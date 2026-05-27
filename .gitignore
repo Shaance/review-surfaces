@@ -1,0 +1,24 @@
+.DS_Store
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies and package-manager caches
+node_modules/
+.pnpm-store/
+
+# Build, coverage, and test output
+dist/
+build/
+coverage/
+.nyc_output/
+tmp/
+temp/
+
+# review-surfaces generated run artifacts
+.review-surfaces/*
+!.review-surfaces/feedback/
+!.review-surfaces/feedback/*.yaml
+!.review-surfaces/agent_handoff.md
