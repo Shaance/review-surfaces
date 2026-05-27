@@ -1,0 +1,27 @@
+schema_version: review-surfaces.config.v1
+output_dir: .review-surfaces
+specs:
+  - features/**/*.feature.yaml
+docs:
+  - README.md
+  - README.bootstrap.md
+  - AGENTS.md
+  - docs/**/*.md
+  - .agents/skills/**/SKILL.md
+tests:
+  - tests/**/*.test.ts
+privacy:
+  ignore_file: .review-surfacesignore
+  redact_secrets: true
+llm:
+  provider: mock
+  model: null
+  require_json_schema: true
+diagrams:
+  format: mermaid
+render:
+  mode: compact
+  include_evidence_appendix: true
+dogfood:
+  enabled: true
+  milestone: M1

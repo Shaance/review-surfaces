@@ -1,0 +1,26 @@
+{
+  "name": "review-surfaces",
+  "version": "0.1.0",
+  "description": "Local-first review packet compiler for agent-generated code changes.",
+  "bin": {
+    "review-surfaces": "./bin/review-surfaces.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "pnpm run typecheck",
+    "test": "pnpm run build && node --test dist/tests/*.test.js",
+    "review-surfaces": "pnpm run build && node bin/review-surfaces.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "src",
+    "types",
+    "schemas"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.8.0"
+}

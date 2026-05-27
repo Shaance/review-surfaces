@@ -1,0 +1,21 @@
+feature:
+  name: example
+  product: example-product
+  version: 0.0.1
+  draft: true
+
+components:
+  INTENT:
+    name: Intent parsing
+    requirements:
+      1:
+        requirement: The tool must parse object requirements.
+        note: Preserve notes.
+      2: The tool must parse string requirements.
+
+constraints:
+  QUALITY:
+    name: Quality
+    requirements:
+      1:
+        requirement: The tool must keep evidence explicit.
