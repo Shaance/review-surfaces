@@ -9,5 +9,5 @@ test("loads local review-surfaces config", async () => {
   assert.equal(config.output_dir, ".review-surfaces");
   assert.deepEqual(config.specs, ["features/**/*.feature.yaml"]);
   assert.equal(config.llm.provider, "mock");
-  assert.equal(config.dogfood.milestone, "M3");
+  assert.equal(config.dogfood.milestone, "M4");
 });

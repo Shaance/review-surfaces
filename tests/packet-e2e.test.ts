@@ -81,6 +81,9 @@ validation:
 
   const packet = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "review_packet.json"), "utf8"));
   const packetMarkdown = fs.readFileSync(path.join(tmp, ".review-surfaces", "review_packet.md"), "utf8");
+  const architectureMarkdown = fs.readFileSync(path.join(tmp, ".review-surfaces", "architecture.md"), "utf8");
+  assert.ok(packet.architecture.diagram_validation.every((result: { status: string }) => result.status === "valid"));
+  assert.match(architectureMarkdown, /Diagram validation/);
   assert.ok(packet.dogfood.findings.some((finding: { finding: string }) => finding.finding.includes("FB-E2E-001")));
   assert.ok(packet.risks.test_evidence.some((evidence: { kind: string; summary: string }) => evidence.kind === "direct" && evidence.summary.includes("CMD-E2E-001")));
   assert.ok(!packet.risks.test_evidence.some((evidence: { id: string; kind: string; summary: string }) => evidence.id.startsWith("TEST-FB-") && evidence.summary.includes("pnpm run test")));

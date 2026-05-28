@@ -31,6 +31,7 @@ export interface RunManifest {
 }
 
 export interface CollectionResult {
+  cwd: string;
   outputDir: string;
   manifest: RunManifest;
   specIndex: AcaiSpecIndex;
@@ -175,6 +176,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   await writeText(path.join(inputsDir, "diff.patch"), redactedDiff.text);
 
   return {
+    cwd: options.cwd,
     outputDir,
     manifest,
     specIndex,

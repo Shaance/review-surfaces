@@ -57,10 +57,17 @@ findings:
     affected_section: PR review
     finding: PR review found that exact evidence classification needed to use configured test inputs, exclude docs and skills from implementation proof, and allow test-only QUALITY requirements to be satisfied by exact test evidence.
     desired_change: Keep evaluator fixture coverage around configured test globs, documentation-only ACID mentions, and test-focused requirements before broadening satisfied coverage rules.
+  - id: FB-2026-05-28-010
+    category: diagram_quality
+    severity: medium
+    affected_section: Architecture surfaces
+    finding: M4 adds deterministic Mermaid artifact validation so architecture outputs show whether generated diagrams are valid, invalid, or too noisy before a reviewer trusts them.
+    desired_change: Keep diagram validation local and schema-backed, then use future dogfood runs to reduce noisy subsystem maps rather than adding provider-dependent diagram interpretation.
 validation:
-  updated_at: 2026-05-28T15:52:27Z
+  updated_at: 2026-05-28T16:07:04Z
   passed:
     - pnpm run test
+    - node --test dist/tests/diagrams.test.js
     - node --test dist/tests/evaluation.test.js
     - pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
     - pnpm run typecheck
@@ -79,6 +86,7 @@ validation:
     - This M3 slice adds reusable review-surfaces usage and dogfood-loop skills, exact ACID test evidence tracking in the evaluator, and a dogfood milestone bump to M3.
     - The CMD-PNPM-TEST transcript capture command is intentionally recorded as a note rather than validation.passed so risk analysis does not duplicate direct transcript evidence as indirect feedback evidence.
     - PR review follow-up tightened exact evidence classification for configured test globs, documentation-only ACID mentions, and test-only QUALITY requirements.
+    - This M4 slice adds deterministic Mermaid diagram validation, packet schema support for diagram_validation, and architecture Markdown validation output.
     - Simplify triad ran with read-only correctness, efficiency, and reuse tracks; fixes applied for unknown top-level flags, explicit conflict markers, custom --out transcript discovery, deterministic default transcript IDs, stream backpressure, and shared transcript constants.
     - Review hardening ran three full-diff cycles with tests, lint/typecheck, packet validation, whitespace checks, and fresh review; no unresolved actionable findings remained.
     - Deferred improvement: richer schema-bound provider-assisted intent synthesis remains later work.

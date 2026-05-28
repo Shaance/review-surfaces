@@ -8,6 +8,7 @@ import { buildIntent } from "../src/intent/intent";
 
 function collection(overrides: Partial<CollectionResult> = {}): CollectionResult {
   return {
+    cwd: process.cwd(),
     outputDir: ".review-surfaces",
     manifest: {
       tool_version: "0.1.0",

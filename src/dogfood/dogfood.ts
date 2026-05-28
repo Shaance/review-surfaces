@@ -1,6 +1,7 @@
 import { CollectionResult } from "../collector/collect";
 import { EvidenceRef } from "../evidence/evidence";
 import { EvaluationModel } from "../evaluation/evaluate";
+import { FeedbackFile, FeedbackFinding } from "../feedback/feedback";
 import { MethodologyModel } from "../methodology/methodology";
 import { RisksModel } from "../risks/risks";
 
@@ -43,7 +44,9 @@ export function buildDogfood(
   commands: string[]
 ): DogfoodModel {
   const unsatisfied = evaluation.results.filter((result) => result.status !== "satisfied").length;
-  const feedbackFindings = collection.feedback.flatMap((feedbackFile) => feedbackFile.findings);
+  const feedbackFilesByRecency = sortFeedbackFilesByRecency(collection.feedback);
+  const feedbackFindings = feedbackFilesByRecency.flatMap((feedbackFile) => feedbackFile.findings);
+  const highlightedFeedbackFindings = selectFeedbackFindings(collection.feedback, 8);
   const noisySections: string[] = [];
   if (risks.test_gaps.length > 15) {
     noisySections.push("test_gaps");
@@ -95,7 +98,7 @@ export function buildDogfood(
           target_milestone: "MVP"
         }
       },
-      ...feedbackFindings.slice(0, 8).map((finding, index) => ({
+      ...highlightedFeedbackFindings.map((finding, index) => ({
         id: `DOG-FB-${String(index + 1).padStart(3, "0")}`,
         category: finding.category,
         severity: finding.severity,
@@ -121,7 +124,7 @@ export function buildDogfood(
       })),
       ...feedbackFindings
         .filter((finding) => finding.desired_change)
-        .slice(0, 5)
+        .slice(-5)
         .map((finding) => ({
           type: "feedback" as const,
           description: finding.desired_change as string,
@@ -133,4 +136,56 @@ export function buildDogfood(
       providerName === "mock" ? "AI SDK enrichment was not used in the default offline dogfood run." : `Provider used: ${providerName}.`
     ]
   };
+}
+
+function selectFeedbackFindings(feedbackFiles: FeedbackFile[], limit: number): FeedbackFinding[] {
+  const selected: FeedbackFinding[] = [];
+  const seen = new Set<string>();
+  const feedbackFilesByRecency = sortFeedbackFilesByRecency(feedbackFiles);
+  const add = (feedbackFile: FeedbackFile, finding: FeedbackFinding | undefined): void => {
+    const key = finding ? `${feedbackFile.path}:${finding.id}` : "";
+    if (!finding || seen.has(key) || selected.length >= limit) {
+      return;
+    }
+    seen.add(key);
+    selected.push(finding);
+  };
+
+  for (let fileIndex = feedbackFilesByRecency.length - 1; fileIndex >= 0 && selected.length < limit; fileIndex -= 1) {
+    const feedbackFile = feedbackFilesByRecency[fileIndex];
+    add(feedbackFile, feedbackFile.findings[feedbackFile.findings.length - 1]);
+  }
+
+  for (let fileIndex = feedbackFilesByRecency.length - 1; fileIndex >= 0 && selected.length < limit; fileIndex -= 1) {
+    const feedbackFile = feedbackFilesByRecency[fileIndex];
+    for (let findingIndex = feedbackFile.findings.length - 1; findingIndex >= 0 && selected.length < limit; findingIndex -= 1) {
+      add(feedbackFile, feedbackFile.findings[findingIndex]);
+    }
+  }
+
+  return selected;
+}
+
+function sortFeedbackFilesByRecency(feedbackFiles: FeedbackFile[]): FeedbackFile[] {
+  return [...feedbackFiles].sort((left, right) => {
+    const leftTime = feedbackCreatedAt(left);
+    const rightTime = feedbackCreatedAt(right);
+    if (leftTime !== undefined || rightTime !== undefined) {
+      if (leftTime === undefined) {
+        return -1;
+      }
+      if (rightTime === undefined) {
+        return 1;
+      }
+      if (leftTime !== rightTime) {
+        return leftTime - rightTime;
+      }
+    }
+    return left.path.localeCompare(right.path);
+  });
+}
+
+function feedbackCreatedAt(feedbackFile: FeedbackFile): number | undefined {
+  const timestamp = feedbackFile.created_at ? Date.parse(feedbackFile.created_at) : NaN;
+  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
