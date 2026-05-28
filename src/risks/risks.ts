@@ -2,6 +2,7 @@ import { CollectionResult } from "../collector/collect";
 import { COMMAND_TRANSCRIPT_OUTPUT_PATH, CommandTranscript } from "../commands/transcripts";
 import { commandEvidence, EvidenceRef, feedbackEvidence, missingEvidence, specEvidence } from "../evidence/evidence";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
+import { MethodologyModel } from "../methodology/methodology";
 
 export interface RiskItem {
   id: string;
@@ -38,7 +39,12 @@ export interface RisksModel {
   review_focus: string[];
 }
 
-export function analyzeRisks(collection: CollectionResult, evaluation: EvaluationModel, commands: string[]): RisksModel {
+export function analyzeRisks(
+  collection: CollectionResult,
+  evaluation: EvaluationModel,
+  commands: string[],
+  methodology?: MethodologyModel
+): RisksModel {
   const weakResults = evaluation.results.filter((result) => result.status !== "satisfied");
   const partialResults = evaluation.results.filter((result) => result.status === "partial");
   const missingResults = evaluation.results.filter((result) => result.status === "missing");
@@ -105,6 +111,21 @@ export function analyzeRisks(collection: CollectionResult, evaluation: Evaluatio
     });
   }
 
+  if (methodology?.claims_without_evidence?.length) {
+    items.push({
+      id: `RISK-${String(items.length + 1).padStart(3, "0")}`,
+      category: "workflow",
+      severity: "medium",
+      likelihood: "medium",
+      detectability: "easy",
+      summary: `${methodology.claims_without_evidence.length} methodology claim(s) mention tests or passing checks without command transcript evidence.`,
+      impact: "Reviewers may over-trust claimed validation unless the command output is recorded separately.",
+      evidence: methodology.evidence?.length ? methodology.evidence.slice(0, 5) : [missingEvidence("Methodology claims need command transcript evidence.")],
+      suggested_checks: ["Run validation through review-surfaces run or attach a bounded command transcript before treating the claim as proof."],
+      manual_review: true
+    });
+  }
+
   const testEvidence = validationEvidenceFromCommandTranscripts(collection);
   const transcriptCommands = new Set((collection.commandTranscripts ?? []).map((transcript) => normalizeCommand(transcript.command)));
   const feedbackEvidence = validationEvidenceFromFeedback(collection, transcriptCommands);
@@ -147,9 +168,26 @@ export function analyzeRisks(collection: CollectionResult, evaluation: Evaluatio
       "Start with missing and partial requirement results.",
       "Check overreach files before reviewing implementation detail.",
       "Treat AI-enriched summaries as review aids, not proof.",
-      "Confirm validation command output for the current branch."
+      "Confirm validation command output for the current branch.",
+      ...methodologyReviewFocus(methodology)
     ]
   };
+}
+
+function methodologyReviewFocus(methodology: MethodologyModel | undefined): string[] {
+  if (!methodology) {
+    return [];
+  }
+  if (methodology.claims_without_evidence.length > 0) {
+    return ["Inspect methodology claims without command evidence before relying on claimed tests."];
+  }
+  if (methodology.missing_logs) {
+    return ["Methodology conversation logs are missing; rely on local artifacts and command transcripts only."];
+  }
+  if (methodology.verified_claims.length > 0) {
+    return ["Use verified methodology claims only when backed by command transcript evidence."];
+  }
+  return [];
 }
 
 function validationEvidenceFromFeedback(collection: CollectionResult, transcriptCommands: Set<string>): RisksModel["test_evidence"] {

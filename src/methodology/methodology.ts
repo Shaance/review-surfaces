@@ -4,6 +4,7 @@ import { CollectionResult } from "../collector/collect";
 import { ensureDir, readText, writeText } from "../core/files";
 import { parseYaml } from "../core/simple-yaml";
 import { commandEvidence, EvidenceRef, missingEvidence } from "../evidence/evidence";
+import { redactSecrets } from "../privacy/secrets";
 
 export interface MethodologyModel {
   summary: string;
@@ -14,6 +15,8 @@ export interface MethodologyModel {
   unchallenged_assumptions: string[];
   skipped_checks: string[];
   claims_without_evidence: string[];
+  verified_claims: string[];
+  quality_flags: string[];
   evidence: EvidenceRef[];
 }
 
@@ -22,6 +25,11 @@ interface ConversationEvent {
   actor: string;
   kind: string;
   summary: string;
+}
+
+interface TranscriptCommandEvidence {
+  passed: Set<string>;
+  failed: Set<string>;
 }
 
 export async function buildMethodology(
@@ -40,6 +48,8 @@ export async function buildMethodology(
       unchallenged_assumptions: ["No conversation log was supplied, so options considered outside files are unknown."],
       skipped_checks: ["Conversation methodology audit skipped: --conversation not provided."],
       claims_without_evidence: [],
+      verified_claims: [],
+      quality_flags: ["conversation_log_missing"],
       evidence: [missingEvidence("No conversation log was provided.")]
     };
   }
@@ -47,6 +57,14 @@ export async function buildMethodology(
   const absolutePath = path.resolve(cwd, conversationPath);
   const events = await parseConversationFile(absolutePath);
   await writeNormalizedConversation(collection.outputDir, events);
+  const transcriptCommandEvidence = buildTranscriptCommandEvidence(collection);
+  const validationClaims = pickValidationClaims(events);
+  const verifiedClaims = validationClaims.filter((claim) => claimHasCommandEvidence(claim, transcriptCommandEvidence));
+  const claimsWithoutEvidence = validationClaims.filter((claim) => !claimHasCommandEvidence(claim, transcriptCommandEvidence));
+  const qualityFlags = [
+    ...(claimsWithoutEvidence.length > 0 ? ["test_claims_without_command_evidence"] : []),
+    ...(verifiedClaims.length > 0 ? ["test_claims_verified_by_command_transcripts"] : [])
+  ];
 
   return {
     summary: `Methodology extracted ${events.length} event(s) from ${conversationPath}.`,
@@ -59,7 +77,9 @@ export async function buildMethodology(
       ...pick(events, ["skip", "skipped", "not run", "could not"]),
       ...commands.filter((command) => command.includes("ai-sdk skipped"))
     ],
-    claims_without_evidence: pick(events, ["passed", "green", "tested"]).filter((claim) => !claim.includes("command")),
+    claims_without_evidence: claimsWithoutEvidence,
+    verified_claims: verifiedClaims,
+    quality_flags: qualityFlags,
     evidence: [
       {
         kind: "conversation",
@@ -68,6 +88,19 @@ export async function buildMethodology(
         validation_status: "valid",
         note: "Conversation was normalized into inputs/conversation.normalized.jsonl."
       },
+      ...(collection.commandTranscripts ?? []).map((transcript) =>
+        commandEvidence(
+          transcript.command,
+          `Command transcript ${transcript.id} supports methodology claim checking.`,
+          transcript.exit_code === 0 ? "high" : "medium",
+          {
+            path: collection.commandTranscriptOutputPath,
+            eventId: transcript.id,
+            excerptHash: transcript.stdout_hash ?? transcript.stderr_hash,
+            validationStatus: "valid"
+          }
+        )
+      ),
       ...commands.map((command) => commandEvidence(command, "Command associated with this review run.", "medium"))
     ]
   };
@@ -85,7 +118,7 @@ async function parseConversationFile(filePath: string): Promise<ConversationEven
           id: String(parsed.id ?? `evt_${String(index + 1).padStart(4, "0")}`),
           actor: String(parsed.actor ?? "unknown"),
           kind: String(parsed.kind ?? "message"),
-          summary: String(parsed.summary ?? parsed.text ?? "")
+          summary: redactConversationSummary(parsed.summary ?? parsed.text ?? "")
         };
       });
   }
@@ -97,7 +130,7 @@ async function parseConversationFile(filePath: string): Promise<ConversationEven
         id: String(isRecord(event) ? event.id ?? `evt_${String(index + 1).padStart(4, "0")}` : `evt_${String(index + 1).padStart(4, "0")}`),
         actor: String(isRecord(event) ? event.actor ?? "unknown" : "unknown"),
         kind: String(isRecord(event) ? event.kind ?? "message" : "message"),
-        summary: String(isRecord(event) ? event.summary ?? event.text ?? "" : event)
+        summary: redactConversationSummary(isRecord(event) ? event.summary ?? event.text ?? "" : event)
       }));
     }
   }
@@ -110,7 +143,7 @@ async function parseConversationFile(filePath: string): Promise<ConversationEven
       id: `evt_${String(index + 1).padStart(4, "0")}`,
       actor: line.startsWith("user:") ? "user" : line.startsWith("assistant:") ? "assistant" : "unknown",
       kind: line.startsWith("#") ? "heading" : "message",
-      summary: line.replace(/^(user|assistant):\s*/i, "")
+      summary: redactConversationSummary(line.replace(/^(user|assistant):\s*/i, ""))
     }));
 }
 
@@ -133,6 +166,102 @@ function pick(events: ConversationEvent[], keywords: string[]): string[] {
     }
   }
   return result;
+}
+
+function pickValidationClaims(events: ConversationEvent[]): string[] {
+  const result: string[] = [];
+  for (const event of events) {
+    if (isValidationSuccessClaim(event.summary) || isValidationFailureClaim(event.summary)) {
+      result.push(`${event.id}: ${event.summary}`);
+    }
+  }
+  return result;
+}
+
+function isValidationSuccessClaim(summary: string): boolean {
+  const lower = summary.toLowerCase();
+  const mentionsValidation = /\b(?:tests?|tested|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test|tsc)\b/.test(lower);
+  const claimsSuccess = /\b(?:tested|pass|passed|passes|passing|green|succeeded|successful|success|validated|verified)\b/.test(lower);
+  if (!mentionsValidation || !claimsSuccess) {
+    return false;
+  }
+  return !/\b(?:missing|needs?|add|todo|skipped|skip|not run|could not|cannot|can't|gap|uncovered)\b|\b(?:should|could|would|might|may|will|expect(?:ed)? to)\s+(?:pass|passed|passes|green|succeed|succeeded|successful|validate|validated|verify|verified)\b|\bnot\s+(?:pass|passed|passing|green|successful|validated|verified)\b/.test(lower);
+}
+
+function isValidationFailureClaim(summary: string): boolean {
+  const lower = summary.toLowerCase();
+  const mentionsValidation = /\b(?:tests?|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test|tsc)\b/.test(lower);
+  const claimsFailure = /\b(?:fail|failed|failing|errored|error)\b/.test(lower);
+  if (!mentionsValidation || !claimsFailure) {
+    return false;
+  }
+  return !/\b(?:needs?|add|todo|skipped|skip|not run|could not|cannot|can't|gap|uncovered)\b|\b(?:should|could|would|might|may|will|expect(?:ed)? to)\s+(?:fail|failed|failing|error|errored)\b/.test(lower);
+}
+
+function buildTranscriptCommandEvidence(collection: CollectionResult): TranscriptCommandEvidence {
+  const evidence: TranscriptCommandEvidence = {
+    passed: new Set(),
+    failed: new Set()
+  };
+  for (const transcript of collection.commandTranscripts ?? []) {
+    const command = normalizeCommand(transcript.command);
+    if (transcript.status === "passed" && transcript.exit_code === 0) {
+      evidence.passed.add(command);
+    } else if (transcript.status === "failed" || (typeof transcript.exit_code === "number" && transcript.exit_code !== 0)) {
+      evidence.failed.add(command);
+    }
+  }
+  return evidence;
+}
+
+function claimHasCommandEvidence(claim: string, transcriptCommands: TranscriptCommandEvidence): boolean {
+  const claimedCommands = extractClaimedCommands(claim);
+  if (claimedCommands.length === 0) {
+    return false;
+  }
+  if (isValidationSuccessClaim(claim)) {
+    return claimedCommands.every((command) => transcriptCommands.passed.has(command));
+  }
+  if (isValidationFailureClaim(claim)) {
+    return claimedCommands.every((command) => transcriptCommands.failed.has(command));
+  }
+  return false;
+}
+
+function normalizeCommand(command: string): string {
+  return command.toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+function extractClaimedCommands(claim: string): string[] {
+  const commands: string[] = [];
+  const normalizedClaim = normalizeCommand(claim);
+  const commandStarts = [...normalizedClaim.matchAll(/\b(?:pnpm|npm|yarn|bun|node|tsc)\b/g)];
+  for (let index = 0; index < commandStarts.length; index += 1) {
+    const start = commandStarts[index].index ?? 0;
+    const end = commandStarts[index + 1]?.index ?? normalizedClaim.length;
+    const command = cleanClaimedCommand(normalizedClaim.slice(start, end));
+    if (command && commandLooksSupported(command)) {
+      commands.push(command);
+    }
+  }
+  return [...new Set(commands)];
+}
+
+function cleanClaimedCommand(value: string): string {
+  return normalizeCommand(value)
+    .replace(/\s+\b(?:passed|passes|passing|green|succeeded|successful|success|validated|verified|tested|fail|failed|failing|errored|error|after|before|because|so|while|when)\b.*$/i, "")
+    .replace(/\s+\b(?:and|then)\s*$/i, "")
+    .replace(/\s*(?:,|;|&&|\|\|)\s*$/i, "")
+    .replace(/[`'")\]]+$/g, "")
+    .trim();
+}
+
+function commandLooksSupported(command: string): boolean {
+  return /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+[\w:.-]+|exec\s+[\w:.-]+|test(?::[\w.-]+)?|lint|typecheck|build)(?:\s+[^\s,;]+)*|node\s+--test(?:\s+[^\s,;]+)*|tsc(?:\s+[^\s,;]+)*)$/.test(command);
+}
+
+function redactConversationSummary(value: unknown): string {
+  return redactSecrets(String(value)).text;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

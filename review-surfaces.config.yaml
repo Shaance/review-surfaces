@@ -25,4 +25,4 @@ render:
   include_evidence_appendix: true
 dogfood:
   enabled: true
-  milestone: M4
+  milestone: M5

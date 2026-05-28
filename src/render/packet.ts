@@ -10,6 +10,7 @@ import { RisksModel } from "../risks/risks";
 import { writeJson, writeText } from "../core/files";
 import { stringifyYaml } from "../core/simple-yaml";
 import { countRequirementStatuses } from "../evaluation/status";
+import { redactSecrets } from "../privacy/secrets";
 
 export interface ReviewPacket {
   schema_version: "review-surfaces.packet.v1";
@@ -24,9 +25,14 @@ export interface ReviewPacket {
     summary: string;
     current_milestone?: string;
     relevant_acids?: string[];
+    implemented_changes?: string[];
     commands_to_run?: string[];
+    validation_evidence?: string[];
+    failed_validation?: string[];
+    methodology_flags?: string[];
     next_tasks: string[];
     open_risks?: string[];
+    deferrals?: string[];
     artifact_paths?: string[];
   };
 }
@@ -94,6 +100,7 @@ function buildHandoff(inputs: PacketInputs): ReviewPacket["agent_handoff"] {
       ...missing.map((result) => result.acai_id).filter(Boolean) as string[],
       ...partial.map((result) => result.acai_id).filter(Boolean) as string[]
     ]).slice(0, 12),
+    implemented_changes: formatImplementedChanges(inputs.collection.changedFiles),
     commands_to_run: [
       "pnpm run lint",
       "pnpm run test",
@@ -101,11 +108,22 @@ function buildHandoff(inputs: PacketInputs): ReviewPacket["agent_handoff"] {
       "pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces",
       "pnpm run review-surfaces -- validate .review-surfaces"
     ],
+    validation_evidence: inputs.risks.test_evidence
+      .filter(isHandoffValidationEvidence)
+      .slice(0, 8)
+      .map(formatHandoffEvidence),
+    failed_validation: inputs.risks.test_evidence
+      .filter(isHandoffFailedValidationEvidence)
+      .sort(compareHandoffFailedValidationEvidence)
+      .slice(0, 6)
+      .map(formatHandoffEvidence),
+    methodology_flags: handoffMethodologyFlags(inputs.methodology),
     next_tasks: [
       ...inputs.risks.test_gaps.slice(0, 5).map((gap) => `${gap.acai_id ?? gap.requirement_id ?? gap.id}: ${gap.suggested_test ?? gap.summary}`),
       "Inspect .review-surfaces/review_packet.md before trusting generated summaries."
     ],
     open_risks: inputs.risks.items.slice(0, 6).map((risk) => `${risk.id}: ${risk.summary}`),
+    deferrals: inputs.dogfood?.deferrals ?? [],
     artifact_paths: [
       ".review-surfaces/review_packet.md",
       ".review-surfaces/review_packet.json",
@@ -157,6 +175,12 @@ ${previewLines(packet.architecture.subsystems, (subsystem) => `- ${subsystem.nam
 
 ## 5. Methodology audit
 ${packet.methodology.summary}
+
+Verified claims:
+${previewLines(packet.methodology.verified_claims ?? [], (claim) => `- ${redactRenderedText(claim)}`, 5)}
+
+Claims needing evidence:
+${previewLines(packet.methodology.claims_without_evidence ?? [], (claim) => `- ${redactRenderedText(claim)}`, 5)}
 
 Skipped/unknown:
 ${(packet.methodology.skipped_checks ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
@@ -237,6 +261,22 @@ ${(handoff.relevant_acids ?? []).map((item) => `- ${item}`).join("\n") || "- Non
 
 ${(handoff.commands_to_run ?? []).map((item) => `- \`${item}\``).join("\n") || "- None recorded."}
 
+## Implemented Changes
+
+${(handoff.implemented_changes ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
+
+## Validation Evidence
+
+${(handoff.validation_evidence ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
+
+## Failed Or Missing Validation
+
+${(handoff.failed_validation ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
+
+## Methodology Flags
+
+${(handoff.methodology_flags ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
+
 ## Next Tasks
 
 ${handoff.next_tasks.map((item) => `- ${item}`).join("\n")}
@@ -244,6 +284,10 @@ ${handoff.next_tasks.map((item) => `- ${item}`).join("\n")}
 ## Open Risks
 
 ${(handoff.open_risks ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
+
+## Deferrals
+
+${(handoff.deferrals ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
 
 ## Artifact Paths
 
@@ -259,8 +303,92 @@ function previewLines<T>(items: T[], render: (item: T) => string, limit = 12): s
   return visible.join("\n") || "- None.";
 }
 
+function formatImplementedChanges(changedFiles: CollectionResult["changedFiles"], limit = 12): string[] {
+  const visible = changedFiles.slice(0, limit).map((file) => `${file.status} ${file.path}`);
+  if (changedFiles.length > limit) {
+    visible.push(`... ${changedFiles.length - limit} more changed file(s) in .review-surfaces/inputs/changed_files.json`);
+  }
+  return visible;
+}
+
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function redactRenderedText(value: string): string {
+  return redactSecrets(value).text;
+}
+
+function formatHandoffEvidence(evidence: RisksModel["test_evidence"][number]): string {
+  return redactRenderedText(`${evidence.id} [${evidence.kind}]: ${evidence.summary}`);
+}
+
+function compareHandoffFailedValidationEvidence(
+  left: RisksModel["test_evidence"][number],
+  right: RisksModel["test_evidence"][number]
+): number {
+  return handoffFailedValidationPriority(left) - handoffFailedValidationPriority(right);
+}
+
+function handoffFailedValidationPriority(evidence: RisksModel["test_evidence"][number]): number {
+  const summary = evidence.summary.toLowerCase();
+  if (summary.includes("failing validation command")) {
+    return 0;
+  }
+  if (evidence.kind === "missing") {
+    return 1;
+  }
+  if (evidence.kind === "unknown") {
+    return 2;
+  }
+  if (evidence.kind === "claimed") {
+    return 3;
+  }
+  if (evidence.kind === "indirect") {
+    return 4;
+  }
+  return 5;
+}
+
+function isHandoffValidationEvidence(evidence: RisksModel["test_evidence"][number]): boolean {
+  if (evidence.kind !== "direct" && evidence.kind !== "indirect") {
+    return false;
+  }
+  return (evidence.evidence ?? []).some((ref) => ref.kind === "command");
+}
+
+function isHandoffFailedValidationEvidence(evidence: RisksModel["test_evidence"][number]): boolean {
+  if (evidence.kind === "missing" || evidence.kind === "unknown") {
+    return true;
+  }
+  if (evidence.kind === "indirect" && isFeedbackOnlyEvidence(evidence)) {
+    return true;
+  }
+  if (evidence.kind !== "claimed") {
+    return false;
+  }
+  return (evidence.evidence ?? []).some((ref) =>
+    ref.kind === "feedback"
+      || (ref.kind === "command" && typeof ref.command === "string" && commandLooksLikeLocalValidation(ref.command))
+  );
+}
+
+function isFeedbackOnlyEvidence(evidence: RisksModel["test_evidence"][number]): boolean {
+  const refs = evidence.evidence ?? [];
+  return refs.length > 0 && refs.every((ref) => ref.kind === "feedback");
+}
+
+function commandLooksLikeLocalValidation(command: string): boolean {
+  return /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?(?:test(?::[\w.-]+)?|lint|typecheck|build)|node\s+--test|tsc\s)/.test(command.toLowerCase().trim().replace(/\s+/g, " "));
+}
+
+function handoffMethodologyFlags(methodology: MethodologyModel): string[] {
+  return unique([
+    ...methodology.quality_flags,
+    ...(methodology.missing_logs ? ["conversation_log_missing"] : []),
+    ...(methodology.claims_without_evidence.length > 0 ? ["claims_without_evidence"] : []),
+    ...(methodology.verified_claims.length > 0 ? ["verified_claims_available"] : [])
+  ]);
 }
 
 function stripUndefined<T>(value: T): T {

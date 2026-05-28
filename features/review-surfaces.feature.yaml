@@ -267,3 +267,5 @@ constraints:
     requirements:
       1:
         requirement: schemas/review_packet.schema.json must validate review_packet.json fields for architecture diagram validation metadata.
+      2:
+        requirement: schemas/review_packet.schema.json must validate methodology claim evidence metadata and agent handoff validation/deferral metadata.

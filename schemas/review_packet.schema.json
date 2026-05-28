@@ -610,7 +610,10 @@
       "additionalProperties": false,
       "required": [
         "summary",
-        "missing_logs"
+        "missing_logs",
+        "claims_without_evidence",
+        "verified_claims",
+        "quality_flags"
       ],
       "properties": {
         "summary": {
@@ -650,6 +653,18 @@
           }
         },
         "claims_without_evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "verified_claims": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "quality_flags": {
           "type": "array",
           "items": {
             "type": "string"
@@ -1005,7 +1020,11 @@
       "additionalProperties": false,
       "required": [
         "summary",
-        "next_tasks"
+        "validation_evidence",
+        "failed_validation",
+        "methodology_flags",
+        "next_tasks",
+        "deferrals"
       ],
       "properties": {
         "summary": {
@@ -1020,7 +1039,31 @@
             "type": "string"
           }
         },
+        "implemented_changes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "commands_to_run": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "validation_evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "failed_validation": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "methodology_flags": {
           "type": "array",
           "items": {
             "type": "string"
@@ -1033,6 +1076,12 @@
           }
         },
         "open_risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deferrals": {
           "type": "array",
           "items": {
             "type": "string"
