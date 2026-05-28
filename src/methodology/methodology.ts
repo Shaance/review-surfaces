@@ -27,6 +27,11 @@ interface ConversationEvent {
   summary: string;
 }
 
+interface TranscriptCommandEvidence {
+  passed: Set<string>;
+  failed: Set<string>;
+}
+
 export async function buildMethodology(
   cwd: string,
   collection: CollectionResult,
@@ -52,14 +57,10 @@ export async function buildMethodology(
   const absolutePath = path.resolve(cwd, conversationPath);
   const events = await parseConversationFile(absolutePath);
   await writeNormalizedConversation(collection.outputDir, events);
-  const passingTranscriptCommands = new Set(
-    (collection.commandTranscripts ?? [])
-      .filter((transcript) => transcript.status === "passed" && transcript.exit_code === 0)
-      .map((transcript) => normalizeCommand(transcript.command))
-  );
+  const transcriptCommandEvidence = buildTranscriptCommandEvidence(collection);
   const validationClaims = pickValidationClaims(events);
-  const verifiedClaims = validationClaims.filter((claim) => claimHasCommandEvidence(claim, passingTranscriptCommands));
-  const claimsWithoutEvidence = validationClaims.filter((claim) => !claimHasCommandEvidence(claim, passingTranscriptCommands));
+  const verifiedClaims = validationClaims.filter((claim) => claimHasCommandEvidence(claim, transcriptCommandEvidence));
+  const claimsWithoutEvidence = validationClaims.filter((claim) => !claimHasCommandEvidence(claim, transcriptCommandEvidence));
   const qualityFlags = [
     ...(claimsWithoutEvidence.length > 0 ? ["test_claims_without_command_evidence"] : []),
     ...(verifiedClaims.length > 0 ? ["test_claims_verified_by_command_transcripts"] : [])
@@ -197,12 +198,34 @@ function isValidationFailureClaim(summary: string): boolean {
   return !/\b(?:needs?|add|todo|skipped|skip|not run|could not|cannot|can't|gap|uncovered)\b|\b(?:should|could|would|might|may|will|expect(?:ed)? to)\s+(?:fail|failed|failing|error|errored)\b/.test(lower);
 }
 
-function claimHasCommandEvidence(claim: string, transcriptCommands: Set<string>): boolean {
-  if (!isValidationSuccessClaim(claim)) {
+function buildTranscriptCommandEvidence(collection: CollectionResult): TranscriptCommandEvidence {
+  const evidence: TranscriptCommandEvidence = {
+    passed: new Set(),
+    failed: new Set()
+  };
+  for (const transcript of collection.commandTranscripts ?? []) {
+    const command = normalizeCommand(transcript.command);
+    if (transcript.status === "passed" && transcript.exit_code === 0) {
+      evidence.passed.add(command);
+    } else if (transcript.status === "failed" || (typeof transcript.exit_code === "number" && transcript.exit_code !== 0)) {
+      evidence.failed.add(command);
+    }
+  }
+  return evidence;
+}
+
+function claimHasCommandEvidence(claim: string, transcriptCommands: TranscriptCommandEvidence): boolean {
+  const claimedCommands = extractClaimedCommands(claim);
+  if (claimedCommands.length === 0) {
     return false;
   }
-  const claimedCommands = extractClaimedCommands(claim);
-  return claimedCommands.length > 0 && claimedCommands.every((command) => transcriptCommands.has(command));
+  if (isValidationSuccessClaim(claim)) {
+    return claimedCommands.every((command) => transcriptCommands.passed.has(command));
+  }
+  if (isValidationFailureClaim(claim)) {
+    return claimedCommands.every((command) => transcriptCommands.failed.has(command));
+  }
+  return false;
 }
 
 function normalizeCommand(command: string): string {
@@ -226,7 +249,7 @@ function extractClaimedCommands(claim: string): string[] {
 
 function cleanClaimedCommand(value: string): string {
   return normalizeCommand(value)
-    .replace(/\s+\b(?:passed|passes|passing|green|succeeded|successful|success|validated|verified|tested|after|before|because|so|while|when)\b.*$/i, "")
+    .replace(/\s+\b(?:passed|passes|passing|green|succeeded|successful|success|validated|verified|tested|fail|failed|failing|errored|error|after|before|because|so|while|when)\b.*$/i, "")
     .replace(/\s+\b(?:and|then)\s*$/i, "")
     .replace(/\s*(?:,|;|&&|\|\|)\s*$/i, "")
     .replace(/[`'")\]]+$/g, "")
@@ -234,7 +257,7 @@ function cleanClaimedCommand(value: string): string {
 }
 
 function commandLooksSupported(command: string): boolean {
-  return /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+[\w:.-]+|exec\s+[\w:.-]+|test(?::[\w.-]+)?|lint|typecheck|build)(?:\s+[^\s,.;]+)*|node\s+--test(?:\s+[^\s,.;]+)*|tsc(?:\s+[^\s,.;]+)*)$/.test(command);
+  return /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+[\w:.-]+|exec\s+[\w:.-]+|test(?::[\w.-]+)?|lint|typecheck|build)(?:\s+[^\s,;]+)*|node\s+--test(?:\s+[^\s,;]+)*|tsc(?:\s+[^\s,;]+)*)$/.test(command);
 }
 
 function redactConversationSummary(value: unknown): string {

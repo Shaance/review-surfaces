@@ -100,9 +100,7 @@ function buildHandoff(inputs: PacketInputs): ReviewPacket["agent_handoff"] {
       ...missing.map((result) => result.acai_id).filter(Boolean) as string[],
       ...partial.map((result) => result.acai_id).filter(Boolean) as string[]
     ]).slice(0, 12),
-    implemented_changes: inputs.collection.changedFiles
-      .slice(0, 12)
-      .map((file) => `${file.status} ${file.path}`),
+    implemented_changes: formatImplementedChanges(inputs.collection.changedFiles),
     commands_to_run: [
       "pnpm run lint",
       "pnpm run test",
@@ -303,6 +301,14 @@ function previewLines<T>(items: T[], render: (item: T) => string, limit = 12): s
     visible.push(`- ... ${items.length - limit} more in review_packet.json`);
   }
   return visible.join("\n") || "- None.";
+}
+
+function formatImplementedChanges(changedFiles: CollectionResult["changedFiles"], limit = 12): string[] {
+  const visible = changedFiles.slice(0, limit).map((file) => `${file.status} ${file.path}`);
+  if (changedFiles.length > limit) {
+    visible.push(`... ${changedFiles.length - limit} more changed file(s) in .review-surfaces/inputs/changed_files.json`);
+  }
+  return visible;
 }
 
 function unique(values: string[]): string[] {

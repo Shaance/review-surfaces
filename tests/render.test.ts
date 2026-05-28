@@ -147,3 +147,71 @@ test("review-surfaces.PRIVACY.2 redacts and prioritizes generated handoff valida
   assert.ok(!packet.agent_handoff?.validation_evidence?.some((item) => item.includes("abc123456")));
   assert.ok(!packet.agent_handoff?.failed_validation?.some((item) => item.includes("abc123456")));
 });
+
+test("review-surfaces.DOGFOOD.5 marks truncated implemented changes in generated handoff", () => {
+  const packet = createReviewPacket({
+    collection: {
+      manifest: { milestone: "M5" },
+      changedFiles: Array.from({ length: 14 }, (_value, index) => ({
+        status: "M",
+        path: `src/changed-${index + 1}.ts`,
+        source: "diff"
+      }))
+    },
+    intent: {
+      summary: "render fixture",
+      requirements: [],
+      constraints: [],
+      non_goals: [],
+      assumptions: [],
+      open_questions: [],
+      sources: []
+    },
+    evaluation: {
+      summary: "render fixture",
+      results: [],
+      overreach: [],
+      acai_coverage: {}
+    },
+    architecture: {
+      summary: "render fixture",
+      diagrams: [],
+      diagram_validation: [],
+      subsystems: [],
+      open_questions: []
+    },
+    methodology: {
+      summary: "render fixture",
+      missing_logs: false,
+      considered: [],
+      research: [],
+      decisions: [],
+      unchallenged_assumptions: [],
+      skipped_checks: [],
+      claims_without_evidence: [],
+      verified_claims: [],
+      quality_flags: [],
+      evidence: []
+    },
+    risks: {
+      summary: "render fixture",
+      items: [],
+      test_gaps: [],
+      review_focus: [],
+      test_evidence: []
+    },
+    dogfood: {
+      milestone: "M5",
+      summary: "dogfood fixture",
+      findings: []
+    },
+    enrichment: {
+      provider: "mock",
+      status: "skipped"
+    },
+    commands: []
+  } as unknown as PacketInputs);
+
+  assert.equal(packet.agent_handoff?.implemented_changes?.length, 13);
+  assert.ok(packet.agent_handoff?.implemented_changes?.includes("... 2 more changed file(s) in .review-surfaces/inputs/changed_files.json"));
+});

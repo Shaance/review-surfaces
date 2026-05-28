@@ -36,6 +36,7 @@ M5
 - M tests/command-transcripts.test.ts
 - M tests/config.test.ts
 - M tests/feedback.test.ts
+- ... 4 more changed file(s) in .review-surfaces/inputs/changed_files.json
 
 ## Validation Evidence
 

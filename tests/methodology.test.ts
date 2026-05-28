@@ -112,6 +112,36 @@ test("review-surfaces.METHODOLOGY.2 does not verify claims with failed command t
   assert.ok(methodology.quality_flags.includes("test_claims_without_command_evidence"));
 });
 
+test("review-surfaces.METHODOLOGY.2 verifies failed claims with failed command transcripts", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  const logPath = path.join(tmp, "conversation.md");
+  fs.writeFileSync(logPath, "assistant: pnpm run test failed after the implementation.\n");
+
+  const methodology = await buildMethodology(
+    tmp,
+    collectionFixture(tmp, {
+      commandTranscripts: [
+        {
+          id: "CMD-PNPM-TEST",
+          command: "pnpm run test",
+          status: "failed",
+          exit_code: 1,
+          stderr_hash: "def456",
+          truncated: false,
+          source_path: ".review-surfaces/commands/CMD-PNPM-TEST.json"
+        }
+      ]
+    }),
+    "conversation.md",
+    []
+  );
+
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm run test failed")));
+  assert.equal(methodology.claims_without_evidence.length, 0);
+  assert.ok(methodology.quality_flags.includes("test_claims_verified_by_command_transcripts"));
+  assert.ok(!methodology.quality_flags.includes("test_claims_without_command_evidence"));
+});
+
 test("review-surfaces.METHODOLOGY.2 requires exact command matches for verified claims", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
   const logPath = path.join(tmp, "conversation.md");
@@ -126,6 +156,8 @@ test("review-surfaces.METHODOLOGY.2 requires exact command matches for verified 
       "assistant: pnpm run test -- --runInBand passed after the implementation.",
       "assistant: pnpm exec vitest passed after the implementation.",
       "assistant: tsc --noEmit passed after the implementation.",
+      "assistant: tsc -p tsconfig.json --noEmit passed after the implementation.",
+      "assistant: node --test dist/tests/*.test.js passed after the implementation.",
       "assistant: pnpm run lint and pnpm run test passed after the implementation.",
       "assistant: pnpm run lint, pnpm run test passed after the implementation.",
       "assistant: pnpm run lint && pnpm run test passed after the implementation."
@@ -171,6 +203,24 @@ test("review-surfaces.METHODOLOGY.2 requires exact command matches for verified 
           stdout_hash: "ace456",
           truncated: false,
           source_path: ".review-surfaces/commands/CMD-TSC-NOEMIT.json"
+        },
+        {
+          id: "CMD-TSC-PROJECT",
+          command: "tsc -p tsconfig.json --noEmit",
+          status: "passed",
+          exit_code: 0,
+          stdout_hash: "bdf789",
+          truncated: false,
+          source_path: ".review-surfaces/commands/CMD-TSC-PROJECT.json"
+        },
+        {
+          id: "CMD-NODE-TEST-GLOB",
+          command: "node --test dist/tests/*.test.js",
+          status: "passed",
+          exit_code: 0,
+          stdout_hash: "cde987",
+          truncated: false,
+          source_path: ".review-surfaces/commands/CMD-NODE-TEST-GLOB.json"
         }
       ]
     }),
@@ -183,6 +233,8 @@ test("review-surfaces.METHODOLOGY.2 requires exact command matches for verified 
   assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm run test -- --runInBand passed")));
   assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm exec vitest passed")));
   assert.ok(methodology.verified_claims.some((claim) => claim.includes("tsc --noEmit passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("tsc -p tsconfig.json --noEmit passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("node --test dist/tests/*.test.js passed")));
   assert.ok(!methodology.verified_claims.some((claim) => claim.includes("pnpm run test failed")));
   assert.ok(!methodology.verified_claims.some((claim) => claim.includes("test:coverage")));
   assert.ok(!methodology.verified_claims.some((claim) => claim.includes("npm run test passed") && !claim.includes("pnpm run")));
