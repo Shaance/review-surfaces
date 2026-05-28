@@ -171,6 +171,8 @@ The human reviewer wants to review a branch without rereading a long conversatio
 Expected flow:
 
 ```bash
+review-surfaces run -- pnpm run test
+
 review-surfaces all \
   --base origin/main \
   --head HEAD \
@@ -408,6 +410,36 @@ Support these incrementally:
 - package-manager scripts;
 - test file ACID references;
 - CI artifacts later.
+
+The first local transcript capture helper is:
+
+```bash
+review-surfaces run -- pnpm run test
+```
+
+It writes `.review-surfaces/commands/<id>.json` with bounded, redacted excerpts and hashes. It must not preserve unbounded raw command output. When `--out <dir>` is supplied and `--command-transcripts` is not, `run` writes to `<dir>/commands` and packet generation reads transcripts from that same output directory. Default transcript IDs are deterministic by command so repeated validation loops overwrite stale evidence unless the caller supplies an explicit `--id`.
+
+Example:
+
+```json
+{
+  "schema_version": "review-surfaces.command_transcripts.v1",
+  "commands": [
+    {
+      "id": "CMD-20260528-TEST",
+      "command": "pnpm run test",
+      "status": "passed",
+      "exit_code": 0,
+      "duration_ms": 1200,
+      "started_at": "2026-05-28T12:00:00.000Z",
+      "completed_at": "2026-05-28T12:00:01.200Z",
+      "stdout_excerpt": "34 tests passed",
+      "stdout_hash": "sha256...",
+      "truncated": false
+    }
+  ]
+}
+```
 
 ---
 
@@ -676,6 +708,7 @@ review-surfaces handoff
 review-surfaces packet
 review-surfaces all
 review-surfaces validate
+review-surfaces run -- pnpm run test
 review-surfaces comment   # later
 ```
 

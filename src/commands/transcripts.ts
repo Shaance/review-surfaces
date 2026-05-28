@@ -1,11 +1,14 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { readText, relativePath } from "../core/files";
+import { relativePath } from "../core/files";
 import { redactSecrets } from "../privacy/secrets";
 
 export const COMMAND_TRANSCRIPT_OUTPUT_PATH = ".review-surfaces/inputs/commands.json";
 export const COMMAND_TRANSCRIPT_INPUT_FILENAME = "commands.json";
+export const COMMAND_TRANSCRIPT_SCHEMA_VERSION = "review-surfaces.command_transcripts.v1";
+export const COMMAND_TRANSCRIPT_DIRNAME = "commands";
+export const DEFAULT_COMMAND_TRANSCRIPT_DIR = ".review-surfaces/commands";
 
 export type CommandTranscriptStatus = "passed" | "failed" | "unknown";
 
@@ -25,54 +28,97 @@ export interface CommandTranscript {
   source_path: string;
 }
 
-const EXCERPT_LIMIT = 1200;
+export const COMMAND_TRANSCRIPT_EXCERPT_LIMIT = 1200;
 const MAX_TRANSCRIPT_FILE_BYTES = 1_000_000;
 const MAX_RAW_OUTPUT_CHARS = 20_000;
+
+export interface CommandTranscriptSourceHash {
+  path: string;
+  algorithm: "sha256";
+  hash: string;
+  kind: "command_transcript";
+}
+
+export interface CommandTranscriptIndex {
+  transcripts: CommandTranscript[];
+  sourceHashes: CommandTranscriptSourceHash[];
+}
+
+interface TranscriptIndexOptions {
+  includeSourceHashes?: boolean;
+}
 
 export function commandTranscriptOutputPath(cwd: string, outputDir: string): string {
   return relativePath(cwd, path.join(outputDir, "inputs", COMMAND_TRANSCRIPT_INPUT_FILENAME));
 }
 
+export function commandTranscriptInputDir(cwd: string, outputDir: string): string {
+  return relativePath(cwd, path.join(outputDir, COMMAND_TRANSCRIPT_DIRNAME));
+}
+
 export async function indexCommandTranscripts(cwd: string, transcriptPaths: string[]): Promise<CommandTranscript[]> {
+  return (await indexCommandTranscriptFiles(cwd, transcriptPaths, { includeSourceHashes: false })).transcripts;
+}
+
+export async function indexCommandTranscriptFiles(
+  cwd: string,
+  transcriptPaths: string[],
+  options: TranscriptIndexOptions = { includeSourceHashes: true }
+): Promise<CommandTranscriptIndex> {
   const transcripts: CommandTranscript[] = [];
+  const sourceHashes: CommandTranscriptSourceHash[] = [];
   let index = 1;
   for (const transcriptPath of transcriptPaths.sort()) {
-    for (const value of await readTranscriptFile(cwd, transcriptPath)) {
+    const transcriptFile = await readTranscriptFile(cwd, transcriptPath, options.includeSourceHashes !== false);
+    if (transcriptFile.hash) {
+      sourceHashes.push({
+        path: transcriptPath,
+        algorithm: "sha256",
+        hash: transcriptFile.hash,
+        kind: "command_transcript"
+      });
+    }
+    for (const value of transcriptFile.values) {
       transcripts.push(normalizeTranscript(transcriptPath, value, index));
       index += 1;
     }
   }
-  return transcripts;
+  return { transcripts, sourceHashes };
 }
 
-async function readTranscriptFile(cwd: string, transcriptPath: string): Promise<unknown[]> {
+async function readTranscriptFile(cwd: string, transcriptPath: string, includeSourceHash: boolean): Promise<{ values: unknown[]; hash?: string }> {
   const absolutePath = path.resolve(cwd, transcriptPath);
   const size = fs.statSync(absolutePath).size;
   if (size > MAX_TRANSCRIPT_FILE_BYTES) {
-    return [
-      {
-        id: path.basename(transcriptPath, ".json"),
-        command: "unknown",
-        status: "unknown",
-        stdout_excerpt: `Command transcript file exceeded ${MAX_TRANSCRIPT_FILE_BYTES} bytes and was not parsed. Provide bounded excerpts plus hashes instead.`
-      }
-    ];
+    return {
+      hash: includeSourceHash ? await hashFileStream(absolutePath) : undefined,
+      values: [
+        {
+          id: path.basename(transcriptPath, ".json"),
+          command: "unknown",
+          status: "unknown",
+          stdout_excerpt: `Command transcript file exceeded ${MAX_TRANSCRIPT_FILE_BYTES} bytes and was not parsed. Provide bounded excerpts plus hashes instead.`
+        }
+      ]
+    };
   }
 
-  const parsed = JSON.parse(await readText(absolutePath));
+  const data = await fs.promises.readFile(absolutePath);
+  const hash = includeSourceHash ? crypto.createHash("sha256").update(data).digest("hex") : undefined;
+  const parsed = JSON.parse(data.toString("utf8"));
   if (Array.isArray(parsed)) {
-    return parsed;
+    return { values: parsed, hash };
   }
   if (isRecord(parsed)) {
     if (Array.isArray(parsed.commands)) {
-      return parsed.commands;
+      return { values: parsed.commands, hash };
     }
     if (Array.isArray(parsed.transcripts)) {
-      return parsed.transcripts;
+      return { values: parsed.transcripts, hash };
     }
-    return [parsed];
+    return { values: [parsed], hash };
   }
-  return [];
+  return { values: [], hash };
 }
 
 function normalizeTranscript(sourcePath: string, value: unknown, index: number): CommandTranscript {
@@ -120,10 +166,10 @@ function boundedText(value: string | undefined): { excerpt?: string; truncated: 
   if (value === undefined) {
     return { truncated: false };
   }
-  if (value.length <= EXCERPT_LIMIT) {
+  if (value.length <= COMMAND_TRANSCRIPT_EXCERPT_LIMIT) {
     return { excerpt: value, truncated: false };
   }
-  return { excerpt: value.slice(0, EXCERPT_LIMIT), truncated: true };
+  return { excerpt: value.slice(0, COMMAND_TRANSCRIPT_EXCERPT_LIMIT), truncated: true };
 }
 
 function hashFromRecord(value: unknown, fallbackText: string | undefined): string | undefined {
@@ -151,6 +197,16 @@ function safeOutputText(value: string | undefined, excerpt: string | undefined, 
 
 function outputTooLarge(value: string | undefined): boolean {
   return value !== undefined && value.length > MAX_RAW_OUTPUT_CHARS;
+}
+
+function hashFileStream(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = fs.createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
 }
 
 function redactText(value: string | undefined): string | undefined {

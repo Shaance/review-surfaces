@@ -49,6 +49,9 @@ components:
         requirement: The CLI must support mock/offline operation so tests and dogfood runs do not require network access or a hosted LLM.
       6:
         requirement: The CLI must support dogfood mode with milestone, previous packet path, and feedback ingestion options.
+      7:
+        requirement: The CLI should provide a run helper that executes a local command and records a bounded command transcript artifact.
+        note: The helper must keep local/offline operation, redact secrets, and avoid storing unbounded raw stdout or stderr.
 
   COLLECTOR:
     name: Input collection and indexing

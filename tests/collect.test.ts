@@ -100,3 +100,40 @@ components:
 
   assert.ok(result.changedFiles.some((file) => file.path === "src/diagrams/diagrams.ts"));
 });
+
+test("review-surfaces.CLI.7 collection defaults command transcripts to the output directory", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-output-commands-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "custom-surfaces", "commands"), { recursive: true });
+  fs.copyFileSync(
+    path.join(process.cwd(), "tests", "fixtures", "minimal-repo", "features", "example.feature.yaml"),
+    path.join(tmp, "features", "example.feature.yaml")
+  );
+  fs.writeFileSync(
+    path.join(tmp, "custom-surfaces", "commands", "local.json"),
+    JSON.stringify({ commands: [{ id: "CMD-CUSTOM-OUT", command: "pnpm run test", exit_code: 0 }] })
+  );
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const result = await collectInputs({
+    cwd: tmp,
+    config: {
+      schema_version: "review-surfaces.config.v1",
+      output_dir: "custom-surfaces",
+      specs: ["features/**/*.feature.yaml"],
+      docs: [],
+      tests: [],
+      privacy: { ignore_file: ".review-surfacesignore", redact_secrets: true },
+      llm: { provider: "mock", model: null, require_json_schema: true },
+      diagrams: { format: "mermaid" },
+      render: { mode: "compact", include_evidence_appendix: true },
+      dogfood: { enabled: true, milestone: "M1" }
+    },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+
+  assert.equal(result.commandTranscriptOutputPath, "custom-surfaces/inputs/commands.json");
+  assert.equal(result.commandTranscripts[0].id, "CMD-CUSTOM-OUT");
+});
