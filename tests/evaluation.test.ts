@@ -32,7 +32,7 @@ components:
 `
   );
   fs.writeFileSync(path.join(tmp, "src", "intent", "intent.ts"), "export const x = 'example.INTENT.1';\n");
-  fs.writeFileSync(path.join(tmp, "tests", "intent.test.ts"), "test('intent', () => {});\n");
+  fs.writeFileSync(path.join(tmp, "tests", "intent.test.ts"), "test('example.INTENT.1 intent', () => {});\n");
   fs.writeFileSync(path.join(tmp, "src", "risks", "risks.ts"), "export const risk = true;\n");
   execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
   execFileSync("git", ["add", "."], { cwd: tmp, stdio: "ignore" });
@@ -125,6 +125,41 @@ components:
   const evaluation = await evaluateIntent(tmp, collection, intent);
 
   assert.equal(evaluation.acai_coverage["example.EVAL.1"], "partial");
+});
+
+test("review-surfaces.EVAL.4 requires exact test ACID evidence before marking a requirement satisfied", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-exact-test-evidence-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src", "evaluation"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "tests"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+components:
+  EVAL:
+    requirements:
+      1: Evaluate implementation.
+`
+  );
+  fs.writeFileSync(path.join(tmp, "src", "evaluation", "evaluate.ts"), "export const acid = 'example.EVAL.1';\n");
+  fs.writeFileSync(path.join(tmp, "tests", "evaluation.test.ts"), "test('evaluation path evidence only', () => {});\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: ["tests/**/*.test.ts"] },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+  collection.changedFiles = [{ path: "src/evaluation/evaluate.ts", status: "A", source: "working_tree" }];
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent);
+
+  assert.equal(evaluation.acai_coverage["example.EVAL.1"], "partial");
+  assert.match(evaluation.results[0].missing_evidence[0].note ?? "", /No exact test ACID evidence/);
 });
 
 test("evaluator treats later provider integrations as unknown deferrals", async () => {

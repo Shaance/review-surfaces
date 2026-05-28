@@ -221,7 +221,16 @@ A subagent may be assigned one bounded step, such as:
 
 Each subagent should read and write structured files rather than relying on chat context.
 
-### 5.4 Later PR/MR workflow
+### 5.4 Skill-assisted workflow
+
+The repo carries two reusable local skills:
+
+- `.agents/skills/review-surfaces-usage/SKILL.md` for running review-surfaces in any repository without relying on hosted renderers (`review-surfaces.BOOTSTRAP.6`);
+- `.agents/skills/review-surfaces-dogfood-loop/SKILL.md` for improving this repository through generated packets, feedback files, and explicit deferrals (`review-surfaces.DOGFOOD.8`).
+
+These skills are workflow aids over the same local `.review-surfaces/` artifacts. They must not introduce private path dependencies or make provider calls required for the core packet.
+
+### 5.5 Later PR/MR workflow
 
 Later, CI can run the same local pipeline and post a sticky comment or upload artifacts. This must not redefine the core artifact shapes.
 
@@ -598,6 +607,7 @@ The evaluator must:
 - map requirements to source, diff, docs, tests, commands, and log evidence;
 - detect missing implementation evidence;
 - detect missing test evidence;
+- distinguish exact ACID-backed test evidence from broad test-path evidence so similarly named tests do not overstate coverage;
 - detect overreach: changed files or behavior that do not map to stated intent;
 - detect invalid evidence references;
 - preserve Acai coverage metadata.

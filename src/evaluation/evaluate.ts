@@ -30,6 +30,7 @@ export interface EvaluationModel {
 
 interface EvidenceIndex {
   byAcid: Map<string, EvidenceRef[]>;
+  testsByAcid: Map<string, EvidenceRef[]>;
   changedByGroup: Map<string, EvidenceRef[]>;
   testsByGroup: Map<string, EvidenceRef[]>;
   allChangedFiles: string[];
@@ -64,15 +65,28 @@ export async function evaluateIntent(cwd: string, collection: CollectionResult, 
 function evaluateRequirement(requirement: IntentRequirement, index: EvidenceIndex): RequirementResult {
   const group = groupFromAcid(requirement.acai_id);
   const exactEvidence = requirement.acai_id ? index.byAcid.get(requirement.acai_id) ?? [] : [];
+  const exactTestEvidence = requirement.acai_id ? index.testsByAcid.get(requirement.acai_id) ?? [] : [];
+  const exactImplementationEvidence = exactEvidence.filter((evidenceRef) => evidenceRef.kind !== "test");
   const directEvidence = directFileEvidence(requirement, index);
   const implementationEvidence = group ? index.changedByGroup.get(group) ?? [] : [];
   const tests = group ? index.testsByGroup.get(group) ?? [] : [];
-  const evidence = uniqueEvidence([...(requirement.acai_id ? [specEvidence(sourcePath(requirement), requirement.acai_id)] : []), ...directEvidence, ...exactEvidence, ...implementationEvidence, ...tests]);
+  const evidence = uniqueEvidence([
+    ...(requirement.acai_id ? [specEvidence(sourcePath(requirement), requirement.acai_id)] : []),
+    ...directEvidence,
+    ...exactImplementationEvidence,
+    ...exactTestEvidence,
+    ...implementationEvidence,
+    ...tests
+  ]);
 
   let status: RequirementStatus;
   let summary: string;
   let confidence: "high" | "medium" | "low" | "unknown";
   const missing: EvidenceRef[] = [];
+  const hasExactImplementation = exactImplementationEvidence.length > 0;
+  const hasImplementation = hasExactImplementation || implementationEvidence.length > 0;
+  const hasExactTest = exactTestEvidence.length > 0;
+  const hasBroadTest = tests.length > 0;
 
   if (hasInvalidSpecRef(requirement)) {
     status = "invalid_evidence";
@@ -87,20 +101,35 @@ function evaluateRequirement(requirement: IntentRequirement, index: EvidenceInde
     summary = "This requirement targets a later provider surface and is not implemented in the local MVP.";
     confidence = "unknown";
     missing.push(missingEvidence("Provider integrations are explicitly deferred until after local artifacts are useful."));
-  } else if (exactEvidence.length > 0 && tests.length > 0) {
+  } else if (hasExactImplementation && hasExactTest) {
     status = "satisfied";
-    summary = "Exact ACID evidence and test evidence exist.";
+    summary = "Exact implementation ACID evidence and exact test ACID evidence exist.";
     confidence = "high";
+  } else if (hasImplementation && hasExactTest) {
+    status = "partial";
+    summary = "Requirement-specific test evidence exists, but implementation evidence is broad rather than exact.";
+    confidence = "medium";
+    missing.push(missingEvidence("No exact implementation ACID evidence was found for this requirement."));
+  } else if (hasExactImplementation && hasBroadTest) {
+    status = "partial";
+    summary = "Exact implementation ACID evidence and broad test-path evidence exist, but no exact test ACID evidence was found.";
+    confidence = "medium";
+    missing.push(missingEvidence("No exact test ACID evidence was found for this requirement."));
   } else if (implementationEvidence.length > 0 && tests.length > 0) {
     status = "partial";
     summary = "Implementation and test-path evidence exist for this broad area, but no requirement-specific proof was found.";
     confidence = "medium";
-    missing.push(missingEvidence("No exact ACID or requirement-specific evidence was found for this requirement."));
-  } else if (implementationEvidence.length > 0 || exactEvidence.length > 0) {
+    missing.push(missingEvidence("No exact implementation or test ACID evidence was found for this requirement."));
+  } else if (hasImplementation) {
     status = "partial";
     summary = "Implementation evidence exists, but direct test evidence is missing or weak.";
     confidence = "medium";
     missing.push(missingEvidence("No direct test evidence was found for this requirement area."));
+  } else if (hasExactTest || hasBroadTest) {
+    status = "partial";
+    summary = "Test evidence exists, but implementation evidence is missing or weak.";
+    confidence = "medium";
+    missing.push(missingEvidence("No implementation evidence was found for this requirement area."));
   } else {
     status = "missing";
     summary = "No implementation or test evidence was found for this requirement.";
@@ -125,6 +154,7 @@ function evaluateRequirement(requirement: IntentRequirement, index: EvidenceInde
 
 async function buildEvidenceIndex(cwd: string, collection: CollectionResult): Promise<EvidenceIndex> {
   const byAcid = new Map<string, EvidenceRef[]>();
+  const testsByAcid = new Map<string, EvidenceRef[]>();
   const changedByGroup = new Map<string, EvidenceRef[]>();
   const testsByGroup = new Map<string, EvidenceRef[]>();
   const allFiles = (collection.repositoryFiles.length ? collection.repositoryFiles : await walkFiles(cwd)).filter(
@@ -148,11 +178,18 @@ async function buildEvidenceIndex(cwd: string, collection: CollectionResult): Pr
     const text = await readText(absolutePath);
     const acidMatches = text.match(/[a-z0-9_-]+\.[A-Z0-9_]+\.[0-9]+(?:-[0-9]+)?/g) ?? [];
     for (const acid of acidMatches) {
-      pushMap(byAcid, acid, evidenceForPath(filePath, `Mentions ${acid}.`));
+      const evidenceRef = evidenceForPath(filePath, `Mentions ${acid}.`);
+      pushMap(byAcid, acid, evidenceRef);
+      if (evidenceRef.kind === "test") {
+        pushMap(testsByAcid, acid, evidenceRef);
+      }
     }
   }
 
   for (const changedFile of collection.changedFiles) {
+    if (isTestPath(changedFile.path)) {
+      continue;
+    }
     for (const group of groupsForReviewPath(changedFile.path)) {
       pushMap(changedByGroup, group, fileEvidence(changedFile.path, `Changed file mapped to ${group}.`));
     }
@@ -166,6 +203,7 @@ async function buildEvidenceIndex(cwd: string, collection: CollectionResult): Pr
 
   return {
     byAcid,
+    testsByAcid,
     changedByGroup,
     testsByGroup,
     allChangedFiles: collection.changedFiles.map((file) => file.path),
@@ -216,7 +254,11 @@ function hasInvalidSpecRef(requirement: IntentRequirement): boolean {
 }
 
 function evidenceForPath(filePath: string, note: string): EvidenceRef {
-  return filePath.includes("/test") || filePath.startsWith("tests/") ? testEvidence(filePath, note, "high") : fileEvidence(filePath, note, "high");
+  return isTestPath(filePath) ? testEvidence(filePath, note, "high") : fileEvidence(filePath, note, "high");
+}
+
+function isTestPath(filePath: string): boolean {
+  return filePath.includes("/test") || filePath.startsWith("tests/");
 }
 
 function pushMap(map: Map<string, EvidenceRef[]>, key: string, value: EvidenceRef): void {
