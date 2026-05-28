@@ -13,6 +13,8 @@ function copyRepoFixture(targetDir: string): void {
       const relative = path.relative(process.cwd(), source);
       return relative !== ".git"
         && !relative.startsWith(`.git${path.sep}`)
+        && relative !== path.join(".review-surfaces", "commands")
+        && !relative.startsWith(`${path.join(".review-surfaces", "commands")}${path.sep}`)
         && relative !== "dist"
         && !relative.startsWith(`dist${path.sep}`);
     }

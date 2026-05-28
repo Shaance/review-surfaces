@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Local E2E packet generated with provider=mock/not_requested; 5 satisfied, 75 partial, 0 missing, 4 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
+Local E2E packet generated with provider=mock/not_requested; 5 satisfied, 71 partial, 4 missing, 4 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
 
 ## Current Milestone
 
@@ -8,6 +8,10 @@ M5
 
 ## Relevant ACIDs
 
+- review-surfaces.RISK.1
+- review-surfaces.RISK.3
+- review-surfaces.RISK.4
+- review-surfaces.RISK.5
 - review-surfaces.BOOTSTRAP.1
 - review-surfaces.BOOTSTRAP.4
 - review-surfaces.BOOTSTRAP.5
@@ -16,31 +20,26 @@ M5
 
 ## Commands To Run
 
-- `pnpm run lint`
-- `pnpm run test`
-- `pnpm run build`
-- `pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces`
-- `pnpm run review-surfaces -- validate .review-surfaces`
+- `node bin/review-surfaces.js run --id CMD-PNPM-BUILD --command-transcripts .review-surfaces/commands -- pnpm run build`
+- `node bin/review-surfaces.js run --id CMD-PNPM-LINT --command-transcripts .review-surfaces/commands -- pnpm run lint`
+- `node bin/review-surfaces.js run --id CMD-PNPM-TEST --command-transcripts .review-surfaces/commands -- pnpm run test`
+- `node bin/review-surfaces.js all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --provider mock --out .review-surfaces`
+- `node bin/review-surfaces.js validate .review-surfaces`
 
 ## Implemented Changes
 
 - M .review-surfaces/agent_handoff.md
-- M .review-surfaces/feedback/manual-dogfood.yaml
-- M features/review-surfaces.feature.yaml
-- M review-surfaces.config.yaml
-- M schemas/review_packet.schema.json
-- M src/cli/index.ts
-- M src/methodology/methodology.ts
+- M bin/review-surfaces.js
 - M src/render/packet.ts
-- M src/risks/risks.ts
-- M tests/command-transcripts.test.ts
-- M tests/config.test.ts
-- M tests/feedback.test.ts
-- ... 4 more changed file(s) in .review-surfaces/inputs/changed_files.json
+- M tests/cli.test.ts
+- M tests/packet-e2e.test.ts
+- M tests/render.test.ts
 
 ## Validation Evidence
 
-- TEST-TR-001 [direct]: Command transcript CMD-PNPM-TEST records exit 0: pnpm run test
+- TEST-TR-001 [indirect]: Command transcript CMD-PNPM-BUILD records exit 0: pnpm run build
+- TEST-TR-002 [indirect]: Command transcript CMD-PNPM-LINT records exit 0: pnpm run lint
+- TEST-TR-003 [direct]: Command transcript CMD-PNPM-TEST records exit 0: pnpm run test
 
 ## Failed Or Missing Validation
 
@@ -48,8 +47,8 @@ M5
 - TEST-FB-002 [claimed]: Feedback records a passing validation command: node --test dist/tests/evaluation.test.js
 - TEST-FB-003 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
 - TEST-FB-004 [indirect]: Feedback records a passing validation command: pnpm run typecheck
-- TEST-FB-005 [indirect]: Feedback records a passing validation command: pnpm run lint
-- TEST-FB-006 [indirect]: Feedback records a passing validation command: pnpm run build
+- TEST-FB-005 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces
+- TEST-FB-006 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- validate .review-surfaces
 
 ## Methodology Flags
 
@@ -66,8 +65,9 @@ M5
 
 ## Open Risks
 
-- RISK-001: 75 requirement(s) have implementation evidence but weak or missing test evidence.
-- RISK-002: 4 requirement(s) remain unknown due to weak evidence.
+- RISK-001: 4 requirement(s) have no implementation or test evidence.
+- RISK-002: 71 requirement(s) have implementation evidence but weak or missing test evidence.
+- RISK-003: 4 requirement(s) remain unknown due to weak evidence.
 
 ## Deferrals
 

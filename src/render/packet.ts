@@ -101,13 +101,7 @@ function buildHandoff(inputs: PacketInputs): ReviewPacket["agent_handoff"] {
       ...partial.map((result) => result.acai_id).filter(Boolean) as string[]
     ]).slice(0, 12),
     implemented_changes: formatImplementedChanges(inputs.collection.changedFiles),
-    commands_to_run: [
-      "pnpm run lint",
-      "pnpm run test",
-      "pnpm run build",
-      "pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces",
-      "pnpm run review-surfaces -- validate .review-surfaces"
-    ],
+    commands_to_run: handoffCommandsToRun(),
     validation_evidence: inputs.risks.test_evidence
       .filter(isHandoffValidationEvidence)
       .slice(0, 8)
@@ -301,6 +295,18 @@ function previewLines<T>(items: T[], render: (item: T) => string, limit = 12): s
     visible.push(`- ... ${items.length - limit} more in review_packet.json`);
   }
   return visible.join("\n") || "- None.";
+}
+
+function handoffCommandsToRun(): string[] {
+  // The tracked bin shim records `run` transcripts before dist exists, so the
+  // first build command remains useful in a fresh checkout.
+  return [
+    "node bin/review-surfaces.js run --id CMD-PNPM-BUILD --command-transcripts .review-surfaces/commands -- pnpm run build",
+    "node bin/review-surfaces.js run --id CMD-PNPM-LINT --command-transcripts .review-surfaces/commands -- pnpm run lint",
+    "node bin/review-surfaces.js run --id CMD-PNPM-TEST --command-transcripts .review-surfaces/commands -- pnpm run test",
+    "node bin/review-surfaces.js all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --provider mock --out .review-surfaces",
+    "node bin/review-surfaces.js validate .review-surfaces"
+  ];
 }
 
 function formatImplementedChanges(changedFiles: CollectionResult["changedFiles"], limit = 12): string[] {

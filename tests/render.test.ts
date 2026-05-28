@@ -148,6 +148,78 @@ test("review-surfaces.PRIVACY.2 redacts and prioritizes generated handoff valida
   assert.ok(!packet.agent_handoff?.failed_validation?.some((item) => item.includes("abc123456")));
 });
 
+test("review-surfaces.CLI.7 handoff commands capture validation transcripts", () => {
+  const packet = createReviewPacket({
+    collection: {
+      manifest: { milestone: "M5" },
+      changedFiles: []
+    },
+    intent: {
+      summary: "render fixture",
+      requirements: [],
+      constraints: [],
+      non_goals: [],
+      assumptions: [],
+      open_questions: [],
+      sources: []
+    },
+    evaluation: {
+      summary: "render fixture",
+      results: [],
+      overreach: [],
+      acai_coverage: {}
+    },
+    architecture: {
+      summary: "render fixture",
+      diagrams: [],
+      diagram_validation: [],
+      subsystems: [],
+      open_questions: []
+    },
+    methodology: {
+      summary: "render fixture",
+      missing_logs: false,
+      considered: [],
+      research: [],
+      decisions: [],
+      unchallenged_assumptions: [],
+      skipped_checks: [],
+      claims_without_evidence: [],
+      verified_claims: [],
+      quality_flags: [],
+      evidence: []
+    },
+    risks: {
+      summary: "render fixture",
+      items: [],
+      test_gaps: [],
+      review_focus: [],
+      test_evidence: []
+    },
+    dogfood: {
+      milestone: "M5",
+      summary: "dogfood fixture",
+      findings: []
+    },
+    enrichment: {
+      provider: "mock",
+      status: "skipped"
+    },
+    commands: []
+  } as unknown as PacketInputs);
+
+  assert.deepEqual(packet.agent_handoff?.commands_to_run?.slice(0, 3), [
+    "node bin/review-surfaces.js run --id CMD-PNPM-BUILD --command-transcripts .review-surfaces/commands -- pnpm run build",
+    "node bin/review-surfaces.js run --id CMD-PNPM-LINT --command-transcripts .review-surfaces/commands -- pnpm run lint",
+    "node bin/review-surfaces.js run --id CMD-PNPM-TEST --command-transcripts .review-surfaces/commands -- pnpm run test"
+  ]);
+  assert.ok(!packet.agent_handoff?.commands_to_run?.some((command) => command.startsWith("pnpm run review-surfaces -- run")));
+  assert.ok(packet.agent_handoff?.commands_to_run?.includes(
+    "node bin/review-surfaces.js all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --provider mock --out .review-surfaces"
+  ));
+  assert.ok(packet.agent_handoff?.commands_to_run?.includes("node bin/review-surfaces.js validate .review-surfaces"));
+});
+
 test("review-surfaces.DOGFOOD.5 marks truncated implemented changes in generated handoff", () => {
   const packet = createReviewPacket({
     collection: {
