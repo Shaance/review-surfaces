@@ -209,14 +209,15 @@ test("review-surfaces.CLI.7 handoff commands capture validation transcripts", ()
   } as unknown as PacketInputs);
 
   assert.deepEqual(packet.agent_handoff?.commands_to_run?.slice(0, 3), [
-    "pnpm run review-surfaces -- run --id CMD-PNPM-LINT -- pnpm run lint",
-    "pnpm run review-surfaces -- run --id CMD-PNPM-TEST -- pnpm run test",
-    "pnpm run review-surfaces -- run --id CMD-PNPM-BUILD -- pnpm run build"
+    "node bin/review-surfaces.js run --id CMD-PNPM-BUILD -- pnpm run build",
+    "node bin/review-surfaces.js run --id CMD-PNPM-LINT -- pnpm run lint",
+    "node bin/review-surfaces.js run --id CMD-PNPM-TEST -- pnpm run test"
   ]);
+  assert.ok(!packet.agent_handoff?.commands_to_run?.some((command) => command.startsWith("pnpm run review-surfaces -- run")));
   assert.ok(packet.agent_handoff?.commands_to_run?.includes(
-    "pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces"
+    "node bin/review-surfaces.js all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --provider mock --out .review-surfaces"
   ));
-  assert.ok(packet.agent_handoff?.commands_to_run?.includes("pnpm run review-surfaces -- validate .review-surfaces"));
+  assert.ok(packet.agent_handoff?.commands_to_run?.includes("node bin/review-surfaces.js validate .review-surfaces"));
 });
 
 test("review-surfaces.DOGFOOD.5 marks truncated implemented changes in generated handoff", () => {

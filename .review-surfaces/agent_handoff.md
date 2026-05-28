@@ -20,11 +20,11 @@ M5
 
 ## Commands To Run
 
-- `pnpm run review-surfaces -- run --id CMD-PNPM-LINT -- pnpm run lint`
-- `pnpm run review-surfaces -- run --id CMD-PNPM-TEST -- pnpm run test`
-- `pnpm run review-surfaces -- run --id CMD-PNPM-BUILD -- pnpm run build`
-- `pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces`
-- `pnpm run review-surfaces -- validate .review-surfaces`
+- `node bin/review-surfaces.js run --id CMD-PNPM-BUILD -- pnpm run build`
+- `node bin/review-surfaces.js run --id CMD-PNPM-LINT -- pnpm run lint`
+- `node bin/review-surfaces.js run --id CMD-PNPM-TEST -- pnpm run test`
+- `node bin/review-surfaces.js all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --provider mock --out .review-surfaces`
+- `node bin/review-surfaces.js validate .review-surfaces`
 
 ## Implemented Changes
 
