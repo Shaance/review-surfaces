@@ -1,4 +1,5 @@
 import { CollectionResult } from "../collector/collect";
+import { COMMAND_TRANSCRIPT_OUTPUT_PATH, CommandTranscript } from "../commands/transcripts";
 import { commandEvidence, EvidenceRef, feedbackEvidence, missingEvidence, specEvidence } from "../evidence/evidence";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 
@@ -104,15 +105,19 @@ export function analyzeRisks(collection: CollectionResult, evaluation: Evaluatio
     });
   }
 
-  const testEvidence = validationEvidenceFromFeedback(collection);
-  const claimedCommandEvidence = commands.map((command, index) => ({
-    id: `TEST-CMD-${String(index + 1).padStart(3, "0")}`,
-    kind: "claimed" as const,
-    summary: `Command invoked by this run context: ${command}`,
-    requirement_ids: [],
-    evidence: [commandEvidence(command, "Command invocation is recorded by the CLI, but output is not captured in this artifact.", "medium")]
-  }));
-  const allTestEvidence = [...testEvidence, ...claimedCommandEvidence];
+  const testEvidence = validationEvidenceFromCommandTranscripts(collection);
+  const transcriptCommands = new Set((collection.commandTranscripts ?? []).map((transcript) => normalizeCommand(transcript.command)));
+  const feedbackEvidence = validationEvidenceFromFeedback(collection, transcriptCommands);
+  const claimedCommandEvidence = commands
+    .filter((command) => !transcriptCommands.has(normalizeCommand(command)))
+    .map((command, index) => ({
+      id: `TEST-CMD-${String(index + 1).padStart(3, "0")}`,
+      kind: "claimed" as const,
+      summary: `Command invoked by this run context: ${command}`,
+      requirement_ids: [],
+      evidence: [commandEvidence(command, "Command invocation is recorded by the CLI, but output is not captured in this artifact.", "medium")]
+    }));
+  const allTestEvidence = [...testEvidence, ...feedbackEvidence, ...claimedCommandEvidence];
   if (allTestEvidence.length === 0) {
     allTestEvidence.push({
       id: "TEST-001",
@@ -147,10 +152,13 @@ export function analyzeRisks(collection: CollectionResult, evaluation: Evaluatio
   };
 }
 
-function validationEvidenceFromFeedback(collection: CollectionResult): RisksModel["test_evidence"] {
+function validationEvidenceFromFeedback(collection: CollectionResult, transcriptCommands: Set<string>): RisksModel["test_evidence"] {
   const entries: RisksModel["test_evidence"] = [];
   for (const feedbackFile of collection.feedback) {
     for (const command of feedbackFile.validation.passed) {
+      if (transcriptCommands.has(normalizeCommand(command))) {
+        continue;
+      }
       entries.push({
         id: `TEST-FB-${String(entries.length + 1).padStart(3, "0")}`,
         kind: commandLooksLikeTestCommand(command) ? "claimed" : "indirect",
@@ -164,6 +172,9 @@ function validationEvidenceFromFeedback(collection: CollectionResult): RisksMode
       });
     }
     for (const command of feedbackFile.validation.failed) {
+      if (transcriptCommands.has(normalizeCommand(command))) {
+        continue;
+      }
       entries.push({
         id: `TEST-FB-${String(entries.length + 1).padStart(3, "0")}`,
         kind: "missing",
@@ -178,8 +189,57 @@ function validationEvidenceFromFeedback(collection: CollectionResult): RisksMode
   return entries;
 }
 
+function validationEvidenceFromCommandTranscripts(collection: CollectionResult): RisksModel["test_evidence"] {
+  const entries: RisksModel["test_evidence"] = [];
+  const evidencePath = collection.commandTranscriptOutputPath ?? COMMAND_TRANSCRIPT_OUTPUT_PATH;
+  for (const transcript of collection.commandTranscripts ?? []) {
+    entries.push({
+      id: `TEST-TR-${String(entries.length + 1).padStart(3, "0")}`,
+      kind: testEvidenceKindForTranscript(transcript),
+      summary: commandTranscriptSummary(transcript),
+      requirement_ids: [],
+      evidence: [
+        commandEvidence(
+          transcript.command,
+          `Command transcript ${transcript.id} recorded exit_code=${transcript.exit_code ?? "unknown"} and status=${transcript.status}.`,
+          transcript.exit_code === 0 ? "high" : "medium",
+          {
+            path: evidencePath,
+            eventId: transcript.id,
+            excerptHash: transcript.stdout_hash ?? transcript.stderr_hash,
+            validationStatus: "valid"
+          }
+        )
+      ]
+    });
+  }
+  return entries;
+}
+
+function testEvidenceKindForTranscript(transcript: CommandTranscript): RisksModel["test_evidence"][number]["kind"] {
+  if (transcript.status === "passed" && transcript.exit_code === 0 && commandLooksLikeTestCommand(transcript.command)) {
+    return "direct";
+  }
+  if (transcript.status === "passed" && transcript.exit_code === 0) {
+    return "indirect";
+  }
+  if (transcript.status === "failed" || typeof transcript.exit_code === "number") {
+    return "missing";
+  }
+  return "unknown";
+}
+
+function commandTranscriptSummary(transcript: CommandTranscript): string {
+  const exit = transcript.exit_code === undefined ? "unknown exit" : `exit ${transcript.exit_code}`;
+  return `Command transcript ${transcript.id} records ${exit}: ${transcript.command}`;
+}
+
 function commandLooksLikeTestCommand(command: string): boolean {
-  return /\b(test|node --test|vitest|jest|tap|uvu)\b/.test(command);
+  return /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?test(?::[\w.-]+)?|node\s+--test|(?:pnpm|npm|yarn|bun)\s+exec\s+(?:vitest|jest|tap|uvu)|(?:vitest|jest|tap|uvu))(?:\s|$)/.test(normalizeCommand(command));
+}
+
+function normalizeCommand(command: string): string {
+  return command.trim().replace(/\s+/g, " ");
 }
 
 function suggestedTestFor(result: RequirementResult): string {

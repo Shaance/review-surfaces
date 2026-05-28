@@ -11,6 +11,7 @@ test("collects specs and writes first local artifacts", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-test-"));
   fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
   fs.mkdirSync(path.join(tmp, ".review-surfaces", "feedback"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, ".review-surfaces", "commands"), { recursive: true });
   fs.copyFileSync(
     path.join(process.cwd(), "tests", "fixtures", "minimal-repo", "features", "example.feature.yaml"),
     path.join(tmp, "features", "example.feature.yaml")
@@ -29,6 +30,12 @@ validation:
   passed:
     - pnpm run test
 `
+  );
+  fs.writeFileSync(
+    path.join(tmp, ".review-surfaces", "commands", "local.json"),
+    JSON.stringify({
+      commands: [{ id: "CMD-001", command: "pnpm run test", exit_code: 0 }]
+    })
   );
   execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
 
@@ -50,10 +57,14 @@ validation:
   assert.equal(result.specIndex.specs[0].requirements.length, 3);
   assert.equal(result.feedback.length, 1);
   assert.equal(result.feedback[0].findings[0].id, "FB-001");
+  assert.equal(result.commandTranscripts.length, 1);
+  assert.equal(result.commandTranscripts[0].id, "CMD-001");
   assert.ok(result.manifest.input_hashes.some((input) => input.path === ".review-surfaces/feedback/manual.yaml" && input.kind === "feedback"));
+  assert.ok(result.manifest.input_hashes.some((input) => input.path === ".review-surfaces/commands/local.json" && input.kind === "command_transcript"));
   assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "manifest.json")));
   assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "inputs", "specs.index.json")));
   assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "inputs", "feedback.index.json")));
+  assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "inputs", "commands.json")));
 });
 
 test("collector expands untracked directories into file evidence", async () => {

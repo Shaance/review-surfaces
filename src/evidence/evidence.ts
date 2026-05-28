@@ -70,13 +70,26 @@ export function testEvidence(path: string, note?: string, confidence: Confidence
   };
 }
 
-export function commandEvidence(command: string, note?: string, confidence: Confidence = "medium"): EvidenceRef {
+export function commandEvidence(
+  command: string,
+  note?: string,
+  confidence: Confidence = "medium",
+  options: {
+    path?: string;
+    eventId?: string;
+    excerptHash?: string;
+    validationStatus?: ValidationStatus;
+  } = {}
+): EvidenceRef {
   return {
     kind: "command",
+    path: options.path,
+    event_id: options.eventId,
     command,
+    excerpt_hash: options.excerptHash,
     note,
     confidence,
-    validation_status: "not_checked"
+    validation_status: options.validationStatus ?? "not_checked"
   };
 }
 

@@ -19,28 +19,42 @@ findings:
     category: evidence_quality
     severity: medium
     affected_section: Test evidence and gaps
-    finding: review-surfaces.RISK.2 now separates feedback-recorded validation commands from CLI invocation records and classifies manually recorded test commands as claimed rather than direct, but the artifact still does not preserve command stdout, stderr, duration, or exit status as first-class transcript evidence.
-    desired_change: Add a bounded local command transcript input artifact in a later slice so test evidence can be direct without relying on manually maintained feedback notes.
+    finding: review-surfaces.RISK.2 now has bounded command transcript ingestion via review-surfaces.COLLECTOR.7, and the dogfood packet shows transcript-backed test commands as direct evidence while feedback-recorded commands remain claimed or indirect.
+    desired_change: Keep command transcript excerpts bounded and prefer transcript-backed evidence over feedback-only validation notes.
   - id: FB-2026-05-28-004
     category: agent_workflow
     severity: low
     affected_section: Architecture surfaces
     finding: Dogfood initially reported src/feedback/feedback.ts as overreach because the review-area map did not classify the new feedback ingestion module under review-surfaces.DOGFOOD.6.
     desired_change: Keep review-area mappings and tests updated whenever a new local pipeline module is added.
+  - id: FB-2026-05-28-005
+    category: usability
+    severity: low
+    affected_section: Command transcripts
+    finding: The current command transcript support ingests local JSON artifacts and writes bounded inputs/commands.json, but this branch still creates the local transcript artifact outside the CLI.
+    desired_change: Add a small documented helper or command-runner mode later so agents can capture command transcripts without manually assembling JSON.
+  - id: FB-2026-05-28-006
+    category: performance
+    severity: low
+    affected_section: Command transcripts
+    finding: Command transcript files are currently parsed for transcript indexing and read again for manifest hashing; this is acceptable for bounded M1 artifacts but still avoidable.
+    desired_change: Return source hashes from transcript indexing or add a shared manifest hash helper in a later cleanup.
 validation:
-  updated_at: 2026-05-28T10:33:30Z
+  updated_at: 2026-05-28T11:58:43Z
   passed:
     - pnpm run test
     - pnpm run typecheck
     - pnpm run lint
     - pnpm run build
-    - pnpm run review-surfaces -- dogfood --provider mock --base HEAD --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces
+    - pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces
     - pnpm run review-surfaces -- validate .review-surfaces
   failed: []
   notes:
     - The dogfood run used provider=mock and did not require network access.
-    - The current slice added feedback indexing, feedback.index.json, dogfood feedback carry-forward, and rendered validation evidence.
-    - Dogfood found an overreach mapping gap for src/feedback/ and the change now maps feedback ingestion to review-surfaces.DOGFOOD.6.
-    - Simplify triad ran with read-only correctness, efficiency, and reuse tracks; fixed the feedback direct-evidence overclaim, added feedback input hashes, and centralized feedback evidence refs.
-    - Review loop ran three valid full-diff cycles after the triad fixes; no new actionable findings remained.
-    - Deferred improvement: add bounded local command transcript artifacts so validation can become direct evidence without relying on manually recorded feedback.
+    - The previous slice added feedback indexing, feedback.index.json, dogfood feedback carry-forward, and rendered validation evidence.
+    - This slice adds bounded command transcript ingestion, .review-surfaces/inputs/commands.json, manifest hashes for transcript inputs, and direct test evidence from exit_code=0 test transcripts.
+    - Dogfood shows TEST-TR-001 as direct evidence for pnpm run test, suppresses duplicate feedback-only claims for transcripted commands, and overreach is 0 after mapping source contract files to BOOTSTRAP.
+    - Simplify triad ran with read-only correctness, efficiency, and reuse tracks; fixed transcript secret redaction, custom output evidence paths, direct-test overclaiming, duplicate lower-confidence evidence, and oversized raw output handling.
+    - Review loop ran three valid full-diff cycles after triad fixes; no new actionable findings remained.
+    - Deferred improvement: add a CLI helper or command-runner mode so transcript JSON does not need to be assembled manually.
+    - Deferred improvement: avoid reading transcript files a second time for manifest hashing.

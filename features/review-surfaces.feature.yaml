@@ -67,6 +67,9 @@ components:
         requirement: Missing conversation logs must be recorded as missing evidence rather than causing fatal failure.
       6:
         requirement: The collector must support .review-surfacesignore and privacy exclusions before files are copied or sent to an LLM provider.
+      7:
+        requirement: The collector must ingest bounded local command transcript artifacts and write .review-surfaces/inputs/commands.json.
+        note: Transcripted successful test commands may be treated as direct evidence; feedback-recorded commands remain claimed or indirect unless backed by a transcript.
 
   INTENT:
     name: Intent extraction
