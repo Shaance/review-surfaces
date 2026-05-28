@@ -522,7 +522,8 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "summary"
+        "summary",
+        "diagram_validation"
       ],
       "properties": {
         "summary": {

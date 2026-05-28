@@ -41,6 +41,7 @@ export interface DiagramValidationResult {
 interface DiagramArtifact {
   path: string;
   body: string;
+  evidencePath?: string;
 }
 
 export async function buildArchitecture(collection: CollectionResult, evaluation: EvaluationModel): Promise<ArchitectureModel> {
@@ -54,7 +55,12 @@ export async function buildArchitecture(collection: CollectionResult, evaluation
     await writeText(path.join(outputDir, diagram.path), diagram.body);
   }
 
-  const diagramValidation = diagramArtifacts.map((diagram) => validateMermaidDiagramArtifact(diagram));
+  const diagramValidation = diagramArtifacts.map((diagram) =>
+    validateMermaidDiagramArtifact({
+      ...diagram,
+      evidencePath: diagramEvidencePath(collection, diagram.path)
+    })
+  );
   const subsystems = REVIEW_AREAS.map((subsystem) => subsystemCard(subsystem, collection, evaluation)).filter((card) => card.files.length > 0);
   const invalidDiagrams = diagramValidation.filter((result) => result.status === "invalid");
   const validDiagrams = diagramValidation.length - invalidDiagrams.length;
@@ -133,9 +139,21 @@ export function validateMermaidDiagramArtifact(diagram: DiagramArtifact): Diagra
     warnings,
     evidence:
       status === "valid"
-        ? [{ ...fileEvidence(diagram.path, note, "high"), validation_status: "valid" }]
+        ? [{ ...fileEvidence(diagram.evidencePath ?? diagram.path, note, "high"), validation_status: "valid" }]
         : [{ ...missingEvidence(note), validation_status: "invalid" }]
   };
+}
+
+function diagramEvidencePath(collection: CollectionResult, artifactPath: string): string {
+  const cwd = collection.cwd ?? process.cwd();
+  const outputDir = path.isAbsolute(collection.outputDir)
+    ? collection.outputDir
+    : path.resolve(cwd, collection.outputDir);
+  return normalizeEvidencePath(path.relative(cwd, path.join(outputDir, artifactPath)));
+}
+
+function normalizeEvidencePath(filePath: string): string {
+  return filePath.replace(/\\/g, "/").replace(/^\.\/+/, "");
 }
 
 function classifyMermaidDiagram(firstLine: string): DiagramValidationResult["diagram_type"] {
@@ -154,7 +172,8 @@ function hasCompleteFlowchartEdge(line: string): boolean {
 }
 
 function hasCompleteSequenceMessage(line: string): boolean {
-  return /^\S.+[-=]+>>\S.+:\s*\S.+$/.test(line);
+  const match = line.match(/^(.+?)\s*[-=]+>>\s*(.+?):\s*(.+)$/);
+  return Boolean(match?.[1]?.trim() && match?.[2]?.trim() && match?.[3]?.trim());
 }
 
 function hasBalancedSyntax(text: string): boolean {

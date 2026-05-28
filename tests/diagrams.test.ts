@@ -10,11 +10,14 @@ import { EvaluationModel } from "../src/evaluation/evaluate";
 test("review-surfaces.ARCH.6 validates generated Mermaid artifacts", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-diagrams-"));
   const outputDir = path.join(tmp, ".review-surfaces");
-  const architecture = await buildArchitecture(collectionFixture(outputDir), evaluationFixture());
+  const architecture = await buildArchitecture(collectionFixture(tmp, outputDir), evaluationFixture());
+  const pipelineValidation = architecture.diagram_validation.find((result) => result.path === "diagrams/pipeline.mmd");
 
   assert.equal(architecture.diagram_validation.length, 3);
   assert.ok(architecture.diagram_validation.every((result) => result.status === "valid"));
   assert.ok(fs.existsSync(path.join(outputDir, "diagrams", "pipeline.mmd")));
+  assert.equal(pipelineValidation?.evidence[0]?.path, ".review-surfaces/diagrams/pipeline.mmd");
+  assert.ok(fs.existsSync(path.join(tmp, pipelineValidation?.evidence[0]?.path ?? "")));
   assert.equal(
     architecture.diagram_validation.find((result) => result.path === "diagrams/dogfood-flow.mmd")?.diagram_type,
     "sequenceDiagram"
@@ -50,8 +53,18 @@ test("review-surfaces.ARCH.6 rejects incomplete Mermaid flowchart and sequence s
   assert.ok(sequence.errors.some((error) => error.includes("Sequence message is incomplete")));
 });
 
-function collectionFixture(outputDir: string): CollectionResult {
+test("review-surfaces.ARCH.6 accepts single-letter Mermaid sequence participants", () => {
+  const result = validateMermaidDiagramArtifact({
+    path: "diagrams/single-letter-sequence.mmd",
+    body: "sequenceDiagram\n  A->>B: ok\n"
+  });
+
+  assert.equal(result.status, "valid");
+});
+
+function collectionFixture(cwd: string, outputDir: string): CollectionResult {
   return {
+    cwd,
     outputDir,
     manifest: {
       tool_version: "0.1.0",
