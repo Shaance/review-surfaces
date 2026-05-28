@@ -40,11 +40,12 @@ export async function evaluateIntent(cwd: string, collection: CollectionResult, 
   const index = await buildEvidenceIndex(cwd, collection);
   const knownAcids = new Set(intent.requirements.map((requirement) => requirement.acai_id).filter(Boolean) as string[]);
   const knownPaths = new Set([...index.allFiles, ...index.allChangedFiles]);
+  const evidenceContext = { cwd, knownAcids, knownPaths };
   const results = intent.requirements
     .map((requirement) => evaluateRequirement(requirement, index))
-    .map((result) => validateRequirementResultEvidence(result, { cwd, knownAcids, knownPaths }));
+    .map((result) => validateRequirementResultEvidence(result, evidenceContext));
   const overreach = detectOverreach(index, intent.requirements).map((result) =>
-    validateRequirementResultEvidence(result, { cwd, knownAcids, knownPaths })
+    validateRequirementResultEvidence(result, evidenceContext)
   );
   const acai_coverage = Object.fromEntries(
     results.filter((result) => result.acai_id).map((result) => [result.acai_id as string, result.status])

@@ -16,6 +16,7 @@ findings:
     finding: The worktree E2E fixture previously copied a .git file from linked worktrees and broke git init in copied fixtures; the fixture copier now excludes both .git files and .git directories.
     desired_change: Keep worktree setup documented in AGENTS.md, CLAUDE.md, and scripts/SECRETS.md so future agents can reproduce local provider setup without private paths.
 validation:
+  updated_at: 2026-05-28T09:19:54Z
   passed:
     - pnpm run test
     - pnpm run lint
@@ -25,3 +26,6 @@ validation:
   failed: []
   notes:
     - The dogfood run used provider=mock and did not require network access.
+    - Simplify triad ran with correctness, efficiency, and reuse tracks; high-confidence findings were fixed.
+    - Review loop ran for three full-diff cycles after the simplify fixes; no new actionable findings remained.
+    - Google AI SDK credentials were copied into ignored .env.local from a sibling project for optional live use, without committing or printing the value.

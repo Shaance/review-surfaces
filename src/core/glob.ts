@@ -9,7 +9,10 @@ export interface WalkOptions {
 }
 
 export async function expandPatterns(cwd: string, patterns: string[], options: WalkOptions = {}): Promise<string[]> {
-  const files = await walkFiles(cwd, options);
+  return filterPathsByPatterns(await walkFiles(cwd, options), patterns);
+}
+
+export function filterPathsByPatterns(files: string[], patterns: string[]): string[] {
   const regexes = patterns.map(globToRegExp);
   return files.filter((filePath) => regexes.some((regex) => regex.test(filePath))).sort();
 }

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { AcaiSpecIndex, indexAcaiSpecs } from "../acai/acai";
 import { ReviewSurfacesConfig } from "../config/config";
-import { expandPatterns, walkFiles } from "../core/glob";
+import { filterPathsByPatterns, walkFiles } from "../core/glob";
 import { ensureDir, hashFile, writeJson, writeText } from "../core/files";
 import { filterIgnoredDiff } from "../privacy/diff";
 import { loadPrivacyIgnore } from "../privacy/ignore";
@@ -63,9 +63,9 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const ignore = await loadPrivacyIgnore(options.cwd, options.config.privacy.ignore_file);
   const walkOptions = { isIgnored: ignore.isIgnored };
   const repositoryFiles = await walkFiles(options.cwd, walkOptions);
-  const specPaths = await expandPatterns(options.cwd, options.config.specs, walkOptions);
-  const docPaths = await expandPatterns(options.cwd, options.config.docs, walkOptions);
-  const testPaths = await expandPatterns(options.cwd, options.config.tests, walkOptions);
+  const specPaths = filterPathsByPatterns(repositoryFiles, options.config.specs);
+  const docPaths = filterPathsByPatterns(repositoryFiles, options.config.docs);
+  const testPaths = filterPathsByPatterns(repositoryFiles, options.config.tests);
   const specIndex = await indexAcaiSpecs(options.cwd, specPaths);
   const git = collectGitInfo(options.cwd, options.baseRef, options.headRef);
   const allChangedFiles = collectChangedFiles(options.cwd, options.baseRef, options.headRef);
@@ -77,6 +77,15 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     ? redactSecrets(filteredDiff)
     : { text: filteredDiff, redactions: [], blocked: false };
   const commits = collectCommits(options.cwd, options.baseRef, options.headRef);
+  const docs = docPaths.map((docPath) => ({ path: docPath, kind: classifyDoc(docPath) }));
+  const tests = testPaths.map((testPath) => ({ path: testPath, kind: "test" }));
+  const privacy = {
+    ignore_file: ignore.ignoreFile,
+    ignore_patterns: ignore.patterns,
+    ignored_changed_files: ignoredChangedFiles,
+    diff_redactions: redactedDiff.redactions,
+    remote_provider_blocked: redactedDiff.blocked
+  };
 
   const inputHashes: ManifestInputHash[] = [];
   for (const specPath of specPaths) {
@@ -123,19 +132,15 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   });
   await writeJson(path.join(inputsDir, "docs.index.json"), {
     schema_version: "review-surfaces.docs.index.v1",
-    docs: docPaths.map((docPath) => ({ path: docPath, kind: classifyDoc(docPath) }))
+    docs
   });
   await writeJson(path.join(inputsDir, "tests.index.json"), {
     schema_version: "review-surfaces.tests.index.v1",
-    tests: testPaths.map((testPath) => ({ path: testPath, kind: "test" }))
+    tests
   });
   await writeJson(path.join(inputsDir, "privacy.json"), {
     schema_version: "review-surfaces.privacy.v1",
-    ignore_file: ignore.ignoreFile,
-    ignore_patterns: ignore.patterns,
-    ignored_changed_files: ignoredChangedFiles,
-    diff_redactions: redactedDiff.redactions,
-    remote_provider_blocked: redactedDiff.blocked
+    ...privacy
   });
   await writeText(path.join(inputsDir, "diff.patch"), redactedDiff.text);
 
@@ -144,16 +149,10 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     manifest,
     specIndex,
     changedFiles,
-    docs: docPaths.map((docPath) => ({ path: docPath, kind: classifyDoc(docPath) })),
-    tests: testPaths.map((testPath) => ({ path: testPath, kind: "test" })),
+    docs,
+    tests,
     repositoryFiles,
-    privacy: {
-      ignore_file: ignore.ignoreFile,
-      ignore_patterns: ignore.patterns,
-      ignored_changed_files: ignoredChangedFiles,
-      diff_redactions: redactedDiff.redactions,
-      remote_provider_blocked: redactedDiff.blocked
-    },
+    privacy,
     git
   };
 }

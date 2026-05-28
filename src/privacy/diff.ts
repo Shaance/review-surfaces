@@ -1,12 +1,12 @@
 export function filterIgnoredDiff(diff: string, isIgnored: (filePath: string) => boolean): string {
   const lines = diff.split(/\r?\n/);
-  const sections: string[][] = [];
+  const keptSections: string[] = [];
   let current: string[] = [];
 
   for (const line of lines) {
     if (line.startsWith("diff --git ")) {
       if (current.length > 0) {
-        sections.push(current);
+        appendIfAllowed(current, isIgnored, keptSections);
       }
       current = [line];
       continue;
@@ -15,19 +15,16 @@ export function filterIgnoredDiff(diff: string, isIgnored: (filePath: string) =>
   }
 
   if (current.length > 0) {
-    sections.push(current);
+    appendIfAllowed(current, isIgnored, keptSections);
   }
 
-  return sections
-    .filter((section) => {
-      const header = section[0] ?? "";
-      const match = header.match(/^diff --git a\/(.+) b\/(.+)$/);
-      if (!match) {
-        return true;
-      }
-      return !isIgnored(match[1]) && !isIgnored(match[2]);
-    })
-    .map((section) => section.join("\n"))
-    .join("\n")
-    .trimEnd();
+  return keptSections.join("\n").trimEnd();
+}
+
+function appendIfAllowed(section: string[], isIgnored: (filePath: string) => boolean, output: string[]): void {
+  const header = section[0] ?? "";
+  const match = header.match(/^diff --git a\/(.+) b\/(.+)$/);
+  if (!match || (!isIgnored(match[1]) && !isIgnored(match[2]))) {
+    output.push(section.join("\n"));
+  }
 }

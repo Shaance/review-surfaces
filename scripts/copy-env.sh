@@ -62,17 +62,4 @@ copy_optional_file() {
 }
 
 copy_optional_file ".env.local"
-
-CLAUDE_SRC="$SOURCE_ROOT/.claude/settings.json"
-CLAUDE_DEST="$WORKTREE_ROOT/.claude/settings.json"
-if [ -f "$CLAUDE_SRC" ]; then
-  if [ "$SOURCE_ROOT" = "$WORKTREE_ROOT" ]; then
-    echo "Using main worktree .claude/settings.json (already in this worktree)."
-  else
-    mkdir -p "$(dirname -- "$CLAUDE_DEST")"
-    cp "$CLAUDE_SRC" "$CLAUDE_DEST"
-    echo "Copied $CLAUDE_SRC -> $CLAUDE_DEST"
-  fi
-else
-  echo "Note: $CLAUDE_SRC not found; skipped." >&2
-fi
+copy_optional_file ".claude/settings.json"

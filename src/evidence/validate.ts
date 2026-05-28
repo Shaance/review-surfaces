@@ -8,6 +8,8 @@ export interface EvidenceValidationContext {
   knownAcids?: Set<string>;
   knownPaths?: Set<string>;
   knownCommands?: Set<string>;
+  pathExistsCache?: Map<string, boolean>;
+  lineCountCache?: Map<string, number>;
 }
 
 const PATH_BACKED_KINDS = new Set(["file", "diff", "test", "doc", "spec", "conversation", "feedback", "agent_instruction"]);
@@ -18,19 +20,24 @@ export function validateEvidenceRef(ref: EvidenceRef, context: EvidenceValidatio
 
   if (ref.path) {
     const normalizedPath = normalizeEvidencePath(ref.path);
-    if (!normalizedPath || normalizedPath.startsWith("../") || path.isAbsolute(ref.path)) {
+    const resolvedPath = path.resolve(context.cwd, normalizedPath);
+    if (!isSafeRepositoryPath(ref.path, normalizedPath, resolvedPath, context.cwd)) {
       invalidReasons.push("path must be repository-relative");
     } else if (PATH_BACKED_KINDS.has(ref.kind)) {
-      const absolutePath = path.resolve(context.cwd, normalizedPath);
       const pathKnown = context.knownPaths?.has(normalizedPath) ?? false;
-      const exists = fs.existsSync(absolutePath);
+      const hasLineRange = ref.line_start !== undefined || ref.line_end !== undefined;
+      const exists = pathKnown && !hasLineRange ? true : pathExists(resolvedPath, context);
       if (!exists && !pathKnown) {
         invalidReasons.push("path does not exist in the repository or collected change set");
       }
-      if ((ref.line_start !== undefined || ref.line_end !== undefined) && exists) {
-        const lineCount = fs.readFileSync(absolutePath, "utf8").split(/\r?\n/).length;
-        if (!validLineRange(ref.line_start, ref.line_end, lineCount)) {
-          invalidReasons.push("line range is outside the referenced file");
+      if (hasLineRange) {
+        if (!exists) {
+          invalidReasons.push("line range cannot be checked because the referenced file does not exist");
+        } else {
+          const lineCount = fileLineCount(resolvedPath, context);
+          if (!validLineRange(ref.line_start, ref.line_end, lineCount)) {
+            invalidReasons.push("line range is outside the referenced file");
+          }
         }
       }
     }
@@ -99,6 +106,39 @@ export function validateRequirementResultEvidence(
 
 function normalizeEvidencePath(filePath: string): string {
   return filePath.replace(/\\/g, "/").replace(/^\.\/+/, "");
+}
+
+function isSafeRepositoryPath(originalPath: string, normalizedPath: string, resolvedPath: string, cwd: string): boolean {
+  if (!normalizedPath || path.isAbsolute(originalPath) || normalizedPath.split("/").includes("..")) {
+    return false;
+  }
+  const root = path.resolve(cwd);
+  return resolvedPath === root || resolvedPath.startsWith(`${root}${path.sep}`);
+}
+
+function pathExists(filePath: string, context: EvidenceValidationContext): boolean {
+  const cache = context.pathExistsCache ?? new Map<string, boolean>();
+  context.pathExistsCache = cache;
+  const cached = cache.get(filePath);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const exists = fs.existsSync(filePath);
+  cache.set(filePath, exists);
+  return exists;
+}
+
+function fileLineCount(filePath: string, context: EvidenceValidationContext): number {
+  const cache = context.lineCountCache ?? new Map<string, number>();
+  context.lineCountCache = cache;
+  const cached = cache.get(filePath);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const text = fs.readFileSync(filePath, "utf8");
+  const lines = text === "" ? [] : text.replace(/\r?\n$/, "").split(/\r?\n/);
+  cache.set(filePath, lines.length);
+  return lines.length;
 }
 
 function validLineRange(lineStart: number | undefined, lineEnd: number | undefined, lineCount: number): boolean {
