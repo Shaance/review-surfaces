@@ -10,6 +10,7 @@ import { RisksModel } from "../risks/risks";
 import { writeJson, writeText } from "../core/files";
 import { stringifyYaml } from "../core/simple-yaml";
 import { countRequirementStatuses } from "../evaluation/status";
+import { redactSecrets } from "../privacy/secrets";
 
 export interface ReviewPacket {
   schema_version: "review-surfaces.packet.v1";
@@ -177,10 +178,10 @@ ${previewLines(packet.architecture.subsystems, (subsystem) => `- ${subsystem.nam
 ${packet.methodology.summary}
 
 Verified claims:
-${previewLines(packet.methodology.verified_claims ?? [], (claim) => `- ${claim}`, 5)}
+${previewLines(packet.methodology.verified_claims ?? [], (claim) => `- ${redactRenderedText(claim)}`, 5)}
 
 Claims needing evidence:
-${previewLines(packet.methodology.claims_without_evidence ?? [], (claim) => `- ${claim}`, 5)}
+${previewLines(packet.methodology.claims_without_evidence ?? [], (claim) => `- ${redactRenderedText(claim)}`, 5)}
 
 Skipped/unknown:
 ${(packet.methodology.skipped_checks ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
@@ -305,6 +306,10 @@ function previewLines<T>(items: T[], render: (item: T) => string, limit = 12): s
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function redactRenderedText(value: string): string {
+  return redactSecrets(value).text;
 }
 
 function isHandoffValidationEvidence(evidence: RisksModel["test_evidence"][number]): boolean {
