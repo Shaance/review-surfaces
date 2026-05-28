@@ -124,6 +124,8 @@ components:
         requirement: Subsystem cards must include purpose, files, responsibilities, interactions, tests, risks, and relevant docs/specs.
       5:
         requirement: "Diagram generation should be hybrid: deterministic file/dependency grouping first, LLM labeling second."
+      6:
+        requirement: The diagram generator must validate generated Mermaid artifacts and report invalid or noisy diagrams in local architecture outputs.
 
   METHODOLOGY:
     name: Agent workflow audit
@@ -258,3 +260,10 @@ constraints:
         requirement: The tool should fail gently during early local dogfood runs and hard-fail only for explicit validation commands or configured gates.
       8:
         requirement: Generated review packets must be compact enough for human review.
+
+  SCHEMA:
+    name: Machine-readable artifact schemas
+    description: Keep review packet contracts aligned with generated local artifacts.
+    requirements:
+      1:
+        requirement: schemas/review_packet.schema.json must validate review_packet.json fields for architecture diagram validation metadata.

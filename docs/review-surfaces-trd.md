@@ -622,6 +622,7 @@ The diagram generator must:
 - include per-subsystem cards in `architecture.md`;
 - cite file evidence for subsystem membership;
 - validate that referenced files exist;
+- validate generated Mermaid artifact shape and surface invalid or noisy diagrams in packet artifacts;
 - use deterministic clustering first and LLM labels second.
 
 ### 10.7 Methodology Auditor

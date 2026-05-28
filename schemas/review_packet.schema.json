@@ -534,6 +534,12 @@
             "type": "string"
           }
         },
+        "diagram_validation": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DiagramValidation"
+          }
+        },
         "subsystems": {
           "type": "array",
           "items": {
@@ -544,6 +550,56 @@
           "type": "array",
           "items": {
             "type": "string"
+          }
+        }
+      }
+    },
+    "DiagramValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "status",
+        "diagram_type",
+        "errors",
+        "warnings",
+        "evidence"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "valid",
+            "invalid"
+          ]
+        },
+        "diagram_type": {
+          "type": "string",
+          "enum": [
+            "flowchart",
+            "sequenceDiagram",
+            "unknown"
+          ]
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
           }
         }
       }

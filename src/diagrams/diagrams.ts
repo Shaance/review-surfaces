@@ -7,6 +7,7 @@ import { matchesReviewPrefix, REVIEW_AREAS, ReviewArea } from "../review-areas/a
 export interface ArchitectureModel {
   summary: string;
   diagrams: string[];
+  diagram_validation: DiagramValidationResult[];
   subsystems: Array<{
     id: string;
     name: string;
@@ -27,25 +28,114 @@ export interface ArchitectureModel {
   open_questions: string[];
 }
 
+export interface DiagramValidationResult {
+  path: string;
+  status: "valid" | "invalid";
+  diagram_type: "flowchart" | "sequenceDiagram" | "unknown";
+  errors: string[];
+  warnings: string[];
+  evidence: Array<{
+    kind: "file" | "unknown";
+    path?: string;
+    confidence: "high" | "medium" | "low" | "unknown";
+    validation_status?: "valid" | "invalid" | "not_checked" | "unknown";
+    note?: string;
+  }>;
+}
+
+interface DiagramArtifact {
+  path: string;
+  body: string;
+}
+
 export async function buildArchitecture(collection: CollectionResult, evaluation: EvaluationModel): Promise<ArchitectureModel> {
   const outputDir = collection.outputDir;
-  const diagrams = [
-    "diagrams/pipeline.mmd",
-    "diagrams/source-layout.mmd",
-    "diagrams/dogfood-flow.mmd"
+  const diagramArtifacts = [
+    { path: "diagrams/pipeline.mmd", body: pipelineDiagram() },
+    { path: "diagrams/source-layout.mmd", body: sourceLayoutDiagram(collection) },
+    { path: "diagrams/dogfood-flow.mmd", body: dogfoodFlowDiagram() }
   ];
-  await writeText(path.join(outputDir, diagrams[0]), pipelineDiagram());
-  await writeText(path.join(outputDir, diagrams[1]), sourceLayoutDiagram(collection));
-  await writeText(path.join(outputDir, diagrams[2]), dogfoodFlowDiagram());
+  for (const diagram of diagramArtifacts) {
+    await writeText(path.join(outputDir, diagram.path), diagram.body);
+  }
 
+  const diagramValidation = diagramArtifacts.map((diagram) => validateMermaidDiagramArtifact(diagram));
   const subsystems = REVIEW_AREAS.map((subsystem) => subsystemCard(subsystem, collection, evaluation)).filter((card) => card.files.length > 0);
+  const invalidDiagrams = diagramValidation.filter((result) => result.status === "invalid");
+  const validDiagrams = diagramValidation.length - invalidDiagrams.length;
 
   return {
-    summary: `Generated ${diagrams.length} Mermaid diagram(s) and ${subsystems.length} evidence-backed subsystem card(s).`,
-    diagrams,
+    summary: `Generated ${diagramArtifacts.length} Mermaid diagram(s) (${validDiagrams} valid, ${invalidDiagrams.length} invalid) and ${subsystems.length} evidence-backed subsystem card(s).`,
+    diagrams: diagramArtifacts.map((diagram) => diagram.path),
+    diagram_validation: diagramValidation,
     subsystems,
-    open_questions: subsystems.length === 0 ? ["No subsystem file evidence was found for this run."] : []
+    open_questions: [
+      ...(subsystems.length === 0 ? ["No subsystem file evidence was found for this run."] : []),
+      ...invalidDiagrams.map((diagram) => `Diagram validation failed for ${diagram.path}: ${diagram.errors.join("; ")}`)
+    ]
   };
+}
+
+export function validateMermaidDiagramArtifact(diagram: DiagramArtifact): DiagramValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const trimmedBody = diagram.body.trim();
+  const lines = trimmedBody
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("%%"));
+  const firstLine = lines[0] ?? "";
+  const diagramType = classifyMermaidDiagram(firstLine);
+
+  if (path.isAbsolute(diagram.path) || diagram.path.includes("..") || !diagram.path.startsWith("diagrams/") || !diagram.path.endsWith(".mmd")) {
+    errors.push("Diagram path must be a relative diagrams/*.mmd artifact path.");
+  }
+  if (!trimmedBody) {
+    errors.push("Diagram body is empty.");
+  }
+  if (diagramType === "unknown") {
+    errors.push("Diagram must start with a supported Mermaid declaration.");
+  }
+  if (diagram.body.includes("undefined") || diagram.body.includes("[object Object]")) {
+    errors.push("Diagram contains placeholder output.");
+  }
+  if (lines.length > 40) {
+    warnings.push("Diagram has more than 40 non-empty lines and may not be review-sized.");
+  }
+  if (diagramType === "flowchart" && !lines.some((line) => /-->|---|==>/.test(line))) {
+    errors.push("Flowchart diagram must contain at least one edge.");
+  }
+  if (diagramType === "sequenceDiagram" && !lines.some((line) => /[-=]+>>/.test(line))) {
+    errors.push("Sequence diagram must contain at least one message.");
+  }
+
+  const status = errors.length === 0 ? "valid" : "invalid";
+  return {
+    path: diagram.path,
+    status,
+    diagram_type: diagramType,
+    errors,
+    warnings,
+    evidence: [
+      {
+        kind: status === "valid" ? "file" : "unknown",
+        path: status === "valid" ? diagram.path : undefined,
+        confidence: status === "valid" ? "high" : "unknown",
+        validation_status: status,
+        note: `review-surfaces.ARCH.6 ${status === "valid" ? "validated" : "rejected"} Mermaid diagram artifact.`
+      }
+    ]
+  };
+}
+
+function classifyMermaidDiagram(firstLine: string): DiagramValidationResult["diagram_type"] {
+  if (/^(flowchart|graph)\s+/.test(firstLine)) {
+    return "flowchart";
+  }
+  if (firstLine === "sequenceDiagram") {
+    return "sequenceDiagram";
+  }
+  return "unknown";
 }
 
 function pipelineDiagram(): string {

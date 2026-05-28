@@ -149,6 +149,9 @@ ${packet.architecture.summary}
 Diagrams:
 ${packet.architecture.diagrams.map((diagram) => `- ${diagram}`).join("\n") || "- None generated."}
 
+Diagram validation:
+${previewLines(packet.architecture.diagram_validation ?? [], (result) => `- ${result.path}: ${result.status}${result.warnings.length ? ` (${result.warnings.join("; ")})` : ""}`, 8)}
+
 Changed areas:
 ${previewLines(packet.architecture.subsystems, (subsystem) => `- ${subsystem.name}: ${subsystem.files.length} file(s), ${subsystem.tests.length} test(s)`, 10)}
 
@@ -193,6 +196,12 @@ ${architecture.summary}
 ## Diagrams
 
 ${architecture.diagrams.map((diagram) => `- \`${diagram}\``).join("\n") || "- None generated."}
+
+## Diagram validation
+
+${(architecture.diagram_validation ?? [])
+  .map((result) => `- \`${result.path}\`: ${result.status}${result.errors.length ? ` - ${result.errors.join("; ")}` : ""}${result.warnings.length ? ` (${result.warnings.join("; ")})` : ""}`)
+  .join("\n") || "- No diagram validation results recorded."}
 
 ## Subsystems
 

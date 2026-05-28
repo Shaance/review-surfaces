@@ -1,6 +1,7 @@
 import { CollectionResult } from "../collector/collect";
 import { EvidenceRef } from "../evidence/evidence";
 import { EvaluationModel } from "../evaluation/evaluate";
+import { FeedbackFile, FeedbackFinding } from "../feedback/feedback";
 import { MethodologyModel } from "../methodology/methodology";
 import { RisksModel } from "../risks/risks";
 
@@ -44,6 +45,7 @@ export function buildDogfood(
 ): DogfoodModel {
   const unsatisfied = evaluation.results.filter((result) => result.status !== "satisfied").length;
   const feedbackFindings = collection.feedback.flatMap((feedbackFile) => feedbackFile.findings);
+  const highlightedFeedbackFindings = selectFeedbackFindings(collection.feedback, 8);
   const noisySections: string[] = [];
   if (risks.test_gaps.length > 15) {
     noisySections.push("test_gaps");
@@ -95,7 +97,7 @@ export function buildDogfood(
           target_milestone: "MVP"
         }
       },
-      ...feedbackFindings.slice(0, 8).map((finding, index) => ({
+      ...highlightedFeedbackFindings.map((finding, index) => ({
         id: `DOG-FB-${String(index + 1).padStart(3, "0")}`,
         category: finding.category,
         severity: finding.severity,
@@ -121,7 +123,7 @@ export function buildDogfood(
       })),
       ...feedbackFindings
         .filter((finding) => finding.desired_change)
-        .slice(0, 5)
+        .slice(-5)
         .map((finding) => ({
           type: "feedback" as const,
           description: finding.desired_change as string,
@@ -133,4 +135,27 @@ export function buildDogfood(
       providerName === "mock" ? "AI SDK enrichment was not used in the default offline dogfood run." : `Provider used: ${providerName}.`
     ]
   };
+}
+
+function selectFeedbackFindings(feedbackFiles: FeedbackFile[], limit: number): FeedbackFinding[] {
+  const selected: FeedbackFinding[] = [];
+  const seen = new Set<string>();
+  const add = (finding: FeedbackFinding | undefined): void => {
+    if (!finding || seen.has(finding.id) || selected.length >= limit) {
+      return;
+    }
+    seen.add(finding.id);
+    selected.push(finding);
+  };
+
+  for (const feedbackFile of feedbackFiles) {
+    add(feedbackFile.findings[feedbackFile.findings.length - 1]);
+  }
+
+  const allFindings = feedbackFiles.flatMap((feedbackFile) => feedbackFile.findings);
+  for (let index = allFindings.length - 1; index >= 0; index -= 1) {
+    add(allFindings[index]);
+  }
+
+  return selected;
 }
