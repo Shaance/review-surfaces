@@ -1,0 +1,167 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { collectInputs } from "../src/collector/collect";
+import { defaultConfig } from "../src/config/config";
+import { buildIntent } from "../src/intent/intent";
+import { evaluateIntent } from "../src/evaluation/evaluate";
+
+test("evaluator emits satisfied, partial, and missing statuses conservatively", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-eval-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src", "intent"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src", "risks"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "tests"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+components:
+  INTENT:
+    requirements:
+      1: Build intent.
+  RISK:
+    requirements:
+      1: Build risks.
+  ARCH:
+    requirements:
+      1: Build diagrams.
+`
+  );
+  fs.writeFileSync(path.join(tmp, "src", "intent", "intent.ts"), "export const x = 'example.INTENT.1';\n");
+  fs.writeFileSync(path.join(tmp, "tests", "intent.test.ts"), "test('intent', () => {});\n");
+  fs.writeFileSync(path.join(tmp, "src", "risks", "risks.ts"), "export const risk = true;\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["add", "."], { cwd: tmp, stdio: "ignore" });
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: ["tests/**/*.test.ts"] },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+  collection.changedFiles = [
+    { path: "src/intent/intent.ts", status: "A", source: "working_tree" },
+    { path: "src/risks/risks.ts", status: "A", source: "working_tree" }
+  ];
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent);
+
+  assert.equal(evaluation.acai_coverage["example.INTENT.1"], "satisfied");
+  assert.equal(evaluation.acai_coverage["example.RISK.1"], "partial");
+  assert.equal(evaluation.acai_coverage["example.ARCH.1"], "missing");
+});
+
+test("evaluator does not treat generated artifact ACID mentions as proof", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-generated-evidence-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, ".review-surfaces"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+components:
+  INTENT:
+    requirements:
+      1: Build intent.
+  DOGFOOD:
+    requirements:
+      1: Generate handoff.
+`
+  );
+  fs.writeFileSync(path.join(tmp, ".review-surfaces", "agent_handoff.md"), "Mentions example.INTENT.1 but is generated output.\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [] },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+  collection.changedFiles = [{ path: ".review-surfaces/agent_handoff.md", status: "M", source: "working_tree" }];
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent);
+
+  assert.equal(evaluation.acai_coverage["example.INTENT.1"], "missing");
+  assert.equal(evaluation.acai_coverage["example.DOGFOOD.1"], "partial");
+});
+
+test("evaluator keeps broad group evidence partial without exact requirement proof", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-broad-evidence-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src", "evaluation"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "tests"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+components:
+  EVAL:
+    requirements:
+      1: Evaluate implementation.
+`
+  );
+  fs.writeFileSync(path.join(tmp, "src", "evaluation", "evaluate.ts"), "export const evaluate = true;\n");
+  fs.writeFileSync(path.join(tmp, "tests", "evaluation.test.ts"), "test('evaluation', () => {});\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: ["tests/**/*.test.ts"] },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+  collection.changedFiles = [{ path: "src/evaluation/evaluate.ts", status: "A", source: "working_tree" }];
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent);
+
+  assert.equal(evaluation.acai_coverage["example.EVAL.1"], "partial");
+});
+
+test("evaluator treats later provider integrations as unknown deferrals", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-deferral-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src", "llm"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "tests"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+components:
+  PROVIDERS:
+    requirements:
+      1: GitHub comment integration must reuse local artifacts.
+constraints:
+  EVIDENCE:
+    requirements:
+      1: The tool must work in local/offline mode with mock or disabled LLM modules.
+`
+  );
+  fs.writeFileSync(path.join(tmp, "src", "llm", "provider.ts"), "export const provider = true;\n");
+  fs.writeFileSync(path.join(tmp, "tests", "provider.test.ts"), "test('provider', () => {});\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: ["tests/**/*.test.ts"] },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+  collection.changedFiles = [{ path: "src/llm/provider.ts", status: "A", source: "working_tree" }];
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent);
+
+  assert.equal(evaluation.acai_coverage["example.PROVIDERS.1"], "unknown");
+  assert.equal(evaluation.overreach.length, 0);
+});

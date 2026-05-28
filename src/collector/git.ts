@@ -1,4 +1,6 @@
+import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { isRegularFile } from "../core/files";
 
 export interface GitInfo {
   repo: string;
@@ -39,7 +41,7 @@ export function collectChangedFiles(cwd: string, baseRef: string, headRef: strin
     }
   }
 
-  const statusOutput = git(cwd, ["status", "--porcelain"]);
+  const statusOutput = git(cwd, ["status", "--porcelain", "--untracked-files=all"]);
   if (statusOutput) {
     for (const line of statusOutput.split("\n")) {
       if (line.trim() === "") {
@@ -47,7 +49,7 @@ export function collectChangedFiles(cwd: string, baseRef: string, headRef: strin
       }
       const status = line.slice(0, 2).trim() || "modified";
       const filePath = line.slice(3).trim();
-      if (filePath && !byPath.has(filePath) && filePath !== ".DS_Store") {
+      if (filePath && !filePath.endsWith("/") && !byPath.has(filePath) && filePath !== ".DS_Store" && isRegularFile(path.resolve(cwd, filePath))) {
         byPath.set(filePath, { path: filePath, status, source: "working_tree" });
       }
     }

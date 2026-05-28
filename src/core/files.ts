@@ -27,6 +27,14 @@ export function fileExists(filePath: string): boolean {
   return fs.existsSync(filePath);
 }
 
+export function isRegularFile(filePath: string): boolean {
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
 export async function hashFile(filePath: string): Promise<string> {
   const data = await fs.promises.readFile(filePath);
   return crypto.createHash("sha256").update(data).digest("hex");
