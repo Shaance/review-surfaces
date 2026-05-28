@@ -1,6 +1,6 @@
 # Agent Handoff
 
-First working local CLI slice exists: config loading, Acai indexing, collection, schema validation, and skeleton packet rendering.
+Local E2E packet generated with provider=mock/not_requested; 5 satisfied, 61 partial, 7 missing, 4 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
 
 ## Current Milestone
 
@@ -8,31 +8,47 @@ M1
 
 ## Relevant ACIDs
 
+- review-surfaces.BOOTSTRAP.1
+- review-surfaces.BOOTSTRAP.4
+- review-surfaces.BOOTSTRAP.5
+- review-surfaces.PRIVACY.1
+- review-surfaces.PRIVACY.2
 - review-surfaces.CLI.1
-- review-surfaces.COLLECTOR.2
-- review-surfaces.RENDER.3
-- review-surfaces.DOGFOOD.1
+- review-surfaces.CLI.2
+- review-surfaces.CLI.3
+- review-surfaces.CLI.4
+- review-surfaces.CLI.5
 
 ## Commands To Run
 
-- `pnpm run typecheck`
+- `pnpm run lint`
 - `pnpm run test`
-- `pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces`
-- `pnpm run review-surfaces -- validate .review-surfaces/review_packet.json`
+- `pnpm run build`
+- `pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces`
+- `pnpm run review-surfaces -- validate .review-surfaces`
 
 ## Next Tasks
 
-- Broaden fixture tests for overreach, sparse specs, and missing logs.
-- Implement evaluator and risk modules with direct versus missing evidence separation.
-- Replace skeleton architecture output with deterministic subsystem grouping and Mermaid diagrams.
+- review-surfaces.BOOTSTRAP.1: Add a focused unit or fixture test tied to review-surfaces.BOOTSTRAP.1.
+- review-surfaces.BOOTSTRAP.4: Add a focused unit or fixture test tied to review-surfaces.BOOTSTRAP.4.
+- review-surfaces.BOOTSTRAP.5: Add a focused unit or fixture test tied to review-surfaces.BOOTSTRAP.5.
+- review-surfaces.CLI.1: Add a focused unit or fixture test tied to review-surfaces.CLI.1.
+- review-surfaces.CLI.2: Add a focused unit or fixture test tied to review-surfaces.CLI.2.
+- Inspect .review-surfaces/review_packet.md before trusting generated summaries.
 
 ## Open Risks
 
-- Schema validation is local and intentionally small; replace or harden it before accepting arbitrary external schemas.
+- RISK-001: 7 requirement(s) have no implementation or test evidence.
+- RISK-002: 61 requirement(s) have implementation evidence but weak or missing test evidence.
+- RISK-003: 4 requirement(s) remain unknown due to weak evidence.
 
 ## Artifact Paths
 
-- `.review-surfaces/manifest.json`
-- `.review-surfaces/inputs/specs.index.json`
-- `.review-surfaces/review_packet.json`
 - `.review-surfaces/review_packet.md`
+- `.review-surfaces/review_packet.json`
+- `.review-surfaces/intent.yaml`
+- `.review-surfaces/evaluation.yaml`
+- `.review-surfaces/architecture.md`
+- `.review-surfaces/risks.yaml`
+- `.review-surfaces/methodology.yaml`
+- `.review-surfaces/dogfood.yaml`

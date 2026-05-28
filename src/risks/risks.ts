@@ -1,0 +1,163 @@
+import { CollectionResult } from "../collector/collect";
+import { commandEvidence, EvidenceRef, missingEvidence, specEvidence } from "../evidence/evidence";
+import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
+
+export interface RiskItem {
+  id: string;
+  category: "correctness" | "security" | "privacy" | "maintainability" | "architecture" | "testing" | "workflow" | "release" | "performance" | "unknown";
+  severity: "low" | "medium" | "high" | "critical" | "unknown";
+  likelihood?: "low" | "medium" | "high" | "unknown";
+  detectability?: "easy" | "moderate" | "hard" | "unknown";
+  summary: string;
+  impact?: string;
+  evidence?: EvidenceRef[];
+  suggested_checks?: string[];
+  manual_review?: boolean;
+}
+
+export interface RisksModel {
+  summary: string;
+  items: RiskItem[];
+  test_evidence: Array<{
+    id: string;
+    kind: "direct" | "indirect" | "claimed" | "missing" | "unknown";
+    summary: string;
+    requirement_ids?: string[];
+    evidence?: EvidenceRef[];
+  }>;
+  test_gaps: Array<{
+    id: string;
+    requirement_id?: string;
+    acai_id?: string;
+    summary: string;
+    suggested_test?: string;
+    manual_check?: string;
+    evidence?: EvidenceRef[];
+  }>;
+  review_focus: string[];
+}
+
+export function analyzeRisks(collection: CollectionResult, evaluation: EvaluationModel, commands: string[]): RisksModel {
+  const weakResults = evaluation.results.filter((result) => result.status !== "satisfied");
+  const partialResults = evaluation.results.filter((result) => result.status === "partial");
+  const missingResults = evaluation.results.filter((result) => result.status === "missing");
+  const unknownResults = evaluation.results.filter((result) => result.status === "unknown");
+  const items: RiskItem[] = [];
+
+  if (missingResults.length > 0) {
+    items.push({
+      id: "RISK-001",
+      category: "correctness",
+      severity: "high",
+      likelihood: "medium",
+      detectability: "moderate",
+      summary: `${missingResults.length} requirement(s) have no implementation or test evidence.`,
+      impact: "Reviewers cannot tell whether required behavior exists.",
+      evidence: missingResults.slice(0, 5).flatMap((result) => result.missing_evidence ?? []),
+      suggested_checks: ["Implement or explicitly defer missing requirements.", "Add direct tests or artifact evidence for missing requirements."],
+      manual_review: true
+    });
+  }
+
+  if (partialResults.length > 0) {
+    items.push({
+      id: `RISK-${String(items.length + 1).padStart(3, "0")}`,
+      category: "testing",
+      severity: "medium",
+      likelihood: "high",
+      detectability: "easy",
+      summary: `${partialResults.length} requirement(s) have implementation evidence but weak or missing test evidence.`,
+      impact: "Implementation may exist but regressions are not well guarded.",
+      evidence: partialResults.slice(0, 5).flatMap((result) => result.evidence ?? []),
+      suggested_checks: ["Add unit or fixture tests tied to affected requirement groups."],
+      manual_review: true
+    });
+  }
+
+  if (evaluation.overreach.length > 0) {
+    items.push({
+      id: `RISK-${String(items.length + 1).padStart(3, "0")}`,
+      category: "workflow",
+      severity: "medium",
+      likelihood: "medium",
+      detectability: "easy",
+      summary: `${evaluation.overreach.length} changed file(s) did not map to a stated requirement group.`,
+      impact: "The diff may contain unstated scope or the spec may be incomplete.",
+      evidence: evaluation.overreach.flatMap((result) => result.evidence ?? []).slice(0, 6),
+      suggested_checks: ["Either map the changed file to an Acai requirement or add a spec update/deferral."],
+      manual_review: true
+    });
+  }
+
+  if (unknownResults.length > 0) {
+    items.push({
+      id: `RISK-${String(items.length + 1).padStart(3, "0")}`,
+      category: "release",
+      severity: "low",
+      likelihood: "medium",
+      detectability: "moderate",
+      summary: `${unknownResults.length} requirement(s) remain unknown due to weak evidence.`,
+      impact: "The packet is intentionally conservative and should not be treated as full coverage.",
+      evidence: [missingEvidence("Unknown requirements need stronger evidence before release decisions.")],
+      suggested_checks: ["Review unknown requirements manually and convert recurring unknowns into tests or explicit deferrals."],
+      manual_review: true
+    });
+  }
+
+  const testEvidence = commands.length > 0
+    ? commands.map((command, index) => ({
+        id: `TEST-${String(index + 1).padStart(3, "0")}`,
+        kind: "claimed" as const,
+        summary: `Command expected or observed in this run context: ${command}`,
+        requirement_ids: [],
+        evidence: [commandEvidence(command, "Command evidence is recorded by invocation, not by parsed transcript.", "medium")]
+      }))
+    : [
+        {
+          id: "TEST-001",
+          kind: "missing" as const,
+          summary: "No command transcript was supplied to prove test execution.",
+          requirement_ids: [],
+          evidence: [missingEvidence("Run validation commands and preserve output externally or in a future command transcript artifact.")]
+        }
+      ];
+
+  const testGaps = weakResults.slice(0, 20).map((result, index) => ({
+    id: `GAP-${String(index + 1).padStart(3, "0")}`,
+    requirement_id: result.requirement_id,
+    acai_id: result.acai_id,
+    summary: `${result.status} coverage for ${result.acai_id ?? result.requirement_id}: ${result.summary}`,
+    suggested_test: suggestedTestFor(result),
+    manual_check: "Inspect changed files and generated artifacts for this requirement before trusting coverage.",
+    evidence: result.missing_evidence?.length ? result.missing_evidence : [specEvidence("features/review-surfaces.feature.yaml", result.acai_id)]
+  }));
+
+  return {
+    summary: `${items.length} risk item(s), ${testGaps.length} test gap(s), ${collection.changedFiles.length} changed file(s) in scope.`,
+    items,
+    test_evidence: testEvidence,
+    test_gaps: testGaps,
+    review_focus: [
+      "Start with missing and partial requirement results.",
+      "Check overreach files before reviewing implementation detail.",
+      "Treat AI-enriched summaries as review aids, not proof.",
+      "Confirm validation command output for the current branch."
+    ]
+  };
+}
+
+function suggestedTestFor(result: RequirementResult): string {
+  if (result.acai_id?.includes(".INTENT.")) {
+    return "Add intent fixture tests proving source refs, assumptions, and open questions are preserved.";
+  }
+  if (result.acai_id?.includes(".EVAL.")) {
+    return "Add evaluator fixture tests for satisfied, partial, missing, unknown, and overreach statuses.";
+  }
+  if (result.acai_id?.includes(".ARCH.")) {
+    return "Add diagram generation tests that assert Mermaid files and subsystem cards exist.";
+  }
+  if (result.acai_id?.includes(".METHODOLOGY.")) {
+    return "Add methodology tests for both missing logs and supplied Markdown/JSONL logs.";
+  }
+  return `Add a focused unit or fixture test tied to ${result.acai_id ?? result.requirement_id}.`;
+}
