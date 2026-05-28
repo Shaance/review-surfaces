@@ -80,6 +80,27 @@ export function commandEvidence(command: string, note?: string, confidence: Conf
   };
 }
 
+export function feedbackEvidence(
+  feedbackPath: string,
+  note?: string,
+  options: {
+    eventId?: string;
+    command?: string;
+    confidence?: Confidence;
+    validationStatus?: ValidationStatus;
+  } = {}
+): EvidenceRef {
+  return {
+    kind: "feedback",
+    path: feedbackPath,
+    event_id: options.eventId,
+    command: options.command,
+    note,
+    confidence: options.confidence ?? "high",
+    validation_status: options.validationStatus ?? "valid"
+  };
+}
+
 export function missingEvidence(note: string): EvidenceRef {
   return {
     kind: "unknown",

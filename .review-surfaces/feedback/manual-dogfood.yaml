@@ -15,17 +15,32 @@ findings:
     affected_section: Worktree setup
     finding: The worktree E2E fixture previously copied a .git file from linked worktrees and broke git init in copied fixtures; the fixture copier now excludes both .git files and .git directories.
     desired_change: Keep worktree setup documented in AGENTS.md, CLAUDE.md, and scripts/SECRETS.md so future agents can reproduce local provider setup without private paths.
+  - id: FB-2026-05-28-003
+    category: evidence_quality
+    severity: medium
+    affected_section: Test evidence and gaps
+    finding: review-surfaces.RISK.2 now separates feedback-recorded validation commands from CLI invocation records and classifies manually recorded test commands as claimed rather than direct, but the artifact still does not preserve command stdout, stderr, duration, or exit status as first-class transcript evidence.
+    desired_change: Add a bounded local command transcript input artifact in a later slice so test evidence can be direct without relying on manually maintained feedback notes.
+  - id: FB-2026-05-28-004
+    category: agent_workflow
+    severity: low
+    affected_section: Architecture surfaces
+    finding: Dogfood initially reported src/feedback/feedback.ts as overreach because the review-area map did not classify the new feedback ingestion module under review-surfaces.DOGFOOD.6.
+    desired_change: Keep review-area mappings and tests updated whenever a new local pipeline module is added.
 validation:
-  updated_at: 2026-05-28T09:19:54Z
+  updated_at: 2026-05-28T10:33:30Z
   passed:
     - pnpm run test
+    - pnpm run typecheck
     - pnpm run lint
     - pnpm run build
-    - pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces
+    - pnpm run review-surfaces -- dogfood --provider mock --base HEAD --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces
     - pnpm run review-surfaces -- validate .review-surfaces
   failed: []
   notes:
     - The dogfood run used provider=mock and did not require network access.
-    - Simplify triad ran with correctness, efficiency, and reuse tracks; high-confidence findings were fixed.
-    - Review loop ran for three full-diff cycles after the simplify fixes; no new actionable findings remained.
-    - Google AI SDK credentials were copied into ignored .env.local from a sibling project for optional live use, without committing or printing the value.
+    - The current slice added feedback indexing, feedback.index.json, dogfood feedback carry-forward, and rendered validation evidence.
+    - Dogfood found an overreach mapping gap for src/feedback/ and the change now maps feedback ingestion to review-surfaces.DOGFOOD.6.
+    - Simplify triad ran with read-only correctness, efficiency, and reuse tracks; fixed the feedback direct-evidence overclaim, added feedback input hashes, and centralized feedback evidence refs.
+    - Review loop ran three valid full-diff cycles after the triad fixes; no new actionable findings remained.
+    - Deferred improvement: add bounded local command transcript artifacts so validation can become direct evidence without relying on manually recorded feedback.

@@ -1,5 +1,5 @@
 import { CollectionResult } from "../collector/collect";
-import { commandEvidence, EvidenceRef, missingEvidence, specEvidence } from "../evidence/evidence";
+import { commandEvidence, EvidenceRef, feedbackEvidence, missingEvidence, specEvidence } from "../evidence/evidence";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 
 export interface RiskItem {
@@ -104,23 +104,24 @@ export function analyzeRisks(collection: CollectionResult, evaluation: Evaluatio
     });
   }
 
-  const testEvidence = commands.length > 0
-    ? commands.map((command, index) => ({
-        id: `TEST-${String(index + 1).padStart(3, "0")}`,
-        kind: "claimed" as const,
-        summary: `Command expected or observed in this run context: ${command}`,
-        requirement_ids: [],
-        evidence: [commandEvidence(command, "Command evidence is recorded by invocation, not by parsed transcript.", "medium")]
-      }))
-    : [
-        {
-          id: "TEST-001",
-          kind: "missing" as const,
-          summary: "No command transcript was supplied to prove test execution.",
-          requirement_ids: [],
-          evidence: [missingEvidence("Run validation commands and preserve output externally or in a future command transcript artifact.")]
-        }
-      ];
+  const testEvidence = validationEvidenceFromFeedback(collection);
+  const claimedCommandEvidence = commands.map((command, index) => ({
+    id: `TEST-CMD-${String(index + 1).padStart(3, "0")}`,
+    kind: "claimed" as const,
+    summary: `Command invoked by this run context: ${command}`,
+    requirement_ids: [],
+    evidence: [commandEvidence(command, "Command invocation is recorded by the CLI, but output is not captured in this artifact.", "medium")]
+  }));
+  const allTestEvidence = [...testEvidence, ...claimedCommandEvidence];
+  if (allTestEvidence.length === 0) {
+    allTestEvidence.push({
+      id: "TEST-001",
+      kind: "missing" as const,
+      summary: "No command transcript or validation feedback was supplied to prove test execution.",
+      requirement_ids: [],
+      evidence: [missingEvidence("Run validation commands and preserve output externally or in a future command transcript artifact.")]
+    });
+  }
 
   const testGaps = weakResults.slice(0, 20).map((result, index) => ({
     id: `GAP-${String(index + 1).padStart(3, "0")}`,
@@ -135,7 +136,7 @@ export function analyzeRisks(collection: CollectionResult, evaluation: Evaluatio
   return {
     summary: `${items.length} risk item(s), ${testGaps.length} test gap(s), ${collection.changedFiles.length} changed file(s) in scope.`,
     items,
-    test_evidence: testEvidence,
+    test_evidence: allTestEvidence,
     test_gaps: testGaps,
     review_focus: [
       "Start with missing and partial requirement results.",
@@ -144,6 +145,41 @@ export function analyzeRisks(collection: CollectionResult, evaluation: Evaluatio
       "Confirm validation command output for the current branch."
     ]
   };
+}
+
+function validationEvidenceFromFeedback(collection: CollectionResult): RisksModel["test_evidence"] {
+  const entries: RisksModel["test_evidence"] = [];
+  for (const feedbackFile of collection.feedback) {
+    for (const command of feedbackFile.validation.passed) {
+      entries.push({
+        id: `TEST-FB-${String(entries.length + 1).padStart(3, "0")}`,
+        kind: commandLooksLikeTestCommand(command) ? "claimed" : "indirect",
+        summary: `Feedback records a passing validation command: ${command}`,
+        requirement_ids: [],
+        evidence: [
+          feedbackEvidence(feedbackFile.path, "Validation command recorded in local feedback; command output is not captured in this artifact.", {
+            command
+          })
+        ]
+      });
+    }
+    for (const command of feedbackFile.validation.failed) {
+      entries.push({
+        id: `TEST-FB-${String(entries.length + 1).padStart(3, "0")}`,
+        kind: "missing",
+        summary: `Feedback records a failing validation command: ${command}`,
+        requirement_ids: [],
+        evidence: [
+          feedbackEvidence(feedbackFile.path, "Failed validation command recorded in local feedback.", { command })
+        ]
+      });
+    }
+  }
+  return entries;
+}
+
+function commandLooksLikeTestCommand(command: string): boolean {
+  return /\b(test|node --test|vitest|jest|tap|uvu)\b/.test(command);
 }
 
 function suggestedTestFor(result: RequirementResult): string {

@@ -1,4 +1,5 @@
 import { CollectionResult } from "../collector/collect";
+import { EvidenceRef } from "../evidence/evidence";
 import { EvaluationModel } from "../evaluation/evaluate";
 import { MethodologyModel } from "../methodology/methodology";
 import { RisksModel } from "../risks/risks";
@@ -16,7 +17,7 @@ export interface DogfoodModel {
     packet_section?: string;
     finding: string;
     impact?: string;
-    evidence?: Array<Record<string, unknown>>;
+    evidence?: EvidenceRef[];
     remediation?: {
       type: "code" | "test" | "schema" | "doc" | "spec" | "skill" | "feedback" | "defer";
       description: string;
@@ -42,6 +43,7 @@ export function buildDogfood(
   commands: string[]
 ): DogfoodModel {
   const unsatisfied = evaluation.results.filter((result) => result.status !== "satisfied").length;
+  const feedbackFindings = collection.feedback.flatMap((feedbackFile) => feedbackFile.findings);
   const noisySections: string[] = [];
   if (risks.test_gaps.length > 15) {
     noisySections.push("test_gaps");
@@ -53,7 +55,7 @@ export function buildDogfood(
   return {
     milestone: collection.manifest.milestone ?? "MVP",
     command: commands.find((command) => command.includes("review-surfaces")) ?? "review-surfaces dogfood",
-    summary: `Dogfood generated a packet with ${evaluation.results.length} requirement result(s), ${risks.items.length} risk(s), provider=${providerName}, noisy_sections=${noisySections.join(",") || "none"}.`,
+    summary: `Dogfood generated a packet with ${evaluation.results.length} requirement result(s), ${risks.items.length} risk(s), ${feedbackFindings.length} feedback finding(s), provider=${providerName}, noisy_sections=${noisySections.join(",") || "none"}.`,
     helped_agent: unsatisfied < evaluation.results.length ? "partially" : "unknown",
     helped_reviewer: risks.review_focus.length > 0 ? "partially" : "unknown",
     findings: [
@@ -92,14 +94,40 @@ export function buildDogfood(
           acai_id: "review-surfaces.METHODOLOGY.4",
           target_milestone: "MVP"
         }
-      }
+      },
+      ...feedbackFindings.slice(0, 8).map((finding, index) => ({
+        id: `DOG-FB-${String(index + 1).padStart(3, "0")}`,
+        category: finding.category,
+        severity: finding.severity,
+        packet_section: finding.affected_section,
+        finding: `Feedback ${finding.id}: ${finding.finding}`,
+        impact: "Human or agent feedback is part of the local dogfood loop and should shape the next implementation slice.",
+        evidence: finding.evidence,
+        remediation: finding.desired_change
+          ? {
+              type: "feedback" as const,
+              description: finding.desired_change,
+              target_milestone: "MVP"
+            }
+          : undefined
+      }))
     ],
-    remediation_tasks: risks.test_gaps.slice(0, 5).map((gap) => ({
-      type: "test" as const,
-      description: gap.suggested_test ?? gap.summary,
-      acai_id: gap.acai_id,
-      target_milestone: "MVP"
-    })),
+    remediation_tasks: [
+      ...risks.test_gaps.slice(0, 5).map((gap) => ({
+        type: "test" as const,
+        description: gap.suggested_test ?? gap.summary,
+        acai_id: gap.acai_id,
+        target_milestone: "MVP"
+      })),
+      ...feedbackFindings
+        .filter((finding) => finding.desired_change)
+        .slice(0, 5)
+        .map((finding) => ({
+          type: "feedback" as const,
+          description: finding.desired_change as string,
+          target_milestone: "MVP"
+        }))
+    ],
     deferrals: [
       "Provider comments and hosted dashboards remain deferred per local-first scope.",
       providerName === "mock" ? "AI SDK enrichment was not used in the default offline dogfood run." : `Provider used: ${providerName}.`

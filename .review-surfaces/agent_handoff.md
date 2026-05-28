@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Local E2E packet generated with provider=mock/not_requested; 8 satisfied, 47 partial, 18 missing, 4 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
+Local E2E packet generated with provider=mock/not_requested; 11 satisfied, 33 partial, 29 missing, 4 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
 
 ## Current Milestone
 
@@ -8,16 +8,16 @@ M1
 
 ## Relevant ACIDs
 
-- review-surfaces.INTENT.3
-- review-surfaces.INTENT.4
-- review-surfaces.INTENT.5
-- review-surfaces.ARCH.1
-- review-surfaces.ARCH.2
 - review-surfaces.BOOTSTRAP.1
 - review-surfaces.BOOTSTRAP.4
 - review-surfaces.BOOTSTRAP.5
 - review-surfaces.CLI.1
 - review-surfaces.CLI.2
+- review-surfaces.COLLECTOR.1
+- review-surfaces.COLLECTOR.3
+- review-surfaces.COLLECTOR.4
+- review-surfaces.COLLECTOR.5
+- review-surfaces.INTENT.1
 
 ## Commands To Run
 
@@ -38,8 +38,8 @@ M1
 
 ## Open Risks
 
-- RISK-001: 18 requirement(s) have no implementation or test evidence.
-- RISK-002: 47 requirement(s) have implementation evidence but weak or missing test evidence.
+- RISK-001: 29 requirement(s) have no implementation or test evidence.
+- RISK-002: 33 requirement(s) have implementation evidence but weak or missing test evidence.
 - RISK-003: 4 requirement(s) remain unknown due to weak evidence.
 
 ## Artifact Paths
