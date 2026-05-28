@@ -298,10 +298,12 @@ function previewLines<T>(items: T[], render: (item: T) => string, limit = 12): s
 }
 
 function handoffCommandsToRun(): string[] {
+  // The tracked bin shim records `run` transcripts before dist exists, so the
+  // first build command remains useful in a fresh checkout.
   return [
-    "node bin/review-surfaces.js run --id CMD-PNPM-BUILD -- pnpm run build",
-    "node bin/review-surfaces.js run --id CMD-PNPM-LINT -- pnpm run lint",
-    "node bin/review-surfaces.js run --id CMD-PNPM-TEST -- pnpm run test",
+    "node bin/review-surfaces.js run --id CMD-PNPM-BUILD --command-transcripts .review-surfaces/commands -- pnpm run build",
+    "node bin/review-surfaces.js run --id CMD-PNPM-LINT --command-transcripts .review-surfaces/commands -- pnpm run lint",
+    "node bin/review-surfaces.js run --id CMD-PNPM-TEST --command-transcripts .review-surfaces/commands -- pnpm run test",
     "node bin/review-surfaces.js all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --provider mock --out .review-surfaces",
     "node bin/review-surfaces.js validate .review-surfaces"
   ];

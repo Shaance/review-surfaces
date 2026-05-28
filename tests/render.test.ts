@@ -209,9 +209,9 @@ test("review-surfaces.CLI.7 handoff commands capture validation transcripts", ()
   } as unknown as PacketInputs);
 
   assert.deepEqual(packet.agent_handoff?.commands_to_run?.slice(0, 3), [
-    "node bin/review-surfaces.js run --id CMD-PNPM-BUILD -- pnpm run build",
-    "node bin/review-surfaces.js run --id CMD-PNPM-LINT -- pnpm run lint",
-    "node bin/review-surfaces.js run --id CMD-PNPM-TEST -- pnpm run test"
+    "node bin/review-surfaces.js run --id CMD-PNPM-BUILD --command-transcripts .review-surfaces/commands -- pnpm run build",
+    "node bin/review-surfaces.js run --id CMD-PNPM-LINT --command-transcripts .review-surfaces/commands -- pnpm run lint",
+    "node bin/review-surfaces.js run --id CMD-PNPM-TEST --command-transcripts .review-surfaces/commands -- pnpm run test"
   ]);
   assert.ok(!packet.agent_handoff?.commands_to_run?.some((command) => command.startsWith("pnpm run review-surfaces -- run")));
   assert.ok(packet.agent_handoff?.commands_to_run?.includes(
