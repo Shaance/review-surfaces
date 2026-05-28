@@ -1,20 +1,256 @@
 #!/usr/bin/env node
-const { spawnSync } = require("node:child_process");
-const { existsSync } = require("node:fs");
-const { dirname, resolve } = require("node:path");
+const { spawn, spawnSync } = require("node:child_process");
+const crypto = require("node:crypto");
+const { existsSync, mkdirSync, writeFileSync } = require("node:fs");
+const { dirname, join, relative, resolve, sep } = require("node:path");
 
 const root = resolve(dirname(__filename), "..");
 const compiledEntry = resolve(root, "dist/src/cli/index.js");
-if (!existsSync(compiledEntry)) {
-  console.error("review-surfaces is not built. Run `pnpm run build` first.");
-  process.exit(1);
+const COMMAND_TRANSCRIPT_EXCERPT_LIMIT = 1200;
+const COMMAND_TRANSCRIPT_SCHEMA_VERSION = "review-surfaces.command_transcripts.v1";
+const DEFAULT_COMMAND_TRANSCRIPT_DIR = ".review-surfaces/commands";
+
+async function main() {
+  const cliArgs = process.argv.slice(2);
+  if (!existsSync(compiledEntry)) {
+    if (cliArgs[0] === "run") {
+      return runBootstrapRecordedCommand(cliArgs.slice(1));
+    }
+    console.error("review-surfaces is not built. Run `pnpm run build` first.");
+    return 1;
+  }
+
+  const args = [compiledEntry, ...cliArgs];
+  const result = spawnSync(process.execPath, args, { stdio: "inherit" });
+  if (result.error) {
+    console.error(result.error.message);
+    return 1;
+  }
+
+  return result.status ?? 1;
 }
 
-const args = [compiledEntry, ...process.argv.slice(2)];
-const result = spawnSync(process.execPath, args, { stdio: "inherit" });
-if (result.error) {
-  console.error(result.error.message);
-  process.exit(1);
+async function runBootstrapRecordedCommand(args) {
+  const parsed = parseRunArgs(args);
+  if (parsed.positionals.length === 0) {
+    console.error("Usage: review-surfaces run [--id <id>] [--command-transcripts <dir>] -- <command> [args...]");
+    return 2;
+  }
+
+  const result = await recordCommandTranscript({
+    cwd: process.cwd(),
+    args: parsed.positionals,
+    id: stringFlag(parsed, "id"),
+    transcriptDir: stringFlag(parsed, "command-transcripts") ?? transcriptDirFromOut(parsed)
+  });
+  console.error(`Recorded command transcript to ${result.transcriptPath}`);
+  return result.exitCode;
 }
 
-process.exit(result.status ?? 1);
+function parseRunArgs(args) {
+  if (args[0] === "--") {
+    args = args.slice(1);
+  }
+
+  const flags = {};
+  const positionals = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--") {
+      positionals.push(...args.slice(index + 1));
+      break;
+    }
+    if (!arg.startsWith("--")) {
+      positionals.push(arg);
+      continue;
+    }
+
+    const [rawKey, inlineValue] = arg.slice(2).split("=", 2);
+    if (inlineValue !== undefined) {
+      flags[rawKey] = inlineValue;
+      continue;
+    }
+
+    const next = args[index + 1];
+    if (next && !next.startsWith("--")) {
+      flags[rawKey] = next;
+      index += 1;
+    } else {
+      flags[rawKey] = true;
+    }
+  }
+  return { flags, positionals };
+}
+
+function stringFlag(parsed, key) {
+  const value = parsed.flags[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function transcriptDirFromOut(parsed) {
+  const outputDir = stringFlag(parsed, "out");
+  return outputDir ? toPosixPath(relative(process.cwd(), join(resolve(process.cwd(), outputDir), "commands"))) : undefined;
+}
+
+function recordCommandTranscript(options) {
+  const started = new Date();
+  const stdout = new BoundedStreamCapture();
+  const stderr = new BoundedStreamCapture();
+  return runChildCommand(options, stdout, stderr).then((childResult) => {
+    const completed = new Date();
+    const id = options.id ?? defaultTranscriptId(options.args);
+    const transcript = stripUndefined({
+      id,
+      command: redact(shellCommandString(options.args)),
+      status: childResult.exitCode === 0 ? "passed" : "failed",
+      exit_code: childResult.exitCode,
+      duration_ms: Math.max(0, completed.getTime() - started.getTime()),
+      started_at: started.toISOString(),
+      completed_at: completed.toISOString(),
+      stdout_excerpt: redact(stdout.excerpt()),
+      stderr_excerpt: redact(stderr.excerpt()),
+      stdout_hash: stdout.hash(),
+      stderr_hash: stderr.hash(),
+      truncated: stdout.truncated || stderr.truncated
+    });
+
+    const transcriptPath = writeTranscriptFile(options.cwd, options.transcriptDir, id, transcript);
+    return { transcript, transcriptPath, exitCode: childResult.exitCode };
+  });
+}
+
+function runChildCommand(options, stdoutCapture, stderrCapture) {
+  return new Promise((resolveResult) => {
+    const child = spawn(options.args[0], options.args.slice(1), {
+      cwd: options.cwd,
+      env: process.env,
+      shell: false
+    });
+    let settled = false;
+
+    child.stdout?.on("data", (chunk) => teeChunk(chunk, stdoutCapture, process.stdout, child.stdout));
+    child.stderr?.on("data", (chunk) => teeChunk(chunk, stderrCapture, process.stderr, child.stderr));
+    child.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      const message = Buffer.from(`${error.message}\n`);
+      stderrCapture.write(message);
+      process.stderr.write(message);
+      resolveResult({ exitCode: error.code === "ENOENT" ? 127 : 1 });
+    });
+    child.on("close", (code, signal) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (signal) {
+        stderrCapture.write(Buffer.from(`Command terminated by signal ${signal}\n`));
+      }
+      resolveResult({ exitCode: typeof code === "number" ? code : 1 });
+    });
+  });
+}
+
+function writeTranscriptFile(cwd, transcriptDir, id, transcript) {
+  const dir = resolve(cwd, transcriptDir ?? DEFAULT_COMMAND_TRANSCRIPT_DIR);
+  mkdirSync(dir, { recursive: true });
+  const absolutePath = join(dir, `${safeFilename(id)}.json`);
+  writeFileSync(absolutePath, `${JSON.stringify({
+    schema_version: COMMAND_TRANSCRIPT_SCHEMA_VERSION,
+    commands: [transcript]
+  }, null, 2)}\n`);
+  return toPosixPath(relative(cwd, absolutePath));
+}
+
+class BoundedStreamCapture {
+  constructor() {
+    this.digest = crypto.createHash("sha256");
+    this.chunks = [];
+    this.excerptLength = 0;
+    this.sawContent = false;
+    this.truncated = false;
+  }
+
+  write(chunk) {
+    this.sawContent = true;
+    this.digest.update(chunk);
+    if (this.excerptLength >= COMMAND_TRANSCRIPT_EXCERPT_LIMIT) {
+      this.truncated = true;
+      return;
+    }
+
+    const text = chunk.toString("utf8");
+    const available = COMMAND_TRANSCRIPT_EXCERPT_LIMIT - this.excerptLength;
+    const excerpt = text.slice(0, available);
+    this.chunks.push(excerpt);
+    this.excerptLength += excerpt.length;
+    if (text.length > available) {
+      this.truncated = true;
+    }
+  }
+
+  excerpt() {
+    return this.sawContent ? this.chunks.join("") : undefined;
+  }
+
+  hash() {
+    return this.sawContent ? this.digest.copy().digest("hex") : undefined;
+  }
+}
+
+function defaultTranscriptId(args) {
+  const hash = crypto.createHash("sha1").update(args.join("\0")).digest("hex").slice(0, 12).toUpperCase();
+  return `CMD-${hash}`;
+}
+
+function shellCommandString(args) {
+  return args.map(shellQuote).join(" ");
+}
+
+function shellQuote(value) {
+  return /^[A-Za-z0-9_./:=@+-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function safeFilename(value) {
+  return value.replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "") || "command";
+}
+
+function teeChunk(chunk, capture, destination, source) {
+  capture.write(chunk);
+  const canContinue = destination.write(chunk);
+  if (canContinue === false && source?.pause && destination.once && source.resume) {
+    source.pause();
+    destination.once("drain", () => {
+      source.resume?.();
+    });
+  }
+}
+
+function redact(value) {
+  if (value === undefined) {
+    return undefined;
+  }
+  return value
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED:private_key]")
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, "[REDACTED:google_api_key]")
+    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)[A-Za-z0-9_]*\s*[:=]\s*["']?)([^\s"',;]{8,})/gi, (_match, prefix) => `${prefix}[REDACTED:secret]`);
+}
+
+function stripUndefined(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function toPosixPath(value) {
+  return value.split(sep).join("/");
+}
+
+main()
+  .then((code) => {
+    process.exitCode = code;
+  })
+  .catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });

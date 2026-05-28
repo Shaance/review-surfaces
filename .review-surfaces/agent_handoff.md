@@ -29,7 +29,9 @@ M5
 ## Implemented Changes
 
 - M .review-surfaces/agent_handoff.md
+- M bin/review-surfaces.js
 - M src/render/packet.ts
+- M tests/cli.test.ts
 - M tests/packet-e2e.test.ts
 - M tests/render.test.ts
 
