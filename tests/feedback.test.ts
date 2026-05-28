@@ -130,3 +130,51 @@ test("review-surfaces.DOGFOOD.4 surfaces latest feedback findings in dogfood out
   assert.ok(!dogfood.findings.some((finding) => finding.finding.includes("FB-001")));
   assert.ok(dogfood.remediation_tasks?.some((task) => task.description === "Change 10"));
 });
+
+test("review-surfaces.DOGFOOD.4 keeps latest feedback across files with duplicate local ids", () => {
+  const collection = {
+    manifest: { milestone: "M4" },
+    feedback: Array.from({ length: 10 }, (_, index) => ({
+      path: `.review-surfaces/feedback/${String(index + 1).padStart(2, "0")}.yaml`,
+      schema_version: "review-surfaces.feedback.v1",
+      author: "codex",
+      findings: [
+        {
+          id: "FB-001",
+          category: "diagram_quality" as const,
+          severity: "low" as const,
+          affected_section: "Architecture surfaces",
+          finding: `Finding file ${index + 1}`,
+          desired_change: `Change file ${index + 1}`,
+          evidence: []
+        }
+      ],
+      validation: { passed: [], failed: [], notes: [] }
+    }))
+  } as unknown as CollectionResult;
+  const evaluation: EvaluationModel = {
+    summary: "no results",
+    results: [],
+    overreach: [],
+    acai_coverage: {}
+  };
+  const risks = { items: [], test_gaps: [], review_focus: [], summary: "no risks", test_evidence: [] };
+  const methodology = {
+    summary: "no logs",
+    missing_logs: true,
+    considered: [],
+    research: [],
+    decisions: [],
+    unchallenged_assumptions: [],
+    skipped_checks: [],
+    claims_without_evidence: [],
+    evidence: []
+  };
+
+  const dogfood = buildDogfood(collection, evaluation, risks, methodology, "mock", []);
+
+  assert.ok(dogfood.findings.some((finding) => finding.finding.includes("Finding file 10")));
+  assert.ok(dogfood.findings.some((finding) => finding.finding.includes("Finding file 3")));
+  assert.ok(!dogfood.findings.some((finding) => /Finding file 1\b/.test(finding.finding)));
+  assert.ok(!dogfood.findings.some((finding) => /Finding file 2\b/.test(finding.finding)));
+});

@@ -1,6 +1,7 @@
 import path from "node:path";
 import { CollectionResult } from "../collector/collect";
 import { writeText } from "../core/files";
+import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
 import { EvaluationModel } from "../evaluation/evaluate";
 import { matchesReviewPrefix, REVIEW_AREAS, ReviewArea } from "../review-areas/areas";
 
@@ -34,13 +35,7 @@ export interface DiagramValidationResult {
   diagram_type: "flowchart" | "sequenceDiagram" | "unknown";
   errors: string[];
   warnings: string[];
-  evidence: Array<{
-    kind: "file" | "unknown";
-    path?: string;
-    confidence: "high" | "medium" | "low" | "unknown";
-    validation_status?: "valid" | "invalid" | "not_checked" | "unknown";
-    note?: string;
-  }>;
+  evidence: EvidenceRef[];
 }
 
 interface DiagramArtifact {
@@ -99,32 +94,47 @@ export function validateMermaidDiagramArtifact(diagram: DiagramArtifact): Diagra
   if (diagram.body.includes("undefined") || diagram.body.includes("[object Object]")) {
     errors.push("Diagram contains placeholder output.");
   }
+  if (!hasBalancedSyntax(diagram.body)) {
+    errors.push("Diagram contains unbalanced brackets or quotes.");
+  }
   if (lines.length > 40) {
     warnings.push("Diagram has more than 40 non-empty lines and may not be review-sized.");
   }
-  if (diagramType === "flowchart" && !lines.some((line) => /-->|---|==>/.test(line))) {
-    errors.push("Flowchart diagram must contain at least one edge.");
+  if (diagramType === "flowchart") {
+    const edgeLines = lines.slice(1).filter((line) => /-->|---|==>/.test(line));
+    if (edgeLines.length === 0) {
+      errors.push("Flowchart diagram must contain at least one edge.");
+    }
+    for (const line of edgeLines) {
+      if (!hasCompleteFlowchartEdge(line)) {
+        errors.push(`Flowchart edge is incomplete: ${line}`);
+      }
+    }
   }
-  if (diagramType === "sequenceDiagram" && !lines.some((line) => /[-=]+>>/.test(line))) {
-    errors.push("Sequence diagram must contain at least one message.");
+  if (diagramType === "sequenceDiagram") {
+    const messageLines = lines.slice(1).filter((line) => /[-=]+>>/.test(line));
+    if (messageLines.length === 0) {
+      errors.push("Sequence diagram must contain at least one message.");
+    }
+    for (const line of messageLines) {
+      if (!hasCompleteSequenceMessage(line)) {
+        errors.push(`Sequence message is incomplete: ${line}`);
+      }
+    }
   }
 
   const status = errors.length === 0 ? "valid" : "invalid";
+  const note = `review-surfaces.ARCH.6 ${status === "valid" ? "validated" : "rejected"} Mermaid diagram artifact.`;
   return {
     path: diagram.path,
     status,
     diagram_type: diagramType,
     errors,
     warnings,
-    evidence: [
-      {
-        kind: status === "valid" ? "file" : "unknown",
-        path: status === "valid" ? diagram.path : undefined,
-        confidence: status === "valid" ? "high" : "unknown",
-        validation_status: status,
-        note: `review-surfaces.ARCH.6 ${status === "valid" ? "validated" : "rejected"} Mermaid diagram artifact.`
-      }
-    ]
+    evidence:
+      status === "valid"
+        ? [{ ...fileEvidence(diagram.path, note, "high"), validation_status: "valid" }]
+        : [{ ...missingEvidence(note), validation_status: "invalid" }]
   };
 }
 
@@ -136,6 +146,26 @@ function classifyMermaidDiagram(firstLine: string): DiagramValidationResult["dia
     return "sequenceDiagram";
   }
   return "unknown";
+}
+
+function hasCompleteFlowchartEdge(line: string): boolean {
+  const match = line.match(/^(.*?)\s*(?:-->|---|==>)\s*(.*?)$/);
+  return Boolean(match?.[1]?.trim() && match?.[2]?.trim());
+}
+
+function hasCompleteSequenceMessage(line: string): boolean {
+  return /^\S.+[-=]+>>\S.+:\s*\S.+$/.test(line);
+}
+
+function hasBalancedSyntax(text: string): boolean {
+  return count(text, "[") === count(text, "]")
+    && count(text, "(") === count(text, ")")
+    && count(text, "{") === count(text, "}")
+    && count(text, "\"") % 2 === 0;
+}
+
+function count(text: string, character: string): number {
+  return text.split(character).length - 1;
 }
 
 function pipelineDiagram(): string {

@@ -34,6 +34,22 @@ test("review-surfaces.ARCH.6 rejects invalid Mermaid artifacts", () => {
   assert.ok(result.errors.some((error) => error.includes("supported Mermaid declaration")));
 });
 
+test("review-surfaces.ARCH.6 rejects incomplete Mermaid flowchart and sequence syntax", () => {
+  const flowchart = validateMermaidDiagramArtifact({
+    path: "diagrams/bad-flow.mmd",
+    body: "flowchart LR\n  A -->\n"
+  });
+  const sequence = validateMermaidDiagramArtifact({
+    path: "diagrams/bad-sequence.mmd",
+    body: "sequenceDiagram\n  Dev->>CLI\n"
+  });
+
+  assert.equal(flowchart.status, "invalid");
+  assert.ok(flowchart.errors.some((error) => error.includes("Flowchart edge is incomplete")));
+  assert.equal(sequence.status, "invalid");
+  assert.ok(sequence.errors.some((error) => error.includes("Sequence message is incomplete")));
+});
+
 function collectionFixture(outputDir: string): CollectionResult {
   return {
     outputDir,

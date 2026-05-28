@@ -140,21 +140,25 @@ export function buildDogfood(
 function selectFeedbackFindings(feedbackFiles: FeedbackFile[], limit: number): FeedbackFinding[] {
   const selected: FeedbackFinding[] = [];
   const seen = new Set<string>();
-  const add = (finding: FeedbackFinding | undefined): void => {
-    if (!finding || seen.has(finding.id) || selected.length >= limit) {
+  const add = (feedbackFile: FeedbackFile, finding: FeedbackFinding | undefined): void => {
+    const key = finding ? `${feedbackFile.path}:${finding.id}` : "";
+    if (!finding || seen.has(key) || selected.length >= limit) {
       return;
     }
-    seen.add(finding.id);
+    seen.add(key);
     selected.push(finding);
   };
 
-  for (const feedbackFile of feedbackFiles) {
-    add(feedbackFile.findings[feedbackFile.findings.length - 1]);
+  for (let fileIndex = feedbackFiles.length - 1; fileIndex >= 0 && selected.length < limit; fileIndex -= 1) {
+    const feedbackFile = feedbackFiles[fileIndex];
+    add(feedbackFile, feedbackFile.findings[feedbackFile.findings.length - 1]);
   }
 
-  const allFindings = feedbackFiles.flatMap((feedbackFile) => feedbackFile.findings);
-  for (let index = allFindings.length - 1; index >= 0; index -= 1) {
-    add(allFindings[index]);
+  for (let fileIndex = feedbackFiles.length - 1; fileIndex >= 0 && selected.length < limit; fileIndex -= 1) {
+    const feedbackFile = feedbackFiles[fileIndex];
+    for (let findingIndex = feedbackFile.findings.length - 1; findingIndex >= 0 && selected.length < limit; findingIndex -= 1) {
+      add(feedbackFile, feedbackFile.findings[findingIndex]);
+    }
   }
 
   return selected;
