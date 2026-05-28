@@ -205,3 +205,8 @@ test("source contract edits map to the bootstrap Acai review area", () => {
   assert.ok(groupsForReviewPath("docs/review-surfaces-trd.md").includes("BOOTSTRAP"));
   assert.ok(groupsForReviewPath("types/node-ambient.d.ts").includes("BOOTSTRAP"));
 });
+
+test("review-surfaces.BOOTSTRAP.6 and review-surfaces.DOGFOOD.8 skill files map to review areas", () => {
+  assert.ok(groupsForReviewPath(".agents/skills/review-surfaces-usage/SKILL.md").includes("BOOTSTRAP"));
+  assert.ok(groupsForReviewPath(".agents/skills/review-surfaces-dogfood-loop/SKILL.md").includes("DOGFOOD"));
+});

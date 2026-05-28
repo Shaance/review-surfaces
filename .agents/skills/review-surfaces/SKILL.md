@@ -7,6 +7,11 @@ description: Use when implementing, testing, or dogfooding the review-surfaces r
 
 Use this skill when working inside the `review-surfaces` repository.
 
+## Related Skills
+
+- Use `.agents/skills/review-surfaces-usage/SKILL.md` for the reusable local packet workflow in another repository.
+- Use `.agents/skills/review-surfaces-dogfood-loop/SKILL.md` when a self-review packet should drive product improvements.
+
 ## Source Order
 
 1. Read `features/review-surfaces.feature.yaml`.

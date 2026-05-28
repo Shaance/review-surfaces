@@ -45,10 +45,24 @@ findings:
     affected_section: Intent
     finding: M2 intent extraction now records sparse-source and source-marked contradiction questions deterministically, but richer schema-bound provider-assisted synthesis is still deferred.
     desired_change: Add bounded intent enrichment later through the same provider-agnostic contract rather than making real LLM calls mandatory.
+  - id: FB-2026-05-28-008
+    category: evidence_quality
+    severity: medium
+    affected_section: Requirement coverage
+    finding: M3 evaluator dogfood now distinguishes exact ACID-backed test evidence from broad test-path evidence, which reduces inflated satisfied counts and exposes more partial coverage instead of overstating proof.
+    desired_change: Continue adding exact ACID fixture tests or explicit deferrals for high-value requirements, and keep the handoff milestone aligned with the active dogfood milestone.
+  - id: FB-2026-05-28-009
+    category: evidence_quality
+    severity: medium
+    affected_section: PR review
+    finding: PR review found that exact evidence classification needed to use configured test inputs, exclude docs and skills from implementation proof, and allow test-only QUALITY requirements to be satisfied by exact test evidence.
+    desired_change: Keep evaluator fixture coverage around configured test globs, documentation-only ACID mentions, and test-focused requirements before broadening satisfied coverage rules.
 validation:
-  updated_at: 2026-05-28T12:40:31Z
+  updated_at: 2026-05-28T15:52:27Z
   passed:
     - pnpm run test
+    - node --test dist/tests/evaluation.test.js
+    - pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
     - pnpm run typecheck
     - pnpm run lint
     - pnpm run build
@@ -62,6 +76,9 @@ validation:
     - pnpm run test, pnpm run lint, and pnpm run build were re-run through review-surfaces run so dogfood can ingest direct/indirect transcript evidence.
     - Command transcript indexing now returns source hashes for manifest input hashes, avoiding the previous second read of each transcript file.
     - M2 intent hardening now records sparse-source and source-marked contradiction questions without requiring a real LLM provider.
+    - This M3 slice adds reusable review-surfaces usage and dogfood-loop skills, exact ACID test evidence tracking in the evaluator, and a dogfood milestone bump to M3.
+    - The CMD-PNPM-TEST transcript capture command is intentionally recorded as a note rather than validation.passed so risk analysis does not duplicate direct transcript evidence as indirect feedback evidence.
+    - PR review follow-up tightened exact evidence classification for configured test globs, documentation-only ACID mentions, and test-only QUALITY requirements.
     - Simplify triad ran with read-only correctness, efficiency, and reuse tracks; fixes applied for unknown top-level flags, explicit conflict markers, custom --out transcript discovery, deterministic default transcript IDs, stream backpressure, and shared transcript constants.
     - Review hardening ran three full-diff cycles with tests, lint/typecheck, packet validation, whitespace checks, and fresh review; no unresolved actionable findings remained.
     - Deferred improvement: richer schema-bound provider-assisted intent synthesis remains later work.

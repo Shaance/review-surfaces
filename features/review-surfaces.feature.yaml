@@ -31,6 +31,9 @@ components:
       5:
         requirement: The bootstrap command should create or validate AGENTS.md, the review-surfaces skill, config, schemas, and this feature spec.
         note: Missing bootstrap files should be created deterministically and be easy to review.
+      6:
+        requirement: The repository must contain .agents/skills/review-surfaces-usage/SKILL.md with a reusable workflow for running review-surfaces in any local repository.
+        note: The skill must keep hosted comments, dashboards, and CI as later renderers over local .review-surfaces artifacts.
 
   CLI:
     name: Local-first CLI
@@ -173,6 +176,8 @@ components:
         note: .review-surfaces/feedback/*.yaml should be read by review-surfaces dogfood.
       7:
         requirement: The product must include a dogfood-loop architecture diagram by milestone M4.
+      8:
+        requirement: The repository must contain .agents/skills/review-surfaces-dogfood-loop/SKILL.md with a self-improvement workflow for turning packet findings into code, tests, specs, docs, skills, feedback files, or explicit deferrals.
 
   RENDER:
     name: Packet rendering and machine-readable outputs

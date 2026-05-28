@@ -14,6 +14,12 @@ The project should use its own partial capabilities as soon as they exist. Dogfo
 | M5 | Methodology audit, dogfood manager, and handoff renderer generate `dogfood.yaml` and `agent_handoff.md`. |
 | M6 | GitHub/CI integration reuses local artifacts and does not redefine the core workflow. |
 
+## Skill-assisted loop
+
+Use `.agents/skills/review-surfaces-dogfood-loop/SKILL.md` when a self-review packet should drive the next product change (`review-surfaces.DOGFOOD.8`). Use `.agents/skills/review-surfaces-usage/SKILL.md` when applying the packet workflow to another repository (`review-surfaces.BOOTSTRAP.6`).
+
+The dogfood-loop skill should not replace the packet. It should make the loop repeatable: implement a scoped change, capture command evidence, generate local artifacts, inspect the packet, then convert useful findings into code, tests, schema, specs, docs, skills, feedback files, or explicit deferrals.
+
 ## Feedback file shape
 
 Store manual feedback under `.review-surfaces/feedback/*.yaml`.
