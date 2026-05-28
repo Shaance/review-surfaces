@@ -94,6 +94,7 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
     baseRef: stringFlag(parsed, "base") ?? "origin/main",
     headRef: stringFlag(parsed, "head") ?? "HEAD",
     outputDir: stringFlag(parsed, "out"),
+    commandTranscriptDir: stringFlag(parsed, "command-transcripts"),
     dogfood: isDogfoodRun(parsed)
   });
   return { collection, config: runConfig };
@@ -265,6 +266,8 @@ Options:
   --schema <path>   Schema path for validate, default schemas/review_packet.schema.json
   --conversation <path>
                    Optional text/Markdown/JSONL/YAML conversation log for methodology
+  --command-transcripts <dir>
+                   Optional command transcript directory; default .review-surfaces/commands
   --provider <name> Optional enrichment provider: mock, ai-sdk, agent-file. Default mock
   --model <model>   Optional AI SDK model, e.g. google:gemini-2.5-flash
   --agent-input <path>

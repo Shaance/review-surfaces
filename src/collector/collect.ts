@@ -1,5 +1,6 @@
 import path from "node:path";
 import { AcaiSpecIndex, indexAcaiSpecs } from "../acai/acai";
+import { CommandTranscript, commandTranscriptOutputPath, indexCommandTranscripts } from "../commands/transcripts";
 import { ReviewSurfacesConfig } from "../config/config";
 import { filterPathsByPatterns, walkFiles } from "../core/glob";
 import { ensureDir, hashFile, writeJson, writeText } from "../core/files";
@@ -37,6 +38,8 @@ export interface CollectionResult {
   docs: Array<{ path: string; kind: string }>;
   tests: Array<{ path: string; kind: string }>;
   feedback: FeedbackFile[];
+  commandTranscripts: CommandTranscript[];
+  commandTranscriptOutputPath: string;
   repositoryFiles: string[];
   privacy: {
     ignore_file: string;
@@ -54,12 +57,14 @@ export interface CollectOptions {
   baseRef: string;
   headRef: string;
   outputDir?: string;
+  commandTranscriptDir?: string;
   dogfood: boolean;
 }
 
 export async function collectInputs(options: CollectOptions): Promise<CollectionResult> {
   const outputDir = path.resolve(options.cwd, options.outputDir ?? options.config.output_dir);
   const inputsDir = path.join(outputDir, "inputs");
+  const commandsOutputPath = commandTranscriptOutputPath(options.cwd, outputDir);
   await ensureDir(inputsDir);
 
   const ignore = await loadPrivacyIgnore(options.cwd, options.config.privacy.ignore_file);
@@ -69,8 +74,11 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const docPaths = filterPathsByPatterns(repositoryFiles, options.config.docs);
   const testPaths = filterPathsByPatterns(repositoryFiles, options.config.tests);
   const feedbackPaths = filterPathsByPatterns(repositoryFiles, [".review-surfaces/feedback/*.yaml"]);
+  const commandTranscriptDir = normalizeRelativeDir(options.commandTranscriptDir ?? ".review-surfaces/commands");
+  const commandTranscriptPaths = filterPathsByPatterns(repositoryFiles, [`${commandTranscriptDir}/*.json`]);
   const specIndex = await indexAcaiSpecs(options.cwd, specPaths);
   const feedback = await indexFeedbackFiles(options.cwd, feedbackPaths);
+  const commandTranscripts = await indexCommandTranscripts(options.cwd, commandTranscriptPaths);
   const git = collectGitInfo(options.cwd, options.baseRef, options.headRef);
   const allChangedFiles = collectChangedFiles(options.cwd, options.baseRef, options.headRef);
   const changedFiles = allChangedFiles.filter((file) => !ignore.isIgnored(file.path));
@@ -116,6 +124,14 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
       kind: "feedback"
     });
   }
+  for (const commandTranscriptPath of commandTranscriptPaths) {
+    inputHashes.push({
+      path: commandTranscriptPath,
+      algorithm: "sha256",
+      hash: await hashFile(path.resolve(options.cwd, commandTranscriptPath)),
+      kind: "command_transcript"
+    });
+  }
 
   const manifest: RunManifest = {
     tool_version: "0.1.0",
@@ -154,6 +170,10 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     schema_version: "review-surfaces.feedback.index.v1",
     feedback
   });
+  await writeJson(path.resolve(options.cwd, commandsOutputPath), {
+    schema_version: "review-surfaces.commands.v1",
+    transcripts: commandTranscripts
+  });
   await writeJson(path.join(inputsDir, "privacy.json"), {
     schema_version: "review-surfaces.privacy.v1",
     ...privacy
@@ -168,6 +188,8 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     docs,
     tests,
     feedback,
+    commandTranscripts,
+    commandTranscriptOutputPath: commandsOutputPath,
     repositoryFiles,
     privacy,
     git
@@ -182,4 +204,8 @@ function classifyDoc(filePath: string): string {
     return "agent_skill";
   }
   return "doc";
+}
+
+function normalizeRelativeDir(dirPath: string): string {
+  return dirPath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
 }

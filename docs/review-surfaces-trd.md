@@ -236,6 +236,7 @@ Later, CI can run the same local pipeline and post a sticky comment or upload ar
     diff.patch
     changed_files.json
     commits.json
+    commands.json
     specs.index.json
     docs.index.json
     tests.index.json
@@ -263,6 +264,7 @@ Later, CI can run the same local pipeline and post a sticky comment or upload ar
 |---|---|
 | `manifest.json` | Run metadata: tool version, git refs, run mode, input hashes, config. |
 | `inputs/*` | Deterministic indexes and normalized raw material. |
+| `inputs/commands.json` | Bounded command transcript summaries with exit code, duration, hashes, and capped excerpts. |
 | `intent.yaml` | What the tool believes the task requires, with sources and unknowns. |
 | `evaluation.yaml` | Requirement-by-requirement implementation coverage. |
 | `architecture.md` | Architecture decomposition, diagrams, subsystem cards. |
@@ -517,7 +519,7 @@ The collector must:
 - hash input files;
 - discover Acai specs under `features/**/*.feature.yaml`;
 - discover docs, plans, README, AGENTS, and skills;
-- ingest test outputs when supplied;
+- ingest bounded command transcripts and test outputs when supplied;
 - normalize supported conversation logs;
 - respect `.review-surfacesignore`;
 - avoid copying raw secrets into artifacts.
@@ -1188,4 +1190,3 @@ The MVP is useful when a reviewer can run one local command and receive:
 - a handoff note for the next agent.
 
 The MVP is not useful if it only produces a generic AI summary of a diff.
-
