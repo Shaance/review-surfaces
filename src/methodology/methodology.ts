@@ -14,6 +14,8 @@ export interface MethodologyModel {
   unchallenged_assumptions: string[];
   skipped_checks: string[];
   claims_without_evidence: string[];
+  verified_claims: string[];
+  quality_flags: string[];
   evidence: EvidenceRef[];
 }
 
@@ -40,6 +42,8 @@ export async function buildMethodology(
       unchallenged_assumptions: ["No conversation log was supplied, so options considered outside files are unknown."],
       skipped_checks: ["Conversation methodology audit skipped: --conversation not provided."],
       claims_without_evidence: [],
+      verified_claims: [],
+      quality_flags: ["conversation_log_missing"],
       evidence: [missingEvidence("No conversation log was provided.")]
     };
   }
@@ -47,6 +51,14 @@ export async function buildMethodology(
   const absolutePath = path.resolve(cwd, conversationPath);
   const events = await parseConversationFile(absolutePath);
   await writeNormalizedConversation(collection.outputDir, events);
+  const transcriptCommands = new Set((collection.commandTranscripts ?? []).map((transcript) => normalizeCommand(transcript.command)));
+  const testClaims = pick(events, ["passed", "green", "tested", "test"]);
+  const verifiedClaims = testClaims.filter((claim) => claimHasCommandEvidence(claim, transcriptCommands));
+  const claimsWithoutEvidence = testClaims.filter((claim) => !claimHasCommandEvidence(claim, transcriptCommands));
+  const qualityFlags = [
+    ...(claimsWithoutEvidence.length > 0 ? ["test_claims_without_command_evidence"] : []),
+    ...(verifiedClaims.length > 0 ? ["test_claims_verified_by_command_transcripts"] : [])
+  ];
 
   return {
     summary: `Methodology extracted ${events.length} event(s) from ${conversationPath}.`,
@@ -59,7 +71,9 @@ export async function buildMethodology(
       ...pick(events, ["skip", "skipped", "not run", "could not"]),
       ...commands.filter((command) => command.includes("ai-sdk skipped"))
     ],
-    claims_without_evidence: pick(events, ["passed", "green", "tested"]).filter((claim) => !claim.includes("command")),
+    claims_without_evidence: claimsWithoutEvidence,
+    verified_claims: verifiedClaims,
+    quality_flags: qualityFlags,
     evidence: [
       {
         kind: "conversation",
@@ -68,6 +82,19 @@ export async function buildMethodology(
         validation_status: "valid",
         note: "Conversation was normalized into inputs/conversation.normalized.jsonl."
       },
+      ...(collection.commandTranscripts ?? []).map((transcript) =>
+        commandEvidence(
+          transcript.command,
+          `Command transcript ${transcript.id} supports methodology claim checking.`,
+          transcript.exit_code === 0 ? "high" : "medium",
+          {
+            path: collection.commandTranscriptOutputPath,
+            eventId: transcript.id,
+            excerptHash: transcript.stdout_hash ?? transcript.stderr_hash,
+            validationStatus: "valid"
+          }
+        )
+      ),
       ...commands.map((command) => commandEvidence(command, "Command associated with this review run.", "medium"))
     ]
   };
@@ -133,6 +160,15 @@ function pick(events: ConversationEvent[], keywords: string[]): string[] {
     }
   }
   return result;
+}
+
+function claimHasCommandEvidence(claim: string, transcriptCommands: Set<string>): boolean {
+  const normalizedClaim = normalizeCommand(claim);
+  return [...transcriptCommands].some((command) => normalizedClaim.includes(command));
+}
+
+function normalizeCommand(command: string): string {
+  return command.toLowerCase().trim().replace(/\s+/g, " ");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

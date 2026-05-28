@@ -1,17 +1,13 @@
 # Agent Handoff
 
-Local E2E packet generated with provider=mock/not_requested; 6 satisfied, 69 partial, 4 missing, 4 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
+Local E2E packet generated with provider=mock/not_requested; 5 satisfied, 75 partial, 0 missing, 4 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
 
 ## Current Milestone
 
-M4
+M5
 
 ## Relevant ACIDs
 
-- review-surfaces.RISK.1
-- review-surfaces.RISK.3
-- review-surfaces.RISK.4
-- review-surfaces.RISK.5
 - review-surfaces.BOOTSTRAP.1
 - review-surfaces.BOOTSTRAP.4
 - review-surfaces.BOOTSTRAP.5
@@ -26,6 +22,39 @@ M4
 - `pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces`
 - `pnpm run review-surfaces -- validate .review-surfaces`
 
+## Implemented Changes
+
+- M .review-surfaces/agent_handoff.md
+- M .review-surfaces/feedback/manual-dogfood.yaml
+- M features/review-surfaces.feature.yaml
+- M review-surfaces.config.yaml
+- M schemas/review_packet.schema.json
+- M src/cli/index.ts
+- M src/methodology/methodology.ts
+- M src/render/packet.ts
+- M src/risks/risks.ts
+- M tests/command-transcripts.test.ts
+- M tests/config.test.ts
+- M tests/feedback.test.ts
+
+## Validation Evidence
+
+- TEST-TR-001 [direct]: Command transcript CMD-PNPM-TEST records exit 0: pnpm run test
+- TEST-FB-003 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
+- TEST-FB-004 [indirect]: Feedback records a passing validation command: pnpm run typecheck
+- TEST-FB-005 [indirect]: Feedback records a passing validation command: pnpm run lint
+- TEST-FB-006 [indirect]: Feedback records a passing validation command: pnpm run build
+- TEST-FB-007 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces
+- TEST-FB-008 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- validate .review-surfaces
+
+## Failed Or Missing Validation
+
+- None recorded.
+
+## Methodology Flags
+
+- conversation_log_missing
+
 ## Next Tasks
 
 - review-surfaces.BOOTSTRAP.1: Add a focused unit or fixture test tied to review-surfaces.BOOTSTRAP.1.
@@ -37,9 +66,13 @@ M4
 
 ## Open Risks
 
-- RISK-001: 4 requirement(s) have no implementation or test evidence.
-- RISK-002: 69 requirement(s) have implementation evidence but weak or missing test evidence.
-- RISK-003: 4 requirement(s) remain unknown due to weak evidence.
+- RISK-001: 75 requirement(s) have implementation evidence but weak or missing test evidence.
+- RISK-002: 4 requirement(s) remain unknown due to weak evidence.
+
+## Deferrals
+
+- Provider comments and hosted dashboards remain deferred per local-first scope.
+- Provider used: mock/not_requested.
 
 ## Artifact Paths
 

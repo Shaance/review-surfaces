@@ -55,6 +55,29 @@ test("review-surfaces.SCHEMA.1 requires architecture diagram validation metadata
   assert.ok(invalid.issues.some((issue) => issue.path === "$.architecture" && issue.message.includes("diagram_validation")));
 });
 
+test("review-surfaces.SCHEMA.2 validates methodology and handoff M5 metadata", () => {
+  const schema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "review_packet.schema.json"), "utf8"));
+  const packet = minimalReviewPacket();
+  packet.methodology.verified_claims = ["evt_0001: pnpm run test passed"];
+  packet.methodology.quality_flags = ["test_claims_verified_by_command_transcripts"];
+  packet.agent_handoff = {
+    summary: "handoff fixture",
+    current_milestone: "M5",
+    relevant_acids: ["review-surfaces.METHODOLOGY.5"],
+    implemented_changes: ["M src/methodology/methodology.ts"],
+    commands_to_run: ["pnpm run test"],
+    validation_evidence: ["TEST-TR-001 [direct]: Command transcript CMD-PNPM-TEST records exit 0"],
+    failed_validation: [],
+    methodology_flags: ["verified_claims_available"],
+    next_tasks: ["Inspect packet"],
+    open_risks: [],
+    deferrals: ["Provider comments remain deferred"],
+    artifact_paths: [".review-surfaces/review_packet.md"]
+  };
+
+  assert.equal(validateJsonSchema(schema, packet).valid, true);
+});
+
 function minimalReviewPacket(): {
   schema_version: string;
   manifest: Record<string, unknown>;
@@ -63,6 +86,7 @@ function minimalReviewPacket(): {
   architecture: Record<string, unknown>;
   methodology: Record<string, unknown>;
   risks: Record<string, unknown>;
+  agent_handoff?: Record<string, unknown>;
 } {
   return {
     schema_version: "review-surfaces.packet.v1",

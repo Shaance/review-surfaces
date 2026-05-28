@@ -200,6 +200,39 @@ test("review-surfaces.RISK.2 uses the actual commands.json path for custom outpu
   assert.equal(risks.test_evidence[0].evidence?.[0].path, "custom-out/inputs/commands.json");
 });
 
+test("review-surfaces.METHODOLOGY.5 feeds unverified methodology claims into risk focus", () => {
+  const collection = {
+    changedFiles: [],
+    feedback: [],
+    commandTranscriptOutputPath: ".review-surfaces/inputs/commands.json",
+    commandTranscripts: []
+  } as unknown as CollectionResult;
+  const evaluation: EvaluationModel = {
+    summary: "no results",
+    results: [],
+    overreach: [],
+    acai_coverage: {}
+  };
+  const methodology = {
+    summary: "methodology fixture",
+    missing_logs: false,
+    considered: [],
+    research: [],
+    decisions: [],
+    unchallenged_assumptions: [],
+    skipped_checks: [],
+    claims_without_evidence: ["evt_0001: tests are green"],
+    verified_claims: [],
+    quality_flags: ["test_claims_without_command_evidence"],
+    evidence: []
+  };
+
+  const risks = analyzeRisks(collection, evaluation, [], methodology);
+
+  assert.ok(risks.items.some((risk) => risk.summary.includes("methodology claim")));
+  assert.ok(risks.review_focus.some((focus) => focus.includes("methodology claims without command evidence")));
+});
+
 test("source contract edits map to the bootstrap Acai review area", () => {
   assert.ok(groupsForReviewPath("features/review-surfaces.feature.yaml").includes("BOOTSTRAP"));
   assert.ok(groupsForReviewPath("docs/review-surfaces-trd.md").includes("BOOTSTRAP"));

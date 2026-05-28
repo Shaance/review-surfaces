@@ -47,6 +47,14 @@ validation:
       commands: [{ id: "CMD-E2E-001", command: "pnpm run test", exit_code: 0, stdout: "tests passed" }]
     })
   );
+  fs.writeFileSync(
+    path.join(tmp, "conversation.md"),
+    [
+      "assistant: pnpm run test passed before packet generation.",
+      "assistant: tests are green without a command reference.",
+      "assistant: Decision: keep review-surfaces local-first for M5."
+    ].join("\n")
+  );
   execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
 
   execFileSync(
@@ -62,6 +70,8 @@ validation:
       "HEAD",
       "--spec",
       "features/review-surfaces.feature.yaml",
+      "--conversation",
+      "conversation.md",
       "--out",
       ".review-surfaces"
     ],
@@ -78,6 +88,7 @@ validation:
   assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "dogfood.yaml")));
   assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "agent_handoff.md")));
   assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "inputs", "commands.json")));
+  assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "inputs", "conversation.normalized.jsonl")));
 
   const packet = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "review_packet.json"), "utf8"));
   const packetMarkdown = fs.readFileSync(path.join(tmp, ".review-surfaces", "review_packet.md"), "utf8");
@@ -87,7 +98,13 @@ validation:
   assert.ok(packet.dogfood.findings.some((finding: { finding: string }) => finding.finding.includes("FB-E2E-001")));
   assert.ok(packet.risks.test_evidence.some((evidence: { kind: string; summary: string }) => evidence.kind === "direct" && evidence.summary.includes("CMD-E2E-001")));
   assert.ok(!packet.risks.test_evidence.some((evidence: { id: string; kind: string; summary: string }) => evidence.id.startsWith("TEST-FB-") && evidence.summary.includes("pnpm run test")));
+  assert.ok(packet.methodology.verified_claims.some((claim: string) => claim.includes("pnpm run test passed")));
+  assert.ok(packet.methodology.claims_without_evidence.some((claim: string) => claim.includes("tests are green")));
+  assert.ok(packet.risks.review_focus.some((focus: string) => focus.includes("methodology claims without command evidence")));
+  assert.ok(packet.agent_handoff.validation_evidence.some((evidence: string) => evidence.includes("CMD-E2E-001")));
+  assert.ok(packet.agent_handoff.methodology_flags.includes("claims_without_evidence"));
   assert.match(packetMarkdown, /Validation evidence:/);
+  assert.match(packetMarkdown, /Claims needing evidence:/);
 });
 
 test("CLI uses configured provider when no provider flag is passed", async () => {

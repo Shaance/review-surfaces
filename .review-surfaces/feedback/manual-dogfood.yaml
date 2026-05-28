@@ -63,6 +63,12 @@ findings:
     affected_section: Architecture surfaces
     finding: M4 adds deterministic Mermaid artifact validation so architecture outputs show whether generated diagrams are valid, invalid, or too noisy before a reviewer trusts them.
     desired_change: Keep diagram validation local and schema-backed, then use future dogfood runs to reduce noisy subsystem maps rather than adding provider-dependent diagram interpretation.
+  - id: FB-2026-05-28-011
+    category: agent_workflow
+    severity: medium
+    affected_section: Methodology and handoff
+    finding: M5 should make methodology claims and agent handoff outputs distinguish transcript-backed validation from unverified claims, so future agents can continue without relying on hidden chat context.
+    desired_change: Preserve verified methodology claims, unverified claims, validation evidence, failed validation, methodology flags, and deferrals in local packet and handoff artifacts.
 validation:
   updated_at: 2026-05-28T16:07:04Z
   passed:
@@ -87,6 +93,7 @@ validation:
     - The CMD-PNPM-TEST transcript capture command is intentionally recorded as a note rather than validation.passed so risk analysis does not duplicate direct transcript evidence as indirect feedback evidence.
     - PR review follow-up tightened exact evidence classification for configured test globs, documentation-only ACID mentions, and test-only QUALITY requirements.
     - This M4 slice adds deterministic Mermaid diagram validation, packet schema support for diagram_validation, and architecture Markdown validation output.
+    - This M5 slice adds methodology claim evidence metadata, methodology-fed workflow risk focus, and richer handoff validation/deferral sections.
     - Simplify triad ran with read-only correctness, efficiency, and reuse tracks; fixes applied for unknown top-level flags, explicit conflict markers, custom --out transcript discovery, deterministic default transcript IDs, stream backpressure, and shared transcript constants.
     - Review hardening ran three full-diff cycles with tests, lint/typecheck, packet validation, whitespace checks, and fresh review; no unresolved actionable findings remained.
     - Deferred improvement: richer schema-bound provider-assisted intent synthesis remains later work.

@@ -24,9 +24,14 @@ export interface ReviewPacket {
     summary: string;
     current_milestone?: string;
     relevant_acids?: string[];
+    implemented_changes?: string[];
     commands_to_run?: string[];
+    validation_evidence?: string[];
+    failed_validation?: string[];
+    methodology_flags?: string[];
     next_tasks: string[];
     open_risks?: string[];
+    deferrals?: string[];
     artifact_paths?: string[];
   };
 }
@@ -94,6 +99,9 @@ function buildHandoff(inputs: PacketInputs): ReviewPacket["agent_handoff"] {
       ...missing.map((result) => result.acai_id).filter(Boolean) as string[],
       ...partial.map((result) => result.acai_id).filter(Boolean) as string[]
     ]).slice(0, 12),
+    implemented_changes: inputs.collection.changedFiles
+      .slice(0, 12)
+      .map((file) => `${file.status} ${file.path}`),
     commands_to_run: [
       "pnpm run lint",
       "pnpm run test",
@@ -101,11 +109,21 @@ function buildHandoff(inputs: PacketInputs): ReviewPacket["agent_handoff"] {
       "pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces",
       "pnpm run review-surfaces -- validate .review-surfaces"
     ],
+    validation_evidence: inputs.risks.test_evidence
+      .filter((evidence) => evidence.kind === "direct" || evidence.kind === "indirect")
+      .slice(0, 8)
+      .map((evidence) => `${evidence.id} [${evidence.kind}]: ${evidence.summary}`),
+    failed_validation: inputs.risks.test_evidence
+      .filter((evidence) => evidence.kind === "missing")
+      .slice(0, 6)
+      .map((evidence) => `${evidence.id}: ${evidence.summary}`),
+    methodology_flags: handoffMethodologyFlags(inputs.methodology),
     next_tasks: [
       ...inputs.risks.test_gaps.slice(0, 5).map((gap) => `${gap.acai_id ?? gap.requirement_id ?? gap.id}: ${gap.suggested_test ?? gap.summary}`),
       "Inspect .review-surfaces/review_packet.md before trusting generated summaries."
     ],
     open_risks: inputs.risks.items.slice(0, 6).map((risk) => `${risk.id}: ${risk.summary}`),
+    deferrals: inputs.dogfood?.deferrals ?? [],
     artifact_paths: [
       ".review-surfaces/review_packet.md",
       ".review-surfaces/review_packet.json",
@@ -157,6 +175,12 @@ ${previewLines(packet.architecture.subsystems, (subsystem) => `- ${subsystem.nam
 
 ## 5. Methodology audit
 ${packet.methodology.summary}
+
+Verified claims:
+${previewLines(packet.methodology.verified_claims ?? [], (claim) => `- ${claim}`, 5)}
+
+Claims needing evidence:
+${previewLines(packet.methodology.claims_without_evidence ?? [], (claim) => `- ${claim}`, 5)}
 
 Skipped/unknown:
 ${(packet.methodology.skipped_checks ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
@@ -237,6 +261,22 @@ ${(handoff.relevant_acids ?? []).map((item) => `- ${item}`).join("\n") || "- Non
 
 ${(handoff.commands_to_run ?? []).map((item) => `- \`${item}\``).join("\n") || "- None recorded."}
 
+## Implemented Changes
+
+${(handoff.implemented_changes ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
+
+## Validation Evidence
+
+${(handoff.validation_evidence ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
+
+## Failed Or Missing Validation
+
+${(handoff.failed_validation ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
+
+## Methodology Flags
+
+${(handoff.methodology_flags ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
+
 ## Next Tasks
 
 ${handoff.next_tasks.map((item) => `- ${item}`).join("\n")}
@@ -244,6 +284,10 @@ ${handoff.next_tasks.map((item) => `- ${item}`).join("\n")}
 ## Open Risks
 
 ${(handoff.open_risks ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
+
+## Deferrals
+
+${(handoff.deferrals ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
 
 ## Artifact Paths
 
@@ -261,6 +305,15 @@ function previewLines<T>(items: T[], render: (item: T) => string, limit = 12): s
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function handoffMethodologyFlags(methodology: MethodologyModel): string[] {
+  return unique([
+    ...methodology.quality_flags,
+    ...(methodology.missing_logs ? ["conversation_log_missing"] : []),
+    ...(methodology.claims_without_evidence.length > 0 ? ["claims_without_evidence"] : []),
+    ...(methodology.verified_claims.length > 0 ? ["verified_claims_available"] : [])
+  ]);
 }
 
 function stripUndefined<T>(value: T): T {

@@ -129,7 +129,7 @@ async function runAll(parsed: ParsedArgs): Promise<void> {
   const intent = await buildIntent(cwd, collection);
   const evaluation = await evaluateIntent(cwd, collection, intent);
   const methodology = await buildMethodology(cwd, collection, stringFlag(parsed, "conversation"), commands);
-  const risks = analyzeRisks(collection, evaluation, commands);
+  const risks = analyzeRisks(collection, evaluation, commands, methodology);
   const architecture = await buildArchitecture(collection, evaluation);
   const preEnrichment: EnrichmentResult = {
     provider,

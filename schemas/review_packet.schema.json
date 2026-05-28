@@ -655,6 +655,18 @@
             "type": "string"
           }
         },
+        "verified_claims": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "quality_flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "evidence": {
           "type": "array",
           "items": {
@@ -1020,7 +1032,31 @@
             "type": "string"
           }
         },
+        "implemented_changes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "commands_to_run": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "validation_evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "failed_validation": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "methodology_flags": {
           "type": "array",
           "items": {
             "type": "string"
@@ -1033,6 +1069,12 @@
           }
         },
         "open_risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deferrals": {
           "type": "array",
           "items": {
             "type": "string"
