@@ -113,11 +113,12 @@ function buildHandoff(inputs: PacketInputs): ReviewPacket["agent_handoff"] {
     validation_evidence: inputs.risks.test_evidence
       .filter(isHandoffValidationEvidence)
       .slice(0, 8)
-      .map((evidence) => `${evidence.id} [${evidence.kind}]: ${evidence.summary}`),
+      .map(formatHandoffEvidence),
     failed_validation: inputs.risks.test_evidence
       .filter(isHandoffFailedValidationEvidence)
+      .sort(compareHandoffFailedValidationEvidence)
       .slice(0, 6)
-      .map((evidence) => `${evidence.id} [${evidence.kind}]: ${evidence.summary}`),
+      .map(formatHandoffEvidence),
     methodology_flags: handoffMethodologyFlags(inputs.methodology),
     next_tasks: [
       ...inputs.risks.test_gaps.slice(0, 5).map((gap) => `${gap.acai_id ?? gap.requirement_id ?? gap.id}: ${gap.suggested_test ?? gap.summary}`),
@@ -310,6 +311,37 @@ function unique(values: string[]): string[] {
 
 function redactRenderedText(value: string): string {
   return redactSecrets(value).text;
+}
+
+function formatHandoffEvidence(evidence: RisksModel["test_evidence"][number]): string {
+  return redactRenderedText(`${evidence.id} [${evidence.kind}]: ${evidence.summary}`);
+}
+
+function compareHandoffFailedValidationEvidence(
+  left: RisksModel["test_evidence"][number],
+  right: RisksModel["test_evidence"][number]
+): number {
+  return handoffFailedValidationPriority(left) - handoffFailedValidationPriority(right);
+}
+
+function handoffFailedValidationPriority(evidence: RisksModel["test_evidence"][number]): number {
+  const summary = evidence.summary.toLowerCase();
+  if (summary.includes("failing validation command")) {
+    return 0;
+  }
+  if (evidence.kind === "missing") {
+    return 1;
+  }
+  if (evidence.kind === "unknown") {
+    return 2;
+  }
+  if (evidence.kind === "claimed") {
+    return 3;
+  }
+  if (evidence.kind === "indirect") {
+    return 4;
+  }
+  return 5;
 }
 
 function isHandoffValidationEvidence(evidence: RisksModel["test_evidence"][number]): boolean {

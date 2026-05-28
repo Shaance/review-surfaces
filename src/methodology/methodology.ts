@@ -57,7 +57,7 @@ export async function buildMethodology(
       .filter((transcript) => transcript.status === "passed" && transcript.exit_code === 0)
       .map((transcript) => normalizeCommand(transcript.command))
   );
-  const validationClaims = pickValidationSuccessClaims(events);
+  const validationClaims = pickValidationClaims(events);
   const verifiedClaims = validationClaims.filter((claim) => claimHasCommandEvidence(claim, passingTranscriptCommands));
   const claimsWithoutEvidence = validationClaims.filter((claim) => !claimHasCommandEvidence(claim, passingTranscriptCommands));
   const qualityFlags = [
@@ -167,10 +167,10 @@ function pick(events: ConversationEvent[], keywords: string[]): string[] {
   return result;
 }
 
-function pickValidationSuccessClaims(events: ConversationEvent[]): string[] {
+function pickValidationClaims(events: ConversationEvent[]): string[] {
   const result: string[] = [];
   for (const event of events) {
-    if (isValidationSuccessClaim(event.summary)) {
+    if (isValidationSuccessClaim(event.summary) || isValidationFailureClaim(event.summary)) {
       result.push(`${event.id}: ${event.summary}`);
     }
   }
@@ -187,7 +187,20 @@ function isValidationSuccessClaim(summary: string): boolean {
   return !/\b(?:missing|needs?|add|todo|skipped|skip|not run|could not|cannot|can't|gap|uncovered)\b|\b(?:should|could|would|might|may|will|expect(?:ed)? to)\s+(?:pass|passed|passes|green|succeed|succeeded|successful|validate|validated|verify|verified)\b|\bnot\s+(?:pass|passed|passing|green|successful|validated|verified)\b/.test(lower);
 }
 
+function isValidationFailureClaim(summary: string): boolean {
+  const lower = summary.toLowerCase();
+  const mentionsValidation = /\b(?:tests?|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test|tsc)\b/.test(lower);
+  const claimsFailure = /\b(?:fail|failed|failing|errored|error)\b/.test(lower);
+  if (!mentionsValidation || !claimsFailure) {
+    return false;
+  }
+  return !/\b(?:needs?|add|todo|skipped|skip|not run|could not|cannot|can't|gap|uncovered)\b|\b(?:should|could|would|might|may|will|expect(?:ed)? to)\s+(?:fail|failed|failing|error|errored)\b/.test(lower);
+}
+
 function claimHasCommandEvidence(claim: string, transcriptCommands: Set<string>): boolean {
+  if (!isValidationSuccessClaim(claim)) {
+    return false;
+  }
   const claimedCommands = extractClaimedCommands(claim);
   return claimedCommands.length > 0 && claimedCommands.every((command) => transcriptCommands.has(command));
 }
@@ -216,6 +229,7 @@ function cleanClaimedCommand(value: string): string {
     .replace(/\s+\b(?:passed|passes|passing|green|succeeded|successful|success|validated|verified|tested|after|before|because|so|while|when)\b.*$/i, "")
     .replace(/\s+\b(?:and|then)\s*$/i, "")
     .replace(/\s*(?:,|;|&&|\|\|)\s*$/i, "")
+    .replace(/[`'")\]]+$/g, "")
     .trim();
 }
 
