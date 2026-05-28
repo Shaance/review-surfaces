@@ -123,7 +123,10 @@ test("review-surfaces.METHODOLOGY.2 requires exact command matches for verified 
       "assistant: npm run test passed after the implementation.",
       "assistant: pnpm run test -- --runInBand passed after the implementation.",
       "assistant: pnpm exec vitest passed after the implementation.",
-      "assistant: pnpm run lint and pnpm run test passed after the implementation."
+      "assistant: tsc --noEmit passed after the implementation.",
+      "assistant: pnpm run lint and pnpm run test passed after the implementation.",
+      "assistant: pnpm run lint, pnpm run test passed after the implementation.",
+      "assistant: pnpm run lint && pnpm run test passed after the implementation."
     ].join("\n")
   );
 
@@ -157,6 +160,15 @@ test("review-surfaces.METHODOLOGY.2 requires exact command matches for verified 
           stdout_hash: "fed654",
           truncated: false,
           source_path: ".review-surfaces/commands/CMD-PNPM-VITEST.json"
+        },
+        {
+          id: "CMD-TSC-NOEMIT",
+          command: "tsc --noEmit",
+          status: "passed",
+          exit_code: 0,
+          stdout_hash: "ace456",
+          truncated: false,
+          source_path: ".review-surfaces/commands/CMD-TSC-NOEMIT.json"
         }
       ]
     }),
@@ -167,12 +179,17 @@ test("review-surfaces.METHODOLOGY.2 requires exact command matches for verified 
   assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm run test passed")));
   assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm run test -- --runInBand passed")));
   assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm exec vitest passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("tsc --noEmit passed")));
   assert.ok(!methodology.verified_claims.some((claim) => claim.includes("test:coverage")));
   assert.ok(!methodology.verified_claims.some((claim) => claim.includes("npm run test passed") && !claim.includes("pnpm run")));
   assert.ok(!methodology.verified_claims.some((claim) => claim.includes("pnpm run lint and pnpm run test passed")));
+  assert.ok(!methodology.verified_claims.some((claim) => claim.includes("pnpm run lint, pnpm run test passed")));
+  assert.ok(!methodology.verified_claims.some((claim) => claim.includes("pnpm run lint && pnpm run test passed")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run test:coverage passed")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("npm run test passed")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run lint and pnpm run test passed")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run lint, pnpm run test passed")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run lint && pnpm run test passed")));
 });
 
 test("review-surfaces.METHODOLOGY.2 scans all validation claims and redacts conversation secrets", async () => {

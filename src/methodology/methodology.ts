@@ -179,7 +179,7 @@ function pickValidationSuccessClaims(events: ConversationEvent[]): string[] {
 
 function isValidationSuccessClaim(summary: string): boolean {
   const lower = summary.toLowerCase();
-  const mentionsValidation = /\b(?:tests?|tested|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test)\b/.test(lower);
+  const mentionsValidation = /\b(?:tests?|tested|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test|tsc)\b/.test(lower);
   const claimsSuccess = /\b(?:tested|pass|passed|passes|passing|green|succeeded|successful|success|validated|verified)\b/.test(lower);
   if (!mentionsValidation || !claimsSuccess) {
     return false;
@@ -215,6 +215,7 @@ function cleanClaimedCommand(value: string): string {
   return normalizeCommand(value)
     .replace(/\s+\b(?:passed|passes|passing|green|succeeded|successful|success|validated|verified|tested|after|before|because|so|while|when)\b.*$/i, "")
     .replace(/\s+\b(?:and|then)\s*$/i, "")
+    .replace(/\s*(?:,|;|&&|\|\|)\s*$/i, "")
     .trim();
 }
 
