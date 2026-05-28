@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Local E2E packet generated with provider=mock/not_requested; 6 satisfied, 62 partial, 9 missing, 4 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
+Local E2E packet generated with provider=mock/not_requested; 5 satisfied, 63 partial, 9 missing, 4 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
 
 ## Current Milestone
 
@@ -39,7 +39,7 @@ M3
 ## Open Risks
 
 - RISK-001: 9 requirement(s) have no implementation or test evidence.
-- RISK-002: 62 requirement(s) have implementation evidence but weak or missing test evidence.
+- RISK-002: 63 requirement(s) have implementation evidence but weak or missing test evidence.
 - RISK-003: 4 requirement(s) remain unknown due to weak evidence.
 
 ## Artifact Paths

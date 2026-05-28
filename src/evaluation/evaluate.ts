@@ -30,6 +30,7 @@ export interface EvaluationModel {
 
 interface EvidenceIndex {
   byAcid: Map<string, EvidenceRef[]>;
+  implementationByAcid: Map<string, EvidenceRef[]>;
   testsByAcid: Map<string, EvidenceRef[]>;
   changedByGroup: Map<string, EvidenceRef[]>;
   testsByGroup: Map<string, EvidenceRef[]>;
@@ -65,14 +66,15 @@ export async function evaluateIntent(cwd: string, collection: CollectionResult, 
 function evaluateRequirement(requirement: IntentRequirement, index: EvidenceIndex): RequirementResult {
   const group = groupFromAcid(requirement.acai_id);
   const exactEvidence = requirement.acai_id ? index.byAcid.get(requirement.acai_id) ?? [] : [];
+  const exactImplementationEvidence = requirement.acai_id ? index.implementationByAcid.get(requirement.acai_id) ?? [] : [];
   const exactTestEvidence = requirement.acai_id ? index.testsByAcid.get(requirement.acai_id) ?? [] : [];
-  const exactImplementationEvidence = exactEvidence.filter((evidenceRef) => evidenceRef.kind !== "test");
   const directEvidence = directFileEvidence(requirement, index);
   const implementationEvidence = group ? index.changedByGroup.get(group) ?? [] : [];
   const tests = group ? index.testsByGroup.get(group) ?? [] : [];
   const evidence = uniqueEvidence([
     ...(requirement.acai_id ? [specEvidence(sourcePath(requirement), requirement.acai_id)] : []),
     ...directEvidence,
+    ...exactEvidence,
     ...exactImplementationEvidence,
     ...exactTestEvidence,
     ...implementationEvidence,
@@ -87,6 +89,7 @@ function evaluateRequirement(requirement: IntentRequirement, index: EvidenceInde
   const hasImplementation = hasExactImplementation || implementationEvidence.length > 0;
   const hasExactTest = exactTestEvidence.length > 0;
   const hasBroadTest = tests.length > 0;
+  const testOnlyRequirement = isTestOnlyRequirement(requirement, group);
 
   if (hasInvalidSpecRef(requirement)) {
     status = "invalid_evidence";
@@ -101,6 +104,10 @@ function evaluateRequirement(requirement: IntentRequirement, index: EvidenceInde
     summary = "This requirement targets a later provider surface and is not implemented in the local MVP.";
     confidence = "unknown";
     missing.push(missingEvidence("Provider integrations are explicitly deferred until after local artifacts are useful."));
+  } else if (testOnlyRequirement && hasExactTest) {
+    status = "satisfied";
+    summary = "Exact test ACID evidence exists for this test-focused requirement.";
+    confidence = "high";
   } else if (hasExactImplementation && hasExactTest) {
     status = "satisfied";
     summary = "Exact implementation ACID evidence and exact test ACID evidence exist.";
@@ -154,9 +161,14 @@ function evaluateRequirement(requirement: IntentRequirement, index: EvidenceInde
 
 async function buildEvidenceIndex(cwd: string, collection: CollectionResult): Promise<EvidenceIndex> {
   const byAcid = new Map<string, EvidenceRef[]>();
+  const implementationByAcid = new Map<string, EvidenceRef[]>();
   const testsByAcid = new Map<string, EvidenceRef[]>();
   const changedByGroup = new Map<string, EvidenceRef[]>();
   const testsByGroup = new Map<string, EvidenceRef[]>();
+  const testPaths = new Set(collection.tests.map((test) => test.path));
+  const changedImplementationPaths = new Set(
+    collection.changedFiles.filter((changedFile) => isImplementationEvidencePath(changedFile.path, testPaths)).map((changedFile) => changedFile.path)
+  );
   const allFiles = (collection.repositoryFiles.length ? collection.repositoryFiles : await walkFiles(cwd)).filter(
     (filePath) => !filePath.startsWith(".review-surfaces/")
   );
@@ -178,16 +190,18 @@ async function buildEvidenceIndex(cwd: string, collection: CollectionResult): Pr
     const text = await readText(absolutePath);
     const acidMatches = text.match(/[a-z0-9_-]+\.[A-Z0-9_]+\.[0-9]+(?:-[0-9]+)?/g) ?? [];
     for (const acid of acidMatches) {
-      const evidenceRef = evidenceForPath(filePath, `Mentions ${acid}.`);
+      const evidenceRef = evidenceForPath(filePath, `Mentions ${acid}.`, testPaths);
       pushMap(byAcid, acid, evidenceRef);
       if (evidenceRef.kind === "test") {
         pushMap(testsByAcid, acid, evidenceRef);
+      } else if (changedImplementationPaths.has(filePath)) {
+        pushMap(implementationByAcid, acid, evidenceRef);
       }
     }
   }
 
   for (const changedFile of collection.changedFiles) {
-    if (isTestPath(changedFile.path)) {
+    if (testPaths.has(changedFile.path)) {
       continue;
     }
     for (const group of groupsForReviewPath(changedFile.path)) {
@@ -203,6 +217,7 @@ async function buildEvidenceIndex(cwd: string, collection: CollectionResult): Pr
 
   return {
     byAcid,
+    implementationByAcid,
     testsByAcid,
     changedByGroup,
     testsByGroup,
@@ -245,6 +260,10 @@ function isRepositoryPresenceRequirement(requirement: IntentRequirement): boolea
   return lower.includes("repository must contain") || lower.includes("repo must contain");
 }
 
+function isTestOnlyRequirement(requirement: IntentRequirement, group: string | undefined): boolean {
+  return group === "QUALITY" && /\btests?\b/i.test(requirement.requirement);
+}
+
 function sourcePath(requirement: IntentRequirement): string {
   return requirement.source_refs[0]?.ref ?? "unknown";
 }
@@ -253,12 +272,26 @@ function hasInvalidSpecRef(requirement: IntentRequirement): boolean {
   return requirement.source_refs.some((ref) => ref.kind === "unknown");
 }
 
-function evidenceForPath(filePath: string, note: string): EvidenceRef {
-  return isTestPath(filePath) ? testEvidence(filePath, note, "high") : fileEvidence(filePath, note, "high");
+function evidenceForPath(filePath: string, note: string, testPaths: Set<string>): EvidenceRef {
+  return testPaths.has(filePath) ? testEvidence(filePath, note, "high") : fileEvidence(filePath, note, "high");
 }
 
-function isTestPath(filePath: string): boolean {
-  return filePath.includes("/test") || filePath.startsWith("tests/");
+function isImplementationEvidencePath(filePath: string, testPaths: Set<string>): boolean {
+  if (testPaths.has(filePath)) {
+    return false;
+  }
+  if (
+    filePath.startsWith("docs/") ||
+    filePath.startsWith("features/") ||
+    filePath.startsWith(".agents/") ||
+    filePath.startsWith(".review-surfaces/") ||
+    filePath === "AGENTS.md" ||
+    filePath === "CLAUDE.md" ||
+    filePath.startsWith("README")
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function pushMap(map: Map<string, EvidenceRef[]>, key: string, value: EvidenceRef): void {
