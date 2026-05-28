@@ -1,0 +1,84 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { CollectionResult } from "../src/collector/collect";
+import { indexFeedbackFiles } from "../src/feedback/feedback";
+import { EvaluationModel } from "../src/evaluation/evaluate";
+import { groupsForReviewPath } from "../src/review-areas/areas";
+import { analyzeRisks } from "../src/risks/risks";
+
+test("indexes local feedback files with findings and validation commands", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-feedback-"));
+  fs.mkdirSync(path.join(tmp, ".review-surfaces", "feedback"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, ".review-surfaces", "feedback", "manual.yaml"),
+    `schema_version: review-surfaces.feedback.v1
+author: codex
+packet_path: .review-surfaces/review_packet.json
+findings:
+  - id: FB-001
+    category: evidence_quality
+    severity: high
+    affected_section: risks.test_evidence
+    finding: review-surfaces.RISK.2 needs validation evidence, not only claimed commands.
+    desired_change: Preserve local validation commands as feedback evidence.
+validation:
+  passed:
+    - pnpm run test
+    - pnpm run build
+  failed:
+    - pnpm run lint
+  notes:
+    - review-surfaces.DOGFOOD.6 feedback was collected manually.
+`
+  );
+
+  const feedback = await indexFeedbackFiles(tmp, [".review-surfaces/feedback/manual.yaml"]);
+
+  assert.equal(feedback.length, 1);
+  assert.equal(feedback[0].findings[0].id, "FB-001");
+  assert.equal(feedback[0].findings[0].category, "evidence_quality");
+  assert.equal(feedback[0].findings[0].evidence[0].kind, "feedback");
+  assert.deepEqual(feedback[0].validation.passed, ["pnpm run test", "pnpm run build"]);
+  assert.deepEqual(feedback[0].validation.failed, ["pnpm run lint"]);
+});
+
+test("risk analysis maps feedback validation to claimed, indirect, and missing test evidence", () => {
+  const collection = {
+    changedFiles: [],
+    feedback: [
+      {
+        path: ".review-surfaces/feedback/manual.yaml",
+        schema_version: "review-surfaces.feedback.v1",
+        author: "codex",
+        findings: [],
+        validation: {
+          passed: ["pnpm run test", "pnpm run build"],
+          failed: ["pnpm run lint"],
+          notes: []
+        }
+      }
+    ]
+  } as unknown as CollectionResult;
+  const evaluation: EvaluationModel = {
+    summary: "no results",
+    results: [],
+    overreach: [],
+    acai_coverage: {}
+  };
+
+  const risks = analyzeRisks(collection, evaluation, []);
+
+  assert.equal(risks.test_evidence.length, 3);
+  assert.equal(risks.test_evidence[0].kind, "claimed");
+  assert.equal(risks.test_evidence[1].kind, "indirect");
+  assert.equal(risks.test_evidence[2].kind, "missing");
+  assert.equal(risks.test_evidence[0].evidence?.[0].path, ".review-surfaces/feedback/manual.yaml");
+});
+
+test("feedback ingestion files map to the dogfood Acai review area", () => {
+  assert.ok(groupsForReviewPath("src/feedback/feedback.ts").includes("DOGFOOD"));
+  assert.ok(groupsForReviewPath("tests/feedback.test.ts").includes("DOGFOOD"));
+});

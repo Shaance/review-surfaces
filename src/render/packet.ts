@@ -161,6 +161,10 @@ ${(packet.methodology.skipped_checks ?? []).map((item) => `- ${item}`).join("\n"
 ## 6. Test evidence and gaps
 ${packet.risks.summary}
 
+Validation evidence:
+${previewLines(packet.risks.test_evidence ?? [], (evidence) => `- ${evidence.id} [${evidence.kind}]: ${evidence.summary}`, 8)}
+
+Gaps:
 ${previewLines(packet.risks.test_gaps, (gap) => `- ${gap.id} (${gap.acai_id ?? gap.requirement_id ?? "unmapped"}): ${gap.summary}`, 10)}
 
 ## 7. Risks

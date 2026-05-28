@@ -3,6 +3,7 @@ import { AcaiSpecIndex, indexAcaiSpecs } from "../acai/acai";
 import { ReviewSurfacesConfig } from "../config/config";
 import { filterPathsByPatterns, walkFiles } from "../core/glob";
 import { ensureDir, hashFile, writeJson, writeText } from "../core/files";
+import { FeedbackFile, indexFeedbackFiles } from "../feedback/feedback";
 import { filterIgnoredDiff } from "../privacy/diff";
 import { loadPrivacyIgnore } from "../privacy/ignore";
 import { SecretRedaction, redactSecrets } from "../privacy/secrets";
@@ -35,6 +36,7 @@ export interface CollectionResult {
   changedFiles: ChangedFile[];
   docs: Array<{ path: string; kind: string }>;
   tests: Array<{ path: string; kind: string }>;
+  feedback: FeedbackFile[];
   repositoryFiles: string[];
   privacy: {
     ignore_file: string;
@@ -66,7 +68,9 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const specPaths = filterPathsByPatterns(repositoryFiles, options.config.specs);
   const docPaths = filterPathsByPatterns(repositoryFiles, options.config.docs);
   const testPaths = filterPathsByPatterns(repositoryFiles, options.config.tests);
+  const feedbackPaths = filterPathsByPatterns(repositoryFiles, [".review-surfaces/feedback/*.yaml"]);
   const specIndex = await indexAcaiSpecs(options.cwd, specPaths);
+  const feedback = await indexFeedbackFiles(options.cwd, feedbackPaths);
   const git = collectGitInfo(options.cwd, options.baseRef, options.headRef);
   const allChangedFiles = collectChangedFiles(options.cwd, options.baseRef, options.headRef);
   const changedFiles = allChangedFiles.filter((file) => !ignore.isIgnored(file.path));
@@ -104,6 +108,14 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
       kind: "doc"
     });
   }
+  for (const feedbackPath of feedbackPaths) {
+    inputHashes.push({
+      path: feedbackPath,
+      algorithm: "sha256",
+      hash: await hashFile(path.resolve(options.cwd, feedbackPath)),
+      kind: "feedback"
+    });
+  }
 
   const manifest: RunManifest = {
     tool_version: "0.1.0",
@@ -138,6 +150,10 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     schema_version: "review-surfaces.tests.index.v1",
     tests
   });
+  await writeJson(path.join(inputsDir, "feedback.index.json"), {
+    schema_version: "review-surfaces.feedback.index.v1",
+    feedback
+  });
   await writeJson(path.join(inputsDir, "privacy.json"), {
     schema_version: "review-surfaces.privacy.v1",
     ...privacy
@@ -151,6 +167,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     changedFiles,
     docs,
     tests,
+    feedback,
     repositoryFiles,
     privacy,
     git

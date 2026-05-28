@@ -10,11 +10,26 @@ import { defaultConfig } from "../src/config/config";
 test("collects specs and writes first local artifacts", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-test-"));
   fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, ".review-surfaces", "feedback"), { recursive: true });
   fs.copyFileSync(
     path.join(process.cwd(), "tests", "fixtures", "minimal-repo", "features", "example.feature.yaml"),
     path.join(tmp, "features", "example.feature.yaml")
   );
   fs.writeFileSync(path.join(tmp, "README.md"), "# Fixture\n");
+  fs.writeFileSync(
+    path.join(tmp, ".review-surfaces", "feedback", "manual.yaml"),
+    `schema_version: review-surfaces.feedback.v1
+author: codex
+findings:
+  - id: FB-001
+    category: review_value
+    severity: medium
+    finding: review-surfaces.DOGFOOD.6 should preserve feedback.
+validation:
+  passed:
+    - pnpm run test
+`
+  );
   execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
 
   const result = await collectInputs({
@@ -33,8 +48,12 @@ test("collects specs and writes first local artifacts", async () => {
 
   assert.equal(result.specIndex.specs.length, 1);
   assert.equal(result.specIndex.specs[0].requirements.length, 3);
+  assert.equal(result.feedback.length, 1);
+  assert.equal(result.feedback[0].findings[0].id, "FB-001");
+  assert.ok(result.manifest.input_hashes.some((input) => input.path === ".review-surfaces/feedback/manual.yaml" && input.kind === "feedback"));
   assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "manifest.json")));
   assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "inputs", "specs.index.json")));
+  assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "inputs", "feedback.index.json")));
 });
 
 test("collector expands untracked directories into file evidence", async () => {
