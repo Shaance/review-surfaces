@@ -610,7 +610,10 @@
       "additionalProperties": false,
       "required": [
         "summary",
-        "missing_logs"
+        "missing_logs",
+        "claims_without_evidence",
+        "verified_claims",
+        "quality_flags"
       ],
       "properties": {
         "summary": {
@@ -1017,7 +1020,11 @@
       "additionalProperties": false,
       "required": [
         "summary",
-        "next_tasks"
+        "validation_evidence",
+        "failed_validation",
+        "methodology_flags",
+        "next_tasks",
+        "deferrals"
       ],
       "properties": {
         "summary": {

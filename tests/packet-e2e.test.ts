@@ -39,6 +39,7 @@ findings:
 validation:
   passed:
     - pnpm run test
+    - "pnpm run test:coverage"
 `
   );
   fs.writeFileSync(
@@ -97,11 +98,13 @@ validation:
   assert.match(architectureMarkdown, /Diagram validation/);
   assert.ok(packet.dogfood.findings.some((finding: { finding: string }) => finding.finding.includes("FB-E2E-001")));
   assert.ok(packet.risks.test_evidence.some((evidence: { kind: string; summary: string }) => evidence.kind === "direct" && evidence.summary.includes("CMD-E2E-001")));
-  assert.ok(!packet.risks.test_evidence.some((evidence: { id: string; kind: string; summary: string }) => evidence.id.startsWith("TEST-FB-") && evidence.summary.includes("pnpm run test")));
+  assert.ok(!packet.risks.test_evidence.some((evidence: { id: string; kind: string; summary: string }) => evidence.id.startsWith("TEST-FB-") && evidence.summary === "Feedback records a passing validation command: pnpm run test"));
   assert.ok(packet.methodology.verified_claims.some((claim: string) => claim.includes("pnpm run test passed")));
   assert.ok(packet.methodology.claims_without_evidence.some((claim: string) => claim.includes("tests are green")));
   assert.ok(packet.risks.review_focus.some((focus: string) => focus.includes("methodology claims without command evidence")));
   assert.ok(packet.agent_handoff.validation_evidence.some((evidence: string) => evidence.includes("CMD-E2E-001")));
+  assert.ok(packet.agent_handoff.failed_validation.some((evidence: string) => evidence.includes("[claimed]") && evidence.includes("pnpm run test:coverage")));
+  assert.ok(!packet.agent_handoff.failed_validation.some((evidence: string) => evidence.includes("review-surfaces dogfood") || evidence.includes("review-surfaces all")));
   assert.ok(packet.agent_handoff.methodology_flags.includes("claims_without_evidence"));
   assert.match(packetMarkdown, /Validation evidence:/);
   assert.match(packetMarkdown, /Claims needing evidence:/);

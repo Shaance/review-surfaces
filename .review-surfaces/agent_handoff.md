@@ -49,7 +49,8 @@ M5
 
 ## Failed Or Missing Validation
 
-- None recorded.
+- TEST-FB-001 [claimed]: Feedback records a passing validation command: node --test dist/tests/diagrams.test.js
+- TEST-FB-002 [claimed]: Feedback records a passing validation command: node --test dist/tests/evaluation.test.js
 
 ## Methodology Flags
 

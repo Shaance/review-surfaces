@@ -76,6 +76,24 @@ test("review-surfaces.SCHEMA.2 validates methodology and handoff M5 metadata", (
   };
 
   assert.equal(validateJsonSchema(schema, packet).valid, true);
+
+  const staleMethodologyPacket = minimalReviewPacket();
+  delete staleMethodologyPacket.methodology.verified_claims;
+  delete staleMethodologyPacket.methodology.quality_flags;
+  const invalidMethodology = validateJsonSchema(schema, staleMethodologyPacket);
+  assert.equal(invalidMethodology.valid, false);
+  assert.ok(invalidMethodology.issues.some((issue) => issue.path === "$.methodology" && issue.message.includes("verified_claims")));
+  assert.ok(invalidMethodology.issues.some((issue) => issue.path === "$.methodology" && issue.message.includes("quality_flags")));
+
+  const staleHandoffPacket = minimalReviewPacket();
+  staleHandoffPacket.agent_handoff = {
+    summary: "stale handoff fixture",
+    next_tasks: ["Inspect packet"]
+  };
+  const invalidHandoff = validateJsonSchema(schema, staleHandoffPacket);
+  assert.equal(invalidHandoff.valid, false);
+  assert.ok(invalidHandoff.issues.some((issue) => issue.path === "$.agent_handoff" && issue.message.includes("validation_evidence")));
+  assert.ok(invalidHandoff.issues.some((issue) => issue.path === "$.agent_handoff" && issue.message.includes("deferrals")));
 });
 
 function minimalReviewPacket(): {
@@ -126,6 +144,8 @@ function minimalReviewPacket(): {
       unchallenged_assumptions: [],
       skipped_checks: [],
       claims_without_evidence: [],
+      verified_claims: [],
+      quality_flags: [],
       evidence: []
     },
     risks: {

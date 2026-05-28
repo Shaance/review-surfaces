@@ -114,9 +114,9 @@ function buildHandoff(inputs: PacketInputs): ReviewPacket["agent_handoff"] {
       .slice(0, 8)
       .map((evidence) => `${evidence.id} [${evidence.kind}]: ${evidence.summary}`),
     failed_validation: inputs.risks.test_evidence
-      .filter((evidence) => evidence.kind === "missing")
+      .filter(isHandoffFailedValidationEvidence)
       .slice(0, 6)
-      .map((evidence) => `${evidence.id}: ${evidence.summary}`),
+      .map((evidence) => `${evidence.id} [${evidence.kind}]: ${evidence.summary}`),
     methodology_flags: handoffMethodologyFlags(inputs.methodology),
     next_tasks: [
       ...inputs.risks.test_gaps.slice(0, 5).map((gap) => `${gap.acai_id ?? gap.requirement_id ?? gap.id}: ${gap.suggested_test ?? gap.summary}`),
@@ -305,6 +305,23 @@ function previewLines<T>(items: T[], render: (item: T) => string, limit = 12): s
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function isHandoffFailedValidationEvidence(evidence: RisksModel["test_evidence"][number]): boolean {
+  if (evidence.kind === "missing") {
+    return true;
+  }
+  if (evidence.kind !== "claimed") {
+    return false;
+  }
+  return (evidence.evidence ?? []).some((ref) =>
+    ref.kind === "feedback"
+      || (ref.kind === "command" && typeof ref.command === "string" && commandLooksLikeLocalValidation(ref.command))
+  );
+}
+
+function commandLooksLikeLocalValidation(command: string): boolean {
+  return /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?(?:test(?::[\w.-]+)?|lint|typecheck|build)|node\s+--test|tsc\s)/.test(command.toLowerCase().trim().replace(/\s+/g, " "));
 }
 
 function handoffMethodologyFlags(methodology: MethodologyModel): string[] {

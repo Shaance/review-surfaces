@@ -40,6 +40,10 @@ test("review-surfaces.METHODOLOGY.2 separates transcript-backed claims from unve
     [
       "assistant: pnpm run test passed after the implementation.",
       "assistant: tests are green for the workflow.",
+      "assistant: all tests pass after the fix.",
+      "assistant: failing tests are now green.",
+      "assistant: add tests for this gap.",
+      "assistant: test coverage is missing for the workflow.",
       "assistant: Decision: keep local artifacts first."
     ].join("\n")
   );
@@ -65,9 +69,43 @@ test("review-surfaces.METHODOLOGY.2 separates transcript-backed claims from unve
 
   assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm run test passed")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("tests are green")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("all tests pass")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("failing tests are now green")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("add tests for this gap")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("coverage is missing")));
   assert.ok(methodology.quality_flags.includes("test_claims_verified_by_command_transcripts"));
   assert.ok(methodology.quality_flags.includes("test_claims_without_command_evidence"));
   assert.ok(methodology.evidence.some((evidence) => evidence.kind === "command" && evidence.event_id === "CMD-PNPM-TEST"));
+});
+
+test("review-surfaces.METHODOLOGY.2 does not verify claims with failed command transcripts", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  const logPath = path.join(tmp, "conversation.md");
+  fs.writeFileSync(logPath, "assistant: pnpm run test passed after the implementation.\n");
+
+  const methodology = await buildMethodology(
+    tmp,
+    collectionFixture(tmp, {
+      commandTranscripts: [
+        {
+          id: "CMD-PNPM-TEST",
+          command: "pnpm run test",
+          status: "failed",
+          exit_code: 1,
+          stderr_hash: "def456",
+          truncated: false,
+          source_path: ".review-surfaces/commands/CMD-PNPM-TEST.json"
+        }
+      ]
+    }),
+    "conversation.md",
+    []
+  );
+
+  assert.equal(methodology.verified_claims.length, 0);
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run test passed")));
+  assert.ok(!methodology.quality_flags.includes("test_claims_verified_by_command_transcripts"));
+  assert.ok(methodology.quality_flags.includes("test_claims_without_command_evidence"));
 });
 
 function collectionFixture(tmp: string, overrides: Partial<CollectionResult> = {}): CollectionResult {

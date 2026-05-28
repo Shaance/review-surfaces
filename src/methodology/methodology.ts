@@ -51,10 +51,14 @@ export async function buildMethodology(
   const absolutePath = path.resolve(cwd, conversationPath);
   const events = await parseConversationFile(absolutePath);
   await writeNormalizedConversation(collection.outputDir, events);
-  const transcriptCommands = new Set((collection.commandTranscripts ?? []).map((transcript) => normalizeCommand(transcript.command)));
-  const testClaims = pick(events, ["passed", "green", "tested", "test"]);
-  const verifiedClaims = testClaims.filter((claim) => claimHasCommandEvidence(claim, transcriptCommands));
-  const claimsWithoutEvidence = testClaims.filter((claim) => !claimHasCommandEvidence(claim, transcriptCommands));
+  const passingTranscriptCommands = new Set(
+    (collection.commandTranscripts ?? [])
+      .filter((transcript) => transcript.status === "passed" && transcript.exit_code === 0)
+      .map((transcript) => normalizeCommand(transcript.command))
+  );
+  const validationClaims = pickValidationSuccessClaims(events);
+  const verifiedClaims = validationClaims.filter((claim) => claimHasCommandEvidence(claim, passingTranscriptCommands));
+  const claimsWithoutEvidence = validationClaims.filter((claim) => !claimHasCommandEvidence(claim, passingTranscriptCommands));
   const qualityFlags = [
     ...(claimsWithoutEvidence.length > 0 ? ["test_claims_without_command_evidence"] : []),
     ...(verifiedClaims.length > 0 ? ["test_claims_verified_by_command_transcripts"] : [])
@@ -160,6 +164,29 @@ function pick(events: ConversationEvent[], keywords: string[]): string[] {
     }
   }
   return result;
+}
+
+function pickValidationSuccessClaims(events: ConversationEvent[]): string[] {
+  const result: string[] = [];
+  for (const event of events) {
+    if (result.length >= 12) {
+      break;
+    }
+    if (isValidationSuccessClaim(event.summary)) {
+      result.push(`${event.id}: ${event.summary}`);
+    }
+  }
+  return result;
+}
+
+function isValidationSuccessClaim(summary: string): boolean {
+  const lower = summary.toLowerCase();
+  const mentionsValidation = /\b(?:tests?|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test)\b/.test(lower);
+  const claimsSuccess = /\b(?:pass|passed|passes|passing|green|succeeded|successful|success|validated|verified)\b/.test(lower);
+  if (!mentionsValidation || !claimsSuccess) {
+    return false;
+  }
+  return !/\b(?:missing|needs?|add|todo|skipped|skip|not run|could not|cannot|can't|gap|uncovered)\b|\bnot\s+(?:pass|passed|passing|green|successful|validated|verified)\b/.test(lower);
 }
 
 function claimHasCommandEvidence(claim: string, transcriptCommands: Set<string>): boolean {
