@@ -6,12 +6,22 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { validateJsonFile } from "../src/schema/json-schema";
 
+function copyRepoFixture(targetDir: string): void {
+  fs.cpSync(process.cwd(), targetDir, {
+    recursive: true,
+    filter: (source) => {
+      const relative = path.relative(process.cwd(), source);
+      return relative !== ".git"
+        && !relative.startsWith(`.git${path.sep}`)
+        && relative !== "dist"
+        && !relative.startsWith(`dist${path.sep}`);
+    }
+  });
+}
+
 test("CLI dogfood-style run writes valid packet, diagrams, dogfood, and handoff", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-e2e-"));
-  fs.cpSync(process.cwd(), tmp, {
-    recursive: true,
-    filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) && !source.includes(`${path.sep}dist${path.sep}`)
-  });
+  copyRepoFixture(tmp);
   execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
 
   execFileSync(
@@ -46,10 +56,7 @@ test("CLI dogfood-style run writes valid packet, diagrams, dogfood, and handoff"
 
 test("CLI uses configured provider when no provider flag is passed", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-config-provider-"));
-  fs.cpSync(process.cwd(), tmp, {
-    recursive: true,
-    filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) && !source.includes(`${path.sep}dist${path.sep}`)
-  });
+  copyRepoFixture(tmp);
   fs.writeFileSync(
     path.join(tmp, "review-surfaces.config.yaml"),
     `schema_version: review-surfaces.config.v1

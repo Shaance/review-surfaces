@@ -10,14 +10,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "pnpm run typecheck",
     "test": "pnpm run build && node --test dist/tests/*.test.js",
-    "review-surfaces": "pnpm run build && node bin/review-surfaces.js"
+    "review-surfaces": "pnpm run build && node bin/review-surfaces.js",
+    "copy-env": "./scripts/copy-env.sh"
   },
   "files": [
     "bin",
     "dist",
     "src",
     "types",
-    "schemas"
+    "schemas",
+    "scripts"
   ],
   "engines": {
     "node": ">=22"

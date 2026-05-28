@@ -3,6 +3,7 @@ import { CollectionResult } from "../collector/collect";
 import { isRegularFile, readText } from "../core/files";
 import { walkFiles } from "../core/glob";
 import { EvidenceRef, fileEvidence, missingEvidence, specEvidence, testEvidence } from "../evidence/evidence";
+import { validateRequirementResultEvidence } from "../evidence/validate";
 import { IntentModel, IntentRequirement } from "../intent/intent";
 import { groupsForReviewPath, isLaterProviderGroup } from "../review-areas/areas";
 import { countRequirementStatuses, formatRequirementStatusSummary } from "./status";
@@ -37,8 +38,14 @@ interface EvidenceIndex {
 
 export async function evaluateIntent(cwd: string, collection: CollectionResult, intent: IntentModel): Promise<EvaluationModel> {
   const index = await buildEvidenceIndex(cwd, collection);
-  const results = intent.requirements.map((requirement) => evaluateRequirement(requirement, index));
-  const overreach = detectOverreach(index, intent.requirements);
+  const knownAcids = new Set(intent.requirements.map((requirement) => requirement.acai_id).filter(Boolean) as string[]);
+  const knownPaths = new Set([...index.allFiles, ...index.allChangedFiles]);
+  const results = intent.requirements
+    .map((requirement) => evaluateRequirement(requirement, index))
+    .map((result) => validateRequirementResultEvidence(result, { cwd, knownAcids, knownPaths }));
+  const overreach = detectOverreach(index, intent.requirements).map((result) =>
+    validateRequirementResultEvidence(result, { cwd, knownAcids, knownPaths })
+  );
   const acai_coverage = Object.fromEntries(
     results.filter((result) => result.acai_id).map((result) => [result.acai_id as string, result.status])
   );
@@ -119,7 +126,9 @@ async function buildEvidenceIndex(cwd: string, collection: CollectionResult): Pr
   const byAcid = new Map<string, EvidenceRef[]>();
   const changedByGroup = new Map<string, EvidenceRef[]>();
   const testsByGroup = new Map<string, EvidenceRef[]>();
-  const allFiles = (await walkFiles(cwd)).filter((filePath) => !filePath.startsWith(".review-surfaces/"));
+  const allFiles = (collection.repositoryFiles.length ? collection.repositoryFiles : await walkFiles(cwd)).filter(
+    (filePath) => !filePath.startsWith(".review-surfaces/")
+  );
   const candidateFiles = [
     ...collection.changedFiles.map((file) => file.path),
     ...collection.tests.map((test) => test.path),

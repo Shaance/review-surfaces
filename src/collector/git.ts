@@ -59,7 +59,12 @@ export function collectChangedFiles(cwd: string, baseRef: string, headRef: strin
 }
 
 export function collectDiff(cwd: string, baseRef: string, headRef: string): string {
-  return git(cwd, ["diff", `${baseRef}...${headRef}`]) ?? git(cwd, ["diff"]) ?? "";
+  const parts = [
+    git(cwd, ["diff", `${baseRef}...${headRef}`]),
+    git(cwd, ["diff", "--cached"]),
+    git(cwd, ["diff"])
+  ].filter((part): part is string => Boolean(part));
+  return parts.join("\n");
 }
 
 export function collectCommits(cwd: string, baseRef: string, headRef: string): Array<Record<string, string>> {

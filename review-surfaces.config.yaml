@@ -6,6 +6,7 @@ docs:
   - README.md
   - README.bootstrap.md
   - AGENTS.md
+  - CLAUDE.md
   - docs/**/*.md
   - .agents/skills/**/SKILL.md
 tests:

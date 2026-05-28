@@ -165,3 +165,51 @@ constraints:
   assert.equal(evaluation.acai_coverage["example.PROVIDERS.1"], "unknown");
   assert.equal(evaluation.overreach.length, 0);
 });
+
+test("review-surfaces.EVIDENCE.4 turns invalid evidence references into invalid_evidence", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-invalid-evidence-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+constraints:
+  EVIDENCE:
+    requirements:
+      4: Invalid references must become invalid_evidence findings.
+`
+  );
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [] },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+
+  const evaluation = await evaluateIntent(tmp, collection, {
+    summary: "Invalid evidence fixture.",
+    requirements: [
+      {
+        id: "REQ-001",
+        acai_id: "example.EVIDENCE.4",
+        requirement: "Invalid references must become invalid_evidence findings.",
+        source_refs: [{ kind: "file", ref: "missing-spec.md" }],
+        constraints: [],
+        assumptions: [],
+        open_questions: [],
+        confidence: "high"
+      }
+    ],
+    constraints: [],
+    non_goals: [],
+    assumptions: [],
+    open_questions: [],
+    sources: []
+  });
+
+  assert.equal(evaluation.acai_coverage["example.EVIDENCE.4"], "invalid_evidence");
+  assert.equal(evaluation.results[0].evidence[0].validation_status, "invalid");
+});

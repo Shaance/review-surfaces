@@ -35,6 +35,48 @@ test("ai-sdk provider skips without credentials", async () => {
   }
 });
 
+test("review-surfaces.PRIVACY.2 blocks ai-sdk enrichment when prompt contains private key material", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-privacy-"));
+  const oldKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  process.env.GOOGLE_GENERATIVE_AI_API_KEY = "test-key";
+  try {
+    const target = packet();
+    const pemLabel = "PRIVATE KEY";
+    target.intent.summary = `-----BEGIN ${pemLabel}-----\nabc\n-----END ${pemLabel}-----`;
+    const result = await enrichPacket(target, { cwd: tmp, outputDir: path.join(tmp, ".review-surfaces"), provider: "ai-sdk" });
+    assert.equal(result.status, "skipped");
+    assert.equal(result.skipped_reason, "privacy_block");
+  } finally {
+    if (oldKey === undefined) {
+      delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+    } else {
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY = oldKey;
+    }
+  }
+});
+
+test("review-surfaces.PRIVACY.2 blocks ai-sdk enrichment when collected inputs were privacy-blocked", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-input-privacy-"));
+  const oldKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  process.env.GOOGLE_GENERATIVE_AI_API_KEY = "test-key";
+  try {
+    const result = await enrichPacket(packet(), {
+      cwd: tmp,
+      outputDir: path.join(tmp, ".review-surfaces"),
+      provider: "ai-sdk",
+      remotePrivacyBlocked: true
+    });
+    assert.equal(result.status, "skipped");
+    assert.equal(result.skipped_reason, "privacy_block");
+  } finally {
+    if (oldKey === undefined) {
+      delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+    } else {
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY = oldKey;
+    }
+  }
+});
+
 test("agent-file provider applies bounded structured enrichment", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-"));
   fs.writeFileSync(
