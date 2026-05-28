@@ -4,6 +4,7 @@ import { CollectionResult } from "../collector/collect";
 import { ensureDir, readText, writeText } from "../core/files";
 import { parseYaml } from "../core/simple-yaml";
 import { commandEvidence, EvidenceRef, missingEvidence } from "../evidence/evidence";
+import { redactSecrets } from "../privacy/secrets";
 
 export interface MethodologyModel {
   summary: string;
@@ -116,7 +117,7 @@ async function parseConversationFile(filePath: string): Promise<ConversationEven
           id: String(parsed.id ?? `evt_${String(index + 1).padStart(4, "0")}`),
           actor: String(parsed.actor ?? "unknown"),
           kind: String(parsed.kind ?? "message"),
-          summary: String(parsed.summary ?? parsed.text ?? "")
+          summary: redactConversationSummary(parsed.summary ?? parsed.text ?? "")
         };
       });
   }
@@ -128,7 +129,7 @@ async function parseConversationFile(filePath: string): Promise<ConversationEven
         id: String(isRecord(event) ? event.id ?? `evt_${String(index + 1).padStart(4, "0")}` : `evt_${String(index + 1).padStart(4, "0")}`),
         actor: String(isRecord(event) ? event.actor ?? "unknown" : "unknown"),
         kind: String(isRecord(event) ? event.kind ?? "message" : "message"),
-        summary: String(isRecord(event) ? event.summary ?? event.text ?? "" : event)
+        summary: redactConversationSummary(isRecord(event) ? event.summary ?? event.text ?? "" : event)
       }));
     }
   }
@@ -141,7 +142,7 @@ async function parseConversationFile(filePath: string): Promise<ConversationEven
       id: `evt_${String(index + 1).padStart(4, "0")}`,
       actor: line.startsWith("user:") ? "user" : line.startsWith("assistant:") ? "assistant" : "unknown",
       kind: line.startsWith("#") ? "heading" : "message",
-      summary: line.replace(/^(user|assistant):\s*/i, "")
+      summary: redactConversationSummary(line.replace(/^(user|assistant):\s*/i, ""))
     }));
 }
 
@@ -169,9 +170,6 @@ function pick(events: ConversationEvent[], keywords: string[]): string[] {
 function pickValidationSuccessClaims(events: ConversationEvent[]): string[] {
   const result: string[] = [];
   for (const event of events) {
-    if (result.length >= 12) {
-      break;
-    }
     if (isValidationSuccessClaim(event.summary)) {
       result.push(`${event.id}: ${event.summary}`);
     }
@@ -186,16 +184,29 @@ function isValidationSuccessClaim(summary: string): boolean {
   if (!mentionsValidation || !claimsSuccess) {
     return false;
   }
-  return !/\b(?:missing|needs?|add|todo|skipped|skip|not run|could not|cannot|can't|gap|uncovered)\b|\bnot\s+(?:pass|passed|passing|green|successful|validated|verified)\b/.test(lower);
+  return !/\b(?:missing|needs?|add|todo|skipped|skip|not run|could not|cannot|can't|gap|uncovered)\b|\b(?:should|could|would|might|may|will|expect(?:ed)? to)\s+(?:pass|passed|passes|green|succeed|succeeded|successful|validate|validated|verify|verified)\b|\bnot\s+(?:pass|passed|passing|green|successful|validated|verified)\b/.test(lower);
 }
 
 function claimHasCommandEvidence(claim: string, transcriptCommands: Set<string>): boolean {
-  const normalizedClaim = normalizeCommand(claim);
-  return [...transcriptCommands].some((command) => normalizedClaim.includes(command));
+  return extractClaimedCommands(claim).some((command) => transcriptCommands.has(command));
 }
 
 function normalizeCommand(command: string): string {
   return command.toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+function extractClaimedCommands(claim: string): string[] {
+  const commands: string[] = [];
+  const normalizedClaim = normalizeCommand(claim);
+  const commandPattern = /\b((?:pnpm|npm|yarn|bun)\s+(?:run\s+)?(?:test(?::[\w.-]+)?|lint|typecheck|build)|node\s+--test(?:\s+[\w./:-]+)?|tsc(?:\s+--noemit)?)/g;
+  for (const match of normalizedClaim.matchAll(commandPattern)) {
+    commands.push(normalizeCommand(match[1]));
+  }
+  return [...new Set(commands)];
+}
+
+function redactConversationSummary(value: unknown): string {
+  return redactSecrets(String(value)).text;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -110,7 +110,7 @@ function buildHandoff(inputs: PacketInputs): ReviewPacket["agent_handoff"] {
       "pnpm run review-surfaces -- validate .review-surfaces"
     ],
     validation_evidence: inputs.risks.test_evidence
-      .filter((evidence) => evidence.kind === "direct" || evidence.kind === "indirect")
+      .filter(isHandoffValidationEvidence)
       .slice(0, 8)
       .map((evidence) => `${evidence.id} [${evidence.kind}]: ${evidence.summary}`),
     failed_validation: inputs.risks.test_evidence
@@ -307,8 +307,18 @@ function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+function isHandoffValidationEvidence(evidence: RisksModel["test_evidence"][number]): boolean {
+  if (evidence.kind !== "direct" && evidence.kind !== "indirect") {
+    return false;
+  }
+  return (evidence.evidence ?? []).some((ref) => ref.kind === "command");
+}
+
 function isHandoffFailedValidationEvidence(evidence: RisksModel["test_evidence"][number]): boolean {
-  if (evidence.kind === "missing") {
+  if (evidence.kind === "missing" || evidence.kind === "unknown") {
+    return true;
+  }
+  if (evidence.kind === "indirect" && isFeedbackOnlyEvidence(evidence)) {
     return true;
   }
   if (evidence.kind !== "claimed") {
@@ -318,6 +328,11 @@ function isHandoffFailedValidationEvidence(evidence: RisksModel["test_evidence"]
     ref.kind === "feedback"
       || (ref.kind === "command" && typeof ref.command === "string" && commandLooksLikeLocalValidation(ref.command))
   );
+}
+
+function isFeedbackOnlyEvidence(evidence: RisksModel["test_evidence"][number]): boolean {
+  const refs = evidence.evidence ?? [];
+  return refs.length > 0 && refs.every((ref) => ref.kind === "feedback");
 }
 
 function commandLooksLikeLocalValidation(command: string): boolean {

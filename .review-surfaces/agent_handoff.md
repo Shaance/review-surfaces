@@ -40,17 +40,15 @@ M5
 ## Validation Evidence
 
 - TEST-TR-001 [direct]: Command transcript CMD-PNPM-TEST records exit 0: pnpm run test
-- TEST-FB-003 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
-- TEST-FB-004 [indirect]: Feedback records a passing validation command: pnpm run typecheck
-- TEST-FB-005 [indirect]: Feedback records a passing validation command: pnpm run lint
-- TEST-FB-006 [indirect]: Feedback records a passing validation command: pnpm run build
-- TEST-FB-007 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces
-- TEST-FB-008 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- validate .review-surfaces
 
 ## Failed Or Missing Validation
 
 - TEST-FB-001 [claimed]: Feedback records a passing validation command: node --test dist/tests/diagrams.test.js
 - TEST-FB-002 [claimed]: Feedback records a passing validation command: node --test dist/tests/evaluation.test.js
+- TEST-FB-003 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
+- TEST-FB-004 [indirect]: Feedback records a passing validation command: pnpm run typecheck
+- TEST-FB-005 [indirect]: Feedback records a passing validation command: pnpm run lint
+- TEST-FB-006 [indirect]: Feedback records a passing validation command: pnpm run build
 
 ## Methodology Flags
 

@@ -40,12 +40,16 @@ validation:
   passed:
     - pnpm run test
     - "pnpm run test:coverage"
+    - pnpm run lint
 `
   );
   fs.writeFileSync(
     path.join(tmp, ".review-surfaces", "commands", "local.json"),
     JSON.stringify({
-      commands: [{ id: "CMD-E2E-001", command: "pnpm run test", exit_code: 0, stdout: "tests passed" }]
+      commands: [
+        { id: "CMD-E2E-001", command: "pnpm run test", exit_code: 0, stdout: "tests passed" },
+        { id: "CMD-E2E-UNKNOWN", command: "pnpm run build", status: "unknown", stdout: "build started" }
+      ]
     })
   );
   fs.writeFileSync(
@@ -104,6 +108,9 @@ validation:
   assert.ok(packet.risks.review_focus.some((focus: string) => focus.includes("methodology claims without command evidence")));
   assert.ok(packet.agent_handoff.validation_evidence.some((evidence: string) => evidence.includes("CMD-E2E-001")));
   assert.ok(packet.agent_handoff.failed_validation.some((evidence: string) => evidence.includes("[claimed]") && evidence.includes("pnpm run test:coverage")));
+  assert.ok(packet.agent_handoff.failed_validation.some((evidence: string) => evidence.includes("[indirect]") && evidence.includes("pnpm run lint")));
+  assert.ok(packet.agent_handoff.failed_validation.some((evidence: string) => evidence.includes("[unknown]") && evidence.includes("CMD-E2E-UNKNOWN")));
+  assert.ok(!packet.agent_handoff.validation_evidence.some((evidence: string) => evidence.includes("pnpm run lint")));
   assert.ok(!packet.agent_handoff.failed_validation.some((evidence: string) => evidence.includes("review-surfaces dogfood") || evidence.includes("review-surfaces all")));
   assert.ok(packet.agent_handoff.methodology_flags.includes("claims_without_evidence"));
   assert.match(packetMarkdown, /Validation evidence:/);

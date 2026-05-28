@@ -42,6 +42,7 @@ test("review-surfaces.METHODOLOGY.2 separates transcript-backed claims from unve
       "assistant: tests are green for the workflow.",
       "assistant: all tests pass after the fix.",
       "assistant: failing tests are now green.",
+      "assistant: the tests should pass after this change.",
       "assistant: add tests for this gap.",
       "assistant: test coverage is missing for the workflow.",
       "assistant: Decision: keep local artifacts first."
@@ -71,6 +72,7 @@ test("review-surfaces.METHODOLOGY.2 separates transcript-backed claims from unve
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("tests are green")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("all tests pass")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("failing tests are now green")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("should pass")));
   assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("add tests for this gap")));
   assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("coverage is missing")));
   assert.ok(methodology.quality_flags.includes("test_claims_verified_by_command_transcripts"));
@@ -106,6 +108,63 @@ test("review-surfaces.METHODOLOGY.2 does not verify claims with failed command t
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run test passed")));
   assert.ok(!methodology.quality_flags.includes("test_claims_verified_by_command_transcripts"));
   assert.ok(methodology.quality_flags.includes("test_claims_without_command_evidence"));
+});
+
+test("review-surfaces.METHODOLOGY.2 requires exact command matches for verified claims", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  const logPath = path.join(tmp, "conversation.md");
+  fs.writeFileSync(
+    logPath,
+    [
+      "assistant: pnpm run test passed after the implementation.",
+      "assistant: pnpm run test:coverage passed after the implementation.",
+      "assistant: npm run test passed after the implementation."
+    ].join("\n")
+  );
+
+  const methodology = await buildMethodology(
+    tmp,
+    collectionFixture(tmp, {
+      commandTranscripts: [
+        {
+          id: "CMD-PNPM-TEST",
+          command: "pnpm run test",
+          status: "passed",
+          exit_code: 0,
+          stdout_hash: "abc123",
+          truncated: false,
+          source_path: ".review-surfaces/commands/CMD-PNPM-TEST.json"
+        }
+      ]
+    }),
+    "conversation.md",
+    []
+  );
+
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm run test passed")));
+  assert.ok(!methodology.verified_claims.some((claim) => claim.includes("test:coverage")));
+  assert.ok(!methodology.verified_claims.some((claim) => claim.includes("npm run test passed") && !claim.includes("pnpm run")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run test:coverage passed")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("npm run test passed")));
+});
+
+test("review-surfaces.METHODOLOGY.2 scans all validation claims and redacts conversation secrets", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  const logPath = path.join(tmp, "conversation.md");
+  fs.writeFileSync(
+    logPath,
+    [
+      ...Array.from({ length: 12 }, (_value, index) => `assistant: validation check ${index + 1} passed.`),
+      "assistant: SECRET_TOKEN=abc123456 pnpm run test passed after the implementation."
+    ].join("\n")
+  );
+
+  const methodology = await buildMethodology(tmp, collectionFixture(tmp), "conversation.md", []);
+
+  assert.equal(methodology.claims_without_evidence.length, 13);
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run test passed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("abc123456")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("SECRET_TOKEN=[REDACTED:secret]")));
 });
 
 function collectionFixture(tmp: string, overrides: Partial<CollectionResult> = {}): CollectionResult {
