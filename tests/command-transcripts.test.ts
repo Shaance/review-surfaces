@@ -203,4 +203,5 @@ test("review-surfaces.RISK.2 uses the actual commands.json path for custom outpu
 test("source contract edits map to the bootstrap Acai review area", () => {
   assert.ok(groupsForReviewPath("features/review-surfaces.feature.yaml").includes("BOOTSTRAP"));
   assert.ok(groupsForReviewPath("docs/review-surfaces-trd.md").includes("BOOTSTRAP"));
+  assert.ok(groupsForReviewPath("types/node-ambient.d.ts").includes("BOOTSTRAP"));
 });

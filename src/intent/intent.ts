@@ -49,7 +49,10 @@ export async function buildIntent(cwd: string, collection: CollectionResult): Pr
     ...docSignals.assumptions
   ];
 
-  const openQuestions = docSignals.open_questions;
+  const openQuestions = [
+    ...docSignals.open_questions,
+    ...sparseSourceQuestions(collection.specIndex.specs.length, requirements.length, collection.docs.length)
+  ];
   const sources: SourceRef[] = [
     ...collection.specIndex.specs.map((spec) => ({
       kind: "spec" as const,
@@ -128,6 +131,9 @@ async function readDocSignals(cwd: string, docPaths: string[]): Promise<{
       if ((lower.includes("assumes") || lower.includes("assumption")) && assumptions.length < 8) {
         assumptions.push(`${docPath}: ${clean}`);
       }
+      if (hasExplicitConflictMarker(clean) && open_questions.length < 8) {
+        open_questions.push(`${docPath}: Possible conflicting source: ${clean}`);
+      }
       if (clean.endsWith("?") && !isReviewerChecklistQuestion(clean) && open_questions.length < 8) {
         open_questions.push(`${docPath}: ${clean}`);
       }
@@ -146,6 +152,21 @@ function isReviewerChecklistQuestion(value: string): boolean {
     "what is missing?",
     "where should i look first?"
   ]).has(normalized);
+}
+
+function hasExplicitConflictMarker(value: string): boolean {
+  return /^(conflict|contradiction|conflicting source)\s*:/i.test(value);
+}
+
+function sparseSourceQuestions(specCount: number, requirementCount: number, docCount: number): string[] {
+  const questions: string[] = [];
+  if (specCount === 0 || requirementCount === 0) {
+    questions.push("No Acai requirements were indexed; confirm the intended task scope before evaluating implementation coverage.");
+  }
+  if (docCount === 0) {
+    questions.push("No docs or agent instruction inputs were indexed; confirm constraints, non-goals, and reviewer expectations.");
+  }
+  return questions;
 }
 
 function unique(values: string[]): string[] {

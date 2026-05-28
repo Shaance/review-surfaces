@@ -11,7 +11,7 @@ export interface ReviewArea {
 export const REVIEW_AREAS: ReviewArea[] = [
   area("SUB-CLI", "CLI orchestration", "CLI", ["src/cli/", "bin/", "package.json"], "Parse commands and wire local pipeline stages.", "command dispatcher", ["cli"]),
   area("SUB-COLLECT", "Collection and indexing", "COLLECTOR", ["src/collector/", "src/acai/", "src/core/", "src/commands/"], "Collect Git, diff, docs, tests, and input indexes.", "deterministic collector", ["acai", "collect", "command"]),
-  area("SUB-BOOTSTRAP", "Bootstrap files", "BOOTSTRAP", ["AGENTS.md", "CLAUDE.md", ".agents/", "features/", "docs/review-surfaces-trd.md", "review-surfaces.config.yaml", "src/config/", "scripts/copy-env.sh", "scripts/SECRETS.md"], "Keep local source-of-truth and agent workflow files available.", "spec-first bootstrap", ["config", "bootstrap"]),
+  area("SUB-BOOTSTRAP", "Bootstrap files", "BOOTSTRAP", ["AGENTS.md", "CLAUDE.md", ".agents/", "features/", "docs/review-surfaces-trd.md", "review-surfaces.config.yaml", "src/config/", "scripts/copy-env.sh", "scripts/SECRETS.md", "types/"], "Keep local source-of-truth and agent workflow files available.", "spec-first bootstrap", ["config", "bootstrap"]),
   area("SUB-INTENT", "Intent builder", "INTENT", ["src/intent/"], "Build requirements and source-backed intent.", "deterministic synthesis", ["intent"]),
   area("SUB-EVAL", "Evaluator", "EVAL", ["src/evaluation/"], "Map intent requirements to implementation and test evidence.", "evidence classifier", ["eval", "evaluation"]),
   area("SUB-RISK", "Risk analyzer", "RISK", ["src/risks/"], "Summarize risks, test evidence, gaps, and review focus.", "risk register", ["risk"]),

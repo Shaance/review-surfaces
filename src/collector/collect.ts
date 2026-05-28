@@ -1,6 +1,6 @@
 import path from "node:path";
 import { AcaiSpecIndex, indexAcaiSpecs } from "../acai/acai";
-import { CommandTranscript, commandTranscriptOutputPath, indexCommandTranscripts } from "../commands/transcripts";
+import { CommandTranscript, commandTranscriptInputDir, commandTranscriptOutputPath, indexCommandTranscriptFiles } from "../commands/transcripts";
 import { ReviewSurfacesConfig } from "../config/config";
 import { filterPathsByPatterns, walkFiles } from "../core/glob";
 import { ensureDir, hashFile, writeJson, writeText } from "../core/files";
@@ -74,11 +74,12 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const docPaths = filterPathsByPatterns(repositoryFiles, options.config.docs);
   const testPaths = filterPathsByPatterns(repositoryFiles, options.config.tests);
   const feedbackPaths = filterPathsByPatterns(repositoryFiles, [".review-surfaces/feedback/*.yaml"]);
-  const commandTranscriptDir = normalizeRelativeDir(options.commandTranscriptDir ?? ".review-surfaces/commands");
+  const commandTranscriptDir = normalizeRelativeDir(options.commandTranscriptDir ?? commandTranscriptInputDir(options.cwd, outputDir));
   const commandTranscriptPaths = filterPathsByPatterns(repositoryFiles, [`${commandTranscriptDir}/*.json`]);
   const specIndex = await indexAcaiSpecs(options.cwd, specPaths);
   const feedback = await indexFeedbackFiles(options.cwd, feedbackPaths);
-  const commandTranscripts = await indexCommandTranscripts(options.cwd, commandTranscriptPaths);
+  const commandTranscriptIndex = await indexCommandTranscriptFiles(options.cwd, commandTranscriptPaths);
+  const commandTranscripts = commandTranscriptIndex.transcripts;
   const git = collectGitInfo(options.cwd, options.baseRef, options.headRef);
   const allChangedFiles = collectChangedFiles(options.cwd, options.baseRef, options.headRef);
   const changedFiles = allChangedFiles.filter((file) => !ignore.isIgnored(file.path));
@@ -124,14 +125,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
       kind: "feedback"
     });
   }
-  for (const commandTranscriptPath of commandTranscriptPaths) {
-    inputHashes.push({
-      path: commandTranscriptPath,
-      algorithm: "sha256",
-      hash: await hashFile(path.resolve(options.cwd, commandTranscriptPath)),
-      kind: "command_transcript"
-    });
-  }
+  inputHashes.push(...commandTranscriptIndex.sourceHashes);
 
   const manifest: RunManifest = {
     tool_version: "0.1.0",

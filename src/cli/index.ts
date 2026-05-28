@@ -1,4 +1,6 @@
 import path from "node:path";
+import { recordCommandTranscript } from "../commands/runner";
+import { commandTranscriptInputDir } from "../commands/transcripts";
 import { collectInputs, CollectionResult } from "../collector/collect";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
 import { CliError, ExitCodes } from "../core/exit-codes";
@@ -27,6 +29,7 @@ const COMMANDS = [
   "packet",
   "all",
   "validate",
+  "run",
   "comment"
 ];
 
@@ -56,6 +59,8 @@ async function main(): Promise<number> {
       return ExitCodes.success;
     case "validate":
       return runValidate(parsed);
+    case "run":
+      return runRecordedCommand(parsed);
     case "intent":
     case "evaluate":
     case "diagrams":
@@ -76,6 +81,21 @@ async function main(): Promise<number> {
     default:
       throw new CliError(`Unhandled command: ${parsed.command}`, ExitCodes.runtimeError);
   }
+}
+
+async function runRecordedCommand(parsed: ParsedArgs): Promise<number> {
+  const cwd = process.cwd();
+  if (parsed.positionals.length === 0) {
+    throw new CliError("Usage: review-surfaces run [--id <id>] [--command-transcripts <dir>] -- <command> [args...]", ExitCodes.usageError);
+  }
+  const result = await recordCommandTranscript({
+    cwd,
+    args: parsed.positionals,
+    id: stringFlag(parsed, "id"),
+    transcriptDir: stringFlag(parsed, "command-transcripts") ?? transcriptDirFromOut(parsed)
+  });
+  console.error(`Recorded command transcript to ${result.transcriptPath}`);
+  return result.exitCode;
 }
 
 async function runCollect(parsed: ParsedArgs): Promise<void> {
@@ -181,12 +201,17 @@ function parseArgs(args: string[]): ParsedArgs {
     args = args.slice(1);
   }
 
-  const [command = "help", ...rest] = args;
+  const command = args.length === 0 || args[0] === "--help" ? "help" : args[0];
+  const rest = command === "help" ? args : args.slice(1);
   const flags: Record<string, string | boolean> = {};
   const positionals: string[] = [];
 
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
+    if (arg === "--") {
+      positionals.push(...rest.slice(index + 1));
+      break;
+    }
     if (!arg.startsWith("--")) {
       positionals.push(arg);
       continue;
@@ -232,6 +257,11 @@ function providerFlag(parsed: ParsedArgs, config: ReviewSurfacesConfig): Provide
   }
 }
 
+function transcriptDirFromOut(parsed: ParsedArgs): string | undefined {
+  const outputDir = stringFlag(parsed, "out");
+  return outputDir ? commandTranscriptInputDir(process.cwd(), path.resolve(process.cwd(), outputDir)) : undefined;
+}
+
 function printHelp(): void {
   console.log(`review-surfaces 0.1.0
 
@@ -254,6 +284,7 @@ Commands:
   packet        Run the available local pipeline and write review packet
   all           Run the whole available local pipeline
   validate      Validate review_packet.json against schemas/review_packet.schema.json
+  run           Execute a local command and write a bounded command transcript
   comment       Deferred provider renderer stub
 
 Options:
@@ -268,6 +299,7 @@ Options:
                    Optional text/Markdown/JSONL/YAML conversation log for methodology
   --command-transcripts <dir>
                    Optional command transcript directory; default .review-surfaces/commands
+  --id <id>       Optional transcript ID for run
   --provider <name> Optional enrichment provider: mock, ai-sdk, agent-file. Default mock
   --model <model>   Optional AI SDK model, e.g. google:gemini-2.5-flash
   --agent-input <path>

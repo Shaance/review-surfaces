@@ -9,6 +9,7 @@ declare module "node:assert/strict" {
 
 declare module "node:child_process" {
   export const execFileSync: any;
+  export const spawn: any;
   export const spawnSync: any;
 }
 
