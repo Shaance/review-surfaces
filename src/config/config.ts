@@ -34,7 +34,7 @@ export const defaultConfig: ReviewSurfacesConfig = {
   schema_version: "review-surfaces.config.v1",
   output_dir: ".review-surfaces",
   specs: ["features/**/*.feature.yaml"],
-  docs: ["README.md", "README.bootstrap.md", "AGENTS.md", "docs/**/*.md", ".agents/skills/**/SKILL.md"],
+  docs: ["README.md", "README.bootstrap.md", "AGENTS.md", "CLAUDE.md", "docs/**/*.md", ".agents/skills/**/SKILL.md"],
   tests: ["tests/**/*.test.ts", "tests/**/*.test.js"],
   privacy: {
     ignore_file: ".review-surfacesignore",

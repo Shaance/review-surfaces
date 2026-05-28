@@ -10,6 +10,36 @@ This repository is developed spec-first and dogfood-first.
 4. Preserve Acai-style IDs such as `review-surfaces.INTENT.2` in implementation notes, tests, review packets, and remediation tasks where useful.
 5. Treat local `coffee-agents` setup as optional bootstrap scaffolding only. Do not introduce public product dependencies on private local scripts or paths.
 
+## Start here
+
+1. Detect whether this checkout is a git worktree:
+
+```bash
+test -f .git && echo "WORKTREE" || echo "MAIN"
+```
+
+2. If it is a worktree, copy optional local env and shared Claude project settings from the main worktree:
+
+```bash
+./scripts/copy-env.sh
+```
+
+Set `REVIEW_SURFACES_MAIN_WORKTREE=/absolute/path/to/main/worktree` if auto-detection chooses the wrong source. Secret ownership and expected keys live in `scripts/SECRETS.md`.
+
+3. Install dependencies for this worktree when needed:
+
+```bash
+pnpm install
+```
+
+4. Use offline mode by default:
+
+```bash
+pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces
+```
+
+Use `--provider agent-file --agent-input <json-or-yaml>` when a coding agent such as Codex or Claude contributes bounded local hypotheses. Use `--provider ai-sdk` only for optional live enrichment after privacy filtering; real credentials belong in `.env.local`, not committed files.
+
 ## Before editing
 
 1. Read `features/review-surfaces.feature.yaml`.
@@ -68,3 +98,4 @@ Do not rely on hidden chat context for handoff. Update `agent_handoff.md`, the f
 - Do not invent file paths, line numbers, commands, ACIDs, or test names.
 - Mark missing evidence as unknown rather than filling gaps with plausible prose.
 - Keep generated review artifacts compact enough for a human reviewer to use.
+- Treat `.review-surfacesignore`, secret redaction, and evidence validation as part of the core local pipeline, not provider-only concerns.

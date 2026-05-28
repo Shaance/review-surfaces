@@ -1,0 +1,13 @@
+# review-surfaces.COLLECTOR.6 / review-surfaces.PRIVACY.3
+# Exclude local credentials and raw logs before indexing or remote provider use.
+.env
+.env.*
+!.env.example
+**/.dev.vars
+**/*.pem
+**/*.key
+**/id_rsa
+**/id_ed25519
+.claude/settings.local.json
+.review-surfaces/feedback/raw/**
+.review-surfaces/inputs/conversation.raw.*

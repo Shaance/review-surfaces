@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileExists, readText, writeJson, writeText } from "../core/files";
 import { parseYaml } from "../core/simple-yaml";
+import { redactSecrets } from "../privacy/secrets";
 import { ReviewPacket } from "../render/packet";
 
 export type ProviderName = "mock" | "ai-sdk" | "agent-file";
@@ -11,6 +12,8 @@ export interface EnrichmentOptions {
   model?: string;
   agentInput?: string;
   outputDir: string;
+  redactSecrets?: boolean;
+  remotePrivacyBlocked?: boolean;
 }
 
 export interface EnrichmentResult {
@@ -84,6 +87,16 @@ async function enrichFromAgentFile(packet: ReviewPacket, options: EnrichmentOpti
 }
 
 async function enrichFromAiSdk(packet: ReviewPacket, options: EnrichmentOptions): Promise<EnrichmentResult> {
+  if (options.remotePrivacyBlocked) {
+    return {
+      provider: "ai-sdk",
+      model: options.model,
+      status: "skipped",
+      summary: "AI SDK provider skipped because collected inputs contained high-risk secret material.",
+      skipped_reason: "privacy_block"
+    };
+  }
+
   const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   if (!apiKey) {
     return {
@@ -92,6 +105,20 @@ async function enrichFromAiSdk(packet: ReviewPacket, options: EnrichmentOptions)
       status: "skipped",
       summary: "AI SDK provider skipped because GOOGLE_GENERATIVE_AI_API_KEY is not set.",
       skipped_reason: "missing_google_api_key"
+    };
+  }
+
+  const rawPrompt = enrichmentPrompt(packet);
+  const safePrompt = options.redactSecrets === false
+    ? { text: rawPrompt, redactions: [], blocked: false }
+    : redactSecrets(rawPrompt);
+  if (safePrompt.blocked) {
+    return {
+      provider: "ai-sdk",
+      model: options.model,
+      status: "skipped",
+      summary: "AI SDK provider skipped because the remote prompt contained high-risk secret material.",
+      skipped_reason: "privacy_block"
     };
   }
 
@@ -116,7 +143,7 @@ async function enrichFromAiSdk(packet: ReviewPacket, options: EnrichmentOptions)
     const modelId = normalizeModel(options.model);
     const result = await ai.generateText({
       model: provider(modelId),
-      prompt: enrichmentPrompt(packet)
+      prompt: safePrompt.text
     });
     const parsed = safeJson(result.text);
     if (isRecord(parsed)) {
@@ -128,7 +155,7 @@ async function enrichFromAiSdk(packet: ReviewPacket, options: EnrichmentOptions)
       model: modelId,
       status: isRecord(parsed) ? "applied" : "failed",
       summary: isRecord(parsed)
-        ? `Applied AI SDK enrichment using ${modelId}.`
+        ? `Applied AI SDK enrichment using ${modelId}${safePrompt.redactions.length ? " after deterministic prompt redaction" : ""}.`
         : "AI SDK returned non-JSON enrichment; deterministic packet was preserved.",
       skipped_reason: isRecord(parsed) ? undefined : "invalid_ai_output"
     };

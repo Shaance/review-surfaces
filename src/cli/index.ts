@@ -131,7 +131,9 @@ async function runAll(parsed: ParsedArgs): Promise<void> {
     provider,
     model: requestedModel,
     agentInput: stringFlag(parsed, "agent-input"),
-    outputDir: collection.outputDir
+    outputDir: collection.outputDir,
+    redactSecrets: config.privacy.redact_secrets,
+    remotePrivacyBlocked: collection.privacy.remote_provider_blocked
   });
   const dogfood = isDogfoodRun(parsed) ? buildDogfood(collection, evaluation, risks, methodology, `${enrichment.provider}/${enrichment.status}`, commands) : undefined;
   await writeReviewPacket({
