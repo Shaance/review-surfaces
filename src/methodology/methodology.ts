@@ -179,8 +179,8 @@ function pickValidationSuccessClaims(events: ConversationEvent[]): string[] {
 
 function isValidationSuccessClaim(summary: string): boolean {
   const lower = summary.toLowerCase();
-  const mentionsValidation = /\b(?:tests?|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test)\b/.test(lower);
-  const claimsSuccess = /\b(?:pass|passed|passes|passing|green|succeeded|successful|success|validated|verified)\b/.test(lower);
+  const mentionsValidation = /\b(?:tests?|tested|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test)\b/.test(lower);
+  const claimsSuccess = /\b(?:tested|pass|passed|passes|passing|green|succeeded|successful|success|validated|verified)\b/.test(lower);
   if (!mentionsValidation || !claimsSuccess) {
     return false;
   }
@@ -188,7 +188,8 @@ function isValidationSuccessClaim(summary: string): boolean {
 }
 
 function claimHasCommandEvidence(claim: string, transcriptCommands: Set<string>): boolean {
-  return extractClaimedCommands(claim).some((command) => transcriptCommands.has(command));
+  const claimedCommands = extractClaimedCommands(claim);
+  return claimedCommands.length > 0 && claimedCommands.every((command) => transcriptCommands.has(command));
 }
 
 function normalizeCommand(command: string): string {
@@ -198,11 +199,27 @@ function normalizeCommand(command: string): string {
 function extractClaimedCommands(claim: string): string[] {
   const commands: string[] = [];
   const normalizedClaim = normalizeCommand(claim);
-  const commandPattern = /\b((?:pnpm|npm|yarn|bun)\s+(?:run\s+)?(?:test(?::[\w.-]+)?|lint|typecheck|build)|node\s+--test(?:\s+[\w./:-]+)?|tsc(?:\s+--noemit)?)/g;
-  for (const match of normalizedClaim.matchAll(commandPattern)) {
-    commands.push(normalizeCommand(match[1]));
+  const commandStarts = [...normalizedClaim.matchAll(/\b(?:pnpm|npm|yarn|bun|node|tsc)\b/g)];
+  for (let index = 0; index < commandStarts.length; index += 1) {
+    const start = commandStarts[index].index ?? 0;
+    const end = commandStarts[index + 1]?.index ?? normalizedClaim.length;
+    const command = cleanClaimedCommand(normalizedClaim.slice(start, end));
+    if (command && commandLooksSupported(command)) {
+      commands.push(command);
+    }
   }
   return [...new Set(commands)];
+}
+
+function cleanClaimedCommand(value: string): string {
+  return normalizeCommand(value)
+    .replace(/\s+\b(?:passed|passes|passing|green|succeeded|successful|success|validated|verified|tested|after|before|because|so|while|when)\b.*$/i, "")
+    .replace(/\s+\b(?:and|then)\s*$/i, "")
+    .trim();
+}
+
+function commandLooksSupported(command: string): boolean {
+  return /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+[\w:.-]+|exec\s+[\w:.-]+|test(?::[\w.-]+)?|lint|typecheck|build)(?:\s+[^\s,.;]+)*|node\s+--test(?:\s+[^\s,.;]+)*|tsc(?:\s+[^\s,.;]+)*)$/.test(command);
 }
 
 function redactConversationSummary(value: unknown): string {

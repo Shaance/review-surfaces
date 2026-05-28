@@ -42,6 +42,7 @@ test("review-surfaces.METHODOLOGY.2 separates transcript-backed claims from unve
       "assistant: tests are green for the workflow.",
       "assistant: all tests pass after the fix.",
       "assistant: failing tests are now green.",
+      "assistant: manually tested the CLI.",
       "assistant: the tests should pass after this change.",
       "assistant: add tests for this gap.",
       "assistant: test coverage is missing for the workflow.",
@@ -72,6 +73,7 @@ test("review-surfaces.METHODOLOGY.2 separates transcript-backed claims from unve
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("tests are green")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("all tests pass")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("failing tests are now green")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("manually tested the CLI")));
   assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("should pass")));
   assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("add tests for this gap")));
   assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("coverage is missing")));
@@ -118,7 +120,10 @@ test("review-surfaces.METHODOLOGY.2 requires exact command matches for verified 
     [
       "assistant: pnpm run test passed after the implementation.",
       "assistant: pnpm run test:coverage passed after the implementation.",
-      "assistant: npm run test passed after the implementation."
+      "assistant: npm run test passed after the implementation.",
+      "assistant: pnpm run test -- --runInBand passed after the implementation.",
+      "assistant: pnpm exec vitest passed after the implementation.",
+      "assistant: pnpm run lint and pnpm run test passed after the implementation."
     ].join("\n")
   );
 
@@ -134,6 +139,24 @@ test("review-surfaces.METHODOLOGY.2 requires exact command matches for verified 
           stdout_hash: "abc123",
           truncated: false,
           source_path: ".review-surfaces/commands/CMD-PNPM-TEST.json"
+        },
+        {
+          id: "CMD-PNPM-TEST-RUNINBAND",
+          command: "pnpm run test -- --runInBand",
+          status: "passed",
+          exit_code: 0,
+          stdout_hash: "def456",
+          truncated: false,
+          source_path: ".review-surfaces/commands/CMD-PNPM-TEST-RUNINBAND.json"
+        },
+        {
+          id: "CMD-PNPM-VITEST",
+          command: "pnpm exec vitest",
+          status: "passed",
+          exit_code: 0,
+          stdout_hash: "fed654",
+          truncated: false,
+          source_path: ".review-surfaces/commands/CMD-PNPM-VITEST.json"
         }
       ]
     }),
@@ -142,10 +165,14 @@ test("review-surfaces.METHODOLOGY.2 requires exact command matches for verified 
   );
 
   assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm run test passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm run test -- --runInBand passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm exec vitest passed")));
   assert.ok(!methodology.verified_claims.some((claim) => claim.includes("test:coverage")));
   assert.ok(!methodology.verified_claims.some((claim) => claim.includes("npm run test passed") && !claim.includes("pnpm run")));
+  assert.ok(!methodology.verified_claims.some((claim) => claim.includes("pnpm run lint and pnpm run test passed")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run test:coverage passed")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("npm run test passed")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run lint and pnpm run test passed")));
 });
 
 test("review-surfaces.METHODOLOGY.2 scans all validation claims and redacts conversation secrets", async () => {
