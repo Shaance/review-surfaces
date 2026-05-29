@@ -6,6 +6,7 @@ import { IntentModel, IntentRequirement } from "../intent/intent";
 import { MethodologyModel } from "../methodology/methodology";
 import { redactSecrets } from "../privacy/secrets";
 import { RisksModel } from "../risks/risks";
+import { buildReviewAreas, ReviewArea, strictGroupsForReviewPath } from "../review-areas/areas";
 import { GenerateStructuredOptions, ReasoningProvider } from "./provider";
 
 /**
@@ -433,6 +434,12 @@ async function runEvaluationCandidateEvidence(
   generateOptions: GenerateStructuredOptions
 ): Promise<void> {
   const candidatePaths = candidatePathPool(inputs.collection);
+  // FINDING D (soundness): the review areas used to decide whether a cited path
+  // is DETERMINISTICALLY TIED to a requirement's group (mirrors the verification
+  // loop's strict group mapping). Pool membership is necessary but NOT sufficient
+  // to upgrade missing -> partial; an unrelated pooled path attaches as a
+  // hypothesis but does not change status.
+  const areas = buildReviewAreas({ repoIndex: inputs.collection.repoIndex }).areas;
   // Collapse the GLOBAL review_focus surface by rationale TEXT (not by
   // requirement id). One LLM hypothesis cited across many requirements becomes a
   // single coherent "N requirements share this LLM hypothesis" line instead of
@@ -484,7 +491,7 @@ async function runEvaluationCandidateEvidence(
     if (!entry) {
       continue; // the batch returned nothing for this requirement
     }
-    applyCandidateEvidence(result, entry, evidenceContext, inputs.risks, candidatePaths, focusAccumulator, budget);
+    applyCandidateEvidence(result, entry, evidenceContext, inputs.risks, candidatePaths, focusAccumulator, budget, areas);
   }
 }
 
@@ -584,7 +591,8 @@ function applyCandidateEvidence(
   risks: RisksModel,
   candidatePaths: string[],
   focusAccumulator: ReviewFocusAccumulator,
-  budget: GlobalEvidenceBudget
+  budget: GlobalEvidenceBudget,
+  areas: ReviewArea[]
 ): void {
   const rawCandidates = Array.isArray(data.candidate_evidence) ? data.candidate_evidence : [];
   const candidatePathSet = new Set(candidatePaths);
@@ -660,12 +668,47 @@ function applyCandidateEvidence(
     }
   }
 
-  // The ONLY allowed status change: missing -> partial when valid impl/test
-  // evidence was actually attached. Never to satisfied; never override anything
-  // the deterministic layer already decided. If the global cap blocked every
-  // ref for this requirement, nothing was attached and no upgrade happens.
-  const upgraded = maybeUpgradeToPartial(result, attached);
+  // FINDING D (soundness + --strict): missing -> partial may fire ONLY when at
+  // least one ATTACHED valid ref is DETERMINISTICALLY TIED to THIS requirement
+  // (mirrors the verification-loop per-requirement mapping rule). Pool membership
+  // + path-existence alone is NOT enough: an agent/LLM could otherwise cite any
+  // unrelated changed/test file, drop the missing count, and help --strict skip
+  // the quality gate (which counts missing). A pooled-but-unrelated ref still
+  // attaches as a low-confidence llm_proposed hypothesis (above), but the status
+  // stays missing so the gate is never bypassed by an unrelated citation.
+  const tiedEvidence = attached.filter((ref) => isDeterministicallyTied(result, ref, areas));
+  const upgraded = maybeUpgradeToPartial(result, tiedEvidence);
   enrichReviewFocus(result, data, risks, upgraded, focusAccumulator);
+}
+
+// Whether an LLM-proposed (but VALID, in-pool) candidate ref is deterministically
+// tied to THIS requirement, using the SAME mapping rules the verification loop
+// trusts for promotion:
+//   (a) EXACT-ACID: the ref's path or test_name references the requirement's
+//       exact ACID (e.g. contains "review-surfaces.EVAL.1"). OR
+//   (b) GROUP/TEST MAPPING: the ref's path maps to the requirement's group under
+//       the STRICT review-area mapping (true directory prefixes + whole-token
+//       test keywords, never a stray substring).
+// A ref that satisfies neither is a pooled-but-unrelated hypothesis: it attaches
+// but does NOT move the status.
+function isDeterministicallyTied(result: RequirementResult, ref: EvidenceRef, areas: ReviewArea[]): boolean {
+  if (result.acai_id && refReferencesAcid(ref, result.acai_id)) {
+    return true;
+  }
+  const group = groupFromAcid(result.acai_id);
+  if (!group || typeof ref.path !== "string") {
+    return false;
+  }
+  return strictGroupsForReviewPath(ref.path, areas).includes(group);
+}
+
+function refReferencesAcid(ref: EvidenceRef, acaiId: string): boolean {
+  const haystack = [ref.path, ref.test_name, ref.note].filter((part): part is string => typeof part === "string");
+  return haystack.some((part) => part.includes(acaiId));
+}
+
+function groupFromAcid(acaiId: string | undefined): string | undefined {
+  return acaiId?.split(".")[1];
 }
 
 function maybeUpgradeToPartial(result: RequirementResult, validEvidence: EvidenceRef[]): boolean {

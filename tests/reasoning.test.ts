@@ -163,7 +163,10 @@ test("INVARIANT: a VALID LLM candidate ref upgrades missing -> partial at most, 
         acai_id: "example.EVAL.1",
         requirement_id: "REQ-001",
         candidate_evidence: [
-          { kind: "file", path: "src/evaluation/evaluate.ts", note: "implements evaluation" }
+          // FINDING D: the candidate cites the requirement's EXACT ACID in its
+          // note, a deterministic tie that legitimately upgrades missing ->
+          // partial (an unrelated in-pool path would not; see the dedicated test).
+          { kind: "file", path: "src/evaluation/evaluate.ts", note: "implements example.EVAL.1" }
         ],
         rationale: "This file appears to implement the requirement.",
         what_would_confirm: "An exact ACID mention or a focused test."
@@ -174,7 +177,7 @@ test("INVARIANT: a VALID LLM candidate ref upgrades missing -> partial at most, 
   await runReasoningStages(provider, { collection, intent: missingIntent(), evaluation, methodology: emptyMethodology(), risks: emptyRisks() });
 
   const result = evaluation.results[0];
-  assert.equal(result.status, "partial", "valid LLM evidence may upgrade at most to partial");
+  assert.equal(result.status, "partial", "valid LLM evidence deterministically tied to the requirement may upgrade at most to partial");
   assert.notEqual(result.status, "satisfied");
   const proposed = result.evidence.find((ref) => ref.llm_proposed === true);
   assert.ok(proposed, "the attached candidate evidence carries the LLM-proposed marker");
@@ -231,7 +234,10 @@ test("INVARIANT: the LLM cannot over-claim a status; the claimed status is ignor
         acai_id: "example.EVAL.1",
         requirement_id: "REQ-001",
         status: "satisfied",
-        candidate_evidence: Array.from({ length: 50 }, () => ({ kind: "file", path: "src/real.ts", note: "spam" })),
+        // The note cites the exact ACID (a deterministic tie under FINDING D) so
+        // the only allowed change (missing -> partial) can fire; the claimed
+        // "satisfied" is still ignored and the flood is still capped.
+        candidate_evidence: Array.from({ length: 50 }, () => ({ kind: "file", path: "src/real.ts", note: "spam example.EVAL.1" })),
         rationale: "trust me it is done",
         what_would_confirm: "nothing"
       } as BatchedReqEntry
@@ -314,6 +320,123 @@ test("INVARIANT: a real repo file OUTSIDE the candidate pool (changed files + te
   const surfaced = result.missing_evidence.find((ref) => ref.validation_status === "invalid");
   assert.ok(surfaced, "the out-of-pool ref is surfaced as invalid, not silently swallowed");
   assert.match(surfaced?.note ?? "", /candidate pool/);
+});
+
+// FINDING D (soundness): an in-pool, valid, EXISTING changed file that is NOT
+// deterministically tied to the requirement (no exact ACID in its path/name/note,
+// no strict group mapping) must ATTACH as a low-confidence hypothesis but must
+// NOT upgrade missing -> partial. Otherwise an agent could cite any unrelated
+// changed file, drop the missing count, and help --strict skip the quality gate.
+test("FINDING D: an UNRELATED in-pool changed file attaches as a hypothesis but does NOT upgrade missing -> partial", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-unrelated-pool-"));
+  fs.mkdirSync(path.join(tmp, "src", "billing"), { recursive: true });
+  // A real, CHANGED, in-pool file that is unrelated to the EVAL requirement: its
+  // path has no EVAL token, and there are no configured/fallback areas mapping it
+  // to the EVAL group.
+  fs.writeFileSync(path.join(tmp, "src", "billing", "invoice.ts"), "export const invoice = 1;\n");
+
+  const collection = baseCollection(tmp, {
+    repositoryFiles: ["src/billing/invoice.ts"],
+    changedFiles: [{ path: "src/billing/invoice.ts", status: "M", source: "working_tree" }]
+  });
+  const evaluation = evaluationWithStatus("missing");
+
+  const provider = stubProvider({
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.EVAL.1",
+        requirement_id: "REQ-001",
+        // The cited path is real and IN the candidate pool (it is a changed file),
+        // but it is unrelated to example.EVAL.1: no ACID, no group mapping.
+        candidate_evidence: [{ kind: "file", path: "src/billing/invoice.ts", note: "I think this helps somehow" }],
+        rationale: "Speculative association with the requirement.",
+        what_would_confirm: "An exact ACID mention or a focused test."
+      }
+    ])
+  });
+
+  await runReasoningStages(provider, { collection, intent: missingIntent(), evaluation, methodology: emptyMethodology(), risks: emptyRisks() });
+
+  const result = evaluation.results[0];
+  assert.equal(result.status, "missing", "an unrelated in-pool citation must NOT drop the missing count");
+  // The hypothesis is still ATTACHED (it is in-pool and path-valid), just not as
+  // a status-changing tie.
+  const attached = result.evidence.find((ref) => ref.llm_proposed === true && ref.path === "src/billing/invoice.ts");
+  assert.ok(attached, "the in-pool hypothesis is still attached as low-confidence llm_proposed evidence");
+  assert.equal(attached?.validation_status, "valid", "the attached hypothesis validated (it exists and is in-pool)");
+});
+
+test("FINDING D: a DETERMINISTICALLY-mapped path (exact ACID in the note) DOES upgrade missing -> partial", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-tied-acid-"));
+  fs.mkdirSync(path.join(tmp, "src", "billing"), { recursive: true });
+  fs.writeFileSync(path.join(tmp, "src", "billing", "invoice.ts"), "export const invoice = 1;\n");
+
+  const collection = baseCollection(tmp, {
+    repositoryFiles: ["src/billing/invoice.ts"],
+    changedFiles: [{ path: "src/billing/invoice.ts", status: "M", source: "working_tree" }]
+  });
+  const evaluation = evaluationWithStatus("missing");
+
+  const provider = stubProvider({
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.EVAL.1",
+        requirement_id: "REQ-001",
+        // Same unrelated PATH as the negative test, but now the citation
+        // references the requirement's EXACT ACID, a deterministic tie.
+        candidate_evidence: [{ kind: "file", path: "src/billing/invoice.ts", note: "implements example.EVAL.1 behaviour" }],
+        rationale: "This file implements the exact requirement.",
+        what_would_confirm: "A focused test."
+      }
+    ])
+  });
+
+  await runReasoningStages(provider, { collection, intent: missingIntent(), evaluation, methodology: emptyMethodology(), risks: emptyRisks() });
+
+  const result = evaluation.results[0];
+  assert.equal(result.status, "partial", "an exact-ACID-tied valid citation upgrades missing -> partial");
+  assert.ok(result.evidence.some((ref) => ref.llm_proposed === true), "the tied hypothesis is attached as proof-of-hypothesis");
+});
+
+test("FINDING D: a DETERMINISTICALLY group-mapped path (strict area mapping) DOES upgrade missing -> partial", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-tied-group-"));
+  fs.mkdirSync(path.join(tmp, "src", "evaluation"), { recursive: true });
+  fs.writeFileSync(path.join(tmp, "src", "evaluation", "evaluate.ts"), "export const x = 1;\n");
+
+  // A fallback area derived from a cluster whose id yields the EVAL group key and
+  // whose directory prefix is src/evaluation/, so strictGroupsForReviewPath maps
+  // the cited path to EVAL (a deterministic group tie, no ACID needed).
+  const collection = baseCollection(tmp, {
+    repositoryFiles: ["src/evaluation/evaluate.ts"],
+    changedFiles: [{ path: "src/evaluation/evaluate.ts", status: "M", source: "working_tree" }],
+    repoIndex: {
+      files: [],
+      ecosystems: [],
+      clusters: [
+        { id: "EVAL", label: "Evaluation", language: "typescript", dirs: ["src/evaluation"], files: ["src/evaluation/evaluate.ts"] }
+      ]
+    }
+  });
+  const evaluation = evaluationWithStatus("missing");
+
+  const provider = stubProvider({
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.EVAL.1",
+        requirement_id: "REQ-001",
+        // No ACID in the note; the tie comes from the STRICT group mapping of the
+        // cited path (src/evaluation/ -> EVAL) under the cluster-derived area.
+        candidate_evidence: [{ kind: "file", path: "src/evaluation/evaluate.ts", note: "implements evaluation" }],
+        rationale: "This evaluation module implements the requirement.",
+        what_would_confirm: "An exact ACID mention or a focused test."
+      }
+    ])
+  });
+
+  await runReasoningStages(provider, { collection, intent: missingIntent(), evaluation, methodology: emptyMethodology(), risks: emptyRisks() });
+
+  const result = evaluation.results[0];
+  assert.equal(result.status, "partial", "a strict group-mapped valid citation upgrades missing -> partial");
 });
 
 // Stage A #3: build N pool files src/f000.ts.. plus a matching changed-file

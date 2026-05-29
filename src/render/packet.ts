@@ -586,7 +586,17 @@ function isHandoffValidationEvidence(evidence: RisksModel["test_evidence"][numbe
   if (evidence.kind !== "direct" && evidence.kind !== "indirect") {
     return false;
   }
-  return (evidence.evidence ?? []).some((ref) => ref.kind === "command");
+  // FINDING F: include parsed JUnit passes. A passing parsed test becomes a
+  // kind:"direct" entry carrying only a kind:"test" evidence ref (the REAL
+  // test_name) with validation_status "valid" -- it has NO command ref. The prior
+  // filter required a command ref, so a run with --test-output but no command
+  // transcript promoted requirements and listed parsed passes in risks.yaml while
+  // agent_handoff.md claimed no validation evidence was recorded. Accept a
+  // VERIFIED parsed-test ref (kind "test", validation_status "valid") alongside
+  // the command-transcript path so the handoff reflects parsed-test validation.
+  return (evidence.evidence ?? []).some(
+    (ref) => ref.kind === "command" || (ref.kind === "test" && ref.validation_status === "valid")
+  );
 }
 
 function isHandoffFailedValidationEvidence(evidence: RisksModel["test_evidence"][number]): boolean {

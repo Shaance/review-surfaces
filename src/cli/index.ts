@@ -8,7 +8,7 @@ import { loadConfig, ReviewSurfacesConfig } from "../config/config";
 import { CliError, ExitCodes } from "../core/exit-codes";
 import { fileExists } from "../core/files";
 import { gateDecision, GateOptions } from "../core/gate";
-import { ArchitectureModel, buildArchitecture } from "../diagrams/diagrams";
+import { ArchitectureModel, buildArchitecture, buildArchitectureModel } from "../diagrams/diagrams";
 import { buildDogfood, DogfoodComparisonInput } from "../dogfood/dogfood";
 import { comparePackets, loadPreviousPacket, resolvePreviousPacketPath } from "../dogfood/compare";
 import { EvaluationModel, evaluateIntent, verifyRequirementsWithTests } from "../evaluation/evaluate";
@@ -34,7 +34,7 @@ import { renderCommentFromPacketFile, resolvePacketPath } from "../render/commen
 import { renderSarifFromPacketFile } from "../render/sarif";
 import { postStickyComment } from "../render/post-comment";
 import { writeText } from "../core/files";
-import { validateJsonFile } from "../schema/json-schema";
+import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 
 const COMMANDS = [
   "init",
@@ -300,14 +300,39 @@ async function readCacheSnapshot(cwd: string, parsed: ParsedArgs): Promise<Cache
   }
   let packetValid = false;
   if (fileExists(packetPath)) {
-    try {
-      JSON.parse(fs.readFileSync(packetPath, "utf8"));
-      packetValid = true;
-    } catch {
-      packetValid = false;
-    }
+    packetValid = await isSchemaValidPacket(cwd, parsed, packetPath);
   }
   return { manifestPath, manifestRaw, priorSignature, packetPath, packetValid };
+}
+
+// FINDING E (cache schema validity): a --cache signature hit must reuse a packet
+// only when review_packet.json is a SCHEMA-VALID review packet, not merely
+// parseable JSON. A truncated `{}` or other parseable non-packet JSON that
+// happens to share a signature would otherwise be reused and break later
+// comment/SARIF/validate. We validate the on-disk packet against the same
+// review_packet schema `validate` uses (reusing the shared ajv validator);
+// schema-invalid is treated exactly like a cache miss (the caller regenerates).
+//
+// If the schema itself cannot be read (a repo without schemas/), we conservatively
+// fall back to the parseable-only check so caching is not silently disabled for
+// repos that lack the schema file; `all` still writes a schema-valid packet there.
+async function isSchemaValidPacket(cwd: string, parsed: ParsedArgs, packetPath: string): Promise<boolean> {
+  let packetData: unknown;
+  try {
+    packetData = JSON.parse(fs.readFileSync(packetPath, "utf8"));
+  } catch {
+    return false; // unparseable => cache miss
+  }
+  const schemaPath = path.resolve(cwd, stringFlag(parsed, "schema") ?? "schemas/review_packet.schema.json");
+  let schema: unknown;
+  try {
+    schema = JSON.parse(fs.readFileSync(schemaPath, "utf8"));
+  } catch {
+    // Schema unavailable: keep the prior parseable-only behavior so caching still
+    // works on repos without a checked-in schema.
+    return true;
+  }
+  return validateJsonSchema(schema, packetData).valid;
 }
 
 function isCacheHit(snapshot: CacheSnapshot, currentSignature: string | undefined): boolean {
@@ -353,7 +378,6 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   const reviewAreas = buildReviewAreas({ config, repoIndex: collection.repoIndex });
   const areasOption = reviewAreas.mode === "config" ? { areas: reviewAreas.areas } : {};
   const intent = await buildIntent(cwd, collection);
-  const evaluation = await evaluateIntent(cwd, collection, intent, areasOption);
   const methodology = await buildMethodology(cwd, collection, stringFlag(parsed, "conversation"), commands);
 
   // Phase 3-2: schema-bound, evidence-gated reasoning stages run with the
@@ -369,10 +393,13 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     redactSecrets: config.privacy.redact_secrets,
     remotePrivacyBlocked: collection.privacy.remote_provider_blocked
   };
-  const risks = await runReasoningWithVerification(reasoningProvider, reasoningOptions, {
+  // FINDING A: intent synthesis (which may append LLM candidate_requirements) runs
+  // BEFORE evaluateIntent inside this helper, so the returned evaluation has a
+  // result for EVERY intent requirement, including the LLM candidates.
+  const { evaluation, risks } = await runReasoningWithVerification(reasoningProvider, reasoningOptions, {
+    cwd,
     collection,
     intent,
-    evaluation,
     methodology,
     commands,
     areasOption
@@ -516,8 +543,34 @@ async function loadOrComputeIntent(context: StageContext, label = "intent"): Pro
   return computeEnrichedIntent(context);
 }
 
+// FINDING C: the load-or-compute fallback for a MISSING evaluation.yaml (used by
+// the composable diagrams/handoff stages). It must produce the SAME evaluation
+// the `evaluate`/`all` path produces -- i.e. with the candidate-evidence
+// reasoning stage AND the partial -> satisfied verification loop applied -- so a
+// standalone diagrams/handoff run builds from POST-promotion statuses rather than
+// pre-promotion ones. The intent passed in is already intent-reasoned (its
+// caller runs computeEnrichedIntent), so only the evaluation-owned reasoning +
+// verification are slotted here. Under mock / without --test-output both are
+// no-ops, so the byte-stable offline path is preserved.
 async function computeEvaluation(context: StageContext, intent: IntentModel): Promise<EvaluationModel> {
   const evaluation = await evaluateIntent(context.cwd, context.collection, intent, context.areasOption);
+  // Stage 2 (candidate evidence) attaches LLM-pinpointed test refs the verification
+  // loop may rely on, and may upgrade missing -> partial. Its risks.review_focus
+  // side effect lands on a throwaway here (diagrams/handoff do not own risks.yaml).
+  await runEvaluationReasoning(
+    reasoningProviderFor(context),
+    {
+      collection: context.collection,
+      intent,
+      evaluation,
+      methodology: emptyMethodology(),
+      risks: emptyRisks()
+    },
+    reasoningOptionsFor(context)
+  );
+  // VERIFICATION LOOP (#2): apply the partial -> satisfied promotion, matching
+  // `evaluate`/`all`. No-op without --test-output.
+  verifyRequirementsWithTests(context.collection, intent, evaluation, context.areasOption);
   return evaluation;
 }
 
@@ -567,6 +620,15 @@ async function computeArchitecture(context: StageContext, evaluation: Evaluation
   return buildArchitecture(context.collection, evaluation, context.areasOption);
 }
 
+// Per-stage isolation: build the architecture MODEL without the diagrams/*.mmd
+// disk side effect, for stages that need the model but do NOT own the diagrams
+// artifact (the `risks` enrichment-parity packet, the `handoff` packet inputs).
+// The model is byte-identical to computeArchitecture's; only the disk write is
+// dropped, so a standalone `risks`/`handoff` run no longer leaks diagrams/.
+function computeArchitectureModel(context: StageContext, evaluation: EvaluationModel): ArchitectureModel {
+  return buildArchitectureModel(context.collection, evaluation, context.areasOption);
+}
+
 interface EnrichedModels {
   intent: IntentModel;
   evaluation: EvaluationModel;
@@ -587,16 +649,17 @@ interface EnrichedModels {
 // invocations.
 async function buildEnrichedModels(context: StageContext): Promise<EnrichedModels> {
   const intent = await buildIntent(context.cwd, context.collection);
-  const evaluation = await evaluateIntent(context.cwd, context.collection, intent, context.areasOption);
   const methodology = await computeMethodology(context);
-  // Mirror `all`: run the reasoning sequence with the partial -> satisfied
-  // verification interleaved at the correct point so the risks model composed
-  // subcommands persist (packet/risks/methodology) reflects the promotion. No-op
-  // without --test-output / under mock, so the byte-stable offline path holds.
-  const risks = await runReasoningWithVerification(reasoningProviderFor(context), reasoningOptionsFor(context), {
+  // Mirror `all`: run the reasoning sequence with intent synthesis FIRST (FINDING
+  // A: any LLM candidate_requirements get an evaluation.results entry) and the
+  // partial -> satisfied verification interleaved at the correct point so the
+  // risks model composed subcommands persist (packet/risks/methodology) reflects
+  // the promotion. No-op without --test-output / under mock, so the byte-stable
+  // offline path holds.
+  const { evaluation, risks } = await runReasoningWithVerification(reasoningProviderFor(context), reasoningOptionsFor(context), {
+    cwd: context.cwd,
     collection: context.collection,
     intent,
-    evaluation,
     methodology,
     commands: context.commands,
     areasOption: context.areasOption
@@ -605,22 +668,33 @@ async function buildEnrichedModels(context: StageContext): Promise<EnrichedModel
 }
 
 interface VerificationStageInputs {
+  cwd: string;
   collection: CollectionResult;
   intent: IntentModel;
-  evaluation: EvaluationModel;
   methodology: MethodologyModel;
   commands: string[];
   areasOption: { areas?: ReviewArea[] };
+}
+
+interface ReasonedEvaluation {
+  evaluation: EvaluationModel;
+  risks: RisksModel;
 }
 
 // Run the schema-bound reasoning sequence with the VERIFICATION LOOP (#2)
 // promotion interleaved so every evaluation-derived surface (risks here, and
 // architecture at the call site) sees the POST-promotion evaluation. The full
 // reasoning order is preserved exactly as runReasoningStages would run it
-// (intent synthesis -> candidate evidence -> narrative); verify and analyzeRisks
-// are slotted between candidate evidence and narrative:
+// (intent synthesis -> candidate evidence -> narrative); evaluation, verify and
+// analyzeRisks are slotted at the deterministically-correct points:
 //
-//   intent synthesis
+//   intent synthesis       (FINDING A: may append LLM candidate_requirements to
+//                            intent; runs BEFORE evaluateIntent)
+//   -> evaluateIntent      (evaluates the FULL, post-intent-reasoning intent so
+//                            EVERY requirement -- including LLM candidate
+//                            requirements -- has a matching evaluation.results
+//                            entry, preserving the one-result-per-requirement
+//                            contract)
 //   -> candidate evidence  (attaches LLM-pinpointed test refs to evaluation;
 //                            appends to risks.review_focus)
 //   -> verify              (partial -> satisfied using those refs + deterministic
@@ -629,18 +703,35 @@ interface VerificationStageInputs {
 //                            partial test gap nor counted in the weak-test risk)
 //   -> narrative           (appends LLM risk items to risks.items)
 //
+// Intent synthesis MUST run before evaluateIntent (FINDING A): the deterministic
+// evaluator only produces a result for an intent requirement that exists when it
+// runs, so building evaluation before intent reasoning left any LLM-appended
+// candidate_requirements with no evaluation.results entry (and no risks/architecture).
 // The candidate-evidence stage's risks.review_focus additions are captured as a
 // delta and re-applied to the freshly analyzed (post-promotion) risks so that
-// side effect is preserved. Under mock every reasoning stage is a no-op, the
-// delta is empty, and this collapses to evaluate -> verify -> analyzeRisks,
-// keeping the deterministic baseline byte-stable. The same helper backs `all`
-// and buildEnrichedModels so compose == monolith for risks.yaml.
+// side effect is preserved. Under mock every reasoning stage is a no-op, intent
+// is unchanged, the delta is empty, and this collapses to evaluate -> verify ->
+// analyzeRisks, keeping the deterministic baseline byte-stable. The same helper
+// backs `all` and buildEnrichedModels so compose == monolith.
 async function runReasoningWithVerification(
   reasoningProvider: ReturnType<typeof providerFor>,
   reasoningOptions: { redactSecrets?: boolean; remotePrivacyBlocked?: boolean },
   inputs: VerificationStageInputs
-): Promise<RisksModel> {
-  const { collection, intent, evaluation, methodology, commands, areasOption } = inputs;
+): Promise<ReasonedEvaluation> {
+  const { cwd, collection, intent, methodology, commands, areasOption } = inputs;
+
+  // FINDING A: intent synthesis runs FIRST so any LLM candidate_requirements are
+  // present in intent BEFORE the deterministic evaluator runs. Pass a placeholder
+  // evaluation/risks: the intent stage only reads/mutates intent.
+  await runIntentReasoning(
+    reasoningProvider,
+    { collection, intent, evaluation: emptyEvaluation(), methodology, risks: emptyRisks() },
+    reasoningOptions
+  );
+
+  // Evaluate the FULL (post-intent-reasoning) intent so every requirement has a
+  // matching evaluation.results entry (the one-result-per-requirement contract).
+  const evaluation = await evaluateIntent(cwd, collection, intent, areasOption);
 
   // Seed a risks object for the candidate-evidence stage to append review_focus
   // to. Its gap/partial sections are recomputed post-promotion below, so the
@@ -649,7 +740,6 @@ async function runReasoningWithVerification(
   const baseReviewFocusLength = seededRisks.review_focus.length;
   const reasoningInputs = { collection, intent, evaluation, methodology, risks: seededRisks };
 
-  await runIntentReasoning(reasoningProvider, reasoningInputs, reasoningOptions);
   await runEvaluationReasoning(reasoningProvider, reasoningInputs, reasoningOptions);
   // The candidate-evidence stage only ever APPENDS to review_focus, so the delta
   // is everything past the deterministic base.
@@ -663,7 +753,7 @@ async function runReasoningWithVerification(
   risks.review_focus.push(...evalReviewFocusDelta);
   reasoningInputs.risks = risks;
   await runNarrativeReasoning(reasoningProvider, reasoningInputs, reasoningOptions);
-  return risks;
+  return { evaluation, risks };
 }
 
 // emptyEvaluation / emptyMethodology / emptyRisks are placeholders for stages
@@ -756,8 +846,48 @@ async function runRisksStage(parsed: ParsedArgs): Promise<void> {
   // risks.yaml reflects BOTH reasoning side effects `all` lands on risks: stage 2
   // (candidate evidence) appends to risks.review_focus and stage 3 (narrative)
   // appends to risks.items. Reproduce the monolith models and persist only risks.
-  const { risks } = await buildEnrichedModels(context);
-  await writeRisksArtifact(context.collection.outputDir, risks);
+  const { intent, evaluation, methodology, risks } = await buildEnrichedModels(context);
+  // FINDING B (enrichment parity): `all`/`packet` run the packet-level enrichPacket
+  // (which appends agent-file risk_summaries as AI-RISK items and review_focus
+  // additions) BEFORE writing risks.yaml. The standalone risks stage previously
+  // wrote buildEnrichedModels output directly and silently dropped those risk
+  // hypotheses for `risks --provider agent-file --agent-input ...`. Run the same
+  // bounded packet-level enrichment here so risks.yaml matches `all`. The AI-RISK
+  // items stay marked llm_proposed (hypothesis-quarantined) by mergeEnrichment.
+  // Under mock enrichPacket is a no-op (not_requested), so the byte-stable offline
+  // path holds; createReviewPacket/enrichPacket mutate packet.risks in place.
+  //
+  // PER-STAGE ISOLATION: the `risks` stage does NOT own diagrams. enrichPacket
+  // never reads packet.architecture (it only mutates packet.risks/evaluation),
+  // so build the architecture MODEL without the diagrams/*.mmd disk side effect;
+  // writing them here would leak a diagrams/ directory a `risks` run must not own.
+  const architecture = computeArchitectureModel(context, evaluation);
+  const preEnrichment: EnrichmentResult = {
+    provider: context.provider,
+    model: context.requestedModel,
+    status: "not_requested",
+    summary: "Enrichment has not run yet."
+  };
+  const packet = createReviewPacket({
+    collection: context.collection,
+    intent,
+    evaluation,
+    methodology,
+    risks,
+    architecture,
+    enrichment: preEnrichment,
+    commands: context.commands
+  });
+  await enrichPacket(packet, {
+    cwd: context.cwd,
+    provider: context.provider,
+    model: context.requestedModel,
+    agentInput: stringFlag(parsed, "agent-input"),
+    outputDir: context.collection.outputDir,
+    redactSecrets: context.config.privacy.redact_secrets,
+    remotePrivacyBlocked: context.collection.privacy.remote_provider_blocked
+  });
+  await writeRisksArtifact(context.collection.outputDir, packet.risks);
   logWrote(context);
 }
 
@@ -875,7 +1005,10 @@ async function runHandoffStage(parsed: ParsedArgs): Promise<void> {
     collection: context.collection,
     intent: loadIntent(context.collection.outputDir) ?? (await buildIntent(context.cwd, context.collection)),
     evaluation,
-    architecture: await computeArchitecture(context, evaluation),
+    // PER-STAGE ISOLATION: the `handoff` stage writes ONLY agent_handoff.md.
+    // buildHandoff never reads architecture, so build the model without the
+    // diagrams/*.mmd disk side effect rather than leaking a diagrams/ directory.
+    architecture: computeArchitectureModel(context, evaluation),
     methodology,
     risks,
     dogfood,

@@ -48,22 +48,54 @@ export interface ArchitectureOptions {
   areas?: ReviewArea[];
 }
 
+// Writing variant: build the architecture model AND persist diagrams/*.mmd to
+// disk. Used by stages that OWN the diagrams artifact (`all`, `diagrams`, and
+// the full-packet `packet` stage whose architecture.diagrams paths must resolve
+// to real files).
 export async function buildArchitecture(
   collection: CollectionResult,
   evaluation: EvaluationModel,
   options: ArchitectureOptions = {}
 ): Promise<ArchitectureModel> {
   const areas = options.areas ?? buildReviewAreas({ repoIndex: collection.repoIndex }).areas;
+  const diagramArtifacts = diagramArtifactsFor(collection, areas);
   const outputDir = collection.outputDir;
-  const diagramArtifacts = [
+  for (const diagram of diagramArtifacts) {
+    await writeText(path.join(outputDir, diagram.path), diagram.body);
+  }
+  return buildArchitectureModelFromDiagrams(collection, evaluation, areas, diagramArtifacts);
+}
+
+// Non-writing variant (per-stage isolation): build the SAME ArchitectureModel
+// without the diagrams/*.mmd disk side effect. Stages that need only the model
+// (e.g. `risks` for FINDING B enrichment parity, `handoff`) use this so a
+// standalone run does not write a diagrams/ directory it does not own. The model
+// is byte-identical to buildArchitecture's because diagram paths and validation
+// are derived from the in-memory bodies, not from reading the files back.
+export function buildArchitectureModel(
+  collection: CollectionResult,
+  evaluation: EvaluationModel,
+  options: ArchitectureOptions = {}
+): ArchitectureModel {
+  const areas = options.areas ?? buildReviewAreas({ repoIndex: collection.repoIndex }).areas;
+  const diagramArtifacts = diagramArtifactsFor(collection, areas);
+  return buildArchitectureModelFromDiagrams(collection, evaluation, areas, diagramArtifacts);
+}
+
+function diagramArtifactsFor(collection: CollectionResult, areas: ReviewArea[]): DiagramArtifact[] {
+  return [
     { path: "diagrams/pipeline.mmd", body: pipelineDiagram() },
     { path: "diagrams/source-layout.mmd", body: sourceLayoutDiagram(collection, areas) },
     { path: "diagrams/dogfood-flow.mmd", body: dogfoodFlowDiagram() }
   ];
-  for (const diagram of diagramArtifacts) {
-    await writeText(path.join(outputDir, diagram.path), diagram.body);
-  }
+}
 
+function buildArchitectureModelFromDiagrams(
+  collection: CollectionResult,
+  evaluation: EvaluationModel,
+  areas: ReviewArea[],
+  diagramArtifacts: DiagramArtifact[]
+): ArchitectureModel {
   const diagramValidation = diagramArtifacts.map((diagram) =>
     validateMermaidDiagramArtifact({
       ...diagram,
