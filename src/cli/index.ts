@@ -935,8 +935,49 @@ async function runMethodologyStage(parsed: ParsedArgs): Promise<void> {
   // methodology (considered/decisions). Reproduce the monolith models and persist
   // only methodology so the artifact matches `all`. Under mock this is the
   // deterministic methodology, byte-stable.
-  const { methodology } = await buildEnrichedModels(context);
-  await writeMethodologyArtifact(context.collection.outputDir, methodology);
+  const { intent, evaluation, methodology, risks } = await buildEnrichedModels(context);
+  // Round 7 (FINDING B, enrichment parity): `all`/`packet` run the packet-level
+  // enrichPacket BEFORE writing methodology.yaml, which appends agent-file
+  // methodology_decisions to packet.methodology.decisions. The standalone
+  // methodology stage previously wrote buildEnrichedModels output directly and
+  // silently dropped those agent decisions for
+  // `methodology --provider agent-file --agent-input ...`, breaking composed-stage
+  // parity with all/packet (the same class as the round-4 risks-stage fix). Run the
+  // same bounded packet-level enrichment here so methodology.yaml matches `all`.
+  // Under mock enrichPacket is a no-op (not_requested), so the byte-stable offline
+  // path holds; createReviewPacket/enrichPacket mutate packet.methodology in place.
+  //
+  // PER-STAGE ISOLATION: the `methodology` stage does NOT own diagrams. enrichPacket
+  // never reads packet.architecture (it only mutates packet.methodology/risks/intent),
+  // so build the architecture MODEL without the diagrams/*.mmd disk side effect;
+  // writing them here would leak a diagrams/ directory a `methodology` run must not own.
+  const architecture = computeArchitectureModel(context, evaluation);
+  const preEnrichment: EnrichmentResult = {
+    provider: context.provider,
+    model: context.requestedModel,
+    status: "not_requested",
+    summary: "Enrichment has not run yet."
+  };
+  const packet = createReviewPacket({
+    collection: context.collection,
+    intent,
+    evaluation,
+    methodology,
+    risks,
+    architecture,
+    enrichment: preEnrichment,
+    commands: context.commands
+  });
+  await enrichPacket(packet, {
+    cwd: context.cwd,
+    provider: context.provider,
+    model: context.requestedModel,
+    agentInput: stringFlag(parsed, "agent-input"),
+    outputDir: context.collection.outputDir,
+    redactSecrets: context.config.privacy.redact_secrets,
+    remotePrivacyBlocked: context.collection.privacy.remote_provider_blocked
+  });
+  await writeMethodologyArtifact(context.collection.outputDir, packet.methodology);
   logWrote(context);
 }
 

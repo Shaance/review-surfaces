@@ -164,6 +164,14 @@ function clampTotal(markdown: string, packetJsonRel: string): string {
 // Truncate a single interpolated free-text field to a sane per-line length so a
 // pathological summary/path/requirement can't blow up the comment. Deterministic
 // and newline-collapsing so one field can't smuggle extra markdown lines in.
+//
+// FINDING C (SECRET LEAK): this MUST NOT be called on raw free text before
+// redaction. Block secrets (e.g. a multi-line `-----BEGIN ... PRIVATE KEY-----`
+// ... `-----END ... PRIVATE KEY-----` block) are only matched by redactSecrets
+// when the WHOLE block is present, but the display cap collapses whitespace and
+// truncates to MAX_LINE_CHARS -- a truncated block no longer matches, so the
+// first ~300 chars of the key would survive into comment.md and the posted PR
+// comment. Always redact the FULL field FIRST (`renderField`), then truncate.
 function truncateField(value: string): string {
   const oneLine = value.replace(/\s+/g, " ").trim();
   if (oneLine.length <= MAX_LINE_CHARS) {
@@ -172,13 +180,24 @@ function truncateField(value: string): string {
   return `${oneLine.slice(0, MAX_LINE_CHARS - 1)}…`;
 }
 
+// FINDING C: the ONLY safe ordering for an interpolated free-text line is
+// redact-the-FULL-text-then-truncate. Redacting first guarantees block secrets
+// (private keys, etc.) are replaced while the whole BEGIN...END block is still
+// intact; truncating after keeps the comment review-sized. Use this for every
+// free-text line in the comment renderer.
+function renderField(value: string): string {
+  return truncateField(redact(value));
+}
+
 function readMilestone(packet: ReviewPacket): string | undefined {
   const milestone = packet.dogfood?.milestone ?? packet.manifest?.milestone;
   return typeof milestone === "string" && milestone.trim() !== "" ? milestone : undefined;
 }
 
 function reviewFocus(packet: ReviewPacket, limit: number): string[] {
-  return (packet.risks?.review_focus ?? []).slice(0, limit).map((item) => redact(truncateField(item)));
+  // FINDING C: redact the FULL field, THEN truncate (renderField), so a block
+  // secret is replaced before the display cap can split it.
+  return (packet.risks?.review_focus ?? []).slice(0, limit).map((item) => renderField(item));
 }
 
 // Mirror the SARIF renderer: the deterministic "Top risks" list excludes risk
@@ -189,7 +208,8 @@ function topRisks(packet: ReviewPacket, limit: number): string[] {
   return (packet.risks?.items ?? [])
     .filter((risk) => !isHypothesisOnly(risk.evidence))
     .slice(0, limit)
-    .map((risk) => redact(`${risk.id} [${risk.severity}]: ${truncateField(risk.summary)}`));
+    // FINDING C: redact the FULL line (with the untruncated summary), THEN truncate.
+    .map((risk) => renderField(`${risk.id} [${risk.severity}]: ${risk.summary}`));
 }
 
 // Compact coverage: the count summary line plus a few NON-satisfied requirement
@@ -205,7 +225,8 @@ function coverageLines(
   const nonSatisfied = (packet.evaluation.results ?? []).filter((result) => result.status !== "satisfied");
   for (const result of nonSatisfied.slice(0, MAX_NON_SATISFIED)) {
     const id = result.acai_id ?? result.requirement_id;
-    lines.push(redact(`${id}: ${result.status} - ${truncateField(result.summary)}`));
+    // FINDING C: redact the FULL line (with the untruncated summary), THEN truncate.
+    lines.push(renderField(`${id}: ${result.status} - ${result.summary}`));
   }
   if (nonSatisfied.length > MAX_NON_SATISFIED) {
     lines.push(`... ${nonSatisfied.length - MAX_NON_SATISFIED} more in review_packet.json`);
@@ -216,25 +237,29 @@ function coverageLines(
 // review-surfaces.EVIDENCE.6: surface LLM/agent-proposed material CLEARLY labeled
 // as hypotheses (the section header says so) and never presented as proof.
 function hypotheses(packet: ReviewPacket, limit: number): string[] {
+  // FINDING C: build the lines with the FULL (untruncated) free text, then
+  // redact-the-full-line-THEN-truncate (renderField) below. The previous code
+  // truncated each field while assembling and only redacted afterwards, so a block
+  // secret split by the display cap escaped redaction.
   const lines: string[] = [];
   for (const requirement of packet.intent?.requirements ?? []) {
     if (requirement.llm_derived) {
-      lines.push(`requirement ${requirement.id}: ${truncateField(requirement.requirement)}`);
+      lines.push(`requirement ${requirement.id}: ${requirement.requirement}`);
     }
   }
   for (const result of packet.evaluation?.results ?? []) {
     for (const ref of [...(result.evidence ?? []), ...(result.missing_evidence ?? [])]) {
       if (ref.llm_proposed === true) {
-        lines.push(`${result.acai_id ?? result.requirement_id} [${ref.validation_status ?? "unknown"}]: ${truncateField(ref.path ?? ref.note ?? ref.kind)}`);
+        lines.push(`${result.acai_id ?? result.requirement_id} [${ref.validation_status ?? "unknown"}]: ${ref.path ?? ref.note ?? ref.kind}`);
       }
     }
   }
   for (const item of packet.risks?.items ?? []) {
     if ((item.evidence ?? []).some((ref) => ref.llm_proposed === true)) {
-      lines.push(`${item.id}: ${truncateField(item.summary)}`);
+      lines.push(`${item.id}: ${item.summary}`);
     }
   }
-  const visible = lines.slice(0, limit).map((line) => redact(line));
+  const visible = lines.slice(0, limit).map((line) => renderField(line));
   if (lines.length > limit) {
     visible.push(`... ${lines.length - limit} more in review_packet.json`);
   }

@@ -67,11 +67,20 @@ export function createReviewPacket(inputs: PacketInputs): ReviewPacket {
 
 export async function writeReviewPacket(inputs: PacketInputs): Promise<ReviewPacket> {
   const packet = createReviewPacket(inputs);
-  await writeArtifacts(inputs.collection.outputDir, packet);
+  // Round 7 (FINDING A): the packet markdown footer pointed reviewers at a
+  // hardcoded `.review-surfaces/review_packet.json`. For a run using
+  // `--out`/`output_dir` the file lives elsewhere, so the footer was stale. Thread
+  // the SAME cwd-relative effective output dir the handoff/comment paths use so the
+  // footer references the REAL artifact location. The default `.review-surfaces`
+  // output stays byte-identical.
+  await writeArtifacts(inputs.collection.outputDir, packet, effectiveOutputDirRelative(inputs.collection));
   return packet;
 }
 
 export async function rewriteReviewPacket(outputDir: string, packet: ReviewPacket): Promise<void> {
+  // No collection context here (the packet does not carry cwd/outputDir), so the
+  // footer keeps the default `.review-surfaces` pointer -- byte-identical to the
+  // prior behavior for in-place re-renders.
   await writeArtifacts(outputDir, packet);
 }
 
@@ -109,14 +118,20 @@ export async function writeHandoffArtifact(outputDir: string, inputs: PacketInpu
   }
 }
 
-async function writeArtifacts(outputDir: string, packet: ReviewPacket): Promise<void> {
+async function writeArtifacts(
+  outputDir: string,
+  packet: ReviewPacket,
+  // cwd-relative effective output dir for the packet markdown footer. Defaults to
+  // `.review-surfaces` so the in-place re-render path stays byte-identical.
+  packetDirRel: string = ".review-surfaces"
+): Promise<void> {
   await writeJson(path.join(outputDir, "review_packet.json"), packet);
   await writeText(path.join(outputDir, "intent.yaml"), stringifyYaml(packet.intent));
   await writeText(path.join(outputDir, "evaluation.yaml"), stringifyYaml(packet.evaluation));
   await writeText(path.join(outputDir, "methodology.yaml"), stringifyYaml(packet.methodology));
   await writeText(path.join(outputDir, "risks.yaml"), stringifyYaml(packet.risks));
   await writeText(path.join(outputDir, "architecture.md"), renderArchitectureMarkdown(packet.architecture));
-  await writeText(path.join(outputDir, "review_packet.md"), renderPacketMarkdown(packet));
+  await writeText(path.join(outputDir, "review_packet.md"), renderPacketMarkdown(packet, packetDirRel));
   if (packet.dogfood) {
     await writeText(path.join(outputDir, "dogfood.yaml"), stringifyYaml(packet.dogfood));
   }
@@ -194,8 +209,12 @@ function effectiveOutputDirRelative(collection: PacketInputs["collection"]): str
   return rel;
 }
 
-function renderPacketMarkdown(packet: ReviewPacket): string {
+function renderPacketMarkdown(packet: ReviewPacket, packetDirRel: string = ".review-surfaces"): string {
   const statusCounts = countRequirementStatuses(packet.evaluation.results);
+  // The footer points reviewers at the machine-readable packet at its EFFECTIVE
+  // location. `path.posix.join` keeps the link forward-slashed on every platform,
+  // matching the handoff artifact_paths.
+  const packetJsonRel = path.posix.join(packetDirRel, "review_packet.json");
   const changedFiles = (packet.architecture.subsystems ?? []).flatMap((subsystem) => subsystem.files);
   const llmProposedRequirements = packet.intent.requirements.filter((requirement) => requirement.llm_derived).length;
   const hypotheses = llmProposedEvidenceLines(packet);
@@ -274,7 +293,7 @@ ${packet.intent.open_questions.map((item) => `- ${item}`).join("\n") || "- None 
 - Changed files in subsystem cards: ${changedFiles.length}
 - Methodology logs missing: ${packet.methodology.missing_logs}
 - Packet schema: schemas/review_packet.schema.json
-- Full machine-readable details: .review-surfaces/review_packet.json${hasLlmContribution ? `
+- Full machine-readable details: ${packetJsonRel}${hasLlmContribution ? `
 
 LLM/agent hypotheses (not proof; verify against deterministic evidence):
 ${previewLines(hypotheses, (line) => `- ${redactRenderedText(line)}`, 12)}` : ""}
