@@ -7,7 +7,7 @@ import { EnrichmentResult } from "../llm/provider";
 import { IntentModel } from "../intent/intent";
 import { MethodologyModel } from "../methodology/methodology";
 import { RisksModel } from "../risks/risks";
-import { writeJson, writeText } from "../core/files";
+import { relativePath, writeJson, writeText } from "../core/files";
 import { stringifyYaml } from "../core/simple-yaml";
 import { countRequirementStatuses, REQUIREMENT_STATUSES, RequirementStatusCount } from "../evaluation/status";
 import { redactSecrets } from "../privacy/secrets";
@@ -154,17 +154,44 @@ function buildHandoff(inputs: PacketInputs): ReviewPacket["agent_handoff"] {
     open_risks: inputs.risks.items.slice(0, 6).map((risk) => `${risk.id}: ${risk.summary}`),
     deferrals: inputs.dogfood?.deferrals ?? [],
     changes_since_last_packet: changesSinceLastPacket(inputs.dogfood),
-    artifact_paths: [
-      ".review-surfaces/review_packet.md",
-      ".review-surfaces/review_packet.json",
-      ".review-surfaces/intent.yaml",
-      ".review-surfaces/evaluation.yaml",
-      ".review-surfaces/architecture.md",
-      ".review-surfaces/risks.yaml",
-      ".review-surfaces/methodology.yaml",
-      ".review-surfaces/dogfood.yaml"
-    ]
+    artifact_paths: handoffArtifactPaths(inputs.collection)
   };
+}
+
+// Round 6: the handoff must point reviewers at the REAL artifact location. The
+// packet/comment paths already honor the effective output dir; the handoff used
+// to hardcode `.review-surfaces/`, so a run using `--out`/`output_dir` pointed at
+// files that were written elsewhere. Thread the cwd-relative effective output dir
+// (collection.outputDir is absolute) so artifact_paths reference where the files
+// actually live. The default `.review-surfaces` output is unchanged. Falls back
+// to `.review-surfaces` when cwd/outputDir are absent (minimal test fixtures).
+function handoffArtifactPaths(collection: PacketInputs["collection"]): string[] {
+  const baseDir = effectiveOutputDirRelative(collection);
+  return [
+    "review_packet.md",
+    "review_packet.json",
+    "intent.yaml",
+    "evaluation.yaml",
+    "architecture.md",
+    "risks.yaml",
+    "methodology.yaml",
+    "dogfood.yaml"
+  ].map((file) => path.posix.join(baseDir, file));
+}
+
+function effectiveOutputDirRelative(collection: PacketInputs["collection"]): string {
+  const { cwd, outputDir } = collection;
+  if (!cwd || !outputDir) {
+    return ".review-surfaces";
+  }
+  const rel = relativePath(cwd, outputDir);
+  // An empty relative path means outputDir === cwd; treat the repo root as ".".
+  // A path that escapes cwd (shouldn't happen) keeps the absolute form rather
+  // than emitting a misleading relative path.
+  if (rel === "" || rel.startsWith("..")) {
+    return rel === "" ? "." : outputDir;
+  }
+  return rel;
 }
 
 function renderPacketMarkdown(packet: ReviewPacket): string {

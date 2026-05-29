@@ -287,10 +287,18 @@ async function scaffoldFeatureSpec(cwd: string, force: boolean, validateOnly: bo
 
   if (existing.length > 0) {
     // At least one spec already exists; never clobber existing specs even with
-    // --force (the user owns their contracts). Validate the first one parses.
-    const error = await tryValidate(validateFeatureSpec, cwd, resolveInside(cwd, existing[0]));
-    if (error) {
-      return { path: existing[0], status: "invalid", detail: error, required: true };
+    // --force (the user owns their contracts).
+    //
+    // Round 6: validate EVERY discovered spec, not just the first sorted match.
+    // A later malformed spec would otherwise let `bootstrap --strict` exit 0 even
+    // though the next `collect`/`all` run fails indexing the whole set. Report the
+    // FIRST invalid spec (deterministic by sort order) so the required-failure
+    // gate trips; only report "found N" when ALL specs parse.
+    for (const spec of existing) {
+      const error = await tryValidate(validateFeatureSpec, cwd, resolveInside(cwd, spec));
+      if (error) {
+        return { path: spec, status: "invalid", detail: error, required: true };
+      }
     }
     return { path: existing[0], status: "found", detail: `found ${existing.length}`, required: true };
   }

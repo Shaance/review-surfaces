@@ -365,7 +365,16 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       await writeText(cacheSnapshot.manifestPath, cacheSnapshot.manifestRaw);
       console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
       const provider = providerFlag(parsed, config);
-      if (strict && evaluation) {
+      // Round 6: a cache hit must match a normal run's gate behavior. Run
+      // applyGate on the cached evaluation so a cached packet with a
+      // gate-tripping condition is NOT silently passed: without --strict
+      // applyGate prints the fail-gently WARNING and returns success; with
+      // --strict it returns the gate exit code. Previously the no-strict cache
+      // path returned success before applyGate, skipping that warning. When
+      // evaluation is unavailable here (only reachable without --strict, since
+      // strict-without-evaluation falls through to regenerate below) we keep the
+      // prior reuse-and-succeed behavior rather than forcing a regenerate.
+      if (evaluation) {
         return applyGate(parsed, evaluation, collection, provider, config);
       }
       return ExitCodes.success;
