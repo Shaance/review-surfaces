@@ -13,6 +13,7 @@ import {
   resolveModel,
   StructuredResult
 } from "../src/llm/provider";
+import { isHypothesisOnly } from "../src/evidence/evidence";
 
 function packet(): any {
   return {
@@ -195,6 +196,41 @@ test("agent-file provider applies bounded structured enrichment", async () => {
   assert.deepEqual(target.risks.review_focus, ["Check evaluator"]);
   assert.deepEqual(target.intent.assumptions, ["Agent hypothesis only"]);
   assert.equal(target.risks.items.length, 1);
+});
+
+// FINDING D: an agent-file risk_summary becomes an AI-RISK item that is
+// hypothesis-only. Its sole evidence ref MUST be marked llm_proposed:true so that
+// isHypothesisOnly() returns true and the comment/SARIF renderers quarantine it
+// into the hypotheses section instead of emitting it as a deterministic top risk.
+test("review-surfaces.EVIDENCE.6 agent-file risk_summaries become hypothesis-quarantined AI-RISK items", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-airisk-"));
+  fs.writeFileSync(
+    path.join(tmp, "agent.json"),
+    JSON.stringify({ risk_summaries: ["A possible race condition"] })
+  );
+  const target = packet();
+  const result = await enrichPacket(target, {
+    cwd: tmp,
+    outputDir: path.join(tmp, ".review-surfaces"),
+    provider: "agent-file",
+    agentInput: "agent.json"
+  });
+
+  assert.equal(result.status, "applied");
+  assert.equal(target.risks.items.length, 1, "the risk_summary produced exactly one AI-RISK item");
+  const aiRisk = target.risks.items[0];
+  assert.match(aiRisk.id, /^AI-RISK-/, "the appended risk uses the AI-RISK id prefix");
+  assert.equal(aiRisk.evidence.length, 1, "the AI-RISK carries a single hypothesis evidence ref");
+  assert.equal(
+    aiRisk.evidence[0].llm_proposed,
+    true,
+    "the AI-RISK evidence ref must be marked llm_proposed so it is treated as a hypothesis"
+  );
+  assert.equal(
+    isHypothesisOnly(aiRisk.evidence),
+    true,
+    "isHypothesisOnly() must quarantine the AI-RISK away from deterministic findings"
+  );
 });
 
 test("review-surfaces.PRIVACY.2 agent-file enrichment redacts secrets before merging into packet fields", async () => {

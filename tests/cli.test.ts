@@ -240,6 +240,93 @@ test("review-surfaces.CLI.4a composed methodology/risks match `all` under offlin
   }
 });
 
+// FINDING B: `evaluate --provider <non-mock>` WITHOUT a pre-existing intent.yaml
+// must run the SAME enriched-intent path as `intent` (deterministic synthesis +
+// the resolved provider's intent-reasoning stage), not deterministic-only intent.
+// In a sparse/foreign repo (no Acai spec) the intent-reasoning stage is the ONLY
+// path that adds validated candidate_requirements, so before the fix the evaluate
+// fallback wrote an evaluation.yaml MISSING them while `intent` then `evaluate`
+// (which evaluates the ENRICHED intent) included them.
+function setupSparseRepo(prefix: string): string {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+  // No features/ Acai spec at all -> isSparseSpec true, so candidate_requirements
+  // from the agent-file intent-reasoning stage are accepted.
+  fs.writeFileSync(path.join(tmp, "src", "worker.ts"), "export const worker = () => 'runs';\n");
+  fs.writeFileSync(path.join(tmp, "README.md"), "# sparse\n");
+  fs.writeFileSync(path.join(tmp, ".gitignore"), ".review-surfaces/\n");
+  // A bounded agent-file hypothesis proposing one candidate requirement that cites
+  // a REAL repo file (so evidence validation accepts it).
+  fs.writeFileSync(
+    path.join(tmp, "agent-input.json"),
+    JSON.stringify(
+      {
+        summary: "Sparse-repo intent hypothesis.",
+        candidate_requirements: [
+          {
+            title: "Worker entrypoint",
+            requirement: "The worker entrypoint in src/worker.ts must run.",
+            source_ref: { path: "src/worker.ts", note: "worker module" }
+          }
+        ]
+      },
+      null,
+      2
+    )
+  );
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
+  return tmp;
+}
+
+function runSparseStage(cwd: string, command: string): { status: number | null; stderr: string } {
+  const result = spawnSync(
+    "node",
+    [CLI, command, "--base", "HEAD", "--head", "HEAD", "--provider", "agent-file", "--agent-input", "agent-input.json", "--out", ".review-surfaces"],
+    { cwd, encoding: "utf8" }
+  );
+  return { status: result.status, stderr: result.stderr };
+}
+
+test("review-surfaces.CLI.4a evaluate (no prior intent.yaml) runs enriched intent so candidate_requirements match `intent` then `evaluate` in a sparse repo", () => {
+  const evalDir = setupSparseRepo("review-surfaces-sparse-eval-");
+  const stagedDir = setupSparseRepo("review-surfaces-sparse-staged-");
+  try {
+    // Reference: `intent` then `evaluate` evaluates the ENRICHED intent (with the
+    // candidate requirement), so the candidate flows into evaluation.yaml.
+    assert.equal(runSparseStage(stagedDir, "intent").status, 0);
+    const stagedEvalRun = runSparseStage(stagedDir, "evaluate");
+    assert.equal(stagedEvalRun.status, 0, stagedEvalRun.stderr);
+    const stagedEval = fs.readFileSync(path.join(stagedDir, ".review-surfaces", "evaluation.yaml"), "utf8");
+    assert.match(
+      stagedEval,
+      /REQ-LLM-/,
+      "intent then evaluate must include the LLM-derived candidate requirement (otherwise this test is vacuous)"
+    );
+
+    // `evaluate` standalone with NO prior intent.yaml must reproduce the same
+    // candidate requirement: the fix runs the intent-reasoning fallback so the
+    // evaluation evaluates the enriched intent, not deterministic-only intent.
+    assert.equal(
+      fs.existsSync(path.join(evalDir, ".review-surfaces", "intent.yaml")),
+      false,
+      "precondition: no intent.yaml before the evaluate run"
+    );
+    const evalRun = runSparseStage(evalDir, "evaluate");
+    assert.equal(evalRun.status, 0, evalRun.stderr);
+    const standaloneEval = fs.readFileSync(path.join(evalDir, ".review-surfaces", "evaluation.yaml"), "utf8");
+    assert.match(
+      standaloneEval,
+      /REQ-LLM-/,
+      "evaluate (no prior intent.yaml) must include the candidate requirement via the enriched-intent fallback"
+    );
+  } finally {
+    fs.rmSync(evalDir, { recursive: true, force: true });
+    fs.rmSync(stagedDir, { recursive: true, force: true });
+  }
+});
+
 // review-surfaces.SCHEMA.3 / CLI.4a: a standalone `packet --dogfood` with NO
 // pre-existing dogfood.yaml must BUILD the dogfood + agent_handoff sections, not
 // leave them undefined. The packet schema REQUIRES both when run_mode=dogfood,

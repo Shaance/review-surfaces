@@ -374,6 +374,88 @@ test("review-surfaces --cache: a --config content change is a cache miss", () =>
   }
 });
 
+// FINDING E: with --cache, changing --previous-packet (its path OR its contents)
+// must change the signature. Before the fix it was absent from the fingerprint,
+// so a dogfood --cache run could restore an old review_packet.json whose
+// dogfood.comparison / agent_handoff.changes_since_last_packet was computed
+// against a stale baseline. The previous packet is hashed (path + content) like
+// --agent-input and --test-output.
+function writePreviousPacket(cwd: string, dir: string, evalSummary: string): void {
+  fs.mkdirSync(path.join(cwd, dir), { recursive: true });
+  fs.writeFileSync(
+    path.join(cwd, dir, "review_packet.json"),
+    `{"schema_version":"review-surfaces.packet.v1","evaluation":{"summary":"${evalSummary}","results":[]},"risks":{"summary":"r","items":[]}}\n`
+  );
+}
+
+test("review-surfaces --cache: a --previous-packet content change is a cache miss (dogfood comparison staleness)", () => {
+  const tmp = setupRepo("review-surfaces-cache-prevpacket-content-");
+  try {
+    writePreviousPacket(tmp, "prev", "baseline-summary");
+    runAll(tmp, ["--now", FROZEN, "--cache", "--dogfood", "--previous-packet", "prev"]);
+    const sigBefore = signatureOf(tmp);
+
+    // Edit the baseline packet's bytes (the comparison would change). Same path.
+    writePreviousPacket(tmp, "prev", "edited-different-summary");
+    const run = runAll(tmp, ["--now", FROZEN, "--cache", "--dogfood", "--previous-packet", "prev"]);
+    assert.equal(run.status, 0, run.stderr);
+    assert.doesNotMatch(run.stdout, /inputs unchanged/, "a previous-packet content change must be a cache MISS");
+    assert.notEqual(signatureOf(tmp), sigBefore, "previous-packet content must be folded into the signature");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces --cache: a --previous-packet PATH change is a cache miss", () => {
+  const tmp = setupRepo("review-surfaces-cache-prevpacket-path-");
+  try {
+    writePreviousPacket(tmp, "prev1", "summary-one");
+    writePreviousPacket(tmp, "prev2", "summary-two-different");
+    runAll(tmp, ["--now", FROZEN, "--cache", "--dogfood", "--previous-packet", "prev1"]);
+    const sigPrev1 = signatureOf(tmp);
+
+    // Point at a DIFFERENT baseline packet. The signature must change so the cache
+    // does not reuse the comparison computed against the first baseline.
+    runAll(tmp, ["--now", FROZEN, "--cache", "--dogfood", "--previous-packet", "prev2"]);
+    assert.notEqual(signatureOf(tmp), sigPrev1, "changing which baseline --previous-packet points at must change the signature");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// FINDING F: a dogfood --cache packet and a local --cache packet must NOT share a
+// signature. run_mode (and milestone) are part of the fingerprint so a prior
+// local-mode cached packet can never be restored for a dogfood run (which would
+// yield a packet missing the schema-required dogfood + agent_handoff sections).
+test("review-surfaces --cache: a dogfood run never matches a non-dogfood cached signature", () => {
+  const tmp = setupRepo("review-surfaces-cache-runmode-");
+  try {
+    // Local run primes the cache and stamps run_mode local.
+    runAll(tmp, ["--now", FROZEN, "--cache"]);
+    const localSig = signatureOf(tmp);
+    const localManifest = JSON.parse(read(tmp, "manifest.json"));
+    assert.equal(localManifest.run_mode, "local", "the first run is local mode");
+
+    // A dogfood run with otherwise-identical inputs must compute a DIFFERENT
+    // signature (so it never reuses the local-mode packet).
+    const dogfood = runAll(tmp, ["--now", FROZEN, "--cache", "--dogfood"]);
+    assert.equal(dogfood.status, 0, dogfood.stderr);
+    assert.doesNotMatch(dogfood.stdout, /inputs unchanged/, "a dogfood run must NOT hit a local-mode cached signature");
+    const dogfoodSig = signatureOf(tmp);
+    assert.notEqual(dogfoodSig, localSig, "dogfood and local runs must not share a signature");
+
+    // And the regenerated dogfood packet carries the schema-required sections that
+    // a restored local-mode packet would have been missing.
+    const dogfoodManifest = JSON.parse(read(tmp, "manifest.json"));
+    assert.equal(dogfoodManifest.run_mode, "dogfood", "the dogfood run stamps run_mode dogfood");
+    const packet = JSON.parse(read(tmp, "review_packet.json"));
+    assert.ok(packet.dogfood, "the dogfood packet has the required dogfood section");
+    assert.ok(packet.agent_handoff, "the dogfood packet has the required agent_handoff section");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // A repo whose single requirement has no satisfying code/test, so the quality
 // gate finds a "missing" requirement and trips (exit 10) under --strict.
 function setupGateTrippingRepo(prefix: string): string {

@@ -182,6 +182,39 @@ test("review-surfaces.EVIDENCE.6 sarif keeps every LLM/agent hypothesis at level
   }
 });
 
+// FINDING D: agent-file risk_summaries become AI-RISK-* items. Marked
+// llm_proposed, they must be emitted via hypothesisResults (ruleId llm_hypothesis,
+// level note) and excluded from riskResults. Before the fix the missing marker let
+// them ride as normal risk results at a non-note level.
+test("review-surfaces.EVIDENCE.6 sarif quarantines agent-file AI-RISK risk_summaries as llm_hypothesis notes", () => {
+  const tmp = setupFixture("review-surfaces-sarif-airisk-");
+  try {
+    fs.writeFileSync(
+      path.join(tmp, "agent-input.json"),
+      JSON.stringify({ risk_summaries: ["A possible race condition in the worker"] }, null, 2)
+    );
+    runAll(tmp, ["--provider", "agent-file", "--agent-input", "agent-input.json"]);
+    const result = runSarif(tmp);
+    assert.equal(result.status, 0, result.stderr);
+
+    const log = JSON.parse(result.stdout) as SarifLogShape;
+    const aiRiskResults = log.runs[0].results.filter((item) => item.message.text.includes("AI-RISK-001"));
+    assert.ok(aiRiskResults.length > 0, "the AI-RISK hypothesis must be present in SARIF");
+    for (const item of aiRiskResults) {
+      assert.equal(item.ruleId, "llm_hypothesis", "AI-RISK must be a quarantined llm_hypothesis, not a deterministic risk result");
+      assert.equal(item.level, "note", "AI-RISK hypotheses must always be note");
+      assert.match(item.message.text, /HYPOTHESIS \(NOT proof; verify\)/);
+    }
+    // It must NOT also appear as a non-note deterministic risk result.
+    const elevatedAiRisk = log.runs[0].results.filter(
+      (item) => item.message.text.includes("AI-RISK-001") && item.level !== "note"
+    );
+    assert.equal(elevatedAiRisk.length, 0, "AI-RISK must never be emitted at error/warning as deterministic proof");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.PROVIDERS.2 sarif render is byte-deterministic across two renders", () => {
   const tmp = setupFixture("review-surfaces-sarif-det-");
   try {

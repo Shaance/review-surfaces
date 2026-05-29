@@ -154,6 +154,23 @@ async function runCollect(parsed: ParsedArgs): Promise<void> {
   console.log(`Wrote review-surfaces artifacts to ${path.relative(process.cwd(), collection.outputDir) || "."}`);
 }
 
+// Resolve --previous-packet to the concrete review_packet.json path the dogfood
+// comparison reads, expressed RELATIVE to cwd (mirroring resolveComparisonInput's
+// recorded path and the other flag inputs, so the signature stays independent of
+// the absolute cwd / --out location). Returned to collectInputs so its path AND
+// content fold into the cache signature: changing which baseline a dogfood run
+// compares against — or editing that baseline — is a cache miss instead of a
+// stale hit that restores a packet with an out-of-date dogfood.comparison /
+// agent_handoff.changes_since_last_packet. Absent => no --previous-packet flag.
+function resolvePreviousPacketInput(cwd: string, parsed: ParsedArgs): string | undefined {
+  const flagValue = stringFlag(parsed, "previous-packet");
+  if (flagValue === undefined) {
+    return undefined;
+  }
+  const resolved = resolvePreviousPacketPath(cwd, flagValue);
+  return path.relative(cwd, resolved) || resolved;
+}
+
 async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResult; config: ReviewSurfacesConfig }> {
   const cwd = process.cwd();
   // The exact config path loadConfig reads. Fold its content into the signature
@@ -179,7 +196,8 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
     model: stringFlag(parsed, "model") ?? runConfig.llm.model ?? undefined,
     conversationPath: stringFlag(parsed, "conversation"),
     agentInputPath: stringFlag(parsed, "agent-input"),
-    configPath
+    configPath,
+    previousPacketPath: resolvePreviousPacketInput(cwd, parsed)
   });
   return { collection, config: runConfig };
 }
@@ -222,6 +240,17 @@ async function resolveOutputDir(cwd: string, parsed: ParsedArgs): Promise<string
   const configPath = stringFlag(parsed, "config") ?? "review-surfaces.config.yaml";
   const config = await loadConfig(cwd, configPath);
   return path.resolve(cwd, config.output_dir);
+}
+
+// Resolve the output location the comment/SARIF renderers should read, applying
+// the SAME precedence as collectInputs (--out -> config.output_dir ->
+// .review-surfaces). An explicit --out (which may be a directory OR a .json path)
+// is preserved verbatim via path.resolve; otherwise the config's output_dir is
+// used so a repo that configured output_dir gets its packet found without --out.
+// The returned value is fed straight to resolvePacketPath, which appends
+// review_packet.json for a directory and uses a .json path as-is.
+async function resolveCommentOutDir(cwd: string, parsed: ParsedArgs): Promise<string> {
+  return resolveOutputDir(cwd, parsed);
 }
 
 // Snapshot the prior manifest.json (raw bytes + parsed signature) and check that
@@ -656,12 +685,14 @@ async function runEvaluateStage(parsed: ParsedArgs): Promise<number> {
   const context = await buildStageContext(parsed);
   // Reuse a successfully-loaded intent.yaml (so `intent` then `evaluate` as
   // separate invocations compose); compute intent only when its artifact is
-  // absent. The reasoning evaluation stage runs against the resolved provider.
-  let intent: IntentModel | null = loadIntent(context.collection.outputDir);
-  if (!intent) {
-    logComputed("intent");
-    intent = await buildIntent(context.cwd, context.collection);
-  }
+  // absent. When computing, run the SAME enriched-intent path as `all`/`intent`
+  // (deterministic synthesis + the resolved provider's intent-reasoning stage),
+  // not deterministic-only synthesis. In sparse/foreign repos with no Acai
+  // requirements the intent-reasoning stage is the only path that contributes
+  // validated candidate_requirements, so skipping it let `evaluate --provider
+  // agent-file` write an incomplete evaluation.yaml while `all` (or `intent` then
+  // `evaluate`) included them.
+  const intent: IntentModel = await loadOrComputeIntent(context);
   const evaluation = await evaluateIntent(context.cwd, context.collection, intent, context.areasOption);
   // Stage 2 (candidate evidence) is the only reasoning stage that touches
   // evaluation.results. Its risks.review_focus side effect lands on a throwaway
@@ -880,7 +911,11 @@ async function runComment(parsed: ParsedArgs): Promise<number> {
 // never touch the network).
 async function runCommentGithub(parsed: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
-  const outDir = stringFlag(parsed, "out");
+  // Resolve the EFFECTIVE output dir with the same precedence collectInputs/`all`
+  // use (--out -> config.output_dir -> .review-surfaces) so comment finds the
+  // packet `all` actually wrote. Passing undefined would hardcode .review-surfaces
+  // and miss a config-set output_dir.
+  const outDir = await resolveCommentOutDir(cwd, parsed);
   const rendered = renderCommentFromPacketFile(cwd, outDir);
   if (!rendered) {
     throw missingPacketError(cwd, outDir);
@@ -904,7 +939,9 @@ async function runCommentGithub(parsed: ParsedArgs): Promise<number> {
 // nothing is written. No network is ever touched.
 async function runCommentSarif(parsed: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
-  const outDir = stringFlag(parsed, "out");
+  // Same effective output-dir resolution as the github path: honor a config-set
+  // output_dir so SARIF reads the packet `all` wrote, not a hardcoded default.
+  const outDir = await resolveCommentOutDir(cwd, parsed);
   const rendered = renderSarifFromPacketFile(cwd, outDir);
   if (!rendered) {
     throw missingPacketError(cwd, outDir);

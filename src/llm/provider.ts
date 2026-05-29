@@ -481,6 +481,11 @@ function mergeEnrichment(packet: ReviewPacket, enrichment: AgentFileEnrichment):
             kind: "unknown" as const,
             confidence: "low" as const,
             validation_status: "unknown" as const,
+            // Mark the sole evidence ref llm_proposed so isHypothesisOnly() treats
+            // this AI-RISK as hypothesis-only and the comment/SARIF renderers
+            // quarantine it into the hypotheses appendix (review-surfaces.EVIDENCE.6)
+            // instead of emitting it as a normal top risk / SARIF result.
+            llm_proposed: true,
             note: "Optional enrichment hypothesis."
           }
         ],

@@ -854,3 +854,97 @@ test("VERIFICATION #2 SOUNDNESS: a promoted requirement is not a partial test ga
   );
   assert.equal(weakTestRisk, undefined, "the promoted requirement is not counted in the weak-test risk item");
 });
+
+// FINDING A: resultHasImplementationEvidence used an EMPTY test-path set, so a
+// deterministic file ref pointing at a COLLECTED TEST file (directFileEvidence
+// fired because the requirement text names tests/foo.test.ts) was wrongly counted
+// as IMPLEMENTATION evidence. Combined with a passing exact-ACID test that is
+// per-requirement proof, the verification loop then promoted a NON-test-only
+// requirement to satisfied using only test-file evidence. A test file must NEVER
+// count as implementation, so the requirement must STAY partial.
+test("VERIFICATION #2 SOUNDNESS: a tests/ file ref does NOT count as implementation; a verified exact-ACID test must NOT promote", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-verify-testimpl-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "tests"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+components:
+  EVAL:
+    requirements:
+      1: The evaluator behaviour covered by tests/eval-behaviour.test.ts must hold.
+`
+  );
+  // A REAL collected test file the requirement TEXT references. directFileEvidence
+  // attaches it as a kind:file ref with path tests/eval-behaviour.test.ts. Its
+  // tests/ prefix is NOT excluded by isImplementationEvidencePath's path rules, so
+  // ONLY the collected-test-path set can reject it as implementation.
+  fs.writeFileSync(path.join(tmp, "tests", "eval-behaviour.test.ts"), "test('eval behaviour', () => {});\n");
+  // An EXACT-ACID passing test exists (per-requirement proof). Only the impl gate
+  // should block: the requirement's sole non-test file ref is a tests/ path.
+  fs.writeFileSync(
+    path.join(tmp, "junit.xml"),
+    `<?xml version="1.0"?>
+<testsuite name="eval">
+  <testcase name="example.EVAL.1 behaviour holds" classname="suite.EVAL" time="0.01"/>
+</testsuite>
+`
+  );
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: ["tests/**/*.test.ts"] },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    testOutputPaths: ["junit.xml"],
+    dogfood: false
+  });
+  // No implementation file changed; the requirement's only file ref is the test file.
+  collection.changedFiles = [];
+  const intent = await buildIntent(tmp, collection);
+
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
+  const before = evaluation.results.find((r) => r.acai_id === "example.EVAL.1");
+  assert.equal(before?.status, "partial", "the requirement starts partial (no genuine implementation)");
+  assert.ok(
+    before?.evidence.some((ref) => ref.kind === "file" && ref.path === "tests/eval-behaviour.test.ts"),
+    "the tests/ file is attached as a file ref (directFileEvidence) that must NOT count as implementation"
+  );
+
+  verifyRequirementsWithTests(collection, intent, evaluation, { areas: await defaultReviewSurfacesAreas() });
+
+  const result = evaluation.results.find((r) => r.acai_id === "example.EVAL.1");
+  assert.equal(
+    result?.status,
+    "partial",
+    "a verified exact-ACID test must NOT promote a non-test-only requirement whose only file ref is a collected test path"
+  );
+  assert.ok(
+    !result?.evidence.some((ref) => ref.verified === true),
+    "no verified promotion marker is attached when the only non-test evidence is a tests/ file ref"
+  );
+});
+
+// FINDING A (positive control): the SAME shape but with a GENUINE non-test
+// implementation file present DOES promote on the passing exact-ACID test, proving
+// the fix rejects only test-file evidence and not real implementation evidence.
+test("VERIFICATION #2 SOUNDNESS: genuine non-test impl + a verified exact-ACID test still promotes", async () => {
+  // setupEvalRepo wires a real src/evaluation/evaluate.ts changed file (genuine
+  // implementation, not a test file) plus an EXACT-ACID passing test.
+  const { collection, intent } = await setupEvalRepo({ junitXml: EXACT_ACID_PASSING });
+  const evaluation = await evaluateIntent(collection.cwd, collection, intent, { areas: await defaultReviewSurfacesAreas() });
+  const before = evaluation.results.find((r) => r.acai_id === "example.EVAL.1");
+  assert.equal(before?.status, "partial", "genuine impl + exact-ACID test starts partial pre-verification");
+  assert.ok(
+    before?.evidence.some((ref) => ref.kind === "file" && ref.path === "src/evaluation/evaluate.ts"),
+    "the genuine implementation file is attached as a file ref"
+  );
+
+  verifyRequirementsWithTests(collection, intent, evaluation, { areas: await defaultReviewSurfacesAreas() });
+
+  const result = evaluation.results.find((r) => r.acai_id === "example.EVAL.1");
+  assert.equal(result?.status, "satisfied", "genuine non-test implementation still satisfies the impl gate, so the verified test promotes");
+  assert.ok(result?.evidence.some((ref) => ref.verified === true), "a verified promotion marker is attached");
+});

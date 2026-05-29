@@ -180,6 +180,36 @@ test("review-surfaces.EVIDENCE.6 comment does not intermix LLM hypothesis risks 
   }
 });
 
+// FINDING D: agent-file risk_summaries become AI-RISK-* items in the packet.
+// Their evidence ref must be marked llm_proposed so isHypothesisOnly quarantines
+// them. Before the fix the missing marker let AI-RISK items render as deterministic
+// top risks; they must instead surface only under the hypotheses section.
+test("review-surfaces.EVIDENCE.6 comment quarantines agent-file AI-RISK risk_summaries under hypotheses", () => {
+  const tmp = setupFixture("review-surfaces-comment-airisk-");
+  try {
+    fs.writeFileSync(
+      path.join(tmp, "agent-input.json"),
+      JSON.stringify({ risk_summaries: ["A possible race condition in the worker"] }, null, 2)
+    );
+    runAll(tmp, ["--provider", "agent-file", "--agent-input", "agent-input.json"]);
+    const result = runComment(tmp);
+    assert.equal(result.status, 0, result.stderr);
+
+    // The AI-RISK hypothesis must NOT appear under the deterministic Top risks block.
+    const topRisksBlock = result.stdout.slice(
+      result.stdout.indexOf("### Top risks"),
+      result.stdout.indexOf("### Requirement coverage")
+    );
+    assert.doesNotMatch(topRisksBlock, /AI-RISK/, "AI-RISK hypotheses must not appear under deterministic Top risks");
+
+    // It MUST be surfaced under the labeled hypotheses section.
+    const hypothesesBlock = result.stdout.slice(result.stdout.indexOf("### LLM/agent hypotheses"));
+    assert.match(hypothesesBlock, /AI-RISK-001/, "the AI-RISK hypothesis must be quarantined into the hypotheses section");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.EVIDENCE.6 comment clearly labels LLM/agent hypotheses as non-proof", () => {
   const tmp = setupFixture("review-surfaces-comment-hyp-");
   try {
@@ -240,6 +270,72 @@ test("review-surfaces.PROVIDERS.1 missing packet is a clean usage error pointing
       fs.existsSync(path.join(tmp, ".review-surfaces", "review_packet.json")),
       false,
       "comment must never recompute review_packet.json"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// FINDING C: comment WITHOUT --out must resolve the effective output dir from
+// config (--out else config.output_dir else .review-surfaces), the SAME
+// precedence collectInputs/`all` use. Before the fix comment passed undefined and
+// the renderer hardcoded .review-surfaces, so a repo that configured a custom
+// output_dir (and where `all` wrote the packet there) got a spurious "no packet"
+// usage error. This covers BOTH the github and sarif formats.
+const CUSTOM_OUTPUT_DIR = ".review-surfaces-custom";
+
+function runAllNoOut(cwd: string, extra: string[] = []): void {
+  execFileSync(
+    "node",
+    [CLI, "all", "--base", "HEAD", "--head", "HEAD", "--spec", "features/review-surfaces.feature.yaml", "--provider", "mock", ...extra],
+    { cwd, stdio: "ignore" }
+  );
+}
+
+function runCommentNoOut(cwd: string, extra: string[] = []): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync("node", [CLI, "comment", ...extra], { cwd, encoding: "utf8" });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+test("review-surfaces.PROVIDERS.1/.2 comment without --out reads the configured output_dir for both github and sarif", () => {
+  const tmp = setupFixture("review-surfaces-comment-customdir-");
+  try {
+    // Point output_dir somewhere OTHER than .review-surfaces and gitignore it so
+    // generated artifacts never perturb the diff. setupFixture copies the repo's
+    // own config; overwrite it for this fixture.
+    fs.writeFileSync(
+      path.join(tmp, "review-surfaces.config.yaml"),
+      `schema_version: review-surfaces.config.v1\noutput_dir: ${CUSTOM_OUTPUT_DIR}\n`
+    );
+    fs.appendFileSync(path.join(tmp, ".gitignore"), `\n${CUSTOM_OUTPUT_DIR}/\n`);
+
+    // `all` WITHOUT --out writes the packet under the CONFIGURED dir.
+    runAllNoOut(tmp);
+    assert.ok(
+      fs.existsSync(path.join(tmp, CUSTOM_OUTPUT_DIR, "review_packet.json")),
+      "all (no --out) must write the packet under the configured output_dir"
+    );
+    assert.ok(
+      !fs.existsSync(path.join(tmp, ".review-surfaces", "review_packet.json")),
+      ".review-surfaces must NOT be used when config sets output_dir"
+    );
+
+    // comment --format github WITHOUT --out must find the packet under the configured dir.
+    const github = runCommentNoOut(tmp);
+    assert.equal(github.status, 0, github.stderr);
+    assert.match(github.stdout, /### Requirement coverage/, "comment must render from the configured-dir packet");
+    assert.ok(
+      fs.existsSync(path.join(tmp, CUSTOM_OUTPUT_DIR, "comment.md")),
+      "comment.md must be written under the configured output_dir"
+    );
+
+    // comment --format sarif WITHOUT --out must likewise find the packet.
+    const sarif = runCommentNoOut(tmp, ["--format", "sarif"]);
+    assert.equal(sarif.status, 0, sarif.stderr);
+    assert.match(sarif.stdout, /sarif-schema-2\.1\.0\.json/, "sarif must render from the configured-dir packet");
+    assert.ok(
+      fs.existsSync(path.join(tmp, CUSTOM_OUTPUT_DIR, "review.sarif")),
+      "review.sarif must be written under the configured output_dir"
     );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

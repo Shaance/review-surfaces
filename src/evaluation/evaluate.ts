@@ -199,7 +199,7 @@ export function verifyRequirementsWithTests(
     if (match) {
       // Invariant #3: implementation evidence is required unless test-only.
       const testOnly = requirement ? isTestOnlyRequirement(requirement, group) : false;
-      if (!testOnly && !resultHasImplementationEvidence(result)) {
+      if (!testOnly && !resultHasImplementationEvidence(result, collectedTestPaths)) {
         continue; // A verified test alone may NEVER satisfy a non-test-only requirement.
       }
       promoteToVerified(result, match);
@@ -415,7 +415,7 @@ function passingCaseGroups(
   return groups;
 }
 
-function resultHasImplementationEvidence(result: RequirementResult): boolean {
+function resultHasImplementationEvidence(result: RequirementResult, collectedTestPaths: Set<string>): boolean {
   // Implementation evidence is a deterministically-discovered (not LLM-proposed)
   // file/diff ref whose PATH is a real implementation path. This reuses the
   // evaluator's own notion of implementation (isImplementationEvidencePath), which
@@ -424,19 +424,22 @@ function resultHasImplementationEvidence(result: RequirementResult): boolean {
   // NOT satisfy Invariant #3: a verified test may never satisfy a requirement the
   // evaluator itself determined has no implementation. A ref without a path is
   // conservatively NOT counted as implementation.
+  //
+  // The collected test paths are threaded through so that a deterministic file ref
+  // pointing at a COLLECTED TEST file (e.g. directFileEvidence fired because the
+  // requirement text names tests/foo.test.ts) is rejected here: a test file is
+  // NEVER implementation evidence, so a passing exact-ACID test plus a tests/ file
+  // ref must not promote a non-test-only requirement to satisfied. Test files
+  // also frequently live outside tests/ (e.g. *.test.ts beside source), so the
+  // explicit collected-test-path set is required, not just the path prefixes.
   return result.evidence.some(
     (ref) =>
       (ref.kind === "file" || ref.kind === "diff") &&
       !isLlmProposed(ref) &&
       typeof ref.path === "string" &&
-      isImplementationEvidencePath(ref.path, EMPTY_PATH_SET)
+      isImplementationEvidencePath(ref.path, collectedTestPaths)
   );
 }
-
-// isImplementationEvidencePath also rejects collected test paths; in the
-// verification loop a test path would arrive as kind "test", not "file"/"diff",
-// so a shared empty set is sufficient and keeps the path-class check.
-const EMPTY_PATH_SET = new Set<string>();
 
 function promoteToVerified(result: RequirementResult, match: VerifyingMatch): void {
   const exactAcid = match.basis === "exact_acid";

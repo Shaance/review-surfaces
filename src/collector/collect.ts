@@ -129,6 +129,13 @@ export interface CollectOptions {
   // the quality gate, so it is folded into the signature. Absent (no file on disk)
   // => the built-in defaults were used and there is nothing to hash.
   configPath?: string;
+  // Resolved --previous-packet path (the concrete review_packet.json the dogfood
+  // comparison reads). Folded into the signature (path + content) so that changing
+  // which baseline a dogfood run compares against — or editing that baseline's
+  // bytes — is a cache miss. Without this, a --cache run could restore an old
+  // packet whose dogfood.comparison / agent_handoff.changes_since_last_packet was
+  // computed against a stale baseline. Absent => no --previous-packet flag.
+  previousPacketPath?: string;
 }
 
 export async function collectInputs(options: CollectOptions): Promise<CollectionResult> {
@@ -225,8 +232,16 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     { kind: "coverage", path: options.coverageOutputPath },
     { kind: "agent-input", path: options.agentInputPath },
     { kind: "config", path: options.configPath },
+    { kind: "previous-packet", path: options.previousPacketPath },
     ...testOutputPaths.map((testPath) => ({ kind: "test-output", path: testPath }))
   ]);
+
+  // Resolve run_mode/milestone ONCE so the same values feed both the signature
+  // and the manifest. They are part of the fingerprint so a dogfood --cache run
+  // can never match a non-dogfood cached signature: a restored local-mode packet
+  // would be missing the schema-required dogfood + agent_handoff sections.
+  const runMode: RunManifest["run_mode"] = options.dogfood ? "dogfood" : "local";
+  const milestone = options.dogfood ? options.config.dogfood.milestone : undefined;
 
   const signature = computeSignature({
     toolVersion: TOOL_VERSION,
@@ -234,6 +249,8 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     headSha: git.head_sha,
     provider: options.provider,
     model: options.model,
+    runMode,
+    milestone,
     inputHashes,
     changedFileHashes,
     flagInputHashes
@@ -247,8 +264,8 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     head_ref: options.headRef,
     base_sha: git.base_sha,
     head_sha: git.head_sha,
-    run_mode: options.dogfood ? "dogfood" : "local",
-    milestone: options.dogfood ? options.config.dogfood.milestone : undefined,
+    run_mode: runMode,
+    milestone,
     input_hashes: inputHashes,
     signature
   };
@@ -384,6 +401,11 @@ interface SignatureInput {
   headSha: string;
   provider?: string;
   model?: string;
+  // run_mode (local|dogfood|...) and the dogfood milestone fold into the
+  // fingerprint so a dogfood run never collides with a non-dogfood cached
+  // signature (which would restore a packet missing dogfood/agent_handoff).
+  runMode: RunManifest["run_mode"];
+  milestone?: string;
   inputHashes: ManifestInputHash[];
   changedFileHashes: ChangedFileHash[];
   flagInputHashes: FlagInputHash[];
@@ -400,6 +422,11 @@ function computeSignature(input: SignatureInput): string {
     head_sha: input.headSha,
     provider: input.provider ?? null,
     model: input.model ?? null,
+    // run_mode + milestone are part of the key so a dogfood --cache run NEVER
+    // matches a non-dogfood cached signature: the cached local-mode packet would
+    // be missing the schema-required dogfood + agent_handoff sections.
+    run_mode: input.runMode,
+    milestone: input.milestone ?? null,
     input_hashes: [...input.inputHashes]
       .sort((left, right) => left.path.localeCompare(right.path))
       .map((entry) => ({ path: entry.path, kind: entry.kind, hash: entry.hash })),
