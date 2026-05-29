@@ -420,3 +420,94 @@ test("review-surfaces.PROVIDERS.2 emitted regions are 1-based with endLine>=star
   assert.equal(byUri.get("src/b.ts"), undefined);
   assert.deepEqual(byUri.get("src/c.ts"), { startLine: 5 });
 });
+
+// FINDING D (round 3): an invalid_evidence result whose rejected evidence path is
+// absolute, escapes the repo via `..`, or is marked validation_status "invalid"
+// must NOT emit that raw value as artifactLocation.uri (code-scanning consumers
+// require locations to resolve INSIDE the analyzed repo). The result is still
+// reported, but at the run level with NO locations.
+test("review-surfaces.PROVIDERS.2 invalid_evidence with an unsafe path emits the result with no out-of-repo location", () => {
+  const log = renderSarif(
+    packetFor({
+      results: [
+        // Absolute path: unsafe, drop the location.
+        {
+          requirement_id: "REQ-ABS",
+          acai_id: "x.A.1",
+          status: "invalid_evidence",
+          summary: "absolute evidence path was rejected",
+          evidence: [{ kind: "file", path: "/etc/passwd", confidence: "low", validation_status: "invalid" }],
+          missing_evidence: []
+        },
+        // Parent-escaping path: unsafe, drop the location.
+        {
+          requirement_id: "REQ-DOTDOT",
+          acai_id: "x.A.2",
+          status: "invalid_evidence",
+          summary: "parent-escaping evidence path was rejected",
+          evidence: [{ kind: "file", path: "../../outside/secret.ts", confidence: "low", validation_status: "invalid" }],
+          missing_evidence: []
+        },
+        // Plain repo-relative path but marked validation_status invalid: still
+        // dropped (the validator rejected the ref) -> no location.
+        {
+          requirement_id: "REQ-INVALID-REL",
+          acai_id: "x.A.3",
+          status: "invalid_evidence",
+          summary: "rejected relative evidence",
+          evidence: [{ kind: "file", path: "src/inside.ts", confidence: "low", validation_status: "invalid" }],
+          missing_evidence: []
+        }
+      ]
+    })
+  ) as unknown as SarifLogShape;
+
+  const invalidResults = log.runs[0].results.filter((item) => item.ruleId === "invalid_evidence");
+  // All three invalid_evidence results are STILL reported (never silently dropped).
+  assert.equal(invalidResults.length, 3, "every invalid_evidence result must still be reported");
+
+  for (const item of invalidResults) {
+    // No location at all (run-level), OR (defensively) only safe repo-relative URIs.
+    const uris = (item.locations ?? []).map((loc) => loc.physicalLocation.artifactLocation.uri);
+    assert.equal(item.locations ?? undefined, undefined, `${item.message.text} must have no out-of-repo location`);
+    for (const uri of uris) {
+      assert.ok(!uri.startsWith("/"), `must never emit an absolute path: ${uri}`);
+      assert.ok(!uri.split(/[\\/]/).includes(".."), `must never emit a parent-escaping path: ${uri}`);
+    }
+  }
+
+  // The raw unsafe values must never appear as a URI anywhere in the log.
+  const allUris = log.runs[0].results.flatMap((item) =>
+    (item.locations ?? []).map((loc) => loc.physicalLocation.artifactLocation.uri)
+  );
+  assert.equal(allUris.includes("/etc/passwd"), false, "absolute path must never be emitted as a SARIF URI");
+  assert.equal(allUris.includes("../../outside/secret.ts"), false, "parent-escaping path must never be emitted as a SARIF URI");
+});
+
+// FINDING D (round 3): a valid (not-invalid) repo-relative path is STILL emitted
+// as a normal location, and only the unsafe sibling ref is dropped. This pins the
+// fix to unsafe paths and proves safe locations are preserved.
+test("review-surfaces.PROVIDERS.2 safe repo-relative locations are preserved while unsafe siblings are dropped", () => {
+  const log = renderSarif(
+    packetFor({
+      risks: [
+        {
+          id: "R-MIXED",
+          category: "correctness",
+          severity: "high",
+          summary: "risk with one safe and one unsafe evidence path",
+          evidence: [
+            { kind: "file", path: "src/safe.ts", line_start: 3, confidence: "medium" },
+            { kind: "file", path: "/abs/unsafe.ts", confidence: "medium" },
+            { kind: "file", path: "../escape.ts", confidence: "medium" }
+          ]
+        }
+      ]
+    })
+  ) as unknown as SarifLogShape;
+
+  const risk = log.runs[0].results.find((item) => item.ruleId === "correctness");
+  assert.ok(risk, "the risk result must still be emitted");
+  const uris = (risk!.locations ?? []).map((loc) => loc.physicalLocation.artifactLocation.uri);
+  assert.deepEqual(uris, ["src/safe.ts"], "only the safe repo-relative path is kept as a location");
+});

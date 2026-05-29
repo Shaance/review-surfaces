@@ -113,9 +113,41 @@ export function loadPreviousPacket(packetPath: string): PreviousPacket | null {
     return null;
   }
   const record = parsed;
+  // A valid JSON OBJECT that is NOT a review packet (e.g. package.json or
+  // manifest.json) must be the SAME clean no-op as the array/primitive cases.
+  // Without this guard its absent evaluation/risks fields normalize to an empty
+  // baseline, and the comparison falsely reports every current requirement as an
+  // improvement-from-missing and every current risk as new — against a phantom
+  // baseline. Require it to actually look like a review packet first.
+  if (!isReviewPacketShape(record)) {
+    return null;
+  }
   const evaluation = normalizeEvaluation(record.evaluation);
   const risks = normalizeRisks(record.risks);
   return { evaluation, risks };
+}
+
+// A loaded object IS a review packet when it carries the packet schema_version,
+// OR (for an older/handwritten packet that may omit it) it has BOTH the expected
+// evaluation and risks objects. A package.json / manifest.json / arbitrary JSON
+// object satisfies neither, so it is rejected as an unreadable baseline (no-op).
+const REVIEW_PACKET_SCHEMA_VERSION = "review-surfaces.packet.v1";
+
+function isReviewPacketShape(record: Record<string, unknown>): boolean {
+  if (record.schema_version === REVIEW_PACKET_SCHEMA_VERSION) {
+    return true;
+  }
+  // Fall back to a structural check: both an evaluation object (with a results
+  // array) and a risks object (with an items array) are present. This accepts a
+  // genuine packet missing schema_version while still rejecting non-packets.
+  const evaluation = record.evaluation;
+  const risks = record.risks;
+  return (
+    isRecord(evaluation) &&
+    Array.isArray(evaluation.results) &&
+    isRecord(risks) &&
+    Array.isArray(risks.items)
+  );
 }
 
 /**

@@ -62,6 +62,22 @@ function runAll(cwd: string, extra: string[] = []): { status: number | null; std
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
+// Same as runAll but with a custom environment, so a test can vary
+// REVIEW_SURFACES_AI_MODEL between runs. The `extra` flags come AFTER the
+// defaults so a later --provider overrides the default mock.
+function runAllWithEnv(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  extra: string[] = []
+): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync(
+    "node",
+    [CLI, "all", "--base", "HEAD", "--head", "HEAD", "--spec", "features/example.feature.yaml", "--provider", "mock", "--out", ".review-surfaces", ...extra],
+    { cwd, encoding: "utf8", env }
+  );
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
 function read(cwd: string, file: string): string {
   return fs.readFileSync(path.join(cwd, ".review-surfaces", file), "utf8");
 }
@@ -191,6 +207,74 @@ test("review-surfaces signature: changes with provider/model and with base/head"
     );
     assert.equal(result.status, 0, result.stderr);
     assert.notEqual(signatureOf(tmp), mockSig, "differing base/head must change the signature");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// FINDING B (round 3): under --provider ai-sdk, the EFFECTIVE model can come
+// from REVIEW_SURFACES_AI_MODEL (no --model, no config.llm.model). Before the
+// fix the signature recorded model=undefined, so a re-run with a DIFFERENT env
+// model hit the old cache and reused the prior model's reasoning/enrichment.
+// The env model must be folded into the signature so changing it busts the cache.
+// (No API key is set, so the ai-sdk run cleanly skips enrichment offline.)
+test("review-surfaces signature: REVIEW_SURFACES_AI_MODEL changes the signature under ai-sdk", () => {
+  const tmp = setupRepo("review-surfaces-sig-envmodel-");
+  try {
+    const baseEnv = { ...process.env };
+    delete baseEnv.REVIEW_SURFACES_AI_MODEL;
+
+    const first = runAllWithEnv(
+      tmp,
+      { ...baseEnv, REVIEW_SURFACES_AI_MODEL: "anthropic:claude-3-5-haiku-latest" },
+      ["--now", FROZEN, "--provider", "ai-sdk"]
+    );
+    assert.equal(first.status, 0, first.stderr);
+    const sigModelA = signatureOf(tmp);
+
+    // Same inputs, ONLY the env model differs -> a DIFFERENT signature.
+    const second = runAllWithEnv(
+      tmp,
+      { ...baseEnv, REVIEW_SURFACES_AI_MODEL: "openai:gpt-4o-mini" },
+      ["--now", FROZEN, "--provider", "ai-sdk"]
+    );
+    assert.equal(second.status, 0, second.stderr);
+    const sigModelB = signatureOf(tmp);
+
+    assert.notEqual(sigModelB, sigModelA, "changing REVIEW_SURFACES_AI_MODEL must change the ai-sdk signature");
+
+    // The signature must be STABLE when the env model is unchanged (rerunning A).
+    const again = runAllWithEnv(
+      tmp,
+      { ...baseEnv, REVIEW_SURFACES_AI_MODEL: "anthropic:claude-3-5-haiku-latest" },
+      ["--now", FROZEN, "--provider", "ai-sdk"]
+    );
+    assert.equal(again.status, 0, again.stderr);
+    assert.equal(signatureOf(tmp), sigModelA, "an unchanged env model must keep the signature stable");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// FINDING B (round 3): mock must stay deterministic. The mock provider never
+// calls a model, so REVIEW_SURFACES_AI_MODEL must NOT perturb the mock signature.
+test("review-surfaces signature: REVIEW_SURFACES_AI_MODEL does NOT change the mock signature", () => {
+  const tmp = setupRepo("review-surfaces-sig-mockenv-");
+  try {
+    const baseEnv = { ...process.env };
+    delete baseEnv.REVIEW_SURFACES_AI_MODEL;
+
+    const noEnv = runAllWithEnv(tmp, baseEnv, ["--now", FROZEN]);
+    assert.equal(noEnv.status, 0, noEnv.stderr);
+    const sigNoEnv = signatureOf(tmp);
+
+    const withEnv = runAllWithEnv(
+      tmp,
+      { ...baseEnv, REVIEW_SURFACES_AI_MODEL: "openai:gpt-4o-mini" },
+      ["--now", FROZEN]
+    );
+    assert.equal(withEnv.status, 0, withEnv.stderr);
+    assert.equal(signatureOf(tmp), sigNoEnv, "the env model must not perturb the deterministic mock signature");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

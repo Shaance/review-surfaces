@@ -175,6 +175,20 @@ export function providerFor(name: ProviderName, options: ProviderFactoryOptions 
 }
 
 /**
+ * The canonical "<provider>:<modelId>" string the ai-sdk provider will actually
+ * use, resolved with the SAME precedence as resolveModel:
+ *   explicit model  ->  REVIEW_SURFACES_AI_MODEL env  ->  provider default.
+ * Folded into the cache signature so a model change (including one made ONLY via
+ * the env var, with no --model / config.llm.model) busts the cache instead of
+ * silently reusing the prior model's reasoning/enrichment. Deterministic: it
+ * reads process.env once and returns a stable canonical id.
+ */
+export function effectiveModelId(model: string | undefined): string {
+  const resolved = resolveModel(model);
+  return `${resolved.provider}:${resolved.modelId}`;
+}
+
+/**
  * Parse a "--model <provider>:<model>" string. Unknown/absent provider prefixes
  * default to anthropic with a sensible default model. google:/openai: prefixes
  * are preserved (including the historical google: handling).

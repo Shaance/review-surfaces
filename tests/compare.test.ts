@@ -257,10 +257,56 @@ test("review-surfaces.CLI.6 absent or unreadable previous packet is a clean no-o
   fs.writeFileSync(numberPath, "42");
   assert.equal(loadPreviousPacket(numberPath), null);
 
+  // FINDING C (round 3): a valid JSON OBJECT that is NOT a review packet (e.g.
+  // package.json or manifest.json) must be the SAME clean no-op as the
+  // array/primitive cases. Without a packet-shape guard its absent
+  // evaluation/risks normalize to an empty baseline and the comparison falsely
+  // reports everything as improved/new against a phantom baseline.
+  const packageJsonPath = path.join(tmp, "package.json");
+  fs.writeFileSync(packageJsonPath, JSON.stringify({ name: "some-pkg", version: "1.0.0", scripts: { build: "tsc" } }));
+  assert.equal(loadPreviousPacket(packageJsonPath), null, "a non-packet JSON object must be a clean no-op");
+
+  // A review-surfaces manifest.json (has tool_version/signature, no packet shape)
+  // is likewise rejected as an unreadable baseline.
+  const manifestPath = path.join(tmp, "manifest.json");
+  fs.writeFileSync(manifestPath, JSON.stringify({ tool_version: "0.1.0", head_sha: "abc", input_hashes: [], signature: "deadbeef" }));
+  assert.equal(loadPreviousPacket(manifestPath), null, "a manifest.json must be a clean no-op");
+
   // buildDogfood without comparison input carries no comparison metadata.
   const dogfood = buildDogfood(collectionFixture(), currentEvaluation() as EvaluationModel, risksFixture(), methodologyFixture(), "mock", []);
   assert.equal(dogfood.comparison, undefined);
   assert.equal(dogfood.previous_packet_path, undefined);
+});
+
+// FINDING C (round 3): a --previous-packet pointing at a non-packet JSON object
+// must produce NO comparison (loadPreviousPacket returns null), NOT a fabricated
+// "all current requirements improved-from-missing / all risks new" diff.
+test("review-surfaces.CLI.6 a non-packet JSON object yields no comparison (not all-improvements)", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-compare-nonpacket-"));
+  try {
+    const packageJsonPath = path.join(tmp, "package.json");
+    fs.writeFileSync(packageJsonPath, JSON.stringify({ name: "x", version: "1.0.0", dependencies: { foo: "^1" } }));
+
+    // The loader treats it as an unreadable baseline (no-op).
+    assert.equal(loadPreviousPacket(packageJsonPath), null);
+
+    // Sanity: a genuine packet at the SAME shape WOULD load and (as a phantom
+    // empty baseline) report improvements. Build that phantom baseline explicitly
+    // and confirm the no-op path produces nothing like it.
+    const phantom = loadPreviousPacketFrom({
+      schema_version: "review-surfaces.packet.v1",
+      evaluation: { summary: "", results: [], overreach: [], acai_coverage: {} },
+      risks: { summary: "", items: [] }
+    });
+    const fabricated = comparePackets(phantom, { evaluation: currentEvaluation(), risks: currentRisks() });
+    // The fabricated comparison against an empty baseline reports current entries
+    // as new/improved; the non-packet path must NOT do this (it returns null), so
+    // there is no comparison object at all.
+    assert.ok(fabricated.status_changes.length > 0, "an empty phantom baseline DOES fabricate improvements (control)");
+    assert.equal(loadPreviousPacket(packageJsonPath), null, "the non-packet object must never produce a comparison");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("review-surfaces.CLI.6 buildDogfood records previous_packet_path when previous packet was unreadable", () => {

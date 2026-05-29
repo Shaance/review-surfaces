@@ -261,6 +261,16 @@ function deterministicLocations(evidence: EvidenceRef[] | undefined): SarifLocat
     if (typeof ref.path !== "string" || ref.path.trim() === "") {
       continue;
     }
+    // Code-scanning consumers require every location to resolve INSIDE the
+    // analyzed repo. An invalid_evidence result preserves its REJECTED evidence
+    // path (validation_status "invalid"), which can be absolute or escape the
+    // repo via a `..` segment. Emitting that raw value as artifactLocation.uri
+    // points the consumer out-of-repo. Drop the location for any unsafe path (or
+    // any ref the validator marked invalid); the result is still reported, but at
+    // the run level (no location) via locationsField.
+    if (isUnsafeEvidencePath(ref)) {
+      continue;
+    }
     const region = regionFor(ref);
     const key = `${ref.path}:${region?.startLine ?? ""}:${region?.endLine ?? ""}`;
     if (seen.has(key)) {
@@ -284,6 +294,32 @@ function deterministicLocations(evidence: EvidenceRef[] | undefined): SarifLocat
     const rightStart = right.physicalLocation.region?.startLine ?? 0;
     return leftStart - rightStart;
   });
+}
+
+// An evidence ref's path is UNSAFE for a SARIF artifactLocation.uri when it
+// cannot be trusted to resolve inside the analyzed repo: an absolute path, a
+// path with a `..` segment (escapes the repo), or a ref the deterministic
+// validator already rejected (validation_status "invalid"). Such refs are
+// dropped from locations so the result is emitted at the run level instead of
+// carrying an out-of-repo URI. Path checks cover both POSIX and Windows
+// separators so a `..\\` or drive-letter path is caught too.
+function isUnsafeEvidencePath(ref: EvidenceRef): boolean {
+  if (ref.validation_status === "invalid") {
+    return true;
+  }
+  const value = ref.path ?? "";
+  return isAbsolutePath(value) || hasParentSegment(value);
+}
+
+function isAbsolutePath(value: string): boolean {
+  // POSIX absolute (/foo), Windows drive (C:\ or C:/), or UNC (\\server) paths.
+  return value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\");
+}
+
+function hasParentSegment(value: string): boolean {
+  return value
+    .split(/[\\/]/)
+    .some((segment) => segment === "..");
 }
 
 function regionFor(ref: EvidenceRef): SarifRegion | undefined {

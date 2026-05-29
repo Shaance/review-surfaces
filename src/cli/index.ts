@@ -13,7 +13,7 @@ import { buildDogfood, DogfoodComparisonInput } from "../dogfood/dogfood";
 import { comparePackets, loadPreviousPacket, resolvePreviousPacketPath } from "../dogfood/compare";
 import { EvaluationModel, evaluateIntent, verifyRequirementsWithTests } from "../evaluation/evaluate";
 import { buildIntent, IntentModel } from "../intent/intent";
-import { enrichPacket, EnrichmentResult, parseProviderName, providerFor, ProviderName } from "../llm/provider";
+import { effectiveModelId, enrichPacket, EnrichmentResult, parseProviderName, providerFor, ProviderName } from "../llm/provider";
 import { runEvaluationReasoning, runIntentReasoning, runNarrativeReasoning } from "../llm/reasoning";
 import { buildMethodology, MethodologyModel } from "../methodology/methodology";
 import { buildReviewAreas, ReviewArea } from "../review-areas/areas";
@@ -193,13 +193,36 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
     dogfood: isDogfoodRun(parsed),
     now: nowFlag(parsed),
     provider,
-    model: stringFlag(parsed, "model") ?? runConfig.llm.model ?? undefined,
+    model: signatureModel(parsed, runConfig, provider),
     conversationPath: stringFlag(parsed, "conversation"),
     agentInputPath: stringFlag(parsed, "agent-input"),
     configPath,
     previousPacketPath: resolvePreviousPacketInput(cwd, parsed)
   });
   return { collection, config: runConfig };
+}
+
+// The model value folded into the cache signature. For ai-sdk we resolve the
+// EFFECTIVE model with the SAME precedence the provider uses
+// (--model -> config.llm.model -> REVIEW_SURFACES_AI_MODEL env -> provider
+// default) so a model change made ONLY through the env var still busts the
+// cache; without this the signature recorded `undefined` and a re-run with a
+// DIFFERENT REVIEW_SURFACES_AI_MODEL hit the old cache and reused the prior
+// model's reasoning/enrichment. mock NEVER calls a model and must stay
+// deterministic, so it folds nothing extra (the explicit requested model, if
+// any, is still recorded so an explicit --model swap remains a cache miss).
+// agent-file is offline and does not consult the AI model env var, so it keeps
+// the requested-model-only behavior unchanged.
+function signatureModel(
+  parsed: ParsedArgs,
+  config: ReviewSurfacesConfig,
+  provider: ProviderName
+): string | undefined {
+  const requested = stringFlag(parsed, "model") ?? config.llm.model ?? undefined;
+  if (provider === "ai-sdk") {
+    return effectiveModelId(requested);
+  }
+  return requested;
 }
 
 // Validate --now as a parseable ISO 8601 instant and normalize it to a single

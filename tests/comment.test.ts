@@ -342,6 +342,46 @@ test("review-surfaces.PROVIDERS.1/.2 comment without --out reads the configured 
   }
 });
 
+// FINDING A (round 3): the published comment's "Full local packet" pointer must
+// reference the EFFECTIVE output dir the renderer actually read, not a hardcoded
+// .review-surfaces path. In a repo with a custom output_dir the hardcoded link
+// would point at a non-existent/stale packet. The pointer (markdown + json) must
+// reflect the custom dir and must NOT mention .review-surfaces.
+test("review-surfaces.PROVIDERS.1 comment pointer reflects a custom output_dir (not a hardcoded .review-surfaces link)", () => {
+  const tmp = setupFixture("review-surfaces-comment-pointer-");
+  try {
+    fs.writeFileSync(
+      path.join(tmp, "review-surfaces.config.yaml"),
+      `schema_version: review-surfaces.config.v1\noutput_dir: ${CUSTOM_OUTPUT_DIR}\n`
+    );
+    fs.appendFileSync(path.join(tmp, ".gitignore"), `\n${CUSTOM_OUTPUT_DIR}/\n`);
+
+    runAllNoOut(tmp);
+    const github = runCommentNoOut(tmp);
+    assert.equal(github.status, 0, github.stderr);
+
+    // The pointer must name the configured dir's packet artifacts...
+    assert.match(
+      github.stdout,
+      new RegExp(`Full local packet: \`${CUSTOM_OUTPUT_DIR}/review_packet\\.md\``),
+      "the markdown pointer must reference the configured output_dir"
+    );
+    assert.match(
+      github.stdout,
+      new RegExp(`machine-readable: \`${CUSTOM_OUTPUT_DIR}/review_packet\\.json\``),
+      "the json pointer must reference the configured output_dir"
+    );
+    // ...and must NOT carry the stale hardcoded .review-surfaces link.
+    assert.doesNotMatch(
+      github.stdout,
+      /\.review-surfaces\/review_packet/,
+      "the comment must not point reviewers at a non-existent .review-surfaces packet"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.PROVIDERS.1 default comment does not invoke --post (no network)", () => {
   const tmp = setupFixture("review-surfaces-comment-nopost-");
   try {

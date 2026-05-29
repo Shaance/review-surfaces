@@ -42,8 +42,25 @@ const MAX_HYPOTHESES = 6;
 // silently fail to upsert.
 const MAX_LINE_CHARS = 300;
 const MAX_COMMENT_CHARS = 60000;
-const COMMENT_TRUNCATED_TRAILER =
-  "\n\n... truncated; see `.review-surfaces/review_packet.json` for the full packet.\n";
+
+// Default artifact-dir relative paths used when renderComment is called without
+// a resolved packet location (the pure in-memory path). The CLI path threads the
+// EFFECTIVE output dir so a custom output_dir is reflected in the pointer.
+const DEFAULT_PACKET_JSON_REL = ".review-surfaces/review_packet.json";
+const DEFAULT_PACKET_MD_REL = ".review-surfaces/review_packet.md";
+
+// Where the full local packet lives, expressed relative to cwd. Both pointers
+// are derived from the SAME effective packet path the renderer read, so a custom
+// output_dir is reflected in the published comment instead of a hardcoded
+// .review-surfaces link that would point at a non-existent/stale artifact.
+interface PacketPointers {
+  json: string;
+  markdown: string;
+}
+
+function defaultPointers(): PacketPointers {
+  return { json: DEFAULT_PACKET_JSON_REL, markdown: DEFAULT_PACKET_MD_REL };
+}
 
 export interface RenderedComment {
   markdown: string;
@@ -72,9 +89,23 @@ export function renderCommentFromPacketFile(cwd: string, outDir?: string): Rende
   }
   const packet = JSON.parse(fs.readFileSync(packetPath, "utf8")) as ReviewPacket;
   return {
-    markdown: renderComment(packet),
+    // Derive the "full packet" pointers from the EFFECTIVE packet path the
+    // renderer actually read, expressed relative to cwd, so a repo with a custom
+    // output_dir gets a link to the REAL artifact location rather than a
+    // hardcoded .review-surfaces/review_packet.* that does not exist there.
+    markdown: renderComment(packet, pointersForPacketPath(cwd, packetPath)),
     packetPath
   };
+}
+
+// review_packet.json -> {json, markdown} pointers, relative to cwd. The json
+// path is the packet the renderer read; the markdown path is its .md sibling in
+// the same directory (the human-readable surface `all` also writes there).
+function pointersForPacketPath(cwd: string, packetPath: string): PacketPointers {
+  const dir = path.dirname(packetPath);
+  const jsonRel = path.relative(cwd, packetPath) || packetPath;
+  const mdRel = path.relative(cwd, path.join(dir, "review_packet.md")) || path.join(dir, "review_packet.md");
+  return { json: jsonRel, markdown: mdRel };
 }
 
 /**
@@ -82,7 +113,7 @@ export function renderCommentFromPacketFile(cwd: string, outDir?: string): Rende
  * clock, deterministic given the packet. Secrets are redacted in every rendered
  * free-text line, mirroring the packet markdown renderer.
  */
-export function renderComment(packet: ReviewPacket): string {
+export function renderComment(packet: ReviewPacket, pointers: PacketPointers = defaultPointers()): string {
   const counts = countRequirementStatuses(packet.evaluation.results ?? []);
   const overreachCount = packet.evaluation.overreach?.length ?? 0;
   const milestone = readMilestone(packet);
@@ -104,25 +135,30 @@ export function renderComment(packet: ReviewPacket): string {
     "### LLM/agent hypotheses (NOT proof; verify against deterministic evidence)",
     renderBullets(hypotheses(packet, MAX_HYPOTHESES), "None proposed."),
     "",
-    "Full local packet: `.review-surfaces/review_packet.md` (machine-readable: `.review-surfaces/review_packet.json`)."
+    // Point reviewers at the REAL artifact location (the effective output_dir),
+    // not a hardcoded .review-surfaces path that would be stale/absent in a repo
+    // with a configured output_dir.
+    `Full local packet: \`${pointers.markdown}\` (machine-readable: \`${pointers.json}\`).`
   ];
 
   // Single trailing newline so two renders of the same packet are byte-identical.
   // Per-line truncation already bounds each interpolated field; the total cap is a
   // belt-and-suspenders guarantee (many capped lines could still add up) that the
   // assembled comment stays under GitHub's per-comment limit.
-  return clampTotal(`${sections.join("\n")}\n`);
+  return clampTotal(`${sections.join("\n")}\n`, pointers.json);
 }
 
 // Hard-cap the assembled comment so it can never exceed GitHub's per-comment
 // limit. Deterministic: same input -> same (possibly truncated) output. The
-// trailer points the reviewer at the full local packet.
-function clampTotal(markdown: string): string {
+// trailer points the reviewer at the full local packet at its REAL (effective
+// output_dir) location, not a hardcoded .review-surfaces path.
+function clampTotal(markdown: string, packetJsonRel: string): string {
   if (markdown.length <= MAX_COMMENT_CHARS) {
     return markdown;
   }
-  const budget = MAX_COMMENT_CHARS - COMMENT_TRUNCATED_TRAILER.length;
-  return `${markdown.slice(0, budget)}${COMMENT_TRUNCATED_TRAILER}`;
+  const trailer = `\n\n... truncated; see \`${packetJsonRel}\` for the full packet.\n`;
+  const budget = MAX_COMMENT_CHARS - trailer.length;
+  return `${markdown.slice(0, budget)}${trailer}`;
 }
 
 // Truncate a single interpolated free-text field to a sane per-line length so a
