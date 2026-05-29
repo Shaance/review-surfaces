@@ -4,6 +4,7 @@ import { EvidenceValidationContext, validateEvidenceRef } from "../evidence/vali
 import { EvaluationModel, RequirementResult, RequirementStatus } from "../evaluation/evaluate";
 import { IntentModel, IntentRequirement } from "../intent/intent";
 import { MethodologyModel } from "../methodology/methodology";
+import { redactSecrets } from "../privacy/secrets";
 import { RisksModel } from "../risks/risks";
 import { GenerateStructuredOptions, ReasoningProvider } from "./provider";
 
@@ -295,7 +296,8 @@ function buildCandidateRequirements(
     if (result.length >= MAX_PROPOSED_REQUIREMENTS || !isRecord(entry)) {
       continue;
     }
-    const requirementText = typeof entry.requirement === "string" ? entry.requirement.trim() : "";
+    // Redact agent/LLM-controlled free text before it can reach intent fields.
+    const requirementText = typeof entry.requirement === "string" ? redact(entry.requirement).trim() : "";
     if (requirementText === "") {
       continue;
     }
@@ -307,7 +309,7 @@ function buildCandidateRequirements(
       path: sourceRefRaw.path,
       line_start: numericField(sourceRefRaw.line_start),
       line_end: numericField(sourceRefRaw.line_end),
-      note: typeof sourceRefRaw.note === "string" ? sourceRefRaw.note : "Source cited for proposed requirement.",
+      note: typeof sourceRefRaw.note === "string" ? redact(sourceRefRaw.note) : "Source cited for proposed requirement.",
       confidence: "low"
     });
     const validated = validateEvidenceRef(candidateEvidence, evidenceContext);
@@ -318,7 +320,7 @@ function buildCandidateRequirements(
     result.push({
       id: `REQ-LLM-${String(counter).padStart(3, "0")}`,
       acai_id: undefined, // NEVER fabricate an acai_id
-      title: typeof entry.title === "string" ? entry.title : "LLM-proposed requirement",
+      title: typeof entry.title === "string" ? redact(entry.title) : "LLM-proposed requirement",
       requirement: requirementText,
       source_refs: [
         {
@@ -598,8 +600,9 @@ function applyCandidateEvidence(
       path: entry.path,
       line_start: numericField(entry.line_start),
       line_end: numericField(entry.line_end),
-      test_name: typeof entry.test_name === "string" ? entry.test_name : undefined,
-      note: typeof entry.note === "string" ? entry.note : "Candidate evidence for this requirement.",
+      test_name: typeof entry.test_name === "string" ? redact(entry.test_name) : undefined,
+      // Redact agent/LLM-controlled free text before it reaches the evidence note.
+      note: typeof entry.note === "string" ? redact(entry.note) : "Candidate evidence for this requirement.",
       confidence: kind === "test" ? "medium" : "low"
     });
     // Gate on the candidate pool BEFORE deterministic validation. The pool is the
@@ -899,8 +902,19 @@ Methodology summary: ${inputs.methodology.summary}
 
 const HYPOTHESIS_PREFIX = "LLM-proposed:";
 
+// Agent-file/LLM-returned strings reach the packet through the reasoning stages,
+// NOT only through provider.ts mergeEnrichment. A local --agent-input file (or a
+// remote model echo) can carry a token/API key, so EVERY such string must pass
+// through redactSecrets before it is written into intent/methodology/risk fields.
+// This mirrors the redaction boundary in provider.ts and keeps raw secrets out of
+// review_packet.json / the YAML artifacts. markHypothesis is the single funnel
+// every narrative/hypothesis string flows through, so redaction lives here.
+function redact(value: string): string {
+  return redactSecrets(value).text;
+}
+
 function markHypothesis(value: string): string {
-  const trimmed = value.trim();
+  const trimmed = redact(value).trim();
   if (trimmed === "") {
     return trimmed;
   }

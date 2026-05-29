@@ -441,37 +441,53 @@ function aiSdkSkipSummary(reason: string): string {
   }
 }
 
+// Agent-file enrichment is read from a LOCAL file the agent controls, so it can
+// accidentally contain a token/API key. Every merged string must therefore pass
+// through redactSecrets BEFORE it is written into packet fields, mirroring the
+// redaction boundary already applied to diffs/conversations for remote calls.
+// This keeps a raw secret out of review_packet.json / YAML.
+function redact(value: string): string {
+  return redactSecrets(value).text;
+}
+
+function redactAll(values: string[]): string[] {
+  return values.map(redact);
+}
+
 function mergeEnrichment(packet: ReviewPacket, enrichment: AgentFileEnrichment): void {
   if (Array.isArray(enrichment.review_focus) && isRecord(packet.risks)) {
-    packet.risks.review_focus = uniqueStrings([...(asStringArray(packet.risks.review_focus)), ...enrichment.review_focus]).slice(0, 10);
+    packet.risks.review_focus = uniqueStrings([...(asStringArray(packet.risks.review_focus)), ...redactAll(enrichment.review_focus)]).slice(0, 10);
   }
   if (Array.isArray(enrichment.assumptions) && isRecord(packet.intent)) {
-    packet.intent.assumptions = uniqueStrings([...(asStringArray(packet.intent.assumptions)), ...enrichment.assumptions]).slice(0, 12);
+    packet.intent.assumptions = uniqueStrings([...(asStringArray(packet.intent.assumptions)), ...redactAll(enrichment.assumptions)]).slice(0, 12);
   }
   if (Array.isArray(enrichment.methodology_decisions) && isRecord(packet.methodology)) {
-    packet.methodology.decisions = uniqueStrings([...(asStringArray(packet.methodology.decisions)), ...enrichment.methodology_decisions]).slice(0, 12);
+    packet.methodology.decisions = uniqueStrings([...(asStringArray(packet.methodology.decisions)), ...redactAll(enrichment.methodology_decisions)]).slice(0, 12);
   }
   if (Array.isArray(enrichment.risk_summaries) && isRecord(packet.risks)) {
     const existing = Array.isArray(packet.risks.items) ? packet.risks.items : [];
-    const appended = enrichment.risk_summaries.slice(0, 3).map((summary, index) => ({
-      id: `AI-RISK-${String(index + 1).padStart(3, "0")}`,
-      category: "unknown" as const,
-      severity: "unknown" as const,
-      likelihood: "unknown" as const,
-      detectability: "unknown" as const,
-      summary: `AI/agent hypothesis: ${summary}`,
-      impact: "Hypothesis only; not proof of behavior.",
-      evidence: [
-        {
-          kind: "unknown" as const,
-          confidence: "low" as const,
-          validation_status: "unknown" as const,
-          note: "Optional enrichment hypothesis."
-        }
-      ],
-      suggested_checks: ["Validate this hypothesis against deterministic evidence before acting."],
-      manual_review: true
-    }));
+    const appended = enrichment.risk_summaries.slice(0, 3).map((rawSummary, index) => {
+      const summary = redact(rawSummary);
+      return {
+        id: `AI-RISK-${String(index + 1).padStart(3, "0")}`,
+        category: "unknown" as const,
+        severity: "unknown" as const,
+        likelihood: "unknown" as const,
+        detectability: "unknown" as const,
+        summary: `AI/agent hypothesis: ${summary}`,
+        impact: "Hypothesis only; not proof of behavior.",
+        evidence: [
+          {
+            kind: "unknown" as const,
+            confidence: "low" as const,
+            validation_status: "unknown" as const,
+            note: "Optional enrichment hypothesis."
+          }
+        ],
+        suggested_checks: ["Validate this hypothesis against deterministic evidence before acting."],
+        manual_review: true
+      };
+    });
     packet.risks.items = [...existing, ...appended];
   }
 }

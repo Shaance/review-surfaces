@@ -19,10 +19,15 @@ import { countRequirementStatuses, RequirementStatusCount } from "../evaluation/
 // not a coverage status) and is treated as its own bucket so a status that
 // flips into or out of overreach is reported as a change without forcing a
 // nonsensical numeric direction.
+//
+// invalid_evidence ranks BELOW missing/unknown: it means a claim is actively
+// untrustworthy (it trips the evidence gate), which is strictly worse than a
+// merely-absent claim. So a move INTO invalid_evidence (e.g. missing ->
+// invalid_evidence) is a regression, and a move OUT of it is an improvement.
 const STATUS_ORDER: Record<string, number> = {
-  missing: 0,
-  unknown: 1,
-  invalid_evidence: 2,
+  invalid_evidence: 0,
+  missing: 1,
+  unknown: 2,
   partial: 3,
   satisfied: 4
 };
@@ -228,14 +233,19 @@ function computeRiskChanges(
   return { new_risks: newRisks, resolved_risks: resolvedRisks };
 }
 
-// Risks are keyed by id + summary so a re-numbered RISK-NNN with the same
-// summary is not double-counted as both new and resolved.
-function riskKeys(items: Array<{ id?: string; summary?: string }>): Set<string> {
+// Risks are keyed by a STABLE property (category + summary), NOT the generated
+// RISK-NNN id. Risk ids are assigned by insertion order, so adding an earlier
+// risk renumbers every later one; keying on the id would then report an
+// unchanged risk (same summary, shifted id) as BOTH resolved AND new. Category
+// is included so two distinct risks that happen to share a summary stay
+// separable, while a re-numbered risk with the same category+summary matches
+// across packets.
+function riskKeys(items: Array<{ id?: string; category?: string; summary?: string }>): Set<string> {
   const keys = new Set<string>();
   for (const item of items) {
-    const id = item.id ?? "";
+    const category = item.category ?? "";
     const summary = item.summary ?? "";
-    keys.add(`${id}: ${summary}`);
+    keys.add(`${category}: ${summary}`);
   }
   return keys;
 }
@@ -296,11 +306,30 @@ function normalizeRisks(value: unknown): Pick<RisksModel, "items"> {
     .filter(isRecord)
     .map((item) => ({
       id: typeof item.id === "string" ? item.id : "",
-      category: "unknown" as const,
+      // Preserve the real category so the stable risk key (category + summary)
+      // matches across packets; fall back to "unknown" when absent.
+      category: isRiskCategory(item.category) ? item.category : ("unknown" as const),
       severity: "unknown" as const,
       summary: typeof item.summary === "string" ? item.summary : ""
     }));
   return { items };
+}
+
+const RISK_CATEGORIES = new Set<string>([
+  "correctness",
+  "security",
+  "privacy",
+  "maintainability",
+  "architecture",
+  "testing",
+  "workflow",
+  "release",
+  "performance",
+  "unknown"
+]);
+
+function isRiskCategory(value: unknown): value is RisksModel["items"][number]["category"] {
+  return typeof value === "string" && RISK_CATEGORIES.has(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileExists } from "../core/files";
 import { parseYaml } from "../core/simple-yaml";
 import { Confidence, EvidenceKind, EvidenceRef, SourceRef, ValidationStatus } from "../evidence/evidence";
-import { EvaluationModel, RequirementResult, RequirementStatus } from "../evaluation/evaluate";
+import { EvaluationModel, PartialReason, RequirementResult, RequirementStatus } from "../evaluation/evaluate";
 import { DogfoodModel } from "../dogfood/dogfood";
 import { ComparisonDirection, CountDelta, PacketComparison } from "../dogfood/compare";
 import { IntentModel, IntentRequirement } from "../intent/intent";
@@ -119,6 +119,18 @@ const REQUIREMENT_STATUS: RequirementStatus[] = [
   "overreach",
   "invalid_evidence"
 ];
+// Structured sub-reason for a partial status; only meaningful when
+// status === "partial". Preserved on load so the composable flow
+// (evaluate -> packet) keeps the partial_reason labels a monolithic `all`
+// run produces, so compose == monolith.
+const PARTIAL_REASONS: PartialReason[] = [
+  "impl_no_test",
+  "test_no_impl",
+  "impl_broad_no_exact_test",
+  "exact_impl_broad_test",
+  "broad_area_only",
+  "other"
+];
 
 function normalizeRequirement(value: unknown): IntentRequirement {
   const record = isRecord(value) ? value : {};
@@ -138,11 +150,16 @@ function normalizeRequirement(value: unknown): IntentRequirement {
 
 function normalizeRequirementResult(value: unknown): RequirementResult {
   const record = isRecord(value) ? value : {};
+  const status = asEnum(record.status, REQUIREMENT_STATUS) ?? "unknown";
+  // partial_reason is only meaningful for partial results; carry it through
+  // round-trips so loaded evaluations match a monolithic `all` run.
+  const partialReason = status === "partial" ? asEnum(record.partial_reason, PARTIAL_REASONS) : undefined;
   return {
     requirement_id: asString(record.requirement_id),
     acai_id: optionalString(record.acai_id),
-    status: asEnum(record.status, REQUIREMENT_STATUS) ?? "unknown",
+    status,
     summary: asString(record.summary),
+    ...(partialReason ? { partial_reason: partialReason } : {}),
     evidence: asArray(record.evidence).map(normalizeEvidenceRef),
     missing_evidence: asArray(record.missing_evidence).map(normalizeEvidenceRef),
     review_focus: asString(record.review_focus),

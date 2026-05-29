@@ -49,10 +49,25 @@ test("review-surfaces.EVIDENCE.4 invalid_evidence in overreach also trips eviden
   assert.equal(gateExitCode(evalModel, collection(false), "mock", DEFAULT_OPTIONS), ExitCodes.evidenceValidationFailed);
 });
 
-test("review-surfaces.PRIVACY.2 non-mock provider + remote block trips privacyBlocked (5)", () => {
+test("review-surfaces.PRIVACY.2 ONLY a remote-calling provider (ai-sdk) trips privacyBlocked (5)", () => {
   const clean = evaluation([result("satisfied")]);
+  // ai-sdk leaves the machine, so a remote-blocked diff MUST privacy-block.
   assert.equal(gateExitCode(clean, collection(true), "ai-sdk", DEFAULT_OPTIONS), ExitCodes.privacyBlocked);
-  assert.equal(gateExitCode(clean, collection(true), "agent-file", DEFAULT_OPTIONS), ExitCodes.privacyBlocked);
+});
+
+test("review-surfaces.PRIVACY.2 agent-file is OFFLINE and must NOT privacy-block (continues to evidence/quality gates)", () => {
+  // agent-file only reads a LOCAL --agent-input file; no remote call happens, so
+  // a remote_provider_blocked diff must NOT short-circuit to code 5. A clean
+  // evaluation continues through and passes (0).
+  const clean = evaluation([result("satisfied")]);
+  assert.equal(gateExitCode(clean, collection(true), "agent-file", DEFAULT_OPTIONS), ExitCodes.success);
+
+  // And it still REACHES the downstream gates rather than stopping at privacy:
+  // invalid_evidence -> 4, missing -> 10, even when remote-blocked.
+  const badEvidence = evaluation([result("invalid_evidence")]);
+  assert.equal(gateExitCode(badEvidence, collection(true), "agent-file", DEFAULT_OPTIONS), ExitCodes.evidenceValidationFailed);
+  const missing = evaluation([result("missing")]);
+  assert.equal(gateExitCode(missing, collection(true), "agent-file", DEFAULT_OPTIONS), ExitCodes.qualityGateFailed);
 });
 
 test("review-surfaces.PRIVACY.2 mock provider never trips privacyBlocked even when remote-blocked", () => {

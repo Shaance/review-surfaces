@@ -448,3 +448,94 @@ test("review-surfaces --cache --strict: a clean hit reuses the packet and still 
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// FIX (cache output dir): when config sets a custom output_dir and the run does
+// NOT pass --out, the --cache snapshot must read the manifest/packet from the
+// CONFIGURED dir (the same precedence collectInputs uses), not .review-surfaces.
+// Before the fix the snapshot read .review-surfaces/manifest.json (absent), so a
+// custom-output_dir repo ALWAYS missed the cache and silently regenerated.
+const CUSTOM_OUTPUT_DIR = ".review-surfaces-custom";
+
+function setupCustomOutputDirRepo(prefix: string): string {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+components:
+  SRC:
+    requirements:
+      1: The source module exports the marker.
+`
+  );
+  fs.writeFileSync(path.join(tmp, "src", "module.ts"), "export const marker = 'example.SRC.1';\n");
+  fs.writeFileSync(path.join(tmp, "README.md"), "# example\n");
+  // Config points the output dir somewhere OTHER than .review-surfaces.
+  fs.writeFileSync(
+    path.join(tmp, "review-surfaces.config.yaml"),
+    `schema_version: review-surfaces.config.v1\noutput_dir: ${CUSTOM_OUTPUT_DIR}\n`
+  );
+  // The custom output dir must be gitignored so its generated artifacts never
+  // perturb the changed-file signature.
+  fs.writeFileSync(path.join(tmp, ".gitignore"), `${CUSTOM_OUTPUT_DIR}/\n.review-surfaces/\n`);
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+  execFileSync(
+    "git",
+    ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"],
+    { cwd: tmp, stdio: "ignore" }
+  );
+  return tmp;
+}
+
+// Run `all` WITHOUT --out so the effective output dir comes from config.output_dir.
+function runAllNoOut(cwd: string, extra: string[] = []): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync(
+    "node",
+    [CLI, "all", "--base", "HEAD", "--head", "HEAD", "--spec", "features/example.feature.yaml", "--provider", "mock", ...extra],
+    { cwd, encoding: "utf8" }
+  );
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+test("review-surfaces --cache: a configured output_dir (no --out) is read for the cache snapshot", () => {
+  const tmp = setupCustomOutputDirRepo("review-surfaces-cache-customdir-");
+  try {
+    // Prime: writes manifest/packet under the CONFIGURED dir, not .review-surfaces.
+    const prime = runAllNoOut(tmp, ["--now", FROZEN, "--cache"]);
+    assert.equal(prime.status, 0, prime.stderr);
+    assert.ok(
+      fs.existsSync(path.join(tmp, CUSTOM_OUTPUT_DIR, "manifest.json")),
+      "artifacts must be written under the configured output_dir"
+    );
+    assert.ok(
+      !fs.existsSync(path.join(tmp, ".review-surfaces", "manifest.json")),
+      ".review-surfaces must NOT be used when config sets output_dir"
+    );
+
+    // Sentinel the on-disk packet in the CONFIGURED dir. A cache HIT must not touch it.
+    const packetPath = path.join(tmp, CUSTOM_OUTPUT_DIR, "review_packet.json");
+    const sentinel = fs
+      .readFileSync(packetPath, "utf8")
+      .replace("\"schema_version\"", "\"_custom_dir_sentinel\": true,\n  \"schema_version\"");
+    fs.writeFileSync(packetPath, sentinel);
+
+    // Second run with unchanged inputs: must be a cache HIT reading the configured dir.
+    const hit = runAllNoOut(tmp, ["--now", FROZEN, "--cache"]);
+    assert.equal(hit.status, 0, hit.stderr);
+    assert.match(
+      hit.stdout,
+      /inputs unchanged \(signature match\); reusing existing packet/,
+      "a custom output_dir must still produce a cache HIT (snapshot read the configured dir)"
+    );
+    assert.match(
+      fs.readFileSync(packetPath, "utf8"),
+      /_custom_dir_sentinel/,
+      "the cache hit must leave the configured-dir packet untouched"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

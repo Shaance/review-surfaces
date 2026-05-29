@@ -197,6 +197,42 @@ test("agent-file provider applies bounded structured enrichment", async () => {
   assert.equal(target.risks.items.length, 1);
 });
 
+test("review-surfaces.PRIVACY.2 agent-file enrichment redacts secrets before merging into packet fields", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-redact-"));
+  // A local agent file that accidentally carries credentials in every merged
+  // field category. None of the raw secret material may reach the packet.
+  fs.writeFileSync(
+    path.join(tmp, "agent.json"),
+    JSON.stringify({
+      review_focus: ["Audit auth path; API_KEY=sk-supersecretvalue123 was hardcoded"],
+      assumptions: ["Shared key AIzaSyA1234567890abcdefghijklmnopqrstuv is committed"],
+      methodology_decisions: ["password=hunter2hunter2 stored in env"],
+      risk_summaries: ["SECRET=topsecretvalue9999 leaks in logs"]
+    })
+  );
+  const target = packet();
+  const result = await enrichPacket(target, {
+    cwd: tmp,
+    outputDir: path.join(tmp, ".review-surfaces"),
+    provider: "agent-file",
+    agentInput: "agent.json"
+  });
+
+  assert.equal(result.status, "applied");
+
+  const serialized = JSON.stringify(target);
+  // The raw secret values must NOT survive into the packet.
+  assert.ok(!serialized.includes("sk-supersecretvalue123"), "API key value redacted");
+  assert.ok(!serialized.includes("AIzaSyA1234567890abcdefghijklmnopqrstuv"), "google key redacted");
+  assert.ok(!serialized.includes("hunter2hunter2"), "password value redacted");
+  assert.ok(!serialized.includes("topsecretvalue9999"), "risk secret value redacted");
+  // The redaction markers prove the boundary ran on each field category.
+  assert.match(target.risks.review_focus[0], /\[REDACTED:secret\]/);
+  assert.match(target.intent.assumptions[0], /\[REDACTED:google_api_key\]/);
+  assert.match(target.methodology.decisions[0], /\[REDACTED:secret\]/);
+  assert.match(target.risks.items[0].summary, /\[REDACTED:secret\]/);
+});
+
 test("enrichPacket accepts an injected provider factory (test seam) with no network", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-seam-"));
   let receivedSchema: object | undefined;

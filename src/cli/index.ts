@@ -207,20 +207,29 @@ interface CacheSnapshot {
   packetValid: boolean;
 }
 
-// Resolve --out the same way collectInputs does so the cache reads/writes the
-// exact manifest.json the run will produce. config.output_dir defaults to
-// .review-surfaces; --out overrides it.
-function resolveOutputDir(cwd: string, parsed: ParsedArgs): string {
+// Resolve the EFFECTIVE output dir with the SAME precedence collectInputs uses
+// so the cache reads/writes the exact manifest.json the run will produce:
+//   --out flag  ->  config.output_dir  ->  .review-surfaces
+// A repo that sets output_dir in config (without --out) would otherwise have its
+// cache snapshot read the wrong (.review-surfaces) directory, yielding wrong
+// cache hits or silently-disabled caching. config is loaded here from the same
+// --config path collect() uses; an absent config falls back to defaults.
+async function resolveOutputDir(cwd: string, parsed: ParsedArgs): Promise<string> {
   const outFlag = stringFlag(parsed, "out");
-  return path.resolve(cwd, outFlag ?? ".review-surfaces");
+  if (outFlag !== undefined) {
+    return path.resolve(cwd, outFlag);
+  }
+  const configPath = stringFlag(parsed, "config") ?? "review-surfaces.config.yaml";
+  const config = await loadConfig(cwd, configPath);
+  return path.resolve(cwd, config.output_dir);
 }
 
 // Snapshot the prior manifest.json (raw bytes + parsed signature) and check that
 // a parseable review_packet.json exists. Any read/parse failure yields an empty
 // snapshot (priorSignature undefined / packet invalid) so the run is a clean
 // cache MISS and regenerates normally.
-function readCacheSnapshot(cwd: string, parsed: ParsedArgs): CacheSnapshot {
-  const outputDir = resolveOutputDir(cwd, parsed);
+async function readCacheSnapshot(cwd: string, parsed: ParsedArgs): Promise<CacheSnapshot> {
+  const outputDir = await resolveOutputDir(cwd, parsed);
   const manifestPath = path.join(outputDir, "manifest.json");
   const packetPath = path.join(outputDir, "review_packet.json");
   let manifestRaw = "";
@@ -263,7 +272,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // --cache is opt-in. Snapshot the prior manifest BEFORE collect recomputes
   // (and overwrites) it, so a signature match can be detected and the on-disk
   // manifest/packet left byte-identical. Without --cache nothing is read here.
-  const cacheSnapshot = booleanFlag(parsed, "cache") ? readCacheSnapshot(cwd, parsed) : undefined;
+  const cacheSnapshot = booleanFlag(parsed, "cache") ? await readCacheSnapshot(cwd, parsed) : undefined;
   const { collection, config } = await collect(parsed);
   if (cacheSnapshot && isCacheHit(cacheSnapshot, collection.manifest.signature)) {
     const strict = booleanFlag(parsed, "strict");
@@ -729,7 +738,6 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
   const methodology = loadMethodology(context.collection.outputDir) ?? (await enriched()).methodology;
   const risks = loadRisks(context.collection.outputDir) ?? (await enriched()).risks;
   const architecture = await computeArchitecture(context, evaluation);
-  const dogfood = isDogfoodRun(parsed) ? loadDogfood(context.collection.outputDir) ?? undefined : undefined;
 
   const preEnrichment: EnrichmentResult = {
     provider: context.provider,
@@ -744,7 +752,6 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
     methodology,
     risks,
     architecture,
-    dogfood,
     enrichment: preEnrichment,
     commands: context.commands
   });
@@ -757,6 +764,24 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
     redactSecrets: context.config.privacy.redact_secrets,
     remotePrivacyBlocked: context.collection.privacy.remote_provider_blocked
   });
+  // run_mode is "dogfood" whenever --dogfood is set (collect stamps the
+  // manifest), and the schema REQUIRES both `dogfood` and `agent_handoff` then.
+  // Prefer a loaded dogfood.yaml so a prior `dogfood` stage composes; otherwise
+  // BUILD the dogfood model from the post-enrichment packet (mirroring `all`) so
+  // a standalone `packet --dogfood` always emits a schema-valid packet rather
+  // than one missing the required dogfood/agent_handoff sections.
+  const dogfood = isDogfoodRun(parsed)
+    ? loadDogfood(context.collection.outputDir) ??
+      buildDogfood(
+        context.collection,
+        packet.evaluation,
+        packet.risks,
+        packet.methodology,
+        `${enrichment.provider}/${enrichment.status}`,
+        context.commands,
+        resolveComparisonInput(parsed, context.cwd, packet.evaluation, packet.risks)
+      )
+    : undefined;
   await writeReviewPacket({
     collection: context.collection,
     intent: packet.intent,

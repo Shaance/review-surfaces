@@ -8,7 +8,7 @@ import { EvaluationModel } from "../src/evaluation/evaluate";
 import { IntentModel } from "../src/intent/intent";
 import { MethodologyModel } from "../src/methodology/methodology";
 import { RisksModel } from "../src/risks/risks";
-import { ReasoningProvider, StructuredResult } from "../src/llm/provider";
+import { agentFileProvider, ReasoningProvider, StructuredResult } from "../src/llm/provider";
 import { runReasoningStages } from "../src/llm/reasoning";
 import { rewriteReviewPacket, ReviewPacket } from "../src/render/packet";
 import { validateJsonFile } from "../src/schema/json-schema";
@@ -931,4 +931,92 @@ test("review-surfaces.EVIDENCE.6: renderer visibly distinguishes LLM hypotheses 
     path.join(tmp, "review_packet.json")
   );
   assert.equal(result.valid, true, JSON.stringify(result.issues));
+});
+
+test("review-surfaces.PRIVACY.2 agent-file reasoning stages redact secrets before they reach the packet", async () => {
+  // Regression: secrets in a local --agent-input file reach the packet through
+  // the REASONING stages (intent synthesis + risk narrative), not only through
+  // provider.ts mergeEnrichment. The agent-file provider returns the same parsed
+  // file to EVERY stage, so a recognizable secret planted in each consumed field
+  // must be redacted before it is written into intent / methodology / risks.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-agentfile-redact-"));
+  fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+  fs.writeFileSync(path.join(tmp, "src", "real.ts"), "export const real = 1;\n");
+
+  const secrets = {
+    google: "AIzaSyRAWGOOGLEKEY1234567890abcdefghijkl",
+    ghtoken: "ghp_RAWTOKEN1234567890abcdefghijklmnop",
+    apikey: "sk-RAWSECRETabcdef123456",
+    password: "hunter2hunter2",
+    risksecret: "topsecretvalue9999"
+  };
+
+  const agentFile = {
+    // Consumed by the intent-synthesis stage.
+    assumptions: [`Shared key AIzaSy=${secrets.google} present`],
+    non_goals: [`GH_TOKEN=${secrets.ghtoken} should be rotated`],
+    open_questions: [`Is API_KEY=${secrets.apikey} hardcoded?`],
+    summary: `Summary that mentions SECRET=${secrets.risksecret}`,
+    candidate_requirements: [
+      {
+        requirement: `Requirement leaking password=${secrets.password}`,
+        title: `Title with API_KEY=${secrets.apikey}`,
+        source_ref: { kind: "file", path: "src/real.ts", note: `note has SECRET=${secrets.risksecret}` }
+      }
+    ],
+    // Consumed by the methodology + risk narrative stage.
+    considered: [`Considered password=${secrets.password} approach`],
+    decisions: [`Decided to keep API_KEY=${secrets.apikey}`],
+    risk_narratives: [`Risk: google key AIzaSy=${secrets.google} committed`]
+  };
+  fs.writeFileSync(path.join(tmp, "agent.json"), JSON.stringify(agentFile));
+
+  const provider = agentFileProvider({ cwd: tmp, agentInput: "agent.json" });
+
+  // Sparse intent so candidate_requirements are actually built (foreign-repo path).
+  const intent: IntentModel = {
+    summary: "Sparse foreign repo.",
+    requirements: [],
+    constraints: [],
+    non_goals: [],
+    assumptions: [],
+    open_questions: [],
+    sources: []
+  };
+  const evaluation: EvaluationModel = { summary: "x", results: [], overreach: [], acai_coverage: {} };
+  const methodology = emptyMethodology();
+  const risks = emptyRisks();
+  const collection = baseCollection(tmp, {
+    repositoryFiles: ["src/real.ts"],
+    changedFiles: [{ path: "src/real.ts", status: "A", source: "working_tree" }]
+  });
+
+  await runReasoningStages(provider, { collection, intent, evaluation, methodology, risks });
+
+  // No raw secret VALUE may survive anywhere in the merged models.
+  const serialized = JSON.stringify({ intent, evaluation, methodology, risks });
+  for (const [name, raw] of Object.entries(secrets)) {
+    assert.ok(!serialized.includes(raw), `raw ${name} secret must be redacted out of the packet`);
+  }
+
+  // The redaction boundary visibly ran on each consumed reasoning field.
+  assert.match(intent.assumptions.join("\n"), /\[REDACTED:google_api_key\]/);
+  assert.match(intent.non_goals.join("\n"), /\[REDACTED:secret\]/);
+  assert.match(intent.open_questions.join("\n"), /\[REDACTED:secret\]/);
+  assert.match(intent.summary, /\[REDACTED:secret\]/);
+  assert.match(methodology.considered.join("\n"), /\[REDACTED:secret\]/);
+  assert.match(methodology.decisions.join("\n"), /\[REDACTED:secret\]/);
+  assert.match(
+    risks.items.map((item) => item.summary).join("\n"),
+    /\[REDACTED:google_api_key\]/
+  );
+
+  // The candidate-requirement title / requirement text / source-ref note are
+  // also redacted (these bypass markHypothesis and land directly in intent).
+  const proposed = intent.requirements.find((req) => req.llm_derived);
+  assert.ok(proposed, "the candidate requirement with a valid source ref is built");
+  assert.match(JSON.stringify(proposed), /\[REDACTED:secret\]/);
+  assert.ok(!JSON.stringify(proposed).includes(secrets.apikey), "candidate title api key redacted");
+  assert.ok(!JSON.stringify(proposed).includes(secrets.password), "candidate requirement password redacted");
+  assert.ok(!JSON.stringify(proposed).includes(secrets.risksecret), "candidate source-ref note secret redacted");
 });

@@ -4,8 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
+import { validateJsonSchema } from "../src/schema/json-schema";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
+const PACKET_SCHEMA = JSON.parse(
+  fs.readFileSync(path.join(process.cwd(), "schemas", "review_packet.schema.json"), "utf8")
+);
 
 function setupComposeFixture(prefix: string): string {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -233,6 +237,41 @@ test("review-surfaces.CLI.4a composed methodology/risks match `all` under offlin
   } finally {
     fs.rmSync(composeDir, { recursive: true, force: true });
     fs.rmSync(allDir, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces.SCHEMA.3 / CLI.4a: a standalone `packet --dogfood` with NO
+// pre-existing dogfood.yaml must BUILD the dogfood + agent_handoff sections, not
+// leave them undefined. The packet schema REQUIRES both when run_mode=dogfood,
+// so an unbuilt dogfood section would emit an invalid review_packet.json.
+test("review-surfaces.SCHEMA.3 packet --dogfood with no prior dogfood.yaml emits a schema-valid packet", () => {
+  const tmp = setupComposeFixture("review-surfaces-packet-dogfood-");
+  try {
+    // No prior dogfood.yaml exists; `packet --dogfood` must build it. (packet
+    // also computes any other missing stage deps, so this is fully standalone.)
+    assert.equal(
+      fs.existsSync(path.join(tmp, ".review-surfaces", "dogfood.yaml")),
+      false,
+      "precondition: no dogfood.yaml before the packet run"
+    );
+    runStage(tmp, "packet", ["--dogfood"]);
+
+    const packetPath = path.join(tmp, ".review-surfaces", "review_packet.json");
+    const packet = JSON.parse(fs.readFileSync(packetPath, "utf8"));
+
+    // run_mode is stamped dogfood; the schema then requires both sections.
+    assert.equal(packet.manifest.run_mode, "dogfood");
+    assert.ok(packet.dogfood, "packet --dogfood must include the dogfood section");
+    assert.ok(packet.agent_handoff, "packet --dogfood must include the agent_handoff section");
+
+    const result = validateJsonSchema(PACKET_SCHEMA, packet);
+    assert.equal(result.valid, true, JSON.stringify(result.issues));
+
+    // The handoff surfaces are written alongside the JSON packet.
+    assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "dogfood.yaml")), "dogfood.yaml is written");
+    assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "agent_handoff.md")), "agent_handoff.md is written");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 

@@ -29,8 +29,12 @@ export function gateDecision(
   provider: ProviderName,
   options: GateOptions
 ): GateDecision {
-  // 5: a non-mock provider was requested but privacy blocked remote enrichment.
-  if (provider !== "mock" && collection.privacy.remote_provider_blocked) {
+  // 5: a provider that makes a REMOTE call was requested but privacy blocked
+  // remote enrichment. Only ai-sdk leaves the machine; mock and agent-file are
+  // OFFLINE (agent-file only reads a local --agent-input file), so a
+  // remote_provider_blocked diff must NOT privacy-block them — it would
+  // wrongly short-circuit the evidence/quality gates for a local-only run.
+  if (providerMakesRemoteCall(provider) && collection.privacy.remote_provider_blocked) {
     return {
       code: ExitCodes.privacyBlocked,
       reason: `Privacy block: provider "${provider}" requires remote enrichment, but the redacted diff is flagged remote_provider_blocked.`
@@ -72,4 +76,12 @@ export function gateExitCode(
 
 function countMissing(results: RequirementResult[]): number {
   return results.filter((result) => result.status === "missing").length;
+}
+
+// Only "ai-sdk" performs a remote network call; "mock" and "agent-file" are
+// fully local (mock is deterministic; agent-file reads a local --agent-input
+// file only). The privacy block exists to stop a flagged diff from leaving the
+// machine, so it applies solely to remote-calling providers.
+function providerMakesRemoteCall(provider: ProviderName): boolean {
+  return provider === "ai-sdk";
 }

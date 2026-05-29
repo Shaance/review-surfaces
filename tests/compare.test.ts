@@ -102,10 +102,99 @@ test("review-surfaces.CLI.6 comparePackets reports new/resolved risks and overre
   const previous = loadPreviousPacketFrom(previousPacketJson());
   const comparison = comparePackets(previous, { evaluation: currentEvaluation(), risks: currentRisks() });
 
-  assert.deepEqual(comparison.new_risks, ["RISK-003: Brand new risk"]);
-  assert.deepEqual(comparison.resolved_risks, ["RISK-002: Goes away"]);
+  // Risks are keyed by the STABLE category + summary (NOT the generated id).
+  assert.deepEqual(comparison.new_risks, ["security: Brand new risk"]);
+  assert.deepEqual(comparison.resolved_risks, ["testing: Goes away"]);
   assert.deepEqual(comparison.new_overreach, ["src/new-overreach.ts"]);
   assert.deepEqual(comparison.resolved_overreach, ["src/old-overreach.ts"]);
+});
+
+test("review-surfaces.CLI.6 inserting an EARLIER risk does not report unchanged later risks as new/resolved", () => {
+  // Risk ids are assigned by insertion order, so adding a new FIRST risk shifts
+  // every later id (RISK-001 -> RISK-002, etc.). Keying on the generated id used
+  // to report the unchanged later risks as BOTH new and resolved; keying on the
+  // stable category + summary must not.
+  const previous = loadPreviousPacketFrom({
+    schema_version: "review-surfaces.packet.v1",
+    evaluation: { summary: "p", results: [], overreach: [], acai_coverage: {} },
+    risks: {
+      summary: "previous",
+      items: [
+        { id: "RISK-001", category: "correctness", severity: "high", summary: "Existing risk A" },
+        { id: "RISK-002", category: "testing", severity: "medium", summary: "Existing risk B" }
+      ]
+    }
+  });
+  // A new risk is inserted FIRST, renumbering A and B to RISK-002 / RISK-003.
+  const current: Pick<RisksModel, "items"> = {
+    items: [
+      { id: "RISK-001", category: "security", severity: "high", summary: "Brand new earlier risk" },
+      { id: "RISK-002", category: "correctness", severity: "high", summary: "Existing risk A" },
+      { id: "RISK-003", category: "testing", severity: "medium", summary: "Existing risk B" }
+    ]
+  };
+  const comparison = comparePackets(previous, { evaluation: currentEvaluation(), risks: current });
+
+  // ONLY the genuinely new risk is reported as new; nothing is resolved.
+  assert.deepEqual(comparison.new_risks, ["security: Brand new earlier risk"]);
+  assert.deepEqual(comparison.resolved_risks, []);
+});
+
+test("review-surfaces.DOGFOOD.7 missing -> invalid_evidence is a REGRESSION (invalid_evidence is worse than missing/unknown)", () => {
+  const previous = loadPreviousPacketFrom({
+    schema_version: "review-surfaces.packet.v1",
+    evaluation: {
+      summary: "p",
+      results: [
+        { requirement_id: "R1", acai_id: "review-surfaces.A.1", status: "missing", summary: "was missing" },
+        { requirement_id: "R2", acai_id: "review-surfaces.B.2", status: "unknown", summary: "was unknown" }
+      ],
+      overreach: [],
+      acai_coverage: {}
+    },
+    risks: { summary: "r", items: [] }
+  });
+  const current: EvaluationModel = {
+    summary: "c",
+    results: [
+      // missing -> invalid_evidence: a claim went from absent to actively untrustworthy.
+      { requirement_id: "R1", acai_id: "review-surfaces.A.1", status: "invalid_evidence", summary: "now invalid", evidence: [], missing_evidence: [], review_focus: "", confidence: "low" },
+      // unknown -> invalid_evidence: same direction.
+      { requirement_id: "R2", acai_id: "review-surfaces.B.2", status: "invalid_evidence", summary: "now invalid", evidence: [], missing_evidence: [], review_focus: "", confidence: "low" }
+    ],
+    overreach: [],
+    acai_coverage: {}
+  };
+  const comparison = comparePackets(previous, { evaluation: current, risks: { items: [] } });
+
+  const a = comparison.status_changes.find((change) => change.acai_id === "review-surfaces.A.1");
+  assert.equal(a?.previous_status, "missing");
+  assert.equal(a?.current_status, "invalid_evidence");
+  assert.equal(a?.direction, "regressed");
+
+  const b = comparison.status_changes.find((change) => change.acai_id === "review-surfaces.B.2");
+  assert.equal(b?.direction, "regressed");
+
+  // And leaving invalid_evidence (invalid_evidence -> missing) is an improvement.
+  const wasInvalid = loadPreviousPacketFrom({
+    schema_version: "review-surfaces.packet.v1",
+    evaluation: {
+      summary: "p",
+      results: [{ requirement_id: "R1", acai_id: "review-surfaces.A.1", status: "invalid_evidence", summary: "was invalid" }],
+      overreach: [],
+      acai_coverage: {}
+    },
+    risks: { summary: "r", items: [] }
+  });
+  const nowMissing: EvaluationModel = {
+    summary: "c",
+    results: [{ requirement_id: "R1", acai_id: "review-surfaces.A.1", status: "missing", summary: "now missing", evidence: [], missing_evidence: [], review_focus: "", confidence: "low" }],
+    overreach: [],
+    acai_coverage: {}
+  };
+  const leaving = comparePackets(wasInvalid, { evaluation: nowMissing, risks: { items: [] } });
+  const leavingChange = leaving.status_changes.find((change) => change.acai_id === "review-surfaces.A.1");
+  assert.equal(leavingChange?.direction, "improved");
 });
 
 test("review-surfaces.CLI.6 comparePackets reports count deltas before vs after", () => {
