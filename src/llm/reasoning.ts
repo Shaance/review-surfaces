@@ -41,6 +41,21 @@ const MAX_PROPOSED_REQUIREMENTS = 5;
 const MAX_CANDIDATE_EVIDENCE_PER_REQUIREMENT = 4;
 const MAX_GLOBAL_REVIEW_FOCUS = 14;
 
+// Stage A #1: batch the evaluation candidate-evidence call instead of issuing
+// one generateStructured call per weak requirement. We still bound the per-call
+// payload: very large repos are split into a few bounded batches rather than one
+// unbounded prompt.
+const MAX_REQUIREMENTS_PER_EVAL_BATCH = 25;
+
+// Stage A #3: a GLOBAL cap on how many LLM-proposed candidate-evidence refs can
+// be attached across ALL requirements in a single run. The per-requirement cap
+// (MAX_CANDIDATE_EVIDENCE_PER_REQUIREMENT) still applies; this is an additional
+// run-wide bound so a large weak repo cannot accrue hundreds of hypotheses. When
+// the budget is exhausted, the remaining (lower-priority) requirements simply
+// receive no LLM hypotheses and stay exactly as the deterministic layer left
+// them.
+const MAX_GLOBAL_LLM_EVIDENCE = 40;
+
 // Statuses whose evidence we let the LLM enrich. "satisfied" and
 // "invalid_evidence" are never touched.
 const ENRICHABLE_STATUSES = new Set<RequirementStatus>(["partial", "missing", "unknown"]);
@@ -347,28 +362,50 @@ ${changedFiles || "(none)"}
 // Stage 2: evaluation candidate-evidence
 // ---------------------------------------------------------------------------
 
+// Stage A #1: the BATCHED candidate-evidence shape. One call returns a
+// `requirements` array; each entry keys its candidate_evidence by the
+// requirement it addresses (acai_id and/or requirement_id). The deterministic
+// processing applied to each entry is IDENTICAL to the prior per-requirement
+// path: pool membership, validateEvidenceRef, the per-requirement cap, attach as
+// llm_proposed, missing->partial only. Only the call shape/count changed.
+const CANDIDATE_EVIDENCE_ITEM_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    kind: { type: "string", enum: ["file", "test"] },
+    path: { type: "string" },
+    line_start: { type: "integer", minimum: 1 },
+    line_end: { type: "integer", minimum: 1 },
+    test_name: { type: "string" },
+    note: { type: "string" }
+  },
+  required: ["kind", "path"]
+} as const;
+
 const CANDIDATE_EVIDENCE_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
-    candidate_evidence: {
+    requirements: {
       type: "array",
       items: {
         type: "object",
         additionalProperties: false,
         properties: {
-          kind: { type: "string", enum: ["file", "test"] },
-          path: { type: "string" },
-          line_start: { type: "integer", minimum: 1 },
-          line_end: { type: "integer", minimum: 1 },
-          test_name: { type: "string" },
-          note: { type: "string" }
-        },
-        required: ["kind", "path"]
+          // The model echoes back which requirement each batch entry addresses.
+          // We match on acai_id first, then requirement_id; an entry that maps to
+          // no enrichable requirement in this batch is ignored.
+          acai_id: { type: "string" },
+          requirement_id: { type: "string" },
+          candidate_evidence: {
+            type: "array",
+            items: CANDIDATE_EVIDENCE_ITEM_SCHEMA
+          },
+          rationale: { type: "string" },
+          what_would_confirm: { type: "string" }
+        }
       }
-    },
-    rationale: { type: "string" },
-    what_would_confirm: { type: "string" }
+    }
   }
 } as const;
 
@@ -376,6 +413,15 @@ interface CandidateEvidenceOutput {
   candidate_evidence?: unknown;
   rationale?: unknown;
   what_would_confirm?: unknown;
+}
+
+interface BatchedCandidateEvidenceOutput {
+  requirements?: unknown;
+}
+
+interface BatchedCandidateEntry extends CandidateEvidenceOutput {
+  acai_id?: unknown;
+  requirement_id?: unknown;
 }
 
 async function runEvaluationCandidateEvidence(
@@ -391,12 +437,23 @@ async function runEvaluationCandidateEvidence(
   // verbose noise repeated verbatim across the most prominent review surface.
   const focusAccumulator = createReviewFocusAccumulator();
 
-  for (const result of inputs.evaluation.results) {
-    if (!ENRICHABLE_STATUSES.has(result.status)) {
-      continue; // satisfied / invalid_evidence are never touched by the LLM
-    }
-    const requirement = inputs.intent.requirements.find((req) => req.id === result.requirement_id);
-    const prompt = candidateEvidencePrompt(result, requirement, inputs.collection, candidatePaths);
+  // Stage A #3: rank ALL enrichable requirements weakest-first so that, under
+  // the global cap, the requirements with the least deterministic evidence win
+  // the limited LLM hypothesis budget. Anything beyond the cap simply receives
+  // no hypotheses (still deterministic).
+  const enrichable = rankEnrichableRequirements(inputs.evaluation.results);
+  if (enrichable.length === 0) {
+    return;
+  }
+
+  // Stage A #1: BATCH the call. Send the ranked, enrichable requirements (with
+  // the shared candidate-path pool) in a small number of bounded batches and ask
+  // the model for candidate_evidence keyed by acai_id/requirement_id, instead of
+  // one call per requirement.
+  const byRequirementId = new Map<string, BatchedCandidateEntry>();
+  const byAcaiId = new Map<string, BatchedCandidateEntry>();
+  for (const batch of chunk(enrichable, MAX_REQUIREMENTS_PER_EVAL_BATCH)) {
+    const prompt = batchedCandidateEvidencePrompt(batch, inputs.intent, inputs.collection, candidatePaths);
     const stageResult = await provider.generateStructured(
       "evaluation-candidate-evidence",
       prompt,
@@ -404,17 +461,118 @@ async function runEvaluationCandidateEvidence(
       generateOptions
     );
     if (!stageResult.ok || !isRecord(stageResult.data)) {
-      continue; // no-op for this requirement
+      continue; // no-op for this batch
     }
-    applyCandidateEvidence(
-      result,
-      stageResult.data as CandidateEvidenceOutput,
-      evidenceContext,
-      inputs.risks,
-      candidatePaths,
-      focusAccumulator
-    );
+    indexBatchedResponse(stageResult.data as BatchedCandidateEvidenceOutput, byRequirementId, byAcaiId);
   }
+
+  if (byRequirementId.size === 0 && byAcaiId.size === 0) {
+    return; // no usable batched output
+  }
+
+  // Stage A #3: a single run-wide budget shared across requirements. We apply in
+  // ranked (weakest-first) order, so when the budget runs out the strongest
+  // requirements are the ones left without hypotheses.
+  const budget: GlobalEvidenceBudget = { remaining: MAX_GLOBAL_LLM_EVIDENCE };
+  for (const result of enrichable) {
+    if (budget.remaining <= 0) {
+      break; // global cap reached; remaining requirements get no LLM hypotheses
+    }
+    const entry = lookupBatchedEntry(result, byRequirementId, byAcaiId);
+    if (!entry) {
+      continue; // the batch returned nothing for this requirement
+    }
+    applyCandidateEvidence(result, entry, evidenceContext, inputs.risks, candidatePaths, focusAccumulator, budget);
+  }
+}
+
+/**
+ * Stage A #3 ranking: order enrichable requirements weakest-evidence-first so the
+ * global cap is spent on the requirements that need help most. Priority:
+ * missing > unknown > partial-with-no-test-evidence > other partial. Ties keep
+ * the deterministic evaluation order (stable sort).
+ */
+function rankEnrichableRequirements(results: RequirementResult[]): RequirementResult[] {
+  return results
+    .filter((result) => ENRICHABLE_STATUSES.has(result.status))
+    .map((result, index) => ({ result, index, rank: enrichmentRank(result) }))
+    .sort((a, b) => (a.rank - b.rank) || (a.index - b.index))
+    .map((entry) => entry.result);
+}
+
+function enrichmentRank(result: RequirementResult): number {
+  if (result.status === "missing") {
+    return 0;
+  }
+  if (result.status === "unknown") {
+    return 1;
+  }
+  // status === "partial": prefer partial requirements that have NO test evidence
+  // yet (weaker) over partial requirements that already cite a test.
+  return hasTestEvidence(result) ? 3 : 2;
+}
+
+function hasTestEvidence(result: RequirementResult): boolean {
+  return result.evidence.some((ref) => ref.kind === "test" && !isLlmProposed(ref));
+}
+
+interface GlobalEvidenceBudget {
+  remaining: number;
+}
+
+/** Split an array into bounded chunks (Stage A #1 batch sizing). */
+function chunk<T>(items: T[], size: number): T[][] {
+  if (size <= 0) {
+    return [items];
+  }
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    batches.push(items.slice(i, i + size));
+  }
+  return batches;
+}
+
+/**
+ * Index a batched candidate-evidence response by requirement_id and acai_id so
+ * each enrichable requirement can be matched back to its entry. Later entries do
+ * not overwrite an earlier one for the same key (first-write-wins keeps the
+ * model from re-claiming a requirement across batches).
+ */
+function indexBatchedResponse(
+  data: BatchedCandidateEvidenceOutput,
+  byRequirementId: Map<string, BatchedCandidateEntry>,
+  byAcaiId: Map<string, BatchedCandidateEntry>
+): void {
+  const rawRequirements = Array.isArray(data.requirements) ? data.requirements : [];
+  for (const raw of rawRequirements) {
+    if (!isRecord(raw)) {
+      continue;
+    }
+    const entry = raw as BatchedCandidateEntry;
+    const requirementId = typeof entry.requirement_id === "string" ? entry.requirement_id : undefined;
+    const acaiId = typeof entry.acai_id === "string" ? entry.acai_id : undefined;
+    if (requirementId && !byRequirementId.has(requirementId)) {
+      byRequirementId.set(requirementId, entry);
+    }
+    if (acaiId && !byAcaiId.has(acaiId)) {
+      byAcaiId.set(acaiId, entry);
+    }
+  }
+}
+
+/** Match a requirement result to its batched entry: acai_id first, then id. */
+function lookupBatchedEntry(
+  result: RequirementResult,
+  byRequirementId: Map<string, BatchedCandidateEntry>,
+  byAcaiId: Map<string, BatchedCandidateEntry>
+): BatchedCandidateEntry | undefined {
+  if (result.acai_id) {
+    const byAcid = byAcaiId.get(result.acai_id);
+    if (byAcid) {
+      return byAcid;
+    }
+  }
+  return byRequirementId.get(result.requirement_id);
 }
 
 function applyCandidateEvidence(
@@ -423,7 +581,8 @@ function applyCandidateEvidence(
   evidenceContext: EvidenceValidationContext,
   risks: RisksModel,
   candidatePaths: string[],
-  focusAccumulator: ReviewFocusAccumulator
+  focusAccumulator: ReviewFocusAccumulator,
+  budget: GlobalEvidenceBudget
 ): void {
   const rawCandidates = Array.isArray(data.candidate_evidence) ? data.candidate_evidence : [];
   const candidatePathSet = new Set(candidatePaths);
@@ -479,20 +638,30 @@ function applyCandidateEvidence(
     return;
   }
 
-  // Attach valid, clearly-marked hypotheses. De-duplicate against existing refs.
+  // Attach valid, clearly-marked hypotheses. De-duplicate against existing refs
+  // AND respect the run-wide global cap (Stage A #3): never attach more
+  // llm_proposed evidence than the remaining global budget, and decrement the
+  // budget for each ref actually attached. Duplicates do not consume budget.
   const existingKeys = new Set(result.evidence.map(evidenceKey));
+  const attached: EvidenceRef[] = [];
   for (const ref of validEvidence) {
+    if (budget.remaining <= 0) {
+      break; // global cap reached mid-requirement; stop attaching hypotheses
+    }
     const key = evidenceKey(ref);
     if (!existingKeys.has(key)) {
       existingKeys.add(key);
       result.evidence.push(ref);
+      attached.push(ref);
+      budget.remaining -= 1;
     }
   }
 
   // The ONLY allowed status change: missing -> partial when valid impl/test
-  // evidence was newly proposed. Never to satisfied; never override anything
-  // the deterministic layer already decided.
-  const upgraded = maybeUpgradeToPartial(result, validEvidence);
+  // evidence was actually attached. Never to satisfied; never override anything
+  // the deterministic layer already decided. If the global cap blocked every
+  // ref for this requirement, nothing was attached and no upgrade happens.
+  const upgraded = maybeUpgradeToPartial(result, attached);
   enrichReviewFocus(result, data, risks, upgraded, focusAccumulator);
 }
 
@@ -615,21 +784,31 @@ function candidatePathPool(collection: CollectionResult): string[] {
   ]).slice(0, 40);
 }
 
-function candidateEvidencePrompt(
-  result: RequirementResult,
-  requirement: IntentRequirement | undefined,
+function batchedCandidateEvidencePrompt(
+  batch: RequirementResult[],
+  intent: IntentModel,
   collection: CollectionResult,
   candidatePaths: string[]
 ): string {
-  return `Return compact JSON only matching the provided schema. Propose candidate_evidence ONLY from the listed candidate paths; never invent paths, line numbers, or tests. Mark everything as a hypothesis; deterministic validation decides whether it counts.
+  const requirementById = new Map(intent.requirements.map((req) => [req.id, req]));
+  const requirementsBlock = batch
+    .map((result) => {
+      const requirement = requirementById.get(result.requirement_id);
+      const text = requirement?.requirement ?? result.summary;
+      // Each line echoes the keys the model must use to address the requirement
+      // (acai_id when present, requirement_id otherwise) plus its current status.
+      return `- requirement_id=${result.requirement_id}${result.acai_id ? ` acai_id=${result.acai_id}` : ""} status=${result.status}: ${text}`;
+    })
+    .join("\n");
+  return `Return compact JSON only matching the provided schema. You are given MANY weak requirements at once. For each requirement you can support, add one entry to the "requirements" array, echoing its acai_id and/or requirement_id so it can be matched back. Propose candidate_evidence ONLY from the shared candidate paths below; never invent paths, line numbers, or tests. Mark everything as a hypothesis; deterministic validation decides whether it counts. Leave out any requirement you cannot support.
 
-Requirement (${result.acai_id ?? result.requirement_id}, current status ${result.status}):
-${requirement?.requirement ?? result.summary}
+Requirements (each addressed by acai_id and/or requirement_id):
+${requirementsBlock || "(none)"}
 
 Changed files:
 ${collection.changedFiles.slice(0, 20).map((file) => file.path).join("\n") || "(none)"}
 
-Candidate paths you may cite:
+Shared candidate paths you may cite (same pool for every requirement):
 ${candidatePaths.join("\n") || "(none)"}
 `;
 }

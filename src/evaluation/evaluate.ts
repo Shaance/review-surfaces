@@ -14,11 +14,25 @@ const ACID_PATTERN = /[a-z0-9_-]+\.[A-Z0-9_]+\.[0-9]+(?:-[0-9]+)?/g;
 
 export type RequirementStatus = "satisfied" | "partial" | "missing" | "unknown" | "overreach" | "invalid_evidence";
 
+// review-surfaces.EVAL: structured sub-reason for a partial status. The
+// evaluator already distinguishes these cases in prose; this lifts that
+// distinction into a small, deterministic enum so downstream surfaces can group
+// and prioritize partials without parsing summary strings. Only set when
+// status === "partial".
+export type PartialReason =
+  | "impl_no_test"
+  | "test_no_impl"
+  | "impl_broad_no_exact_test"
+  | "exact_impl_broad_test"
+  | "broad_area_only"
+  | "other";
+
 export interface RequirementResult {
   requirement_id: string;
   acai_id?: string;
   status: RequirementStatus;
   summary: string;
+  partial_reason?: PartialReason;
   evidence: EvidenceRef[];
   missing_evidence: EvidenceRef[];
   review_focus: string;
@@ -103,6 +117,7 @@ function evaluateRequirement(requirement: IntentRequirement, index: EvidenceInde
   let status: RequirementStatus;
   let summary: string;
   let confidence: "high" | "medium" | "low" | "unknown";
+  let partialReason: PartialReason | undefined;
   const missing: EvidenceRef[] = [];
   const hasExactImplementation = exactImplementationEvidence.length > 0;
   const hasImplementation = hasExactImplementation || implementationEvidence.length > 0;
@@ -135,26 +150,31 @@ function evaluateRequirement(requirement: IntentRequirement, index: EvidenceInde
     status = "partial";
     summary = "Requirement-specific test evidence exists, but implementation evidence is broad rather than exact.";
     confidence = "medium";
+    partialReason = "impl_broad_no_exact_test";
     missing.push(missingEvidence("No exact implementation ACID evidence was found for this requirement."));
   } else if (hasExactImplementation && hasBroadTest) {
     status = "partial";
     summary = "Exact implementation ACID evidence and broad test-path evidence exist, but no exact test ACID evidence was found.";
     confidence = "medium";
+    partialReason = "exact_impl_broad_test";
     missing.push(missingEvidence("No exact test ACID evidence was found for this requirement."));
   } else if (implementationEvidence.length > 0 && tests.length > 0) {
     status = "partial";
     summary = "Implementation and test-path evidence exist for this broad area, but no requirement-specific proof was found.";
     confidence = "medium";
+    partialReason = "broad_area_only";
     missing.push(missingEvidence("No exact implementation or test ACID evidence was found for this requirement."));
   } else if (hasImplementation) {
     status = "partial";
     summary = "Implementation evidence exists, but direct test evidence is missing or weak.";
     confidence = "medium";
+    partialReason = "impl_no_test";
     missing.push(missingEvidence("No direct test evidence was found for this requirement area."));
   } else if (hasExactTest || hasBroadTest) {
     status = "partial";
     summary = "Test evidence exists, but implementation evidence is missing or weak.";
     confidence = "medium";
+    partialReason = "test_no_impl";
     missing.push(missingEvidence("No implementation evidence was found for this requirement area."));
   } else {
     status = "missing";
@@ -168,6 +188,9 @@ function evaluateRequirement(requirement: IntentRequirement, index: EvidenceInde
     acai_id: requirement.acai_id,
     status,
     summary,
+    // Only surface a structured sub-reason for partial results; every partial
+    // branch above sets it, so the "other" fallback only guards future drift.
+    ...(status === "partial" ? { partial_reason: partialReason ?? "other" } : {}),
     evidence,
     missing_evidence: missing,
     review_focus:

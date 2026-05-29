@@ -2,14 +2,14 @@ import path from "node:path";
 import { CollectionResult } from "../collector/collect";
 import { ArchitectureModel } from "../diagrams/diagrams";
 import { DogfoodModel } from "../dogfood/dogfood";
-import { EvaluationModel } from "../evaluation/evaluate";
+import { EvaluationModel, RequirementStatus } from "../evaluation/evaluate";
 import { EnrichmentResult } from "../llm/provider";
 import { IntentModel } from "../intent/intent";
 import { MethodologyModel } from "../methodology/methodology";
 import { RisksModel } from "../risks/risks";
 import { writeJson, writeText } from "../core/files";
 import { stringifyYaml } from "../core/simple-yaml";
-import { countRequirementStatuses } from "../evaluation/status";
+import { countRequirementStatuses, REQUIREMENT_STATUSES, RequirementStatusCount } from "../evaluation/status";
 import { redactSecrets } from "../privacy/secrets";
 
 export interface ReviewPacket {
@@ -196,7 +196,7 @@ ${previewLines(packet.intent.requirements, (requirement) => `- ${requirement.id}
 - invalid_evidence: ${statusCounts.invalid_evidence}
 - overreach: ${packet.evaluation.overreach.length}
 
-${previewLines(packet.evaluation.results.filter((result) => result.status !== "satisfied"), (result) => `- ${result.requirement_id} (${result.acai_id ?? "no-acid"}): ${result.status}${hasLlmProposedEvidence(result) ? " [includes LLM-proposed evidence]" : ""} - ${result.summary}`, 10)}
+${renderRequirementCoverage(packet.evaluation.results)}
 
 ## 4. Architecture surfaces
 ${packet.architecture.summary}
@@ -339,6 +339,111 @@ ${(handoff.changes_since_last_packet ?? []).map((item) => `- ${item}`).join("\n"
 
 ${(handoff.artifact_paths ?? []).map((item) => `- \`${item}\``).join("\n") || "- None recorded."}
 `;
+}
+
+type RequirementResultView = ReviewPacket["evaluation"]["results"][number];
+
+// Compact group-rollup threshold (#4). Past this many requirement results the
+// per-requirement coverage list is too noisy to read inline (the dogfood
+// manager already flags requirement_coverage as a noisy_section past 50), so we
+// switch to one rollup line per Acai group plus a short "worst N" detail list.
+// Small specs and full mode keep the full per-requirement list. Tied to a fixed
+// count so the choice is deterministic and independent of any provider.
+const COMPACT_ROLLUP_THRESHOLD = 40;
+const WORST_DETAIL_LIMIT = 10;
+
+// Order used to rank groups (and individual requirements) for the "worst N"
+// detail list: the least-covered statuses come first so reviewers see the most
+// actionable items. Satisfied results never appear in this section.
+const COVERAGE_SEVERITY: RequirementStatus[] = ["invalid_evidence", "missing", "unknown", "partial"];
+
+function renderRequirementCoverage(results: RequirementResultView[]): string {
+  const unsatisfied = results.filter((result) => result.status !== "satisfied");
+  if (results.length > COMPACT_ROLLUP_THRESHOLD) {
+    return renderGroupRollups(results, unsatisfied);
+  }
+  return previewLines(unsatisfied, renderRequirementCoverageLine, 10);
+}
+
+// Full per-requirement coverage line. Surfaces the structured partial_reason
+// (#5) inline, e.g. "REQ-012 (acid): partial [impl_no_test] - ...".
+function renderRequirementCoverageLine(result: RequirementResultView): string {
+  const reason = result.status === "partial" && result.partial_reason ? ` [${result.partial_reason}]` : "";
+  const llm = hasLlmProposedEvidence(result) ? " [includes LLM-proposed evidence]" : "";
+  return `- ${result.requirement_id} (${result.acai_id ?? "no-acid"}): ${result.status}${reason}${llm} - ${result.summary}`;
+}
+
+// Compact mode (#4): one rollup line per Acai group_key with per-status counts,
+// instead of the full per-requirement list. Followed by a short "worst N"
+// detail list so the most actionable requirements are still visible. Group
+// order is deterministic (alphabetical by group_key); the no-group bucket
+// sorts last under "(no-group)".
+function renderGroupRollups(results: RequirementResultView[], unsatisfied: RequirementResultView[]): string {
+  const groups = new Map<string, RequirementStatusCount>();
+  for (const result of results) {
+    const key = groupKeyForResult(result);
+    const counts = groups.get(key) ?? blankStatusCount();
+    if (result.status in counts) {
+      counts[result.status as keyof RequirementStatusCount] += 1;
+    }
+    groups.set(key, counts);
+  }
+
+  const rollupLines = [...groups.entries()]
+    .sort(([left], [right]) => compareGroupKey(left, right))
+    .map(([key, counts]) => {
+      const total = REQUIREMENT_STATUSES.reduce((sum, status) => sum + counts[status], 0);
+      return `- ${key}: ${total} requirement(s) — satisfied ${counts.satisfied}, partial ${counts.partial}, missing ${counts.missing}, unknown ${counts.unknown}, invalid ${counts.invalid_evidence}`;
+    });
+
+  const worst = [...unsatisfied]
+    .sort(compareCoverageSeverity)
+    .slice(0, WORST_DETAIL_LIMIT)
+    .map(renderRequirementCoverageLine);
+  const worstOverflow = unsatisfied.length > WORST_DETAIL_LIMIT
+    ? [`- ... ${unsatisfied.length - WORST_DETAIL_LIMIT} more unsatisfied requirement(s) in review_packet.json`]
+    : [];
+
+  return [
+    `Group rollups (${results.length} requirements across ${groups.size} group(s); full per-requirement list in review_packet.json):`,
+    ...rollupLines,
+    "",
+    `Worst ${Math.min(WORST_DETAIL_LIMIT, unsatisfied.length)} requirement(s):`,
+    ...(worst.length > 0 ? [...worst, ...worstOverflow] : ["- None; all requirements satisfied."])
+  ].join("\n");
+}
+
+function groupKeyForResult(result: RequirementResultView): string {
+  return result.acai_id?.split(".")[1] ?? "(no-group)";
+}
+
+function compareGroupKey(left: string, right: string): number {
+  // Keep the explicit no-group bucket last for a stable, readable ordering.
+  if (left === "(no-group)") {
+    return right === "(no-group)" ? 0 : 1;
+  }
+  if (right === "(no-group)") {
+    return -1;
+  }
+  return left.localeCompare(right);
+}
+
+function compareCoverageSeverity(left: RequirementResultView, right: RequirementResultView): number {
+  const rank = (status: string): number => {
+    const index = COVERAGE_SEVERITY.indexOf(status as RequirementStatus);
+    return index === -1 ? COVERAGE_SEVERITY.length : index;
+  };
+  const delta = rank(left.status) - rank(right.status);
+  if (delta !== 0) {
+    return delta;
+  }
+  // Stable secondary key so output is fully deterministic regardless of input
+  // ordering.
+  return (left.acai_id ?? left.requirement_id).localeCompare(right.acai_id ?? right.requirement_id);
+}
+
+function blankStatusCount(): RequirementStatusCount {
+  return Object.fromEntries(REQUIREMENT_STATUSES.map((status) => [status, 0])) as RequirementStatusCount;
 }
 
 function hasLlmProposedEvidence(result: ReviewPacket["evaluation"]["results"][number]): boolean {

@@ -381,6 +381,127 @@ test("review-surfaces.EVIDENCE.6 mock packet omits LLM hypotheses UI when there 
   }
 });
 
+// #4/#5 fixture: a packet whose evaluation results are generated so the count
+// can cross the compact group-rollup threshold. Each result carries an Acai id
+// (so it has a group_key) and a deterministic status spread across groups.
+function packetWithRequirementResults(count: number): ReviewPacket {
+  const groups = ["INTENT", "EVAL", "RISK"];
+  const results = Array.from({ length: count }, (_value, index) => {
+    const group = groups[index % groups.length];
+    const status = index % 4 === 0 ? "satisfied" : index % 4 === 1 ? "partial" : index % 4 === 2 ? "missing" : "unknown";
+    return {
+      requirement_id: `REQ-${String(index + 1).padStart(3, "0")}`,
+      acai_id: `example.${group}.${index + 1}`,
+      status,
+      summary: `result ${index + 1}`,
+      ...(status === "partial" ? { partial_reason: "impl_no_test" as const } : {}),
+      evidence: [],
+      missing_evidence: [],
+      review_focus: "focus",
+      confidence: "medium" as const
+    };
+  });
+  return {
+    schema_version: "review-surfaces.packet.v1",
+    manifest: {},
+    intent: {
+      summary: "rollup fixture",
+      requirements: [],
+      constraints: [],
+      non_goals: [],
+      assumptions: [],
+      open_questions: [],
+      sources: []
+    },
+    evaluation: {
+      summary: "rollup fixture",
+      results: results as unknown as ReviewPacket["evaluation"]["results"],
+      overreach: [],
+      acai_coverage: {}
+    },
+    architecture: {
+      summary: "rollup fixture",
+      diagrams: [],
+      diagram_validation: [],
+      subsystems: [],
+      open_questions: []
+    },
+    methodology: {
+      summary: "rollup fixture",
+      missing_logs: false,
+      considered: [],
+      research: [],
+      decisions: [],
+      unchallenged_assumptions: [],
+      skipped_checks: [],
+      claims_without_evidence: [],
+      verified_claims: [],
+      quality_flags: [],
+      evidence: []
+    },
+    risks: { summary: "rollup fixture", items: [], test_evidence: [], test_gaps: [], review_focus: [] }
+  };
+}
+
+// #5: the full per-requirement coverage list surfaces the structured
+// partial_reason inline. #4: below the compact threshold the full list (not
+// group rollups) is rendered.
+test("review-surfaces.RENDER.1 small spec renders full per-requirement coverage with partial_reason", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-render-full-list-"));
+  try {
+    await rewriteReviewPacket(tmp, packetWithRequirementResults(8));
+    const markdown = fs.readFileSync(path.join(tmp, "review_packet.md"), "utf8");
+    assert.doesNotMatch(markdown, /Group rollups/, "small spec must not switch to group rollups");
+    assert.match(markdown, /partial \[impl_no_test\]/, "partial lines must surface the structured partial_reason");
+    // The full list shows an individual unsatisfied requirement id.
+    assert.match(markdown, /REQ-002 \(example\.EVAL\.2\): partial \[impl_no_test\]/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// #4: past the compact threshold the requirement-coverage section renders one
+// group rollup line per Acai group with per-status counts plus a short "worst N"
+// detail list, instead of the full per-requirement list. Deterministic.
+test("review-surfaces.RENDER.2 large spec renders compact group rollups with worst-N detail", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-render-rollups-"));
+  try {
+    const packet = packetWithRequirementResults(60);
+    await rewriteReviewPacket(tmp, packet);
+    const markdown = fs.readFileSync(path.join(tmp, "review_packet.md"), "utf8");
+
+    assert.match(markdown, /Group rollups \(60 requirements across 3 group\(s\)/);
+    // One rollup line per group with per-status counts.
+    assert.match(markdown, /- EVAL: \d+ requirement\(s\) — satisfied \d+, partial \d+, missing \d+, unknown \d+, invalid \d+/);
+    assert.match(markdown, /- INTENT: \d+ requirement\(s\) —/);
+    assert.match(markdown, /- RISK: \d+ requirement\(s\) —/);
+    // Groups are listed in deterministic (alphabetical) order.
+    assert.ok(markdown.indexOf("- EVAL:") < markdown.indexOf("- INTENT:"));
+    assert.ok(markdown.indexOf("- INTENT:") < markdown.indexOf("- RISK:"));
+    // The full per-requirement list is NOT inlined: a deep requirement id stays
+    // in the JSON, not the markdown coverage section.
+    assert.doesNotMatch(markdown, /REQ-058/);
+    // A short "worst N" detail list is still present. It is ranked by severity
+    // (invalid_evidence > missing > unknown > partial), so the most actionable
+    // statuses surface first.
+    assert.match(markdown, /Worst 10 requirement\(s\):/);
+    const worstBlock = markdown.slice(markdown.indexOf("Worst 10 requirement(s):"));
+    assert.match(worstBlock, /: missing - /, "worst-N detail leads with the most severe unsatisfied statuses");
+    assert.match(worstBlock, /\.\.\. \d+ more unsatisfied requirement\(s\) in review_packet\.json/);
+
+    // Re-rendering the same packet is byte-identical (deterministic).
+    const second = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-render-rollups-2-"));
+    try {
+      await rewriteReviewPacket(second, packet);
+      assert.equal(fs.readFileSync(path.join(second, "review_packet.md"), "utf8"), markdown);
+    } finally {
+      fs.rmSync(second, { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // FIX 3: with a stub provider contribution (an llm_proposed evidence ref) the
 // hypotheses header and the LLM-proposed appendix line DO appear.
 test("review-surfaces.EVIDENCE.6 packet renders LLM hypotheses UI when a contribution is present", async () => {

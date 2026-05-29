@@ -26,6 +26,22 @@ function stubProvider(byStage: Record<string, unknown>): ReasoningProvider {
   };
 }
 
+// Stage A #1: the evaluation candidate-evidence call is now BATCHED. One
+// generateStructured call returns a `requirements` array; each entry keys its
+// candidate_evidence by acai_id and/or requirement_id. This helper builds that
+// batched response shape for tests.
+interface BatchedReqEntry {
+  acai_id?: string;
+  requirement_id?: string;
+  candidate_evidence?: unknown;
+  rationale?: string;
+  what_would_confirm?: string;
+}
+
+function batchedEvidence(entries: BatchedReqEntry[]): Record<string, unknown> {
+  return { requirements: entries };
+}
+
 function baseCollection(cwd: string, overrides: Partial<CollectionResult> = {}): CollectionResult {
   return {
     cwd,
@@ -142,13 +158,17 @@ test("INVARIANT: a VALID LLM candidate ref upgrades missing -> partial at most, 
   const evaluation = evaluationWithStatus("missing");
 
   const provider = stubProvider({
-    "evaluation-candidate-evidence": {
-      candidate_evidence: [
-        { kind: "file", path: "src/evaluation/evaluate.ts", note: "implements evaluation" }
-      ],
-      rationale: "This file appears to implement the requirement.",
-      what_would_confirm: "An exact ACID mention or a focused test."
-    }
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.EVAL.1",
+        requirement_id: "REQ-001",
+        candidate_evidence: [
+          { kind: "file", path: "src/evaluation/evaluate.ts", note: "implements evaluation" }
+        ],
+        rationale: "This file appears to implement the requirement.",
+        what_would_confirm: "An exact ACID mention or a focused test."
+      }
+    ])
   });
 
   await runReasoningStages(provider, { collection, intent: missingIntent(), evaluation, methodology: emptyMethodology(), risks: emptyRisks() });
@@ -169,13 +189,17 @@ test("INVARIANT: an INVALID LLM candidate ref is rejected and does NOT upgrade s
   const evaluation = evaluationWithStatus("missing");
 
   const provider = stubProvider({
-    "evaluation-candidate-evidence": {
-      // nonexistent path + bad line range + would-be unknown ACID territory
-      candidate_evidence: [
-        { kind: "file", path: "src/does-not-exist.ts", line_start: 999, line_end: 1000, note: "fabricated" }
-      ],
-      rationale: "guessing"
-    }
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.EVAL.1",
+        requirement_id: "REQ-001",
+        // nonexistent path + bad line range + would-be unknown ACID territory
+        candidate_evidence: [
+          { kind: "file", path: "src/does-not-exist.ts", line_start: 999, line_end: 1000, note: "fabricated" }
+        ],
+        rationale: "guessing"
+      }
+    ])
   });
 
   await runReasoningStages(provider, { collection, intent: missingIntent(), evaluation, methodology: emptyMethodology(), risks: emptyRisks() });
@@ -202,12 +226,16 @@ test("INVARIANT: the LLM cannot over-claim a status; the claimed status is ignor
   // not even allow a status field; even if it did, the deterministic layer
   // ignores any claimed status.
   const provider = stubProvider({
-    "evaluation-candidate-evidence": {
-      status: "satisfied",
-      candidate_evidence: Array.from({ length: 50 }, () => ({ kind: "file", path: "src/real.ts", note: "spam" })),
-      rationale: "trust me it is done",
-      what_would_confirm: "nothing"
-    } as Record<string, unknown>
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.EVAL.1",
+        requirement_id: "REQ-001",
+        status: "satisfied",
+        candidate_evidence: Array.from({ length: 50 }, () => ({ kind: "file", path: "src/real.ts", note: "spam" })),
+        rationale: "trust me it is done",
+        what_would_confirm: "nothing"
+      } as BatchedReqEntry
+    ])
   });
 
   await runReasoningStages(provider, { collection, intent: missingIntent(), evaluation, methodology: emptyMethodology(), risks: emptyRisks() });
@@ -232,10 +260,14 @@ test("INVARIANT: a partial requirement is never raised by the LLM (only missing 
   const evaluation = evaluationWithStatus("partial");
 
   const provider = stubProvider({
-    "evaluation-candidate-evidence": {
-      candidate_evidence: [{ kind: "test", path: "src/real.ts", note: "a test, allegedly" }],
-      rationale: "more evidence"
-    }
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.EVAL.1",
+        requirement_id: "REQ-001",
+        candidate_evidence: [{ kind: "test", path: "src/real.ts", note: "a test, allegedly" }],
+        rationale: "more evidence"
+      }
+    ])
   });
 
   await runReasoningStages(provider, { collection, intent: missingIntent(), evaluation, methodology: emptyMethodology(), risks: emptyRisks() });
@@ -263,11 +295,15 @@ test("INVARIANT: a real repo file OUTSIDE the candidate pool (changed files + te
   // The model cites a real file that exists but is unrelated to this requirement
   // and outside the candidate pool. Path-existence alone would have upgraded it.
   const provider = stubProvider({
-    "evaluation-candidate-evidence": {
-      candidate_evidence: [{ kind: "file", path: "src/llm/reasoning.ts", note: "cited an unrelated real file" }],
-      rationale: "This module implements the schema-bound reasoning stages.",
-      what_would_confirm: "An exact ACID mention in code or a focused test."
-    }
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.EVAL.1",
+        requirement_id: "REQ-001",
+        candidate_evidence: [{ kind: "file", path: "src/llm/reasoning.ts", note: "cited an unrelated real file" }],
+        rationale: "This module implements the schema-bound reasoning stages.",
+        what_would_confirm: "An exact ACID mention in code or a focused test."
+      }
+    ])
   });
 
   await runReasoningStages(provider, { collection, intent: missingIntent(), evaluation, methodology: emptyMethodology(), risks: emptyRisks() });
@@ -278,6 +314,214 @@ test("INVARIANT: a real repo file OUTSIDE the candidate pool (changed files + te
   const surfaced = result.missing_evidence.find((ref) => ref.validation_status === "invalid");
   assert.ok(surfaced, "the out-of-pool ref is surfaced as invalid, not silently swallowed");
   assert.match(surfaced?.note ?? "", /candidate pool/);
+});
+
+// Stage A #3: build N pool files src/f000.ts.. plus a matching changed-file
+// pool, and a batched response where every requirement cites a unique pair of
+// valid in-pool files. Lets a test exceed the global cap deterministically.
+function manyPoolFiles(tmp: string, count: number): string[] {
+  fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+  const paths: string[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const rel = `src/f${String(i).padStart(3, "0")}.ts`;
+    fs.writeFileSync(path.join(tmp, rel), `export const f${i} = ${i};\n`);
+    paths.push(rel);
+  }
+  return paths;
+}
+
+// The candidate pool is bounded to the first POOL_SIZE changed-files/tests, so
+// every test that wants its cited paths to validate must index within it.
+const POOL_SIZE = 40;
+
+test("review-surfaces.EVIDENCE.4 Stage A #3: a GLOBAL cap bounds total LLM-proposed evidence across all requirements", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-globalcap-"));
+  // 40 in-pool files (the whole candidate pool); 50 missing requirements each
+  // cite 2 in-pool files = 100 candidate refs demanded, far above the 40 cap.
+  const poolPaths = manyPoolFiles(tmp, POOL_SIZE);
+
+  const reqCount = 50;
+  const ids = Array.from({ length: reqCount }, (_, i) => `example.REQ.${i + 1}`);
+  const intent: IntentModel = {
+    summary: "Many missing requirements.",
+    requirements: ids.map((acai, i) => ({
+      id: `REQ-${String(i + 1).padStart(3, "0")}`,
+      acai_id: acai,
+      requirement: `Requirement ${i + 1}.`,
+      source_refs: [],
+      constraints: [],
+      assumptions: [],
+      open_questions: [],
+      confidence: "high" as const
+    })),
+    constraints: [],
+    non_goals: [],
+    assumptions: [],
+    open_questions: [],
+    sources: []
+  };
+  const evaluation: EvaluationModel = {
+    summary: `${reqCount} requirements evaluated.`,
+    results: ids.map((acai, i) => ({
+      requirement_id: `REQ-${String(i + 1).padStart(3, "0")}`,
+      acai_id: acai,
+      status: "missing" as const,
+      summary: "No evidence.",
+      evidence: [],
+      missing_evidence: [],
+      review_focus: "Review.",
+      confidence: "medium" as const
+    })),
+    overreach: [],
+    acai_coverage: Object.fromEntries(ids.map((acai) => [acai, "missing"]))
+  };
+
+  const collection = baseCollection(tmp, {
+    repositoryFiles: poolPaths,
+    changedFiles: poolPaths.map((p) => ({ path: p, status: "A" as const, source: "working_tree" as const }))
+  });
+
+  const provider = stubProvider({
+    "evaluation-candidate-evidence": batchedEvidence(
+      ids.map((acai, i) => ({
+        acai_id: acai,
+        requirement_id: `REQ-${String(i + 1).padStart(3, "0")}`,
+        candidate_evidence: [
+          { kind: "file", path: poolPaths[(i * 2) % POOL_SIZE], note: `impl for ${acai}` },
+          { kind: "file", path: poolPaths[(i * 2 + 1) % POOL_SIZE], note: `impl2 for ${acai}` }
+        ],
+        rationale: `Distinct rationale for ${acai}.`
+      }))
+    )
+  });
+
+  await runReasoningStages(provider, { collection, intent, evaluation, methodology: emptyMethodology(), risks: emptyRisks() });
+
+  const totalProposed = evaluation.results.reduce(
+    (sum, r) => sum + r.evidence.filter((ref) => ref.llm_proposed === true).length,
+    0
+  );
+  assert.ok(totalProposed > 0, "some LLM-proposed evidence was attached");
+  assert.ok(totalProposed <= 40, `global cap must bound total LLM-proposed evidence, got ${totalProposed}`);
+  assert.equal(totalProposed, 40, "exactly the global cap is spent when demand exceeds it");
+  // Per-requirement cap still holds.
+  for (const r of evaluation.results) {
+    const perReq = r.evidence.filter((ref) => ref.llm_proposed === true).length;
+    assert.ok(perReq <= 4, `per-requirement cap still holds, got ${perReq}`);
+  }
+});
+
+test("review-surfaces.EVIDENCE.4 Stage A #3: ranking spends the cap on the WEAKEST requirements first", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-rank-"));
+  const poolPaths = manyPoolFiles(tmp, POOL_SIZE);
+
+  // Mix of statuses. Under the cap, the weakest (missing > unknown >
+  // partial-without-test > partial-with-test) must win the budget. We make the
+  // missing requirements alone demand more than the 40-ref cap so the partial
+  // requirements should be starved entirely.
+  type Spec = { acai: string; status: "missing" | "unknown" | "partial"; withTest: boolean };
+  const specs: Spec[] = [];
+  // Two partials WITH deterministic test evidence (weakest rank: 3).
+  specs.push({ acai: "example.PWT.1", status: "partial", withTest: true });
+  specs.push({ acai: "example.PWT.2", status: "partial", withTest: true });
+  // Two partials WITHOUT test evidence (rank 2).
+  specs.push({ acai: "example.PNT.1", status: "partial", withTest: false });
+  specs.push({ acai: "example.PNT.2", status: "partial", withTest: false });
+  // One unknown (rank 1).
+  specs.push({ acai: "example.UNK.1", status: "unknown", withTest: false });
+  // 30 missing (rank 0); 30 * 2 refs = 60 demanded, above the 40 cap.
+  for (let i = 1; i <= 30; i += 1) {
+    specs.push({ acai: `example.MISS.${i}`, status: "missing", withTest: false });
+  }
+
+  const intent: IntentModel = {
+    summary: "Mixed-strength requirements.",
+    requirements: specs.map((spec, i) => ({
+      id: `REQ-${String(i + 1).padStart(3, "0")}`,
+      acai_id: spec.acai,
+      requirement: `Requirement ${spec.acai}.`,
+      source_refs: [],
+      constraints: [],
+      assumptions: [],
+      open_questions: [],
+      confidence: "high" as const
+    })),
+    constraints: [],
+    non_goals: [],
+    assumptions: [],
+    open_questions: [],
+    sources: []
+  };
+  const evaluation: EvaluationModel = {
+    summary: `${specs.length} requirements evaluated.`,
+    results: specs.map((spec, i) => ({
+      requirement_id: `REQ-${String(i + 1).padStart(3, "0")}`,
+      acai_id: spec.acai,
+      status: spec.status,
+      summary: "Deterministic result.",
+      // Partial-with-test carries a deterministic (non-LLM) test ref so the
+      // ranker can see it already has test evidence.
+      evidence: spec.withTest
+        ? [{ kind: "test" as const, path: poolPaths[0], note: "deterministic test", confidence: "high" as const, validation_status: "valid" as const }]
+        : [],
+      missing_evidence: [],
+      review_focus: "Review.",
+      confidence: "medium" as const
+    })),
+    overreach: [],
+    acai_coverage: Object.fromEntries(specs.map((spec) => [spec.acai, spec.status]))
+  };
+
+  const collection = baseCollection(tmp, {
+    repositoryFiles: poolPaths,
+    changedFiles: poolPaths.map((p) => ({ path: p, status: "A" as const, source: "working_tree" as const }))
+  });
+
+  const provider = stubProvider({
+    "evaluation-candidate-evidence": batchedEvidence(
+      specs.map((spec, i) => ({
+        acai_id: spec.acai,
+        requirement_id: `REQ-${String(i + 1).padStart(3, "0")}`,
+        candidate_evidence: [
+          { kind: "file", path: poolPaths[(i * 2) % POOL_SIZE], note: `impl for ${spec.acai}` },
+          { kind: "file", path: poolPaths[(i * 2 + 1) % POOL_SIZE], note: `impl2 for ${spec.acai}` }
+        ],
+        rationale: `Distinct rationale for ${spec.acai}.`
+      }))
+    )
+  });
+
+  await runReasoningStages(provider, { collection, intent, evaluation, methodology: emptyMethodology(), risks: emptyRisks() });
+
+  const proposedFor = (acai: string) =>
+    evaluation.results.find((r) => r.acai_id === acai)!.evidence.filter((ref) => ref.llm_proposed === true).length;
+
+  // The cap is spent on the missing requirements; the partials are starved.
+  const missingTotal = specs
+    .filter((s) => s.status === "missing")
+    .reduce((sum, s) => sum + proposedFor(s.acai), 0);
+  assert.ok(missingTotal > 0, "missing requirements receive hypotheses first");
+
+  assert.equal(proposedFor("example.PWT.1"), 0, "partial-with-test is lowest priority and gets no budget");
+  assert.equal(proposedFor("example.PWT.2"), 0, "partial-with-test is lowest priority and gets no budget");
+  assert.equal(proposedFor("example.PNT.1"), 0, "partial-without-test loses to the 60-ref missing demand");
+  assert.equal(proposedFor("example.PNT.2"), 0, "partial-without-test loses to the 60-ref missing demand");
+
+  // Total stays under the global cap.
+  const totalProposed = evaluation.results.reduce(
+    (sum, r) => sum + r.evidence.filter((ref) => ref.llm_proposed === true).length,
+    0
+  );
+  assert.ok(totalProposed <= 40, `global cap holds under ranking, got ${totalProposed}`);
+
+  // No partial requirement was upgraded by the LLM (the guardrail), and no
+  // missing requirement that received valid evidence exceeded partial.
+  for (const r of evaluation.results) {
+    assert.notEqual(r.status, "satisfied", "LLM never reaches satisfied");
+    if (specs.find((s) => s.acai === r.acai_id)?.status === "partial") {
+      assert.equal(r.status, "partial", "partial requirements are never raised by the LLM");
+    }
+  }
 });
 
 test("agent-file noise control: one rationale broadcast to many requirements collapses to a single global review_focus line", async () => {
@@ -330,13 +574,18 @@ test("agent-file noise control: one rationale broadcast to many requirements col
   const globalBefore = risks.review_focus.length;
 
   // The agent-file failure mode: the SAME rationale + what_would_confirm + a
-  // single cited (out-of-pool) file is returned for EVERY requirement.
+  // single cited file is returned for EVERY requirement, now as one batched
+  // response carrying an entry per requirement.
   const provider = stubProvider({
-    "evaluation-candidate-evidence": {
-      candidate_evidence: [{ kind: "file", path: "src/real.ts", note: "broadcast file" }],
-      rationale: "This module implements the schema-bound reasoning stages.",
-      what_would_confirm: "An exact ACID mention in code or a focused test."
-    }
+    "evaluation-candidate-evidence": batchedEvidence(
+      ids.map((acai, i) => ({
+        acai_id: acai,
+        requirement_id: `REQ-${String(i + 1).padStart(3, "0")}`,
+        candidate_evidence: [{ kind: "file", path: "src/real.ts", note: "broadcast file" }],
+        rationale: "This module implements the schema-bound reasoning stages.",
+        what_would_confirm: "An exact ACID mention in code or a focused test."
+      }))
+    )
   });
 
   await runReasoningStages(provider, { collection, intent, evaluation, methodology: emptyMethodology(), risks });
@@ -397,24 +646,23 @@ test("distinct rationales remain distinct global review_focus lines", async () =
   const risks = emptyRisks();
   const globalBefore = risks.review_focus.length;
 
-  // Provider returns a DIFFERENT rationale per call (alternating).
-  let call = 0;
-  const provider: ReasoningProvider = {
-    name: "ai-sdk",
-    async generateStructured(stage): Promise<StructuredResult> {
-      if (stage !== "evaluation-candidate-evidence") {
-        return { ok: false, reason: "n/a" };
+  // The single batched call returns a DIFFERENT rationale per requirement.
+  const provider = stubProvider({
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.A.1",
+        requirement_id: "REQ-001",
+        rationale: "Distinct rationale number 1.",
+        what_would_confirm: "A focused test."
+      },
+      {
+        acai_id: "example.B.1",
+        requirement_id: "REQ-002",
+        rationale: "Distinct rationale number 2.",
+        what_would_confirm: "A focused test."
       }
-      call += 1;
-      return {
-        ok: true,
-        data: {
-          rationale: `Distinct rationale number ${call}.`,
-          what_would_confirm: "A focused test."
-        }
-      };
-    }
-  };
+    ])
+  });
 
   await runReasoningStages(provider, { collection, intent, evaluation, methodology: emptyMethodology(), risks });
 

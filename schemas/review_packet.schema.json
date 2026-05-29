@@ -413,6 +413,17 @@
         "summary": {
           "type": "string"
         },
+        "partial_reason": {
+          "type": "string",
+          "enum": [
+            "impl_no_test",
+            "test_no_impl",
+            "impl_broad_no_exact_test",
+            "exact_impl_broad_test",
+            "broad_area_only",
+            "other"
+          ]
+        },
         "evidence": {
           "type": "array",
           "items": {
