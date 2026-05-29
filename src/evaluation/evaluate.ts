@@ -2,11 +2,11 @@ import path from "node:path";
 import { CollectionResult } from "../collector/collect";
 import { isRegularFile, readText } from "../core/files";
 import { walkFiles } from "../core/glob";
-import { EvidenceRef, fileEvidence, missingEvidence, specEvidence, testEvidence } from "../evidence/evidence";
+import { EvidenceRef, fileEvidence, isLlmProposed, missingEvidence, specEvidence, testEvidence } from "../evidence/evidence";
 import { validateRequirementResultEvidence } from "../evidence/validate";
 import { FileClassification, RepoIndex } from "../indexer/indexer";
 import { IntentModel, IntentRequirement } from "../intent/intent";
-import { buildReviewAreas, groupsForReviewPath, isLaterProviderGroup, ReviewArea, ReviewAreasMode } from "../review-areas/areas";
+import { buildReviewAreas, groupsForReviewPath, isLaterProviderGroup, ReviewArea, ReviewAreasMode, strictGroupsForReviewPath } from "../review-areas/areas";
 import { NormalizedTestCase, TestResults } from "../tests-evidence/junit";
 import { countRequirementStatuses, formatRequirementStatusSummary } from "./status";
 
@@ -94,6 +94,415 @@ export async function evaluateIntent(
     overreach,
     acai_coverage
   };
+}
+
+// ---------------------------------------------------------------------------
+// VERIFICATION LOOP (#2): partial -> satisfied ONLY via a real PASSING test that
+// proves THIS SPECIFIC requirement.
+//
+// This deliberately loosens the satisfied guardrail, so it is conservative by
+// construction and runs AFTER the reasoning stage (so it can see any
+// LLM-pinpointed test names attached as llm_proposed test evidence). A
+// requirement may be promoted partial->satisfied ONLY when ALL hold:
+//   1. collection.testResults is present and non-empty (--test-output supplied).
+//      With NO results this is a COMPLETE no-op (baseline byte-unchanged).
+//   2. There is a PARSED PASSING test case (not failed, not skipped) that maps to
+//      THIS SPECIFIC requirement (NOT merely to its broad group), where the
+//      per-requirement mapping means EITHER:
+//        (a) EXACT-ACID: the passing test's name/classname/suite references the
+//            requirement's EXACT ACID (e.g. contains "review-surfaces.RENDER.1").
+//            A passing test that only maps to the requirement GROUP (its
+//            classname names the group token, or it references a DIFFERENT ACID
+//            in the same group) is INTENTIONALLY NOT enough: a passing "render"
+//            area test does not prove RENDER.5 specifically. OR
+//        (b) LLM-PINPOINTED-AND-CORROBORATED: the reasoning stage proposed that
+//            specific test for this specific requirement (an llm_proposed test
+//            ref with a matching test_name) AND that test is ALSO at least
+//            group-mapped (corroborated). A pure cross-area LLM claim with NO
+//            group corroboration MUST NOT qualify. The LLM word alone NEVER
+//            promotes.
+//   3. The requirement already has IMPLEMENTATION evidence (exact or broad),
+//      UNLESS it is a test-only requirement (isTestOnlyRequirement) which may be
+//      satisfied by the verified test alone. A verified test must NEVER satisfy a
+//      requirement that still lacks implementation (except test-only).
+//
+// On promotion: attach the passing test as VERIFIED evidence (kind: test,
+// validation_status "valid", verified=true, the REAL test_name), set status
+// satisfied, confidence high for the exact-ACID mapping / medium for the
+// LLM-pinpointed mapping, and clear partial_reason.
+//
+// A passing test that maps ONLY to the requirement GROUP (no exact ACID, no LLM
+// pinpoint) does NOT promote. Instead it is attached as VERIFIED-but-BROAD test
+// evidence (kind: test, validation_status "valid", verified=true, the REAL
+// test_name, a note explaining it is broad / not requirement-specific) and the
+// requirement STAYS partial with partial_reason "broad_area_only". This records
+// that a real passing area test exists without overstating per-requirement
+// coverage.
+//
+// The pass mutates evaluation.results in place and re-derives acai_coverage and
+// the summary so promotions are reflected downstream. It is idempotent: a result
+// already carrying verified test evidence is left untouched.
+export function verifyRequirementsWithTests(
+  collection: CollectionResult,
+  intent: IntentModel,
+  evaluation: EvaluationModel,
+  options: EvaluateOptions = {}
+): EvaluationModel {
+  // Invariant #1: no test results => complete no-op. Baseline unchanged.
+  const testResults = collection.testResults;
+  if (!testResults || testResults.cases.length === 0) {
+    return evaluation;
+  }
+
+  const passingCases = testResults.cases.filter((testCase) => testCase.status === "passed");
+  if (passingCases.length === 0) {
+    return evaluation;
+  }
+
+  const areas = options.areas ?? buildReviewAreas({ repoIndex: collection.repoIndex }).areas;
+  const knownAcids = new Set(intent.requirements.map((requirement) => requirement.acai_id).filter(Boolean) as string[]);
+  const knownGroups = new Set(
+    intent.requirements.map((requirement) => groupFromAcid(requirement.acai_id)).filter(Boolean) as string[]
+  );
+  const requirementById = new Map(intent.requirements.map((requirement) => [requirement.id, requirement]));
+  // The actual COLLECTED test files. A passing case's classname only contributes
+  // a group mapping when it IS one of these real test paths (not an arbitrary
+  // free-text classname), so a misleadingly named classname cannot promote.
+  const collectedTestPaths = new Set(collection.tests.map((test) => test.path));
+
+  // Pre-compute, per passing case, the deterministic mapping facts: which ACIDs
+  // it references and which groups it maps to. "Maps to a group" is intentionally
+  // STRICTER than the partial-nudge mapping: the case's group must be revealed by
+  // an ACID it references, a group token in its classname/suite (NOT its
+  // human-readable name), or a classname that is a real collected test path
+  // mapping to the group via the strict review-area mapping.
+  const mappedCases = passingCases.map((testCase) => ({
+    testCase,
+    acids: passingCaseAcids(testCase, knownAcids),
+    groups: passingCaseGroups(testCase, knownGroups, knownAcids, areas, collectedTestPaths)
+  }));
+
+  let mutated = false;
+  for (const result of evaluation.results) {
+    if (result.status !== "partial") {
+      continue; // VERIFICATION LOOP only promotes partial -> satisfied.
+    }
+    // Idempotent: never re-process a result that already carries verified proof
+    // (either a satisfied promotion or a previously-attached verified-broad ref).
+    if (result.evidence.some((ref) => ref.verified === true)) {
+      continue;
+    }
+    const requirement = requirementById.get(result.requirement_id);
+    const group = groupFromAcid(result.acai_id);
+
+    const match = findVerifyingCase(result, group, mappedCases, areas);
+    if (match) {
+      // Invariant #3: implementation evidence is required unless test-only.
+      const testOnly = requirement ? isTestOnlyRequirement(requirement, group) : false;
+      if (!testOnly && !resultHasImplementationEvidence(result)) {
+        continue; // A verified test alone may NEVER satisfy a non-test-only requirement.
+      }
+      promoteToVerified(result, match);
+      mutated = true;
+      continue;
+    }
+
+    // No per-requirement proof. A passing test that maps ONLY to the broad group
+    // (no exact ACID, no LLM pinpoint) must NOT promote: a passing "render" area
+    // test does not prove RENDER.5 specifically. Record it as VERIFIED-but-BROAD
+    // test evidence so the real passing area test is auditable, but keep the
+    // requirement partial (broad_area_only). The implementation gate is NOT
+    // relevant here: nothing is being satisfied, only evidence is being attached.
+    const broadCase = findGroupOnlyVerifyingCase(group, mappedCases);
+    if (broadCase) {
+      attachVerifiedBroadTestEvidence(result, broadCase);
+      mutated = true;
+    }
+  }
+
+  if (!mutated) {
+    return evaluation;
+  }
+
+  // Re-derive coverage + summary so the promotions are reflected downstream.
+  for (const result of evaluation.results) {
+    if (result.acai_id) {
+      evaluation.acai_coverage[result.acai_id] = result.status;
+    }
+  }
+  const statusCounts = countRequirementStatuses(evaluation.results);
+  evaluation.summary = `${formatRequirementStatusSummary(statusCounts, evaluation.overreach.length)}. Statuses are conservative and evidence-backed.`;
+  return evaluation;
+}
+
+interface MappedPassingCase {
+  testCase: NormalizedTestCase;
+  acids: string[];
+  groups: Set<string>;
+}
+
+type VerifyBasis = "exact_acid" | "llm_pinpointed";
+
+interface VerifyingMatch {
+  testCase: NormalizedTestCase;
+  basis: VerifyBasis;
+}
+
+// Find a passing test case that proves THIS SPECIFIC requirement, preferring the
+// stronger EXACT-ACID mapping over the LLM-pinpointed-and-corroborated one. A
+// passing test that maps ONLY to the requirement's broad group is deliberately
+// NOT a verifying case here (see findGroupOnlyVerifyingCase): it is too coarse to
+// promote a specific requirement.
+function findVerifyingCase(
+  result: RequirementResult,
+  group: string | undefined,
+  mappedCases: MappedPassingCase[],
+  areas: ReviewArea[]
+): VerifyingMatch | undefined {
+  // (a) EXACT-ACID: the passing test's name/classname/suite references THIS
+  // requirement's exact ACID. Group membership alone (a different ACID in the
+  // same group, or a classname that merely names the group token) is NOT enough
+  // and is handled separately as verified-but-broad evidence.
+  if (result.acai_id) {
+    for (const mapped of mappedCases) {
+      if (mapped.acids.includes(result.acai_id)) {
+        return { testCase: mapped.testCase, basis: "exact_acid" };
+      }
+    }
+  }
+
+  // (b) LLM-PINPOINTED-AND-CORROBORATED: the reasoning stage proposed a specific
+  // test (an llm_proposed test ref carrying a test_name + the cited test FILE
+  // path) for this requirement, that exact passing test is present in the parsed
+  // results, AND the MATCHED passing case's OWN provenance (its classname/suite/
+  // ACID, via the same strict case->group mapping used deterministically) maps to
+  // the requirement group. We corroborate on the parsed case the LLM named, NOT
+  // on the LLM's word about which file the test lives in. This rejects two unsound
+  // paths: (1) a pure cross-area LLM claim with no group corroboration, and (2) a
+  // name-collision where the LLM cites a same-group file but the ONLY passing case
+  // with that name actually belongs to a different area.
+  if (!group) {
+    return undefined;
+  }
+  const pinpoints = llmPinpointedTests(result);
+  if (pinpoints.length === 0) {
+    return undefined;
+  }
+  // Group every passing case by name so a name collision across suites is visible:
+  // if ANY case with the pinpointed name has its OWN provenance contradicting the
+  // requirement group, we must not silently pick a different one as "verified".
+  const mappedByName = new Map<string, MappedPassingCase[]>();
+  for (const mapped of mappedCases) {
+    const bucket = mappedByName.get(mapped.testCase.name) ?? [];
+    bucket.push(mapped);
+    mappedByName.set(mapped.testCase.name, bucket);
+  }
+  for (const pinpoint of pinpoints) {
+    // Corroboration #1: the LLM-cited test FILE must map to the requirement group
+    // under the STRICT mapping (no substring/`medieval`-style false positives).
+    if (typeof pinpoint.path !== "string" || !strictGroupsForReviewPath(pinpoint.path, areas).includes(group)) {
+      continue;
+    }
+    const candidates = mappedByName.get(pinpoint.testName);
+    if (!candidates || candidates.length === 0) {
+      continue; // the pinpointed test is not a real PASSING parsed case
+    }
+    // Corroboration #2: the MATCHED case's OWN provenance must not point at a
+    // DIFFERENT area. Prefer a case whose own classname/suite/ACID maps to the
+    // requirement group; otherwise accept a group-NEUTRAL case (one that maps to
+    // no group at all) corroborated by the cited path. A case whose own
+    // provenance maps to OTHER groups but not this one is rejected: it belongs to
+    // a different area, so a name-only collision must never promote on it.
+    const ownGroupMatch = candidates.find((mapped) => mapped.groups.has(group));
+    if (ownGroupMatch) {
+      return { testCase: ownGroupMatch.testCase, basis: "llm_pinpointed" };
+    }
+    const neutral = candidates.find((mapped) => mapped.groups.size === 0);
+    if (neutral) {
+      return { testCase: neutral.testCase, basis: "llm_pinpointed" };
+    }
+  }
+  return undefined;
+}
+
+// A passing test that maps to the requirement's broad GROUP but NOT to its exact
+// ACID. This is the case that USED to promote the whole group; it now only
+// produces verified-but-broad test evidence (the requirement stays partial). We
+// require true group provenance (an ACID in the group, a group token in the
+// classname/suite, or a collected test path mapping to the group) -- the same
+// passingCaseGroups provenance used everywhere else -- so a merely
+// similarly-named test does not attach. The requirement must NOT already have an
+// exact-ACID match (that path promotes instead) and the group must be known.
+function findGroupOnlyVerifyingCase(
+  group: string | undefined,
+  mappedCases: MappedPassingCase[]
+): NormalizedTestCase | undefined {
+  if (!group) {
+    return undefined;
+  }
+  for (const mapped of mappedCases) {
+    if (mapped.groups.has(group)) {
+      return mapped.testCase;
+    }
+  }
+  return undefined;
+}
+
+interface LlmPinpoint {
+  testName: string;
+  path?: string;
+}
+
+// The tests the reasoning stage pinpointed for this requirement: llm_proposed
+// test evidence refs carrying a real test_name (and the cited test file path used
+// for group corroboration). The caller intersects testName with the parsed
+// PASSING cases and requires group corroboration before any of this counts.
+function llmPinpointedTests(result: RequirementResult): LlmPinpoint[] {
+  const pinpoints: LlmPinpoint[] = [];
+  for (const ref of result.evidence) {
+    if (ref.kind === "test" && isLlmProposed(ref) && typeof ref.test_name === "string" && ref.test_name.length > 0) {
+      pinpoints.push({ testName: ref.test_name, path: ref.path });
+    }
+  }
+  return pinpoints;
+}
+
+function passingCaseAcids(testCase: NormalizedTestCase, knownAcids: Set<string>): string[] {
+  const haystack = [testCase.name, testCase.classname, testCase.suite].filter(Boolean).join(" ");
+  return unique(haystack.match(ACID_PATTERN) ?? []).filter((acid) => knownAcids.has(acid));
+}
+
+function passingCaseGroups(
+  testCase: NormalizedTestCase,
+  knownGroups: Set<string>,
+  knownAcids: Set<string>,
+  areas: ReviewArea[],
+  collectedTestPaths: Set<string>
+): Set<string> {
+  const groups = new Set<string>();
+  // The group-token haystack is the case's CLASSNAME and SUITE only. The
+  // human-readable test NAME is deliberately excluded: a free-text name that
+  // merely contains a group token as a word (e.g. "EVAL of latency budget") is
+  // not provenance and must not be a basis for a SATISFIED promotion (it was only
+  // ever meant to nudge a PARTIAL). ACID references in the name still count below.
+  const tokenHaystack = [testCase.classname, testCase.suite].filter(Boolean).join(" ");
+
+  // Any ACID the case references (anywhere, incl. the name) puts it in that
+  // ACID's group: an exact ACID reference IS sound provenance.
+  for (const acid of passingCaseAcids(testCase, knownAcids)) {
+    const group = groupFromAcid(acid);
+    if (group) {
+      groups.add(group);
+    }
+  }
+  // A group token named directly in the case's classname/suite (mirrors the
+  // conservative attachParsedTestEvidence group fallback, minus the name).
+  for (const group of knownGroups) {
+    if (mentionsGroupToken(tokenHaystack, group)) {
+      groups.add(group);
+    }
+  }
+  // A classname that is an ACTUAL COLLECTED test path maps through the STRICT
+  // review-area path mapping (true directory prefixes + whole-token keywords).
+  // A free-text classname that is not a real test path contributes nothing here,
+  // so a path-like-but-unrelated classname (e.g. tests/medieval_history.test.ts
+  // not in the test set) can no longer corroborate a promotion via substrings.
+  if (typeof testCase.classname === "string" && collectedTestPaths.has(testCase.classname)) {
+    for (const group of strictGroupsForReviewPath(testCase.classname, areas)) {
+      groups.add(group);
+    }
+  }
+  return groups;
+}
+
+function resultHasImplementationEvidence(result: RequirementResult): boolean {
+  // Implementation evidence is a deterministically-discovered (not LLM-proposed)
+  // file/diff ref whose PATH is a real implementation path. This reuses the
+  // evaluator's own notion of implementation (isImplementationEvidencePath), which
+  // EXCLUDES docs/, features/, .agents/, AGENTS.md, CLAUDE.md, README*, etc. A
+  // spec-referenced doc attached as a file ref (directFileEvidence) must therefore
+  // NOT satisfy Invariant #3: a verified test may never satisfy a requirement the
+  // evaluator itself determined has no implementation. A ref without a path is
+  // conservatively NOT counted as implementation.
+  return result.evidence.some(
+    (ref) =>
+      (ref.kind === "file" || ref.kind === "diff") &&
+      !isLlmProposed(ref) &&
+      typeof ref.path === "string" &&
+      isImplementationEvidencePath(ref.path, EMPTY_PATH_SET)
+  );
+}
+
+// isImplementationEvidencePath also rejects collected test paths; in the
+// verification loop a test path would arrive as kind "test", not "file"/"diff",
+// so a shared empty set is sufficient and keeps the path-class check.
+const EMPTY_PATH_SET = new Set<string>();
+
+function promoteToVerified(result: RequirementResult, match: VerifyingMatch): void {
+  const exactAcid = match.basis === "exact_acid";
+  const note = exactAcid
+    ? "Requirement verified by a passing parsed test that references its exact ACID."
+    : "Requirement verified by a passing parsed test; test pinpointed by LLM and corroborated by the requirement group's test set.";
+  const verifiedEvidence: EvidenceRef = {
+    kind: "test",
+    test_name: match.testCase.name,
+    note,
+    confidence: exactAcid ? "high" : "medium",
+    validation_status: "valid",
+    verified: true
+  };
+  // De-duplicate against any existing identical verified ref (idempotency guard).
+  const exists = result.evidence.some(
+    (ref) => ref.verified === true && ref.test_name === verifiedEvidence.test_name
+  );
+  if (!exists) {
+    // The verified ref makes the promotion auditable, so it MUST survive the
+    // evidence cap. uniqueEvidence keeps the first N refs; prepending the verified
+    // ref guarantees the cap drops a lower-value pre-existing ref instead of the
+    // proof of the promotion (a requirement can already carry 8 deterministic/LLM
+    // refs before verification, e.g. directFileEvidence + candidate-evidence).
+    result.evidence = uniqueEvidence([verifiedEvidence, ...result.evidence]);
+  }
+  result.status = "satisfied";
+  result.confidence = exactAcid ? "high" : "medium";
+  result.summary = exactAcid
+    ? "Requirement promoted to satisfied: a passing parsed test references its exact ACID."
+    : "Requirement promoted to satisfied: a passing parsed test verifies it (test pinpointed by LLM, group-corroborated).";
+  result.partial_reason = undefined;
+  result.review_focus =
+    "Spot-check the verified passing test actually exercises the required behavior, not just file presence.";
+  // The promotion satisfied the requirement, so its prior partial gap note no
+  // longer applies; drop missing-evidence entries that merely recorded the gap.
+  result.missing_evidence = result.missing_evidence.filter((ref) => ref.validation_status === "invalid");
+}
+
+// Attach a passing area test that maps only to the requirement's broad GROUP as
+// VERIFIED-but-BROAD test evidence. This does NOT promote: a passing "render"
+// area test does not prove a specific RENDER.N requirement. The verified marker
+// records that a real passing test for the area exists (auditable, valid), while
+// the requirement STAYS partial with partial_reason "broad_area_only" so per-
+// requirement coverage is not overstated.
+function attachVerifiedBroadTestEvidence(result: RequirementResult, testCase: NormalizedTestCase): void {
+  const verifiedEvidence: EvidenceRef = {
+    kind: "test",
+    test_name: testCase.name,
+    note: "verified passing area test (broad, not requirement-specific)",
+    confidence: "medium",
+    validation_status: "valid",
+    verified: true
+  };
+  const exists = result.evidence.some(
+    (ref) => ref.verified === true && ref.test_name === verifiedEvidence.test_name
+  );
+  if (!exists) {
+    // Prepend so the verified-broad ref survives the 8-ref evidence cap, mirroring
+    // promoteToVerified: the marker must remain auditable even on a capped result.
+    result.evidence = uniqueEvidence([verifiedEvidence, ...result.evidence]);
+  }
+  // Status stays partial. Reflect that a broad verified test now exists; the
+  // requirement still lacks requirement-specific proof.
+  result.status = "partial";
+  result.partial_reason = "broad_area_only";
 }
 
 function evaluateRequirement(requirement: IntentRequirement, index: EvidenceIndex): RequirementResult {

@@ -11,10 +11,10 @@ import { gateDecision, GateOptions } from "../core/gate";
 import { ArchitectureModel, buildArchitecture } from "../diagrams/diagrams";
 import { buildDogfood, DogfoodComparisonInput } from "../dogfood/dogfood";
 import { comparePackets, loadPreviousPacket, resolvePreviousPacketPath } from "../dogfood/compare";
-import { EvaluationModel, evaluateIntent } from "../evaluation/evaluate";
+import { EvaluationModel, evaluateIntent, verifyRequirementsWithTests } from "../evaluation/evaluate";
 import { buildIntent, IntentModel } from "../intent/intent";
 import { enrichPacket, EnrichmentResult, parseProviderName, providerFor, ProviderName } from "../llm/provider";
-import { runEvaluationReasoning, runIntentReasoning, runReasoningStages } from "../llm/reasoning";
+import { runEvaluationReasoning, runIntentReasoning, runNarrativeReasoning } from "../llm/reasoning";
 import { buildMethodology, MethodologyModel } from "../methodology/methodology";
 import { buildReviewAreas, ReviewArea } from "../review-areas/areas";
 import { analyzeRisks, RisksModel } from "../risks/risks";
@@ -294,25 +294,28 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   const intent = await buildIntent(cwd, collection);
   const evaluation = await evaluateIntent(cwd, collection, intent, areasOption);
   const methodology = await buildMethodology(cwd, collection, stringFlag(parsed, "conversation"), commands);
-  const risks = analyzeRisks(collection, evaluation, commands, methodology);
 
   // Phase 3-2: schema-bound, evidence-gated reasoning stages run with the
   // resolved provider. The default mock provider returns not-ok, so every stage
-  // is a no-op and the deterministic packet above stays byte-stable.
+  // is a no-op and the deterministic packet below stays byte-stable.
   const reasoningProvider = providerFor(provider, {
     model: requestedModel,
     cwd,
     remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
     agentInput: stringFlag(parsed, "agent-input")
   });
-  await runReasoningStages(
-    reasoningProvider,
-    { collection, intent, evaluation, methodology, risks },
-    {
-      redactSecrets: config.privacy.redact_secrets,
-      remotePrivacyBlocked: collection.privacy.remote_provider_blocked
-    }
-  );
+  const reasoningOptions = {
+    redactSecrets: config.privacy.redact_secrets,
+    remotePrivacyBlocked: collection.privacy.remote_provider_blocked
+  };
+  const risks = await runReasoningWithVerification(reasoningProvider, reasoningOptions, {
+    collection,
+    intent,
+    evaluation,
+    methodology,
+    commands,
+    areasOption
+  });
 
   const architecture = await buildArchitecture(collection, evaluation, areasOption);
   const preEnrichment: EnrichmentResult = {
@@ -525,13 +528,81 @@ async function buildEnrichedModels(context: StageContext): Promise<EnrichedModel
   const intent = await buildIntent(context.cwd, context.collection);
   const evaluation = await evaluateIntent(context.cwd, context.collection, intent, context.areasOption);
   const methodology = await computeMethodology(context);
-  const risks = analyzeRisks(context.collection, evaluation, context.commands, methodology);
-  await runReasoningStages(
-    reasoningProviderFor(context),
-    { collection: context.collection, intent, evaluation, methodology, risks },
-    reasoningOptionsFor(context)
-  );
+  // Mirror `all`: run the reasoning sequence with the partial -> satisfied
+  // verification interleaved at the correct point so the risks model composed
+  // subcommands persist (packet/risks/methodology) reflects the promotion. No-op
+  // without --test-output / under mock, so the byte-stable offline path holds.
+  const risks = await runReasoningWithVerification(reasoningProviderFor(context), reasoningOptionsFor(context), {
+    collection: context.collection,
+    intent,
+    evaluation,
+    methodology,
+    commands: context.commands,
+    areasOption: context.areasOption
+  });
   return { intent, evaluation, methodology, risks };
+}
+
+interface VerificationStageInputs {
+  collection: CollectionResult;
+  intent: IntentModel;
+  evaluation: EvaluationModel;
+  methodology: MethodologyModel;
+  commands: string[];
+  areasOption: { areas?: ReviewArea[] };
+}
+
+// Run the schema-bound reasoning sequence with the VERIFICATION LOOP (#2)
+// promotion interleaved so every evaluation-derived surface (risks here, and
+// architecture at the call site) sees the POST-promotion evaluation. The full
+// reasoning order is preserved exactly as runReasoningStages would run it
+// (intent synthesis -> candidate evidence -> narrative); verify and analyzeRisks
+// are slotted between candidate evidence and narrative:
+//
+//   intent synthesis
+//   -> candidate evidence  (attaches LLM-pinpointed test refs to evaluation;
+//                            appends to risks.review_focus)
+//   -> verify              (partial -> satisfied using those refs + deterministic
+//                            mappings; mutates evaluation in place)
+//   -> analyzeRisks        (POST-promotion: a promoted requirement is no longer a
+//                            partial test gap nor counted in the weak-test risk)
+//   -> narrative           (appends LLM risk items to risks.items)
+//
+// The candidate-evidence stage's risks.review_focus additions are captured as a
+// delta and re-applied to the freshly analyzed (post-promotion) risks so that
+// side effect is preserved. Under mock every reasoning stage is a no-op, the
+// delta is empty, and this collapses to evaluate -> verify -> analyzeRisks,
+// keeping the deterministic baseline byte-stable. The same helper backs `all`
+// and buildEnrichedModels so compose == monolith for risks.yaml.
+async function runReasoningWithVerification(
+  reasoningProvider: ReturnType<typeof providerFor>,
+  reasoningOptions: { redactSecrets?: boolean; remotePrivacyBlocked?: boolean },
+  inputs: VerificationStageInputs
+): Promise<RisksModel> {
+  const { collection, intent, evaluation, methodology, commands, areasOption } = inputs;
+
+  // Seed a risks object for the candidate-evidence stage to append review_focus
+  // to. Its gap/partial sections are recomputed post-promotion below, so the
+  // pre-promotion seed is only a scratch surface for the review_focus delta.
+  const seededRisks = analyzeRisks(collection, evaluation, commands, methodology);
+  const baseReviewFocusLength = seededRisks.review_focus.length;
+  const reasoningInputs = { collection, intent, evaluation, methodology, risks: seededRisks };
+
+  await runIntentReasoning(reasoningProvider, reasoningInputs, reasoningOptions);
+  await runEvaluationReasoning(reasoningProvider, reasoningInputs, reasoningOptions);
+  // The candidate-evidence stage only ever APPENDS to review_focus, so the delta
+  // is everything past the deterministic base.
+  const evalReviewFocusDelta = seededRisks.review_focus.slice(baseReviewFocusLength);
+
+  verifyRequirementsWithTests(collection, intent, evaluation, areasOption);
+
+  // Recompute risks against the POST-promotion evaluation, then re-apply the
+  // candidate-evidence review_focus delta so that enrichment is not lost.
+  const risks = analyzeRisks(collection, evaluation, commands, methodology);
+  risks.review_focus.push(...evalReviewFocusDelta);
+  reasoningInputs.risks = risks;
+  await runNarrativeReasoning(reasoningProvider, reasoningInputs, reasoningOptions);
+  return risks;
 }
 
 // emptyEvaluation / emptyMethodology / emptyRisks are placeholders for stages
@@ -597,6 +668,10 @@ async function runEvaluateStage(parsed: ParsedArgs): Promise<number> {
     },
     reasoningOptionsFor(context)
   );
+  // VERIFICATION LOOP (#2): the evaluation stage owns evaluation.yaml, so apply
+  // the partial -> satisfied verification here too, matching `all`. No-op without
+  // --test-output.
+  verifyRequirementsWithTests(context.collection, intent, evaluation, context.areasOption);
   await writeEvaluationArtifact(context.collection.outputDir, evaluation);
   logWrote(context);
   return applyGate(parsed, evaluation, context.collection, context.provider, context.config);

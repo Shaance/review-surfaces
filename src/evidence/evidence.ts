@@ -37,6 +37,17 @@ export interface EvidenceRef {
    * (review-surfaces.EVIDENCE.6).
    */
   llm_proposed?: boolean;
+  /**
+   * True when this evidence is a PASSING parsed test case that the deterministic
+   * verification loop accepted as proof a requirement is satisfied (VERIFICATION
+   * LOOP #2). It is only ever set on `kind: "test"` evidence whose
+   * validation_status is "valid" and whose test_name is the REAL parsed case
+   * name. It makes the basis of a partial->satisfied promotion transparent in the
+   * packet. Never set by the LLM word alone: the test had to deterministically
+   * map (ACID/group) to the requirement, the LLM-pinpointed path additionally
+   * requires group corroboration.
+   */
+  verified?: boolean;
 }
 
 export interface SourceRef {

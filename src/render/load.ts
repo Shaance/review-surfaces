@@ -197,7 +197,8 @@ function normalizeEvidenceRef(value: unknown): EvidenceRef {
       "not_checked",
       "unknown"
     ]),
-    llm_proposed: record.llm_proposed === true ? true : undefined
+    llm_proposed: record.llm_proposed === true ? true : undefined,
+    verified: record.verified === true ? true : undefined
   };
   return ref;
 }

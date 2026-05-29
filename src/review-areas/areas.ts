@@ -64,6 +64,62 @@ export function groupsForReviewPath(filePath: string, areas: ReviewArea[]): stri
   return [...new Set(groups)];
 }
 
+// VERIFICATION LOOP (#2): a STRICTER path->group mapping than groupsForReviewPath,
+// used ONLY when deciding a partial->satisfied promotion (never for the
+// deterministic evidence index, so the byte-stable baseline is untouched).
+//
+// The loose groupsForReviewPath is appropriate for nudging a requirement to
+// PARTIAL (a benign over-match only widens the review surface), but it is NOT a
+// sound basis for SATISFIED: it matches a config prefix anywhere in the path
+// (`src/cli/` matching a stray substring) and matches a test_keyword as a bare
+// substring (`eval` inside `medieval`, `cli` inside `clinical`). This strict
+// variant instead requires:
+//   - prefix matches to be true directory prefixes (or exact path equality), and
+//   - test_keyword matches to be WHOLE path/filename tokens (split on /._-),
+// so an unrelated path can no longer corroborate a SATISFIED promotion.
+export function strictGroupsForReviewPath(filePath: string, areas: ReviewArea[]): string[] {
+  const groups = areas
+    .filter((area) => area.prefixes.some((prefix) => matchesStrictPrefix(filePath, prefix)))
+    .map((area) => area.groupKey);
+
+  if (filePath.startsWith("tests/")) {
+    const tokens = pathTokens(filePath);
+    for (const area of areas) {
+      if (area.testKeywords.some((keyword) => tokens.has(keyword.toLowerCase()))) {
+        groups.push(area.groupKey);
+      }
+    }
+  }
+
+  return [...new Set(groups)];
+}
+
+// Split a path into lowercased whole tokens on directory, dot, hyphen, and
+// underscore boundaries so a test_keyword only matches a real path/filename
+// segment (e.g. "eval" matches "tests/eval.test.ts" but NOT "tests/medieval.ts").
+function pathTokens(filePath: string): Set<string> {
+  return new Set(
+    filePath
+      .toLowerCase()
+      .split(/[/.\-_]+/)
+      .filter((token) => token.length > 0)
+  );
+}
+
+// A true directory prefix (startsWith with a trailing "/"), an exact path match,
+// or the repository-root sentinel. Never an arbitrary substring match. A config
+// prefix like "package.json" with no trailing slash is treated as an exact path
+// (file) prefix, matching only that file or paths nested beneath it.
+function matchesStrictPrefix(filePath: string, prefix: string): boolean {
+  if (prefix === ROOT_PREFIX) {
+    return !filePath.includes("/");
+  }
+  if (prefix.endsWith("/")) {
+    return filePath === prefix.slice(0, -1) || filePath.startsWith(prefix);
+  }
+  return filePath === prefix || filePath.startsWith(`${prefix}/`);
+}
+
 export function isLaterProviderGroup(groupKey: string): boolean {
   return groupKey === "PROVIDERS";
 }

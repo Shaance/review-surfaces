@@ -240,6 +240,9 @@
         },
         "llm_proposed": {
           "type": "boolean"
+        },
+        "verified": {
+          "type": "boolean"
         }
       }
     },
