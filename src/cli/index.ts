@@ -4,6 +4,7 @@ import { formatReports, hasRequiredFailure, runBootstrap, runInit } from "../boo
 import { recordCommandTranscript } from "../commands/runner";
 import { commandTranscriptInputDir } from "../commands/transcripts";
 import { collectInputs, CollectionResult } from "../collector/collect";
+import { artifactProducingSignature, PROVENANCE_ARTIFACTS, stampArtifactSignatures } from "../collector/artifact-provenance";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
 import { CliError, ExitCodes } from "../core/exit-codes";
 import { fileExists } from "../core/files";
@@ -244,6 +245,14 @@ interface CacheSnapshot {
   manifestPath: string;
   manifestRaw: string;
   priorSignature?: string;
+  // FINDING B (round 8): the producing signature recorded for review_packet.json
+  // in the PRIOR manifest's artifact_signatures map (snapshotted before collect
+  // rewrites the manifest). The cache hit gates on THIS, not the top-level
+  // manifest signature: an intervening collect/intent bumps the top-level
+  // signature to the current inputs while leaving a STALE review_packet.json (and
+  // its old producing signature) in place, so a top-level-signature hit would
+  // reuse a packet whose coverage/risks predate the current inputs.
+  packetProducingSignature?: string;
   packetPath: string;
   packetValid: boolean;
 }
@@ -286,6 +295,7 @@ async function readCacheSnapshot(cwd: string, parsed: ParsedArgs): Promise<Cache
   const packetPath = path.join(outputDir, "review_packet.json");
   let manifestRaw = "";
   let priorSignature: string | undefined;
+  let packetProducingSignature: string | undefined;
   if (fileExists(manifestPath)) {
     try {
       manifestRaw = fs.readFileSync(manifestPath, "utf8");
@@ -293,16 +303,27 @@ async function readCacheSnapshot(cwd: string, parsed: ParsedArgs): Promise<Cache
       if (parsed && typeof parsed.signature === "string") {
         priorSignature = parsed.signature;
       }
+      // FINDING B: read review_packet.json's OWN producing signature from the
+      // prior manifest's artifact_signatures map (snapshotted before collect
+      // overwrites the manifest), so a stale packet left by an intervening
+      // collect/intent is not reused on a top-level-signature match.
+      const artifactSignatures =
+        parsed && typeof parsed === "object" && parsed.artifact_signatures && typeof parsed.artifact_signatures === "object"
+          ? (parsed.artifact_signatures as Record<string, unknown>)
+          : undefined;
+      const recorded = artifactSignatures?.[PROVENANCE_ARTIFACTS.packet];
+      packetProducingSignature = typeof recorded === "string" ? recorded : undefined;
     } catch {
       manifestRaw = "";
       priorSignature = undefined;
+      packetProducingSignature = undefined;
     }
   }
   let packetValid = false;
   if (fileExists(packetPath)) {
     packetValid = await isSchemaValidPacket(cwd, parsed, packetPath);
   }
-  return { manifestPath, manifestRaw, priorSignature, packetPath, packetValid };
+  return { manifestPath, manifestRaw, priorSignature, packetProducingSignature, packetPath, packetValid };
 }
 
 // FINDING E (cache schema validity): a --cache signature hit must reuse a packet
@@ -340,7 +361,14 @@ function isCacheHit(snapshot: CacheSnapshot, currentSignature: string | undefine
     snapshot.packetValid &&
     snapshot.manifestRaw !== "" &&
     typeof currentSignature === "string" &&
-    snapshot.priorSignature === currentSignature
+    snapshot.priorSignature === currentSignature &&
+    // FINDING B: only a HIT when review_packet.json was PRODUCED from the current
+    // signature (its stamped producing signature matches), not merely when the
+    // manifest's top-level signature matches. An intervening collect/intent bumps
+    // the manifest signature while leaving a stale packet (with an old producing
+    // signature) -> treat as a miss and regenerate. A clean `all --cache` re-run
+    // stamped review_packet.json with this same signature, so it still hits.
+    snapshot.packetProducingSignature === currentSignature
   );
 }
 
@@ -468,6 +496,22 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     enrichment,
     commands
   });
+  // FINDING B + FINDING C: stamp every artifact `all` just wrote with the current
+  // collection signature so a later --cache hit / composable load can tell they
+  // were produced from THESE inputs. writeReviewPacket writes the full set
+  // (intent/evaluation/methodology/risks/review_packet, plus dogfood when present).
+  await stampArtifactSignatures(
+    collection.outputDir,
+    [
+      PROVENANCE_ARTIFACTS.intent,
+      PROVENANCE_ARTIFACTS.evaluation,
+      PROVENANCE_ARTIFACTS.methodology,
+      PROVENANCE_ARTIFACTS.risks,
+      PROVENANCE_ARTIFACTS.packet,
+      ...(dogfood ? [PROVENANCE_ARTIFACTS.dogfood] : [])
+    ],
+    collection.manifest.signature
+  );
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
@@ -496,86 +540,64 @@ interface StageContext {
   provider: ProviderName;
   requestedModel?: string;
   areasOption: { areas?: ReviewArea[] };
-  // FINDING E: the deterministic signature recorded in the PRIOR manifest.json
-  // (read BEFORE collect() overwrote it with the current run's signature). When it
-  // does not match the current collection signature, any prior-stage artifacts
-  // under --out (intent/evaluation/risks.yaml) were produced from DIFFERENT inputs
-  // and must NOT be loaded as-is -- they would publish a packet whose
-  // coverage/risks are stale relative to the current manifest/architecture.
-  // Undefined when there was no prior manifest (first run) -- nothing to load
-  // anyway, so the stages compute normally.
-  priorSignature?: string;
-}
-
-// FINDING E: read the signature stamped in the prior manifest.json (if any) so a
-// composable stage can tell whether prior-stage artifacts under --out were
-// produced from the SAME inputs. Must be called BEFORE collect() rewrites the
-// manifest. Any read/parse failure (no prior run, corrupt manifest) yields
-// undefined, which forces a recompute (never a stale load).
-async function readPriorManifestSignature(cwd: string, parsed: ParsedArgs): Promise<string | undefined> {
-  const outputDir = await resolveOutputDir(cwd, parsed);
-  const manifestPath = path.join(outputDir, "manifest.json");
-  if (!fileExists(manifestPath)) {
-    return undefined;
-  }
-  try {
-    const parsedManifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-    return parsedManifest && typeof parsedManifest.signature === "string" ? parsedManifest.signature : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 async function buildStageContext(parsed: ParsedArgs): Promise<StageContext> {
   const cwd = process.cwd();
-  // FINDING E: snapshot the prior manifest signature BEFORE collect() overwrites
-  // manifest.json with the current run's signature, so stale prior-stage artifacts
-  // can be detected and recomputed rather than loaded.
-  const priorSignature = await readPriorManifestSignature(cwd, parsed);
+  // FINDING B + FINDING C: collect() carries the prior per-artifact provenance map
+  // (manifest.artifact_signatures) FORWARD verbatim into the freshly-written
+  // manifest, so the per-artifact loaders below read each artifact's OWN producing
+  // signature from the now-current manifest. No separate prior-signature snapshot
+  // is needed: an artifact whose owning stage did not rerun this collection keeps
+  // its old producing signature in the carried-forward map.
   const { collection, config } = await collect(parsed);
   const commands = [`review-surfaces ${parsed.command} ${process.argv.slice(3).join(" ")}`.trim()];
   const provider = providerFlag(parsed, config);
   const requestedModel = stringFlag(parsed, "model") ?? config.llm.model ?? undefined;
   const reviewAreas = buildReviewAreas({ config, repoIndex: collection.repoIndex });
   const areasOption = reviewAreas.mode === "config" ? { areas: reviewAreas.areas } : {};
-  return { cwd, parsed, collection, config, commands, provider, requestedModel, areasOption, priorSignature };
+  return { cwd, parsed, collection, config, commands, provider, requestedModel, areasOption };
 }
 
-// FINDING E: prior-stage artifacts under --out are only safe to LOAD when they
-// were produced from the SAME inputs as this run. The current signature lives in
-// the freshly-written manifest; the prior signature was snapshotted before
-// collect() overwrote it. They match => prior artifacts are current and may be
-// reused (compose). They differ (inputs changed) OR there is no current signature
-// => recompute every stage so a reused --out never publishes stale coverage/risks.
-function priorArtifactsAreCurrent(context: StageContext): boolean {
+// FINDING B + FINDING C (round 8, PER-ARTIFACT provenance): a prior-stage
+// artifact is only safe to LOAD when ITS OWN producing signature equals the
+// current collection signature. The round-5 check compared the SHARED manifest
+// top-level signature, but a stage like collect/intent rewrites manifest.json to
+// the CURRENT signature while leaving older evaluation.yaml/risks.yaml in place --
+// so the top-level signature matched and stale coverage/risks were reused. Now we
+// read each artifact's recorded producing signature from manifest.artifact_signatures
+// (collect carries the map forward; each stage stamps the artifacts it actually
+// rewrites with the current signature) and gate reuse on THAT. With unchanged
+// inputs the owning stage stamped the current signature, so compose==monolith and
+// the byte-stable offline path are preserved; when inputs changed (or the owning
+// stage never reran this run) the recorded producing signature differs and the
+// caller recomputes from current inputs instead of composing a stale artifact.
+function artifactIsCurrent(context: StageContext, artifactFile: string): boolean {
   const currentSignature = context.collection.manifest.signature;
-  return typeof currentSignature === "string" && context.priorSignature === currentSignature;
+  if (typeof currentSignature !== "string") {
+    return false;
+  }
+  return artifactProducingSignature(context.collection.outputDir, artifactFile) === currentSignature;
 }
 
-// FINDING E: signature-gated artifact loaders. Each returns the prior-stage
-// artifact ONLY when its producing manifest signature matches the current run
-// (priorArtifactsAreCurrent); otherwise null, so the caller recomputes the stage
-// from current inputs instead of composing a stale artifact. When inputs are
-// unchanged these are exactly the underlying loaders, so compose==monolith and
-// the byte-stable offline path are preserved.
 function loadCurrentIntent(context: StageContext): IntentModel | null {
-  return priorArtifactsAreCurrent(context) ? loadIntent(context.collection.outputDir) : null;
+  return artifactIsCurrent(context, PROVENANCE_ARTIFACTS.intent) ? loadIntent(context.collection.outputDir) : null;
 }
 
 function loadCurrentEvaluation(context: StageContext): EvaluationModel | null {
-  return priorArtifactsAreCurrent(context) ? loadEvaluation(context.collection.outputDir) : null;
+  return artifactIsCurrent(context, PROVENANCE_ARTIFACTS.evaluation) ? loadEvaluation(context.collection.outputDir) : null;
 }
 
 function loadCurrentMethodology(context: StageContext): MethodologyModel | null {
-  return priorArtifactsAreCurrent(context) ? loadMethodology(context.collection.outputDir) : null;
+  return artifactIsCurrent(context, PROVENANCE_ARTIFACTS.methodology) ? loadMethodology(context.collection.outputDir) : null;
 }
 
 function loadCurrentRisks(context: StageContext): RisksModel | null {
-  return priorArtifactsAreCurrent(context) ? loadRisks(context.collection.outputDir) : null;
+  return artifactIsCurrent(context, PROVENANCE_ARTIFACTS.risks) ? loadRisks(context.collection.outputDir) : null;
 }
 
 function loadCurrentDogfood(context: StageContext): DogfoodModel | null {
-  return priorArtifactsAreCurrent(context) ? loadDogfood(context.collection.outputDir) : null;
+  return artifactIsCurrent(context, PROVENANCE_ARTIFACTS.dogfood) ? loadDogfood(context.collection.outputDir) : null;
 }
 
 function reasoningProviderFor(context: StageContext) {
@@ -890,6 +912,9 @@ async function runIntentStage(parsed: ParsedArgs): Promise<void> {
   const context = await buildStageContext(parsed);
   const intent = await computeEnrichedIntent(context);
   await writeIntentArtifact(context.collection.outputDir, intent);
+  // FINDING B + FINDING C: stamp intent.yaml's producing signature so a later
+  // stage composes it ONLY when the inputs are still the same.
+  await stampArtifactSignatures(context.collection.outputDir, [PROVENANCE_ARTIFACTS.intent], context.collection.manifest.signature);
   logWrote(context);
 }
 
@@ -925,6 +950,9 @@ async function runEvaluateStage(parsed: ParsedArgs): Promise<number> {
   // --test-output.
   verifyRequirementsWithTests(context.collection, intent, evaluation, context.areasOption);
   await writeEvaluationArtifact(context.collection.outputDir, evaluation);
+  // FINDING B + FINDING C: stamp evaluation.yaml's producing signature so a later
+  // packet/handoff composes this coverage ONLY while the inputs are unchanged.
+  await stampArtifactSignatures(context.collection.outputDir, [PROVENANCE_ARTIFACTS.evaluation], context.collection.manifest.signature);
   logWrote(context);
   return applyGate(parsed, evaluation, context.collection, context.provider, context.config);
 }
@@ -978,6 +1006,8 @@ async function runMethodologyStage(parsed: ParsedArgs): Promise<void> {
     remotePrivacyBlocked: context.collection.privacy.remote_provider_blocked
   });
   await writeMethodologyArtifact(context.collection.outputDir, packet.methodology);
+  // FINDING B + FINDING C: stamp methodology.yaml's producing signature.
+  await stampArtifactSignatures(context.collection.outputDir, [PROVENANCE_ARTIFACTS.methodology], context.collection.manifest.signature);
   logWrote(context);
 }
 
@@ -1028,6 +1058,9 @@ async function runRisksStage(parsed: ParsedArgs): Promise<void> {
     remotePrivacyBlocked: context.collection.privacy.remote_provider_blocked
   });
   await writeRisksArtifact(context.collection.outputDir, packet.risks);
+  // FINDING B + FINDING C: stamp risks.yaml's producing signature so packet/handoff
+  // compose this risk register ONLY while the inputs are unchanged.
+  await stampArtifactSignatures(context.collection.outputDir, [PROVENANCE_ARTIFACTS.risks], context.collection.manifest.signature);
   logWrote(context);
 }
 
@@ -1126,6 +1159,23 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
     enrichment,
     commands: context.commands
   });
+  // FINDING B + FINDING C: packet rewrites the full artifact set (writeReviewPacket
+  // writes intent/evaluation/methodology/risks/review_packet, plus dogfood when
+  // present), so stamp all of them with the current signature. This is what makes a
+  // later `all --cache` reuse the packet (review_packet.json now carries the
+  // current producing signature) AND keeps the composable stages current.
+  await stampArtifactSignatures(
+    context.collection.outputDir,
+    [
+      PROVENANCE_ARTIFACTS.intent,
+      PROVENANCE_ARTIFACTS.evaluation,
+      PROVENANCE_ARTIFACTS.methodology,
+      PROVENANCE_ARTIFACTS.risks,
+      PROVENANCE_ARTIFACTS.packet,
+      ...(dogfood ? [PROVENANCE_ARTIFACTS.dogfood] : [])
+    ],
+    context.collection.manifest.signature
+  );
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }

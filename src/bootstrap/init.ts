@@ -440,8 +440,19 @@ async function scaffoldAgents(cwd: string, force: boolean, validateOnly: boolean
 
   // AGENTS.md is user-owned context. If it already exists, never mutate it,
   // even with --force, so we do not stomp an existing contributor workflow.
+  //
+  // Round 8 (FINDING A): even though init never overwrites an existing AGENTS.md,
+  // it MUST still validate it like every other scaffold target (and like
+  // bootstrap's validate-only branch above). Previously init reported a bare
+  // "exists" without running validateNonEmpty, so an empty/blank AGENTS.md left
+  // `init` reporting success even though the file is invalid and would later trip
+  // `bootstrap --strict`. Validate the existing file and report "invalid" when it
+  // is empty (preserving the no-clobber guarantee: we never write over it).
   if (exists) {
-    return { path: AGENTS_FILE, status: "exists", required: true };
+    const error = await tryValidate(validateNonEmpty, cwd, absolutePath);
+    return error
+      ? { path: AGENTS_FILE, status: "invalid", detail: error, required: true }
+      : { path: AGENTS_FILE, status: "exists", required: true };
   }
 
   await writeText(absolutePath, renderAgents(repoFeatureName(cwd)));

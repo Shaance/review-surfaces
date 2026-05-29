@@ -244,7 +244,17 @@ function validationEvidenceFromTestResults(testResults: TestResults | undefined)
   if (!testResults || testResults.cases.length === 0) {
     return entries;
   }
-  for (const testCase of testResults.cases.slice(0, MAX_PARSED_TEST_EVIDENCE)) {
+  // Round 8 (FINDING D): testResults.cases arrives sorted ALPHABETICALLY
+  // (classname/suite/name). Capping that order with slice(0, 40) silently DROPS a
+  // FAILED/skipped case that sorts late, so the packet could show many passing
+  // tests while HIDING a real failure (and the handoff failed-validation section
+  // would miss it). Order so non-passed (failed/error/skipped) cases come BEFORE
+  // passed ones BEFORE applying the cap, so failures are never hidden. Ordering is
+  // STABLE within each status group: the underlying array is already
+  // deterministically sorted, and the priority sort below preserves that order
+  // among equal-priority cases.
+  const prioritized = orderTestCasesFailuresFirst(testResults.cases).slice(0, MAX_PARSED_TEST_EVIDENCE);
+  for (const testCase of prioritized) {
     entries.push({
       id: `TEST-RESULT-${String(entries.length + 1).padStart(3, "0")}`,
       kind: parsedTestEvidenceKind(testCase),
@@ -254,6 +264,25 @@ function validationEvidenceFromTestResults(testResults: TestResults | undefined)
     });
   }
   return entries;
+}
+
+// FINDING D: a stable reordering that puts non-passing cases first so the 40-entry
+// cap reserves slots for failures. `passed` cases sort last; everything else
+// (failed / skipped / any other non-passed status) keeps its existing
+// deterministic relative order. Failures sort ahead of skips so a genuine FAILED
+// test is the very last thing the cap would ever drop. A plain Array.prototype.sort
+// in Node is stable, so within each priority bucket the input order is preserved.
+function orderTestCasesFailuresFirst(cases: NormalizedTestCase[]): NormalizedTestCase[] {
+  const priority = (testCase: NormalizedTestCase): number => {
+    if (testCase.status === "passed") {
+      return 2; // passing tests are the LEAST important to keep under the cap
+    }
+    if (testCase.status === "skipped") {
+      return 1;
+    }
+    return 0; // failed (and any non-passed/non-skipped) status: never hide these
+  };
+  return [...cases].sort((left, right) => priority(left) - priority(right));
 }
 
 function parsedTestEvidenceKind(testCase: NormalizedTestCase): RisksModel["test_evidence"][number]["kind"] {

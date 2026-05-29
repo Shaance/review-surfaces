@@ -1,10 +1,11 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import { AcaiSpecIndex, indexAcaiSpecs } from "../acai/acai";
 import { CommandTranscript, commandTranscriptInputDir, commandTranscriptOutputPath, indexCommandTranscriptFiles } from "../commands/transcripts";
 import { ReviewSurfacesConfig } from "../config/config";
 import { filterPathsByPatterns, walkFiles } from "../core/glob";
-import { ensureDir, hashFile, isRegularFile, writeJson, writeText } from "../core/files";
+import { ensureDir, fileExists, hashFile, isRegularFile, writeJson, writeText } from "../core/files";
 import { FeedbackFile, indexFeedbackFiles } from "../feedback/feedback";
 import { filterIgnoredDiff } from "../privacy/diff";
 import { loadPrivacyIgnore } from "../privacy/ignore";
@@ -62,6 +63,15 @@ export interface RunManifest {
   // changed file). Excludes created_at and the --out path so frozen-clock and
   // path changes never perturb it. Used by --cache to detect unchanged inputs.
   signature?: string;
+  // Round 8 (FINDING B + FINDING C) — per-artifact provenance. Maps a stage
+  // artifact file name (intent.yaml, evaluation.yaml, risks.yaml,
+  // review_packet.json, ...) to the collection signature it was PRODUCED from.
+  // collect carries the prior map FORWARD verbatim (so a stage that only rewrote
+  // manifest.json leaves the old producing signature visible as the staleness
+  // signal); each stage re-stamps the artifacts it actually (re)writes with the
+  // current signature. Reuse (compose / --cache) is gated on an artifact's OWN
+  // recorded signature matching the current signature, not on `signature` above.
+  artifact_signatures?: Record<string, string>;
 }
 
 // A changed file plus a content hash of its current working-tree bytes. Folding
@@ -270,7 +280,26 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     signature
   };
 
-  await writeJson(path.join(outputDir, "manifest.json"), manifest);
+  // FINDING B + FINDING C: carry the PRIOR per-artifact provenance map forward so
+  // a stale artifact (one whose owning stage did not rerun this collection) keeps
+  // its old producing signature visible. collect itself produces NO stage artifact
+  // (intent/evaluation/risks/packet), so it never advances any entry to the new
+  // signature here; each stage re-stamps the artifacts it actually rewrites. When
+  // the inputs changed, the carried-over entries no longer match the new signature
+  // and downstream reuse correctly recomputes. Read BEFORE overwriting the manifest.
+  //
+  // artifact_signatures lives ONLY in the on-disk manifest.json (which already
+  // varies by created_at). It is intentionally NOT added to the returned in-memory
+  // manifest: that object is embedded verbatim into review_packet.json, and folding
+  // a carried-forward map into it would break byte-stability across two identical
+  // frozen-clock runs (run 2 would carry forward run 1's map). The provenance
+  // readers (cache snapshot, per-artifact loaders, stampArtifactSignatures) all read
+  // the on-disk manifest.json directly, so they see the map regardless.
+  const priorArtifactSignatures = readPriorArtifactSignatures(path.join(outputDir, "manifest.json"));
+  await writeJson(path.join(outputDir, "manifest.json"), {
+    ...manifest,
+    ...(priorArtifactSignatures ? { artifact_signatures: priorArtifactSignatures } : {})
+  });
   await writeJson(path.join(inputsDir, "specs.index.json"), specIndex);
   await writeJson(path.join(inputsDir, "changed_files.json"), {
     schema_version: "review-surfaces.changed_files.v1",
@@ -339,6 +368,33 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     privacy,
     git
   };
+}
+
+// FINDING B + FINDING C: read the prior manifest's artifact_signatures map (if
+// any) so collect can carry it forward verbatim. Returns undefined when there is
+// no prior map (first run / corrupt manifest), keeping the manifest byte-identical
+// to before this addition when no provenance has been recorded yet.
+function readPriorArtifactSignatures(manifestPath: string): Record<string, string> | undefined {
+  if (!fileExists(manifestPath)) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    const map = parsed && typeof parsed === "object" ? parsed.artifact_signatures : undefined;
+    if (!map || typeof map !== "object" || Array.isArray(map)) {
+      return undefined;
+    }
+    const result: Record<string, string> = {};
+    for (const key of Object.keys(map as Record<string, unknown>).sort()) {
+      const value = (map as Record<string, unknown>)[key];
+      if (typeof value === "string") {
+        result[key] = value;
+      }
+    }
+    return Object.keys(result).length > 0 ? result : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function hashChangedFiles(cwd: string, changedFiles: ChangedFile[]): Promise<ChangedFileHash[]> {

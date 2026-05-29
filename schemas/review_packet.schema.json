@@ -133,6 +133,12 @@
         },
         "signature": {
           "type": "string"
+        },
+        "artifact_signatures": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       }
     },

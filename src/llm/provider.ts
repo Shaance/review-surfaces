@@ -470,14 +470,22 @@ function redactAll(values: string[]): string[] {
 }
 
 function mergeEnrichment(packet: ReviewPacket, enrichment: AgentFileEnrichment): void {
+  // Round 8 (FINDING E): the agent-file payload is LOCAL, user/agent-controlled,
+  // and NOT validated against ENRICHMENT_SCHEMA (only the ai-sdk path binds that
+  // schema via generateObject). A malformed array like review_focus: [123] or
+  // risk_summaries: [123] previously passed a non-string straight into
+  // redactSecrets, which calls String.prototype.replace and THREW, crashing the
+  // whole run. Normalize every user-controlled array with asStringArray (drop
+  // non-string entries) BEFORE redacting, so bad entries are skipped instead of
+  // crashing. The schema-conformant string-array case is unchanged.
   if (Array.isArray(enrichment.review_focus) && isRecord(packet.risks)) {
-    packet.risks.review_focus = uniqueStrings([...(asStringArray(packet.risks.review_focus)), ...redactAll(enrichment.review_focus)]).slice(0, 10);
+    packet.risks.review_focus = uniqueStrings([...(asStringArray(packet.risks.review_focus)), ...redactAll(asStringArray(enrichment.review_focus))]).slice(0, 10);
   }
   if (Array.isArray(enrichment.assumptions) && isRecord(packet.intent)) {
-    packet.intent.assumptions = uniqueStrings([...(asStringArray(packet.intent.assumptions)), ...redactAll(enrichment.assumptions)]).slice(0, 12);
+    packet.intent.assumptions = uniqueStrings([...(asStringArray(packet.intent.assumptions)), ...redactAll(asStringArray(enrichment.assumptions))]).slice(0, 12);
   }
   if (Array.isArray(enrichment.methodology_decisions) && isRecord(packet.methodology)) {
-    packet.methodology.decisions = uniqueStrings([...(asStringArray(packet.methodology.decisions)), ...redactAll(enrichment.methodology_decisions)]).slice(0, 12);
+    packet.methodology.decisions = uniqueStrings([...(asStringArray(packet.methodology.decisions)), ...redactAll(asStringArray(enrichment.methodology_decisions))]).slice(0, 12);
   }
   if (Array.isArray(enrichment.risk_summaries) && isRecord(packet.risks)) {
     const existing = Array.isArray(packet.risks.items) ? packet.risks.items : [];
@@ -492,7 +500,10 @@ function mergeEnrichment(packet: ReviewPacket, enrichment: AgentFileEnrichment):
     const existingKeys = new Set(existing.map(riskItemKey));
     let aiRiskCounter = existing.filter((item) => typeof item.id === "string" && item.id.startsWith("AI-RISK-")).length;
     const appended: RiskItem[] = [];
-    for (const rawSummary of enrichment.risk_summaries.slice(0, 3)) {
+    // FINDING E: normalize to strings first (drop non-string entries such as a
+    // malformed risk_summaries: [123]) so redact() never receives a non-string and
+    // throws.
+    for (const rawSummary of asStringArray(enrichment.risk_summaries).slice(0, 3)) {
       const summary = `AI/agent hypothesis: ${redact(rawSummary)}`;
       const key = `${"unknown"}: ${summary}`;
       if (existingKeys.has(key)) {
