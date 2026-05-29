@@ -1,3 +1,5 @@
+import Ajv2020, { ErrorObject, ValidateFunction } from "ajv/dist/2020";
+import addFormats from "ajv-formats";
 import { readJson } from "../core/files";
 
 export interface ValidationIssue {
@@ -10,6 +12,23 @@ export interface ValidationResult {
   issues: ValidationIssue[];
 }
 
+/**
+ * Ajv instance reused across calls. ajv compiles and caches schemas, so a
+ * shared instance keeps repeated validations fast and deterministic.
+ * - draft 2020-12 dialect ($defs/$ref, allOf + if/then, const, enum, ...).
+ * - allErrors: surface every issue, matching the old validator.
+ * - strict: false so unknown/format keywords do not throw at compile time.
+ */
+const ajv = new Ajv2020({ allErrors: true, strict: false });
+addFormats(ajv);
+
+// Cache by object identity for anonymous schemas...
+const compiledSchemas = new WeakMap<object, ValidateFunction>();
+// ...and by $id for schemas that declare one, so re-parsing the same schema
+// file (a fresh object each time) reuses the compiled validator instead of
+// asking Ajv to register a duplicate $id (which throws).
+const compiledById = new Map<string, ValidateFunction>();
+
 export async function validateJsonFile(schemaPath: string, dataPath: string): Promise<ValidationResult> {
   const schema = await readJson(schemaPath);
   const data = await readJson(dataPath);
@@ -17,166 +36,127 @@ export async function validateJsonFile(schemaPath: string, dataPath: string): Pr
 }
 
 export function validateJsonSchema(schema: unknown, data: unknown): ValidationResult {
-  const issues: ValidationIssue[] = [];
-  validateNode(schema, data, "$", schema, issues);
+  const validate = getValidator(schema);
+  const valid = validate(data) as boolean;
+  if (valid) {
+    return { valid: true, issues: [] };
+  }
+
+  const issues = (validate.errors ?? []).map(toIssue);
   return {
     valid: issues.length === 0,
     issues
   };
 }
 
-function validateNode(schemaNode: unknown, data: unknown, path: string, rootSchema: unknown, issues: ValidationIssue[]): void {
-  if (!isRecord(schemaNode)) {
-    return;
+function getValidator(schema: unknown): ValidateFunction {
+  if (schema === null || typeof schema !== "object") {
+    return ajv.compile(schema as object);
   }
 
-  if (typeof schemaNode.$ref === "string") {
-    validateNode(resolveRef(rootSchema, schemaNode.$ref), data, path, rootSchema, issues);
-    return;
+  const byIdentity = compiledSchemas.get(schema as object);
+  if (byIdentity) {
+    return byIdentity;
   }
 
-  if (Array.isArray(schemaNode.allOf)) {
-    for (const item of schemaNode.allOf) {
-      validateConditional(item, data, path, rootSchema, issues);
+  const schemaId = (schema as { $id?: unknown }).$id;
+  if (typeof schemaId === "string") {
+    const byId = compiledById.get(schemaId) ?? ajv.getSchema(schemaId);
+    if (byId) {
+      compiledSchemas.set(schema as object, byId);
+      compiledById.set(schemaId, byId);
+      return byId;
     }
   }
 
-  if ("const" in schemaNode && data !== schemaNode.const) {
-    issues.push({ path, message: `Expected constant ${JSON.stringify(schemaNode.const)}` });
+  const compiled = ajv.compile(schema as object);
+  compiledSchemas.set(schema as object, compiled);
+  if (typeof schemaId === "string") {
+    compiledById.set(schemaId, compiled);
   }
+  return compiled;
+}
 
-  if (Array.isArray(schemaNode.enum) && !schemaNode.enum.includes(data)) {
-    issues.push({ path, message: `Expected one of ${schemaNode.enum.map((item) => JSON.stringify(item)).join(", ")}` });
-  }
+function toIssue(error: ErrorObject): ValidationIssue {
+  return {
+    path: errorPath(error),
+    message: errorMessage(error)
+  };
+}
 
-  const expectedType = schemaNode.type;
-  if (typeof expectedType === "string" && !matchesType(data, expectedType)) {
-    issues.push({ path, message: `Expected type ${expectedType}` });
-    return;
-  }
-
-  if (expectedType === "object" || (schemaNode.properties && isRecord(data))) {
-    validateObject(schemaNode, data, path, rootSchema, issues);
-  }
-
-  if (expectedType === "array" || (schemaNode.items && Array.isArray(data))) {
-    validateArray(schemaNode, data, path, rootSchema, issues);
-  }
-
-  if (typeof schemaNode.pattern === "string" && typeof data === "string") {
-    const regex = new RegExp(schemaNode.pattern);
-    if (!regex.test(data)) {
-      issues.push({ path, message: `Expected string to match ${schemaNode.pattern}` });
+/**
+ * Convert an Ajv instancePath (e.g. "/arr/0/name") into the historical
+ * "$.arr[0].name" shape used throughout the codebase and tests.
+ *
+ * For keyword errors that point at a child key (additionalProperties), the
+ * offending property is appended so the path identifies the exact location,
+ * matching the previous hand-rolled validator ("$.a.extra").
+ */
+function errorPath(error: ErrorObject): string {
+  let path = instancePathToDollar(error.instancePath);
+  if (error.keyword === "additionalProperties") {
+    const extra = (error.params as { additionalProperty?: string }).additionalProperty;
+    if (typeof extra === "string") {
+      path = appendKey(path, extra);
     }
   }
-
-  const minimum = schemaNode.minimum;
-  if (typeof minimum === "number" && typeof data === "number" && data < minimum) {
-    issues.push({ path, message: `Expected number >= ${minimum}` });
-  }
+  return path;
 }
 
-function validateConditional(
-  schemaNode: unknown,
-  data: unknown,
-  path: string,
-  rootSchema: unknown,
-  issues: ValidationIssue[]
-): void {
-  if (!isRecord(schemaNode) || !schemaNode.if || !schemaNode.then) {
-    validateNode(schemaNode, data, path, rootSchema, issues);
-    return;
+function instancePathToDollar(instancePath: string): string {
+  if (!instancePath) {
+    return "$";
   }
-
-  const conditionIssues: ValidationIssue[] = [];
-  validateNode(schemaNode.if, data, path, rootSchema, conditionIssues);
-  if (conditionIssues.length === 0) {
-    validateNode(schemaNode.then, data, path, rootSchema, issues);
+  let path = "$";
+  for (const rawSegment of instancePath.split("/").slice(1)) {
+    const segment = unescapePointer(rawSegment);
+    path = appendKey(path, segment);
   }
+  return path;
 }
 
-function validateObject(
-  schemaNode: Record<string, unknown>,
-  data: unknown,
-  path: string,
-  rootSchema: unknown,
-  issues: ValidationIssue[]
-): void {
-  if (!isRecord(data)) {
-    return;
-  }
+function appendKey(path: string, key: string): string {
+  return /^[0-9]+$/.test(key) ? `${path}[${key}]` : `${path}.${key}`;
+}
 
-  const required = Array.isArray(schemaNode.required) ? schemaNode.required : [];
-  for (const key of required) {
-    if (typeof key === "string" && !(key in data)) {
-      issues.push({ path, message: `Missing required property ${key}` });
+function unescapePointer(segment: string): string {
+  // JSON Pointer escaping: ~1 => "/", ~0 => "~".
+  return segment.replace(/~1/g, "/").replace(/~0/g, "~");
+}
+
+/**
+ * Map Ajv messages onto the phrasing the existing tests and artifacts expect
+ * ("Expected constant ...", "Expected one of ...", "Unexpected property",
+ * "Missing required property ...", "Expected type ...", etc.). Falls back to
+ * Ajv's own message for keywords without a bespoke phrasing.
+ */
+function errorMessage(error: ErrorObject): string {
+  switch (error.keyword) {
+    case "const":
+      return `Expected constant ${JSON.stringify((error.params as { allowedValue: unknown }).allowedValue)}`;
+    case "enum": {
+      const allowed = (error.params as { allowedValues: unknown[] }).allowedValues;
+      return `Expected one of ${allowed.map((item) => JSON.stringify(item)).join(", ")}`;
     }
-  }
-
-  const properties = isRecord(schemaNode.properties) ? schemaNode.properties : {};
-  for (const [key, value] of Object.entries(data)) {
-    if (key in properties) {
-      validateNode(properties[key], value, `${path}.${key}`, rootSchema, issues);
-    } else if (schemaNode.additionalProperties === false) {
-      issues.push({ path: `${path}.${key}`, message: "Unexpected property" });
-    } else if (isRecord(schemaNode.additionalProperties)) {
-      validateNode(schemaNode.additionalProperties, value, `${path}.${key}`, rootSchema, issues);
+    case "additionalProperties":
+      return "Unexpected property";
+    case "required": {
+      const missing = (error.params as { missingProperty: string }).missingProperty;
+      return `Missing required property ${missing}`;
     }
-  }
-}
-
-function validateArray(
-  schemaNode: Record<string, unknown>,
-  data: unknown,
-  path: string,
-  rootSchema: unknown,
-  issues: ValidationIssue[]
-): void {
-  if (!Array.isArray(data)) {
-    return;
-  }
-
-  for (let i = 0; i < data.length; i += 1) {
-    validateNode(schemaNode.items, data[i], `${path}[${i}]`, rootSchema, issues);
-  }
-}
-
-function resolveRef(rootSchema: unknown, ref: string): unknown {
-  if (!ref.startsWith("#/")) {
-    throw new Error(`Only local schema refs are supported: ${ref}`);
-  }
-
-  let current = rootSchema;
-  for (const segment of ref.slice(2).split("/")) {
-    if (!isRecord(current)) {
-      throw new Error(`Invalid schema ref ${ref}`);
+    case "type": {
+      const expected = (error.params as { type: string | string[] }).type;
+      return `Expected type ${Array.isArray(expected) ? expected.join(", ") : expected}`;
     }
-    current = current[segment];
-  }
-  return current;
-}
-
-function matchesType(data: unknown, expectedType: string): boolean {
-  switch (expectedType) {
-    case "object":
-      return isRecord(data);
-    case "array":
-      return Array.isArray(data);
-    case "string":
-      return typeof data === "string";
-    case "boolean":
-      return typeof data === "boolean";
-    case "integer":
-      return typeof data === "number" && Number.isInteger(data);
-    case "number":
-      return typeof data === "number";
-    case "null":
-      return data === null;
+    case "pattern": {
+      const pattern = (error.params as { pattern: string }).pattern;
+      return `Expected string to match ${pattern}`;
+    }
+    case "minimum": {
+      const limit = (error.params as { limit: number }).limit;
+      return `Expected number >= ${limit}`;
+    }
     default:
-      return true;
+      return error.message ?? `Schema validation failed (${error.keyword})`;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

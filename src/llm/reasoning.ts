@@ -1,0 +1,761 @@
+import { CollectionResult } from "../collector/collect";
+import { EvidenceRef, isLlmProposed, llmProposedEvidence } from "../evidence/evidence";
+import { EvidenceValidationContext, validateEvidenceRef } from "../evidence/validate";
+import { EvaluationModel, RequirementResult, RequirementStatus } from "../evaluation/evaluate";
+import { IntentModel, IntentRequirement } from "../intent/intent";
+import { MethodologyModel } from "../methodology/methodology";
+import { RisksModel } from "../risks/risks";
+import { GenerateStructuredOptions, ReasoningProvider } from "./provider";
+
+/**
+ * Phase 3-2: schema-bound, evidence-gated LLM reasoning stages.
+ *
+ * THE INVARIANT (enforced here, proven in tests):
+ * - The LLM never sets a requirement status by itself. Deterministic evidence
+ *   validation gates everything.
+ * - LLM-proposed evidence must pass the SAME validateEvidenceRef used by the
+ *   deterministic layer (path exists / line range valid / repo-relative / known
+ *   ACID). Invalid refs are dropped or surfaced as invalid_evidence and can
+ *   NEVER upgrade a status.
+ * - A requirement reaches "satisfied" ONLY via exact deterministic evidence. The
+ *   LLM can at most move missing -> partial by proposing VALID candidate
+ *   evidence, always labeled an LLM hypothesis with confidence <= medium.
+ * - With the mock provider (returns not-ok), every stage is a NO-OP and the
+ *   deterministic packet is byte-stable.
+ */
+
+export interface ReasoningInputs {
+  collection: CollectionResult;
+  intent: IntentModel;
+  evaluation: EvaluationModel;
+  methodology: MethodologyModel;
+  risks: RisksModel;
+}
+
+export interface ReasoningOptions {
+  redactSecrets?: boolean;
+  remotePrivacyBlocked?: boolean;
+}
+
+const MAX_PROPOSED_REQUIREMENTS = 5;
+const MAX_CANDIDATE_EVIDENCE_PER_REQUIREMENT = 4;
+const MAX_GLOBAL_REVIEW_FOCUS = 14;
+
+// Statuses whose evidence we let the LLM enrich. "satisfied" and
+// "invalid_evidence" are never touched.
+const ENRICHABLE_STATUSES = new Set<RequirementStatus>(["partial", "missing", "unknown"]);
+
+// LLM-proposed candidate evidence may only ever push a requirement to "partial",
+// and only from "missing". Everything else is left exactly as the deterministic
+// layer computed it.
+const UPGRADEABLE_FROM = new Set<RequirementStatus>(["missing"]);
+
+/**
+ * Run all reasoning stages in place against the supplied packet models. The
+ * provider is consulted with bounded prompts + JSON schemas; a non-ok result is
+ * treated as a skip so the deterministic packet is preserved unchanged.
+ *
+ * This is the monolithic `all` entry point. The composable per-stage runners
+ * below (runIntentReasoning / runEvaluationReasoning / runNarrativeReasoning)
+ * split this exact sequence by the artifact each stage's side effects land in,
+ * so a composed run reproduces the same enrichment as `all` (compose==monolith).
+ */
+export async function runReasoningStages(
+  provider: ReasoningProvider,
+  inputs: ReasoningInputs,
+  options: ReasoningOptions = {}
+): Promise<void> {
+  // Mock (and any provider that opts out of reasoning) is a guaranteed no-op:
+  // skip every stage so the offline pipeline stays byte-stable.
+  if (provider.name === "mock") {
+    return;
+  }
+
+  const evidenceContext = buildEvidenceContext(inputs);
+  const generateOptions = toGenerateOptions(options);
+
+  await runIntentSynthesis(provider, inputs, evidenceContext, generateOptions);
+  await runEvaluationCandidateEvidence(provider, inputs, evidenceContext, generateOptions);
+  await runNarrativeStage(provider, inputs, generateOptions);
+}
+
+function toGenerateOptions(options: ReasoningOptions): GenerateStructuredOptions {
+  return {
+    redactSecrets: options.redactSecrets,
+    remotePrivacyBlocked: options.remotePrivacyBlocked
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Composable per-stage reasoning runners.
+//
+// Each runner reproduces EXACTLY the side effects the corresponding stage has
+// inside runReasoningStages, so a composed subcommand can capture the same
+// enrichment as `all` for the single artifact it owns. The mock short-circuit
+// is preserved per runner so the deterministic offline path stays byte-stable.
+//
+// Side-effect map (which model each stage mutates):
+//   intent synthesis      -> inputs.intent            (intent.yaml)
+//   candidate evidence    -> inputs.evaluation.results (evaluation.yaml)
+//                            inputs.risks.review_focus  (risks.yaml)
+//   narrative             -> inputs.methodology         (methodology.yaml)
+//                            inputs.risks.items          (risks.yaml)
+//
+// Because candidate evidence and narrative both touch risks, the risks
+// subcommand runs BOTH against freshly computed deterministic models so the
+// persisted risks.yaml matches `all`. Each runner mutates only the models it is
+// meant to own at the call site; callers discard the cross-cutting models they
+// do not persist.
+// ---------------------------------------------------------------------------
+
+/** Stage 1: intent synthesis. Mutates inputs.intent in place. */
+export async function runIntentReasoning(
+  provider: ReasoningProvider,
+  inputs: ReasoningInputs,
+  options: ReasoningOptions = {}
+): Promise<void> {
+  if (provider.name === "mock") {
+    return;
+  }
+  await runIntentSynthesis(provider, inputs, buildEvidenceContext(inputs), toGenerateOptions(options));
+}
+
+/**
+ * Stage 2: evaluation candidate evidence. Mutates inputs.evaluation.results and
+ * inputs.risks.review_focus in place.
+ */
+export async function runEvaluationReasoning(
+  provider: ReasoningProvider,
+  inputs: ReasoningInputs,
+  options: ReasoningOptions = {}
+): Promise<void> {
+  if (provider.name === "mock") {
+    return;
+  }
+  await runEvaluationCandidateEvidence(provider, inputs, buildEvidenceContext(inputs), toGenerateOptions(options));
+}
+
+/**
+ * Stage 3: methodology + risk narrative. Mutates inputs.methodology and
+ * inputs.risks.items in place.
+ */
+export async function runNarrativeReasoning(
+  provider: ReasoningProvider,
+  inputs: ReasoningInputs,
+  options: ReasoningOptions = {}
+): Promise<void> {
+  if (provider.name === "mock") {
+    return;
+  }
+  await runNarrativeStage(provider, inputs, toGenerateOptions(options));
+}
+
+// ---------------------------------------------------------------------------
+// Shared evidence validation context
+// ---------------------------------------------------------------------------
+
+function buildEvidenceContext(inputs: ReasoningInputs): EvidenceValidationContext {
+  const knownPaths = new Set<string>([
+    ...inputs.collection.repositoryFiles,
+    ...inputs.collection.changedFiles.map((file) => file.path),
+    ...inputs.collection.tests.map((test) => test.path),
+    ...inputs.collection.docs.map((doc) => doc.path)
+  ]);
+  const knownAcids = new Set<string>(
+    inputs.intent.requirements.map((requirement) => requirement.acai_id).filter(Boolean) as string[]
+  );
+  return {
+    cwd: inputs.collection.cwd,
+    knownPaths,
+    knownAcids,
+    pathExistsCache: new Map(),
+    lineCountCache: new Map()
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Stage 1: intent synthesis
+// ---------------------------------------------------------------------------
+
+const INTENT_SYNTHESIS_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    summary: { type: "string" },
+    non_goals: { type: "array", items: { type: "string" } },
+    assumptions: { type: "array", items: { type: "string" } },
+    open_questions: { type: "array", items: { type: "string" } },
+    candidate_requirements: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          requirement: { type: "string" },
+          title: { type: "string" },
+          source_ref: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              kind: { type: "string" },
+              path: { type: "string" },
+              line_start: { type: "integer", minimum: 1 },
+              line_end: { type: "integer", minimum: 1 },
+              note: { type: "string" }
+            }
+          }
+        },
+        required: ["requirement", "source_ref"]
+      }
+    }
+  }
+} as const;
+
+interface IntentSynthesisOutput {
+  summary?: unknown;
+  non_goals?: unknown;
+  assumptions?: unknown;
+  open_questions?: unknown;
+  candidate_requirements?: unknown;
+}
+
+async function runIntentSynthesis(
+  provider: ReasoningProvider,
+  inputs: ReasoningInputs,
+  evidenceContext: EvidenceValidationContext,
+  generateOptions: GenerateStructuredOptions
+): Promise<void> {
+  const sparse = isSparseSpec(inputs.intent);
+  const prompt = intentPrompt(inputs, sparse);
+  const result = await provider.generateStructured("intent-synthesis", prompt, INTENT_SYNTHESIS_SCHEMA, generateOptions);
+  if (!result.ok || !isRecord(result.data)) {
+    return; // no-op: deterministic intent preserved
+  }
+
+  const data = result.data as IntentSynthesisOutput;
+  const intent = inputs.intent;
+
+  // Authoritative Acai requirements are untouched; only enrich the free-text
+  // narrative arrays, each marked as an LLM hypothesis.
+  const proposedAssumptions = asStringArray(data.assumptions).map(markHypothesis);
+  const proposedNonGoals = asStringArray(data.non_goals).map(markHypothesis);
+  const proposedQuestions = asStringArray(data.open_questions).map(markHypothesis);
+
+  intent.assumptions = unique([...intent.assumptions, ...proposedAssumptions]).slice(0, 16);
+  intent.non_goals = unique([...intent.non_goals, ...proposedNonGoals]).slice(0, 12);
+  intent.open_questions = unique([...intent.open_questions, ...proposedQuestions]).slice(0, 12);
+
+  if (typeof data.summary === "string" && data.summary.trim() !== "") {
+    intent.summary = `${intent.summary} ${markHypothesis(data.summary.trim())}`;
+  }
+
+  // Candidate requirements ONLY when the authoritative spec is sparse/absent
+  // (e.g. foreign repos). Each must cite a source ref that validates; drop
+  // those that do not. Proposed requirements never carry an acai_id and never
+  // reach confidence "high".
+  if (sparse) {
+    const proposed = buildCandidateRequirements(data.candidate_requirements, intent, evidenceContext);
+    if (proposed.length > 0) {
+      intent.requirements = [...intent.requirements, ...proposed];
+    }
+  }
+}
+
+function isSparseSpec(intent: IntentModel): boolean {
+  const authoritative = intent.requirements.filter((requirement) => !requirement.llm_derived && requirement.acai_id);
+  return authoritative.length === 0;
+}
+
+function buildCandidateRequirements(
+  raw: unknown,
+  intent: IntentModel,
+  evidenceContext: EvidenceValidationContext
+): IntentRequirement[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const result: IntentRequirement[] = [];
+  let counter = intent.requirements.length;
+  for (const entry of raw) {
+    if (result.length >= MAX_PROPOSED_REQUIREMENTS || !isRecord(entry)) {
+      continue;
+    }
+    const requirementText = typeof entry.requirement === "string" ? entry.requirement.trim() : "";
+    if (requirementText === "") {
+      continue;
+    }
+    const sourceRefRaw = isRecord(entry.source_ref) ? entry.source_ref : undefined;
+    if (!sourceRefRaw || typeof sourceRefRaw.path !== "string") {
+      continue; // every proposed item MUST cite a source ref
+    }
+    const candidateEvidence = llmProposedEvidence("file", {
+      path: sourceRefRaw.path,
+      line_start: numericField(sourceRefRaw.line_start),
+      line_end: numericField(sourceRefRaw.line_end),
+      note: typeof sourceRefRaw.note === "string" ? sourceRefRaw.note : "Source cited for proposed requirement.",
+      confidence: "low"
+    });
+    const validated = validateEvidenceRef(candidateEvidence, evidenceContext);
+    if (validated.validation_status !== "valid") {
+      continue; // drop proposed requirements whose source ref does not validate
+    }
+    counter += 1;
+    result.push({
+      id: `REQ-LLM-${String(counter).padStart(3, "0")}`,
+      acai_id: undefined, // NEVER fabricate an acai_id
+      title: typeof entry.title === "string" ? entry.title : "LLM-proposed requirement",
+      requirement: requirementText,
+      source_refs: [
+        {
+          kind: "file",
+          ref: sourceRefRaw.path,
+          title: "LLM-proposed source",
+          evidence: [validated]
+        }
+      ],
+      constraints: [],
+      assumptions: [],
+      open_questions: ["LLM-proposed requirement; confirm scope against authoritative intent before relying on it."],
+      confidence: "low", // never "high"
+      llm_derived: true
+    });
+  }
+  return result;
+}
+
+function intentPrompt(inputs: ReasoningInputs, sparse: boolean): string {
+  const changedFiles = inputs.collection.changedFiles
+    .slice(0, 30)
+    .map((file) => `${file.status} ${file.path}`)
+    .join("\n");
+  const candidateClause = sparse
+    ? "The authoritative spec is sparse/absent. You MAY propose up to 5 candidate_requirements, each citing a source_ref with a real repository-relative path. Do not invent ACIDs."
+    : "The authoritative spec already has requirements. Do NOT propose candidate_requirements; leave that array empty.";
+  return `Return compact JSON only matching the provided schema. Every assumption/non_goal/open_question and any candidate_requirement source_ref MUST cite a real repository file. Do not invent file paths, line numbers, ACIDs, or tests.
+
+${candidateClause}
+
+Deterministic intent summary:
+${inputs.intent.summary}
+
+Changed files:
+${changedFiles || "(none)"}
+`;
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2: evaluation candidate-evidence
+// ---------------------------------------------------------------------------
+
+const CANDIDATE_EVIDENCE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    candidate_evidence: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          kind: { type: "string", enum: ["file", "test"] },
+          path: { type: "string" },
+          line_start: { type: "integer", minimum: 1 },
+          line_end: { type: "integer", minimum: 1 },
+          test_name: { type: "string" },
+          note: { type: "string" }
+        },
+        required: ["kind", "path"]
+      }
+    },
+    rationale: { type: "string" },
+    what_would_confirm: { type: "string" }
+  }
+} as const;
+
+interface CandidateEvidenceOutput {
+  candidate_evidence?: unknown;
+  rationale?: unknown;
+  what_would_confirm?: unknown;
+}
+
+async function runEvaluationCandidateEvidence(
+  provider: ReasoningProvider,
+  inputs: ReasoningInputs,
+  evidenceContext: EvidenceValidationContext,
+  generateOptions: GenerateStructuredOptions
+): Promise<void> {
+  const candidatePaths = candidatePathPool(inputs.collection);
+  // Collapse the GLOBAL review_focus surface by rationale TEXT (not by
+  // requirement id). One LLM hypothesis cited across many requirements becomes a
+  // single coherent "N requirements share this LLM hypothesis" line instead of
+  // verbose noise repeated verbatim across the most prominent review surface.
+  const focusAccumulator = createReviewFocusAccumulator();
+
+  for (const result of inputs.evaluation.results) {
+    if (!ENRICHABLE_STATUSES.has(result.status)) {
+      continue; // satisfied / invalid_evidence are never touched by the LLM
+    }
+    const requirement = inputs.intent.requirements.find((req) => req.id === result.requirement_id);
+    const prompt = candidateEvidencePrompt(result, requirement, inputs.collection, candidatePaths);
+    const stageResult = await provider.generateStructured(
+      "evaluation-candidate-evidence",
+      prompt,
+      CANDIDATE_EVIDENCE_SCHEMA,
+      generateOptions
+    );
+    if (!stageResult.ok || !isRecord(stageResult.data)) {
+      continue; // no-op for this requirement
+    }
+    applyCandidateEvidence(
+      result,
+      stageResult.data as CandidateEvidenceOutput,
+      evidenceContext,
+      inputs.risks,
+      candidatePaths,
+      focusAccumulator
+    );
+  }
+}
+
+function applyCandidateEvidence(
+  result: RequirementResult,
+  data: CandidateEvidenceOutput,
+  evidenceContext: EvidenceValidationContext,
+  risks: RisksModel,
+  candidatePaths: string[],
+  focusAccumulator: ReviewFocusAccumulator
+): void {
+  const rawCandidates = Array.isArray(data.candidate_evidence) ? data.candidate_evidence : [];
+  const candidatePathSet = new Set(candidatePaths);
+  const validEvidence: EvidenceRef[] = [];
+  const invalidEvidence: EvidenceRef[] = [];
+
+  for (const entry of rawCandidates.slice(0, MAX_CANDIDATE_EVIDENCE_PER_REQUIREMENT)) {
+    if (!isRecord(entry) || typeof entry.path !== "string") {
+      continue;
+    }
+    const kind = entry.kind === "test" ? "test" : "file";
+    const candidate = llmProposedEvidence(kind, {
+      path: entry.path,
+      line_start: numericField(entry.line_start),
+      line_end: numericField(entry.line_end),
+      test_name: typeof entry.test_name === "string" ? entry.test_name : undefined,
+      note: typeof entry.note === "string" ? entry.note : "Candidate evidence for this requirement.",
+      confidence: kind === "test" ? "medium" : "low"
+    });
+    // Gate on the candidate pool BEFORE deterministic validation. The pool is the
+    // changed files + tests actually offered for this requirement; a real repo
+    // file that is NOT in the pool (e.g. an unrelated source file the model
+    // cited) must never attach as proof or drive a missing -> partial upgrade.
+    // Path-existence alone is insufficient: it would let any real file inflate
+    // arbitrary unrelated requirements. Refs outside the pool are surfaced as
+    // invalid so a reviewer can see the rejected hypothesis.
+    if (!candidatePathSet.has(normalizeCandidatePath(entry.path))) {
+      invalidEvidence.push({
+        ...candidate,
+        validation_status: "invalid",
+        note: appendOutOfPoolNote(candidate.note)
+      });
+      continue;
+    }
+    // Validate EVERY candidate ref via the same deterministic validator the
+    // evaluation layer uses. Invalid refs can NEVER upgrade status.
+    const validated = validateEvidenceRef(candidate, evidenceContext);
+    if (validated.validation_status === "valid") {
+      validEvidence.push(validated);
+    } else {
+      invalidEvidence.push(validated);
+    }
+  }
+
+  // Surface invalid candidate refs as invalid_evidence on the requirement so a
+  // reviewer can see the rejected hypothesis; never let them upgrade status.
+  if (invalidEvidence.length > 0) {
+    result.missing_evidence = [...result.missing_evidence, ...invalidEvidence];
+  }
+
+  if (validEvidence.length === 0) {
+    enrichReviewFocus(result, data, risks, false, focusAccumulator);
+    return;
+  }
+
+  // Attach valid, clearly-marked hypotheses. De-duplicate against existing refs.
+  const existingKeys = new Set(result.evidence.map(evidenceKey));
+  for (const ref of validEvidence) {
+    const key = evidenceKey(ref);
+    if (!existingKeys.has(key)) {
+      existingKeys.add(key);
+      result.evidence.push(ref);
+    }
+  }
+
+  // The ONLY allowed status change: missing -> partial when valid impl/test
+  // evidence was newly proposed. Never to satisfied; never override anything
+  // the deterministic layer already decided.
+  const upgraded = maybeUpgradeToPartial(result, validEvidence);
+  enrichReviewFocus(result, data, risks, upgraded, focusAccumulator);
+}
+
+function maybeUpgradeToPartial(result: RequirementResult, validEvidence: EvidenceRef[]): boolean {
+  if (!UPGRADEABLE_FROM.has(result.status)) {
+    return false;
+  }
+  if (validEvidence.length === 0) {
+    return false;
+  }
+  result.status = "partial";
+  result.confidence = "low";
+  result.summary =
+    "Status raised to partial by an LLM-proposed candidate evidence hypothesis; deterministic proof is still required.";
+  return true;
+}
+
+function enrichReviewFocus(
+  result: RequirementResult,
+  data: CandidateEvidenceOutput,
+  risks: RisksModel,
+  upgraded: boolean,
+  focusAccumulator: ReviewFocusAccumulator
+): void {
+  const rationale = typeof data.rationale === "string" ? data.rationale.trim() : "";
+  const whatWouldConfirm = typeof data.what_would_confirm === "string" ? data.what_would_confirm.trim() : "";
+  const fragments: string[] = [];
+  if (rationale !== "") {
+    fragments.push(`rationale: ${rationale}`);
+  }
+  if (whatWouldConfirm !== "") {
+    fragments.push(`what would confirm: ${whatWouldConfirm}`);
+  }
+  if (fragments.length === 0) {
+    return;
+  }
+  // Per-requirement review_focus keeps the full hypothesis text: it is scoped to
+  // one requirement, so it is context, not noise.
+  const focusNote = markHypothesis(fragments.join("; "));
+  result.review_focus = `${result.review_focus} ${focusNote}`.trim();
+
+  // The GLOBAL "where do I look first" surface de-duplicates by rationale TEXT.
+  // The same hypothesis cited across many requirements collapses into a single
+  // line listing the affected requirements, rather than one verbatim entry per
+  // requirement id.
+  recordGlobalReviewFocus(focusAccumulator, risks, {
+    label: result.acai_id ?? result.requirement_id,
+    upgraded,
+    text: fragments.join("; ")
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Global review_focus accumulator: collapse by rationale TEXT, not requirement.
+// ---------------------------------------------------------------------------
+
+interface ReviewFocusEntry {
+  index: number; // position of this entry's line in risks.review_focus
+  labels: string[]; // requirement labels sharing this rationale (deduped, ordered)
+  anyUpgraded: boolean;
+}
+
+interface ReviewFocusAccumulator {
+  byText: Map<string, ReviewFocusEntry>;
+}
+
+function createReviewFocusAccumulator(): ReviewFocusAccumulator {
+  return { byText: new Map() };
+}
+
+function recordGlobalReviewFocus(
+  accumulator: ReviewFocusAccumulator,
+  risks: RisksModel,
+  note: { label: string; upgraded: boolean; text: string }
+): void {
+  const existing = accumulator.byText.get(note.text);
+  if (existing) {
+    // Same hypothesis text already surfaced: fold this requirement into the
+    // shared line instead of appending a near-identical duplicate.
+    if (!existing.labels.includes(note.label)) {
+      existing.labels.push(note.label);
+    }
+    existing.anyUpgraded = existing.anyUpgraded || note.upgraded;
+    risks.review_focus[existing.index] = renderGlobalReviewFocusLine(existing, note.text);
+    return;
+  }
+
+  // First time we see this hypothesis text. Respect the global cap; once we hit
+  // it, drop further distinct hypotheses rather than unbounded growth.
+  if (risks.review_focus.length >= MAX_GLOBAL_REVIEW_FOCUS) {
+    return;
+  }
+  const entry: ReviewFocusEntry = {
+    index: risks.review_focus.length,
+    labels: [note.label],
+    anyUpgraded: note.upgraded
+  };
+  accumulator.byText.set(note.text, entry);
+  risks.review_focus.push(renderGlobalReviewFocusLine(entry, note.text));
+}
+
+function renderGlobalReviewFocusLine(entry: ReviewFocusEntry, text: string): string {
+  const upgradeTag = entry.anyUpgraded ? " (raised to partial)" : "";
+  if (entry.labels.length === 1) {
+    return markHypothesis(`${entry.labels[0]}${upgradeTag}: ${text}`);
+  }
+  // Collapse repeated identical rationales into one shared line.
+  const shown = entry.labels.slice(0, 6);
+  const more = entry.labels.length - shown.length;
+  const labelList = more > 0 ? `${shown.join(", ")}, +${more} more` : shown.join(", ");
+  return markHypothesis(
+    `${entry.labels.length} requirements share this hypothesis (${labelList})${upgradeTag}: ${text}`
+  );
+}
+
+function candidatePathPool(collection: CollectionResult): string[] {
+  return unique([
+    ...collection.changedFiles.map((file) => file.path),
+    ...collection.tests.map((test) => test.path)
+  ]).slice(0, 40);
+}
+
+function candidateEvidencePrompt(
+  result: RequirementResult,
+  requirement: IntentRequirement | undefined,
+  collection: CollectionResult,
+  candidatePaths: string[]
+): string {
+  return `Return compact JSON only matching the provided schema. Propose candidate_evidence ONLY from the listed candidate paths; never invent paths, line numbers, or tests. Mark everything as a hypothesis; deterministic validation decides whether it counts.
+
+Requirement (${result.acai_id ?? result.requirement_id}, current status ${result.status}):
+${requirement?.requirement ?? result.summary}
+
+Changed files:
+${collection.changedFiles.slice(0, 20).map((file) => file.path).join("\n") || "(none)"}
+
+Candidate paths you may cite:
+${candidatePaths.join("\n") || "(none)"}
+`;
+}
+
+// ---------------------------------------------------------------------------
+// Stage 3: methodology + risk narrative
+// ---------------------------------------------------------------------------
+
+const NARRATIVE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    considered: { type: "array", items: { type: "string" } },
+    decisions: { type: "array", items: { type: "string" } },
+    risk_narratives: { type: "array", items: { type: "string" } }
+  }
+} as const;
+
+interface NarrativeOutput {
+  considered?: unknown;
+  decisions?: unknown;
+  risk_narratives?: unknown;
+}
+
+async function runNarrativeStage(
+  provider: ReasoningProvider,
+  inputs: ReasoningInputs,
+  generateOptions: GenerateStructuredOptions
+): Promise<void> {
+  const prompt = narrativePrompt(inputs);
+  const result = await provider.generateStructured("methodology-risk-narrative", prompt, NARRATIVE_SCHEMA, generateOptions);
+  if (!result.ok || !isRecord(result.data)) {
+    return; // no-op
+  }
+  const data = result.data as NarrativeOutput;
+  const methodology = inputs.methodology;
+
+  const consideredAdditions = asStringArray(data.considered).map(markHypothesis);
+  const decisionsAdditions = asStringArray(data.decisions).map(markHypothesis);
+  methodology.considered = unique([...methodology.considered, ...consideredAdditions]).slice(0, 16);
+  methodology.decisions = unique([...methodology.decisions, ...decisionsAdditions]).slice(0, 16);
+
+  // Risk narratives are appended as labeled hypotheses (confidence unknown/low),
+  // never overriding deterministic risk findings.
+  const narratives = asStringArray(data.risk_narratives).slice(0, 3);
+  const existing = inputs.risks.items;
+  const appended = narratives.map((summary, index) => ({
+    id: `LLM-RISK-${String(index + 1).padStart(3, "0")}`,
+    category: "unknown" as const,
+    severity: "unknown" as const,
+    likelihood: "unknown" as const,
+    detectability: "unknown" as const,
+    summary: markHypothesis(summary),
+    impact: "Hypothesis only; not proof of behavior.",
+    evidence: [
+      // Key order mirrors the canonical EvidenceRef field order used by the
+      // load layer (render/load.ts normalizeEvidenceRef): kind, ..., note,
+      // confidence, validation_status, llm_proposed. Keeping this order means a
+      // directly-written risks.yaml (`all`, composed `risks`) is byte-identical
+      // to one round-tripped through the loader (composed `packet`), so
+      // compose==monolith holds for risks.yaml.
+      {
+        kind: "unknown" as const,
+        note: "LLM-proposed: risk narrative, not deterministic evidence.",
+        confidence: "low" as const,
+        validation_status: "unknown" as const,
+        llm_proposed: true
+      }
+    ],
+    suggested_checks: ["Validate this hypothesis against deterministic evidence before acting."],
+    manual_review: true
+  }));
+  inputs.risks.items = [...existing, ...appended];
+}
+
+function narrativePrompt(inputs: ReasoningInputs): string {
+  return `Return compact JSON only matching the provided schema. Provide considered options, decisions, and risk_narratives as hypotheses only. Do not invent file paths, tests, commands, or ACIDs, and do not claim any requirement status.
+
+Evaluation summary: ${inputs.evaluation.summary}
+Risk summary: ${inputs.risks.summary}
+Methodology summary: ${inputs.methodology.summary}
+`;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const HYPOTHESIS_PREFIX = "LLM-proposed:";
+
+function markHypothesis(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return trimmed;
+  }
+  return trimmed.startsWith(HYPOTHESIS_PREFIX) ? trimmed : `${HYPOTHESIS_PREFIX} ${trimmed}`;
+}
+
+function evidenceKey(ref: EvidenceRef): string {
+  return `${ref.kind}:${ref.path ?? ""}:${ref.line_start ?? ""}:${ref.line_end ?? ""}:${ref.acai_id ?? ""}:${isLlmProposed(ref) ? "llm" : "det"}`;
+}
+
+function numericField(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+// Normalize a cited path the same way the evidence validator does (strip
+// backslashes + leading "./") so candidate-pool membership is robust to the
+// model citing "./src/x.ts" vs "src/x.ts".
+function normalizeCandidatePath(filePath: string): string {
+  return filePath.replace(/\\/g, "/").replace(/^\.\/+/, "");
+}
+
+function appendOutOfPoolNote(note: string | undefined): string {
+  const suffix = "Invalid evidence: path is not in the candidate pool (changed files + tests) offered for this requirement.";
+  return note ? `${note} ${suffix}` : suffix;
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "") : [];
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

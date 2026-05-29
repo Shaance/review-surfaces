@@ -4,11 +4,14 @@ import { EvaluationModel } from "../evaluation/evaluate";
 import { FeedbackFile, FeedbackFinding } from "../feedback/feedback";
 import { MethodologyModel } from "../methodology/methodology";
 import { RisksModel } from "../risks/risks";
+import { PacketComparison } from "./compare";
 
 export interface DogfoodModel {
   milestone: string;
   command?: string;
   summary: string;
+  previous_packet_path?: string;
+  comparison?: PacketComparison;
   helped_agent?: "yes" | "partially" | "no" | "unknown";
   helped_reviewer?: "yes" | "partially" | "no" | "unknown";
   findings: Array<{
@@ -35,13 +38,19 @@ export interface DogfoodModel {
   deferrals?: string[];
 }
 
+export interface DogfoodComparisonInput {
+  previous_packet_path: string;
+  comparison?: PacketComparison;
+}
+
 export function buildDogfood(
   collection: CollectionResult,
   evaluation: EvaluationModel,
   risks: RisksModel,
   methodology: MethodologyModel,
   providerName: string,
-  commands: string[]
+  commands: string[],
+  comparisonInput?: DogfoodComparisonInput
 ): DogfoodModel {
   const unsatisfied = evaluation.results.filter((result) => result.status !== "satisfied").length;
   const feedbackFilesByRecency = sortFeedbackFilesByRecency(collection.feedback);
@@ -58,7 +67,9 @@ export function buildDogfood(
   return {
     milestone: collection.manifest.milestone ?? "MVP",
     command: commands.find((command) => command.includes("review-surfaces")) ?? "review-surfaces dogfood",
-    summary: `Dogfood generated a packet with ${evaluation.results.length} requirement result(s), ${risks.items.length} risk(s), ${feedbackFindings.length} feedback finding(s), provider=${providerName}, noisy_sections=${noisySections.join(",") || "none"}.`,
+    summary: `Dogfood generated a packet with ${evaluation.results.length} requirement result(s), ${risks.items.length} risk(s), ${feedbackFindings.length} feedback finding(s), provider=${providerName}, noisy_sections=${noisySections.join(",") || "none"}.${comparisonInput ? ` ${summarizeComparison(comparisonInput)}` : ""}`,
+    previous_packet_path: comparisonInput?.previous_packet_path,
+    comparison: comparisonInput?.comparison,
     helped_agent: unsatisfied < evaluation.results.length ? "partially" : "unknown",
     helped_reviewer: risks.review_focus.length > 0 ? "partially" : "unknown",
     findings: [
@@ -136,6 +147,19 @@ export function buildDogfood(
       providerName === "mock" ? "AI SDK enrichment was not used in the default offline dogfood run." : `Provider used: ${providerName}.`
     ]
   };
+}
+
+// Compact one-line comparison summary for dogfood.yaml / the dogfood summary.
+// When the previous packet was absent/unreadable the comparison is undefined
+// and we say so without failing.
+function summarizeComparison(input: DogfoodComparisonInput): string {
+  if (!input.comparison) {
+    return `Comparison vs ${input.previous_packet_path}: previous packet absent or unreadable; no comparison computed.`;
+  }
+  const comparison = input.comparison;
+  const improved = comparison.status_changes.filter((change) => change.direction === "improved").length;
+  const regressed = comparison.status_changes.filter((change) => change.direction === "regressed").length;
+  return `Comparison vs ${input.previous_packet_path}: ${improved} improved, ${regressed} regressed, ${comparison.new_risks.length} new risk(s), ${comparison.resolved_risks.length} resolved risk(s), ${comparison.new_overreach.length} new overreach, ${comparison.resolved_overreach.length} resolved overreach.`;
 }
 
 function selectFeedbackFindings(feedbackFiles: FeedbackFile[], limit: number): FeedbackFinding[] {

@@ -1,0 +1,75 @@
+import { CollectionResult } from "../collector/collect";
+import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
+import { ProviderName } from "../llm/provider";
+import { ExitCodes } from "./exit-codes";
+
+export interface GateOptions {
+  // Maximum number of "missing" requirement results tolerated before the
+  // quality gate trips. Defaults to 0 (any missing requirement fails).
+  maxMissing: number;
+}
+
+export interface GateDecision {
+  code: number;
+  reason: string;
+}
+
+// Pure, unit-testable quality/privacy/evidence gate. Returns the FIRST
+// applicable exit code in priority order:
+//   privacyBlocked (5) -> evidenceValidationFailed (4) -> qualityGateFailed (10)
+// and ExitCodes.success (0) when nothing trips. This function never reads the
+// filesystem or process state, so it is identical inside `all` and in tests.
+//
+// Callers decide whether to ACT on the code: without --strict the pipeline
+// keeps its default "fail gently" behavior (warn, exit 0); with --strict the
+// returned code becomes the process exit code.
+export function gateDecision(
+  evaluation: EvaluationModel,
+  collection: CollectionResult,
+  provider: ProviderName,
+  options: GateOptions
+): GateDecision {
+  // 5: a non-mock provider was requested but privacy blocked remote enrichment.
+  if (provider !== "mock" && collection.privacy.remote_provider_blocked) {
+    return {
+      code: ExitCodes.privacyBlocked,
+      reason: `Privacy block: provider "${provider}" requires remote enrichment, but the redacted diff is flagged remote_provider_blocked.`
+    };
+  }
+
+  // 4: any result OR overreach finding failed deterministic evidence validation.
+  const invalidEvidenceCount = [...evaluation.results, ...evaluation.overreach].filter(
+    (result) => result.status === "invalid_evidence"
+  ).length;
+  if (invalidEvidenceCount > 0) {
+    return {
+      code: ExitCodes.evidenceValidationFailed,
+      reason: `Evidence validation failed: ${invalidEvidenceCount} requirement result(s) have status "invalid_evidence".`
+    };
+  }
+
+  // 10: more "missing" requirement results than the configured tolerance.
+  const missingCount = countMissing(evaluation.results);
+  if (missingCount > options.maxMissing) {
+    return {
+      code: ExitCodes.qualityGateFailed,
+      reason: `Quality gate failed: ${missingCount} missing requirement(s) exceed the allowed maximum of ${options.maxMissing}.`
+    };
+  }
+
+  return { code: ExitCodes.success, reason: "All gates passed." };
+}
+
+// Convenience wrapper returning only the numeric exit code.
+export function gateExitCode(
+  evaluation: EvaluationModel,
+  collection: CollectionResult,
+  provider: ProviderName,
+  options: GateOptions
+): number {
+  return gateDecision(evaluation, collection, provider, options).code;
+}
+
+function countMissing(results: RequirementResult[]): number {
+  return results.filter((result) => result.status === "missing").length;
+}

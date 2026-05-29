@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { buildArchitecture, validateMermaidDiagramArtifact } from "../src/diagrams/diagrams";
 import { CollectionResult } from "../src/collector/collect";
+import { buildRepoIndex } from "../src/indexer/indexer";
 import { EvaluationModel } from "../src/evaluation/evaluate";
 
 test("review-surfaces.ARCH.6 validates generated Mermaid artifacts", async () => {
@@ -63,6 +64,7 @@ test("review-surfaces.ARCH.6 accepts single-letter Mermaid sequence participants
 });
 
 function collectionFixture(cwd: string, outputDir: string): CollectionResult {
+  const changedFiles = [{ path: "src/diagrams/diagrams.ts", status: "M", source: "working_tree" as const }];
   return {
     cwd,
     outputDir,
@@ -78,13 +80,15 @@ function collectionFixture(cwd: string, outputDir: string): CollectionResult {
       input_hashes: []
     },
     specIndex: { schema_version: "review-surfaces.specs.index.v1", specs: [] },
-    changedFiles: [{ path: "src/diagrams/diagrams.ts", status: "M", source: "working_tree" }],
+    changedFiles,
     docs: [],
     tests: [{ path: "tests/diagrams.test.ts", kind: "test" }],
     feedback: [],
     commandTranscripts: [],
     commandTranscriptOutputPath: ".review-surfaces/inputs/commands.json",
+    testResults: { suites: [], cases: [], totals: { suites: 0, cases: 0, passed: 0, failed: 0, skipped: 0 }, source_paths: [] },
     repositoryFiles: [],
+    repoIndex: buildRepoIndex({ cwd, changedFiles, repositoryFiles: [] }),
     privacy: {
       ignore_file: ".review-surfacesignore",
       ignore_patterns: [],

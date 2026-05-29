@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="vitest" tests="3" failures="1" time="0.512">
+  <testsuite name="outer" tests="1" failures="0" time="0.120">
+    <testsuite name="middle" tests="1" failures="1" time="0.090">
+      <testsuite name="inner" tests="1" failures="1" time="0.050">
+        <testcase name="example.EVAL.1 nested failing test" classname="tests/eval.test.ts" time="0.040">
+          <failure message="expected satisfied but got missing" type="AssertionError">at tests/eval.test.ts:7 SECRET_TOKEN=abc123456 expected true</failure>
+        </testcase>
+      </testsuite>
+      <testcase name="middle direct passing test" classname="tests/eval.test.ts" time="0.030"/>
+    </testsuite>
+    <testcase name="outer direct passing test" classname="tests/eval.test.ts" time="0.020"/>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,312 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileExists } from "../core/files";
+import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
+import { RisksModel } from "../risks/risks";
+import { countRequirementStatuses, RequirementStatusCount } from "../evaluation/status";
+
+// ---------------------------------------------------------------------------
+// Phase 5b: previous-packet comparison (CLI.6; TRD 10.9 & 15.4).
+//
+// Computes a fully DETERMINISTIC diff between a previously-written
+// review_packet.json and the current packet's evaluation/risks. No timestamps,
+// no environment, no ordering surprises: every list is sorted by a stable key
+// so the same pair of packets always yields byte-identical output.
+// ---------------------------------------------------------------------------
+
+// Status ordering used to classify a requirement-status transition as
+// improved / regressed / unchanged. "overreach" is handled separately (it is
+// not a coverage status) and is treated as its own bucket so a status that
+// flips into or out of overreach is reported as a change without forcing a
+// nonsensical numeric direction.
+const STATUS_ORDER: Record<string, number> = {
+  missing: 0,
+  unknown: 1,
+  invalid_evidence: 2,
+  partial: 3,
+  satisfied: 4
+};
+
+export type ComparisonDirection = "improved" | "regressed" | "unchanged";
+
+export interface StatusChange {
+  acai_id: string;
+  previous_status: string;
+  current_status: string;
+  direction: ComparisonDirection;
+}
+
+export interface CountDeltas {
+  satisfied: CountDelta;
+  partial: CountDelta;
+  missing: CountDelta;
+  unknown: CountDelta;
+  invalid_evidence: CountDelta;
+}
+
+export interface CountDelta {
+  before: number;
+  after: number;
+  delta: number;
+}
+
+export interface PacketComparison {
+  status_changes: StatusChange[];
+  new_overreach: string[];
+  resolved_overreach: string[];
+  new_risks: string[];
+  resolved_risks: string[];
+  count_deltas: CountDeltas;
+}
+
+// Minimal shape of a loaded previous review_packet.json. Only the slices the
+// comparison consumes are typed; everything else is ignored so a packet written
+// by an older tool version still loads.
+export interface PreviousPacket {
+  evaluation: EvaluationModel;
+  risks: Pick<RisksModel, "items">;
+}
+
+export interface CurrentPacketModels {
+  evaluation: EvaluationModel;
+  risks: Pick<RisksModel, "items">;
+}
+
+/**
+ * Resolve a --previous-packet value to a concrete review_packet.json path.
+ * A directory resolves to <dir>/review_packet.json; a file path is used as-is.
+ */
+export function resolvePreviousPacketPath(cwd: string, value: string): string {
+  const resolved = path.resolve(cwd, value);
+  if (resolved.endsWith(".json")) {
+    return resolved;
+  }
+  return path.join(resolved, "review_packet.json");
+}
+
+/**
+ * Load a previous packet for comparison. Returns null (NOT throwing) when the
+ * file is absent or unreadable so an absent/unreadable --previous-packet is a
+ * clean no-op and never fatal.
+ */
+export function loadPreviousPacket(packetPath: string): PreviousPacket | null {
+  if (!fileExists(packetPath)) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(packetPath, "utf8"));
+  } catch {
+    return null;
+  }
+  // A top-level non-object (primitive) OR a JSON array must be treated the same
+  // as malformed JSON: a clean no-op returning null. An array satisfies
+  // `typeof === "object"` and is non-null, so without the Array.isArray guard
+  // it would slip past, get coerced to an empty previous packet, and fabricate
+  // a misleading "everything improved" comparison against a phantom baseline.
+  if (!isRecord(parsed)) {
+    return null;
+  }
+  const record = parsed;
+  const evaluation = normalizeEvaluation(record.evaluation);
+  const risks = normalizeRisks(record.risks);
+  return { evaluation, risks };
+}
+
+/**
+ * Compute the deterministic comparison between a previous packet and the
+ * current packet's models. Pure: no IO, no clock, fully sorted output.
+ */
+export function comparePackets(previous: PreviousPacket, current: CurrentPacketModels): PacketComparison {
+  return {
+    status_changes: computeStatusChanges(previous.evaluation, current.evaluation),
+    ...computeOverreachChanges(previous.evaluation, current.evaluation),
+    ...computeRiskChanges(previous.risks, current.risks),
+    count_deltas: computeCountDeltas(previous.evaluation, current.evaluation)
+  };
+}
+
+function computeStatusChanges(previous: EvaluationModel, current: EvaluationModel): StatusChange[] {
+  const previousByKey = statusByRequirementKey(previous.results);
+  const currentByKey = statusByRequirementKey(current.results);
+  const keys = new Set<string>([...previousByKey.keys(), ...currentByKey.keys()]);
+
+  const changes: StatusChange[] = [];
+  for (const key of keys) {
+    const previousStatus = previousByKey.get(key) ?? "missing";
+    const currentStatus = currentByKey.get(key) ?? "missing";
+    if (previousStatus === currentStatus) {
+      continue;
+    }
+    changes.push({
+      acai_id: key,
+      previous_status: previousStatus,
+      current_status: currentStatus,
+      direction: directionFor(previousStatus, currentStatus)
+    });
+  }
+
+  return changes.sort((left, right) => left.acai_id.localeCompare(right.acai_id));
+}
+
+// Key a result by its acai_id when present, else by requirement_id, so the same
+// requirement matches across packets even when only one identifier is set.
+function statusByRequirementKey(results: RequirementResult[]): Map<string, string> {
+  const byKey = new Map<string, string>();
+  for (const result of results) {
+    const key = result.acai_id || result.requirement_id;
+    if (!key) {
+      continue;
+    }
+    // First write wins for stable, deterministic output when duplicates exist.
+    if (!byKey.has(key)) {
+      byKey.set(key, result.status);
+    }
+  }
+  return byKey;
+}
+
+function directionFor(previousStatus: string, currentStatus: string): ComparisonDirection {
+  const previousRank = STATUS_ORDER[previousStatus];
+  const currentRank = STATUS_ORDER[currentStatus];
+  // Either side is overreach (or an unrecognized status): not a coverage
+  // ranking, so we cannot say improved/regressed. Treat any change to/from
+  // overreach as "regressed" when entering overreach and "improved" when
+  // leaving it, otherwise "unchanged".
+  if (previousRank === undefined || currentRank === undefined) {
+    if (currentStatus === "overreach" && previousStatus !== "overreach") {
+      return "regressed";
+    }
+    if (previousStatus === "overreach" && currentStatus !== "overreach") {
+      return "improved";
+    }
+    return "unchanged";
+  }
+  if (currentRank > previousRank) {
+    return "improved";
+  }
+  if (currentRank < previousRank) {
+    return "regressed";
+  }
+  return "unchanged";
+}
+
+function computeOverreachChanges(
+  previous: EvaluationModel,
+  current: EvaluationModel
+): Pick<PacketComparison, "new_overreach" | "resolved_overreach"> {
+  const previousPaths = overreachPaths(previous);
+  const currentPaths = overreachPaths(current);
+  const newOverreach = [...currentPaths].filter((filePath) => !previousPaths.has(filePath)).sort((a, b) => a.localeCompare(b));
+  const resolvedOverreach = [...previousPaths].filter((filePath) => !currentPaths.has(filePath)).sort((a, b) => a.localeCompare(b));
+  return { new_overreach: newOverreach, resolved_overreach: resolvedOverreach };
+}
+
+// Overreach is keyed by the changed-file path(s) it covers; collect every file
+// path referenced by the overreach results' evidence so a packet whose
+// OVERREACH-NNN ids shift still diffs by stable file identity.
+function overreachPaths(evaluation: EvaluationModel): Set<string> {
+  const paths = new Set<string>();
+  for (const result of evaluation.overreach ?? []) {
+    for (const ref of result.evidence ?? []) {
+      if (ref.path) {
+        paths.add(ref.path);
+      }
+    }
+  }
+  return paths;
+}
+
+function computeRiskChanges(
+  previous: Pick<RisksModel, "items">,
+  current: Pick<RisksModel, "items">
+): Pick<PacketComparison, "new_risks" | "resolved_risks"> {
+  const previousRisks = riskKeys(previous.items ?? []);
+  const currentRisks = riskKeys(current.items ?? []);
+  const newRisks = [...currentRisks].filter((key) => !previousRisks.has(key)).sort((a, b) => a.localeCompare(b));
+  const resolvedRisks = [...previousRisks].filter((key) => !currentRisks.has(key)).sort((a, b) => a.localeCompare(b));
+  return { new_risks: newRisks, resolved_risks: resolvedRisks };
+}
+
+// Risks are keyed by id + summary so a re-numbered RISK-NNN with the same
+// summary is not double-counted as both new and resolved.
+function riskKeys(items: Array<{ id?: string; summary?: string }>): Set<string> {
+  const keys = new Set<string>();
+  for (const item of items) {
+    const id = item.id ?? "";
+    const summary = item.summary ?? "";
+    keys.add(`${id}: ${summary}`);
+  }
+  return keys;
+}
+
+function computeCountDeltas(previous: EvaluationModel, current: EvaluationModel): CountDeltas {
+  const before = countRequirementStatuses(previous.results);
+  const after = countRequirementStatuses(current.results);
+  return {
+    satisfied: deltaFor(before, after, "satisfied"),
+    partial: deltaFor(before, after, "partial"),
+    missing: deltaFor(before, after, "missing"),
+    unknown: deltaFor(before, after, "unknown"),
+    invalid_evidence: deltaFor(before, after, "invalid_evidence")
+  };
+}
+
+function deltaFor(
+  before: RequirementStatusCount,
+  after: RequirementStatusCount,
+  key: keyof RequirementStatusCount
+): CountDelta {
+  return { before: before[key], after: after[key], delta: after[key] - before[key] };
+}
+
+// ---------------------------------------------------------------------------
+// Tolerant normalizers for a previously-written packet on disk.
+// ---------------------------------------------------------------------------
+
+function normalizeEvaluation(value: unknown): EvaluationModel {
+  const record = isRecord(value) ? value : {};
+  return {
+    summary: typeof record.summary === "string" ? record.summary : "",
+    results: asArray(record.results).map(normalizeResult),
+    overreach: asArray(record.overreach).map(normalizeResult),
+    acai_coverage: {}
+  };
+}
+
+function normalizeResult(value: unknown): RequirementResult {
+  const record = isRecord(value) ? value : {};
+  return {
+    requirement_id: typeof record.requirement_id === "string" ? record.requirement_id : "",
+    acai_id: typeof record.acai_id === "string" ? record.acai_id : undefined,
+    status: (typeof record.status === "string" ? record.status : "unknown") as RequirementResult["status"],
+    summary: typeof record.summary === "string" ? record.summary : "",
+    evidence: asArray(record.evidence)
+      .map((ref) => (isRecord(ref) && typeof ref.path === "string" ? { kind: "file" as const, path: ref.path, confidence: "unknown" as const } : null))
+      .filter((ref): ref is { kind: "file"; path: string; confidence: "unknown" } => ref !== null),
+    missing_evidence: [],
+    review_focus: "",
+    confidence: "unknown"
+  };
+}
+
+function normalizeRisks(value: unknown): Pick<RisksModel, "items"> {
+  const record = isRecord(value) ? value : {};
+  const items = asArray(record.items)
+    .filter(isRecord)
+    .map((item) => ({
+      id: typeof item.id === "string" ? item.id : "",
+      category: "unknown" as const,
+      severity: "unknown" as const,
+      summary: typeof item.summary === "string" ? item.summary : ""
+    }));
+  return { items };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}

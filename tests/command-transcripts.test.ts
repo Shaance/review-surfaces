@@ -8,6 +8,7 @@ import { indexCommandTranscripts } from "../src/commands/transcripts";
 import { EvaluationModel } from "../src/evaluation/evaluate";
 import { groupsForReviewPath } from "../src/review-areas/areas";
 import { analyzeRisks } from "../src/risks/risks";
+import { defaultReviewSurfacesAreas } from "./helpers/review-areas";
 
 test("review-surfaces.COLLECTOR.7 indexes bounded local command transcripts without preserving raw output", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-commands-"));
@@ -233,13 +234,15 @@ test("review-surfaces.METHODOLOGY.5 feeds unverified methodology claims into ris
   assert.ok(risks.review_focus.some((focus) => focus.includes("methodology claims without command evidence")));
 });
 
-test("source contract edits map to the bootstrap Acai review area", () => {
-  assert.ok(groupsForReviewPath("features/review-surfaces.feature.yaml").includes("BOOTSTRAP"));
-  assert.ok(groupsForReviewPath("docs/review-surfaces-trd.md").includes("BOOTSTRAP"));
-  assert.ok(groupsForReviewPath("types/node-ambient.d.ts").includes("BOOTSTRAP"));
+test("source contract edits map to the bootstrap Acai review area", async () => {
+  const areas = await defaultReviewSurfacesAreas();
+  assert.ok(groupsForReviewPath("features/review-surfaces.feature.yaml", areas).includes("BOOTSTRAP"));
+  assert.ok(groupsForReviewPath("docs/review-surfaces-trd.md", areas).includes("BOOTSTRAP"));
+  assert.ok(groupsForReviewPath("types/node-ambient.d.ts", areas).includes("BOOTSTRAP"));
 });
 
-test("review-surfaces.BOOTSTRAP.6 and review-surfaces.DOGFOOD.8 skill files map to review areas", () => {
-  assert.ok(groupsForReviewPath(".agents/skills/review-surfaces-usage/SKILL.md").includes("BOOTSTRAP"));
-  assert.ok(groupsForReviewPath(".agents/skills/review-surfaces-dogfood-loop/SKILL.md").includes("DOGFOOD"));
+test("review-surfaces.BOOTSTRAP.6 and review-surfaces.DOGFOOD.8 skill files map to review areas", async () => {
+  const areas = await defaultReviewSurfacesAreas();
+  assert.ok(groupsForReviewPath(".agents/skills/review-surfaces-usage/SKILL.md", areas).includes("BOOTSTRAP"));
+  assert.ok(groupsForReviewPath(".agents/skills/review-surfaces-dogfood-loop/SKILL.md", areas).includes("DOGFOOD"));
 });

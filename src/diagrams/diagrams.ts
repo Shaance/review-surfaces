@@ -3,7 +3,7 @@ import { CollectionResult } from "../collector/collect";
 import { writeText } from "../core/files";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
 import { EvaluationModel } from "../evaluation/evaluate";
-import { matchesReviewPrefix, REVIEW_AREAS, ReviewArea } from "../review-areas/areas";
+import { buildReviewAreas, matchesReviewPrefix, ReviewArea } from "../review-areas/areas";
 
 export interface ArchitectureModel {
   summary: string;
@@ -44,11 +44,20 @@ interface DiagramArtifact {
   evidencePath?: string;
 }
 
-export async function buildArchitecture(collection: CollectionResult, evaluation: EvaluationModel): Promise<ArchitectureModel> {
+export interface ArchitectureOptions {
+  areas?: ReviewArea[];
+}
+
+export async function buildArchitecture(
+  collection: CollectionResult,
+  evaluation: EvaluationModel,
+  options: ArchitectureOptions = {}
+): Promise<ArchitectureModel> {
+  const areas = options.areas ?? buildReviewAreas({ repoIndex: collection.repoIndex }).areas;
   const outputDir = collection.outputDir;
   const diagramArtifacts = [
     { path: "diagrams/pipeline.mmd", body: pipelineDiagram() },
-    { path: "diagrams/source-layout.mmd", body: sourceLayoutDiagram(collection) },
+    { path: "diagrams/source-layout.mmd", body: sourceLayoutDiagram(collection, areas) },
     { path: "diagrams/dogfood-flow.mmd", body: dogfoodFlowDiagram() }
   ];
   for (const diagram of diagramArtifacts) {
@@ -61,7 +70,7 @@ export async function buildArchitecture(collection: CollectionResult, evaluation
       evidencePath: diagramEvidencePath(collection, diagram.path)
     })
   );
-  const subsystems = REVIEW_AREAS.map((subsystem) => subsystemCard(subsystem, collection, evaluation)).filter((card) => card.files.length > 0);
+  const subsystems = areas.map((subsystem) => subsystemCard(subsystem, collection, evaluation)).filter((card) => card.files.length > 0);
   const invalidDiagrams = diagramValidation.filter((result) => result.status === "invalid");
   const validDiagrams = diagramValidation.length - invalidDiagrams.length;
 
@@ -204,17 +213,33 @@ function pipelineDiagram(): string {
 `;
 }
 
-function sourceLayoutDiagram(collection: CollectionResult): string {
+function sourceLayoutDiagram(collection: CollectionResult, areas: ReviewArea[]): string {
   const changed = new Set(collection.changedFiles.map((file) => file.path));
-  const lines = ["flowchart TB", "  ROOT[\"review-surfaces\"]"];
-  for (const subsystem of REVIEW_AREAS) {
+  const lines = ["flowchart TB", `  ROOT["${diagramLabel(collection.git?.repo ?? "repository")}"]`];
+  areas.forEach((subsystem, position) => {
     const count = collection.changedFiles.filter((file) => matchesReviewPrefix(file.path, subsystem.prefixes)).length;
-    lines.push(`  ROOT --> ${subsystem.id.replace(/-/g, "_")}[\"${subsystem.name} (${count} changed)\"]`);
-  }
+    lines.push(`  ROOT --> ${nodeId(subsystem.id, position)}["${diagramLabel(subsystem.name)} (${count} changed)"]`);
+  });
   if (changed.size === 0) {
     lines.push("  ROOT --> CLEAN[\"No changed files detected\"]");
   }
+  if (areas.length === 0) {
+    lines.push("  ROOT --> NOAREAS[\"No review areas configured or derived\"]");
+  }
   return `${lines.join("\n")}\n`;
+}
+
+// Mermaid node ids must be identifier-safe. Config area ids like "SUB-CLI" are
+// already safe once dashes are replaced; fallback cluster ids like
+// "cluster:src/api" contain ":" and "/", so fall back to a positional id.
+function nodeId(id: string, position: number): string {
+  const sanitized = id.replace(/-/g, "_");
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(sanitized) ? sanitized : `AREA_${position}`;
+}
+
+// Keep diagram labels free of characters that would unbalance Mermaid syntax.
+function diagramLabel(text: string): string {
+  return text.replace(/["[\]{}()]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function dogfoodFlowDiagram(): string {

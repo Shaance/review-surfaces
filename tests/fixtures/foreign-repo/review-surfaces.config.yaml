@@ -1,0 +1,11 @@
+schema_version: review-surfaces.config.v1
+output_dir: .review-surfaces
+specs:
+  - features/**/*.feature.yaml
+docs:
+  - README.md
+tests:
+  - test/**/*.test.js
+llm:
+  provider: mock
+  model: null

@@ -8,6 +8,7 @@ import { collectInputs } from "../src/collector/collect";
 import { defaultConfig } from "../src/config/config";
 import { buildIntent } from "../src/intent/intent";
 import { evaluateIntent } from "../src/evaluation/evaluate";
+import { defaultReviewSurfacesAreas } from "./helpers/review-areas";
 
 test("evaluator emits satisfied, partial, and missing statuses conservatively", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-eval-"));
@@ -50,7 +51,7 @@ components:
   ];
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.INTENT.1"], "satisfied");
   assert.equal(evaluation.acai_coverage["example.RISK.1"], "partial");
@@ -87,7 +88,7 @@ components:
   collection.changedFiles = [{ path: ".review-surfaces/agent_handoff.md", status: "M", source: "working_tree" }];
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.INTENT.1"], "missing");
   assert.equal(evaluation.acai_coverage["example.DOGFOOD.1"], "partial");
@@ -122,7 +123,7 @@ components:
   collection.changedFiles = [{ path: "src/evaluation/evaluate.ts", status: "A", source: "working_tree" }];
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.EVAL.1"], "partial");
 });
@@ -156,7 +157,7 @@ components:
   collection.changedFiles = [{ path: "src/evaluation/evaluate.ts", status: "A", source: "working_tree" }];
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.EVAL.1"], "partial");
   assert.match(evaluation.results[0].missing_evidence[0].note ?? "", /No exact test ACID evidence/);
@@ -191,7 +192,7 @@ components:
   collection.changedFiles = [{ path: "src/evaluation/evaluate.ts", status: "A", source: "working_tree" }];
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.EVAL.1"], "satisfied");
 });
@@ -225,7 +226,7 @@ components:
   collection.changedFiles = [{ path: "docs/evaluation.md", status: "A", source: "working_tree" }];
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.EVAL.1"], "partial");
   assert.match(evaluation.results[0].missing_evidence[0].note ?? "", /No implementation evidence/);
@@ -257,7 +258,7 @@ constraints:
   });
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.QUALITY.1"], "satisfied");
 });
@@ -295,7 +296,7 @@ constraints:
   collection.changedFiles = [{ path: "src/llm/provider.ts", status: "A", source: "working_tree" }];
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.PROVIDERS.1"], "unknown");
   assert.equal(evaluation.overreach.length, 0);
@@ -343,7 +344,7 @@ constraints:
     assumptions: [],
     open_questions: [],
     sources: []
-  });
+  }, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.EVIDENCE.4"], "invalid_evidence");
   assert.equal(evaluation.results[0].evidence[0].validation_status, "invalid");

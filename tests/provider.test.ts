@@ -3,7 +3,16 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { enrichPacket } from "../src/llm/provider";
+import {
+  aiSdkProvider,
+  agentFileProvider,
+  enrichPacket,
+  mockProvider,
+  providerFor,
+  ReasoningProvider,
+  resolveModel,
+  StructuredResult
+} from "../src/llm/provider";
 
 function packet(): any {
   return {
@@ -14,24 +23,116 @@ function packet(): any {
   };
 }
 
-async function withGoogleApiKey(value: string | undefined, callback: () => Promise<void>): Promise<void> {
-  const oldKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-  if (value === undefined) {
-    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-  } else {
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY = value;
-  }
+const SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: { review_focus: { type: "array", items: { type: "string" } } }
+};
 
+async function withEnv(key: string, value: string | undefined, callback: () => Promise<void>): Promise<void> {
+  const old = process.env[key];
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
   try {
     await callback();
   } finally {
-    if (oldKey === undefined) {
-      delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+    if (old === undefined) {
+      delete process.env[key];
     } else {
-      process.env.GOOGLE_GENERATIVE_AI_API_KEY = oldKey;
+      process.env[key] = old;
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Provider abstraction
+// ---------------------------------------------------------------------------
+
+test("mock provider is deterministic and contributes nothing by default", async () => {
+  const a = await mockProvider.generateStructured("enrichment", "prompt", SCHEMA);
+  const b = await mockProvider.generateStructured("reasoning", "another prompt", SCHEMA);
+  assert.deepEqual(a, { ok: false, reason: "mock_no_enrichment" });
+  assert.deepEqual(b, { ok: false, reason: "mock_no_enrichment" });
+});
+
+test("providerFor returns the deterministic mock by default", () => {
+  assert.equal(providerFor("mock").name, "mock");
+  assert.equal(providerFor("ai-sdk").name, "ai-sdk");
+  assert.equal(providerFor("agent-file").name, "agent-file");
+});
+
+test("resolveModel defaults to anthropic and preserves provider prefixes", () => {
+  assert.equal(resolveModel(undefined).provider, "anthropic");
+  assert.deepEqual(resolveModel("claude-x"), { provider: "anthropic", modelId: "claude-x" });
+  assert.deepEqual(resolveModel("google:gemini-2.5-flash"), { provider: "google", modelId: "gemini-2.5-flash" });
+  assert.deepEqual(resolveModel("openai:gpt-4o-mini"), { provider: "openai", modelId: "gpt-4o-mini" });
+  assert.deepEqual(resolveModel("anthropic:claude-3-5-haiku-latest"), {
+    provider: "anthropic",
+    modelId: "claude-3-5-haiku-latest"
+  });
+});
+
+test("ai-sdk provider honors remotePrivacyBlocked without a network call", async () => {
+  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
+    const provider = aiSdkProvider({ remotePrivacyBlocked: true });
+    const result = await provider.generateStructured("enrichment", "prompt", SCHEMA);
+    assert.deepEqual(result, { ok: false, reason: "privacy_block" });
+  });
+});
+
+test("ai-sdk provider skips cleanly when the selected provider key is missing", async () => {
+  await withEnv("ANTHROPIC_API_KEY", undefined, async () => {
+    const provider = aiSdkProvider({});
+    const result = await provider.generateStructured("enrichment", "prompt", SCHEMA);
+    assert.deepEqual(result, { ok: false, reason: "missing_anthropic_api_key" });
+  });
+});
+
+test("ai-sdk provider resolves the right key per provider prefix", async () => {
+  await withEnv("ANTHROPIC_API_KEY", undefined, async () => {
+    await withEnv("OPENAI_API_KEY", undefined, async () => {
+      const result = await aiSdkProvider({ model: "openai:gpt-4o-mini" }).generateStructured("s", "p", SCHEMA);
+      assert.deepEqual(result, { ok: false, reason: "missing_openai_api_key" });
+    });
+    await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", undefined, async () => {
+      const result = await aiSdkProvider({ model: "google:gemini-2.5-flash" }).generateStructured("s", "p", SCHEMA);
+      assert.deepEqual(result, { ok: false, reason: "missing_google_api_key" });
+    });
+  });
+});
+
+test("ai-sdk provider blocks on secret material in the prompt before any call", async () => {
+  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
+    const pemLabel = "PRIVATE KEY";
+    const prompt = `-----BEGIN ${pemLabel}-----\nabc\n-----END ${pemLabel}-----`;
+    const result = await aiSdkProvider({}).generateStructured("enrichment", prompt, SCHEMA);
+    assert.deepEqual(result, { ok: false, reason: "privacy_block" });
+  });
+});
+
+test("agent-file provider returns structured data from a local file", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-agentfile-"));
+  fs.writeFileSync(path.join(tmp, "agent.json"), JSON.stringify({ review_focus: ["Check evaluator"] }));
+  const provider = agentFileProvider({ cwd: tmp, agentInput: "agent.json" });
+  const result = await provider.generateStructured("enrichment", "prompt", SCHEMA);
+  assert.equal(result.ok, true);
+  assert.deepEqual((result as { ok: true; data: any }).data, { review_focus: ["Check evaluator"] });
+});
+
+test("agent-file provider skips when input is missing", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-agentfile-"));
+  const noInput = await agentFileProvider({ cwd: tmp }).generateStructured("s", "p", SCHEMA);
+  assert.deepEqual(noInput, { ok: false, reason: "missing_agent_input" });
+  const notFound = await agentFileProvider({ cwd: tmp, agentInput: "nope.json" }).generateStructured("s", "p", SCHEMA);
+  assert.deepEqual(notFound, { ok: false, reason: "agent_input_not_found" });
+});
+
+// ---------------------------------------------------------------------------
+// enrichPacket wiring + injection seam
+// ---------------------------------------------------------------------------
 
 test("mock provider writes prompts without enrichment", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-"));
@@ -43,16 +144,16 @@ test("mock provider writes prompts without enrichment", async () => {
 
 test("ai-sdk provider skips without credentials", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-"));
-  await withGoogleApiKey(undefined, async () => {
+  await withEnv("ANTHROPIC_API_KEY", undefined, async () => {
     const result = await enrichPacket(packet(), { cwd: tmp, outputDir: path.join(tmp, ".review-surfaces"), provider: "ai-sdk" });
     assert.equal(result.status, "skipped");
-    assert.equal(result.skipped_reason, "missing_google_api_key");
+    assert.equal(result.skipped_reason, "missing_anthropic_api_key");
   });
 });
 
 test("review-surfaces.PRIVACY.2 blocks ai-sdk enrichment when prompt contains private key material", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-privacy-"));
-  await withGoogleApiKey("test-key", async () => {
+  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
     const target = packet();
     const pemLabel = "PRIVATE KEY";
     target.intent.summary = `-----BEGIN ${pemLabel}-----\nabc\n-----END ${pemLabel}-----`;
@@ -64,7 +165,7 @@ test("review-surfaces.PRIVACY.2 blocks ai-sdk enrichment when prompt contains pr
 
 test("review-surfaces.PRIVACY.2 blocks ai-sdk enrichment when collected inputs were privacy-blocked", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-input-privacy-"));
-  await withGoogleApiKey("test-key", async () => {
+  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
     const result = await enrichPacket(packet(), {
       cwd: tmp,
       outputDir: path.join(tmp, ".review-surfaces"),
@@ -94,4 +195,46 @@ test("agent-file provider applies bounded structured enrichment", async () => {
   assert.deepEqual(target.risks.review_focus, ["Check evaluator"]);
   assert.deepEqual(target.intent.assumptions, ["Agent hypothesis only"]);
   assert.equal(target.risks.items.length, 1);
+});
+
+test("enrichPacket accepts an injected provider factory (test seam) with no network", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-seam-"));
+  let receivedSchema: object | undefined;
+  const fakeProvider: ReasoningProvider = {
+    name: "ai-sdk",
+    async generateStructured(_stage, _prompt, schema): Promise<StructuredResult> {
+      receivedSchema = schema;
+      return { ok: true, data: { review_focus: ["Injected focus"] } };
+    }
+  };
+  const target = packet();
+  const result = await enrichPacket(target, {
+    cwd: tmp,
+    outputDir: path.join(tmp, ".review-surfaces"),
+    provider: "ai-sdk",
+    providerFactory: () => fakeProvider
+  });
+
+  assert.equal(result.status, "applied");
+  assert.deepEqual(target.risks.review_focus, ["Injected focus"]);
+  assert.ok(receivedSchema && typeof receivedSchema === "object", "schema is passed to the provider");
+});
+
+test("enrichPacket surfaces an injected non-ok ai-sdk result as a failure", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-seam-"));
+  const fakeProvider: ReasoningProvider = {
+    name: "ai-sdk",
+    async generateStructured(): Promise<StructuredResult> {
+      return { ok: false, reason: "ai_sdk_error: boom" };
+    }
+  };
+  const result = await enrichPacket(packet(), {
+    cwd: tmp,
+    outputDir: path.join(tmp, ".review-surfaces"),
+    provider: "ai-sdk",
+    providerFactory: () => fakeProvider
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.skipped_reason, "ai_sdk_error: boom");
 });

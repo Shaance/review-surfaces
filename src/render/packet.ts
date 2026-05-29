@@ -34,6 +34,7 @@ export interface ReviewPacket {
     open_risks?: string[];
     deferrals?: string[];
     artifact_paths?: string[];
+    changes_since_last_packet?: string[];
   };
 }
 
@@ -72,6 +73,40 @@ export async function writeReviewPacket(inputs: PacketInputs): Promise<ReviewPac
 
 export async function rewriteReviewPacket(outputDir: string, packet: ReviewPacket): Promise<void> {
   await writeArtifacts(outputDir, packet);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4a: per-stage artifact writers. Each composable subcommand writes ONLY
+// its own artifact(s) using the exact same serialization writeArtifacts uses,
+// so a stage run in isolation produces a byte-identical file to the same stage
+// inside `all`.
+// ---------------------------------------------------------------------------
+
+export async function writeIntentArtifact(outputDir: string, intent: IntentModel): Promise<void> {
+  await writeText(path.join(outputDir, "intent.yaml"), stringifyYaml(intent));
+}
+
+export async function writeEvaluationArtifact(outputDir: string, evaluation: EvaluationModel): Promise<void> {
+  await writeText(path.join(outputDir, "evaluation.yaml"), stringifyYaml(evaluation));
+}
+
+export async function writeMethodologyArtifact(outputDir: string, methodology: MethodologyModel): Promise<void> {
+  await writeText(path.join(outputDir, "methodology.yaml"), stringifyYaml(methodology));
+}
+
+export async function writeRisksArtifact(outputDir: string, risks: RisksModel): Promise<void> {
+  await writeText(path.join(outputDir, "risks.yaml"), stringifyYaml(risks));
+}
+
+export async function writeArchitectureArtifact(outputDir: string, architecture: ArchitectureModel): Promise<void> {
+  await writeText(path.join(outputDir, "architecture.md"), renderArchitectureMarkdown(architecture));
+}
+
+export async function writeHandoffArtifact(outputDir: string, inputs: PacketInputs): Promise<void> {
+  const handoff = buildHandoff(inputs);
+  if (handoff) {
+    await writeText(path.join(outputDir, "agent_handoff.md"), renderHandoffMarkdown(handoff));
+  }
 }
 
 async function writeArtifacts(outputDir: string, packet: ReviewPacket): Promise<void> {
@@ -118,6 +153,7 @@ function buildHandoff(inputs: PacketInputs): ReviewPacket["agent_handoff"] {
     ],
     open_risks: inputs.risks.items.slice(0, 6).map((risk) => `${risk.id}: ${risk.summary}`),
     deferrals: inputs.dogfood?.deferrals ?? [],
+    changes_since_last_packet: changesSinceLastPacket(inputs.dogfood),
     artifact_paths: [
       ".review-surfaces/review_packet.md",
       ".review-surfaces/review_packet.json",
@@ -143,7 +179,7 @@ ${packet.risks.review_focus.map((item) => `- ${item}`).join("\n") || "- No revie
 ## 2. Intent
 ${packet.intent.summary}
 
-${previewLines(packet.intent.requirements, (requirement) => `- ${requirement.id} (${requirement.acai_id ?? "no-acid"}): ${requirement.requirement}`)}
+${previewLines(packet.intent.requirements, (requirement) => `- ${requirement.id} (${requirement.acai_id ?? "no-acid"})${requirement.llm_derived ? " [LLM-proposed, non-authoritative]" : ""}: ${requirement.requirement}`)}
 
 ## 3. Requirement coverage
 - satisfied: ${statusCounts.satisfied}
@@ -153,7 +189,7 @@ ${previewLines(packet.intent.requirements, (requirement) => `- ${requirement.id}
 - invalid_evidence: ${statusCounts.invalid_evidence}
 - overreach: ${packet.evaluation.overreach.length}
 
-${previewLines(packet.evaluation.results.filter((result) => result.status !== "satisfied"), (result) => `- ${result.requirement_id} (${result.acai_id ?? "no-acid"}): ${result.status} - ${result.summary}`, 10)}
+${previewLines(packet.evaluation.results.filter((result) => result.status !== "satisfied"), (result) => `- ${result.requirement_id} (${result.acai_id ?? "no-acid"}): ${result.status}${hasLlmProposedEvidence(result) ? " [includes LLM-proposed evidence]" : ""} - ${result.summary}`, 10)}
 
 ## 4. Architecture surfaces
 ${packet.architecture.summary}
@@ -199,10 +235,15 @@ ${packet.intent.open_questions.map((item) => `- ${item}`).join("\n") || "- None 
 
 ## 10. Evidence appendix
 - Requirements indexed: ${packet.intent.requirements.length}
+- Authoritative requirements: ${packet.intent.requirements.filter((requirement) => !requirement.llm_derived).length}
+- LLM-proposed (non-authoritative) requirements: ${packet.intent.requirements.filter((requirement) => requirement.llm_derived).length}
 - Changed files in subsystem cards: ${changedFiles.length}
 - Methodology logs missing: ${packet.methodology.missing_logs}
 - Packet schema: schemas/review_packet.schema.json
 - Full machine-readable details: .review-surfaces/review_packet.json
+
+LLM/agent hypotheses (not proof; verify against deterministic evidence):
+${previewLines(llmProposedEvidenceLines(packet), (line) => `- ${redactRenderedText(line)}`, 12)}
 `;
 }
 
@@ -283,10 +324,43 @@ ${(handoff.open_risks ?? []).map((item) => `- ${item}`).join("\n") || "- None re
 
 ${(handoff.deferrals ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
 
+## Changes Since Last Packet
+
+${(handoff.changes_since_last_packet ?? []).map((item) => `- ${item}`).join("\n") || "- No previous packet supplied; pass --previous-packet to compare."}
+
 ## Artifact Paths
 
 ${(handoff.artifact_paths ?? []).map((item) => `- \`${item}\``).join("\n") || "- None recorded."}
 `;
+}
+
+function hasLlmProposedEvidence(result: ReviewPacket["evaluation"]["results"][number]): boolean {
+  return (result.evidence ?? []).some((ref) => ref.llm_proposed === true)
+    || (result.missing_evidence ?? []).some((ref) => ref.llm_proposed === true);
+}
+
+// review-surfaces.EVIDENCE.6: collect every LLM/agent-proposed marker so the
+// packet visibly distinguishes hypotheses from verified deterministic evidence.
+function llmProposedEvidenceLines(packet: ReviewPacket): string[] {
+  const lines: string[] = [];
+  for (const requirement of packet.intent.requirements) {
+    if (requirement.llm_derived) {
+      lines.push(`requirement ${requirement.id}: ${requirement.requirement}`);
+    }
+  }
+  for (const result of packet.evaluation.results) {
+    for (const ref of [...(result.evidence ?? []), ...(result.missing_evidence ?? [])]) {
+      if (ref.llm_proposed === true) {
+        lines.push(`${result.acai_id ?? result.requirement_id} [${ref.validation_status ?? "unknown"}]: ${ref.path ?? ref.note ?? ref.kind}`);
+      }
+    }
+  }
+  for (const item of packet.risks.items ?? []) {
+    if ((item.evidence ?? []).some((ref) => ref.llm_proposed === true)) {
+      lines.push(`${item.id}: ${item.summary}`);
+    }
+  }
+  return lines;
 }
 
 function previewLines<T>(items: T[], render: (item: T) => string, limit = 12): string {
@@ -319,6 +393,46 @@ function formatImplementedChanges(changedFiles: CollectionResult["changedFiles"]
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+// Phase 5b (CLI.6): compact, deterministic "Changes since last packet" lines
+// for the handoff. Returns undefined when no --previous-packet was supplied so
+// behavior is unchanged for runs without a comparison. When --previous-packet
+// pointed at an absent/unreadable packet we still note the comparison was
+// skipped rather than silently dropping the request.
+function changesSinceLastPacket(dogfood: DogfoodModel | undefined): string[] | undefined {
+  if (!dogfood?.previous_packet_path) {
+    return undefined;
+  }
+  const comparison = dogfood.comparison;
+  if (!comparison) {
+    return [`Previous packet ${dogfood.previous_packet_path} was absent or unreadable; no comparison computed.`];
+  }
+  const lines: string[] = [`Compared against ${dogfood.previous_packet_path}.`];
+  for (const change of comparison.status_changes) {
+    lines.push(`${change.acai_id}: ${change.previous_status} -> ${change.current_status} (${change.direction})`);
+  }
+  for (const risk of comparison.new_risks) {
+    lines.push(`New risk: ${risk}`);
+  }
+  for (const risk of comparison.resolved_risks) {
+    lines.push(`Resolved risk: ${risk}`);
+  }
+  for (const filePath of comparison.new_overreach) {
+    lines.push(`New overreach: ${filePath}`);
+  }
+  for (const filePath of comparison.resolved_overreach) {
+    lines.push(`Resolved overreach: ${filePath}`);
+  }
+  const deltas = comparison.count_deltas;
+  lines.push(
+    `Count deltas: satisfied ${formatDelta(deltas.satisfied.delta)}, partial ${formatDelta(deltas.partial.delta)}, missing ${formatDelta(deltas.missing.delta)}, unknown ${formatDelta(deltas.unknown.delta)}, invalid_evidence ${formatDelta(deltas.invalid_evidence.delta)}.`
+  );
+  return lines;
+}
+
+function formatDelta(delta: number): string {
+  return delta > 0 ? `+${delta}` : `${delta}`;
 }
 
 function redactRenderedText(value: string): string {

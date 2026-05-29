@@ -4,9 +4,13 @@ import { isRegularFile, readText } from "../core/files";
 import { walkFiles } from "../core/glob";
 import { EvidenceRef, fileEvidence, missingEvidence, specEvidence, testEvidence } from "../evidence/evidence";
 import { validateRequirementResultEvidence } from "../evidence/validate";
+import { FileClassification, RepoIndex } from "../indexer/indexer";
 import { IntentModel, IntentRequirement } from "../intent/intent";
-import { groupsForReviewPath, isLaterProviderGroup } from "../review-areas/areas";
+import { buildReviewAreas, groupsForReviewPath, isLaterProviderGroup, ReviewArea, ReviewAreasMode } from "../review-areas/areas";
+import { NormalizedTestCase, TestResults } from "../tests-evidence/junit";
 import { countRequirementStatuses, formatRequirementStatusSummary } from "./status";
+
+const ACID_PATTERN = /[a-z0-9_-]+\.[A-Z0-9_]+\.[0-9]+(?:-[0-9]+)?/g;
 
 export type RequirementStatus = "satisfied" | "partial" | "missing" | "unknown" | "overreach" | "invalid_evidence";
 
@@ -36,10 +40,25 @@ interface EvidenceIndex {
   testsByGroup: Map<string, EvidenceRef[]>;
   allChangedFiles: string[];
   allFiles: Set<string>;
+  areas: ReviewArea[];
+  areasMode: ReviewAreasMode;
+  repoIndex?: RepoIndex;
+  classificationByPath: Map<string, FileClassification>;
 }
 
-export async function evaluateIntent(cwd: string, collection: CollectionResult, intent: IntentModel): Promise<EvaluationModel> {
-  const index = await buildEvidenceIndex(cwd, collection);
+export interface EvaluateOptions {
+  areas?: ReviewArea[];
+}
+
+export async function evaluateIntent(
+  cwd: string,
+  collection: CollectionResult,
+  intent: IntentModel,
+  options: EvaluateOptions = {}
+): Promise<EvaluationModel> {
+  const resolved = options.areas ?? buildReviewAreas({ repoIndex: collection.repoIndex }).areas;
+  const areasMode: ReviewAreasMode = options.areas ? "config" : "fallback";
+  const index = await buildEvidenceIndex(cwd, collection, resolved, areasMode, intent.requirements);
   const knownAcids = new Set(intent.requirements.map((requirement) => requirement.acai_id).filter(Boolean) as string[]);
   const knownPaths = new Set([...index.allFiles, ...index.allChangedFiles]);
   const evidenceContext = { cwd, knownAcids, knownPaths };
@@ -159,7 +178,13 @@ function evaluateRequirement(requirement: IntentRequirement, index: EvidenceInde
   };
 }
 
-async function buildEvidenceIndex(cwd: string, collection: CollectionResult): Promise<EvidenceIndex> {
+async function buildEvidenceIndex(
+  cwd: string,
+  collection: CollectionResult,
+  areas: ReviewArea[],
+  areasMode: ReviewAreasMode,
+  requirements: IntentRequirement[]
+): Promise<EvidenceIndex> {
   const byAcid = new Map<string, EvidenceRef[]>();
   const implementationByAcid = new Map<string, EvidenceRef[]>();
   const testsByAcid = new Map<string, EvidenceRef[]>();
@@ -204,16 +229,27 @@ async function buildEvidenceIndex(cwd: string, collection: CollectionResult): Pr
     if (testPaths.has(changedFile.path)) {
       continue;
     }
-    for (const group of groupsForReviewPath(changedFile.path)) {
+    for (const group of groupsForReviewPath(changedFile.path, areas)) {
       pushMap(changedByGroup, group, fileEvidence(changedFile.path, `Changed file mapped to ${group}.`));
     }
   }
 
   for (const test of collection.tests) {
-    for (const group of groupsForReviewPath(test.path)) {
+    for (const group of groupsForReviewPath(test.path, areas)) {
       pushMap(testsByGroup, group, testEvidence(test.path, `Test path mapped to ${group}.`));
     }
   }
+
+  // Phase 5a: attach parsed JUnit cases as REAL test evidence. A passing case
+  // whose name/classname clearly references an ACID becomes EXACT test ACID
+  // evidence (with the real test_name); a passing case whose name/classname
+  // names a known requirement group strengthens that group. Conservative: only
+  // PASSING cases that clearly map are attached as proof.
+  attachParsedTestEvidence(collection.testResults, requirements, { testsByAcid, testsByGroup });
+
+  const classificationByPath = new Map<string, FileClassification>(
+    (collection.repoIndex?.files ?? []).map((file) => [file.path, file.classification])
+  );
 
   return {
     byAcid,
@@ -222,13 +258,33 @@ async function buildEvidenceIndex(cwd: string, collection: CollectionResult): Pr
     changedByGroup,
     testsByGroup,
     allChangedFiles: collection.changedFiles.map((file) => file.path),
-    allFiles: new Set(allFiles)
+    allFiles: new Set(allFiles),
+    areas,
+    areasMode,
+    repoIndex: collection.repoIndex,
+    classificationByPath
   };
 }
 
+// Classifications that are never review surfaces in their own right; suppress
+// them from overreach so noise files do not get flagged one-by-one.
+const NON_REVIEW_CLASSIFICATIONS = new Set<FileClassification>(["lockfile", "generated"]);
+
 function detectOverreach(index: EvidenceIndex, requirements: IntentRequirement[]): RequirementResult[] {
   const knownGroups = new Set(requirements.map((requirement) => groupFromAcid(requirement.acai_id)).filter(Boolean) as string[]);
-  const unmapped = index.allChangedFiles.filter((filePath) => groupsForReviewPath(filePath).every((group) => !knownGroups.has(group)));
+  const unmapped = index.allChangedFiles.filter(
+    (filePath) =>
+      !NON_REVIEW_CLASSIFICATIONS.has(index.classificationByPath.get(filePath) ?? "unknown") &&
+      groupsForReviewPath(filePath, index.areas).every((group) => !knownGroups.has(group))
+  );
+
+  // Fallback (no configured areas): report overreach as review-sized UNMAPPED
+  // CLUSTERS, never one finding per file. Files that fall outside every cluster
+  // (docs/config that the index did not cluster) collapse into a single bucket.
+  if (index.areasMode === "fallback") {
+    return overreachClusters(index, unmapped);
+  }
+
   return unmapped.map((filePath, index) => ({
     requirement_id: `OVERREACH-${String(index + 1).padStart(3, "0")}`,
     status: "overreach" as const,
@@ -236,6 +292,44 @@ function detectOverreach(index: EvidenceIndex, requirements: IntentRequirement[]
     evidence: [fileEvidence(filePath, "Changed file did not map to a known requirement group.", "medium")],
     missing_evidence: [],
     review_focus: "Confirm whether this file is in scope or the spec needs an explicit requirement.",
+    confidence: "medium" as const
+  }));
+}
+
+function overreachClusters(index: EvidenceIndex, unmapped: string[]): RequirementResult[] {
+  if (unmapped.length === 0) {
+    return [];
+  }
+  const unmappedSet = new Set(unmapped);
+  const clusters = index.repoIndex?.clusters ?? [];
+  const buckets: Array<{ label: string; files: string[] }> = [];
+  const accountedFor = new Set<string>();
+
+  for (const cluster of clusters) {
+    const files = cluster.files.filter((filePath) => unmappedSet.has(filePath));
+    if (files.length === 0) {
+      continue;
+    }
+    for (const filePath of files) {
+      accountedFor.add(filePath);
+    }
+    buckets.push({ label: cluster.label, files: files.sort((left, right) => left.localeCompare(right)) });
+  }
+
+  const leftover = unmapped.filter((filePath) => !accountedFor.has(filePath)).sort((left, right) => left.localeCompare(right));
+  if (leftover.length > 0) {
+    buckets.push({ label: "unclustered changes", files: leftover });
+  }
+
+  return buckets.map((bucket, position) => ({
+    requirement_id: `OVERREACH-${String(position + 1).padStart(3, "0")}`,
+    status: "overreach" as const,
+    summary: `Unmapped cluster (${bucket.files.length} file(s)) does not map to any requirement: ${bucket.label}`,
+    evidence: bucket.files
+      .slice(0, 8)
+      .map((filePath) => fileEvidence(filePath, "Changed file is in a cluster with no requirement coverage.", "medium")),
+    missing_evidence: [],
+    review_focus: "Confirm whether this cluster is in scope or the spec needs requirements for it.",
     confidence: "medium" as const
   }));
 }
@@ -274,6 +368,64 @@ function hasInvalidSpecRef(requirement: IntentRequirement): boolean {
 
 function evidenceForPath(filePath: string, note: string, testPaths: Set<string>): EvidenceRef {
   return testPaths.has(filePath) ? testEvidence(filePath, note, "high") : fileEvidence(filePath, note, "high");
+}
+
+// Phase 5a: attach PASSING parsed JUnit cases as real test evidence, carrying
+// the actual test_name. We only attach a case when it CLEARLY maps:
+//   - any ACID it references (in name or classname) -> exact test ACID evidence
+//   - else a known requirement group token in its classname/name -> group test
+// Failing/skipped cases are intentionally NOT treated as proof here (the risks
+// surface reports them); the evaluator stays conservative.
+function attachParsedTestEvidence(
+  testResults: TestResults | undefined,
+  requirements: IntentRequirement[],
+  maps: { testsByAcid: Map<string, EvidenceRef[]>; testsByGroup: Map<string, EvidenceRef[]> }
+): void {
+  if (!testResults || testResults.cases.length === 0) {
+    return;
+  }
+  const knownAcids = new Set(requirements.map((requirement) => requirement.acai_id).filter(Boolean) as string[]);
+  const knownGroups = new Set(requirements.map((requirement) => groupFromAcid(requirement.acai_id)).filter(Boolean) as string[]);
+
+  for (const testCase of testResults.cases) {
+    if (testCase.status !== "passed") {
+      continue;
+    }
+    const haystack = [testCase.name, testCase.classname, testCase.suite].filter(Boolean).join(" ");
+    const acids = unique(haystack.match(ACID_PATTERN) ?? []).filter((acid) => knownAcids.has(acid));
+    if (acids.length > 0) {
+      for (const acid of acids) {
+        pushMap(maps.testsByAcid, acid, parsedTestEvidenceRef(testCase, `Parsed JUnit case mentions ${acid}.`));
+      }
+      continue;
+    }
+    // No ACID match: fall back to a conservative group-token match so a case
+    // whose classname/name clearly names a requirement group still strengthens
+    // that group. Token boundaries avoid accidental substring matches.
+    for (const group of knownGroups) {
+      if (mentionsGroupToken(haystack, group)) {
+        pushMap(maps.testsByGroup, group, parsedTestEvidenceRef(testCase, `Parsed JUnit case maps to ${group}.`));
+      }
+    }
+  }
+}
+
+function parsedTestEvidenceRef(testCase: NormalizedTestCase, note: string): EvidenceRef {
+  return {
+    kind: "test",
+    test_name: testCase.name,
+    note,
+    confidence: "high",
+    validation_status: "valid"
+  };
+}
+
+function mentionsGroupToken(haystack: string, group: string): boolean {
+  return new RegExp(`(^|[^A-Za-z0-9_])${escapeRegExp(group)}([^A-Za-z0-9_]|$)`).test(haystack);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function isImplementationEvidencePath(filePath: string, testPaths: Set<string>): boolean {

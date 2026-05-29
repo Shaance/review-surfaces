@@ -127,7 +127,8 @@ test("review-surfaces.CLI.7 collection defaults command transcripts to the outpu
       llm: { provider: "mock", model: null, require_json_schema: true },
       diagrams: { format: "mermaid" },
       render: { mode: "compact", include_evidence_appendix: true },
-      dogfood: { enabled: true, milestone: "M1" }
+      dogfood: { enabled: true, milestone: "M1" },
+      quality_gate: { max_missing: 0 }
     },
     baseRef: "HEAD",
     headRef: "HEAD",

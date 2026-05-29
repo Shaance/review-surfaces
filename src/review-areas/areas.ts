@@ -1,3 +1,6 @@
+import { ReviewAreaConfig, ReviewSurfacesConfig, loadConfig } from "../config/config";
+import { RepoIndex } from "../indexer/indexer";
+
 export interface ReviewArea {
   id: string;
   name: string;
@@ -8,39 +11,50 @@ export interface ReviewArea {
   testKeywords: string[];
 }
 
-export const REVIEW_AREAS: ReviewArea[] = [
-  area("SUB-CLI", "CLI orchestration", "CLI", ["src/cli/", "bin/", "package.json"], "Parse commands and wire local pipeline stages.", "command dispatcher", ["cli"]),
-  area("SUB-COLLECT", "Collection and indexing", "COLLECTOR", ["src/collector/", "src/acai/", "src/core/", "src/commands/"], "Collect Git, diff, docs, tests, and input indexes.", "deterministic collector", ["acai", "collect", "command"]),
-  area("SUB-BOOTSTRAP", "Bootstrap files", "BOOTSTRAP", ["AGENTS.md", "CLAUDE.md", ".agents/", "features/", "docs/review-surfaces-trd.md", "review-surfaces.config.yaml", "src/config/", "scripts/copy-env.sh", "scripts/SECRETS.md", "types/"], "Keep local source-of-truth and agent workflow files available.", "spec-first bootstrap", ["config", "bootstrap"]),
-  area("SUB-INTENT", "Intent builder", "INTENT", ["src/intent/"], "Build requirements and source-backed intent.", "deterministic synthesis", ["intent"]),
-  area("SUB-EVAL", "Evaluator", "EVAL", ["src/evaluation/"], "Map intent requirements to implementation and test evidence.", "evidence classifier", ["eval", "evaluation"]),
-  area("SUB-RISK", "Risk analyzer", "RISK", ["src/risks/"], "Summarize risks, test evidence, gaps, and review focus.", "risk register", ["risk"]),
-  area("SUB-DIAGRAM", "Diagram generator", "ARCH", ["src/diagrams/", "architecture.md"], "Generate Mermaid diagrams and subsystem cards.", "artifact renderer", ["arch", "diagram"]),
-  area("SUB-METH", "Methodology auditor", "METHODOLOGY", ["src/methodology/"], "Normalize conversation logs and process evidence.", "log normalizer", ["method"]),
-  area("SUB-LLM", "Optional enrichment", "EVIDENCE", ["src/llm/"], "Optionally enrich packet summaries through mock, AI SDK, or agent files without treating them as proof.", "bounded optional adapter", ["llm", "provider"]),
-  area("SUB-EVIDENCE", "Evidence and schema validation", "EVIDENCE", ["src/evidence/", "src/schema/", "src/review-areas/"], "Represent and validate evidence references used by packet claims.", "evidence model", ["evidence", "evaluation"]),
-  area("SUB-PRIVACY", "Privacy controls", "PRIVACY", [".review-surfacesignore", ".env.example", "src/privacy/"], "Exclude sensitive files and prepare redaction boundaries before remote provider use.", "privacy guard", ["privacy"]),
-  area(
-    "SUB-DOGFOOD",
-    "Dogfood loop",
-    "DOGFOOD",
-    ["src/dogfood/", "src/feedback/", ".review-surfaces/agent_handoff.md", ".review-surfaces/feedback/", "docs/dogfooding.md", ".agents/skills/review-surfaces-dogfood-loop/"],
-    "Turn self-review findings into local product feedback and handoff.",
-    "feedback loop",
-    ["dogfood", "feedback"]
-  ),
-  area("SUB-RENDER", "Packet renderer", "RENDER", ["src/render/"], "Write JSON/YAML/Markdown packet artifacts.", "stable renderer", ["packet", "render"]),
-  area("SUB-QUALITY", "Tests and fixtures", "QUALITY", ["tests/", "package.json"], "Verify local parsing, evidence, providers, and packet behavior.", "fixture tests", []),
-  area("SUB-SCHEMA", "Packet schema", "SCHEMA", ["schemas/"], "Define machine-readable packet contracts.", "JSON schema", ["schema"])
-];
+// "config" areas come from the consuming repo's review-surfaces.config.yaml.
+// "fallback" areas are derived from the deterministic repo index clusters so
+// the tool stays useful on repos that have not declared any areas.
+export type ReviewAreasMode = "config" | "fallback";
 
-export function groupsForReviewPath(filePath: string): string[] {
-  const groups = REVIEW_AREAS
+export interface ReviewAreasResult {
+  areas: ReviewArea[];
+  mode: ReviewAreasMode;
+}
+
+export interface BuildReviewAreasOptions {
+  config?: Pick<ReviewSurfacesConfig, "areas">;
+  repoIndex?: RepoIndex;
+}
+
+/**
+ * Resolve the review areas a run should use. Prefer areas declared in config.
+ * When config declares none, derive neutral fallback areas from the repo index
+ * clusters so diagrams/cards/grouping still work on any repository.
+ */
+export function buildReviewAreas(options: BuildReviewAreasOptions = {}): ReviewAreasResult {
+  const configured = options.config?.areas;
+  if (configured && configured.length > 0) {
+    return { areas: configured.map(fromConfig), mode: "config" };
+  }
+  return { areas: fallbackAreasFromIndex(options.repoIndex), mode: "fallback" };
+}
+
+/**
+ * Load the review areas declared in a repository's config (used by tests and
+ * tooling that need this repo's own default areas without a full collection).
+ */
+export async function loadReviewAreas(cwd: string, configPath?: string): Promise<ReviewAreasResult> {
+  const config = await loadConfig(cwd, configPath);
+  return buildReviewAreas({ config });
+}
+
+export function groupsForReviewPath(filePath: string, areas: ReviewArea[]): string[] {
+  const groups = areas
     .filter((area) => area.prefixes.some((prefix) => matchesPrefix(filePath, prefix)))
     .map((area) => area.groupKey);
 
   if (filePath.startsWith("tests/")) {
-    for (const area of REVIEW_AREAS) {
+    for (const area of areas) {
       if (area.testKeywords.some((keyword) => filePath.toLowerCase().includes(keyword))) {
         groups.push(area.groupKey);
       }
@@ -54,22 +68,58 @@ export function isLaterProviderGroup(groupKey: string): boolean {
   return groupKey === "PROVIDERS";
 }
 
+// Sentinel prefix representing the repository root in fallback areas. A real
+// directory prefix always ends with "/", and config prefixes never use this
+// exact token, so it cannot collide with a normal path prefix. matchesPrefix
+// treats it as "this file lives at the repo root" (no directory separator),
+// which is precise: it matches `index.ts` but not `src/index.ts`.
+export const ROOT_PREFIX = ".";
+
 export function matchesReviewPrefix(filePath: string, prefixes: string[]): boolean {
   return prefixes.some((prefix) => matchesPrefix(filePath, prefix));
 }
 
-function area(
-  id: string,
-  name: string,
-  groupKey: string,
-  prefixes: string[],
-  purpose: string,
-  pattern: string,
-  testKeywords: string[]
-): ReviewArea {
-  return { id, name, groupKey, prefixes, purpose, pattern, testKeywords };
+function fromConfig(area: ReviewAreaConfig): ReviewArea {
+  return {
+    id: area.id,
+    name: area.name,
+    groupKey: area.group_key,
+    prefixes: area.prefixes,
+    purpose: area.purpose,
+    pattern: area.pattern,
+    testKeywords: area.test_keywords
+  };
+}
+
+/**
+ * Derive neutral review areas from the deterministic repo index clusters.
+ * Each cluster becomes one review-sized area. Group keys are derived from the
+ * cluster id so structural mapping stays stable across runs.
+ */
+function fallbackAreasFromIndex(repoIndex?: RepoIndex): ReviewArea[] {
+  const clusters = repoIndex?.clusters ?? [];
+  return clusters.map((cluster) => ({
+    id: cluster.id,
+    name: cluster.label,
+    groupKey: clusterGroupKey(cluster.id),
+    prefixes: cluster.dirs.map((dir) => (dir === "." || dir === "(root)" ? ROOT_PREFIX : `${dir}/`)),
+    purpose: `Changed ${cluster.language} files clustered under ${cluster.label}.`,
+    pattern: "structural cluster",
+    testKeywords: []
+  }));
+}
+
+// "cluster:src/api" -> "CLUSTER:SRC/API". Deterministic and never collides with
+// Acai-style group keys, which come from spec component names.
+function clusterGroupKey(clusterId: string): string {
+  return clusterId.toUpperCase();
 }
 
 function matchesPrefix(filePath: string, prefix: string): boolean {
+  if (prefix === ROOT_PREFIX) {
+    // Root cluster: match only files that live at the repository root, i.e. with
+    // no directory separator. Avoids over-matching nested files like src/index.ts.
+    return !filePath.includes("/");
+  }
   return filePath === prefix || filePath.startsWith(prefix) || filePath.includes(prefix);
 }

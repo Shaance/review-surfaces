@@ -1,18 +1,38 @@
 import path from "node:path";
+import { formatReports, hasRequiredFailure, runBootstrap, runInit } from "../bootstrap/init";
 import { recordCommandTranscript } from "../commands/runner";
 import { commandTranscriptInputDir } from "../commands/transcripts";
 import { collectInputs, CollectionResult } from "../collector/collect";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
 import { CliError, ExitCodes } from "../core/exit-codes";
 import { fileExists } from "../core/files";
-import { buildArchitecture } from "../diagrams/diagrams";
-import { buildDogfood } from "../dogfood/dogfood";
-import { evaluateIntent } from "../evaluation/evaluate";
-import { buildIntent } from "../intent/intent";
-import { enrichPacket, EnrichmentResult, parseProviderName, ProviderName } from "../llm/provider";
-import { buildMethodology } from "../methodology/methodology";
-import { analyzeRisks } from "../risks/risks";
-import { createReviewPacket, writeReviewPacket } from "../render/packet";
+import { gateDecision, GateOptions } from "../core/gate";
+import { ArchitectureModel, buildArchitecture } from "../diagrams/diagrams";
+import { buildDogfood, DogfoodComparisonInput } from "../dogfood/dogfood";
+import { comparePackets, loadPreviousPacket, resolvePreviousPacketPath } from "../dogfood/compare";
+import { EvaluationModel, evaluateIntent } from "../evaluation/evaluate";
+import { buildIntent, IntentModel } from "../intent/intent";
+import { enrichPacket, EnrichmentResult, parseProviderName, providerFor, ProviderName } from "../llm/provider";
+import { runEvaluationReasoning, runIntentReasoning, runReasoningStages } from "../llm/reasoning";
+import { buildMethodology, MethodologyModel } from "../methodology/methodology";
+import { buildReviewAreas, ReviewArea } from "../review-areas/areas";
+import { analyzeRisks, RisksModel } from "../risks/risks";
+import { splitTestOutputPaths } from "../tests-evidence/junit";
+import {
+  createReviewPacket,
+  writeArchitectureArtifact,
+  writeEvaluationArtifact,
+  writeHandoffArtifact,
+  writeIntentArtifact,
+  writeMethodologyArtifact,
+  writeReviewPacket,
+  writeRisksArtifact
+} from "../render/packet";
+import { loadDogfood, loadEvaluation, loadIntent, loadMethodology, loadRisks } from "../render/load";
+import { renderCommentFromPacketFile, resolvePacketPath } from "../render/comment";
+import { renderSarifFromPacketFile } from "../render/sarif";
+import { postStickyComment } from "../render/post-comment";
+import { writeText } from "../core/files";
 import { validateJsonFile } from "../schema/json-schema";
 
 const COMMANDS = [
@@ -55,29 +75,38 @@ async function main(): Promise<number> {
       await runCollect(parsed);
       return ExitCodes.success;
     case "all":
-      await runAll(parsed);
-      return ExitCodes.success;
+      return runAll(parsed);
     case "validate":
       return runValidate(parsed);
     case "run":
       return runRecordedCommand(parsed);
-    case "intent":
-    case "evaluate":
-    case "diagrams":
-    case "methodology":
-    case "risks":
     case "dogfood":
-    case "handoff":
+      return runAll(parsed);
+    case "intent":
+      await runIntentStage(parsed);
+      return ExitCodes.success;
+    case "evaluate":
+      return runEvaluateStage(parsed);
+    case "methodology":
+      await runMethodologyStage(parsed);
+      return ExitCodes.success;
+    case "risks":
+      await runRisksStage(parsed);
+      return ExitCodes.success;
+    case "diagrams":
+      await runDiagramsStage(parsed);
+      return ExitCodes.success;
     case "packet":
-      await runAll(parsed);
+      return runPacketStage(parsed);
+    case "handoff":
+      await runHandoffStage(parsed);
       return ExitCodes.success;
     case "init":
+      return runInitCommand(parsed);
     case "bootstrap":
-      console.log("Bootstrap files are already expected in this repository. Full bootstrap mutation is not implemented yet.");
-      return ExitCodes.success;
+      return runBootstrapCommand(parsed);
     case "comment":
-      console.log("Provider comments are intentionally deferred; local artifacts are the MVP surface.");
-      return ExitCodes.success;
+      return runComment(parsed);
     default:
       throw new CliError(`Unhandled command: ${parsed.command}`, ExitCodes.runtimeError);
   }
@@ -98,6 +127,27 @@ async function runRecordedCommand(parsed: ParsedArgs): Promise<number> {
   return result.exitCode;
 }
 
+async function runInitCommand(parsed: ParsedArgs): Promise<number> {
+  const cwd = process.cwd();
+  const { reports } = await runInit({ cwd, force: booleanFlag(parsed, "force") });
+  console.log("review-surfaces init");
+  console.log(formatReports(reports));
+  return ExitCodes.success;
+}
+
+async function runBootstrapCommand(parsed: ParsedArgs): Promise<number> {
+  const cwd = process.cwd();
+  const { reports } = await runBootstrap({ cwd });
+  console.log("review-surfaces bootstrap");
+  console.log(formatReports(reports));
+  const strict = booleanFlag(parsed, "strict");
+  if (strict && hasRequiredFailure(reports)) {
+    console.error("Bootstrap quality gate failed: required scaffolding is missing or invalid. Run `review-surfaces init` first.");
+    return ExitCodes.qualityGateFailed;
+  }
+  return ExitCodes.success;
+}
+
 async function runCollect(parsed: ParsedArgs): Promise<void> {
   const { collection } = await collect(parsed);
   console.log(`Wrote review-surfaces artifacts to ${path.relative(process.cwd(), collection.outputDir) || "."}`);
@@ -115,22 +165,45 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
     headRef: stringFlag(parsed, "head") ?? "HEAD",
     outputDir: stringFlag(parsed, "out"),
     commandTranscriptDir: stringFlag(parsed, "command-transcripts"),
+    testOutputPaths: splitTestOutputPaths(stringFlag(parsed, "test-output")),
+    coverageOutputPath: stringFlag(parsed, "coverage"),
     dogfood: isDogfoodRun(parsed)
   });
   return { collection, config: runConfig };
 }
 
-async function runAll(parsed: ParsedArgs): Promise<void> {
+async function runAll(parsed: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
   const { collection, config } = await collect(parsed);
   const commands = [`review-surfaces ${parsed.command} ${process.argv.slice(3).join(" ")}`.trim()];
   const provider = providerFlag(parsed, config);
   const requestedModel = stringFlag(parsed, "model") ?? config.llm.model ?? undefined;
+  const reviewAreas = buildReviewAreas({ config, repoIndex: collection.repoIndex });
+  const areasOption = reviewAreas.mode === "config" ? { areas: reviewAreas.areas } : {};
   const intent = await buildIntent(cwd, collection);
-  const evaluation = await evaluateIntent(cwd, collection, intent);
+  const evaluation = await evaluateIntent(cwd, collection, intent, areasOption);
   const methodology = await buildMethodology(cwd, collection, stringFlag(parsed, "conversation"), commands);
   const risks = analyzeRisks(collection, evaluation, commands, methodology);
-  const architecture = await buildArchitecture(collection, evaluation);
+
+  // Phase 3-2: schema-bound, evidence-gated reasoning stages run with the
+  // resolved provider. The default mock provider returns not-ok, so every stage
+  // is a no-op and the deterministic packet above stays byte-stable.
+  const reasoningProvider = providerFor(provider, {
+    model: requestedModel,
+    cwd,
+    remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
+    agentInput: stringFlag(parsed, "agent-input")
+  });
+  await runReasoningStages(
+    reasoningProvider,
+    { collection, intent, evaluation, methodology, risks },
+    {
+      redactSecrets: config.privacy.redact_secrets,
+      remotePrivacyBlocked: collection.privacy.remote_provider_blocked
+    }
+  );
+
+  const architecture = await buildArchitecture(collection, evaluation, areasOption);
   const preEnrichment: EnrichmentResult = {
     provider,
     model: requestedModel,
@@ -156,7 +229,17 @@ async function runAll(parsed: ParsedArgs): Promise<void> {
     redactSecrets: config.privacy.redact_secrets,
     remotePrivacyBlocked: collection.privacy.remote_provider_blocked
   });
-  const dogfood = isDogfoodRun(parsed) ? buildDogfood(collection, evaluation, risks, methodology, `${enrichment.provider}/${enrichment.status}`, commands) : undefined;
+  const dogfood = isDogfoodRun(parsed)
+    ? buildDogfood(
+        collection,
+        evaluation,
+        risks,
+        methodology,
+        `${enrichment.provider}/${enrichment.status}`,
+        commands,
+        resolveComparisonInput(parsed, cwd, packet.evaluation, packet.risks)
+      )
+    : undefined;
   await writeReviewPacket({
     collection,
     intent: packet.intent,
@@ -172,6 +255,369 @@ async function runAll(parsed: ParsedArgs): Promise<void> {
     console.warn(enrichment.summary);
   }
   console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
+  return applyGate(parsed, evaluation, collection, provider, config);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4a: composable per-stage subcommands.
+//
+// Each subcommand runs ONLY its stage. Dependencies are loaded from prior-stage
+// artifacts under --out when present (LOAD), and computed only when the artifact
+// is missing (ELSE-COMPUTE). Each subcommand writes ONLY its own artifact(s).
+// `all` keeps orchestrating the full pipeline (runAll above) unchanged.
+//
+// The shared StageContext mirrors runAll's provider/areas/config/commands wiring
+// so a stage produces the same models whether run standalone or inside `all`.
+// ---------------------------------------------------------------------------
+
+interface StageContext {
+  cwd: string;
+  parsed: ParsedArgs;
+  collection: CollectionResult;
+  config: ReviewSurfacesConfig;
+  commands: string[];
+  provider: ProviderName;
+  requestedModel?: string;
+  areasOption: { areas?: ReviewArea[] };
+}
+
+async function buildStageContext(parsed: ParsedArgs): Promise<StageContext> {
+  const cwd = process.cwd();
+  const { collection, config } = await collect(parsed);
+  const commands = [`review-surfaces ${parsed.command} ${process.argv.slice(3).join(" ")}`.trim()];
+  const provider = providerFlag(parsed, config);
+  const requestedModel = stringFlag(parsed, "model") ?? config.llm.model ?? undefined;
+  const reviewAreas = buildReviewAreas({ config, repoIndex: collection.repoIndex });
+  const areasOption = reviewAreas.mode === "config" ? { areas: reviewAreas.areas } : {};
+  return { cwd, parsed, collection, config, commands, provider, requestedModel, areasOption };
+}
+
+function reasoningProviderFor(context: StageContext) {
+  return providerFor(context.provider, {
+    model: context.requestedModel,
+    cwd: context.cwd,
+    remotePrivacyBlocked: context.collection.privacy.remote_provider_blocked,
+    agentInput: stringFlag(context.parsed, "agent-input")
+  });
+}
+
+function logComputed(label: string): void {
+  console.log(`Computed missing ${label} dependency.`);
+}
+
+// Compute intent + run the resolved reasoning intent stage in place. Used by the
+// intent subcommand and as the ELSE-COMPUTE for downstream stages. Only stage 1
+// (intent synthesis) touches intent, so we run exactly that slice; placeholders
+// for the cross-cutting models are never consulted, and mock is a no-op.
+async function computeEnrichedIntent(context: StageContext): Promise<IntentModel> {
+  const intent = await buildIntent(context.cwd, context.collection);
+  await runIntentReasoning(
+    reasoningProviderFor(context),
+    {
+      collection: context.collection,
+      intent,
+      evaluation: emptyEvaluation(),
+      methodology: emptyMethodology(),
+      risks: emptyRisks()
+    },
+    reasoningOptionsFor(context)
+  );
+  return intent;
+}
+
+function reasoningOptionsFor(context: StageContext) {
+  return {
+    redactSecrets: context.config.privacy.redact_secrets,
+    remotePrivacyBlocked: context.collection.privacy.remote_provider_blocked
+  };
+}
+
+async function loadOrComputeIntent(context: StageContext, label = "intent"): Promise<IntentModel> {
+  const loaded = loadIntent(context.collection.outputDir);
+  if (loaded) {
+    return loaded;
+  }
+  logComputed(label);
+  return computeEnrichedIntent(context);
+}
+
+async function computeEvaluation(context: StageContext, intent: IntentModel): Promise<EvaluationModel> {
+  const evaluation = await evaluateIntent(context.cwd, context.collection, intent, context.areasOption);
+  return evaluation;
+}
+
+async function loadOrComputeEvaluation(
+  context: StageContext,
+  intentForCompute: () => Promise<IntentModel>
+): Promise<EvaluationModel> {
+  const loaded = loadEvaluation(context.collection.outputDir);
+  if (loaded) {
+    return loaded;
+  }
+  logComputed("evaluation");
+  return computeEvaluation(context, await intentForCompute());
+}
+
+async function computeMethodology(context: StageContext): Promise<MethodologyModel> {
+  return buildMethodology(context.cwd, context.collection, stringFlag(context.parsed, "conversation"), context.commands);
+}
+
+async function loadOrComputeMethodology(context: StageContext): Promise<MethodologyModel> {
+  const loaded = loadMethodology(context.collection.outputDir);
+  if (loaded) {
+    return loaded;
+  }
+  logComputed("methodology");
+  return computeMethodology(context);
+}
+
+function computeRisks(context: StageContext, evaluation: EvaluationModel, methodology: MethodologyModel): RisksModel {
+  return analyzeRisks(context.collection, evaluation, context.commands, methodology);
+}
+
+async function loadOrComputeRisks(
+  context: StageContext,
+  evaluationForCompute: () => Promise<EvaluationModel>,
+  methodologyForCompute: () => Promise<MethodologyModel>
+): Promise<RisksModel> {
+  const loaded = loadRisks(context.collection.outputDir);
+  if (loaded) {
+    return loaded;
+  }
+  logComputed("risks");
+  return computeRisks(context, await evaluationForCompute(), await methodologyForCompute());
+}
+
+async function computeArchitecture(context: StageContext, evaluation: EvaluationModel): Promise<ArchitectureModel> {
+  return buildArchitecture(context.collection, evaluation, context.areasOption);
+}
+
+interface EnrichedModels {
+  intent: IntentModel;
+  evaluation: EvaluationModel;
+  methodology: MethodologyModel;
+  risks: RisksModel;
+}
+
+// Reproduce the EXACT models the monolith `all` run holds after reasoning, by
+// building the same deterministic models in the same order and running the same
+// full reasoning sequence. A composed subcommand then persists only its own
+// artifact from these, so compose==monolith holds for every artifact even under
+// non-mock providers (e.g. offline agent-file). With mock, runReasoningStages is
+// a no-op and these collapse to the deterministic models, byte-stable as before.
+//
+// NOTE: intent/evaluation/methodology/risks are built fresh and deterministically
+// here (never loaded from possibly-already-enriched artifacts) so reasoning is
+// applied exactly once, matching `all` and staying idempotent across composed
+// invocations.
+async function buildEnrichedModels(context: StageContext): Promise<EnrichedModels> {
+  const intent = await buildIntent(context.cwd, context.collection);
+  const evaluation = await evaluateIntent(context.cwd, context.collection, intent, context.areasOption);
+  const methodology = await computeMethodology(context);
+  const risks = analyzeRisks(context.collection, evaluation, context.commands, methodology);
+  await runReasoningStages(
+    reasoningProviderFor(context),
+    { collection: context.collection, intent, evaluation, methodology, risks },
+    reasoningOptionsFor(context)
+  );
+  return { intent, evaluation, methodology, risks };
+}
+
+// emptyEvaluation / emptyMethodology / emptyRisks are placeholders for stages
+// that only read a subset of the reasoning inputs. Mock is a no-op, so they are
+// never consulted in the default offline path.
+function emptyEvaluation(): EvaluationModel {
+  return { summary: "", results: [], overreach: [], acai_coverage: {} };
+}
+
+function emptyMethodology(): MethodologyModel {
+  return {
+    summary: "",
+    missing_logs: true,
+    considered: [],
+    research: [],
+    decisions: [],
+    unchallenged_assumptions: [],
+    skipped_checks: [],
+    claims_without_evidence: [],
+    verified_claims: [],
+    quality_flags: [],
+    evidence: []
+  };
+}
+
+function emptyRisks(): RisksModel {
+  return { summary: "", items: [], test_evidence: [], test_gaps: [], review_focus: [] };
+}
+
+function logWrote(context: StageContext): void {
+  console.log(`Wrote review-surfaces artifacts to ${path.relative(context.cwd, context.collection.outputDir) || "."}`);
+}
+
+async function runIntentStage(parsed: ParsedArgs): Promise<void> {
+  const context = await buildStageContext(parsed);
+  const intent = await computeEnrichedIntent(context);
+  await writeIntentArtifact(context.collection.outputDir, intent);
+  logWrote(context);
+}
+
+async function runEvaluateStage(parsed: ParsedArgs): Promise<number> {
+  const context = await buildStageContext(parsed);
+  // Reuse a successfully-loaded intent.yaml (so `intent` then `evaluate` as
+  // separate invocations compose); compute intent only when its artifact is
+  // absent. The reasoning evaluation stage runs against the resolved provider.
+  let intent: IntentModel | null = loadIntent(context.collection.outputDir);
+  if (!intent) {
+    logComputed("intent");
+    intent = await buildIntent(context.cwd, context.collection);
+  }
+  const evaluation = await evaluateIntent(context.cwd, context.collection, intent, context.areasOption);
+  // Stage 2 (candidate evidence) is the only reasoning stage that touches
+  // evaluation.results. Its risks.review_focus side effect lands on a throwaway
+  // here; the risks subcommand reproduces it against fresh deterministic models.
+  await runEvaluationReasoning(
+    reasoningProviderFor(context),
+    {
+      collection: context.collection,
+      intent,
+      evaluation,
+      methodology: emptyMethodology(),
+      risks: emptyRisks()
+    },
+    reasoningOptionsFor(context)
+  );
+  await writeEvaluationArtifact(context.collection.outputDir, evaluation);
+  logWrote(context);
+  return applyGate(parsed, evaluation, context.collection, context.provider, context.config);
+}
+
+async function runMethodologyStage(parsed: ParsedArgs): Promise<void> {
+  const context = await buildStageContext(parsed);
+  // methodology.yaml reflects the narrative-stage enrichment that `all` lands on
+  // methodology (considered/decisions). Reproduce the monolith models and persist
+  // only methodology so the artifact matches `all`. Under mock this is the
+  // deterministic methodology, byte-stable.
+  const { methodology } = await buildEnrichedModels(context);
+  await writeMethodologyArtifact(context.collection.outputDir, methodology);
+  logWrote(context);
+}
+
+async function runRisksStage(parsed: ParsedArgs): Promise<void> {
+  const context = await buildStageContext(parsed);
+  // risks.yaml reflects BOTH reasoning side effects `all` lands on risks: stage 2
+  // (candidate evidence) appends to risks.review_focus and stage 3 (narrative)
+  // appends to risks.items. Reproduce the monolith models and persist only risks.
+  const { risks } = await buildEnrichedModels(context);
+  await writeRisksArtifact(context.collection.outputDir, risks);
+  logWrote(context);
+}
+
+async function runDiagramsStage(parsed: ParsedArgs): Promise<void> {
+  const context = await buildStageContext(parsed);
+  const evaluation = await loadOrComputeEvaluation(context, () => loadOrComputeIntent(context));
+  const architecture = await computeArchitecture(context, evaluation);
+  // buildArchitecture writes diagrams/*.mmd as a side effect; write the
+  // architecture.md surface for this stage too.
+  await writeArchitectureArtifact(context.collection.outputDir, architecture);
+  logWrote(context);
+}
+
+async function runPacketStage(parsed: ParsedArgs): Promise<number> {
+  const context = await buildStageContext(parsed);
+  // Load every stage artifact when present (each was enriched by its owning
+  // stage, so loading composes). For any MISSING artifact, fall back to the
+  // monolith-equivalent enriched models (built at most once) instead of a
+  // deterministic-only compute, so a standalone `packet` under a non-mock
+  // provider still equals `all`. Under mock the enriched models collapse to the
+  // deterministic ones, keeping the byte-stable offline path.
+  let enrichedCache: EnrichedModels | undefined;
+  const enriched = async (): Promise<EnrichedModels> => {
+    if (!enrichedCache) {
+      logComputed("packet inputs");
+      enrichedCache = await buildEnrichedModels(context);
+    }
+    return enrichedCache;
+  };
+  const intent = loadIntent(context.collection.outputDir) ?? (await enriched()).intent;
+  const evaluation = loadEvaluation(context.collection.outputDir) ?? (await enriched()).evaluation;
+  const methodology = loadMethodology(context.collection.outputDir) ?? (await enriched()).methodology;
+  const risks = loadRisks(context.collection.outputDir) ?? (await enriched()).risks;
+  const architecture = await computeArchitecture(context, evaluation);
+  const dogfood = isDogfoodRun(parsed) ? loadDogfood(context.collection.outputDir) ?? undefined : undefined;
+
+  const preEnrichment: EnrichmentResult = {
+    provider: context.provider,
+    model: context.requestedModel,
+    status: "not_requested",
+    summary: "Enrichment has not run yet."
+  };
+  const packet = createReviewPacket({
+    collection: context.collection,
+    intent,
+    evaluation,
+    methodology,
+    risks,
+    architecture,
+    dogfood,
+    enrichment: preEnrichment,
+    commands: context.commands
+  });
+  const enrichment = await enrichPacket(packet, {
+    cwd: context.cwd,
+    provider: context.provider,
+    model: context.requestedModel,
+    agentInput: stringFlag(parsed, "agent-input"),
+    outputDir: context.collection.outputDir,
+    redactSecrets: context.config.privacy.redact_secrets,
+    remotePrivacyBlocked: context.collection.privacy.remote_provider_blocked
+  });
+  await writeReviewPacket({
+    collection: context.collection,
+    intent: packet.intent,
+    evaluation: packet.evaluation,
+    methodology: packet.methodology,
+    risks: packet.risks,
+    architecture: packet.architecture,
+    dogfood,
+    enrichment,
+    commands: context.commands
+  });
+  if (enrichment.status === "skipped" || enrichment.status === "failed") {
+    console.warn(enrichment.summary);
+  }
+  logWrote(context);
+  return applyGate(parsed, evaluation, context.collection, context.provider, context.config);
+}
+
+async function runHandoffStage(parsed: ParsedArgs): Promise<void> {
+  const context = await buildStageContext(parsed);
+  // Load packet inputs needed for the handoff; compute any that are missing.
+  const evaluation = await loadOrComputeEvaluation(context, () => loadOrComputeIntent(context));
+  const methodology = await loadOrComputeMethodology(context);
+  const risks = await loadOrComputeRisks(
+    context,
+    async () => evaluation,
+    async () => methodology
+  );
+  const dogfood = loadDogfood(context.collection.outputDir) ?? undefined;
+  const enrichment: EnrichmentResult = {
+    provider: context.provider,
+    model: context.requestedModel,
+    status: "not_requested",
+    summary: "Handoff generated from local artifacts."
+  };
+  await writeHandoffArtifact(context.collection.outputDir, {
+    collection: context.collection,
+    intent: loadIntent(context.collection.outputDir) ?? (await buildIntent(context.cwd, context.collection)),
+    evaluation,
+    architecture: await computeArchitecture(context, evaluation),
+    methodology,
+    risks,
+    dogfood,
+    enrichment,
+    commands: context.commands
+  });
+  logWrote(context);
 }
 
 async function runValidate(parsed: ParsedArgs): Promise<number> {
@@ -194,6 +640,80 @@ async function runValidate(parsed: ParsedArgs): Promise<number> {
 
   console.log(`Validated ${path.relative(cwd, packetPath)} against ${path.relative(cwd, schemaPath)}`);
   return ExitCodes.success;
+}
+
+// Phase 6a/6b (PROVIDERS.1/PROVIDERS.2; M6): render a review surface from the
+// LOCAL review_packet.json. These are renderers, not pipeline stages: they read
+// the already-written artifact, never recompute the pipeline, and never redefine
+// the artifact contract. Both paths are fully offline.
+//
+//   --format github (default): a compact GitHub sticky comment (6a).
+//   --format sarif:            a SARIF 2.1.0 log written to review.sarif (6b).
+//
+// An absent packet is a clean usage error (exit 2) that points at
+// `review-surfaces all` rather than silently recomputing, for either format.
+async function runComment(parsed: ParsedArgs): Promise<number> {
+  const format = stringFlag(parsed, "format") ?? "github";
+  if (format === "sarif") {
+    return runCommentSarif(parsed);
+  }
+  if (format !== "github") {
+    throw new CliError(`Unknown --format: ${format}. Use github or sarif.`, ExitCodes.usageError);
+  }
+  return runCommentGithub(parsed);
+}
+
+// --post is OPTIONAL and best-effort: only when set AND `gh` is available AND a
+// PR context is detectable will it upsert the sticky comment. It is never
+// required and never runs without the flag (so tests, which never pass --post,
+// never touch the network).
+async function runCommentGithub(parsed: ParsedArgs): Promise<number> {
+  const cwd = process.cwd();
+  const outDir = stringFlag(parsed, "out");
+  const rendered = renderCommentFromPacketFile(cwd, outDir);
+  if (!rendered) {
+    throw missingPacketError(cwd, outDir);
+  }
+
+  const commentPath = path.join(path.dirname(rendered.packetPath), "comment.md");
+  await writeText(commentPath, rendered.markdown);
+  process.stdout.write(rendered.markdown);
+  console.error(`Wrote ${path.relative(cwd, commentPath)}`);
+
+  if (booleanFlag(parsed, "post")) {
+    const result = postStickyComment(cwd, rendered.markdown);
+    console.error(result.reason);
+  }
+  return ExitCodes.success;
+}
+
+// Phase 6b (PROVIDERS.2; M6): write a SARIF 2.1.0 log from the local packet.
+// Default output is <dir>/review.sarif under --out; --sarif-out overrides the
+// exact file. Like the github path, an absent packet is a clean usage error and
+// nothing is written. No network is ever touched.
+async function runCommentSarif(parsed: ParsedArgs): Promise<number> {
+  const cwd = process.cwd();
+  const outDir = stringFlag(parsed, "out");
+  const rendered = renderSarifFromPacketFile(cwd, outDir);
+  if (!rendered) {
+    throw missingPacketError(cwd, outDir);
+  }
+
+  const sarifPath = stringFlag(parsed, "sarif-out")
+    ? path.resolve(cwd, stringFlag(parsed, "sarif-out") as string)
+    : path.join(path.dirname(rendered.packetPath), "review.sarif");
+  await writeText(sarifPath, rendered.json);
+  process.stdout.write(rendered.json);
+  console.error(`Wrote ${path.relative(cwd, sarifPath)}`);
+  return ExitCodes.success;
+}
+
+function missingPacketError(cwd: string, outDir: string | undefined): CliError {
+  const packetPath = resolvePacketPath(cwd, outDir);
+  return new CliError(
+    `No review packet JSON found at ${path.relative(cwd, packetPath)}. Run \`review-surfaces all\` first to generate it; comment does not recompute the pipeline.`,
+    ExitCodes.usageError
+  );
 }
 
 function parseArgs(args: string[]): ParsedArgs {
@@ -248,6 +768,76 @@ function isDogfoodRun(parsed: ParsedArgs): boolean {
   return parsed.command === "dogfood" || booleanFlag(parsed, "dogfood");
 }
 
+// Phase 5b (CLI.6): when --previous-packet is supplied in dogfood mode, resolve
+// it (dir -> review_packet.json), load the previous packet, and compute the
+// deterministic comparison vs the current packet. An absent/unreadable previous
+// packet is a clean no-op: we still record the resolved path but compute no
+// comparison, and behavior is otherwise unchanged.
+function resolveComparisonInput(
+  parsed: ParsedArgs,
+  cwd: string,
+  evaluation: EvaluationModel,
+  risks: RisksModel
+): DogfoodComparisonInput | undefined {
+  const flagValue = stringFlag(parsed, "previous-packet");
+  if (flagValue === undefined) {
+    return undefined;
+  }
+  const previousPacketPath = resolvePreviousPacketPath(cwd, flagValue);
+  const relativePath = path.relative(cwd, previousPacketPath) || previousPacketPath;
+  const previous = loadPreviousPacket(previousPacketPath);
+  if (!previous) {
+    return { previous_packet_path: relativePath };
+  }
+  return {
+    previous_packet_path: relativePath,
+    comparison: comparePackets(previous, { evaluation, risks })
+  };
+}
+
+function numberFlag(parsed: ParsedArgs, key: string): number | undefined {
+  const value = stringFlag(parsed, key);
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsedNumber = Number(value);
+  if (!Number.isInteger(parsedNumber) || parsedNumber < 0) {
+    throw new CliError(`--${key} must be a non-negative integer`, ExitCodes.usageError);
+  }
+  return parsedNumber;
+}
+
+function gateOptionsFor(parsed: ParsedArgs, config: ReviewSurfacesConfig): GateOptions {
+  return {
+    maxMissing: numberFlag(parsed, "max-missing") ?? config.quality_gate.max_missing
+  };
+}
+
+// Apply the privacy/evidence/quality gate. The pure decision is computed
+// unconditionally so the same code path runs with and without --strict.
+//
+// DEFAULT (no --strict): "fail gently" — warn about any tripped gate and return
+// ExitCodes.success (0). This preserves the prior normal/dogfood exit behavior.
+// --strict: return the gate exit code (5/4/10) and print a clear reason.
+function applyGate(
+  parsed: ParsedArgs,
+  evaluation: EvaluationModel,
+  collection: CollectionResult,
+  provider: ProviderName,
+  config: ReviewSurfacesConfig
+): number {
+  const decision = gateDecision(evaluation, collection, provider, gateOptionsFor(parsed, config));
+  if (decision.code === ExitCodes.success) {
+    return ExitCodes.success;
+  }
+  if (booleanFlag(parsed, "strict")) {
+    console.error(`Strict gate tripped (exit ${decision.code}): ${decision.reason}`);
+    return decision.code;
+  }
+  console.warn(`Gate warning (would exit ${decision.code} under --strict): ${decision.reason}`);
+  return ExitCodes.success;
+}
+
 function providerFlag(parsed: ParsedArgs, config: ReviewSurfacesConfig): ProviderName {
   const provider = stringFlag(parsed, "provider") ?? config.llm.provider;
   try {
@@ -271,8 +861,8 @@ Usage:
   review-surfaces <command> [options]
 
 Commands:
-  init          Create bootstrap files when missing (stub)
-  bootstrap     Validate/bootstrap repository scaffolding (stub)
+  init          Scaffold config, schema, ignore, feature spec, usage skill, and AGENTS.md into this repo (create-or-validate; never clobbers without --force)
+  bootstrap     Validate that the init scaffolding exists and parses (validate-only; exits 10 with --strict when a required target is missing/invalid)
   collect       Write manifest and input indexes under .review-surfaces
   intent        Run the available local pipeline and write intent artifacts
   evaluate      Run the available local pipeline and write evaluation artifacts
@@ -285,13 +875,23 @@ Commands:
   all           Run the whole available local pipeline
   validate      Validate review_packet.json against schemas/review_packet.schema.json
   run           Execute a local command and write a bounded command transcript
-  comment       Deferred provider renderer stub
+  comment       Render a review surface from the local review_packet.json. With
+                --format github (default) writes .review-surfaces/comment.md (a compact
+                GitHub sticky comment); with --format sarif writes
+                .review-surfaces/review.sarif (a SARIF 2.1.0 log). Reads local artifacts
+                only and never recomputes the pipeline.
 
 Options:
   --base <ref>      Base ref for diff collection, default origin/main
   --head <ref>      Head ref for diff collection, default HEAD
   --spec <path>     Feature spec path, default from config
   --out <dir>       Output directory, default .review-surfaces
+  --format <fmt>    comment: output format, github (default) or sarif. github writes
+                   .review-surfaces/comment.md; sarif writes .review-surfaces/review.sarif
+                   (SARIF 2.1.0). Both honor --out and read the local packet only.
+  --sarif-out <path>
+                   comment --format sarif: write the SARIF log to this exact file instead
+                   of <out>/review.sarif
   --dogfood         Mark run as dogfood and include dogfood/handoff sections
   --config <path>   Config path, default review-surfaces.config.yaml
   --schema <path>   Schema path for validate, default schemas/review_packet.schema.json
@@ -299,12 +899,39 @@ Options:
                    Optional text/Markdown/JSONL/YAML conversation log for methodology
   --command-transcripts <dir>
                    Optional command transcript directory; default .review-surfaces/commands
+  --test-output <path>
+                   Optional JUnit XML test report(s) (comma-separated) parsed into
+                   per-test names + pass/fail evidence. Writes .review-surfaces/inputs/tests.results.json
+  --coverage <path>
+                   Optional istanbul coverage-summary.json with per-file pct, ingested alongside --test-output
   --id <id>       Optional transcript ID for run
   --provider <name> Optional enrichment provider: mock, ai-sdk, agent-file. Default mock
-  --model <model>   Optional AI SDK model, e.g. google:gemini-2.5-flash
+  --model <model>   Optional AI SDK model as <provider>:<model>, e.g. anthropic:claude-3-5-haiku-latest,
+                   google:gemini-2.5-flash, or openai:gpt-4o-mini. No prefix defaults to anthropic.
   --agent-input <path>
                    Structured JSON/YAML enrichment produced by a coding agent
+  --previous-packet <path-or-dir>
+                   Dogfood only: a prior review_packet.json (or its directory) to
+                   compare against. Computes status_changes, new/resolved overreach
+                   and risks, and count deltas. Absent/unreadable is a clean no-op.
+  --post            comment: OPTIONAL best-effort upsert of the rendered sticky comment to
+                   the current PR via the gh CLI. Only acts when gh is available AND a PR
+                   context is detectable; otherwise it just emits the local artifact. Never
+                   required: without --post, comment only writes .review-surfaces/comment.md.
+  --force           init: overwrite generated targets even when they already exist
+  --strict          Turn gate findings into exit codes for all/evaluate/packet (and
+                   bootstrap). Without --strict the pipeline fails gently: it prints
+                   warnings and still exits 0 (default normal/dogfood behavior).
+  --max-missing <n> Quality-gate tolerance: allow up to N "missing" requirements
+                   before tripping. Default from config quality_gate.max_missing (0).
   --help            Show this help
+
+Gate semantics (only enforced as exit codes with --strict):
+  5  privacy block   provider is not "mock" AND the redacted diff blocked remote enrichment
+  4  evidence failed any requirement result/overreach has status "invalid_evidence"
+  10 quality gate    missing requirements exceed --max-missing / quality_gate.max_missing
+  The first applicable gate wins, in the order 5 -> 4 -> 10. validate is unaffected
+  and keeps returning 3 on schema-validation failure.
 `);
 }
 

@@ -8,7 +8,17 @@ import { FeedbackFile, indexFeedbackFiles } from "../feedback/feedback";
 import { filterIgnoredDiff } from "../privacy/diff";
 import { loadPrivacyIgnore } from "../privacy/ignore";
 import { SecretRedaction, redactSecrets } from "../privacy/secrets";
+import { buildRepoIndex, RepoIndex } from "../indexer/indexer";
+import {
+  emptyTestResults,
+  ingestTestOutputs,
+  TEST_RESULTS_OUTPUT_FILENAME,
+  TEST_RESULTS_SCHEMA_VERSION,
+  TestResults
+} from "../tests-evidence/junit";
 import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, GitInfo } from "./git";
+
+export const REPO_INDEX_SCHEMA_VERSION = "review-surfaces.repo.index.v1";
 
 export interface ManifestInputHash {
   path: string;
@@ -41,7 +51,9 @@ export interface CollectionResult {
   feedback: FeedbackFile[];
   commandTranscripts: CommandTranscript[];
   commandTranscriptOutputPath: string;
+  testResults: TestResults;
   repositoryFiles: string[];
+  repoIndex: RepoIndex;
   privacy: {
     ignore_file: string;
     ignore_patterns: string[];
@@ -59,6 +71,8 @@ export interface CollectOptions {
   headRef: string;
   outputDir?: string;
   commandTranscriptDir?: string;
+  testOutputPaths?: string[];
+  coverageOutputPath?: string;
   dogfood: boolean;
 }
 
@@ -81,6 +95,13 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const feedback = await indexFeedbackFiles(options.cwd, feedbackPaths);
   const commandTranscriptIndex = await indexCommandTranscriptFiles(options.cwd, commandTranscriptPaths);
   const commandTranscripts = commandTranscriptIndex.transcripts;
+  // Phase 5a: ingest structured test output (JUnit XML + optional coverage).
+  // When --test-output is absent this is the empty result and nothing changes.
+  const testOutputPaths = options.testOutputPaths ?? [];
+  const testResults =
+    testOutputPaths.length > 0 || options.coverageOutputPath
+      ? ingestTestOutputs(options.cwd, testOutputPaths, options.coverageOutputPath)
+      : emptyTestResults();
   const git = collectGitInfo(options.cwd, options.baseRef, options.headRef);
   const allChangedFiles = collectChangedFiles(options.cwd, options.baseRef, options.headRef);
   const changedFiles = allChangedFiles.filter((file) => !ignore.isIgnored(file.path));
@@ -93,6 +114,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const commits = collectCommits(options.cwd, options.baseRef, options.headRef);
   const docs = docPaths.map((docPath) => ({ path: docPath, kind: classifyDoc(docPath) }));
   const tests = testPaths.map((testPath) => ({ path: testPath, kind: "test" }));
+  const repoIndex = buildRepoIndex({ cwd: options.cwd, changedFiles, repositoryFiles });
   const privacy = {
     ignore_file: ignore.ignoreFile,
     ignore_patterns: ignore.patterns,
@@ -161,6 +183,12 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     schema_version: "review-surfaces.tests.index.v1",
     tests
   });
+  await writeJson(path.join(inputsDir, "repo.index.json"), {
+    schema_version: REPO_INDEX_SCHEMA_VERSION,
+    files: repoIndex.files,
+    ecosystems: repoIndex.ecosystems,
+    clusters: repoIndex.clusters
+  });
   await writeJson(path.join(inputsDir, "feedback.index.json"), {
     schema_version: "review-surfaces.feedback.index.v1",
     feedback
@@ -169,6 +197,18 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     schema_version: "review-surfaces.commands.v1",
     transcripts: commandTranscripts
   });
+  // Only materialize tests.results.json when structured test output was actually
+  // supplied, so the default pipeline (no --test-output) stays byte-stable.
+  if (testOutputPaths.length > 0 || options.coverageOutputPath) {
+    await writeJson(path.join(inputsDir, TEST_RESULTS_OUTPUT_FILENAME), {
+      schema_version: TEST_RESULTS_SCHEMA_VERSION,
+      suites: testResults.suites,
+      cases: testResults.cases,
+      totals: testResults.totals,
+      coverage: testResults.coverage,
+      source_paths: testResults.source_paths
+    });
+  }
   await writeJson(path.join(inputsDir, "privacy.json"), {
     schema_version: "review-surfaces.privacy.v1",
     ...privacy
@@ -186,7 +226,9 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     feedback,
     commandTranscripts,
     commandTranscriptOutputPath: commandsOutputPath,
+    testResults,
     repositoryFiles,
+    repoIndex,
     privacy,
     git
   };
