@@ -31,6 +31,8 @@ areas:
       - src/acai/
       - src/core/
       - src/commands/
+      - src/indexer/
+      - src/tests-evidence/
     purpose: Collect Git, diff, docs, tests, and input indexes.
     pattern: deterministic collector
     test_keywords:
@@ -48,6 +50,7 @@ areas:
       - docs/review-surfaces-trd.md
       - review-surfaces.config.yaml
       - src/config/
+      - src/bootstrap/
       - scripts/copy-env.sh
       - scripts/SECRETS.md
       - types/
