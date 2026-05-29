@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileExists } from "../core/files";
 import { redactSecrets } from "../privacy/secrets";
+import { isHypothesisOnly } from "../evidence/evidence";
 import type { EvidenceRef } from "../evidence/evidence";
 import type { RequirementResult } from "../evaluation/evaluate";
 import type { RiskItem } from "../risks/risks";
@@ -247,14 +248,6 @@ function hypothesisResults(packet: ReviewPacket): SarifResult[] {
   }
 
   return results;
-}
-
-// True when the evidence set is non-empty AND every ref is LLM-proposed. An empty
-// set is NOT hypothesis-only (the item simply has no evidence), so deterministic
-// risks with no refs still emit at their real severity level.
-function isHypothesisOnly(evidence: EvidenceRef[] | undefined): boolean {
-  const refs = evidence ?? [];
-  return refs.length > 0 && refs.every((ref) => ref.llm_proposed === true);
 }
 
 // Build SARIF locations from evidence refs that carry a file path. Region

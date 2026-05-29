@@ -171,3 +171,15 @@ export function llmProposedEvidence(
 export function isLlmProposed(ref: EvidenceRef): boolean {
   return ref.llm_proposed === true;
 }
+
+/**
+ * True when the evidence set is non-empty AND every ref is LLM-proposed, i.e. the
+ * item rests ENTIRELY on hypotheses with no deterministic backing. An empty set
+ * is NOT hypothesis-only (the item simply has no evidence), so a deterministic
+ * finding with no refs is still treated as proof. Renderers use this to quarantine
+ * hypothesis-only material away from deterministic findings (review-surfaces.EVIDENCE.6).
+ */
+export function isHypothesisOnly(evidence: EvidenceRef[] | undefined): boolean {
+  const refs = evidence ?? [];
+  return refs.length > 0 && refs.every((ref) => ref.llm_proposed === true);
+}

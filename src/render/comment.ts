@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileExists } from "../core/files";
 import { redactSecrets } from "../privacy/secrets";
+import { isHypothesisOnly } from "../evidence/evidence";
 import { countRequirementStatuses, formatRequirementStatusSummary } from "../evaluation/status";
 import type { ReviewPacket } from "./packet";
 
@@ -31,6 +32,18 @@ const MAX_REVIEW_FOCUS = 5;
 const MAX_RISKS = 5;
 const MAX_NON_SATISFIED = 6;
 const MAX_HYPOTHESES = 6;
+
+// Per-line and total length bounds. Item COUNT caps alone do not bound the
+// comment: free-text fields (risk/result summaries, requirement text, file
+// paths) are partly user/agent-controlled and can be arbitrarily long, so each
+// interpolated line is truncated and the assembled comment is hard-capped well
+// under GitHub's ~65,536-char per-comment limit. Without these, a single
+// oversized summary or path could blow past the limit and a later --post would
+// silently fail to upsert.
+const MAX_LINE_CHARS = 300;
+const MAX_COMMENT_CHARS = 60000;
+const COMMENT_TRUNCATED_TRAILER =
+  "\n\n... truncated; see `.review-surfaces/review_packet.json` for the full packet.\n";
 
 export interface RenderedComment {
   markdown: string;
@@ -95,7 +108,32 @@ export function renderComment(packet: ReviewPacket): string {
   ];
 
   // Single trailing newline so two renders of the same packet are byte-identical.
-  return `${sections.join("\n")}\n`;
+  // Per-line truncation already bounds each interpolated field; the total cap is a
+  // belt-and-suspenders guarantee (many capped lines could still add up) that the
+  // assembled comment stays under GitHub's per-comment limit.
+  return clampTotal(`${sections.join("\n")}\n`);
+}
+
+// Hard-cap the assembled comment so it can never exceed GitHub's per-comment
+// limit. Deterministic: same input -> same (possibly truncated) output. The
+// trailer points the reviewer at the full local packet.
+function clampTotal(markdown: string): string {
+  if (markdown.length <= MAX_COMMENT_CHARS) {
+    return markdown;
+  }
+  const budget = MAX_COMMENT_CHARS - COMMENT_TRUNCATED_TRAILER.length;
+  return `${markdown.slice(0, budget)}${COMMENT_TRUNCATED_TRAILER}`;
+}
+
+// Truncate a single interpolated free-text field to a sane per-line length so a
+// pathological summary/path/requirement can't blow up the comment. Deterministic
+// and newline-collapsing so one field can't smuggle extra markdown lines in.
+function truncateField(value: string): string {
+  const oneLine = value.replace(/\s+/g, " ").trim();
+  if (oneLine.length <= MAX_LINE_CHARS) {
+    return oneLine;
+  }
+  return `${oneLine.slice(0, MAX_LINE_CHARS - 1)}…`;
 }
 
 function readMilestone(packet: ReviewPacket): string | undefined {
@@ -104,13 +142,18 @@ function readMilestone(packet: ReviewPacket): string | undefined {
 }
 
 function reviewFocus(packet: ReviewPacket, limit: number): string[] {
-  return (packet.risks?.review_focus ?? []).slice(0, limit).map((item) => redact(item));
+  return (packet.risks?.review_focus ?? []).slice(0, limit).map((item) => redact(truncateField(item)));
 }
 
+// Mirror the SARIF renderer: the deterministic "Top risks" list excludes risk
+// items whose evidence is entirely LLM-proposed. Those hypotheses are already
+// surfaced (clearly labeled) under the dedicated hypotheses section, so they must
+// not be intermixed with deterministic findings here (review-surfaces.EVIDENCE.6).
 function topRisks(packet: ReviewPacket, limit: number): string[] {
   return (packet.risks?.items ?? [])
+    .filter((risk) => !isHypothesisOnly(risk.evidence))
     .slice(0, limit)
-    .map((risk) => redact(`${risk.id} [${risk.severity}]: ${risk.summary}`));
+    .map((risk) => redact(`${risk.id} [${risk.severity}]: ${truncateField(risk.summary)}`));
 }
 
 // Compact coverage: the count summary line plus a few NON-satisfied requirement
@@ -126,7 +169,7 @@ function coverageLines(
   const nonSatisfied = (packet.evaluation.results ?? []).filter((result) => result.status !== "satisfied");
   for (const result of nonSatisfied.slice(0, MAX_NON_SATISFIED)) {
     const id = result.acai_id ?? result.requirement_id;
-    lines.push(redact(`${id}: ${result.status} - ${result.summary}`));
+    lines.push(redact(`${id}: ${result.status} - ${truncateField(result.summary)}`));
   }
   if (nonSatisfied.length > MAX_NON_SATISFIED) {
     lines.push(`... ${nonSatisfied.length - MAX_NON_SATISFIED} more in review_packet.json`);
@@ -140,19 +183,19 @@ function hypotheses(packet: ReviewPacket, limit: number): string[] {
   const lines: string[] = [];
   for (const requirement of packet.intent?.requirements ?? []) {
     if (requirement.llm_derived) {
-      lines.push(`requirement ${requirement.id}: ${requirement.requirement}`);
+      lines.push(`requirement ${requirement.id}: ${truncateField(requirement.requirement)}`);
     }
   }
   for (const result of packet.evaluation?.results ?? []) {
     for (const ref of [...(result.evidence ?? []), ...(result.missing_evidence ?? [])]) {
       if (ref.llm_proposed === true) {
-        lines.push(`${result.acai_id ?? result.requirement_id} [${ref.validation_status ?? "unknown"}]: ${ref.path ?? ref.note ?? ref.kind}`);
+        lines.push(`${result.acai_id ?? result.requirement_id} [${ref.validation_status ?? "unknown"}]: ${truncateField(ref.path ?? ref.note ?? ref.kind)}`);
       }
     }
   }
   for (const item of packet.risks?.items ?? []) {
     if ((item.evidence ?? []).some((ref) => ref.llm_proposed === true)) {
-      lines.push(`${item.id}: ${item.summary}`);
+      lines.push(`${item.id}: ${truncateField(item.summary)}`);
     }
   }
   const visible = lines.slice(0, limit).map((line) => redact(line));

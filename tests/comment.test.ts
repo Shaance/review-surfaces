@@ -118,6 +118,68 @@ test("review-surfaces.PROVIDERS.1 comment is review-sized (length-bounded)", () 
   }
 });
 
+test("review-surfaces.PROVIDERS.1 comment enforces a real length bound on pathological free-text", () => {
+  const tmp = setupFixture("review-surfaces-comment-bound-");
+  try {
+    runAll(tmp);
+    // Inject pathological free-text into the local packet: huge risk and
+    // requirement summaries plus an unbounded foreign-repo path. The bound must
+    // hold regardless of input length, not by luck of short mock summaries.
+    const packetPath = path.join(tmp, ".review-surfaces", "review_packet.json");
+    const packet = JSON.parse(fs.readFileSync(packetPath, "utf8"));
+    const big = "X".repeat(200000);
+    packet.risks.items.unshift({ id: "RISK-BIG", category: "correctness", severity: "high", summary: big, evidence: [] });
+    if (packet.evaluation.results.length > 0) {
+      packet.evaluation.results[0].status = "missing";
+      packet.evaluation.results[0].summary = big;
+    }
+    fs.writeFileSync(packetPath, JSON.stringify(packet, null, 2));
+
+    const result = runComment(tmp);
+    assert.equal(result.status, 0, result.stderr);
+
+    // Total comment stays well under GitHub's ~65,536-char per-comment limit.
+    assert.ok(
+      result.stdout.length < 65536,
+      `comment must stay under the GitHub per-comment limit, was ${result.stdout.length} chars`
+    );
+    // No single line carries the unbounded 200k field: per-line truncation holds.
+    const longestLine = Math.max(...result.stdout.split("\n").map((line) => line.length));
+    assert.ok(longestLine < 1000, `no line should be unbounded, longest was ${longestLine} chars`);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.EVIDENCE.6 comment does not intermix LLM hypothesis risks into deterministic Top risks", () => {
+  const tmp = setupFixture("review-surfaces-comment-toprisks-");
+  try {
+    fs.writeFileSync(path.join(tmp, "agent-input.json"), AGENT_INPUT_FIXTURE);
+    // Offline agent-file provider appends LLM-RISK-* hypotheses (severity unknown,
+    // llm_proposed-only evidence). They must be quarantined under the hypotheses
+    // header, mirroring the SARIF renderer, NOT listed under "### Top risks".
+    runAll(tmp, ["--provider", "agent-file", "--agent-input", "agent-input.json"]);
+    const result = runComment(tmp);
+    assert.equal(result.status, 0, result.stderr);
+
+    // Slice out just the deterministic Top risks block.
+    const topRisksBlock = result.stdout.slice(
+      result.stdout.indexOf("### Top risks"),
+      result.stdout.indexOf("### Requirement coverage")
+    );
+    assert.doesNotMatch(topRisksBlock, /LLM-RISK/, "LLM hypothesis risks must not appear under deterministic Top risks");
+
+    // They MUST still be surfaced under the labeled hypotheses section.
+    const hypothesesBlock = result.stdout.slice(
+      result.stdout.indexOf("### LLM/agent hypotheses")
+    );
+    assert.match(hypothesesBlock, /LLM-RISK-001/);
+    assert.match(hypothesesBlock, /LLM-RISK-002/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.EVIDENCE.6 comment clearly labels LLM/agent hypotheses as non-proof", () => {
   const tmp = setupFixture("review-surfaces-comment-hyp-");
   try {
