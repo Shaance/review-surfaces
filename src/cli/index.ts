@@ -9,12 +9,12 @@ import { CliError, ExitCodes } from "../core/exit-codes";
 import { fileExists } from "../core/files";
 import { gateDecision, GateOptions } from "../core/gate";
 import { ArchitectureModel, buildArchitecture, buildArchitectureModel } from "../diagrams/diagrams";
-import { buildDogfood, DogfoodComparisonInput } from "../dogfood/dogfood";
+import { buildDogfood, DogfoodComparisonInput, DogfoodModel } from "../dogfood/dogfood";
 import { comparePackets, loadPreviousPacket, resolvePreviousPacketPath } from "../dogfood/compare";
 import { EvaluationModel, evaluateIntent, verifyRequirementsWithTests } from "../evaluation/evaluate";
 import { buildIntent, IntentModel } from "../intent/intent";
 import { effectiveModelId, enrichPacket, EnrichmentResult, parseProviderName, providerFor, ProviderName } from "../llm/provider";
-import { runEvaluationReasoning, runIntentReasoning, runNarrativeReasoning } from "../llm/reasoning";
+import { ReasoningOptions, runEvaluationReasoning, runIntentReasoning, runNarrativeReasoning } from "../llm/reasoning";
 import { buildMethodology, MethodologyModel } from "../methodology/methodology";
 import { buildReviewAreas, ReviewArea } from "../review-areas/areas";
 import { analyzeRisks, RisksModel } from "../risks/risks";
@@ -391,7 +391,13 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   });
   const reasoningOptions = {
     redactSecrets: config.privacy.redact_secrets,
-    remotePrivacyBlocked: collection.privacy.remote_provider_blocked
+    remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
+    // FINDING C: thread the SAME config-derived review areas evaluateIntent uses
+    // (present only in config mode) into the candidate-evidence group mapping, so
+    // a config-area-mapped citation upgrades missing -> partial like the
+    // deterministic evaluator's mapping would. Undefined in fallback mode keeps
+    // the prior repo-index-cluster behavior.
+    reviewAreas: areasOption.areas
   };
   // FINDING A: intent synthesis (which may append LLM candidate_requirements) runs
   // BEFORE evaluateIntent inside this helper, so the returned evaluation has a
@@ -481,17 +487,86 @@ interface StageContext {
   provider: ProviderName;
   requestedModel?: string;
   areasOption: { areas?: ReviewArea[] };
+  // FINDING E: the deterministic signature recorded in the PRIOR manifest.json
+  // (read BEFORE collect() overwrote it with the current run's signature). When it
+  // does not match the current collection signature, any prior-stage artifacts
+  // under --out (intent/evaluation/risks.yaml) were produced from DIFFERENT inputs
+  // and must NOT be loaded as-is -- they would publish a packet whose
+  // coverage/risks are stale relative to the current manifest/architecture.
+  // Undefined when there was no prior manifest (first run) -- nothing to load
+  // anyway, so the stages compute normally.
+  priorSignature?: string;
+}
+
+// FINDING E: read the signature stamped in the prior manifest.json (if any) so a
+// composable stage can tell whether prior-stage artifacts under --out were
+// produced from the SAME inputs. Must be called BEFORE collect() rewrites the
+// manifest. Any read/parse failure (no prior run, corrupt manifest) yields
+// undefined, which forces a recompute (never a stale load).
+async function readPriorManifestSignature(cwd: string, parsed: ParsedArgs): Promise<string | undefined> {
+  const outputDir = await resolveOutputDir(cwd, parsed);
+  const manifestPath = path.join(outputDir, "manifest.json");
+  if (!fileExists(manifestPath)) {
+    return undefined;
+  }
+  try {
+    const parsedManifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    return parsedManifest && typeof parsedManifest.signature === "string" ? parsedManifest.signature : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function buildStageContext(parsed: ParsedArgs): Promise<StageContext> {
   const cwd = process.cwd();
+  // FINDING E: snapshot the prior manifest signature BEFORE collect() overwrites
+  // manifest.json with the current run's signature, so stale prior-stage artifacts
+  // can be detected and recomputed rather than loaded.
+  const priorSignature = await readPriorManifestSignature(cwd, parsed);
   const { collection, config } = await collect(parsed);
   const commands = [`review-surfaces ${parsed.command} ${process.argv.slice(3).join(" ")}`.trim()];
   const provider = providerFlag(parsed, config);
   const requestedModel = stringFlag(parsed, "model") ?? config.llm.model ?? undefined;
   const reviewAreas = buildReviewAreas({ config, repoIndex: collection.repoIndex });
   const areasOption = reviewAreas.mode === "config" ? { areas: reviewAreas.areas } : {};
-  return { cwd, parsed, collection, config, commands, provider, requestedModel, areasOption };
+  return { cwd, parsed, collection, config, commands, provider, requestedModel, areasOption, priorSignature };
+}
+
+// FINDING E: prior-stage artifacts under --out are only safe to LOAD when they
+// were produced from the SAME inputs as this run. The current signature lives in
+// the freshly-written manifest; the prior signature was snapshotted before
+// collect() overwrote it. They match => prior artifacts are current and may be
+// reused (compose). They differ (inputs changed) OR there is no current signature
+// => recompute every stage so a reused --out never publishes stale coverage/risks.
+function priorArtifactsAreCurrent(context: StageContext): boolean {
+  const currentSignature = context.collection.manifest.signature;
+  return typeof currentSignature === "string" && context.priorSignature === currentSignature;
+}
+
+// FINDING E: signature-gated artifact loaders. Each returns the prior-stage
+// artifact ONLY when its producing manifest signature matches the current run
+// (priorArtifactsAreCurrent); otherwise null, so the caller recomputes the stage
+// from current inputs instead of composing a stale artifact. When inputs are
+// unchanged these are exactly the underlying loaders, so compose==monolith and
+// the byte-stable offline path are preserved.
+function loadCurrentIntent(context: StageContext): IntentModel | null {
+  return priorArtifactsAreCurrent(context) ? loadIntent(context.collection.outputDir) : null;
+}
+
+function loadCurrentEvaluation(context: StageContext): EvaluationModel | null {
+  return priorArtifactsAreCurrent(context) ? loadEvaluation(context.collection.outputDir) : null;
+}
+
+function loadCurrentMethodology(context: StageContext): MethodologyModel | null {
+  return priorArtifactsAreCurrent(context) ? loadMethodology(context.collection.outputDir) : null;
+}
+
+function loadCurrentRisks(context: StageContext): RisksModel | null {
+  return priorArtifactsAreCurrent(context) ? loadRisks(context.collection.outputDir) : null;
+}
+
+function loadCurrentDogfood(context: StageContext): DogfoodModel | null {
+  return priorArtifactsAreCurrent(context) ? loadDogfood(context.collection.outputDir) : null;
 }
 
 function reasoningProviderFor(context: StageContext) {
@@ -530,12 +605,19 @@ async function computeEnrichedIntent(context: StageContext): Promise<IntentModel
 function reasoningOptionsFor(context: StageContext) {
   return {
     redactSecrets: context.config.privacy.redact_secrets,
-    remotePrivacyBlocked: context.collection.privacy.remote_provider_blocked
+    remotePrivacyBlocked: context.collection.privacy.remote_provider_blocked,
+    // FINDING C: thread the SAME config-derived review areas evaluateIntent uses
+    // (config mode only) so the composed candidate-evidence stage maps cited paths
+    // by config area, matching `all`. Undefined in fallback mode preserves the
+    // prior repo-index-cluster behavior.
+    reviewAreas: context.areasOption.areas
   };
 }
 
 async function loadOrComputeIntent(context: StageContext, label = "intent"): Promise<IntentModel> {
-  const loaded = loadIntent(context.collection.outputDir);
+  // FINDING E: only compose a prior intent.yaml when it was produced from the same
+  // inputs; otherwise recompute so a reused --out never reuses a stale artifact.
+  const loaded = loadCurrentIntent(context);
   if (loaded) {
     return loaded;
   }
@@ -578,7 +660,9 @@ async function loadOrComputeEvaluation(
   context: StageContext,
   intentForCompute: () => Promise<IntentModel>
 ): Promise<EvaluationModel> {
-  const loaded = loadEvaluation(context.collection.outputDir);
+  // FINDING E: only compose a prior evaluation.yaml when its producing signature
+  // matches; a stale coverage artifact must be recomputed, not reused.
+  const loaded = loadCurrentEvaluation(context);
   if (loaded) {
     return loaded;
   }
@@ -591,7 +675,9 @@ async function computeMethodology(context: StageContext): Promise<MethodologyMod
 }
 
 async function loadOrComputeMethodology(context: StageContext): Promise<MethodologyModel> {
-  const loaded = loadMethodology(context.collection.outputDir);
+  // FINDING E: recompute when the prior methodology.yaml is stale (signature
+  // mismatch) instead of composing it.
+  const loaded = loadCurrentMethodology(context);
   if (loaded) {
     return loaded;
   }
@@ -608,7 +694,9 @@ async function loadOrComputeRisks(
   evaluationForCompute: () => Promise<EvaluationModel>,
   methodologyForCompute: () => Promise<MethodologyModel>
 ): Promise<RisksModel> {
-  const loaded = loadRisks(context.collection.outputDir);
+  // FINDING E: recompute when the prior risks.yaml is stale (signature mismatch)
+  // instead of composing it.
+  const loaded = loadCurrentRisks(context);
   if (loaded) {
     return loaded;
   }
@@ -715,7 +803,9 @@ interface ReasonedEvaluation {
 // backs `all` and buildEnrichedModels so compose == monolith.
 async function runReasoningWithVerification(
   reasoningProvider: ReturnType<typeof providerFor>,
-  reasoningOptions: { redactSecrets?: boolean; remotePrivacyBlocked?: boolean },
+  // FINDING C: ReasoningOptions carries the config-derived reviewAreas through to
+  // the candidate-evidence stage; a narrower local type would silently strip it.
+  reasoningOptions: ReasoningOptions,
   inputs: VerificationStageInputs
 ): Promise<ReasonedEvaluation> {
   const { cwd, collection, intent, methodology, commands, areasOption } = inputs;
@@ -909,6 +999,13 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
   // deterministic-only compute, so a standalone `packet` under a non-mock
   // provider still equals `all`. Under mock the enriched models collapse to the
   // deterministic ones, keeping the byte-stable offline path.
+  //
+  // FINDING E: each load is signature-gated (loadCurrent*) so a reused --out whose
+  // inputs changed (different diff range/spec/provider input/source files, i.e. a
+  // signature mismatch) RECOMPUTES coverage/risks from current inputs instead of
+  // publishing a packet whose manifest/architecture are current but whose loaded
+  // requirement coverage/risks are stale. With unchanged inputs they are the plain
+  // loaders, so the composable evaluate->packet flow still composes.
   let enrichedCache: EnrichedModels | undefined;
   const enriched = async (): Promise<EnrichedModels> => {
     if (!enrichedCache) {
@@ -917,10 +1014,10 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
     }
     return enrichedCache;
   };
-  const intent = loadIntent(context.collection.outputDir) ?? (await enriched()).intent;
-  const evaluation = loadEvaluation(context.collection.outputDir) ?? (await enriched()).evaluation;
-  const methodology = loadMethodology(context.collection.outputDir) ?? (await enriched()).methodology;
-  const risks = loadRisks(context.collection.outputDir) ?? (await enriched()).risks;
+  const intent = loadCurrentIntent(context) ?? (await enriched()).intent;
+  const evaluation = loadCurrentEvaluation(context) ?? (await enriched()).evaluation;
+  const methodology = loadCurrentMethodology(context) ?? (await enriched()).methodology;
+  const risks = loadCurrentRisks(context) ?? (await enriched()).risks;
   const architecture = await computeArchitecture(context, evaluation);
 
   const preEnrichment: EnrichmentResult = {
@@ -955,7 +1052,9 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
   // a standalone `packet --dogfood` always emits a schema-valid packet rather
   // than one missing the required dogfood/agent_handoff sections.
   const dogfood = isDogfoodRun(parsed)
-    ? loadDogfood(context.collection.outputDir) ??
+    ? // FINDING E: only compose a prior dogfood.yaml when it is current; a stale one
+      // (inputs changed) is rebuilt from the post-enrichment packet.
+      loadCurrentDogfood(context) ??
       buildDogfood(
         context.collection,
         packet.evaluation,
@@ -994,7 +1093,8 @@ async function runHandoffStage(parsed: ParsedArgs): Promise<void> {
     async () => evaluation,
     async () => methodology
   );
-  const dogfood = loadDogfood(context.collection.outputDir) ?? undefined;
+  // FINDING E: compose a prior dogfood.yaml / intent.yaml only when it is current.
+  const dogfood = loadCurrentDogfood(context) ?? undefined;
   const enrichment: EnrichmentResult = {
     provider: context.provider,
     model: context.requestedModel,
@@ -1003,7 +1103,7 @@ async function runHandoffStage(parsed: ParsedArgs): Promise<void> {
   };
   await writeHandoffArtifact(context.collection.outputDir, {
     collection: context.collection,
-    intent: loadIntent(context.collection.outputDir) ?? (await buildIntent(context.cwd, context.collection)),
+    intent: loadCurrentIntent(context) ?? (await buildIntent(context.cwd, context.collection)),
     evaluation,
     // PER-STAGE ISOLATION: the `handoff` stage writes ONLY agent_handoff.md.
     // buildHandoff never reads architecture, so build the model without the

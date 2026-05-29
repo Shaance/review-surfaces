@@ -415,24 +415,29 @@ async function scaffoldAgents(cwd: string, force: boolean, validateOnly: boolean
   const absolutePath = resolveInside(cwd, AGENTS_FILE);
   const exists = fileExists(absolutePath);
 
+  // FINDING A: AGENTS.md is part of the scaffold BOOTSTRAP.2/5 + the README
+  // promise, so it is REQUIRED for `bootstrap --strict` (a missing/empty
+  // AGENTS.md must trip the quality gate, not be silently ignored). The
+  // no-overwrite behavior below is preserved independently of this flag: init
+  // still never clobbers an existing AGENTS.md, even with --force.
   if (validateOnly) {
     if (!exists) {
-      return { path: AGENTS_FILE, status: "missing", required: false };
+      return { path: AGENTS_FILE, status: "missing", required: true };
     }
     const error = await tryValidate(validateNonEmpty, cwd, absolutePath);
     return error
-      ? { path: AGENTS_FILE, status: "invalid", detail: error, required: false }
-      : { path: AGENTS_FILE, status: "exists", required: false };
+      ? { path: AGENTS_FILE, status: "invalid", detail: error, required: true }
+      : { path: AGENTS_FILE, status: "exists", required: true };
   }
 
   // AGENTS.md is user-owned context. If it already exists, never mutate it,
   // even with --force, so we do not stomp an existing contributor workflow.
   if (exists) {
-    return { path: AGENTS_FILE, status: "exists", required: false };
+    return { path: AGENTS_FILE, status: "exists", required: true };
   }
 
   await writeText(absolutePath, renderAgents(repoFeatureName(cwd)));
-  return { path: AGENTS_FILE, status: "created", required: false };
+  return { path: AGENTS_FILE, status: "created", required: true };
 }
 
 function renderAgents(featureName: string): string {

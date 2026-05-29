@@ -10,6 +10,7 @@ import { MethodologyModel } from "../src/methodology/methodology";
 import { RisksModel } from "../src/risks/risks";
 import { agentFileProvider, ReasoningProvider, StructuredResult } from "../src/llm/provider";
 import { runReasoningStages } from "../src/llm/reasoning";
+import { ReviewArea } from "../src/review-areas/areas";
 import { rewriteReviewPacket, ReviewPacket } from "../src/render/packet";
 import { validateJsonFile } from "../src/schema/json-schema";
 
@@ -437,6 +438,383 @@ test("FINDING D: a DETERMINISTICALLY group-mapped path (strict area mapping) DOE
 
   const result = evaluation.results[0];
   assert.equal(result.status, "partial", "a strict group-mapped valid citation upgrades missing -> partial");
+});
+
+// ---------------------------------------------------------------------------
+// FINDING C (round 5): in a repo with `areas:` configured, the candidate-evidence
+// stage must use the SAME config-derived review areas evaluateIntent uses (threaded
+// via ReasoningOptions.reviewAreas). A config-area-mapped in-pool citation (e.g.
+// src/cli/* for a *.CLI.* requirement) is then recognized as a DETERMINISTIC tie
+// and upgrades missing -> partial -- whereas the fallback cluster areas would map
+// the same path to CLUSTER:SRC/CLI (NOT CLI), leaving it a hypothesis-only and the
+// requirement missing (tripping --strict). The round-4 Finding D soundness must NOT
+// be re-loosened: an UNRELATED path (no config-group mapping, no ACID) still stays
+// missing even when config areas are threaded.
+// ---------------------------------------------------------------------------
+
+// Intent + evaluation keyed to a CLI-group requirement (example.CLI.1).
+function cliIntent(): IntentModel {
+  return {
+    summary: "Built deterministic intent.",
+    requirements: [
+      {
+        id: "REQ-001",
+        acai_id: "example.CLI.1",
+        requirement: "The CLI dispatcher must parse commands.",
+        source_refs: [{ kind: "spec", ref: "features/example.feature.yaml" }],
+        constraints: [],
+        assumptions: [],
+        open_questions: [],
+        confidence: "high"
+      }
+    ],
+    constraints: [],
+    non_goals: [],
+    assumptions: [],
+    open_questions: [],
+    sources: []
+  };
+}
+
+function cliMissingEvaluation(): EvaluationModel {
+  return {
+    summary: "1 requirement evaluated.",
+    results: [
+      {
+        requirement_id: "REQ-001",
+        acai_id: "example.CLI.1",
+        status: "missing",
+        summary: "No implementation or test evidence was found.",
+        evidence: [],
+        missing_evidence: [],
+        review_focus: "Review whether this requirement needs implementation or tests.",
+        confidence: "medium"
+      }
+    ],
+    overreach: [],
+    acai_coverage: { "example.CLI.1": "missing" }
+  };
+}
+
+// A CONFIG-derived area mapping src/cli/ -> group CLI. Note the fallback cluster
+// for the same path would be CLUSTER:SRC/CLI, which does NOT match the CLI group.
+const CLI_CONFIG_AREAS: ReviewArea[] = [
+  {
+    id: "SUB-CLI",
+    name: "CLI orchestration",
+    groupKey: "CLI",
+    prefixes: ["src/cli/"],
+    purpose: "Parse commands and wire stages.",
+    pattern: "command dispatcher",
+    testKeywords: ["cli"]
+  }
+];
+
+// A collection whose FALLBACK cluster yields CLUSTER:SRC/CLI for src/cli/ (NOT the
+// CLI group), so without the config areas the citation is not a tie.
+function cliCollection(tmp: string): CollectionResult {
+  fs.mkdirSync(path.join(tmp, "src", "cli"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src", "other"), { recursive: true });
+  fs.writeFileSync(path.join(tmp, "src", "cli", "index.ts"), "export const dispatch = () => 'ok';\n");
+  fs.writeFileSync(path.join(tmp, "src", "other", "unrelated.ts"), "export const unrelated = 1;\n");
+  return baseCollection(tmp, {
+    repositoryFiles: ["src/cli/index.ts", "src/other/unrelated.ts"],
+    changedFiles: [
+      { path: "src/cli/index.ts", status: "M", source: "working_tree" },
+      { path: "src/other/unrelated.ts", status: "A", source: "working_tree" }
+    ],
+    repoIndex: {
+      files: [],
+      ecosystems: [],
+      clusters: [
+        { id: "cluster:src/cli", label: "src/cli", language: "typescript", dirs: ["src/cli"], files: ["src/cli/index.ts"] },
+        { id: "cluster:src/other", label: "src/other", language: "typescript", dirs: ["src/other"], files: ["src/other/unrelated.ts"] }
+      ]
+    }
+  });
+}
+
+test("FINDING C: a config-area-mapped citation (src/cli/* for CLI.*) upgrades missing -> partial", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-findingC-mapped-"));
+  const collection = cliCollection(tmp);
+  const evaluation = cliMissingEvaluation();
+
+  const provider = stubProvider({
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.CLI.1",
+        requirement_id: "REQ-001",
+        // In-pool, config-area-mapped (src/cli/ -> CLI) -- no ACID in the note, so
+        // the tie comes ONLY from the threaded config areas.
+        candidate_evidence: [{ kind: "file", path: "src/cli/index.ts", note: "the dispatcher" }],
+        rationale: "Config-area-mapped citation.",
+        what_would_confirm: "A focused test."
+      }
+    ])
+  });
+
+  await runReasoningStages(
+    provider,
+    { collection, intent: cliIntent(), evaluation, methodology: emptyMethodology(), risks: emptyRisks() },
+    { reviewAreas: CLI_CONFIG_AREAS }
+  );
+
+  const result = evaluation.results[0];
+  assert.equal(result.status, "partial", "a config-area-mapped (src/cli/ -> CLI) citation must upgrade missing -> partial");
+  assert.ok(
+    result.evidence.some((ref) => ref.llm_proposed === true && ref.path === "src/cli/index.ts"),
+    "the config-mapped hypothesis is attached"
+  );
+});
+
+test("FINDING C (regression baseline): WITHOUT the config areas, the same src/cli/ citation maps to a fallback cluster (NOT CLI) and stays missing", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-findingC-fallback-"));
+  const collection = cliCollection(tmp);
+  const evaluation = cliMissingEvaluation();
+
+  const provider = stubProvider({
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.CLI.1",
+        requirement_id: "REQ-001",
+        candidate_evidence: [{ kind: "file", path: "src/cli/index.ts", note: "the dispatcher" }],
+        rationale: "Config-area-mapped citation."
+      }
+    ])
+  });
+
+  // No reviewAreas threaded -> the stage falls back to repo-index cluster areas,
+  // whose group for src/cli/ is CLUSTER:SRC/CLI, not CLI. So the citation is a
+  // hypothesis-only and the requirement stays missing. This is the bug FINDING C
+  // fixes (the config areas above flip it to partial); it doubles as the proof the
+  // upgrade is driven by the threaded config areas, not pool membership.
+  await runReasoningStages(provider, {
+    collection,
+    intent: cliIntent(),
+    evaluation,
+    methodology: emptyMethodology(),
+    risks: emptyRisks()
+  });
+
+  const result = evaluation.results[0];
+  assert.equal(result.status, "missing", "without config areas the src/cli/ citation is not a CLI tie and stays missing");
+  assert.ok(
+    result.evidence.some((ref) => ref.llm_proposed === true && ref.path === "src/cli/index.ts"),
+    "the citation is still attached as a hypothesis (proving it stays missing as a hypothesis, not a no-op)"
+  );
+});
+
+test("FINDING C (round-4 D soundness preserved): an UNRELATED path stays missing even with config areas threaded", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-findingC-unrelated-"));
+  const collection = cliCollection(tmp);
+  const evaluation = cliMissingEvaluation();
+
+  const provider = stubProvider({
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.CLI.1",
+        requirement_id: "REQ-001",
+        // In-pool but src/other/ does NOT map to the CLI config group and the note
+        // carries no ACID -> hypothesis only, status must stay missing.
+        candidate_evidence: [{ kind: "file", path: "src/other/unrelated.ts", note: "I think this helps" }],
+        rationale: "Speculative association."
+      }
+    ])
+  });
+
+  await runReasoningStages(
+    provider,
+    { collection, intent: cliIntent(), evaluation, methodology: emptyMethodology(), risks: emptyRisks() },
+    { reviewAreas: CLI_CONFIG_AREAS }
+  );
+
+  const result = evaluation.results[0];
+  assert.equal(result.status, "missing", "an unrelated, non-config-mapped citation must stay missing (D soundness not re-loosened)");
+  assert.ok(
+    result.evidence.some((ref) => ref.llm_proposed === true && ref.path === "src/other/unrelated.ts"),
+    "the unrelated hypothesis is still attached (proving the guard kept it missing, not a no-op)"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// FINDING D (round 5, EVIDENCE.4): a genuinely-invalid in-pool LLM-proposed ref
+// (bad line range) must flip the requirement to invalid_evidence (not be quietly
+// buried in missing_evidence with status unchanged), so the --strict exit-4
+// evidence gate catches it. An out-of-pool ref (a valid-looking but out-of-scope
+// citation) and a valid hypothesis must NOT trigger invalid_evidence.
+// ---------------------------------------------------------------------------
+
+test("FINDING D (EVIDENCE.4): a genuinely-invalid in-pool ref (out-of-range line) flips the requirement to invalid_evidence", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-findingD-invalid-"));
+  fs.mkdirSync(path.join(tmp, "src", "billing"), { recursive: true });
+  // A short, real, in-pool changed file. Citing a line range far past its length
+  // makes validateEvidenceRef return invalid ("line range is outside the file").
+  fs.writeFileSync(path.join(tmp, "src", "billing", "invoice.ts"), "export const invoice = 1;\n");
+
+  const collection = baseCollection(tmp, {
+    repositoryFiles: ["src/billing/invoice.ts"],
+    changedFiles: [{ path: "src/billing/invoice.ts", status: "M", source: "working_tree" }]
+  });
+  const evaluation = evaluationWithStatus("missing");
+
+  const provider = stubProvider({
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.EVAL.1",
+        requirement_id: "REQ-001",
+        candidate_evidence: [
+          { kind: "file", path: "src/billing/invoice.ts", line_start: 9000, line_end: 9001, note: "bad range" }
+        ],
+        rationale: "Invalid line range hypothesis."
+      }
+    ])
+  });
+
+  await runReasoningStages(provider, { collection, intent: missingIntent(), evaluation, methodology: emptyMethodology(), risks: emptyRisks() });
+
+  const result = evaluation.results[0];
+  assert.equal(result.status, "invalid_evidence", "a genuinely-invalid LLM-proposed ref must flip the requirement to invalid_evidence");
+  // The invalid ref is surfaced (so a reviewer / SARIF / comment can see it).
+  assert.ok(
+    result.missing_evidence.some((ref) => ref.validation_status === "invalid"),
+    "the invalid ref is surfaced as invalid evidence"
+  );
+});
+
+test("FINDING D (EVIDENCE.4): an OUT-OF-POOL ref stays a non-status-changing hypothesis (not invalid_evidence)", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-findingD-outofpool-"));
+  fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+  // A real repo file that is NOT in the candidate pool (not a changed file / test).
+  fs.writeFileSync(path.join(tmp, "src", "elsewhere.ts"), "export const elsewhere = 1;\n");
+
+  const collection = baseCollection(tmp, {
+    repositoryFiles: ["src/elsewhere.ts"],
+    changedFiles: [] // empty pool: src/elsewhere.ts is out-of-pool
+  });
+  const evaluation = evaluationWithStatus("missing");
+
+  const provider = stubProvider({
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.EVAL.1",
+        requirement_id: "REQ-001",
+        candidate_evidence: [{ kind: "file", path: "src/elsewhere.ts", note: "out of scope" }],
+        rationale: "Out-of-pool citation."
+      }
+    ])
+  });
+
+  await runReasoningStages(provider, { collection, intent: missingIntent(), evaluation, methodology: emptyMethodology(), risks: emptyRisks() });
+
+  const result = evaluation.results[0];
+  // An out-of-pool ref is a rejected hypothesis, NOT a malformed reference: it must
+  // not force the exit-4 evidence gate, so the requirement stays missing.
+  assert.equal(result.status, "missing", "an out-of-pool ref must NOT flip the requirement to invalid_evidence");
+  assert.ok(
+    result.missing_evidence.some((ref) => ref.validation_status === "invalid"),
+    "the out-of-pool ref is still surfaced as a rejected hypothesis"
+  );
+});
+
+// ROUND-5 SOUNDNESS (the OTHER direction from round-4 Finding D): an untrusted
+// agent/LLM ref must never DEGRADE a verdict the deterministic layer already backed
+// with valid, non-LLM evidence. A deterministically-partial requirement that carries
+// real valid deterministic evidence + one invalid in-pool agent candidate ref must
+// STAY partial (keep partial_reason), surface the invalid ref, and NOT trip exit 4.
+test("ROUND-5 SOUNDNESS: a deterministically-partial requirement with valid deterministic evidence is NOT demoted to invalid_evidence by one invalid agent ref", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-round5-partial-soundness-"));
+  fs.mkdirSync(path.join(tmp, "src", "billing"), { recursive: true });
+  // A short, real, in-pool changed file. Citing a line range far past its length
+  // makes validateEvidenceRef return invalid ("line range is outside the file").
+  fs.writeFileSync(path.join(tmp, "src", "billing", "invoice.ts"), "export const invoice = 1;\n");
+
+  const collection = baseCollection(tmp, {
+    repositoryFiles: ["src/billing/invoice.ts"],
+    changedFiles: [{ path: "src/billing/invoice.ts", status: "M", source: "working_tree" }]
+  });
+
+  // A deterministically-PARTIAL requirement WITH real, valid, deterministically-
+  // collected (non-llm_proposed) evidence and a partial_reason -- exactly what the
+  // deterministic evaluator produces for a partial verdict.
+  const evaluation = evaluationWithStatus("partial");
+  evaluation.results[0].partial_reason = "impl_no_test";
+  evaluation.results[0].evidence = [
+    {
+      kind: "file",
+      path: "src/billing/invoice.ts",
+      line_start: 1,
+      line_end: 1,
+      note: "Deterministic implementation evidence.",
+      confidence: "high",
+      validation_status: "valid"
+    }
+  ];
+
+  const provider = stubProvider({
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.EVAL.1",
+        requirement_id: "REQ-001",
+        // One genuinely-invalid in-pool agent candidate (out-of-range line).
+        candidate_evidence: [
+          { kind: "file", path: "src/billing/invoice.ts", line_start: 9000, line_end: 9001, note: "bad range" }
+        ],
+        rationale: "Invalid line range hypothesis."
+      }
+    ])
+  });
+
+  await runReasoningStages(provider, { collection, intent: missingIntent(), evaluation, methodology: emptyMethodology(), risks: emptyRisks() });
+
+  const result = evaluation.results[0];
+  // The untrusted invalid ref must NOT corrupt the sound deterministic verdict.
+  assert.equal(result.status, "partial", "a deterministically-partial verdict backed by valid evidence must stay partial");
+  assert.equal(result.partial_reason, "impl_no_test", "partial_reason must be preserved (not dropped by an invalid agent ref)");
+  // The valid deterministic evidence is still present.
+  assert.ok(
+    result.evidence.some((ref) => !ref.llm_proposed && ref.validation_status === "valid"),
+    "the valid deterministic evidence remains attached"
+  );
+  // The invalid agent ref is still surfaced for the reviewer.
+  assert.ok(
+    result.missing_evidence.some((ref) => ref.validation_status === "invalid"),
+    "the invalid agent ref is still surfaced as a rejected hypothesis"
+  );
+});
+
+// ROUND-5 SOUNDNESS (no re-loosening of round-4 Finding D): a requirement with NO
+// valid deterministic evidence (e.g. "missing") + an invalid agent ref STILL flips
+// to invalid_evidence and trips the exit-4 gate. Pairs with the test above to prove
+// the fix is scoped, not a blanket loosening.
+test("ROUND-5 SOUNDNESS: an unsupported requirement (no valid deterministic evidence) + invalid agent ref STILL flips to invalid_evidence", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-round5-missing-still-invalid-"));
+  fs.mkdirSync(path.join(tmp, "src", "billing"), { recursive: true });
+  fs.writeFileSync(path.join(tmp, "src", "billing", "invoice.ts"), "export const invoice = 1;\n");
+
+  const collection = baseCollection(tmp, {
+    repositoryFiles: ["src/billing/invoice.ts"],
+    changedFiles: [{ path: "src/billing/invoice.ts", status: "M", source: "working_tree" }]
+  });
+  // Missing requirement has no valid deterministic evidence.
+  const evaluation = evaluationWithStatus("missing");
+
+  const provider = stubProvider({
+    "evaluation-candidate-evidence": batchedEvidence([
+      {
+        acai_id: "example.EVAL.1",
+        requirement_id: "REQ-001",
+        candidate_evidence: [
+          { kind: "file", path: "src/billing/invoice.ts", line_start: 9000, line_end: 9001, note: "bad range" }
+        ],
+        rationale: "Invalid line range hypothesis."
+      }
+    ])
+  });
+
+  await runReasoningStages(provider, { collection, intent: missingIntent(), evaluation, methodology: emptyMethodology(), risks: emptyRisks() });
+
+  const result = evaluation.results[0];
+  assert.equal(result.status, "invalid_evidence", "an unsupported requirement with an invalid agent ref must still flip to invalid_evidence (round-4 D not re-loosened)");
 });
 
 // Stage A #3: build N pool files src/f000.ts.. plus a matching changed-file

@@ -3,6 +3,7 @@ import { fileExists, readText, writeJson, writeText } from "../core/files";
 import { parseYaml } from "../core/simple-yaml";
 import { redactSecrets } from "../privacy/secrets";
 import { ReviewPacket } from "../render/packet";
+import { RiskItem } from "../risks/risks";
 
 export type ProviderName = "mock" | "ai-sdk" | "agent-file";
 
@@ -480,15 +481,32 @@ function mergeEnrichment(packet: ReviewPacket, enrichment: AgentFileEnrichment):
   }
   if (Array.isArray(enrichment.risk_summaries) && isRecord(packet.risks)) {
     const existing = Array.isArray(packet.risks.items) ? packet.risks.items : [];
-    const appended = enrichment.risk_summaries.slice(0, 3).map((rawSummary, index) => {
-      const summary = redact(rawSummary);
-      return {
-        id: `AI-RISK-${String(index + 1).padStart(3, "0")}`,
+    // FINDING B (dedup): re-running enrichment over already-enriched risks (e.g.
+    // `risks --provider agent-file` then `packet --provider agent-file` in the same
+    // --out, where loadRisks() feeds the prior AI-RISK items back into the packet)
+    // must NOT append the same risk_summaries a second time and inflate the risk
+    // register (and downstream comment/SARIF). Key existing items by their stable
+    // identity (category + summary) -- the SAME key compare.ts uses -- and skip any
+    // risk_summary whose rendered AI-RISK summary is already present. IDs continue
+    // from the count of existing AI-RISK items so a deduped re-run stays stable.
+    const existingKeys = new Set(existing.map(riskItemKey));
+    let aiRiskCounter = existing.filter((item) => typeof item.id === "string" && item.id.startsWith("AI-RISK-")).length;
+    const appended: RiskItem[] = [];
+    for (const rawSummary of enrichment.risk_summaries.slice(0, 3)) {
+      const summary = `AI/agent hypothesis: ${redact(rawSummary)}`;
+      const key = `${"unknown"}: ${summary}`;
+      if (existingKeys.has(key)) {
+        continue; // already present from a prior enrichment pass; do not duplicate
+      }
+      existingKeys.add(key);
+      aiRiskCounter += 1;
+      appended.push({
+        id: `AI-RISK-${String(aiRiskCounter).padStart(3, "0")}`,
         category: "unknown" as const,
         severity: "unknown" as const,
         likelihood: "unknown" as const,
         detectability: "unknown" as const,
-        summary: `AI/agent hypothesis: ${summary}`,
+        summary,
         impact: "Hypothesis only; not proof of behavior.",
         evidence: [
           {
@@ -505,10 +523,17 @@ function mergeEnrichment(packet: ReviewPacket, enrichment: AgentFileEnrichment):
         ],
         suggested_checks: ["Validate this hypothesis against deterministic evidence before acting."],
         manual_review: true
-      };
-    });
+      });
+    }
     packet.risks.items = [...existing, ...appended];
   }
+}
+
+// Stable identity for a risk item, matching the dogfood comparison key
+// (category + summary). Used by FINDING B dedup so a re-enriched run does not
+// re-append an AI-RISK item that is already present.
+function riskItemKey(item: { category?: string; summary?: string }): string {
+  return `${item.category ?? "unknown"}: ${item.summary ?? ""}`;
 }
 
 async function writePrompts(outputDir: string): Promise<void> {

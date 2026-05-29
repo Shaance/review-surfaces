@@ -37,6 +37,14 @@ export interface ReasoningInputs {
 export interface ReasoningOptions {
   redactSecrets?: boolean;
   remotePrivacyBlocked?: boolean;
+  // FINDING C: the SAME config-derived review areas evaluateIntent uses (config
+  // mode when the repo declares `areas:`). The candidate-evidence stage maps a
+  // cited path to a requirement's group via strictGroupsForReviewPath; without
+  // these it rebuilt FALLBACK cluster areas (CLUSTER:SRC/CLI) and a valid in-pool
+  // citation like src/cli/index.ts for a *.CLI.* requirement was attached only as
+  // a hypothesis (status stayed missing, tripping --strict) despite the config
+  // area mapping. Absent => fall back to repo-index cluster areas (unchanged).
+  reviewAreas?: ReviewArea[];
 }
 
 const MAX_PROPOSED_REQUIREMENTS = 5;
@@ -92,8 +100,20 @@ export async function runReasoningStages(
   const generateOptions = toGenerateOptions(options);
 
   await runIntentSynthesis(provider, inputs, evidenceContext, generateOptions);
-  await runEvaluationCandidateEvidence(provider, inputs, evidenceContext, generateOptions);
+  await runEvaluationCandidateEvidence(provider, inputs, evidenceContext, generateOptions, resolveReviewAreas(inputs, options));
   await runNarrativeStage(provider, inputs, generateOptions);
+}
+
+// FINDING C: resolve the review areas the candidate-evidence group mapping must
+// use. Prefer the config-derived areas the caller threads through (the SAME ones
+// evaluateIntent used, so a config-area-mapped path is recognized as a
+// deterministic tie); fall back to repo-index cluster areas when none are
+// supplied so non-configured repos behave exactly as before.
+function resolveReviewAreas(inputs: ReasoningInputs, options: ReasoningOptions): ReviewArea[] {
+  if (options.reviewAreas && options.reviewAreas.length > 0) {
+    return options.reviewAreas;
+  }
+  return buildReviewAreas({ repoIndex: inputs.collection.repoIndex }).areas;
 }
 
 function toGenerateOptions(options: ReasoningOptions): GenerateStructuredOptions {
@@ -149,7 +169,13 @@ export async function runEvaluationReasoning(
   if (provider.name === "mock") {
     return;
   }
-  await runEvaluationCandidateEvidence(provider, inputs, buildEvidenceContext(inputs), toGenerateOptions(options));
+  await runEvaluationCandidateEvidence(
+    provider,
+    inputs,
+    buildEvidenceContext(inputs),
+    toGenerateOptions(options),
+    resolveReviewAreas(inputs, options)
+  );
 }
 
 /**
@@ -431,15 +457,19 @@ async function runEvaluationCandidateEvidence(
   provider: ReasoningProvider,
   inputs: ReasoningInputs,
   evidenceContext: EvidenceValidationContext,
-  generateOptions: GenerateStructuredOptions
+  generateOptions: GenerateStructuredOptions,
+  // FINDING C/D (soundness): the review areas used to decide whether a cited path
+  // is DETERMINISTICALLY TIED to a requirement's group (mirrors the verification
+  // loop's strict group mapping). These are the SAME areas evaluateIntent uses --
+  // config-derived when the repo declares `areas:`, repo-index clusters otherwise
+  // (resolveReviewAreas) -- so a config-area-mapped citation (e.g. src/cli/* for a
+  // *.CLI.* requirement) is recognized as a tie rather than a fallback cluster
+  // group. Pool membership is necessary but NOT sufficient to upgrade missing ->
+  // partial; an unrelated pooled path attaches as a hypothesis but does not change
+  // status (FINDING D round-4 soundness, preserved unchanged).
+  areas: ReviewArea[]
 ): Promise<void> {
   const candidatePaths = candidatePathPool(inputs.collection);
-  // FINDING D (soundness): the review areas used to decide whether a cited path
-  // is DETERMINISTICALLY TIED to a requirement's group (mirrors the verification
-  // loop's strict group mapping). Pool membership is necessary but NOT sufficient
-  // to upgrade missing -> partial; an unrelated pooled path attaches as a
-  // hypothesis but does not change status.
-  const areas = buildReviewAreas({ repoIndex: inputs.collection.repoIndex }).areas;
   // Collapse the GLOBAL review_focus surface by rationale TEXT (not by
   // requirement id). One LLM hypothesis cited across many requirements becomes a
   // single coherent "N requirements share this LLM hypothesis" line instead of
@@ -597,7 +627,18 @@ function applyCandidateEvidence(
   const rawCandidates = Array.isArray(data.candidate_evidence) ? data.candidate_evidence : [];
   const candidatePathSet = new Set(candidatePaths);
   const validEvidence: EvidenceRef[] = [];
-  const invalidEvidence: EvidenceRef[] = [];
+  // Out-of-pool refs: a citation the model offered that was not in the candidate
+  // pool (changed files + tests) for this requirement. Surfaced as a rejected
+  // hypothesis but NOT status-changing (FINDING D round-4 soundness): it could be
+  // a real, valid file that is simply out of scope, so it must not force the
+  // exit-4 evidence gate.
+  const outOfPoolEvidence: EvidenceRef[] = [];
+  // GENUINELY invalid refs: a citation that failed the SAME deterministic
+  // validator the evaluation layer uses (bad path / out-of-range line / bad ACID).
+  // EVIDENCE.4: these must turn the requirement into invalid_evidence so the
+  // rejected reference is surfaced in SARIF/comment AND the --strict exit-4
+  // evidence gate catches it -- consistent with validateRequirementResultEvidence.
+  const genuinelyInvalidEvidence: EvidenceRef[] = [];
 
   for (const entry of rawCandidates.slice(0, MAX_CANDIDATE_EVIDENCE_PER_REQUIREMENT)) {
     if (!isRecord(entry) || typeof entry.path !== "string") {
@@ -618,10 +659,11 @@ function applyCandidateEvidence(
     // file that is NOT in the pool (e.g. an unrelated source file the model
     // cited) must never attach as proof or drive a missing -> partial upgrade.
     // Path-existence alone is insufficient: it would let any real file inflate
-    // arbitrary unrelated requirements. Refs outside the pool are surfaced as
-    // invalid so a reviewer can see the rejected hypothesis.
+    // arbitrary unrelated requirements. Refs outside the pool are surfaced as a
+    // rejected hypothesis (but NOT status-changing: an out-of-scope citation must
+    // not trip the exit-4 evidence gate the way a genuinely-malformed ref does).
     if (!candidatePathSet.has(normalizeCandidatePath(entry.path))) {
-      invalidEvidence.push({
+      outOfPoolEvidence.push({
         ...candidate,
         validation_status: "invalid",
         note: appendOutOfPoolNote(candidate.note)
@@ -634,14 +676,43 @@ function applyCandidateEvidence(
     if (validated.validation_status === "valid") {
       validEvidence.push(validated);
     } else {
-      invalidEvidence.push(validated);
+      // FINDING D (EVIDENCE.4): a genuinely-invalid in-pool ref (bad path,
+      // out-of-range line, bad ACID) must surface as invalid_evidence, not be
+      // quietly buried in missing_evidence with the status unchanged.
+      genuinelyInvalidEvidence.push(validated);
     }
   }
 
-  // Surface invalid candidate refs as invalid_evidence on the requirement so a
-  // reviewer can see the rejected hypothesis; never let them upgrade status.
-  if (invalidEvidence.length > 0) {
-    result.missing_evidence = [...result.missing_evidence, ...invalidEvidence];
+  // Surface every rejected hypothesis (out-of-pool + genuinely-invalid) on the
+  // requirement so a reviewer can see it; only the genuinely-invalid ones flip the
+  // status below.
+  const allInvalid = [...outOfPoolEvidence, ...genuinelyInvalidEvidence];
+  if (allInvalid.length > 0) {
+    result.missing_evidence = [...result.missing_evidence, ...allInvalid];
+  }
+
+  // FINDING D (EVIDENCE.4 + --strict): a genuinely-invalid LLM-proposed ref makes
+  // the requirement invalid_evidence (mirroring validateRequirementResultEvidence)
+  // so it is surfaced and the --strict exit-4 evidence gate catches it even in a
+  // partial / --max-missing-tolerant run. A status raised here cannot be moved
+  // back to partial below (invalid_evidence is not in UPGRADEABLE_FROM), so a
+  // valid in-pool hypothesis on the same requirement never masks the invalid one.
+  //
+  // ROUND-5 SOUNDNESS (the OTHER direction): an untrusted agent/LLM ref must never
+  // DEGRADE a verdict the deterministic layer already backed with valid, non-LLM
+  // evidence (CLAUDE.md: agent output is never proof until deterministic validation
+  // accepts it -- it must equally never invalidate accepted deterministic proof).
+  // So only flip to invalid_evidence when the requirement has NO pre-existing valid
+  // deterministic (non-llm_proposed) evidence -- i.e. an otherwise-unsupported
+  // requirement (typically "missing"). A deterministically-partial/unknown verdict
+  // that the deterministic layer already supported keeps its status; the invalid
+  // agent ref still surfaces in missing_evidence (above) for the reviewer, but it
+  // cannot trip exit 4 or drop partial_reason. This does NOT re-loosen round-4
+  // Finding D: a genuinely-unsupported requirement (no valid deterministic
+  // evidence) still flips to invalid_evidence and trips the gate, which retains
+  // higher priority than missing/exit 10.
+  if (genuinelyInvalidEvidence.length > 0 && !hasValidDeterministicEvidence(result)) {
+    markInvalidEvidence(result);
   }
 
   if (validEvidence.length === 0) {
@@ -709,6 +780,57 @@ function refReferencesAcid(ref: EvidenceRef, acaiId: string): boolean {
 
 function groupFromAcid(acaiId: string | undefined): string | undefined {
   return acaiId?.split(".")[1];
+}
+
+// Evidence kinds that merely CITE the requirement's source (the spec entry, a doc)
+// rather than demonstrate the requirement is BACKED by implementation/test work.
+// Every requirement -- including a genuinely-"missing" one -- carries a valid spec
+// source ref, so these kinds must NOT count as deterministic backing when deciding
+// whether an invalid agent ref may flip the requirement to invalid_evidence.
+// Otherwise the round-4 Finding-D path (a genuinely-unsupported requirement + an
+// invalid in-pool ref must flip and trip exit 4) would be silently re-loosened.
+const SOURCE_ONLY_EVIDENCE_KINDS = new Set<EvidenceRef["kind"]>(["spec", "doc"]);
+
+// ROUND-5 SOUNDNESS: true when the requirement already carries at least one VALID,
+// deterministically-collected (non-llm_proposed) BACKING ref -- i.e. real
+// implementation/test evidence (a changed file mapped to the area, a parsed test,
+// etc.), NOT just the spec/doc source citation every requirement carries. Such a
+// requirement was substantively backed by the deterministic layer (e.g. a partial
+// verdict with implementation evidence); an invented/invalid LLM-proposed ref must
+// NOT be allowed to demote it to invalid_evidence. A genuinely-unsupported
+// requirement (only a spec source ref, or no evidence) returns false, so it still
+// flips to invalid_evidence and trips exit 4 (round-4 Finding D intact). Note:
+// out-of-pool refs are pushed onto missing_evidence (not result.evidence), and
+// genuinely-invalid candidates are never attached to result.evidence, so neither
+// inflates this check.
+function hasValidDeterministicEvidence(result: RequirementResult): boolean {
+  return result.evidence.some(
+    (ref) =>
+      !isLlmProposed(ref) &&
+      ref.validation_status === "valid" &&
+      !SOURCE_ONLY_EVIDENCE_KINDS.has(ref.kind)
+  );
+}
+
+// FINDING D (EVIDENCE.4): flip a requirement to invalid_evidence when an
+// LLM-proposed candidate ref failed deterministic validation. Mirrors
+// validateRequirementResultEvidence's invalid-evidence shape (status, summary,
+// review_focus, confidence, dropped partial_reason) so the surfaced result is
+// indistinguishable from a deterministically-detected invalid-evidence finding,
+// and the --strict exit-4 gate (which counts status === "invalid_evidence")
+// catches it. Idempotent: a result already invalid_evidence is left untouched.
+// Callers gate this on hasValidDeterministicEvidence so a deterministically-backed
+// verdict is never demoted (round-5 soundness).
+function markInvalidEvidence(result: RequirementResult): void {
+  if (result.status === "invalid_evidence") {
+    return;
+  }
+  result.status = "invalid_evidence";
+  result.partial_reason = undefined;
+  result.summary =
+    "One or more LLM-proposed evidence references failed deterministic validation.";
+  result.review_focus = "Inspect invalid evidence references before judging requirement coverage.";
+  result.confidence = "high";
 }
 
 function maybeUpgradeToPartial(result: RequirementResult, validEvidence: EvidenceRef[]): boolean {
