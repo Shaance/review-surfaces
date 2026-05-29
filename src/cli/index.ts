@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { formatReports, hasRequiredFailure, runBootstrap, runInit } from "../bootstrap/init";
 import { recordCommandTranscript } from "../commands/runner";
@@ -155,9 +156,14 @@ async function runCollect(parsed: ParsedArgs): Promise<void> {
 
 async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResult; config: ReviewSurfacesConfig }> {
   const cwd = process.cwd();
-  const config = await loadConfig(cwd, stringFlag(parsed, "config") ?? "review-surfaces.config.yaml");
+  // The exact config path loadConfig reads. Fold its content into the signature
+  // (via collectInputs) so a config edit is a cache miss; loadConfig falls back
+  // to defaults when the file is absent, and the "missing" sentinel covers that.
+  const configPath = stringFlag(parsed, "config") ?? "review-surfaces.config.yaml";
+  const config = await loadConfig(cwd, configPath);
   const specFlag = stringFlag(parsed, "spec");
   const runConfig = specFlag ? { ...config, specs: [specFlag] } : config;
+  const provider = providerFlag(parsed, runConfig);
   const collection = await collectInputs({
     cwd,
     config: runConfig,
@@ -167,14 +173,119 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
     commandTranscriptDir: stringFlag(parsed, "command-transcripts"),
     testOutputPaths: splitTestOutputPaths(stringFlag(parsed, "test-output")),
     coverageOutputPath: stringFlag(parsed, "coverage"),
-    dogfood: isDogfoodRun(parsed)
+    dogfood: isDogfoodRun(parsed),
+    now: nowFlag(parsed),
+    provider,
+    model: stringFlag(parsed, "model") ?? runConfig.llm.model ?? undefined,
+    conversationPath: stringFlag(parsed, "conversation"),
+    agentInputPath: stringFlag(parsed, "agent-input"),
+    configPath
   });
   return { collection, config: runConfig };
 }
 
+// Validate --now as a parseable ISO 8601 instant and normalize it to a single
+// canonical string so two runs with the same --now value freeze the clock to a
+// byte-identical timestamp. Absent => undefined (real wall clock, unchanged).
+function nowFlag(parsed: ParsedArgs): string | undefined {
+  const raw = stringFlag(parsed, "now");
+  if (raw === undefined) {
+    return undefined;
+  }
+  const millis = Date.parse(raw);
+  if (Number.isNaN(millis)) {
+    throw new CliError(`--now must be a parseable ISO 8601 timestamp, got: ${raw}`, ExitCodes.usageError);
+  }
+  return new Date(millis).toISOString();
+}
+
+interface CacheSnapshot {
+  manifestPath: string;
+  manifestRaw: string;
+  priorSignature?: string;
+  packetPath: string;
+  packetValid: boolean;
+}
+
+// Resolve --out the same way collectInputs does so the cache reads/writes the
+// exact manifest.json the run will produce. config.output_dir defaults to
+// .review-surfaces; --out overrides it.
+function resolveOutputDir(cwd: string, parsed: ParsedArgs): string {
+  const outFlag = stringFlag(parsed, "out");
+  return path.resolve(cwd, outFlag ?? ".review-surfaces");
+}
+
+// Snapshot the prior manifest.json (raw bytes + parsed signature) and check that
+// a parseable review_packet.json exists. Any read/parse failure yields an empty
+// snapshot (priorSignature undefined / packet invalid) so the run is a clean
+// cache MISS and regenerates normally.
+function readCacheSnapshot(cwd: string, parsed: ParsedArgs): CacheSnapshot {
+  const outputDir = resolveOutputDir(cwd, parsed);
+  const manifestPath = path.join(outputDir, "manifest.json");
+  const packetPath = path.join(outputDir, "review_packet.json");
+  let manifestRaw = "";
+  let priorSignature: string | undefined;
+  if (fileExists(manifestPath)) {
+    try {
+      manifestRaw = fs.readFileSync(manifestPath, "utf8");
+      const parsed = JSON.parse(manifestRaw);
+      if (parsed && typeof parsed.signature === "string") {
+        priorSignature = parsed.signature;
+      }
+    } catch {
+      manifestRaw = "";
+      priorSignature = undefined;
+    }
+  }
+  let packetValid = false;
+  if (fileExists(packetPath)) {
+    try {
+      JSON.parse(fs.readFileSync(packetPath, "utf8"));
+      packetValid = true;
+    } catch {
+      packetValid = false;
+    }
+  }
+  return { manifestPath, manifestRaw, priorSignature, packetPath, packetValid };
+}
+
+function isCacheHit(snapshot: CacheSnapshot, currentSignature: string | undefined): boolean {
+  return (
+    snapshot.packetValid &&
+    snapshot.manifestRaw !== "" &&
+    typeof currentSignature === "string" &&
+    snapshot.priorSignature === currentSignature
+  );
+}
+
 async function runAll(parsed: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
+  // --cache is opt-in. Snapshot the prior manifest BEFORE collect recomputes
+  // (and overwrites) it, so a signature match can be detected and the on-disk
+  // manifest/packet left byte-identical. Without --cache nothing is read here.
+  const cacheSnapshot = booleanFlag(parsed, "cache") ? readCacheSnapshot(cwd, parsed) : undefined;
   const { collection, config } = await collect(parsed);
+  if (cacheSnapshot && isCacheHit(cacheSnapshot, collection.manifest.signature)) {
+    const strict = booleanFlag(parsed, "strict");
+    const evaluation = loadEvaluation(collection.outputDir);
+    // Under --strict the gate MUST run. If the cached output dir is incomplete
+    // (evaluation.yaml missing/unreadable) we cannot reuse it: fall through to a
+    // full regenerate (cache MISS) so the gate is recomputed and applied, rather
+    // than silently exiting 0. A clean hit (valid evaluation, or no --strict)
+    // still reuses the packet untouched below.
+    if (!(strict && !evaluation)) {
+      // Inputs unchanged: restore the prior manifest bytes (collect just rewrote
+      // it; only created_at could differ) and reuse the existing packet untouched.
+      await writeText(cacheSnapshot.manifestPath, cacheSnapshot.manifestRaw);
+      console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
+      const provider = providerFlag(parsed, config);
+      if (strict && evaluation) {
+        return applyGate(parsed, evaluation, collection, provider, config);
+      }
+      return ExitCodes.success;
+    }
+    console.warn("Cached output is incomplete (evaluation.yaml missing/unreadable); regenerating to apply the --strict gate.");
+  }
   const commands = [`review-surfaces ${parsed.command} ${process.argv.slice(3).join(" ")}`.trim()];
   const provider = providerFlag(parsed, config);
   const requestedModel = stringFlag(parsed, "model") ?? config.llm.model ?? undefined;
@@ -924,6 +1035,15 @@ Options:
                    warnings and still exits 0 (default normal/dogfood behavior).
   --max-missing <n> Quality-gate tolerance: allow up to N "missing" requirements
                    before tripping. Default from config quality_gate.max_missing (0).
+  --now <ISO8601>   Freeze the clock: write this fixed instant as manifest.created_at
+                   (and any other wall-clock value) so two runs with the same --now and
+                   inputs produce byte-identical artifacts. Must be a parseable ISO 8601
+                   timestamp. Absent: real wall-clock time (unchanged default).
+  --cache           all: opt-in. Skip regeneration when --out already holds a manifest
+                   whose deterministic signature matches the current inputs AND a valid
+                   review_packet.json exists; reuses the existing packet and still applies
+                   the --strict gate. Any input/provider/model/tool change is a cache miss
+                   and regenerates. Absent: always regenerate (unchanged default).
   --help            Show this help
 
 Gate semantics (only enforced as exit codes with --strict):

@@ -1,9 +1,10 @@
+import crypto from "node:crypto";
 import path from "node:path";
 import { AcaiSpecIndex, indexAcaiSpecs } from "../acai/acai";
 import { CommandTranscript, commandTranscriptInputDir, commandTranscriptOutputPath, indexCommandTranscriptFiles } from "../commands/transcripts";
 import { ReviewSurfacesConfig } from "../config/config";
 import { filterPathsByPatterns, walkFiles } from "../core/glob";
-import { ensureDir, hashFile, writeJson, writeText } from "../core/files";
+import { ensureDir, hashFile, isRegularFile, writeJson, writeText } from "../core/files";
 import { FeedbackFile, indexFeedbackFiles } from "../feedback/feedback";
 import { filterIgnoredDiff } from "../privacy/diff";
 import { loadPrivacyIgnore } from "../privacy/ignore";
@@ -19,6 +20,24 @@ import {
 import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, GitInfo } from "./git";
 
 export const REPO_INDEX_SCHEMA_VERSION = "review-surfaces.repo.index.v1";
+
+export const TOOL_VERSION = "0.1.0";
+
+// A frozen-clock provider: a fixed ISO string or a function returning one. When
+// the CLI passes a fixed string (from --now) two runs with the same inputs
+// produce byte-identical artifacts; without it the default real wall clock is
+// used and behavior is unchanged.
+export type NowProvider = string | (() => string);
+
+function resolveNow(now: NowProvider | undefined): string {
+  if (typeof now === "function") {
+    return now();
+  }
+  if (typeof now === "string") {
+    return now;
+  }
+  return new Date().toISOString();
+}
 
 export interface ManifestInputHash {
   path: string;
@@ -38,6 +57,22 @@ export interface RunManifest {
   run_mode: "local" | "dogfood" | "ci" | "provider" | "unknown";
   milestone?: string;
   input_hashes: ManifestInputHash[];
+  // Deterministic cache key over the meaningful inputs (tool version, base/head
+  // sha, provider, model, hashed input files, AND content hashes of every
+  // changed file). Excludes created_at and the --out path so frozen-clock and
+  // path changes never perturb it. Used by --cache to detect unchanged inputs.
+  signature?: string;
+}
+
+// A changed file plus a content hash of its current working-tree bytes. Folding
+// these into the signature is what makes a source edit a cache miss: hashing
+// only the spec/doc inputs (as input_hashes does) would leave the key STALE.
+export interface ChangedFileHash {
+  path: string;
+  status: string;
+  source: string;
+  algorithm: "sha256";
+  hash: string;
 }
 
 export interface CollectionResult {
@@ -74,6 +109,26 @@ export interface CollectOptions {
   testOutputPaths?: string[];
   coverageOutputPath?: string;
   dogfood: boolean;
+  // Frozen-clock provider for byte-reproducible artifacts. Absent => real wall
+  // clock (unchanged default behavior).
+  now?: NowProvider;
+  // Resolved provider/model folded into the manifest signature so a
+  // provider/model swap is a cache miss. Absent => omitted from the fingerprint.
+  provider?: string;
+  model?: string;
+  // Resolved --conversation file path (text/markdown/jsonl/yaml log) consumed by
+  // buildMethodology. Folded into the signature so a conversation edit is a cache
+  // miss. Absent => no conversation flag was supplied.
+  conversationPath?: string;
+  // Resolved --agent-input file path consumed by the agent-file provider. Folded
+  // into the signature so a changed hypothesis set is a cache miss. Absent => no
+  // agent-input flag was supplied.
+  agentInputPath?: string;
+  // Resolved config file path actually loaded by loadConfig (review-surfaces.config.yaml
+  // or a --config override). Its content drives review areas, globs, privacy, and
+  // the quality gate, so it is folded into the signature. Absent (no file on disk)
+  // => the built-in defaults were used and there is nothing to hash.
+  configPath?: string;
 }
 
 export async function collectInputs(options: CollectOptions): Promise<CollectionResult> {
@@ -150,9 +205,43 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   }
   inputHashes.push(...commandTranscriptIndex.sourceHashes);
 
+  // Content-hash every changed file's CURRENT working-tree bytes so a source
+  // edit perturbs the signature (a cache key that ignored changed source would
+  // be stale). Missing/unreadable files hash to a sentinel so deletions still
+  // register as a change.
+  const changedFileHashes = await hashChangedFiles(options.cwd, changedFiles);
+
+  // Content-hash every flag-supplied input file that materially shapes the
+  // packet but is NOT discovered through the repo walk (so it never lands in
+  // input_hashes or changed_files): the --conversation log, --test-output
+  // report(s), --coverage summary, --agent-input payload, and the resolved
+  // config file. These are typically gitignored or live outside the diff, so
+  // omitting them left a stale-cache hole: editing one yielded the same key.
+  // Missing files hash to a sentinel so toggling a flag on/off still moves the
+  // key. Kind is part of the fingerprint so two flags pointing at the same path
+  // never collide.
+  const flagInputHashes = await hashFlagInputs(options.cwd, [
+    { kind: "conversation", path: options.conversationPath },
+    { kind: "coverage", path: options.coverageOutputPath },
+    { kind: "agent-input", path: options.agentInputPath },
+    { kind: "config", path: options.configPath },
+    ...testOutputPaths.map((testPath) => ({ kind: "test-output", path: testPath }))
+  ]);
+
+  const signature = computeSignature({
+    toolVersion: TOOL_VERSION,
+    baseSha: git.base_sha,
+    headSha: git.head_sha,
+    provider: options.provider,
+    model: options.model,
+    inputHashes,
+    changedFileHashes,
+    flagInputHashes
+  });
+
   const manifest: RunManifest = {
-    tool_version: "0.1.0",
-    created_at: new Date().toISOString(),
+    tool_version: TOOL_VERSION,
+    created_at: resolveNow(options.now),
     repo: git.repo,
     base_ref: options.baseRef,
     head_ref: options.headRef,
@@ -160,7 +249,8 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     head_sha: git.head_sha,
     run_mode: options.dogfood ? "dogfood" : "local",
     milestone: options.dogfood ? options.config.dogfood.milestone : undefined,
-    input_hashes: inputHashes
+    input_hashes: inputHashes,
+    signature
   };
 
   await writeJson(path.join(outputDir, "manifest.json"), manifest);
@@ -232,6 +322,98 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     privacy,
     git
   };
+}
+
+async function hashChangedFiles(cwd: string, changedFiles: ChangedFile[]): Promise<ChangedFileHash[]> {
+  const hashes: ChangedFileHash[] = [];
+  for (const file of changedFiles) {
+    let hash = "missing";
+    const absolute = path.resolve(cwd, file.path);
+    if (isRegularFile(absolute)) {
+      try {
+        hash = await hashFile(absolute);
+      } catch {
+        hash = "unreadable";
+      }
+    }
+    hashes.push({ path: file.path, status: file.status, source: file.source, algorithm: "sha256", hash });
+  }
+  return hashes;
+}
+
+// A flag-supplied input file plus a content hash of its current bytes. Kind +
+// resolved path + hash fold into the signature so editing the file (or toggling
+// the flag, via the "missing" sentinel) is a cache miss.
+export interface FlagInputHash {
+  kind: string;
+  path: string;
+  algorithm: "sha256";
+  hash: string;
+}
+
+// Hash each present flag-input file (entries with no path are skipped: the flag
+// was not supplied, and an absent flag means there is nothing in the fingerprint
+// to change). A supplied-but-missing/unreadable file hashes to a sentinel so a
+// later create/repair still moves the key.
+async function hashFlagInputs(
+  cwd: string,
+  entries: Array<{ kind: string; path: string | undefined }>
+): Promise<FlagInputHash[]> {
+  const hashes: FlagInputHash[] = [];
+  for (const entry of entries) {
+    if (entry.path === undefined) {
+      continue;
+    }
+    let hash = "missing";
+    const absolute = path.resolve(cwd, entry.path);
+    if (isRegularFile(absolute)) {
+      try {
+        hash = await hashFile(absolute);
+      } catch {
+        hash = "unreadable";
+      }
+    }
+    hashes.push({ kind: entry.kind, path: entry.path, algorithm: "sha256", hash });
+  }
+  return hashes;
+}
+
+interface SignatureInput {
+  toolVersion: string;
+  baseSha?: string;
+  headSha: string;
+  provider?: string;
+  model?: string;
+  inputHashes: ManifestInputHash[];
+  changedFileHashes: ChangedFileHash[];
+  flagInputHashes: FlagInputHash[];
+}
+
+// Deterministic sha256 over a SORTED, canonical fingerprint of the meaningful
+// inputs. Sorting both hash lists by path makes the key independent of input
+// ordering; created_at and the --out path are intentionally excluded so the
+// frozen clock and output location never change the signature.
+function computeSignature(input: SignatureInput): string {
+  const fingerprint = {
+    tool_version: input.toolVersion,
+    base_sha: input.baseSha ?? null,
+    head_sha: input.headSha,
+    provider: input.provider ?? null,
+    model: input.model ?? null,
+    input_hashes: [...input.inputHashes]
+      .sort((left, right) => left.path.localeCompare(right.path))
+      .map((entry) => ({ path: entry.path, kind: entry.kind, hash: entry.hash })),
+    changed_files: [...input.changedFileHashes]
+      .sort((left, right) => left.path.localeCompare(right.path))
+      .map((entry) => ({ path: entry.path, status: entry.status, hash: entry.hash })),
+    // Sorted by kind then path so the key is independent of the order flags were
+    // supplied. Empty when no flag-input files were given, leaving the default
+    // (no-flag) signature byte-identical to before this addition.
+    flag_inputs: [...input.flagInputHashes]
+      .sort((left, right) => left.kind.localeCompare(right.kind) || left.path.localeCompare(right.path))
+      .map((entry) => ({ kind: entry.kind, path: entry.path, hash: entry.hash }))
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(fingerprint)).digest("hex");
 }
 
 function classifyDoc(filePath: string): string {

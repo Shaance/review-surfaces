@@ -170,6 +170,13 @@ function buildHandoff(inputs: PacketInputs): ReviewPacket["agent_handoff"] {
 function renderPacketMarkdown(packet: ReviewPacket): string {
   const statusCounts = countRequirementStatuses(packet.evaluation.results);
   const changedFiles = (packet.architecture.subsystems ?? []).flatMap((subsystem) => subsystem.files);
+  const llmProposedRequirements = packet.intent.requirements.filter((requirement) => requirement.llm_derived).length;
+  const hypotheses = llmProposedEvidenceLines(packet);
+  // A "pure mock" run has zero LLM contributions: no llm_derived requirement and
+  // no llm_proposed evidence/risk markers. Suppress the LLM-proposed appendix
+  // line and the hypotheses section entirely so a naive grep for "LLM-proposed"
+  // on a mock packet finds nothing misleading. The JSON still carries the zeros.
+  const hasLlmContribution = llmProposedRequirements > 0 || hypotheses.length > 0;
 
   return `# Review Packet
 
@@ -235,15 +242,15 @@ ${packet.intent.open_questions.map((item) => `- ${item}`).join("\n") || "- None 
 
 ## 10. Evidence appendix
 - Requirements indexed: ${packet.intent.requirements.length}
-- Authoritative requirements: ${packet.intent.requirements.filter((requirement) => !requirement.llm_derived).length}
-- LLM-proposed (non-authoritative) requirements: ${packet.intent.requirements.filter((requirement) => requirement.llm_derived).length}
+- Authoritative requirements: ${packet.intent.requirements.filter((requirement) => !requirement.llm_derived).length}${hasLlmContribution ? `
+- LLM-proposed (non-authoritative) requirements: ${llmProposedRequirements}` : ""}
 - Changed files in subsystem cards: ${changedFiles.length}
 - Methodology logs missing: ${packet.methodology.missing_logs}
 - Packet schema: schemas/review_packet.schema.json
-- Full machine-readable details: .review-surfaces/review_packet.json
+- Full machine-readable details: .review-surfaces/review_packet.json${hasLlmContribution ? `
 
 LLM/agent hypotheses (not proof; verify against deterministic evidence):
-${previewLines(llmProposedEvidenceLines(packet), (line) => `- ${redactRenderedText(line)}`, 12)}
+${previewLines(hypotheses, (line) => `- ${redactRenderedText(line)}`, 12)}` : ""}
 `;
 }
 

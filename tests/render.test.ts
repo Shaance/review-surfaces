@@ -287,3 +287,120 @@ test("review-surfaces.DOGFOOD.5 marks truncated implemented changes in generated
   assert.equal(packet.agent_handoff?.implemented_changes?.length, 13);
   assert.ok(packet.agent_handoff?.implemented_changes?.includes("... 2 more changed file(s) in .review-surfaces/inputs/changed_files.json"));
 });
+
+// FIX 3 fixture: a packet with zero LLM contributions (a pure mock run). The
+// evaluation result carries only deterministic evidence (no llm_proposed flag)
+// and the requirement is not llm_derived.
+function mockPacketInputs(): PacketInputs {
+  return {
+    collection: { manifest: {}, changedFiles: [] },
+    intent: {
+      summary: "render fixture",
+      requirements: [
+        {
+          id: "REQ-1",
+          acai_id: "example.SRC.1",
+          requirement: "The source module exports the marker.",
+          source_refs: [],
+          constraints: [],
+          assumptions: [],
+          open_questions: [],
+          confidence: "high"
+        }
+      ],
+      constraints: [],
+      non_goals: [],
+      assumptions: [],
+      open_questions: [],
+      sources: []
+    },
+    evaluation: {
+      summary: "render fixture",
+      results: [
+        {
+          requirement_id: "REQ-1",
+          acai_id: "example.SRC.1",
+          status: "satisfied",
+          summary: "deterministic evidence found",
+          evidence: [{ kind: "file", path: "src/module.ts", confidence: "high" }],
+          missing_evidence: [],
+          confidence: "high"
+        }
+      ],
+      overreach: [],
+      acai_coverage: {}
+    },
+    architecture: {
+      summary: "render fixture",
+      diagrams: [],
+      diagram_validation: [],
+      subsystems: [],
+      open_questions: []
+    },
+    methodology: {
+      summary: "render fixture",
+      missing_logs: false,
+      considered: [],
+      research: [],
+      decisions: [],
+      unchallenged_assumptions: [],
+      skipped_checks: [],
+      claims_without_evidence: [],
+      verified_claims: [],
+      quality_flags: [],
+      evidence: []
+    },
+    risks: {
+      summary: "render fixture",
+      items: [],
+      test_gaps: [],
+      review_focus: [],
+      test_evidence: []
+    },
+    enrichment: { provider: "mock", status: "skipped" },
+    commands: []
+  } as unknown as PacketInputs;
+}
+
+// FIX 3: a pure mock run (zero LLM contributions) must NOT render the
+// "LLM/agent hypotheses" header nor any "LLM-proposed" appendix line, so a naive
+// grep for "LLM-proposed" finds nothing misleading.
+test("review-surfaces.EVIDENCE.6 mock packet omits LLM hypotheses UI when there are no LLM contributions", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-render-mock-llm-"));
+  try {
+    await rewriteReviewPacket(tmp, createReviewPacket(mockPacketInputs()));
+    const markdown = fs.readFileSync(path.join(tmp, "review_packet.md"), "utf8");
+    assert.doesNotMatch(markdown, /LLM\/agent hypotheses/, "mock packet must not render the hypotheses header");
+    assert.doesNotMatch(markdown, /LLM-proposed/, "mock packet must not render any LLM-proposed text");
+
+    // The JSON must still carry zero LLM flags (unchanged contract).
+    const packet = JSON.parse(fs.readFileSync(path.join(tmp, "review_packet.json"), "utf8"));
+    assert.equal(packet.intent.requirements.filter((r: { llm_derived?: boolean }) => r.llm_derived).length, 0);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// FIX 3: with a stub provider contribution (an llm_proposed evidence ref) the
+// hypotheses header and the LLM-proposed appendix line DO appear.
+test("review-surfaces.EVIDENCE.6 packet renders LLM hypotheses UI when a contribution is present", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-render-llm-present-"));
+  try {
+    const inputs = mockPacketInputs();
+    // Inject a stub provider contribution: a proposed (non-authoritative)
+    // evidence ref on the evaluation result.
+    (inputs.evaluation.results[0].evidence as unknown[]).push({
+      kind: "file",
+      path: "src/module.ts",
+      confidence: "low",
+      validation_status: "not_checked",
+      llm_proposed: true
+    });
+    await rewriteReviewPacket(tmp, createReviewPacket(inputs));
+    const markdown = fs.readFileSync(path.join(tmp, "review_packet.md"), "utf8");
+    assert.match(markdown, /LLM\/agent hypotheses/, "header must appear when an LLM contribution exists");
+    assert.match(markdown, /LLM-proposed \(non-authoritative\) requirements: 0/, "appendix line must appear (count may be 0 for evidence-only contributions)");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
