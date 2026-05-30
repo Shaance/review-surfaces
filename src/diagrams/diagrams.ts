@@ -4,6 +4,13 @@ import { writeText } from "../core/files";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
 import { EvaluationModel } from "../evaluation/evaluate";
 import { buildReviewAreas, createReviewAreaMatcher, ReviewArea, ReviewAreaMatcher } from "../review-areas/areas";
+import type {
+  PacketConfidence,
+  PacketDiagramStatus,
+  PacketDiagramType,
+  PacketEvidenceKind,
+  PacketValidationStatus
+} from "../schema/review-packet-contract";
 
 export interface ArchitectureModel {
   summary: string;
@@ -19,10 +26,10 @@ export interface ArchitectureModel {
     tests: string[];
     risks: string[];
     evidence: Array<{
-      kind: "file" | "test" | "spec" | "unknown";
+      kind: Extract<PacketEvidenceKind, "file" | "test" | "spec" | "unknown">;
       path?: string;
-      confidence: "high" | "medium" | "low" | "unknown";
-      validation_status?: "valid" | "invalid" | "not_checked" | "unknown";
+      confidence: PacketConfidence;
+      validation_status?: PacketValidationStatus;
       note?: string;
     }>;
   }>;
@@ -31,8 +38,8 @@ export interface ArchitectureModel {
 
 export interface DiagramValidationResult {
   path: string;
-  status: "valid" | "invalid";
-  diagram_type: "flowchart" | "sequenceDiagram" | "unknown";
+  status: PacketDiagramStatus;
+  diagram_type: PacketDiagramType;
   errors: string[];
   warnings: string[];
   evidence: EvidenceRef[];

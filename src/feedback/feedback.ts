@@ -2,19 +2,16 @@ import path from "node:path";
 import { readText } from "../core/files";
 import { parseYaml } from "../core/simple-yaml";
 import { EvidenceRef, feedbackEvidence } from "../evidence/evidence";
+import {
+  PACKET_DOGFOOD_CATEGORIES,
+  PACKET_DOGFOOD_SEVERITIES,
+  type PacketDogfoodCategory,
+  type PacketSeverity
+} from "../schema/review-packet-contract";
 
-export type FeedbackCategory =
-  | "usability"
-  | "review_value"
-  | "evidence_quality"
-  | "agent_workflow"
-  | "schema"
-  | "diagram_quality"
-  | "test_gap"
-  | "performance"
-  | "unknown";
+export type FeedbackCategory = PacketDogfoodCategory;
 
-export type FeedbackSeverity = "low" | "medium" | "high" | "critical" | "unknown";
+export type FeedbackSeverity = PacketSeverity;
 
 export interface FeedbackFinding {
   id: string;
@@ -42,18 +39,8 @@ export interface FeedbackFile {
   validation: FeedbackValidation;
 }
 
-const CATEGORIES = new Set<FeedbackCategory>([
-  "usability",
-  "review_value",
-  "evidence_quality",
-  "agent_workflow",
-  "schema",
-  "diagram_quality",
-  "test_gap",
-  "performance",
-  "unknown"
-]);
-const SEVERITIES = new Set<FeedbackSeverity>(["low", "medium", "high", "critical", "unknown"]);
+const CATEGORIES = new Set<FeedbackCategory>(PACKET_DOGFOOD_CATEGORIES);
+const SEVERITIES = new Set<FeedbackSeverity>(PACKET_DOGFOOD_SEVERITIES);
 
 export async function indexFeedbackFiles(cwd: string, feedbackPaths: string[]): Promise<FeedbackFile[]> {
   const feedback: FeedbackFile[] = [];

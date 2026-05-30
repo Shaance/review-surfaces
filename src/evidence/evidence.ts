@@ -1,19 +1,13 @@
-export type EvidenceKind =
-  | "file"
-  | "diff"
-  | "test"
-  | "ci"
-  | "doc"
-  | "spec"
-  | "conversation"
-  | "command"
-  | "feedback"
-  | "agent_instruction"
-  | "url"
-  | "unknown";
+import type {
+  PacketConfidence,
+  PacketEvidenceKind,
+  PacketSourceKind,
+  PacketValidationStatus
+} from "../schema/review-packet-contract";
 
-export type Confidence = "high" | "medium" | "low" | "unknown";
-export type ValidationStatus = "valid" | "invalid" | "not_checked" | "unknown";
+export type EvidenceKind = PacketEvidenceKind;
+export type Confidence = PacketConfidence;
+export type ValidationStatus = PacketValidationStatus;
 
 export interface EvidenceRef {
   kind: EvidenceKind;
@@ -51,7 +45,7 @@ export interface EvidenceRef {
 }
 
 export interface SourceRef {
-  kind: "spec" | "doc" | "file" | "conversation" | "feedback" | "unknown";
+  kind: PacketSourceKind;
   ref: string;
   title?: string;
   evidence?: EvidenceRef[];

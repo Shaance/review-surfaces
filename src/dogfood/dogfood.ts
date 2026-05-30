@@ -4,6 +4,12 @@ import { EvaluationModel } from "../evaluation/evaluate";
 import { FeedbackFile, FeedbackFinding } from "../feedback/feedback";
 import { MethodologyModel } from "../methodology/methodology";
 import { RisksModel } from "../risks/risks";
+import type {
+  PacketDogfoodCategory,
+  PacketHelpfulness,
+  PacketRemediationType,
+  PacketSeverity
+} from "../schema/review-packet-contract";
 import { PacketComparison } from "./compare";
 
 export interface DogfoodModel {
@@ -12,25 +18,25 @@ export interface DogfoodModel {
   summary: string;
   previous_packet_path?: string;
   comparison?: PacketComparison;
-  helped_agent?: "yes" | "partially" | "no" | "unknown";
-  helped_reviewer?: "yes" | "partially" | "no" | "unknown";
+  helped_agent?: PacketHelpfulness;
+  helped_reviewer?: PacketHelpfulness;
   findings: Array<{
     id: string;
-    category: "usability" | "review_value" | "evidence_quality" | "agent_workflow" | "schema" | "diagram_quality" | "test_gap" | "performance" | "unknown";
-    severity: "low" | "medium" | "high" | "critical" | "unknown";
+    category: PacketDogfoodCategory;
+    severity: PacketSeverity;
     packet_section?: string;
     finding: string;
     impact?: string;
     evidence?: EvidenceRef[];
     remediation?: {
-      type: "code" | "test" | "schema" | "doc" | "spec" | "skill" | "feedback" | "defer";
+      type: PacketRemediationType;
       description: string;
       acai_id?: string;
       target_milestone?: string;
     };
   }>;
   remediation_tasks?: Array<{
-    type: "code" | "test" | "schema" | "doc" | "spec" | "skill" | "feedback" | "defer";
+    type: PacketRemediationType;
     description: string;
     acai_id?: string;
     target_milestone?: string;

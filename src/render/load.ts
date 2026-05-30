@@ -2,13 +2,31 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileExists } from "../core/files";
 import { parseYaml } from "../core/simple-yaml";
-import { Confidence, EvidenceKind, EvidenceRef, SourceRef, ValidationStatus } from "../evidence/evidence";
-import { EvaluationModel, PartialReason, RequirementResult, RequirementStatus } from "../evaluation/evaluate";
+import { EvidenceRef, SourceRef } from "../evidence/evidence";
+import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 import { DogfoodModel } from "../dogfood/dogfood";
-import { ComparisonDirection, CountDelta, PacketComparison } from "../dogfood/compare";
+import { CountDelta, PacketComparison } from "../dogfood/compare";
 import { IntentModel, IntentRequirement } from "../intent/intent";
 import { MethodologyModel } from "../methodology/methodology";
 import { RiskItem, RisksModel } from "../risks/risks";
+import {
+  PACKET_COMPARISON_DIRECTIONS,
+  PACKET_CONFIDENCE_LEVELS,
+  PACKET_DOGFOOD_CATEGORIES,
+  PACKET_DOGFOOD_SEVERITIES,
+  PACKET_EVIDENCE_KINDS,
+  PACKET_HELPFULNESS_VALUES,
+  PACKET_PARTIAL_REASONS,
+  PACKET_REMEDIATION_TYPES,
+  PACKET_REQUIREMENT_STATUSES,
+  PACKET_RISK_CATEGORIES,
+  PACKET_RISK_DETECTABILITY,
+  PACKET_RISK_LIKELIHOODS,
+  PACKET_RISK_SEVERITIES,
+  PACKET_SOURCE_KINDS,
+  PACKET_TEST_EVIDENCE_KINDS,
+  PACKET_VALIDATION_STATUSES
+} from "../schema/review-packet-contract";
 
 /**
  * Phase 4a artifact loaders.
@@ -107,8 +125,8 @@ export function loadDogfood(outputDir: string): DogfoodModel | null {
     summary: asString(parsed.summary),
     previous_packet_path: optionalString(parsed.previous_packet_path),
     comparison: normalizeComparison(parsed.comparison),
-    helped_agent: asEnum(parsed.helped_agent, ["yes", "partially", "no", "unknown"]),
-    helped_reviewer: asEnum(parsed.helped_reviewer, ["yes", "partially", "no", "unknown"]),
+    helped_agent: asEnum(parsed.helped_agent, PACKET_HELPFULNESS_VALUES),
+    helped_reviewer: asEnum(parsed.helped_reviewer, PACKET_HELPFULNESS_VALUES),
     findings: asArray(parsed.findings).map(normalizeDogfoodFinding),
     remediation_tasks: asArray(parsed.remediation_tasks).map(normalizeRemediation),
     deferrals: asStringArray(parsed.deferrals)
@@ -118,28 +136,6 @@ export function loadDogfood(outputDir: string): DogfoodModel | null {
 // ---------------------------------------------------------------------------
 // Normalizers
 // ---------------------------------------------------------------------------
-
-const REQUIREMENT_CONFIDENCE: Confidence[] = ["high", "medium", "low", "unknown"];
-const REQUIREMENT_STATUS: RequirementStatus[] = [
-  "satisfied",
-  "partial",
-  "missing",
-  "unknown",
-  "overreach",
-  "invalid_evidence"
-];
-// Structured sub-reason for a partial status; only meaningful when
-// status === "partial". Preserved on load so the composable flow
-// (evaluate -> packet) keeps the partial_reason labels a monolithic `all`
-// run produces, so compose == monolith.
-const PARTIAL_REASONS: PartialReason[] = [
-  "impl_no_test",
-  "test_no_impl",
-  "impl_broad_no_exact_test",
-  "exact_impl_broad_test",
-  "broad_area_only",
-  "other"
-];
 
 function normalizeRequirement(value: unknown): IntentRequirement {
   const record = isRecord(value) ? value : {};
@@ -152,17 +148,17 @@ function normalizeRequirement(value: unknown): IntentRequirement {
     constraints: asStringArray(record.constraints),
     assumptions: asStringArray(record.assumptions),
     open_questions: asStringArray(record.open_questions),
-    confidence: asEnum(record.confidence, REQUIREMENT_CONFIDENCE) ?? "unknown",
+    confidence: asEnum(record.confidence, PACKET_CONFIDENCE_LEVELS) ?? "unknown",
     llm_derived: record.llm_derived === true ? true : undefined
   };
 }
 
 function normalizeRequirementResult(value: unknown): RequirementResult {
   const record = isRecord(value) ? value : {};
-  const status = asEnum(record.status, REQUIREMENT_STATUS) ?? "unknown";
+  const status = asEnum(record.status, PACKET_REQUIREMENT_STATUSES) ?? "unknown";
   // partial_reason is only meaningful for partial results; carry it through
   // round-trips so loaded evaluations match a monolithic `all` run.
-  const partialReason = status === "partial" ? asEnum(record.partial_reason, PARTIAL_REASONS) : undefined;
+  const partialReason = status === "partial" ? asEnum(record.partial_reason, PACKET_PARTIAL_REASONS) : undefined;
   return {
     requirement_id: asString(record.requirement_id),
     acai_id: optionalString(record.acai_id),
@@ -172,39 +168,24 @@ function normalizeRequirementResult(value: unknown): RequirementResult {
     evidence: asArray(record.evidence).map(normalizeEvidenceRef),
     missing_evidence: asArray(record.missing_evidence).map(normalizeEvidenceRef),
     review_focus: asString(record.review_focus),
-    confidence: asEnum(record.confidence, REQUIREMENT_CONFIDENCE) ?? "unknown"
+    confidence: asEnum(record.confidence, PACKET_CONFIDENCE_LEVELS) ?? "unknown"
   };
 }
 
 function normalizeSourceRef(value: unknown): SourceRef {
   const record = isRecord(value) ? value : {};
   return {
-    kind: asEnum(record.kind, ["spec", "doc", "file", "conversation", "feedback", "unknown"]) ?? "unknown",
+    kind: asEnum(record.kind, PACKET_SOURCE_KINDS) ?? "unknown",
     ref: asString(record.ref),
     title: optionalString(record.title),
     evidence: record.evidence === undefined ? undefined : asArray(record.evidence).map(normalizeEvidenceRef)
   };
 }
 
-const EVIDENCE_KINDS: EvidenceKind[] = [
-  "file",
-  "diff",
-  "test",
-  "ci",
-  "doc",
-  "spec",
-  "conversation",
-  "command",
-  "feedback",
-  "agent_instruction",
-  "url",
-  "unknown"
-];
-
 function normalizeEvidenceRef(value: unknown): EvidenceRef {
   const record = isRecord(value) ? value : {};
   const ref: EvidenceRef = {
-    kind: asEnum(record.kind, EVIDENCE_KINDS) ?? "unknown",
+    kind: asEnum(record.kind, PACKET_EVIDENCE_KINDS) ?? "unknown",
     path: optionalString(record.path),
     line_start: optionalNumber(record.line_start),
     line_end: optionalNumber(record.line_end),
@@ -216,41 +197,22 @@ function normalizeEvidenceRef(value: unknown): EvidenceRef {
     command: optionalString(record.command),
     excerpt_hash: optionalString(record.excerpt_hash),
     note: optionalString(record.note),
-    confidence: asEnum(record.confidence, REQUIREMENT_CONFIDENCE) ?? "unknown",
-    validation_status: asEnum<ValidationStatus>(record.validation_status, [
-      "valid",
-      "invalid",
-      "not_checked",
-      "unknown"
-    ]),
+    confidence: asEnum(record.confidence, PACKET_CONFIDENCE_LEVELS) ?? "unknown",
+    validation_status: asEnum(record.validation_status, PACKET_VALIDATION_STATUSES),
     llm_proposed: record.llm_proposed === true ? true : undefined,
     verified: record.verified === true ? true : undefined
   };
   return ref;
 }
 
-const RISK_CATEGORY: RiskItem["category"][] = [
-  "correctness",
-  "security",
-  "privacy",
-  "maintainability",
-  "architecture",
-  "testing",
-  "workflow",
-  "release",
-  "performance",
-  "unknown"
-];
-const RISK_SEVERITY: RiskItem["severity"][] = ["low", "medium", "high", "critical", "unknown"];
-
 function normalizeRiskItem(value: unknown): RiskItem {
   const record = isRecord(value) ? value : {};
   return {
     id: asString(record.id),
-    category: asEnum(record.category, RISK_CATEGORY) ?? "unknown",
-    severity: asEnum(record.severity, RISK_SEVERITY) ?? "unknown",
-    likelihood: asEnum(record.likelihood, ["low", "medium", "high", "unknown"]),
-    detectability: asEnum(record.detectability, ["easy", "moderate", "hard", "unknown"]),
+    category: asEnum(record.category, PACKET_RISK_CATEGORIES) ?? "unknown",
+    severity: asEnum(record.severity, PACKET_RISK_SEVERITIES) ?? "unknown",
+    likelihood: asEnum(record.likelihood, PACKET_RISK_LIKELIHOODS),
+    detectability: asEnum(record.detectability, PACKET_RISK_DETECTABILITY),
     summary: asString(record.summary),
     impact: optionalString(record.impact),
     evidence: record.evidence === undefined ? undefined : asArray(record.evidence).map(normalizeEvidenceRef),
@@ -263,7 +225,7 @@ function normalizeTestEvidence(value: unknown): RisksModel["test_evidence"][numb
   const record = isRecord(value) ? value : {};
   return {
     id: asString(record.id),
-    kind: asEnum(record.kind, ["direct", "indirect", "claimed", "missing", "unknown"]) ?? "unknown",
+    kind: asEnum(record.kind, PACKET_TEST_EVIDENCE_KINDS) ?? "unknown",
     summary: asString(record.summary),
     requirement_ids: record.requirement_ids === undefined ? undefined : asStringArray(record.requirement_ids),
     evidence: record.evidence === undefined ? undefined : asArray(record.evidence).map(normalizeEvidenceRef)
@@ -335,27 +297,13 @@ function missingManualChecksFromGaps(gaps: RisksModel["test_gaps"]): NonNullable
     }));
 }
 
-type RemediationType = "code" | "test" | "schema" | "doc" | "spec" | "skill" | "feedback" | "defer";
-const REMEDIATION_TYPES: RemediationType[] = ["code", "test", "schema", "doc", "spec", "skill", "feedback", "defer"];
-
 function normalizeDogfoodFinding(value: unknown): DogfoodModel["findings"][number] {
   const record = isRecord(value) ? value : {};
   const remediation = isRecord(record.remediation) ? normalizeRemediation(record.remediation) : undefined;
   return {
     id: asString(record.id),
-    category:
-      asEnum(record.category, [
-        "usability",
-        "review_value",
-        "evidence_quality",
-        "agent_workflow",
-        "schema",
-        "diagram_quality",
-        "test_gap",
-        "performance",
-        "unknown"
-      ]) ?? "unknown",
-    severity: asEnum(record.severity, ["low", "medium", "high", "critical", "unknown"]) ?? "unknown",
+    category: asEnum(record.category, PACKET_DOGFOOD_CATEGORIES) ?? "unknown",
+    severity: asEnum(record.severity, PACKET_DOGFOOD_SEVERITIES) ?? "unknown",
     packet_section: optionalString(record.packet_section),
     finding: asString(record.finding),
     impact: optionalString(record.impact),
@@ -367,14 +315,12 @@ function normalizeDogfoodFinding(value: unknown): DogfoodModel["findings"][numbe
 function normalizeRemediation(value: unknown): NonNullable<DogfoodModel["remediation_tasks"]>[number] {
   const record = isRecord(value) ? value : {};
   return {
-    type: asEnum(record.type, REMEDIATION_TYPES) ?? "defer",
+    type: asEnum(record.type, PACKET_REMEDIATION_TYPES) ?? "defer",
     description: asString(record.description),
     acai_id: optionalString(record.acai_id),
     target_milestone: optionalString(record.target_milestone)
   };
 }
-
-const COMPARISON_DIRECTIONS: ComparisonDirection[] = ["improved", "regressed", "unchanged"];
 
 // Phase 5b: reconstruct the dogfood comparison from dogfood.yaml so the
 // `packet` stage that loads a prior dogfood artifact preserves it. Returns
@@ -390,7 +336,7 @@ function normalizeComparison(value: unknown): PacketComparison | undefined {
         acai_id: asString(change.acai_id),
         previous_status: asString(change.previous_status),
         current_status: asString(change.current_status),
-        direction: asEnum(change.direction, COMPARISON_DIRECTIONS) ?? "unchanged"
+        direction: asEnum(change.direction, PACKET_COMPARISON_DIRECTIONS) ?? "unchanged"
       })),
     new_overreach: asStringArray(value.new_overreach),
     resolved_overreach: asStringArray(value.resolved_overreach),

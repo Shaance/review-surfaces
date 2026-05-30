@@ -1,4 +1,13 @@
-export const REQUIREMENT_STATUSES = ["satisfied", "partial", "missing", "unknown", "invalid_evidence"] as const;
+import {
+  PACKET_REQUIREMENT_STATUSES,
+  type PacketRequirementStatus
+} from "../schema/review-packet-contract";
+
+type CountedRequirementStatus = Exclude<PacketRequirementStatus, "overreach">;
+
+export const REQUIREMENT_STATUSES = PACKET_REQUIREMENT_STATUSES.filter(
+  (status): status is CountedRequirementStatus => status !== "overreach"
+);
 
 export type RequirementStatusCount = Record<(typeof REQUIREMENT_STATUSES)[number], number>;
 
