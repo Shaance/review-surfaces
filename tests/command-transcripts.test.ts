@@ -6,7 +6,7 @@ import path from "node:path";
 import { CollectionResult } from "../src/collector/collect";
 import { indexCommandTranscripts } from "../src/commands/transcripts";
 import { EvaluationModel } from "../src/evaluation/evaluate";
-import { groupsForReviewPath } from "../src/review-areas/areas";
+import { createReviewAreaMatcher } from "../src/review-areas/areas";
 import { analyzeRisks } from "../src/risks/risks";
 import { defaultReviewSurfacesAreas } from "./helpers/review-areas";
 
@@ -236,19 +236,22 @@ test("review-surfaces.METHODOLOGY.5 feeds unverified methodology claims into ris
 
 test("source contract edits map to the bootstrap Acai review area", async () => {
   const areas = await defaultReviewSurfacesAreas();
-  assert.ok(groupsForReviewPath(".gitignore", areas).includes("BOOTSTRAP"));
-  assert.ok(groupsForReviewPath("features/review-surfaces.feature.yaml", areas).includes("BOOTSTRAP"));
-  assert.ok(groupsForReviewPath("docs/review-surfaces-trd.md", areas).includes("BOOTSTRAP"));
-  assert.ok(groupsForReviewPath("types/node-ambient.d.ts", areas).includes("BOOTSTRAP"));
+  const matcher = createReviewAreaMatcher(areas);
+  assert.ok(matcher.groupsForPath(".gitignore", { purpose: "review_surface" }).includes("BOOTSTRAP"));
+  assert.ok(matcher.groupsForPath("features/review-surfaces.feature.yaml", { purpose: "review_surface" }).includes("BOOTSTRAP"));
+  assert.ok(matcher.groupsForPath("docs/review-surfaces-trd.md", { purpose: "review_surface" }).includes("BOOTSTRAP"));
+  assert.ok(matcher.groupsForPath("types/node-ambient.d.ts", { purpose: "review_surface" }).includes("BOOTSTRAP"));
 });
 
 test("pipeline stage files map to the CLI orchestration review area", async () => {
   const areas = await defaultReviewSurfacesAreas();
-  assert.ok(groupsForReviewPath("src/pipeline/stages.ts", areas).includes("CLI"));
+  const matcher = createReviewAreaMatcher(areas);
+  assert.ok(matcher.groupsForPath("src/pipeline/stages.ts", { purpose: "review_surface" }).includes("CLI"));
 });
 
 test("review-surfaces.BOOTSTRAP.6 and review-surfaces.DOGFOOD.8 skill files map to review areas", async () => {
   const areas = await defaultReviewSurfacesAreas();
-  assert.ok(groupsForReviewPath(".agents/skills/review-surfaces-usage/SKILL.md", areas).includes("BOOTSTRAP"));
-  assert.ok(groupsForReviewPath(".agents/skills/review-surfaces-dogfood-loop/SKILL.md", areas).includes("DOGFOOD"));
+  const matcher = createReviewAreaMatcher(areas);
+  assert.ok(matcher.groupsForPath(".agents/skills/review-surfaces-usage/SKILL.md", { purpose: "review_surface" }).includes("BOOTSTRAP"));
+  assert.ok(matcher.groupsForPath(".agents/skills/review-surfaces-dogfood-loop/SKILL.md", { purpose: "review_surface" }).includes("DOGFOOD"));
 });

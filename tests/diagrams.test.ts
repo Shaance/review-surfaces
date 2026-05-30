@@ -50,6 +50,41 @@ test("review-surfaces.ARCH.6 buildArchitectureModel returns the same model WITHO
   }
 });
 
+test("review-surfaces.ARCH.6 source layout counts each area by its own prefixes", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-duplicate-area-"));
+  const outputDir = path.join(tmp, ".review-surfaces");
+  try {
+    await buildArchitecture(collectionFixture(tmp, outputDir), evaluationFixture(), {
+      areas: [
+        {
+          id: "DUPLICATE",
+          name: "CLI",
+          groupKey: "CLI",
+          prefixes: ["src/cli/"],
+          purpose: "CLI command handling.",
+          pattern: "dispatcher",
+          testKeywords: ["cli"]
+        },
+        {
+          id: "DUPLICATE",
+          name: "Architecture",
+          groupKey: "ARCH",
+          prefixes: ["src/diagrams/"],
+          purpose: "Architecture diagrams.",
+          pattern: "renderer",
+          testKeywords: ["diagrams"]
+        }
+      ]
+    });
+
+    const sourceLayout = fs.readFileSync(path.join(outputDir, "diagrams", "source-layout.mmd"), "utf8");
+    assert.match(sourceLayout, /CLI \(0 changed\)/);
+    assert.match(sourceLayout, /Architecture \(1 changed\)/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.ARCH.6 rejects invalid Mermaid artifacts", () => {
   const result = validateMermaidDiagramArtifact({
     path: "../bad.mmd",

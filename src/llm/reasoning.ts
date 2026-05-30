@@ -6,7 +6,7 @@ import { IntentModel, IntentRequirement } from "../intent/intent";
 import { MethodologyModel } from "../methodology/methodology";
 import { redactSecrets } from "../privacy/secrets";
 import { RisksModel } from "../risks/risks";
-import { buildReviewAreas, ReviewArea, strictGroupsForReviewPath } from "../review-areas/areas";
+import { buildReviewAreas, createReviewAreaMatcher, ReviewArea, ReviewAreaMatcher } from "../review-areas/areas";
 import { GenerateStructuredOptions, ReasoningProvider } from "./provider";
 
 /**
@@ -39,7 +39,7 @@ export interface ReasoningOptions {
   remotePrivacyBlocked?: boolean;
   // FINDING C: the SAME config-derived review areas evaluateIntent uses (config
   // mode when the repo declares `areas:`). The candidate-evidence stage maps a
-  // cited path to a requirement's group via strictGroupsForReviewPath; without
+  // cited path to a requirement's group via the requirement_proof matcher; without
   // these it rebuilt FALLBACK cluster areas (CLUSTER:SRC/CLI) and a valid in-pool
   // citation like src/cli/index.ts for a *.CLI.* requirement was attached only as
   // a hypothesis (status stayed missing, tripping --strict) despite the config
@@ -470,6 +470,7 @@ async function runEvaluationCandidateEvidence(
   areas: ReviewArea[]
 ): Promise<void> {
   const candidatePaths = candidatePathPool(inputs.collection);
+  const matcher = createReviewAreaMatcher(areas);
   // Collapse the GLOBAL review_focus surface by rationale TEXT (not by
   // requirement id). One LLM hypothesis cited across many requirements becomes a
   // single coherent "N requirements share this LLM hypothesis" line instead of
@@ -521,7 +522,7 @@ async function runEvaluationCandidateEvidence(
     if (!entry) {
       continue; // the batch returned nothing for this requirement
     }
-    applyCandidateEvidence(result, entry, evidenceContext, inputs.risks, candidatePaths, focusAccumulator, budget, areas);
+    applyCandidateEvidence(result, entry, evidenceContext, inputs.risks, candidatePaths, focusAccumulator, budget, matcher);
   }
 }
 
@@ -622,7 +623,7 @@ function applyCandidateEvidence(
   candidatePaths: string[],
   focusAccumulator: ReviewFocusAccumulator,
   budget: GlobalEvidenceBudget,
-  areas: ReviewArea[]
+  matcher: ReviewAreaMatcher
 ): void {
   const rawCandidates = Array.isArray(data.candidate_evidence) ? data.candidate_evidence : [];
   const candidatePathSet = new Set(candidatePaths);
@@ -747,7 +748,7 @@ function applyCandidateEvidence(
   // the quality gate (which counts missing). A pooled-but-unrelated ref still
   // attaches as a low-confidence llm_proposed hypothesis (above), but the status
   // stays missing so the gate is never bypassed by an unrelated citation.
-  const tiedEvidence = attached.filter((ref) => isDeterministicallyTied(result, ref, areas));
+  const tiedEvidence = attached.filter((ref) => isDeterministicallyTied(result, ref, matcher));
   const upgraded = maybeUpgradeToPartial(result, tiedEvidence);
   enrichReviewFocus(result, data, risks, upgraded, focusAccumulator);
 }
@@ -762,7 +763,7 @@ function applyCandidateEvidence(
 //       test keywords, never a stray substring).
 // A ref that satisfies neither is a pooled-but-unrelated hypothesis: it attaches
 // but does NOT move the status.
-function isDeterministicallyTied(result: RequirementResult, ref: EvidenceRef, areas: ReviewArea[]): boolean {
+function isDeterministicallyTied(result: RequirementResult, ref: EvidenceRef, matcher: ReviewAreaMatcher): boolean {
   if (result.acai_id && refReferencesAcid(ref, result.acai_id)) {
     return true;
   }
@@ -770,7 +771,7 @@ function isDeterministicallyTied(result: RequirementResult, ref: EvidenceRef, ar
   if (!group || typeof ref.path !== "string") {
     return false;
   }
-  return strictGroupsForReviewPath(ref.path, areas).includes(group);
+  return matcher.groupsForPath(ref.path, { purpose: "requirement_proof" }).includes(group);
 }
 
 function refReferencesAcid(ref: EvidenceRef, acaiId: string): boolean {
