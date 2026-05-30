@@ -215,14 +215,18 @@ export function analyzeRisks(
     test_gaps: testGaps,
     missing_automatic_tests: missingAutomaticTests,
     missing_manual_checks: missingManualChecks,
-    review_focus: [
-      "Start with missing and partial requirement results.",
-      "Check overreach files before reviewing implementation detail.",
-      "Treat AI-enriched summaries as review aids, not proof.",
-      "Confirm validation command output for the current branch.",
-      ...methodologyReviewFocus(methodology)
-    ]
+    review_focus: buildRiskReviewFocus(methodology)
   };
+}
+
+export function buildRiskReviewFocus(methodology: MethodologyModel | undefined): string[] {
+  return [
+    "Start with missing and partial requirement results.",
+    "Check overreach files before reviewing implementation detail.",
+    "Treat AI-enriched summaries as review aids, not proof.",
+    "Confirm validation command output for the current branch.",
+    ...methodologyReviewFocus(methodology)
+  ];
 }
 
 function evidenceOrMissing(evidence: EvidenceRef[], fallback: string): EvidenceRef[] {
