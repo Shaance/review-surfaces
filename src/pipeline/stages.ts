@@ -1,8 +1,6 @@
-import { artifactProducingSignature, PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
 import { CollectionResult } from "../collector/collect";
 import { ReviewSurfacesConfig } from "../config/config";
 import { ArchitectureModel, buildArchitecture, buildArchitectureModel } from "../diagrams/diagrams";
-import { DogfoodModel } from "../dogfood/dogfood";
 import { EvaluationModel, evaluateIntent, verifyRequirementsWithTests } from "../evaluation/evaluate";
 import { buildIntent, IntentModel } from "../intent/intent";
 import { EnrichmentResult, ProviderName, enrichPacket, providerFor } from "../llm/provider";
@@ -10,14 +8,15 @@ import { ReasoningOptions, runEvaluationReasoning, runIntentReasoning, runNarrat
 import { buildMethodology, MethodologyModel } from "../methodology/methodology";
 import { buildReviewAreas, ReviewArea } from "../review-areas/areas";
 import { analyzeRisks, RisksModel } from "../risks/risks";
-import { loadDogfood, loadEvaluation, loadIntent, loadMethodology, loadRisks } from "../render/load";
 import { ReviewPacket } from "../render/packet";
+import { createPipelineArtifactStoreForCollection, PipelineArtifactStore } from "./artifact-store";
 
 export interface PipelineStageContext {
   cwd: string;
   commandName: string;
   commandArgs: string[];
   collection: CollectionResult;
+  artifacts: PipelineArtifactStore;
   config: ReviewSurfacesConfig;
   commands: string[];
   provider: ProviderName;
@@ -47,6 +46,7 @@ export function buildPipelineStageContext(options: BuildPipelineStageContextOpti
     commandName: options.commandName,
     commandArgs: options.commandArgs,
     collection: options.collection,
+    artifacts: createPipelineArtifactStoreForCollection(options.collection),
     config: options.config,
     commands: [`review-surfaces ${options.commandName} ${options.commandArgs.join(" ")}`.trim()],
     provider: options.provider,
@@ -55,47 +55,6 @@ export function buildPipelineStageContext(options: BuildPipelineStageContextOpti
     agentInput: options.agentInput,
     conversationPath: options.conversationPath
   };
-}
-
-// FINDING B + FINDING C (round 8, PER-ARTIFACT provenance): a prior-stage
-// artifact is only safe to LOAD when ITS OWN producing signature equals the
-// current collection signature. The round-5 check compared the SHARED manifest
-// top-level signature, but a stage like collect/intent rewrites manifest.json to
-// the CURRENT signature while leaving older evaluation.yaml/risks.yaml in place --
-// so the top-level signature matched and stale coverage/risks were reused. Now we
-// read each artifact's recorded producing signature from manifest.artifact_signatures
-// (collect carries the map forward; each stage stamps the artifacts it actually
-// rewrites with the current signature) and gate reuse on THAT. With unchanged
-// inputs the owning stage stamped the current signature, so compose==monolith and
-// the byte-stable offline path are preserved; when inputs changed (or the owning
-// stage never reran this run) the recorded producing signature differs and the
-// caller recomputes from current inputs instead of composing a stale artifact.
-export function artifactIsCurrent(context: PipelineStageContext, artifactFile: string): boolean {
-  const currentSignature = context.collection.manifest.signature;
-  if (typeof currentSignature !== "string") {
-    return false;
-  }
-  return artifactProducingSignature(context.collection.outputDir, artifactFile) === currentSignature;
-}
-
-export function loadCurrentIntent(context: PipelineStageContext): IntentModel | null {
-  return artifactIsCurrent(context, PROVENANCE_ARTIFACTS.intent) ? loadIntent(context.collection.outputDir) : null;
-}
-
-export function loadCurrentEvaluation(context: PipelineStageContext): EvaluationModel | null {
-  return artifactIsCurrent(context, PROVENANCE_ARTIFACTS.evaluation) ? loadEvaluation(context.collection.outputDir) : null;
-}
-
-export function loadCurrentMethodology(context: PipelineStageContext): MethodologyModel | null {
-  return artifactIsCurrent(context, PROVENANCE_ARTIFACTS.methodology) ? loadMethodology(context.collection.outputDir) : null;
-}
-
-export function loadCurrentRisks(context: PipelineStageContext): RisksModel | null {
-  return artifactIsCurrent(context, PROVENANCE_ARTIFACTS.risks) ? loadRisks(context.collection.outputDir) : null;
-}
-
-export function loadCurrentDogfood(context: PipelineStageContext): DogfoodModel | null {
-  return artifactIsCurrent(context, PROVENANCE_ARTIFACTS.dogfood) ? loadDogfood(context.collection.outputDir) : null;
 }
 
 export function reasoningProviderFor(context: PipelineStageContext) {
@@ -158,7 +117,7 @@ export async function computeEnrichedIntent(context: PipelineStageContext): Prom
 export async function loadOrComputeIntent(context: PipelineStageContext, label = "intent"): Promise<IntentModel> {
   // FINDING E: only compose a prior intent.yaml when it was produced from the same
   // inputs; otherwise recompute so a reused --out never reuses a stale artifact.
-  const loaded = loadCurrentIntent(context);
+  const loaded = context.artifacts.loadCurrentIntent();
   if (loaded) {
     return loaded;
   }
@@ -203,7 +162,7 @@ export async function loadOrComputeEvaluation(
 ): Promise<EvaluationModel> {
   // FINDING E: only compose a prior evaluation.yaml when its producing signature
   // matches; a stale coverage artifact must be recomputed, not reused.
-  const loaded = loadCurrentEvaluation(context);
+  const loaded = context.artifacts.loadCurrentEvaluation();
   if (loaded) {
     return loaded;
   }
@@ -218,7 +177,7 @@ export async function computeMethodology(context: PipelineStageContext): Promise
 export async function loadOrComputeMethodology(context: PipelineStageContext): Promise<MethodologyModel> {
   // FINDING E: recompute when the prior methodology.yaml is stale (signature
   // mismatch) instead of composing it.
-  const loaded = loadCurrentMethodology(context);
+  const loaded = context.artifacts.loadCurrentMethodology();
   if (loaded) {
     return loaded;
   }
@@ -241,7 +200,7 @@ export async function loadOrComputeRisks(
 ): Promise<RisksModel> {
   // FINDING E: recompute when the prior risks.yaml is stale (signature mismatch)
   // instead of composing it.
-  const loaded = loadCurrentRisks(context);
+  const loaded = context.artifacts.loadCurrentRisks();
   if (loaded) {
     return loaded;
   }
