@@ -6,7 +6,7 @@ import path from "node:path";
 import { CollectionResult } from "../src/collector/collect";
 import { indexFeedbackFiles } from "../src/feedback/feedback";
 import { EvaluationModel } from "../src/evaluation/evaluate";
-import { groupsForReviewPath } from "../src/review-areas/areas";
+import { createReviewAreaMatcher } from "../src/review-areas/areas";
 import { analyzeRisks } from "../src/risks/risks";
 import { buildDogfood } from "../src/dogfood/dogfood";
 import { defaultReviewSurfacesAreas } from "./helpers/review-areas";
@@ -82,8 +82,9 @@ test("risk analysis maps feedback validation to claimed, indirect, and missing t
 
 test("feedback ingestion files map to the dogfood Acai review area", async () => {
   const areas = await defaultReviewSurfacesAreas();
-  assert.ok(groupsForReviewPath("src/feedback/feedback.ts", areas).includes("DOGFOOD"));
-  assert.ok(groupsForReviewPath("tests/feedback.test.ts", areas).includes("DOGFOOD"));
+  const matcher = createReviewAreaMatcher(areas);
+  assert.ok(matcher.groupsForPath("src/feedback/feedback.ts", { purpose: "review_surface" }).includes("DOGFOOD"));
+  assert.ok(matcher.groupsForPath("tests/feedback.test.ts", { purpose: "review_surface" }).includes("DOGFOOD"));
 });
 
 test("review-surfaces.DOGFOOD.4 surfaces latest feedback findings in dogfood output", () => {

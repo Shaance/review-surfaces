@@ -3,7 +3,7 @@ import { CollectionResult } from "../collector/collect";
 import { writeText } from "../core/files";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
 import { EvaluationModel } from "../evaluation/evaluate";
-import { buildReviewAreas, matchesReviewPrefix, ReviewArea } from "../review-areas/areas";
+import { buildReviewAreas, createReviewAreaMatcher, ReviewArea, ReviewAreaMatcher } from "../review-areas/areas";
 
 export interface ArchitectureModel {
   summary: string;
@@ -249,7 +249,8 @@ function sourceLayoutDiagram(collection: CollectionResult, areas: ReviewArea[]):
   const changed = new Set(collection.changedFiles.map((file) => file.path));
   const lines = ["flowchart TB", `  ROOT["${diagramLabel(collection.git?.repo ?? "repository")}"]`];
   areas.forEach((subsystem, position) => {
-    const count = collection.changedFiles.filter((file) => matchesReviewPrefix(file.path, subsystem.prefixes)).length;
+    const matcher = createReviewAreaMatcher([subsystem]);
+    const count = collection.changedFiles.filter((file) => areaHasReviewSurfacePrefix(file.path, matcher)).length;
     lines.push(`  ROOT --> ${nodeId(subsystem.id, position)}["${diagramLabel(subsystem.name)} (${count} changed)"]`);
   });
   if (changed.size === 0) {
@@ -289,12 +290,13 @@ function dogfoodFlowDiagram(): string {
 }
 
 function subsystemCard(definition: ReviewArea, collection: CollectionResult, evaluation: EvaluationModel): ArchitectureModel["subsystems"][number] {
+  const matcher = createReviewAreaMatcher([definition]);
   const files = collection.changedFiles
     .map((file) => file.path)
-    .filter((filePath) => matchesReviewPrefix(filePath, definition.prefixes));
+    .filter((filePath) => areaHasReviewSurfacePrefix(filePath, matcher));
   const tests = collection.tests
     .map((test) => test.path)
-    .filter((filePath) => filePath.startsWith("tests/") && relatedToSubsystem(filePath, definition));
+    .filter((filePath) => filePath.startsWith("tests/") && relatedToSubsystem(filePath, definition, matcher));
   const risks = evaluation.results
     .filter((result) => result.acai_id?.includes(`.${definition.groupKey}.`) && result.status !== "satisfied")
     .slice(0, 4)
@@ -316,9 +318,21 @@ function subsystemCard(definition: ReviewArea, collection: CollectionResult, eva
   };
 }
 
-function relatedToSubsystem(filePath: string, definition: ReviewArea): boolean {
+function relatedToSubsystem(filePath: string, definition: ReviewArea, matcher: ReviewAreaMatcher): boolean {
   if (definition.prefixes.includes("tests/")) {
     return filePath.startsWith("tests/");
   }
-  return definition.testKeywords.some((keyword) => filePath.toLowerCase().includes(keyword));
+  return areaHasReviewSurfaceTestKeyword(filePath, matcher);
+}
+
+function areaHasReviewSurfacePrefix(filePath: string, matcher: ReviewAreaMatcher): boolean {
+  return matcher
+    .explainPath(filePath, { purpose: "review_surface" })
+    .matches.some((match) => match.reason === "prefix");
+}
+
+function areaHasReviewSurfaceTestKeyword(filePath: string, matcher: ReviewAreaMatcher): boolean {
+  return matcher
+    .explainPath(filePath, { purpose: "review_surface" })
+    .matches.some((match) => match.reason === "test_keyword");
 }

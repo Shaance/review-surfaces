@@ -407,7 +407,7 @@ test("FINDING D: a DETERMINISTICALLY group-mapped path (strict area mapping) DOE
   fs.writeFileSync(path.join(tmp, "src", "evaluation", "evaluate.ts"), "export const x = 1;\n");
 
   // A fallback area derived from a cluster whose id yields the EVAL group key and
-  // whose directory prefix is src/evaluation/, so strictGroupsForReviewPath maps
+  // whose directory prefix is src/evaluation/, so the requirement_proof matcher maps
   // the cited path to EVAL (a deterministic group tie, no ACID needed).
   const collection = baseCollection(tmp, {
     repositoryFiles: ["src/evaluation/evaluate.ts"],

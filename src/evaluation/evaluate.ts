@@ -6,7 +6,14 @@ import { EvidenceRef, fileEvidence, isLlmProposed, missingEvidence, specEvidence
 import { validateRequirementResultEvidence } from "../evidence/validate";
 import { FileClassification, RepoIndex } from "../indexer/indexer";
 import { IntentModel, IntentRequirement } from "../intent/intent";
-import { buildReviewAreas, groupsForReviewPath, isLaterProviderGroup, ReviewArea, ReviewAreasMode, strictGroupsForReviewPath } from "../review-areas/areas";
+import {
+  buildReviewAreas,
+  createReviewAreaMatcher,
+  isLaterProviderGroup,
+  ReviewArea,
+  ReviewAreaMatcher,
+  ReviewAreasMode
+} from "../review-areas/areas";
 import { NormalizedTestCase, TestResults } from "../tests-evidence/junit";
 import { countRequirementStatuses, formatRequirementStatusSummary } from "./status";
 
@@ -55,6 +62,7 @@ interface EvidenceIndex {
   allChangedFiles: string[];
   allFiles: Set<string>;
   areas: ReviewArea[];
+  matcher: ReviewAreaMatcher;
   areasMode: ReviewAreasMode;
   repoIndex?: RepoIndex;
   classificationByPath: Map<string, FileClassification>;
@@ -160,6 +168,7 @@ export function verifyRequirementsWithTests(
   }
 
   const areas = options.areas ?? buildReviewAreas({ repoIndex: collection.repoIndex }).areas;
+  const matcher = createReviewAreaMatcher(areas);
   const knownAcids = new Set(intent.requirements.map((requirement) => requirement.acai_id).filter(Boolean) as string[]);
   const knownGroups = new Set(
     intent.requirements.map((requirement) => groupFromAcid(requirement.acai_id)).filter(Boolean) as string[]
@@ -179,7 +188,7 @@ export function verifyRequirementsWithTests(
   const mappedCases = passingCases.map((testCase) => ({
     testCase,
     acids: passingCaseAcids(testCase, knownAcids),
-    groups: passingCaseGroups(testCase, knownGroups, knownAcids, areas, collectedTestPaths)
+    groups: passingCaseGroups(testCase, knownGroups, knownAcids, matcher, collectedTestPaths)
   }));
 
   let mutated = false;
@@ -195,7 +204,7 @@ export function verifyRequirementsWithTests(
     const requirement = requirementById.get(result.requirement_id);
     const group = groupFromAcid(result.acai_id);
 
-    const match = findVerifyingCase(result, group, mappedCases, areas);
+    const match = findVerifyingCase(result, group, mappedCases, matcher);
     if (match) {
       // Invariant #3: implementation evidence is required unless test-only.
       const testOnly = requirement ? isTestOnlyRequirement(requirement, group) : false;
@@ -257,7 +266,7 @@ function findVerifyingCase(
   result: RequirementResult,
   group: string | undefined,
   mappedCases: MappedPassingCase[],
-  areas: ReviewArea[]
+  matcher: ReviewAreaMatcher
 ): VerifyingMatch | undefined {
   // (a) EXACT-ACID: the passing test's name/classname/suite references THIS
   // requirement's exact ACID. Group membership alone (a different ACID in the
@@ -300,7 +309,10 @@ function findVerifyingCase(
   for (const pinpoint of pinpoints) {
     // Corroboration #1: the LLM-cited test FILE must map to the requirement group
     // under the STRICT mapping (no substring/`medieval`-style false positives).
-    if (typeof pinpoint.path !== "string" || !strictGroupsForReviewPath(pinpoint.path, areas).includes(group)) {
+    if (
+      typeof pinpoint.path !== "string" ||
+      !matcher.groupsForPath(pinpoint.path, { purpose: "requirement_proof" }).includes(group)
+    ) {
       continue;
     }
     const candidates = mappedByName.get(pinpoint.testName);
@@ -376,7 +388,7 @@ function passingCaseGroups(
   testCase: NormalizedTestCase,
   knownGroups: Set<string>,
   knownAcids: Set<string>,
-  areas: ReviewArea[],
+  matcher: ReviewAreaMatcher,
   collectedTestPaths: Set<string>
 ): Set<string> {
   const groups = new Set<string>();
@@ -403,12 +415,13 @@ function passingCaseGroups(
     }
   }
   // A classname that is an ACTUAL COLLECTED test path maps through the STRICT
-  // review-area path mapping (true directory prefixes + whole-token keywords).
+  // requirement-proof path mapping (true directory prefixes + whole-token
+  // keywords).
   // A free-text classname that is not a real test path contributes nothing here,
   // so a path-like-but-unrelated classname (e.g. tests/medieval_history.test.ts
   // not in the test set) can no longer corroborate a promotion via substrings.
   if (typeof testCase.classname === "string" && collectedTestPaths.has(testCase.classname)) {
-    for (const group of strictGroupsForReviewPath(testCase.classname, areas)) {
+    for (const group of matcher.groupsForPath(testCase.classname, { purpose: "requirement_proof" })) {
       groups.add(group);
     }
   }
@@ -625,6 +638,7 @@ async function buildEvidenceIndex(
   const testsByAcid = new Map<string, EvidenceRef[]>();
   const changedByGroup = new Map<string, EvidenceRef[]>();
   const testsByGroup = new Map<string, EvidenceRef[]>();
+  const matcher = createReviewAreaMatcher(areas);
   const testPaths = new Set(collection.tests.map((test) => test.path));
   const changedImplementationPaths = new Set(
     collection.changedFiles.filter((changedFile) => isImplementationEvidencePath(changedFile.path, testPaths)).map((changedFile) => changedFile.path)
@@ -664,13 +678,13 @@ async function buildEvidenceIndex(
     if (testPaths.has(changedFile.path)) {
       continue;
     }
-    for (const group of groupsForReviewPath(changedFile.path, areas)) {
+    for (const group of matcher.groupsForPath(changedFile.path, { purpose: "review_surface" })) {
       pushMap(changedByGroup, group, fileEvidence(changedFile.path, `Changed file mapped to ${group}.`));
     }
   }
 
   for (const test of collection.tests) {
-    for (const group of groupsForReviewPath(test.path, areas)) {
+    for (const group of matcher.groupsForPath(test.path, { purpose: "review_surface" })) {
       pushMap(testsByGroup, group, testEvidence(test.path, `Test path mapped to ${group}.`));
     }
   }
@@ -695,6 +709,7 @@ async function buildEvidenceIndex(
     allChangedFiles: collection.changedFiles.map((file) => file.path),
     allFiles: new Set(allFiles),
     areas,
+    matcher,
     areasMode,
     repoIndex: collection.repoIndex,
     classificationByPath
@@ -710,7 +725,7 @@ function detectOverreach(index: EvidenceIndex, requirements: IntentRequirement[]
   const unmapped = index.allChangedFiles.filter(
     (filePath) =>
       !NON_REVIEW_CLASSIFICATIONS.has(index.classificationByPath.get(filePath) ?? "unknown") &&
-      groupsForReviewPath(filePath, index.areas).every((group) => !knownGroups.has(group))
+      index.matcher.groupsForPath(filePath, { purpose: "review_surface" }).every((group) => !knownGroups.has(group))
   );
 
   // Fallback (no configured areas): report overreach as review-sized UNMAPPED
