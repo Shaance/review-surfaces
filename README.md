@@ -41,7 +41,8 @@ pnpm install
 pnpm run build
 ```
 
-`pnpm run build` compiles the CommonJS CLI with `tsc`. The executable is
+`pnpm run build` clears stale compiled output, then compiles the CommonJS CLI with
+`tsc`. The executable is
 `bin/review-surfaces.js` (also exposed as the `review-surfaces` bin and via the
 `pnpm run review-surfaces` script).
 
@@ -126,7 +127,7 @@ validation accepts it.
 ## Testing
 
 ```bash
-pnpm run test       # builds, then runs node --test over dist/tests/*.test.js
+pnpm run test       # cleans/builds, then runs node --test over dist/tests/*.test.js
 pnpm run typecheck  # tsc --noEmit
 pnpm run lint       # alias for typecheck
 ```
