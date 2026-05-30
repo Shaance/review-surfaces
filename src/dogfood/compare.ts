@@ -127,19 +127,27 @@ export function loadPreviousPacket(packetPath: string): PreviousPacket | null {
   return { evaluation, risks };
 }
 
-// A loaded object IS a review packet when it carries the packet schema_version,
-// OR (for an older/handwritten packet that may omit it) it has BOTH the expected
-// evaluation and risks objects. A package.json / manifest.json / arbitrary JSON
-// object satisfies neither, so it is rejected as an unreadable baseline (no-op).
-const REVIEW_PACKET_SCHEMA_VERSION = "review-surfaces.packet.v1";
-
+// A loaded object IS a review packet ONLY when it has the expected STRUCTURE:
+// an evaluation object with a results array AND a risks object with an items
+// array. A package.json / manifest.json / arbitrary JSON object lacks both, so
+// it is rejected as an unreadable baseline (no-op).
+//
+// Round 9 (FINDING A): schema_version is NO LONGER a sufficient short-circuit.
+// A parseable-but-truncated/corrupt baseline like
+// `{ "schema_version": "review-surfaces.packet.v1" }` (no evaluation/risks) used
+// to pass on schema_version alone; normalizeEvaluation(undefined) /
+// normalizeRisks(undefined) then coerced it into an EMPTY baseline, and the
+// dogfood comparison falsely reported every current requirement as
+// improved-from-missing and every current risk as new against a phantom
+// baseline. The structural fields are now required UNCONDITIONALLY so such a
+// file returns null (clean no-op), exactly like the absent/array/non-packet
+// cases.
+//
+// PARITY PRESERVED: the structural check does NOT require schema_version, so a
+// genuine handwritten packet that OMITS schema_version but carries a proper
+// evaluation.results array and risks.items array is still accepted (round-3
+// behavior).
 function isReviewPacketShape(record: Record<string, unknown>): boolean {
-  if (record.schema_version === REVIEW_PACKET_SCHEMA_VERSION) {
-    return true;
-  }
-  // Fall back to a structural check: both an evaluation object (with a results
-  // array) and a risks object (with an items array) are present. This accepts a
-  // genuine packet missing schema_version while still rejecting non-packets.
   const evaluation = record.evaluation;
   const risks = record.risks;
   return (

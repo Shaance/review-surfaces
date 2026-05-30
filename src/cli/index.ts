@@ -1186,6 +1186,7 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
 async function runHandoffStage(parsed: ParsedArgs): Promise<void> {
   const context = await buildStageContext(parsed);
   // Load packet inputs needed for the handoff; compute any that are missing.
+  const intent = loadCurrentIntent(context) ?? (await buildIntent(context.cwd, context.collection));
   const evaluation = await loadOrComputeEvaluation(context, () => loadOrComputeIntent(context));
   const methodology = await loadOrComputeMethodology(context);
   const risks = await loadOrComputeRisks(
@@ -1195,23 +1196,62 @@ async function runHandoffStage(parsed: ParsedArgs): Promise<void> {
   );
   // FINDING E: compose a prior dogfood.yaml / intent.yaml only when it is current.
   const dogfood = loadCurrentDogfood(context) ?? undefined;
-  const enrichment: EnrichmentResult = {
+  // PER-STAGE ISOLATION: the `handoff` stage writes ONLY agent_handoff.md.
+  // buildHandoff never reads architecture, so build the model without the
+  // diagrams/*.mmd disk side effect rather than leaking a diagrams/ directory.
+  const architecture = computeArchitectureModel(context, evaluation);
+  // Round 9 (FINDING B, enrichment parity): the monolithic `all`/`packet` run
+  // calls enrichPacket BEFORE writing the handoff, so agent-file enrichment
+  // (risk_summaries -> AI-RISK items in risks.items, review_focus -> risks.review_focus,
+  // methodology_decisions -> methodology.decisions, assumptions -> intent.assumptions)
+  // surfaces in agent_handoff.md. The standalone handoff stage previously computed
+  // PLAIN methodology/risks and never enriched, so with `handoff --provider agent-file
+  // --agent-input ...` in a fresh output dir those agent fields were ABSENT from
+  // agent_handoff.md (same parity class as the round-4 standalone-risks fix and the
+  // round-7 standalone-methodology fix). Assemble the SAME in-memory packet model
+  // packet uses and run the IDENTICAL enrichPacket call BEFORE writeHandoffArtifact.
+  // Under mock enrichPacket is a strict no-op (not_requested), so a mock handoff
+  // stays byte-identical.
+  //
+  // PER-STAGE ISOLATION HOLDS: enrichPacket mutates only the in-memory
+  // packet.intent/methodology/risks models (it never writes intent/evaluation/
+  // methodology/risks/review_packet to disk), and writeHandoffArtifact still emits
+  // ONLY agent_handoff.md. computeArchitectureModel built the architecture without
+  // the diagrams/*.mmd side effect, so no diagrams/ directory is leaked.
+  const preEnrichment: EnrichmentResult = {
     provider: context.provider,
     model: context.requestedModel,
     status: "not_requested",
-    summary: "Handoff generated from local artifacts."
+    summary: "Enrichment has not run yet."
   };
-  await writeHandoffArtifact(context.collection.outputDir, {
+  const packet = createReviewPacket({
     collection: context.collection,
-    intent: loadCurrentIntent(context) ?? (await buildIntent(context.cwd, context.collection)),
+    intent,
     evaluation,
-    // PER-STAGE ISOLATION: the `handoff` stage writes ONLY agent_handoff.md.
-    // buildHandoff never reads architecture, so build the model without the
-    // diagrams/*.mmd disk side effect rather than leaking a diagrams/ directory.
-    architecture: computeArchitectureModel(context, evaluation),
     methodology,
     risks,
+    architecture,
     dogfood,
+    enrichment: preEnrichment,
+    commands: context.commands
+  });
+  const enrichment = await enrichPacket(packet, {
+    cwd: context.cwd,
+    provider: context.provider,
+    model: context.requestedModel,
+    agentInput: stringFlag(parsed, "agent-input"),
+    outputDir: context.collection.outputDir,
+    redactSecrets: context.config.privacy.redact_secrets,
+    remotePrivacyBlocked: context.collection.privacy.remote_provider_blocked
+  });
+  await writeHandoffArtifact(context.collection.outputDir, {
+    collection: context.collection,
+    intent: packet.intent,
+    evaluation: packet.evaluation,
+    architecture: packet.architecture,
+    methodology: packet.methodology,
+    risks: packet.risks,
+    dogfood: packet.dogfood,
     enrichment,
     commands: context.commands
   });
