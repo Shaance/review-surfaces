@@ -56,7 +56,15 @@ function emptyMethodology(): MethodologyModel {
 }
 
 function emptyRisks(): RisksModel {
-  return { summary: "risks", items: [], test_evidence: [], test_gaps: [], review_focus: [] };
+  return {
+    summary: "risks",
+    items: [],
+    test_evidence: [],
+    test_gaps: [],
+    missing_automatic_tests: [],
+    missing_manual_checks: [],
+    review_focus: []
+  };
 }
 
 // Build a temp repo with a single EVAL requirement, a BROAD implementation file
@@ -611,7 +619,15 @@ function packetWithEvaluationResults(results: unknown[]): Record<string, unknown
       quality_flags: [],
       evidence: []
     },
-    risks: { summary: "verification fixture", items: [], test_evidence: [], test_gaps: [], review_focus: [] }
+    risks: {
+      summary: "verification fixture",
+      items: [],
+      test_evidence: [],
+      test_gaps: [],
+      missing_automatic_tests: [],
+      missing_manual_checks: [],
+      review_focus: []
+    }
   };
 }
 

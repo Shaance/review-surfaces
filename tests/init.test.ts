@@ -58,6 +58,7 @@ test("review-surfaces.BOOTSTRAP.5 init scaffolds every target into a fresh repo"
   const ignoreText = fs.readFileSync(path.join(repo, ".review-surfacesignore"), "utf8");
   assert.match(ignoreText, /^\.env$/m);
   assert.match(ignoreText, /^!\.env\.example$/m);
+  assert.match(ignoreText, /^\.claude\/$/m);
 
   // (4) feature spec parses to at least one ACID.
   const specRel = findFeatureSpec(repo);

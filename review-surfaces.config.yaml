@@ -45,6 +45,7 @@ areas:
     prefixes:
       - AGENTS.md
       - CLAUDE.md
+      - .gitignore
       - .agents/
       - features/
       - docs/review-surfaces-trd.md

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Local E2E packet generated with provider=mock/not_requested; 5 satisfied, 71 partial, 4 missing, 4 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
+Local E2E packet generated with provider=mock/not_requested; 9 satisfied, 71 partial, 0 missing, 4 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
 
 ## Current Milestone
 
@@ -8,10 +8,6 @@ M5
 
 ## Relevant ACIDs
 
-- review-surfaces.RISK.1
-- review-surfaces.RISK.3
-- review-surfaces.RISK.4
-- review-surfaces.RISK.5
 - review-surfaces.BOOTSTRAP.1
 - review-surfaces.BOOTSTRAP.4
 - review-surfaces.BOOTSTRAP.5
@@ -28,12 +24,19 @@ M5
 
 ## Implemented Changes
 
+- M .gitignore
 - M .review-surfaces/agent_handoff.md
-- M bin/review-surfaces.js
+- M .review-surfacesignore
+- M review-surfaces.config.yaml
+- M schemas/review_packet.schema.json
+- M src/cli/index.ts
+- M src/privacy/ignore.ts
+- M src/render/load.ts
 - M src/render/packet.ts
-- M tests/cli.test.ts
-- M tests/packet-e2e.test.ts
-- M tests/render.test.ts
+- M src/risks/risks.ts
+- M tests/command-transcripts.test.ts
+- M tests/compare.test.ts
+- ... 10 more changed file(s) in .review-surfaces/inputs/changed_files.json
 
 ## Validation Evidence
 
@@ -65,14 +68,17 @@ M5
 
 ## Open Risks
 
-- RISK-001: 4 requirement(s) have no implementation or test evidence.
-- RISK-002: 71 requirement(s) have implementation evidence but weak or missing test evidence.
-- RISK-003: 4 requirement(s) remain unknown due to weak evidence.
+- RISK-001: 71 requirement(s) have implementation evidence but weak or missing test evidence.
+- RISK-002: 4 requirement(s) remain unknown due to weak evidence.
 
 ## Deferrals
 
 - Provider comments and hosted dashboards remain deferred per local-first scope.
 - Provider used: mock/not_requested.
+
+## Changes Since Last Packet
+
+- No previous packet supplied; pass --previous-packet to compare.
 
 ## Artifact Paths
 
