@@ -17,6 +17,7 @@ areas:
     group_key: CLI
     prefixes:
       - src/cli/
+      - src/pipeline/
       - bin/
       - package.json
     purpose: Parse commands and wire local pipeline stages.

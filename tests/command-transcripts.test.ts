@@ -242,6 +242,11 @@ test("source contract edits map to the bootstrap Acai review area", async () => 
   assert.ok(groupsForReviewPath("types/node-ambient.d.ts", areas).includes("BOOTSTRAP"));
 });
 
+test("pipeline stage files map to the CLI orchestration review area", async () => {
+  const areas = await defaultReviewSurfacesAreas();
+  assert.ok(groupsForReviewPath("src/pipeline/stages.ts", areas).includes("CLI"));
+});
+
 test("review-surfaces.BOOTSTRAP.6 and review-surfaces.DOGFOOD.8 skill files map to review areas", async () => {
   const areas = await defaultReviewSurfacesAreas();
   assert.ok(groupsForReviewPath(".agents/skills/review-surfaces-usage/SKILL.md", areas).includes("BOOTSTRAP"));
