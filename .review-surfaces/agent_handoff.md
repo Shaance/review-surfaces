@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Local E2E packet generated with provider=mock/not_requested; 7 satisfied, 73 partial, 0 missing, 4 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
+Local E2E packet generated with provider=mock/not_requested; 8 satisfied, 72 partial, 0 missing, 4 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
 
 ## Current Milestone
 
@@ -24,15 +24,19 @@ M5
 
 ## Implemented Changes
 
-- ?? src/evaluation/candidate-evidence.ts
+- M src/collector/collect.ts
+- M src/diagrams/diagrams.ts
+- M src/dogfood/compare.ts
+- M src/dogfood/dogfood.ts
 - M src/evaluation/evaluate.ts
-- ?? src/evaluation/evidence-rules.ts
-- ?? src/evaluation/verification.ts
-- ?? src/evidence/hypothesis.ts
-- M src/evidence/validate.ts
-- M src/llm/reasoning.ts
-- M src/pipeline/stages.ts
+- M src/evaluation/status.ts
+- M src/evidence/evidence.ts
+- M src/feedback/feedback.ts
+- M src/render/load.ts
+- M src/render/packet.ts
 - M src/risks/risks.ts
+- ?? src/schema/review-packet-contract.ts
+- ... 3 more changed file(s) in .review-surfaces/inputs/changed_files.json
 
 ## Validation Evidence
 
@@ -64,7 +68,7 @@ M5
 
 ## Open Risks
 
-- RISK-001: 73 requirement(s) have implementation evidence but weak or missing test evidence.
+- RISK-001: 72 requirement(s) have implementation evidence but weak or missing test evidence.
 - RISK-002: 4 requirement(s) remain unknown due to weak evidence.
 
 ## Deferrals

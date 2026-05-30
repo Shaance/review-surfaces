@@ -11,6 +11,7 @@ import { filterIgnoredDiff } from "../privacy/diff";
 import { loadPrivacyIgnore } from "../privacy/ignore";
 import { SecretRedaction, redactSecrets } from "../privacy/secrets";
 import { buildRepoIndex, RepoIndex } from "../indexer/indexer";
+import type { PacketRunMode } from "../schema/review-packet-contract";
 import {
   emptyTestResults,
   ingestTestOutputs,
@@ -55,7 +56,7 @@ export interface RunManifest {
   head_ref: string;
   base_sha?: string;
   head_sha: string;
-  run_mode: "local" | "dogfood" | "ci" | "provider" | "unknown";
+  run_mode: PacketRunMode;
   milestone?: string;
   input_hashes: ManifestInputHash[];
   // Deterministic cache key over the meaningful inputs (tool version, base/head

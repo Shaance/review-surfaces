@@ -25,22 +25,17 @@ import {
   uniqueEvidence
 } from "./evidence-rules";
 import { countRequirementStatuses, formatRequirementStatusSummary } from "./status";
+import type { PacketConfidence, PacketPartialReason, PacketRequirementStatus } from "../schema/review-packet-contract";
 export { verifyRequirementsWithTests } from "./verification";
 
-export type RequirementStatus = "satisfied" | "partial" | "missing" | "unknown" | "overreach" | "invalid_evidence";
+export type RequirementStatus = PacketRequirementStatus;
 
 // review-surfaces.EVAL: structured sub-reason for a partial status. The
 // evaluator already distinguishes these cases in prose; this lifts that
 // distinction into a small, deterministic enum so downstream surfaces can group
 // and prioritize partials without parsing summary strings. Only set when
 // status === "partial".
-export type PartialReason =
-  | "impl_no_test"
-  | "test_no_impl"
-  | "impl_broad_no_exact_test"
-  | "exact_impl_broad_test"
-  | "broad_area_only"
-  | "other";
+export type PartialReason = PacketPartialReason;
 
 export interface RequirementResult {
   requirement_id: string;
@@ -51,7 +46,7 @@ export interface RequirementResult {
   evidence: EvidenceRef[];
   missing_evidence: EvidenceRef[];
   review_focus: string;
-  confidence: "high" | "medium" | "low" | "unknown";
+  confidence: PacketConfidence;
 }
 
 export interface EvaluationModel {

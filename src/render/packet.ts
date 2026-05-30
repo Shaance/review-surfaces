@@ -11,9 +11,10 @@ import { relativePath, writeJson, writeText } from "../core/files";
 import { stringifyYaml } from "../core/simple-yaml";
 import { countRequirementStatuses, REQUIREMENT_STATUSES, RequirementStatusCount } from "../evaluation/status";
 import { redactSecrets } from "../privacy/secrets";
+import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 
 export interface ReviewPacket {
-  schema_version: "review-surfaces.packet.v1";
+  schema_version: typeof PACKET_SCHEMA_VERSION;
   manifest: Record<string, unknown>;
   intent: IntentModel;
   evaluation: EvaluationModel;
@@ -52,7 +53,7 @@ export interface PacketInputs {
 
 export function createReviewPacket(inputs: PacketInputs): ReviewPacket {
   const packet: ReviewPacket = {
-    schema_version: "review-surfaces.packet.v1",
+    schema_version: PACKET_SCHEMA_VERSION,
     manifest: stripUndefined(inputs.collection.manifest) as unknown as Record<string, unknown>,
     intent: inputs.intent,
     evaluation: inputs.evaluation,

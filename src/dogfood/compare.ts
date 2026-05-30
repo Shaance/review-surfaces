@@ -4,6 +4,7 @@ import { fileExists } from "../core/files";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 import { RisksModel } from "../risks/risks";
 import { countRequirementStatuses, RequirementStatusCount } from "../evaluation/status";
+import type { PacketComparisonDirection } from "../schema/review-packet-contract";
 
 // ---------------------------------------------------------------------------
 // Phase 5b: previous-packet comparison (CLI.6; TRD 10.9 & 15.4).
@@ -32,7 +33,7 @@ const STATUS_ORDER: Record<string, number> = {
   satisfied: 4
 };
 
-export type ComparisonDirection = "improved" | "regressed" | "unchanged";
+export type ComparisonDirection = PacketComparisonDirection;
 
 export interface StatusChange {
   acai_id: string;

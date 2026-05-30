@@ -3,16 +3,23 @@ import { COMMAND_TRANSCRIPT_OUTPUT_PATH, CommandTranscript } from "../commands/t
 import { commandEvidence, EvidenceRef, feedbackEvidence, missingEvidence, specEvidence } from "../evidence/evidence";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 import { MethodologyModel } from "../methodology/methodology";
+import type {
+  PacketRiskCategory,
+  PacketRiskDetectability,
+  PacketRiskLikelihood,
+  PacketSeverity,
+  PacketTestEvidenceKind
+} from "../schema/review-packet-contract";
 import { NormalizedTestCase, TestResults } from "../tests-evidence/junit";
 
 const MAX_PARSED_TEST_EVIDENCE = 40;
 
 export interface RiskItem {
   id: string;
-  category: "correctness" | "security" | "privacy" | "maintainability" | "architecture" | "testing" | "workflow" | "release" | "performance" | "unknown";
-  severity: "low" | "medium" | "high" | "critical" | "unknown";
-  likelihood?: "low" | "medium" | "high" | "unknown";
-  detectability?: "easy" | "moderate" | "hard" | "unknown";
+  category: PacketRiskCategory;
+  severity: PacketSeverity;
+  likelihood?: PacketRiskLikelihood;
+  detectability?: PacketRiskDetectability;
   summary: string;
   impact?: string;
   evidence?: EvidenceRef[];
@@ -25,7 +32,7 @@ export interface RisksModel {
   items: RiskItem[];
   test_evidence: Array<{
     id: string;
-    kind: "direct" | "indirect" | "claimed" | "missing" | "unknown";
+    kind: PacketTestEvidenceKind;
     summary: string;
     requirement_ids?: string[];
     evidence?: EvidenceRef[];
