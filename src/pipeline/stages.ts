@@ -7,7 +7,7 @@ import { EnrichmentResult, ProviderName, enrichPacket, providerFor } from "../ll
 import { ReasoningOptions, runEvaluationReasoning, runIntentReasoning, runNarrativeReasoning } from "../llm/reasoning";
 import { buildMethodology, MethodologyModel } from "../methodology/methodology";
 import { buildReviewAreas, ReviewArea } from "../review-areas/areas";
-import { analyzeRisks, RisksModel } from "../risks/risks";
+import { analyzeRisks, buildRiskReviewFocus, RisksModel } from "../risks/risks";
 import { ReviewPacket } from "../render/packet";
 import { createPipelineArtifactStoreForCollection, PipelineArtifactStore } from "./artifact-store";
 
@@ -291,7 +291,7 @@ interface ReasonedEvaluation {
 //                            entry, preserving the one-result-per-requirement
 //                            contract)
 //   -> candidate evidence  (attaches LLM-pinpointed test refs to evaluation;
-//                            appends to risks.review_focus)
+//                            returns risks.review_focus additions)
 //   -> verify              (partial -> satisfied using those refs + deterministic
 //                            mappings; mutates evaluation in place)
 //   -> analyzeRisks        (POST-promotion: a promoted requirement is no longer a
@@ -302,12 +302,13 @@ interface ReasonedEvaluation {
 // evaluator only produces a result for an intent requirement that exists when it
 // runs, so building evaluation before intent reasoning left any LLM-appended
 // candidate_requirements with no evaluation.results entry (and no risks/architecture).
-// The candidate-evidence stage's risks.review_focus additions are captured as a
-// delta and re-applied to the freshly analyzed (post-promotion) risks so that
-// side effect is preserved. Under mock every reasoning stage is a no-op, intent
-// is unchanged, the delta is empty, and this collapses to evaluate -> verify ->
-// analyzeRisks, keeping the deterministic baseline byte-stable. The same helper
-// backs `all` and buildEnrichedModels so compose == monolith.
+// The candidate-evidence stage returns its risks.review_focus additions as a
+// delta. We re-apply that delta to the freshly analyzed (post-promotion) risks so
+// risk derivation itself happens once, after verification. Under mock every
+// reasoning stage is a no-op, intent is unchanged, the delta is empty, and this
+// collapses to evaluate -> verify -> analyzeRisks, keeping the deterministic
+// baseline byte-stable. The same helper backs `all` and buildEnrichedModels so
+// compose == monolith.
 export async function runReasoningWithVerification(
   reasoningProvider: ReturnType<typeof providerFor>,
   // FINDING C: ReasoningOptions carries the config-derived reviewAreas through to
@@ -330,17 +331,13 @@ export async function runReasoningWithVerification(
   // matching evaluation.results entry (the one-result-per-requirement contract).
   const evaluation = await evaluateIntent(cwd, collection, intent, areasOption);
 
-  // Seed a risks object for the candidate-evidence stage to append review_focus
-  // to. Its gap/partial sections are recomputed post-promotion below, so the
-  // pre-promotion seed is only a scratch surface for the review_focus delta.
-  const seededRisks = analyzeRisks(collection, evaluation, commands, methodology);
-  const baseReviewFocusLength = seededRisks.review_focus.length;
-  const reasoningInputs = { collection, intent, evaluation, methodology, risks: seededRisks };
-
-  await runEvaluationReasoning(reasoningProvider, reasoningInputs, reasoningOptions);
-  // The candidate-evidence stage only ever APPENDS to review_focus, so the delta
-  // is everything past the deterministic base.
-  const evalReviewFocusDelta = seededRisks.review_focus.slice(baseReviewFocusLength);
+  const reasoningInputs = { collection, intent, evaluation, methodology, risks: emptyRisks() };
+  const evalReviewFocusDelta = (
+    await runEvaluationReasoning(reasoningProvider, reasoningInputs, reasoningOptions, {
+      appendReviewFocus: false,
+      initialReviewFocusCount: buildRiskReviewFocus(methodology).length
+    })
+  ).review_focus;
 
   verifyRequirementsWithTests(collection, intent, evaluation, areasOption);
 

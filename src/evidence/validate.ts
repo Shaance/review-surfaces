@@ -107,7 +107,7 @@ export function validateRequirementResultEvidence(
   };
 }
 
-function normalizeEvidencePath(filePath: string): string {
+export function normalizeEvidencePath(filePath: string): string {
   return filePath.replace(/\\/g, "/").replace(/^\.\/+/, "");
 }
 

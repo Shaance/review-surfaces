@@ -1,12 +1,22 @@
 import { CollectionResult } from "../collector/collect";
-import { EvidenceRef, isLlmProposed, llmProposedEvidence } from "../evidence/evidence";
+import { llmProposedEvidence } from "../evidence/evidence";
 import { EvidenceValidationContext, validateEvidenceRef } from "../evidence/validate";
-import { EvaluationModel, RequirementResult, RequirementStatus } from "../evaluation/evaluate";
+import {
+  appendCandidateReviewFocus,
+  applyCandidateEvidenceEntries,
+  rankEnrichableRequirements
+} from "../evaluation/candidate-evidence";
+import type {
+  CandidateEvidenceApplication,
+  CandidateEvidenceEntry,
+  CandidateEvidenceOutput
+} from "../evaluation/candidate-evidence";
+import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
+import { markHypothesis, redactHypothesisText } from "../evidence/hypothesis";
 import { IntentModel, IntentRequirement } from "../intent/intent";
 import { MethodologyModel } from "../methodology/methodology";
-import { redactSecrets } from "../privacy/secrets";
 import { RisksModel } from "../risks/risks";
-import { buildReviewAreas, createReviewAreaMatcher, ReviewArea, ReviewAreaMatcher } from "../review-areas/areas";
+import { buildReviewAreas, createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
 import { GenerateStructuredOptions, ReasoningProvider } from "./provider";
 
 /**
@@ -47,33 +57,17 @@ export interface ReasoningOptions {
   reviewAreas?: ReviewArea[];
 }
 
-const MAX_PROPOSED_REQUIREMENTS = 5;
-const MAX_CANDIDATE_EVIDENCE_PER_REQUIREMENT = 4;
-const MAX_GLOBAL_REVIEW_FOCUS = 14;
+interface EvaluationReasoningRunOptions {
+  appendReviewFocus?: boolean;
+  initialReviewFocusCount?: number;
+}
 
+const MAX_PROPOSED_REQUIREMENTS = 5;
 // Stage A #1: batch the evaluation candidate-evidence call instead of issuing
 // one generateStructured call per weak requirement. We still bound the per-call
 // payload: very large repos are split into a few bounded batches rather than one
 // unbounded prompt.
 const MAX_REQUIREMENTS_PER_EVAL_BATCH = 25;
-
-// Stage A #3: a GLOBAL cap on how many LLM-proposed candidate-evidence refs can
-// be attached across ALL requirements in a single run. The per-requirement cap
-// (MAX_CANDIDATE_EVIDENCE_PER_REQUIREMENT) still applies; this is an additional
-// run-wide bound so a large weak repo cannot accrue hundreds of hypotheses. When
-// the budget is exhausted, the remaining (lower-priority) requirements simply
-// receive no LLM hypotheses and stay exactly as the deterministic layer left
-// them.
-const MAX_GLOBAL_LLM_EVIDENCE = 40;
-
-// Statuses whose evidence we let the LLM enrich. "satisfied" and
-// "invalid_evidence" are never touched.
-const ENRICHABLE_STATUSES = new Set<RequirementStatus>(["partial", "missing", "unknown"]);
-
-// LLM-proposed candidate evidence may only ever push a requirement to "partial",
-// and only from "missing". Everything else is left exactly as the deterministic
-// layer computed it.
-const UPGRADEABLE_FROM = new Set<RequirementStatus>(["missing"]);
 
 /**
  * Run all reasoning stages in place against the supplied packet models. The
@@ -100,7 +94,15 @@ export async function runReasoningStages(
   const generateOptions = toGenerateOptions(options);
 
   await runIntentSynthesis(provider, inputs, evidenceContext, generateOptions);
-  await runEvaluationCandidateEvidence(provider, inputs, evidenceContext, generateOptions, resolveReviewAreas(inputs, options));
+  const candidateApplication = await runEvaluationCandidateEvidence(
+    provider,
+    inputs,
+    evidenceContext,
+    generateOptions,
+    resolveReviewAreas(inputs, options),
+    inputs.risks.review_focus.length
+  );
+  appendCandidateReviewFocus(inputs.risks.review_focus, candidateApplication.review_focus);
   await runNarrativeStage(provider, inputs, generateOptions);
 }
 
@@ -159,23 +161,30 @@ export async function runIntentReasoning(
 
 /**
  * Stage 2: evaluation candidate evidence. Mutates inputs.evaluation.results and
- * inputs.risks.review_focus in place.
+ * inputs.risks.review_focus in place, and returns the appended review-focus
+ * delta for callers that derive risks after verification.
  */
 export async function runEvaluationReasoning(
   provider: ReasoningProvider,
   inputs: ReasoningInputs,
-  options: ReasoningOptions = {}
-): Promise<void> {
+  options: ReasoningOptions = {},
+  runOptions: EvaluationReasoningRunOptions = {}
+): Promise<CandidateEvidenceApplication> {
   if (provider.name === "mock") {
-    return;
+    return { review_focus: [] };
   }
-  await runEvaluationCandidateEvidence(
+  const application = await runEvaluationCandidateEvidence(
     provider,
     inputs,
     buildEvidenceContext(inputs),
     toGenerateOptions(options),
-    resolveReviewAreas(inputs, options)
+    resolveReviewAreas(inputs, options),
+    runOptions.initialReviewFocusCount ?? inputs.risks.review_focus.length
   );
+  if (runOptions.appendReviewFocus !== false) {
+    appendCandidateReviewFocus(inputs.risks.review_focus, application.review_focus);
+  }
+  return application;
 }
 
 /**
@@ -324,7 +333,7 @@ function buildCandidateRequirements(
       continue;
     }
     // Redact agent/LLM-controlled free text before it can reach intent fields.
-    const requirementText = typeof entry.requirement === "string" ? redact(entry.requirement).trim() : "";
+    const requirementText = typeof entry.requirement === "string" ? redactHypothesisText(entry.requirement).trim() : "";
     if (requirementText === "") {
       continue;
     }
@@ -336,7 +345,7 @@ function buildCandidateRequirements(
       path: sourceRefRaw.path,
       line_start: numericField(sourceRefRaw.line_start),
       line_end: numericField(sourceRefRaw.line_end),
-      note: typeof sourceRefRaw.note === "string" ? redact(sourceRefRaw.note) : "Source cited for proposed requirement.",
+      note: typeof sourceRefRaw.note === "string" ? redactHypothesisText(sourceRefRaw.note) : "Source cited for proposed requirement.",
       confidence: "low"
     });
     const validated = validateEvidenceRef(candidateEvidence, evidenceContext);
@@ -347,7 +356,7 @@ function buildCandidateRequirements(
     result.push({
       id: `REQ-LLM-${String(counter).padStart(3, "0")}`,
       acai_id: undefined, // NEVER fabricate an acai_id
-      title: typeof entry.title === "string" ? redact(entry.title) : "LLM-proposed requirement",
+      title: typeof entry.title === "string" ? redactHypothesisText(entry.title) : "LLM-proposed requirement",
       requirement: requirementText,
       source_refs: [
         {
@@ -438,12 +447,6 @@ const CANDIDATE_EVIDENCE_SCHEMA = {
   }
 } as const;
 
-interface CandidateEvidenceOutput {
-  candidate_evidence?: unknown;
-  rationale?: unknown;
-  what_would_confirm?: unknown;
-}
-
 interface BatchedCandidateEvidenceOutput {
   requirements?: unknown;
 }
@@ -467,15 +470,11 @@ async function runEvaluationCandidateEvidence(
   // group. Pool membership is necessary but NOT sufficient to upgrade missing ->
   // partial; an unrelated pooled path attaches as a hypothesis but does not change
   // status (FINDING D round-4 soundness, preserved unchanged).
-  areas: ReviewArea[]
-): Promise<void> {
+  areas: ReviewArea[],
+  initialReviewFocusCount: number
+): Promise<CandidateEvidenceApplication> {
   const candidatePaths = candidatePathPool(inputs.collection);
   const matcher = createReviewAreaMatcher(areas);
-  // Collapse the GLOBAL review_focus surface by rationale TEXT (not by
-  // requirement id). One LLM hypothesis cited across many requirements becomes a
-  // single coherent "N requirements share this LLM hypothesis" line instead of
-  // verbose noise repeated verbatim across the most prominent review surface.
-  const focusAccumulator = createReviewFocusAccumulator();
 
   // Stage A #3: rank ALL enrichable requirements weakest-first so that, under
   // the global cap, the requirements with the least deterministic evidence win
@@ -483,7 +482,7 @@ async function runEvaluationCandidateEvidence(
   // no hypotheses (still deterministic).
   const enrichable = rankEnrichableRequirements(inputs.evaluation.results);
   if (enrichable.length === 0) {
-    return;
+    return { review_focus: [] };
   }
 
   // Stage A #1: BATCH the call. Send the ranked, enrichable requirements (with
@@ -507,57 +506,23 @@ async function runEvaluationCandidateEvidence(
   }
 
   if (byRequirementId.size === 0 && byAcaiId.size === 0) {
-    return; // no usable batched output
+    return { review_focus: [] }; // no usable batched output
   }
 
-  // Stage A #3: a single run-wide budget shared across requirements. We apply in
-  // ranked (weakest-first) order, so when the budget runs out the strongest
-  // requirements are the ones left without hypotheses.
-  const budget: GlobalEvidenceBudget = { remaining: MAX_GLOBAL_LLM_EVIDENCE };
+  const entries: CandidateEvidenceEntry[] = [];
   for (const result of enrichable) {
-    if (budget.remaining <= 0) {
-      break; // global cap reached; remaining requirements get no LLM hypotheses
-    }
     const entry = lookupBatchedEntry(result, byRequirementId, byAcaiId);
     if (!entry) {
       continue; // the batch returned nothing for this requirement
     }
-    applyCandidateEvidence(result, entry, evidenceContext, inputs.risks, candidatePaths, focusAccumulator, budget, matcher);
+    entries.push({ result, data: entry });
   }
-}
-
-/**
- * Stage A #3 ranking: order enrichable requirements weakest-evidence-first so the
- * global cap is spent on the requirements that need help most. Priority:
- * missing > unknown > partial-with-no-test-evidence > other partial. Ties keep
- * the deterministic evaluation order (stable sort).
- */
-function rankEnrichableRequirements(results: RequirementResult[]): RequirementResult[] {
-  return results
-    .filter((result) => ENRICHABLE_STATUSES.has(result.status))
-    .map((result, index) => ({ result, index, rank: enrichmentRank(result) }))
-    .sort((a, b) => (a.rank - b.rank) || (a.index - b.index))
-    .map((entry) => entry.result);
-}
-
-function enrichmentRank(result: RequirementResult): number {
-  if (result.status === "missing") {
-    return 0;
-  }
-  if (result.status === "unknown") {
-    return 1;
-  }
-  // status === "partial": prefer partial requirements that have NO test evidence
-  // yet (weaker) over partial requirements that already cite a test.
-  return hasTestEvidence(result) ? 3 : 2;
-}
-
-function hasTestEvidence(result: RequirementResult): boolean {
-  return result.evidence.some((ref) => ref.kind === "test" && !isLlmProposed(ref));
-}
-
-interface GlobalEvidenceBudget {
-  remaining: number;
+  return applyCandidateEvidenceEntries(entries, {
+    evidenceContext,
+    candidatePaths,
+    matcher,
+    initialReviewFocusCount
+  });
 }
 
 /** Split an array into bounded chunks (Stage A #1 batch sizing). */
@@ -613,337 +578,6 @@ function lookupBatchedEntry(
     }
   }
   return byRequirementId.get(result.requirement_id);
-}
-
-function applyCandidateEvidence(
-  result: RequirementResult,
-  data: CandidateEvidenceOutput,
-  evidenceContext: EvidenceValidationContext,
-  risks: RisksModel,
-  candidatePaths: string[],
-  focusAccumulator: ReviewFocusAccumulator,
-  budget: GlobalEvidenceBudget,
-  matcher: ReviewAreaMatcher
-): void {
-  const rawCandidates = Array.isArray(data.candidate_evidence) ? data.candidate_evidence : [];
-  const candidatePathSet = new Set(candidatePaths);
-  const validEvidence: EvidenceRef[] = [];
-  // Out-of-pool refs: a citation the model offered that was not in the candidate
-  // pool (changed files + tests) for this requirement. Surfaced as a rejected
-  // hypothesis but NOT status-changing (FINDING D round-4 soundness): it could be
-  // a real, valid file that is simply out of scope, so it must not force the
-  // exit-4 evidence gate.
-  const outOfPoolEvidence: EvidenceRef[] = [];
-  // GENUINELY invalid refs: a citation that failed the SAME deterministic
-  // validator the evaluation layer uses (bad path / out-of-range line / bad ACID).
-  // EVIDENCE.4: these must turn the requirement into invalid_evidence so the
-  // rejected reference is surfaced in SARIF/comment AND the --strict exit-4
-  // evidence gate catches it -- consistent with validateRequirementResultEvidence.
-  const genuinelyInvalidEvidence: EvidenceRef[] = [];
-
-  for (const entry of rawCandidates.slice(0, MAX_CANDIDATE_EVIDENCE_PER_REQUIREMENT)) {
-    if (!isRecord(entry) || typeof entry.path !== "string") {
-      continue;
-    }
-    const kind = entry.kind === "test" ? "test" : "file";
-    const candidate = llmProposedEvidence(kind, {
-      path: entry.path,
-      line_start: numericField(entry.line_start),
-      line_end: numericField(entry.line_end),
-      test_name: typeof entry.test_name === "string" ? redact(entry.test_name) : undefined,
-      // Redact agent/LLM-controlled free text before it reaches the evidence note.
-      note: typeof entry.note === "string" ? redact(entry.note) : "Candidate evidence for this requirement.",
-      confidence: kind === "test" ? "medium" : "low"
-    });
-    // Gate on the candidate pool BEFORE deterministic validation. The pool is the
-    // changed files + tests actually offered for this requirement; a real repo
-    // file that is NOT in the pool (e.g. an unrelated source file the model
-    // cited) must never attach as proof or drive a missing -> partial upgrade.
-    // Path-existence alone is insufficient: it would let any real file inflate
-    // arbitrary unrelated requirements. Refs outside the pool are surfaced as a
-    // rejected hypothesis (but NOT status-changing: an out-of-scope citation must
-    // not trip the exit-4 evidence gate the way a genuinely-malformed ref does).
-    if (!candidatePathSet.has(normalizeCandidatePath(entry.path))) {
-      outOfPoolEvidence.push({
-        ...candidate,
-        validation_status: "invalid",
-        note: appendOutOfPoolNote(candidate.note)
-      });
-      continue;
-    }
-    // Validate EVERY candidate ref via the same deterministic validator the
-    // evaluation layer uses. Invalid refs can NEVER upgrade status.
-    const validated = validateEvidenceRef(candidate, evidenceContext);
-    if (validated.validation_status === "valid") {
-      validEvidence.push(validated);
-    } else {
-      // FINDING D (EVIDENCE.4): a genuinely-invalid in-pool ref (bad path,
-      // out-of-range line, bad ACID) must surface as invalid_evidence, not be
-      // quietly buried in missing_evidence with the status unchanged.
-      genuinelyInvalidEvidence.push(validated);
-    }
-  }
-
-  // Surface every rejected hypothesis (out-of-pool + genuinely-invalid) on the
-  // requirement so a reviewer can see it; only the genuinely-invalid ones flip the
-  // status below.
-  const allInvalid = [...outOfPoolEvidence, ...genuinelyInvalidEvidence];
-  if (allInvalid.length > 0) {
-    result.missing_evidence = [...result.missing_evidence, ...allInvalid];
-  }
-
-  // FINDING D (EVIDENCE.4 + --strict): a genuinely-invalid LLM-proposed ref makes
-  // the requirement invalid_evidence (mirroring validateRequirementResultEvidence)
-  // so it is surfaced and the --strict exit-4 evidence gate catches it even in a
-  // partial / --max-missing-tolerant run. A status raised here cannot be moved
-  // back to partial below (invalid_evidence is not in UPGRADEABLE_FROM), so a
-  // valid in-pool hypothesis on the same requirement never masks the invalid one.
-  //
-  // ROUND-5 SOUNDNESS (the OTHER direction): an untrusted agent/LLM ref must never
-  // DEGRADE a verdict the deterministic layer already backed with valid, non-LLM
-  // evidence (CLAUDE.md: agent output is never proof until deterministic validation
-  // accepts it -- it must equally never invalidate accepted deterministic proof).
-  // So only flip to invalid_evidence when the requirement has NO pre-existing valid
-  // deterministic (non-llm_proposed) evidence -- i.e. an otherwise-unsupported
-  // requirement (typically "missing"). A deterministically-partial/unknown verdict
-  // that the deterministic layer already supported keeps its status; the invalid
-  // agent ref still surfaces in missing_evidence (above) for the reviewer, but it
-  // cannot trip exit 4 or drop partial_reason. This does NOT re-loosen round-4
-  // Finding D: a genuinely-unsupported requirement (no valid deterministic
-  // evidence) still flips to invalid_evidence and trips the gate, which retains
-  // higher priority than missing/exit 10.
-  if (genuinelyInvalidEvidence.length > 0 && !hasValidDeterministicEvidence(result)) {
-    markInvalidEvidence(result);
-  }
-
-  if (validEvidence.length === 0) {
-    enrichReviewFocus(result, data, risks, false, focusAccumulator);
-    return;
-  }
-
-  // Attach valid, clearly-marked hypotheses. De-duplicate against existing refs
-  // AND respect the run-wide global cap (Stage A #3): never attach more
-  // llm_proposed evidence than the remaining global budget, and decrement the
-  // budget for each ref actually attached. Duplicates do not consume budget.
-  const existingKeys = new Set(result.evidence.map(evidenceKey));
-  const attached: EvidenceRef[] = [];
-  for (const ref of validEvidence) {
-    if (budget.remaining <= 0) {
-      break; // global cap reached mid-requirement; stop attaching hypotheses
-    }
-    const key = evidenceKey(ref);
-    if (!existingKeys.has(key)) {
-      existingKeys.add(key);
-      result.evidence.push(ref);
-      attached.push(ref);
-      budget.remaining -= 1;
-    }
-  }
-
-  // FINDING D (soundness + --strict): missing -> partial may fire ONLY when at
-  // least one ATTACHED valid ref is DETERMINISTICALLY TIED to THIS requirement
-  // (mirrors the verification-loop per-requirement mapping rule). Pool membership
-  // + path-existence alone is NOT enough: an agent/LLM could otherwise cite any
-  // unrelated changed/test file, drop the missing count, and help --strict skip
-  // the quality gate (which counts missing). A pooled-but-unrelated ref still
-  // attaches as a low-confidence llm_proposed hypothesis (above), but the status
-  // stays missing so the gate is never bypassed by an unrelated citation.
-  const tiedEvidence = attached.filter((ref) => isDeterministicallyTied(result, ref, matcher));
-  const upgraded = maybeUpgradeToPartial(result, tiedEvidence);
-  enrichReviewFocus(result, data, risks, upgraded, focusAccumulator);
-}
-
-// Whether an LLM-proposed (but VALID, in-pool) candidate ref is deterministically
-// tied to THIS requirement, using the SAME mapping rules the verification loop
-// trusts for promotion:
-//   (a) EXACT-ACID: the ref's path or test_name references the requirement's
-//       exact ACID (e.g. contains "review-surfaces.EVAL.1"). OR
-//   (b) GROUP/TEST MAPPING: the ref's path maps to the requirement's group under
-//       the STRICT review-area mapping (true directory prefixes + whole-token
-//       test keywords, never a stray substring).
-// A ref that satisfies neither is a pooled-but-unrelated hypothesis: it attaches
-// but does NOT move the status.
-function isDeterministicallyTied(result: RequirementResult, ref: EvidenceRef, matcher: ReviewAreaMatcher): boolean {
-  if (result.acai_id && refReferencesAcid(ref, result.acai_id)) {
-    return true;
-  }
-  const group = groupFromAcid(result.acai_id);
-  if (!group || typeof ref.path !== "string") {
-    return false;
-  }
-  return matcher.groupsForPath(ref.path, { purpose: "requirement_proof" }).includes(group);
-}
-
-function refReferencesAcid(ref: EvidenceRef, acaiId: string): boolean {
-  const haystack = [ref.path, ref.test_name, ref.note].filter((part): part is string => typeof part === "string");
-  return haystack.some((part) => part.includes(acaiId));
-}
-
-function groupFromAcid(acaiId: string | undefined): string | undefined {
-  return acaiId?.split(".")[1];
-}
-
-// Evidence kinds that merely CITE the requirement's source (the spec entry, a doc)
-// rather than demonstrate the requirement is BACKED by implementation/test work.
-// Every requirement -- including a genuinely-"missing" one -- carries a valid spec
-// source ref, so these kinds must NOT count as deterministic backing when deciding
-// whether an invalid agent ref may flip the requirement to invalid_evidence.
-// Otherwise the round-4 Finding-D path (a genuinely-unsupported requirement + an
-// invalid in-pool ref must flip and trip exit 4) would be silently re-loosened.
-const SOURCE_ONLY_EVIDENCE_KINDS = new Set<EvidenceRef["kind"]>(["spec", "doc"]);
-
-// ROUND-5 SOUNDNESS: true when the requirement already carries at least one VALID,
-// deterministically-collected (non-llm_proposed) BACKING ref -- i.e. real
-// implementation/test evidence (a changed file mapped to the area, a parsed test,
-// etc.), NOT just the spec/doc source citation every requirement carries. Such a
-// requirement was substantively backed by the deterministic layer (e.g. a partial
-// verdict with implementation evidence); an invented/invalid LLM-proposed ref must
-// NOT be allowed to demote it to invalid_evidence. A genuinely-unsupported
-// requirement (only a spec source ref, or no evidence) returns false, so it still
-// flips to invalid_evidence and trips exit 4 (round-4 Finding D intact). Note:
-// out-of-pool refs are pushed onto missing_evidence (not result.evidence), and
-// genuinely-invalid candidates are never attached to result.evidence, so neither
-// inflates this check.
-function hasValidDeterministicEvidence(result: RequirementResult): boolean {
-  return result.evidence.some(
-    (ref) =>
-      !isLlmProposed(ref) &&
-      ref.validation_status === "valid" &&
-      !SOURCE_ONLY_EVIDENCE_KINDS.has(ref.kind)
-  );
-}
-
-// FINDING D (EVIDENCE.4): flip a requirement to invalid_evidence when an
-// LLM-proposed candidate ref failed deterministic validation. Mirrors
-// validateRequirementResultEvidence's invalid-evidence shape (status, summary,
-// review_focus, confidence, dropped partial_reason) so the surfaced result is
-// indistinguishable from a deterministically-detected invalid-evidence finding,
-// and the --strict exit-4 gate (which counts status === "invalid_evidence")
-// catches it. Idempotent: a result already invalid_evidence is left untouched.
-// Callers gate this on hasValidDeterministicEvidence so a deterministically-backed
-// verdict is never demoted (round-5 soundness).
-function markInvalidEvidence(result: RequirementResult): void {
-  if (result.status === "invalid_evidence") {
-    return;
-  }
-  result.status = "invalid_evidence";
-  result.partial_reason = undefined;
-  result.summary =
-    "One or more LLM-proposed evidence references failed deterministic validation.";
-  result.review_focus = "Inspect invalid evidence references before judging requirement coverage.";
-  result.confidence = "high";
-}
-
-function maybeUpgradeToPartial(result: RequirementResult, validEvidence: EvidenceRef[]): boolean {
-  if (!UPGRADEABLE_FROM.has(result.status)) {
-    return false;
-  }
-  if (validEvidence.length === 0) {
-    return false;
-  }
-  result.status = "partial";
-  result.confidence = "low";
-  result.summary =
-    "Status raised to partial by an LLM-proposed candidate evidence hypothesis; deterministic proof is still required.";
-  return true;
-}
-
-function enrichReviewFocus(
-  result: RequirementResult,
-  data: CandidateEvidenceOutput,
-  risks: RisksModel,
-  upgraded: boolean,
-  focusAccumulator: ReviewFocusAccumulator
-): void {
-  const rationale = typeof data.rationale === "string" ? data.rationale.trim() : "";
-  const whatWouldConfirm = typeof data.what_would_confirm === "string" ? data.what_would_confirm.trim() : "";
-  const fragments: string[] = [];
-  if (rationale !== "") {
-    fragments.push(`rationale: ${rationale}`);
-  }
-  if (whatWouldConfirm !== "") {
-    fragments.push(`what would confirm: ${whatWouldConfirm}`);
-  }
-  if (fragments.length === 0) {
-    return;
-  }
-  // Per-requirement review_focus keeps the full hypothesis text: it is scoped to
-  // one requirement, so it is context, not noise.
-  const focusNote = markHypothesis(fragments.join("; "));
-  result.review_focus = `${result.review_focus} ${focusNote}`.trim();
-
-  // The GLOBAL "where do I look first" surface de-duplicates by rationale TEXT.
-  // The same hypothesis cited across many requirements collapses into a single
-  // line listing the affected requirements, rather than one verbatim entry per
-  // requirement id.
-  recordGlobalReviewFocus(focusAccumulator, risks, {
-    label: result.acai_id ?? result.requirement_id,
-    upgraded,
-    text: fragments.join("; ")
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Global review_focus accumulator: collapse by rationale TEXT, not requirement.
-// ---------------------------------------------------------------------------
-
-interface ReviewFocusEntry {
-  index: number; // position of this entry's line in risks.review_focus
-  labels: string[]; // requirement labels sharing this rationale (deduped, ordered)
-  anyUpgraded: boolean;
-}
-
-interface ReviewFocusAccumulator {
-  byText: Map<string, ReviewFocusEntry>;
-}
-
-function createReviewFocusAccumulator(): ReviewFocusAccumulator {
-  return { byText: new Map() };
-}
-
-function recordGlobalReviewFocus(
-  accumulator: ReviewFocusAccumulator,
-  risks: RisksModel,
-  note: { label: string; upgraded: boolean; text: string }
-): void {
-  const existing = accumulator.byText.get(note.text);
-  if (existing) {
-    // Same hypothesis text already surfaced: fold this requirement into the
-    // shared line instead of appending a near-identical duplicate.
-    if (!existing.labels.includes(note.label)) {
-      existing.labels.push(note.label);
-    }
-    existing.anyUpgraded = existing.anyUpgraded || note.upgraded;
-    risks.review_focus[existing.index] = renderGlobalReviewFocusLine(existing, note.text);
-    return;
-  }
-
-  // First time we see this hypothesis text. Respect the global cap; once we hit
-  // it, drop further distinct hypotheses rather than unbounded growth.
-  if (risks.review_focus.length >= MAX_GLOBAL_REVIEW_FOCUS) {
-    return;
-  }
-  const entry: ReviewFocusEntry = {
-    index: risks.review_focus.length,
-    labels: [note.label],
-    anyUpgraded: note.upgraded
-  };
-  accumulator.byText.set(note.text, entry);
-  risks.review_focus.push(renderGlobalReviewFocusLine(entry, note.text));
-}
-
-function renderGlobalReviewFocusLine(entry: ReviewFocusEntry, text: string): string {
-  const upgradeTag = entry.anyUpgraded ? " (raised to partial)" : "";
-  if (entry.labels.length === 1) {
-    return markHypothesis(`${entry.labels[0]}${upgradeTag}: ${text}`);
-  }
-  // Collapse repeated identical rationales into one shared line.
-  const shown = entry.labels.slice(0, 6);
-  const more = entry.labels.length - shown.length;
-  const labelList = more > 0 ? `${shown.join(", ")}, +${more} more` : shown.join(", ");
-  return markHypothesis(
-    `${entry.labels.length} requirements share this hypothesis (${labelList})${upgradeTag}: ${text}`
-  );
 }
 
 function candidatePathPool(collection: CollectionResult): string[] {
@@ -1066,45 +700,8 @@ Methodology summary: ${inputs.methodology.summary}
 // Helpers
 // ---------------------------------------------------------------------------
 
-const HYPOTHESIS_PREFIX = "LLM-proposed:";
-
-// Agent-file/LLM-returned strings reach the packet through the reasoning stages,
-// NOT only through provider.ts mergeEnrichment. A local --agent-input file (or a
-// remote model echo) can carry a token/API key, so EVERY such string must pass
-// through redactSecrets before it is written into intent/methodology/risk fields.
-// This mirrors the redaction boundary in provider.ts and keeps raw secrets out of
-// review_packet.json / the YAML artifacts. markHypothesis is the single funnel
-// every narrative/hypothesis string flows through, so redaction lives here.
-function redact(value: string): string {
-  return redactSecrets(value).text;
-}
-
-function markHypothesis(value: string): string {
-  const trimmed = redact(value).trim();
-  if (trimmed === "") {
-    return trimmed;
-  }
-  return trimmed.startsWith(HYPOTHESIS_PREFIX) ? trimmed : `${HYPOTHESIS_PREFIX} ${trimmed}`;
-}
-
-function evidenceKey(ref: EvidenceRef): string {
-  return `${ref.kind}:${ref.path ?? ""}:${ref.line_start ?? ""}:${ref.line_end ?? ""}:${ref.acai_id ?? ""}:${isLlmProposed(ref) ? "llm" : "det"}`;
-}
-
 function numericField(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-// Normalize a cited path the same way the evidence validator does (strip
-// backslashes + leading "./") so candidate-pool membership is robust to the
-// model citing "./src/x.ts" vs "src/x.ts".
-function normalizeCandidatePath(filePath: string): string {
-  return filePath.replace(/\\/g, "/").replace(/^\.\/+/, "");
-}
-
-function appendOutOfPoolNote(note: string | undefined): string {
-  const suffix = "Invalid evidence: path is not in the candidate pool (changed files + tests) offered for this requirement.";
-  return note ? `${note} ${suffix}` : suffix;
 }
 
 function asStringArray(value: unknown): string[] {
