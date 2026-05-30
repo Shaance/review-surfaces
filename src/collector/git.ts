@@ -28,27 +28,16 @@ export function collectGitInfo(cwd: string, baseRef: string, headRef: string): G
 
 export function collectChangedFiles(cwd: string, baseRef: string, headRef: string): ChangedFile[] {
   const byPath = new Map<string, ChangedFile>();
-  const diffOutput = git(cwd, ["diff", "--name-status", `${baseRef}...${headRef}`]) ?? git(cwd, ["diff", "--name-status"]);
+  const diffOutput = git(cwd, ["diff", "--name-status", "-z", `${baseRef}...${headRef}`]) ?? git(cwd, ["diff", "--name-status", "-z"]);
   if (diffOutput) {
-    for (const line of diffOutput.split("\n")) {
-      if (line.trim() === "") {
-        continue;
-      }
-      const [status, filePath] = line.split(/\s+/, 2);
-      if (filePath) {
-        byPath.set(filePath, { path: filePath, status, source: "diff" });
-      }
+    for (const changedFile of parseDiffNameStatusOutput(diffOutput)) {
+      byPath.set(changedFile.path, changedFile);
     }
   }
 
-  const statusOutput = git(cwd, ["status", "--porcelain", "--untracked-files=all"]);
+  const statusOutput = git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
   if (statusOutput) {
-    for (const line of statusOutput.split("\n")) {
-      if (line.trim() === "") {
-        continue;
-      }
-      const status = line.slice(0, 2).trim() || "modified";
-      const filePath = line.slice(3).trim();
+    for (const { status, filePath } of parsePorcelainStatusOutput(statusOutput)) {
       if (filePath && !filePath.endsWith("/") && !byPath.has(filePath) && filePath !== ".DS_Store" && isRegularFile(path.resolve(cwd, filePath))) {
         byPath.set(filePath, { path: filePath, status, source: "working_tree" });
       }
@@ -56,6 +45,56 @@ export function collectChangedFiles(cwd: string, baseRef: string, headRef: strin
   }
 
   return [...byPath.values()].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function parseDiffNameStatusOutput(output: string): ChangedFile[] {
+  const fields = splitNullOutput(output);
+  const files: ChangedFile[] = [];
+  for (let index = 0; index < fields.length; index += 1) {
+    const status = fields[index];
+    if (!status) {
+      continue;
+    }
+    if (isRenameOrCopyStatus(status)) {
+      index += 2;
+      const filePath = fields[index];
+      if (filePath) {
+        files.push({ path: filePath, status, source: "diff" });
+      }
+      continue;
+    }
+    const filePath = fields[index + 1];
+    index += 1;
+    if (filePath) {
+      files.push({ path: filePath, status, source: "diff" });
+    }
+  }
+  return files;
+}
+
+function parsePorcelainStatusOutput(output: string): Array<{ status: string; filePath: string }> {
+  const records = splitNullOutput(output);
+  const files: Array<{ status: string; filePath: string }> = [];
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    const status = record.slice(0, 2).trim() || "modified";
+    const filePath = record.slice(3);
+    if (filePath) {
+      files.push({ status, filePath });
+    }
+    if (isRenameOrCopyStatus(status)) {
+      index += 1;
+    }
+  }
+  return files;
+}
+
+function isRenameOrCopyStatus(status: string): boolean {
+  return /[RC]/.test(status);
+}
+
+function splitNullOutput(output: string): string[] {
+  return output.split("\0").filter((field) => field !== "");
 }
 
 export function collectDiff(cwd: string, baseRef: string, headRef: string): string {

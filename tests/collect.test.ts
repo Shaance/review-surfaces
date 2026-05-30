@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { collectInputs } from "../src/collector/collect";
+import { collectChangedFiles } from "../src/collector/git";
 import { defaultConfig } from "../src/config/config";
 
 test("collects specs and writes first local artifacts", async () => {
@@ -99,6 +100,37 @@ components:
   });
 
   assert.ok(result.changedFiles.some((file) => file.path === "src/diagrams/diagrams.ts"));
+});
+
+test("collector records staged and committed renames by their new path", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-rename-"));
+  try {
+    const oldPath = "src/old name.ts";
+    const newPath = "src/new -> name.ts";
+    fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, oldPath), "export const value = 1;\n");
+    execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
+    const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
+
+    execFileSync("git", ["mv", oldPath, newPath], { cwd: tmp, stdio: "ignore" });
+    const staged = collectChangedFiles(tmp, "HEAD", "HEAD");
+    assert.ok(staged.some((file) => file.path === newPath && file.status.startsWith("R")), "staged rename must use the new path");
+    assert.ok(!staged.some((file) => file.path === `${oldPath} -> ${newPath}`), "staged rename must not keep porcelain's old -> new display path");
+    assert.ok(!staged.some((file) => file.path.includes("\"")), "staged rename paths must be unquoted");
+
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "rename"], { cwd: tmp, stdio: "ignore" });
+    const committed = collectChangedFiles(tmp, base, "HEAD");
+    assert.deepEqual(
+      committed.filter((file) => file.path === newPath).map((file) => file.source),
+      ["diff"],
+      "committed rename diff must use the new path"
+    );
+    assert.ok(!committed.some((file) => file.path === oldPath), "committed rename must not report the old path as changed");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("review-surfaces.CLI.7 collection defaults command transcripts to the output directory", async () => {
