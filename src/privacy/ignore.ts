@@ -11,7 +11,7 @@ export const DEFAULT_PRIVACY_IGNORE_PATTERNS = [
   "**/*.key",
   "**/id_rsa",
   "**/id_ed25519",
-  ".claude/settings.local.json",
+  ".claude/",
   ".review-surfaces/feedback/raw/**",
   ".review-surfaces/inputs/conversation.raw.*"
 ];

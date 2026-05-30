@@ -888,10 +888,86 @@
             "$ref": "#/$defs/TestGap"
           }
         },
+        "missing_automatic_tests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MissingAutomaticTest"
+          }
+        },
+        "missing_manual_checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MissingManualCheck"
+          }
+        },
         "review_focus": {
           "type": "array",
           "items": {
             "type": "string"
+          }
+        }
+      }
+    },
+    "MissingAutomaticTest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "summary",
+        "suggested_test"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "requirement_id": {
+          "type": "string"
+        },
+        "acai_id": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "suggested_test": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          }
+        }
+      }
+    },
+    "MissingManualCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "summary",
+        "manual_check"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "requirement_id": {
+          "type": "string"
+        },
+        "acai_id": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "manual_check": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
           }
         }
       }

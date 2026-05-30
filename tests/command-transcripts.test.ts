@@ -236,6 +236,7 @@ test("review-surfaces.METHODOLOGY.5 feeds unverified methodology claims into ris
 
 test("source contract edits map to the bootstrap Acai review area", async () => {
   const areas = await defaultReviewSurfacesAreas();
+  assert.ok(groupsForReviewPath(".gitignore", areas).includes("BOOTSTRAP"));
   assert.ok(groupsForReviewPath("features/review-surfaces.feature.yaml", areas).includes("BOOTSTRAP"));
   assert.ok(groupsForReviewPath("docs/review-surfaces-trd.md", areas).includes("BOOTSTRAP"));
   assert.ok(groupsForReviewPath("types/node-ambient.d.ts", areas).includes("BOOTSTRAP"));

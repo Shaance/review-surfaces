@@ -91,6 +91,15 @@ test("review-surfaces.PRIVACY.3 supports gitignore-style negation for tracked ex
   assert.equal(ignore.isIgnored(".env.example"), false);
 });
 
+test("review-surfaces.PRIVACY.3 default ignore excludes local Claude state", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ignore-claude-"));
+  const ignore = await loadPrivacyIgnore(tmp, ".review-surfacesignore");
+
+  assert.equal(ignore.isIgnored(".claude/settings.local.json"), true);
+  assert.equal(ignore.isIgnored(".claude/scheduled_tasks.lock"), true);
+  assert.equal(ignore.isIgnored("CLAUDE.md"), false);
+});
+
 test("review-surfaces.PRIVACY.2 blocks high-risk private key material for remote prompts", () => {
   const pemLabel = "PRIVATE KEY";
   const result = redactSecrets(`PRIVATE_KEY=-----BEGIN ${pemLabel}-----\nabc\n-----END ${pemLabel}-----`);

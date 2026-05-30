@@ -83,6 +83,8 @@ export function loadRisks(outputDir: string): RisksModel | null {
     items: asArray(parsed.items).map(normalizeRiskItem),
     test_evidence: asArray(parsed.test_evidence).map(normalizeTestEvidence),
     test_gaps: asArray(parsed.test_gaps).map(normalizeTestGap),
+    missing_automatic_tests: asArray(parsed.missing_automatic_tests).map(normalizeMissingAutomaticTest),
+    missing_manual_checks: asArray(parsed.missing_manual_checks).map(normalizeMissingManualCheck),
     review_focus: asStringArray(parsed.review_focus)
   };
 }
@@ -270,6 +272,30 @@ function normalizeTestGap(value: unknown): RisksModel["test_gaps"][number] {
     summary: asString(record.summary),
     suggested_test: optionalString(record.suggested_test),
     manual_check: optionalString(record.manual_check),
+    evidence: record.evidence === undefined ? undefined : asArray(record.evidence).map(normalizeEvidenceRef)
+  };
+}
+
+function normalizeMissingAutomaticTest(value: unknown): NonNullable<RisksModel["missing_automatic_tests"]>[number] {
+  const record = isRecord(value) ? value : {};
+  return {
+    id: asString(record.id),
+    requirement_id: optionalString(record.requirement_id),
+    acai_id: optionalString(record.acai_id),
+    summary: asString(record.summary),
+    suggested_test: asString(record.suggested_test),
+    evidence: record.evidence === undefined ? undefined : asArray(record.evidence).map(normalizeEvidenceRef)
+  };
+}
+
+function normalizeMissingManualCheck(value: unknown): NonNullable<RisksModel["missing_manual_checks"]>[number] {
+  const record = isRecord(value) ? value : {};
+  return {
+    id: asString(record.id),
+    requirement_id: optionalString(record.requirement_id),
+    acai_id: optionalString(record.acai_id),
+    summary: asString(record.summary),
+    manual_check: asString(record.manual_check),
     evidence: record.evidence === undefined ? undefined : asArray(record.evidence).map(normalizeEvidenceRef)
   };
 }

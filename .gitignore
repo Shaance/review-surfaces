@@ -17,6 +17,9 @@ coverage/
 tmp/
 temp/
 
+# Local agent/editor state
+.claude/
+
 # review-surfaces generated run artifacts
 .review-surfaces/*
 !.review-surfaces/feedback/

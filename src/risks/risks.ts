@@ -39,6 +39,22 @@ export interface RisksModel {
     manual_check?: string;
     evidence?: EvidenceRef[];
   }>;
+  missing_automatic_tests?: Array<{
+    id: string;
+    requirement_id?: string;
+    acai_id?: string;
+    summary: string;
+    suggested_test: string;
+    evidence?: EvidenceRef[];
+  }>;
+  missing_manual_checks?: Array<{
+    id: string;
+    requirement_id?: string;
+    acai_id?: string;
+    summary: string;
+    manual_check: string;
+    evidence?: EvidenceRef[];
+  }>;
   review_focus: string[];
 }
 
@@ -78,7 +94,10 @@ export function analyzeRisks(
       detectability: "easy",
       summary: `${partialResults.length} requirement(s) have implementation evidence but weak or missing test evidence.`,
       impact: "Implementation may exist but regressions are not well guarded.",
-      evidence: partialResults.slice(0, 5).flatMap((result) => result.evidence ?? []),
+      evidence: evidenceOrMissing(
+        partialResults.slice(0, 5).flatMap((result) => result.evidence ?? []),
+        "Partial requirements need implementation and test evidence before release decisions."
+      ),
       suggested_checks: ["Add unit or fixture tests tied to affected requirement groups."],
       manual_review: true
     });
@@ -93,7 +112,10 @@ export function analyzeRisks(
       detectability: "easy",
       summary: `${evaluation.overreach.length} changed file(s) did not map to a stated requirement group.`,
       impact: "The diff may contain unstated scope or the spec may be incomplete.",
-      evidence: evaluation.overreach.flatMap((result) => result.evidence ?? []).slice(0, 6),
+      evidence: evidenceOrMissing(
+        evaluation.overreach.flatMap((result) => result.evidence ?? []).slice(0, 6),
+        "Overreach findings need changed-file evidence or an explicit scope deferral."
+      ),
       suggested_checks: ["Either map the changed file to an Acai requirement or add a spec update/deferral."],
       manual_review: true
     });
@@ -165,12 +187,34 @@ export function analyzeRisks(
     manual_check: "Inspect changed files and generated artifacts for this requirement before trusting coverage.",
     evidence: result.missing_evidence?.length ? result.missing_evidence : [specEvidence("features/review-surfaces.feature.yaml", result.acai_id)]
   }));
+  const missingAutomaticTests = testGaps
+    .filter((gap) => gap.suggested_test)
+    .map((gap, index) => ({
+      id: `AUTO-${String(index + 1).padStart(3, "0")}`,
+      requirement_id: gap.requirement_id,
+      acai_id: gap.acai_id,
+      summary: `Missing automatic test for ${gap.acai_id ?? gap.requirement_id ?? gap.id}.`,
+      suggested_test: gap.suggested_test,
+      evidence: gap.evidence
+    }));
+  const missingManualChecks = testGaps
+    .filter((gap) => gap.manual_check)
+    .map((gap, index) => ({
+      id: `MANUAL-${String(index + 1).padStart(3, "0")}`,
+      requirement_id: gap.requirement_id,
+      acai_id: gap.acai_id,
+      summary: `Missing manual review check for ${gap.acai_id ?? gap.requirement_id ?? gap.id}.`,
+      manual_check: gap.manual_check,
+      evidence: gap.evidence
+    }));
 
   return {
     summary: `${items.length} risk item(s), ${testGaps.length} test gap(s), ${collection.changedFiles.length} changed file(s) in scope.`,
     items,
     test_evidence: allTestEvidence,
     test_gaps: testGaps,
+    missing_automatic_tests: missingAutomaticTests,
+    missing_manual_checks: missingManualChecks,
     review_focus: [
       "Start with missing and partial requirement results.",
       "Check overreach files before reviewing implementation detail.",
@@ -179,6 +223,10 @@ export function analyzeRisks(
       ...methodologyReviewFocus(methodology)
     ]
   };
+}
+
+function evidenceOrMissing(evidence: EvidenceRef[], fallback: string): EvidenceRef[] {
+  return evidence.length > 0 ? evidence : [missingEvidence(fallback)];
 }
 
 function methodologyReviewFocus(methodology: MethodologyModel | undefined): string[] {
