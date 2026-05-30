@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildArchitecture, validateMermaidDiagramArtifact } from "../src/diagrams/diagrams";
+import { buildArchitecture, buildArchitectureModel, validateMermaidDiagramArtifact } from "../src/diagrams/diagrams";
 import { CollectionResult } from "../src/collector/collect";
+import { buildRepoIndex } from "../src/indexer/indexer";
 import { EvaluationModel } from "../src/evaluation/evaluate";
 
 test("review-surfaces.ARCH.6 validates generated Mermaid artifacts", async () => {
@@ -23,6 +24,30 @@ test("review-surfaces.ARCH.6 validates generated Mermaid artifacts", async () =>
     "sequenceDiagram"
   );
   assert.deepEqual(architecture.open_questions, []);
+});
+
+test("review-surfaces.ARCH.6 buildArchitectureModel returns the same model WITHOUT writing diagrams/", async () => {
+  const tmpWrite = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-arch-write-"));
+  const tmpModel = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-arch-model-"));
+  try {
+    const writeDir = path.join(tmpWrite, ".review-surfaces");
+    const modelDir = path.join(tmpModel, ".review-surfaces");
+    const written = await buildArchitecture(collectionFixture(tmpWrite, writeDir), evaluationFixture());
+    const modelOnly = buildArchitectureModel(collectionFixture(tmpModel, modelDir), evaluationFixture());
+
+    // The model (diagram paths + validation + subsystem cards) is byte-identical.
+    assert.deepEqual(modelOnly, written, "the non-writing model must equal the writing builder's model");
+    // The writing builder persisted diagrams/*.mmd; the non-writing variant did not.
+    assert.ok(fs.existsSync(path.join(writeDir, "diagrams", "pipeline.mmd")), "buildArchitecture must write diagrams");
+    assert.equal(
+      fs.existsSync(path.join(modelDir, "diagrams")),
+      false,
+      "buildArchitectureModel must NOT write a diagrams/ directory"
+    );
+  } finally {
+    fs.rmSync(tmpWrite, { recursive: true, force: true });
+    fs.rmSync(tmpModel, { recursive: true, force: true });
+  }
 });
 
 test("review-surfaces.ARCH.6 rejects invalid Mermaid artifacts", () => {
@@ -63,6 +88,7 @@ test("review-surfaces.ARCH.6 accepts single-letter Mermaid sequence participants
 });
 
 function collectionFixture(cwd: string, outputDir: string): CollectionResult {
+  const changedFiles = [{ path: "src/diagrams/diagrams.ts", status: "M", source: "working_tree" as const }];
   return {
     cwd,
     outputDir,
@@ -78,13 +104,15 @@ function collectionFixture(cwd: string, outputDir: string): CollectionResult {
       input_hashes: []
     },
     specIndex: { schema_version: "review-surfaces.specs.index.v1", specs: [] },
-    changedFiles: [{ path: "src/diagrams/diagrams.ts", status: "M", source: "working_tree" }],
+    changedFiles,
     docs: [],
     tests: [{ path: "tests/diagrams.test.ts", kind: "test" }],
     feedback: [],
     commandTranscripts: [],
     commandTranscriptOutputPath: ".review-surfaces/inputs/commands.json",
+    testResults: { suites: [], cases: [], totals: { suites: 0, cases: 0, passed: 0, failed: 0, skipped: 0 }, source_paths: [] },
     repositoryFiles: [],
+    repoIndex: buildRepoIndex({ cwd, changedFiles, repositoryFiles: [] }),
     privacy: {
       ignore_file: ".review-surfacesignore",
       ignore_patterns: [],

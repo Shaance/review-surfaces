@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="vitest" tests="3" failures="1" time="0.512">
+  <testsuite name="evaluation" tests="2" failures="0" time="0.120">
+    <testcase name="review-surfaces.EVAL.4 attaches parsed evidence" classname="tests/evaluation.test.ts" time="0.080"/>
+    <testcase name="skipped scenario" classname="tests/evaluation.test.ts" time="0">
+      <skipped/>
+    </testcase>
+  </testsuite>
+  <testsuite name="risks" tests="1" failures="1" time="0.392">
+    <testcase name="failing risk case" classname="tests/risks.test.ts" time="0.300">
+      <failure message="expected direct but got missing" type="AssertionError">at tests/risks.test.ts:42 SECRET_TOKEN=abc123456 expected true</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

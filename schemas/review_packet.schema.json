@@ -130,6 +130,15 @@
           "items": {
             "$ref": "#/$defs/InputHash"
           }
+        },
+        "signature": {
+          "type": "string"
+        },
+        "artifact_signatures": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       }
     },
@@ -234,6 +243,12 @@
             "not_checked",
             "unknown"
           ]
+        },
+        "llm_proposed": {
+          "type": "boolean"
+        },
+        "verified": {
+          "type": "boolean"
         }
       }
     },
@@ -323,6 +338,9 @@
             "low",
             "unknown"
           ]
+        },
+        "llm_derived": {
+          "type": "boolean"
         }
       }
     },
@@ -403,6 +421,17 @@
         },
         "summary": {
           "type": "string"
+        },
+        "partial_reason": {
+          "type": "string",
+          "enum": [
+            "impl_no_test",
+            "test_no_impl",
+            "impl_broad_no_exact_test",
+            "exact_impl_broad_test",
+            "broad_area_only",
+            "other"
+          ]
         },
         "evidence": {
           "type": "array",
@@ -956,6 +985,127 @@
         }
       }
     },
+    "CountDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "before",
+        "after",
+        "delta"
+      ],
+      "properties": {
+        "before": {
+          "type": "integer"
+        },
+        "after": {
+          "type": "integer"
+        },
+        "delta": {
+          "type": "integer"
+        }
+      }
+    },
+    "StatusChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acai_id",
+        "previous_status",
+        "current_status",
+        "direction"
+      ],
+      "properties": {
+        "acai_id": {
+          "type": "string"
+        },
+        "previous_status": {
+          "type": "string"
+        },
+        "current_status": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "improved",
+            "regressed",
+            "unchanged"
+          ]
+        }
+      }
+    },
+    "PacketComparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status_changes",
+        "new_overreach",
+        "resolved_overreach",
+        "new_risks",
+        "resolved_risks",
+        "count_deltas"
+      ],
+      "properties": {
+        "status_changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StatusChange"
+          }
+        },
+        "new_overreach": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resolved_overreach": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "new_risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resolved_risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "count_deltas": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "satisfied",
+            "partial",
+            "missing",
+            "unknown",
+            "invalid_evidence"
+          ],
+          "properties": {
+            "satisfied": {
+              "$ref": "#/$defs/CountDelta"
+            },
+            "partial": {
+              "$ref": "#/$defs/CountDelta"
+            },
+            "missing": {
+              "$ref": "#/$defs/CountDelta"
+            },
+            "unknown": {
+              "$ref": "#/$defs/CountDelta"
+            },
+            "invalid_evidence": {
+              "$ref": "#/$defs/CountDelta"
+            }
+          }
+        }
+      }
+    },
     "Dogfood": {
       "type": "object",
       "additionalProperties": false,
@@ -994,6 +1144,9 @@
         },
         "previous_packet_path": {
           "type": "string"
+        },
+        "comparison": {
+          "$ref": "#/$defs/PacketComparison"
         },
         "findings": {
           "type": "array",
@@ -1088,6 +1241,12 @@
           }
         },
         "artifact_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "changes_since_last_packet": {
           "type": "array",
           "items": {
             "type": "string"

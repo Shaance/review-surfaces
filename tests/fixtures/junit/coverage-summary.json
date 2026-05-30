@@ -1,0 +1,14 @@
+{
+  "total": {
+    "lines": { "total": 100, "covered": 92, "pct": 92 },
+    "statements": { "total": 110, "covered": 99, "pct": 90 },
+    "functions": { "total": 20, "covered": 18, "pct": 90 },
+    "branches": { "total": 40, "covered": 30, "pct": 75 }
+  },
+  "src/tests-evidence/junit.ts": {
+    "lines": { "total": 50, "covered": 48, "pct": 96 },
+    "statements": { "total": 55, "covered": 52, "pct": 94.5 },
+    "functions": { "total": 12, "covered": 12, "pct": 100 },
+    "branches": { "total": 20, "covered": 17, "pct": 85 }
+  }
+}

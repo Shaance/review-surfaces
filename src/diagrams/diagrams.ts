@@ -3,7 +3,7 @@ import { CollectionResult } from "../collector/collect";
 import { writeText } from "../core/files";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
 import { EvaluationModel } from "../evaluation/evaluate";
-import { matchesReviewPrefix, REVIEW_AREAS, ReviewArea } from "../review-areas/areas";
+import { buildReviewAreas, matchesReviewPrefix, ReviewArea } from "../review-areas/areas";
 
 export interface ArchitectureModel {
   summary: string;
@@ -44,24 +44,65 @@ interface DiagramArtifact {
   evidencePath?: string;
 }
 
-export async function buildArchitecture(collection: CollectionResult, evaluation: EvaluationModel): Promise<ArchitectureModel> {
+export interface ArchitectureOptions {
+  areas?: ReviewArea[];
+}
+
+// Writing variant: build the architecture model AND persist diagrams/*.mmd to
+// disk. Used by stages that OWN the diagrams artifact (`all`, `diagrams`, and
+// the full-packet `packet` stage whose architecture.diagrams paths must resolve
+// to real files).
+export async function buildArchitecture(
+  collection: CollectionResult,
+  evaluation: EvaluationModel,
+  options: ArchitectureOptions = {}
+): Promise<ArchitectureModel> {
+  const areas = options.areas ?? buildReviewAreas({ repoIndex: collection.repoIndex }).areas;
+  const diagramArtifacts = diagramArtifactsFor(collection, areas);
   const outputDir = collection.outputDir;
-  const diagramArtifacts = [
-    { path: "diagrams/pipeline.mmd", body: pipelineDiagram() },
-    { path: "diagrams/source-layout.mmd", body: sourceLayoutDiagram(collection) },
-    { path: "diagrams/dogfood-flow.mmd", body: dogfoodFlowDiagram() }
-  ];
   for (const diagram of diagramArtifacts) {
     await writeText(path.join(outputDir, diagram.path), diagram.body);
   }
+  return buildArchitectureModelFromDiagrams(collection, evaluation, areas, diagramArtifacts);
+}
 
+// Non-writing variant (per-stage isolation): build the SAME ArchitectureModel
+// without the diagrams/*.mmd disk side effect. Stages that need only the model
+// (e.g. `risks` for FINDING B enrichment parity, `handoff`) use this so a
+// standalone run does not write a diagrams/ directory it does not own. The model
+// is byte-identical to buildArchitecture's because diagram paths and validation
+// are derived from the in-memory bodies, not from reading the files back.
+export function buildArchitectureModel(
+  collection: CollectionResult,
+  evaluation: EvaluationModel,
+  options: ArchitectureOptions = {}
+): ArchitectureModel {
+  const areas = options.areas ?? buildReviewAreas({ repoIndex: collection.repoIndex }).areas;
+  const diagramArtifacts = diagramArtifactsFor(collection, areas);
+  return buildArchitectureModelFromDiagrams(collection, evaluation, areas, diagramArtifacts);
+}
+
+function diagramArtifactsFor(collection: CollectionResult, areas: ReviewArea[]): DiagramArtifact[] {
+  return [
+    { path: "diagrams/pipeline.mmd", body: pipelineDiagram() },
+    { path: "diagrams/source-layout.mmd", body: sourceLayoutDiagram(collection, areas) },
+    { path: "diagrams/dogfood-flow.mmd", body: dogfoodFlowDiagram() }
+  ];
+}
+
+function buildArchitectureModelFromDiagrams(
+  collection: CollectionResult,
+  evaluation: EvaluationModel,
+  areas: ReviewArea[],
+  diagramArtifacts: DiagramArtifact[]
+): ArchitectureModel {
   const diagramValidation = diagramArtifacts.map((diagram) =>
     validateMermaidDiagramArtifact({
       ...diagram,
       evidencePath: diagramEvidencePath(collection, diagram.path)
     })
   );
-  const subsystems = REVIEW_AREAS.map((subsystem) => subsystemCard(subsystem, collection, evaluation)).filter((card) => card.files.length > 0);
+  const subsystems = areas.map((subsystem) => subsystemCard(subsystem, collection, evaluation)).filter((card) => card.files.length > 0);
   const invalidDiagrams = diagramValidation.filter((result) => result.status === "invalid");
   const validDiagrams = diagramValidation.length - invalidDiagrams.length;
 
@@ -204,17 +245,33 @@ function pipelineDiagram(): string {
 `;
 }
 
-function sourceLayoutDiagram(collection: CollectionResult): string {
+function sourceLayoutDiagram(collection: CollectionResult, areas: ReviewArea[]): string {
   const changed = new Set(collection.changedFiles.map((file) => file.path));
-  const lines = ["flowchart TB", "  ROOT[\"review-surfaces\"]"];
-  for (const subsystem of REVIEW_AREAS) {
+  const lines = ["flowchart TB", `  ROOT["${diagramLabel(collection.git?.repo ?? "repository")}"]`];
+  areas.forEach((subsystem, position) => {
     const count = collection.changedFiles.filter((file) => matchesReviewPrefix(file.path, subsystem.prefixes)).length;
-    lines.push(`  ROOT --> ${subsystem.id.replace(/-/g, "_")}[\"${subsystem.name} (${count} changed)\"]`);
-  }
+    lines.push(`  ROOT --> ${nodeId(subsystem.id, position)}["${diagramLabel(subsystem.name)} (${count} changed)"]`);
+  });
   if (changed.size === 0) {
     lines.push("  ROOT --> CLEAN[\"No changed files detected\"]");
   }
+  if (areas.length === 0) {
+    lines.push("  ROOT --> NOAREAS[\"No review areas configured or derived\"]");
+  }
   return `${lines.join("\n")}\n`;
+}
+
+// Mermaid node ids must be identifier-safe. Config area ids like "SUB-CLI" are
+// already safe once dashes are replaced; fallback cluster ids like
+// "cluster:src/api" contain ":" and "/", so fall back to a positional id.
+function nodeId(id: string, position: number): string {
+  const sanitized = id.replace(/-/g, "_");
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(sanitized) ? sanitized : `AREA_${position}`;
+}
+
+// Keep diagram labels free of characters that would unbalance Mermaid syntax.
+function diagramLabel(text: string): string {
+  return text.replace(/["[\]{}()]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function dogfoodFlowDiagram(): string {

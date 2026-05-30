@@ -30,6 +30,24 @@ export interface EvidenceRef {
   note?: string;
   confidence: Confidence;
   validation_status?: ValidationStatus;
+  /**
+   * True when this evidence was proposed by an LLM/agent reasoning stage rather
+   * than discovered deterministically. Verified deterministic evidence never
+   * sets this. The renderer uses it to visibly distinguish hypotheses from proof
+   * (review-surfaces.EVIDENCE.6).
+   */
+  llm_proposed?: boolean;
+  /**
+   * True when this evidence is a PASSING parsed test case that the deterministic
+   * verification loop accepted as proof a requirement is satisfied (VERIFICATION
+   * LOOP #2). It is only ever set on `kind: "test"` evidence whose
+   * validation_status is "valid" and whose test_name is the REAL parsed case
+   * name. It makes the basis of a partial->satisfied promotion transparent in the
+   * packet. Never set by the LLM word alone: the test had to deterministically
+   * map (ACID/group) to the requirement, the LLM-pinpointed path additionally
+   * requires group corroboration.
+   */
+  verified?: boolean;
 }
 
 export interface SourceRef {
@@ -121,4 +139,58 @@ export function missingEvidence(note: string): EvidenceRef {
     confidence: "unknown",
     validation_status: "unknown"
   };
+}
+
+const LLM_PROPOSED_PREFIX = "LLM-proposed:";
+
+/**
+ * Build an LLM/agent-proposed candidate evidence ref. It is ALWAYS marked as a
+ * hypothesis (llm_proposed=true, note prefixed "LLM-proposed:") and capped at
+ * medium confidence. It still has to pass deterministic validation before any
+ * caller is allowed to attach it; this helper only labels it.
+ */
+export function llmProposedEvidence(
+  kind: EvidenceKind,
+  options: {
+    path?: string;
+    line_start?: number;
+    line_end?: number;
+    test_name?: string;
+    acai_id?: string;
+    note?: string;
+    confidence?: "low" | "medium";
+  } = {}
+): EvidenceRef {
+  const baseNote = (options.note ?? "").trim();
+  const note = baseNote.startsWith(LLM_PROPOSED_PREFIX)
+    ? baseNote
+    : `${LLM_PROPOSED_PREFIX} ${baseNote}`.trim();
+  return {
+    kind,
+    path: options.path,
+    line_start: options.line_start,
+    line_end: options.line_end,
+    test_name: options.test_name,
+    acai_id: options.acai_id,
+    note,
+    confidence: options.confidence ?? "low",
+    validation_status: "not_checked",
+    llm_proposed: true
+  };
+}
+
+export function isLlmProposed(ref: EvidenceRef): boolean {
+  return ref.llm_proposed === true;
+}
+
+/**
+ * True when the evidence set is non-empty AND every ref is LLM-proposed, i.e. the
+ * item rests ENTIRELY on hypotheses with no deterministic backing. An empty set
+ * is NOT hypothesis-only (the item simply has no evidence), so a deterministic
+ * finding with no refs is still treated as proof. Renderers use this to quarantine
+ * hypothesis-only material away from deterministic findings (review-surfaces.EVIDENCE.6).
+ */
+export function isHypothesisOnly(evidence: EvidenceRef[] | undefined): boolean {
+  const refs = evidence ?? [];
+  return refs.length > 0 && refs.every((ref) => ref.llm_proposed === true);
 }

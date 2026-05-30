@@ -1,0 +1,10 @@
+{
+  "name": "todo-service",
+  "version": "1.0.0",
+  "description": "Small foreign repo fixture for review-surfaces generality.",
+  "type": "module",
+  "main": "src/api.js",
+  "scripts": {
+    "test": "node --test"
+  }
+}

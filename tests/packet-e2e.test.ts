@@ -119,6 +119,62 @@ validation:
   assert.match(packetMarkdown, /Claims needing evidence:/);
 });
 
+test("review-surfaces.CLI.6 dogfood --previous-packet writes a comparison and stays schema-valid", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-prev-packet-"));
+  copyRepoFixture(tmp);
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const cli = path.join(process.cwd(), "dist", "src", "cli", "index.js");
+  const baseArgs = [
+    "dogfood",
+    "--provider",
+    "mock",
+    "--base",
+    "HEAD",
+    "--head",
+    "HEAD",
+    "--spec",
+    "features/review-surfaces.feature.yaml",
+    "--out",
+    ".review-surfaces"
+  ];
+
+  // First run produces a packet we will later compare against.
+  execFileSync("node", [cli, ...baseArgs], { cwd: tmp, stdio: "ignore" });
+  const previousDir = path.join(tmp, ".review-surfaces-prev");
+  fs.cpSync(path.join(tmp, ".review-surfaces"), previousDir, { recursive: true });
+
+  // Second run compares against the directory holding the previous packet.
+  execFileSync("node", [cli, ...baseArgs, "--previous-packet", ".review-surfaces-prev"], { cwd: tmp, stdio: "ignore" });
+
+  const result = await validateJsonFile(
+    path.join(tmp, "schemas", "review_packet.schema.json"),
+    path.join(tmp, ".review-surfaces", "review_packet.json")
+  );
+  assert.equal(result.valid, true, JSON.stringify(result.issues));
+
+  const packet = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "review_packet.json"), "utf8"));
+  assert.equal(packet.dogfood.previous_packet_path, path.join(".review-surfaces-prev", "review_packet.json"));
+  assert.ok(packet.dogfood.comparison, "comparison should be present");
+  assert.ok(Array.isArray(packet.dogfood.comparison.status_changes));
+  assert.ok(packet.dogfood.comparison.count_deltas);
+
+  const handoff = fs.readFileSync(path.join(tmp, ".review-surfaces", "agent_handoff.md"), "utf8");
+  assert.match(handoff, /## Changes Since Last Packet/);
+  assert.match(handoff, /Compared against/);
+
+  // Absent --previous-packet target is a clean no-op: no comparison, still valid.
+  execFileSync("node", [cli, ...baseArgs, "--previous-packet", ".does-not-exist"], { cwd: tmp, stdio: "ignore" });
+  const noopPacket = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "review_packet.json"), "utf8"));
+  assert.equal(noopPacket.dogfood.comparison, undefined);
+  assert.equal(noopPacket.dogfood.previous_packet_path, path.join(".does-not-exist", "review_packet.json"));
+  const noopResult = await validateJsonFile(
+    path.join(tmp, "schemas", "review_packet.schema.json"),
+    path.join(tmp, ".review-surfaces", "review_packet.json")
+  );
+  assert.equal(noopResult.valid, true, JSON.stringify(noopResult.issues));
+});
+
 test("CLI uses configured provider when no provider flag is passed", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-config-provider-"));
   copyRepoFixture(tmp);

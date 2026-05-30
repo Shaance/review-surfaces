@@ -93,6 +93,9 @@ export function validateRequirementResultEvidence(
   return {
     ...result,
     status: "invalid_evidence",
+    // The result is no longer partial, so drop any partial sub-reason rather
+    // than leaving a stale field that contradicts the new status.
+    partial_reason: undefined,
     summary: "One or more evidence references failed deterministic validation.",
     evidence,
     missing_evidence: [

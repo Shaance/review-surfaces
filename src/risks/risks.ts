@@ -3,6 +3,9 @@ import { COMMAND_TRANSCRIPT_OUTPUT_PATH, CommandTranscript } from "../commands/t
 import { commandEvidence, EvidenceRef, feedbackEvidence, missingEvidence, specEvidence } from "../evidence/evidence";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 import { MethodologyModel } from "../methodology/methodology";
+import { NormalizedTestCase, TestResults } from "../tests-evidence/junit";
+
+const MAX_PARSED_TEST_EVIDENCE = 40;
 
 export interface RiskItem {
   id: string;
@@ -126,6 +129,10 @@ export function analyzeRisks(
     });
   }
 
+  // Parsed JUnit results carry REAL per-test names + pass/fail and are STRONGER
+  // than coarse command-transcript evidence, so they lead. Transcripts are kept
+  // too (a "test exited 0" signal remains useful when no parsed results exist).
+  const parsedTestEvidence = validationEvidenceFromTestResults(collection.testResults);
   const testEvidence = validationEvidenceFromCommandTranscripts(collection);
   const transcriptCommands = new Set((collection.commandTranscripts ?? []).map((transcript) => normalizeCommand(transcript.command)));
   const feedbackEvidence = validationEvidenceFromFeedback(collection, transcriptCommands);
@@ -138,7 +145,7 @@ export function analyzeRisks(
       requirement_ids: [],
       evidence: [commandEvidence(command, "Command invocation is recorded by the CLI, but output is not captured in this artifact.", "medium")]
     }));
-  const allTestEvidence = [...testEvidence, ...feedbackEvidence, ...claimedCommandEvidence];
+  const allTestEvidence = [...parsedTestEvidence, ...testEvidence, ...feedbackEvidence, ...claimedCommandEvidence];
   if (allTestEvidence.length === 0) {
     allTestEvidence.push({
       id: "TEST-001",
@@ -225,6 +232,109 @@ function validationEvidenceFromFeedback(collection: CollectionResult, transcript
     }
   }
   return entries;
+}
+
+// Phase 5a: map parsed JUnit cases to test_evidence. A PASSING case becomes
+// "direct" evidence carrying the REAL EvidenceRef.test_name (classname/suite in
+// the note); a FAILING case becomes "missing" evidence (the test ran but did not
+// prove the behavior). Skipped cases are recorded as "claimed" so they are
+// visible without being treated as proof.
+function validationEvidenceFromTestResults(testResults: TestResults | undefined): RisksModel["test_evidence"] {
+  const entries: RisksModel["test_evidence"] = [];
+  if (!testResults || testResults.cases.length === 0) {
+    return entries;
+  }
+  // Round 8 (FINDING D): testResults.cases arrives sorted ALPHABETICALLY
+  // (classname/suite/name). Capping that order with slice(0, 40) silently DROPS a
+  // FAILED/skipped case that sorts late, so the packet could show many passing
+  // tests while HIDING a real failure (and the handoff failed-validation section
+  // would miss it). Order so non-passed (failed/error/skipped) cases come BEFORE
+  // passed ones BEFORE applying the cap, so failures are never hidden. Ordering is
+  // STABLE within each status group: the underlying array is already
+  // deterministically sorted, and the priority sort below preserves that order
+  // among equal-priority cases.
+  const prioritized = orderTestCasesFailuresFirst(testResults.cases).slice(0, MAX_PARSED_TEST_EVIDENCE);
+  for (const testCase of prioritized) {
+    entries.push({
+      id: `TEST-RESULT-${String(entries.length + 1).padStart(3, "0")}`,
+      kind: parsedTestEvidenceKind(testCase),
+      summary: parsedTestCaseSummary(testCase),
+      requirement_ids: [],
+      evidence: [parsedTestCaseEvidence(testCase)]
+    });
+  }
+  return entries;
+}
+
+// FINDING D: a stable reordering that puts non-passing cases first so the 40-entry
+// cap reserves slots for failures. `passed` cases sort last; everything else
+// (failed / skipped / any other non-passed status) keeps its existing
+// deterministic relative order. Failures sort ahead of skips so a genuine FAILED
+// test is the very last thing the cap would ever drop. A plain Array.prototype.sort
+// in Node is stable, so within each priority bucket the input order is preserved.
+function orderTestCasesFailuresFirst(cases: NormalizedTestCase[]): NormalizedTestCase[] {
+  const priority = (testCase: NormalizedTestCase): number => {
+    if (testCase.status === "passed") {
+      return 2; // passing tests are the LEAST important to keep under the cap
+    }
+    if (testCase.status === "skipped") {
+      return 1;
+    }
+    return 0; // failed (and any non-passed/non-skipped) status: never hide these
+  };
+  return [...cases].sort((left, right) => priority(left) - priority(right));
+}
+
+function parsedTestEvidenceKind(testCase: NormalizedTestCase): RisksModel["test_evidence"][number]["kind"] {
+  if (testCase.status === "passed") {
+    return "direct";
+  }
+  if (testCase.status === "failed") {
+    return "missing";
+  }
+  return "claimed";
+}
+
+function parsedTestCaseSummary(testCase: NormalizedTestCase): string {
+  const context = parsedTestContext(testCase);
+  const where = context ? ` (${context})` : "";
+  if (testCase.status === "passed") {
+    return `Parsed test passed: ${testCase.name}${where}`;
+  }
+  if (testCase.status === "failed") {
+    const reason = testCase.failure_message ? `: ${testCase.failure_message}` : "";
+    return `Parsed test FAILED: ${testCase.name}${where}${reason}`;
+  }
+  return `Parsed test skipped: ${testCase.name}${where}`;
+}
+
+function parsedTestCaseEvidence(testCase: NormalizedTestCase): EvidenceRef {
+  const context = parsedTestContext(testCase);
+  const note =
+    testCase.status === "failed" && testCase.failure_message
+      ? `Parsed JUnit case ${context ? `(${context}) ` : ""}failed: ${testCase.failure_message}`
+      : `Parsed JUnit case${context ? ` (${context})` : ""} with status=${testCase.status}.`;
+  return stripUndefinedEvidence({
+    kind: "test",
+    test_name: testCase.name,
+    note,
+    confidence: testCase.status === "passed" ? "high" : testCase.status === "failed" ? "medium" : "low",
+    validation_status: testCase.status === "passed" ? "valid" : testCase.status === "failed" ? "invalid" : "not_checked"
+  });
+}
+
+function parsedTestContext(testCase: NormalizedTestCase): string | undefined {
+  const parts = [testCase.classname, testCase.suite].filter(
+    (part): part is string => Boolean(part && part.length > 0)
+  );
+  if (parts.length === 0) {
+    return undefined;
+  }
+  return [...new Set(parts)].join(" / ");
+}
+
+function stripUndefinedEvidence(ref: EvidenceRef): EvidenceRef {
+  return JSON.parse(JSON.stringify(ref)) as EvidenceRef;
 }
 
 function validationEvidenceFromCommandTranscripts(collection: CollectionResult): RisksModel["test_evidence"] {

@@ -14,6 +14,12 @@ export interface IntentRequirement {
   assumptions: string[];
   open_questions: string[];
   confidence: "high" | "medium" | "low" | "unknown";
+  /**
+   * True for requirements proposed by an LLM/agent reasoning stage rather than
+   * indexed from an authoritative Acai spec. Such requirements never carry an
+   * acai_id and never reach confidence "high".
+   */
+  llm_derived?: boolean;
 }
 
 export interface IntentModel {

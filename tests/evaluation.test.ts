@@ -8,6 +8,8 @@ import { collectInputs } from "../src/collector/collect";
 import { defaultConfig } from "../src/config/config";
 import { buildIntent } from "../src/intent/intent";
 import { evaluateIntent } from "../src/evaluation/evaluate";
+import { validateJsonSchema } from "../src/schema/json-schema";
+import { defaultReviewSurfacesAreas } from "./helpers/review-areas";
 
 test("evaluator emits satisfied, partial, and missing statuses conservatively", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-eval-"));
@@ -50,7 +52,7 @@ components:
   ];
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.INTENT.1"], "satisfied");
   assert.equal(evaluation.acai_coverage["example.RISK.1"], "partial");
@@ -87,7 +89,7 @@ components:
   collection.changedFiles = [{ path: ".review-surfaces/agent_handoff.md", status: "M", source: "working_tree" }];
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.INTENT.1"], "missing");
   assert.equal(evaluation.acai_coverage["example.DOGFOOD.1"], "partial");
@@ -122,7 +124,7 @@ components:
   collection.changedFiles = [{ path: "src/evaluation/evaluate.ts", status: "A", source: "working_tree" }];
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.EVAL.1"], "partial");
 });
@@ -156,7 +158,7 @@ components:
   collection.changedFiles = [{ path: "src/evaluation/evaluate.ts", status: "A", source: "working_tree" }];
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.EVAL.1"], "partial");
   assert.match(evaluation.results[0].missing_evidence[0].note ?? "", /No exact test ACID evidence/);
@@ -191,7 +193,7 @@ components:
   collection.changedFiles = [{ path: "src/evaluation/evaluate.ts", status: "A", source: "working_tree" }];
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.EVAL.1"], "satisfied");
 });
@@ -225,7 +227,7 @@ components:
   collection.changedFiles = [{ path: "docs/evaluation.md", status: "A", source: "working_tree" }];
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.EVAL.1"], "partial");
   assert.match(evaluation.results[0].missing_evidence[0].note ?? "", /No implementation evidence/);
@@ -257,7 +259,7 @@ constraints:
   });
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.QUALITY.1"], "satisfied");
 });
@@ -295,7 +297,7 @@ constraints:
   collection.changedFiles = [{ path: "src/llm/provider.ts", status: "A", source: "working_tree" }];
 
   const intent = await buildIntent(tmp, collection);
-  const evaluation = await evaluateIntent(tmp, collection, intent);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.PROVIDERS.1"], "unknown");
   assert.equal(evaluation.overreach.length, 0);
@@ -343,8 +345,120 @@ constraints:
     assumptions: [],
     open_questions: [],
     sources: []
-  });
+  }, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.EVIDENCE.4"], "invalid_evidence");
   assert.equal(evaluation.results[0].evidence[0].validation_status, "invalid");
 });
+
+// #5: partial_reason lifts the partial sub-cases the evaluator already
+// distinguishes in prose into a structured enum. A changed implementation file
+// with no test mapped to its group -> impl_no_test; a test mapped to a group
+// with no implementation change -> test_no_impl. The field is set deterministically
+// only when status === "partial".
+test("review-surfaces.EVAL.5 sets partial_reason for impl-no-test and test-no-impl partials", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-partial-reason-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src", "risks"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src", "diagrams"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "tests"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+components:
+  RISK:
+    requirements:
+      1: Build risks.
+  ARCH:
+    requirements:
+      1: Build diagrams.
+`
+  );
+  // RISK: implementation changed, but no test maps to the RISK group -> impl_no_test.
+  fs.writeFileSync(path.join(tmp, "src", "risks", "risks.ts"), "export const risk = true;\n");
+  // ARCH: a test whose filename matches the ARCH test_keyword ("diagram") maps to
+  // the ARCH group, but no implementation file changed -> test_no_impl.
+  fs.writeFileSync(path.join(tmp, "tests", "diagram.test.ts"), "test('diagram surfaces', () => {});\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: ["tests/**/*.test.ts"] },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+  collection.changedFiles = [{ path: "src/risks/risks.ts", status: "A", source: "working_tree" }];
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
+
+  const risk = evaluation.results.find((result) => result.acai_id === "example.RISK.1");
+  const arch = evaluation.results.find((result) => result.acai_id === "example.ARCH.1");
+
+  assert.equal(risk?.status, "partial");
+  assert.equal(risk?.partial_reason, "impl_no_test");
+  assert.equal(arch?.status, "partial");
+  assert.equal(arch?.partial_reason, "test_no_impl");
+
+  // Non-partial results never carry a partial_reason.
+  for (const result of evaluation.results) {
+    if (result.status !== "partial") {
+      assert.equal(result.partial_reason, undefined, `${result.requirement_id} should not carry partial_reason`);
+    }
+  }
+
+  // The new optional partial_reason field is additive: a packet carrying these
+  // evaluation results (with partial_reason present) still validates against the
+  // checked-in schema. A bogus partial_reason value is rejected by the enum.
+  const schema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "review_packet.schema.json"), "utf8"));
+  const packet = packetWithEvaluationResults(evaluation.results);
+  assert.equal(validateJsonSchema(schema, packet).valid, true);
+
+  const bogus = packetWithEvaluationResults([
+    { ...(risk as unknown as Record<string, unknown>), partial_reason: "not_a_real_reason" }
+  ]);
+  const invalid = validateJsonSchema(schema, bogus);
+  assert.equal(invalid.valid, false);
+  assert.ok(invalid.issues.some((issue: { message: string }) => issue.message.includes("Expected one of")));
+});
+
+function packetWithEvaluationResults(results: unknown[]): Record<string, unknown> {
+  return {
+    schema_version: "review-surfaces.packet.v1",
+    manifest: {
+      tool_version: "0.1.0",
+      created_at: "2026-05-28T00:00:00.000Z",
+      repo: "review-surfaces",
+      base_ref: "origin/main",
+      head_ref: "HEAD",
+      head_sha: "abc",
+      run_mode: "local",
+      input_hashes: []
+    },
+    intent: { summary: "partial_reason fixture", requirements: [] },
+    evaluation: { summary: "partial_reason fixture", results, overreach: [], acai_coverage: {} },
+    architecture: {
+      summary: "partial_reason fixture",
+      diagrams: [],
+      diagram_validation: [],
+      subsystems: [],
+      open_questions: []
+    },
+    methodology: {
+      summary: "partial_reason fixture",
+      missing_logs: true,
+      considered: [],
+      research: [],
+      decisions: [],
+      unchallenged_assumptions: [],
+      skipped_checks: [],
+      claims_without_evidence: [],
+      verified_claims: [],
+      quality_flags: [],
+      evidence: []
+    },
+    risks: { summary: "partial_reason fixture", items: [], test_evidence: [], test_gaps: [], review_focus: [] }
+  };
+}

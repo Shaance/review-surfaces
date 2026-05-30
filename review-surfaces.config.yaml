@@ -11,6 +11,178 @@ docs:
   - .agents/skills/**/SKILL.md
 tests:
   - tests/**/*.test.ts
+areas:
+  - id: SUB-CLI
+    name: CLI orchestration
+    group_key: CLI
+    prefixes:
+      - src/cli/
+      - bin/
+      - package.json
+    purpose: Parse commands and wire local pipeline stages.
+    pattern: command dispatcher
+    test_keywords:
+      - cli
+  - id: SUB-COLLECT
+    name: Collection and indexing
+    group_key: COLLECTOR
+    prefixes:
+      - src/collector/
+      - src/acai/
+      - src/core/
+      - src/commands/
+      - src/indexer/
+      - src/tests-evidence/
+    purpose: Collect Git, diff, docs, tests, and input indexes.
+    pattern: deterministic collector
+    test_keywords:
+      - acai
+      - collect
+      - command
+  - id: SUB-BOOTSTRAP
+    name: Bootstrap files
+    group_key: BOOTSTRAP
+    prefixes:
+      - AGENTS.md
+      - CLAUDE.md
+      - .agents/
+      - features/
+      - docs/review-surfaces-trd.md
+      - review-surfaces.config.yaml
+      - src/config/
+      - src/bootstrap/
+      - scripts/copy-env.sh
+      - scripts/SECRETS.md
+      - types/
+    purpose: Keep local source-of-truth and agent workflow files available.
+    pattern: spec-first bootstrap
+    test_keywords:
+      - config
+      - bootstrap
+  - id: SUB-INTENT
+    name: Intent builder
+    group_key: INTENT
+    prefixes:
+      - src/intent/
+    purpose: Build requirements and source-backed intent.
+    pattern: deterministic synthesis
+    test_keywords:
+      - intent
+  - id: SUB-EVAL
+    name: Evaluator
+    group_key: EVAL
+    prefixes:
+      - src/evaluation/
+    purpose: Map intent requirements to implementation and test evidence.
+    pattern: evidence classifier
+    test_keywords:
+      - eval
+      - evaluation
+  - id: SUB-RISK
+    name: Risk analyzer
+    group_key: RISK
+    prefixes:
+      - src/risks/
+    purpose: Summarize risks, test evidence, gaps, and review focus.
+    pattern: risk register
+    test_keywords:
+      - risk
+  - id: SUB-DIAGRAM
+    name: Diagram generator
+    group_key: ARCH
+    prefixes:
+      - src/diagrams/
+      - architecture.md
+    purpose: Generate Mermaid diagrams and subsystem cards.
+    pattern: artifact renderer
+    test_keywords:
+      - arch
+      - diagram
+  - id: SUB-METH
+    name: Methodology auditor
+    group_key: METHODOLOGY
+    prefixes:
+      - src/methodology/
+    purpose: Normalize conversation logs and process evidence.
+    pattern: log normalizer
+    test_keywords:
+      - method
+  - id: SUB-LLM
+    name: Optional enrichment
+    group_key: EVIDENCE
+    prefixes:
+      - src/llm/
+    purpose: Optionally enrich packet summaries through mock, AI SDK, or agent files without treating them as proof.
+    pattern: bounded optional adapter
+    test_keywords:
+      - llm
+      - provider
+  - id: SUB-EVIDENCE
+    name: Evidence and schema validation
+    group_key: EVIDENCE
+    prefixes:
+      - src/evidence/
+      - src/schema/
+      - src/review-areas/
+    purpose: Represent and validate evidence references used by packet claims.
+    pattern: evidence model
+    test_keywords:
+      - evidence
+      - evaluation
+  - id: SUB-PRIVACY
+    name: Privacy controls
+    group_key: PRIVACY
+    prefixes:
+      - .review-surfacesignore
+      - .env.example
+      - src/privacy/
+    purpose: Exclude sensitive files and prepare redaction boundaries before remote provider use.
+    pattern: privacy guard
+    test_keywords:
+      - privacy
+  - id: SUB-DOGFOOD
+    name: Dogfood loop
+    group_key: DOGFOOD
+    prefixes:
+      - src/dogfood/
+      - src/feedback/
+      - .review-surfaces/agent_handoff.md
+      - .review-surfaces/feedback/
+      - docs/dogfooding.md
+      - .agents/skills/review-surfaces-dogfood-loop/
+    purpose: Turn self-review findings into local product feedback and handoff.
+    pattern: feedback loop
+    test_keywords:
+      - dogfood
+      - feedback
+  - id: SUB-RENDER
+    name: Packet renderer
+    group_key: RENDER
+    prefixes:
+      - src/render/
+    purpose: Write JSON/YAML/Markdown packet artifacts.
+    pattern: stable renderer
+    test_keywords:
+      - packet
+      - render
+  - id: SUB-QUALITY
+    name: Tests and fixtures
+    group_key: QUALITY
+    prefixes:
+      - tests/
+      - package.json
+    purpose: Verify local parsing, evidence, providers, and packet behavior.
+    pattern: fixture tests
+    test_keywords: []
+  - id: SUB-SCHEMA
+    name: Packet schema
+    group_key: SCHEMA
+    prefixes:
+      - schemas/
+    purpose: Define machine-readable packet contracts.
+    pattern: JSON schema
+    test_keywords:
+      - schema
 privacy:
   ignore_file: .review-surfacesignore
   redact_secrets: true

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="broken"
+  <testsuite name="oops" tests="1"
+    <testcase name="never closes
