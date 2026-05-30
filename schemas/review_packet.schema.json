@@ -864,7 +864,9 @@
       "additionalProperties": false,
       "required": [
         "summary",
-        "items"
+        "items",
+        "missing_automatic_tests",
+        "missing_manual_checks"
       ],
       "properties": {
         "summary": {

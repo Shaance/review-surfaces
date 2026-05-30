@@ -29,14 +29,14 @@ M5
 - M .review-surfacesignore
 - M review-surfaces.config.yaml
 - M schemas/review_packet.schema.json
+- M src/cli/index.ts
 - M src/privacy/ignore.ts
 - M src/render/load.ts
 - M src/render/packet.ts
 - M src/risks/risks.ts
 - M tests/command-transcripts.test.ts
-- M tests/init.test.ts
-- M tests/load.test.ts
-- ... 2 more changed file(s) in .review-surfaces/inputs/changed_files.json
+- M tests/compare.test.ts
+- ... 10 more changed file(s) in .review-surfaces/inputs/changed_files.json
 
 ## Validation Evidence
 

@@ -96,6 +96,28 @@ test("review-surfaces.SCHEMA.2 validates methodology and handoff M5 metadata", (
   assert.ok(invalidHandoff.issues.some((issue) => issue.path === "$.agent_handoff" && issue.message.includes("deferrals")));
 });
 
+test("review-surfaces.RISK.4 requires first-class missing-check lists in packet schema", () => {
+  const schema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "review_packet.schema.json"), "utf8"));
+  const packet = minimalReviewPacket();
+
+  assert.equal(validateJsonSchema(schema, packet).valid, true);
+
+  const stalePacket = minimalReviewPacket();
+  delete stalePacket.risks.missing_automatic_tests;
+  delete stalePacket.risks.missing_manual_checks;
+  const invalid = validateJsonSchema(schema, stalePacket);
+
+  assert.equal(invalid.valid, false);
+  assert.ok(
+    invalid.issues.some(
+      (issue) => issue.path === "$.risks" && issue.message.includes("missing_automatic_tests")
+    )
+  );
+  assert.ok(
+    invalid.issues.some((issue) => issue.path === "$.risks" && issue.message.includes("missing_manual_checks"))
+  );
+});
+
 function minimalReviewPacket(): {
   schema_version: string;
   manifest: Record<string, unknown>;
@@ -153,6 +175,8 @@ function minimalReviewPacket(): {
       items: [],
       test_evidence: [],
       test_gaps: [],
+      missing_automatic_tests: [],
+      missing_manual_checks: [],
       review_focus: []
     }
   };

@@ -439,7 +439,15 @@ function packetWithRequirementResults(count: number): ReviewPacket {
       quality_flags: [],
       evidence: []
     },
-    risks: { summary: "rollup fixture", items: [], test_evidence: [], test_gaps: [], review_focus: [] }
+    risks: {
+      summary: "rollup fixture",
+      items: [],
+      test_evidence: [],
+      test_gaps: [],
+      missing_automatic_tests: [],
+      missing_manual_checks: [],
+      review_focus: []
+    }
   };
 }
 

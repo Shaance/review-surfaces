@@ -459,6 +459,14 @@ function packetWithEvaluationResults(results: unknown[]): Record<string, unknown
       quality_flags: [],
       evidence: []
     },
-    risks: { summary: "partial_reason fixture", items: [], test_evidence: [], test_gaps: [], review_focus: [] }
+    risks: {
+      summary: "partial_reason fixture",
+      items: [],
+      test_evidence: [],
+      test_gaps: [],
+      missing_automatic_tests: [],
+      missing_manual_checks: [],
+      review_focus: []
+    }
   };
 }

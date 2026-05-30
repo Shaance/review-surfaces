@@ -280,7 +280,15 @@ function minimalPacketWithSecret(secret: string, field: "review_focus" | "risk" 
     evaluation: { summary: "round7", results: [], overreach: [] },
     architecture: { summary: "round7", diagrams: [], diagram_validation: [], subsystems: [] },
     methodology: { summary: "round7", missing_logs: false, decisions: [] },
-    risks: { summary: "round7", items: [], test_evidence: [], test_gaps: [], review_focus: [] }
+    risks: {
+      summary: "round7",
+      items: [],
+      test_evidence: [],
+      test_gaps: [],
+      missing_automatic_tests: [],
+      missing_manual_checks: [],
+      review_focus: []
+    }
   } as unknown as ReviewPacket;
 
   if (field === "review_focus") {

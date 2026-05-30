@@ -367,7 +367,15 @@ function collectionFixture(): CollectionResult {
 }
 
 function risksFixture(): RisksModel {
-  return { summary: "no risks", items: [], test_evidence: [], test_gaps: [], review_focus: [] };
+  return {
+    summary: "no risks",
+    items: [],
+    test_evidence: [],
+    test_gaps: [],
+    missing_automatic_tests: [],
+    missing_manual_checks: [],
+    review_focus: []
+  };
 }
 
 function methodologyFixture(): MethodologyModel {
@@ -426,7 +434,15 @@ function dogfoodPacketFixture(): {
       quality_flags: [],
       evidence: []
     },
-    risks: { summary: "fixture", items: [], test_evidence: [], test_gaps: [], review_focus: [] },
+    risks: {
+      summary: "fixture",
+      items: [],
+      test_evidence: [],
+      test_gaps: [],
+      missing_automatic_tests: [],
+      missing_manual_checks: [],
+      review_focus: []
+    },
     dogfood: {
       milestone: "M5",
       summary: "fixture dogfood",

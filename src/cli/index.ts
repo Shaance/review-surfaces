@@ -901,7 +901,15 @@ function emptyMethodology(): MethodologyModel {
 }
 
 function emptyRisks(): RisksModel {
-  return { summary: "", items: [], test_evidence: [], test_gaps: [], review_focus: [] };
+  return {
+    summary: "",
+    items: [],
+    test_evidence: [],
+    test_gaps: [],
+    missing_automatic_tests: [],
+    missing_manual_checks: [],
+    review_focus: []
+  };
 }
 
 function logWrote(context: StageContext): void {

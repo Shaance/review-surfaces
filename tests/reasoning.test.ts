@@ -143,6 +143,8 @@ function emptyRisks(): RisksModel {
     items: [],
     test_evidence: [],
     test_gaps: [],
+    missing_automatic_tests: [],
+    missing_manual_checks: [],
     review_focus: ["Start with missing and partial requirement results."]
   };
 }
@@ -1416,6 +1418,8 @@ test("review-surfaces.EVIDENCE.6: renderer visibly distinguishes LLM hypotheses 
       ],
       test_evidence: [],
       test_gaps: [],
+      missing_automatic_tests: [],
+      missing_manual_checks: [],
       review_focus: []
     }
   };
