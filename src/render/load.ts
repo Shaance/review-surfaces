@@ -78,13 +78,20 @@ export function loadRisks(outputDir: string): RisksModel | null {
   if (!isRecord(parsed)) {
     return null;
   }
+  const testGaps = asArray(parsed.test_gaps).map(normalizeTestGap);
   return {
     summary: asString(parsed.summary),
     items: asArray(parsed.items).map(normalizeRiskItem),
     test_evidence: asArray(parsed.test_evidence).map(normalizeTestEvidence),
-    test_gaps: asArray(parsed.test_gaps).map(normalizeTestGap),
-    missing_automatic_tests: asArray(parsed.missing_automatic_tests).map(normalizeMissingAutomaticTest),
-    missing_manual_checks: asArray(parsed.missing_manual_checks).map(normalizeMissingManualCheck),
+    test_gaps: testGaps,
+    missing_automatic_tests:
+      parsed.missing_automatic_tests === undefined
+        ? missingAutomaticTestsFromGaps(testGaps)
+        : asArray(parsed.missing_automatic_tests).map(normalizeMissingAutomaticTest),
+    missing_manual_checks:
+      parsed.missing_manual_checks === undefined
+        ? missingManualChecksFromGaps(testGaps)
+        : asArray(parsed.missing_manual_checks).map(normalizeMissingManualCheck),
     review_focus: asStringArray(parsed.review_focus)
   };
 }
@@ -298,6 +305,34 @@ function normalizeMissingManualCheck(value: unknown): NonNullable<RisksModel["mi
     manual_check: asString(record.manual_check),
     evidence: record.evidence === undefined ? undefined : asArray(record.evidence).map(normalizeEvidenceRef)
   };
+}
+
+function missingAutomaticTestsFromGaps(
+  gaps: RisksModel["test_gaps"]
+): NonNullable<RisksModel["missing_automatic_tests"]> {
+  return gaps
+    .filter((gap) => gap.suggested_test)
+    .map((gap, index) => ({
+      id: `AUTO-${String(index + 1).padStart(3, "0")}`,
+      requirement_id: gap.requirement_id,
+      acai_id: gap.acai_id,
+      summary: `Missing automatic test for ${gap.acai_id ?? gap.requirement_id ?? gap.id}.`,
+      suggested_test: gap.suggested_test as string,
+      evidence: gap.evidence
+    }));
+}
+
+function missingManualChecksFromGaps(gaps: RisksModel["test_gaps"]): NonNullable<RisksModel["missing_manual_checks"]> {
+  return gaps
+    .filter((gap) => gap.manual_check)
+    .map((gap, index) => ({
+      id: `MANUAL-${String(index + 1).padStart(3, "0")}`,
+      requirement_id: gap.requirement_id,
+      acai_id: gap.acai_id,
+      summary: `Missing manual review check for ${gap.acai_id ?? gap.requirement_id ?? gap.id}.`,
+      manual_check: gap.manual_check as string,
+      evidence: gap.evidence
+    }));
 }
 
 type RemediationType = "code" | "test" | "schema" | "doc" | "spec" | "skill" | "feedback" | "defer";

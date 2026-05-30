@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { writeEvaluationArtifact } from "../src/render/packet";
-import { loadEvaluation } from "../src/render/load";
+import { loadEvaluation, loadRisks } from "../src/render/load";
 import { stringifyYaml } from "../src/core/simple-yaml";
 import { EvaluationModel } from "../src/evaluation/evaluate";
 
@@ -108,6 +108,44 @@ test("review-surfaces.EVAL loadEvaluation ignores partial_reason on a non-partia
     assert.ok(loaded);
     assert.equal(loaded!.results[0]?.status, "satisfied");
     assert.equal(loaded!.results[0]?.partial_reason, undefined);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.RISK.4 loadRisks backfills missing-check lists from stale test_gaps", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-load-risks-stale-"));
+  try {
+    fs.writeFileSync(
+      path.join(tmp, "risks.yaml"),
+      stringifyYaml({
+        summary: "stale risks",
+        items: [],
+        test_evidence: [],
+        test_gaps: [
+          {
+            id: "GAP-001",
+            requirement_id: "REQ-043",
+            acai_id: "review-surfaces.RISK.1",
+            summary: "partial risk coverage",
+            suggested_test: "Add a focused risk artifact test.",
+            manual_check: "Inspect risks.yaml before trusting release coverage.",
+            evidence: [{ kind: "spec", path: "features/review-surfaces.feature.yaml", confidence: "high" }]
+          }
+        ],
+        review_focus: []
+      })
+    );
+
+    const loaded = loadRisks(tmp);
+
+    assert.ok(loaded);
+    assert.equal(loaded!.missing_automatic_tests?.[0]?.id, "AUTO-001");
+    assert.equal(loaded!.missing_automatic_tests?.[0]?.acai_id, "review-surfaces.RISK.1");
+    assert.equal(loaded!.missing_automatic_tests?.[0]?.suggested_test, "Add a focused risk artifact test.");
+    assert.equal(loaded!.missing_manual_checks?.[0]?.id, "MANUAL-001");
+    assert.equal(loaded!.missing_manual_checks?.[0]?.acai_id, "review-surfaces.RISK.1");
+    assert.equal(loaded!.missing_manual_checks?.[0]?.manual_check, "Inspect risks.yaml before trusting release coverage.");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

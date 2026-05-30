@@ -35,8 +35,8 @@ M5
 - M src/risks/risks.ts
 - M tests/command-transcripts.test.ts
 - M tests/init.test.ts
-- M tests/privacy.test.ts
-- ... 1 more changed file(s) in .review-surfaces/inputs/changed_files.json
+- M tests/load.test.ts
+- ... 2 more changed file(s) in .review-surfaces/inputs/changed_files.json
 
 ## Validation Evidence
 
