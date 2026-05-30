@@ -24,11 +24,11 @@ M5
 
 ## Implemented Changes
 
-- M .review-surfaces/agent_handoff.md
-- M review-surfaces.config.yaml
 - M src/cli/index.ts
-- ?? src/pipeline/stages.ts
-- M tests/command-transcripts.test.ts
+- M src/collector/collect.ts
+- ?? src/pipeline/artifact-store.ts
+- M src/pipeline/stages.ts
+- ?? tests/pipeline-artifact-store.test.ts
 
 ## Validation Evidence
 

@@ -293,8 +293,9 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // manifest: that object is embedded verbatim into review_packet.json, and folding
   // a carried-forward map into it would break byte-stability across two identical
   // frozen-clock runs (run 2 would carry forward run 1's map). The provenance
-  // readers (cache snapshot, per-artifact loaders, stampArtifactSignatures) all read
-  // the on-disk manifest.json directly, so they see the map regardless.
+  // readers (cache snapshot, per-artifact loaders, artifact stamping) all go
+  // through the pipeline artifact store, which reads the on-disk manifest.json
+  // directly, so they see the map regardless.
   const priorArtifactSignatures = readPriorArtifactSignatures(path.join(outputDir, "manifest.json"));
   await writeJson(path.join(outputDir, "manifest.json"), {
     ...manifest,

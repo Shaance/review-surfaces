@@ -4,7 +4,7 @@ import { formatReports, hasRequiredFailure, runBootstrap, runInit } from "../boo
 import { recordCommandTranscript } from "../commands/runner";
 import { commandTranscriptInputDir } from "../commands/transcripts";
 import { collectInputs, CollectionResult } from "../collector/collect";
-import { PROVENANCE_ARTIFACTS, stampArtifactSignatures } from "../collector/artifact-provenance";
+import { PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
 import { CliError, ExitCodes } from "../core/exit-codes";
 import { fileExists } from "../core/files";
@@ -43,11 +43,6 @@ import {
   computeEvaluation,
   computeEnrichedIntent,
   enrichPacketForContext,
-  loadCurrentDogfood,
-  loadCurrentEvaluation,
-  loadCurrentIntent,
-  loadCurrentMethodology,
-  loadCurrentRisks,
   loadOrComputeEvaluation,
   loadOrComputeIntent,
   loadOrComputeMethodology,
@@ -56,6 +51,11 @@ import {
   PipelineStageContext,
   runReasoningWithVerification
 } from "../pipeline/stages";
+import {
+  artifactSignaturesFromManifest,
+  createPipelineArtifactStore,
+  createPipelineArtifactStoreForCollection
+} from "../pipeline/artifact-store";
 
 const COMMANDS = [
   "init",
@@ -327,12 +327,10 @@ async function readCacheSnapshot(cwd: string, parsed: ParsedArgs): Promise<Cache
       // prior manifest's artifact_signatures map (snapshotted before collect
       // overwrites the manifest), so a stale packet left by an intervening
       // collect/intent is not reused on a top-level-signature match.
-      const artifactSignatures =
-        parsed && typeof parsed === "object" && parsed.artifact_signatures && typeof parsed.artifact_signatures === "object"
-          ? (parsed.artifact_signatures as Record<string, unknown>)
-          : undefined;
-      const recorded = artifactSignatures?.[PROVENANCE_ARTIFACTS.packet];
-      packetProducingSignature = typeof recorded === "string" ? recorded : undefined;
+      packetProducingSignature = createPipelineArtifactStore({
+        outputDir,
+        artifactSignatures: artifactSignaturesFromManifest(parsed)
+      }).producingSignature(PROVENANCE_ARTIFACTS.packet);
     } catch {
       manifestRaw = "";
       priorSignature = undefined;
@@ -399,6 +397,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // manifest/packet left byte-identical. Without --cache nothing is read here.
   const cacheSnapshot = booleanFlag(parsed, "cache") ? await readCacheSnapshot(cwd, parsed) : undefined;
   const { collection, config } = await collect(parsed);
+  const artifactStore = createPipelineArtifactStoreForCollection(collection);
   if (cacheSnapshot && isCacheHit(cacheSnapshot, collection.manifest.signature)) {
     const strict = booleanFlag(parsed, "strict");
     const evaluation = loadEvaluation(collection.outputDir);
@@ -520,18 +519,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // collection signature so a later --cache hit / composable load can tell they
   // were produced from THESE inputs. writeReviewPacket writes the full set
   // (intent/evaluation/methodology/risks/review_packet, plus dogfood when present).
-  await stampArtifactSignatures(
-    collection.outputDir,
-    [
-      PROVENANCE_ARTIFACTS.intent,
-      PROVENANCE_ARTIFACTS.evaluation,
-      PROVENANCE_ARTIFACTS.methodology,
-      PROVENANCE_ARTIFACTS.risks,
-      PROVENANCE_ARTIFACTS.packet,
-      ...(dogfood ? [PROVENANCE_ARTIFACTS.dogfood] : [])
-    ],
-    collection.manifest.signature
-  );
+  await artifactStore.stampPacketArtifacts({ includeDogfood: dogfood !== undefined });
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
@@ -585,7 +573,7 @@ async function runIntentStage(parsed: ParsedArgs): Promise<void> {
   await writeIntentArtifact(context.collection.outputDir, intent);
   // FINDING B + FINDING C: stamp intent.yaml's producing signature so a later
   // stage composes it ONLY when the inputs are still the same.
-  await stampArtifactSignatures(context.collection.outputDir, [PROVENANCE_ARTIFACTS.intent], context.collection.manifest.signature);
+  await context.artifacts.stamp([PROVENANCE_ARTIFACTS.intent]);
   logWrote(context);
 }
 
@@ -605,7 +593,7 @@ async function runEvaluateStage(parsed: ParsedArgs): Promise<number> {
   await writeEvaluationArtifact(context.collection.outputDir, evaluation);
   // FINDING B + FINDING C: stamp evaluation.yaml's producing signature so a later
   // packet/handoff composes this coverage ONLY while the inputs are unchanged.
-  await stampArtifactSignatures(context.collection.outputDir, [PROVENANCE_ARTIFACTS.evaluation], context.collection.manifest.signature);
+  await context.artifacts.stamp([PROVENANCE_ARTIFACTS.evaluation]);
   logWrote(context);
   return applyGate(parsed, evaluation, context.collection, context.provider, context.config);
 }
@@ -652,7 +640,7 @@ async function runMethodologyStage(parsed: ParsedArgs): Promise<void> {
   await enrichPacketForContext(context, packet);
   await writeMethodologyArtifact(context.collection.outputDir, packet.methodology);
   // FINDING B + FINDING C: stamp methodology.yaml's producing signature.
-  await stampArtifactSignatures(context.collection.outputDir, [PROVENANCE_ARTIFACTS.methodology], context.collection.manifest.signature);
+  await context.artifacts.stamp([PROVENANCE_ARTIFACTS.methodology]);
   logWrote(context);
 }
 
@@ -697,7 +685,7 @@ async function runRisksStage(parsed: ParsedArgs): Promise<void> {
   await writeRisksArtifact(context.collection.outputDir, packet.risks);
   // FINDING B + FINDING C: stamp risks.yaml's producing signature so packet/handoff
   // compose this risk register ONLY while the inputs are unchanged.
-  await stampArtifactSignatures(context.collection.outputDir, [PROVENANCE_ARTIFACTS.risks], context.collection.manifest.signature);
+  await context.artifacts.stamp([PROVENANCE_ARTIFACTS.risks]);
   logWrote(context);
 }
 
@@ -734,10 +722,10 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
     }
     return enrichedCache;
   };
-  const intent = loadCurrentIntent(context) ?? (await enriched()).intent;
-  const evaluation = loadCurrentEvaluation(context) ?? (await enriched()).evaluation;
-  const methodology = loadCurrentMethodology(context) ?? (await enriched()).methodology;
-  const risks = loadCurrentRisks(context) ?? (await enriched()).risks;
+  const intent = context.artifacts.loadCurrentIntent() ?? (await enriched()).intent;
+  const evaluation = context.artifacts.loadCurrentEvaluation() ?? (await enriched()).evaluation;
+  const methodology = context.artifacts.loadCurrentMethodology() ?? (await enriched()).methodology;
+  const risks = context.artifacts.loadCurrentRisks() ?? (await enriched()).risks;
   const architecture = await computeArchitecture(context, evaluation);
 
   const preEnrichment: EnrichmentResult = {
@@ -766,7 +754,7 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
   const dogfood = isDogfoodRun(parsed)
     ? // FINDING E: only compose a prior dogfood.yaml when it is current; a stale one
       // (inputs changed) is rebuilt from the post-enrichment packet.
-      loadCurrentDogfood(context) ??
+      context.artifacts.loadCurrentDogfood() ??
       buildDogfood(
         context.collection,
         packet.evaluation,
@@ -793,18 +781,7 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
   // present), so stamp all of them with the current signature. This is what makes a
   // later `all --cache` reuse the packet (review_packet.json now carries the
   // current producing signature) AND keeps the composable stages current.
-  await stampArtifactSignatures(
-    context.collection.outputDir,
-    [
-      PROVENANCE_ARTIFACTS.intent,
-      PROVENANCE_ARTIFACTS.evaluation,
-      PROVENANCE_ARTIFACTS.methodology,
-      PROVENANCE_ARTIFACTS.risks,
-      PROVENANCE_ARTIFACTS.packet,
-      ...(dogfood ? [PROVENANCE_ARTIFACTS.dogfood] : [])
-    ],
-    context.collection.manifest.signature
-  );
+  await context.artifacts.stampPacketArtifacts({ includeDogfood: dogfood !== undefined });
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
@@ -815,7 +792,7 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
 async function runHandoffStage(parsed: ParsedArgs): Promise<void> {
   const context = await buildStageContext(parsed);
   // Load packet inputs needed for the handoff; compute any that are missing.
-  const intent = loadCurrentIntent(context) ?? (await buildIntent(context.cwd, context.collection));
+  const intent = context.artifacts.loadCurrentIntent() ?? (await buildIntent(context.cwd, context.collection));
   const evaluation = await loadOrComputeEvaluation(context, () => loadOrComputeIntent(context));
   const methodology = await loadOrComputeMethodology(context);
   const risks = await loadOrComputeRisks(
@@ -824,7 +801,7 @@ async function runHandoffStage(parsed: ParsedArgs): Promise<void> {
     async () => methodology
   );
   // FINDING E: compose a prior dogfood.yaml / intent.yaml only when it is current.
-  const dogfood = loadCurrentDogfood(context) ?? undefined;
+  const dogfood = context.artifacts.loadCurrentDogfood() ?? undefined;
   // PER-STAGE ISOLATION: the `handoff` stage writes ONLY agent_handoff.md.
   // buildHandoff never reads architecture, so build the model without the
   // diagrams/*.mmd disk side effect rather than leaking a diagrams/ directory.
