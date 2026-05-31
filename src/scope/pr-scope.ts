@@ -112,18 +112,24 @@ export function buildPrScope(input: BuildPrScopeInput): PrScopeModel {
     .sort((left, right) => compareStrings(left.group_key, right.group_key));
 
   // --- affected_requirements ----------------------------------------------
-  // Precompute, per role, the set of group_keys any changed file of that role
-  // maps to. These power the medium-confidence "changed_path/test group" rules.
-  const implementationGroups = new Set<string>();
+  // Precompute the set of group_keys touched by changed files, split into TEST
+  // groups and "mapped" groups (any non-test, non-generated changed file with an
+  // area — implementation, config, doc, ci, spec, …). A mapped config/doc/schema
+  // file (e.g. schemas/review_packet.schema.json or review-surfaces.config.yaml)
+  // usually carries no ACID literal, so without this its requirement group would
+  // never enter scope and the surface would show the changed area/risk while
+  // reporting zero affected requirements. These power the medium-confidence
+  // "changed_path/test group" rules.
+  const mappedGroups = new Set<string>();
   const testGroups = new Set<string>();
   for (const changedFile of changedFiles) {
-    if (changedFile.role === "implementation") {
-      for (const group of changedFile.areas) {
-        implementationGroups.add(group);
-      }
-    } else if (changedFile.role === "test") {
+    if (changedFile.role === "test") {
       for (const group of changedFile.areas) {
         testGroups.add(group);
+      }
+    } else if (changedFile.role !== "generated") {
+      for (const group of changedFile.areas) {
+        mappedGroups.add(group);
       }
     }
   }
@@ -133,7 +139,7 @@ export function buildPrScope(input: BuildPrScopeInput): PrScopeModel {
     const reasons = scopeReasonsForRequirement(requirement, {
       changedFiles,
       diffByPath,
-      implementationGroups,
+      mappedGroups,
       testGroups
     });
     if (reasons.length === 0) {
@@ -249,7 +255,8 @@ function isGeneratedPath(filePath: string): boolean {
 interface ScopeContext {
   changedFiles: ScopedChangedFile[];
   diffByPath: Map<string, StructuredDiffFile>;
-  implementationGroups: Set<string>;
+  // Groups touched by any non-test, non-generated mapped changed file.
+  mappedGroups: Set<string>;
   testGroups: Set<string>;
 }
 
@@ -302,14 +309,14 @@ function scopeReasonsForRequirement(requirement: IntentRequirement, context: Sco
     }
   }
 
-  // changed_path_requirement_group (medium): a changed implementation file maps
-  // to the requirement's group_key.
-  if (groupKey && context.implementationGroups.has(groupKey)) {
-    const file = firstChangedFileForGroup(context.changedFiles, groupKey, "implementation");
+  // changed_path_requirement_group (medium): a changed non-test mapped file (impl,
+  // config, doc, ci, spec, …) maps to the requirement's group_key.
+  if (groupKey && context.mappedGroups.has(groupKey)) {
+    const file = firstMappedFileForGroup(context.changedFiles, groupKey);
     reasons.push(
       scopeReason("changed_path_requirement_group", "medium", {
         path: file,
-        note: `Changed implementation file maps to requirement group ${groupKey}.`
+        note: `Changed file maps to requirement group ${groupKey}.`
       })
     );
   }
@@ -439,6 +446,18 @@ function firstChangedFileForGroup(
 ): string | undefined {
   for (const changedFile of changedFiles) {
     if (changedFile.role === role && changedFile.areas.includes(groupKey)) {
+      return changedFile.path;
+    }
+  }
+  return undefined;
+}
+
+// First non-test, non-generated changed file mapping to the group — the path that
+// justifies a changed_path_requirement_group reason regardless of whether the
+// mapped file is implementation, config, doc, ci, or spec.
+function firstMappedFileForGroup(changedFiles: ScopedChangedFile[], groupKey: string): string | undefined {
+  for (const changedFile of changedFiles) {
+    if (changedFile.role !== "test" && changedFile.role !== "generated" && changedFile.areas.includes(groupKey)) {
       return changedFile.path;
     }
   }

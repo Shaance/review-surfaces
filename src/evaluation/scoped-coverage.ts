@@ -113,6 +113,43 @@ export function buildPrScopedCoverage(input: BuildPrScopedCoverageInput): PrScop
     });
   }
 
+  // Removed requirements: present in the BASE eval, absent at HEAD, and in an area
+  // this PR touches. affected_requirements is built from the HEAD intent, so a
+  // requirement the PR DELETED from the spec has no head requirement and would never
+  // reach the removed_requirement branch above — yet a deletion is exactly when a
+  // reviewer needs a PR-scoped coverage signal. Scan base-only requirements here.
+  if (baseAvailable && input.baseEvaluation) {
+    const headAcids = new Set(input.headEvaluation.results.map((r) => r.acai_id).filter((id): id is string => id !== undefined));
+    const headReqIds = new Set(input.headEvaluation.results.map((r) => r.requirement_id));
+    const inScopeKeys = new Set(
+      input.scope.affected_requirements.flatMap((r) => [r.requirement_id, r.acai_id].filter((id): id is string => id !== undefined))
+    );
+    const affectedGroups = new Set(input.scope.affected_areas.map((area) => area.group_key));
+    for (const baseResult of input.baseEvaluation.results) {
+      if (inScopeKeys.has(baseResult.requirement_id) || (baseResult.acai_id !== undefined && inScopeKeys.has(baseResult.acai_id))) {
+        continue; // already reported as an in-scope head requirement
+      }
+      const stillAtHead = (baseResult.acai_id !== undefined && headAcids.has(baseResult.acai_id)) || headReqIds.has(baseResult.requirement_id);
+      if (stillAtHead) {
+        continue; // not removed
+      }
+      const group = baseResult.acai_id ? baseResult.acai_id.split(".")[1] : undefined;
+      if (!group || !affectedGroups.has(group)) {
+        continue; // not touched by this diff
+      }
+      deltas.push({
+        requirement_id: baseResult.requirement_id,
+        acai_id: baseResult.acai_id,
+        base_status: baseResult.status,
+        head_status: "absent",
+        delta: "removed_requirement",
+        reasons: [`base ${baseResult.status} -> head absent (removed from spec)`],
+        head_evidence: [],
+        missing_evidence: []
+      });
+    }
+  }
+
   // Stable secondary sort by acai_id/requirement_id so the table is byte-stable
   // even if scope ordering ever changes upstream.
   deltas.sort((left, right) =>

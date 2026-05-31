@@ -253,6 +253,32 @@ function validateItems(value: unknown, allowedPaths: Set<string>, allowedReqs: S
   return items.slice(0, MAX_ANCHORED_ITEMS);
 }
 
+// The summary is the most prominent prose field, so it gets the same
+// anchored-or-dropped discipline as the sections: scan it for path-like and
+// ACID-like tokens and, if it names any that is NOT on an allowlist, treat it as
+// having fabricated an anchor and replace it with a deterministic summary rather
+// than publishing the unvalidated LLM prose at the top of the comment.
+const SUMMARY_PATH_TOKEN = /\b[\w-]+(?:\/[\w.-]+)+\.[A-Za-z][\w]*\b/g; // e.g. src/foo/bar.ts
+const SUMMARY_ACID_TOKEN = /\b[A-Za-z][\w-]*\.[A-Za-z][\w-]*\.\d+\b/g; // e.g. review-surfaces.PRIVACY.2
+
+function summaryCitesOnlyAllowed(text: string, allowedPaths: Set<string>, allowedReqs: Set<string>): boolean {
+  for (const match of text.matchAll(SUMMARY_PATH_TOKEN)) {
+    if (!allowedPaths.has(match[0])) {
+      return false;
+    }
+  }
+  for (const match of text.matchAll(SUMMARY_ACID_TOKEN)) {
+    if (!allowedReqs.has(match[0])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function deterministicSummary(scope: PrScopeModel): string {
+  return `${scope.changed_files.length} changed file(s) across ${scope.affected_areas.length} review area(s); ${scope.affected_requirements.length} affected requirement(s).`;
+}
+
 function validateRiskNarratives(value: unknown, allowedRisks: Set<string>): AnchoredRiskNarrative[] {
   if (!Array.isArray(value)) {
     return [];
@@ -335,8 +361,13 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
   // NOTE: no diagram_caption. It was un-anchored LLM free text (the only narrative
   // field that bypassed allowlist validation) and no renderer ever read it, so it
   // only ever risked shipping off-allowlist LLM prose into the persisted artifact.
+  const rawSummary = typeof data.summary === "string" ? data.summary : "";
+  const summary =
+    rawSummary !== "" && summaryCitesOnlyAllowed(rawSummary, allowedPaths, allowedRequirementIds)
+      ? redact(rawSummary)
+      : deterministicSummary(input.scope);
   const narrative: PrNarrativeModel = {
-    summary: redact(typeof data.summary === "string" ? data.summary : ""),
+    summary,
     what_changed: whatChanged,
     why_it_matters: whyItMatters,
     review_first: reviewFirst,

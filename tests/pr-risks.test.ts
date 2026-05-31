@@ -102,6 +102,44 @@ test("coverage-regression delta produces a coverage_regression candidate citing 
   assert.ok(candidate.summary.includes("REQ-PRIV-2"), "summary names the regressed requirement");
 });
 
+test("coverage_regression risk anchors to the requirement's REAL evidence path, never its title", () => {
+  const regressed: PrRequirementCoverageDelta = {
+    requirement_id: "REQ-PRIV-2",
+    acai_id: "review-surfaces.PRIVACY.2",
+    title: "Redact secrets in the diff", // a TITLE — must never become an evidence path
+    base_status: "satisfied",
+    head_status: "partial",
+    delta: "regressed",
+    reasons: ["test removed"],
+    head_evidence: [{ kind: "file", path: "src/privacy/secrets.ts", confidence: "medium", validation_status: "not_checked" }],
+    missing_evidence: []
+  };
+  const model = buildPrRiskCandidates(buildInput({ coverage: coverage([regressed]) }));
+  const candidate = model.candidates.find((c) => c.rule === "coverage_regression");
+  assert.ok(candidate);
+  assert.ok(candidate!.evidence.some((ref) => ref.path === "src/privacy/secrets.ts"), "cites the real source path");
+  assert.ok(!candidate!.evidence.some((ref) => ref.path === "Redact secrets in the diff"), "title is never an evidence path");
+});
+
+test("coverage_regression without path-bearing evidence anchors by acai_id, not a fabricated path", () => {
+  const regressed: PrRequirementCoverageDelta = {
+    requirement_id: "REQ-PRIV-2",
+    acai_id: "review-surfaces.PRIVACY.2",
+    title: "Redact secrets in the diff",
+    base_status: "satisfied",
+    head_status: "partial",
+    delta: "regressed",
+    reasons: ["test removed"],
+    head_evidence: [],
+    missing_evidence: []
+  };
+  const model = buildPrRiskCandidates(buildInput({ coverage: coverage([regressed]) }));
+  const candidate = model.candidates.find((c) => c.rule === "coverage_regression");
+  assert.ok(candidate);
+  assert.ok(candidate!.evidence.every((ref) => ref.path === undefined), "no fabricated path");
+  assert.ok(candidate!.evidence.some((ref) => ref.acai_id === "review-surfaces.PRIVACY.2"), "anchored by acai_id");
+});
+
 test("changed .github/workflows file produces a ci_secret_boundary_change candidate", () => {
   const input = buildInput({
     scope: scope({

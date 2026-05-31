@@ -100,6 +100,43 @@ test("diagram_caption from the LLM is never persisted (un-anchored free text is 
   assert.ok(!("diagram_caption" in (result.narrative as object)), "diagram_caption must not be persisted");
 });
 
+test("a summary citing a FABRICATED path is replaced by a deterministic summary (anchored-or-dropped)", async () => {
+  const result = await buildPrNarrative(
+    inputWith({
+      ok: true,
+      data: {
+        summary: "Refactors src/totally/made-up.ts and review-surfaces.GHOST.9 across the codebase.",
+        what_changed: [{ text: "valid", paths: ["src/cli/index.ts"] }],
+        why_it_matters: [],
+        review_first: [],
+        risk_narratives: []
+      }
+    })
+  );
+  assert.ok(result.narrative);
+  // The fabricated path/ACID must not survive in the most prominent field.
+  assert.doesNotMatch(result.narrative!.summary, /made-up\.ts|GHOST/);
+  // Replaced by the deterministic scope summary.
+  assert.match(result.narrative!.summary, /changed file\(s\).*affected requirement\(s\)/);
+});
+
+test("a summary that cites ONLY allowlisted anchors is kept verbatim", async () => {
+  const result = await buildPrNarrative(
+    inputWith({
+      ok: true,
+      data: {
+        summary: "Touches src/cli/index.ts for x.CLI.1.",
+        what_changed: [{ text: "valid", paths: ["src/cli/index.ts"] }],
+        why_it_matters: [],
+        review_first: [],
+        risk_narratives: []
+      }
+    })
+  );
+  assert.ok(result.narrative);
+  assert.match(result.narrative!.summary, /Touches src\/cli\/index\.ts for x\.CLI\.1\./);
+});
+
 test("a runtime ai_sdk_error blocks with reason llm_failed and meta.status failed (key was present)", async () => {
   const result = await buildPrNarrative(inputWith({ ok: false, reason: "ai_sdk_error: request timed out" }));
   assert.equal(result.narrative, undefined);

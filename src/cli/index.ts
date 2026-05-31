@@ -450,7 +450,16 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   const commands = [`review-surfaces ${parsed.command} ${process.argv.slice(3).join(" ")}`.trim()];
   const provider = providerFlag(parsed, config);
   const requestedModel = stringFlag(parsed, "model") ?? config.llm.model ?? undefined;
-  debug(parsed, `provider=${provider} model=${requestedModel ?? "(default)"}`);
+  const isPrScope = reviewScope(parsed) === "pr";
+  // PR-mode contract: scope/coverage/risks are DETERMINISTIC and the LLM authors
+  // ONLY the diff-scoped narrative. So in pr mode the whole-repo packet (a side
+  // artifact here) is built with `mock`: the live provider is NOT spent on
+  // whole-repo reasoning/enrichment (no wasted remote calls, no whole-repo context
+  // leak) and the intent/evaluation the PR surface is derived from stay byte-stable
+  // regardless of model output. The live provider is reserved for the PR narrative
+  // step below. In repo mode this is exactly the requested provider (unchanged).
+  const wholeRepoProvider: ProviderName = isPrScope ? "mock" : provider;
+  debug(parsed, `provider=${provider} wholeRepo=${wholeRepoProvider} model=${requestedModel ?? "(default)"}`);
   const reviewAreas = buildReviewAreas({ config, repoIndex: collection.repoIndex });
   const areasOption = reviewAreas.mode === "config" ? { areas: reviewAreas.areas } : {};
   const intent = await buildIntent(cwd, collection);
@@ -459,7 +468,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // Phase 3-2: schema-bound, evidence-gated reasoning stages run with the
   // resolved provider. The default mock provider returns not-ok, so every stage
   // is a no-op and the deterministic packet below stays byte-stable.
-  const reasoningProvider = providerFor(provider, {
+  const reasoningProvider = providerFor(wholeRepoProvider, {
     model: requestedModel,
     cwd,
     remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
@@ -500,12 +509,12 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     methodology,
     risks,
     architecture,
-    enrichment: notRequestedEnrichment(provider, requestedModel),
+    enrichment: notRequestedEnrichment(wholeRepoProvider, requestedModel),
     commands
   });
   const enrichment = await enrichPacket(packet, {
     cwd,
-    provider,
+    provider: wholeRepoProvider,
     model: requestedModel,
     agentInput: stringFlag(parsed, "agent-input"),
     outputDir: collection.outputDir,
@@ -542,7 +551,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // PR review surface (--review-scope pr): a SEPARATE diff-scoped, LLM-narrated
   // artifact (pr_review_surface.json) that the PR comment renders from. Requires
   // an LLM provider; a blocked surface is written (never a whole-repo fallback).
-  if (reviewScope(parsed) === "pr") {
+  if (isPrScope) {
     // Evaluate the base ref in a throwaway worktree for the coverage delta
     // (best-effort: degrades to current-status when the base can't be evaluated).
     const baseEvaluation = await evaluateBaseline({
@@ -551,13 +560,23 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       configPath: stringFlag(parsed, "config") ?? "review-surfaces.config.yaml",
       specFlag: stringFlag(parsed, "spec")
     });
+    // The narrative is the ONLY LLM step in pr mode: build a fresh provider with
+    // the REQUESTED (live) provider/model here, separate from the deterministic
+    // whole-repo `reasoningProvider`. intent/evaluation come from the mock-built
+    // packet above, so the diff-scoped facts are deterministic per the contract.
+    const narrativeProvider = providerFor(provider, {
+      model: requestedModel,
+      cwd,
+      remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
+      agentInput: stringFlag(parsed, "agent-input")
+    });
     const surface = await assemblePrReviewSurface({
       collection,
       intent: packet.intent,
       evaluation: packet.evaluation,
       baseEvaluation,
       reviewAreas: reviewAreas.areas,
-      provider: reasoningProvider,
+      provider: narrativeProvider,
       providerName: provider,
       model: requestedModel,
       redactSecrets: config.privacy.redact_secrets
@@ -572,28 +591,48 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   }
   console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
   debug(parsed, `completed in ${Date.now() - startedAt}ms`);
-  return applyGate(parsed, evaluation, collection, provider, config);
+  // Gate on the provider that actually produced `evaluation` (mock in pr mode), so
+  // a pr-mode run never reports a whole-repo privacy block for enrichment it
+  // deliberately did not attempt.
+  return applyGate(parsed, evaluation, collection, wholeRepoProvider, config);
 }
 
 // --review-scope pr|repo. PR mode emits/reads the diff-scoped pr_review_surface;
-// repo mode (default, back-compatible) uses the whole-repo packet + comment.
+// repo mode (default, back-compatible) uses the whole-repo packet + comment. An
+// unknown value is a usage error, not a silent fallback to repo: the flag fully
+// selects the review surface (and whether `comment --post` publishes the PR or the
+// whole-repo sticky comment), so a typo like `--review-scope rp` must fail fast.
 function reviewScope(parsed: ParsedArgs): ReviewScope {
-  return stringFlag(parsed, "review-scope") === "pr" ? "pr" : "repo";
+  const raw = stringFlag(parsed, "review-scope");
+  if (raw === undefined || raw === "repo") {
+    return "repo";
+  }
+  if (raw === "pr") {
+    return "pr";
+  }
+  throw new CliError(`Unknown --review-scope: ${raw}. Use pr or repo.`, ExitCodes.usageError);
 }
 
 // Whether a --cache signature hit may be honored as-is. Always true in repo mode
 // (the cache governs the whole-repo packet it was built for). In pr mode the PR
 // surface is a separate artifact NOT covered by the signature, so the shortcut is
-// only safe when pr_review_surface.json already exists for the CURRENT head sha;
-// otherwise we must regenerate so the surface is (re)written and matches HEAD.
+// only safe when a READY pr_review_surface.json already exists for the CURRENT head
+// sha; otherwise we must regenerate so the surface is (re)written and matches HEAD.
+// A BLOCKED/failed surface (e.g. a prior run missing the LLM key or that timed out)
+// is never reusable: API-key availability and transient provider success are not in
+// the packet signature, so reusing it would never re-attempt the narrative even
+// after the key is added. Force regeneration for any non-ready surface.
 function prSurfaceCacheReusable(parsed: ParsedArgs, collection: CollectionResult): boolean {
   if (reviewScope(parsed) !== "pr") {
     return true;
   }
   const surfacePath = path.join(collection.outputDir, "pr_review_surface.json");
   try {
-    const parsedSurface = JSON.parse(fs.readFileSync(surfacePath, "utf8")) as { scope?: { head_sha?: string } };
-    return parsedSurface?.scope?.head_sha === collection.git.head_sha;
+    const parsedSurface = JSON.parse(fs.readFileSync(surfacePath, "utf8")) as {
+      status?: string;
+      scope?: { head_sha?: string };
+    };
+    return parsedSurface?.scope?.head_sha === collection.git.head_sha && parsedSurface?.status === "ready";
   } catch {
     return false;
   }
@@ -930,6 +969,15 @@ async function runValidate(parsed: ParsedArgs): Promise<number> {
 // `review-surfaces all` rather than silently recomputing, for either format.
 async function runComment(parsed: ParsedArgs): Promise<number> {
   const format = stringFlag(parsed, "format") ?? "github";
+  // SARIF is a whole-repo packet projection; in pr scope the only surface is the
+  // diff-scoped GitHub comment (and pr mode never falls back to the whole-repo
+  // packet), so reject sarif here rather than silently emitting repo-scoped SARIF.
+  if (reviewScope(parsed) === "pr" && format === "sarif") {
+    throw new CliError(
+      "--format sarif is not supported with --review-scope pr (the PR surface renders only as a GitHub comment). Use --format github, or --review-scope repo for SARIF.",
+      ExitCodes.usageError
+    );
+  }
   if (format === "sarif") {
     return runCommentSarif(parsed);
   }

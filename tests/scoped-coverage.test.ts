@@ -92,6 +92,45 @@ test("PR coverage treats a successful-but-EMPTY base eval as no baseline (not an
   assert.match(cov.summary, /baseline unavailable/);
 });
 
+function scopeWithArea(affectedAcaiIds: string[]): PrScopeModel {
+  return {
+    base_ref: "origin/main",
+    head_ref: "HEAD",
+    head_sha: "head",
+    diff_source: "range",
+    changed_files: [],
+    affected_areas: [{ group_key: "PRIVACY", area_ids: ["SUB-PRIVACY"], name: "Privacy", changed_files: [] }],
+    affected_requirements: affectedAcaiIds.map((acai) => ({
+      requirement_id: acai,
+      acai_id: acai,
+      title: acai,
+      group_key: acai.split(".")[1],
+      reasons: []
+    })),
+    out_of_scope_changed_files: []
+  };
+}
+
+test("PR coverage reports a removed_requirement for a base requirement deleted from the spec in an affected area", () => {
+  const head = evaluation([result("x.PRIVACY.2", "satisfied")]); // x.PRIVACY.5 is gone at head
+  const base = evaluation([result("x.PRIVACY.2", "satisfied"), result("x.PRIVACY.5", "satisfied")]);
+  const cov = buildPrScopedCoverage({ scope: scopeWithArea(["x.PRIVACY.2"]), headEvaluation: head, baseEvaluation: base });
+  const removed = cov.deltas.find((d) => d.acai_id === "x.PRIVACY.5");
+  assert.ok(removed, "the deleted requirement appears as a removed_requirement delta");
+  assert.equal(removed!.delta, "removed_requirement");
+  assert.equal(removed!.base_status, "satisfied");
+  assert.equal(removed!.head_status, "absent");
+  assert.equal(cov.counts.removed_requirement, 1);
+});
+
+test("a base requirement removed OUTSIDE any affected area is NOT reported (only diff-touched removals)", () => {
+  const head = evaluation([result("x.PRIVACY.2", "satisfied")]);
+  const base = evaluation([result("x.PRIVACY.2", "satisfied"), result("x.UNRELATED.9", "satisfied")]);
+  const cov = buildPrScopedCoverage({ scope: scopeWithArea(["x.PRIVACY.2"]), headEvaluation: head, baseEvaluation: base });
+  assert.ok(!cov.deltas.some((d) => d.acai_id === "x.UNRELATED.9"), "a removal outside affected areas is not reported");
+  assert.equal(cov.counts.removed_requirement, 0);
+});
+
 test("PR coverage degrades to current-status when the baseline is unavailable (no whole-spec fallback)", () => {
   const head = evaluation([result("x.CLI.1", "partial"), result("x.CLI.2", "satisfied")]);
   const cov = buildPrScopedCoverage({ scope: scope(["x.CLI.1", "x.CLI.2"]), headEvaluation: head });

@@ -319,6 +319,42 @@ test("spec_block_changed fires for a WHOLE-FILE spec ref (no line numbers) edite
   assert.equal(spec?.path, specPath);
 });
 
+test("a mapped CONFIG/SCHEMA file (no ACID literal) scopes its group's requirements", () => {
+  const schemaArea: ReviewArea = {
+    id: "SUB-SCHEMA",
+    name: "Schema",
+    groupKey: "SCHEMA",
+    prefixes: ["schemas/"],
+    purpose: "Review packet JSON schema.",
+    pattern: "schema",
+    testKeywords: ["schema"]
+  };
+  const requirements = [
+    requirement({ id: "REQ-001", acai_id: "review-surfaces.SCHEMA.1", requirement: "Packet matches the schema." })
+  ];
+  // A changed schema file with NO acai_id text in its diff — only the path mapping.
+  const diff: StructuredDiff = {
+    files: [diffFile("schemas/review_packet.schema.json", ['  "added": true'])]
+  };
+  const model = buildPrScope(
+    input({
+      reviewAreas: [schemaArea],
+      collection: collectionStub([{ path: "schemas/review_packet.schema.json", status: "M" }]),
+      intent: intentModel(requirements),
+      diff
+    })
+  );
+
+  // The schema file is classified config but still maps to the SCHEMA area.
+  const schemaFile = model.changed_files.find((file) => file.path === "schemas/review_packet.schema.json");
+  assert.equal(schemaFile?.role, "config");
+  assert.deepEqual(schemaFile?.areas, ["SCHEMA"]);
+  // Its requirement is in scope via changed_path_requirement_group (not zero).
+  const req = model.affected_requirements.find((entry) => entry.requirement_id === "REQ-001");
+  assert.ok(req, "a mapped config/schema change must scope its group's requirements");
+  assert.ok(req?.reasons.some((reason) => reason.rule === "changed_path_requirement_group"));
+});
+
 test("an unmapped changed file lands in out_of_scope_changed_files", () => {
   const model = buildPrScope(
     input({

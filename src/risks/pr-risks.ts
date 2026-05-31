@@ -1,6 +1,6 @@
 import { compareStrings } from "../core/compare";
 import { stripUndefined } from "../core/guards";
-import { EvidenceRef, fileEvidence, missingEvidence, specEvidence } from "../evidence/evidence";
+import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
 import type { CollectionResult } from "../collector/collect";
 import type {
   PrRiskCandidate,
@@ -93,7 +93,10 @@ export function buildPrRiskCandidates(input: BuildPrRiskInput): PrRiskModel {
 
 // --- Rule: coverage_regression (testing, high) -----------------------------
 // Any requirement whose scoped coverage delta is "regressed". Cites the
-// regressed requirement(s) as spec evidence (acai_id when present).
+// requirement's REAL evidence refs (head/missing evidence carry actual file
+// paths), so the risk anchors to a clickable source and the change diagram can
+// wire it to a real file. Falls back to an acai_id-only spec ref (no fabricated
+// path) when the delta carries no path-bearing evidence.
 function pushCoverageRegression(drafts: DraftCandidate[], input: BuildPrRiskInput): void {
   const regressed = input.coverage.deltas.filter((delta) => delta.delta === "regressed");
   if (regressed.length === 0) {
@@ -108,9 +111,16 @@ function pushCoverageRegression(drafts: DraftCandidate[], input: BuildPrRiskInpu
     category: "testing",
     severity: "high",
     summary: `Coverage regressed for ${ordered.length} requirement(s): ${ids.join(", ")}.`,
-    evidence: ordered.map((delta) =>
-      specEvidence(delta.title ?? delta.requirement_id, delta.acai_id ?? delta.requirement_id, `Coverage regressed (${delta.base_status} -> ${delta.head_status}).`)
-    ),
+    evidence: ordered.flatMap((delta) => {
+      const realRefs = [...delta.missing_evidence, ...delta.head_evidence].filter((ref) => ref.path !== undefined).slice(0, 2);
+      if (realRefs.length > 0) {
+        return realRefs;
+      }
+      // No path-bearing evidence: anchor by requirement acai_id only — never the
+      // requirement title, which is not a path.
+      const acaiId = delta.acai_id ?? delta.requirement_id;
+      return [{ kind: "spec" as const, acai_id: acaiId, note: `Coverage regressed (${delta.base_status} -> ${delta.head_status}).`, confidence: "high" as const, validation_status: "valid" as const }];
+    }),
     suggested_checks: [
       "Restore or add tests for the regressed requirement(s) before merge.",
       "Confirm the coverage delta is intended and not an accidental test deletion."
