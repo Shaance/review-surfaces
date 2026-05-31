@@ -34,6 +34,7 @@ import { loadEvaluation } from "../render/load";
 import { renderCommentFromPacketFile, resolvePacketPath } from "../render/comment";
 import { renderPrComment } from "../render/pr-comment";
 import { assemblePrReviewSurface } from "../pipeline/pr-surface";
+import { evaluateBaseline } from "../evaluation/baseline";
 import { PrReviewSurfaceModel, ReviewScope } from "../pr/contract";
 import { renderSarifFromPacketFile } from "../render/sarif";
 import { postStickyComment } from "../render/post-comment";
@@ -536,10 +537,19 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // artifact (pr_review_surface.json) that the PR comment renders from. Requires
   // an LLM provider; a blocked surface is written (never a whole-repo fallback).
   if (reviewScope(parsed) === "pr") {
+    // Evaluate the base ref in a throwaway worktree for the coverage delta
+    // (best-effort: degrades to current-status when the base can't be evaluated).
+    const baseEvaluation = await evaluateBaseline({
+      cwd,
+      baseRef: stringFlag(parsed, "base") ?? "origin/main",
+      configPath: stringFlag(parsed, "config") ?? "review-surfaces.config.yaml",
+      specFlag: stringFlag(parsed, "spec")
+    });
     const surface = await assemblePrReviewSurface({
       collection,
       intent: packet.intent,
       evaluation: packet.evaluation,
+      baseEvaluation,
       reviewAreas: reviewAreas.areas,
       provider: reasoningProvider,
       providerName: provider,
