@@ -78,7 +78,10 @@ components:
   const diff = fs.readFileSync(path.join(tmp, ".review-surfaces", "inputs", "diff.patch"), "utf8");
   const privacy = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "inputs", "privacy.json"), "utf8"));
   assert.doesNotMatch(diff, /AIzaSyFakeSecretForTestingOnly/);
-  assert.match(diff, /\[REDACTED:secret\]/);
+  // The AIza value is a Google API key, so it is redacted by its PRECISE kind;
+  // the generic token_assignment catch-all no longer overwrites that marker with
+  // [REDACTED:secret] (the (?!\[REDACTED:) lookahead in secrets.ts).
+  assert.match(diff, /GOOGLE_GENERATIVE_AI_API_KEY=\[REDACTED:google_api_key\]/);
   assert.ok(privacy.diff_redactions.length > 0);
 });
 
@@ -132,10 +135,8 @@ for (const testCase of PROVIDER_TOKEN_CASES) {
     const result = redactSecrets(`leaked here: ${testCase.secret} end`);
     assert.equal(result.blocked, true, `${testCase.name} must privacy-block`);
     assert.ok(!result.text.includes(testCase.secret), `${testCase.name} raw literal must be removed`);
-    // The specific kind is recorded as a blocking redaction. (For assignment-style
-    // shapes whose literal also looks like SECRET=..., the generic token_assignment
-    // catch-all may overwrite the visible text marker afterwards, but the specific
-    // kind is still recorded and still blocked — that is the guarantee that matters.)
+    // The specific kind is recorded as a blocking redaction; the generic
+    // token_assignment catch-all no longer re-claims an inserted marker (lookahead).
     assert.ok(
       result.redactions.some((r) => r.kind === testCase.kind && r.blocked),
       `${testCase.name} records a blocking ${testCase.kind} redaction`
@@ -146,15 +147,19 @@ for (const testCase of PROVIDER_TOKEN_CASES) {
 test("review-surfaces.PRIVACY.2 specific provider token wins over the generic token_assignment", () => {
   // A GitHub token inside a generic TOKEN= assignment: the github pattern
   // (specific, runs first) claims the token via its own kind and BLOCKS it. The
-  // generic token_assignment is non-blocking, so without the specific pattern the
-  // string would NOT block — the github_token redaction is what makes blocked true.
+  // generic token_assignment catch-all must NOT re-claim the inserted marker (a
+  // `(?!\[REDACTED:)` lookahead guards this), so the precise kind wins in BOTH the
+  // rendered text and the redaction inventory — no clobbered label, no double-count.
   const ghToken = `ghp_${"B".repeat(36)}`;
   const result = redactSecrets(`GH_TOKEN=${ghToken}`);
   assert.equal(result.blocked, true, "the github_token redaction makes the result blocked");
   assert.ok(!result.text.includes(ghToken), "raw github token literal is removed");
-  assert.ok(
-    result.redactions.some((r) => r.kind === "github_token" && r.blocked),
-    "a blocking github_token redaction is recorded (specific wins over generic token_assignment)"
+  assert.match(result.text, /\[REDACTED:github_token\]/, "the precise kind wins in the visible text");
+  assert.doesNotMatch(result.text, /\[REDACTED:secret\]/, "the generic token_assignment marker must NOT overwrite the specific kind");
+  assert.deepEqual(
+    result.redactions.map((r) => r.kind),
+    ["github_token"],
+    "exactly one redaction is recorded — the generic catch-all does not double-claim the marker"
   );
 });
 

@@ -56,6 +56,11 @@ export async function recordCommandTranscript(options: RecordCommandOptions): Pr
   const childResult = await runChildCommand(options, stdout, stderr);
   const completed = now();
   const id = options.id ?? defaultTranscriptId(options.args);
+  // boundExcerpt() redacts-then-bounds AND marks the capture truncated as a side
+  // effect, so compute both excerpts BEFORE reading `.truncated` rather than
+  // relying on object-literal property evaluation order.
+  const stdoutExcerpt = boundExcerpt(stdout);
+  const stderrExcerpt = boundExcerpt(stderr);
   const transcript: RecordedCommandTranscript = stripUndefined({
     id,
     command: redact(command) ?? "",
@@ -64,8 +69,8 @@ export async function recordCommandTranscript(options: RecordCommandOptions): Pr
     duration_ms: Math.max(0, completed.getTime() - started.getTime()),
     started_at: started.toISOString(),
     completed_at: completed.toISOString(),
-    stdout_excerpt: boundExcerpt(stdout),
-    stderr_excerpt: boundExcerpt(stderr),
+    stdout_excerpt: stdoutExcerpt,
+    stderr_excerpt: stderrExcerpt,
     stdout_hash: stdout.hash(),
     stderr_hash: stderr.hash(),
     truncated: stdout.truncated || stderr.truncated

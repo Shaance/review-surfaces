@@ -544,6 +544,28 @@ test("review-surfaces.CLI validate on a wrong schema_version prints a regenerate
   }
 });
 
+test("review-surfaces.CLI validate honors a custom --schema and skips the bundled schema_version pre-check", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-validate-customschema-"));
+  try {
+    // A packet whose schema_version differs from the bundled contract constant,
+    // validated against a CALLER-SUPPLIED schema that accepts it. The bundled
+    // schema_version pre-check must NOT pre-reject when --schema is overridden —
+    // the supplied schema's own ajv validation is the authority.
+    const packetPath = path.join(tmp, "packet.json");
+    fs.writeFileSync(packetPath, JSON.stringify({ schema_version: "review-surfaces.packet.vNEXT" }));
+    const schemaPath = path.join(tmp, "custom-schema.json");
+    fs.writeFileSync(
+      schemaPath,
+      JSON.stringify({ $schema: "https://json-schema.org/draft/2020-12/schema", type: "object" })
+    );
+    const run = spawnSync("node", [CLI, "validate", packetPath, "--schema", schemaPath], { cwd: tmp, encoding: "utf8" });
+    assert.equal(run.status, ExitCodes.success, `a custom --schema that accepts the packet must validate (0): ${run.stderr}`);
+    assert.doesNotMatch(run.stderr, /regenerate/, "the bundled version pre-check must be skipped under --schema");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.CLI --verbose prints debug lines to stderr while a non-verbose run does not", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-verbose-"));
   try {

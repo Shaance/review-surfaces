@@ -73,9 +73,15 @@ export function redactSecrets(input: string): SecretRedactionResult {
   apply("google_oauth_token", /\bya29\.[A-Za-z0-9_-]{20,}\b/g, "[REDACTED:google_oauth_token]", true);
   apply("jwt", /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED:jwt]", true);
   apply("google_api_key", /AIza[0-9A-Za-z_-]{20,}/g, "[REDACTED:google_api_key]", false);
+  // The `(?!\[REDACTED:)` lookahead stops this generic catch-all from re-claiming
+  // a placeholder a provider-specific pass already inserted (e.g.
+  // `KEY=[REDACTED:aws_secret]`): without it the value group `[^\s"',;]{8,}`
+  // matches `[REDACTED:aws_secret]`, rewriting the precise kind to the generic
+  // `[REDACTED:secret]` AND double-counting one secret across two redactions[]
+  // entries. With it, the specific kind wins (text + inventory), as documented.
   apply(
     "token_assignment",
-    /\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)[A-Za-z0-9_]*\s*[:=]\s*["']?)([^\s"',;]{8,})/gi,
+    /\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)[A-Za-z0-9_]*\s*[:=]\s*["']?)(?!\[REDACTED:)([^\s"',;]{8,})/gi,
     (_match, prefix) => `${prefix}[REDACTED:secret]`,
     false
   );
@@ -104,5 +110,5 @@ export const SECRET_PATTERN_SOURCES: string[] = [
   /\bya29\.[A-Za-z0-9_-]{20,}\b/g.source,
   /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g.source,
   /AIza[0-9A-Za-z_-]{20,}/g.source,
-  /\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)[A-Za-z0-9_]*\s*[:=]\s*["']?)([^\s"',;]{8,})/gi.source
+  /\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)[A-Za-z0-9_]*\s*[:=]\s*["']?)(?!\[REDACTED:)([^\s"',;]{8,})/gi.source
 ];

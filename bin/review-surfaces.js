@@ -273,7 +273,9 @@ function redact(value) {
     .replace(/\bya29\.[A-Za-z0-9_-]{20,}\b/g, "[REDACTED:google_oauth_token]")
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED:jwt]")
     .replace(/AIza[0-9A-Za-z_-]{20,}/g, "[REDACTED:google_api_key]")
-    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)[A-Za-z0-9_]*\s*[:=]\s*["']?)([^\s"',;]{8,})/gi, (_match, prefix) => `${prefix}[REDACTED:secret]`);
+    // (?!\[REDACTED:) keeps this generic pass from re-claiming a marker a
+    // specific pattern already inserted (mirrors secrets.ts).
+    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)[A-Za-z0-9_]*\s*[:=]\s*["']?)(?!\[REDACTED:)([^\s"',;]{8,})/gi, (_match, prefix) => `${prefix}[REDACTED:secret]`);
 }
 
 function stripUndefined(value) {

@@ -826,18 +826,24 @@ async function runValidate(parsed: ParsedArgs): Promise<number> {
   // returns exit 3 (a present-but-wrong-version packet IS a schema failure), it
   // just improves the MESSAGE. An unparseable packet falls through to ajv, which
   // reports the parse/shape issue.
+  //
+  // Only when validating against the BUNDLED schema (no --schema override): a
+  // caller who supplies a custom --schema owns its own schema_version `const`, so
+  // we let that schema's ajv validation be the authority instead of pre-rejecting
+  // a packet that is valid against the supplied (possibly newer) schema.
+  const customSchema = stringFlag(parsed, "schema");
   let packetVersion: unknown;
   try {
     packetVersion = (JSON.parse(fs.readFileSync(packetPath, "utf8")) as { schema_version?: unknown }).schema_version;
   } catch {
     packetVersion = undefined;
   }
-  if (typeof packetVersion === "string" && packetVersion !== PACKET_SCHEMA_VERSION) {
+  if (customSchema === undefined && typeof packetVersion === "string" && packetVersion !== PACKET_SCHEMA_VERSION) {
     console.error(`packet is ${packetVersion}, schema expects ${PACKET_SCHEMA_VERSION} — regenerate with \`review-surfaces all\`.`);
     return ExitCodes.schemaValidationFailed;
   }
 
-  const schemaPath = path.resolve(cwd, stringFlag(parsed, "schema") ?? "schemas/review_packet.schema.json");
+  const schemaPath = path.resolve(cwd, customSchema ?? "schemas/review_packet.schema.json");
   const result = await validateJsonFile(schemaPath, packetPath);
   if (!result.valid) {
     for (const issue of result.issues) {

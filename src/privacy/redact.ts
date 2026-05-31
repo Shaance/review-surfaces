@@ -1,10 +1,5 @@
 import { redactSecrets } from "./secrets";
 
-/** Redact secrets from a string; thin stable wrapper over redactSecrets(value).text. */
-export function redactText(value: string): string {
-  return redactSecrets(value).text;
-}
-
 /**
  * Redact FIRST, then bound to `limit` characters. Returns the bounded excerpt and
  * whether truncation occurred. Order matters: redacting before slicing prevents a
