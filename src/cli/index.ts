@@ -1155,8 +1155,9 @@ Options:
                    Optional istanbul coverage-summary.json with per-file pct, ingested alongside --test-output
   --id <id>       Optional transcript ID for run
   --provider <name> Optional enrichment provider: mock, ai-sdk, agent-file. Default mock
-  --model <model>   Optional AI SDK model as <provider>:<model>, e.g. anthropic:claude-3-5-haiku-latest,
-                   google:gemini-2.5-flash, or openai:gpt-4o-mini. No prefix defaults to anthropic.
+  --model <model>   Optional AI SDK model as <provider>:<model>, e.g. google:gemini-2.5-flash,
+                   anthropic:claude-3-5-haiku-latest, or openai:gpt-4o-mini. Google/Gemini is the
+                   first-class default; no prefix (or no --model) defaults to google:gemini-2.5-flash.
   --agent-input <path>
                    Structured JSON/YAML enrichment produced by a coding agent
   --previous-packet <path-or-dir>
