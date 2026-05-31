@@ -107,8 +107,8 @@ function recordCommandTranscript(options) {
       duration_ms: Math.max(0, completed.getTime() - started.getTime()),
       started_at: started.toISOString(),
       completed_at: completed.toISOString(),
-      stdout_excerpt: redact(stdout.excerpt()),
-      stderr_excerpt: redact(stderr.excerpt()),
+      stdout_excerpt: boundExcerpt(stdout),
+      stderr_excerpt: boundExcerpt(stderr),
       stdout_hash: stdout.hash(),
       stderr_hash: stderr.hash(),
       truncated: stdout.truncated || stderr.truncated
@@ -164,11 +164,16 @@ function writeTranscriptFile(cwd, transcriptDir, id, transcript) {
   return toPosixPath(relative(cwd, absolutePath));
 }
 
+// Raw capture cap mirrors src/commands/runner.ts: bound memory while giving the
+// redact-before-truncate step enough context to catch a secret straddling the
+// final excerpt limit. The sha256 digest still hashes the FULL raw stream.
+const RAW_EXCERPT_CAP = COMMAND_TRANSCRIPT_EXCERPT_LIMIT * 4;
+
 class BoundedStreamCapture {
   constructor() {
     this.digest = crypto.createHash("sha256");
     this.chunks = [];
-    this.excerptLength = 0;
+    this.rawLength = 0;
     this.sawContent = false;
     this.truncated = false;
   }
@@ -176,28 +181,48 @@ class BoundedStreamCapture {
   write(chunk) {
     this.sawContent = true;
     this.digest.update(chunk);
-    if (this.excerptLength >= COMMAND_TRANSCRIPT_EXCERPT_LIMIT) {
+    if (this.rawLength >= RAW_EXCERPT_CAP) {
       this.truncated = true;
       return;
     }
 
     const text = chunk.toString("utf8");
-    const available = COMMAND_TRANSCRIPT_EXCERPT_LIMIT - this.excerptLength;
-    const excerpt = text.slice(0, available);
-    this.chunks.push(excerpt);
-    this.excerptLength += excerpt.length;
+    const available = RAW_EXCERPT_CAP - this.rawLength;
+    const captured = text.slice(0, available);
+    this.chunks.push(captured);
+    this.rawLength += captured.length;
     if (text.length > available) {
       this.truncated = true;
     }
   }
 
-  excerpt() {
+  rawExcerpt() {
     return this.sawContent ? this.chunks.join("") : undefined;
+  }
+
+  markTruncated() {
+    this.truncated = true;
   }
 
   hash() {
     return this.sawContent ? this.digest.copy().digest("hex") : undefined;
   }
+}
+
+// Redact the captured raw stream, THEN bound to the excerpt limit (mirrors
+// boundExcerpt in src/commands/runner.ts). Slicing AFTER redaction prevents a
+// secret straddling the limit from leaking an unredacted prefix.
+function boundExcerpt(capture) {
+  const raw = capture.rawExcerpt();
+  if (raw === undefined) {
+    return undefined;
+  }
+  const redacted = redact(raw);
+  if (redacted.length <= COMMAND_TRANSCRIPT_EXCERPT_LIMIT) {
+    return redacted;
+  }
+  capture.markTruncated();
+  return redacted.slice(0, COMMAND_TRANSCRIPT_EXCERPT_LIMIT);
 }
 
 function defaultTranscriptId(args) {
@@ -228,14 +253,29 @@ function teeChunk(chunk, capture, destination, source) {
   }
 }
 
+// CJS duplicate of src/privacy/secrets.ts. bin is the no-dist `run` fallback and
+// cannot require dist, so the pattern set is duplicated here in the SAME ORDER
+// (private_key, AKIA, aws_secret, github, slack, openai, stripe, ya29, jwt, AIza,
+// token_assignment) and pinned to secrets.ts by a parity test
+// (tests/command-runner.test.ts via SECRET_PATTERN_SOURCES).
 function redact(value) {
   if (value === undefined) {
     return undefined;
   }
   return value
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED:private_key]")
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED:aws_access_key_id]")
+    .replace(/\b(AWS_SECRET_ACCESS_KEY\s*[:=]\s*["']?)([A-Za-z0-9/+=]{40})/g, (_m, prefix) => `${prefix}[REDACTED:aws_secret]`)
+    .replace(/\b(?:ghp|gho|ghs|ghu)_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{22,}\b/g, "[REDACTED:github_token]")
+    .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, "[REDACTED:slack_token]")
+    .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g, "[REDACTED:openai_key]")
+    .replace(/\b(?:sk|rk)_live_[A-Za-z0-9]{20,}\b/g, "[REDACTED:stripe_key]")
+    .replace(/\bya29\.[A-Za-z0-9_-]{20,}\b/g, "[REDACTED:google_oauth_token]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED:jwt]")
     .replace(/AIza[0-9A-Za-z_-]{20,}/g, "[REDACTED:google_api_key]")
-    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)[A-Za-z0-9_]*\s*[:=]\s*["']?)([^\s"',;]{8,})/gi, (_match, prefix) => `${prefix}[REDACTED:secret]`);
+    // (?!\[REDACTED:) keeps this generic pass from re-claiming a marker a
+    // specific pattern already inserted (mirrors secrets.ts).
+    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)[A-Za-z0-9_]*\s*[:=]\s*["']?)(?!\[REDACTED:)([^\s"',;]{8,})/gi, (_match, prefix) => `${prefix}[REDACTED:secret]`);
 }
 
 function stripUndefined(value) {

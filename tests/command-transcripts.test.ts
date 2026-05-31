@@ -61,7 +61,9 @@ test("review-surfaces.PRIVACY.2 redacts command transcript command and excerpt t
 
   assert.doesNotMatch(transcripts[0].command, /AIzaSyFakeSecretForTestingOnly/);
   assert.doesNotMatch(transcripts[0].stdout_excerpt ?? "", /supersecretvalue/);
-  assert.match(transcripts[0].command, /\[REDACTED:secret\]/);
+  // The command's AIza value is a Google API key (precise kind); the stdout's
+  // bare TOKEN=value is a generic assignment (token_assignment catch-all).
+  assert.match(transcripts[0].command, /\[REDACTED:google_api_key\]/);
   assert.match(transcripts[0].stdout_excerpt ?? "", /\[REDACTED:secret\]/);
 });
 

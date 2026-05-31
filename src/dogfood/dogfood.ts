@@ -11,6 +11,7 @@ import type {
   PacketSeverity
 } from "../schema/review-packet-contract";
 import { PacketComparison } from "./compare";
+import { compareStrings } from "../core/compare";
 
 export interface DogfoodModel {
   milestone: string;
@@ -211,7 +212,7 @@ function sortFeedbackFilesByRecency(feedbackFiles: FeedbackFile[]): FeedbackFile
         return leftTime - rightTime;
       }
     }
-    return left.path.localeCompare(right.path);
+    return compareStrings(left.path, right.path);
   });
 }
 

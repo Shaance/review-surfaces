@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { relativePath } from "../core/files";
+import { isRecord, stripUndefined } from "../core/guards";
+import { redactForArtifact } from "../privacy/redact";
 import { redactSecrets } from "../privacy/secrets";
 
 export const COMMAND_TRANSCRIPT_OUTPUT_PATH = ".review-surfaces/inputs/commands.json";
@@ -129,8 +131,10 @@ function normalizeTranscript(sourcePath: string, value: unknown, index: number):
   const stderrRaw = optionalString(record.stderr);
   const stdoutSource = safeOutputText(stdoutRaw, optionalString(record.stdout_excerpt), "stdout");
   const stderrSource = safeOutputText(stderrRaw, optionalString(record.stderr_excerpt), "stderr");
-  const stdout = boundedText(stdoutSource);
-  const stderr = boundedText(stderrSource);
+  // Redact BEFORE bounding so a secret straddling the excerpt limit cannot leak
+  // an unredacted prefix (the truncate-then-redact bug this chokepoint fixes).
+  const stdout = redactForArtifact(stdoutSource, COMMAND_TRANSCRIPT_EXCERPT_LIMIT);
+  const stderr = redactForArtifact(stderrSource, COMMAND_TRANSCRIPT_EXCERPT_LIMIT);
 
   return stripUndefined({
     id: stringValue(record.id, `CMD-${String(index).padStart(3, "0")}`),
@@ -140,8 +144,8 @@ function normalizeTranscript(sourcePath: string, value: unknown, index: number):
     duration_ms: numberValue(record.duration_ms ?? record.durationMs),
     started_at: optionalString(record.started_at ?? record.startedAt),
     completed_at: optionalString(record.completed_at ?? record.completedAt),
-    stdout_excerpt: redactText(stdout.excerpt),
-    stderr_excerpt: redactText(stderr.excerpt),
+    stdout_excerpt: stdout.excerpt,
+    stderr_excerpt: stderr.excerpt,
     stdout_hash: hashFromRecord(record.stdout_hash, stdoutRaw ?? stdoutSource),
     stderr_hash: hashFromRecord(record.stderr_hash, stderrRaw ?? stderrSource),
     truncated: booleanValue(record.truncated) || stdout.truncated || stderr.truncated || outputTooLarge(stdoutRaw) || outputTooLarge(stderrRaw),
@@ -160,16 +164,6 @@ function normalizeStatus(value: unknown, exitCode: number | undefined): CommandT
     return "failed";
   }
   return "unknown";
-}
-
-function boundedText(value: string | undefined): { excerpt?: string; truncated: boolean } {
-  if (value === undefined) {
-    return { truncated: false };
-  }
-  if (value.length <= COMMAND_TRANSCRIPT_EXCERPT_LIMIT) {
-    return { excerpt: value, truncated: false };
-  }
-  return { excerpt: value.slice(0, COMMAND_TRANSCRIPT_EXCERPT_LIMIT), truncated: true };
 }
 
 function hashFromRecord(value: unknown, fallbackText: string | undefined): string | undefined {
@@ -209,10 +203,6 @@ function hashFileStream(filePath: string): Promise<string> {
   });
 }
 
-function redactText(value: string | undefined): string | undefined {
-  return value === undefined ? undefined : redactSecrets(value).text;
-}
-
 function redactRequiredText(value: string): string {
   return redactSecrets(value).text;
 }
@@ -231,12 +221,4 @@ function numberValue(value: unknown): number | undefined {
 
 function booleanValue(value: unknown): boolean {
   return value === true;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stripUndefined<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value));
 }

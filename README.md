@@ -37,9 +37,12 @@ renderers are deliberately *later* surfaces — the local artifacts are the MVP.
 ## Install
 
 ```bash
-pnpm install
+pnpm install --frozen-lockfile
 pnpm run build
 ```
+
+CI and reproducible installs use `--frozen-lockfile` so `pnpm-lock.yaml` is treated
+as authoritative; drop the flag only when intentionally updating dependencies.
 
 `pnpm run build` clears stale compiled output, then compiles the CommonJS CLI with
 `tsc`. The executable is

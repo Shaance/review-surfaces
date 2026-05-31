@@ -8,32 +8,38 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "pnpm run clean && tsc -p tsconfig.json",
+    "build:fast": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "pnpm run typecheck",
     "test": "pnpm run build && node --test dist/tests/*.test.js",
+    "test:fast": "pnpm run build:fast && node --test dist/tests/*.test.js",
+    "test:watch": "pnpm run build:fast && node --test --watch dist/tests/*.test.js",
+    "test:cov": "pnpm run build && node --experimental-test-coverage --test dist/tests/*.test.js",
+    "determinism-check": "./scripts/determinism-check.sh",
     "review-surfaces": "pnpm run build && node bin/review-surfaces.js",
-    "copy-env": "./scripts/copy-env.sh"
+    "copy-env": "./scripts/copy-env.sh",
+    "prepublishOnly": "pnpm run build"
   },
   "files": [
     "bin",
     "dist",
-    "src",
-    "schemas",
-    "scripts"
+    "schemas"
   ],
   "engines": {
     "node": ">=22"
   },
   "packageManager": "pnpm@10.8.0",
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.81",
-    "@ai-sdk/google": "^3.0.80",
-    "@ai-sdk/openai": "^3.0.66",
-    "ai": "^6.0.192",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "fast-xml-parser": "^5.8.0",
     "yaml": "^2.9.0"
+  },
+  "optionalDependencies": {
+    "@ai-sdk/anthropic": "^3.0.81",
+    "@ai-sdk/google": "^3.0.80",
+    "@ai-sdk/openai": "^3.0.66",
+    "ai": "^6.0.192"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",

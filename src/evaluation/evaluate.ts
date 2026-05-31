@@ -2,6 +2,7 @@ import path from "node:path";
 import { CollectionResult } from "../collector/collect";
 import { isRegularFile, readText } from "../core/files";
 import { walkFiles } from "../core/glob";
+import { compareStrings } from "../core/compare";
 import { EvidenceRef, fileEvidence, missingEvidence, specEvidence, testEvidence } from "../evidence/evidence";
 import { validateRequirementResultEvidence } from "../evidence/validate";
 import { FileClassification, RepoIndex } from "../indexer/indexer";
@@ -349,10 +350,10 @@ function overreachClusters(index: EvidenceIndex, unmapped: string[]): Requiremen
     for (const filePath of files) {
       accountedFor.add(filePath);
     }
-    buckets.push({ label: cluster.label, files: files.sort((left, right) => left.localeCompare(right)) });
+    buckets.push({ label: cluster.label, files: files.sort((left, right) => compareStrings(left, right)) });
   }
 
-  const leftover = unmapped.filter((filePath) => !accountedFor.has(filePath)).sort((left, right) => left.localeCompare(right));
+  const leftover = unmapped.filter((filePath) => !accountedFor.has(filePath)).sort((left, right) => compareStrings(left, right));
   if (leftover.length > 0) {
     buckets.push({ label: "unclustered changes", files: leftover });
   }

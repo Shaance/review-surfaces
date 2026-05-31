@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ChangedFile } from "../collector/git";
 import { toPosixPath } from "../core/files";
+import { compareStrings } from "../core/compare";
 
 // TRD section 10.2: classify changed files, detect language + ecosystem,
 // and expose deterministic structural clusters the LLM may label but not invent.
@@ -176,7 +177,7 @@ function buildFiles(changedFiles: ChangedFile[]): IndexedFile[] {
         language: detectLanguage(posix)
       };
     })
-    .sort((left, right) => left.path.localeCompare(right.path));
+    .sort((left, right) => compareStrings(left.path, right.path));
 }
 
 function detectEcosystems(repositoryFiles: string[]): Ecosystem[] {
@@ -193,7 +194,7 @@ function detectEcosystems(repositoryFiles: string[]): Ecosystem[] {
 
   const findManifest = (candidates: string[]): string | undefined => {
     const matches = [...present].filter((file) => candidates.includes(baseName(file)));
-    matches.sort((left, right) => left.localeCompare(right));
+    matches.sort((left, right) => compareStrings(left, right));
     return matches[0];
   };
 
@@ -214,7 +215,7 @@ function detectEcosystems(repositoryFiles: string[]): Ecosystem[] {
     add("rust", rust);
   }
 
-  return ecosystems.sort((left, right) => left.id.localeCompare(right.id));
+  return ecosystems.sort((left, right) => compareStrings(left.id, right.id));
 }
 
 interface MutableCluster {
@@ -246,7 +247,7 @@ function buildClusters(cwd: string, files: IndexedFile[]): RepoCluster[] {
   }
 
   // Union-find over directory seeds so import adjacency can merge them.
-  const dirs = [...dirToFiles.keys()].sort((left, right) => left.localeCompare(right));
+  const dirs = [...dirToFiles.keys()].sort((left, right) => compareStrings(left, right));
   const parent = new Map<string, string>();
   for (const dir of dirs) {
     parent.set(dir, dir);
@@ -271,7 +272,7 @@ function buildClusters(cwd: string, files: IndexedFile[]): RepoCluster[] {
       return;
     }
     // Keep the lexicographically smaller root for deterministic ids.
-    if (rootLeft.localeCompare(rootRight) <= 0) {
+    if (compareStrings(rootLeft, rootRight) <= 0) {
       parent.set(rootRight, rootLeft);
     } else {
       parent.set(rootLeft, rootRight);
@@ -326,8 +327,8 @@ function buildClusters(cwd: string, files: IndexedFile[]): RepoCluster[] {
   }
 
   const clusters: RepoCluster[] = [...merged.entries()].map(([root, cluster]) => {
-    const sortedDirs = [...cluster.dirs].sort((left, right) => left.localeCompare(right));
-    const sortedFiles = [...cluster.files].sort((left, right) => left.localeCompare(right));
+    const sortedDirs = [...cluster.dirs].sort((left, right) => compareStrings(left, right));
+    const sortedFiles = [...cluster.files].sort((left, right) => compareStrings(left, right));
     return {
       id: `cluster:${root}`,
       label: clusterLabel(sortedDirs),
@@ -337,7 +338,7 @@ function buildClusters(cwd: string, files: IndexedFile[]): RepoCluster[] {
     };
   });
 
-  return clusters.sort((left, right) => left.id.localeCompare(right.id));
+  return clusters.sort((left, right) => compareStrings(left.id, right.id));
 }
 
 function clusterDir(filePath: string): string {
@@ -363,7 +364,7 @@ function dominantLanguage(languages: Map<FileLanguage, number>): FileLanguage {
     if (right[1] !== left[1]) {
       return right[1] - left[1];
     }
-    return left[0].localeCompare(right[0]);
+    return compareStrings(left[0], right[0]);
   });
   for (const [language, count] of ordered) {
     if (count > bestCount) {
@@ -398,7 +399,7 @@ function extractRelativeImports(cwd: string, relativePath: string): string[] {
       }
     }
   }
-  return [...specifiers].sort((left, right) => left.localeCompare(right));
+  return [...specifiers].sort((left, right) => compareStrings(left, right));
 }
 
 function resolveRelativeImport(

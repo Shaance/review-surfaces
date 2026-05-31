@@ -1,0 +1,8 @@
+[project]
+name = "todo-service-py"
+version = "1.0.0"
+description = "Small foreign python+node repo fixture for review-surfaces ecosystem detection."
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

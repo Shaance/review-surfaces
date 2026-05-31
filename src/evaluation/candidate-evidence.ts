@@ -1,3 +1,4 @@
+import { isRecord, numericField } from "../core/guards";
 import { EvidenceRef, isLlmProposed, llmProposedEvidence } from "../evidence/evidence";
 import { markHypothesis, redactHypothesisText } from "../evidence/hypothesis";
 import { EvidenceValidationContext, normalizeEvidencePath, validateEvidenceRef } from "../evidence/validate";
@@ -320,15 +321,7 @@ function evidenceKey(ref: EvidenceRef): string {
   return `${ref.kind}:${ref.path ?? ""}:${ref.line_start ?? ""}:${ref.line_end ?? ""}:${ref.acai_id ?? ""}:${isLlmProposed(ref) ? "llm" : "det"}`;
 }
 
-function numericField(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function appendOutOfPoolNote(note: string | undefined): string {
   const suffix = "Invalid evidence: path is not in the candidate pool (changed files + tests) offered for this requirement.";
   return note ? `${note} ${suffix}` : suffix;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

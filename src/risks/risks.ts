@@ -1,5 +1,6 @@
 import { CollectionResult } from "../collector/collect";
 import { COMMAND_TRANSCRIPT_OUTPUT_PATH, CommandTranscript } from "../commands/transcripts";
+import { stripUndefined } from "../core/guards";
 import { commandEvidence, EvidenceRef, feedbackEvidence, missingEvidence, specEvidence } from "../evidence/evidence";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 import { MethodologyModel } from "../methodology/methodology";
@@ -393,7 +394,7 @@ function parsedTestContext(testCase: NormalizedTestCase): string | undefined {
 }
 
 function stripUndefinedEvidence(ref: EvidenceRef): EvidenceRef {
-  return JSON.parse(JSON.stringify(ref)) as EvidenceRef;
+  return stripUndefined(ref);
 }
 
 function validationEvidenceFromCommandTranscripts(collection: CollectionResult): RisksModel["test_evidence"] {

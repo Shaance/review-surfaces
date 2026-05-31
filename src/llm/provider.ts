@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileExists, readText, writeJson, writeText } from "../core/files";
+import { errorMessage, isRecord, uniqueTruthy } from "../core/guards";
 import { parseYaml } from "../core/simple-yaml";
 import { redactSecrets } from "../privacy/secrets";
 import { ReviewPacket } from "../render/packet";
@@ -43,6 +44,8 @@ export interface ProviderFactoryOptions {
   cwd?: string;
   remotePrivacyBlocked?: boolean;
   agentInput?: string;
+  /** Injection seam for the dynamic ai-sdk import; tests pass a fake `ai`/provider module map. */
+  aiModuleLoader?: (moduleName: string) => Promise<any>;
 }
 
 /** Optional injection seam used by the reasoning entry points and tests. */
@@ -51,6 +54,12 @@ export type ProviderFactory = (name: ProviderName, options: ProviderFactoryOptio
 const ANTHROPIC_DEFAULT_MODEL = "claude-3-5-haiku-latest";
 const GOOGLE_DEFAULT_MODEL = "gemini-2.5-flash";
 const OPENAI_DEFAULT_MODEL = "gpt-4o-mini";
+
+// Live-call hardening (R3.2): a remote generateObject call is wrapped in an
+// AbortController timeout and a bounded output budget. These only affect the
+// live ai-sdk branch (never mock/offline), so golden fixtures are unaffected.
+const AI_DEFAULT_TIMEOUT_MS = 60_000;
+const AI_MAX_OUTPUT_TOKENS = 2_048;
 
 interface ResolvedModel {
   provider: "anthropic" | "google" | "openai";
@@ -126,18 +135,19 @@ export function aiSdkProvider(options: ProviderFactoryOptions): ReasoningProvide
         return { ok: false, reason: `missing_${resolved.provider}_api_key` };
       }
 
-      // ALWAYS redact (unless explicitly disabled) before any real call.
-      const safe = opts?.redactSecrets === false
-        ? { text: prompt, redactions: [], blocked: false }
-        : redactSecrets(prompt);
-      if (safe.blocked) {
+      // The high-severity BLOCK (e.g. PEM private keys, provider tokens) ALWAYS
+      // runs before a remote call, even when redactSecrets is disabled: only the
+      // lower-severity substitution of the outgoing prompt is skipped.
+      const redacted = redactSecrets(prompt);
+      if (redacted.blocked) {
         return { ok: false, reason: "privacy_block" };
       }
+      const safe = opts?.redactSecrets === false
+        ? { text: prompt, redactions: [], blocked: false }
+        : redacted;
 
       try {
-        const dynamicImport = new Function("moduleName", "return import(moduleName)") as (
-          moduleName: string
-        ) => Promise<any>;
+        const dynamicImport = options.aiModuleLoader ?? defaultDynamicImport;
         const ai = await dynamicImport("ai");
         if (typeof ai.generateObject !== "function" || typeof ai.jsonSchema !== "function") {
           return { ok: false, reason: "ai_sdk_api_unavailable" };
@@ -148,12 +158,20 @@ export function aiSdkProvider(options: ProviderFactoryOptions): ReasoningProvide
           return { ok: false, reason: model.reason };
         }
 
-        const result = await ai.generateObject({
-          model: model.model,
-          schema: ai.jsonSchema(schema),
-          prompt: safe.text
-        });
-        return { ok: true, data: result.object };
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), aiTimeoutMs());
+        try {
+          const result = await ai.generateObject({
+            model: model.model,
+            schema: ai.jsonSchema(schema),
+            prompt: safe.text,
+            abortSignal: controller.signal,
+            maxOutputTokens: AI_MAX_OUTPUT_TOKENS
+          });
+          return { ok: true, data: result.object };
+        } finally {
+          clearTimeout(timer);
+        }
       } catch (error) {
         return { ok: false, reason: `ai_sdk_error: ${errorMessage(error)}` };
       }
@@ -173,6 +191,15 @@ export function providerFor(name: ProviderName, options: ProviderFactoryOptions 
     default:
       return mockProvider;
   }
+}
+
+/**
+ * Whether a provider can transmit collected inputs OFF the machine. Only this
+ * set may be privacy-blocked by a remote_provider_blocked diff. A future remote
+ * provider MUST be added here so it cannot silently bypass the block.
+ */
+export function providerMakesRemoteCall(name: ProviderName): boolean {
+  return name === "ai-sdk";
 }
 
 /**
@@ -220,6 +247,16 @@ export function resolveModel(model: string | undefined): ResolvedModel {
       // contain a colon): default to anthropic, keep the full id.
       return { provider: "anthropic", modelId: raw };
   }
+}
+
+/**
+ * Live-call timeout budget in ms. Reads REVIEW_SURFACES_AI_TIMEOUT_MS once and
+ * falls back to AI_DEFAULT_TIMEOUT_MS for absent/invalid values. Only consulted
+ * on a real remote call, so it has no effect on the offline/mock pipeline.
+ */
+function aiTimeoutMs(): number {
+  const raw = Number(process.env.REVIEW_SURFACES_AI_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : AI_DEFAULT_TIMEOUT_MS;
 }
 
 function apiKeyFor(provider: ResolvedModel["provider"]): string | undefined {
@@ -479,13 +516,13 @@ function mergeEnrichment(packet: ReviewPacket, enrichment: AgentFileEnrichment):
   // non-string entries) BEFORE redacting, so bad entries are skipped instead of
   // crashing. The schema-conformant string-array case is unchanged.
   if (Array.isArray(enrichment.review_focus) && isRecord(packet.risks)) {
-    packet.risks.review_focus = uniqueStrings([...(asStringArray(packet.risks.review_focus)), ...redactAll(asStringArray(enrichment.review_focus))]).slice(0, 10);
+    packet.risks.review_focus = uniqueTruthy([...(asStringArray(packet.risks.review_focus)), ...redactAll(asStringArray(enrichment.review_focus))]).slice(0, 10);
   }
   if (Array.isArray(enrichment.assumptions) && isRecord(packet.intent)) {
-    packet.intent.assumptions = uniqueStrings([...(asStringArray(packet.intent.assumptions)), ...redactAll(asStringArray(enrichment.assumptions))]).slice(0, 12);
+    packet.intent.assumptions = uniqueTruthy([...(asStringArray(packet.intent.assumptions)), ...redactAll(asStringArray(enrichment.assumptions))]).slice(0, 12);
   }
   if (Array.isArray(enrichment.methodology_decisions) && isRecord(packet.methodology)) {
-    packet.methodology.decisions = uniqueStrings([...(asStringArray(packet.methodology.decisions)), ...redactAll(asStringArray(enrichment.methodology_decisions))]).slice(0, 12);
+    packet.methodology.decisions = uniqueTruthy([...(asStringArray(packet.methodology.decisions)), ...redactAll(asStringArray(enrichment.methodology_decisions))]).slice(0, 12);
   }
   if (Array.isArray(enrichment.risk_summaries) && isRecord(packet.risks)) {
     const existing = Array.isArray(packet.risks.items) ? packet.risks.items : [];
@@ -593,14 +630,10 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function uniqueStrings(values: string[]): string[] {
-  return [...new Set(values.filter(Boolean))];
-}
+// The real dynamic import used on the live path. Built via `new Function` so the
+// bundler/tsc does not eagerly resolve the now-optional ai packages; tests inject
+// a fake loader via ProviderFactoryOptions.aiModuleLoader instead of touching this.
+const defaultDynamicImport = new Function("moduleName", "return import(moduleName)") as (
+  moduleName: string
+) => Promise<any>;
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}

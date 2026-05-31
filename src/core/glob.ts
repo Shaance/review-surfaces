@@ -47,6 +47,7 @@ export async function walkFiles(cwd: string, options: WalkOptions = {}): Promise
 
 export function globToRegExp(pattern: string): RegExp {
   const normalized = toPosixPath(pattern);
+  warnUnsupportedGlobMetacharacters(pattern, normalized);
   let output = "^";
   let i = 0;
 
@@ -81,4 +82,22 @@ export function globToRegExp(pattern: string): RegExp {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
+}
+
+// Patterns may contain only `*` / `**` wildcards. Brace, char-class, optional,
+// and negation metacharacters are NOT expanded (they are escaped literally),
+// so a config author who writes them gets silent non-matching. Warn once per
+// distinct pattern to stderr so misconfigured patterns fail loudly. Stderr-only
+// and de-duplicated, so the warning never reaches byte-stable artifacts.
+const warnedGlobPatterns = new Set<string>();
+function warnUnsupportedGlobMetacharacters(original: string, normalized: string): void {
+  if (warnedGlobPatterns.has(original)) {
+    return;
+  }
+  if (/[{}?![\]]/.test(normalized)) {
+    warnedGlobPatterns.add(original);
+    process.stderr.write(
+      `review-surfaces: glob pattern "${original}" contains unsupported metacharacters ({ } ? ! [ ]); only * and ** are supported and these are matched literally.\n`
+    );
+  }
 }

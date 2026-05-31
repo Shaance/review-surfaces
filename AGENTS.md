@@ -29,7 +29,7 @@ Set `REVIEW_SURFACES_MAIN_WORKTREE=/absolute/path/to/main/worktree` if auto-dete
 3. Install dependencies for this worktree when needed:
 
 ```bash
-pnpm install
+pnpm install --frozen-lockfile
 ```
 
 4. Use offline mode by default:

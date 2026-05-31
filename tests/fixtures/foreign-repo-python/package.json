@@ -1,0 +1,6 @@
+{
+  "name": "todo-service-mixed",
+  "version": "1.0.0",
+  "description": "Keeps a node manifest alongside pyproject.toml so the fixture is a mixed node+python ecosystem.",
+  "private": true
+}

@@ -9,6 +9,8 @@ import { MethodologyModel } from "../methodology/methodology";
 import { RisksModel } from "../risks/risks";
 import { relativePath, writeJson, writeText } from "../core/files";
 import { stringifyYaml } from "../core/simple-yaml";
+import { compareStrings } from "../core/compare";
+import { stripUndefined, unique } from "../core/guards";
 import { countRequirementStatuses, REQUIREMENT_STATUSES, RequirementStatusCount } from "../evaluation/status";
 import { redactSecrets } from "../privacy/secrets";
 import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
@@ -478,7 +480,7 @@ function compareGroupKey(left: string, right: string): number {
   if (right === "(no-group)") {
     return -1;
   }
-  return left.localeCompare(right);
+  return compareStrings(left, right);
 }
 
 function compareCoverageSeverity(left: RequirementResultView, right: RequirementResultView): number {
@@ -492,7 +494,7 @@ function compareCoverageSeverity(left: RequirementResultView, right: Requirement
   }
   // Stable secondary key so output is fully deterministic regardless of input
   // ordering.
-  return (left.acai_id ?? left.requirement_id).localeCompare(right.acai_id ?? right.requirement_id);
+  return compareStrings(left.acai_id ?? left.requirement_id, right.acai_id ?? right.requirement_id);
 }
 
 function blankStatusCount(): RequirementStatusCount {
@@ -554,10 +556,6 @@ function formatImplementedChanges(changedFiles: CollectionResult["changedFiles"]
     visible.push(`... ${changedFiles.length - limit} more changed file(s) in .review-surfaces/inputs/changed_files.json`);
   }
   return visible;
-}
-
-function unique(values: string[]): string[] {
-  return [...new Set(values)];
 }
 
 // Phase 5b (CLI.6): compact, deterministic "Changes since last packet" lines
@@ -684,8 +682,4 @@ function handoffMethodologyFlags(methodology: MethodologyModel): string[] {
     ...(methodology.claims_without_evidence.length > 0 ? ["claims_without_evidence"] : []),
     ...(methodology.verified_claims.length > 0 ? ["verified_claims_available"] : [])
   ]);
-}
-
-function stripUndefined<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value));
 }

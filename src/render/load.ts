@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileExists } from "../core/files";
+import { isRecord } from "../core/guards";
 import { parseYaml } from "../core/simple-yaml";
 import { EvidenceRef, SourceRef } from "../evidence/evidence";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
@@ -378,10 +379,6 @@ function readArtifact(outputDir: string, fileName: string): unknown {
   } catch {
     return null;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function asArray(value: unknown): unknown[] {

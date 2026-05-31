@@ -26,9 +26,11 @@ import {
   PACKET_TEST_EVIDENCE_KINDS,
   PACKET_VALIDATION_STATUSES
 } from "../src/schema/review-packet-contract";
-import { minimalReviewPacket } from "./helpers/review-packet";
+import { VERSION } from "../src/core/version";
+import { fullyPopulatedReviewPacket, minimalReviewPacket } from "./helpers/review-packet";
 
 const schema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "review_packet.schema.json"), "utf8"));
+const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as { version: string };
 
 const enumContracts: Array<{
   name: string;
@@ -164,6 +166,30 @@ for (const contract of enumContracts) {
 test("shared minimal review packet fixture stays schema-valid", () => {
   const result = validateJsonSchema(schema, minimalReviewPacket());
   assert.equal(result.valid, true, JSON.stringify(result.issues));
+});
+
+// R7 schema parity: the minimal fixture leaves every optional/array field empty,
+// so a fully-populated packet (one element in EVERY array/optional field across
+// all $defs, including the dogfood + agent_handoff conditional sections) is the
+// only fixture that exercises every $def branch against the schema.
+test("fully-populated review packet exercising every optional field stays schema-valid", () => {
+  const result = validateJsonSchema(schema, fullyPopulatedReviewPacket());
+  assert.equal(result.valid, true, JSON.stringify(result.issues));
+});
+
+test("a review packet with the wrong schema_version fails schema validation", () => {
+  const bad = { ...minimalReviewPacket(), schema_version: "review-surfaces.packet.vX" };
+  const result = validateJsonSchema(schema, bad);
+  assert.equal(result.valid, false);
+});
+
+// Ties the runtime VERSION constant into the packet contract: the manifest's
+// tool_version is stamped from VERSION, and VERSION tracks package.json. (The
+// raw VERSION === package.json check also lives in version.test.ts; here it
+// guards the contract surface — the populated fixture's tool_version — directly.)
+test("VERSION is in sync with package.json and stamps the fixture's manifest tool_version", () => {
+  assert.equal(VERSION, packageJson.version);
+  assert.equal((fullyPopulatedReviewPacket().manifest as { tool_version: string }).tool_version, VERSION);
 });
 
 function schemaAt(value: unknown, segments: string[]): unknown {

@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { redactSecrets } from "../privacy/secrets";
+import { compareStrings } from "../core/compare";
+import { isRecord, stripUndefined } from "../core/guards";
 
 // Phase 5a: STRUCTURED TEST INGESTION.
 //
@@ -122,7 +124,7 @@ export function ingestTestOutputs(cwd: string, testOutputPaths: string[], covera
     }
   }
 
-  results.suites.sort((left, right) => left.name.localeCompare(right.name) || left.source_path.localeCompare(right.source_path));
+  results.suites.sort((left, right) => compareStrings(left.name, right.name) || compareStrings(left.source_path, right.source_path));
   results.cases.sort(compareCases);
   results.totals = computeTotals(results.suites, results.cases);
 
@@ -135,9 +137,9 @@ export function ingestTestOutputs(cwd: string, testOutputPaths: string[], covera
 
 function compareCases(left: NormalizedTestCase, right: NormalizedTestCase): number {
   return (
-    (left.classname ?? "").localeCompare(right.classname ?? "") ||
-    (left.suite ?? "").localeCompare(right.suite ?? "") ||
-    left.name.localeCompare(right.name)
+    compareStrings(left.classname ?? "", right.classname ?? "") ||
+    compareStrings(left.suite ?? "", right.suite ?? "") ||
+    compareStrings(left.name, right.name)
   );
 }
 
@@ -418,7 +420,7 @@ function parseCoverageSummary(cwd: string, coveragePath: string): TestCoverageSu
   if (!total && files.length === 0) {
     return undefined;
   }
-  files.sort((left, right) => left.path.localeCompare(right.path));
+  files.sort((left, right) => compareStrings(left.path, right.path));
   return stripUndefined({ total, files });
 }
 
@@ -466,14 +468,6 @@ function asArray(value: unknown): unknown[] {
     return [];
   }
   return Array.isArray(value) ? value : [value];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stripUndefined<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value));
 }
 
 // Coverage hash helper kept for callers that want a stable digest of the

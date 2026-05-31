@@ -1504,13 +1504,16 @@ test("review-surfaces.PRIVACY.2 agent-file reasoning stages redact secrets befor
     assert.ok(!serialized.includes(raw), `raw ${name} secret must be redacted out of the packet`);
   }
 
-  // The redaction boundary visibly ran on each consumed reasoning field.
+  // The redaction boundary visibly ran on each consumed reasoning field. The
+  // precise kind shows through when the value is a recognized provider token
+  // (google AIza -> google_api_key; apikey sk- -> openai_key); generic
+  // KEY=value shapes (ghtoken<36, risksecret, password) fall to token_assignment.
   assert.match(intent.assumptions.join("\n"), /\[REDACTED:google_api_key\]/);
   assert.match(intent.non_goals.join("\n"), /\[REDACTED:secret\]/);
-  assert.match(intent.open_questions.join("\n"), /\[REDACTED:secret\]/);
+  assert.match(intent.open_questions.join("\n"), /\[REDACTED:openai_key\]/);
   assert.match(intent.summary, /\[REDACTED:secret\]/);
   assert.match(methodology.considered.join("\n"), /\[REDACTED:secret\]/);
-  assert.match(methodology.decisions.join("\n"), /\[REDACTED:secret\]/);
+  assert.match(methodology.decisions.join("\n"), /\[REDACTED:openai_key\]/);
   assert.match(
     risks.items.map((item) => item.summary).join("\n"),
     /\[REDACTED:google_api_key\]/

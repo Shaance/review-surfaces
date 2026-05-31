@@ -1,4 +1,5 @@
 import { CollectionResult } from "../collector/collect";
+import { isRecord, numericField, uniqueTruthy } from "../core/guards";
 import { llmProposedEvidence } from "../evidence/evidence";
 import { EvidenceValidationContext, validateEvidenceRef } from "../evidence/validate";
 import {
@@ -293,9 +294,9 @@ async function runIntentSynthesis(
   const proposedNonGoals = asStringArray(data.non_goals).map(markHypothesis);
   const proposedQuestions = asStringArray(data.open_questions).map(markHypothesis);
 
-  intent.assumptions = unique([...intent.assumptions, ...proposedAssumptions]).slice(0, 16);
-  intent.non_goals = unique([...intent.non_goals, ...proposedNonGoals]).slice(0, 12);
-  intent.open_questions = unique([...intent.open_questions, ...proposedQuestions]).slice(0, 12);
+  intent.assumptions = uniqueTruthy([...intent.assumptions, ...proposedAssumptions]).slice(0, 16);
+  intent.non_goals = uniqueTruthy([...intent.non_goals, ...proposedNonGoals]).slice(0, 12);
+  intent.open_questions = uniqueTruthy([...intent.open_questions, ...proposedQuestions]).slice(0, 12);
 
   if (typeof data.summary === "string" && data.summary.trim() !== "") {
     intent.summary = `${intent.summary} ${markHypothesis(data.summary.trim())}`;
@@ -581,7 +582,7 @@ function lookupBatchedEntry(
 }
 
 function candidatePathPool(collection: CollectionResult): string[] {
-  return unique([
+  return uniqueTruthy([
     ...collection.changedFiles.map((file) => file.path),
     ...collection.tests.map((test) => test.path)
   ]).slice(0, 40);
@@ -651,8 +652,8 @@ async function runNarrativeStage(
 
   const consideredAdditions = asStringArray(data.considered).map(markHypothesis);
   const decisionsAdditions = asStringArray(data.decisions).map(markHypothesis);
-  methodology.considered = unique([...methodology.considered, ...consideredAdditions]).slice(0, 16);
-  methodology.decisions = unique([...methodology.decisions, ...decisionsAdditions]).slice(0, 16);
+  methodology.considered = uniqueTruthy([...methodology.considered, ...consideredAdditions]).slice(0, 16);
+  methodology.decisions = uniqueTruthy([...methodology.decisions, ...decisionsAdditions]).slice(0, 16);
 
   // Risk narratives are appended as labeled hypotheses (confidence unknown/low),
   // never overriding deterministic risk findings.
@@ -700,18 +701,6 @@ Methodology summary: ${inputs.methodology.summary}
 // Helpers
 // ---------------------------------------------------------------------------
 
-function numericField(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "") : [];
-}
-
-function unique(values: string[]): string[] {
-  return [...new Set(values.filter(Boolean))];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

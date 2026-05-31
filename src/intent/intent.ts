@@ -2,6 +2,7 @@ import path from "node:path";
 import { IndexedRequirement } from "../acai/acai";
 import { CollectionResult } from "../collector/collect";
 import { fileExists, readText } from "../core/files";
+import { uniqueTruthy } from "../core/guards";
 import { SourceRef, specEvidence } from "../evidence/evidence";
 
 export interface IntentRequirement {
@@ -76,10 +77,10 @@ export async function buildIntent(cwd: string, collection: CollectionResult): Pr
   return {
     summary: `Built deterministic intent from ${collection.specIndex.specs.length} Acai spec(s), ${collection.docs.length} doc/agent input(s), and ${requirements.length} requirement(s).`,
     requirements,
-    constraints: unique(constraints),
-    non_goals: unique(nonGoals),
-    assumptions: unique(assumptions),
-    open_questions: unique(openQuestions),
+    constraints: uniqueTruthy(constraints),
+    non_goals: uniqueTruthy(nonGoals),
+    assumptions: uniqueTruthy(assumptions),
+    open_questions: uniqueTruthy(openQuestions),
     sources
   };
 }
@@ -173,8 +174,4 @@ function sparseSourceQuestions(specCount: number, requirementCount: number, docC
     questions.push("No docs or agent instruction inputs were indexed; confirm constraints, non-goals, and reviewer expectations.");
   }
   return questions;
-}
-
-function unique(values: string[]): string[] {
-  return [...new Set(values.filter(Boolean))];
 }

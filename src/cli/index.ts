@@ -7,6 +7,7 @@ import { collectInputs, CollectionResult } from "../collector/collect";
 import { PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
 import { CliError, ExitCodes } from "../core/exit-codes";
+import { VERSION } from "../core/version";
 import { fileExists } from "../core/files";
 import { gateDecision, GateOptions } from "../core/gate";
 import { buildArchitecture } from "../diagrams/diagrams";
@@ -14,7 +15,7 @@ import { buildDogfood, DogfoodComparisonInput } from "../dogfood/dogfood";
 import { comparePackets, loadPreviousPacket, resolvePreviousPacketPath } from "../dogfood/compare";
 import { EvaluationModel } from "../evaluation/evaluate";
 import { buildIntent, IntentModel } from "../intent/intent";
-import { effectiveModelId, enrichPacket, EnrichmentResult, parseProviderName, providerFor, ProviderName } from "../llm/provider";
+import { effectiveModelId, enrichPacket, parseProviderName, providerFor, ProviderName } from "../llm/provider";
 import { buildMethodology } from "../methodology/methodology";
 import { buildReviewAreas } from "../review-areas/areas";
 import { RisksModel } from "../risks/risks";
@@ -34,19 +35,21 @@ import { renderCommentFromPacketFile, resolvePacketPath } from "../render/commen
 import { renderSarifFromPacketFile } from "../render/sarif";
 import { postStickyComment } from "../render/post-comment";
 import { writeText } from "../core/files";
+import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import {
+  assembleEnrichedPacket,
   buildEnrichedModels,
   buildPipelineStageContext,
   computeArchitecture,
   computeArchitectureModel,
   computeEvaluation,
   computeEnrichedIntent,
-  enrichPacketForContext,
   loadOrComputeEvaluation,
   loadOrComputeIntent,
   loadOrComputeMethodology,
   loadOrComputeRisks,
+  notRequestedEnrichment,
   EnrichedModels,
   PipelineStageContext,
   runReasoningWithVerification
@@ -192,6 +195,20 @@ function resolvePreviousPacketInput(cwd: string, parsed: ParsedArgs): string | u
   return path.relative(cwd, resolved) || resolved;
 }
 
+// R6: surface silent git degradation on EVERY command. collection.diagnostics
+// prints to stderr ALWAYS (an empty array — healthy git — prints nothing, so
+// byte-stable runs are unchanged); --verbose adds resolved refs / diff_source /
+// output dir. Called from the shared collect() so `collect`, `all`, `dogfood`,
+// and every per-stage subcommand surface a degraded diff range uniformly.
+function printCollectionDiagnostics(parsed: ParsedArgs, cwd: string, collection: CollectionResult): void {
+  for (const note of collection.diagnostics) {
+    process.stderr.write(`[review-surfaces] ${note}\n`);
+  }
+  debug(parsed, `base=${collection.manifest.base_ref} (${collection.manifest.base_sha ?? "unresolved"}) head=${collection.manifest.head_ref} (${collection.manifest.head_sha})`);
+  debug(parsed, `diff_source=${collection.diff_source}`);
+  debug(parsed, `output dir=${path.relative(cwd, collection.outputDir) || "."}`);
+}
+
 async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResult; config: ReviewSurfacesConfig }> {
   const cwd = process.cwd();
   // The exact config path loadConfig reads. Fold its content into the signature
@@ -220,6 +237,7 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
     configPath,
     previousPacketPath: resolvePreviousPacketInput(cwd, parsed)
   });
+  printCollectionDiagnostics(parsed, cwd, collection);
   return { collection, config: runConfig };
 }
 
@@ -292,17 +310,6 @@ async function resolveOutputDir(cwd: string, parsed: ParsedArgs): Promise<string
   const configPath = stringFlag(parsed, "config") ?? "review-surfaces.config.yaml";
   const config = await loadConfig(cwd, configPath);
   return path.resolve(cwd, config.output_dir);
-}
-
-// Resolve the output location the comment/SARIF renderers should read, applying
-// the SAME precedence as collectInputs (--out -> config.output_dir ->
-// .review-surfaces). An explicit --out (which may be a directory OR a .json path)
-// is preserved verbatim via path.resolve; otherwise the config's output_dir is
-// used so a repo that configured output_dir gets its packet found without --out.
-// The returned value is fed straight to resolvePacketPath, which appends
-// review_packet.json for a directory and uses a .json path as-is.
-async function resolveCommentOutDir(cwd: string, parsed: ParsedArgs): Promise<string> {
-  return resolveOutputDir(cwd, parsed);
 }
 
 // Snapshot the prior manifest.json (raw bytes + parsed signature) and check that
@@ -392,6 +399,8 @@ function isCacheHit(snapshot: CacheSnapshot, currentSignature: string | undefine
 
 async function runAll(parsed: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
+  // R6: per-run timing for the verbose (debug) summary line at the end.
+  const startedAt = Date.now();
   // --cache is opt-in. Snapshot the prior manifest BEFORE collect recomputes
   // (and overwrites) it, so a signature match can be detected and the on-disk
   // manifest/packet left byte-identical. Without --cache nothing is read here.
@@ -431,6 +440,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   const commands = [`review-surfaces ${parsed.command} ${process.argv.slice(3).join(" ")}`.trim()];
   const provider = providerFlag(parsed, config);
   const requestedModel = stringFlag(parsed, "model") ?? config.llm.model ?? undefined;
+  debug(parsed, `provider=${provider} model=${requestedModel ?? "(default)"}`);
   const reviewAreas = buildReviewAreas({ config, repoIndex: collection.repoIndex });
   const areasOption = reviewAreas.mode === "config" ? { areas: reviewAreas.areas } : {};
   const intent = await buildIntent(cwd, collection);
@@ -468,12 +478,11 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   });
 
   const architecture = await buildArchitecture(collection, evaluation, areasOption);
-  const preEnrichment: EnrichmentResult = {
-    provider,
-    model: requestedModel,
-    status: "not_requested",
-    summary: "Enrichment has not run yet."
-  };
+  // R2: route the single "not_requested" preEnrichment literal through the shared
+  // notRequestedEnrichment factory so the divergence-prone duplicate is gone from
+  // every call site. runAll has no PipelineStageContext, so it keeps its inline
+  // enrichPacket wiring (the per-stage commands use the full assembleEnrichedPacket
+  // helper). Byte-stable under mock.
   const packet = createReviewPacket({
     collection,
     intent,
@@ -481,7 +490,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     methodology,
     risks,
     architecture,
-    enrichment: preEnrichment,
+    enrichment: notRequestedEnrichment(provider, requestedModel),
     commands
   });
   const enrichment = await enrichPacket(packet, {
@@ -524,6 +533,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     console.warn(enrichment.summary);
   }
   console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
+  debug(parsed, `completed in ${Date.now() - startedAt}ms`);
   return applyGate(parsed, evaluation, collection, provider, config);
 }
 
@@ -621,23 +631,7 @@ async function runMethodologyStage(parsed: ParsedArgs): Promise<void> {
   // so build the architecture MODEL without the diagrams/*.mmd disk side effect;
   // writing them here would leak a diagrams/ directory a `methodology` run must not own.
   const architecture = computeArchitectureModel(context, evaluation);
-  const preEnrichment: EnrichmentResult = {
-    provider: context.provider,
-    model: context.requestedModel,
-    status: "not_requested",
-    summary: "Enrichment has not run yet."
-  };
-  const packet = createReviewPacket({
-    collection: context.collection,
-    intent,
-    evaluation,
-    methodology,
-    risks,
-    architecture,
-    enrichment: preEnrichment,
-    commands: context.commands
-  });
-  await enrichPacketForContext(context, packet);
+  const { packet } = await assembleEnrichedPacket(context, { intent, evaluation, methodology, risks, architecture });
   await writeMethodologyArtifact(context.collection.outputDir, packet.methodology);
   // FINDING B + FINDING C: stamp methodology.yaml's producing signature.
   await context.artifacts.stamp([PROVENANCE_ARTIFACTS.methodology]);
@@ -665,23 +659,7 @@ async function runRisksStage(parsed: ParsedArgs): Promise<void> {
   // so build the architecture MODEL without the diagrams/*.mmd disk side effect;
   // writing them here would leak a diagrams/ directory a `risks` run must not own.
   const architecture = computeArchitectureModel(context, evaluation);
-  const preEnrichment: EnrichmentResult = {
-    provider: context.provider,
-    model: context.requestedModel,
-    status: "not_requested",
-    summary: "Enrichment has not run yet."
-  };
-  const packet = createReviewPacket({
-    collection: context.collection,
-    intent,
-    evaluation,
-    methodology,
-    risks,
-    architecture,
-    enrichment: preEnrichment,
-    commands: context.commands
-  });
-  await enrichPacketForContext(context, packet);
+  const { packet } = await assembleEnrichedPacket(context, { intent, evaluation, methodology, risks, architecture });
   await writeRisksArtifact(context.collection.outputDir, packet.risks);
   // FINDING B + FINDING C: stamp risks.yaml's producing signature so packet/handoff
   // compose this risk register ONLY while the inputs are unchanged.
@@ -728,23 +706,7 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
   const risks = context.artifacts.loadCurrentRisks() ?? (await enriched()).risks;
   const architecture = await computeArchitecture(context, evaluation);
 
-  const preEnrichment: EnrichmentResult = {
-    provider: context.provider,
-    model: context.requestedModel,
-    status: "not_requested",
-    summary: "Enrichment has not run yet."
-  };
-  const packet = createReviewPacket({
-    collection: context.collection,
-    intent,
-    evaluation,
-    methodology,
-    risks,
-    architecture,
-    enrichment: preEnrichment,
-    commands: context.commands
-  });
-  const enrichment = await enrichPacketForContext(context, packet);
+  const { packet, enrichment } = await assembleEnrichedPacket(context, { intent, evaluation, methodology, risks, architecture });
   // run_mode is "dogfood" whenever --dogfood is set (collect stamps the
   // manifest), and the schema REQUIRES both `dogfood` and `agent_handoff` then.
   // Prefer a loaded dogfood.yaml so a prior `dogfood` stage composes; otherwise
@@ -824,24 +786,7 @@ async function runHandoffStage(parsed: ParsedArgs): Promise<void> {
   // methodology/risks/review_packet to disk), and writeHandoffArtifact still emits
   // ONLY agent_handoff.md. computeArchitectureModel built the architecture without
   // the diagrams/*.mmd side effect, so no diagrams/ directory is leaked.
-  const preEnrichment: EnrichmentResult = {
-    provider: context.provider,
-    model: context.requestedModel,
-    status: "not_requested",
-    summary: "Enrichment has not run yet."
-  };
-  const packet = createReviewPacket({
-    collection: context.collection,
-    intent,
-    evaluation,
-    methodology,
-    risks,
-    architecture,
-    dogfood,
-    enrichment: preEnrichment,
-    commands: context.commands
-  });
-  const enrichment = await enrichPacketForContext(context, packet);
+  const { packet, enrichment } = await assembleEnrichedPacket(context, { intent, evaluation, methodology, risks, architecture, dogfood });
   await writeHandoffArtifact(context.collection.outputDir, {
     collection: context.collection,
     intent: packet.intent,
@@ -862,11 +807,43 @@ async function runValidate(parsed: ParsedArgs): Promise<number> {
   const target = parsed.positionals[0] ?? ".review-surfaces/review_packet.json";
   const targetPath = path.resolve(cwd, target);
   const packetPath = targetPath.endsWith(".json") ? targetPath : path.join(targetPath, "review_packet.json");
+  // R7 (a): an ABSENT packet is a USAGE error (exit 2), not a schema-validation
+  // failure (exit 3). It points the user at `review-surfaces all` rather than
+  // implying the bytes on disk were invalid; only a PRESENT-but-invalid packet
+  // returns 3 (matching the help banner's "validate keeps returning 3 on
+  // schema-validation failure" promise).
   if (!fileExists(packetPath)) {
-    throw new CliError(`No review packet JSON found at ${path.relative(cwd, packetPath)}`, ExitCodes.schemaValidationFailed);
+    throw new CliError(
+      `No review packet JSON found at ${path.relative(cwd, packetPath)}. Run \`review-surfaces all\` first to generate it.`,
+      ExitCodes.usageError
+    );
   }
 
-  const schemaPath = path.resolve(cwd, stringFlag(parsed, "schema") ?? "schemas/review_packet.schema.json");
+  // R7 (b): detect a schema_version mismatch BEFORE running ajv, so a packet
+  // produced by a different schema generation gets a clear regenerate message
+  // instead of an opaque `$.schema_version: Expected constant ...` ajv const
+  // failure. PACKET_SCHEMA_VERSION is the runtime contract constant; this still
+  // returns exit 3 (a present-but-wrong-version packet IS a schema failure), it
+  // just improves the MESSAGE. An unparseable packet falls through to ajv, which
+  // reports the parse/shape issue.
+  //
+  // Only when validating against the BUNDLED schema (no --schema override): a
+  // caller who supplies a custom --schema owns its own schema_version `const`, so
+  // we let that schema's ajv validation be the authority instead of pre-rejecting
+  // a packet that is valid against the supplied (possibly newer) schema.
+  const customSchema = stringFlag(parsed, "schema");
+  let packetVersion: unknown;
+  try {
+    packetVersion = (JSON.parse(fs.readFileSync(packetPath, "utf8")) as { schema_version?: unknown }).schema_version;
+  } catch {
+    packetVersion = undefined;
+  }
+  if (customSchema === undefined && typeof packetVersion === "string" && packetVersion !== PACKET_SCHEMA_VERSION) {
+    console.error(`packet is ${packetVersion}, schema expects ${PACKET_SCHEMA_VERSION} — regenerate with \`review-surfaces all\`.`);
+    return ExitCodes.schemaValidationFailed;
+  }
+
+  const schemaPath = path.resolve(cwd, customSchema ?? "schemas/review_packet.schema.json");
   const result = await validateJsonFile(schemaPath, packetPath);
   if (!result.valid) {
     for (const issue of result.issues) {
@@ -910,7 +887,7 @@ async function runCommentGithub(parsed: ParsedArgs): Promise<number> {
   // use (--out -> config.output_dir -> .review-surfaces) so comment finds the
   // packet `all` actually wrote. Passing undefined would hardcode .review-surfaces
   // and miss a config-set output_dir.
-  const outDir = await resolveCommentOutDir(cwd, parsed);
+  const outDir = await resolveOutputDir(cwd, parsed);
   const rendered = renderCommentFromPacketFile(cwd, outDir);
   if (!rendered) {
     throw missingPacketError(cwd, outDir);
@@ -936,7 +913,7 @@ async function runCommentSarif(parsed: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
   // Same effective output-dir resolution as the github path: honor a config-set
   // output_dir so SARIF reads the packet `all` wrote, not a hardcoded default.
-  const outDir = await resolveCommentOutDir(cwd, parsed);
+  const outDir = await resolveOutputDir(cwd, parsed);
   const rendered = renderSarifFromPacketFile(cwd, outDir);
   if (!rendered) {
     throw missingPacketError(cwd, outDir);
@@ -987,7 +964,11 @@ function parseArgs(args: string[]): ParsedArgs {
     }
 
     const next = rest[index + 1];
-    if (next && !next.startsWith("--")) {
+    // Known boolean flags never consume the following token as a value, so e.g.
+    // `validate --verbose packet.json` keeps packet.json as a positional AND
+    // enables --verbose, instead of swallowing the path into flags.verbose. Value
+    // flags keep the permissive `--flag value` form.
+    if (!BOOLEAN_FLAGS.has(rawKey) && next && !next.startsWith("--")) {
       flags[rawKey] = next;
       index += 1;
     } else {
@@ -998,6 +979,10 @@ function parseArgs(args: string[]): ParsedArgs {
   return { command, flags, positionals };
 }
 
+// Flags that are always boolean switches (no value argument). Listed so the
+// permissive parser does not consume a following positional as their "value".
+const BOOLEAN_FLAGS = new Set(["cache", "dogfood", "force", "post", "strict", "verbose", "help"]);
+
 function stringFlag(parsed: ParsedArgs, key: string): string | undefined {
   const value = parsed.flags[key];
   return typeof value === "string" ? value : undefined;
@@ -1005,6 +990,27 @@ function stringFlag(parsed: ParsedArgs, key: string): string | undefined {
 
 function booleanFlag(parsed: ParsedArgs, key: string): boolean {
   return parsed.flags[key] === true || parsed.flags[key] === "true";
+}
+
+// R6: the verbosity predicate, shared by isVerbose() (the parsed-args path) and
+// main()'s catch (which has no ParsedArgs in scope). REVIEW_SURFACES_DEBUG=1|true
+// is the env opt-in. OFF by default => byte-identical output.
+function verboseFromEnv(): boolean {
+  const env = process.env.REVIEW_SURFACES_DEBUG;
+  return env === "1" || env === "true";
+}
+
+// R6: --verbose (or REVIEW_SURFACES_DEBUG=1|true) turns on stderr diagnostics.
+function isVerbose(parsed: ParsedArgs): boolean {
+  return booleanFlag(parsed, "verbose") || verboseFromEnv();
+}
+
+// R6: a framework-free verbose-only stderr logger. Writes ONLY when verbose, so
+// the default path is byte-identical and golden artifact files are untouched.
+function debug(parsed: ParsedArgs, message: string): void {
+  if (isVerbose(parsed)) {
+    process.stderr.write(`[review-surfaces] ${message}\n`);
+  }
 }
 
 function isDogfoodRun(parsed: ParsedArgs): boolean {
@@ -1096,7 +1102,7 @@ function transcriptDirFromOut(parsed: ParsedArgs): string | undefined {
 }
 
 function printHelp(): void {
-  console.log(`review-surfaces 0.1.0
+  console.log(`review-surfaces ${VERSION}
 
 Local-first review packet compiler for agent-generated code changes.
 
@@ -1198,5 +1204,13 @@ main()
       return;
     }
     console.error(error instanceof Error ? error.message : String(error));
+    // R6: under --verbose / REVIEW_SURFACES_DEBUG, also print the stack for an
+    // unexpected (non-CliError) failure so the cause is debuggable. This catch is
+    // outside main() and has no ParsedArgs, so read verbosity from argv/env (same
+    // predicate as isVerbose). Off by default => unchanged single-line message.
+    const verbose = process.argv.includes("--verbose") || verboseFromEnv();
+    if (verbose && error instanceof Error && error.stack) {
+      console.error(error.stack);
+    }
     process.exitCode = ExitCodes.runtimeError;
   });

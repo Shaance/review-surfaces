@@ -8,7 +8,8 @@ import { ReasoningOptions, runEvaluationReasoning, runIntentReasoning, runNarrat
 import { buildMethodology, MethodologyModel } from "../methodology/methodology";
 import { buildReviewAreas, ReviewArea } from "../review-areas/areas";
 import { analyzeRisks, buildRiskReviewFocus, RisksModel } from "../risks/risks";
-import { ReviewPacket } from "../render/packet";
+import { createReviewPacket, ReviewPacket } from "../render/packet";
+import { DogfoodModel } from "../dogfood/dogfood";
 import { createPipelineArtifactStoreForCollection, PipelineArtifactStore } from "./artifact-store";
 
 export interface PipelineStageContext {
@@ -88,6 +89,52 @@ export function enrichPacketForContext(context: PipelineStageContext, packet: Re
     redactSecrets: context.config.privacy.redact_secrets,
     remotePrivacyBlocked: context.collection.privacy.remote_provider_blocked
   });
+}
+
+// The single "enrichment has not run yet" literal, previously duplicated at 5
+// createReviewPacket call sites (runAll + the 4 per-stage commands). Centralizing
+// it guarantees a standalone stage can never construct a divergent preEnrichment
+// shape than `all`.
+export function notRequestedEnrichment(provider: ProviderName, model?: string): EnrichmentResult {
+  return { provider, model, status: "not_requested", summary: "Enrichment has not run yet." };
+}
+
+export interface AssembledPacket {
+  packet: ReviewPacket;
+  enrichment: EnrichmentResult;
+}
+
+// THE single reasoning/enrichment path shared by every per-stage command: build
+// the not_requested preEnrichment -> createReviewPacket -> enrichPacketForContext,
+// in ONE place, so a standalone stage can NEVER diverge from `all`. The caller
+// supplies the already-built models (intent/evaluation/methodology/risks/
+// architecture) and optional dogfood, and then writes ONLY its own artifact(s)
+// from the returned packet+enrichment. Under mock enrichPacket is a no-op
+// (not_requested), so this is byte-stable.
+export async function assembleEnrichedPacket(
+  context: PipelineStageContext,
+  models: {
+    intent: IntentModel;
+    evaluation: EvaluationModel;
+    methodology: MethodologyModel;
+    risks: RisksModel;
+    architecture: ArchitectureModel;
+    dogfood?: DogfoodModel;
+  }
+): Promise<AssembledPacket> {
+  const packet = createReviewPacket({
+    collection: context.collection,
+    intent: models.intent,
+    evaluation: models.evaluation,
+    methodology: models.methodology,
+    risks: models.risks,
+    architecture: models.architecture,
+    dogfood: models.dogfood,
+    enrichment: notRequestedEnrichment(context.provider, context.requestedModel),
+    commands: context.commands
+  });
+  const enrichment = await enrichPacketForContext(context, packet);
+  return { packet, enrichment };
 }
 
 function logComputed(label: string): void {
