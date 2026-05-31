@@ -12,8 +12,8 @@ overreach, and unclear handoffs.
 
 ## Relationship To Other Skills
 
-- Use `$codex-reviewer` for every full-diff code-review pass.
-- Use `$production-review-loops` when the user asks for repeated hardening until production-grade.
+- Use `$codex-reviewer` for full-diff code-review passes when it is available; otherwise perform an equivalent findings-first full-diff review yourself.
+- Use `$production-review-loops` when it is available and the user asks for repeated hardening until production-grade.
 - Use `review-surfaces` tooling when the repo provides it or when `bin/review-surfaces.js` / `pnpm run review-surfaces` is available.
 - Use this skill as the orchestrator when review quality depends on combining code review, checks, generated packets, and handoff evidence.
 
@@ -28,7 +28,7 @@ Inspect these surfaces when available:
 2. **Check surface**: typecheck, lint, tests, build, runtime smoke checks, or user-specified commands.
 3. **Transcript surface**: command transcripts that prove what ran, with exit codes and bounded output.
 4. **Packet surface**: review packet, dogfood output, handoff, risks, SARIF/comment renderers, or equivalent generated artifacts.
-5. **Review surface**: `$codex-reviewer` findings, PR review threads, CI failures, and human comments.
+5. **Review surface**: full-diff review findings, PR review threads, CI failures, and human comments.
 6. **Handoff surface**: final summary of what changed, what is proven, what remains unknown, and what should happen next.
 
 ## Workflow
@@ -75,12 +75,14 @@ When `review-surfaces` is available, generate and validate the packet after the
 current diff and command transcripts are in their final state:
 
 ```bash
-node bin/review-surfaces.js all --base "$BASE_REF" --head "$HEAD_REF" --dogfood --out .review-surfaces
+node bin/review-surfaces.js all --base "$BASE_REF" --head "$HEAD_REF" --out .review-surfaces
 node bin/review-surfaces.js validate .review-surfaces
 ```
 
 Add repo-specific flags such as `--spec`, `--provider mock`, `--test-output`, or
-custom `--out` when the project requires them.
+custom `--out` when the project requires them. Add `--dogfood` only when
+reviewing the `review-surfaces` repository itself or another repo explicitly
+wants self-dogfood artifacts.
 
 If packet generation is unavailable, create an equivalent manual evidence pass:
 list changed files, checks run, validation status, known risks, missing evidence,
@@ -113,8 +115,10 @@ Convert every useful dogfood finding into one of:
 
 ### 5. Run Full-Diff Review
 
-Run `$codex-reviewer` on the entire current diff as one patch. Do not split the
-counted review into per-file chunks unless the user explicitly narrows scope.
+Run `$codex-reviewer` on the entire current diff as one patch when the skill is
+available. If it is not available, perform the same findings-first full-diff
+review yourself. Do not split the counted review into per-file chunks unless the
+user explicitly narrows scope.
 
 Focus the review on:
 
@@ -128,7 +132,7 @@ Focus the review on:
 ### 6. Synthesize And Fix
 
 Deduplicate findings from checks, packet inspection, dogfood output, PR comments,
-and `$codex-reviewer`.
+and the full-diff review pass.
 
 Apply only fixes that are clearly in scope. After each fix batch:
 
@@ -147,7 +151,7 @@ Finish only when all applicable conditions are true:
 - transcript or inspected output supports validation claims;
 - packet/handoff artifacts reflect the final diff;
 - no actionable packet/dogfood findings remain unhandled;
-- `$codex-reviewer` has no unresolved actionable findings;
+- the full-diff review pass has no unresolved actionable findings;
 - PR comments, review threads, and CI/check gates are resolved when reviewing a PR;
 - the final response names remaining risks or says there are none known.
 

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Local E2E packet generated with provider=mock/not_requested; 6 satisfied, 74 partial, 0 missing, 4 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
+Local E2E packet generated with provider=mock/not_requested; 7 satisfied, 74 partial, 0 missing, 4 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
 
 ## Current Milestone
 
@@ -27,6 +27,7 @@ M5
 - A .agents/skills/composed-review-loop/SKILL.md
 - M .review-surfaces/agent_handoff.md
 - M docs/dogfooding.md
+- M features/review-surfaces.feature.yaml
 
 ## Validation Evidence
 
