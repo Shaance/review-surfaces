@@ -223,10 +223,11 @@ Each subagent should read and write structured files rather than relying on chat
 
 ### 5.4 Skill-assisted workflow
 
-The repo carries two reusable local skills:
+The repo carries three reusable local skills:
 
 - `.agents/skills/review-surfaces-usage/SKILL.md` for running review-surfaces in any repository without relying on hosted renderers (`review-surfaces.BOOTSTRAP.6`);
-- `.agents/skills/review-surfaces-dogfood-loop/SKILL.md` for improving this repository through generated packets, feedback files, and explicit deferrals (`review-surfaces.DOGFOOD.8`).
+- `.agents/skills/review-surfaces-dogfood-loop/SKILL.md` for improving this repository through generated packets, feedback files, and explicit deferrals (`review-surfaces.DOGFOOD.8`);
+- `.agents/skills/composed-review-loop/SKILL.md` for combining packet evidence, command transcripts, dogfood findings, PR feedback, and a full-diff review into one readiness decision (`review-surfaces.DOGFOOD.9`).
 
 These skills are workflow aids over the same local `.review-surfaces/` artifacts. They must not introduce private path dependencies or make provider calls required for the core packet.
 

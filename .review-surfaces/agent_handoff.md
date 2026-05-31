@@ -27,7 +27,10 @@ M5
 - A .agents/skills/composed-review-loop/SKILL.md
 - M .review-surfaces/agent_handoff.md
 - M docs/dogfooding.md
+- M docs/review-surfaces-trd.md
 - M features/review-surfaces.feature.yaml
+- M review-surfaces.config.yaml
+- M tests/command-transcripts.test.ts
 
 ## Validation Evidence
 
