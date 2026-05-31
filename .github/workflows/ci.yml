@@ -69,3 +69,42 @@ jobs:
         env:
           LANG: tr_TR.UTF-8
           LC_ALL: tr_TR.UTF-8
+
+  review-comment:
+    # Post the review-surfaces sticky comment (with GitHub-rendered Mermaid
+    # architecture diagrams) on the PR. Checks out the HEAD branch so `gh pr view`
+    # can resolve the PR — the default pull_request checkout is a detached merge
+    # ref where it cannot. Best-effort: `comment --post` never fails the build, and
+    # a fork PR (read-only token) simply skips the post and emits the local artifact.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0 # all history so origin/main and the merge-base resolve
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.8.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - name: Generate review packet (with diagrams)
+        run: |
+          node bin/review-surfaces.js all \
+            --provider mock \
+            --base origin/main \
+            --head HEAD \
+            --spec features/review-surfaces.feature.yaml \
+            --dogfood \
+            --out .review-surfaces
+      - name: Post sticky review comment with diagrams
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node bin/review-surfaces.js comment --format github --post --out .review-surfaces
