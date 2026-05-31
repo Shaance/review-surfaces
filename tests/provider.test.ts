@@ -65,9 +65,10 @@ test("providerFor returns the deterministic mock by default", () => {
   assert.equal(providerFor("agent-file").name, "agent-file");
 });
 
-test("resolveModel defaults to anthropic and preserves provider prefixes", () => {
-  assert.equal(resolveModel(undefined).provider, "anthropic");
-  assert.deepEqual(resolveModel("claude-x"), { provider: "anthropic", modelId: "claude-x" });
+test("resolveModel defaults to google (Gemini first-class) and preserves provider prefixes", () => {
+  assert.deepEqual(resolveModel(undefined), { provider: "google", modelId: "gemini-2.5-flash" });
+  // An unprefixed model id resolves to google (the first-class default provider).
+  assert.deepEqual(resolveModel("gemini-2.0-flash"), { provider: "google", modelId: "gemini-2.0-flash" });
   assert.deepEqual(resolveModel("google:gemini-2.5-flash"), { provider: "google", modelId: "gemini-2.5-flash" });
   assert.deepEqual(resolveModel("openai:gpt-4o-mini"), { provider: "openai", modelId: "gpt-4o-mini" });
   assert.deepEqual(resolveModel("anthropic:claude-3-5-haiku-latest"), {
@@ -77,7 +78,7 @@ test("resolveModel defaults to anthropic and preserves provider prefixes", () =>
 });
 
 test("ai-sdk provider honors remotePrivacyBlocked without a network call", async () => {
-  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
+  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
     const provider = aiSdkProvider({ remotePrivacyBlocked: true });
     const result = await provider.generateStructured("enrichment", "prompt", SCHEMA);
     assert.deepEqual(result, { ok: false, reason: "privacy_block" });
@@ -85,10 +86,12 @@ test("ai-sdk provider honors remotePrivacyBlocked without a network call", async
 });
 
 test("ai-sdk provider skips cleanly when the selected provider key is missing", async () => {
-  await withEnv("ANTHROPIC_API_KEY", undefined, async () => {
+  // Default provider is now google (Gemini first-class), so the default skip
+  // reason is the missing google key.
+  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", undefined, async () => {
     const provider = aiSdkProvider({});
     const result = await provider.generateStructured("enrichment", "prompt", SCHEMA);
-    assert.deepEqual(result, { ok: false, reason: "missing_anthropic_api_key" });
+    assert.deepEqual(result, { ok: false, reason: "missing_google_api_key" });
   });
 });
 
@@ -106,7 +109,7 @@ test("ai-sdk provider resolves the right key per provider prefix", async () => {
 });
 
 test("ai-sdk provider blocks on secret material in the prompt before any call", async () => {
-  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
+  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
     const pemLabel = "PRIVATE KEY";
     const prompt = `-----BEGIN ${pemLabel}-----\nabc\n-----END ${pemLabel}-----`;
     const result = await aiSdkProvider({}).generateStructured("enrichment", prompt, SCHEMA);
@@ -145,16 +148,17 @@ test("mock provider writes prompts without enrichment", async () => {
 
 test("ai-sdk provider skips without credentials", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-"));
-  await withEnv("ANTHROPIC_API_KEY", undefined, async () => {
+  // Default provider is google (Gemini first-class) -> missing google key.
+  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", undefined, async () => {
     const result = await enrichPacket(packet(), { cwd: tmp, outputDir: path.join(tmp, ".review-surfaces"), provider: "ai-sdk" });
     assert.equal(result.status, "skipped");
-    assert.equal(result.skipped_reason, "missing_anthropic_api_key");
+    assert.equal(result.skipped_reason, "missing_google_api_key");
   });
 });
 
 test("review-surfaces.PRIVACY.2 blocks ai-sdk enrichment when prompt contains private key material", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-privacy-"));
-  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
+  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
     const target = packet();
     const pemLabel = "PRIVATE KEY";
     target.intent.summary = `-----BEGIN ${pemLabel}-----\nabc\n-----END ${pemLabel}-----`;
@@ -166,7 +170,7 @@ test("review-surfaces.PRIVACY.2 blocks ai-sdk enrichment when prompt contains pr
 
 test("review-surfaces.PRIVACY.2 blocks ai-sdk enrichment when collected inputs were privacy-blocked", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-input-privacy-"));
-  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
+  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
     const result = await enrichPacket(packet(), {
       cwd: tmp,
       outputDir: path.join(tmp, ".review-surfaces"),
@@ -318,22 +322,23 @@ test("enrichPacket surfaces an injected non-ok ai-sdk result as a failure", asyn
 // ---------------------------------------------------------------------------
 
 // A fake ai-sdk module map for aiModuleLoader. `ai` carries generateObject +
-// jsonSchema; `@ai-sdk/anthropic` carries createAnthropic returning a model
-// factory. The loader is keyed by module name exactly as the real import is.
+// jsonSchema; `@ai-sdk/google` carries createGoogleGenerativeAI returning a model
+// factory (google/Gemini is the first-class default provider). The loader is
+// keyed by module name exactly as the real import is.
 function fakeAiLoader(generateObject: (args: any) => Promise<any>): (moduleName: string) => Promise<any> {
   return async (moduleName: string) => {
     if (moduleName === "ai") {
       return { generateObject, jsonSchema: (schema: object) => schema };
     }
-    if (moduleName === "@ai-sdk/anthropic") {
-      return { createAnthropic: () => () => ({}) };
+    if (moduleName === "@ai-sdk/google") {
+      return { createGoogleGenerativeAI: () => () => ({}) };
     }
     throw new Error(`unexpected module ${moduleName}`);
   };
 }
 
 test("ai-sdk live branch applies enrichment when generateObject resolves an object", async () => {
-  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
+  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
     const provider = aiSdkProvider({
       aiModuleLoader: fakeAiLoader(async () => ({ object: { review_focus: ["X"] } }))
     });
@@ -343,7 +348,7 @@ test("ai-sdk live branch applies enrichment when generateObject resolves an obje
 });
 
 test("ai-sdk live branch maps a thrown SDK error to ai_sdk_error", async () => {
-  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
+  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
     const provider = aiSdkProvider({
       aiModuleLoader: fakeAiLoader(async () => {
         throw new Error("boom");
@@ -360,7 +365,7 @@ test("ai-sdk live branch maps a thrown SDK error to ai_sdk_error", async () => {
 test("ai-sdk live branch returns a non-object verbatim; enrich layer classifies it invalid", async () => {
   // The provider itself only forwards generateObject's .object — invalid-output
   // classification is the enrich layer's job. First the provider level:
-  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
+  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
     const provider = aiSdkProvider({
       aiModuleLoader: fakeAiLoader(async () => ({ object: 42 }))
     });
@@ -388,7 +393,7 @@ test("ai-sdk live branch returns a non-object verbatim; enrich layer classifies 
 });
 
 test("ai-sdk live branch aborts on the timeout and maps it to ai_sdk_error", async () => {
-  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
+  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
     await withEnv("REVIEW_SURFACES_AI_TIMEOUT_MS", "10", async () => {
       const provider = aiSdkProvider({
         aiModuleLoader: fakeAiLoader(

@@ -75,6 +75,28 @@ const AGENT_INPUT_FIXTURE = JSON.stringify(
   2
 );
 
+test("comment rejects an unknown --review-scope value instead of silently using repo", () => {
+  const tmp = setupFixture("review-surfaces-scope-typo-");
+  try {
+    const result = runComment(tmp, ["--review-scope", "rp"]);
+    assert.notEqual(result.status, 0, "a typo'd review-scope must be a usage error");
+    assert.match(result.stderr, /Unknown --review-scope: rp/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("comment --review-scope pr --format sarif is a usage error (PR surface has no SARIF projection)", () => {
+  const tmp = setupFixture("review-surfaces-pr-sarif-");
+  try {
+    const result = runComment(tmp, ["--review-scope", "pr", "--format", "sarif"]);
+    assert.notEqual(result.status, 0, "sarif must not silently emit a whole-repo log in pr scope");
+    assert.match(result.stderr, /sarif is not supported with --review-scope pr/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.PROVIDERS.1 comment renders a compact sticky comment with status summary", () => {
   const tmp = setupFixture("review-surfaces-comment-");
   try {

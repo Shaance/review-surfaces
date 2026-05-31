@@ -75,7 +75,8 @@ areas:
     group_key: EVAL
     prefixes:
       - src/evaluation/
-    purpose: Map intent requirements to implementation and test evidence.
+      - src/scope/
+    purpose: Map intent requirements to implementation and test evidence (incl. the PR diff-scope mapping).
     pattern: evidence classifier
     test_keywords:
       - eval
@@ -126,7 +127,8 @@ areas:
       - src/evidence/
       - src/schema/
       - src/review-areas/
-    purpose: Represent and validate evidence references used by packet claims.
+      - src/pr/
+    purpose: Represent and validate evidence references and packet/PR-surface contracts used by packet claims.
     pattern: evidence model
     test_keywords:
       - evidence

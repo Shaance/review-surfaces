@@ -217,20 +217,20 @@ export function effectiveModelId(model: string | undefined): string {
 }
 
 /**
- * Parse a "--model <provider>:<model>" string. Unknown/absent provider prefixes
- * default to anthropic with a sensible default model. google:/openai: prefixes
- * are preserved (including the historical google: handling).
+ * Parse a "--model <provider>:<model>" string. Google/Gemini is the FIRST-CLASS
+ * default: an absent or unprefixed model resolves to google with GOOGLE_DEFAULT_MODEL.
+ * The anthropic:/openai:/google: prefixes select those providers explicitly.
  */
 export function resolveModel(model: string | undefined): ResolvedModel {
   const envModel = process.env.REVIEW_SURFACES_AI_MODEL;
   const raw = (model ?? envModel ?? "").trim();
   if (!raw) {
-    return { provider: "anthropic", modelId: ANTHROPIC_DEFAULT_MODEL };
+    return { provider: "google", modelId: GOOGLE_DEFAULT_MODEL };
   }
 
   const separator = raw.indexOf(":");
   if (separator === -1) {
-    return { provider: "anthropic", modelId: raw };
+    return { provider: "google", modelId: raw };
   }
 
   const prefix = raw.slice(0, separator).toLowerCase();
@@ -244,8 +244,8 @@ export function resolveModel(model: string | undefined): ResolvedModel {
       return { provider: "anthropic", modelId: rest || ANTHROPIC_DEFAULT_MODEL };
     default:
       // No recognized provider prefix (e.g. a bare model id that happens to
-      // contain a colon): default to anthropic, keep the full id.
-      return { provider: "anthropic", modelId: raw };
+      // contain a colon): default to google (Gemini), keep the full id.
+      return { provider: "google", modelId: raw };
   }
 }
 

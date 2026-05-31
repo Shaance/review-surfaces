@@ -32,9 +32,13 @@ import {
 } from "../render/packet";
 import { loadEvaluation } from "../render/load";
 import { renderCommentFromPacketFile, resolvePacketPath } from "../render/comment";
+import { renderPrComment } from "../render/pr-comment";
+import { assemblePrReviewSurface } from "../pipeline/pr-surface";
+import { evaluateBaseline } from "../evaluation/baseline";
+import { PrReviewSurfaceModel, ReviewScope } from "../pr/contract";
 import { renderSarifFromPacketFile } from "../render/sarif";
 import { postStickyComment } from "../render/post-comment";
-import { writeText } from "../core/files";
+import { writeJson, writeText } from "../core/files";
 import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import {
@@ -219,6 +223,13 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
   const specFlag = stringFlag(parsed, "spec");
   const runConfig = specFlag ? { ...config, specs: [specFlag] } : config;
   const provider = providerFlag(parsed, runConfig);
+  // PR mode produces a DETERMINISTIC mock whole-repo packet (the live provider is
+  // reserved for the diff-scoped narrative). Fold the EFFECTIVE packet provider —
+  // mock in pr mode — into the cache signature, NOT the requested one. Otherwise
+  // the mock side packet would be stamped under the requested provider's signature
+  // and a later `all --review-scope repo --provider ai-sdk --cache` with the same
+  // inputs would reuse the un-enriched mock packet instead of running the LLM.
+  const signatureProvider = reviewScope(parsed) === "pr" ? "mock" : provider;
   const collection = await collectInputs({
     cwd,
     config: runConfig,
@@ -230,8 +241,8 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
     coverageOutputPath: stringFlag(parsed, "coverage"),
     dogfood: isDogfoodRun(parsed),
     now: nowFlag(parsed),
-    provider,
-    model: signatureModel(parsed, runConfig, provider),
+    provider: signatureProvider,
+    model: signatureModel(parsed, runConfig, signatureProvider),
     conversationPath: stringFlag(parsed, "conversation"),
     agentInputPath: stringFlag(parsed, "agent-input"),
     configPath,
@@ -407,7 +418,13 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   const cacheSnapshot = booleanFlag(parsed, "cache") ? await readCacheSnapshot(cwd, parsed) : undefined;
   const { collection, config } = await collect(parsed);
   const artifactStore = createPipelineArtifactStoreForCollection(collection);
-  if (cacheSnapshot && isCacheHit(cacheSnapshot, collection.manifest.signature)) {
+  // The cache signature folds the whole-repo packet inputs, NOT --review-scope. In
+  // pr mode the PR surface is a separate artifact written further below; a plain
+  // signature hit would return before that block and leave pr_review_surface.json
+  // missing or stale-for-another-head. So in pr mode only honor the cache shortcut
+  // when a surface for the CURRENT head already exists; otherwise fall through to a
+  // full regenerate so the PR block runs and (re)writes it.
+  if (cacheSnapshot && isCacheHit(cacheSnapshot, collection.manifest.signature) && prSurfaceCacheReusable(parsed, collection, config)) {
     const strict = booleanFlag(parsed, "strict");
     const evaluation = loadEvaluation(collection.outputDir);
     // Under --strict the gate MUST run. If the cached output dir is incomplete
@@ -440,7 +457,16 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   const commands = [`review-surfaces ${parsed.command} ${process.argv.slice(3).join(" ")}`.trim()];
   const provider = providerFlag(parsed, config);
   const requestedModel = stringFlag(parsed, "model") ?? config.llm.model ?? undefined;
-  debug(parsed, `provider=${provider} model=${requestedModel ?? "(default)"}`);
+  const isPrScope = reviewScope(parsed) === "pr";
+  // PR-mode contract: scope/coverage/risks are DETERMINISTIC and the LLM authors
+  // ONLY the diff-scoped narrative. So in pr mode the whole-repo packet (a side
+  // artifact here) is built with `mock`: the live provider is NOT spent on
+  // whole-repo reasoning/enrichment (no wasted remote calls, no whole-repo context
+  // leak) and the intent/evaluation the PR surface is derived from stay byte-stable
+  // regardless of model output. The live provider is reserved for the PR narrative
+  // step below. In repo mode this is exactly the requested provider (unchanged).
+  const wholeRepoProvider: ProviderName = isPrScope ? "mock" : provider;
+  debug(parsed, `provider=${provider} wholeRepo=${wholeRepoProvider} model=${requestedModel ?? "(default)"}`);
   const reviewAreas = buildReviewAreas({ config, repoIndex: collection.repoIndex });
   const areasOption = reviewAreas.mode === "config" ? { areas: reviewAreas.areas } : {};
   const intent = await buildIntent(cwd, collection);
@@ -449,7 +475,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // Phase 3-2: schema-bound, evidence-gated reasoning stages run with the
   // resolved provider. The default mock provider returns not-ok, so every stage
   // is a no-op and the deterministic packet below stays byte-stable.
-  const reasoningProvider = providerFor(provider, {
+  const reasoningProvider = providerFor(wholeRepoProvider, {
     model: requestedModel,
     cwd,
     remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
@@ -490,12 +516,12 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     methodology,
     risks,
     architecture,
-    enrichment: notRequestedEnrichment(provider, requestedModel),
+    enrichment: notRequestedEnrichment(wholeRepoProvider, requestedModel),
     commands
   });
   const enrichment = await enrichPacket(packet, {
     cwd,
-    provider,
+    provider: wholeRepoProvider,
     model: requestedModel,
     agentInput: stringFlag(parsed, "agent-input"),
     outputDir: collection.outputDir,
@@ -529,12 +555,126 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // were produced from THESE inputs. writeReviewPacket writes the full set
   // (intent/evaluation/methodology/risks/review_packet, plus dogfood when present).
   await artifactStore.stampPacketArtifacts({ includeDogfood: dogfood !== undefined });
+  // PR review surface (--review-scope pr): a SEPARATE diff-scoped, LLM-narrated
+  // artifact (pr_review_surface.json) that the PR comment renders from. Requires
+  // an LLM provider; a blocked surface is written (never a whole-repo fallback).
+  if (isPrScope) {
+    // Evaluate the base ref in a throwaway worktree for the coverage delta
+    // (best-effort: degrades to current-status when the base can't be evaluated).
+    const baseEvaluation = await evaluateBaseline({
+      cwd,
+      baseRef: stringFlag(parsed, "base") ?? "origin/main",
+      configPath: stringFlag(parsed, "config") ?? "review-surfaces.config.yaml",
+      specFlag: stringFlag(parsed, "spec")
+    });
+    // The narrative is the ONLY LLM step in pr mode: build a fresh provider with
+    // the REQUESTED (live) provider/model here, separate from the deterministic
+    // whole-repo `reasoningProvider`. intent/evaluation come from the mock-built
+    // packet above, so the diff-scoped facts are deterministic per the contract.
+    // Record the EFFECTIVE model (incl. REVIEW_SURFACES_AI_MODEL env), not the raw
+    // CLI/config value, so surface reuse can tell an env-only model swap apart.
+    const narrativeModel = effectiveNarrativeModel(parsed, config);
+    const narrativeProvider = providerFor(provider, {
+      model: narrativeModel,
+      cwd,
+      remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
+      agentInput: stringFlag(parsed, "agent-input")
+    });
+    const surface = await assemblePrReviewSurface({
+      collection,
+      intent: packet.intent,
+      evaluation: packet.evaluation,
+      baseEvaluation,
+      reviewAreas: reviewAreas.areas,
+      provider: narrativeProvider,
+      providerName: provider,
+      model: narrativeModel,
+      redactSecrets: config.privacy.redact_secrets
+    });
+    await writeJson(path.join(collection.outputDir, "pr_review_surface.json"), surface);
+    // Materialize the diagram artifact the surface advertises (surface.diagram.path),
+    // so a consumer following the advertised path finds the .mmd it points at.
+    if (surface.diagram) {
+      const diagramPath = path.join(collection.outputDir, surface.diagram.path);
+      fs.mkdirSync(path.dirname(diagramPath), { recursive: true });
+      await writeText(diagramPath, surface.diagram.body);
+    }
+    if (surface.status === "blocked") {
+      console.warn(`PR review surface blocked (${surface.blocked_reason}); see pr_review_surface.json`);
+    }
+  }
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
   console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
   debug(parsed, `completed in ${Date.now() - startedAt}ms`);
+  // Gate on the REQUESTED provider, not wholeRepoProvider: in pr mode the narrative
+  // IS a remote call with the live provider, so a privacy-blocked diff must still
+  // trip the strict privacy gate (exit 5). The mock whole-repo evaluation has no
+  // invalid_evidence, so the evidence gate cannot false-positive from this.
   return applyGate(parsed, evaluation, collection, provider, config);
+}
+
+// --review-scope pr|repo. PR mode emits/reads the diff-scoped pr_review_surface;
+// repo mode (default, back-compatible) uses the whole-repo packet + comment. An
+// unknown value is a usage error, not a silent fallback to repo: the flag fully
+// selects the review surface (and whether `comment --post` publishes the PR or the
+// whole-repo sticky comment), so a typo like `--review-scope rp` must fail fast.
+function reviewScope(parsed: ParsedArgs): ReviewScope {
+  const raw = stringFlag(parsed, "review-scope");
+  if (raw === undefined || raw === "repo") {
+    return "repo";
+  }
+  if (raw === "pr") {
+    return "pr";
+  }
+  throw new CliError(`Unknown --review-scope: ${raw}. Use pr or repo.`, ExitCodes.usageError);
+}
+
+// Whether a --cache signature hit may be honored as-is. Always true in repo mode
+// (the cache governs the whole-repo packet it was built for). In pr mode the PR
+// surface is a separate artifact NOT covered by the signature, so the shortcut is
+// only safe when a READY pr_review_surface.json already exists for the CURRENT head
+// sha; otherwise we must regenerate so the surface is (re)written and matches HEAD.
+// A BLOCKED/failed surface (e.g. a prior run missing the LLM key or that timed out)
+// is never reusable: API-key availability and transient provider success are not in
+// the packet signature, so reusing it would never re-attempt the narrative even
+// after the key is added. Force regeneration for any non-ready surface.
+// The model the PR narrative actually resolves to: --model, else config.llm.model,
+// else the REVIEW_SURFACES_AI_MODEL env (the same precedence resolveModel uses).
+// Recording/comparing THIS, not the raw CLI/config value, lets surface reuse detect
+// an env-only model swap (where --model and config are both absent).
+function effectiveNarrativeModel(parsed: ParsedArgs, config: ReviewSurfacesConfig): string | undefined {
+  return stringFlag(parsed, "model") ?? config.llm.model ?? process.env.REVIEW_SURFACES_AI_MODEL ?? undefined;
+}
+
+function prSurfaceCacheReusable(parsed: ParsedArgs, collection: CollectionResult, config: ReviewSurfacesConfig): boolean {
+  if (reviewScope(parsed) !== "pr") {
+    return true;
+  }
+  const surfacePath = path.join(collection.outputDir, "pr_review_surface.json");
+  try {
+    const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8")) as {
+      status?: string;
+      scope?: { head_sha?: string; base_sha?: string; base_ref?: string };
+      llm?: { provider?: string; model?: string };
+    };
+    const requestedModel = effectiveNarrativeModel(parsed, config);
+    // The surface depends on head AND base (coverage delta) AND the narrative
+    // provider/model, none of which are in the whole-repo packet signature in pr
+    // mode. Reuse only a READY surface that matches all of them; otherwise (stale
+    // base, blocked surface, swapped provider/model) force a regenerate.
+    return (
+      surface?.status === "ready" &&
+      surface.scope?.head_sha === collection.git.head_sha &&
+      surface.scope?.base_sha === collection.git.base_sha &&
+      surface.scope?.base_ref === collection.git.base_ref &&
+      surface.llm?.provider === providerFlag(parsed, config) &&
+      (surface.llm?.model ?? undefined) === requestedModel
+    );
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -868,6 +1008,15 @@ async function runValidate(parsed: ParsedArgs): Promise<number> {
 // `review-surfaces all` rather than silently recomputing, for either format.
 async function runComment(parsed: ParsedArgs): Promise<number> {
   const format = stringFlag(parsed, "format") ?? "github";
+  // SARIF is a whole-repo packet projection; in pr scope the only surface is the
+  // diff-scoped GitHub comment (and pr mode never falls back to the whole-repo
+  // packet), so reject sarif here rather than silently emitting repo-scoped SARIF.
+  if (reviewScope(parsed) === "pr" && format === "sarif") {
+    throw new CliError(
+      "--format sarif is not supported with --review-scope pr (the PR surface renders only as a GitHub comment). Use --format github, or --review-scope repo for SARIF.",
+      ExitCodes.usageError
+    );
+  }
   if (format === "sarif") {
     return runCommentSarif(parsed);
   }
@@ -888,6 +1037,13 @@ async function runCommentGithub(parsed: ParsedArgs): Promise<number> {
   // packet `all` actually wrote. Passing undefined would hardcode .review-surfaces
   // and miss a config-set output_dir.
   const outDir = await resolveOutputDir(cwd, parsed);
+
+  // PR mode renders the diff-scoped surface and NEVER falls back to the
+  // whole-repo comment when it is missing/blocked.
+  if (reviewScope(parsed) === "pr") {
+    return runPrCommentGithub(cwd, outDir, parsed);
+  }
+
   const rendered = renderCommentFromPacketFile(cwd, outDir);
   if (!rendered) {
     throw missingPacketError(cwd, outDir);
@@ -900,6 +1056,32 @@ async function runCommentGithub(parsed: ParsedArgs): Promise<number> {
 
   if (booleanFlag(parsed, "post")) {
     const result = postStickyComment(cwd, rendered.markdown);
+    console.error(result.reason);
+  }
+  return ExitCodes.success;
+}
+
+// Render the PR-mode sticky comment from the diff-scoped pr_review_surface.json
+// (written by `all --review-scope pr`). Absent surface is a clean usage error
+// pointing at `all --review-scope pr`; never a whole-repo fallback.
+async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArgs): Promise<number> {
+  const surfacePath = path.join(outDir.endsWith(".json") ? path.dirname(outDir) : outDir, "pr_review_surface.json");
+  if (!fileExists(surfacePath)) {
+    throw new CliError(
+      `No PR review surface found at ${path.relative(cwd, surfacePath)}. Run \`review-surfaces all --review-scope pr --provider ai-sdk\` first.`,
+      ExitCodes.usageError
+    );
+  }
+  const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8")) as PrReviewSurfaceModel;
+  // Point the comment's "Full PR surface" pointer at the ACTUAL artifact path
+  // (honoring --out / config output_dir), not a hardcoded .review-surfaces.
+  const markdown = renderPrComment(surface, { surfacePath: path.relative(cwd, surfacePath) || surfacePath });
+  const commentPath = path.join(path.dirname(surfacePath), "comment.md");
+  await writeText(commentPath, markdown);
+  process.stdout.write(markdown);
+  console.error(`Wrote ${path.relative(cwd, commentPath)}`);
+  if (booleanFlag(parsed, "post")) {
+    const result = postStickyComment(cwd, markdown);
     console.error(result.reason);
   }
   return ExitCodes.success;
@@ -1135,6 +1317,14 @@ Options:
   --head <ref>      Head ref for diff collection, default HEAD
   --spec <path>     Feature spec path, default from config
   --out <dir>       Output directory, default .review-surfaces
+  --review-scope <s> all/comment: pr or repo (default repo). pr emits/reads a SEPARATE
+                   diff-scoped surface (pr_review_surface.json): changed files mapped to
+                   affected requirements, base-vs-head coverage delta, PR-specific risk
+                   candidates, a PR change-impact diagram, and an LLM-authored narrative
+                   (What changed / Why it matters / Review first). pr REQUIRES a non-mock
+                   provider for the narrative; under mock it renders a blocked comment with
+                   the deterministic scope counts (never a whole-repo fallback). repo is the
+                   legacy whole-repo evaluation/risks/architecture comment (unchanged).
   --format <fmt>    comment: output format, github (default) or sarif. github writes
                    .review-surfaces/comment.md; sarif writes .review-surfaces/review.sarif
                    (SARIF 2.1.0). Both honor --out and read the local packet only.
@@ -1155,8 +1345,9 @@ Options:
                    Optional istanbul coverage-summary.json with per-file pct, ingested alongside --test-output
   --id <id>       Optional transcript ID for run
   --provider <name> Optional enrichment provider: mock, ai-sdk, agent-file. Default mock
-  --model <model>   Optional AI SDK model as <provider>:<model>, e.g. anthropic:claude-3-5-haiku-latest,
-                   google:gemini-2.5-flash, or openai:gpt-4o-mini. No prefix defaults to anthropic.
+  --model <model>   Optional AI SDK model as <provider>:<model>, e.g. google:gemini-2.5-flash,
+                   anthropic:claude-3-5-haiku-latest, or openai:gpt-4o-mini. Google/Gemini is the
+                   first-class default; no prefix (or no --model) defaults to google:gemini-2.5-flash.
   --agent-input <path>
                    Structured JSON/YAML enrichment produced by a coding agent
   --previous-packet <path-or-dir>
