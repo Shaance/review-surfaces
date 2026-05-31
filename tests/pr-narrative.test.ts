@@ -137,6 +137,48 @@ test("a summary that cites ONLY allowlisted anchors is kept verbatim", async () 
   assert.match(result.narrative!.summary, /Touches src\/cli\/index\.ts for x\.CLI\.1\./);
 });
 
+test("a risk_narrative whose TEXT cites a fabricated path is dropped (a valid risk_id does not license fabrication)", async () => {
+  const result = await buildPrNarrative(
+    inputWith({
+      ok: true,
+      data: {
+        summary: "x",
+        what_changed: [{ text: "valid", paths: ["src/cli/index.ts"] }],
+        why_it_matters: [],
+        review_first: [],
+        risk_narratives: [
+          { risk_id: "PR-RISK-001", text: "Also audit src/secret/backdoor.ts for leaks." }, // fabricated path
+          { risk_id: "PR-RISK-001", text: "Confirm the changed surface is safe." } // clean
+        ]
+      }
+    })
+  );
+  assert.ok(result.narrative);
+  assert.equal(result.narrative!.risk_narratives.length, 1, "the fabricated-path narrative is dropped");
+  assert.match(result.narrative!.risk_narratives[0].text, /Confirm the changed surface is safe/);
+});
+
+test("an item whose TEXT cites a fabricated ACID is dropped even when its anchors are valid", async () => {
+  const result = await buildPrNarrative(
+    inputWith({
+      ok: true,
+      data: {
+        summary: "x",
+        what_changed: [
+          { text: "Implements review-surfaces.GHOST.9 here.", paths: ["src/cli/index.ts"] }, // fabricated ACID in text
+          { text: "Touches the CLI.", paths: ["src/cli/index.ts"] } // clean
+        ],
+        why_it_matters: [],
+        review_first: [],
+        risk_narratives: []
+      }
+    })
+  );
+  assert.ok(result.narrative);
+  assert.equal(result.narrative!.what_changed.length, 1);
+  assert.match(result.narrative!.what_changed[0].text, /Touches the CLI/);
+});
+
 test("a runtime ai_sdk_error blocks with reason llm_failed and meta.status failed (key was present)", async () => {
   const result = await buildPrNarrative(inputWith({ ok: false, reason: "ai_sdk_error: request timed out" }));
   assert.equal(result.narrative, undefined);

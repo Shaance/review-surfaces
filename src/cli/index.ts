@@ -591,10 +591,11 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   }
   console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
   debug(parsed, `completed in ${Date.now() - startedAt}ms`);
-  // Gate on the provider that actually produced `evaluation` (mock in pr mode), so
-  // a pr-mode run never reports a whole-repo privacy block for enrichment it
-  // deliberately did not attempt.
-  return applyGate(parsed, evaluation, collection, wholeRepoProvider, config);
+  // Gate on the REQUESTED provider, not wholeRepoProvider: in pr mode the narrative
+  // IS a remote call with the live provider, so a privacy-blocked diff must still
+  // trip the strict privacy gate (exit 5). The mock whole-repo evaluation has no
+  // invalid_evidence, so the evidence gate cannot false-positive from this.
+  return applyGate(parsed, evaluation, collection, provider, config);
 }
 
 // --review-scope pr|repo. PR mode emits/reads the diff-scoped pr_review_surface;
@@ -1034,7 +1035,9 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
     );
   }
   const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8")) as PrReviewSurfaceModel;
-  const markdown = renderPrComment(surface);
+  // Point the comment's "Full PR surface" pointer at the ACTUAL artifact path
+  // (honoring --out / config output_dir), not a hardcoded .review-surfaces.
+  const markdown = renderPrComment(surface, { surfacePath: path.relative(cwd, surfacePath) || surfacePath });
   const commentPath = path.join(path.dirname(surfacePath), "comment.md");
   await writeText(commentPath, markdown);
   process.stdout.write(markdown);

@@ -235,6 +235,9 @@ function validateItems(value: unknown, allowedPaths: Set<string>, allowedReqs: S
     if (offAllowlist) {
       continue; // any fabricated anchor drops the whole item
     }
+    if (!textCitesOnlyAllowed(raw.text, allowedPaths, allowedReqs)) {
+      continue; // the prose itself names a fabricated path/ACID — drop the item
+    }
     if (paths.length + requirementIds.length + riskIds.length === 0) {
       continue; // must cite at least one real anchor
     }
@@ -253,21 +256,22 @@ function validateItems(value: unknown, allowedPaths: Set<string>, allowedReqs: S
   return items.slice(0, MAX_ANCHORED_ITEMS);
 }
 
-// The summary is the most prominent prose field, so it gets the same
-// anchored-or-dropped discipline as the sections: scan it for path-like and
-// ACID-like tokens and, if it names any that is NOT on an allowlist, treat it as
-// having fabricated an anchor and replace it with a deterministic summary rather
-// than publishing the unvalidated LLM prose at the top of the comment.
-const SUMMARY_PATH_TOKEN = /\b[\w-]+(?:\/[\w.-]+)+\.[A-Za-z][\w]*\b/g; // e.g. src/foo/bar.ts
-const SUMMARY_ACID_TOKEN = /\b[A-Za-z][\w-]*\.[A-Za-z][\w-]*\.\d+\b/g; // e.g. review-surfaces.PRIVACY.2
+// Every free-text field (summary, item text, risk narrative text) gets the same
+// anchored-or-dropped discipline as the structured anchors: scan the prose for
+// path-like and ACID-like tokens and, if it names any that is NOT on an allowlist,
+// treat it as having fabricated a reference. A clean text passes; a polluted one is
+// replaced (summary) or its whole item/narrative is dropped. Risk ids (PR-RISK-NNN)
+// match neither pattern, so a risk narrative may still name its own risk id freely.
+const TEXT_PATH_TOKEN = /\b[\w-]+(?:\/[\w.-]+)+\.[A-Za-z][\w]*\b/g; // e.g. src/foo/bar.ts
+const TEXT_ACID_TOKEN = /\b[A-Za-z][\w-]*\.[A-Za-z][\w-]*\.\d+\b/g; // e.g. review-surfaces.PRIVACY.2
 
-function summaryCitesOnlyAllowed(text: string, allowedPaths: Set<string>, allowedReqs: Set<string>): boolean {
-  for (const match of text.matchAll(SUMMARY_PATH_TOKEN)) {
+function textCitesOnlyAllowed(text: string, allowedPaths: Set<string>, allowedReqs: Set<string>): boolean {
+  for (const match of text.matchAll(TEXT_PATH_TOKEN)) {
     if (!allowedPaths.has(match[0])) {
       return false;
     }
   }
-  for (const match of text.matchAll(SUMMARY_ACID_TOKEN)) {
+  for (const match of text.matchAll(TEXT_ACID_TOKEN)) {
     if (!allowedReqs.has(match[0])) {
       return false;
     }
@@ -279,7 +283,12 @@ function deterministicSummary(scope: PrScopeModel): string {
   return `${scope.changed_files.length} changed file(s) across ${scope.affected_areas.length} review area(s); ${scope.affected_requirements.length} affected requirement(s).`;
 }
 
-function validateRiskNarratives(value: unknown, allowedRisks: Set<string>): AnchoredRiskNarrative[] {
+function validateRiskNarratives(
+  value: unknown,
+  allowedRisks: Set<string>,
+  allowedPaths: Set<string>,
+  allowedReqs: Set<string>
+): AnchoredRiskNarrative[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -291,8 +300,17 @@ function validateRiskNarratives(value: unknown, allowedRisks: Set<string>): Anch
     if (!allowedRisks.has(raw.risk_id)) {
       continue;
     }
-    const item: AnchoredRiskNarrative = { risk_id: raw.risk_id, text: redact(raw.text) };
+    // The risk narrative free text gets the same anchored-or-dropped scan as the
+    // summary/items: a valid risk_id does not license fabricated paths/ACIDs in the
+    // prose. Suggested_checks are scanned too; a polluted one drops the narrative.
+    if (!textCitesOnlyAllowed(raw.text, allowedPaths, allowedReqs)) {
+      continue;
+    }
     const checks = asStringArray(raw.suggested_checks).map(redact);
+    if (checks.some((check) => !textCitesOnlyAllowed(check, allowedPaths, allowedReqs))) {
+      continue;
+    }
+    const item: AnchoredRiskNarrative = { risk_id: raw.risk_id, text: redact(raw.text) };
     if (checks.length > 0) {
       item.suggested_checks = checks.slice(0, 4);
     }
@@ -347,7 +365,7 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
   const whatChanged = validateItems(data.what_changed, allowedPaths, allowedRequirementIds, allowedRiskIds);
   const whyItMatters = validateItems(data.why_it_matters, allowedPaths, allowedRequirementIds, allowedRiskIds);
   const reviewFirst = validateItems(data.review_first, allowedPaths, allowedRequirementIds, allowedRiskIds);
-  const riskNarratives = validateRiskNarratives(data.risk_narratives, allowedRiskIds);
+  const riskNarratives = validateRiskNarratives(data.risk_narratives, allowedRiskIds, allowedPaths, allowedRequirementIds);
 
   // Require at least one validated item across the sections, else the surface is
   // blocked (deterministic-only is insufficient for PR mode).
@@ -363,7 +381,7 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
   // only ever risked shipping off-allowlist LLM prose into the persisted artifact.
   const rawSummary = typeof data.summary === "string" ? data.summary : "";
   const summary =
-    rawSummary !== "" && summaryCitesOnlyAllowed(rawSummary, allowedPaths, allowedRequirementIds)
+    rawSummary !== "" && textCitesOnlyAllowed(rawSummary, allowedPaths, allowedRequirementIds)
       ? redact(rawSummary)
       : deterministicSummary(input.scope);
   const narrative: PrNarrativeModel = {

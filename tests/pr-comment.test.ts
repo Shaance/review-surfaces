@@ -110,6 +110,19 @@ test("renderPrComment distinguishes a runtime LLM FAILURE from a missing provide
   assert.doesNotMatch(md, /configured key/i);
 });
 
+test("renderPrComment points the 'Full PR surface' link at the ACTUAL surface path (honors --out)", () => {
+  const md = renderPrComment(readySurface(), { surfacePath: "custom-out/pr_review_surface.json" });
+  assert.match(md, /Full PR surface: `custom-out\/pr_review_surface\.json`/);
+  assert.doesNotMatch(md, /\.review-surfaces\/pr_review_surface\.json/);
+});
+
+test("renderPrComment blocked message points at the actual surface path too", () => {
+  const blocked: PrReviewSurfaceModel = { ...readySurface(), status: "blocked", blocked_reason: "llm_unavailable", narrative: undefined, llm: { required: true, provider: "mock", status: "blocked" } };
+  const md = renderPrComment(blocked, { surfacePath: "custom-out/pr_review_surface.json" });
+  assert.match(md, /See `custom-out\/pr_review_surface\.json`/);
+  assert.doesNotMatch(md, /\.review-surfaces\/pr_review_surface\.json/);
+});
+
 test("renderPrComment is byte-deterministic for the same surface", () => {
   const surface = readySurface();
   assert.equal(renderPrComment(surface), renderPrComment(surface));

@@ -70,11 +70,20 @@ function renderDiagram(diagram: PrChangeDiagramModel | undefined): string[] {
   return ["", "### Change impact", "<details><summary>Change impact diagram</summary>", "", "```mermaid", body, "```", "", "</details>"];
 }
 
-function clampTotal(markdown: string): string {
+const DEFAULT_SURFACE_PATH = ".review-surfaces/pr_review_surface.json";
+
+export interface RenderPrCommentOptions {
+  // Relative path to the pr_review_surface.json the comment was rendered from, so
+  // the "Full PR surface" pointer matches the actual --out / config output_dir
+  // instead of hardcoding .review-surfaces.
+  surfacePath?: string;
+}
+
+function clampTotal(markdown: string, surfacePath: string): string {
   if (markdown.length <= MAX_COMMENT_CHARS) {
     return markdown;
   }
-  const trailer = "\n\n... truncated; see `.review-surfaces/pr_review_surface.json` for the full surface.\n";
+  const trailer = `\n\n... truncated; see \`${surfacePath}\` for the full surface.\n`;
   return `${markdown.slice(0, MAX_COMMENT_CHARS - trailer.length)}${trailer}`;
 }
 
@@ -83,8 +92,9 @@ function clampTotal(markdown: string): string {
  * given the surface. A blocked surface renders an explanation, not the generic
  * whole-repo comment.
  */
-export function renderPrComment(surface: PrReviewSurfaceModel): string {
+export function renderPrComment(surface: PrReviewSurfaceModel, options: RenderPrCommentOptions = {}): string {
   const providerLabel = surface.llm.model ? `${surface.llm.provider}/${surface.llm.model}` : surface.llm.provider;
+  const surfacePath = options.surfacePath ?? DEFAULT_SURFACE_PATH;
 
   if (surface.status === "blocked" || !surface.narrative) {
     const reason = surface.blocked_reason ?? "llm_unavailable";
@@ -109,9 +119,10 @@ export function renderPrComment(surface: PrReviewSurfaceModel): string {
         "",
         field(hint),
         "",
-        `Deterministic scope: ${surface.scope.changed_files.length} changed file(s), ${surface.scope.affected_requirements.length} affected requirement(s), ${surface.risks.candidates.length} PR risk(s). See \`.review-surfaces/pr_review_surface.json\`.`,
+        `Deterministic scope: ${surface.scope.changed_files.length} changed file(s), ${surface.scope.affected_requirements.length} affected requirement(s), ${surface.risks.candidates.length} PR risk(s). See \`${surfacePath}\`.`,
         ""
-      ].join("\n") + "\n"
+      ].join("\n") + "\n",
+      surfacePath
     );
   }
 
@@ -152,10 +163,10 @@ export function renderPrComment(surface: PrReviewSurfaceModel): string {
     renderRisks(surface),
     ...renderDiagram(surface.diagram),
     "",
-    "Full PR surface: `.review-surfaces/pr_review_surface.json`."
+    `Full PR surface: \`${surfacePath}\`.`
   );
 
-  return clampTotal(`${sections.join("\n")}\n`);
+  return clampTotal(`${sections.join("\n")}\n`, surfacePath);
 }
 
 function bulletsFromLines(lines: string[], emptyText: string): string {

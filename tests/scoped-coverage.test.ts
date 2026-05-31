@@ -123,6 +123,33 @@ test("PR coverage reports a removed_requirement for a base requirement deleted f
   assert.equal(cov.counts.removed_requirement, 1);
 });
 
+test("a PURE spec deletion is reported removed via its evidence path even with NO affected area", () => {
+  // Deleting a requirement leaves no head requirement to put its group in
+  // affected_areas, but the spec file it lived in IS a changed file, so its base
+  // spec evidence path matches a changed path.
+  const head = evaluation([result("x.PRIVACY.2", "satisfied")]);
+  const gone: RequirementResult = {
+    ...result("x.GONE.1", "satisfied"),
+    evidence: [{ kind: "spec", path: "features/gone.feature.yaml", confidence: "high", validation_status: "valid" }]
+  };
+  const base = evaluation([result("x.PRIVACY.2", "satisfied"), gone]);
+  const prScope: PrScopeModel = {
+    base_ref: "origin/main",
+    head_ref: "HEAD",
+    head_sha: "head",
+    diff_source: "range",
+    changed_files: [{ path: "features/gone.feature.yaml", status: "M", areas: [], role: "spec" }],
+    affected_areas: [], // pure spec deletion — no affected area for x.GONE
+    affected_requirements: [],
+    out_of_scope_changed_files: []
+  };
+  const cov = buildPrScopedCoverage({ scope: prScope, headEvaluation: head, baseEvaluation: base });
+  const removed = cov.deltas.find((d) => d.acai_id === "x.GONE.1");
+  assert.ok(removed, "a spec-deleted requirement is reported via evidence-path match even with no affected area");
+  assert.equal(removed!.delta, "removed_requirement");
+  assert.equal(cov.counts.removed_requirement, 1);
+});
+
 test("a base requirement removed OUTSIDE any affected area is NOT reported (only diff-touched removals)", () => {
   const head = evaluation([result("x.PRIVACY.2", "satisfied")]);
   const base = evaluation([result("x.PRIVACY.2", "satisfied"), result("x.UNRELATED.9", "satisfied")]);

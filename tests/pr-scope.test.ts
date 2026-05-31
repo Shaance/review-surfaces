@@ -319,6 +319,57 @@ test("spec_block_changed fires for a WHOLE-FILE spec ref (no line numbers) edite
   assert.equal(spec?.path, specPath);
 });
 
+test("exact_acid_in_diff does NOT fire when the acai_id is only on an unchanged CONTEXT line", () => {
+  const requirements = [
+    requirement({ id: "REQ-001", acai_id: "review-surfaces.PRIVACY.2", requirement: "Redact secrets." })
+  ];
+  // The ACID appears only on a context (unchanged) line; the actual added line does not.
+  const ctxDiff: StructuredDiffFile = {
+    path: "src/privacy/secrets.ts",
+    status: "M",
+    hunks: [
+      {
+        old_start: 10,
+        old_lines: 2,
+        new_start: 10,
+        new_lines: 2,
+        lines: [
+          { kind: "context", text: "// implements review-surfaces.PRIVACY.2", old_line: 10, new_line: 10 },
+          { kind: "add", text: "const unrelated = 1;", new_line: 11 }
+        ]
+      }
+    ]
+  };
+  const model = buildPrScope(
+    input({
+      collection: collectionStub([{ path: "src/privacy/secrets.ts", status: "M" }]),
+      intent: intentModel(requirements),
+      diff: { files: [ctxDiff] }
+    })
+  );
+  const req = model.affected_requirements.find((entry) => entry.requirement_id === "REQ-001");
+  // It is still scoped via changed_path_requirement_group (the impl file maps to PRIVACY),
+  // but must NOT carry a high-confidence exact_acid_in_diff reason from the context line.
+  assert.ok(!req?.reasons.some((reason) => reason.rule === "exact_acid_in_diff"), "context-line ACID must not fire exact_acid_in_diff");
+});
+
+test("a renamed file carries its old_path into the scoped changed file", () => {
+  const renameDiff: StructuredDiffFile = {
+    path: "src/intent/new-name.ts",
+    old_path: "src/intent/old-name.ts",
+    status: "R",
+    hunks: []
+  };
+  const model = buildPrScope(
+    input({
+      collection: collectionStub([{ path: "src/intent/new-name.ts", status: "R" }]),
+      diff: { files: [renameDiff] }
+    })
+  );
+  const file = model.changed_files.find((entry) => entry.path === "src/intent/new-name.ts");
+  assert.equal(file?.old_path, "src/intent/old-name.ts");
+});
+
 test("a mapped CONFIG/SCHEMA file (no ACID literal) scopes its group's requirements", () => {
   const schemaArea: ReviewArea = {
     id: "SUB-SCHEMA",

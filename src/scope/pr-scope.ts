@@ -70,6 +70,11 @@ export function buildPrScope(input: BuildPrScopeInput): PrScopeModel {
       areas,
       role: classifyRole(changedFile.path, areas)
     };
+    // Carry the rename source so the persisted surface / prompt / deleted_or_renamed
+    // risk can show what the file was renamed FROM, not just the new path.
+    if (diffFile?.old_path !== undefined) {
+      scoped.old_path = diffFile.old_path;
+    }
     if (counts.added !== undefined) {
       scoped.added_lines = counts.added;
     }
@@ -398,12 +403,18 @@ function lineCounts(diffFile: StructuredDiffFile | undefined): { added?: number;
   return { added, deleted };
 }
 
-// First diff line (add/delete/context) whose text contains the acai_id, with its
-// best available line number (new_line preferred, else old_line). Deterministic:
-// hunks and lines are scanned in file order.
+// First CHANGED diff line (add/delete only — never unchanged context) whose text
+// contains the acai_id, with its best available line number (new_line preferred,
+// else old_line). Context lines are excluded so a small edit NEAR an existing
+// `review-surfaces.X.Y` comment cannot pull an unrelated requirement into scope at
+// high confidence: the ACID-bearing line itself must have been added or deleted.
+// Deterministic: hunks and lines are scanned in file order.
 function firstAcidLine(diffFile: StructuredDiffFile, acaiId: string): { line?: number } | undefined {
   for (const hunk of diffFile.hunks) {
     for (const line of hunk.lines) {
+      if (line.kind === "context") {
+        continue;
+      }
       if (line.text.includes(acaiId)) {
         const lineNumber = line.new_line ?? line.old_line;
         return lineNumber !== undefined ? { line: lineNumber } : {};

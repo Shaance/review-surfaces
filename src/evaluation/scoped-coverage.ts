@@ -125,6 +125,7 @@ export function buildPrScopedCoverage(input: BuildPrScopedCoverageInput): PrScop
       input.scope.affected_requirements.flatMap((r) => [r.requirement_id, r.acai_id].filter((id): id is string => id !== undefined))
     );
     const affectedGroups = new Set(input.scope.affected_areas.map((area) => area.group_key));
+    const changedPaths = new Set(input.scope.changed_files.map((file) => file.path));
     for (const baseResult of input.baseEvaluation.results) {
       if (inScopeKeys.has(baseResult.requirement_id) || (baseResult.acai_id !== undefined && inScopeKeys.has(baseResult.acai_id))) {
         continue; // already reported as an in-scope head requirement
@@ -133,8 +134,15 @@ export function buildPrScopedCoverage(input: BuildPrScopedCoverageInput): PrScop
       if (stillAtHead) {
         continue; // not removed
       }
+      // "Touched by the diff" = the requirement's group is an affected area OR one
+      // of its (base) evidence paths is a changed file. The evidence-path check is
+      // essential for a PURE spec deletion: removing a requirement leaves no head
+      // requirement to put its group in affected_areas, but the spec file it was
+      // defined in IS a changed file, so its base spec evidence path matches.
       const group = baseResult.acai_id ? baseResult.acai_id.split(".")[1] : undefined;
-      if (!group || !affectedGroups.has(group)) {
+      const groupTouched = group !== undefined && affectedGroups.has(group);
+      const evidenceTouched = baseResult.evidence.some((ref) => ref.path !== undefined && changedPaths.has(ref.path));
+      if (!groupTouched && !evidenceTouched) {
         continue; // not touched by this diff
       }
       deltas.push({
