@@ -327,6 +327,31 @@ test("a requirement with NO group_key (LLM-derived) is anchored via its reason p
   assertBalanced(diagram.body);
 });
 
+test("a PATHLESS risk (no evidence path, e.g. large_diff) is anchored to the first file, never floating", () => {
+  const scope: PrScopeModel = {
+    base_ref: "origin/main",
+    head_ref: "HEAD",
+    head_sha: "HEAD",
+    diff_source: "range",
+    changed_files: [changedFile("src/a.ts", ["FOO"])],
+    affected_areas: [{ group_key: "FOO", area_ids: ["SUB-FOO"], name: "Foo", changed_files: ["src/a.ts"] }],
+    affected_requirements: [],
+    out_of_scope_changed_files: []
+  };
+  const risks: PrRiskModel = {
+    summary: "1 risk",
+    candidates: [
+      { id: "PR-RISK-001", rule: "large_diff", category: "testing", severity: "medium", summary: "big diff", evidence: [], suggested_checks: [] }
+    ]
+  };
+  const diagram = buildPrChangeDiagram({ scope, risks });
+
+  assert.equal(diagram.status, "valid");
+  // The pathless risk node K_0 has an incoming edge from the first file.
+  assert.match(diagram.body, /F0 --> K_0/);
+  assertBalanced(diagram.body);
+});
+
 // --- Local helpers -----------------------------------------------------------
 
 function pad(value: number): string {

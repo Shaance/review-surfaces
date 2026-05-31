@@ -571,8 +571,11 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     // the REQUESTED (live) provider/model here, separate from the deterministic
     // whole-repo `reasoningProvider`. intent/evaluation come from the mock-built
     // packet above, so the diff-scoped facts are deterministic per the contract.
+    // Record the EFFECTIVE model (incl. REVIEW_SURFACES_AI_MODEL env), not the raw
+    // CLI/config value, so surface reuse can tell an env-only model swap apart.
+    const narrativeModel = effectiveNarrativeModel(parsed, config);
     const narrativeProvider = providerFor(provider, {
-      model: requestedModel,
+      model: narrativeModel,
       cwd,
       remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
       agentInput: stringFlag(parsed, "agent-input")
@@ -585,7 +588,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       reviewAreas: reviewAreas.areas,
       provider: narrativeProvider,
       providerName: provider,
-      model: requestedModel,
+      model: narrativeModel,
       redactSecrets: config.privacy.redact_secrets
     });
     await writeJson(path.join(collection.outputDir, "pr_review_surface.json"), surface);
@@ -637,6 +640,14 @@ function reviewScope(parsed: ParsedArgs): ReviewScope {
 // is never reusable: API-key availability and transient provider success are not in
 // the packet signature, so reusing it would never re-attempt the narrative even
 // after the key is added. Force regeneration for any non-ready surface.
+// The model the PR narrative actually resolves to: --model, else config.llm.model,
+// else the REVIEW_SURFACES_AI_MODEL env (the same precedence resolveModel uses).
+// Recording/comparing THIS, not the raw CLI/config value, lets surface reuse detect
+// an env-only model swap (where --model and config are both absent).
+function effectiveNarrativeModel(parsed: ParsedArgs, config: ReviewSurfacesConfig): string | undefined {
+  return stringFlag(parsed, "model") ?? config.llm.model ?? process.env.REVIEW_SURFACES_AI_MODEL ?? undefined;
+}
+
 function prSurfaceCacheReusable(parsed: ParsedArgs, collection: CollectionResult, config: ReviewSurfacesConfig): boolean {
   if (reviewScope(parsed) !== "pr") {
     return true;
@@ -648,7 +659,7 @@ function prSurfaceCacheReusable(parsed: ParsedArgs, collection: CollectionResult
       scope?: { head_sha?: string; base_sha?: string; base_ref?: string };
       llm?: { provider?: string; model?: string };
     };
-    const requestedModel = stringFlag(parsed, "model") ?? config.llm.model ?? undefined;
+    const requestedModel = effectiveNarrativeModel(parsed, config);
     // The surface depends on head AND base (coverage delta) AND the narrative
     // provider/model, none of which are in the whole-repo packet signature in pr
     // mode. Reuse only a READY surface that matches all of them; otherwise (stale

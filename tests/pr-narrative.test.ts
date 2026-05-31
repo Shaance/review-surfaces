@@ -206,6 +206,27 @@ test("an item mentioning a DOT-PREFIXED allowlisted path (.github/...) is NOT fa
   assert.match(result.narrative!.summary, /\.github\/workflows\/ci\.yml/);
 });
 
+test("an item naming a root-level FABRICATED file (package.json, not changed) is dropped; 'Node.js' prose is kept", async () => {
+  const result = await buildPrNarrative(
+    inputWith({
+      ok: true,
+      data: {
+        summary: "x",
+        what_changed: [
+          { text: "Edits package.json dependencies.", paths: ["src/cli/index.ts"] }, // package.json not allowlisted -> drop
+          { text: "Bumps the Node.js runtime.", paths: ["src/cli/index.ts"] } // .js excluded -> prose, kept
+        ],
+        why_it_matters: [],
+        review_first: [],
+        risk_narratives: []
+      }
+    })
+  );
+  assert.ok(result.narrative);
+  assert.equal(result.narrative!.what_changed.length, 1, "the fabricated root-file item is dropped, the Node.js one survives");
+  assert.match(result.narrative!.what_changed[0].text, /Node\.js/);
+});
+
 test("a runtime ai_sdk_error blocks with reason llm_failed and meta.status failed (key was present)", async () => {
   const result = await buildPrNarrative(inputWith({ ok: false, reason: "ai_sdk_error: request timed out" }));
   assert.equal(result.narrative, undefined);

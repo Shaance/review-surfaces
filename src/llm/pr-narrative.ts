@@ -268,9 +268,19 @@ function validateItems(value: unknown, allowedPaths: Set<string>, allowedReqs: S
 // failed the allowlist match, and wrongly dropped valid items mentioning it.
 const TEXT_PATH_TOKEN = /(?<![\w./-])\.?[\w-]+(?:\/[\w.-]+)+\.[A-Za-z][\w]*/g; // e.g. src/foo/bar.ts, .github/x/ci.yml
 const TEXT_ACID_TOKEN = /\b[A-Za-z][\w-]*\.[A-Za-z][\w-]*\.\d+\b/g; // e.g. review-surfaces.PRIVACY.2
+// A ROOT-level filename has no slash, so TEXT_PATH_TOKEN misses it. Match a bare
+// filename with a known, file-only extension (e.g. package.json, tsconfig.json,
+// README.md). .js/.jsx are deliberately excluded: prose like "Node.js"/"Next.js"
+// would otherwise be misread as a fabricated path and drop a valid item.
+const TEXT_ROOT_FILE_TOKEN = /(?<![\w./-])[\w-]+\.(?:json|jsonc|ya?ml|toml|cfg|lock|sh|md|tsx?)\b/g;
 
 function textCitesOnlyAllowed(text: string, allowedPaths: Set<string>, allowedReqs: Set<string>): boolean {
   for (const match of text.matchAll(TEXT_PATH_TOKEN)) {
+    if (!allowedPaths.has(match[0])) {
+      return false;
+    }
+  }
+  for (const match of text.matchAll(TEXT_ROOT_FILE_TOKEN)) {
     if (!allowedPaths.has(match[0])) {
       return false;
     }

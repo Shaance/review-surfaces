@@ -288,6 +288,15 @@ function renderBody(
         }
       }
     }
+    // Final fallback for PATHLESS risks (large_diff, failed_or_skipped_test use
+    // missing evidence with no path): anchor to the first shown file so the risk is
+    // tied to the PR scope rather than rendered as a floating node.
+    if (!anchored) {
+      const firstFileId = fileNodeByPath.get(shownFiles[0]?.path ?? "");
+      if (firstFileId) {
+        edges.push(edgeLine(firstFileId, riskId));
+      }
+    }
   });
 
   // --- Overflow chain edges (keep overflow nodes connected, never floating) --
