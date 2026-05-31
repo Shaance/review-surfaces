@@ -3,20 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
-
-const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
-
-function initGitRepo(cwd: string): void {
-  execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
-  execFileSync("git", ["add", "-A"], { cwd, stdio: "ignore" });
-  execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd, stdio: "ignore" });
-}
-
-function runCli(cwd: string, args: string[]): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync("node", [CLI, ...args, "--out", ".review-surfaces"], { cwd, encoding: "utf8" });
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
-}
+import { spawnSync } from "node:child_process";
+import { CLI, initGitRepo, runCli } from "./helpers/cli-repo";
 
 function readJson(cwd: string, file: string): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(path.join(cwd, ".review-surfaces", file), "utf8"));

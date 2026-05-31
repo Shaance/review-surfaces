@@ -1,5 +1,6 @@
 import path from "node:path";
 import { readText } from "../core/files";
+import { isRecord } from "../core/guards";
 import { parseYaml } from "../core/simple-yaml";
 
 export interface AcaiSpecIndex {
@@ -132,8 +133,4 @@ function assertParsedSpec(value: unknown, specPath: string): asserts value is Pa
   if (value.constraints !== undefined && !isRecord(value.constraints)) {
     throw new Error(`Feature spec ${specPath} constraints must be an object`);
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

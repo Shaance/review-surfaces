@@ -1,0 +1,15 @@
+feature:
+  name: todo
+  product: todo-service-py
+  version: "1.0.0"
+components:
+  APP:
+    name: Todo app
+    requirements:
+      1: The app must expose adding a todo with a non-empty title.
+      2: The app must expose listing all todos.
+constraints:
+  QUALITY:
+    name: Quality
+    requirements:
+      1: The service must have unit tests covering the app surface.

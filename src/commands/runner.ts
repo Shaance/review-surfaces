@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
 import { ensureDir, relativePath, writeJson } from "../core/files";
+import { stripUndefined } from "../core/guards";
+import { redactForArtifact } from "../privacy/redact";
 import { redactSecrets } from "../privacy/secrets";
 import {
   COMMAND_TRANSCRIPT_EXCERPT_LIMIT,
@@ -62,8 +64,8 @@ export async function recordCommandTranscript(options: RecordCommandOptions): Pr
     duration_ms: Math.max(0, completed.getTime() - started.getTime()),
     started_at: started.toISOString(),
     completed_at: completed.toISOString(),
-    stdout_excerpt: redact(stdout.excerpt()),
-    stderr_excerpt: redact(stderr.excerpt()),
+    stdout_excerpt: boundExcerpt(stdout),
+    stderr_excerpt: boundExcerpt(stderr),
     stdout_hash: stdout.hash(),
     stderr_hash: stderr.hash(),
     truncated: stdout.truncated || stderr.truncated
@@ -130,38 +132,64 @@ async function writeTranscriptFile(
   return relativePath(cwd, absolutePath);
 }
 
+// Raw capture cap: bound memory while giving redaction enough context to catch a
+// secret that straddles the final excerpt limit. Redaction + the final bound to
+// COMMAND_TRANSCRIPT_EXCERPT_LIMIT happen at read time in boundExcerpt(), NOT on
+// each write, so a secret split across two chunks (or across the limit) is still
+// removed before slicing. The sha256 digest keeps hashing the FULL raw stream.
+const RAW_EXCERPT_CAP = COMMAND_TRANSCRIPT_EXCERPT_LIMIT * 4;
+
 class BoundedStreamCapture {
   private readonly digest = crypto.createHash("sha256");
   private readonly chunks: string[] = [];
-  private excerptLength = 0;
+  private rawLength = 0;
   private sawContent = false;
   truncated = false;
 
   write(chunk: any): void {
     this.sawContent = true;
     this.digest.update(chunk);
-    if (this.excerptLength >= COMMAND_TRANSCRIPT_EXCERPT_LIMIT) {
+    if (this.rawLength >= RAW_EXCERPT_CAP) {
       this.truncated = true;
       return;
     }
 
     const text = chunk.toString("utf8");
-    const available = COMMAND_TRANSCRIPT_EXCERPT_LIMIT - this.excerptLength;
-    const excerpt = text.slice(0, available);
-    this.chunks.push(excerpt);
-    this.excerptLength += excerpt.length;
+    const available = RAW_EXCERPT_CAP - this.rawLength;
+    const captured = text.slice(0, available);
+    this.chunks.push(captured);
+    this.rawLength += captured.length;
     if (text.length > available) {
       this.truncated = true;
     }
   }
 
-  excerpt(): string | undefined {
+  rawExcerpt(): string | undefined {
     return this.sawContent ? this.chunks.join("") : undefined;
+  }
+
+  markTruncated(): void {
+    this.truncated = true;
   }
 
   hash(): string | undefined {
     return this.sawContent ? this.digest.copy().digest("hex") : undefined;
   }
+}
+
+// Redact the captured raw stream, THEN bound to the excerpt limit. Setting
+// truncated here keeps the flag reflecting BOTH a raw-cap overflow and the
+// post-redaction bound (the redacted text can be longer or shorter than raw).
+function boundExcerpt(capture: BoundedStreamCapture): string | undefined {
+  const raw = capture.rawExcerpt();
+  if (raw === undefined) {
+    return undefined;
+  }
+  const { excerpt, truncated } = redactForArtifact(raw, COMMAND_TRANSCRIPT_EXCERPT_LIMIT);
+  if (truncated) {
+    capture.markTruncated();
+  }
+  return excerpt;
 }
 
 function defaultTranscriptId(args: string[]): string {
@@ -207,8 +235,4 @@ function redact(value: string | undefined): string | undefined {
 
 function errorHasCode(error: Error, code: string): boolean {
   return typeof (error as { code?: unknown }).code === "string" && (error as { code?: string }).code === code;
-}
-
-function stripUndefined<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value));
 }

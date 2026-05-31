@@ -6,6 +6,8 @@ import { CommandTranscript, commandTranscriptInputDir, commandTranscriptOutputPa
 import { ReviewSurfacesConfig } from "../config/config";
 import { filterPathsByPatterns, walkFiles } from "../core/glob";
 import { ensureDir, fileExists, hashFile, isRegularFile, writeJson, writeText } from "../core/files";
+import { VERSION } from "../core/version";
+import { compareStrings } from "../core/compare";
 import { FeedbackFile, indexFeedbackFiles } from "../feedback/feedback";
 import { filterIgnoredDiff } from "../privacy/diff";
 import { loadPrivacyIgnore } from "../privacy/ignore";
@@ -19,11 +21,11 @@ import {
   TEST_RESULTS_SCHEMA_VERSION,
   TestResults
 } from "../tests-evidence/junit";
-import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, GitInfo } from "./git";
+import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, gitInfoDiagnostics, GitInfo } from "./git";
 
 export const REPO_INDEX_SCHEMA_VERSION = "review-surfaces.repo.index.v1";
 
-export const TOOL_VERSION = "0.1.0";
+export const TOOL_VERSION = VERSION;
 
 // A frozen-clock provider: a fixed ISO string or a function returning one. When
 // the CLI passes a fixed string (from --now) two runs with the same inputs
@@ -108,6 +110,14 @@ export interface CollectionResult {
     remote_provider_blocked: boolean;
   };
   git: GitInfo;
+  // R6: human-readable collection warnings (unresolved base ref, working-tree
+  // diff fallback, not-a-git-repo). Surfaced to stderr by the CLI; NOT written
+  // into any byte-stable on-disk artifact (the manifest write below lists its
+  // fields explicitly and nothing spreads the whole collection into a packet).
+  diagnostics: string[];
+  // R6: whether the diff/changed-file set came from the base...head range or
+  // fell back to a bare working-tree diff (e.g. base ref did not resolve).
+  diff_source: "range" | "working_tree_fallback";
 }
 
 export interface CollectOptions {
@@ -175,15 +185,32 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     testOutputPaths.length > 0 || options.coverageOutputPath
       ? ingestTestOutputs(options.cwd, testOutputPaths, options.coverageOutputPath)
       : emptyTestResults();
+  // R6: collect human-readable degradation warnings from the git layer
+  // (unresolved base ref, working-tree diff fallback, not-a-git-repo) and the
+  // resolved diff source. These are surfaced to stderr by the CLI; they are NOT
+  // serialized into any byte-stable artifact.
+  const diagnostics: string[] = [];
   const git = collectGitInfo(options.cwd, options.baseRef, options.headRef);
-  const allChangedFiles = collectChangedFiles(options.cwd, options.baseRef, options.headRef);
+  diagnostics.push(...gitInfoDiagnostics(options.cwd, options.baseRef));
+  const changedFilesResult = collectChangedFiles(options.cwd, options.baseRef, options.headRef);
+  diagnostics.push(...changedFilesResult.diagnostics);
+  const allChangedFiles = changedFilesResult.files;
   const changedFiles = allChangedFiles.filter((file) => !ignore.isIgnored(file.path));
   const ignoredChangedFiles = allChangedFiles.filter((file) => ignore.isIgnored(file.path)).map((file) => file.path);
-  const rawDiff = collectDiff(options.cwd, options.baseRef, options.headRef);
+  const diffResult = collectDiff(options.cwd, options.baseRef, options.headRef);
+  diagnostics.push(...diffResult.diagnostics);
+  const rawDiff = diffResult.text;
+  const diffSource = diffResult.diffSource;
   const filteredDiff = filterIgnoredDiff(rawDiff, ignore.isIgnored);
+  // R4.6 (mirror of provider.ts split): ALWAYS compute the secret-block signal
+  // so a PEM/provider-token in the diff sets remote_provider_blocked regardless
+  // of redact_secrets. Only substitute the redacted text onto disk when
+  // redact_secrets is true; when false, keep the raw filtered diff on disk but
+  // still honor the computed block.
+  const secretScan = redactSecrets(filteredDiff);
   const redactedDiff = options.config.privacy.redact_secrets
-    ? redactSecrets(filteredDiff)
-    : { text: filteredDiff, redactions: [], blocked: false };
+    ? secretScan
+    : { text: filteredDiff, redactions: [], blocked: secretScan.blocked };
   const commits = collectCommits(options.cwd, options.baseRef, options.headRef);
   const docs = docPaths.map((docPath) => ({ path: docPath, kind: classifyDoc(docPath) }));
   const tests = testPaths.map((testPath) => ({ path: testPath, kind: "test" }));
@@ -368,7 +395,12 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     repositoryFiles,
     repoIndex,
     privacy,
-    git
+    git,
+    // Insertion-ordered + deduped so the CLI's stderr output is stable and free
+    // of duplicate warnings (the same base-ref failure can surface from both the
+    // git-info step and the changed-files/diff fallbacks).
+    diagnostics: [...new Set(diagnostics)],
+    diff_source: diffSource
   };
 }
 
@@ -486,16 +518,16 @@ function computeSignature(input: SignatureInput): string {
     run_mode: input.runMode,
     milestone: input.milestone ?? null,
     input_hashes: [...input.inputHashes]
-      .sort((left, right) => left.path.localeCompare(right.path))
+      .sort((left, right) => compareStrings(left.path, right.path))
       .map((entry) => ({ path: entry.path, kind: entry.kind, hash: entry.hash })),
     changed_files: [...input.changedFileHashes]
-      .sort((left, right) => left.path.localeCompare(right.path))
+      .sort((left, right) => compareStrings(left.path, right.path))
       .map((entry) => ({ path: entry.path, status: entry.status, hash: entry.hash })),
     // Sorted by kind then path so the key is independent of the order flags were
     // supplied. Empty when no flag-input files were given, leaving the default
     // (no-flag) signature byte-identical to before this addition.
     flag_inputs: [...input.flagInputHashes]
-      .sort((left, right) => left.kind.localeCompare(right.kind) || left.path.localeCompare(right.path))
+      .sort((left, right) => compareStrings(left.kind, right.kind) || compareStrings(left.path, right.path))
       .map((entry) => ({ kind: entry.kind, path: entry.path, hash: entry.hash }))
   };
   return crypto.createHash("sha256").update(JSON.stringify(fingerprint)).digest("hex");

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { readText } from "../core/files";
+import { isRecord } from "../core/guards";
 import { parseYaml } from "../core/simple-yaml";
 import { EvidenceRef, feedbackEvidence } from "../evidence/evidence";
 import {
@@ -106,8 +107,4 @@ function stringArray(value: unknown): string[] {
 
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

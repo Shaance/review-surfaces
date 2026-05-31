@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileExists } from "../core/files";
+import { isRecord } from "../core/guards";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 import { RisksModel } from "../risks/risks";
 import { countRequirementStatuses, RequirementStatusCount } from "../evaluation/status";
+import { compareStrings } from "../core/compare";
 import type { PacketComparisonDirection } from "../schema/review-packet-contract";
 
 // ---------------------------------------------------------------------------
@@ -192,7 +194,7 @@ function computeStatusChanges(previous: EvaluationModel, current: EvaluationMode
     });
   }
 
-  return changes.sort((left, right) => left.acai_id.localeCompare(right.acai_id));
+  return changes.sort((left, right) => compareStrings(left.acai_id, right.acai_id));
 }
 
 // Key a result by its acai_id when present, else by requirement_id, so the same
@@ -243,8 +245,8 @@ function computeOverreachChanges(
 ): Pick<PacketComparison, "new_overreach" | "resolved_overreach"> {
   const previousPaths = overreachPaths(previous);
   const currentPaths = overreachPaths(current);
-  const newOverreach = [...currentPaths].filter((filePath) => !previousPaths.has(filePath)).sort((a, b) => a.localeCompare(b));
-  const resolvedOverreach = [...previousPaths].filter((filePath) => !currentPaths.has(filePath)).sort((a, b) => a.localeCompare(b));
+  const newOverreach = [...currentPaths].filter((filePath) => !previousPaths.has(filePath)).sort((a, b) => compareStrings(a, b));
+  const resolvedOverreach = [...previousPaths].filter((filePath) => !currentPaths.has(filePath)).sort((a, b) => compareStrings(a, b));
   return { new_overreach: newOverreach, resolved_overreach: resolvedOverreach };
 }
 
@@ -269,8 +271,8 @@ function computeRiskChanges(
 ): Pick<PacketComparison, "new_risks" | "resolved_risks"> {
   const previousRisks = riskKeys(previous.items ?? []);
   const currentRisks = riskKeys(current.items ?? []);
-  const newRisks = [...currentRisks].filter((key) => !previousRisks.has(key)).sort((a, b) => a.localeCompare(b));
-  const resolvedRisks = [...previousRisks].filter((key) => !currentRisks.has(key)).sort((a, b) => a.localeCompare(b));
+  const newRisks = [...currentRisks].filter((key) => !previousRisks.has(key)).sort((a, b) => compareStrings(a, b));
+  const resolvedRisks = [...previousRisks].filter((key) => !currentRisks.has(key)).sort((a, b) => compareStrings(a, b));
   return { new_risks: newRisks, resolved_risks: resolvedRisks };
 }
 
@@ -371,10 +373,6 @@ const RISK_CATEGORIES = new Set<string>([
 
 function isRiskCategory(value: unknown): value is RisksModel["items"][number]["category"] {
   return typeof value === "string" && RISK_CATEGORIES.has(value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function asArray(value: unknown): unknown[] {

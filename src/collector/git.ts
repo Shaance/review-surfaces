@@ -1,6 +1,7 @@
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { isRegularFile } from "../core/files";
+import { compareStrings } from "../core/compare";
 
 export interface GitInfo {
   repo: string;
@@ -16,6 +17,23 @@ export interface ChangedFile {
   source: "diff" | "working_tree";
 }
 
+// R6: whether the changed-file set / diff was derived from the requested
+// base...head range or fell back to a bare working-tree diff (e.g. the base ref
+// did not resolve). Surfaced to the CLI for stderr diagnostics; never persisted.
+export type DiffSource = "range" | "working_tree_fallback";
+
+export interface ChangedFilesResult {
+  files: ChangedFile[];
+  diffSource: DiffSource;
+  diagnostics: string[];
+}
+
+export interface DiffResult {
+  text: string;
+  diffSource: DiffSource;
+  diagnostics: string[];
+}
+
 export function collectGitInfo(cwd: string, baseRef: string, headRef: string): GitInfo {
   return {
     repo: remoteRepoName(cwd),
@@ -26,9 +44,41 @@ export function collectGitInfo(cwd: string, baseRef: string, headRef: string): G
   };
 }
 
-export function collectChangedFiles(cwd: string, baseRef: string, headRef: string): ChangedFile[] {
+// R6: diagnostics for the GitInfo resolution step. Separated from collectGitInfo
+// so its GitInfo return (embedded in the byte-stable manifest) is unchanged.
+// Warns when the directory is not a git repo and when the base ref does not
+// resolve to a sha.
+export function gitInfoDiagnostics(cwd: string, baseRef: string): string[] {
+  const diagnostics: string[] = [];
+  if (!isGitRepo(cwd)) {
+    diagnostics.push(`not a git repository at ${cwd}; review range and diff are empty`);
+    return diagnostics;
+  }
+  if (revParse(cwd, baseRef) === undefined) {
+    diagnostics.push(`base ref "${baseRef}" did not resolve; comparing against the working tree instead`);
+  }
+  return diagnostics;
+}
+
+function isGitRepo(cwd: string): boolean {
+  return git(cwd, ["rev-parse", "--is-inside-work-tree"]) === "true";
+}
+
+export function collectChangedFiles(cwd: string, baseRef: string, headRef: string): ChangedFilesResult {
+  const diagnostics: string[] = [];
   const byPath = new Map<string, ChangedFile>();
-  const diffOutput = git(cwd, ["diff", "--name-status", "-z", `${baseRef}...${headRef}`]) ?? git(cwd, ["diff", "--name-status", "-z"]);
+  // Behavior-preserving: the original used `range ?? bare`, which only fell
+  // through on undefined (a git error), NOT on an empty-but-successful range
+  // diff ("" is not nullish). We replicate that: fall back to the bare
+  // working-tree diff only when the range command errors.
+  const rangeOutput = git(cwd, ["diff", "--name-status", "-z", `${baseRef}...${headRef}`]);
+  let diffSource: DiffSource = "range";
+  let diffOutput = rangeOutput;
+  if (rangeOutput === undefined) {
+    diffSource = "working_tree_fallback";
+    diffOutput = git(cwd, ["diff", "--name-status", "-z"]);
+    diagnostics.push(`could not diff ${baseRef}...${headRef}; fell back to working-tree changes`);
+  }
   if (diffOutput) {
     for (const changedFile of parseDiffNameStatusOutput(diffOutput)) {
       byPath.set(changedFile.path, changedFile);
@@ -44,7 +94,8 @@ export function collectChangedFiles(cwd: string, baseRef: string, headRef: strin
     }
   }
 
-  return [...byPath.values()].sort((left, right) => left.path.localeCompare(right.path));
+  const files = [...byPath.values()].sort((left, right) => compareStrings(left.path, right.path));
+  return { files, diffSource, diagnostics };
 }
 
 function parseDiffNameStatusOutput(output: string): ChangedFile[] {
@@ -97,13 +148,22 @@ function splitNullOutput(output: string): string[] {
   return output.split("\0").filter((field) => field !== "");
 }
 
-export function collectDiff(cwd: string, baseRef: string, headRef: string): string {
+export function collectDiff(cwd: string, baseRef: string, headRef: string): DiffResult {
+  const diagnostics: string[] = [];
+  const rangeDiff = git(cwd, ["diff", `${baseRef}...${headRef}`]);
+  let diffSource: DiffSource = "range";
+  if (rangeDiff === undefined) {
+    diffSource = "working_tree_fallback";
+    diagnostics.push(`could not produce a ${baseRef}...${headRef} diff; using working-tree diff only`);
+  }
+  // text is computed identically to before (same parts, same Boolean filter,
+  // same join) so .review-surfaces/inputs/diff.patch bytes are unchanged.
   const parts = [
-    git(cwd, ["diff", `${baseRef}...${headRef}`]),
+    rangeDiff,
     git(cwd, ["diff", "--cached"]),
     git(cwd, ["diff"])
   ].filter((part): part is string => Boolean(part));
-  return parts.join("\n");
+  return { text: parts.join("\n"), diffSource, diagnostics };
 }
 
 export function collectCommits(cwd: string, baseRef: string, headRef: string): Array<Record<string, string>> {

@@ -160,7 +160,9 @@ function collectionFixture(cwd: string, outputDir: string): CollectionResult {
       base_ref: "origin/main",
       head_ref: "HEAD",
       head_sha: "HEAD"
-    }
+    },
+    diagnostics: [],
+    diff_source: "range"
   };
 }
 

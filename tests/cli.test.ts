@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { validateJsonSchema } from "../src/schema/json-schema";
+import { ExitCodes } from "../src/core/exit-codes";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
 const PACKET_SCHEMA = JSON.parse(
@@ -495,4 +496,77 @@ test("review-surfaces.CLI.7 bin run records bootstrap build failures without dis
   assert.equal(transcript.exit_code, 7);
   assert.match(transcript.command, /node -e/);
   assert.match(transcript.stderr_excerpt, /bootstrap build failed/);
+});
+
+// review-surfaces R7 / R6 CLI surfaces (Lane E behavior already landed; these
+// additions pin it). (a) validate on an ABSENT packet is a USAGE error (exit 2),
+// not a schema-validation failure (exit 3). (b) a present packet whose
+// schema_version mismatches the contract prints a regenerate message and returns
+// 3. (c) a --verbose run prints debug lines to stderr while a non-verbose run is
+// byte-silent on stderr (artifacts unaffected). Assertions are exit-code /
+// sentinel based, not exact wording.
+
+test("review-surfaces.CLI validate on a MISSING review_packet.json returns the usage-error exit code", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-validate-missing-"));
+  try {
+    fs.mkdirSync(path.join(tmp, "schemas"), { recursive: true });
+    fs.copyFileSync(
+      path.join(process.cwd(), "schemas", "review_packet.schema.json"),
+      path.join(tmp, "schemas", "review_packet.schema.json")
+    );
+    const run = spawnSync("node", [CLI, "validate"], { cwd: tmp, encoding: "utf8" });
+    assert.equal(run.status, ExitCodes.usageError, `an absent packet must be a usage error (2): ${run.stderr}`);
+    assert.notEqual(run.status, ExitCodes.schemaValidationFailed, "an absent packet must NOT be reported as a schema-validation failure");
+    assert.match(run.stderr, /No review packet JSON found|review-surfaces all/, `expected a usage diagnostic, got:\n${run.stderr}`);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI validate on a wrong schema_version prints a regenerate message and returns the schema-validation exit code", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-validate-badver-"));
+  try {
+    fs.mkdirSync(path.join(tmp, "schemas"), { recursive: true });
+    fs.copyFileSync(
+      path.join(process.cwd(), "schemas", "review_packet.schema.json"),
+      path.join(tmp, "schemas", "review_packet.schema.json")
+    );
+    fs.mkdirSync(path.join(tmp, ".review-surfaces"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, ".review-surfaces", "review_packet.json"),
+      JSON.stringify({ schema_version: "review-surfaces.packet.vX" })
+    );
+    const run = spawnSync("node", [CLI, "validate"], { cwd: tmp, encoding: "utf8" });
+    assert.equal(run.status, ExitCodes.schemaValidationFailed, `a wrong schema_version must return 3: ${run.stderr}`);
+    assert.match(run.stderr, /regenerate/, `expected a regenerate message, got:\n${run.stderr}`);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI --verbose prints debug lines to stderr while a non-verbose run does not", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-verbose-"));
+  try {
+    fs.writeFileSync(path.join(tmp, "README.md"), "# repo\n");
+    fs.writeFileSync(path.join(tmp, ".gitignore"), ".review-surfaces/\n");
+    execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
+
+    const baseArgs = ["all", "--base", "HEAD", "--head", "HEAD", "--provider", "mock", "--out", ".review-surfaces"];
+
+    const plain = spawnSync("node", [CLI, ...baseArgs], { cwd: tmp, encoding: "utf8" });
+    assert.equal(plain.status, 0, plain.stderr);
+    assert.equal(plain.stderr, "", "a healthy non-verbose run is byte-silent on stderr");
+
+    const verbose = spawnSync("node", [CLI, ...baseArgs, "--verbose"], { cwd: tmp, encoding: "utf8" });
+    assert.equal(verbose.status, 0, verbose.stderr);
+    assert.match(verbose.stderr, /\[review-surfaces\]/, "verbose prints the debug-prefixed diagnostics to stderr");
+
+    // Artifacts are unaffected by the verbose flag (debug is stderr-only).
+    const plainPacket = fs.readFileSync(path.join(tmp, ".review-surfaces", "review_packet.json"), "utf8");
+    assert.ok(plainPacket.length > 0, "the verbose run still wrote the packet");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });

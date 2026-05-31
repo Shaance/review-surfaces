@@ -115,13 +115,13 @@ test("collector records staged and committed renames by their new path", () => {
     const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
 
     execFileSync("git", ["mv", oldPath, newPath], { cwd: tmp, stdio: "ignore" });
-    const staged = collectChangedFiles(tmp, "HEAD", "HEAD");
+    const staged = collectChangedFiles(tmp, "HEAD", "HEAD").files;
     assert.ok(staged.some((file) => file.path === newPath && file.status.startsWith("R")), "staged rename must use the new path");
     assert.ok(!staged.some((file) => file.path === `${oldPath} -> ${newPath}`), "staged rename must not keep porcelain's old -> new display path");
     assert.ok(!staged.some((file) => file.path.includes("\"")), "staged rename paths must be unquoted");
 
     execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "rename"], { cwd: tmp, stdio: "ignore" });
-    const committed = collectChangedFiles(tmp, base, "HEAD");
+    const committed = collectChangedFiles(tmp, base, "HEAD").files;
     assert.deepEqual(
       committed.filter((file) => file.path === newPath).map((file) => file.source),
       ["diff"],

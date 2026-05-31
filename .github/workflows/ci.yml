@@ -1,0 +1,71 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need origin/main for --base origin/main
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.8.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm test
+      - name: Assert pack ships dist + schemas
+        run: |
+          out="$(npm pack --dry-run 2>&1)"
+          echo "$out"
+          echo "$out" | grep -q 'dist/src/cli/index.js' || { echo 'MISSING dist/src/cli/index.js in pack'; exit 1; }
+          echo "$out" | grep -q 'schemas/review_packet.schema.json' || { echo 'MISSING schemas/review_packet.schema.json in pack'; exit 1; }
+      - name: Self-dogfood (mock, frozen clock)
+        run: |
+          node bin/review-surfaces.js all \
+            --provider mock \
+            --base origin/main \
+            --head HEAD \
+            --spec features/review-surfaces.feature.yaml \
+            --dogfood \
+            --strict \
+            --now 2026-01-01T00:00:00Z \
+            --out .review-surfaces
+      - name: Validate emitted packet
+        run: node bin/review-surfaces.js validate .review-surfaces
+      - name: Determinism check
+        run: ./scripts/determinism-check.sh
+
+  locale-invariance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.8.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Generate tr_TR.UTF-8 locale
+        run: sudo locale-gen tr_TR.UTF-8 || sudo localedef -i tr_TR -f UTF-8 tr_TR.UTF-8 || true
+      - name: Tests under LANG=C
+        run: pnpm test
+        env:
+          LANG: C
+          LC_ALL: C
+      - name: Tests under Turkish locale (dotted-i hazard)
+        run: pnpm test
+        env:
+          LANG: tr_TR.UTF-8
+          LC_ALL: tr_TR.UTF-8

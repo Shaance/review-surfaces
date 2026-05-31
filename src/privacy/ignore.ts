@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileExists, readText, toPosixPath } from "../core/files";
 import { globToRegExp } from "../core/glob";
+import { unique } from "../core/guards";
 
 export const DEFAULT_PRIVACY_IGNORE_PATTERNS = [
   ".env",
@@ -102,8 +103,4 @@ function hasGlob(pattern: string): boolean {
 
 function normalizeRelativePath(filePath: string): string {
   return toPosixPath(filePath).replace(/^\.\/+/, "").replace(/^\/+/, "");
-}
-
-function unique(values: string[]): string[] {
-  return [...new Set(values)];
 }

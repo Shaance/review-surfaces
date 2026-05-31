@@ -57,14 +57,10 @@ test("pipeline artifact store stamps the shared packet artifact set consistently
     const manifest = JSON.parse(fs.readFileSync(path.join(tmp, "manifest.json"), "utf8")) as {
       artifact_signatures: Record<string, string>;
     };
-    for (const artifact of [
-      PROVENANCE_ARTIFACTS.intent,
-      PROVENANCE_ARTIFACTS.evaluation,
-      PROVENANCE_ARTIFACTS.methodology,
-      PROVENANCE_ARTIFACTS.risks,
-      PROVENANCE_ARTIFACTS.packet,
-      PROVENANCE_ARTIFACTS.dogfood
-    ]) {
+    // Iterate the source-of-truth set rather than a hand-ordered literal so the
+    // assertion is membership over PROVENANCE_ARTIFACTS, not coupled to its
+    // ordering or count (which can change without weakening the intent).
+    for (const artifact of Object.values(PROVENANCE_ARTIFACTS)) {
       assert.equal(manifest.artifact_signatures[artifact], "sig-packet");
     }
   } finally {

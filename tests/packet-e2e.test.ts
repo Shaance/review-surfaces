@@ -104,7 +104,21 @@ validation:
   assert.match(architectureMarkdown, /Diagram validation/);
   assert.ok(packet.dogfood.findings.some((finding: { finding: string }) => finding.finding.includes("FB-E2E-001")));
   assert.ok(packet.risks.test_evidence.some((evidence: { kind: string; summary: string }) => evidence.kind === "direct" && evidence.summary.includes("CMD-E2E-001")));
-  assert.ok(!packet.risks.test_evidence.some((evidence: { id: string; kind: string; summary: string }) => evidence.id.startsWith("TEST-FB-") && evidence.summary === "Feedback records a passing validation command: pnpm run test"));
+  // De-brittled: `pnpm run test` was DIRECTLY run (CMD-E2E-001), so it must not
+  // ALSO surface as a feedback-CLAIMED (TEST-FB-) passing validation command.
+  // Use a stable phrase fragment plus a command-boundary tail match (`: pnpm run
+  // test` at end of string) rather than the exact full sentence — this still
+  // excludes only the exact `pnpm run test` command and NOT `pnpm run
+  // test:coverage`, which legitimately remains a claimed TEST-FB entry.
+  assert.ok(
+    !packet.risks.test_evidence.some(
+      (evidence: { id: string; kind: string; summary: string }) =>
+        evidence.id.startsWith("TEST-FB-") &&
+        /passing validation command/.test(evidence.summary) &&
+        /:\s*pnpm run test$/.test(evidence.summary)
+    ),
+    "the directly-run `pnpm run test` must not also appear as a claimed TEST-FB- validation command"
+  );
   assert.ok(packet.methodology.verified_claims.some((claim: string) => claim.includes("pnpm run test passed")));
   assert.ok(packet.methodology.claims_without_evidence.some((claim: string) => claim.includes("tests are green")));
   assert.ok(packet.risks.review_focus.some((focus: string) => focus.includes("methodology claims without command evidence")));

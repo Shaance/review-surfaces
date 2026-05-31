@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { CollectionResult } from "../collector/collect";
 import { ensureDir, readText, writeText } from "../core/files";
+import { isRecord } from "../core/guards";
 import { parseYaml } from "../core/simple-yaml";
 import { commandEvidence, EvidenceRef, missingEvidence } from "../evidence/evidence";
 import { redactSecrets } from "../privacy/secrets";
@@ -262,8 +263,4 @@ function commandLooksSupported(command: string): boolean {
 
 function redactConversationSummary(value: unknown): string {
   return redactSecrets(String(value)).text;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

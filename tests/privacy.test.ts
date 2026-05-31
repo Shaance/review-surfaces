@@ -107,3 +107,61 @@ test("review-surfaces.PRIVACY.2 blocks high-risk private key material for remote
   assert.equal(result.blocked, true);
   assert.doesNotMatch(result.text, /BEGIN PRIVATE KEY/);
 });
+
+// R4.4: each new high-confidence provider-token pattern must BLOCK the remote
+// call, remove the raw secret literal, and leave its [REDACTED:<kind>] marker.
+const PROVIDER_TOKEN_CASES: Array<{ name: string; secret: string; kind: string }> = [
+  { name: "AWS access key id", secret: "AKIAIOSFODNN7EXAMPLE", kind: "aws_access_key_id" },
+  {
+    name: "AWS secret access key assignment",
+    secret: "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    kind: "aws_secret"
+  },
+  { name: "GitHub ghp_ token", secret: `ghp_${"A".repeat(36)}`, kind: "github_token" },
+  { name: "GitHub fine-grained pat", secret: `github_pat_${"A".repeat(22)}`, kind: "github_token" },
+  { name: "Slack xoxb token", secret: "xoxb-1234567890-abcdefghijklmnop", kind: "slack_token" },
+  { name: "OpenAI sk-proj key", secret: `sk-proj-${"a".repeat(24)}`, kind: "openai_key" },
+  { name: "OpenAI sk key", secret: `sk-${"a".repeat(24)}`, kind: "openai_key" },
+  { name: "Stripe live key", secret: `sk_live_${"a".repeat(24)}`, kind: "stripe_key" },
+  { name: "Google OAuth token", secret: `ya29.${"a".repeat(30)}`, kind: "google_oauth_token" },
+  { name: "JWT", secret: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", kind: "jwt" }
+];
+
+for (const testCase of PROVIDER_TOKEN_CASES) {
+  test(`review-surfaces.PRIVACY.2 blocks and redacts ${testCase.name}`, () => {
+    const result = redactSecrets(`leaked here: ${testCase.secret} end`);
+    assert.equal(result.blocked, true, `${testCase.name} must privacy-block`);
+    assert.ok(!result.text.includes(testCase.secret), `${testCase.name} raw literal must be removed`);
+    // The specific kind is recorded as a blocking redaction. (For assignment-style
+    // shapes whose literal also looks like SECRET=..., the generic token_assignment
+    // catch-all may overwrite the visible text marker afterwards, but the specific
+    // kind is still recorded and still blocked — that is the guarantee that matters.)
+    assert.ok(
+      result.redactions.some((r) => r.kind === testCase.kind && r.blocked),
+      `${testCase.name} records a blocking ${testCase.kind} redaction`
+    );
+  });
+}
+
+test("review-surfaces.PRIVACY.2 specific provider token wins over the generic token_assignment", () => {
+  // A GitHub token inside a generic TOKEN= assignment: the github pattern
+  // (specific, runs first) claims the token via its own kind and BLOCKS it. The
+  // generic token_assignment is non-blocking, so without the specific pattern the
+  // string would NOT block — the github_token redaction is what makes blocked true.
+  const ghToken = `ghp_${"B".repeat(36)}`;
+  const result = redactSecrets(`GH_TOKEN=${ghToken}`);
+  assert.equal(result.blocked, true, "the github_token redaction makes the result blocked");
+  assert.ok(!result.text.includes(ghToken), "raw github token literal is removed");
+  assert.ok(
+    result.redactions.some((r) => r.kind === "github_token" && r.blocked),
+    "a blocking github_token redaction is recorded (specific wins over generic token_assignment)"
+  );
+});
+
+test("review-surfaces.PRIVACY.2 does not over-redact benign text without a token shape", () => {
+  const benign = "The quick brown fox reviews the diff and approves the change.";
+  const result = redactSecrets(benign);
+  assert.equal(result.blocked, false);
+  assert.equal(result.text, benign);
+  assert.equal(result.redactions.length, 0);
+});

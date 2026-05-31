@@ -310,3 +310,97 @@ test("enrichPacket surfaces an injected non-ok ai-sdk result as a failure", asyn
   assert.equal(result.status, "failed");
   assert.equal(result.skipped_reason, "ai_sdk_error: boom");
 });
+
+// ---------------------------------------------------------------------------
+// R3.3: live ai-sdk branch via the injected aiModuleLoader seam. These exercise
+// the REAL aiSdkProvider code path (redaction, key check, generateObject call,
+// abort timeout) with NO network and NO real ai/@ai-sdk packages installed.
+// ---------------------------------------------------------------------------
+
+// A fake ai-sdk module map for aiModuleLoader. `ai` carries generateObject +
+// jsonSchema; `@ai-sdk/anthropic` carries createAnthropic returning a model
+// factory. The loader is keyed by module name exactly as the real import is.
+function fakeAiLoader(generateObject: (args: any) => Promise<any>): (moduleName: string) => Promise<any> {
+  return async (moduleName: string) => {
+    if (moduleName === "ai") {
+      return { generateObject, jsonSchema: (schema: object) => schema };
+    }
+    if (moduleName === "@ai-sdk/anthropic") {
+      return { createAnthropic: () => () => ({}) };
+    }
+    throw new Error(`unexpected module ${moduleName}`);
+  };
+}
+
+test("ai-sdk live branch applies enrichment when generateObject resolves an object", async () => {
+  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
+    const provider = aiSdkProvider({
+      aiModuleLoader: fakeAiLoader(async () => ({ object: { review_focus: ["X"] } }))
+    });
+    const result = await provider.generateStructured("enrichment", "prompt", SCHEMA);
+    assert.deepEqual(result, { ok: true, data: { review_focus: ["X"] } });
+  });
+});
+
+test("ai-sdk live branch maps a thrown SDK error to ai_sdk_error", async () => {
+  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
+    const provider = aiSdkProvider({
+      aiModuleLoader: fakeAiLoader(async () => {
+        throw new Error("boom");
+      })
+    });
+    const result = await provider.generateStructured("enrichment", "prompt", SCHEMA);
+    assert.equal(result.ok, false);
+    const reason = (result as { ok: false; reason: string }).reason;
+    assert.ok(reason.startsWith("ai_sdk_error:"), reason);
+    assert.match(reason, /boom/);
+  });
+});
+
+test("ai-sdk live branch returns a non-object verbatim; enrich layer classifies it invalid", async () => {
+  // The provider itself only forwards generateObject's .object — invalid-output
+  // classification is the enrich layer's job. First the provider level:
+  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
+    const provider = aiSdkProvider({
+      aiModuleLoader: fakeAiLoader(async () => ({ object: 42 }))
+    });
+    const result = await provider.generateStructured("enrichment", "prompt", SCHEMA);
+    assert.deepEqual(result, { ok: true, data: 42 });
+  });
+
+  // Then the enrich layer: a non-object payload becomes failed/invalid_ai_output,
+  // reusing the existing providerFactory seam so no network/packages are needed.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-provider-invalid-"));
+  const fakeProvider: ReasoningProvider = {
+    name: "ai-sdk",
+    async generateStructured(): Promise<StructuredResult> {
+      return { ok: true, data: 42 };
+    }
+  };
+  const result = await enrichPacket(packet(), {
+    cwd: tmp,
+    outputDir: path.join(tmp, ".review-surfaces"),
+    provider: "ai-sdk",
+    providerFactory: () => fakeProvider
+  });
+  assert.equal(result.status, "failed");
+  assert.equal(result.skipped_reason, "invalid_ai_output");
+});
+
+test("ai-sdk live branch aborts on the timeout and maps it to ai_sdk_error", async () => {
+  await withEnv("ANTHROPIC_API_KEY", "test-key", async () => {
+    await withEnv("REVIEW_SURFACES_AI_TIMEOUT_MS", "10", async () => {
+      const provider = aiSdkProvider({
+        aiModuleLoader: fakeAiLoader(
+          ({ abortSignal }: { abortSignal: AbortSignal }) =>
+            new Promise((_resolve, reject) => {
+              abortSignal.addEventListener("abort", () => reject(new Error("aborted")));
+            })
+        )
+      });
+      const result = await provider.generateStructured("enrichment", "prompt", SCHEMA);
+      assert.equal(result.ok, false);
+      assert.ok((result as { ok: false; reason: string }).reason.startsWith("ai_sdk_error:"));
+    });
+  });
+});

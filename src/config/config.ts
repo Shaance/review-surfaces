@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileExists, readText } from "../core/files";
+import { isRecord } from "../core/guards";
 import { parseYaml } from "../core/simple-yaml";
 
 export interface ReviewAreaConfig {
@@ -186,8 +187,4 @@ function parseAreas(value: unknown): ReviewAreaConfig[] | undefined {
 
 function readRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
