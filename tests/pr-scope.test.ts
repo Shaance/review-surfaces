@@ -274,6 +274,51 @@ test("spec_block_changed fires when a changed spec hunk overlaps the requirement
   assert.equal(spec?.path, specPath);
 });
 
+test("spec_block_changed fires for a WHOLE-FILE spec ref (no line numbers) edited anywhere but line 1", () => {
+  // specEvidence() does NOT set line_start/line_end, so the requirement's spec
+  // range is line-less. A hunk editing the spec at lines 30-40 must still scope the
+  // requirement; defaulting the overlap window to line 1 would silently drop it.
+  const specPath = "features/privacy.feature.yaml";
+  const evidence = specEvidence(specPath, "review-surfaces.PRIVACY.2"); // no line numbers
+  assert.equal(evidence.line_start, undefined);
+  assert.equal(evidence.line_end, undefined);
+  const requirements = [
+    requirement({
+      id: "REQ-001",
+      acai_id: "review-surfaces.PRIVACY.2",
+      requirement: "Redact secrets.",
+      source_refs: [{ kind: "spec", ref: specPath, title: "review-surfaces.PRIVACY.2", evidence: [evidence] }]
+    })
+  ];
+  const specDiff: StructuredDiffFile = {
+    path: specPath,
+    status: "M",
+    hunks: [
+      {
+        old_start: 30,
+        old_lines: 3,
+        new_start: 30,
+        new_lines: 4,
+        lines: [{ kind: "add", text: "      9: Redact PEM blocks.", new_line: 33 }]
+      }
+    ]
+  };
+  const model = buildPrScope(
+    input({
+      collection: collectionStub([{ path: specPath, status: "M" }]),
+      intent: intentModel(requirements),
+      diff: { files: [specDiff] }
+    })
+  );
+
+  const req = model.affected_requirements[0];
+  assert.ok(req, "requirement must be in scope via its changed whole-file spec");
+  const spec = req.reasons.find((reason) => reason.rule === "spec_block_changed");
+  assert.ok(spec, "expected spec_block_changed reason for a whole-file spec ref edited at lines 30-40");
+  assert.equal(spec?.confidence, "high");
+  assert.equal(spec?.path, specPath);
+});
+
 test("an unmapped changed file lands in out_of_scope_changed_files", () => {
   const model = buildPrScope(
     input({

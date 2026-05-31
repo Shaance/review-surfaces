@@ -85,8 +85,7 @@ export const PR_NARRATIVE_SCHEMA = {
           suggested_checks: { type: "array", maxItems: 4, items: { type: "string" } }
         }
       }
-    },
-    diagram_caption: { type: "string" }
+    }
   }
 } as const;
 
@@ -200,6 +199,21 @@ function asStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string");
 }
 
+// An anchor field "violates" the allowlist if it is present but malformed (not an
+// array, or contains a non-string element) OR contains a string not on the
+// allowlist. A non-string element must count as a violation so an item that
+// smuggles a fabricated non-string anchor is DROPPED, not silently repaired by
+// asStringArray quietly discarding the non-string before the allowlist check.
+function anchorViolatesAllowlist(value: unknown, allowed: Set<string>): boolean {
+  if (value === undefined) {
+    return false; // an omitted anchor field is fine (the item may cite other anchors)
+  }
+  if (!Array.isArray(value)) {
+    return true;
+  }
+  return value.some((item) => typeof item !== "string" || !allowed.has(item));
+}
+
 // Keep an item only when every anchor it cites is on an allowlist AND it cites at
 // least one. Drop (never repair) anything that fabricates an anchor.
 function validateItems(value: unknown, allowedPaths: Set<string>, allowedReqs: Set<string>, allowedRisks: Set<string>): AnchoredNarrativeItem[] {
@@ -215,9 +229,9 @@ function validateItems(value: unknown, allowedPaths: Set<string>, allowedReqs: S
     const requirementIds = asStringArray(raw.requirement_ids).filter((id) => allowedReqs.has(id));
     const riskIds = asStringArray(raw.risk_ids).filter((id) => allowedRisks.has(id));
     const offAllowlist =
-      asStringArray(raw.paths).some((path) => !allowedPaths.has(path)) ||
-      asStringArray(raw.requirement_ids).some((id) => !allowedReqs.has(id)) ||
-      asStringArray(raw.risk_ids).some((id) => !allowedRisks.has(id));
+      anchorViolatesAllowlist(raw.paths, allowedPaths) ||
+      anchorViolatesAllowlist(raw.requirement_ids, allowedReqs) ||
+      anchorViolatesAllowlist(raw.risk_ids, allowedRisks);
     if (offAllowlist) {
       continue; // any fabricated anchor drops the whole item
     }
@@ -287,9 +301,14 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
 
   if (!result.ok) {
     const reason = result.reason;
-    const blockedReason: PrSurfaceBlockedReason = reason === "privacy_block" ? "privacy_block" : "llm_unavailable";
+    // Distinguish a runtime call failure (key was present, the request errored:
+    // timeout/network/invalid-model) from a missing provider/credential. Both are
+    // blocked, but the renderer must not tell a reviewer to "configure a key" when
+    // the key was already configured and the call simply failed.
+    const isRuntimeFailure = reason.startsWith("ai_sdk_error");
+    const blockedReason: PrSurfaceBlockedReason = reason === "privacy_block" ? "privacy_block" : isRuntimeFailure ? "llm_failed" : "llm_unavailable";
     return {
-      meta: { ...baseMeta, status: reason.startsWith("ai_sdk_error") ? "failed" : "blocked", validation_errors: [reason] },
+      meta: { ...baseMeta, status: isRuntimeFailure ? "failed" : "blocked", validation_errors: [reason] },
       blocked_reason: blockedReason
     };
   }
@@ -313,6 +332,9 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
     };
   }
 
+  // NOTE: no diagram_caption. It was un-anchored LLM free text (the only narrative
+  // field that bypassed allowlist validation) and no renderer ever read it, so it
+  // only ever risked shipping off-allowlist LLM prose into the persisted artifact.
   const narrative: PrNarrativeModel = {
     summary: redact(typeof data.summary === "string" ? data.summary : ""),
     what_changed: whatChanged,
@@ -320,9 +342,6 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
     review_first: reviewFirst,
     risk_narratives: riskNarratives
   };
-  if (typeof data.diagram_caption === "string" && data.diagram_caption.trim() !== "") {
-    narrative.diagram_caption = redact(data.diagram_caption);
-  }
 
   return {
     narrative,

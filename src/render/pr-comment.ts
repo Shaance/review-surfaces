@@ -95,7 +95,11 @@ export function renderPrComment(surface: PrReviewSurfaceModel): string {
           ? "A privacy/secret guard blocked the remote LLM call; the PR narrative was not generated."
           : reason === "baseline_unavailable"
             ? "The base ref could not be evaluated for a coverage delta."
-            : "The PR review narrative requires an LLM provider. Re-run with `--provider ai-sdk` and a configured key (Google/Gemini by default), or use `--review-scope repo` for the whole-repo report.";
+            : reason === "llm_failed"
+              ? "The LLM provider was configured but the call failed at runtime (timeout, network, or model error). Re-run; see `validation_errors` in `.review-surfaces/pr_review_surface.json` for the underlying cause."
+              : reason === "invalid_llm_output"
+                ? "The LLM responded but produced no output that survived evidence-gating (no valid anchored items). Re-run; deterministic scope is below."
+                : "The PR review narrative requires an LLM provider. Re-run with `--provider ai-sdk` and a configured key (Google/Gemini by default), or use `--review-scope repo` for the whole-repo report.";
     return clampTotal(
       [
         PR_STICKY_MARKER,
@@ -112,12 +116,22 @@ export function renderPrComment(surface: PrReviewSurfaceModel): string {
   }
 
   const narrative = surface.narrative;
+  const summary = field(narrative.summary);
+  // Build the comment as discrete blocks joined by single blank lines. Blank ("")
+  // entries are INTENTIONAL Markdown separators and must survive to the join: the
+  // mermaid `<details>` block in particular only renders on GitHub when a blank
+  // line separates the raw-HTML opener from the ```mermaid fence. (A prior
+  // `.filter(line => line !== "")` stripped those, collapsing the diagram.)
   const sections: string[] = [
     PR_STICKY_MARKER,
     "## review-surfaces PR review",
     "",
-    `**Status:** PR-scoped review generated with ${field(providerLabel)}.`,
-    field(narrative.summary) ? `\n${field(narrative.summary)}` : "",
+    `**Status:** PR-scoped review generated with ${field(providerLabel)}.`
+  ];
+  if (summary) {
+    sections.push("", summary);
+  }
+  sections.push(
     "",
     "### What changed",
     bullets(narrative.what_changed, "No change narrative."),
@@ -139,9 +153,9 @@ export function renderPrComment(surface: PrReviewSurfaceModel): string {
     ...renderDiagram(surface.diagram),
     "",
     "Full PR surface: `.review-surfaces/pr_review_surface.json`."
-  ];
+  );
 
-  return clampTotal(`${sections.filter((line) => line !== "").join("\n")}\n`);
+  return clampTotal(`${sections.join("\n")}\n`);
 }
 
 function bulletsFromLines(lines: string[], emptyText: string): string {

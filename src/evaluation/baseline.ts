@@ -36,12 +36,16 @@ export async function evaluateBaseline(input: BaselineEvaluationInput): Promise<
   if (!baseSha) {
     return undefined;
   }
-  const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-base-"));
-  if (git(input.cwd, ["worktree", "add", "--detach", worktree, baseSha]) === undefined) {
-    fs.rmSync(worktree, { recursive: true, force: true });
-    return undefined;
-  }
+  // mkdtempSync can throw (read-only/full tmpdir, EMFILE). Keep it inside the
+  // try so ANY failure here degrades to undefined (head-only coverage) per the
+  // best-effort contract, rather than escaping and aborting the whole run.
+  let worktree: string | undefined;
   try {
+    worktree = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-base-"));
+    if (git(input.cwd, ["worktree", "add", "--detach", worktree, baseSha]) === undefined) {
+      fs.rmSync(worktree, { recursive: true, force: true });
+      return undefined;
+    }
     const config = await loadConfig(worktree, input.configPath);
     const runConfig = input.specFlag ? { ...config, specs: [input.specFlag] } : config;
     const collection = await collectInputs({
@@ -59,7 +63,14 @@ export async function evaluateBaseline(input: BaselineEvaluationInput): Promise<
   } catch {
     return undefined;
   } finally {
-    git(input.cwd, ["worktree", "remove", "--force", worktree]);
-    fs.rmSync(worktree, { recursive: true, force: true });
+    // worktree is undefined only if mkdtempSync itself threw; nothing to clean up.
+    if (worktree !== undefined) {
+      git(input.cwd, ["worktree", "remove", "--force", worktree]);
+      try {
+        fs.rmSync(worktree, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup; never let teardown throw out of evaluateBaseline.
+      }
+    }
   }
 }

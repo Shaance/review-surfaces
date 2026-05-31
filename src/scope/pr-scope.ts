@@ -53,16 +53,6 @@ export function buildPrScope(input: BuildPrScopeInput): PrScopeModel {
     diffByPath.set(file.path, file);
   }
 
-  // Carry the (acai_id -> group_key) mapping the evaluator already knows so a
-  // requirement's group_key derivation prefers spec metadata over the acai_id
-  // middle segment when both are present.
-  const groupByAcid = new Map<string, string>();
-  for (const requirement of intent.requirements) {
-    const group = requirementGroupKey(requirement);
-    if (requirement.acai_id && group) {
-      groupByAcid.set(requirement.acai_id, group);
-    }
-  }
   void evaluation; // EvaluationModel is part of the contract but scope rules are
   // diff-driven; it is reserved for downstream coverage-delta wiring.
 
@@ -143,7 +133,6 @@ export function buildPrScope(input: BuildPrScopeInput): PrScopeModel {
     const reasons = scopeReasonsForRequirement(requirement, {
       changedFiles,
       diffByPath,
-      groupByAcid,
       implementationGroups,
       testGroups
     });
@@ -260,7 +249,6 @@ function isGeneratedPath(filePath: string): boolean {
 interface ScopeContext {
   changedFiles: ScopedChangedFile[];
   diffByPath: Map<string, StructuredDiffFile>;
-  groupByAcid: Map<string, string>;
   implementationGroups: Set<string>;
   testGroups: Set<string>;
 }
@@ -421,6 +409,17 @@ function firstAcidLine(diffFile: StructuredDiffFile, acaiId: string): { line?: n
 // First hunk whose changed line span overlaps the requirement's source line
 // range. Hunk span is taken from new_start/new_lines (the head-side span).
 function firstHunkOverlap(diffFile: StructuredDiffFile, range: SpecSourceRange): { line_start: number; line_end: number } | undefined {
+  // Whole-file spec reference (no line numbers — spec evidence routinely omits
+  // them): treat ANY changed hunk in this spec file as touching the requirement's
+  // source block. Defaulting end to line 1 here would only ever match a hunk that
+  // edits line 1, silently dropping the rule for edits anywhere else in the spec.
+  if (range.line_start === undefined && range.line_end === undefined) {
+    const hunk = diffFile.hunks[0];
+    if (!hunk) {
+      return undefined;
+    }
+    return { line_start: hunk.new_start, line_end: hunk.new_start + Math.max(hunk.new_lines, 1) - 1 };
+  }
   const start = range.line_start ?? 1;
   const end = range.line_end ?? start;
   for (const hunk of diffFile.hunks) {

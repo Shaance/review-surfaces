@@ -71,6 +71,13 @@ test("renderPrComment renders a PR-SPECIFIC surface (what changed / coverage del
   assert.match(md, /### PR risks/);
   assert.match(md, /PR-RISK-001 \[medium\]/);
   assert.match(md, /```mermaid\nflowchart LR/);
+  // The mermaid block only renders on GitHub when a BLANK LINE separates the
+  // <details> raw-HTML opener from the ```mermaid fence (otherwise the fence is
+  // absorbed as raw HTML). A prior `.filter(line => line !== "")` stripped it.
+  assert.match(md, /<details><summary>Change impact diagram<\/summary>\n\n```mermaid/);
+  // Section headings keep their preceding blank line (valid Markdown spacing).
+  assert.match(md, /\n\n### What changed/);
+  assert.match(md, /\n\n### Change impact/);
   // It must NOT contain the whole-spec coverage dump or the boilerplate focus.
   assert.doesNotMatch(md, /\d+ satisfied, \d+ partial, \d+ missing/);
   assert.doesNotMatch(md, /Start with missing and partial requirement results/);
@@ -86,6 +93,21 @@ test("renderPrComment shows a clear blocked message (no whole-repo fallback) whe
   // Never the generic sections.
   assert.doesNotMatch(md, /### What changed/);
   assert.doesNotMatch(md, /Top review focus/);
+});
+
+test("renderPrComment distinguishes a runtime LLM FAILURE from a missing provider", () => {
+  const failed: PrReviewSurfaceModel = {
+    ...readySurface(),
+    status: "blocked",
+    blocked_reason: "llm_failed",
+    narrative: undefined,
+    llm: { required: true, provider: "ai-sdk", status: "failed", validation_errors: ["ai_sdk_error: request timed out"] }
+  };
+  const md = renderPrComment(failed);
+  assert.match(md, /\*\*Status:\*\* blocked \(`llm_failed`\)/);
+  assert.match(md, /failed at runtime/i);
+  // Must NOT misdiagnose a runtime failure as a missing/unconfigured key.
+  assert.doesNotMatch(md, /configured key/i);
 });
 
 test("renderPrComment is byte-deterministic for the same surface", () => {

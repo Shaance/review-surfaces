@@ -75,7 +75,12 @@ function computeDelta(baseAvailable: boolean, base: ScopedStatus, head: ScopedSt
  * list follows the scope's already-sorted affected-requirement order.
  */
 export function buildPrScopedCoverage(input: BuildPrScopedCoverageInput): PrScopedCoverageModel {
-  const baseAvailable = input.baseEvaluation !== undefined;
+  // A base evaluation that produced ZERO requirement results is not a usable
+  // baseline: every in-scope requirement would resolve to "absent" and be
+  // mislabeled "new_requirement", falsely implying the whole spec is brand-new in
+  // this PR. Such an empty result set is ambiguous (base predates the spec, or the
+  // base eval silently degraded), so treat it as no baseline (current-status only).
+  const baseAvailable = input.baseEvaluation !== undefined && input.baseEvaluation.results.length > 0;
   const deltas: PrRequirementCoverageDelta[] = [];
 
   for (const requirement of input.scope.affected_requirements) {

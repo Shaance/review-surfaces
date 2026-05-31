@@ -269,6 +269,64 @@ test("review-surfaces.pr_surface.v1 sanitizes labels so brackets/quotes cannot u
   assertBalanced(diagram.body);
 });
 
+test("two area group_keys that differ only in punctuation get DISTINCT node ids (no collision)", () => {
+  // safeIdToken collapses ':' and '/' (and '-') to '_', so these two keys would
+  // otherwise both emit "A_CLUSTER_SRC_API" and coalesce into one node.
+  const scope: PrScopeModel = {
+    base_ref: "origin/main",
+    head_ref: "HEAD",
+    head_sha: "HEAD",
+    diff_source: "range",
+    changed_files: [changedFile("src/a.ts", ["CLUSTER:SRC/API"]), changedFile("src/b.ts", ["CLUSTER-SRC-API"])],
+    affected_areas: [
+      { group_key: "CLUSTER-SRC-API", area_ids: ["X"], name: "Cluster Beta", changed_files: ["src/b.ts"] },
+      { group_key: "CLUSTER:SRC/API", area_ids: ["Y"], name: "Cluster Alpha", changed_files: ["src/a.ts"] }
+    ],
+    affected_requirements: [],
+    out_of_scope_changed_files: []
+  };
+  const diagram = buildPrChangeDiagram({ scope, risks: emptyRisks() });
+
+  assert.equal(diagram.status, "valid");
+  assert.equal(validateMermaidDiagramArtifact({ path: diagram.path, body: diagram.body }).status, "valid");
+  // Two DISTINCT area node declarations exist (the colliding base id is suffixed).
+  const areaNodeIds = (diagram.body.match(/^ {2}(A_[A-Za-z0-9_]+)\["/gm) ?? []).map((m) => m.trim().split("[")[0]);
+  assert.equal(new Set(areaNodeIds).size, 2, "two distinct area node ids");
+  assert.equal(areaNodeIds.length, 2, "exactly two area nodes, no coalescing");
+  // Both labels survive (neither area is lost to an id collision).
+  assert.ok(diagram.body.includes("Cluster Alpha"));
+  assert.ok(diagram.body.includes("Cluster Beta"));
+  assertBalanced(diagram.body);
+});
+
+test("a requirement with NO group_key (LLM-derived) is anchored via its reason path, never a floating node", () => {
+  const scope: PrScopeModel = {
+    base_ref: "origin/main",
+    head_ref: "HEAD",
+    head_sha: "HEAD",
+    diff_source: "range",
+    changed_files: [changedFile("src/feature.ts", ["FOO"])],
+    affected_areas: [{ group_key: "FOO", area_ids: ["SUB-FOO"], name: "Foo", changed_files: ["src/feature.ts"] }],
+    affected_requirements: [
+      {
+        // No acai_id, no group_key — the normal shape for an llm_derived requirement.
+        requirement_id: "REQ-LLM-1",
+        title: "Agent-proposed behavior",
+        reasons: [{ rule: "spec_block_changed", confidence: "high", path: "src/feature.ts" }]
+      }
+    ],
+    out_of_scope_changed_files: []
+  };
+  const diagram = buildPrChangeDiagram({ scope, risks: emptyRisks() });
+
+  assert.equal(diagram.status, "valid");
+  // The requirement node exists AND has an incoming edge (file -> requirement),
+  // rather than being declared and left unconnected.
+  assert.match(diagram.body, /R_0\["REQ-LLM-1/);
+  assert.match(diagram.body, /F0 --> R_0/);
+  assertBalanced(diagram.body);
+});
+
 // --- Local helpers -----------------------------------------------------------
 
 function pad(value: number): string {

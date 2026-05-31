@@ -1,0 +1,116 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { buildPrNarrative, BuildPrNarrativeInput } from "../src/llm/pr-narrative";
+import { ReasoningProvider, StructuredResult } from "../src/llm/provider";
+import { PrRiskModel, PrScopeModel, PrScopedCoverageModel, StructuredDiff } from "../src/pr/contract";
+
+// A non-mock provider that returns whatever StructuredResult the test supplies,
+// mirroring how the agent-file provider hands back a raw (schema-unbound) object.
+function fakeProvider(result: StructuredResult): ReasoningProvider {
+  return {
+    name: "agent-file",
+    async generateStructured(): Promise<StructuredResult> {
+      return result;
+    }
+  };
+}
+
+function scope(): PrScopeModel {
+  return {
+    base_ref: "origin/main",
+    head_ref: "HEAD",
+    head_sha: "head",
+    diff_source: "range",
+    changed_files: [{ path: "src/cli/index.ts", status: "M", areas: ["CLI"], role: "implementation" }],
+    affected_areas: [{ group_key: "CLI", area_ids: ["CLI"], name: "CLI", changed_files: ["src/cli/index.ts"] }],
+    affected_requirements: [{ requirement_id: "x.CLI.1", acai_id: "x.CLI.1", title: "CLI", group_key: "CLI", reasons: [] }],
+    out_of_scope_changed_files: []
+  };
+}
+
+function coverage(): PrScopedCoverageModel {
+  return {
+    base_available: false,
+    summary: "1 in scope",
+    in_scope_count: 1,
+    deltas: [],
+    counts: { improved: 0, regressed: 0, unchanged: 0, new_requirement: 0, removed_requirement: 0, newly_in_scope: 1 }
+  };
+}
+
+function risks(): PrRiskModel {
+  return {
+    summary: "1 risk",
+    candidates: [
+      { id: "PR-RISK-001", rule: "untested_changed_impl", category: "testing", severity: "medium", summary: "x", evidence: [], suggested_checks: [] }
+    ]
+  };
+}
+
+function inputWith(result: StructuredResult): BuildPrNarrativeInput {
+  return {
+    provider: fakeProvider(result),
+    providerName: "agent-file",
+    repo: "acme/widgets",
+    scope: scope(),
+    coverage: coverage(),
+    risks: risks(),
+    diff: { files: [] } as StructuredDiff,
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  };
+}
+
+test("an item that smuggles a NON-STRING anchor is dropped (not silently repaired to its valid anchors)", async () => {
+  const result = await buildPrNarrative(
+    inputWith({
+      ok: true,
+      data: {
+        summary: "s",
+        what_changed: [
+          { text: "bad — has a fabricated non-string anchor", paths: [123, "src/cli/index.ts"] },
+          { text: "good", paths: ["src/cli/index.ts"] }
+        ],
+        why_it_matters: [],
+        review_first: [],
+        risk_narratives: []
+      }
+    })
+  );
+  assert.ok(result.narrative, "narrative built (a valid item survives)");
+  assert.equal(result.narrative?.what_changed.length, 1, "the non-string-anchor item is dropped");
+  assert.equal(result.narrative?.what_changed[0].text, "good");
+});
+
+test("diagram_caption from the LLM is never persisted (un-anchored free text is not part of the narrative)", async () => {
+  const result = await buildPrNarrative(
+    inputWith({
+      ok: true,
+      data: {
+        summary: "s",
+        what_changed: [{ text: "valid", paths: ["src/cli/index.ts"] }],
+        why_it_matters: [],
+        review_first: [],
+        risk_narratives: [],
+        diagram_caption: "impacts src/not-in-diff.ts per OFF.99"
+      }
+    })
+  );
+  assert.ok(result.narrative);
+  assert.ok(!("diagram_caption" in (result.narrative as object)), "diagram_caption must not be persisted");
+});
+
+test("a runtime ai_sdk_error blocks with reason llm_failed and meta.status failed (key was present)", async () => {
+  const result = await buildPrNarrative(inputWith({ ok: false, reason: "ai_sdk_error: request timed out" }));
+  assert.equal(result.narrative, undefined);
+  assert.equal(result.blocked_reason, "llm_failed");
+  assert.equal(result.meta.status, "failed");
+  assert.deepEqual(result.meta.validation_errors, ["ai_sdk_error: request timed out"]);
+});
+
+test("a missing-credential skip blocks with reason llm_unavailable and meta.status blocked", async () => {
+  const result = await buildPrNarrative(inputWith({ ok: false, reason: "missing_google_api_key" }));
+  assert.equal(result.narrative, undefined);
+  assert.equal(result.blocked_reason, "llm_unavailable");
+  assert.equal(result.meta.status, "blocked");
+});

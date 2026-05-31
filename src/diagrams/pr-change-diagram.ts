@@ -143,8 +143,20 @@ function renderBody(
       shownAreas.push(area);
     }
   }
+  // safeIdToken collapses any non-[A-Za-z0-9_] run to "_", so two distinct
+  // group_keys differing only in punctuation (e.g. "CLUSTER:SRC/API" vs
+  // "CLUSTER-SRC-API") would otherwise emit the SAME node id and collide. Track
+  // used ids and disambiguate deterministically (shownAreas is already sorted).
+  const usedAreaIds = new Set<string>();
   shownAreas.forEach((area) => {
-    const id = `A_${safeIdToken(area.group_key)}`;
+    const base = `A_${safeIdToken(area.group_key)}`;
+    let id = base;
+    let suffix = 2;
+    while (usedAreaIds.has(id)) {
+      id = `${base}_${suffix}`;
+      suffix += 1;
+    }
+    usedAreaIds.add(id);
     areaNodeByKey.set(area.group_key, id);
     lines.push(nodeLine({ id, label: areaLabel(area) }));
   });
@@ -180,15 +192,35 @@ function renderBody(
     lines.push(nodeLine({ id: reqsMoreId, label: `... ${overflowReqs} more requirements` }));
   }
 
-  // area -> the requirements in that group (only shown requirements/areas).
+  // area -> requirement (when the requirement's group matches a shown area), else
+  // fall back to file -> requirement via the requirement's reason paths. Without
+  // the fallback, any requirement with no group_key (every LLM-derived
+  // requirement) or whose group_key matches no shown area would be a FLOATING node
+  // with no edge — the diagram validator only checks for >=1 edge graph-wide, so
+  // such an orphan ships silently.
   shownReqs.forEach((req, index) => {
     const reqId = reqNodeByIndex.get(index);
-    if (!reqId || !req.group_key) {
+    if (!reqId) {
       return;
     }
-    const areaId = areaNodeByKey.get(req.group_key);
-    if (areaId) {
-      edges.push(edgeLine(areaId, reqId));
+    let anchored = false;
+    if (req.group_key) {
+      const areaId = areaNodeByKey.get(req.group_key);
+      if (areaId) {
+        edges.push(edgeLine(areaId, reqId));
+        anchored = true;
+      }
+    }
+    if (!anchored) {
+      for (const reason of req.reasons) {
+        if (reason.path) {
+          const fileId = fileNodeByPath.get(reason.path);
+          if (fileId) {
+            edges.push(edgeLine(fileId, reqId));
+            anchored = true;
+          }
+        }
+      }
     }
   });
 

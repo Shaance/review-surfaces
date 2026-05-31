@@ -144,6 +144,36 @@ test("changed src/privacy file produces a privacy_sensitive_change candidate", (
   );
 });
 
+test("comment_surface_change fires for a render file but NOT for src/evaluation or src/risks files", () => {
+  const renderModel = buildPrRiskCandidates(
+    buildInput({
+      scope: scope({ changed_files: [changedFile({ path: "src/render/pr-comment.ts", role: "implementation", areas: ["RENDER"] })] })
+    })
+  );
+  assert.ok(
+    renderModel.candidates.some((c) => c.rule === "comment_surface_change"),
+    "a real render-surface file should fire comment_surface_change"
+  );
+
+  // src/evaluation/ and src/risks/ are NOT the render surface. They previously
+  // matched the over-broad "evaluation"/"risk" substrings and produced false
+  // positives claiming the comment surface was affected.
+  const nonRenderModel = buildPrRiskCandidates(
+    buildInput({
+      scope: scope({
+        changed_files: [
+          changedFile({ path: "src/evaluation/scoped-coverage.ts", role: "implementation", areas: ["EVAL"] }),
+          changedFile({ path: "src/risks/pr-risks.ts", role: "implementation", areas: ["RISK"] })
+        ]
+      })
+    })
+  );
+  assert.ok(
+    !nonRenderModel.candidates.some((c) => c.rule === "comment_surface_change"),
+    "evaluation/risks files must NOT be mislabeled as comment-surface changes"
+  );
+});
+
 test("impl file with no co-changed test in its area produces an untested_changed_impl candidate", () => {
   const input = buildInput({
     scope: scope({

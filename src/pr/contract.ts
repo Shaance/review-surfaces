@@ -23,6 +23,7 @@ export type PrSurfaceStatus = (typeof PR_SURFACE_STATUSES)[number];
 
 export const PR_SURFACE_BLOCKED_REASONS = [
   "llm_unavailable",
+  "llm_failed",
   "privacy_block",
   "baseline_unavailable",
   "no_diff",
@@ -242,7 +243,6 @@ export interface PrNarrativeModel {
   why_it_matters: AnchoredNarrativeItem[];
   review_first: AnchoredNarrativeItem[];
   risk_narratives: AnchoredRiskNarrative[];
-  diagram_caption?: string;
 }
 
 export interface PrNarrativeLlmMeta {

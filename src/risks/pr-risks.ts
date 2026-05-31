@@ -217,18 +217,18 @@ function pushPrivacySensitiveChange(drafts: DraftCandidate[], input: BuildPrRisk
 
 // --- Rule: comment_surface_change (review_value, medium) -------------------
 // review_value is not a PacketRiskCategory; map to "maintainability" for the
-// schema-valid category while keeping the rule name authoritative. A changed file
-// path matches src/render/, comment, diagram, or risk/evaluation summarization.
+// schema-valid category while keeping the rule name authoritative. Matches the
+// actual review-comment render surface: src/render/ (where the risk/evaluation
+// summarization lives), the comment renderers, and the diagram builders. The
+// bare tokens "risk"/"evaluation"/"summar" were intentionally dropped — they
+// matched non-render files like src/risks/ and src/evaluation/ as false positives.
 function pushCommentSurfaceChange(drafts: DraftCandidate[], input: BuildPrRiskInput): void {
   const matched = matchingChangedPaths(input, (path) => {
     const lower = path.toLowerCase();
     return (
       lower.includes("src/render/") ||
       lower.includes("comment") ||
-      lower.includes("diagram") ||
-      lower.includes("risk") ||
-      lower.includes("evaluation") ||
-      lower.includes("summar")
+      lower.includes("diagram")
     );
   });
   if (matched.length === 0) {

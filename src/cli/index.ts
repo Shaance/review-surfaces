@@ -411,7 +411,13 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   const cacheSnapshot = booleanFlag(parsed, "cache") ? await readCacheSnapshot(cwd, parsed) : undefined;
   const { collection, config } = await collect(parsed);
   const artifactStore = createPipelineArtifactStoreForCollection(collection);
-  if (cacheSnapshot && isCacheHit(cacheSnapshot, collection.manifest.signature)) {
+  // The cache signature folds the whole-repo packet inputs, NOT --review-scope. In
+  // pr mode the PR surface is a separate artifact written further below; a plain
+  // signature hit would return before that block and leave pr_review_surface.json
+  // missing or stale-for-another-head. So in pr mode only honor the cache shortcut
+  // when a surface for the CURRENT head already exists; otherwise fall through to a
+  // full regenerate so the PR block runs and (re)writes it.
+  if (cacheSnapshot && isCacheHit(cacheSnapshot, collection.manifest.signature) && prSurfaceCacheReusable(parsed, collection)) {
     const strict = booleanFlag(parsed, "strict");
     const evaluation = loadEvaluation(collection.outputDir);
     // Under --strict the gate MUST run. If the cached output dir is incomplete
@@ -573,6 +579,24 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
 // repo mode (default, back-compatible) uses the whole-repo packet + comment.
 function reviewScope(parsed: ParsedArgs): ReviewScope {
   return stringFlag(parsed, "review-scope") === "pr" ? "pr" : "repo";
+}
+
+// Whether a --cache signature hit may be honored as-is. Always true in repo mode
+// (the cache governs the whole-repo packet it was built for). In pr mode the PR
+// surface is a separate artifact NOT covered by the signature, so the shortcut is
+// only safe when pr_review_surface.json already exists for the CURRENT head sha;
+// otherwise we must regenerate so the surface is (re)written and matches HEAD.
+function prSurfaceCacheReusable(parsed: ParsedArgs, collection: CollectionResult): boolean {
+  if (reviewScope(parsed) !== "pr") {
+    return true;
+  }
+  const surfacePath = path.join(collection.outputDir, "pr_review_surface.json");
+  try {
+    const parsedSurface = JSON.parse(fs.readFileSync(surfacePath, "utf8")) as { scope?: { head_sha?: string } };
+    return parsedSurface?.scope?.head_sha === collection.git.head_sha;
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
