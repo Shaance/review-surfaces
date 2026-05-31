@@ -95,6 +95,7 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0 # all history so the base ref and the merge-base resolve
+          persist-credentials: false # PR-controlled install/build must not get a token
       - uses: pnpm/action-setup@v4
         with:
           version: 10.8.0
@@ -104,10 +105,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
-      - name: Generate review packet (with diagrams)
-        # Diff against the PR's ACTUAL target branch (github.base_ref), not a
-        # hard-coded main, so a PR onto a release/maintenance branch reviews the
-        # right delta.
+      - name: Generate review comment (PR code, NO token)
+        # PR-controlled code runs here WITHOUT any token: it only writes the local
+        # comment.md (+ packet). Diff against the PR's ACTUAL target branch
+        # (github.base_ref), not a hard-coded main.
         run: |
           node bin/review-surfaces.js all \
             --provider mock \
@@ -116,7 +117,28 @@ jobs:
             --spec features/review-surfaces.feature.yaml \
             --dogfood \
             --out .review-surfaces
-      - name: Post sticky review comment with diagrams
+          node bin/review-surfaces.js comment --format github --out .review-surfaces
+      - name: Upsert sticky comment (trusted gh, not PR code)
+        # Only THIS step holds the write token, and it runs `gh` (trusted) over the
+        # PR-generated comment.md — never PR code — so a tampered CLI entrypoint
+        # cannot reach the token. Upserts the single review-surfaces:sticky comment.
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node bin/review-surfaces.js comment --format github --post --out .review-surfaces
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          body=.review-surfaces/comment.md
+          if [ ! -f "$body" ]; then
+            echo "no comment.md generated; nothing to post"
+            exit 0
+          fi
+          marker='<!-- review-surfaces:sticky -->'
+          id="$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq "[.[] | select(.body | contains(\"$marker\")) | .id] | last // \"\"")"
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$id" -F "body=@$body" >/dev/null
+            echo "updated sticky comment #$id"
+          else
+            gh api "repos/$REPO/issues/$PR_NUMBER/comments" -F "body=@$body" >/dev/null
+            echo "posted sticky comment"
+          fi

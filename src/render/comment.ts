@@ -121,10 +121,21 @@ export function renderCommentFromPacketFile(cwd: string, outDir?: string): Rende
 
 // Load the VALID diagrams referenced by the packet from their .mmd sibling files
 // under outDir. Only diagrams the pipeline validated as `valid` are embedded, and
-// only diagrams/*.mmd relative paths are read (defense against a tampered packet
-// pointing the renderer at an arbitrary file). Missing/empty files are skipped.
+// the read is confined to genuine regular files whose REAL path stays under the
+// real <outDir>/diagrams directory — defense against a tampered packet (run via
+// `comment --post` over a reused/untrusted output dir) pointing the renderer at
+// an arbitrary file through a symlinked .mmd or a symlinked diagrams/ ancestor.
 function loadEmbeddedDiagrams(outDir: string, packet: ReviewPacket): DiagramEmbed[] {
   const embeds: DiagramEmbed[] = [];
+  // The expected real diagrams root: realpath(outDir) + "/diagrams". Built by
+  // string-join (NOT realpath of diagrams/ itself) so a symlinked diagrams/ dir
+  // resolves OUTSIDE this root and is rejected below, rather than being followed.
+  let expectedDiagramsDir: string;
+  try {
+    expectedDiagramsDir = path.join(fs.realpathSync(outDir), "diagrams");
+  } catch {
+    return embeds;
+  }
   for (const diagram of packet.architecture?.diagram_validation ?? []) {
     if (diagram.status !== "valid") {
       continue;
@@ -134,17 +145,29 @@ function loadEmbeddedDiagrams(outDir: string, packet: ReviewPacket): DiagramEmbe
       continue;
     }
     const file = path.join(outDir, rel);
-    // Read only a genuine in-tree regular file. The lexical guard above confines
-    // `rel` to diagrams/*.mmd, but a SYMLINK there could still redirect
-    // fs.readFileSync at an arbitrary file; lstat + isFile() skips symlinks (and
-    // directories) so the read stays confined to real diagram artifacts.
     let stat: fs.Stats;
     try {
       stat = fs.lstatSync(file);
     } catch {
       continue;
     }
-    if (!stat.isFile()) {
+    // Skip non-files (symlink final component / directories) AND oversize files
+    // BEFORE reading: a packet can mark a huge .mmd `valid`, and reading it before
+    // the MAX_DIAGRAM_CHARS check would waste memory on a body we then drop.
+    if (!stat.isFile() || stat.size > MAX_DIAGRAM_CHARS) {
+      continue;
+    }
+    // Confine the fully-resolved real path under the real diagrams root. This
+    // rejects a symlinked .mmd or a symlinked ANCESTOR whose target escapes the
+    // diagrams directory (lstat alone only guards the final path component).
+    let real: string;
+    try {
+      real = fs.realpathSync(file);
+    } catch {
+      continue;
+    }
+    const within = path.relative(expectedDiagramsDir, real);
+    if (within === "" || within.startsWith("..") || path.isAbsolute(within)) {
       continue;
     }
     const body = fs.readFileSync(file, "utf8").trim();
