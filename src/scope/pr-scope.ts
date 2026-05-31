@@ -1,0 +1,504 @@
+import { CollectionResult } from "../collector/collect";
+import { compareStrings } from "../core/compare";
+import { EvaluationModel } from "../evaluation/evaluate";
+import { IntentModel, IntentRequirement } from "../intent/intent";
+import { createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
+import {
+  ChangedFileRole,
+  PrAffectedArea,
+  PrAffectedRequirement,
+  PrOutOfScopeChangedFile,
+  PrScopeConfidence,
+  PrScopeModel,
+  PrScopeReason,
+  PrScopeRule,
+  ScopedChangedFile,
+  StructuredDiff,
+  StructuredDiffFile
+} from "../pr/contract";
+
+// ---------------------------------------------------------------------------
+// PR diff-scoping core (review-surfaces.pr_surface.v1 / scope section).
+//
+// Maps a structured diff + the whole-repo intent/evaluation models onto the
+// subset of requirements and review areas a PR actually touches. Pure and
+// deterministic: every list is sorted with compareStrings on a stable key,
+// reasons are deduped, and undefined fields are omitted from emitted objects so
+// the output is byte-stable.
+// ---------------------------------------------------------------------------
+
+export interface BuildPrScopeInput {
+  collection: CollectionResult;
+  intent: IntentModel;
+  evaluation: EvaluationModel;
+  reviewAreas: ReviewArea[];
+  diff: StructuredDiff;
+}
+
+// A line range derived from a requirement's spec source_ref evidence, used by the
+// spec_block_changed rule to test hunk overlap against the requirement's spec.
+interface SpecSourceRange {
+  path: string;
+  line_start?: number;
+  line_end?: number;
+}
+
+export function buildPrScope(input: BuildPrScopeInput): PrScopeModel {
+  const { collection, intent, evaluation, reviewAreas, diff } = input;
+  const matcher = createReviewAreaMatcher(reviewAreas);
+
+  // Index the structured diff by path so per-file hunk scans are O(1) lookups.
+  const diffByPath = new Map<string, StructuredDiffFile>();
+  for (const file of diff.files) {
+    diffByPath.set(file.path, file);
+  }
+
+  // Carry the (acai_id -> group_key) mapping the evaluator already knows so a
+  // requirement's group_key derivation prefers spec metadata over the acai_id
+  // middle segment when both are present.
+  const groupByAcid = new Map<string, string>();
+  for (const requirement of intent.requirements) {
+    const group = requirementGroupKey(requirement);
+    if (requirement.acai_id && group) {
+      groupByAcid.set(requirement.acai_id, group);
+    }
+  }
+  void evaluation; // EvaluationModel is part of the contract but scope rules are
+  // diff-driven; it is reserved for downstream coverage-delta wiring.
+
+  // --- changed_files -------------------------------------------------------
+  const changedFiles: ScopedChangedFile[] = collection.changedFiles.map((changedFile) => {
+    const areas = matcher
+      .groupsForPath(changedFile.path, { purpose: "review_surface" })
+      .slice()
+      .sort(compareStrings);
+    const diffFile = diffByPath.get(changedFile.path);
+    const counts = lineCounts(diffFile);
+    const scoped: ScopedChangedFile = {
+      path: changedFile.path,
+      status: changedFile.status,
+      areas,
+      role: classifyRole(changedFile.path, areas)
+    };
+    if (counts.added !== undefined) {
+      scoped.added_lines = counts.added;
+    }
+    if (counts.deleted !== undefined) {
+      scoped.deleted_lines = counts.deleted;
+    }
+    return scoped;
+  });
+  changedFiles.sort((left, right) => compareStrings(left.path, right.path));
+
+  // --- affected_areas ------------------------------------------------------
+  const areaAccumulator = new Map<
+    string,
+    { group_key: string; name: string; area_ids: Set<string>; changed_files: Set<string> }
+  >();
+  for (const changedFile of changedFiles) {
+    for (const groupKey of changedFile.areas) {
+      const entry = areaAccumulator.get(groupKey) ?? {
+        group_key: groupKey,
+        name: areaName(reviewAreas, groupKey),
+        area_ids: new Set<string>(),
+        changed_files: new Set<string>()
+      };
+      for (const area of reviewAreas) {
+        if (area.groupKey === groupKey) {
+          entry.area_ids.add(area.id);
+        }
+      }
+      entry.changed_files.add(changedFile.path);
+      areaAccumulator.set(groupKey, entry);
+    }
+  }
+  const affectedAreas: PrAffectedArea[] = [...areaAccumulator.values()]
+    .map((entry) => ({
+      group_key: entry.group_key,
+      area_ids: [...entry.area_ids].sort(compareStrings),
+      name: entry.name,
+      changed_files: [...entry.changed_files].sort(compareStrings)
+    }))
+    .sort((left, right) => compareStrings(left.group_key, right.group_key));
+
+  // --- affected_requirements ----------------------------------------------
+  // Precompute, per role, the set of group_keys any changed file of that role
+  // maps to. These power the medium-confidence "changed_path/test group" rules.
+  const implementationGroups = new Set<string>();
+  const testGroups = new Set<string>();
+  for (const changedFile of changedFiles) {
+    if (changedFile.role === "implementation") {
+      for (const group of changedFile.areas) {
+        implementationGroups.add(group);
+      }
+    } else if (changedFile.role === "test") {
+      for (const group of changedFile.areas) {
+        testGroups.add(group);
+      }
+    }
+  }
+
+  const affectedRequirements: PrAffectedRequirement[] = [];
+  for (const requirement of intent.requirements) {
+    const reasons = scopeReasonsForRequirement(requirement, {
+      changedFiles,
+      diffByPath,
+      groupByAcid,
+      implementationGroups,
+      testGroups
+    });
+    if (reasons.length === 0) {
+      continue;
+    }
+    const groupKey = requirementGroupKey(requirement);
+    const affected: PrAffectedRequirement = {
+      requirement_id: requirement.id,
+      reasons
+    };
+    if (requirement.acai_id !== undefined) {
+      affected.acai_id = requirement.acai_id;
+    }
+    if (requirement.title !== undefined) {
+      affected.title = requirement.title;
+    }
+    if (groupKey !== undefined) {
+      affected.group_key = groupKey;
+    }
+    affectedRequirements.push(affected);
+  }
+  affectedRequirements.sort((left, right) => compareStrings(left.requirement_id, right.requirement_id));
+
+  // --- out_of_scope_changed_files -----------------------------------------
+  const outOfScope: PrOutOfScopeChangedFile[] = changedFiles
+    .filter((changedFile) => changedFile.areas.length === 0)
+    .map((changedFile) => ({
+      path: changedFile.path,
+      status: changedFile.status,
+      reason: changedFile.role === "generated" ? ("generated" as const) : ("unmapped" as const)
+    }))
+    .sort((left, right) => compareStrings(left.path, right.path));
+
+  const model: PrScopeModel = {
+    base_ref: collection.git.base_ref,
+    head_ref: collection.git.head_ref,
+    head_sha: collection.git.head_sha,
+    diff_source: collection.diff_source,
+    changed_files: changedFiles,
+    affected_areas: affectedAreas,
+    affected_requirements: affectedRequirements,
+    out_of_scope_changed_files: outOfScope
+  };
+  if (collection.git.base_sha !== undefined) {
+    model.base_sha = collection.git.base_sha;
+  }
+  return model;
+}
+
+// --- role classification ---------------------------------------------------
+
+function classifyRole(filePath: string, areas: string[]): ChangedFileRole {
+  if (isGeneratedPath(filePath)) {
+    return "generated";
+  }
+  if (filePath.startsWith(".github/")) {
+    return "ci";
+  }
+  if (isTestPath(filePath)) {
+    return "test";
+  }
+  if (isSpecPath(filePath)) {
+    return "spec";
+  }
+  if (isDocPath(filePath)) {
+    return "doc";
+  }
+  if (isConfigPath(filePath)) {
+    return "config";
+  }
+  if (areas.length > 0) {
+    return "implementation";
+  }
+  return "unknown";
+}
+
+function isTestPath(filePath: string): boolean {
+  return filePath.startsWith("tests/") || /\.test\.[^./]+$/.test(filePath) || /\.spec\.[^./]+$/.test(filePath);
+}
+
+function isSpecPath(filePath: string): boolean {
+  return filePath.startsWith("features/") && filePath.endsWith(".feature.yaml");
+}
+
+function isDocPath(filePath: string): boolean {
+  return filePath.startsWith("docs/") || filePath.endsWith(".md");
+}
+
+function isConfigPath(filePath: string): boolean {
+  const base = baseName(filePath);
+  return (
+    filePath.endsWith(".yaml") ||
+    filePath.endsWith(".yml") ||
+    filePath.endsWith(".json") ||
+    base === "tsconfig.json" ||
+    base.startsWith("tsconfig.")
+  );
+}
+
+const LOCKFILES = new Set([
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "npm-shrinkwrap.json"
+]);
+
+function isGeneratedPath(filePath: string): boolean {
+  return filePath.startsWith("dist/") || filePath.includes("/dist/") || LOCKFILES.has(baseName(filePath));
+}
+
+// --- scope rules -----------------------------------------------------------
+
+interface ScopeContext {
+  changedFiles: ScopedChangedFile[];
+  diffByPath: Map<string, StructuredDiffFile>;
+  groupByAcid: Map<string, string>;
+  implementationGroups: Set<string>;
+  testGroups: Set<string>;
+}
+
+function scopeReasonsForRequirement(requirement: IntentRequirement, context: ScopeContext): PrScopeReason[] {
+  const reasons: PrScopeReason[] = [];
+  const acaiId = requirement.acai_id;
+  const groupKey = requirementGroupKey(requirement);
+
+  // exact_acid_in_diff (high) and changed_test_exact_acid (high): scan diff
+  // lines (add/delete/context) of changed files for the literal acai_id.
+  if (acaiId) {
+    for (const changedFile of context.changedFiles) {
+      const diffFile = context.diffByPath.get(changedFile.path);
+      if (!diffFile) {
+        continue;
+      }
+      const hit = firstAcidLine(diffFile, acaiId);
+      if (!hit) {
+        continue;
+      }
+      const isTest = changedFile.role === "test";
+      reasons.push(
+        scopeReason(isTest ? "changed_test_exact_acid" : "exact_acid_in_diff", "high", {
+          path: changedFile.path,
+          line_start: hit.line,
+          line_end: hit.line,
+          note: `Changed ${isTest ? "test" : "file"} diff line references ${acaiId}.`
+        })
+      );
+    }
+  }
+
+  // spec_block_changed (high): a changed spec file hunk overlaps the
+  // requirement's spec source_ref line range for that spec path.
+  for (const range of specSourceRanges(requirement)) {
+    const diffFile = context.diffByPath.get(range.path);
+    if (!diffFile || !isSpecPath(range.path)) {
+      continue;
+    }
+    const overlap = firstHunkOverlap(diffFile, range);
+    if (overlap) {
+      reasons.push(
+        scopeReason("spec_block_changed", "high", {
+          path: range.path,
+          line_start: overlap.line_start,
+          line_end: overlap.line_end,
+          note: `Changed spec hunk overlaps the requirement's source block.`
+        })
+      );
+    }
+  }
+
+  // changed_path_requirement_group (medium): a changed implementation file maps
+  // to the requirement's group_key.
+  if (groupKey && context.implementationGroups.has(groupKey)) {
+    const file = firstChangedFileForGroup(context.changedFiles, groupKey, "implementation");
+    reasons.push(
+      scopeReason("changed_path_requirement_group", "medium", {
+        path: file,
+        note: `Changed implementation file maps to requirement group ${groupKey}.`
+      })
+    );
+  }
+
+  // changed_test_group (medium): a changed test file maps to the group_key.
+  if (groupKey && context.testGroups.has(groupKey)) {
+    const file = firstChangedFileForGroup(context.changedFiles, groupKey, "test");
+    reasons.push(
+      scopeReason("changed_test_group", "medium", {
+        path: file,
+        note: `Changed test file maps to requirement group ${groupKey}.`
+      })
+    );
+  }
+
+  return dedupeReasons(reasons);
+}
+
+function scopeReason(
+  rule: PrScopeRule,
+  confidence: PrScopeConfidence,
+  options: { path?: string; line_start?: number; line_end?: number; note?: string }
+): PrScopeReason {
+  const reason: PrScopeReason = { rule, confidence };
+  if (options.path !== undefined) {
+    reason.path = options.path;
+  }
+  if (options.line_start !== undefined) {
+    reason.line_start = options.line_start;
+  }
+  if (options.line_end !== undefined) {
+    reason.line_end = options.line_end;
+  }
+  if (options.note !== undefined) {
+    reason.note = options.note;
+  }
+  return reason;
+}
+
+// Stable, ordered de-dupe over the identifying fields of a reason. Sorted by
+// rule then path then line range so a requirement's reasons are byte-stable
+// regardless of the order rules fired.
+function dedupeReasons(reasons: PrScopeReason[]): PrScopeReason[] {
+  const seen = new Set<string>();
+  const result: PrScopeReason[] = [];
+  for (const reason of reasons) {
+    const key = `${reason.rule}:${reason.path ?? ""}:${reason.line_start ?? ""}:${reason.line_end ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(reason);
+  }
+  return result.sort(
+    (left, right) =>
+      compareStrings(left.rule, right.rule) ||
+      compareStrings(left.path ?? "", right.path ?? "") ||
+      (left.line_start ?? 0) - (right.line_start ?? 0)
+  );
+}
+
+// --- diff helpers ----------------------------------------------------------
+
+function lineCounts(diffFile: StructuredDiffFile | undefined): { added?: number; deleted?: number } {
+  if (!diffFile) {
+    return {};
+  }
+  let added = 0;
+  let deleted = 0;
+  for (const hunk of diffFile.hunks) {
+    for (const line of hunk.lines) {
+      if (line.kind === "add") {
+        added += 1;
+      } else if (line.kind === "delete") {
+        deleted += 1;
+      }
+    }
+  }
+  return { added, deleted };
+}
+
+// First diff line (add/delete/context) whose text contains the acai_id, with its
+// best available line number (new_line preferred, else old_line). Deterministic:
+// hunks and lines are scanned in file order.
+function firstAcidLine(diffFile: StructuredDiffFile, acaiId: string): { line?: number } | undefined {
+  for (const hunk of diffFile.hunks) {
+    for (const line of hunk.lines) {
+      if (line.text.includes(acaiId)) {
+        const lineNumber = line.new_line ?? line.old_line;
+        return lineNumber !== undefined ? { line: lineNumber } : {};
+      }
+    }
+  }
+  return undefined;
+}
+
+// First hunk whose changed line span overlaps the requirement's source line
+// range. Hunk span is taken from new_start/new_lines (the head-side span).
+function firstHunkOverlap(diffFile: StructuredDiffFile, range: SpecSourceRange): { line_start: number; line_end: number } | undefined {
+  const start = range.line_start ?? 1;
+  const end = range.line_end ?? start;
+  for (const hunk of diffFile.hunks) {
+    const hunkStart = hunk.new_start;
+    const hunkEnd = hunk.new_start + Math.max(hunk.new_lines, 1) - 1;
+    if (hunkStart <= end && hunkEnd >= start) {
+      return { line_start: Math.max(hunkStart, start), line_end: Math.min(hunkEnd, end) };
+    }
+  }
+  return undefined;
+}
+
+function firstChangedFileForGroup(
+  changedFiles: ScopedChangedFile[],
+  groupKey: string,
+  role: ChangedFileRole
+): string | undefined {
+  for (const changedFile of changedFiles) {
+    if (changedFile.role === role && changedFile.areas.includes(groupKey)) {
+      return changedFile.path;
+    }
+  }
+  return undefined;
+}
+
+// --- requirement metadata helpers ------------------------------------------
+
+// Derive a requirement's group_key from the acai_id middle segment
+// (review-surfaces.PRIVACY.2 -> PRIVACY). LLM-derived requirements never carry
+// an acai_id, so they have no deterministic group_key here.
+function requirementGroupKey(requirement: IntentRequirement): string | undefined {
+  return groupFromAcid(requirement.acai_id);
+}
+
+function groupFromAcid(acaiId: string | undefined): string | undefined {
+  if (!acaiId) {
+    return undefined;
+  }
+  const segment = acaiId.split(".")[1];
+  return segment && segment.length > 0 ? segment : undefined;
+}
+
+// Extract (path, line range) tuples from a requirement's spec source_refs. The
+// path is the source_ref.ref; line ranges come from the attached spec evidence
+// (line_start/line_end), which may be absent for whole-file references.
+function specSourceRanges(requirement: IntentRequirement): SpecSourceRange[] {
+  const ranges: SpecSourceRange[] = [];
+  for (const sourceRef of requirement.source_refs) {
+    if (sourceRef.kind !== "spec") {
+      continue;
+    }
+    const evidences = sourceRef.evidence ?? [];
+    if (evidences.length === 0) {
+      ranges.push({ path: sourceRef.ref });
+      continue;
+    }
+    for (const evidence of evidences) {
+      const range: SpecSourceRange = { path: evidence.path ?? sourceRef.ref };
+      if (evidence.line_start !== undefined) {
+        range.line_start = evidence.line_start;
+      }
+      if (evidence.line_end !== undefined) {
+        range.line_end = evidence.line_end;
+      }
+      ranges.push(range);
+    }
+  }
+  return ranges;
+}
+
+// --- misc helpers ----------------------------------------------------------
+
+function areaName(areas: ReviewArea[], groupKey: string): string {
+  const match = areas.find((area) => area.groupKey === groupKey);
+  return match ? match.name : groupKey;
+}
+
+function baseName(filePath: string): string {
+  const index = filePath.lastIndexOf("/");
+  return index >= 0 ? filePath.slice(index + 1) : filePath;
+}
