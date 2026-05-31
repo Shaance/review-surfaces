@@ -4,6 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
+import { renderComment, type DiagramEmbed } from "../src/render/comment";
+import type { ReviewPacket } from "../src/render/packet";
+import { minimalReviewPacket } from "./helpers/review-packet";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
 
@@ -409,4 +412,66 @@ test("review-surfaces.PROVIDERS.1 default comment does not invoke --post (no net
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("review-surfaces.PROVIDERS.1 comment embeds rendered Mermaid architecture diagrams", () => {
+  const tmp = setupFixture("review-surfaces-comment-diagrams-");
+  try {
+    runAll(tmp);
+    const result = runComment(tmp);
+    assert.equal(result.status, 0, result.stderr);
+    // The valid diagrams the pipeline wrote to diagrams/*.mmd are embedded as
+    // <details>-wrapped ```mermaid blocks GitHub renders inline on the PR.
+    assert.match(result.stdout, /### Architecture diagrams/);
+    assert.match(result.stdout, /<details><summary>Pipeline<\/summary>/);
+    assert.match(result.stdout, /```mermaid/);
+    assert.match(result.stdout, /flowchart (LR|TB)/);
+    // The bodies were actually read from disk (not just referenced by path).
+    assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "diagrams", "pipeline.mmd")));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.PROVIDERS.1 comment embeds valid diagrams, omits over-budget ones, and stays optional", () => {
+  const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  const diagrams: DiagramEmbed[] = [
+    { title: "Pipeline", body: "flowchart LR\n  A-->B" },
+    // Over MAX_DIAGRAM_CHARS (4000): must be OMITTED whole, never truncated.
+    { title: "Huge", body: `flowchart TB\n${"  X-->Y\n".repeat(2000)}` }
+  ];
+  const md = renderComment(packet, undefined, diagrams);
+  assert.match(md, /### Architecture diagrams/);
+  assert.match(md, /<details><summary>Pipeline<\/summary>/);
+  assert.match(md, /```mermaid\nflowchart LR\n {2}A-->B\n```/);
+  assert.doesNotMatch(md, /summary>Huge/, "an over-budget diagram must be omitted, not truncated");
+  assert.match(md, /1 more diagram\(s\) omitted/);
+
+  // Backward compatible: with no diagrams the section is absent entirely.
+  assert.doesNotMatch(renderComment(packet, undefined, []), /### Architecture diagrams/);
+  assert.doesNotMatch(renderComment(packet), /### Architecture diagrams/);
+
+  // Deterministic: same inputs -> byte-identical comment.
+  assert.equal(renderComment(packet, undefined, diagrams), md);
+});
+
+test("review-surfaces.PROVIDERS.1 comment diagram embedding is injection-safe (fence + HTML title)", () => {
+  const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  const md = renderComment(packet, undefined, [
+    { title: "Pipeline", body: "flowchart LR\n  A-->B" },
+    // A body that tries to CLOSE the mermaid fence and inject markdown -> omitted whole.
+    { title: "Escape", body: "flowchart LR\n  A-->B\n```\n<script>alert(1)</script>" },
+    // A title containing HTML -> must be escaped in <summary>, never injected.
+    { title: "Evil</summary><img src=x onerror=alert(1)>", body: "flowchart TB\n  X-->Y" }
+  ]);
+  // The valid diagrams are embedded; the fence-breaking body is omitted so its
+  // injected markup never reaches the rendered comment.
+  assert.match(md, /```mermaid\nflowchart LR\n {2}A-->B\n```/);
+  assert.doesNotMatch(md, /<script>/, "a fence-breaking body must be omitted, not embedded");
+  // The HTML title is escaped, not emitted as live markup.
+  assert.doesNotMatch(md, /<img /, "an HTML title must be escaped, not injected into <summary>");
+  assert.match(md, /&lt;img /);
+  // Mermaid arrows in the body are NOT html-escaped (escaping would break rendering).
+  assert.match(md, /A-->B/);
+  assert.doesNotMatch(md, /A--&gt;B/);
 });

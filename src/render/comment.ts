@@ -4,6 +4,7 @@ import { fileExists } from "../core/files";
 import { redactSecrets } from "../privacy/secrets";
 import { isHypothesisOnly } from "../evidence/evidence";
 import { countRequirementStatuses, formatRequirementStatusSummary } from "../evaluation/status";
+import { validateMermaidDiagramArtifact } from "../diagrams/diagrams";
 import type { ReviewPacket } from "./packet";
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,23 @@ const MAX_HYPOTHESES = 6;
 // silently fail to upsert.
 const MAX_LINE_CHARS = 300;
 const MAX_COMMENT_CHARS = 60000;
+
+// Architecture diagrams are embedded as GitHub-rendered ```mermaid blocks so a
+// reviewer can SEE the changed-architecture surfaces directly on the PR. Only
+// VALID diagrams are embedded (an invalid one would render as a parse error);
+// each is wrapped in <details> to keep the sticky comment scannable. Bounds keep
+// the section review-sized (a big repo's source-layout diagram stays well under
+// GitHub's per-comment limit). An over-budget or invalid diagram is OMITTED with
+// a count, never truncated — a half Mermaid block renders as an error on GitHub.
+const MAX_DIAGRAMS = 6;
+const MAX_DIAGRAM_CHARS = 4000;
+const MAX_DIAGRAM_SECTION_CHARS = 12000;
+
+// A validated Mermaid diagram to embed: a human title and the raw .mmd body.
+export interface DiagramEmbed {
+  title: string;
+  body: string;
+}
 
 // Default artifact-dir relative paths used when renderComment is called without
 // a resolved packet location (the pure in-memory path). The CLI path threads the
@@ -88,14 +106,90 @@ export function renderCommentFromPacketFile(cwd: string, outDir?: string): Rende
     return null;
   }
   const packet = JSON.parse(fs.readFileSync(packetPath, "utf8")) as ReviewPacket;
+  // Read the VALID Mermaid bodies from <outDir>/diagrams/*.mmd (the packet JSON
+  // carries only paths + validation status, not the bodies). This sibling-file
+  // read is the only IO; renderComment stays pure given the loaded diagrams.
+  const diagrams = loadEmbeddedDiagrams(path.dirname(packetPath), packet);
   return {
     // Derive the "full packet" pointers from the EFFECTIVE packet path the
     // renderer actually read, expressed relative to cwd, so a repo with a custom
     // output_dir gets a link to the REAL artifact location rather than a
     // hardcoded .review-surfaces/review_packet.* that does not exist there.
-    markdown: renderComment(packet, pointersForPacketPath(cwd, packetPath)),
+    markdown: renderComment(packet, pointersForPacketPath(cwd, packetPath), diagrams),
     packetPath
   };
+}
+
+// Load the VALID diagrams referenced by the packet from their .mmd sibling files
+// under outDir. Only diagrams the pipeline validated as `valid` are embedded, and
+// the read is confined to genuine regular files whose REAL path stays under the
+// real <outDir>/diagrams directory — defense against a tampered packet (run via
+// `comment --post` over a reused/untrusted output dir) pointing the renderer at
+// an arbitrary file through a symlinked .mmd or a symlinked diagrams/ ancestor.
+function loadEmbeddedDiagrams(outDir: string, packet: ReviewPacket): DiagramEmbed[] {
+  const embeds: DiagramEmbed[] = [];
+  // The expected real diagrams root: realpath(outDir) + "/diagrams". Built by
+  // string-join (NOT realpath of diagrams/ itself) so a symlinked diagrams/ dir
+  // resolves OUTSIDE this root and is rejected below, rather than being followed.
+  let expectedDiagramsDir: string;
+  try {
+    expectedDiagramsDir = path.join(fs.realpathSync(outDir), "diagrams");
+  } catch {
+    return embeds;
+  }
+  for (const diagram of packet.architecture?.diagram_validation ?? []) {
+    if (diagram.status !== "valid") {
+      continue;
+    }
+    const rel = diagram.path;
+    if (typeof rel !== "string" || path.isAbsolute(rel) || rel.includes("..") || !rel.startsWith("diagrams/") || !rel.endsWith(".mmd")) {
+      continue;
+    }
+    const file = path.join(outDir, rel);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(file);
+    } catch {
+      continue;
+    }
+    // Skip non-files (symlink final component / directories) AND oversize files
+    // BEFORE reading: a packet can mark a huge .mmd `valid`, and reading it before
+    // the MAX_DIAGRAM_CHARS check would waste memory on a body we then drop.
+    if (!stat.isFile() || stat.size > MAX_DIAGRAM_CHARS) {
+      continue;
+    }
+    // Confine the fully-resolved real path under the real diagrams root. This
+    // rejects a symlinked .mmd or a symlinked ANCESTOR whose target escapes the
+    // diagrams directory (lstat alone only guards the final path component).
+    let real: string;
+    try {
+      real = fs.realpathSync(file);
+    } catch {
+      continue;
+    }
+    const within = path.relative(expectedDiagramsDir, real);
+    if (within === "" || within.startsWith("..") || path.isAbsolute(within)) {
+      continue;
+    }
+    const body = fs.readFileSync(file, "utf8").trim();
+    if (body === "") {
+      continue;
+    }
+    // Re-validate the CURRENT bytes rather than trusting the packet's recorded
+    // status: a .mmd modified/stale since generation could now be invalid Mermaid
+    // and would render as the parse-error block this feature exists to avoid.
+    if (validateMermaidDiagramArtifact({ path: rel, body }).status !== "valid") {
+      continue;
+    }
+    embeds.push({ title: diagramTitle(rel), body });
+  }
+  return embeds;
+}
+
+// "diagrams/source-layout.mmd" -> "Source layout".
+function diagramTitle(rel: string): string {
+  const base = rel.replace(/^diagrams\//, "").replace(/\.mmd$/, "").replace(/[-_]+/g, " ").trim();
+  return base === "" ? "Diagram" : base.charAt(0).toUpperCase() + base.slice(1);
 }
 
 // review_packet.json -> {json, markdown} pointers, relative to cwd. The json
@@ -113,7 +207,11 @@ function pointersForPacketPath(cwd: string, packetPath: string): PacketPointers 
  * clock, deterministic given the packet. Secrets are redacted in every rendered
  * free-text line, mirroring the packet markdown renderer.
  */
-export function renderComment(packet: ReviewPacket, pointers: PacketPointers = defaultPointers()): string {
+export function renderComment(
+  packet: ReviewPacket,
+  pointers: PacketPointers = defaultPointers(),
+  diagrams: DiagramEmbed[] = []
+): string {
   const counts = countRequirementStatuses(packet.evaluation.results ?? []);
   const overreachCount = packet.evaluation.overreach?.length ?? 0;
   const milestone = readMilestone(packet);
@@ -134,6 +232,9 @@ export function renderComment(packet: ReviewPacket, pointers: PacketPointers = d
     "",
     "### LLM/agent hypotheses (NOT proof; verify against deterministic evidence)",
     renderBullets(hypotheses(packet, MAX_HYPOTHESES), "None proposed."),
+    // GitHub renders these ```mermaid blocks inline so reviewers see the changed
+    // architecture surfaces directly on the PR. Empty when no valid diagrams.
+    ...renderDiagramSection(diagrams),
     "",
     // Point reviewers at the REAL artifact location (the effective output_dir),
     // not a hardcoded .review-surfaces path that would be stale/absent in a repo
@@ -266,6 +367,55 @@ function hypotheses(packet: ReviewPacket, limit: number): string[] {
   return visible;
 }
 
+// Build the "Architecture diagrams" section: each valid diagram as a
+// <details>-wrapped ```mermaid block GitHub renders inline. Bodies are redacted
+// (constant substitution preserves valid Mermaid) but NEVER per-line-truncated
+// or split — a partial Mermaid block renders as a parse error. Over-budget,
+// over-size, or beyond-MAX_DIAGRAMS entries are dropped WHOLE and counted, so the
+// section is bounded without ever emitting a broken diagram. Returns [] (no
+// section) when there is nothing renderable.
+function renderDiagramSection(diagrams: DiagramEmbed[]): string[] {
+  const blocks: string[] = [];
+  let used = 0;
+  let omitted = 0;
+  for (const diagram of diagrams) {
+    if (blocks.length >= MAX_DIAGRAMS) {
+      omitted += 1;
+      continue;
+    }
+    const body = redact(diagram.body);
+    // Self-defend rather than trust the upstream validator: omit (never embed) a
+    // body that is over-size OR contains a line that would CLOSE the ```mermaid
+    // fence (a line-leading ``` ), which would spill the remainder into raw
+    // markdown/HTML on the PR. The built-in generators never emit this, but
+    // renderComment/DiagramEmbed are public API and a future/external .mmd writer
+    // could. The body itself is NOT html-escaped: GitHub renders fenced content
+    // verbatim, and escaping would corrupt Mermaid arrows (`-->` -> `--&gt;`).
+    if (body.length > MAX_DIAGRAM_CHARS || /^\s*```/m.test(body)) {
+      omitted += 1;
+      continue;
+    }
+    // The TITLE lands in an HTML <summary>, so it MUST be html-escaped (a caller
+    // could supply a title containing </summary>...<img onerror=...>).
+    const title = htmlEscape(truncateField(redact(diagram.title)));
+    const block = `<details><summary>${title}</summary>\n\n\`\`\`mermaid\n${body}\n\`\`\`\n\n</details>`;
+    if (used + block.length > MAX_DIAGRAM_SECTION_CHARS) {
+      omitted += 1;
+      continue;
+    }
+    blocks.push(block);
+    used += block.length;
+  }
+  if (blocks.length === 0) {
+    return [];
+  }
+  const lines = ["", "### Architecture diagrams", ...blocks];
+  if (omitted > 0) {
+    lines.push(`_${omitted} more diagram(s) omitted to keep the comment compact; see the local \`diagrams/\` artifacts._`);
+  }
+  return lines;
+}
+
 function renderBullets(items: string[], emptyText: string): string {
   if (items.length === 0) {
     return `- ${emptyText}`;
@@ -275,4 +425,15 @@ function renderBullets(items: string[], emptyText: string): string {
 
 function redact(value: string): string {
   return redactSecrets(value).text;
+}
+
+// Neutralize HTML so an interpolated value (e.g. a diagram title) cannot inject
+// markup into the <summary>/<details> wrapper of the posted comment.
+function htmlEscape(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
