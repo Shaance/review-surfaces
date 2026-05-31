@@ -225,7 +225,7 @@ export interface PrChangeDiagramModel {
 
 export interface AnchoredNarrativeItem {
   text: string;
-  paths: string[];
+  paths?: string[];
   requirement_ids?: string[];
   risk_ids?: string[];
 }

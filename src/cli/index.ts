@@ -32,9 +32,12 @@ import {
 } from "../render/packet";
 import { loadEvaluation } from "../render/load";
 import { renderCommentFromPacketFile, resolvePacketPath } from "../render/comment";
+import { renderPrComment } from "../render/pr-comment";
+import { assemblePrReviewSurface } from "../pipeline/pr-surface";
+import { PrReviewSurfaceModel, ReviewScope } from "../pr/contract";
 import { renderSarifFromPacketFile } from "../render/sarif";
 import { postStickyComment } from "../render/post-comment";
-import { writeText } from "../core/files";
+import { writeJson, writeText } from "../core/files";
 import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import {
@@ -529,12 +532,37 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // were produced from THESE inputs. writeReviewPacket writes the full set
   // (intent/evaluation/methodology/risks/review_packet, plus dogfood when present).
   await artifactStore.stampPacketArtifacts({ includeDogfood: dogfood !== undefined });
+  // PR review surface (--review-scope pr): a SEPARATE diff-scoped, LLM-narrated
+  // artifact (pr_review_surface.json) that the PR comment renders from. Requires
+  // an LLM provider; a blocked surface is written (never a whole-repo fallback).
+  if (reviewScope(parsed) === "pr") {
+    const surface = await assemblePrReviewSurface({
+      collection,
+      intent: packet.intent,
+      evaluation: packet.evaluation,
+      reviewAreas: reviewAreas.areas,
+      provider: reasoningProvider,
+      providerName: provider,
+      model: requestedModel,
+      redactSecrets: config.privacy.redact_secrets
+    });
+    await writeJson(path.join(collection.outputDir, "pr_review_surface.json"), surface);
+    if (surface.status === "blocked") {
+      console.warn(`PR review surface blocked (${surface.blocked_reason}); see pr_review_surface.json`);
+    }
+  }
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
   console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
   debug(parsed, `completed in ${Date.now() - startedAt}ms`);
   return applyGate(parsed, evaluation, collection, provider, config);
+}
+
+// --review-scope pr|repo. PR mode emits/reads the diff-scoped pr_review_surface;
+// repo mode (default, back-compatible) uses the whole-repo packet + comment.
+function reviewScope(parsed: ParsedArgs): ReviewScope {
+  return stringFlag(parsed, "review-scope") === "pr" ? "pr" : "repo";
 }
 
 // ---------------------------------------------------------------------------
@@ -888,6 +916,13 @@ async function runCommentGithub(parsed: ParsedArgs): Promise<number> {
   // packet `all` actually wrote. Passing undefined would hardcode .review-surfaces
   // and miss a config-set output_dir.
   const outDir = await resolveOutputDir(cwd, parsed);
+
+  // PR mode renders the diff-scoped surface and NEVER falls back to the
+  // whole-repo comment when it is missing/blocked.
+  if (reviewScope(parsed) === "pr") {
+    return runPrCommentGithub(cwd, outDir, parsed);
+  }
+
   const rendered = renderCommentFromPacketFile(cwd, outDir);
   if (!rendered) {
     throw missingPacketError(cwd, outDir);
@@ -900,6 +935,30 @@ async function runCommentGithub(parsed: ParsedArgs): Promise<number> {
 
   if (booleanFlag(parsed, "post")) {
     const result = postStickyComment(cwd, rendered.markdown);
+    console.error(result.reason);
+  }
+  return ExitCodes.success;
+}
+
+// Render the PR-mode sticky comment from the diff-scoped pr_review_surface.json
+// (written by `all --review-scope pr`). Absent surface is a clean usage error
+// pointing at `all --review-scope pr`; never a whole-repo fallback.
+async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArgs): Promise<number> {
+  const surfacePath = path.join(outDir.endsWith(".json") ? path.dirname(outDir) : outDir, "pr_review_surface.json");
+  if (!fileExists(surfacePath)) {
+    throw new CliError(
+      `No PR review surface found at ${path.relative(cwd, surfacePath)}. Run \`review-surfaces all --review-scope pr --provider ai-sdk\` first.`,
+      ExitCodes.usageError
+    );
+  }
+  const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8")) as PrReviewSurfaceModel;
+  const markdown = renderPrComment(surface);
+  const commentPath = path.join(path.dirname(surfacePath), "comment.md");
+  await writeText(commentPath, markdown);
+  process.stdout.write(markdown);
+  console.error(`Wrote ${path.relative(cwd, commentPath)}`);
+  if (booleanFlag(parsed, "post")) {
+    const result = postStickyComment(cwd, markdown);
     console.error(result.reason);
   }
   return ExitCodes.success;
