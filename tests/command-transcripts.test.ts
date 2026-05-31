@@ -249,9 +249,10 @@ test("pipeline stage files map to the CLI orchestration review area", async () =
   assert.ok(matcher.groupsForPath("src/pipeline/stages.ts", { purpose: "review_surface" }).includes("CLI"));
 });
 
-test("review-surfaces.BOOTSTRAP.6 and review-surfaces.DOGFOOD.8 skill files map to review areas", async () => {
+test("review-surfaces.BOOTSTRAP.6, DOGFOOD.8, and DOGFOOD.9 skill files map to review areas", async () => {
   const areas = await defaultReviewSurfacesAreas();
   const matcher = createReviewAreaMatcher(areas);
   assert.ok(matcher.groupsForPath(".agents/skills/review-surfaces-usage/SKILL.md", { purpose: "review_surface" }).includes("BOOTSTRAP"));
   assert.ok(matcher.groupsForPath(".agents/skills/review-surfaces-dogfood-loop/SKILL.md", { purpose: "review_surface" }).includes("DOGFOOD"));
+  assert.ok(matcher.groupsForPath(".agents/skills/composed-review-loop/SKILL.md", { purpose: "review_surface" }).includes("DOGFOOD"));
 });

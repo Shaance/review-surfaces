@@ -152,6 +152,7 @@ areas:
       - .review-surfaces/feedback/
       - docs/dogfooding.md
       - .agents/skills/review-surfaces-dogfood-loop/
+      - .agents/skills/composed-review-loop/
     purpose: Turn self-review findings into local product feedback and handoff.
     pattern: feedback loop
     test_keywords:

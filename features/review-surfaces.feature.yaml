@@ -180,6 +180,9 @@ components:
         requirement: The product must include a dogfood-loop architecture diagram by milestone M4.
       8:
         requirement: The repository must contain .agents/skills/review-surfaces-dogfood-loop/SKILL.md with a self-improvement workflow for turning packet findings into code, tests, specs, docs, skills, feedback files, or explicit deferrals.
+      9:
+        requirement: The repository must contain .agents/skills/composed-review-loop/SKILL.md with a composed review workflow for combining packet evidence, command transcripts, dogfood findings, PR feedback, and a full-diff review into one readiness decision.
+        note: Optional external review skills may be used when available, but the repo-local workflow must include generic fallbacks and must not depend on private local skill setup.
 
   RENDER:
     name: Packet rendering and machine-readable outputs

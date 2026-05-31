@@ -18,6 +18,8 @@ The project should use its own partial capabilities as soon as they exist. Dogfo
 
 Use `.agents/skills/review-surfaces-dogfood-loop/SKILL.md` when a self-review packet should drive the next product change (`review-surfaces.DOGFOOD.8`). Use `.agents/skills/review-surfaces-usage/SKILL.md` when applying the packet workflow to another repository (`review-surfaces.BOOTSTRAP.6`).
 
+Use `.agents/skills/composed-review-loop/SKILL.md` when a review should combine the packet, command transcripts, dogfood findings, PR comments, and a full-diff code review into one synthesized readiness decision (`review-surfaces.DOGFOOD.9`).
+
 The dogfood-loop skill should not replace the packet. It should make the loop repeatable: implement a scoped change, capture command evidence, generate local artifacts, inspect the packet, then convert useful findings into code, tests, schema, specs, docs, skills, feedback files, or explicit deferrals.
 
 ## Feedback file shape
