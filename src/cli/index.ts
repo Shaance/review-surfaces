@@ -1204,6 +1204,14 @@ Options:
   --head <ref>      Head ref for diff collection, default HEAD
   --spec <path>     Feature spec path, default from config
   --out <dir>       Output directory, default .review-surfaces
+  --review-scope <s> all/comment: pr or repo (default repo). pr emits/reads a SEPARATE
+                   diff-scoped surface (pr_review_surface.json): changed files mapped to
+                   affected requirements, base-vs-head coverage delta, PR-specific risk
+                   candidates, a PR change-impact diagram, and an LLM-authored narrative
+                   (What changed / Why it matters / Review first). pr REQUIRES a non-mock
+                   provider for the narrative; under mock it renders a blocked comment with
+                   the deterministic scope counts (never a whole-repo fallback). repo is the
+                   legacy whole-repo evaluation/risks/architecture comment (unchanged).
   --format <fmt>    comment: output format, github (default) or sarif. github writes
                    .review-surfaces/comment.md; sarif writes .review-surfaces/review.sarif
                    (SARIF 2.1.0). Both honor --out and read the local packet only.
