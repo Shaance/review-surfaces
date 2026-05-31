@@ -4,6 +4,7 @@ import { fileExists } from "../core/files";
 import { redactSecrets } from "../privacy/secrets";
 import { isHypothesisOnly } from "../evidence/evidence";
 import { countRequirementStatuses, formatRequirementStatusSummary } from "../evaluation/status";
+import { validateMermaidDiagramArtifact } from "../diagrams/diagrams";
 import type { ReviewPacket } from "./packet";
 
 // ---------------------------------------------------------------------------
@@ -172,6 +173,12 @@ function loadEmbeddedDiagrams(outDir: string, packet: ReviewPacket): DiagramEmbe
     }
     const body = fs.readFileSync(file, "utf8").trim();
     if (body === "") {
+      continue;
+    }
+    // Re-validate the CURRENT bytes rather than trusting the packet's recorded
+    // status: a .mmd modified/stale since generation could now be invalid Mermaid
+    // and would render as the parse-error block this feature exists to avoid.
+    if (validateMermaidDiagramArtifact({ path: rel, body }).status !== "valid") {
       continue;
     }
     embeds.push({ title: diagramTitle(rel), body });
