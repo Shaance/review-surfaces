@@ -141,10 +141,13 @@ jobs:
             *) echo "comment.md resolves outside the workspace; skipping post"; exit 0 ;;
           esac
           marker='<!-- review-surfaces:sticky -->'
-          # --slurp combines paginated pages into one array before the jq runs
-          # (without it --jq runs per page and yields a malformed/multi-line id).
-          id="$(gh api --paginate --slurp "repos/$REPO/issues/$PR_NUMBER/comments" \
-            --jq "[.[][] | select(.body | contains(\"$marker\")) | .id] | last // \"\"" 2>/dev/null)"
+          # --slurp combines paginated pages into one array, then a standalone jq
+          # selects the sticky id. (`gh api --slurp` is mutually exclusive with
+          # `gh api --jq`, so the filter must be a separate jq process — otherwise
+          # the command errors, the id is empty, and the upsert posts a DUPLICATE
+          # sticky every run instead of updating the existing one.)
+          id="$(gh api --paginate --slurp "repos/$REPO/issues/$PR_NUMBER/comments" 2>/dev/null \
+            | jq -r "[.[][] | select(.body | contains(\"$marker\")) | .id] | last // \"\"")"
           if [ -n "$id" ]; then
             gh api --method PATCH "repos/$REPO/issues/comments/$id" -F "body=@$body" >/dev/null 2>&1 \
               && echo "updated sticky comment #$id" || echo "warning: sticky update failed (best-effort)"
