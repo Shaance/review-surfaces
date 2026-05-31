@@ -74,9 +74,18 @@ jobs:
     # Post the review-surfaces sticky comment (with GitHub-rendered Mermaid
     # architecture diagrams) on the PR. Checks out the HEAD branch so `gh pr view`
     # can resolve the PR — the default pull_request checkout is a detached merge
-    # ref where it cannot. Best-effort: `comment --post` never fails the build, and
-    # a fork PR (read-only token) simply skips the post and emits the local artifact.
-    if: github.event_name == 'pull_request'
+    # ref where it cannot. Best-effort: `comment --post` never fails the build.
+    #
+    # SAME-REPO ONLY: restricted to PRs whose head branch lives in THIS repo. Fork
+    # PRs are skipped because (a) `github.head_ref` names a branch in the FORK, not
+    # here, so a default-repo checkout would fail rather than skip, and (b) running
+    # checked-out PR code while `GH_TOKEN` holds `pull-requests: write` is a token-
+    # exfiltration risk for untrusted forks (a "pwn request"). Same-repo
+    # contributors already have write access, so this escalates no privilege; fork
+    # PRs simply don't get the diagram comment.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -85,7 +94,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.head_ref }}
-          fetch-depth: 0 # all history so origin/main and the merge-base resolve
+          fetch-depth: 0 # all history so the base ref and the merge-base resolve
       - uses: pnpm/action-setup@v4
         with:
           version: 10.8.0
@@ -96,10 +105,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
       - name: Generate review packet (with diagrams)
+        # Diff against the PR's ACTUAL target branch (github.base_ref), not a
+        # hard-coded main, so a PR onto a release/maintenance branch reviews the
+        # right delta.
         run: |
           node bin/review-surfaces.js all \
             --provider mock \
-            --base origin/main \
+            --base "origin/${{ github.base_ref }}" \
             --head HEAD \
             --spec features/review-surfaces.feature.yaml \
             --dogfood \
