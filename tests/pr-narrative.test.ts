@@ -179,6 +179,33 @@ test("an item whose TEXT cites a fabricated ACID is dropped even when its anchor
   assert.match(result.narrative!.what_changed[0].text, /Touches the CLI/);
 });
 
+test("an item mentioning a DOT-PREFIXED allowlisted path (.github/...) is NOT falsely dropped", async () => {
+  const ghScope: PrScopeModel = {
+    ...scope(),
+    changed_files: [{ path: ".github/workflows/ci.yml", status: "M", areas: ["CI"], role: "ci" }],
+    affected_areas: [{ group_key: "CI", area_ids: ["CI"], name: "CI", changed_files: [".github/workflows/ci.yml"] }],
+    affected_requirements: []
+  };
+  const input: BuildPrNarrativeInput = {
+    ...inputWith({ ok: true, data: {} }),
+    scope: ghScope,
+    provider: fakeProvider({
+      ok: true,
+      data: {
+        summary: "Hardens .github/workflows/ci.yml.",
+        what_changed: [{ text: "Tightens the .github/workflows/ci.yml guard.", paths: [".github/workflows/ci.yml"] }],
+        why_it_matters: [],
+        review_first: [],
+        risk_narratives: []
+      }
+    })
+  };
+  const result = await buildPrNarrative(input);
+  assert.ok(result.narrative, "the dot-prefixed allowlisted path must not block the surface");
+  assert.equal(result.narrative!.what_changed.length, 1, "the item citing .github/... survives");
+  assert.match(result.narrative!.summary, /\.github\/workflows\/ci\.yml/);
+});
+
 test("a runtime ai_sdk_error blocks with reason llm_failed and meta.status failed (key was present)", async () => {
   const result = await buildPrNarrative(inputWith({ ok: false, reason: "ai_sdk_error: request timed out" }));
   assert.equal(result.narrative, undefined);

@@ -223,6 +223,13 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
   const specFlag = stringFlag(parsed, "spec");
   const runConfig = specFlag ? { ...config, specs: [specFlag] } : config;
   const provider = providerFlag(parsed, runConfig);
+  // PR mode produces a DETERMINISTIC mock whole-repo packet (the live provider is
+  // reserved for the diff-scoped narrative). Fold the EFFECTIVE packet provider —
+  // mock in pr mode — into the cache signature, NOT the requested one. Otherwise
+  // the mock side packet would be stamped under the requested provider's signature
+  // and a later `all --review-scope repo --provider ai-sdk --cache` with the same
+  // inputs would reuse the un-enriched mock packet instead of running the LLM.
+  const signatureProvider = reviewScope(parsed) === "pr" ? "mock" : provider;
   const collection = await collectInputs({
     cwd,
     config: runConfig,
@@ -234,8 +241,8 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
     coverageOutputPath: stringFlag(parsed, "coverage"),
     dogfood: isDogfoodRun(parsed),
     now: nowFlag(parsed),
-    provider,
-    model: signatureModel(parsed, runConfig, provider),
+    provider: signatureProvider,
+    model: signatureModel(parsed, runConfig, signatureProvider),
     conversationPath: stringFlag(parsed, "conversation"),
     agentInputPath: stringFlag(parsed, "agent-input"),
     configPath,
@@ -417,7 +424,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // missing or stale-for-another-head. So in pr mode only honor the cache shortcut
   // when a surface for the CURRENT head already exists; otherwise fall through to a
   // full regenerate so the PR block runs and (re)writes it.
-  if (cacheSnapshot && isCacheHit(cacheSnapshot, collection.manifest.signature) && prSurfaceCacheReusable(parsed, collection)) {
+  if (cacheSnapshot && isCacheHit(cacheSnapshot, collection.manifest.signature) && prSurfaceCacheReusable(parsed, collection, config)) {
     const strict = booleanFlag(parsed, "strict");
     const evaluation = loadEvaluation(collection.outputDir);
     // Under --strict the gate MUST run. If the cached output dir is incomplete
@@ -582,6 +589,13 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       redactSecrets: config.privacy.redact_secrets
     });
     await writeJson(path.join(collection.outputDir, "pr_review_surface.json"), surface);
+    // Materialize the diagram artifact the surface advertises (surface.diagram.path),
+    // so a consumer following the advertised path finds the .mmd it points at.
+    if (surface.diagram) {
+      const diagramPath = path.join(collection.outputDir, surface.diagram.path);
+      fs.mkdirSync(path.dirname(diagramPath), { recursive: true });
+      await writeText(diagramPath, surface.diagram.body);
+    }
     if (surface.status === "blocked") {
       console.warn(`PR review surface blocked (${surface.blocked_reason}); see pr_review_surface.json`);
     }
@@ -623,17 +637,30 @@ function reviewScope(parsed: ParsedArgs): ReviewScope {
 // is never reusable: API-key availability and transient provider success are not in
 // the packet signature, so reusing it would never re-attempt the narrative even
 // after the key is added. Force regeneration for any non-ready surface.
-function prSurfaceCacheReusable(parsed: ParsedArgs, collection: CollectionResult): boolean {
+function prSurfaceCacheReusable(parsed: ParsedArgs, collection: CollectionResult, config: ReviewSurfacesConfig): boolean {
   if (reviewScope(parsed) !== "pr") {
     return true;
   }
   const surfacePath = path.join(collection.outputDir, "pr_review_surface.json");
   try {
-    const parsedSurface = JSON.parse(fs.readFileSync(surfacePath, "utf8")) as {
+    const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8")) as {
       status?: string;
-      scope?: { head_sha?: string };
+      scope?: { head_sha?: string; base_sha?: string; base_ref?: string };
+      llm?: { provider?: string; model?: string };
     };
-    return parsedSurface?.scope?.head_sha === collection.git.head_sha && parsedSurface?.status === "ready";
+    const requestedModel = stringFlag(parsed, "model") ?? config.llm.model ?? undefined;
+    // The surface depends on head AND base (coverage delta) AND the narrative
+    // provider/model, none of which are in the whole-repo packet signature in pr
+    // mode. Reuse only a READY surface that matches all of them; otherwise (stale
+    // base, blocked surface, swapped provider/model) force a regenerate.
+    return (
+      surface?.status === "ready" &&
+      surface.scope?.head_sha === collection.git.head_sha &&
+      surface.scope?.base_sha === collection.git.base_sha &&
+      surface.scope?.base_ref === collection.git.base_ref &&
+      surface.llm?.provider === providerFlag(parsed, config) &&
+      (surface.llm?.model ?? undefined) === requestedModel
+    );
   } catch {
     return false;
   }

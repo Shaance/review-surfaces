@@ -319,6 +319,27 @@ test("spec_block_changed fires for a WHOLE-FILE spec ref (no line numbers) edite
   assert.equal(spec?.path, specPath);
 });
 
+test("exact_acid_in_diff matches whole ACID tokens only (CLI.1 does NOT match a line citing CLI.10)", () => {
+  const requirements = [
+    requirement({ id: "REQ-001", acai_id: "review-surfaces.PRIVACY.1", requirement: "Redact secrets." })
+  ];
+  // The added line cites PRIVACY.10 — PRIVACY.1 is a prefix substring but a DIFFERENT token.
+  const diff: StructuredDiff = {
+    files: [diffFile("src/privacy/secrets.ts", ["// implements review-surfaces.PRIVACY.10"])]
+  };
+  const model = buildPrScope(
+    input({
+      collection: collectionStub([{ path: "src/privacy/secrets.ts", status: "M" }]),
+      intent: intentModel(requirements),
+      diff
+    })
+  );
+  const req = model.affected_requirements.find((entry) => entry.requirement_id === "REQ-001");
+  // It is still scoped via changed_path_requirement_group (the file maps to PRIVACY),
+  // but must NOT claim an exact_acid_in_diff match against the PRIVACY.10 token.
+  assert.ok(!req?.reasons.some((reason) => reason.rule === "exact_acid_in_diff"), "PRIVACY.1 must not match the PRIVACY.10 token");
+});
+
 test("exact_acid_in_diff does NOT fire when the acai_id is only on an unchanged CONTEXT line", () => {
   const requirements = [
     requirement({ id: "REQ-001", acai_id: "review-surfaces.PRIVACY.2", requirement: "Redact secrets." })

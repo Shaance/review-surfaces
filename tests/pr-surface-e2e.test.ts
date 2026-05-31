@@ -54,6 +54,12 @@ test("all --review-scope pr writes a diff-scoped pr_review_surface (not the whol
     // Mock has no narrative -> blocked, never a whole-repo fallback.
     assert.equal(surface.status, "blocked");
     assert.equal(surface.narrative, undefined);
+    // The diagram artifact the surface advertises is actually materialized on disk.
+    if (surface.diagram) {
+      const diagramFile = path.join(tmp, ".review-surfaces", surface.diagram.path);
+      assert.ok(fs.existsSync(diagramFile), `surface.diagram.path ${surface.diagram.path} must be written`);
+      assert.equal(fs.readFileSync(diagramFile, "utf8"), surface.diagram.body);
+    }
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

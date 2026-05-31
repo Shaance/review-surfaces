@@ -415,13 +415,37 @@ function firstAcidLine(diffFile: StructuredDiffFile, acaiId: string): { line?: n
       if (line.kind === "context") {
         continue;
       }
-      if (line.text.includes(acaiId)) {
+      if (citesAcidToken(line.text, acaiId)) {
         const lineNumber = line.new_line ?? line.old_line;
         return lineNumber !== undefined ? { line: lineNumber } : {};
       }
     }
   }
   return undefined;
+}
+
+// An ACID occurrence counts only as a whole token, never a prefix substring:
+// `review-surfaces.CLI.1` must NOT match a line citing `review-surfaces.CLI.10`.
+// ACID tokens are made of [A-Za-z0-9_.-]; a match requires a non-ACID char (or
+// string edge) on both sides.
+function isAcidChar(ch: string): boolean {
+  return ch !== "" && /[A-Za-z0-9_.-]/.test(ch);
+}
+
+function citesAcidToken(text: string, acaiId: string): boolean {
+  let from = 0;
+  for (;;) {
+    const index = text.indexOf(acaiId, from);
+    if (index === -1) {
+      return false;
+    }
+    const before = index > 0 ? text[index - 1] : "";
+    const after = index + acaiId.length < text.length ? text[index + acaiId.length] : "";
+    if (!isAcidChar(before) && !isAcidChar(after)) {
+      return true;
+    }
+    from = index + 1;
+  }
 }
 
 // First hunk whose changed line span overlaps the requirement's source line
