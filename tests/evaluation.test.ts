@@ -276,7 +276,7 @@ test("evaluator treats later provider integrations as unknown deferrals", async 
 components:
   PROVIDERS:
     requirements:
-      1: GitHub comment integration must reuse local artifacts.
+      1: GitLab and Gerrit adapters must remain optional later provider integrations.
 constraints:
   EVIDENCE:
     requirements:

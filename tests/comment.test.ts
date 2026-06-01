@@ -75,12 +75,23 @@ const AGENT_INPUT_FIXTURE = JSON.stringify(
   2
 );
 
-test("comment rejects an unknown --review-scope value instead of silently using repo", () => {
+test("comment rejects an unknown review surface mode instead of silently using repo", () => {
   const tmp = setupFixture("review-surfaces-scope-typo-");
   try {
-    const result = runComment(tmp, ["--review-scope", "rp"]);
-    assert.notEqual(result.status, 0, "a typo'd review-scope must be a usage error");
-    assert.match(result.stderr, /Unknown --review-scope: rp/);
+    const result = runComment(tmp, ["--mode", "rp"]);
+    assert.notEqual(result.status, 0, "a typo'd mode must be a usage error");
+    assert.match(result.stderr, /Unknown review surface mode: rp/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("comment rejects conflicting --mode and --review-scope values", () => {
+  const tmp = setupFixture("review-surfaces-scope-conflict-");
+  try {
+    const result = runComment(tmp, ["--mode", "pr", "--review-scope", "repo"]);
+    assert.notEqual(result.status, 0, "conflicting surface selectors must be a usage error");
+    assert.match(result.stderr, /Conflicting review surface mode flags/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

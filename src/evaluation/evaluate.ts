@@ -145,7 +145,7 @@ function evaluateRequirement(requirement: IntentRequirement, index: EvidenceInde
     status = "satisfied";
     summary = "Referenced repository file evidence exists for this requirement.";
     confidence = "high";
-  } else if (group && isLaterProviderGroup(group)) {
+  } else if (group && isLaterProviderGroup(group) && isDeferredProviderRequirement(requirement)) {
     status = "unknown";
     summary = "This requirement targets a later provider surface and is not implemented in the local MVP.";
     confidence = "unknown";
@@ -211,6 +211,12 @@ function evaluateRequirement(requirement: IntentRequirement, index: EvidenceInde
         : "Review whether this requirement needs implementation, tests, or an explicit deferral.",
     confidence
   };
+}
+
+function isDeferredProviderRequirement(requirement: IntentRequirement): boolean {
+  return /\b(gitlab|gerrit|hosted|dashboard|acai\s+(?:cli|api|sync)|later provider|optional provider adapter)\b/i.test(
+    requirement.requirement
+  );
 }
 
 async function buildEvidenceIndex(

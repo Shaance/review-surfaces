@@ -38,7 +38,7 @@ function runCli(cwd: string, args: string[]): { status: number | null; stdout: s
 
 const ALL_PR = ["all", "--review-scope", "pr", "--base", "HEAD", "--head", "HEAD", "--spec", "features/review-surfaces.feature.yaml", "--out", ".review-surfaces"];
 
-test("all --review-scope pr writes a diff-scoped pr_review_surface (not the whole spec); mock blocks the narrative", () => {
+test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_review_surface; mock blocks the narrative", () => {
   const tmp = setupChangedRepo();
   try {
     const run = runCli(tmp, [...ALL_PR, "--provider", "mock"]);
@@ -54,6 +54,10 @@ test("all --review-scope pr writes a diff-scoped pr_review_surface (not the whol
     // Mock has no narrative -> blocked, never a whole-repo fallback.
     assert.equal(surface.status, "blocked");
     assert.equal(surface.narrative, undefined);
+    const blockedComment = runCli(tmp, ["comment", "--mode", "pr", "--out", ".review-surfaces"]);
+    assert.equal(blockedComment.status, 4, "blocked PR surfaces are not postable successful comments");
+    assert.match(blockedComment.stdout, /blocked \(`llm_unavailable`\)/);
+    assert.match(blockedComment.stderr, /not postable/);
     // The diagram artifact the surface advertises is actually materialized on disk.
     if (surface.diagram) {
       const diagramFile = path.join(tmp, ".review-surfaces", surface.diagram.path);
@@ -63,6 +67,21 @@ test("all --review-scope pr writes a diff-scoped pr_review_surface (not the whol
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("review-surfaces.PROVIDERS.6 review-comment workflow uses trusted tool and credentialless subject checkouts", () => {
+  const workflow = fs.readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
+
+  assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+  assert.match(workflow, /path: tool/);
+  assert.match(workflow, /fetch-depth: 1/);
+  assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/);
+  assert.match(workflow, /path: subject/);
+  assert.match(workflow, /persist-credentials: false/);
+  assert.match(workflow, /working-directory: tool[\s\S]*pnpm install --frozen-lockfile[\s\S]*pnpm run build/);
+  assert.match(workflow, /GOOGLE_GENERATIVE_AI_API_KEY: \$\{\{ secrets\.GOOGLE_GENERATIVE_AI_API_KEY \}\}/);
+  assert.match(workflow, /node \.\.\/tool\/bin\/review-surfaces\.js all[\s\S]*--review-scope pr/);
+  assert.doesNotMatch(workflow, /--surface-mode pr/);
 });
 
 test("comment --review-scope pr renders the PR surface; with an agent-file narrative it is READY and PR-specific", () => {
@@ -84,7 +103,7 @@ test("comment --review-scope pr renders the PR surface; with an agent-file narra
     assert.equal(surface.status, "ready", `expected ready, got ${surface.status}/${surface.blocked_reason}`);
     assert.ok(surface.narrative.what_changed.length > 0);
 
-    const comment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    const comment = runCli(tmp, ["comment", "--mode", "pr", "--out", ".review-surfaces"]);
     assert.equal(comment.status, 0, comment.stderr);
     assert.match(comment.stdout, /## review-surfaces PR review/);
     assert.match(comment.stdout, /### What changed/);

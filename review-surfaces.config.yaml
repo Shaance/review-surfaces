@@ -133,6 +133,21 @@ areas:
     test_keywords:
       - evidence
       - evaluation
+  - id: SUB-PROVIDERS
+    name: Provider and PR comment adapters
+    group_key: PROVIDERS
+    prefixes:
+      - .github/workflows/
+      - src/cli/index.ts
+      - src/llm/
+      - src/pipeline/pr-surface.ts
+      - src/render/pr-comment.ts
+    purpose: Keep code-hosting and LLM-backed PR comment adapters optional, bounded, and safe.
+    pattern: optional provider boundary
+    test_keywords:
+      - provider
+      - narrative
+      - pr-surface
   - id: SUB-PRIVACY
     name: Privacy controls
     group_key: PRIVACY

@@ -591,6 +591,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       model: narrativeModel,
       redactSecrets: config.privacy.redact_secrets
     });
+    assertValidPrSurface(cwd, surface);
     await writeJson(path.join(collection.outputDir, "pr_review_surface.json"), surface);
     // Materialize the diagram artifact the surface advertises (surface.diagram.path),
     // so a consumer following the advertised path finds the .mmd it points at.
@@ -621,14 +622,36 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
 // selects the review surface (and whether `comment --post` publishes the PR or the
 // whole-repo sticky comment), so a typo like `--review-scope rp` must fail fast.
 function reviewScope(parsed: ParsedArgs): ReviewScope {
-  const raw = stringFlag(parsed, "review-scope");
+  const rawReviewScope = stringFlag(parsed, "review-scope");
+  const rawMode = stringFlag(parsed, "mode");
+  const rawSurfaceMode = stringFlag(parsed, "surface-mode");
+  const supplied = [
+    ["--review-scope", rawReviewScope],
+    ["--mode", rawMode],
+    ["--surface-mode", rawSurfaceMode]
+  ].filter((entry): entry is [string, string] => typeof entry[1] === "string");
+  const uniqueValues = new Set(supplied.map(([, value]) => value));
+  if (uniqueValues.size > 1) {
+    throw new CliError(
+      `Conflicting review surface mode flags: ${supplied.map(([flag, value]) => `${flag} ${value}`).join(", ")}.`,
+      ExitCodes.usageError
+    );
+  }
+  const raw = supplied[0]?.[1];
   if (raw === undefined || raw === "repo") {
     return "repo";
   }
   if (raw === "pr") {
     return "pr";
   }
-  throw new CliError(`Unknown --review-scope: ${raw}. Use pr or repo.`, ExitCodes.usageError);
+  if (raw === "auto") {
+    return isPrEnvironment() ? "pr" : "repo";
+  }
+  throw new CliError(`Unknown review surface mode: ${raw}. Use pr, repo, or auto.`, ExitCodes.usageError);
+}
+
+function isPrEnvironment(): boolean {
+  return process.env.GITHUB_EVENT_NAME === "pull_request" || process.env.GITHUB_EVENT_NAME === "pull_request_target" || process.env.GITHUB_BASE_REF !== undefined;
 }
 
 // Whether a --cache signature hit may be honored as-is. Always true in repo mode
@@ -659,6 +682,9 @@ function prSurfaceCacheReusable(parsed: ParsedArgs, collection: CollectionResult
       scope?: { head_sha?: string; base_sha?: string; base_ref?: string };
       llm?: { provider?: string; model?: string };
     };
+    if (prSurfaceIssues(collection.cwd, surface).length > 0) {
+      return false;
+    }
     const requestedModel = effectiveNarrativeModel(parsed, config);
     // The surface depends on head AND base (coverage delta) AND the narrative
     // provider/model, none of which are in the whole-repo packet signature in pr
@@ -1073,6 +1099,7 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
     );
   }
   const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8")) as PrReviewSurfaceModel;
+  assertValidPrSurface(cwd, surface);
   // Point the comment's "Full PR surface" pointer at the ACTUAL artifact path
   // (honoring --out / config output_dir), not a hardcoded .review-surfaces.
   const markdown = renderPrComment(surface, { surfacePath: path.relative(cwd, surfacePath) || surfacePath });
@@ -1080,11 +1107,57 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
   await writeText(commentPath, markdown);
   process.stdout.write(markdown);
   console.error(`Wrote ${path.relative(cwd, commentPath)}`);
+  // review-surfaces.PROVIDERS.5: posted PR comments require a validated,
+  // non-mock narrative; blocked surfaces are rendered locally but not postable.
+  if (surface.status !== "ready" || surface.llm.status !== "applied" || !surface.narrative) {
+    console.error(`PR review surface is not postable (${surface.blocked_reason ?? surface.llm.status}); skipping sticky post.`);
+    return ExitCodes.evidenceValidationFailed;
+  }
   if (booleanFlag(parsed, "post")) {
     const result = postStickyComment(cwd, markdown);
     console.error(result.reason);
   }
   return ExitCodes.success;
+}
+
+function assertValidPrSurface(cwd: string, surface: unknown): void {
+  const issues = prSurfaceIssues(cwd, surface);
+  if (issues.length === 0) {
+    return;
+  }
+  throw new CliError(`PR review surface failed schema validation: ${issues.join("; ")}`, ExitCodes.schemaValidationFailed);
+}
+
+function prSurfaceIssues(cwd: string, surface: unknown): string[] {
+  const schema = loadPrSurfaceSchema(cwd);
+  if (schema === undefined) {
+    return [];
+  }
+  const result = validateJsonSchema(schema, surface);
+  return result.valid ? [] : result.issues.map((issue) => `${issue.path}: ${issue.message}`);
+}
+
+function loadPrSurfaceSchema(cwd: string): unknown | undefined {
+  const candidates = [
+    path.resolve(__dirname, "..", "..", "..", "schemas", "pr_review_surface.schema.json"),
+    path.resolve(__dirname, "..", "..", "schemas", "pr_review_surface.schema.json"),
+    path.resolve(cwd, "schemas/pr_review_surface.schema.json")
+  ];
+  for (const candidate of candidates) {
+    if (!fileExists(candidate)) {
+      continue;
+    }
+    try {
+      return JSON.parse(fs.readFileSync(candidate, "utf8"));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new CliError(
+        `Unable to read PR review surface schema at ${path.relative(cwd, candidate)}: ${reason}`,
+        ExitCodes.schemaValidationFailed
+      );
+    }
+  }
+  return undefined;
 }
 
 // Phase 6b (PROVIDERS.2; M6): write a SARIF 2.1.0 log from the local packet.
@@ -1317,7 +1390,10 @@ Options:
   --head <ref>      Head ref for diff collection, default HEAD
   --spec <path>     Feature spec path, default from config
   --out <dir>       Output directory, default .review-surfaces
-  --review-scope <s> all/comment: pr or repo (default repo). pr emits/reads a SEPARATE
+  --mode <s>      comment: pr, repo, or auto. Alias for --review-scope on comments.
+  --surface-mode <s>
+                   all: pr, repo, or auto. Alias for --review-scope on packet generation.
+  --review-scope <s> all/comment: pr, repo, or auto (default repo). pr emits/reads a SEPARATE
                    diff-scoped surface (pr_review_surface.json): changed files mapped to
                    affected requirements, base-vs-head coverage delta, PR-specific risk
                    candidates, a PR change-impact diagram, and an LLM-authored narrative

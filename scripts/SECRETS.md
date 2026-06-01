@@ -17,6 +17,11 @@ Expected keys:
 | `GOOGLE_GENERATIVE_AI_API_KEY` | No | `review-surfaces --provider ai-sdk` | Google Gemini key for optional enrichment only. The mock provider and `agent-file` provider do not require it. |
 | `REVIEW_SURFACES_AI_MODEL` | No | `review-surfaces --provider ai-sdk` | Defaults to `gemini-2.5-flash` when unset. |
 
+GitHub PR comments use the same `GOOGLE_GENERATIVE_AI_API_KEY` secret when
+`review-comment` runs in PR mode. The workflow checks out trusted tool code at
+the base SHA and runs it against a credentialless PR subject checkout so the key
+is not exposed to PR-controlled install/build/executable code.
+
 Use `./scripts/copy-env.sh` in a git worktree to copy `.env.local` from the main worktree when it exists. The script also copies `.claude/settings.json` but intentionally does not copy `.claude/settings.local.json`.
 
 ## Provider Safety

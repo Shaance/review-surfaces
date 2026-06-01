@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://review-surfaces.local/schemas/pr_review_surface.schema.v1.json",
+  "title": "review-surfaces PR review surface",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "mode", "status", "scope", "coverage", "risks", "llm"],
+  "properties": {
+    "schema_version": {
+      "const": "review-surfaces.pr_surface.v1"
+    },
+    "mode": {
+      "const": "pr"
+    },
+    "status": {
+      "enum": ["ready", "blocked"]
+    },
+    "blocked_reason": {
+      "enum": ["llm_unavailable", "llm_failed", "privacy_block", "baseline_unavailable", "no_diff", "invalid_llm_output"]
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["base_ref", "head_ref", "head_sha", "diff_source", "changed_files", "affected_areas", "affected_requirements", "out_of_scope_changed_files"],
+      "properties": {
+        "base_ref": { "type": "string" },
+        "head_ref": { "type": "string" },
+        "base_sha": { "type": "string" },
+        "head_sha": { "type": "string" },
+        "diff_source": { "enum": ["range", "working_tree_fallback"] },
+        "changed_files": { "type": "array" },
+        "affected_areas": { "type": "array" },
+        "affected_requirements": { "type": "array" },
+        "out_of_scope_changed_files": { "type": "array" }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["base_available", "summary", "in_scope_count", "deltas", "counts"],
+      "properties": {
+        "base_available": { "type": "boolean" },
+        "summary": { "type": "string" },
+        "in_scope_count": { "type": "integer", "minimum": 0 },
+        "deltas": { "type": "array" },
+        "counts": { "type": "object" }
+      }
+    },
+    "risks": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["summary", "candidates"],
+      "properties": {
+        "summary": { "type": "string" },
+        "candidates": { "type": "array" }
+      }
+    },
+    "diagram": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["path", "status", "body", "warnings"],
+      "properties": {
+        "path": { "type": "string" },
+        "status": { "enum": ["valid", "invalid"] },
+        "body": { "type": "string" },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "narrative": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["summary", "what_changed", "why_it_matters", "review_first", "risk_narratives"],
+      "properties": {
+        "summary": { "type": "string", "maxLength": 1000 },
+        "what_changed": {
+          "type": "array",
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/anchoredNarrativeItem" }
+        },
+        "why_it_matters": {
+          "type": "array",
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/anchoredNarrativeItem" }
+        },
+        "review_first": {
+          "type": "array",
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/anchoredNarrativeItem" }
+        },
+        "risk_narratives": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/anchoredRiskNarrative" }
+        }
+      }
+    },
+    "llm": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["required", "provider", "status"],
+      "properties": {
+        "required": { "const": true },
+        "provider": { "enum": ["mock", "ai-sdk", "agent-file"] },
+        "model": { "type": "string" },
+        "status": { "enum": ["applied", "blocked", "failed"] },
+        "prompt_hash": { "type": "string" },
+        "output_hash": { "type": "string" },
+        "validation_errors": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "$defs": {
+    "anchor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "anchoredNarrativeItem": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "paths": {
+          "type": "array",
+          "maxItems": 10,
+          "items": { "$ref": "#/$defs/anchor" }
+        },
+        "requirement_ids": {
+          "type": "array",
+          "maxItems": 10,
+          "items": { "$ref": "#/$defs/anchor" }
+        },
+        "risk_ids": {
+          "type": "array",
+          "maxItems": 10,
+          "items": { "$ref": "#/$defs/anchor" }
+        }
+      }
+    },
+    "anchoredRiskNarrative": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["risk_id", "text"],
+      "properties": {
+        "risk_id": { "$ref": "#/$defs/anchor" },
+        "text": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "suggested_checks": {
+          "type": "array",
+          "maxItems": 6,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "ready" } },
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["narrative"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "blocked" } },
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["blocked_reason"]
+      }
+    }
+  ]
+}
