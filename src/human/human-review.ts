@@ -226,6 +226,7 @@ function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["revie
   const drafts: QueueDraft[] = [];
   const prChangedPaths = input.prSurface ? prChangedFilePaths(input.prSurface) : undefined;
   const diffIndex = buildDiffIndex(input.diff);
+  let prRiskQueueItemCount = 0;
 
   for (const risk of input.prSurface?.risks.candidates ?? []) {
     const first = firstPathEvidence(risk.evidence);
@@ -233,6 +234,7 @@ function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["revie
       continue;
     }
     const anchor = queueAnchorForEvidence(first, diffIndex);
+    prRiskQueueItemCount += 1;
     drafts.push({
       title: titleForPrRisk(risk),
       path: anchor.path,
@@ -253,7 +255,7 @@ function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["revie
     });
   }
 
-  if (input.prSurface && input.prSurface.risks.candidates.length === 0) {
+  if (input.prSurface && prRiskQueueItemCount === 0) {
     drafts.push(...changedFileQueueDrafts(input.prSurface, diffIndex));
   }
 

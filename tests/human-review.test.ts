@@ -395,6 +395,29 @@ test("PR mode queues changed implementation files when no PR risk candidate fire
   assert.ok(broadRiskIndex > changedImplIndex, "broad packet risk remains available below precise changed-file actions");
 });
 
+test("PR mode queues changed files when PR risk candidates are pathless", () => {
+  const surface = prSurfaceFixture();
+  const pathlessRisk = surface.risks.candidates.find((risk) => risk.id === "PR-RISK-003");
+  assert.ok(pathlessRisk);
+  surface.risks.candidates = [pathlessRisk];
+  surface.scope.changed_files.push({
+    path: "src/human/human-review.ts",
+    status: "M",
+    areas: ["HUMAN_REVIEW"],
+    role: "implementation",
+    added_lines: 12,
+    deleted_lines: 2
+  });
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface, diff: structuredDiffFixture() });
+  const changedImpl = model.review_queue.find((item) => item.path === "src/human/human-review.ts");
+
+  assert.ok(changedImpl);
+  assert.deepEqual(changedImpl.risk_ids, []);
+  assert.equal(model.review_queue.some((item) => item.risk_ids.includes("PR-RISK-003")), false);
+  assert.equal(model.questions.some((question) => question.maps_to_risks.includes("PR-RISK-003")), true);
+});
+
 test("human review writer emits standalone cockpit artifacts from the JSON model", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-human-artifacts-"));
   try {
