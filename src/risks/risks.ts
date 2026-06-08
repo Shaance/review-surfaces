@@ -4,6 +4,7 @@ import { stripUndefined } from "../core/guards";
 import { commandEvidence, EvidenceRef, feedbackEvidence, missingEvidence, specEvidence } from "../evidence/evidence";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 import { MethodologyModel } from "../methodology/methodology";
+import { looksLikeRecordedCiSecretBoundaryManualCheck } from "./manual-checks";
 import type {
   PacketRiskCategory,
   PacketRiskDetectability,
@@ -259,6 +260,7 @@ function methodologyReviewFocus(methodology: MethodologyModel | undefined): stri
 
 function validationEvidenceFromFeedback(collection: CollectionResult, transcriptCommands: Set<string>): RisksModel["test_evidence"] {
   const entries: RisksModel["test_evidence"] = [];
+  const headSha = collection.git?.head_sha;
   for (const feedbackFile of collection.feedback) {
     for (const command of feedbackFile.validation.passed) {
       if (transcriptCommands.has(normalizeCommand(command))) {
@@ -290,8 +292,27 @@ function validationEvidenceFromFeedback(collection: CollectionResult, transcript
         ]
       });
     }
+    for (const note of feedbackFile.validation.notes) {
+      if (!feedbackAppliesToHead(feedbackFile, headSha)) {
+        continue;
+      }
+      if (!looksLikeRecordedCiSecretBoundaryManualCheck(note)) {
+        continue;
+      }
+      entries.push({
+        id: `TEST-FB-${String(entries.length + 1).padStart(3, "0")}`,
+        kind: "indirect",
+        summary: `Feedback records a manual CI secret-boundary check: ${note}`,
+        requirement_ids: [],
+        evidence: [feedbackEvidence(feedbackFile.path, note, { sha: headSha })]
+      });
+    }
   }
   return entries;
+}
+
+function feedbackAppliesToHead(feedbackFile: CollectionResult["feedback"][number], headSha: string | undefined): headSha is string {
+  return typeof headSha === "string" && headSha !== "unknown" && feedbackFile.head_sha === headSha;
 }
 
 // Phase 5a: map parsed JUnit cases to test_evidence. A PASSING case becomes

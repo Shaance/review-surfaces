@@ -25,18 +25,13 @@ M5
 ## Implemented Changes
 
 - M .review-surfaces/feedback/manual-dogfood.yaml
-- M README.md
-- ?? docs/agent/execplans/human-review-cockpit.md
-- ?? docs/human-first-review-surfaces-comprehensive-feature-proposal.md
-- M features/review-surfaces.feature.yaml
-- M review-surfaces.config.yaml
-- ?? schemas/human_review.schema.json
-- M src/cli/index.ts
-- ?? src/human/contract.ts
-- ?? src/human/human-review.ts
-- ?? src/human/render.ts
-- ?? src/pr/risk-metadata.ts
-- ... 3 more changed file(s) in .review-surfaces/inputs/changed_files.json
+- M src/evidence/evidence.ts
+- M src/feedback/feedback.ts
+- M src/human/human-review.ts
+- A src/risks/manual-checks.ts
+- M src/risks/risks.ts
+- M tests/feedback.test.ts
+- M tests/human-review.test.ts
 
 ## Validation Evidence
 

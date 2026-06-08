@@ -111,6 +111,7 @@ export function feedbackEvidence(
   options: {
     eventId?: string;
     command?: string;
+    sha?: string;
     confidence?: Confidence;
     validationStatus?: ValidationStatus;
   } = {}
@@ -120,6 +121,7 @@ export function feedbackEvidence(
     path: feedbackPath,
     event_id: options.eventId,
     command: options.command,
+    sha: options.sha,
     note,
     confidence: options.confidence ?? "high",
     validation_status: options.validationStatus ?? "valid"

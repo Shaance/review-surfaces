@@ -35,6 +35,7 @@ export interface FeedbackFile {
   schema_version: string;
   author: string;
   created_at?: string;
+  head_sha?: string;
   packet_path?: string;
   findings: FeedbackFinding[];
   validation: FeedbackValidation;
@@ -62,6 +63,7 @@ async function readFeedbackFile(cwd: string, feedbackPath: string): Promise<Feed
     schema_version: stringValue(record.schema_version, "unknown"),
     author: stringValue(record.author, "unknown"),
     created_at: optionalString(record.created_at),
+    head_sha: optionalString(record.head_sha),
     packet_path: optionalString(record.packet_path),
     findings,
     validation: {

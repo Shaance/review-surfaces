@@ -1,9 +1,11 @@
 import { compareStrings } from "../core/compare";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
+import { normalizeEvidencePath } from "../evidence/validate";
 import { PrRiskCandidate, PrReviewSurfaceModel } from "../pr/contract";
 import { PR_RISK_RULE_METADATA } from "../pr/risk-metadata";
 import { ReviewPacket } from "../render/packet";
+import { looksLikeRecordedCiSecretBoundaryManualCheck } from "../risks/manual-checks";
 import { RiskItem, RisksModel } from "../risks/risks";
 import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-contract";
 import {
@@ -203,7 +205,7 @@ function buildBlockers(input: BuildHumanReviewInput): ReviewBlocker[] {
   }
 
   const secretBoundary = prSurface?.risks.candidates.find((risk) => risk.rule === "ci_secret_boundary_change");
-  if (secretBoundary) {
+  if (secretBoundary && !hasRecordedCiSecretBoundaryManualCheck(input)) {
     blockers.push({
       id: "BLOCK-CI-SECRET-001",
       severity: "high",
@@ -218,6 +220,7 @@ function buildBlockers(input: BuildHumanReviewInput): ReviewBlocker[] {
 
 function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["review_queue"] {
   const drafts: QueueDraft[] = [];
+  const prChangedPaths = input.prSurface ? prChangedFilePaths(input.prSurface) : undefined;
 
   for (const risk of input.prSurface?.risks.candidates ?? []) {
     const first = firstPathEvidence(risk.evidence);
@@ -243,7 +246,9 @@ function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["revie
   }
 
   for (const risk of input.packet.risks.items) {
-    const first = firstPathEvidence(risk.evidence ?? []);
+    const first = prChangedPaths
+      ? firstPathEvidenceInScope(risk.evidence ?? [], prChangedPaths)
+      : firstPathEvidence(risk.evidence ?? []);
     if (!first) {
       continue;
     }
@@ -318,6 +323,18 @@ function buildQuestions(input: BuildHumanReviewInput, blockers: ReviewBlocker[])
       maps_to_risks: [],
       maps_to_requirements: input.prSurface.coverage.deltas.map((delta) => delta.acai_id ?? delta.requirement_id).slice(0, 8)
     });
+  }
+
+  for (const risk of input.prSurface?.risks.candidates ?? []) {
+    if (firstPathEvidence(risk.evidence)) {
+      continue;
+    }
+    questions.push(questionFromPrRisk(
+      questions.length + 1,
+      questionSeverityForRisk(risk.severity),
+      risk,
+      risk.suggested_checks[0] ?? `How should reviewers account for this pathless PR risk: ${risk.summary}`
+    ));
   }
 
   if (hasNoValidationEvidence(input.packet.risks)) {
@@ -500,13 +517,13 @@ function buildTestPlan(input: BuildHumanReviewInput): TestPlanItem[] {
         maps_to_risks: [risk.id],
         evidence_gap: risk.summary
       });
-    } else if (risk.rule === "ci_secret_boundary_change") {
+    } else if (risk.rule === "ci_secret_boundary_change" && !hasRecordedCiSecretBoundaryManualCheck(input)) {
       items.push({
         id: `TEST-${String(items.length + 1).padStart(3, "0")}`,
         kind: "manual",
         priority: "required",
         scenario: "Inspect workflow/provider/comment-posting changes for the CI secret boundary.",
-        expected_result: "Secret-bearing steps run only from trusted code and PR-controlled files cannot influence credentialed execution.",
+        expected_result: "Manual CI secret-boundary check recorded: PR-controlled code cannot access secrets, and secret-bearing steps run only from trusted code.",
         maps_to_requirements: requirementIds(risk.evidence),
         maps_to_risks: [risk.id],
         evidence_gap: "No manual CI secret-boundary check is recorded."
@@ -745,11 +762,11 @@ function isFailedValidationEvidence(item: RisksModel["test_evidence"][number]): 
   if (item.evidence?.some((ref) => ref.validation_status === "invalid")) {
     return true;
   }
-  if (/\b(fail(?:ed|ing)?|error)\b/i.test(item.summary)) {
-    return true;
-  }
   if (item.kind !== "missing") {
     return false;
+  }
+  if (/\b(fail(?:ed|ing)?|error)\b/i.test(item.summary)) {
+    return true;
   }
   const commandText = [
     item.summary,
@@ -863,6 +880,27 @@ function firstPathEvidence(evidence: EvidenceRef[]): EvidenceRef | undefined {
   return evidence.find((ref) => typeof ref.path === "string" && ref.path.length > 0);
 }
 
+function firstPathEvidenceInScope(evidence: EvidenceRef[], changedPaths: Set<string>): EvidenceRef | undefined {
+  for (const ref of evidence) {
+    if (typeof ref.path !== "string") {
+      continue;
+    }
+    const normalizedPath = normalizeEvidencePath(ref.path);
+    if (changedPaths.has(normalizedPath)) {
+      return normalizedPath === ref.path ? ref : { ...ref, path: normalizedPath };
+    }
+  }
+  return undefined;
+}
+
+function prChangedFilePaths(prSurface: PrReviewSurfaceModel): Set<string> {
+  return new Set(
+    prSurface.scope.changed_files.flatMap((file) =>
+      compactStrings([file.path, file.old_path]).map((filePath) => normalizeEvidencePath(filePath))
+    )
+  );
+}
+
 function evidenceOrMissing(evidence: EvidenceRef[], fallback: string): EvidenceRef[] {
   return evidence.length ? evidence : [missingEvidence(fallback)];
 }
@@ -878,6 +916,32 @@ function compactStrings(values: Array<string | undefined>): string[] {
 function riskIdsFromBlocker(blocker: ReviewBlocker): string[] {
   const match = blocker.id.match(/(PR-RISK-\d+|RISK-\d+)/);
   return match ? [match[1]] : [];
+}
+
+function questionSeverityForRisk(severity: PacketSeverity): ReviewerQuestion["severity"] {
+  return severity === "critical" || severity === "high" ? "blocking" : "clarifying";
+}
+
+function hasRecordedCiSecretBoundaryManualCheck(input: BuildHumanReviewInput): boolean {
+  const headSha = currentHeadSha(input);
+  return input.packet.risks.test_evidence
+    .filter((item) => item.kind === "direct" || item.kind === "indirect")
+    .flatMap((item) => manualCheckEvidenceText(item.evidence ?? [], headSha))
+    .some((text) => looksLikeRecordedCiSecretBoundaryManualCheck(text));
+}
+
+function currentHeadSha(input: BuildHumanReviewInput): string {
+  const manifest = input.packet.manifest as { head_sha?: unknown };
+  return input.prSurface?.scope.head_sha ?? stringOr(manifest.head_sha, "unknown");
+}
+
+function manualCheckEvidenceText(evidence: EvidenceRef[], headSha: string): string[] {
+  if (headSha === "unknown") {
+    return [];
+  }
+  return evidence
+    .filter((ref) => ref.kind === "feedback" && ref.validation_status !== "invalid" && ref.sha === headSha)
+    .flatMap((ref) => compactStrings([ref.note]));
 }
 
 function focusedRequirementGaps(input: BuildHumanReviewInput): RequirementGap[] {
