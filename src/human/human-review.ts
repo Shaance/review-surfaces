@@ -53,6 +53,7 @@ interface QueueDraft {
 type RequirementGap = ReviewPacket["evaluation"]["results"][number];
 type MissingAutomaticTestGap = NonNullable<RisksModel["missing_automatic_tests"]>[number];
 type MissingManualCheckGap = NonNullable<RisksModel["missing_manual_checks"]>[number];
+type PrChangedFile = PrReviewSurfaceModel["scope"]["changed_files"][number];
 
 const MAX_QUEUE = 20;
 const MAX_BLOCKERS = 8;
@@ -61,6 +62,7 @@ const MAX_COMMENTS = 10;
 const MAX_TEST_PLAN = 12;
 const MAX_TRUST_ITEMS = 10;
 const MAX_FOCUSED_REQUIREMENT_TESTS = 6;
+const MAX_CHANGED_FILE_QUEUE = 8;
 
 export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel {
   const blockers = buildBlockers(input);
@@ -224,6 +226,7 @@ function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["revie
   const drafts: QueueDraft[] = [];
   const prChangedPaths = input.prSurface ? prChangedFilePaths(input.prSurface) : undefined;
   const diffIndex = buildDiffIndex(input.diff);
+  let prRiskQueueItemCount = 0;
 
   for (const risk of input.prSurface?.risks.candidates ?? []) {
     const first = firstPathEvidence(risk.evidence);
@@ -231,6 +234,7 @@ function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["revie
       continue;
     }
     const anchor = queueAnchorForEvidence(first, diffIndex);
+    prRiskQueueItemCount += 1;
     drafts.push({
       title: titleForPrRisk(risk),
       path: anchor.path,
@@ -249,6 +253,10 @@ function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["revie
       score: scorePrRisk(risk, anchor),
       sortKey: `${risk.id}:${first.path}`
     });
+  }
+
+  if (input.prSurface && prRiskQueueItemCount === 0) {
+    drafts.push(...changedFileQueueDrafts(input.prSurface, diffIndex));
   }
 
   for (const risk of input.packet.risks.items) {
@@ -300,6 +308,40 @@ function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["revie
       estimated_review_effort: draft.estimated_review_effort
     })
   );
+}
+
+function changedFileQueueDrafts(
+  prSurface: PrReviewSurfaceModel,
+  diffIndex: DiffIndex | undefined
+): QueueDraft[] {
+  return prSurface.scope.changed_files
+    .filter((file) => changedFileQueueWeight(file) > 0)
+    .sort((left, right) => changedFileQueueWeight(right) - changedFileQueueWeight(left) || compareStrings(left.path, right.path))
+    .slice(0, MAX_CHANGED_FILE_QUEUE)
+    .map((file) => {
+      const evidence = fileEvidence(file.path, "Changed PR file queued because no deterministic PR risk candidate fired.");
+      const anchor = queueAnchorForEvidence(evidence, diffIndex);
+      const fileAreas = changedFileAreas(file);
+      const areas = fileAreas.length ? fileAreas.join(", ") : "unmapped area";
+      return {
+        title: titleForChangedFile(file),
+        path: anchor.path,
+        old_path: anchor.old_path,
+        hunk_header: anchor.hunk_header,
+        line_start: anchor.line_start,
+        line_end: anchor.line_end,
+        reviewer_action: actionForChangedFile(file),
+        reason: `No deterministic PR risk candidate fired; queued changed ${file.role} file in ${areas}.`,
+        evidence: [evidence],
+        requirement_ids: affectedRequirementIdsForFile(prSurface, file),
+        risk_ids: [],
+        confidence: anchor.line_start || anchor.hunk_header ? "high" as const : "medium" as const,
+        priority: priorityForChangedFile(file),
+        estimated_review_effort: file.role === "test" ? "quick" as const : "moderate" as const,
+        score: changedFileQueueWeight(file) + (anchor.line_start ? 8 : 0) + (anchor.hunk_header ? 8 : 0),
+        sortKey: `changed:${file.path}`
+      };
+    });
 }
 
 function buildQuestions(input: BuildHumanReviewInput, blockers: ReviewBlocker[]): ReviewerQuestion[] {
@@ -824,6 +866,103 @@ function titleFromSummary(summary: string): string {
   return first.length <= 80 ? first : `${first.slice(0, 77)}...`;
 }
 
+function titleForChangedFile(file: PrChangedFile): string {
+  if (file.role === "doc" && isSourceOfTruthReviewDoc(file.path)) {
+    return "Changed source-of-truth document";
+  }
+  switch (file.role) {
+    case "implementation":
+      return "Changed implementation file";
+    case "test":
+      return "Changed test file";
+    case "ci":
+      return "Changed CI file";
+    case "config":
+      return "Changed configuration file";
+    case "spec":
+      return "Changed contract or spec file";
+    default:
+      return "Changed review file";
+  }
+}
+
+function actionForChangedFile(file: PrChangedFile): string {
+  if (file.role === "doc" && isSourceOfTruthReviewDoc(file.path)) {
+    return `Inspect ${file.path} for reviewer workflow, requirement, or product-contract changes.`;
+  }
+  switch (file.role) {
+    case "implementation":
+      return `Inspect ${file.path} and confirm the changed behavior is covered by existing or co-changed tests.`;
+    case "test":
+      return `Inspect ${file.path} to confirm the new or changed test exercises the intended behavior.`;
+    case "ci":
+      return `Inspect ${file.path} for workflow permissions, checkout boundaries, and reviewer-facing side effects.`;
+    case "config":
+      return `Inspect ${file.path} for configuration contract or runtime behavior changes.`;
+    case "spec":
+      return `Inspect ${file.path} for public requirement, schema, or workflow contract changes.`;
+    default:
+      return `Inspect ${file.path} before approving.`;
+  }
+}
+
+function changedFileQueueWeight(file: PrChangedFile): number {
+  switch (file.role) {
+    case "ci":
+      return 72;
+    case "implementation":
+      return 68;
+    case "spec":
+    case "config":
+      return 60;
+    case "test":
+      return 50;
+    case "doc":
+      return isSourceOfTruthReviewDoc(file.path) ? 46 : 0;
+    default:
+      return 0;
+  }
+}
+
+function isSourceOfTruthReviewDoc(filePath: string): boolean {
+  const normalizedPath = normalizeEvidencePath(filePath);
+  return (
+    /(^|\/)AGENTS\.md$/.test(normalizedPath) ||
+    /(^|\/)CLAUDE\.md$/.test(normalizedPath) ||
+    normalizedPath === "README.md" ||
+    normalizedPath === "README.bootstrap.md" ||
+    normalizedPath === "docs/review-surfaces-trd.md" ||
+    normalizedPath === "docs/dogfooding.md" ||
+    /^\.agents\/skills\/[^/]+\/SKILL\.md$/.test(normalizedPath)
+  );
+}
+
+function priorityForChangedFile(file: PrChangedFile): HumanReviewPriority {
+  return file.role === "test" ? "low" : "medium";
+}
+
+function affectedRequirementIdsForFile(prSurface: PrReviewSurfaceModel, file: PrChangedFile): string[] {
+  const areas = new Set(changedFileAreas(file));
+  const paths = new Set(compactStrings([file.path, file.old_path]).map((filePath) => normalizeEvidencePath(filePath)));
+  return prSurface.scope.affected_requirements
+    .filter((requirement) =>
+      (requirement.group_key && areas.has(requirement.group_key)) ||
+      affectedRequirementReasons(requirement).some((reason) => reason.path && paths.has(normalizeEvidencePath(reason.path)))
+    )
+    .map((requirement) => requirement.acai_id ?? requirement.requirement_id)
+    .slice(0, 8);
+}
+
+function changedFileAreas(file: PrChangedFile): string[] {
+  return Array.isArray(file.areas) ? file.areas : [];
+}
+
+function affectedRequirementReasons(
+  requirement: PrReviewSurfaceModel["scope"]["affected_requirements"][number]
+): PrReviewSurfaceModel["scope"]["affected_requirements"][number]["reasons"] {
+  return Array.isArray(requirement.reasons) ? requirement.reasons : [];
+}
+
 function priorityForSeverity(severity: PacketSeverity): HumanReviewPriority {
   if (severity === "critical") {
     return "blocker";
@@ -1177,6 +1316,9 @@ function isSkimSafeCandidate(filePath: string, role: string): boolean {
     return true;
   }
   if (role !== "doc") {
+    return false;
+  }
+  if (isSourceOfTruthReviewDoc(filePath)) {
     return false;
   }
   const lower = filePath.toLowerCase();

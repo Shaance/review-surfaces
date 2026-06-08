@@ -229,6 +229,20 @@ function structuredDiffFixture() {
     " properties:",
     "+  hunk_header: { type: string }",
     "   verdict:",
+    "diff --git a/src/human/human-review.ts b/src/human/human-review.ts",
+    "--- a/src/human/human-review.ts",
+    "+++ b/src/human/human-review.ts",
+    "@@ -220,2 +220,3 @@",
+    " function buildReviewQueue() {",
+    "+  buildChangedFileFallbackQueue();",
+    " }",
+    "diff --git a/tests/human-review.test.ts b/tests/human-review.test.ts",
+    "--- a/tests/human-review.test.ts",
+    "+++ b/tests/human-review.test.ts",
+    "@@ -395,2 +395,3 @@",
+    " test('fallback') {",
+    "+  assertChangedFileFallback();",
+    " }",
     "diff --git a/src/old-name.ts b/src/new-name.ts",
     "similarity index 90%",
     "rename from src/old-name.ts",
@@ -358,6 +372,185 @@ test("old-side queue evidence keeps rename and delete anchors on the old path", 
   assert.equal(deleted.path, "src/gone.ts");
   assert.equal(deleted.hunk_header, "@@ -7,2 +0,0 @@");
   assert.deepEqual({ line_start: deleted.line_start, line_end: deleted.line_end }, { line_start: 8, line_end: 8 });
+});
+
+test("PR mode queues changed implementation files when no PR risk candidate fires", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files.push({
+    path: "src/human/human-review.ts",
+    status: "M",
+    areas: ["HUMAN_REVIEW"],
+    role: "implementation",
+    added_lines: 12,
+    deleted_lines: 2
+  });
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface, diff: structuredDiffFixture() });
+  const first = model.review_queue[0];
+  const changedImpl = model.review_queue.find((item) => item.path === "src/human/human-review.ts");
+  const broadRiskIndex = model.review_queue.findIndex((item) => item.risk_ids.includes("RISK-001"));
+  const changedImplIndex = model.review_queue.findIndex((item) => item.path === "src/human/human-review.ts");
+
+  assert.deepEqual(first.risk_ids, []);
+  assert.match(first.reason, /No deterministic PR risk candidate fired/);
+  assert.ok(changedImpl);
+  assert.equal(changedImpl.title, "Changed implementation file");
+  assert.equal(changedImpl.hunk_header, "@@ -220,2 +220,3 @@");
+  assert.deepEqual(changedImpl.risk_ids, []);
+  assert.ok(changedImpl.requirement_ids.includes("review-surfaces.HUMAN_REVIEW.1"));
+  assert.ok(broadRiskIndex > changedImplIndex, "broad packet risk remains available below precise changed-file actions");
+});
+
+test("PR mode queues changed files when PR risk candidates are pathless", () => {
+  const surface = prSurfaceFixture();
+  const pathlessRisk = surface.risks.candidates.find((risk) => risk.id === "PR-RISK-003");
+  assert.ok(pathlessRisk);
+  surface.risks.candidates = [pathlessRisk];
+  surface.scope.changed_files.push({
+    path: "src/human/human-review.ts",
+    status: "M",
+    areas: ["HUMAN_REVIEW"],
+    role: "implementation",
+    added_lines: 12,
+    deleted_lines: 2
+  });
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface, diff: structuredDiffFixture() });
+  const changedImpl = model.review_queue.find((item) => item.path === "src/human/human-review.ts");
+
+  assert.ok(changedImpl);
+  assert.deepEqual(changedImpl.risk_ids, []);
+  assert.equal(model.review_queue.some((item) => item.risk_ids.includes("PR-RISK-003")), false);
+  assert.equal(model.questions.some((question) => question.maps_to_risks.includes("PR-RISK-003")), true);
+});
+
+test("PR mode fallback maps path-scoped affected requirements without group keys", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files.push({
+    path: "src/path-scoped.ts",
+    status: "M",
+    areas: [],
+    role: "implementation",
+    added_lines: 4,
+    deleted_lines: 1
+  });
+  surface.scope.affected_requirements.push({
+    requirement_id: "REQ-PATH-1",
+    acai_id: "review-surfaces.HUMAN_REVIEW.PATH",
+    title: "Path-scoped requirement",
+    reasons: [{ rule: "spec_block_changed", confidence: "high", path: "./src\\path-scoped.ts" }]
+  });
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface, diff: structuredDiffFixture() });
+  const changedFile = model.review_queue.find((item) => item.path === "src/path-scoped.ts");
+
+  assert.ok(changedFile);
+  assert.ok(changedFile.requirement_ids.includes("review-surfaces.HUMAN_REVIEW.PATH"));
+});
+
+test("PR mode fallback keeps changed test files above medium whole-packet risks", () => {
+  const surface = prSurfaceFixture();
+  const packet = packetFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files.push({
+    path: "tests/human-review.test.ts",
+    status: "M",
+    areas: ["HUMAN_REVIEW"],
+    role: "test",
+    added_lines: 6,
+    deleted_lines: 1
+  });
+  packet.risks.items[0] = {
+    ...packet.risks.items[0],
+    evidence: [fileEvidence("tests/human-review.test.ts", "Broad packet test risk cites changed test.")]
+  };
+
+  const model = buildHumanReview({ packet, prSurface: surface, diff: structuredDiffFixture() });
+  const changedTestIndex = model.review_queue.findIndex(
+    (item) => item.path === "tests/human-review.test.ts" && item.risk_ids.length === 0
+  );
+  const broadRiskIndex = model.review_queue.findIndex((item) => item.risk_ids.includes("RISK-001"));
+
+  assert.ok(changedTestIndex >= 0);
+  assert.ok(broadRiskIndex >= 0);
+  assert.ok(changedTestIndex < broadRiskIndex, "precise changed test fallback should outrank the broad packet risk");
+});
+
+test("PR mode fallback queues source-of-truth docs but not ordinary docs", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files.push({
+    path: "AGENTS.md",
+    status: "M",
+    areas: ["BOOTSTRAP"],
+    role: "doc",
+    added_lines: 3,
+    deleted_lines: 1
+  });
+  surface.scope.changed_files.push({
+    path: "packages/widget/AGENTS.md",
+    status: "M",
+    areas: ["BOOTSTRAP"],
+    role: "doc",
+    added_lines: 2,
+    deleted_lines: 0
+  });
+  surface.scope.changed_files.push({
+    path: "README.md",
+    status: "M",
+    areas: ["BOOTSTRAP"],
+    role: "doc",
+    added_lines: 2,
+    deleted_lines: 0
+  });
+  surface.scope.affected_requirements.push({
+    requirement_id: "REQ-BOOTSTRAP-1",
+    acai_id: "review-surfaces.BOOTSTRAP.1",
+    title: "Agent workflow source of truth",
+    group_key: "BOOTSTRAP",
+    reasons: [{ rule: "changed_path_requirement_group", confidence: "high", path: "AGENTS.md" }]
+  });
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface, diff: structuredDiffFixture() });
+  const sourceDoc = model.review_queue.find((item) => item.path === "AGENTS.md");
+  const nestedSourceDoc = model.review_queue.find((item) => item.path === "packages/widget/AGENTS.md");
+  const readme = model.review_queue.find((item) => item.path === "README.md");
+
+  assert.ok(sourceDoc);
+  assert.equal(sourceDoc.title, "Changed source-of-truth document");
+  assert.ok(sourceDoc.requirement_ids.includes("review-surfaces.BOOTSTRAP.1"));
+  assert.ok(nestedSourceDoc);
+  assert.equal(nestedSourceDoc.title, "Changed source-of-truth document");
+  assert.ok(readme);
+  assert.equal(model.skim_safe.some((item) => item.path === "README.md"), false);
+  assert.equal(model.review_queue.some((item) => item.path === "docs/notes.md"), false);
+  assert.ok(model.skim_safe.some((item) => item.path === "docs/notes.md"));
+});
+
+test("PR mode fallback tolerates stale changed files without areas", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files.push({
+    path: "src/no-areas.ts",
+    status: "M",
+    role: "implementation",
+    added_lines: 1,
+    deleted_lines: 0
+  } as PrReviewSurfaceModel["scope"]["changed_files"][number]);
+  surface.scope.affected_requirements.push({
+    requirement_id: "REQ-NO-REASONS",
+    acai_id: "review-surfaces.HUMAN_REVIEW.NO_REASONS",
+    title: "Stale requirement without reasons"
+  } as PrReviewSurfaceModel["scope"]["affected_requirements"][number]);
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface, diff: structuredDiffFixture() });
+  const changedFile = model.review_queue.find((item) => item.path === "src/no-areas.ts");
+
+  assert.ok(changedFile);
+  assert.match(changedFile.reason, /unmapped area/);
+  assert.equal(changedFile.requirement_ids.includes("review-surfaces.HUMAN_REVIEW.NO_REASONS"), false);
 });
 
 test("human review writer emits standalone cockpit artifacts from the JSON model", async () => {
