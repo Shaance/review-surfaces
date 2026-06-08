@@ -362,6 +362,26 @@ test("recorded CI secret-boundary manual evidence clears the deterministic block
   assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), false);
 });
 
+test("recorded CI secret-boundary canonical expected result clears the deterministic blocker", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence.push({
+    id: "TEST-MANUAL-CI-SECRET-CANONICAL",
+    kind: "indirect",
+    summary: "Manual CI secret-boundary check recorded.",
+    evidence: [
+      fileEvidence(
+        ".review-surfaces/feedback/manual-dogfood.yaml",
+        "Manual CI secret-boundary check recorded: Secret-bearing steps run only from trusted code and PR-controlled files cannot influence credentialed execution."
+      )
+    ]
+  });
+
+  const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
+
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), false);
+  assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), false);
+});
+
 test("summary-only CI secret-boundary claims do not clear the deterministic blocker", () => {
   const packet = packetFixture();
   packet.risks.test_evidence.push({
@@ -369,6 +389,84 @@ test("summary-only CI secret-boundary claims do not clear the deterministic bloc
     kind: "indirect",
     summary: "Manual CI secret-boundary check recorded: PR-controlled code cannot access secrets.",
     evidence: []
+  });
+
+  const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
+
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), true);
+  assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
+});
+
+test("CI secret-boundary policy wording does not clear the deterministic blocker", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence.push({
+    id: "TEST-MANUAL-CI-SECRET-POLICY",
+    kind: "indirect",
+    summary: "Feedback policy requires a manual CI secret-boundary conclusion.",
+    evidence: [
+      fileEvidence(
+        ".review-surfaces/feedback/manual-dogfood.yaml",
+        "This slice requires an explicit recorded conclusion that PR-controlled code cannot access secrets before clearing the CI secret-boundary blocker."
+      )
+    ]
+  });
+
+  const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
+
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), true);
+  assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
+});
+
+test("CI secret-boundary policy text with recorded wording does not clear the deterministic blocker", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence.push({
+    id: "TEST-MANUAL-CI-SECRET-POLICY-RECORDED",
+    kind: "indirect",
+    summary: "Feedback policy requires a manual CI secret-boundary check.",
+    evidence: [
+      fileEvidence(
+        ".review-surfaces/feedback/manual-dogfood.yaml",
+        "Policy requires a manual CI secret-boundary check recorded: PR-controlled code cannot access secrets."
+      )
+    ]
+  });
+
+  const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
+
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), true);
+  assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
+});
+
+test("inconclusive CI secret-boundary evidence does not clear the deterministic blocker", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence.push({
+    id: "TEST-MANUAL-CI-SECRET-INCONCLUSIVE",
+    kind: "indirect",
+    summary: "Feedback records inconclusive manual CI secret-boundary evidence.",
+    evidence: [
+      fileEvidence(
+        ".review-surfaces/feedback/manual-dogfood.yaml",
+        "Manual CI secret-boundary check recorded: unable to confirm PR-controlled code cannot access secrets."
+      )
+    ]
+  });
+
+  const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
+
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), true);
+  assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
+});
+
+test("split CI secret-boundary phrases do not clear the deterministic blocker", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence.push({
+    id: "TEST-MANUAL-CI-SECRET-SPLIT",
+    kind: "indirect",
+    summary: "Feedback records manual and conclusion fragments separately.",
+    evidence: [
+      fileEvidence(".review-surfaces/feedback/manual-dogfood.yaml", "Manual CI secret-boundary check recorded."),
+      fileEvidence(".review-surfaces/feedback/manual-dogfood.yaml", "PR-controlled code cannot access secrets.")
+    ]
   });
 
   const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });

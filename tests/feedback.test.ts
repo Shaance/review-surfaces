@@ -94,6 +94,9 @@ test("risk analysis maps manual CI secret-boundary feedback notes to indirect ev
           failed: [],
           notes: [
             "Manual CI secret-boundary check recorded: PR-controlled code cannot access secrets.",
+            "This slice requires an explicit recorded conclusion that PR-controlled code cannot access secrets before clearing the CI secret-boundary blocker.",
+            "Policy requires a manual CI secret-boundary check recorded: PR-controlled code cannot access secrets.",
+            "Manual CI secret-boundary check recorded: unable to confirm PR-controlled code cannot access secrets.",
             "Manual workflow security review recorded."
           ]
         }

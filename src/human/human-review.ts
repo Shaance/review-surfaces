@@ -5,6 +5,7 @@ import { normalizeEvidencePath } from "../evidence/validate";
 import { PrRiskCandidate, PrReviewSurfaceModel } from "../pr/contract";
 import { PR_RISK_RULE_METADATA } from "../pr/risk-metadata";
 import { ReviewPacket } from "../render/packet";
+import { looksLikeRecordedCiSecretBoundaryManualCheck } from "../risks/manual-checks";
 import { RiskItem, RisksModel } from "../risks/risks";
 import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-contract";
 import {
@@ -522,7 +523,7 @@ function buildTestPlan(input: BuildHumanReviewInput): TestPlanItem[] {
         kind: "manual",
         priority: "required",
         scenario: "Inspect workflow/provider/comment-posting changes for the CI secret boundary.",
-        expected_result: "Secret-bearing steps run only from trusted code and PR-controlled files cannot influence credentialed execution.",
+        expected_result: "Manual CI secret-boundary check recorded: PR-controlled code cannot access secrets, and secret-bearing steps run only from trusted code.",
         maps_to_requirements: requirementIds(risk.evidence),
         maps_to_risks: [risk.id],
         evidence_gap: "No manual CI secret-boundary check is recorded."
@@ -918,23 +919,18 @@ function questionSeverityForRisk(severity: PacketSeverity): ReviewerQuestion["se
 }
 
 function hasRecordedCiSecretBoundaryManualCheck(input: BuildHumanReviewInput): boolean {
-  const texts = [
+  return [
     ...input.packet.risks.test_evidence
       .filter((item) => item.kind === "direct" || item.kind === "indirect")
       .flatMap((item) => evidenceText(item.evidence ?? [])),
     ...evidenceText(input.packet.methodology.evidence)
-  ];
-  const haystack = compactStrings(texts).join(" ").toLowerCase();
-  const hasExplicitConclusion = /pr-controlled code cannot access secrets/.test(haystack);
-  const hasManualContext = /\b(?:manual|recorded|review|check)\b/.test(haystack);
-  const hasSecretBoundaryContext = /\bci\b|\bworkflow\b|\bsecret\b|secret[- ]boundary/.test(haystack);
-  return hasExplicitConclusion && hasManualContext && hasSecretBoundaryContext;
+  ].some((text) => looksLikeRecordedCiSecretBoundaryManualCheck(text));
 }
 
-function evidenceText(evidence: EvidenceRef[]): Array<string | undefined> {
+function evidenceText(evidence: EvidenceRef[]): string[] {
   return evidence
     .filter((ref) => ref.validation_status !== "invalid")
-    .flatMap((ref) => [ref.note, ref.path, ref.command]);
+    .flatMap((ref) => compactStrings([ref.note, ref.command]));
 }
 
 function focusedRequirementGaps(input: BuildHumanReviewInput): RequirementGap[] {

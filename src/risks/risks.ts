@@ -4,6 +4,7 @@ import { stripUndefined } from "../core/guards";
 import { commandEvidence, EvidenceRef, feedbackEvidence, missingEvidence, specEvidence } from "../evidence/evidence";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 import { MethodologyModel } from "../methodology/methodology";
+import { looksLikeRecordedCiSecretBoundaryManualCheck } from "./manual-checks";
 import type {
   PacketRiskCategory,
   PacketRiskDetectability,
@@ -291,7 +292,7 @@ function validationEvidenceFromFeedback(collection: CollectionResult, transcript
       });
     }
     for (const note of feedbackFile.validation.notes) {
-      if (!looksLikeManualCiSecretBoundaryNote(note)) {
+      if (!looksLikeRecordedCiSecretBoundaryManualCheck(note)) {
         continue;
       }
       entries.push({
@@ -304,14 +305,6 @@ function validationEvidenceFromFeedback(collection: CollectionResult, transcript
     }
   }
   return entries;
-}
-
-function looksLikeManualCiSecretBoundaryNote(note: string): boolean {
-  const lower = note.toLowerCase();
-  const hasExplicitConclusion = /pr-controlled code cannot access secrets/.test(lower);
-  const hasManualContext = /\b(?:manual|recorded|review|check)\b/.test(lower);
-  const hasSecretBoundaryContext = /\bci\b|\bworkflow\b|\bsecret\b|secret[- ]boundary/.test(lower);
-  return hasExplicitConclusion && hasManualContext && hasSecretBoundaryContext;
 }
 
 // Phase 5a: map parsed JUnit cases to test_evidence. A PASSING case becomes
