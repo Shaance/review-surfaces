@@ -1,9 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { buildHumanReview } from "../src/human/human-review";
-import { renderHumanReviewMarkdown } from "../src/human/render";
+import {
+  HUMAN_STANDALONE_ARTIFACTS,
+  renderHumanReviewMarkdown,
+  renderReviewQueueMarkdown,
+  writeHumanReviewArtifacts
+} from "../src/human/render";
 import { ReviewPacket } from "../src/render/packet";
 import { PrReviewSurfaceModel, PR_SURFACE_SCHEMA_VERSION } from "../src/pr/contract";
 import { commandEvidence, feedbackEvidence, fileEvidence, missingEvidence } from "../src/evidence/evidence";
@@ -243,7 +249,60 @@ test("human review Markdown renders a compact cockpit surface", () => {
   assert.match(markdown, /## Trust audit/);
   assert.match(markdown, /Claimed but not verified/);
   assert.match(markdown, /## Suggested comments/);
+  for (const artifact of HUMAN_STANDALONE_ARTIFACTS) {
+    assert.match(markdown, new RegExp(`${artifact.label}: \`\\.review-surfaces/${artifact.artifact}\``));
+  }
   assert.doesNotMatch(markdown, /Start with missing and partial requirement results/);
+});
+
+test("human review writer emits standalone cockpit artifacts from the JSON model", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-human-artifacts-"));
+  try {
+    const model = buildHumanReview({
+      packet: packetFixture(),
+      prSurface: prSurfaceFixture(),
+      packetPath: ".review-surfaces/review_packet.json",
+      prSurfacePath: ".review-surfaces/pr_review_surface.json"
+    });
+
+    await writeHumanReviewArtifacts(tmp, model);
+
+    const expected = ["human_review.json", "human_review.md", ...HUMAN_STANDALONE_ARTIFACTS.map((artifact) => artifact.artifact)];
+    for (const artifact of expected) {
+      assert.ok(fs.existsSync(path.join(tmp, artifact)), `${artifact} should be written`);
+    }
+
+    for (const artifact of HUMAN_STANDALONE_ARTIFACTS) {
+      assert.match(
+        fs.readFileSync(path.join(tmp, artifact.artifact), "utf8"),
+        new RegExp(`^${artifact.heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`)
+      );
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("standalone review queue bounds and de-duplicates evidence refs", () => {
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture() });
+  model.review_queue[0].evidence = [
+    fileEvidence("src/a.ts", "first"),
+    fileEvidence("src/a.ts", "duplicate"),
+    fileEvidence("src/b.ts", "second"),
+    fileEvidence("src/c.ts", "third"),
+    fileEvidence("src/d.ts", "fourth"),
+    fileEvidence("src/e.ts", "fifth"),
+    fileEvidence("src/f.ts", "sixth"),
+    fileEvidence("src/g.ts", "seventh"),
+    fileEvidence("src/h.ts", "eighth"),
+    fileEvidence("src/i.ts", "ninth")
+  ];
+
+  const markdown = renderReviewQueueMarkdown(model);
+
+  assert.equal((markdown.match(/`src\/a\.ts`/g) ?? []).length, 1);
+  assert.match(markdown, /Additional evidence ref\(s\) omitted/);
+  assert.doesNotMatch(markdown, /`src\/i\.ts`/);
 });
 
 test("pathless PR risks become questions and out-of-scope packet risks stay out of PR queue", () => {

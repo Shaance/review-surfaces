@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { validateJsonSchema } from "../src/schema/json-schema";
+import { HUMAN_STANDALONE_ARTIFACTS } from "../src/human/render";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
 const CHANGED = "src/render/comment.ts";
@@ -53,6 +54,59 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     assert.match(humanMarkdown, /^# Human Review/);
     assert.match(humanMarkdown, /## Verdict/);
     assert.match(humanMarkdown, /## Review first/);
+    for (const artifact of HUMAN_STANDALONE_ARTIFACTS) {
+      const body = fs.readFileSync(path.join(tmp, ".review-surfaces", artifact.artifact), "utf8");
+      assert.match(
+        body,
+        new RegExp(`^${artifact.heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+        `${artifact.artifact} should be rendered from human_review.json`
+      );
+    }
+    const markerByCommand: Record<string, string> = {
+      queue: "JSON sentinel queue title",
+      comments: "JSON sentinel suggested comment",
+      trust: "JSON sentinel trust summary",
+      "test-plan": "JSON sentinel test plan"
+    };
+    for (const artifact of HUMAN_STANDALONE_ARTIFACTS) {
+      const marker = markerByCommand[artifact.command];
+      if (artifact.command === "queue") {
+        human.review_queue[0].title = marker;
+      } else if (artifact.command === "comments") {
+        human.suggested_comments[0] = {
+          id: "SC-SENTINEL",
+          severity: "clarifying",
+          body: marker,
+          evidence: [{ kind: "unknown", confidence: "low", note: "JSON sentinel evidence." }],
+          risk_ids: [],
+          requirement_ids: [],
+          confidence: "low",
+          ready_to_post: true
+        };
+      } else if (artifact.command === "trust") {
+        human.trust_audit.confidence_summary = marker;
+      } else if (artifact.command === "test-plan") {
+        human.test_plan[0] = {
+          id: "TEST-SENTINEL",
+          kind: "automatic",
+          priority: "recommended",
+          scenario: marker,
+          expected_result: "Focused renderer reads human_review.json.",
+          maps_to_requirements: [],
+          maps_to_risks: [],
+          evidence_gap: "JSON sentinel evidence gap."
+        };
+      }
+      fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(human, null, 2));
+      const target = path.join(tmp, ".review-surfaces", artifact.artifact);
+      fs.writeFileSync(target, "stale artifact");
+      const subcommand = runCli(tmp, [artifact.command, "--review-scope", "pr", "--out", ".review-surfaces"]);
+      assert.equal(subcommand.status, 0, subcommand.stderr);
+      assert.match(subcommand.stdout, new RegExp(`${artifact.label}: \\.review-surfaces/`));
+      const focusedBody = fs.readFileSync(target, "utf8");
+      assert.match(focusedBody, new RegExp(`^${artifact.heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+      assert.match(focusedBody, new RegExp(marker));
+    }
     assert.equal(surface.mode, "pr");
     // Scoped to the actual change, NOT the whole repo.
     assert.ok(surface.scope.changed_files.some((f: { path: string }) => f.path === CHANGED), "the changed file is in scope");
