@@ -197,7 +197,11 @@ components:
       4:
         requirement: Generated Markdown must support compact and full modes so human reviewers are not overwhelmed.
       5:
-        requirement: PR/MR comments must be a later renderer over the same local artifacts.
+        requirement: Repo-mode PR/MR comments must remain a renderer over review_packet.json, while PR-mode comments must render from a separate PR-scoped sidecar artifact.
+      6:
+        requirement: PR-mode comments must avoid whole-spec coverage dumps, generic review-focus boilerplate, and static whole-repo diagrams.
+      7:
+        requirement: The CLI must support comment --mode pr|repo|auto and all --surface-mode pr|repo|auto.
 
   PROVIDERS:
     name: Later provider integrations
@@ -211,6 +215,10 @@ components:
         requirement: Provider adapters must not be required for local MVP functionality.
       4:
         requirement: Acai CLI/API sync, when added, must preserve local-first operation and work without requiring hosted Acai for tests.
+      5:
+        requirement: Posted PR-mode comments must require a non-mock LLM narrative whose file, requirement, risk, and status anchors are validated against deterministic PR facts.
+      6:
+        requirement: The CI PR comment workflow must keep LLM API keys out of PR-controlled workflow YAML, install, build, and executable code by running secret-bearing steps from a base-controlled workflow with a trusted tool checkout against a credentialless PR subject checkout.
 
 constraints:
   EVIDENCE:
@@ -229,6 +237,8 @@ constraints:
         requirement: The tool must work in local/offline mode with mock or disabled LLM modules.
       6:
         requirement: The packet must clearly distinguish verified evidence from agent claims.
+      7:
+        requirement: PR narrative output must answer what changed, why it matters, and where to look first, and each core section must survive evidence validation before the surface is postable.
 
   PRIVACY:
     name: Security and privacy
@@ -242,6 +252,8 @@ constraints:
         requirement: .review-surfacesignore must exclude sensitive files and logs deterministically.
       4:
         requirement: The tool must not infer private context that is absent from files or logs.
+      5:
+        requirement: PR-mode remote prompts must be secret-scanned, redacted, and blocked on high-risk material before any LLM call.
 
   QUALITY:
     name: Testing and release quality

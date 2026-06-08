@@ -266,6 +266,7 @@ Later, CI can run the same local pipeline and post a sticky comment or upload ar
     flow.mmd
   review_packet.md
   review_packet.json
+  pr_review_surface.json
   feedback/
     *.yaml
 ```
@@ -286,6 +287,7 @@ Later, CI can run the same local pipeline and post a sticky comment or upload ar
 | `agent_handoff.md` | Compact briefing for the next agent. |
 | `review_packet.md` | Human-readable packet. |
 | `review_packet.json` | Machine-readable packet, validated by JSON Schema. |
+| `pr_review_surface.json` | PR-scoped sidecar: changed files, affected requirements, coverage deltas, deterministic PR risks, change-impact diagram, and validated LLM narrative. |
 | `feedback/*.yaml` | Optional human or agent feedback on packet usefulness. |
 
 ### 6.3 Review packet sections
@@ -1138,19 +1140,26 @@ Dogfood:
 
 ### M6: Provider renderers and CI/PR integration
 
-Goal: expose the same local packet through code-hosting workflows.
+Goal: expose local review artifacts through code-hosting workflows without
+turning the whole-repo packet into the default PR review surface.
 
-Deliver later:
+Delivered shape:
 
-- GitHub Action;
-- sticky PR comment renderer;
+- GitHub Action using a trusted-tool checkout and credentialless PR subject
+  checkout for secret-bearing LLM generation;
+- sticky PR comment renderer with `comment --mode pr|repo|auto`;
+- `all --surface-mode pr|repo|auto` sidecar generation;
+- `pr_review_surface.json` sidecar schema;
+- PR comments require a non-mock, applied narrative before they are postable;
+- static whole-repo diagrams remain in repo mode, while PR mode uses only a
+  change-impact diagram derived from the PR scope;
 - optional GitLab/Gerrit adapters;
 - optional SARIF export;
 - optional Acai CLI/API sync.
 
 Constraint:
 
-- M6 must not require changing core artifact contracts.
+- M6 must not require changing the `review_packet.json` core artifact contract.
 
 ---
 

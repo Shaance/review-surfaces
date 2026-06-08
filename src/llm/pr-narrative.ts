@@ -30,6 +30,12 @@ const MAX_CHANGED_FILES = 40;
 const MAX_REQUIREMENTS = 20;
 const MAX_RISKS = 12;
 const MAX_ANCHORED_ITEMS = 6;
+const MAX_WHAT_CHANGED_ITEMS = 3;
+const MAX_WHY_IT_MATTERS_ITEMS = 3;
+const MAX_REVIEW_FIRST_ITEMS = 5;
+const MAX_RISK_NARRATIVE_ITEMS = 8;
+const MAX_NARRATIVE_TEXT_CHARS = 1000;
+const MAX_SUGGESTED_CHECK_CHARS = 500;
 
 export interface BuildPrNarrativeInput {
   provider: ReasoningProvider;
@@ -56,7 +62,7 @@ const anchoredItemSchema = {
   additionalProperties: false,
   required: ["text"],
   properties: {
-    text: { type: "string" },
+    text: { type: "string", maxLength: MAX_NARRATIVE_TEXT_CHARS },
     paths: { type: "array", maxItems: 6, items: { type: "string" } },
     requirement_ids: { type: "array", maxItems: 6, items: { type: "string" } },
     risk_ids: { type: "array", maxItems: 6, items: { type: "string" } }
@@ -68,21 +74,21 @@ export const PR_NARRATIVE_SCHEMA = {
   additionalProperties: false,
   required: ["summary", "what_changed", "why_it_matters", "review_first", "risk_narratives"],
   properties: {
-    summary: { type: "string" },
-    what_changed: { type: "array", maxItems: MAX_ANCHORED_ITEMS, items: anchoredItemSchema },
-    why_it_matters: { type: "array", maxItems: MAX_ANCHORED_ITEMS, items: anchoredItemSchema },
-    review_first: { type: "array", maxItems: MAX_ANCHORED_ITEMS, items: anchoredItemSchema },
+    summary: { type: "string", maxLength: MAX_NARRATIVE_TEXT_CHARS },
+    what_changed: { type: "array", maxItems: MAX_WHAT_CHANGED_ITEMS, items: anchoredItemSchema },
+    why_it_matters: { type: "array", maxItems: MAX_WHY_IT_MATTERS_ITEMS, items: anchoredItemSchema },
+    review_first: { type: "array", maxItems: MAX_REVIEW_FIRST_ITEMS, items: anchoredItemSchema },
     risk_narratives: {
       type: "array",
-      maxItems: MAX_ANCHORED_ITEMS,
+      maxItems: MAX_RISK_NARRATIVE_ITEMS,
       items: {
         type: "object",
         additionalProperties: false,
         required: ["risk_id", "text"],
         properties: {
           risk_id: { type: "string" },
-          text: { type: "string" },
-          suggested_checks: { type: "array", maxItems: 4, items: { type: "string" } }
+          text: { type: "string", maxLength: MAX_NARRATIVE_TEXT_CHARS },
+          suggested_checks: { type: "array", maxItems: 4, items: { type: "string", maxLength: MAX_SUGGESTED_CHECK_CHARS } }
         }
       }
     }
@@ -114,7 +120,10 @@ function buildPromptFacts(input: BuildPrNarrativeInput): {
   }
   const allowedRiskIds = new Set(input.risks.candidates.map((candidate) => candidate.id));
 
-  const diffExcerpt = redact(buildDiffExcerpt(input.diff)).slice(0, MAX_DIFF_EXCERPT_CHARS);
+  const diffExcerpt = buildDiffExcerpt(input.diff, MAX_DIFF_EXCERPT_CHARS);
+  const promptPaths = input.scope.changed_files.map((file) => file.path).slice(0, MAX_CHANGED_FILES);
+  const promptRequirementIds = [...allowedRequirementIds].sort(compareStrings).slice(0, MAX_REQUIREMENTS * 2);
+  const promptRiskIds = [...allowedRiskIds].sort(compareStrings).slice(0, MAX_RISKS);
 
   const facts = {
     repo: input.repo,
@@ -127,8 +136,15 @@ function buildPromptFacts(input: BuildPrNarrativeInput): {
       role: file.role,
       areas: file.areas
     })),
-    diff_excerpt: diffExcerpt,
-    affected_areas: input.scope.affected_areas,
+    diff_excerpt: diffExcerpt.text,
+    diff_excerpt_omitted_line_count: diffExcerpt.omittedLines,
+    affected_areas: input.scope.affected_areas.slice(0, MAX_CHANGED_FILES).map((area) => ({
+      group_key: area.group_key,
+      area_ids: area.area_ids,
+      name: area.name,
+      changed_files: area.changed_files.slice(0, MAX_CHANGED_FILES)
+    })),
+    affected_areas_omitted_count: Math.max(input.scope.affected_areas.length - MAX_CHANGED_FILES, 0),
     affected_requirements: input.scope.affected_requirements.slice(0, MAX_REQUIREMENTS).map((requirement) => ({
       requirement_id: requirement.requirement_id,
       acai_id: requirement.acai_id,
@@ -148,29 +164,43 @@ function buildPromptFacts(input: BuildPrNarrativeInput): {
       severity: candidate.severity,
       summary: candidate.summary
     })),
-    allowed_paths: [...allowedPaths].sort(compareStrings),
-    allowed_requirement_ids: [...allowedRequirementIds].sort(compareStrings),
-    allowed_risk_ids: [...allowedRiskIds].sort(compareStrings)
+    allowed_paths: promptPaths,
+    allowed_paths_omitted_count: Math.max(allowedPaths.size - promptPaths.length, 0),
+    allowed_requirement_ids: promptRequirementIds,
+    allowed_requirement_ids_omitted_count: Math.max(allowedRequirementIds.size - promptRequirementIds.length, 0),
+    allowed_risk_ids: promptRiskIds,
+    allowed_risk_ids_omitted_count: Math.max(allowedRiskIds.size - promptRiskIds.length, 0)
   };
 
   return { facts, allowedPaths, allowedRequirementIds, allowedRiskIds };
 }
 
-function buildDiffExcerpt(diff: StructuredDiff): string {
+function buildDiffExcerpt(diff: StructuredDiff, maxChars: number): { text: string; omittedLines: number } {
   const lines: string[] = [];
+  let length = 0;
+  let omittedLines = 0;
+  const append = (line: string): void => {
+    const extra = (lines.length === 0 ? 0 : 1) + line.length;
+    if (length + extra > maxChars) {
+      omittedLines += 1;
+      return;
+    }
+    lines.push(line);
+    length += extra;
+  };
   for (const file of diff.files) {
-    lines.push(`# ${file.status} ${file.path}`);
+    append(`# ${file.status} ${file.path}`);
     for (const hunk of file.hunks) {
       for (const line of hunk.lines) {
         if (line.kind === "add") {
-          lines.push(`+ ${line.text}`);
+          append(`+ ${line.text}`);
         } else if (line.kind === "delete") {
-          lines.push(`- ${line.text}`);
+          append(`- ${line.text}`);
         }
       }
     }
   }
-  return lines.join("\n");
+  return { text: redact(lines.join("\n")), omittedLines };
 }
 
 function buildPrompt(facts: Record<string, unknown>): string {
@@ -199,6 +229,14 @@ function asStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string");
 }
 
+function boundedRedactedText(value: string, maxChars: number): string | undefined {
+  const redacted = redact(value);
+  if (redacted.length === 0 || redacted.length > maxChars) {
+    return undefined;
+  }
+  return redacted;
+}
+
 // An anchor field "violates" the allowlist if it is present but malformed (not an
 // array, or contains a non-string element) OR contains a string not on the
 // allowlist. A non-string element must count as a violation so an item that
@@ -216,7 +254,13 @@ function anchorViolatesAllowlist(value: unknown, allowed: Set<string>): boolean 
 
 // Keep an item only when every anchor it cites is on an allowlist AND it cites at
 // least one. Drop (never repair) anything that fabricates an anchor.
-function validateItems(value: unknown, allowedPaths: Set<string>, allowedReqs: Set<string>, allowedRisks: Set<string>): AnchoredNarrativeItem[] {
+function validateItems(
+  value: unknown,
+  allowedPaths: Set<string>,
+  allowedReqs: Set<string>,
+  allowedRisks: Set<string>,
+  maxItems = MAX_ANCHORED_ITEMS
+): AnchoredNarrativeItem[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -241,7 +285,11 @@ function validateItems(value: unknown, allowedPaths: Set<string>, allowedReqs: S
     if (paths.length + requirementIds.length + riskIds.length === 0) {
       continue; // must cite at least one real anchor
     }
-    const item: AnchoredNarrativeItem = { text: redact(raw.text) };
+    const text = boundedRedactedText(raw.text, MAX_NARRATIVE_TEXT_CHARS);
+    if (text === undefined) {
+      continue;
+    }
+    const item: AnchoredNarrativeItem = { text };
     if (paths.length > 0) {
       item.paths = paths;
     }
@@ -253,7 +301,7 @@ function validateItems(value: unknown, allowedPaths: Set<string>, allowedReqs: S
     }
     items.push(item);
   }
-  return items.slice(0, MAX_ANCHORED_ITEMS);
+  return items.slice(0, maxItems);
 }
 
 // Every free-text field (summary, item text, risk narrative text) gets the same
@@ -301,7 +349,8 @@ function validateRiskNarratives(
   value: unknown,
   allowedRisks: Set<string>,
   allowedPaths: Set<string>,
-  allowedReqs: Set<string>
+  allowedReqs: Set<string>,
+  maxItems = MAX_ANCHORED_ITEMS
 ): AnchoredRiskNarrative[] {
   if (!Array.isArray(value)) {
     return [];
@@ -320,17 +369,22 @@ function validateRiskNarratives(
     if (!textCitesOnlyAllowed(raw.text, allowedPaths, allowedReqs)) {
       continue;
     }
-    const checks = asStringArray(raw.suggested_checks).map(redact);
+    const checkCandidates = asStringArray(raw.suggested_checks).map(redact);
+    const checks = checkCandidates.filter((check) => check.length > 0 && check.length <= MAX_SUGGESTED_CHECK_CHARS);
     if (checks.some((check) => !textCitesOnlyAllowed(check, allowedPaths, allowedReqs))) {
       continue;
     }
-    const item: AnchoredRiskNarrative = { risk_id: raw.risk_id, text: redact(raw.text) };
+    const text = boundedRedactedText(raw.text, MAX_NARRATIVE_TEXT_CHARS);
+    if (text === undefined) {
+      continue;
+    }
+    const item: AnchoredRiskNarrative = { risk_id: raw.risk_id, text };
     if (checks.length > 0) {
       item.suggested_checks = checks.slice(0, 4);
     }
     items.push(item);
   }
-  return items.slice(0, MAX_ANCHORED_ITEMS);
+  return items.slice(0, maxItems);
 }
 
 /**
@@ -376,16 +430,16 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
     return { meta: { ...baseMeta, status: "failed", validation_errors: ["non_object_output"] }, blocked_reason: "invalid_llm_output" };
   }
 
-  const whatChanged = validateItems(data.what_changed, allowedPaths, allowedRequirementIds, allowedRiskIds);
-  const whyItMatters = validateItems(data.why_it_matters, allowedPaths, allowedRequirementIds, allowedRiskIds);
-  const reviewFirst = validateItems(data.review_first, allowedPaths, allowedRequirementIds, allowedRiskIds);
-  const riskNarratives = validateRiskNarratives(data.risk_narratives, allowedRiskIds, allowedPaths, allowedRequirementIds);
+  const whatChanged = validateItems(data.what_changed, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_WHAT_CHANGED_ITEMS);
+  const whyItMatters = validateItems(data.why_it_matters, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_WHY_IT_MATTERS_ITEMS);
+  const reviewFirst = validateItems(data.review_first, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_REVIEW_FIRST_ITEMS);
+  const riskNarratives = validateRiskNarratives(data.risk_narratives, allowedRiskIds, allowedPaths, allowedRequirementIds, MAX_RISK_NARRATIVE_ITEMS);
 
-  // Require at least one validated item across the sections, else the surface is
-  // blocked (deterministic-only is insufficient for PR mode).
-  if (whatChanged.length + whyItMatters.length + reviewFirst.length + riskNarratives.length === 0) {
+  // Require the three core PR reviewer questions to survive validation. A risk
+  // narrative alone is not enough for a PR review surface.
+  if (whatChanged.length === 0 || whyItMatters.length === 0 || reviewFirst.length === 0) {
     return {
-      meta: { ...baseMeta, status: "failed", validation_errors: ["no_valid_anchored_items"] },
+      meta: { ...baseMeta, status: "failed", validation_errors: ["missing_valid_core_narrative"] },
       blocked_reason: "invalid_llm_output"
     };
   }
@@ -394,10 +448,11 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
   // field that bypassed allowlist validation) and no renderer ever read it, so it
   // only ever risked shipping off-allowlist LLM prose into the persisted artifact.
   const rawSummary = typeof data.summary === "string" ? data.summary : "";
-  const summary =
+  const boundedSummary =
     rawSummary !== "" && textCitesOnlyAllowed(rawSummary, allowedPaths, allowedRequirementIds)
-      ? redact(rawSummary)
-      : deterministicSummary(input.scope);
+      ? boundedRedactedText(rawSummary, MAX_NARRATIVE_TEXT_CHARS)
+      : undefined;
+  const summary = boundedSummary ?? deterministicSummary(input.scope);
   const narrative: PrNarrativeModel = {
     summary,
     what_changed: whatChanged,

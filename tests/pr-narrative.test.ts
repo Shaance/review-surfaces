@@ -61,20 +61,27 @@ function inputWith(result: StructuredResult): BuildPrNarrativeInput {
   };
 }
 
+function validNarrative(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    summary: "s",
+    what_changed: [{ text: "Touches the CLI.", paths: ["src/cli/index.ts"] }],
+    why_it_matters: [{ text: "Changes reviewer-facing CLI behavior.", paths: ["src/cli/index.ts"] }],
+    review_first: [{ text: "Review src/cli/index.ts first.", paths: ["src/cli/index.ts"] }],
+    risk_narratives: [],
+    ...overrides
+  };
+}
+
 test("an item that smuggles a NON-STRING anchor is dropped (not silently repaired to its valid anchors)", async () => {
   const result = await buildPrNarrative(
     inputWith({
       ok: true,
-      data: {
-        summary: "s",
+      data: validNarrative({
         what_changed: [
           { text: "bad — has a fabricated non-string anchor", paths: [123, "src/cli/index.ts"] },
           { text: "good", paths: ["src/cli/index.ts"] }
-        ],
-        why_it_matters: [],
-        review_first: [],
-        risk_narratives: []
-      }
+        ]
+      })
     })
   );
   assert.ok(result.narrative, "narrative built (a valid item survives)");
@@ -86,14 +93,10 @@ test("diagram_caption from the LLM is never persisted (un-anchored free text is 
   const result = await buildPrNarrative(
     inputWith({
       ok: true,
-      data: {
-        summary: "s",
+      data: validNarrative({
         what_changed: [{ text: "valid", paths: ["src/cli/index.ts"] }],
-        why_it_matters: [],
-        review_first: [],
-        risk_narratives: [],
         diagram_caption: "impacts src/not-in-diff.ts per OFF.99"
-      }
+      })
     })
   );
   assert.ok(result.narrative);
@@ -104,13 +107,10 @@ test("a summary citing a FABRICATED path is replaced by a deterministic summary 
   const result = await buildPrNarrative(
     inputWith({
       ok: true,
-      data: {
+      data: validNarrative({
         summary: "Refactors src/totally/made-up.ts and review-surfaces.GHOST.9 across the codebase.",
-        what_changed: [{ text: "valid", paths: ["src/cli/index.ts"] }],
-        why_it_matters: [],
-        review_first: [],
-        risk_narratives: []
-      }
+        what_changed: [{ text: "valid", paths: ["src/cli/index.ts"] }]
+      })
     })
   );
   assert.ok(result.narrative);
@@ -124,13 +124,10 @@ test("a summary that cites ONLY allowlisted anchors is kept verbatim", async () 
   const result = await buildPrNarrative(
     inputWith({
       ok: true,
-      data: {
+      data: validNarrative({
         summary: "Touches src/cli/index.ts for x.CLI.1.",
-        what_changed: [{ text: "valid", paths: ["src/cli/index.ts"] }],
-        why_it_matters: [],
-        review_first: [],
-        risk_narratives: []
-      }
+        what_changed: [{ text: "valid", paths: ["src/cli/index.ts"] }]
+      })
     })
   );
   assert.ok(result.narrative);
@@ -141,16 +138,13 @@ test("a risk_narrative whose TEXT cites a fabricated path is dropped (a valid ri
   const result = await buildPrNarrative(
     inputWith({
       ok: true,
-      data: {
-        summary: "x",
+      data: validNarrative({
         what_changed: [{ text: "valid", paths: ["src/cli/index.ts"] }],
-        why_it_matters: [],
-        review_first: [],
         risk_narratives: [
           { risk_id: "PR-RISK-001", text: "Also audit src/secret/backdoor.ts for leaks." }, // fabricated path
           { risk_id: "PR-RISK-001", text: "Confirm the changed surface is safe." } // clean
         ]
-      }
+      })
     })
   );
   assert.ok(result.narrative);
@@ -162,16 +156,12 @@ test("an item whose TEXT cites a fabricated ACID is dropped even when its anchor
   const result = await buildPrNarrative(
     inputWith({
       ok: true,
-      data: {
-        summary: "x",
+      data: validNarrative({
         what_changed: [
           { text: "Implements review-surfaces.GHOST.9 here.", paths: ["src/cli/index.ts"] }, // fabricated ACID in text
           { text: "Touches the CLI.", paths: ["src/cli/index.ts"] } // clean
-        ],
-        why_it_matters: [],
-        review_first: [],
-        risk_narratives: []
-      }
+        ]
+      })
     })
   );
   assert.ok(result.narrative);
@@ -194,8 +184,8 @@ test("an item mentioning a DOT-PREFIXED allowlisted path (.github/...) is NOT fa
       data: {
         summary: "Hardens .github/workflows/ci.yml.",
         what_changed: [{ text: "Tightens the .github/workflows/ci.yml guard.", paths: [".github/workflows/ci.yml"] }],
-        why_it_matters: [],
-        review_first: [],
+        why_it_matters: [{ text: ".github/workflows/ci.yml affects CI behavior.", paths: [".github/workflows/ci.yml"] }],
+        review_first: [{ text: "Review .github/workflows/ci.yml first.", paths: [".github/workflows/ci.yml"] }],
         risk_narratives: []
       }
     })
@@ -210,16 +200,12 @@ test("an item naming a root-level FABRICATED file (package.json, not changed) is
   const result = await buildPrNarrative(
     inputWith({
       ok: true,
-      data: {
-        summary: "x",
+      data: validNarrative({
         what_changed: [
           { text: "Edits package.json dependencies.", paths: ["src/cli/index.ts"] }, // package.json not allowlisted -> drop
           { text: "Bumps the Node.js runtime.", paths: ["src/cli/index.ts"] } // .js excluded -> prose, kept
-        ],
-        why_it_matters: [],
-        review_first: [],
-        risk_narratives: []
-      }
+        ]
+      })
     })
   );
   assert.ok(result.narrative);
@@ -240,4 +226,56 @@ test("a missing-credential skip blocks with reason llm_unavailable and meta.stat
   assert.equal(result.narrative, undefined);
   assert.equal(result.blocked_reason, "llm_unavailable");
   assert.equal(result.meta.status, "blocked");
+});
+
+test("all three core PR narrative sections must survive validation", async () => {
+  const result = await buildPrNarrative(
+    inputWith({
+      ok: true,
+      data: validNarrative({
+        what_changed: [{ text: "Touches the CLI.", paths: ["src/cli/index.ts"] }],
+        why_it_matters: [],
+        review_first: [{ text: "Review src/cli/index.ts first.", paths: ["src/cli/index.ts"] }],
+        risk_narratives: [{ risk_id: "PR-RISK-001", text: "Confirm the changed surface is safe." }]
+      })
+    })
+  );
+  assert.equal(result.narrative, undefined);
+  assert.equal(result.blocked_reason, "invalid_llm_output");
+  assert.deepEqual(result.meta.validation_errors, ["missing_valid_core_narrative"]);
+});
+
+test("over-limit core narrative item text is dropped before marking the narrative applied", async () => {
+  const result = await buildPrNarrative(
+    inputWith({
+      ok: true,
+      data: validNarrative({
+        what_changed: [{ text: "X".repeat(1001), paths: ["src/cli/index.ts"] }]
+      })
+    })
+  );
+  assert.equal(result.narrative, undefined);
+  assert.equal(result.blocked_reason, "invalid_llm_output");
+  assert.deepEqual(result.meta.validation_errors, ["missing_valid_core_narrative"]);
+});
+
+test("over-limit summary falls back and over-limit suggested checks are omitted", async () => {
+  const result = await buildPrNarrative(
+    inputWith({
+      ok: true,
+      data: validNarrative({
+        summary: "X".repeat(1001),
+        risk_narratives: [
+          {
+            risk_id: "PR-RISK-001",
+            text: "Confirm the changed surface is safe.",
+            suggested_checks: ["Y".repeat(501), "Review src/cli/index.ts"]
+          }
+        ]
+      })
+    })
+  );
+  assert.ok(result.narrative);
+  assert.match(result.narrative!.summary, /changed file\(s\).*affected requirement\(s\)/);
+  assert.deepEqual(result.narrative!.risk_narratives[0].suggested_checks, ["Review src/cli/index.ts"]);
 });

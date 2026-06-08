@@ -481,8 +481,9 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
     agentInput: stringFlag(parsed, "agent-input")
   });
+  const redactSecrets = redactSecretsFlag(parsed, config);
   const reasoningOptions = {
-    redactSecrets: config.privacy.redact_secrets,
+    redactSecrets,
     remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
     // FINDING C: thread the SAME config-derived review areas evaluateIntent uses
     // (present only in config mode) into the candidate-evidence group mapping, so
@@ -525,7 +526,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     model: requestedModel,
     agentInput: stringFlag(parsed, "agent-input"),
     outputDir: collection.outputDir,
-    redactSecrets: config.privacy.redact_secrets,
+    redactSecrets,
     remotePrivacyBlocked: collection.privacy.remote_provider_blocked
   });
   const dogfood = isDogfoodRun(parsed)
@@ -564,7 +565,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     const baseEvaluation = await evaluateBaseline({
       cwd,
       baseRef: stringFlag(parsed, "base") ?? "origin/main",
-      configPath: stringFlag(parsed, "config") ?? "review-surfaces.config.yaml",
+      config,
       specFlag: stringFlag(parsed, "spec")
     });
     // The narrative is the ONLY LLM step in pr mode: build a fresh provider with
@@ -589,18 +590,20 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       provider: narrativeProvider,
       providerName: provider,
       model: narrativeModel,
-      redactSecrets: config.privacy.redact_secrets
+      redactSecrets
     });
-    await writeJson(path.join(collection.outputDir, "pr_review_surface.json"), surface);
+    const persistedSurface = jsonSerializable(surface);
+    assertValidPrSurface(cwd, persistedSurface);
+    await writeJson(path.join(collection.outputDir, "pr_review_surface.json"), persistedSurface);
     // Materialize the diagram artifact the surface advertises (surface.diagram.path),
     // so a consumer following the advertised path finds the .mmd it points at.
-    if (surface.diagram) {
-      const diagramPath = path.join(collection.outputDir, surface.diagram.path);
+    if (persistedSurface.diagram) {
+      const diagramPath = path.join(collection.outputDir, persistedSurface.diagram.path);
       fs.mkdirSync(path.dirname(diagramPath), { recursive: true });
-      await writeText(diagramPath, surface.diagram.body);
+      await writeText(diagramPath, persistedSurface.diagram.body);
     }
-    if (surface.status === "blocked") {
-      console.warn(`PR review surface blocked (${surface.blocked_reason}); see pr_review_surface.json`);
+    if (persistedSurface.status === "blocked") {
+      console.warn(`PR review surface blocked (${persistedSurface.blocked_reason}); see pr_review_surface.json`);
     }
   }
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
@@ -621,14 +624,36 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
 // selects the review surface (and whether `comment --post` publishes the PR or the
 // whole-repo sticky comment), so a typo like `--review-scope rp` must fail fast.
 function reviewScope(parsed: ParsedArgs): ReviewScope {
-  const raw = stringFlag(parsed, "review-scope");
+  const rawReviewScope = stringFlag(parsed, "review-scope");
+  const rawMode = stringFlag(parsed, "mode");
+  const rawSurfaceMode = stringFlag(parsed, "surface-mode");
+  const supplied = [
+    ["--review-scope", rawReviewScope],
+    ["--mode", rawMode],
+    ["--surface-mode", rawSurfaceMode]
+  ].filter((entry): entry is [string, string] => typeof entry[1] === "string");
+  const uniqueValues = new Set(supplied.map(([, value]) => value));
+  if (uniqueValues.size > 1) {
+    throw new CliError(
+      `Conflicting review surface mode flags: ${supplied.map(([flag, value]) => `${flag} ${value}`).join(", ")}.`,
+      ExitCodes.usageError
+    );
+  }
+  const raw = supplied[0]?.[1];
   if (raw === undefined || raw === "repo") {
     return "repo";
   }
   if (raw === "pr") {
     return "pr";
   }
-  throw new CliError(`Unknown --review-scope: ${raw}. Use pr or repo.`, ExitCodes.usageError);
+  if (raw === "auto") {
+    return isPrEnvironment() ? "pr" : "repo";
+  }
+  throw new CliError(`Unknown review surface mode: ${raw}. Use pr, repo, or auto.`, ExitCodes.usageError);
+}
+
+function isPrEnvironment(): boolean {
+  return process.env.GITHUB_EVENT_NAME === "pull_request" || process.env.GITHUB_EVENT_NAME === "pull_request_target" || process.env.GITHUB_BASE_REF !== undefined;
 }
 
 // Whether a --cache signature hit may be honored as-is. Always true in repo mode
@@ -659,6 +684,9 @@ function prSurfaceCacheReusable(parsed: ParsedArgs, collection: CollectionResult
       scope?: { head_sha?: string; base_sha?: string; base_ref?: string };
       llm?: { provider?: string; model?: string };
     };
+    if (prSurfaceIssues(collection.cwd, surface).length > 0) {
+      return false;
+    }
     const requestedModel = effectiveNarrativeModel(parsed, config);
     // The surface depends on head AND base (coverage delta) AND the narrative
     // provider/model, none of which are in the whole-repo packet signature in pr
@@ -1073,6 +1101,7 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
     );
   }
   const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8")) as PrReviewSurfaceModel;
+  assertValidPrSurface(cwd, surface);
   // Point the comment's "Full PR surface" pointer at the ACTUAL artifact path
   // (honoring --out / config output_dir), not a hardcoded .review-surfaces.
   const markdown = renderPrComment(surface, { surfacePath: path.relative(cwd, surfacePath) || surfacePath });
@@ -1080,11 +1109,68 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
   await writeText(commentPath, markdown);
   process.stdout.write(markdown);
   console.error(`Wrote ${path.relative(cwd, commentPath)}`);
+  // review-surfaces.PROVIDERS.5: posted PR comments require a validated remote
+  // LLM narrative. Local agent-file narratives are useful for dogfooding, but
+  // must remain local artifacts and never satisfy the sticky-post gate.
+  const hasRemoteNarrative =
+    surface.status === "ready" &&
+    surface.llm.status === "applied" &&
+    surface.llm.provider === "ai-sdk" &&
+    surface.narrative !== undefined;
+  if (!hasRemoteNarrative) {
+    const reason = surface.blocked_reason ?? `${surface.llm.status}/${surface.llm.provider}`;
+    console.error(`PR review surface is not postable (${reason}); skipping sticky post.`);
+    return ExitCodes.evidenceValidationFailed;
+  }
   if (booleanFlag(parsed, "post")) {
     const result = postStickyComment(cwd, markdown);
     console.error(result.reason);
   }
   return ExitCodes.success;
+}
+
+function assertValidPrSurface(cwd: string, surface: unknown): void {
+  const issues = prSurfaceIssues(cwd, surface);
+  if (issues.length === 0) {
+    return;
+  }
+  throw new CliError(`PR review surface failed schema validation: ${issues.join("; ")}`, ExitCodes.schemaValidationFailed);
+}
+
+function prSurfaceIssues(cwd: string, surface: unknown): string[] {
+  const schema = loadPrSurfaceSchema(cwd);
+  if (schema === undefined) {
+    return [];
+  }
+  const result = validateJsonSchema(schema, surface);
+  return result.valid ? [] : result.issues.map((issue) => `${issue.path}: ${issue.message}`);
+}
+
+function jsonSerializable<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function loadPrSurfaceSchema(cwd: string): unknown | undefined {
+  const candidates = [
+    path.resolve(__dirname, "..", "..", "..", "schemas", "pr_review_surface.schema.json"),
+    path.resolve(__dirname, "..", "..", "schemas", "pr_review_surface.schema.json"),
+    path.resolve(cwd, "schemas/pr_review_surface.schema.json")
+  ];
+  for (const candidate of candidates) {
+    if (!fileExists(candidate)) {
+      continue;
+    }
+    try {
+      return JSON.parse(fs.readFileSync(candidate, "utf8"));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new CliError(
+        `Unable to read PR review surface schema at ${path.relative(cwd, candidate)}: ${reason}`,
+        ExitCodes.schemaValidationFailed
+      );
+    }
+  }
+  return undefined;
 }
 
 // Phase 6b (PROVIDERS.2; M6): write a SARIF 2.1.0 log from the local packet.
@@ -1163,7 +1249,7 @@ function parseArgs(args: string[]): ParsedArgs {
 
 // Flags that are always boolean switches (no value argument). Listed so the
 // permissive parser does not consume a following positional as their "value".
-const BOOLEAN_FLAGS = new Set(["cache", "dogfood", "force", "post", "strict", "verbose", "help"]);
+const BOOLEAN_FLAGS = new Set(["cache", "dogfood", "force", "no-redact-secrets", "post", "strict", "verbose", "help"]);
 
 function stringFlag(parsed: ParsedArgs, key: string): string | undefined {
   const value = parsed.flags[key];
@@ -1172,6 +1258,31 @@ function stringFlag(parsed: ParsedArgs, key: string): string | undefined {
 
 function booleanFlag(parsed: ParsedArgs, key: string): boolean {
   return parsed.flags[key] === true || parsed.flags[key] === "true";
+}
+
+function optionalBooleanFlag(parsed: ParsedArgs, key: string): boolean | undefined {
+  const value = parsed.flags[key];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === true || value === "true") {
+    return true;
+  }
+  if (value === "false") {
+    return false;
+  }
+  throw new CliError(`--${key} must be true or false`, ExitCodes.usageError);
+}
+
+function redactSecretsFlag(parsed: ParsedArgs, config: ReviewSurfacesConfig): boolean {
+  const override = optionalBooleanFlag(parsed, "redact-secrets");
+  if (override !== undefined) {
+    return override;
+  }
+  if (booleanFlag(parsed, "no-redact-secrets")) {
+    return false;
+  }
+  return config.privacy.redact_secrets;
 }
 
 // R6: the verbosity predicate, shared by isVerbose() (the parsed-args path) and
@@ -1317,7 +1428,10 @@ Options:
   --head <ref>      Head ref for diff collection, default HEAD
   --spec <path>     Feature spec path, default from config
   --out <dir>       Output directory, default .review-surfaces
-  --review-scope <s> all/comment: pr or repo (default repo). pr emits/reads a SEPARATE
+  --mode <s>      comment: pr, repo, or auto. Alias for --review-scope on comments.
+  --surface-mode <s>
+                   all: pr, repo, or auto. Alias for --review-scope on packet generation.
+  --review-scope <s> all/comment: pr, repo, or auto (default repo). pr emits/reads a SEPARATE
                    diff-scoped surface (pr_review_surface.json): changed files mapped to
                    affected requirements, base-vs-head coverage delta, PR-specific risk
                    candidates, a PR change-impact diagram, and an LLM-authored narrative
@@ -1348,6 +1462,8 @@ Options:
   --model <model>   Optional AI SDK model as <provider>:<model>, e.g. google:gemini-2.5-flash,
                    anthropic:claude-3-5-haiku-latest, or openai:gpt-4o-mini. Google/Gemini is the
                    first-class default; no prefix (or no --model) defaults to google:gemini-2.5-flash.
+  --redact-secrets <bool>
+                   Override config privacy.redact_secrets for this run.
   --agent-input <path>
                    Structured JSON/YAML enrichment produced by a coding agent
   --previous-packet <path-or-dir>

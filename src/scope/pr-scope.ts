@@ -1,6 +1,6 @@
 import { CollectionResult } from "../collector/collect";
 import { compareStrings } from "../core/compare";
-import { EvaluationModel } from "../evaluation/evaluate";
+import { ACID_PATTERN, groupFromAcid } from "../evaluation/evidence-rules";
 import { IntentModel, IntentRequirement } from "../intent/intent";
 import { createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
 import {
@@ -30,7 +30,6 @@ import {
 export interface BuildPrScopeInput {
   collection: CollectionResult;
   intent: IntentModel;
-  evaluation: EvaluationModel;
   reviewAreas: ReviewArea[];
   diff: StructuredDiff;
 }
@@ -44,7 +43,7 @@ interface SpecSourceRange {
 }
 
 export function buildPrScope(input: BuildPrScopeInput): PrScopeModel {
-  const { collection, intent, evaluation, reviewAreas, diff } = input;
+  const { collection, intent, reviewAreas, diff } = input;
   const matcher = createReviewAreaMatcher(reviewAreas);
 
   // Index the structured diff by path so per-file hunk scans are O(1) lookups.
@@ -52,9 +51,6 @@ export function buildPrScope(input: BuildPrScopeInput): PrScopeModel {
   for (const file of diff.files) {
     diffByPath.set(file.path, file);
   }
-
-  void evaluation; // EvaluationModel is part of the contract but scope rules are
-  // diff-driven; it is reserved for downstream coverage-delta wiring.
 
   // --- changed_files -------------------------------------------------------
   const changedFiles: ScopedChangedFile[] = collection.changedFiles.map((changedFile) => {
@@ -140,12 +136,18 @@ export function buildPrScope(input: BuildPrScopeInput): PrScopeModel {
   }
 
   const affectedRequirements: PrAffectedRequirement[] = [];
+  const acidHits = buildAcidHitIndex(changedFiles, diffByPath);
+  const firstMappedByGroup = firstFilesByGroup(changedFiles, (file) => file.role !== "test" && file.role !== "generated");
+  const firstTestByGroup = firstFilesByGroup(changedFiles, (file) => file.role === "test");
   for (const requirement of intent.requirements) {
     const reasons = scopeReasonsForRequirement(requirement, {
       changedFiles,
       diffByPath,
       mappedGroups,
-      testGroups
+      testGroups,
+      acidHits,
+      firstMappedByGroup,
+      firstTestByGroup
     });
     if (reasons.length === 0) {
       continue;
@@ -263,6 +265,15 @@ interface ScopeContext {
   // Groups touched by any non-test, non-generated mapped changed file.
   mappedGroups: Set<string>;
   testGroups: Set<string>;
+  acidHits: Map<string, AcidHit[]>;
+  firstMappedByGroup: Map<string, string>;
+  firstTestByGroup: Map<string, string>;
+}
+
+interface AcidHit {
+  path: string;
+  role: ChangedFileRole;
+  line?: number;
 }
 
 function scopeReasonsForRequirement(requirement: IntentRequirement, context: ScopeContext): PrScopeReason[] {
@@ -271,21 +282,13 @@ function scopeReasonsForRequirement(requirement: IntentRequirement, context: Sco
   const groupKey = requirementGroupKey(requirement);
 
   // exact_acid_in_diff (high) and changed_test_exact_acid (high): scan diff
-  // lines (add/delete/context) of changed files for the literal acai_id.
+  // lines (add/delete only) of changed files for the literal acai_id.
   if (acaiId) {
-    for (const changedFile of context.changedFiles) {
-      const diffFile = context.diffByPath.get(changedFile.path);
-      if (!diffFile) {
-        continue;
-      }
-      const hit = firstAcidLine(diffFile, acaiId);
-      if (!hit) {
-        continue;
-      }
-      const isTest = changedFile.role === "test";
+    for (const hit of context.acidHits.get(acaiId) ?? []) {
+      const isTest = hit.role === "test";
       reasons.push(
         scopeReason(isTest ? "changed_test_exact_acid" : "exact_acid_in_diff", "high", {
-          path: changedFile.path,
+          path: hit.path,
           line_start: hit.line,
           line_end: hit.line,
           note: `Changed ${isTest ? "test" : "file"} diff line references ${acaiId}.`
@@ -317,7 +320,7 @@ function scopeReasonsForRequirement(requirement: IntentRequirement, context: Sco
   // changed_path_requirement_group (medium): a changed non-test mapped file (impl,
   // config, doc, ci, spec, …) maps to the requirement's group_key.
   if (groupKey && context.mappedGroups.has(groupKey)) {
-    const file = firstMappedFileForGroup(context.changedFiles, groupKey);
+    const file = context.firstMappedByGroup.get(groupKey);
     reasons.push(
       scopeReason("changed_path_requirement_group", "medium", {
         path: file,
@@ -328,7 +331,7 @@ function scopeReasonsForRequirement(requirement: IntentRequirement, context: Sco
 
   // changed_test_group (medium): a changed test file maps to the group_key.
   if (groupKey && context.testGroups.has(groupKey)) {
-    const file = firstChangedFileForGroup(context.changedFiles, groupKey, "test");
+    const file = context.firstTestByGroup.get(groupKey);
     reasons.push(
       scopeReason("changed_test_group", "medium", {
         path: file,
@@ -409,43 +412,60 @@ function lineCounts(diffFile: StructuredDiffFile | undefined): { added?: number;
 // `review-surfaces.X.Y` comment cannot pull an unrelated requirement into scope at
 // high confidence: the ACID-bearing line itself must have been added or deleted.
 // Deterministic: hunks and lines are scanned in file order.
-function firstAcidLine(diffFile: StructuredDiffFile, acaiId: string): { line?: number } | undefined {
-  for (const hunk of diffFile.hunks) {
-    for (const line of hunk.lines) {
-      if (line.kind === "context") {
-        continue;
-      }
-      if (citesAcidToken(line.text, acaiId)) {
-        const lineNumber = line.new_line ?? line.old_line;
-        return lineNumber !== undefined ? { line: lineNumber } : {};
+function buildAcidHitIndex(
+  changedFiles: ScopedChangedFile[],
+  diffByPath: Map<string, StructuredDiffFile>
+): Map<string, AcidHit[]> {
+  const hits = new Map<string, AcidHit[]>();
+  const seenByFile = new Set<string>();
+  const acidPattern = new RegExp(ACID_PATTERN.source, "g");
+  for (const changedFile of changedFiles) {
+    const diffFile = diffByPath.get(changedFile.path);
+    if (!diffFile) {
+      continue;
+    }
+    for (const hunk of diffFile.hunks) {
+      for (const line of hunk.lines) {
+        if (line.kind === "context") {
+          continue;
+        }
+        acidPattern.lastIndex = 0;
+        for (const match of line.text.matchAll(acidPattern)) {
+          const acid = match[0];
+          if (!isWholeAcidToken(line.text, match.index ?? 0, acid)) {
+            continue;
+          }
+          const key = `${acid}:${changedFile.path}`;
+          if (seenByFile.has(key)) {
+            continue;
+          }
+          seenByFile.add(key);
+          const lineNumber = line.new_line ?? line.old_line;
+          const entry = hits.get(acid) ?? [];
+          entry.push({
+            path: changedFile.path,
+            role: changedFile.role,
+            ...(lineNumber !== undefined ? { line: lineNumber } : {})
+          });
+          hits.set(acid, entry);
+        }
       }
     }
   }
-  return undefined;
+  return hits;
 }
 
-// An ACID occurrence counts only as a whole token, never a prefix substring:
-// `review-surfaces.CLI.1` must NOT match a line citing `review-surfaces.CLI.10`.
 // ACID tokens are made of [A-Za-z0-9_.-]; a match requires a non-ACID char (or
-// string edge) on both sides.
+// string edge) on both sides. The shared ACID_PATTERN finds candidate tokens, but
+// this boundary check prevents `review-surfaces.CLI.1beta` from scoping CLI.1.
 function isAcidChar(ch: string): boolean {
   return ch !== "" && /[A-Za-z0-9_.-]/.test(ch);
 }
 
-function citesAcidToken(text: string, acaiId: string): boolean {
-  let from = 0;
-  for (;;) {
-    const index = text.indexOf(acaiId, from);
-    if (index === -1) {
-      return false;
-    }
-    const before = index > 0 ? text[index - 1] : "";
-    const after = index + acaiId.length < text.length ? text[index + acaiId.length] : "";
-    if (!isAcidChar(before) && !isAcidChar(after)) {
-      return true;
-    }
-    from = index + 1;
-  }
+function isWholeAcidToken(text: string, index: number, acid: string): boolean {
+  const before = index > 0 ? text[index - 1] : "";
+  const after = index + acid.length < text.length ? text[index + acid.length] : "";
+  return !isAcidChar(before) && !isAcidChar(after);
 }
 
 // First hunk whose changed line span overlaps the requirement's source line
@@ -474,29 +494,22 @@ function firstHunkOverlap(diffFile: StructuredDiffFile, range: SpecSourceRange):
   return undefined;
 }
 
-function firstChangedFileForGroup(
+function firstFilesByGroup(
   changedFiles: ScopedChangedFile[],
-  groupKey: string,
-  role: ChangedFileRole
-): string | undefined {
+  predicate: (file: ScopedChangedFile) => boolean
+): Map<string, string> {
+  const result = new Map<string, string>();
   for (const changedFile of changedFiles) {
-    if (changedFile.role === role && changedFile.areas.includes(groupKey)) {
-      return changedFile.path;
+    if (!predicate(changedFile)) {
+      continue;
+    }
+    for (const groupKey of changedFile.areas) {
+      if (!result.has(groupKey)) {
+        result.set(groupKey, changedFile.path);
+      }
     }
   }
-  return undefined;
-}
-
-// First non-test, non-generated changed file mapping to the group — the path that
-// justifies a changed_path_requirement_group reason regardless of whether the
-// mapped file is implementation, config, doc, ci, or spec.
-function firstMappedFileForGroup(changedFiles: ScopedChangedFile[], groupKey: string): string | undefined {
-  for (const changedFile of changedFiles) {
-    if (changedFile.role !== "test" && changedFile.role !== "generated" && changedFile.areas.includes(groupKey)) {
-      return changedFile.path;
-    }
-  }
-  return undefined;
+  return result;
 }
 
 // --- requirement metadata helpers ------------------------------------------
@@ -506,14 +519,6 @@ function firstMappedFileForGroup(changedFiles: ScopedChangedFile[], groupKey: st
 // an acai_id, so they have no deterministic group_key here.
 function requirementGroupKey(requirement: IntentRequirement): string | undefined {
   return groupFromAcid(requirement.acai_id);
-}
-
-function groupFromAcid(acaiId: string | undefined): string | undefined {
-  if (!acaiId) {
-    return undefined;
-  }
-  const segment = acaiId.split(".")[1];
-  return segment && segment.length > 0 ? segment : undefined;
 }
 
 // Extract (path, line range) tuples from a requirement's spec source_refs. The

@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { buildPrScope, BuildPrScopeInput } from "../src/scope/pr-scope";
 import { CollectionResult } from "../src/collector/collect";
-import { EvaluationModel } from "../src/evaluation/evaluate";
 import { IntentModel, IntentRequirement } from "../src/intent/intent";
 import { ReviewArea } from "../src/review-areas/areas";
 import { specEvidence } from "../src/evidence/evidence";
@@ -57,12 +56,6 @@ function intentModel(requirements: IntentRequirement[]): IntentModel {
   };
 }
 
-function evaluationModel(): EvaluationModel {
-  // Scope rules are diff-driven; an empty evaluation is sufficient to exercise
-  // them while still satisfying the contract input shape.
-  return { summary: "", results: [], overreach: [], acai_coverage: {} };
-}
-
 function collectionStub(
   changedFiles: Array<{ path: string; status: string }>
 ): CollectionResult {
@@ -103,7 +96,6 @@ function input(overrides: Partial<BuildPrScopeInput>): BuildPrScopeInput {
   return {
     collection: collectionStub([]),
     intent: intentModel([]),
-    evaluation: evaluationModel(),
     reviewAreas: areas(),
     diff: { files: [] },
     ...overrides
@@ -319,13 +311,18 @@ test("spec_block_changed fires for a WHOLE-FILE spec ref (no line numbers) edite
   assert.equal(spec?.path, specPath);
 });
 
-test("exact_acid_in_diff matches whole ACID tokens only (CLI.1 does NOT match a line citing CLI.10)", () => {
+test("exact_acid_in_diff matches whole ACID tokens only (PRIVACY.1 does not match PRIVACY.10 or suffix text)", () => {
   const requirements = [
     requirement({ id: "REQ-001", acai_id: "review-surfaces.PRIVACY.1", requirement: "Redact secrets." })
   ];
   // The added line cites PRIVACY.10 — PRIVACY.1 is a prefix substring but a DIFFERENT token.
   const diff: StructuredDiff = {
-    files: [diffFile("src/privacy/secrets.ts", ["// implements review-surfaces.PRIVACY.10"])]
+    files: [
+      diffFile("src/privacy/secrets.ts", [
+        "// implements review-surfaces.PRIVACY.10",
+        "// not a token: review-surfaces.PRIVACY.1beta"
+      ])
+    ]
   };
   const model = buildPrScope(
     input({
@@ -521,10 +518,8 @@ test("output is deterministic: lists sorted and reasons deduped", () => {
     ["REQ-001", "REQ-002"]
   );
 
-  // The two duplicate acid lines on one path collapse to a single
-  // exact_acid_in_diff reason (deduped by rule+path+line range... but same path,
-  // different line numbers would not dedupe; here we assert the rule fires once
-  // per distinct line). Confirm at most one exact reason per path.
+  // Duplicate acid lines on one path collapse to a single exact_acid_in_diff
+  // reason. Confirm at most one exact reason per path.
   const privacyReq = model.affected_requirements.find((req) => req.requirement_id === "REQ-002");
   const exactReasons = privacyReq?.reasons.filter((reason) => reason.rule === "exact_acid_in_diff") ?? [];
   assert.equal(exactReasons.length, 1, "first-acid-line scan yields one exact reason per file");

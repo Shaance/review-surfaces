@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { collectInputs } from "../collector/collect";
-import { loadConfig } from "../config/config";
+import { ReviewSurfacesConfig } from "../config/config";
 import { buildIntent } from "../intent/intent";
 import { buildReviewAreas } from "../review-areas/areas";
 import { EvaluationModel, evaluateIntent } from "./evaluate";
@@ -19,7 +19,7 @@ import { EvaluationModel, evaluateIntent } from "./evaluate";
 export interface BaselineEvaluationInput {
   cwd: string;
   baseRef: string;
-  configPath: string;
+  config: ReviewSurfacesConfig;
   specFlag?: string;
 }
 
@@ -46,8 +46,7 @@ export async function evaluateBaseline(input: BaselineEvaluationInput): Promise<
       fs.rmSync(worktree, { recursive: true, force: true });
       return undefined;
     }
-    const config = await loadConfig(worktree, input.configPath);
-    const runConfig = input.specFlag ? { ...config, specs: [input.specFlag] } : config;
+    const runConfig = input.specFlag ? { ...input.config, specs: [input.specFlag] } : input.config;
     const collection = await collectInputs({
       cwd: worktree,
       config: runConfig,

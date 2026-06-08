@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { loadConfig, defaultConfig } from "../src/config/config";
 
-test("loads local review-surfaces config", async () => {
+test("review-surfaces.PROVIDERS.3 loads local review-surfaces config with mock as the default provider", async () => {
   const config = await loadConfig(process.cwd());
 
   assert.equal(config.schema_version, "review-surfaces.config.v1");

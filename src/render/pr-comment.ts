@@ -20,6 +20,9 @@ const MAX_LINE_CHARS = 300;
 const MAX_COMMENT_CHARS = 60000;
 const MAX_DELTAS = 12;
 const MAX_RISKS = 8;
+const MAX_WHAT_CHANGED = 3;
+const MAX_WHY_IT_MATTERS = 3;
+const MAX_REVIEW_FIRST = 5;
 
 function redact(value: string): string {
   return redactSecrets(value).text;
@@ -145,13 +148,13 @@ export function renderPrComment(surface: PrReviewSurfaceModel, options: RenderPr
   sections.push(
     "",
     "### What changed",
-    bullets(narrative.what_changed, "No change narrative."),
+    bullets(narrative.what_changed.slice(0, MAX_WHAT_CHANGED), "No change narrative."),
     "",
     "### Why it matters",
-    bullets(narrative.why_it_matters, "No impact narrative."),
+    bullets(narrative.why_it_matters.slice(0, MAX_WHY_IT_MATTERS), "No impact narrative."),
     "",
     "### Review first",
-    bullets(narrative.review_first, "No ordered review plan."),
+    bullets(narrative.review_first.slice(0, MAX_REVIEW_FIRST), "No ordered review plan."),
     "",
     "### Affected coverage",
     surface.coverage.base_available
@@ -177,7 +180,7 @@ function bulletsFromLines(lines: string[], emptyText: string): string {
 }
 
 function renderRisks(surface: PrReviewSurfaceModel): string {
-  const byId = new Map(surface.narrative?.risk_narratives.map((narrative) => [narrative.risk_id, narrative]) ?? []);
+  const byId = new Map(surface.narrative?.risk_narratives.slice(0, MAX_RISKS).map((narrative) => [narrative.risk_id, narrative]) ?? []);
   const lines: string[] = [];
   for (const candidate of surface.risks.candidates.slice(0, MAX_RISKS)) {
     const narrative = byId.get(candidate.id);

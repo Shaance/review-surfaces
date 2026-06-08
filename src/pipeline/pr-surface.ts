@@ -50,7 +50,6 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
   const scope = buildPrScope({
     collection: input.collection,
     intent: input.intent,
-    evaluation: input.evaluation,
     reviewAreas: input.reviewAreas,
     diff
   });
@@ -64,7 +63,6 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
   const risks = buildPrRiskCandidates({
     scope,
     coverage,
-    diff,
     testResults: input.collection.testResults
   });
 

@@ -9,5 +9,6 @@
 **/id_rsa
 **/id_ed25519
 .claude/
+.review-surfaces/agent_handoff.md
 .review-surfaces/feedback/raw/**
 .review-surfaces/inputs/conversation.raw.*

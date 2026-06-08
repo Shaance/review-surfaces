@@ -150,7 +150,7 @@ export function buildDogfood(
         }))
     ],
     deferrals: [
-      "Provider comments and hosted dashboards remain deferred per local-first scope.",
+      "Hosted dashboards and non-GitHub provider adapters remain deferred per local-first scope.",
       providerName === "mock" ? "AI SDK enrichment was not used in the default offline dogfood run." : `Provider used: ${providerName}.`
     ]
   };

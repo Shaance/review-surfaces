@@ -5,8 +5,7 @@ import type {
   PrRequirementCoverageDelta,
   PrScopedCoverageModel,
   PrScopeModel,
-  ScopedChangedFile,
-  StructuredDiff
+  ScopedChangedFile
 } from "../src/pr/contract";
 
 // --- Inline fixture builders (construct contract types directly; NO wiring to
@@ -55,15 +54,10 @@ function coverage(deltas: PrRequirementCoverageDelta[] = []): PrScopedCoverageMo
   };
 }
 
-function emptyDiff(): StructuredDiff {
-  return { files: [] };
-}
-
 function buildInput(overrides: Partial<BuildPrRiskInput> = {}): BuildPrRiskInput {
   return {
     scope: overrides.scope ?? scope(),
     coverage: overrides.coverage ?? coverage(),
-    diff: overrides.diff ?? emptyDiff(),
     ...(overrides.testResults !== undefined ? { testResults: overrides.testResults } : {}),
     ...(overrides.config !== undefined ? { config: overrides.config } : {})
   };

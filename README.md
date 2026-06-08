@@ -83,6 +83,10 @@ After a run, look under `.review-surfaces/`:
   `schemas/review_packet.schema.json`).
 - `review_packet.md` / `architecture.md` / `agent_handoff.md` — human-readable
   surfaces.
+- `pr_review_surface.json` — when `all --surface-mode pr` is used, the
+  diff-scoped PR sidecar with changed files, affected requirements, coverage
+  deltas, deterministic PR risks, validated LLM narrative, and a change-impact
+  diagram.
 - `intent.yaml`, `evaluation.yaml`, `methodology.yaml`, `risks.yaml`,
   `dogfood.yaml` — per-section YAML artifacts.
 - `inputs/` and `commands/` — collected input indexes and bounded command
@@ -93,14 +97,14 @@ After a run, look under `.review-surfaces/`:
 | Command | What it does |
 | --- | --- |
 | `collect` | Write the run manifest and input indexes under `.review-surfaces`. |
-| `all` | Run the whole local pipeline and write the full review packet. |
+| `all` | Run the whole local pipeline and write the full review packet. Add `--surface-mode pr` to also write the PR-scoped sidecar. |
 | `intent` / `evaluate` / `diagrams` / `methodology` / `risks` / `packet` / `handoff` | Run the available local pipeline and emit packet artifacts. (These currently run the same end-to-end pipeline as `all`.) |
 | `dogfood` | Run the pipeline in dogfood mode (adds the `dogfood` and `agent_handoff` sections). |
 | `validate [dir-or-json]` | Validate `review_packet.json` against `schemas/review_packet.schema.json`. Defaults to `.review-surfaces`. |
 | `run [--id <id>] [--command-transcripts <dir>] -- <cmd>...` | Execute a local command and record a bounded command transcript as direct evidence. |
 | `init [--force]` | Scaffold a repo for review-surfaces (create-or-validate): config, packet schema, `.review-surfacesignore`, a starter feature spec, the usage skill, and `AGENTS.md`. Existing files are never overwritten without `--force`; user-owned `AGENTS.md` and feature specs are preserved even with `--force`. |
 | `bootstrap [--strict]` | Validate-only: report whether the expected scaffolding exists and parses. Exits `10` under `--strict` when a required target is missing or invalid. |
-| `comment` | **Deferred.** Provider/PR comment rendering is intentionally not implemented; local artifacts are the MVP surface. |
+| `comment` | Render a local review surface. `--mode repo` reads `review_packet.json`; `--mode pr` reads `pr_review_surface.json` and refuses to succeed unless the PR narrative was LLM-authored and evidence-validated. |
 
 Run `node bin/review-surfaces.js --help` for the full option list.
 
@@ -109,6 +113,10 @@ Run `node bin/review-surfaces.js --help` for the full option list.
 - `--base <ref>` / `--head <ref>` — diff range (defaults `origin/main` … `HEAD`).
 - `--spec <path>` — feature spec path (defaults to config).
 - `--out <dir>` — output directory (defaults `.review-surfaces`).
+- `--mode pr|repo|auto` — `comment` surface mode. `repo` keeps the whole-packet
+  comment; `pr` uses the PR sidecar.
+- `--surface-mode pr|repo|auto` — `all` sidecar mode. `pr` writes
+  `pr_review_surface.json`.
 - `--dogfood` — mark the run as dogfood and include the dogfood/handoff sections.
 - `--config <path>` — config path (defaults `review-surfaces.config.yaml`).
 - `--provider <name>` — enrichment provider: `mock` (default, offline),
@@ -127,6 +135,18 @@ Run `node bin/review-surfaces.js --help` for the full option list.
 LLM and agent output is never treated as proof until deterministic evidence
 validation accepts it.
 
+For posted PR comments, use PR mode with a non-mock provider:
+
+```bash
+node bin/review-surfaces.js all --surface-mode pr --provider ai-sdk \
+  --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml
+node bin/review-surfaces.js comment --mode pr --out .review-surfaces
+```
+
+`agent-file` is useful for local deterministic PR-mode tests. `mock` may build a
+blocked PR surface for diagnostics, but it does not satisfy the required PR
+narrative.
+
 ## Testing
 
 ```bash
@@ -141,6 +161,8 @@ pnpm run lint       # alias for typecheck
   diagrams, methodology, risks, dogfood, render, schema, privacy, providers).
 - `tests/` — `node --test` suite compiled to `dist/tests`.
 - `schemas/review_packet.schema.json` — the draft 2020-12 packet contract.
+- `schemas/pr_review_surface.schema.json` — the draft 2020-12 PR sidecar
+  contract.
 - `features/review-surfaces.feature.yaml` — the authoritative requirements ledger.
 - `.review-surfaces/` — generated, local-first artifacts.
 

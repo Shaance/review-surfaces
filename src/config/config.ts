@@ -56,6 +56,8 @@ export const defaultConfig: ReviewSurfacesConfig = {
     redact_secrets: true
   },
   llm: {
+    // review-surfaces.PROVIDERS.3: local MVP runs against the deterministic mock
+    // provider unless a caller opts into a provider adapter.
     provider: "mock",
     model: null,
     require_json_schema: true

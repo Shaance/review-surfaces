@@ -8,8 +8,7 @@ import type {
   PrRiskRule,
   PrScopeModel,
   PrScopedCoverageModel,
-  ScopedChangedFile,
-  StructuredDiff
+  ScopedChangedFile
 } from "../pr/contract";
 import { PR_RISK_RULES } from "../pr/contract";
 import type { PacketRiskCategory, PacketSeverity } from "../schema/review-packet-contract";
@@ -29,13 +28,14 @@ import type { PacketRiskCategory, PacketSeverity } from "../schema/review-packet
 export interface BuildPrRiskInput {
   scope: PrScopeModel;
   coverage: PrScopedCoverageModel;
-  diff: StructuredDiff;
   testResults?: CollectionResult["testResults"];
   config?: { largeDiffFileCap?: number; largeDiffLineCap?: number };
 }
 
 const DEFAULT_LARGE_DIFF_FILE_CAP = 40;
 const DEFAULT_LARGE_DIFF_LINE_CAP = 1500;
+const MAX_RULE_EVIDENCE = 12;
+const MAX_PER_FILE_CANDIDATES = 12;
 
 // A pre-id candidate carries its sort key (rule priority + path) so the final
 // PR-RISK-00N numbering follows the documented order without re-sorting evidence.
@@ -106,11 +106,13 @@ function pushCoverageRegression(drafts: DraftCandidate[], input: BuildPrRiskInpu
     compareStrings(left.requirement_id, right.requirement_id)
   );
   const ids = ordered.map((delta) => delta.requirement_id);
+  const displayedIds = ids.slice(0, MAX_RULE_EVIDENCE);
+  const omittedIds = ids.length - displayedIds.length;
   drafts.push({
     rule: "coverage_regression",
     category: "testing",
     severity: "high",
-    summary: `Coverage regressed for ${ordered.length} requirement(s): ${ids.join(", ")}.`,
+    summary: `Coverage regressed for ${ordered.length} requirement(s): ${displayedIds.join(", ")}${omittedIds > 0 ? `, ... ${omittedIds} more` : ""}.`,
     evidence: ordered.flatMap((delta) => {
       const realRefs = [...delta.missing_evidence, ...delta.head_evidence].filter((ref) => ref.path !== undefined).slice(0, 2);
       if (realRefs.length > 0) {
@@ -120,7 +122,7 @@ function pushCoverageRegression(drafts: DraftCandidate[], input: BuildPrRiskInpu
       // requirement title, which is not a path.
       const acaiId = delta.acai_id ?? delta.requirement_id;
       return [{ kind: "spec" as const, acai_id: acaiId, note: `Coverage regressed (${delta.base_status} -> ${delta.head_status}).`, confidence: "high" as const, validation_status: "valid" as const }];
-    }),
+    }).slice(0, MAX_RULE_EVIDENCE),
     suggested_checks: [
       "Restore or add tests for the regressed requirement(s) before merge.",
       "Confirm the coverage delta is intended and not an accidental test deletion."
@@ -146,7 +148,7 @@ function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInp
   const untested = changed
     .filter((file) => file.role === "implementation" && !hasTestedArea(file, testedAreas))
     .sort((left, right) => compareStrings(left.path, right.path));
-  for (const file of untested) {
+  for (const file of untested.slice(0, MAX_PER_FILE_CANDIDATES)) {
     drafts.push({
       rule: "untested_changed_impl",
       category: "testing",
@@ -158,6 +160,25 @@ function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInp
         "Confirm existing tests exercise the new behavior."
       ],
       sortPath: file.path
+    });
+  }
+  if (untested.length > MAX_PER_FILE_CANDIDATES) {
+    const omitted = untested.length - MAX_PER_FILE_CANDIDATES;
+    const firstOmitted = untested[MAX_PER_FILE_CANDIDATES];
+    drafts.push({
+      rule: "untested_changed_impl",
+      category: "testing",
+      severity: "medium",
+      summary: `${omitted} additional implementation file(s) changed with no changed test in their review area.`,
+      evidence: evidenceForPaths(
+        untested.slice(MAX_PER_FILE_CANDIDATES).map((file) => file.path),
+        "Additional untested implementation file."
+      ),
+      suggested_checks: [
+        "Add or update tests for the additional untested implementation changes.",
+        "Confirm existing tests exercise the new behavior."
+      ],
+      sortPath: firstOmitted?.path ?? ""
     });
   }
 }
@@ -186,7 +207,9 @@ function pushUnmappedChange(drafts: DraftCandidate[], input: BuildPrRiskInput): 
     category: "workflow",
     severity: "low",
     summary: `${ordered.length} changed file(s) did not map to any review area or requirement.`,
-    evidence: ordered.map((file) => fileEvidence(file.path, `Out-of-scope changed file (${file.reason}).`)),
+    evidence: ordered
+      .slice(0, MAX_RULE_EVIDENCE)
+      .map((file) => fileEvidence(file.path, `Out-of-scope changed file (${file.reason}).`)),
     suggested_checks: [
       "Confirm the unmapped change is intended and not missing a review-area mapping.",
       "Map the file to an area/requirement if it carries reviewable behavior."
@@ -216,7 +239,7 @@ function pushPrivacySensitiveChange(drafts: DraftCandidate[], input: BuildPrRisk
     category: "privacy",
     severity: "high",
     summary: `${matched.length} changed file(s) touch privacy-sensitive surfaces (secrets/tokens/redaction/providers).`,
-    evidence: matched.map((path) => fileEvidence(path, "Privacy-sensitive changed file.")),
+    evidence: evidenceForPaths(matched, "Privacy-sensitive changed file."),
     suggested_checks: [
       "Verify no secrets, tokens, or unredacted sensitive data are introduced.",
       "Confirm redaction and provider-boundary handling still holds."
@@ -249,7 +272,7 @@ function pushCommentSurfaceChange(drafts: DraftCandidate[], input: BuildPrRiskIn
     category: "maintainability",
     severity: "medium",
     summary: `${matched.length} changed file(s) affect the review comment surface (render/comment/diagram/summarization).`,
-    evidence: matched.map((path) => fileEvidence(path, "Review comment surface changed file.")),
+    evidence: evidenceForPaths(matched, "Review comment surface changed file."),
     suggested_checks: [
       "Re-render the review comment and confirm output is correct and byte-stable.",
       "Check that the rendered surface still cites evidence faithfully."
@@ -282,7 +305,7 @@ function pushCiSecretBoundaryChange(drafts: DraftCandidate[], input: BuildPrRisk
     category: "security",
     severity: "high",
     summary: `${matched.length} changed file(s) touch the CI / secret boundary (workflows, provider, comment posting).`,
-    evidence: matched.map((path) => fileEvidence(path, "CI / secret-boundary changed file.")),
+    evidence: evidenceForPaths(matched, "CI / secret-boundary changed file."),
     suggested_checks: [
       "Verify no secret/token is exposed in CI workflow or provider changes.",
       "Confirm permissions and the comment-posting boundary are unchanged or tightened."
@@ -311,7 +334,7 @@ function pushSchemaContractChange(drafts: DraftCandidate[], input: BuildPrRiskIn
     category: "architecture",
     severity: "medium",
     summary: `${matched.length} changed file(s) modify a schema / contract surface (schemas, packet contract, render load).`,
-    evidence: matched.map((path) => fileEvidence(path, "Schema / contract changed file.")),
+    evidence: evidenceForPaths(matched, "Schema / contract changed file."),
     suggested_checks: [
       "Confirm the schema/contract change is backward compatible or versioned.",
       "Re-validate existing artifacts load against the changed contract."
@@ -338,9 +361,9 @@ function pushDeletedOrRenamedSurface(drafts: DraftCandidate[], input: BuildPrRis
     category: "maintainability",
     severity: "low",
     summary: `${affected.length} implementation/test file(s) were deleted or renamed.`,
-    evidence: affected.map((file) =>
-      fileEvidence(file.path, `${file.status.startsWith("D") ? "Deleted" : "Renamed"} ${file.role} surface.`)
-    ),
+    evidence: affected
+      .slice(0, MAX_RULE_EVIDENCE)
+      .map((file) => fileEvidence(file.path, `${file.status.startsWith("D") ? "Deleted" : "Renamed"} ${file.role} surface.`)),
     suggested_checks: [
       "Confirm deleted/renamed surfaces have no remaining references.",
       "Verify removed behavior was intentionally dropped and not regressed."
@@ -424,6 +447,10 @@ function matchingChangedPaths(input: BuildPrRiskInput, predicate: (path: string)
     }
   }
   return [...matched].sort(compareStrings);
+}
+
+function evidenceForPaths(paths: string[], note: string): EvidenceRef[] {
+  return paths.slice(0, MAX_RULE_EVIDENCE).map((path) => fileEvidence(path, note));
 }
 
 // Model-level summary: a deterministic 'summary'-level count of candidates by
