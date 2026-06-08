@@ -321,7 +321,8 @@ function changedFileQueueDrafts(
     .map((file) => {
       const evidence = fileEvidence(file.path, "Changed PR file queued because no deterministic PR risk candidate fired.");
       const anchor = queueAnchorForEvidence(evidence, diffIndex);
-      const areas = file.areas.length ? file.areas.join(", ") : "unmapped area";
+      const fileAreas = changedFileAreas(file);
+      const areas = fileAreas.length ? fileAreas.join(", ") : "unmapped area";
       return {
         title: titleForChangedFile(file),
         path: anchor.path,
@@ -926,8 +927,8 @@ function changedFileQueueWeight(file: PrChangedFile): number {
 function isSourceOfTruthReviewDoc(filePath: string): boolean {
   const normalizedPath = normalizeEvidencePath(filePath);
   return (
-    normalizedPath === "AGENTS.md" ||
-    normalizedPath === "CLAUDE.md" ||
+    /(^|\/)AGENTS\.md$/.test(normalizedPath) ||
+    /(^|\/)CLAUDE\.md$/.test(normalizedPath) ||
     normalizedPath === "README.md" ||
     normalizedPath === "README.bootstrap.md" ||
     normalizedPath === "docs/review-surfaces-trd.md" ||
@@ -941,7 +942,7 @@ function priorityForChangedFile(file: PrChangedFile): HumanReviewPriority {
 }
 
 function affectedRequirementIdsForFile(prSurface: PrReviewSurfaceModel, file: PrChangedFile): string[] {
-  const areas = new Set(file.areas);
+  const areas = new Set(changedFileAreas(file));
   const paths = new Set(compactStrings([file.path, file.old_path]).map((filePath) => normalizeEvidencePath(filePath)));
   return prSurface.scope.affected_requirements
     .filter((requirement) =>
@@ -950,6 +951,10 @@ function affectedRequirementIdsForFile(prSurface: PrReviewSurfaceModel, file: Pr
     )
     .map((requirement) => requirement.acai_id ?? requirement.requirement_id)
     .slice(0, 8);
+}
+
+function changedFileAreas(file: PrChangedFile): string[] {
+  return Array.isArray(file.areas) ? file.areas : [];
 }
 
 function priorityForSeverity(severity: PacketSeverity): HumanReviewPriority {
@@ -1305,6 +1310,9 @@ function isSkimSafeCandidate(filePath: string, role: string): boolean {
     return true;
   }
   if (role !== "doc") {
+    return false;
+  }
+  if (isSourceOfTruthReviewDoc(filePath)) {
     return false;
   }
   const lower = filePath.toLowerCase();

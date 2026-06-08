@@ -489,6 +489,22 @@ test("PR mode fallback queues source-of-truth docs but not ordinary docs", () =>
     added_lines: 3,
     deleted_lines: 1
   });
+  surface.scope.changed_files.push({
+    path: "packages/widget/AGENTS.md",
+    status: "M",
+    areas: ["BOOTSTRAP"],
+    role: "doc",
+    added_lines: 2,
+    deleted_lines: 0
+  });
+  surface.scope.changed_files.push({
+    path: "README.md",
+    status: "M",
+    areas: ["BOOTSTRAP"],
+    role: "doc",
+    added_lines: 2,
+    deleted_lines: 0
+  });
   surface.scope.affected_requirements.push({
     requirement_id: "REQ-BOOTSTRAP-1",
     acai_id: "review-surfaces.BOOTSTRAP.1",
@@ -499,12 +515,36 @@ test("PR mode fallback queues source-of-truth docs but not ordinary docs", () =>
 
   const model = buildHumanReview({ packet: packetFixture(), prSurface: surface, diff: structuredDiffFixture() });
   const sourceDoc = model.review_queue.find((item) => item.path === "AGENTS.md");
+  const nestedSourceDoc = model.review_queue.find((item) => item.path === "packages/widget/AGENTS.md");
+  const readme = model.review_queue.find((item) => item.path === "README.md");
 
   assert.ok(sourceDoc);
   assert.equal(sourceDoc.title, "Changed source-of-truth document");
   assert.ok(sourceDoc.requirement_ids.includes("review-surfaces.BOOTSTRAP.1"));
+  assert.ok(nestedSourceDoc);
+  assert.equal(nestedSourceDoc.title, "Changed source-of-truth document");
+  assert.ok(readme);
+  assert.equal(model.skim_safe.some((item) => item.path === "README.md"), false);
   assert.equal(model.review_queue.some((item) => item.path === "docs/notes.md"), false);
   assert.ok(model.skim_safe.some((item) => item.path === "docs/notes.md"));
+});
+
+test("PR mode fallback tolerates stale changed files without areas", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files.push({
+    path: "src/no-areas.ts",
+    status: "M",
+    role: "implementation",
+    added_lines: 1,
+    deleted_lines: 0
+  } as PrReviewSurfaceModel["scope"]["changed_files"][number]);
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface, diff: structuredDiffFixture() });
+  const changedFile = model.review_queue.find((item) => item.path === "src/no-areas.ts");
+
+  assert.ok(changedFile);
+  assert.match(changedFile.reason, /unmapped area/);
 });
 
 test("human review writer emits standalone cockpit artifacts from the JSON model", async () => {
