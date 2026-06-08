@@ -244,3 +244,38 @@ test("all three core PR narrative sections must survive validation", async () =>
   assert.equal(result.blocked_reason, "invalid_llm_output");
   assert.deepEqual(result.meta.validation_errors, ["missing_valid_core_narrative"]);
 });
+
+test("over-limit core narrative item text is dropped before marking the narrative applied", async () => {
+  const result = await buildPrNarrative(
+    inputWith({
+      ok: true,
+      data: validNarrative({
+        what_changed: [{ text: "X".repeat(1001), paths: ["src/cli/index.ts"] }]
+      })
+    })
+  );
+  assert.equal(result.narrative, undefined);
+  assert.equal(result.blocked_reason, "invalid_llm_output");
+  assert.deepEqual(result.meta.validation_errors, ["missing_valid_core_narrative"]);
+});
+
+test("over-limit summary falls back and over-limit suggested checks are omitted", async () => {
+  const result = await buildPrNarrative(
+    inputWith({
+      ok: true,
+      data: validNarrative({
+        summary: "X".repeat(1001),
+        risk_narratives: [
+          {
+            risk_id: "PR-RISK-001",
+            text: "Confirm the changed surface is safe.",
+            suggested_checks: ["Y".repeat(501), "Review src/cli/index.ts"]
+          }
+        ]
+      })
+    })
+  );
+  assert.ok(result.narrative);
+  assert.match(result.narrative!.summary, /changed file\(s\).*affected requirement\(s\)/);
+  assert.deepEqual(result.narrative!.risk_narratives[0].suggested_checks, ["Review src/cli/index.ts"]);
+});

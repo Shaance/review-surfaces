@@ -54,6 +54,8 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     // Mock has no narrative -> blocked, never a whole-repo fallback.
     assert.equal(surface.status, "blocked");
     assert.equal(surface.narrative, undefined);
+    assert.equal(Object.hasOwn(surface, "narrative"), false, "blocked serialized surfaces must omit undefined narrative");
+    assert.equal(Object.hasOwn(surface.llm, "model"), false, "serialized llm meta must omit undefined model");
     const blockedComment = runCli(tmp, ["comment", "--mode", "pr", "--out", ".review-surfaces"]);
     assert.equal(blockedComment.status, 4, "blocked PR surfaces are not postable successful comments");
     assert.match(blockedComment.stdout, /blocked \(`llm_unavailable`\)/);
@@ -81,6 +83,9 @@ test("review-surfaces.PROVIDERS.6 review-comment workflow uses trusted tool and 
   assert.match(workflow, /working-directory: tool[\s\S]*pnpm install --frozen-lockfile[\s\S]*pnpm run build/);
   assert.match(workflow, /GOOGLE_GENERATIVE_AI_API_KEY: \$\{\{ secrets\.GOOGLE_GENERATIVE_AI_API_KEY \}\}/);
   assert.match(workflow, /node \.\.\/tool\/bin\/review-surfaces\.js all[\s\S]*--review-scope pr/);
+  assert.match(workflow, /--model google:gemini-2\.5-flash/);
+  assert.match(workflow, /--config \.\.\/tool\/review-surfaces\.config\.yaml/);
+  assert.match(workflow, /--redact-secrets true/);
   assert.doesNotMatch(workflow, /--surface-mode pr/);
 });
 

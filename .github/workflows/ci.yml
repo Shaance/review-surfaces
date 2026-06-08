@@ -126,6 +126,9 @@ jobs:
         run: |
           node ../tool/bin/review-surfaces.js all \
             --provider ai-sdk \
+            --model google:gemini-2.5-flash \
+            --config ../tool/review-surfaces.config.yaml \
+            --redact-secrets true \
             --base "origin/${{ github.base_ref }}" \
             --head HEAD \
             --spec features/review-surfaces.feature.yaml \

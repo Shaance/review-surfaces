@@ -34,6 +34,8 @@ const MAX_WHAT_CHANGED_ITEMS = 3;
 const MAX_WHY_IT_MATTERS_ITEMS = 3;
 const MAX_REVIEW_FIRST_ITEMS = 5;
 const MAX_RISK_NARRATIVE_ITEMS = 8;
+const MAX_NARRATIVE_TEXT_CHARS = 1000;
+const MAX_SUGGESTED_CHECK_CHARS = 500;
 
 export interface BuildPrNarrativeInput {
   provider: ReasoningProvider;
@@ -60,7 +62,7 @@ const anchoredItemSchema = {
   additionalProperties: false,
   required: ["text"],
   properties: {
-    text: { type: "string" },
+    text: { type: "string", maxLength: MAX_NARRATIVE_TEXT_CHARS },
     paths: { type: "array", maxItems: 6, items: { type: "string" } },
     requirement_ids: { type: "array", maxItems: 6, items: { type: "string" } },
     risk_ids: { type: "array", maxItems: 6, items: { type: "string" } }
@@ -72,7 +74,7 @@ export const PR_NARRATIVE_SCHEMA = {
   additionalProperties: false,
   required: ["summary", "what_changed", "why_it_matters", "review_first", "risk_narratives"],
   properties: {
-    summary: { type: "string" },
+    summary: { type: "string", maxLength: MAX_NARRATIVE_TEXT_CHARS },
     what_changed: { type: "array", maxItems: MAX_WHAT_CHANGED_ITEMS, items: anchoredItemSchema },
     why_it_matters: { type: "array", maxItems: MAX_WHY_IT_MATTERS_ITEMS, items: anchoredItemSchema },
     review_first: { type: "array", maxItems: MAX_REVIEW_FIRST_ITEMS, items: anchoredItemSchema },
@@ -85,8 +87,8 @@ export const PR_NARRATIVE_SCHEMA = {
         required: ["risk_id", "text"],
         properties: {
           risk_id: { type: "string" },
-          text: { type: "string" },
-          suggested_checks: { type: "array", maxItems: 4, items: { type: "string" } }
+          text: { type: "string", maxLength: MAX_NARRATIVE_TEXT_CHARS },
+          suggested_checks: { type: "array", maxItems: 4, items: { type: "string", maxLength: MAX_SUGGESTED_CHECK_CHARS } }
         }
       }
     }
@@ -227,6 +229,14 @@ function asStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string");
 }
 
+function boundedRedactedText(value: string, maxChars: number): string | undefined {
+  const redacted = redact(value);
+  if (redacted.length === 0 || redacted.length > maxChars) {
+    return undefined;
+  }
+  return redacted;
+}
+
 // An anchor field "violates" the allowlist if it is present but malformed (not an
 // array, or contains a non-string element) OR contains a string not on the
 // allowlist. A non-string element must count as a violation so an item that
@@ -275,7 +285,11 @@ function validateItems(
     if (paths.length + requirementIds.length + riskIds.length === 0) {
       continue; // must cite at least one real anchor
     }
-    const item: AnchoredNarrativeItem = { text: redact(raw.text) };
+    const text = boundedRedactedText(raw.text, MAX_NARRATIVE_TEXT_CHARS);
+    if (text === undefined) {
+      continue;
+    }
+    const item: AnchoredNarrativeItem = { text };
     if (paths.length > 0) {
       item.paths = paths;
     }
@@ -355,11 +369,16 @@ function validateRiskNarratives(
     if (!textCitesOnlyAllowed(raw.text, allowedPaths, allowedReqs)) {
       continue;
     }
-    const checks = asStringArray(raw.suggested_checks).map(redact);
+    const checkCandidates = asStringArray(raw.suggested_checks).map(redact);
+    const checks = checkCandidates.filter((check) => check.length > 0 && check.length <= MAX_SUGGESTED_CHECK_CHARS);
     if (checks.some((check) => !textCitesOnlyAllowed(check, allowedPaths, allowedReqs))) {
       continue;
     }
-    const item: AnchoredRiskNarrative = { risk_id: raw.risk_id, text: redact(raw.text) };
+    const text = boundedRedactedText(raw.text, MAX_NARRATIVE_TEXT_CHARS);
+    if (text === undefined) {
+      continue;
+    }
+    const item: AnchoredRiskNarrative = { risk_id: raw.risk_id, text };
     if (checks.length > 0) {
       item.suggested_checks = checks.slice(0, 4);
     }
@@ -429,10 +448,11 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
   // field that bypassed allowlist validation) and no renderer ever read it, so it
   // only ever risked shipping off-allowlist LLM prose into the persisted artifact.
   const rawSummary = typeof data.summary === "string" ? data.summary : "";
-  const summary =
+  const boundedSummary =
     rawSummary !== "" && textCitesOnlyAllowed(rawSummary, allowedPaths, allowedRequirementIds)
-      ? redact(rawSummary)
-      : deterministicSummary(input.scope);
+      ? boundedRedactedText(rawSummary, MAX_NARRATIVE_TEXT_CHARS)
+      : undefined;
+  const summary = boundedSummary ?? deterministicSummary(input.scope);
   const narrative: PrNarrativeModel = {
     summary,
     what_changed: whatChanged,

@@ -481,8 +481,9 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
     agentInput: stringFlag(parsed, "agent-input")
   });
+  const redactSecrets = redactSecretsFlag(parsed, config);
   const reasoningOptions = {
-    redactSecrets: config.privacy.redact_secrets,
+    redactSecrets,
     remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
     // FINDING C: thread the SAME config-derived review areas evaluateIntent uses
     // (present only in config mode) into the candidate-evidence group mapping, so
@@ -525,7 +526,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     model: requestedModel,
     agentInput: stringFlag(parsed, "agent-input"),
     outputDir: collection.outputDir,
-    redactSecrets: config.privacy.redact_secrets,
+    redactSecrets,
     remotePrivacyBlocked: collection.privacy.remote_provider_blocked
   });
   const dogfood = isDogfoodRun(parsed)
@@ -589,19 +590,20 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       provider: narrativeProvider,
       providerName: provider,
       model: narrativeModel,
-      redactSecrets: config.privacy.redact_secrets
+      redactSecrets
     });
-    assertValidPrSurface(cwd, surface);
-    await writeJson(path.join(collection.outputDir, "pr_review_surface.json"), surface);
+    const persistedSurface = jsonSerializable(surface);
+    assertValidPrSurface(cwd, persistedSurface);
+    await writeJson(path.join(collection.outputDir, "pr_review_surface.json"), persistedSurface);
     // Materialize the diagram artifact the surface advertises (surface.diagram.path),
     // so a consumer following the advertised path finds the .mmd it points at.
-    if (surface.diagram) {
-      const diagramPath = path.join(collection.outputDir, surface.diagram.path);
+    if (persistedSurface.diagram) {
+      const diagramPath = path.join(collection.outputDir, persistedSurface.diagram.path);
       fs.mkdirSync(path.dirname(diagramPath), { recursive: true });
-      await writeText(diagramPath, surface.diagram.body);
+      await writeText(diagramPath, persistedSurface.diagram.body);
     }
-    if (surface.status === "blocked") {
-      console.warn(`PR review surface blocked (${surface.blocked_reason}); see pr_review_surface.json`);
+    if (persistedSurface.status === "blocked") {
+      console.warn(`PR review surface blocked (${persistedSurface.blocked_reason}); see pr_review_surface.json`);
     }
   }
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
@@ -1137,6 +1139,10 @@ function prSurfaceIssues(cwd: string, surface: unknown): string[] {
   return result.valid ? [] : result.issues.map((issue) => `${issue.path}: ${issue.message}`);
 }
 
+function jsonSerializable<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
 function loadPrSurfaceSchema(cwd: string): unknown | undefined {
   const candidates = [
     path.resolve(__dirname, "..", "..", "..", "schemas", "pr_review_surface.schema.json"),
@@ -1236,7 +1242,7 @@ function parseArgs(args: string[]): ParsedArgs {
 
 // Flags that are always boolean switches (no value argument). Listed so the
 // permissive parser does not consume a following positional as their "value".
-const BOOLEAN_FLAGS = new Set(["cache", "dogfood", "force", "post", "strict", "verbose", "help"]);
+const BOOLEAN_FLAGS = new Set(["cache", "dogfood", "force", "no-redact-secrets", "post", "strict", "verbose", "help"]);
 
 function stringFlag(parsed: ParsedArgs, key: string): string | undefined {
   const value = parsed.flags[key];
@@ -1245,6 +1251,31 @@ function stringFlag(parsed: ParsedArgs, key: string): string | undefined {
 
 function booleanFlag(parsed: ParsedArgs, key: string): boolean {
   return parsed.flags[key] === true || parsed.flags[key] === "true";
+}
+
+function optionalBooleanFlag(parsed: ParsedArgs, key: string): boolean | undefined {
+  const value = parsed.flags[key];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === true || value === "true") {
+    return true;
+  }
+  if (value === "false") {
+    return false;
+  }
+  throw new CliError(`--${key} must be true or false`, ExitCodes.usageError);
+}
+
+function redactSecretsFlag(parsed: ParsedArgs, config: ReviewSurfacesConfig): boolean {
+  const override = optionalBooleanFlag(parsed, "redact-secrets");
+  if (override !== undefined) {
+    return override;
+  }
+  if (booleanFlag(parsed, "no-redact-secrets")) {
+    return false;
+  }
+  return config.privacy.redact_secrets;
 }
 
 // R6: the verbosity predicate, shared by isVerbose() (the parsed-args path) and
@@ -1424,6 +1455,8 @@ Options:
   --model <model>   Optional AI SDK model as <provider>:<model>, e.g. google:gemini-2.5-flash,
                    anthropic:claude-3-5-haiku-latest, or openai:gpt-4o-mini. Google/Gemini is the
                    first-class default; no prefix (or no --model) defaults to google:gemini-2.5-flash.
+  --redact-secrets <bool>
+                   Override config privacy.redact_secrets for this run.
   --agent-input <path>
                    Structured JSON/YAML enrichment produced by a coding agent
   --previous-packet <path-or-dir>
