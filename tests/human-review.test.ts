@@ -539,12 +539,18 @@ test("PR mode fallback tolerates stale changed files without areas", () => {
     added_lines: 1,
     deleted_lines: 0
   } as PrReviewSurfaceModel["scope"]["changed_files"][number]);
+  surface.scope.affected_requirements.push({
+    requirement_id: "REQ-NO-REASONS",
+    acai_id: "review-surfaces.HUMAN_REVIEW.NO_REASONS",
+    title: "Stale requirement without reasons"
+  } as PrReviewSurfaceModel["scope"]["affected_requirements"][number]);
 
   const model = buildHumanReview({ packet: packetFixture(), prSurface: surface, diff: structuredDiffFixture() });
   const changedFile = model.review_queue.find((item) => item.path === "src/no-areas.ts");
 
   assert.ok(changedFile);
   assert.match(changedFile.reason, /unmapped area/);
+  assert.equal(changedFile.requirement_ids.includes("review-surfaces.HUMAN_REVIEW.NO_REASONS"), false);
 });
 
 test("human review writer emits standalone cockpit artifacts from the JSON model", async () => {

@@ -947,7 +947,7 @@ function affectedRequirementIdsForFile(prSurface: PrReviewSurfaceModel, file: Pr
   return prSurface.scope.affected_requirements
     .filter((requirement) =>
       (requirement.group_key && areas.has(requirement.group_key)) ||
-      requirement.reasons.some((reason) => reason.path && paths.has(normalizeEvidencePath(reason.path)))
+      affectedRequirementReasons(requirement).some((reason) => reason.path && paths.has(normalizeEvidencePath(reason.path)))
     )
     .map((requirement) => requirement.acai_id ?? requirement.requirement_id)
     .slice(0, 8);
@@ -955,6 +955,12 @@ function affectedRequirementIdsForFile(prSurface: PrReviewSurfaceModel, file: Pr
 
 function changedFileAreas(file: PrChangedFile): string[] {
   return Array.isArray(file.areas) ? file.areas : [];
+}
+
+function affectedRequirementReasons(
+  requirement: PrReviewSurfaceModel["scope"]["affected_requirements"][number]
+): PrReviewSurfaceModel["scope"]["affected_requirements"][number]["reasons"] {
+  return Array.isArray(requirement.reasons) ? requirement.reasons : [];
 }
 
 function priorityForSeverity(severity: PacketSeverity): HumanReviewPriority {
