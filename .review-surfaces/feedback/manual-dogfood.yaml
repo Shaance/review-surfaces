@@ -99,10 +99,24 @@ findings:
     affected_section: Human review deferrals
     finding: Simplify triad found broader cleanup opportunities in cache-hit artifact parsing, shared Markdown helpers, and shared sidecar schema validation.
     desired_change: Defer these to a follow-up cache/render/helper cleanup slice because they are not required for the M1 human-review contract.
+  - id: FB-2026-06-08-006
+    category: agent_workflow
+    severity: high
+    affected_section: PR autoland
+    finding: PR #25 was merged before the Codex COMMENTED review for the current head appeared, leaving four automated review comments unaddressed.
+    desired_change: Treat a current-head Codex review result as part of the autoland gate; inspect thread-aware review comments before merging and push follow-up fixes when comments appear after CI.
+  - id: FB-2026-06-08-007
+    category: review_value
+    severity: high
+    affected_section: Human review cockpit
+    finding: Codex review found PR-mode human queues could include whole-packet risks outside the PR diff, drop pathless PR risks instead of rendering them as questions, over-block passing tests whose names mention errors, and keep CI secret-boundary blockers impossible to clear after manual evidence is recorded.
+    desired_change: Scope packet risks to PR changed files, render pathless PR risks as questions, classify failed validation only from missing/invalid evidence, and let recorded CI secret-boundary manual-check evidence clear the blocker and required manual test-plan item.
 validation:
-  updated_at: 2026-06-08T19:33:31Z
+  updated_at: 2026-06-08T20:45:44Z
   passed:
     - pnpm run test
+    - pnpm run test:fast
+    - node --test dist/tests/human-review.test.js
     - node --test dist/tests/diagrams.test.js
     - node --test dist/tests/evaluation.test.js
     - pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
@@ -131,3 +145,5 @@ validation:
     - Human review M1 dogfood promoted focused human gaps into questions/comments/test-plan items, added failed-validation and stale-sidecar correctness guards, added schema enum parity tests, and shared PR-risk title/queue metadata.
     - Deferred improvement: cache-hit human rendering still reparses already-validated packet/surface artifacts; fix in a focused cache helper cleanup.
     - Deferred improvement: extract shared bounded Markdown and sidecar schema-validation helpers after the human surface API settles.
+    - Follow-up after PR #25: current-head Codex review comments must be inspected before autoland; this slice addresses all four comments from chatgpt-codex-connector on c64e9da8b2.
+    - Follow-up simplify triad tightened PR queue path normalization and requires an explicit recorded conclusion that PR-controlled code cannot access secrets before clearing the CI secret-boundary blocker.

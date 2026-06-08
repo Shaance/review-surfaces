@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Local E2E packet generated with provider=mock/not_requested; 8 satisfied, 96 partial, 0 missing, 2 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
+Local E2E packet generated with provider=mock/not_requested; 7 satisfied, 97 partial, 0 missing, 2 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
 
 ## Current Milestone
 
@@ -25,18 +25,8 @@ M5
 ## Implemented Changes
 
 - M .review-surfaces/feedback/manual-dogfood.yaml
-- M README.md
-- ?? docs/agent/execplans/human-review-cockpit.md
-- ?? docs/human-first-review-surfaces-comprehensive-feature-proposal.md
-- M features/review-surfaces.feature.yaml
-- M review-surfaces.config.yaml
-- ?? schemas/human_review.schema.json
-- M src/cli/index.ts
-- ?? src/human/contract.ts
-- ?? src/human/human-review.ts
-- ?? src/human/render.ts
-- ?? src/pr/risk-metadata.ts
-- ... 3 more changed file(s) in .review-surfaces/inputs/changed_files.json
+- M src/human/human-review.ts
+- M tests/human-review.test.ts
 
 ## Validation Evidence
 
@@ -47,12 +37,12 @@ M5
 
 ## Failed Or Missing Validation
 
-- TEST-FB-001 [claimed]: Feedback records a passing validation command: node --test dist/tests/diagrams.test.js
-- TEST-FB-002 [claimed]: Feedback records a passing validation command: node --test dist/tests/evaluation.test.js
-- TEST-FB-003 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
-- TEST-FB-004 [indirect]: Feedback records a passing validation command: pnpm run typecheck
-- TEST-FB-005 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces
-- TEST-FB-006 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- validate .review-surfaces
+- TEST-FB-001 [claimed]: Feedback records a passing validation command: node --test dist/tests/human-review.test.js
+- TEST-FB-002 [claimed]: Feedback records a passing validation command: node --test dist/tests/diagrams.test.js
+- TEST-FB-003 [claimed]: Feedback records a passing validation command: node --test dist/tests/evaluation.test.js
+- TEST-FB-004 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
+- TEST-FB-005 [indirect]: Feedback records a passing validation command: pnpm run typecheck
+- TEST-FB-006 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces
 
 ## Methodology Flags
 
@@ -69,7 +59,7 @@ M5
 
 ## Open Risks
 
-- RISK-001: 96 requirement(s) have implementation evidence but weak or missing test evidence.
+- RISK-001: 97 requirement(s) have implementation evidence but weak or missing test evidence.
 - RISK-002: 2 requirement(s) remain unknown due to weak evidence.
 
 ## Deferrals

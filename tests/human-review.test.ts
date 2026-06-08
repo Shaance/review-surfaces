@@ -246,9 +246,40 @@ test("human review Markdown renders a compact cockpit surface", () => {
   assert.doesNotMatch(markdown, /Start with missing and partial requirement results/);
 });
 
-test("queue excludes risk candidates without path evidence", () => {
+test("pathless PR risks become questions and out-of-scope packet risks stay out of PR queue", () => {
   const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture() });
   assert.equal(model.review_queue.some((item) => item.risk_ids.includes("PR-RISK-003")), false);
+  assert.equal(model.review_queue.some((item) => item.risk_ids.includes("RISK-001")), false);
+  assert.equal(model.questions.some((question) => question.maps_to_risks.includes("PR-RISK-003")), true);
+});
+
+test("PR-scoped packet risks match changed files with normalized evidence paths", () => {
+  const packet = packetFixture();
+  packet.risks.items = [
+    {
+      id: "RISK-NORMALIZED",
+      category: "maintainability",
+      severity: "medium",
+      summary: "Human review implementation should remain in the PR queue.",
+      evidence: [fileEvidence("./src\\human\\human-review.ts", "Equivalent changed path spelling.")],
+      suggested_checks: ["Inspect the normalized path-backed risk."],
+      manual_review: true
+    }
+  ];
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files.push({
+    path: "src/human/human-review.ts",
+    status: "M",
+    areas: ["HUMAN_REVIEW"],
+    role: "implementation",
+    added_lines: 5,
+    deleted_lines: 1
+  });
+
+  const model = buildHumanReview({ packet, prSurface });
+  const item = model.review_queue.find((queueItem) => queueItem.risk_ids.includes("RISK-NORMALIZED"));
+
+  assert.equal(item?.path, "src/human/human-review.ts");
 });
 
 test("repo-mode human review promotes focused human gaps into actions", () => {
@@ -284,6 +315,61 @@ test("nonzero validation command evidence blocks merge readiness", () => {
 
   assert.equal(model.verdict.decision, "block_before_merge");
   assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-TESTS-001"), true);
+});
+
+test("passing test evidence whose name mentions errors does not block merge readiness", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence = [
+    {
+      id: "TEST-PASSING-ERROR-NAME",
+      kind: "direct",
+      summary: "Parsed test passed: renders error state",
+      evidence: [
+        {
+          kind: "test",
+          test_name: "renders error state",
+          note: "Parsed test passed.",
+          confidence: "high",
+          validation_status: "valid"
+        }
+      ]
+    }
+  ];
+
+  const model = buildHumanReview({ packet });
+
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-TESTS-001"), false);
+  assert.notEqual(model.verdict.decision, "block_before_merge");
+});
+
+test("recorded CI secret-boundary manual evidence clears the deterministic blocker", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence.push({
+    id: "TEST-MANUAL-CI-SECRET",
+    kind: "indirect",
+    summary: "Manual CI secret-boundary check recorded: PR-controlled code cannot access secrets.",
+    evidence: [fileEvidence(".review-surfaces/feedback/manual-dogfood.yaml", "Manual CI secret-boundary check recorded.")]
+  });
+
+  const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
+
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), false);
+  assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), false);
+});
+
+test("unrelated manual security wording does not clear the CI secret-boundary blocker", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence.push({
+    id: "TEST-MANUAL-UNRELATED",
+    kind: "indirect",
+    summary: "Manual workflow security review recorded.",
+    evidence: [fileEvidence(".review-surfaces/feedback/manual-dogfood.yaml", "Manual security review recorded.")]
+  });
+
+  const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
+
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), true);
+  assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
 });
 
 test("human review schema enums stay aligned with runtime contract constants", () => {
