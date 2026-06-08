@@ -10,7 +10,7 @@ import type {
   PrScopedCoverageModel,
   ScopedChangedFile
 } from "../pr/contract";
-import { PR_RISK_RULES } from "../pr/contract";
+import { prRiskRulePriority } from "../pr/risk-metadata";
 import type { PacketRiskCategory, PacketSeverity } from "../schema/review-packet-contract";
 
 // ---------------------------------------------------------------------------
@@ -51,11 +51,6 @@ interface DraftCandidate {
   sortPath: string;
 }
 
-// Priority index of a rule in the locked PR_RISK_RULES order. Drives both the
-// emit order and the id numbering, so the contract's declared order is the single
-// source of truth (no parallel hand-maintained priority list to drift).
-const RULE_PRIORITY = new Map<PrRiskRule, number>(PR_RISK_RULES.map((rule, index) => [rule, index]));
-
 export function buildPrRiskCandidates(input: BuildPrRiskInput): PrRiskModel {
   const drafts: DraftCandidate[] = [];
 
@@ -72,7 +67,7 @@ export function buildPrRiskCandidates(input: BuildPrRiskInput): PrRiskModel {
 
   drafts.sort(
     (left, right) =>
-      (RULE_PRIORITY.get(left.rule) ?? 0) - (RULE_PRIORITY.get(right.rule) ?? 0) ||
+      prRiskRulePriority(left.rule) - prRiskRulePriority(right.rule) ||
       compareStrings(left.sortPath, right.sortPath)
   );
 

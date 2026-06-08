@@ -1,0 +1,416 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://review-surfaces.local/schemas/human_review.schema.v1.json",
+  "title": "review-surfaces human review cockpit",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "mode",
+    "verdict",
+    "summary",
+    "review_queue",
+    "blockers",
+    "questions",
+    "suggested_comments",
+    "trust_audit",
+    "test_plan",
+    "skim_safe",
+    "generated_from"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "review-surfaces.human_review.v1"
+    },
+    "mode": {
+      "enum": ["pr", "repo"]
+    },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["decision", "confidence", "reasons"],
+      "properties": {
+        "decision": {
+          "enum": [
+            "probably_safe",
+            "reviewable_with_attention",
+            "needs_author_clarification",
+            "block_before_merge",
+            "no_signal"
+          ]
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/verdictReason"
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "review_queue": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/reviewQueueItem"
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/blocker"
+      }
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/question"
+      }
+    },
+    "suggested_comments": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/suggestedComment"
+      }
+    },
+    "trust_audit": {
+      "$ref": "#/$defs/trustAudit"
+    },
+    "test_plan": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/testPlanItem"
+      }
+    },
+    "skim_safe": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/skimSafeItem"
+      }
+    },
+    "generated_from": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["packet_path", "base_ref", "head_ref", "head_sha"],
+      "properties": {
+        "packet_path": { "type": "string" },
+        "pr_surface_path": { "type": "string" },
+        "base_ref": { "type": "string" },
+        "head_ref": { "type": "string" },
+        "head_sha": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "confidence": {
+      "enum": ["high", "medium", "low", "unknown"]
+    },
+    "severity": {
+      "enum": ["low", "medium", "high", "critical", "unknown"]
+    },
+    "evidenceRef": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["kind", "confidence"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "file",
+            "diff",
+            "test",
+            "ci",
+            "doc",
+            "spec",
+            "conversation",
+            "command",
+            "feedback",
+            "agent_instruction",
+            "url",
+            "unknown"
+          ]
+        },
+        "path": { "type": "string" },
+        "line_start": { "type": "integer", "minimum": 1 },
+        "line_end": { "type": "integer", "minimum": 1 },
+        "sha": { "type": "string" },
+        "url": { "type": "string" },
+        "acai_id": { "type": "string" },
+        "event_id": { "type": "string" },
+        "test_name": { "type": "string" },
+        "command": { "type": "string" },
+        "excerpt_hash": { "type": "string" },
+        "note": { "type": "string" },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "validation_status": {
+          "enum": ["valid", "invalid", "not_checked", "unknown"]
+        },
+        "llm_proposed": { "type": "boolean" },
+        "verified": { "type": "boolean" }
+      }
+    },
+    "verdictReason": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "severity", "summary", "evidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "summary": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "required_action": { "type": "string" }
+      }
+    },
+    "reviewQueueItem": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "rank",
+        "title",
+        "path",
+        "reason",
+        "reviewer_action",
+        "evidence",
+        "requirement_ids",
+        "risk_ids",
+        "confidence",
+        "priority"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "rank": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string" },
+        "path": { "type": "string" },
+        "old_path": { "type": "string" },
+        "line_start": { "type": "integer", "minimum": 1 },
+        "line_end": { "type": "integer", "minimum": 1 },
+        "hunk_header": { "type": "string" },
+        "reason": { "type": "string" },
+        "reviewer_action": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "risk_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "requirement_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "priority": {
+          "enum": ["blocker", "high", "medium", "low"]
+        },
+        "estimated_review_effort": {
+          "enum": ["quick", "moderate", "deep"]
+        }
+      }
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "severity", "summary", "evidence", "required_action"],
+      "properties": {
+        "id": { "type": "string" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "summary": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "required_action": { "type": "string" }
+      }
+    },
+    "question": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "severity", "question", "reason", "evidence", "maps_to_risks", "maps_to_requirements"],
+      "properties": {
+        "id": { "type": "string" },
+        "severity": {
+          "enum": ["blocking", "clarifying", "optional"]
+        },
+        "question": { "type": "string" },
+        "reason": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "maps_to_risks": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "maps_to_requirements": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "suggestedComment": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "severity", "body", "evidence", "risk_ids", "requirement_ids", "confidence", "ready_to_post"],
+      "properties": {
+        "id": { "type": "string" },
+        "severity": {
+          "enum": ["blocking", "clarifying", "non_blocking"]
+        },
+        "path": { "type": "string" },
+        "line_start": { "type": "integer", "minimum": 1 },
+        "line_end": { "type": "integer", "minimum": 1 },
+        "body": { "type": "string", "maxLength": 2000 },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "risk_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "requirement_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "ready_to_post": { "type": "boolean" }
+      }
+    },
+    "trustAudit": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["verified_facts", "claimed_not_verified", "missing_evidence", "invalid_evidence", "confidence_summary"],
+      "properties": {
+        "verified_facts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/trustFact" }
+        },
+        "claimed_not_verified": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/trustClaim" }
+        },
+        "missing_evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/missingEvidence" }
+        },
+        "invalid_evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/invalidEvidence" }
+        },
+        "confidence_summary": { "type": "string" }
+      }
+    },
+    "trustFact": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "summary", "evidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "summary": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        }
+      }
+    },
+    "trustClaim": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "claim", "status", "missing_evidence", "evidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "claim": { "type": "string" },
+        "status": { "const": "unverified" },
+        "missing_evidence": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        }
+      }
+    },
+    "missingEvidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "summary", "evidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "summary": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        }
+      }
+    },
+    "invalidEvidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "summary", "evidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "summary": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        }
+      }
+    },
+    "testPlanItem": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "kind",
+        "priority",
+        "scenario",
+        "expected_result",
+        "maps_to_requirements",
+        "maps_to_risks",
+        "evidence_gap"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "enum": ["automatic", "manual"] },
+        "priority": { "enum": ["required", "recommended", "optional"] },
+        "suggested_file": { "type": "string" },
+        "scenario": { "type": "string" },
+        "expected_result": { "type": "string" },
+        "command": { "type": "string" },
+        "maps_to_requirements": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "maps_to_risks": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "evidence_gap": { "type": "string" }
+      }
+    },
+    "skimSafeItem": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["path", "reason", "evidence", "confidence"],
+      "properties": {
+        "path": { "type": "string" },
+        "reason": { "type": "string" },
+        "caveat": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    }
+  }
+}

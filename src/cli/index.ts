@@ -8,7 +8,7 @@ import { PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
 import { CliError, ExitCodes } from "../core/exit-codes";
 import { VERSION } from "../core/version";
-import { fileExists } from "../core/files";
+import { fileExists, readJson } from "../core/files";
 import { gateDecision, GateOptions } from "../core/gate";
 import { buildArchitecture } from "../diagrams/diagrams";
 import { buildDogfood, DogfoodComparisonInput } from "../dogfood/dogfood";
@@ -41,6 +41,10 @@ import { postStickyComment } from "../render/post-comment";
 import { writeJson, writeText } from "../core/files";
 import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
+import { buildHumanReview } from "../human/human-review";
+import { HumanReviewModel } from "../human/contract";
+import { writeHumanReviewArtifacts } from "../human/render";
+import { ReviewPacket } from "../render/packet";
 import {
   assembleEnrichedPacket,
   buildEnrichedModels,
@@ -75,6 +79,7 @@ const COMMANDS = [
   "risks",
   "dogfood",
   "handoff",
+  "human",
   "packet",
   "all",
   "validate",
@@ -129,6 +134,9 @@ async function main(): Promise<number> {
       return runPacketStage(parsed);
     case "handoff":
       await runHandoffStage(parsed);
+      return ExitCodes.success;
+    case "human":
+      await runHumanStage(parsed);
       return ExitCodes.success;
     case "init":
       return runInitCommand(parsed);
@@ -448,8 +456,10 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // strict-without-evaluation falls through to regenerate below) we keep the
       // prior reuse-and-succeed behavior rather than forcing a regenerate.
       if (evaluation) {
+        await writeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed));
         return applyGate(parsed, evaluation, collection, provider, config);
       }
+      await writeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed));
       return ExitCodes.success;
     }
     console.warn("Cached output is incomplete (evaluation.yaml missing/unreadable); regenerating to apply the --strict gate.");
@@ -540,7 +550,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
         resolveComparisonInput(parsed, cwd, packet.evaluation, packet.risks)
       )
     : undefined;
-  await writeReviewPacket({
+  const writtenPacket = await writeReviewPacket({
     collection,
     intent: packet.intent,
     evaluation: packet.evaluation,
@@ -559,6 +569,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // PR review surface (--review-scope pr): a SEPARATE diff-scoped, LLM-narrated
   // artifact (pr_review_surface.json) that the PR comment renders from. Requires
   // an LLM provider; a blocked surface is written (never a whole-repo fallback).
+  let persistedSurface: PrReviewSurfaceModel | undefined;
   if (isPrScope) {
     // Evaluate the base ref in a throwaway worktree for the coverage delta
     // (best-effort: degrades to current-status when the base can't be evaluated).
@@ -592,7 +603,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       model: narrativeModel,
       redactSecrets
     });
-    const persistedSurface = jsonSerializable(surface);
+    persistedSurface = jsonSerializable(surface);
     assertValidPrSurface(cwd, persistedSurface);
     await writeJson(path.join(collection.outputDir, "pr_review_surface.json"), persistedSurface);
     // Materialize the diagram artifact the surface advertises (surface.diagram.path),
@@ -606,10 +617,12 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       console.warn(`PR review surface blocked (${persistedSurface.blocked_reason}); see pr_review_surface.json`);
     }
   }
+  await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface);
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
   console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
+  console.log(`Human review: ${artifactPathForLog(cwd, collection.outputDir, "human_review.md")}`);
   debug(parsed, `completed in ${Date.now() - startedAt}ms`);
   // Gate on the REQUESTED provider, not wholeRepoProvider: in pr mode the narrative
   // IS a remote call with the live provider, so a privacy-blocked diff must still
@@ -967,6 +980,116 @@ async function runHandoffStage(parsed: ParsedArgs): Promise<void> {
     commands: context.commands
   });
   logWrote(context);
+}
+
+async function runHumanStage(parsed: ParsedArgs): Promise<void> {
+  const cwd = process.cwd();
+  const outDir = await resolveOutputDir(cwd, parsed);
+  await writeHumanReviewFromArtifacts(cwd, outDir, reviewScope(parsed));
+  console.log(`Human review: ${artifactPathForLog(cwd, outDir, "human_review.md")}`);
+}
+
+async function writeHumanReviewFromArtifacts(cwd: string, outDir: string, scope: ReviewScope): Promise<HumanReviewModel> {
+  const packetPath = path.join(outDir.endsWith(".json") ? path.dirname(outDir) : outDir, "review_packet.json");
+  if (!fileExists(packetPath)) {
+    throw missingPacketError(cwd, outDir);
+  }
+  const packet = await readJson(packetPath) as ReviewPacket;
+  const surfacePath = path.join(path.dirname(packetPath), "pr_review_surface.json");
+  const surface = scope === "pr" && fileExists(surfacePath)
+    ? JSON.parse(fs.readFileSync(surfacePath, "utf8")) as PrReviewSurfaceModel
+    : undefined;
+  if (surface) {
+    assertValidPrSurface(cwd, surface);
+    if (!prSurfaceMatchesPacketManifest(packet, surface)) {
+      console.warn(
+        `Ignoring stale pr_review_surface.json; run review-surfaces all --review-scope pr to regenerate it for the current packet.`
+      );
+      return writeHumanReviewForPacket(cwd, path.dirname(packetPath), packet);
+    }
+  }
+  return writeHumanReviewForPacket(cwd, path.dirname(packetPath), packet, surface);
+}
+
+async function writeHumanReviewForPacket(
+  cwd: string,
+  outDir: string,
+  packet: ReviewPacket,
+  prSurface?: PrReviewSurfaceModel
+): Promise<HumanReviewModel> {
+  const humanReview = buildHumanReview({
+    packet,
+    prSurface,
+    packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
+    prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
+  });
+  assertValidHumanReview(cwd, humanReview);
+  await writeHumanReviewArtifacts(outDir, humanReview);
+  return humanReview;
+}
+
+function assertValidHumanReview(cwd: string, humanReview: unknown): void {
+  const issues = humanReviewIssues(cwd, humanReview);
+  if (issues.length === 0) {
+    return;
+  }
+  throw new CliError(`Human review surface failed schema validation: ${issues.join("; ")}`, ExitCodes.schemaValidationFailed);
+}
+
+function humanReviewIssues(cwd: string, humanReview: unknown): string[] {
+  const schema = loadHumanReviewSchema(cwd);
+  if (schema === undefined) {
+    return [];
+  }
+  const result = validateJsonSchema(schema, humanReview);
+  return result.valid ? [] : result.issues.map((issue) => `${issue.path}: ${issue.message}`);
+}
+
+function loadHumanReviewSchema(cwd: string): unknown | undefined {
+  const candidates = [
+    path.resolve(__dirname, "..", "..", "..", "schemas", "human_review.schema.json"),
+    path.resolve(__dirname, "..", "..", "schemas", "human_review.schema.json"),
+    path.resolve(cwd, "schemas/human_review.schema.json")
+  ];
+  for (const candidate of candidates) {
+    if (!fileExists(candidate)) {
+      continue;
+    }
+    try {
+      return JSON.parse(fs.readFileSync(candidate, "utf8"));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new CliError(
+        `Unable to read human review schema at ${path.relative(cwd, candidate)}: ${reason}`,
+        ExitCodes.schemaValidationFailed
+      );
+    }
+  }
+  return undefined;
+}
+
+function artifactPathForLog(cwd: string, outDir: string, fileName: string): string {
+  const rel = path.relative(cwd, path.join(outDir, fileName));
+  return rel || path.join(outDir, fileName);
+}
+
+function prSurfaceMatchesPacketManifest(packet: ReviewPacket, surface: PrReviewSurfaceModel): boolean {
+  const manifest = packet.manifest as {
+    base_ref?: unknown;
+    head_ref?: unknown;
+    base_sha?: unknown;
+    head_sha?: unknown;
+  };
+  return (
+    matchesManifestString(manifest.base_ref, surface.scope.base_ref) &&
+    matchesManifestString(manifest.head_ref, surface.scope.head_ref) &&
+    matchesManifestString(manifest.base_sha, surface.scope.base_sha) &&
+    matchesManifestString(manifest.head_sha, surface.scope.head_sha)
+  );
+}
+
+function matchesManifestString(packetValue: unknown, surfaceValue: string | undefined): boolean {
+  return typeof packetValue !== "string" || packetValue.length === 0 || packetValue === surfaceValue;
 }
 
 
@@ -1413,6 +1536,7 @@ Commands:
   risks         Run the available local pipeline and write risk artifacts
   dogfood       Run the available local pipeline in dogfood mode
   handoff       Run the available local pipeline and write agent handoff
+  human         Render human_review.json and human_review.md from existing local packet artifacts
   packet        Run the available local pipeline and write review packet
   all           Run the whole available local pipeline
   validate      Validate review_packet.json against schemas/review_packet.schema.json

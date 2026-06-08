@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Local E2E packet generated with provider=mock/not_requested; 14 satisfied, 75 partial, 0 missing, 2 unknown, 0 invalid evidence, 1 overreach item(s). Statuses are conservative and evidence-backed.
+Local E2E packet generated with provider=mock/not_requested; 8 satisfied, 96 partial, 0 missing, 2 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
 
 ## Current Milestone
 
@@ -11,8 +11,8 @@ M5
 - review-surfaces.BOOTSTRAP.1
 - review-surfaces.BOOTSTRAP.4
 - review-surfaces.BOOTSTRAP.5
+- review-surfaces.CLI.1
 - review-surfaces.CLI.2
-- review-surfaces.CLI.3
 
 ## Commands To Run
 
@@ -24,33 +24,35 @@ M5
 
 ## Implemented Changes
 
-- M .github/workflows/ci.yml
-- M .review-surfacesignore
+- M .review-surfaces/feedback/manual-dogfood.yaml
 - M README.md
-- M docs/review-surfaces-trd.md
+- ?? docs/agent/execplans/human-review-cockpit.md
+- ?? docs/human-first-review-surfaces-comprehensive-feature-proposal.md
 - M features/review-surfaces.feature.yaml
 - M review-surfaces.config.yaml
-- A schemas/pr_review_surface.schema.json
-- M scripts/SECRETS.md
+- ?? schemas/human_review.schema.json
 - M src/cli/index.ts
-- M src/config/config.ts
-- M src/dogfood/dogfood.ts
-- M src/evaluation/evaluate.ts
-- ... 12 more changed file(s) in .review-surfaces/inputs/changed_files.json
+- ?? src/human/contract.ts
+- ?? src/human/human-review.ts
+- ?? src/human/render.ts
+- ?? src/pr/risk-metadata.ts
+- ... 3 more changed file(s) in .review-surfaces/inputs/changed_files.json
 
 ## Validation Evidence
 
-- TEST-TR-001 [direct]: Command transcript CMD-PNPM-TEST records exit 0: pnpm test
-- TEST-TR-002 [indirect]: Command transcript CMD-PNPM-TYPECHECK records exit 0: pnpm run typecheck
+- TEST-TR-001 [indirect]: Command transcript CMD-PNPM-BUILD records exit 0: pnpm run build
+- TEST-TR-002 [indirect]: Command transcript CMD-PNPM-LINT records exit 0: pnpm run lint
+- TEST-TR-003 [direct]: Command transcript CMD-PNPM-TEST-FAST records exit 0: pnpm run test:fast
+- TEST-TR-004 [direct]: Command transcript CMD-PNPM-TEST records exit 0: pnpm run test
 
 ## Failed Or Missing Validation
 
-- TEST-FB-001 [claimed]: Feedback records a passing validation command: pnpm run test
-- TEST-FB-002 [claimed]: Feedback records a passing validation command: node --test dist/tests/diagrams.test.js
-- TEST-FB-003 [claimed]: Feedback records a passing validation command: node --test dist/tests/evaluation.test.js
-- TEST-FB-004 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
-- TEST-FB-005 [indirect]: Feedback records a passing validation command: pnpm run lint
-- TEST-FB-006 [indirect]: Feedback records a passing validation command: pnpm run build
+- TEST-FB-001 [claimed]: Feedback records a passing validation command: node --test dist/tests/diagrams.test.js
+- TEST-FB-002 [claimed]: Feedback records a passing validation command: node --test dist/tests/evaluation.test.js
+- TEST-FB-003 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
+- TEST-FB-004 [indirect]: Feedback records a passing validation command: pnpm run typecheck
+- TEST-FB-005 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces
+- TEST-FB-006 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- validate .review-surfaces
 
 ## Methodology Flags
 
@@ -61,15 +63,14 @@ M5
 - review-surfaces.BOOTSTRAP.1: Add a focused unit or fixture test tied to review-surfaces.BOOTSTRAP.1.
 - review-surfaces.BOOTSTRAP.4: Add a focused unit or fixture test tied to review-surfaces.BOOTSTRAP.4.
 - review-surfaces.BOOTSTRAP.5: Add a focused unit or fixture test tied to review-surfaces.BOOTSTRAP.5.
+- review-surfaces.CLI.1: Add a focused unit or fixture test tied to review-surfaces.CLI.1.
 - review-surfaces.CLI.2: Add a focused unit or fixture test tied to review-surfaces.CLI.2.
-- review-surfaces.CLI.3: Add a focused unit or fixture test tied to review-surfaces.CLI.3.
 - Inspect .review-surfaces/review_packet.md before trusting generated summaries.
 
 ## Open Risks
 
-- RISK-001: 75 requirement(s) have implementation evidence but weak or missing test evidence.
-- RISK-002: 1 changed file(s) did not map to a stated requirement group.
-- RISK-003: 2 requirement(s) remain unknown due to weak evidence.
+- RISK-001: 96 requirement(s) have implementation evidence but weak or missing test evidence.
+- RISK-002: 2 requirement(s) remain unknown due to weak evidence.
 
 ## Deferrals
 
