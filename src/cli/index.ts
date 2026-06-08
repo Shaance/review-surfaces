@@ -1008,7 +1008,7 @@ async function runHumanSubartifactStage(parsed: ParsedArgs): Promise<void> {
   if (!artifact) {
     throw new CliError(`Unknown human artifact command: ${parsed.command}`, ExitCodes.usageError);
   }
-  const context = await buildHumanReviewFromArtifacts(cwd, outDir, reviewScope(parsed));
+  const context = await loadOrBuildHumanReviewJson(cwd, outDir, reviewScope(parsed));
   await writeHumanStandaloneArtifact(context.outputDir, context.model, artifact);
   console.log(`${artifact.label}: ${artifactPathForLog(cwd, context.outputDir, artifact.artifact)}`);
 }
@@ -1017,6 +1017,24 @@ async function writeHumanReviewFromArtifacts(cwd: string, outDir: string, scope:
   const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope);
   await writeHumanReviewArtifacts(context.outputDir, context.model);
   return context.model;
+}
+
+async function loadOrBuildHumanReviewJson(
+  cwd: string,
+  outDir: string,
+  scope: ReviewScope
+): Promise<{ outputDir: string; model: HumanReviewModel }> {
+  const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
+  const humanReviewPath = path.join(outputDir, "human_review.json");
+  if (fileExists(humanReviewPath)) {
+    const model = await readJson(humanReviewPath) as HumanReviewModel;
+    assertValidHumanReview(cwd, model);
+    return { outputDir, model };
+  }
+
+  const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope);
+  await writeJson(path.join(context.outputDir, "human_review.json"), context.model);
+  return context;
 }
 
 async function buildHumanReviewFromArtifacts(
@@ -1678,7 +1696,7 @@ Gate semantics (only enforced as exit codes with --strict):
 
 function humanStandaloneCommandHelp(): string {
   return HUMAN_STANDALONE_ARTIFACTS
-    .map((artifact) => `  ${artifact.command.padEnd(13)} Render ${artifact.artifact} from existing local packet artifacts`)
+    .map((artifact) => `  ${artifact.command.padEnd(13)} Render ${artifact.artifact} from human_review.json`)
     .join("\n");
 }
 

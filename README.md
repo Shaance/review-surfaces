@@ -109,7 +109,7 @@ After a run, look under `.review-surfaces/`:
 | `validate [dir-or-json]` | Validate `review_packet.json` against `schemas/review_packet.schema.json`. Defaults to `.review-surfaces`. |
 | `run [--id <id>] [--command-transcripts <dir>] -- <cmd>...` | Execute a local command and record a bounded command transcript as direct evidence. |
 | `human` | Render `human_review.json`, `human_review.md`, and standalone human artifacts from existing local packet artifacts without recomputing the pipeline. |
-| `queue` / `comments` / `trust` / `test-plan` | Render the focused standalone human artifacts from existing local packet artifacts. |
+| `queue` / `comments` / `trust` / `test-plan` | Render the focused standalone human artifacts from `human_review.json`. |
 | `init [--force]` | Scaffold a repo for review-surfaces (create-or-validate): config, packet schema, `.review-surfacesignore`, a starter feature spec, the usage skill, and `AGENTS.md`. Existing files are never overwritten without `--force`; user-owned `AGENTS.md` and feature specs are preserved even with `--force`. |
 | `bootstrap [--strict]` | Validate-only: report whether the expected scaffolding exists and parses. Exits `10` under `--strict` when a required target is missing or invalid. |
 | `comment` | Render a local review surface. `--mode repo` reads `review_packet.json`; `--mode pr` reads `pr_review_surface.json` and refuses to succeed unless the PR narrative was LLM-authored and evidence-validated. |
