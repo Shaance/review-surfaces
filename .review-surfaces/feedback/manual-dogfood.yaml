@@ -69,8 +69,38 @@ findings:
     affected_section: Methodology and handoff
     finding: M5 should make methodology claims and agent handoff outputs distinguish transcript-backed validation from unverified claims, so future agents can continue without relying on hidden chat context.
     desired_change: Preserve verified methodology claims, unverified claims, validation evidence, failed validation, methodology flags, and deferrals in local packet and handoff artifacts.
+  - id: FB-2026-06-08-001
+    category: review_value
+    severity: medium
+    affected_section: Human review cockpit
+    finding: M1 dogfood showed repo-mode human_review.md degraded readiness for missing evidence but generated no author questions and led with broad legacy test gaps.
+    desired_change: Promote focused HUMAN_REVIEW and HUMAN_TRUST gaps into reviewer questions, suggested comments, and front-loaded test-plan items before generic packet gaps.
+  - id: FB-2026-06-08-002
+    category: correctness
+    severity: high
+    affected_section: Merge readiness
+    finding: Simplify triad found that nonzero command transcript exits could avoid the test-failure blocker when summaries said "records exit 1" without fail/error wording.
+    desired_change: Treat failed, invalid, or nonzero validation command evidence as a deterministic merge blocker and cover it with a focused human review test.
+  - id: FB-2026-06-08-003
+    category: evidence_quality
+    severity: high
+    affected_section: Human review sidecars
+    finding: Simplify triad found that human --review-scope pr could combine a stale pr_review_surface.json sidecar with a newer review_packet.json.
+    desired_change: Validate PR sidecar base/head metadata against the packet manifest before using it; ignore stale sidecars and ask the user to regenerate PR mode.
+  - id: FB-2026-06-08-004
+    category: maintainability
+    severity: medium
+    affected_section: Human review implementation
+    finding: Simplify triad found duplicate schema enum contracts and duplicate PR risk title/ranking metadata around the new human review surface.
+    desired_change: Keep human runtime constants aligned with schema enums through parity tests, and share PR risk display/ranking metadata rather than re-declaring it in the human builder.
+  - id: FB-2026-06-08-005
+    category: maintainability
+    severity: low
+    affected_section: Human review deferrals
+    finding: Simplify triad found broader cleanup opportunities in cache-hit artifact parsing, shared Markdown helpers, and shared sidecar schema validation.
+    desired_change: Defer these to a follow-up cache/render/helper cleanup slice because they are not required for the M1 human-review contract.
 validation:
-  updated_at: 2026-05-28T16:07:04Z
+  updated_at: 2026-06-08T19:33:31Z
   passed:
     - pnpm run test
     - node --test dist/tests/diagrams.test.js
@@ -98,3 +128,6 @@ validation:
     - Review hardening ran three full-diff cycles with tests, lint/typecheck, packet validation, whitespace checks, and fresh review; no unresolved actionable findings remained.
     - Deferred improvement: richer schema-bound provider-assisted intent synthesis remains later work.
     - Deferred improvement: a CLI command registry and shared CLI test harness would reduce maintenance drift but are not required for this slice.
+    - Human review M1 dogfood promoted focused human gaps into questions/comments/test-plan items, added failed-validation and stale-sidecar correctness guards, added schema enum parity tests, and shared PR-risk title/queue metadata.
+    - Deferred improvement: cache-hit human rendering still reparses already-validated packet/surface artifacts; fix in a focused cache helper cleanup.
+    - Deferred improvement: extract shared bounded Markdown and sidecar schema-validation helpers after the human surface API settles.

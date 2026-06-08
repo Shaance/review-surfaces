@@ -44,6 +44,7 @@ areas:
     name: Bootstrap files
     group_key: BOOTSTRAP
     prefixes:
+      - README.md
       - AGENTS.md
       - CLAUDE.md
       - .gitignore
@@ -167,6 +168,7 @@ areas:
       - src/feedback/
       - .review-surfaces/agent_handoff.md
       - .review-surfaces/feedback/
+      - docs/agent/execplans/
       - docs/dogfooding.md
       - .agents/skills/review-surfaces-dogfood-loop/
       - .agents/skills/composed-review-loop/
@@ -185,6 +187,34 @@ areas:
     test_keywords:
       - packet
       - render
+  - id: SUB-HUMAN-REVIEW
+    name: Human review cockpit
+    group_key: HUMAN_REVIEW
+    prefixes:
+      - src/human/
+      - src/pr/risk-metadata.ts
+      - schemas/human_review.schema.json
+      - tests/human-review.test.ts
+      - docs/human-first-review-surfaces-comprehensive-feature-proposal.md
+    purpose: Turn packet and PR-surface evidence into human-first review decisions, queues, questions, comments, and checks.
+    pattern: decision surface renderer
+    test_keywords:
+      - human
+      - review
+  - id: SUB-HUMAN-TRUST
+    name: Human reviewer trust
+    group_key: HUMAN_TRUST
+    prefixes:
+      - src/human/
+      - schemas/human_review.schema.json
+      - tests/human-review.test.ts
+      - docs/human-first-review-surfaces-comprehensive-feature-proposal.md
+    purpose: Keep human review actions bounded, evidence-backed, conservative, and separate from untrusted LLM prose.
+    pattern: trust-bounded decision surface
+    test_keywords:
+      - human
+      - review
+      - evidence
   - id: SUB-QUALITY
     name: Tests and fixtures
     group_key: QUALITY

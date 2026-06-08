@@ -203,6 +203,36 @@ components:
       7:
         requirement: The CLI must support comment --mode pr|repo|auto and all --surface-mode pr|repo|auto.
 
+  HUMAN_REVIEW:
+    name: Human reviewer cockpit
+    description: Convert packet evidence into an ordered review decision surface for human reviewers.
+    requirements:
+      1:
+        requirement: The default human surface must start with a merge-readiness verdict, top blockers, and an ordered review queue.
+        note: The verdict must be deterministic and derived from evidence, risks, coverage, tests, privacy state, and configured policy, not from untrusted LLM prose.
+      2:
+        requirement: Review queue items must cite changed files and, when available, diff hunks or line ranges.
+        note: Queue items without path or hunk evidence must be rendered as general questions, not as main review-first items.
+      3:
+        requirement: The human surface must separate verified facts, author or agent claims, missing evidence, and invalid evidence.
+        note: Claimed tests without command transcript or parsed test-output evidence must be visible near the top of the surface.
+      4:
+        requirement: The human surface must generate reviewer questions for ambiguous intent, missing evidence, coverage regressions, and risky changes.
+        note: Questions must be grouped by blocking, clarifying, and optional severity.
+      5:
+        requirement: Suggested reviewer comments must be grouped by blocking, clarifying, and non-blocking severity, and every suggested comment must cite evidence.
+        note: Suggested comments are local drafts by default and must not be auto-posted without explicit user configuration.
+      6:
+        requirement: The human surface must include concrete test-plan items for missing automatic tests and concrete manual-check procedures for missing manual checks.
+      7:
+        requirement: The human surface must identify skim-safe files or areas only when no high-risk finding maps to them.
+      8:
+        requirement: Agent handoff must be rendered as a secondary surface and must not be the default reviewer entrypoint.
+      9:
+        requirement: The human review model must be emitted as schema-validated JSON and rendered to Markdown from that JSON.
+      10:
+        requirement: Reviewer feedback files must be able to tune false positives, team policies, required manual checks, and preferred review focus without overriding evidence silently.
+
   PROVIDERS:
     name: Later provider integrations
     description: Integrations that expose local review artifacts in code-hosting or spec-tracking systems.
@@ -239,6 +269,21 @@ constraints:
         requirement: The packet must clearly distinguish verified evidence from agent claims.
       7:
         requirement: PR narrative output must answer what changed, why it matters, and where to look first, and each core section must survive evidence validation before the surface is postable.
+
+  HUMAN_TRUST:
+    name: Human reviewer trust
+    description: Human surfaces must be action-oriented, bounded, evidence-backed, and conservative when evidence is missing.
+    requirements:
+      1:
+        requirement: Merge-readiness decisions must degrade conservatively when required evidence is missing.
+      2:
+        requirement: LLM output may improve prose but must not create blockers, clear blockers, set coverage status, or set merge-readiness verdicts.
+      3:
+        requirement: Every human-review action must cite evidence or be explicitly marked as a question, assumption, or missing-evidence item.
+      4:
+        requirement: Human-review Markdown must fit on one readable screen for the top summary and link to deeper artifacts for details.
+      5:
+        requirement: Human surfaces must avoid generic AI review boilerplate.
 
   PRIVACY:
     name: Security and privacy

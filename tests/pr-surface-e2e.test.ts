@@ -4,9 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
+import { validateJsonSchema } from "../src/schema/json-schema";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
 const CHANGED = "src/render/comment.ts";
+const HUMAN_REVIEW_SCHEMA = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "human_review.schema.json"), "utf8"));
 
 // Copy the repo (minus .git/.review-surfaces/dist), init git, commit a baseline,
 // then introduce ONE uncommitted change so there is a real diff to scope.
@@ -44,6 +46,13 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     const run = runCli(tmp, [...ALL_PR, "--provider", "mock"]);
     assert.equal(run.status, 0, run.stderr);
     const surface = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "pr_review_surface.json"), "utf8"));
+    const human = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    const humanMarkdown = fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.md"), "utf8");
+    assert.equal(validateJsonSchema(HUMAN_REVIEW_SCHEMA, human).valid, true);
+    assert.equal(human.mode, "pr");
+    assert.match(humanMarkdown, /^# Human Review/);
+    assert.match(humanMarkdown, /## Verdict/);
+    assert.match(humanMarkdown, /## Review first/);
     assert.equal(surface.mode, "pr");
     // Scoped to the actual change, NOT the whole repo.
     assert.ok(surface.scope.changed_files.some((f: { path: string }) => f.path === CHANGED), "the changed file is in scope");
@@ -125,6 +134,30 @@ test("comment --review-scope pr renders agent-file narratives locally but does n
     // Not the whole-spec dump or boilerplate.
     assert.doesNotMatch(comment.stdout, /\d+ satisfied, \d+ partial, \d+ missing/);
     assert.doesNotMatch(comment.stdout, /Start with missing and partial requirement results/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("human --review-scope pr ignores stale pr_review_surface sidecars", () => {
+  const tmp = setupChangedRepo();
+  try {
+    const run = runCli(tmp, [...ALL_PR, "--provider", "mock"]);
+    assert.equal(run.status, 0, run.stderr);
+
+    const surfacePath = path.join(tmp, ".review-surfaces", "pr_review_surface.json");
+    const staleSurface = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
+    staleSurface.scope.head_sha = "stale-head-sha";
+    fs.writeFileSync(surfacePath, JSON.stringify(staleSurface, null, 2));
+
+    const humanRun = runCli(tmp, ["human", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(humanRun.status, 0, humanRun.stderr);
+    assert.match(humanRun.stderr, /Ignoring stale pr_review_surface\.json/);
+
+    const human = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    assert.equal(validateJsonSchema(HUMAN_REVIEW_SCHEMA, human).valid, true);
+    assert.equal(human.mode, "repo");
+    assert.equal(Object.hasOwn(human.generated_from, "pr_surface_path"), false);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

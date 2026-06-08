@@ -79,6 +79,9 @@ pnpm run review-surfaces -- all --base origin/main --head HEAD \
 
 After a run, look under `.review-surfaces/`:
 
+- `human_review.md` / `human_review.json` — the default human reviewer
+  entrypoint: verdict, review-first queue, blockers/questions, trust audit,
+  suggested comments, test-plan items, skim-safe hints, and evidence pointers.
 - `review_packet.json` — the schema-validated packet (validated against
   `schemas/review_packet.schema.json`).
 - `review_packet.md` / `architecture.md` / `agent_handoff.md` — human-readable
@@ -102,6 +105,7 @@ After a run, look under `.review-surfaces/`:
 | `dogfood` | Run the pipeline in dogfood mode (adds the `dogfood` and `agent_handoff` sections). |
 | `validate [dir-or-json]` | Validate `review_packet.json` against `schemas/review_packet.schema.json`. Defaults to `.review-surfaces`. |
 | `run [--id <id>] [--command-transcripts <dir>] -- <cmd>...` | Execute a local command and record a bounded command transcript as direct evidence. |
+| `human` | Render `human_review.json` and `human_review.md` from existing local packet artifacts without recomputing the pipeline. |
 | `init [--force]` | Scaffold a repo for review-surfaces (create-or-validate): config, packet schema, `.review-surfacesignore`, a starter feature spec, the usage skill, and `AGENTS.md`. Existing files are never overwritten without `--force`; user-owned `AGENTS.md` and feature specs are preserved even with `--force`. |
 | `bootstrap [--strict]` | Validate-only: report whether the expected scaffolding exists and parses. Exits `10` under `--strict` when a required target is missing or invalid. |
 | `comment` | Render a local review surface. `--mode repo` reads `review_packet.json`; `--mode pr` reads `pr_review_surface.json` and refuses to succeed unless the PR narrative was LLM-authored and evidence-validated. |

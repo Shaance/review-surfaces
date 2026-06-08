@@ -1,0 +1,322 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { buildHumanReview } from "../src/human/human-review";
+import { renderHumanReviewMarkdown } from "../src/human/render";
+import { ReviewPacket } from "../src/render/packet";
+import { PrReviewSurfaceModel, PR_SURFACE_SCHEMA_VERSION } from "../src/pr/contract";
+import { commandEvidence, fileEvidence, missingEvidence } from "../src/evidence/evidence";
+import { validateJsonSchema } from "../src/schema/json-schema";
+import { minimalReviewPacket } from "./helpers/review-packet";
+import {
+  HUMAN_REVIEW_DECISIONS,
+  HUMAN_REVIEW_PRIORITIES,
+  HUMAN_REVIEW_SCHEMA_VERSION,
+  REVIEWER_QUESTION_SEVERITIES,
+  SUGGESTED_COMMENT_SEVERITIES
+} from "../src/human/contract";
+import {
+  PACKET_CONFIDENCE_LEVELS,
+  PACKET_EVIDENCE_KINDS,
+  PACKET_SEVERITIES,
+  PACKET_VALIDATION_STATUSES
+} from "../src/schema/review-packet-contract";
+
+const schema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "human_review.schema.json"), "utf8"));
+
+function packetFixture(): ReviewPacket {
+  const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  packet.manifest = {
+    ...packet.manifest,
+    base_ref: "origin/main",
+    head_ref: "HEAD",
+    head_sha: "abc123"
+  };
+  packet.evaluation = {
+    summary: "1 satisfied, 1 partial",
+    results: [
+      {
+        requirement_id: "REQ-HUMAN-1",
+        acai_id: "review-surfaces.HUMAN_REVIEW.1",
+        status: "partial",
+        summary: "Human review exists but needs tests.",
+        partial_reason: "impl_no_test",
+        evidence: [fileEvidence("src/human/human-review.ts", "Builder exists.")],
+        missing_evidence: [missingEvidence("Needs direct test evidence.")],
+        review_focus: "Review human surface.",
+        confidence: "medium"
+      }
+    ],
+    overreach: [],
+    acai_coverage: { "review-surfaces.HUMAN_REVIEW.1": "partial" }
+  };
+  packet.methodology = {
+    ...packet.methodology,
+    claims_without_evidence: ["All human review edge cases are covered."],
+    evidence: [fileEvidence("docs/human-first-review-surfaces-comprehensive-feature-proposal.md", "Proposal is present.")]
+  };
+  packet.risks = {
+    summary: "fixture risks",
+    items: [
+      {
+        id: "RISK-001",
+        category: "testing",
+        severity: "medium",
+        summary: "Human review has weak test evidence.",
+        evidence: [fileEvidence("src/human/human-review.ts", "Risk cites builder.")],
+        suggested_checks: ["Add focused human review tests."],
+        manual_review: true
+      }
+    ],
+    test_evidence: [
+      {
+        id: "TEST-TR-001",
+        kind: "direct",
+        summary: "Command transcript records exit 0: pnpm test",
+        evidence: [commandEvidence("pnpm test", "pnpm test passed.", "high", { validationStatus: "valid" })]
+      },
+      {
+        id: "TEST-CMD-001",
+        kind: "claimed",
+        summary: "Command invoked by this run context: pnpm run review-surfaces",
+        evidence: [commandEvidence("pnpm run review-surfaces", "Invocation recorded without output.", "medium")]
+      }
+    ],
+    test_gaps: [],
+    missing_automatic_tests: [
+      {
+        id: "AUTO-001",
+        requirement_id: "REQ-HUMAN-1",
+        acai_id: "review-surfaces.HUMAN_REVIEW.1",
+        summary: "Missing automatic test for review-surfaces.HUMAN_REVIEW.1.",
+        suggested_test: "Add a focused unit or fixture test tied to review-surfaces.HUMAN_REVIEW.1.",
+        evidence: [missingEvidence("Needs direct human review test evidence.")]
+      }
+    ],
+    missing_manual_checks: [],
+    review_focus: ["Confirm validation command output for the current branch."]
+  };
+  return packet;
+}
+
+function prSurfaceFixture(): PrReviewSurfaceModel {
+  return {
+    schema_version: PR_SURFACE_SCHEMA_VERSION,
+    mode: "pr",
+    status: "blocked",
+    blocked_reason: "llm_unavailable",
+    scope: {
+      base_ref: "origin/main",
+      head_ref: "HEAD",
+      head_sha: "abc123",
+      diff_source: "range",
+      changed_files: [
+        {
+          path: ".github/workflows/pr-review-comment.yml",
+          status: "M",
+          areas: ["PROVIDERS"],
+          role: "ci",
+          added_lines: 10,
+          deleted_lines: 2
+        },
+        {
+          path: "schemas/human_review.schema.json",
+          status: "A",
+          areas: ["HUMAN_REVIEW", "SCHEMA"],
+          role: "spec",
+          added_lines: 100,
+          deleted_lines: 0
+        },
+        {
+          path: "docs/notes.md",
+          status: "M",
+          areas: ["HUMAN_REVIEW"],
+          role: "doc",
+          added_lines: 1,
+          deleted_lines: 0
+        }
+      ],
+      affected_areas: [
+        { group_key: "HUMAN_REVIEW", area_ids: ["SUB-HUMAN-REVIEW"], name: "Human review cockpit", changed_files: ["schemas/human_review.schema.json"] }
+      ],
+      affected_requirements: [
+        {
+          requirement_id: "REQ-HUMAN-1",
+          acai_id: "review-surfaces.HUMAN_REVIEW.1",
+          title: "Human surface starts with verdict",
+          group_key: "HUMAN_REVIEW",
+          reasons: []
+        }
+      ],
+      out_of_scope_changed_files: []
+    },
+    coverage: {
+      base_available: false,
+      summary: "1 requirement in scope",
+      in_scope_count: 1,
+      deltas: [
+        {
+          requirement_id: "REQ-HUMAN-1",
+          acai_id: "review-surfaces.HUMAN_REVIEW.1",
+          base_status: "absent",
+          head_status: "partial",
+          delta: "newly_in_scope",
+          reasons: ["baseline unavailable"],
+          head_evidence: [fileEvidence("src/human/human-review.ts", "Human builder.")],
+          missing_evidence: [missingEvidence("No baseline evaluation.")]
+        }
+      ],
+      counts: { improved: 0, regressed: 0, unchanged: 0, new_requirement: 0, removed_requirement: 0, newly_in_scope: 1 }
+    },
+    risks: {
+      summary: "3 PR risk candidates",
+      candidates: [
+        {
+          id: "PR-RISK-001",
+          rule: "ci_secret_boundary_change",
+          category: "security",
+          severity: "high",
+          summary: "Workflow touches the CI secret boundary.",
+          evidence: [fileEvidence(".github/workflows/pr-review-comment.yml", "Workflow changed.")],
+          suggested_checks: ["Confirm PR-controlled code cannot access secrets."]
+        },
+        {
+          id: "PR-RISK-002",
+          rule: "schema_contract_change",
+          category: "architecture",
+          severity: "medium",
+          summary: "Human review schema changed.",
+          evidence: [fileEvidence("schemas/human_review.schema.json", "Schema changed.")],
+          suggested_checks: ["Add a compatibility fixture."]
+        },
+        {
+          id: "PR-RISK-003",
+          rule: "large_diff",
+          category: "maintainability",
+          severity: "low",
+          summary: "Large diff needs extra review time.",
+          evidence: [missingEvidence("Diff size exceeded threshold.")],
+          suggested_checks: ["Allocate extra review time."]
+        }
+      ]
+    },
+    llm: { required: true, provider: "mock", status: "blocked" }
+  };
+}
+
+test("human review model is schema-valid and starts with deterministic readiness signals", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    prSurface: prSurfaceFixture(),
+    packetPath: ".review-surfaces/review_packet.json",
+    prSurfacePath: ".review-surfaces/pr_review_surface.json"
+  });
+
+  assert.equal(model.schema_version, "review-surfaces.human_review.v1");
+  assert.equal(model.mode, "pr");
+  assert.equal(model.verdict.decision, "block_before_merge");
+  assert.equal(model.blockers[0].id, "BLOCK-CI-SECRET-001");
+  assert.equal(model.review_queue[0].path, ".github/workflows/pr-review-comment.yml");
+  assert.deepEqual(model.review_queue[0].risk_ids, ["PR-RISK-001"]);
+  assert.ok(model.review_queue.every((item) => item.path !== ""));
+  assert.ok(model.questions.some((question) => question.severity === "blocking"));
+  assert.ok(model.suggested_comments.length > 0);
+  assert.ok(model.suggested_comments.every((comment) => comment.evidence.length > 0));
+  assert.ok(model.trust_audit.claimed_not_verified.length > 0);
+  assert.ok(model.test_plan.some((item) => item.kind === "manual" && item.priority === "required"));
+  assert.ok(model.skim_safe.some((item) => item.path === "docs/notes.md"));
+
+  const validation = validateJsonSchema(schema, model);
+  assert.equal(validation.valid, true, JSON.stringify(validation.issues));
+});
+
+test("human review Markdown renders a compact cockpit surface", () => {
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture() });
+  const markdown = renderHumanReviewMarkdown(model);
+
+  assert.match(markdown, /^# Human Review/);
+  assert.match(markdown, /## Verdict/);
+  assert.match(markdown, /\*\*Block before merge\.\*\*/);
+  assert.match(markdown, /## Review first/);
+  assert.match(markdown, /\.github\/workflows\/pr-review-comment\.yml/);
+  assert.match(markdown, /## Trust audit/);
+  assert.match(markdown, /Claimed but not verified/);
+  assert.match(markdown, /## Suggested comments/);
+  assert.doesNotMatch(markdown, /Start with missing and partial requirement results/);
+});
+
+test("queue excludes risk candidates without path evidence", () => {
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture() });
+  assert.equal(model.review_queue.some((item) => item.risk_ids.includes("PR-RISK-003")), false);
+});
+
+test("repo-mode human review promotes focused human gaps into actions", () => {
+  const model = buildHumanReview({ packet: packetFixture() });
+
+  assert.equal(model.mode, "repo");
+  assert.equal(model.questions[0].maps_to_requirements.includes("review-surfaces.HUMAN_REVIEW.1"), true);
+  assert.match(model.questions[0].question, /validation evidence/);
+  assert.equal(model.suggested_comments[0].requirement_ids.includes("review-surfaces.HUMAN_REVIEW.1"), true);
+  assert.equal(model.test_plan[0].maps_to_requirements.includes("review-surfaces.HUMAN_REVIEW.1"), true);
+  assert.equal(model.test_plan[0].suggested_file, "tests/human-review.test.ts");
+});
+
+test("nonzero validation command evidence blocks merge readiness", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence = [
+    {
+      id: "TEST-TR-FAIL",
+      kind: "missing",
+      summary: "Command transcript CMD-PNPM-TEST records exit 1: pnpm test",
+      evidence: [
+        commandEvidence(
+          "pnpm test",
+          "Command transcript CMD-PNPM-TEST recorded exit_code=1 and status=failed.",
+          "medium",
+          { validationStatus: "valid" }
+        )
+      ]
+    }
+  ];
+
+  const model = buildHumanReview({ packet });
+
+  assert.equal(model.verdict.decision, "block_before_merge");
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-TESTS-001"), true);
+});
+
+test("human review schema enums stay aligned with runtime contract constants", () => {
+  assert.equal(schema.properties.schema_version.const, HUMAN_REVIEW_SCHEMA_VERSION);
+  assert.deepEqual(schema.properties.verdict.properties.decision.enum, [...HUMAN_REVIEW_DECISIONS]);
+  assert.deepEqual(schema.$defs.reviewQueueItem.properties.priority.enum, [...HUMAN_REVIEW_PRIORITIES]);
+  assert.deepEqual(schema.$defs.question.properties.severity.enum, [...REVIEWER_QUESTION_SEVERITIES]);
+  assert.deepEqual(schema.$defs.suggestedComment.properties.severity.enum, [...SUGGESTED_COMMENT_SEVERITIES]);
+  assert.deepEqual(schema.$defs.confidence.enum, [...PACKET_CONFIDENCE_LEVELS]);
+  assert.deepEqual(schema.$defs.severity.enum, [...PACKET_SEVERITIES]);
+  assert.deepEqual(schema.$defs.evidenceRef.properties.kind.enum, [...PACKET_EVIDENCE_KINDS]);
+  assert.deepEqual(schema.$defs.evidenceRef.properties.validation_status.enum, [...PACKET_VALIDATION_STATUSES]);
+});
+
+test("human trust gaps suggest human review tests, not PR tests from incidental substrings", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [
+    {
+      requirement_id: "REQ-HUMAN-TRUST-1",
+      acai_id: "review-surfaces.HUMAN_TRUST.1",
+      status: "partial",
+      summary: "Implementation and test-path evidence exist, but no requirement-specific proof was found.",
+      partial_reason: "broad_area_only",
+      evidence: [fileEvidence("src/human/human-review.ts", "Human trust builder evidence.")],
+      missing_evidence: [missingEvidence("Needs exact HUMAN_TRUST test evidence.")],
+      review_focus: "Review human trust surface.",
+      confidence: "medium"
+    }
+  ];
+  packet.evaluation.acai_coverage = { "review-surfaces.HUMAN_TRUST.1": "partial" };
+
+  const model = buildHumanReview({ packet });
+
+  assert.equal(model.test_plan[0].maps_to_requirements.includes("review-surfaces.HUMAN_TRUST.1"), true);
+  assert.equal(model.test_plan[0].suggested_file, "tests/human-review.test.ts");
+});
