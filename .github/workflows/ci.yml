@@ -135,9 +135,12 @@ jobs:
             --dogfood \
             --review-scope pr \
             --out .review-surfaces
-          node -e 'const fs=require("node:fs"); const s=JSON.parse(fs.readFileSync(".review-surfaces/pr_review_surface.json","utf8")); if (s.status!=="ready" || !s.narrative || s.llm?.status!=="applied") { console.error(`PR review surface not postable: ${s.status}/${s.blocked_reason ?? s.llm?.status}`); process.exit(4); }'
           node ../tool/bin/review-surfaces.js validate .review-surfaces
-          node ../tool/bin/review-surfaces.js comment --review-scope pr --format github --out .review-surfaces
+          if node -e 'const fs=require("node:fs"); const s=JSON.parse(fs.readFileSync(".review-surfaces/pr_review_surface.json","utf8")); if (s.status!=="ready" || !s.narrative || s.llm?.status!=="applied") { console.error(`PR review surface not postable: ${s.status}/${s.blocked_reason ?? s.llm?.status}`); process.exit(4); }'; then
+            node ../tool/bin/review-surfaces.js comment --review-scope pr --format github --out .review-surfaces
+          else
+            echo "PR review surface is blocked; skipping sticky PR comment."
+          fi
       - name: Upsert sticky comment (trusted gh, not PR code)
         # Only THIS step holds the write token, and it runs `gh` (trusted) over the
         # PR-generated comment.md — never PR code — so a tampered CLI entrypoint

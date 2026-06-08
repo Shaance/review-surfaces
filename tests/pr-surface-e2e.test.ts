@@ -86,6 +86,7 @@ test("review-surfaces.PROVIDERS.6 review-comment workflow uses trusted tool and 
   assert.match(workflow, /--model google:gemini-2\.5-flash/);
   assert.match(workflow, /--config \.\.\/tool\/review-surfaces\.config\.yaml/);
   assert.match(workflow, /--redact-secrets true/);
+  assert.match(workflow, /if node -e[\s\S]*PR review surface not postable[\s\S]*skipping sticky PR comment/);
   assert.doesNotMatch(workflow, /--surface-mode pr/);
 });
 
