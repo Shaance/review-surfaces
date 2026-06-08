@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { validateJsonSchema } from "../src/schema/json-schema";
+import { HUMAN_STANDALONE_ARTIFACTS } from "../src/human/render";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
 const CHANGED = "src/render/comment.ts";
@@ -53,6 +54,25 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     assert.match(humanMarkdown, /^# Human Review/);
     assert.match(humanMarkdown, /## Verdict/);
     assert.match(humanMarkdown, /## Review first/);
+    for (const artifact of HUMAN_STANDALONE_ARTIFACTS) {
+      const body = fs.readFileSync(path.join(tmp, ".review-surfaces", artifact.artifact), "utf8");
+      assert.match(
+        body,
+        new RegExp(`^${artifact.heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+        `${artifact.artifact} should be rendered from human_review.json`
+      );
+    }
+    for (const artifact of HUMAN_STANDALONE_ARTIFACTS) {
+      const target = path.join(tmp, ".review-surfaces", artifact.artifact);
+      fs.writeFileSync(target, "stale artifact");
+      const subcommand = runCli(tmp, [artifact.command, "--review-scope", "pr", "--out", ".review-surfaces"]);
+      assert.equal(subcommand.status, 0, subcommand.stderr);
+      assert.match(subcommand.stdout, new RegExp(`${artifact.label}: \\.review-surfaces/`));
+      assert.match(
+        fs.readFileSync(target, "utf8"),
+        new RegExp(`^${artifact.heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`)
+      );
+    }
     assert.equal(surface.mode, "pr");
     // Scoped to the actual change, NOT the whole repo.
     assert.ok(surface.scope.changed_files.some((f: { path: string }) => f.path === CHANGED), "the changed file is in scope");
