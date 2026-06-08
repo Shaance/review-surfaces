@@ -218,7 +218,7 @@ components:
       5:
         requirement: Posted PR-mode comments must require a non-mock LLM narrative whose file, requirement, risk, and status anchors are validated against deterministic PR facts.
       6:
-        requirement: The CI PR comment workflow must keep LLM API keys out of PR-controlled install, build, and executable code by using a trusted tool checkout against a credentialless PR subject checkout.
+        requirement: The CI PR comment workflow must keep LLM API keys out of PR-controlled workflow YAML, install, build, and executable code by running secret-bearing steps from a base-controlled workflow with a trusted tool checkout against a credentialless PR subject checkout.
 
 constraints:
   EVIDENCE:

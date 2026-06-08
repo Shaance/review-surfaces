@@ -71,9 +71,15 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
   }
 });
 
-test("review-surfaces.PROVIDERS.6 review-comment workflow uses trusted tool and credentialless subject checkouts", () => {
-  const workflow = fs.readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
+test("review-surfaces.PROVIDERS.6 PR comment workflow is base-controlled and uses trusted tool checkouts", () => {
+  const ciWorkflow = fs.readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
+  const workflow = fs.readFileSync(path.join(process.cwd(), ".github", "workflows", "pr-review-comment.yml"), "utf8");
 
+  assert.doesNotMatch(ciWorkflow, /GOOGLE_GENERATIVE_AI_API_KEY/);
+  assert.doesNotMatch(ciWorkflow, /--provider ai-sdk/);
+  assert.match(ciWorkflow, /LLM-backed PR comments run from the base-controlled pr-review-comment workflow/);
+  assert.match(workflow, /pull_request_target:/);
+  assert.doesNotMatch(workflow, /\n  pull_request:/);
   assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
   assert.match(workflow, /path: tool/);
   assert.match(workflow, /fetch-depth: 1/);
@@ -84,13 +90,13 @@ test("review-surfaces.PROVIDERS.6 review-comment workflow uses trusted tool and 
   assert.match(workflow, /GOOGLE_GENERATIVE_AI_API_KEY: \$\{\{ secrets\.GOOGLE_GENERATIVE_AI_API_KEY \}\}/);
   assert.match(workflow, /node \.\.\/tool\/bin\/review-surfaces\.js all[\s\S]*--review-scope pr/);
   assert.match(workflow, /--model google:gemini-2\.5-flash/);
-  assert.match(workflow, /--config \.\.\/tool\/review-surfaces\.config\.yaml/);
+  assert.match(workflow, /--config "\$GITHUB_WORKSPACE\/tool\/review-surfaces\.config\.yaml"/);
   assert.match(workflow, /--redact-secrets true/);
-  assert.match(workflow, /if node -e[\s\S]*PR review surface not postable[\s\S]*skipping sticky PR comment/);
+  assert.match(workflow, /if node -e[\s\S]*s\.llm\?\.provider!=="ai-sdk"[\s\S]*skipping sticky PR comment/);
   assert.doesNotMatch(workflow, /--surface-mode pr/);
 });
 
-test("comment --review-scope pr renders the PR surface; with an agent-file narrative it is READY and PR-specific", () => {
+test("comment --review-scope pr renders agent-file narratives locally but does not mark them postable", () => {
   const tmp = setupChangedRepo();
   try {
     // An agent-authored narrative citing the real changed path (anchor allowlisted).
@@ -110,11 +116,12 @@ test("comment --review-scope pr renders the PR surface; with an agent-file narra
     assert.ok(surface.narrative.what_changed.length > 0);
 
     const comment = runCli(tmp, ["comment", "--mode", "pr", "--out", ".review-surfaces"]);
-    assert.equal(comment.status, 0, comment.stderr);
+    assert.equal(comment.status, 4, "agent-file PR narratives render locally but cannot satisfy the sticky-post gate");
     assert.match(comment.stdout, /## review-surfaces PR review/);
     assert.match(comment.stdout, /### What changed/);
     assert.match(comment.stdout, new RegExp(`Tweaked the sticky comment renderer.*${CHANGED.replace(/[/.]/g, "\\$&")}`, "s"));
     assert.match(comment.stdout, /### Affected coverage/);
+    assert.match(comment.stderr, /not postable \(applied\/agent-file\)/);
     // Not the whole-spec dump or boilerplate.
     assert.doesNotMatch(comment.stdout, /\d+ satisfied, \d+ partial, \d+ missing/);
     assert.doesNotMatch(comment.stdout, /Start with missing and partial requirement results/);

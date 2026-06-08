@@ -565,7 +565,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     const baseEvaluation = await evaluateBaseline({
       cwd,
       baseRef: stringFlag(parsed, "base") ?? "origin/main",
-      configPath: stringFlag(parsed, "config") ?? "review-surfaces.config.yaml",
+      config,
       specFlag: stringFlag(parsed, "spec")
     });
     // The narrative is the ONLY LLM step in pr mode: build a fresh provider with
@@ -1109,10 +1109,17 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
   await writeText(commentPath, markdown);
   process.stdout.write(markdown);
   console.error(`Wrote ${path.relative(cwd, commentPath)}`);
-  // review-surfaces.PROVIDERS.5: posted PR comments require a validated,
-  // non-mock narrative; blocked surfaces are rendered locally but not postable.
-  if (surface.status !== "ready" || surface.llm.status !== "applied" || !surface.narrative) {
-    console.error(`PR review surface is not postable (${surface.blocked_reason ?? surface.llm.status}); skipping sticky post.`);
+  // review-surfaces.PROVIDERS.5: posted PR comments require a validated remote
+  // LLM narrative. Local agent-file narratives are useful for dogfooding, but
+  // must remain local artifacts and never satisfy the sticky-post gate.
+  const hasRemoteNarrative =
+    surface.status === "ready" &&
+    surface.llm.status === "applied" &&
+    surface.llm.provider === "ai-sdk" &&
+    surface.narrative !== undefined;
+  if (!hasRemoteNarrative) {
+    const reason = surface.blocked_reason ?? `${surface.llm.status}/${surface.llm.provider}`;
+    console.error(`PR review surface is not postable (${reason}); skipping sticky post.`);
     return ExitCodes.evidenceValidationFailed;
   }
   if (booleanFlag(parsed, "post")) {
