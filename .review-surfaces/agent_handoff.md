@@ -24,9 +24,11 @@ M5
 
 ## Implemented Changes
 
-- M README.md
+- M .review-surfaces/feedback/manual-dogfood.yaml
 - M src/cli/index.ts
+- M src/human/human-review.ts
 - M src/human/render.ts
+- M src/pipeline/pr-surface.ts
 - M tests/human-review.test.ts
 - M tests/pr-surface-e2e.test.ts
 

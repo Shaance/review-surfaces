@@ -4,6 +4,7 @@ import { formatReports, hasRequiredFailure, runBootstrap, runInit } from "../boo
 import { recordCommandTranscript } from "../commands/runner";
 import { commandTranscriptInputDir } from "../commands/transcripts";
 import { collectInputs, CollectionResult } from "../collector/collect";
+import { parseStructuredDiff } from "../collector/diff-hunks";
 import { PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
 import { CliError, ExitCodes } from "../core/exit-codes";
@@ -35,7 +36,7 @@ import { renderCommentFromPacketFile, resolvePacketPath } from "../render/commen
 import { renderPrComment } from "../render/pr-comment";
 import { assemblePrReviewSurface } from "../pipeline/pr-surface";
 import { evaluateBaseline } from "../evaluation/baseline";
-import { PrReviewSurfaceModel, ReviewScope } from "../pr/contract";
+import { PrReviewSurfaceModel, ReviewScope, StructuredDiff } from "../pr/contract";
 import { renderSarifFromPacketFile } from "../render/sarif";
 import { postStickyComment } from "../render/post-comment";
 import { writeJson, writeText } from "../core/files";
@@ -582,7 +583,9 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // artifact (pr_review_surface.json) that the PR comment renders from. Requires
   // an LLM provider; a blocked surface is written (never a whole-repo fallback).
   let persistedSurface: PrReviewSurfaceModel | undefined;
+  let humanReviewDiff: StructuredDiff | undefined;
   if (isPrScope) {
+    humanReviewDiff = readHumanReviewDiff(collection.outputDir);
     // Evaluate the base ref in a throwaway worktree for the coverage delta
     // (best-effort: degrades to current-status when the base can't be evaluated).
     const baseEvaluation = await evaluateBaseline({
@@ -613,7 +616,8 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       provider: narrativeProvider,
       providerName: provider,
       model: narrativeModel,
-      redactSecrets
+      redactSecrets,
+      diff: humanReviewDiff
     });
     persistedSurface = jsonSerializable(surface);
     assertValidPrSurface(cwd, persistedSurface);
@@ -629,7 +633,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       console.warn(`PR review surface blocked (${persistedSurface.blocked_reason}); see pr_review_surface.json`);
     }
   }
-  await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface);
+  await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff);
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
@@ -1074,11 +1078,13 @@ function buildHumanReviewForPacket(
   cwd: string,
   outDir: string,
   packet: ReviewPacket,
-  prSurface?: PrReviewSurfaceModel
+  prSurface?: PrReviewSurfaceModel,
+  diff?: StructuredDiff
 ): HumanReviewModel {
   const humanReview = buildHumanReview({
     packet,
     prSurface,
+    diff: diff ?? readHumanReviewDiff(outDir),
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
@@ -1086,13 +1092,24 @@ function buildHumanReviewForPacket(
   return humanReview;
 }
 
+function readHumanReviewDiff(outDir: string): StructuredDiff | undefined {
+  const diffPath = path.join(outDir, "inputs", "diff.patch");
+  try {
+    const diff = parseStructuredDiff(fs.readFileSync(diffPath, "utf8"));
+    return diff.files.length > 0 ? diff : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function writeHumanReviewForPacket(
   cwd: string,
   outDir: string,
   packet: ReviewPacket,
-  prSurface?: PrReviewSurfaceModel
+  prSurface?: PrReviewSurfaceModel,
+  diff?: StructuredDiff
 ): Promise<HumanReviewModel> {
-  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface);
+  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface, diff);
   await writeHumanReviewArtifacts(outDir, humanReview);
   return humanReview;
 }

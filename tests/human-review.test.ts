@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildHumanReview } from "../src/human/human-review";
+import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import {
   HUMAN_STANDALONE_ARTIFACTS,
   renderHumanReviewMarkdown,
@@ -211,10 +212,49 @@ function prSurfaceFixture(): PrReviewSurfaceModel {
   };
 }
 
+function structuredDiffFixture() {
+  return parseStructuredDiff([
+    "diff --git a/.github/workflows/pr-review-comment.yml b/.github/workflows/pr-review-comment.yml",
+    "--- a/.github/workflows/pr-review-comment.yml",
+    "+++ b/.github/workflows/pr-review-comment.yml",
+    "@@ -10,3 +10,5 @@",
+    " jobs:",
+    "+  permissions: read-all",
+    "+  review-surface: true",
+    "   build:",
+    "diff --git a/schemas/human_review.schema.json b/schemas/human_review.schema.json",
+    "--- a/schemas/human_review.schema.json",
+    "+++ b/schemas/human_review.schema.json",
+    "@@ -70,2 +70,3 @@",
+    " properties:",
+    "+  hunk_header: { type: string }",
+    "   verdict:",
+    "diff --git a/src/old-name.ts b/src/new-name.ts",
+    "similarity index 90%",
+    "rename from src/old-name.ts",
+    "rename to src/new-name.ts",
+    "--- a/src/old-name.ts",
+    "+++ b/src/new-name.ts",
+    "@@ -20,2 +20,2 @@",
+    " keep",
+    "-old trust boundary",
+    "+new trust boundary",
+    "diff --git a/src/gone.ts b/src/gone.ts",
+    "deleted file mode 100644",
+    "--- a/src/gone.ts",
+    "+++ /dev/null",
+    "@@ -7,2 +0,0 @@",
+    "-export const old = true;",
+    "-export const gone = true;",
+    ""
+  ].join("\n"));
+}
+
 test("human review model is schema-valid and starts with deterministic readiness signals", () => {
   const model = buildHumanReview({
     packet: packetFixture(),
     prSurface: prSurfaceFixture(),
+    diff: structuredDiffFixture(),
     packetPath: ".review-surfaces/review_packet.json",
     prSurfacePath: ".review-surfaces/pr_review_surface.json"
   });
@@ -224,6 +264,11 @@ test("human review model is schema-valid and starts with deterministic readiness
   assert.equal(model.verdict.decision, "block_before_merge");
   assert.equal(model.blockers[0].id, "BLOCK-CI-SECRET-001");
   assert.equal(model.review_queue[0].path, ".github/workflows/pr-review-comment.yml");
+  assert.equal(model.review_queue[0].hunk_header, "@@ -10,3 +10,5 @@");
+  assert.deepEqual(
+    { line_start: model.review_queue[0].line_start, line_end: model.review_queue[0].line_end },
+    { line_start: 11, line_end: 12 }
+  );
   assert.deepEqual(model.review_queue[0].risk_ids, ["PR-RISK-001"]);
   assert.ok(model.review_queue.every((item) => item.path !== ""));
   assert.ok(model.questions.some((question) => question.severity === "blocking"));
@@ -238,7 +283,7 @@ test("human review model is schema-valid and starts with deterministic readiness
 });
 
 test("human review Markdown renders a compact cockpit surface", () => {
-  const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture() });
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
   const markdown = renderHumanReviewMarkdown(model);
 
   assert.match(markdown, /^# Human Review/);
@@ -246,6 +291,7 @@ test("human review Markdown renders a compact cockpit surface", () => {
   assert.match(markdown, /\*\*Block before merge\.\*\*/);
   assert.match(markdown, /## Review first/);
   assert.match(markdown, /\.github\/workflows\/pr-review-comment\.yml/);
+  assert.match(markdown, /Hunk: `@@ -10,3 \+10,5 @@`/);
   assert.match(markdown, /## Trust audit/);
   assert.match(markdown, /Claimed but not verified/);
   assert.match(markdown, /## Suggested comments/);
@@ -253,6 +299,65 @@ test("human review Markdown renders a compact cockpit surface", () => {
     assert.match(markdown, new RegExp(`${artifact.label}: \`\\.review-surfaces/${artifact.artifact}\``));
   }
   assert.doesNotMatch(markdown, /Start with missing and partial requirement results/);
+});
+
+test("line-specific queue evidence does not inherit an unrelated diff hunk", () => {
+  const surface = prSurfaceFixture();
+  const schemaRisk = surface.risks.candidates.find((risk) => risk.id === "PR-RISK-002");
+  assert.ok(schemaRisk);
+  schemaRisk.evidence = [
+    {
+      ...fileEvidence("schemas/human_review.schema.json", "Schema evidence outside edited hunk."),
+      line_start: 500,
+      line_end: 502
+    }
+  ];
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface, diff: structuredDiffFixture() });
+  const queueItem = model.review_queue.find((item) => item.risk_ids.includes("PR-RISK-002"));
+
+  assert.ok(queueItem);
+  assert.equal(queueItem.hunk_header, undefined);
+  assert.deepEqual(
+    { line_start: queueItem.line_start, line_end: queueItem.line_end },
+    { line_start: 500, line_end: 502 }
+  );
+});
+
+test("old-side queue evidence keeps rename and delete anchors on the old path", () => {
+  const surface = prSurfaceFixture();
+  const schemaRisk = surface.risks.candidates.find((risk) => risk.id === "PR-RISK-002");
+  const largeDiffRisk = surface.risks.candidates.find((risk) => risk.id === "PR-RISK-003");
+  assert.ok(schemaRisk);
+  assert.ok(largeDiffRisk);
+  schemaRisk.evidence = [
+    {
+      ...fileEvidence("src/old-name.ts", "Old-side rename evidence."),
+      line_start: 21,
+      line_end: 21
+    }
+  ];
+  largeDiffRisk.evidence = [
+    {
+      ...fileEvidence("src/gone.ts", "Deleted-file evidence."),
+      line_start: 8,
+      line_end: 8
+    }
+  ];
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface, diff: structuredDiffFixture() });
+  const renamed = model.review_queue.find((item) => item.risk_ids.includes("PR-RISK-002"));
+  const deleted = model.review_queue.find((item) => item.risk_ids.includes("PR-RISK-003"));
+
+  assert.ok(renamed);
+  assert.equal(renamed.path, "src/old-name.ts");
+  assert.equal(renamed.hunk_header, "@@ -20,2 +20,2 @@");
+  assert.deepEqual({ line_start: renamed.line_start, line_end: renamed.line_end }, { line_start: 21, line_end: 21 });
+
+  assert.ok(deleted);
+  assert.equal(deleted.path, "src/gone.ts");
+  assert.equal(deleted.hunk_header, "@@ -7,2 +0,0 @@");
+  assert.deepEqual({ line_start: deleted.line_start, line_end: deleted.line_end }, { line_start: 8, line_end: 8 });
 });
 
 test("human review writer emits standalone cockpit artifacts from the JSON model", async () => {

@@ -51,6 +51,10 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     const humanMarkdown = fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.md"), "utf8");
     assert.equal(validateJsonSchema(HUMAN_REVIEW_SCHEMA, human).valid, true);
     assert.equal(human.mode, "pr");
+    const changedQueueItem = human.review_queue.find((item: { path: string }) => item.path === CHANGED);
+    assert.ok(changedQueueItem, "human review queue should include the changed renderer file");
+    assert.match(changedQueueItem.hunk_header, /^@@ -\d+,\d+ \+\d+,\d+ @@$/);
+    assert.ok(changedQueueItem.line_start > 0, "human review queue should include a diff-derived line anchor");
     assert.match(humanMarkdown, /^# Human Review/);
     assert.match(humanMarkdown, /## Verdict/);
     assert.match(humanMarkdown, /## Review first/);
