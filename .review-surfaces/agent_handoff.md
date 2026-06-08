@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Local E2E packet generated with provider=mock/not_requested; 7 satisfied, 97 partial, 0 missing, 2 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
+Local E2E packet generated with provider=mock/not_requested; 8 satisfied, 96 partial, 0 missing, 2 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
 
 ## Current Milestone
 
@@ -25,6 +25,8 @@ M5
 ## Implemented Changes
 
 - M .review-surfaces/feedback/manual-dogfood.yaml
+- M src/evidence/evidence.ts
+- M src/feedback/feedback.ts
 - M src/human/human-review.ts
 - A src/risks/manual-checks.ts
 - M src/risks/risks.ts
@@ -62,7 +64,7 @@ M5
 
 ## Open Risks
 
-- RISK-001: 97 requirement(s) have implementation evidence but weak or missing test evidence.
+- RISK-001: 96 requirement(s) have implementation evidence but weak or missing test evidence.
 - RISK-002: 2 requirement(s) remain unknown due to weak evidence.
 
 ## Deferrals

@@ -18,6 +18,7 @@ test("indexes local feedback files with findings and validation commands", async
     path.join(tmp, ".review-surfaces", "feedback", "manual.yaml"),
     `schema_version: review-surfaces.feedback.v1
 author: codex
+head_sha: feedback-head
 packet_path: .review-surfaces/review_packet.json
 findings:
   - id: FB-001
@@ -43,6 +44,7 @@ validation:
   assert.equal(feedback[0].findings[0].id, "FB-001");
   assert.equal(feedback[0].findings[0].category, "evidence_quality");
   assert.equal(feedback[0].findings[0].evidence[0].kind, "feedback");
+  assert.equal(feedback[0].head_sha, "feedback-head");
   assert.deepEqual(feedback[0].validation.passed, ["pnpm run test", "pnpm run build"]);
   assert.deepEqual(feedback[0].validation.failed, ["pnpm run lint"]);
 });
@@ -55,6 +57,7 @@ test("risk analysis maps feedback validation to claimed, indirect, and missing t
         path: ".review-surfaces/feedback/manual.yaml",
         schema_version: "review-surfaces.feedback.v1",
         author: "codex",
+        head_sha: "head123",
         findings: [],
         validation: {
           passed: ["pnpm run test", "pnpm run build"],
@@ -88,6 +91,7 @@ test("risk analysis maps manual CI secret-boundary feedback notes to indirect ev
         path: ".review-surfaces/feedback/manual.yaml",
         schema_version: "review-surfaces.feedback.v1",
         author: "codex",
+        head_sha: "head123",
         findings: [],
         validation: {
           passed: [],
@@ -100,9 +104,22 @@ test("risk analysis maps manual CI secret-boundary feedback notes to indirect ev
             "Manual workflow security review recorded."
           ]
         }
+      },
+      {
+        path: ".review-surfaces/feedback/stale.yaml",
+        schema_version: "review-surfaces.feedback.v1",
+        author: "codex",
+        head_sha: "oldhead",
+        findings: [],
+        validation: {
+          passed: [],
+          failed: [],
+          notes: ["Manual CI secret-boundary check recorded: PR-controlled code cannot access secrets."]
+        }
       }
     ]
   } as unknown as CollectionResult;
+  collection.git = { head_sha: "head123" } as CollectionResult["git"];
   const evaluation: EvaluationModel = {
     summary: "no results",
     results: [],
@@ -116,6 +133,7 @@ test("risk analysis maps manual CI secret-boundary feedback notes to indirect ev
   assert.equal(risks.test_evidence[0].kind, "indirect");
   assert.match(risks.test_evidence[0].summary, /manual CI secret-boundary check/);
   assert.equal(risks.test_evidence[0].evidence?.[0].path, ".review-surfaces/feedback/manual.yaml");
+  assert.equal(risks.test_evidence[0].evidence?.[0].sha, "head123");
   assert.match(risks.test_evidence[0].evidence?.[0].note ?? "", /PR-controlled code cannot access secrets/);
 });
 

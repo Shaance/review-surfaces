@@ -894,7 +894,11 @@ function firstPathEvidenceInScope(evidence: EvidenceRef[], changedPaths: Set<str
 }
 
 function prChangedFilePaths(prSurface: PrReviewSurfaceModel): Set<string> {
-  return new Set(prSurface.scope.changed_files.map((file) => normalizeEvidencePath(file.path)));
+  return new Set(
+    prSurface.scope.changed_files.flatMap((file) =>
+      compactStrings([file.path, file.old_path]).map((filePath) => normalizeEvidencePath(filePath))
+    )
+  );
 }
 
 function evidenceOrMissing(evidence: EvidenceRef[], fallback: string): EvidenceRef[] {
@@ -919,18 +923,25 @@ function questionSeverityForRisk(severity: PacketSeverity): ReviewerQuestion["se
 }
 
 function hasRecordedCiSecretBoundaryManualCheck(input: BuildHumanReviewInput): boolean {
-  return [
-    ...input.packet.risks.test_evidence
-      .filter((item) => item.kind === "direct" || item.kind === "indirect")
-      .flatMap((item) => evidenceText(item.evidence ?? [])),
-    ...evidenceText(input.packet.methodology.evidence)
-  ].some((text) => looksLikeRecordedCiSecretBoundaryManualCheck(text));
+  const headSha = currentHeadSha(input);
+  return input.packet.risks.test_evidence
+    .filter((item) => item.kind === "direct" || item.kind === "indirect")
+    .flatMap((item) => manualCheckEvidenceText(item.evidence ?? [], headSha))
+    .some((text) => looksLikeRecordedCiSecretBoundaryManualCheck(text));
 }
 
-function evidenceText(evidence: EvidenceRef[]): string[] {
+function currentHeadSha(input: BuildHumanReviewInput): string {
+  const manifest = input.packet.manifest as { head_sha?: unknown };
+  return input.prSurface?.scope.head_sha ?? stringOr(manifest.head_sha, "unknown");
+}
+
+function manualCheckEvidenceText(evidence: EvidenceRef[], headSha: string): string[] {
+  if (headSha === "unknown") {
+    return [];
+  }
   return evidence
-    .filter((ref) => ref.validation_status !== "invalid")
-    .flatMap((ref) => compactStrings([ref.note, ref.command]));
+    .filter((ref) => ref.kind === "feedback" && ref.validation_status !== "invalid" && ref.sha === headSha)
+    .flatMap((ref) => compactStrings([ref.note]));
 }
 
 function focusedRequirementGaps(input: BuildHumanReviewInput): RequirementGap[] {

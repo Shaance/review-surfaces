@@ -6,7 +6,7 @@ import { buildHumanReview } from "../src/human/human-review";
 import { renderHumanReviewMarkdown } from "../src/human/render";
 import { ReviewPacket } from "../src/render/packet";
 import { PrReviewSurfaceModel, PR_SURFACE_SCHEMA_VERSION } from "../src/pr/contract";
-import { commandEvidence, fileEvidence, missingEvidence } from "../src/evidence/evidence";
+import { commandEvidence, feedbackEvidence, fileEvidence, missingEvidence } from "../src/evidence/evidence";
 import { validateJsonSchema } from "../src/schema/json-schema";
 import { minimalReviewPacket } from "./helpers/review-packet";
 import {
@@ -282,6 +282,36 @@ test("PR-scoped packet risks match changed files with normalized evidence paths"
   assert.equal(item?.path, "src/human/human-review.ts");
 });
 
+test("PR-scoped packet risks include renamed old paths in the changed-file scope", () => {
+  const packet = packetFixture();
+  packet.risks.items = [
+    {
+      id: "RISK-RENAMED-OLD-PATH",
+      category: "maintainability",
+      severity: "medium",
+      summary: "Renamed old path evidence should remain in the PR queue.",
+      evidence: [fileEvidence("src/human/old-review.ts", "Old side of a rename.")],
+      suggested_checks: ["Inspect the renamed file risk."],
+      manual_review: true
+    }
+  ];
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files.push({
+    path: "src/human/new-review.ts",
+    old_path: "src/human/old-review.ts",
+    status: "R",
+    areas: ["HUMAN_REVIEW"],
+    role: "implementation",
+    added_lines: 3,
+    deleted_lines: 3
+  });
+
+  const model = buildHumanReview({ packet, prSurface });
+  const item = model.review_queue.find((queueItem) => queueItem.risk_ids.includes("RISK-RENAMED-OLD-PATH"));
+
+  assert.equal(item?.path, "src/human/old-review.ts");
+});
+
 test("repo-mode human review promotes focused human gaps into actions", () => {
   const model = buildHumanReview({ packet: packetFixture() });
 
@@ -349,9 +379,10 @@ test("recorded CI secret-boundary manual evidence clears the deterministic block
     kind: "indirect",
     summary: "Manual CI secret-boundary check recorded: PR-controlled code cannot access secrets.",
     evidence: [
-      fileEvidence(
+      feedbackEvidence(
         ".review-surfaces/feedback/manual-dogfood.yaml",
-        "Manual CI secret-boundary check recorded: PR-controlled code cannot access secrets."
+        "Manual CI secret-boundary check recorded: PR-controlled code cannot access secrets.",
+        { sha: "abc123" }
       )
     ]
   });
@@ -369,9 +400,10 @@ test("recorded CI secret-boundary canonical expected result clears the determini
     kind: "indirect",
     summary: "Manual CI secret-boundary check recorded.",
     evidence: [
-      fileEvidence(
+      feedbackEvidence(
         ".review-surfaces/feedback/manual-dogfood.yaml",
-        "Manual CI secret-boundary check recorded: Secret-bearing steps run only from trusted code and PR-controlled files cannot influence credentialed execution."
+        "Manual CI secret-boundary check recorded: Secret-bearing steps run only from trusted code and PR-controlled files cannot influence credentialed execution.",
+        { sha: "abc123" }
       )
     ]
   });
@@ -380,6 +412,49 @@ test("recorded CI secret-boundary canonical expected result clears the determini
 
   assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), false);
   assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), false);
+});
+
+test("stale-head CI secret-boundary feedback does not clear the deterministic blocker", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence.push({
+    id: "TEST-MANUAL-CI-SECRET-STALE",
+    kind: "indirect",
+    summary: "Manual CI secret-boundary check recorded for an older head.",
+    evidence: [
+      feedbackEvidence(
+        ".review-surfaces/feedback/manual-dogfood.yaml",
+        "Manual CI secret-boundary check recorded: PR-controlled code cannot access secrets.",
+        { sha: "oldhead" }
+      )
+    ]
+  });
+
+  const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
+
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), true);
+  assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
+});
+
+test("command text does not clear the CI secret-boundary blocker", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence.push({
+    id: "TEST-COMMAND-MANUAL-CI-SECRET",
+    kind: "direct",
+    summary: "Command transcript records exit 0.",
+    evidence: [
+      commandEvidence(
+        "echo \"Manual CI secret-boundary check recorded: PR-controlled code cannot access secrets\"",
+        "Command transcript recorded exit_code=0 and status=passed.",
+        "high",
+        { validationStatus: "valid" }
+      )
+    ]
+  });
+
+  const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
+
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), true);
+  assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
 });
 
 test("summary-only CI secret-boundary claims do not clear the deterministic blocker", () => {
@@ -404,9 +479,10 @@ test("CI secret-boundary policy wording does not clear the deterministic blocker
     kind: "indirect",
     summary: "Feedback policy requires a manual CI secret-boundary conclusion.",
     evidence: [
-      fileEvidence(
+      feedbackEvidence(
         ".review-surfaces/feedback/manual-dogfood.yaml",
-        "This slice requires an explicit recorded conclusion that PR-controlled code cannot access secrets before clearing the CI secret-boundary blocker."
+        "This slice requires an explicit recorded conclusion that PR-controlled code cannot access secrets before clearing the CI secret-boundary blocker.",
+        { sha: "abc123" }
       )
     ]
   });
@@ -424,9 +500,10 @@ test("CI secret-boundary policy text with recorded wording does not clear the de
     kind: "indirect",
     summary: "Feedback policy requires a manual CI secret-boundary check.",
     evidence: [
-      fileEvidence(
+      feedbackEvidence(
         ".review-surfaces/feedback/manual-dogfood.yaml",
-        "Policy requires a manual CI secret-boundary check recorded: PR-controlled code cannot access secrets."
+        "Policy requires a manual CI secret-boundary check recorded: PR-controlled code cannot access secrets.",
+        { sha: "abc123" }
       )
     ]
   });
@@ -444,9 +521,10 @@ test("inconclusive CI secret-boundary evidence does not clear the deterministic 
     kind: "indirect",
     summary: "Feedback records inconclusive manual CI secret-boundary evidence.",
     evidence: [
-      fileEvidence(
+      feedbackEvidence(
         ".review-surfaces/feedback/manual-dogfood.yaml",
-        "Manual CI secret-boundary check recorded: unable to confirm PR-controlled code cannot access secrets."
+        "Manual CI secret-boundary check recorded: unable to confirm PR-controlled code cannot access secrets.",
+        { sha: "abc123" }
       )
     ]
   });
@@ -464,8 +542,8 @@ test("split CI secret-boundary phrases do not clear the deterministic blocker", 
     kind: "indirect",
     summary: "Feedback records manual and conclusion fragments separately.",
     evidence: [
-      fileEvidence(".review-surfaces/feedback/manual-dogfood.yaml", "Manual CI secret-boundary check recorded."),
-      fileEvidence(".review-surfaces/feedback/manual-dogfood.yaml", "PR-controlled code cannot access secrets.")
+      feedbackEvidence(".review-surfaces/feedback/manual-dogfood.yaml", "Manual CI secret-boundary check recorded.", { sha: "abc123" }),
+      feedbackEvidence(".review-surfaces/feedback/manual-dogfood.yaml", "PR-controlled code cannot access secrets.", { sha: "abc123" })
     ]
   });
 
@@ -481,7 +559,7 @@ test("unrelated manual security wording does not clear the CI secret-boundary bl
     id: "TEST-MANUAL-UNRELATED",
     kind: "indirect",
     summary: "Manual workflow security review recorded.",
-    evidence: [fileEvidence(".review-surfaces/feedback/manual-dogfood.yaml", "Manual security review recorded.")]
+    evidence: [feedbackEvidence(".review-surfaces/feedback/manual-dogfood.yaml", "Manual security review recorded.", { sha: "abc123" })]
   });
 
   const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
