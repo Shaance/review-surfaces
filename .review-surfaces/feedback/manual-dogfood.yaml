@@ -111,8 +111,14 @@ findings:
     affected_section: Human review cockpit
     finding: Codex review found PR-mode human queues could include whole-packet risks outside the PR diff, drop pathless PR risks instead of rendering them as questions, over-block passing tests whose names mention errors, and keep CI secret-boundary blockers impossible to clear after manual evidence is recorded.
     desired_change: Scope packet risks to PR changed files, render pathless PR risks as questions, classify failed validation only from missing/invalid evidence, and let recorded CI secret-boundary manual-check evidence clear the blocker and required manual test-plan item.
+  - id: FB-2026-06-08-008
+    category: review_value
+    severity: medium
+    affected_section: Human review queue
+    finding: PR-scoped dogfood for the hunk-anchor slice showed the queue can resolve a diff hunk, but when deterministic PR risk candidates are empty it still falls back to a broad whole-packet risk instead of producing a precise changed-file review action.
+    desired_change: Add deterministic human-review queue candidates for changed implementation files or affected human-review requirements when PR risks are empty, while keeping pathless or weakly-evidenced items in reviewer questions.
 validation:
-  updated_at: 2026-06-08T20:45:44Z
+  updated_at: 2026-06-08T22:27:00Z
   passed:
     - pnpm run test
     - node --test dist/tests/diagrams.test.js
@@ -123,6 +129,9 @@ validation:
     - pnpm run build
     - pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces
     - pnpm run review-surfaces -- validate .review-surfaces
+    - node bin/review-surfaces.js run --id CMD-PNPM-TEST-FAST --command-transcripts .review-surfaces/commands -- pnpm run test:fast
+    - node bin/review-surfaces.js all --review-scope pr --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
+    - node bin/review-surfaces.js validate .review-surfaces
   failed: []
   notes:
     - The dogfood run used provider=mock and did not require network access.
@@ -146,3 +155,4 @@ validation:
     - Follow-up after PR #25: current-head Codex review comments must be inspected before autoland; this slice addresses all four comments from chatgpt-codex-connector on c64e9da8b2.
     - Follow-up validation also ran pnpm run test:fast and node --test dist/tests/human-review.test.js; these are recorded in notes to keep the bounded handoff validation list stable.
     - Follow-up simplify triad tightened PR queue path normalization and requires an explicit recorded conclusion that PR-controlled code cannot access secrets before clearing the CI secret-boundary blocker.
+    - Human review hunk-anchor dogfood generated review_queue.md with a resolved hunk header for src/cli/index.ts, and recorded a follow-up that empty PR risk candidates still leave the queue too dependent on broad whole-packet risks.

@@ -190,7 +190,7 @@ function renderReviewFirst(items: ReviewQueueItem[]): string {
     .map((item) => {
       const location = formatQueueLocation(item);
       return `${item.rank}. \`${field(location)}\`
-   - Action: ${field(item.reviewer_action)}
+${item.hunk_header ? `   - Hunk: \`${field(item.hunk_header)}\`\n` : ""}   - Action: ${field(item.reviewer_action)}
    - Why ranked: ${field(item.reason)}
    - Risk: ${item.risk_ids.map((risk) => `\`${field(risk)}\``).join(", ") || "none"}
    - Evidence: ${evidenceList(item.evidence)}`;
@@ -207,6 +207,7 @@ function renderQueueDetail(item: ReviewQueueItem): string {
 Priority: ${item.priority}
 Confidence: ${item.confidence}
 File: \`${field(location)}\`
+${item.hunk_header ? `Hunk: \`${field(item.hunk_header)}\`\n` : ""}
 ${item.old_path ? `Old path: \`${field(item.old_path)}\`\n` : ""}
 Why this matters:
 ${field(item.reason, 1000)}

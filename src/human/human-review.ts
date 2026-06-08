@@ -2,7 +2,7 @@ import { compareStrings } from "../core/compare";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
 import { normalizeEvidencePath } from "../evidence/validate";
-import { PrRiskCandidate, PrReviewSurfaceModel } from "../pr/contract";
+import { PrRiskCandidate, PrReviewSurfaceModel, StructuredDiff, StructuredDiffFile, StructuredDiffHunk } from "../pr/contract";
 import { PR_RISK_RULE_METADATA } from "../pr/risk-metadata";
 import { ReviewPacket } from "../render/packet";
 import { looksLikeRecordedCiSecretBoundaryManualCheck } from "../risks/manual-checks";
@@ -26,6 +26,7 @@ import {
 export interface BuildHumanReviewInput {
   packet: ReviewPacket;
   prSurface?: PrReviewSurfaceModel;
+  diff?: StructuredDiff;
   packetPath?: string;
   prSurfacePath?: string;
 }
@@ -34,6 +35,7 @@ interface QueueDraft {
   title: string;
   path: string;
   old_path?: string;
+  hunk_header?: string;
   line_start?: number;
   line_end?: number;
   reviewer_action: string;
@@ -221,26 +223,30 @@ function buildBlockers(input: BuildHumanReviewInput): ReviewBlocker[] {
 function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["review_queue"] {
   const drafts: QueueDraft[] = [];
   const prChangedPaths = input.prSurface ? prChangedFilePaths(input.prSurface) : undefined;
+  const diffIndex = buildDiffIndex(input.diff);
 
   for (const risk of input.prSurface?.risks.candidates ?? []) {
     const first = firstPathEvidence(risk.evidence);
     if (!first) {
       continue;
     }
+    const anchor = queueAnchorForEvidence(first, diffIndex);
     drafts.push({
       title: titleForPrRisk(risk),
-      path: first.path as string,
-      line_start: first.line_start,
-      line_end: first.line_end,
+      path: anchor.path,
+      old_path: anchor.old_path,
+      hunk_header: anchor.hunk_header,
+      line_start: anchor.line_start,
+      line_end: anchor.line_end,
       reviewer_action: risk.suggested_checks[0] ?? "Inspect the cited changed file before approving.",
       reason: rankReasonForPrRisk(risk),
       evidence: evidenceOrMissing(risk.evidence, risk.summary),
       requirement_ids: requirementIds(risk.evidence),
       risk_ids: [risk.id],
-      confidence: first.line_start ? "high" : "medium",
+      confidence: anchor.line_start || anchor.hunk_header ? "high" : "medium",
       priority: priorityForSeverity(risk.severity),
       estimated_review_effort: effortForSeverity(risk.severity),
-      score: scorePrRisk(risk, first),
+      score: scorePrRisk(risk, anchor),
       sortKey: `${risk.id}:${first.path}`
     });
   }
@@ -252,20 +258,23 @@ function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["revie
     if (!first) {
       continue;
     }
+    const anchor = queueAnchorForEvidence(first, diffIndex);
     drafts.push({
       title: titleFromSummary(risk.summary),
-      path: first.path as string,
-      line_start: first.line_start,
-      line_end: first.line_end,
+      path: anchor.path,
+      old_path: anchor.old_path,
+      hunk_header: anchor.hunk_header,
+      line_start: anchor.line_start,
+      line_end: anchor.line_end,
       reviewer_action: risk.suggested_checks?.[0] ?? "Inspect the cited packet risk evidence.",
       reason: `Ranked from whole-packet ${risk.severity} ${risk.category} risk ${risk.id}.`,
       evidence: evidenceOrMissing(risk.evidence ?? [], risk.summary),
       requirement_ids: requirementIds(risk.evidence ?? []),
       risk_ids: [risk.id],
-      confidence: first.line_start ? "high" : "medium",
+      confidence: anchor.line_start || anchor.hunk_header ? "high" : "medium",
       priority: priorityForSeverity(risk.severity),
       estimated_review_effort: effortForSeverity(risk.severity),
-      score: severityWeight(risk.severity) + 10 + (first.line_start ? 5 : 0),
+      score: severityWeight(risk.severity) + 10 + (anchor.line_start ? 5 : 0) + (anchor.hunk_header ? 5 : 0),
       sortKey: `${risk.id}:${first.path}`
     });
   }
@@ -278,6 +287,7 @@ function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["revie
       title: draft.title,
       path: draft.path,
       old_path: draft.old_path,
+      hunk_header: draft.hunk_header,
       line_start: draft.line_start,
       line_end: draft.line_end,
       reviewer_action: draft.reviewer_action,
@@ -775,8 +785,8 @@ function isFailedValidationEvidence(item: RisksModel["test_evidence"][number]): 
   return /\b(?:exit(?:_code)?=|exit\s+)(?:[1-9]\d*)\b/i.test(commandText) || /\bstatus=failed\b/i.test(commandText);
 }
 
-function scorePrRisk(risk: PrRiskCandidate, evidence: EvidenceRef): number {
-  return severityWeight(risk.severity) + ruleWeight(risk.rule) + (evidence.line_start ? 10 : 0);
+function scorePrRisk(risk: PrRiskCandidate, anchor: QueueAnchor): number {
+  return severityWeight(risk.severity) + ruleWeight(risk.rule) + (anchor.line_start ? 10 : 0) + (anchor.hunk_header ? 10 : 0);
 }
 
 function severityWeight(severity: PacketSeverity): number {
@@ -891,6 +901,142 @@ function firstPathEvidenceInScope(evidence: EvidenceRef[], changedPaths: Set<str
     }
   }
   return undefined;
+}
+
+interface DiffIndex {
+  byPath: Map<string, DiffIndexEntry>;
+}
+
+interface DiffIndexEntry {
+  file: StructuredDiffFile;
+  side: "old" | "new";
+}
+
+interface QueueAnchor {
+  path: string;
+  old_path?: string;
+  hunk_header?: string;
+  line_start?: number;
+  line_end?: number;
+}
+
+function buildDiffIndex(diff: StructuredDiff | undefined): DiffIndex | undefined {
+  if (!diff || diff.files.length === 0) {
+    return undefined;
+  }
+  const byPath = new Map<string, DiffIndexEntry>();
+  for (const file of diff.files) {
+    byPath.set(normalizeEvidencePath(file.path), { file, side: file.status === "D" ? "old" : "new" });
+    if (file.old_path) {
+      byPath.set(normalizeEvidencePath(file.old_path), { file, side: "old" });
+    }
+  }
+  return { byPath };
+}
+
+function queueAnchorForEvidence(evidence: EvidenceRef, diffIndex: DiffIndex | undefined): QueueAnchor {
+  const path = normalizeEvidencePath(String(evidence.path));
+  const fallbackRange = normalizedEvidenceRange(evidence);
+  const fallback = stripUndefined({
+    path,
+    line_start: fallbackRange?.line_start,
+    line_end: fallbackRange?.line_end
+  });
+  if (!diffIndex) {
+    return fallback;
+  }
+  const entry = diffIndex.byPath.get(path);
+  if (!entry) {
+    return fallback;
+  }
+  const { file: diffFile, side } = entry;
+  const anchorPath = anchorPathForSide(diffFile, side);
+  const hunk = hunkForEvidence(diffFile, evidence, side) ?? (fallbackRange ? undefined : firstChangedHunk(diffFile));
+  if (!hunk) {
+    return stripUndefined({
+      path: anchorPath,
+      old_path: oldPathForAnchor(diffFile, anchorPath),
+      line_start: fallbackRange?.line_start,
+      line_end: fallbackRange?.line_end
+    });
+  }
+  const changedRange = fallbackRange ?? changedLineRange(hunk, side);
+  return stripUndefined({
+    path: anchorPath,
+    old_path: oldPathForAnchor(diffFile, anchorPath),
+    hunk_header: formatHunkHeader(hunk),
+    line_start: changedRange?.line_start,
+    line_end: changedRange?.line_end
+  });
+}
+
+function hunkForEvidence(
+  diffFile: StructuredDiffFile,
+  evidence: EvidenceRef,
+  side: "old" | "new"
+): StructuredDiffHunk | undefined {
+  if (!evidence.line_start) {
+    return undefined;
+  }
+  const range = normalizedEvidenceRange(evidence);
+  if (!range) {
+    return undefined;
+  }
+  return diffFile.hunks.find((hunk) => hunkOverlapsRange(hunk, side, range.line_start, range.line_end));
+}
+
+function normalizedEvidenceRange(evidence: EvidenceRef): { line_start: number; line_end: number } | undefined {
+  if (!evidence.line_start || evidence.line_start < 1) {
+    return undefined;
+  }
+  const lineEnd = evidence.line_end && evidence.line_end >= evidence.line_start ? evidence.line_end : evidence.line_start;
+  return { line_start: evidence.line_start, line_end: lineEnd };
+}
+
+function hunkOverlapsRange(
+  hunk: StructuredDiffHunk,
+  side: "old" | "new",
+  lineStart: number,
+  lineEnd: number
+): boolean {
+  const hunkStart = side === "old" ? hunk.old_start : hunk.new_start;
+  const hunkLines = side === "old" ? hunk.old_lines : hunk.new_lines;
+  const hunkEnd = hunkStart + Math.max(hunkLines, 1) - 1;
+  return hunkStart > 0 && hunkStart <= lineEnd && hunkEnd >= lineStart;
+}
+
+function firstChangedHunk(diffFile: StructuredDiffFile): StructuredDiffHunk | undefined {
+  return diffFile.hunks.find((hunk) => hunk.lines.some((line) => line.kind === "add" || line.kind === "delete"));
+}
+
+function changedLineRange(hunk: StructuredDiffHunk, side: "old" | "new"): { line_start: number; line_end: number } | undefined {
+  let lineStart: number | undefined;
+  let lineEnd: number | undefined;
+  for (const line of hunk.lines) {
+    const lineNumber = side === "old" ? line.old_line : line.new_line;
+    const wantedKind = side === "old" ? "delete" : "add";
+    if (line.kind !== wantedKind || typeof lineNumber !== "number" || lineNumber <= 0) {
+      continue;
+    }
+    lineStart = lineStart === undefined ? lineNumber : Math.min(lineStart, lineNumber);
+    lineEnd = lineEnd === undefined ? lineNumber : Math.max(lineEnd, lineNumber);
+  }
+  if (lineStart === undefined || lineEnd === undefined) {
+    return undefined;
+  }
+  return { line_start: lineStart, line_end: lineEnd };
+}
+
+function formatHunkHeader(hunk: StructuredDiffHunk): string {
+  return `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@`;
+}
+
+function anchorPathForSide(diffFile: StructuredDiffFile, side: "old" | "new"): string {
+  return side === "old" && diffFile.old_path ? diffFile.old_path : diffFile.path;
+}
+
+function oldPathForAnchor(diffFile: StructuredDiffFile, anchorPath: string): string | undefined {
+  return diffFile.old_path && diffFile.old_path !== anchorPath ? diffFile.old_path : undefined;
 }
 
 function prChangedFilePaths(prSurface: PrReviewSurfaceModel): Set<string> {

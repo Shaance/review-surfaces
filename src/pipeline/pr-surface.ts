@@ -33,6 +33,7 @@ export interface AssemblePrSurfaceInput {
   providerName: ProviderName;
   model?: string;
   redactSecrets: boolean;
+  diff?: StructuredDiff;
 }
 
 function readDiffText(collection: CollectionResult): string {
@@ -45,7 +46,7 @@ function readDiffText(collection: CollectionResult): string {
 }
 
 export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Promise<PrReviewSurfaceModel> {
-  const diff: StructuredDiff = parseStructuredDiff(readDiffText(input.collection));
+  const diff: StructuredDiff = input.diff ?? parseStructuredDiff(readDiffText(input.collection));
 
   const scope = buildPrScope({
     collection: input.collection,
