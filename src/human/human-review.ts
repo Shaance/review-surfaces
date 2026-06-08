@@ -53,6 +53,7 @@ interface QueueDraft {
 type RequirementGap = ReviewPacket["evaluation"]["results"][number];
 type MissingAutomaticTestGap = NonNullable<RisksModel["missing_automatic_tests"]>[number];
 type MissingManualCheckGap = NonNullable<RisksModel["missing_manual_checks"]>[number];
+type PrChangedFile = PrReviewSurfaceModel["scope"]["changed_files"][number];
 
 const MAX_QUEUE = 20;
 const MAX_BLOCKERS = 8;
@@ -61,6 +62,7 @@ const MAX_COMMENTS = 10;
 const MAX_TEST_PLAN = 12;
 const MAX_TRUST_ITEMS = 10;
 const MAX_FOCUSED_REQUIREMENT_TESTS = 6;
+const MAX_CHANGED_FILE_QUEUE = 8;
 
 export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel {
   const blockers = buildBlockers(input);
@@ -251,6 +253,10 @@ function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["revie
     });
   }
 
+  if (input.prSurface && input.prSurface.risks.candidates.length === 0) {
+    drafts.push(...changedFileQueueDrafts(input.prSurface, diffIndex));
+  }
+
   for (const risk of input.packet.risks.items) {
     const first = prChangedPaths
       ? firstPathEvidenceInScope(risk.evidence ?? [], prChangedPaths)
@@ -300,6 +306,39 @@ function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["revie
       estimated_review_effort: draft.estimated_review_effort
     })
   );
+}
+
+function changedFileQueueDrafts(
+  prSurface: PrReviewSurfaceModel,
+  diffIndex: DiffIndex | undefined
+): QueueDraft[] {
+  return prSurface.scope.changed_files
+    .filter((file) => changedFileQueueWeight(file) > 0)
+    .sort((left, right) => changedFileQueueWeight(right) - changedFileQueueWeight(left) || compareStrings(left.path, right.path))
+    .slice(0, MAX_CHANGED_FILE_QUEUE)
+    .map((file) => {
+      const evidence = fileEvidence(file.path, "Changed PR file queued because no deterministic PR risk candidate fired.");
+      const anchor = queueAnchorForEvidence(evidence, diffIndex);
+      const areas = file.areas.length ? file.areas.join(", ") : "unmapped area";
+      return {
+        title: titleForChangedFile(file),
+        path: anchor.path,
+        old_path: anchor.old_path,
+        hunk_header: anchor.hunk_header,
+        line_start: anchor.line_start,
+        line_end: anchor.line_end,
+        reviewer_action: actionForChangedFile(file),
+        reason: `No deterministic PR risk candidate fired; queued changed ${file.role} file in ${areas}.`,
+        evidence: [evidence],
+        requirement_ids: affectedRequirementIdsForFile(prSurface, file),
+        risk_ids: [],
+        confidence: anchor.line_start || anchor.hunk_header ? "high" as const : "medium" as const,
+        priority: priorityForChangedFile(file),
+        estimated_review_effort: file.role === "test" ? "quick" as const : "moderate" as const,
+        score: changedFileQueueWeight(file) + (anchor.line_start ? 8 : 0) + (anchor.hunk_header ? 8 : 0),
+        sortKey: `changed:${file.path}`
+      };
+    });
 }
 
 function buildQuestions(input: BuildHumanReviewInput, blockers: ReviewBlocker[]): ReviewerQuestion[] {
@@ -822,6 +861,68 @@ function titleFromSummary(summary: string): string {
     return "Packet risk";
   }
   return first.length <= 80 ? first : `${first.slice(0, 77)}...`;
+}
+
+function titleForChangedFile(file: PrChangedFile): string {
+  switch (file.role) {
+    case "implementation":
+      return "Changed implementation file";
+    case "test":
+      return "Changed test file";
+    case "ci":
+      return "Changed CI file";
+    case "config":
+      return "Changed configuration file";
+    case "spec":
+      return "Changed contract or spec file";
+    default:
+      return "Changed review file";
+  }
+}
+
+function actionForChangedFile(file: PrChangedFile): string {
+  switch (file.role) {
+    case "implementation":
+      return `Inspect ${file.path} and confirm the changed behavior is covered by existing or co-changed tests.`;
+    case "test":
+      return `Inspect ${file.path} to confirm the new or changed test exercises the intended behavior.`;
+    case "ci":
+      return `Inspect ${file.path} for workflow permissions, checkout boundaries, and reviewer-facing side effects.`;
+    case "config":
+      return `Inspect ${file.path} for configuration contract or runtime behavior changes.`;
+    case "spec":
+      return `Inspect ${file.path} for public requirement, schema, or workflow contract changes.`;
+    default:
+      return `Inspect ${file.path} before approving.`;
+  }
+}
+
+function changedFileQueueWeight(file: PrChangedFile): number {
+  switch (file.role) {
+    case "ci":
+      return 72;
+    case "implementation":
+      return 68;
+    case "spec":
+    case "config":
+      return 60;
+    case "test":
+      return 42;
+    default:
+      return 0;
+  }
+}
+
+function priorityForChangedFile(file: PrChangedFile): HumanReviewPriority {
+  return file.role === "test" ? "low" : "medium";
+}
+
+function affectedRequirementIdsForFile(prSurface: PrReviewSurfaceModel, file: PrChangedFile): string[] {
+  const areas = new Set(file.areas);
+  return prSurface.scope.affected_requirements
+    .filter((requirement) => requirement.group_key && areas.has(requirement.group_key))
+    .map((requirement) => requirement.acai_id ?? requirement.requirement_id)
+    .slice(0, 8);
 }
 
 function priorityForSeverity(severity: PacketSeverity): HumanReviewPriority {

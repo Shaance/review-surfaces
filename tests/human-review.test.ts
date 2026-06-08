@@ -229,6 +229,13 @@ function structuredDiffFixture() {
     " properties:",
     "+  hunk_header: { type: string }",
     "   verdict:",
+    "diff --git a/src/human/human-review.ts b/src/human/human-review.ts",
+    "--- a/src/human/human-review.ts",
+    "+++ b/src/human/human-review.ts",
+    "@@ -220,2 +220,3 @@",
+    " function buildReviewQueue() {",
+    "+  buildChangedFileFallbackQueue();",
+    " }",
     "diff --git a/src/old-name.ts b/src/new-name.ts",
     "similarity index 90%",
     "rename from src/old-name.ts",
@@ -358,6 +365,34 @@ test("old-side queue evidence keeps rename and delete anchors on the old path", 
   assert.equal(deleted.path, "src/gone.ts");
   assert.equal(deleted.hunk_header, "@@ -7,2 +0,0 @@");
   assert.deepEqual({ line_start: deleted.line_start, line_end: deleted.line_end }, { line_start: 8, line_end: 8 });
+});
+
+test("PR mode queues changed implementation files when no PR risk candidate fires", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files.push({
+    path: "src/human/human-review.ts",
+    status: "M",
+    areas: ["HUMAN_REVIEW"],
+    role: "implementation",
+    added_lines: 12,
+    deleted_lines: 2
+  });
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface, diff: structuredDiffFixture() });
+  const first = model.review_queue[0];
+  const changedImpl = model.review_queue.find((item) => item.path === "src/human/human-review.ts");
+  const broadRiskIndex = model.review_queue.findIndex((item) => item.risk_ids.includes("RISK-001"));
+  const changedImplIndex = model.review_queue.findIndex((item) => item.path === "src/human/human-review.ts");
+
+  assert.deepEqual(first.risk_ids, []);
+  assert.match(first.reason, /No deterministic PR risk candidate fired/);
+  assert.ok(changedImpl);
+  assert.equal(changedImpl.title, "Changed implementation file");
+  assert.equal(changedImpl.hunk_header, "@@ -220,2 +220,3 @@");
+  assert.deepEqual(changedImpl.risk_ids, []);
+  assert.ok(changedImpl.requirement_ids.includes("review-surfaces.HUMAN_REVIEW.1"));
+  assert.ok(broadRiskIndex > changedImplIndex, "broad packet risk remains available below precise changed-file actions");
 });
 
 test("human review writer emits standalone cockpit artifacts from the JSON model", async () => {
