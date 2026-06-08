@@ -290,8 +290,28 @@ function validationEvidenceFromFeedback(collection: CollectionResult, transcript
         ]
       });
     }
+    for (const note of feedbackFile.validation.notes) {
+      if (!looksLikeManualCiSecretBoundaryNote(note)) {
+        continue;
+      }
+      entries.push({
+        id: `TEST-FB-${String(entries.length + 1).padStart(3, "0")}`,
+        kind: "indirect",
+        summary: `Feedback records a manual CI secret-boundary check: ${note}`,
+        requirement_ids: [],
+        evidence: [feedbackEvidence(feedbackFile.path, note)]
+      });
+    }
   }
   return entries;
+}
+
+function looksLikeManualCiSecretBoundaryNote(note: string): boolean {
+  const lower = note.toLowerCase();
+  const hasExplicitConclusion = /pr-controlled code cannot access secrets/.test(lower);
+  const hasManualContext = /\b(?:manual|recorded|review|check)\b/.test(lower);
+  const hasSecretBoundaryContext = /\bci\b|\bworkflow\b|\bsecret\b|secret[- ]boundary/.test(lower);
+  return hasExplicitConclusion && hasManualContext && hasSecretBoundaryContext;
 }
 
 // Phase 5a: map parsed JUnit cases to test_evidence. A PASSING case becomes

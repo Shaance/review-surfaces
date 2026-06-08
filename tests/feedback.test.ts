@@ -80,6 +80,42 @@ test("risk analysis maps feedback validation to claimed, indirect, and missing t
   assert.equal(risks.test_evidence[0].evidence?.[0].path, ".review-surfaces/feedback/manual.yaml");
 });
 
+test("risk analysis maps manual CI secret-boundary feedback notes to indirect evidence", () => {
+  const collection = {
+    changedFiles: [],
+    feedback: [
+      {
+        path: ".review-surfaces/feedback/manual.yaml",
+        schema_version: "review-surfaces.feedback.v1",
+        author: "codex",
+        findings: [],
+        validation: {
+          passed: [],
+          failed: [],
+          notes: [
+            "Manual CI secret-boundary check recorded: PR-controlled code cannot access secrets.",
+            "Manual workflow security review recorded."
+          ]
+        }
+      }
+    ]
+  } as unknown as CollectionResult;
+  const evaluation: EvaluationModel = {
+    summary: "no results",
+    results: [],
+    overreach: [],
+    acai_coverage: {}
+  };
+
+  const risks = analyzeRisks(collection, evaluation, []);
+
+  assert.equal(risks.test_evidence.length, 1);
+  assert.equal(risks.test_evidence[0].kind, "indirect");
+  assert.match(risks.test_evidence[0].summary, /manual CI secret-boundary check/);
+  assert.equal(risks.test_evidence[0].evidence?.[0].path, ".review-surfaces/feedback/manual.yaml");
+  assert.match(risks.test_evidence[0].evidence?.[0].note ?? "", /PR-controlled code cannot access secrets/);
+});
+
 test("feedback ingestion files map to the dogfood Acai review area", async () => {
   const areas = await defaultReviewSurfacesAreas();
   const matcher = createReviewAreaMatcher(areas);

@@ -26,6 +26,8 @@ M5
 
 - M .review-surfaces/feedback/manual-dogfood.yaml
 - M src/human/human-review.ts
+- M src/risks/risks.ts
+- M tests/feedback.test.ts
 - M tests/human-review.test.ts
 
 ## Validation Evidence
