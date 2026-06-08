@@ -921,17 +921,20 @@ function hasRecordedCiSecretBoundaryManualCheck(input: BuildHumanReviewInput): b
   const texts = [
     ...input.packet.risks.test_evidence
       .filter((item) => item.kind === "direct" || item.kind === "indirect")
-      .flatMap((item) => [
-        item.summary,
-        ...(item.evidence ?? []).flatMap((ref) => [ref.note, ref.path, ref.command])
-      ]),
-    ...input.packet.methodology.evidence.flatMap((ref) => [ref.note, ref.path, ref.command])
+      .flatMap((item) => evidenceText(item.evidence ?? [])),
+    ...evidenceText(input.packet.methodology.evidence)
   ];
   const haystack = compactStrings(texts).join(" ").toLowerCase();
   const hasExplicitConclusion = /pr-controlled code cannot access secrets/.test(haystack);
   const hasManualContext = /\b(?:manual|recorded|review|check)\b/.test(haystack);
   const hasSecretBoundaryContext = /\bci\b|\bworkflow\b|\bsecret\b|secret[- ]boundary/.test(haystack);
   return hasExplicitConclusion && hasManualContext && hasSecretBoundaryContext;
+}
+
+function evidenceText(evidence: EvidenceRef[]): Array<string | undefined> {
+  return evidence
+    .filter((ref) => ref.validation_status !== "invalid")
+    .flatMap((ref) => [ref.note, ref.path, ref.command]);
 }
 
 function focusedRequirementGaps(input: BuildHumanReviewInput): RequirementGap[] {
