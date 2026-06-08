@@ -909,7 +909,7 @@ function changedFileQueueWeight(file: PrChangedFile): number {
     case "config":
       return 60;
     case "test":
-      return 42;
+      return 50;
     default:
       return 0;
   }
@@ -921,8 +921,12 @@ function priorityForChangedFile(file: PrChangedFile): HumanReviewPriority {
 
 function affectedRequirementIdsForFile(prSurface: PrReviewSurfaceModel, file: PrChangedFile): string[] {
   const areas = new Set(file.areas);
+  const paths = new Set(compactStrings([file.path, file.old_path]).map((filePath) => normalizeEvidencePath(filePath)));
   return prSurface.scope.affected_requirements
-    .filter((requirement) => requirement.group_key && areas.has(requirement.group_key))
+    .filter((requirement) =>
+      (requirement.group_key && areas.has(requirement.group_key)) ||
+      requirement.reasons.some((reason) => reason.path && paths.has(normalizeEvidencePath(reason.path)))
+    )
     .map((requirement) => requirement.acai_id ?? requirement.requirement_id)
     .slice(0, 8);
 }
