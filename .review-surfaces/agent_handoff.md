@@ -37,12 +37,12 @@ M5
 
 ## Failed Or Missing Validation
 
-- TEST-FB-001 [claimed]: Feedback records a passing validation command: node --test dist/tests/human-review.test.js
-- TEST-FB-002 [claimed]: Feedback records a passing validation command: node --test dist/tests/diagrams.test.js
-- TEST-FB-003 [claimed]: Feedback records a passing validation command: node --test dist/tests/evaluation.test.js
-- TEST-FB-004 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
-- TEST-FB-005 [indirect]: Feedback records a passing validation command: pnpm run typecheck
-- TEST-FB-006 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces
+- TEST-FB-001 [claimed]: Feedback records a passing validation command: node --test dist/tests/diagrams.test.js
+- TEST-FB-002 [claimed]: Feedback records a passing validation command: node --test dist/tests/evaluation.test.js
+- TEST-FB-003 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
+- TEST-FB-004 [indirect]: Feedback records a passing validation command: pnpm run typecheck
+- TEST-FB-005 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- dogfood --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --out .review-surfaces
+- TEST-FB-006 [indirect]: Feedback records a passing validation command: pnpm run review-surfaces -- validate .review-surfaces
 
 ## Methodology Flags
 

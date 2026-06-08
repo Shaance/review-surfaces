@@ -115,8 +115,6 @@ validation:
   updated_at: 2026-06-08T20:45:44Z
   passed:
     - pnpm run test
-    - pnpm run test:fast
-    - node --test dist/tests/human-review.test.js
     - node --test dist/tests/diagrams.test.js
     - node --test dist/tests/evaluation.test.js
     - pnpm run review-surfaces -- all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
@@ -146,4 +144,5 @@ validation:
     - Deferred improvement: cache-hit human rendering still reparses already-validated packet/surface artifacts; fix in a focused cache helper cleanup.
     - Deferred improvement: extract shared bounded Markdown and sidecar schema-validation helpers after the human surface API settles.
     - Follow-up after PR #25: current-head Codex review comments must be inspected before autoland; this slice addresses all four comments from chatgpt-codex-connector on c64e9da8b2.
+    - Follow-up validation also ran pnpm run test:fast and node --test dist/tests/human-review.test.js; these are recorded in notes to keep the bounded handoff validation list stable.
     - Follow-up simplify triad tightened PR queue path normalization and requires an explicit recorded conclusion that PR-controlled code cannot access secrets before clearing the CI secret-boundary blocker.
