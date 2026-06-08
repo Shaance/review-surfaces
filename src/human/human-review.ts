@@ -866,6 +866,9 @@ function titleFromSummary(summary: string): string {
 }
 
 function titleForChangedFile(file: PrChangedFile): string {
+  if (file.role === "doc" && isSourceOfTruthReviewDoc(file.path)) {
+    return "Changed source-of-truth document";
+  }
   switch (file.role) {
     case "implementation":
       return "Changed implementation file";
@@ -883,6 +886,9 @@ function titleForChangedFile(file: PrChangedFile): string {
 }
 
 function actionForChangedFile(file: PrChangedFile): string {
+  if (file.role === "doc" && isSourceOfTruthReviewDoc(file.path)) {
+    return `Inspect ${file.path} for reviewer workflow, requirement, or product-contract changes.`;
+  }
   switch (file.role) {
     case "implementation":
       return `Inspect ${file.path} and confirm the changed behavior is covered by existing or co-changed tests.`;
@@ -910,9 +916,24 @@ function changedFileQueueWeight(file: PrChangedFile): number {
       return 60;
     case "test":
       return 50;
+    case "doc":
+      return isSourceOfTruthReviewDoc(file.path) ? 46 : 0;
     default:
       return 0;
   }
+}
+
+function isSourceOfTruthReviewDoc(filePath: string): boolean {
+  const normalizedPath = normalizeEvidencePath(filePath);
+  return (
+    normalizedPath === "AGENTS.md" ||
+    normalizedPath === "CLAUDE.md" ||
+    normalizedPath === "README.md" ||
+    normalizedPath === "README.bootstrap.md" ||
+    normalizedPath === "docs/review-surfaces-trd.md" ||
+    normalizedPath === "docs/dogfooding.md" ||
+    /^\.agents\/skills\/[^/]+\/SKILL\.md$/.test(normalizedPath)
+  );
 }
 
 function priorityForChangedFile(file: PrChangedFile): HumanReviewPriority {

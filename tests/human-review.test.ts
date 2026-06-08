@@ -478,6 +478,35 @@ test("PR mode fallback keeps changed test files above medium whole-packet risks"
   assert.ok(changedTestIndex < broadRiskIndex, "precise changed test fallback should outrank the broad packet risk");
 });
 
+test("PR mode fallback queues source-of-truth docs but not ordinary docs", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files.push({
+    path: "AGENTS.md",
+    status: "M",
+    areas: ["BOOTSTRAP"],
+    role: "doc",
+    added_lines: 3,
+    deleted_lines: 1
+  });
+  surface.scope.affected_requirements.push({
+    requirement_id: "REQ-BOOTSTRAP-1",
+    acai_id: "review-surfaces.BOOTSTRAP.1",
+    title: "Agent workflow source of truth",
+    group_key: "BOOTSTRAP",
+    reasons: [{ rule: "changed_path_requirement_group", confidence: "high", path: "AGENTS.md" }]
+  });
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface, diff: structuredDiffFixture() });
+  const sourceDoc = model.review_queue.find((item) => item.path === "AGENTS.md");
+
+  assert.ok(sourceDoc);
+  assert.equal(sourceDoc.title, "Changed source-of-truth document");
+  assert.ok(sourceDoc.requirement_ids.includes("review-surfaces.BOOTSTRAP.1"));
+  assert.equal(model.review_queue.some((item) => item.path === "docs/notes.md"), false);
+  assert.ok(model.skim_safe.some((item) => item.path === "docs/notes.md"));
+});
+
 test("human review writer emits standalone cockpit artifacts from the JSON model", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-human-artifacts-"));
   try {
