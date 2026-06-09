@@ -48,7 +48,7 @@ export interface ReviewAreaMatcher {
 
 interface ReviewAreaMatchContext {
   testPath: boolean;
-  testTokens?: Set<string>;
+  testTokens?: string[];
 }
 
 export interface BuildReviewAreasOptions {
@@ -92,13 +92,15 @@ export function createReviewAreaMatcher(areas: ReviewArea[]): ReviewAreaMatcher 
 // Split a path into lowercased whole tokens on directory, dot, hyphen, and
 // underscore boundaries so a test_keyword only matches a real path/filename
 // segment (e.g. "eval" matches "tests/eval.test.ts" but NOT "tests/medieval.ts").
+function pathTokenList(filePath: string): string[] {
+  return filePath
+    .toLowerCase()
+    .split(/[/.\-_]+/)
+    .filter((token) => token.length > 0);
+}
+
 function pathTokens(filePath: string): Set<string> {
-  return new Set(
-    filePath
-      .toLowerCase()
-      .split(/[/.\-_]+/)
-      .filter((token) => token.length > 0)
-  );
+  return new Set(pathTokenList(filePath));
 }
 
 // A true directory prefix (startsWith with a trailing "/"), an exact path match,
@@ -224,7 +226,7 @@ function createMatchContext(filePath: string, options: ReviewAreaMatchOptions): 
   const testPath = filePath.startsWith("tests/");
   return {
     testPath,
-    testTokens: testPath ? pathTokens(filePath) : undefined
+    testTokens: testPath ? pathTokenList(filePath) : undefined
   };
 }
 
@@ -237,8 +239,24 @@ function matchesTestKeyword(
   keyword: string,
   context: ReviewAreaMatchContext
 ): boolean {
-  const normalized = keyword.toLowerCase();
-  return (context.testTokens ?? pathTokens(filePath)).has(normalized);
+  const keywordTokens = pathTokenList(keyword);
+  if (keywordTokens.length === 0) {
+    return false;
+  }
+  const testTokens = context.testTokens ?? pathTokenList(filePath);
+  if (keywordTokens.length === 1) {
+    return testTokens.includes(keywordTokens[0]);
+  }
+  return includesTokenSequence(testTokens, keywordTokens);
+}
+
+function includesTokenSequence(tokens: string[], sequence: string[]): boolean {
+  for (let index = 0; index <= tokens.length - sequence.length; index += 1) {
+    if (sequence.every((token, offset) => tokens[index + offset] === token)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function addUnique(groups: string[], group: string): void {

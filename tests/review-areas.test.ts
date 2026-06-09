@@ -93,3 +93,22 @@ test("configured review areas map methodology tests to METHODOLOGY", async () =>
     "tests/methodology.test.ts should count as METHODOLOGY validation evidence"
   );
 });
+
+test("configured review areas preserve compound test keyword matches", async () => {
+  const areas = await defaultReviewSurfacesAreas();
+  const matcher = createReviewAreaMatcher(areas);
+
+  assert.ok(
+    matcher.groupsForPath("tests/pr-surface-e2e.test.ts", { purpose: "review_surface" }).includes("PROVIDERS"),
+    "tests/pr-surface-e2e.test.ts should count as PROVIDERS changed-test review signal"
+  );
+  assert.ok(
+    matcher.groupsForPath("tests/pr-surface-e2e.test.ts", { purpose: "requirement_proof" }).includes("PROVIDERS"),
+    "tests/pr-surface-e2e.test.ts should count as PROVIDERS validation evidence"
+  );
+  assert.equal(
+    matcher.groupsForPath("tests/surface-pr-e2e.test.ts", { purpose: "review_surface" }).includes("PROVIDERS"),
+    false,
+    "compound keywords should match token order, not any separated token pair"
+  );
+});
