@@ -13,6 +13,7 @@ import { PR_RISK_RULE_METADATA } from "../pr/risk-metadata";
 import { ReviewPacket } from "../render/packet";
 import { looksLikeRecordedCiSecretBoundaryManualCheck } from "../risks/manual-checks";
 import { RiskItem, RisksModel } from "../risks/risks";
+import { classifyRole } from "../scope/pr-scope";
 import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-contract";
 import {
   DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
@@ -106,6 +107,7 @@ type RequirementGap = ReviewPacket["evaluation"]["results"][number];
 type MissingAutomaticTestGap = NonNullable<RisksModel["missing_automatic_tests"]>[number];
 type MissingManualCheckGap = NonNullable<RisksModel["missing_manual_checks"]>[number];
 type PrChangedFile = PrReviewSurfaceModel["scope"]["changed_files"][number];
+type IntentObservedFile = Pick<PrChangedFile, "path" | "old_path" | "status" | "areas" | "role" | "added_lines" | "deleted_lines">;
 type TrustFactDraft = Omit<TrustFact, "id">;
 type InvalidEvidenceDraft = Omit<InvalidEvidenceSummary, "id">;
 type SuggestedCommentDraft = Omit<SuggestedReviewComment, "id">;
@@ -915,7 +917,7 @@ function buildIntentMismatch(input: BuildHumanReviewInput): IntentMismatch {
     expected_by_spec: cappedIntentMismatchItems("INTENT-EXPECTED", expectedIntentDrafts(input, focus)),
     observed_in_diff: cappedIntentMismatchItems("INTENT-OBSERVED", observedDiffDrafts(input)),
     possible_mismatches: cappedIntentMismatchItems("INTENT-MISMATCH", possibleMismatchDrafts(input, focus)),
-    possible_overreach: cappedIntentMismatchItems("INTENT-OVERREACH", possibleOverreachDrafts(input)),
+    possible_overreach: cappedIntentMismatchItems("INTENT-OVERREACH", possibleOverreachDrafts(input, focus)),
     missing_intent: cappedIntentMismatchItems("INTENT-MISSING", missingIntentDrafts(input))
   };
 }
@@ -943,7 +945,7 @@ function expectedIntentDrafts(input: BuildHumanReviewInput, focus: IntentMismatc
 
 function observedDiffDrafts(input: BuildHumanReviewInput): IntentMismatchDraft[] {
   const acidKeysByPath = diffAcidKeysByPath(input.diff);
-  return (input.prSurface?.scope.changed_files ?? [])
+  return intentObservedFiles(input)
     .slice()
     .sort((left, right) => compareStrings(left.path, right.path))
     .slice(0, MAX_INTENT_MISMATCH_ITEMS)
@@ -1000,8 +1002,14 @@ function possibleMismatchDrafts(input: BuildHumanReviewInput, focus: IntentMisma
   });
 }
 
-function possibleOverreachDrafts(input: BuildHumanReviewInput): IntentMismatchDraft[] {
-  const packetOverreach = (input.packet.evaluation.overreach ?? []).map((result) => {
+function possibleOverreachDrafts(input: BuildHumanReviewInput, focus: IntentMismatchFocus): IntentMismatchDraft[] {
+  const packetOverreachResults = (input.packet.evaluation.overreach ?? [])
+    .filter((result) =>
+      input.prSurface === undefined ||
+      intentMismatchResultIsStrictlyInFocus(result, focus) ||
+      requirementResultKeys(result).some((key) => focus.scopedRequirementKeys.has(key))
+    );
+  const packetOverreach = packetOverreachResults.map((result) => {
     const evidence = requirementGapEvidence(result);
     return {
       summary: `Possible overreach for ${requirementComparisonKey(result)}: ${result.summary}`,
@@ -1028,7 +1036,7 @@ function possibleOverreachDrafts(input: BuildHumanReviewInput): IntentMismatchDr
 }
 
 function missingIntentDrafts(input: BuildHumanReviewInput): IntentMismatchDraft[] {
-  const changedFiles = input.prSurface?.scope.changed_files ?? [];
+  const changedFiles = intentObservedFiles(input);
   const outOfScopePaths = new Set(
     (input.prSurface?.scope.out_of_scope_changed_files ?? [])
       .filter((file) => file.reason === "unmapped")
@@ -1042,6 +1050,9 @@ function missingIntentDrafts(input: BuildHumanReviewInput): IntentMismatchDraft[
   const drafts: IntentMismatchDraft[] = [];
   for (const file of changedFiles) {
     if (ignoredOrGeneratedPaths.has(normalizeEvidencePath(file.path))) {
+      continue;
+    }
+    if (file.role === "generated") {
       continue;
     }
     const requirementIds = input.prSurface ? affectedRequirementIdsForFile(input.prSurface, file) : [];
@@ -1102,7 +1113,7 @@ function cappedIntentMismatchItems(prefix: string, drafts: IntentMismatchDraft[]
 
 function buildIntentMismatchFocus(input: BuildHumanReviewInput): IntentMismatchFocus {
   const exactRequirementKeys = diffAcidKeys(input.diff);
-  const changedPaths = input.prSurface ? prChangedFilePaths(input.prSurface) : new Set<string>();
+  const changedPaths = input.prSurface ? prChangedFilePaths(input.prSurface) : diffChangedFilePaths(input.diff);
   const scopedRequirementKeys = new Set<string>([...exactRequirementKeys]);
   for (const requirement of input.prSurface?.scope.affected_requirements ?? []) {
     if (affectedRequirementReasons(requirement).some((reason) => reason.path && changedPaths.has(normalizeEvidencePath(reason.path)))) {
@@ -1120,6 +1131,49 @@ function buildIntentMismatchFocus(input: BuildHumanReviewInput): IntentMismatchF
     }
   }
   return { exactRequirementKeys, scopedRequirementKeys, changedPaths };
+}
+
+function intentObservedFiles(input: BuildHumanReviewInput): IntentObservedFile[] {
+  if (input.prSurface) {
+    return input.prSurface.scope.changed_files;
+  }
+  return (input.diff?.files ?? []).map((file) => {
+    const counts = diffChangedLineCounts(file);
+    return {
+      path: file.path,
+      old_path: file.old_path,
+      status: file.status,
+      areas: [],
+      role: classifyRole(file.path, []),
+      added_lines: counts.added,
+      deleted_lines: counts.deleted
+    };
+  });
+}
+
+function diffChangedFilePaths(diff: StructuredDiff | undefined): Set<string> {
+  const paths = new Set<string>();
+  for (const file of diff?.files ?? []) {
+    for (const filePath of compactStrings([file.path, file.old_path])) {
+      paths.add(normalizeEvidencePath(filePath));
+    }
+  }
+  return paths;
+}
+
+function diffChangedLineCounts(file: StructuredDiffFile): { added: number; deleted: number } {
+  let added = 0;
+  let deleted = 0;
+  for (const hunk of file.hunks) {
+    for (const line of hunk.lines) {
+      if (line.kind === "add") {
+        added += 1;
+      } else if (line.kind === "delete") {
+        deleted += 1;
+      }
+    }
+  }
+  return { added, deleted };
 }
 
 function diffAcidKeys(diff: StructuredDiff | undefined): Set<string> {
@@ -1165,7 +1219,7 @@ function diffAcidKeysByPath(diff: StructuredDiff | undefined): Map<string, Set<s
 
 function sortedDiffAcidKeysForFile(
   keysByPath: Map<string, Set<string>>,
-  file: PrReviewSurfaceModel["scope"]["changed_files"][number]
+  file: Pick<PrChangedFile, "path" | "old_path">
 ): string[] {
   const keys = new Set<string>();
   for (const filePath of compactStrings([file.path, file.old_path])) {
@@ -1190,14 +1244,28 @@ function isSourceSpecFile(filePath: string): boolean {
   return /^features\//.test(normalizeEvidencePath(filePath));
 }
 
-function isAcidChar(ch: string): boolean {
+function isAcidPrefixChar(ch: string): boolean {
   return ch !== "" && /[A-Za-z0-9_.-]/.test(ch);
+}
+
+function isAcidSuffixContinuation(text: string, index: number): boolean {
+  const ch = index < text.length ? text[index] : "";
+  if (ch === "") {
+    return false;
+  }
+  if (/[A-Za-z0-9_-]/.test(ch)) {
+    return true;
+  }
+  if (ch === ".") {
+    const next = index + 1 < text.length ? text[index + 1] : "";
+    return /[A-Za-z0-9_-]/.test(next);
+  }
+  return false;
 }
 
 function isWholeAcidToken(text: string, index: number, acid: string): boolean {
   const before = index > 0 ? text[index - 1] : "";
-  const after = index + acid.length < text.length ? text[index + acid.length] : "";
-  return !isAcidChar(before) && !isAcidChar(after);
+  return !isAcidPrefixChar(before) && !isAcidSuffixContinuation(text, index + acid.length);
 }
 
 function intentMismatchResultIsStrictlyInFocus(result: RequirementGap, focus: IntentMismatchFocus): boolean {
@@ -3789,7 +3857,7 @@ function priorityForChangedFile(file: PrChangedFile): HumanReviewPriority {
   return file.role === "test" ? "low" : "medium";
 }
 
-function affectedRequirementIdsForFile(prSurface: PrReviewSurfaceModel, file: PrChangedFile): string[] {
+function affectedRequirementIdsForFile(prSurface: PrReviewSurfaceModel, file: Pick<PrChangedFile, "path" | "old_path" | "areas">): string[] {
   const areas = new Set(changedFileAreas(file));
   const paths = new Set(compactStrings([file.path, file.old_path]).map((filePath) => normalizeEvidencePath(filePath)));
   return prSurface.scope.affected_requirements
@@ -3801,7 +3869,7 @@ function affectedRequirementIdsForFile(prSurface: PrReviewSurfaceModel, file: Pr
     .slice(0, 8);
 }
 
-function changedFileAreas(file: PrChangedFile): string[] {
+function changedFileAreas(file: Pick<PrChangedFile, "areas">): string[] {
   return Array.isArray(file.areas) ? file.areas : [];
 }
 

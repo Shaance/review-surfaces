@@ -442,6 +442,58 @@ test("review-surfaces.HUMAN_REVIEW.18 PR intent mismatch does not fall back to p
   assert.ok(model.questions.some((question) => /scripts\/release\.sh/.test(question.question)));
 });
 
+test("review-surfaces.HUMAN_REVIEW.18 repo-scope intent mismatch observes diff files without PR surface", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/scripts/release.sh b/scripts/release.sh",
+    "--- a/scripts/release.sh",
+    "+++ b/scripts/release.sh",
+    "@@ -1,1 +1,2 @@",
+    " echo release",
+    "+echo ship # review-surfaces.HUMAN_REVIEW.18.",
+    ""
+  ].join("\n"));
+
+  const model = buildHumanReview({ packet: packetFixture(), diff });
+  const observed = model.intent_mismatch.observed_in_diff.find((item) => item.paths.includes("scripts/release.sh"));
+
+  assert.equal(model.mode, "repo");
+  assert.ok(observed);
+  assert.deepEqual(observed.requirement_ids, ["review-surfaces.HUMAN_REVIEW.18"]);
+  assert.match(observed.summary, /references exact requirement/);
+  assert.ok(model.intent_mismatch.missing_intent.some((item) => item.paths.includes("scripts/release.sh")));
+  assert.ok(model.questions.some((question) => /scripts\/release\.sh/.test(question.question)));
+});
+
+test("review-surfaces.HUMAN_REVIEW.18 PR intent mismatch scopes packet overreach to changed paths", () => {
+  const packet = packetFixture();
+  packet.evaluation.overreach = [
+    {
+      requirement_id: "OVER-RELATED",
+      status: "overreach",
+      summary: "Schema surface changed beyond stated intent.",
+      evidence: [fileEvidence("schemas/human_review.schema.json", "Changed schema path is in this PR.")],
+      missing_evidence: [],
+      review_focus: "Confirm whether schema change belongs in this PR.",
+      confidence: "medium"
+    },
+    {
+      requirement_id: "OVER-UNRELATED",
+      status: "overreach",
+      summary: "Old unrelated docs overreach.",
+      evidence: [fileEvidence("docs/unrelated.md", "Whole-repo packet carried a stale overreach finding.")],
+      missing_evidence: [],
+      review_focus: "Ignore for this PR.",
+      confidence: "medium"
+    }
+  ];
+
+  const model = buildHumanReview({ packet, prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
+  const summaries = model.intent_mismatch.possible_overreach.map((item) => item.summary);
+
+  assert.ok(summaries.some((summary) => /OVER-RELATED/.test(summary)));
+  assert.ok(!summaries.some((summary) => /OVER-UNRELATED/.test(summary)));
+});
+
 test("review-surfaces.HUMAN_REVIEW.18 observed diff prefers exact added ACIDs over broad spec path mappings", () => {
   const packet = packetFixture();
   const broadSpecAcid = ["review-surfaces", "BOOTSTRAP", "1"].join(".");
@@ -547,6 +599,48 @@ test("review-surfaces.HUMAN_REVIEW.18 observed diff requires whole-token exact A
   assert.deepEqual(observed.requirement_ids, ["review-surfaces.HUMAN_REVIEW.1"]);
   assert.ok(!observed.requirement_ids.includes("review-surfaces.HUMAN_REVIEW.18"));
   assert.doesNotMatch(observed.summary, /references exact requirement/);
+});
+
+test("review-surfaces.HUMAN_REVIEW.18 observed diff accepts sentence punctuation after exact ACIDs", () => {
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files = [
+    {
+      path: "docs/intent.md",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "doc",
+      added_lines: 1,
+      deleted_lines: 0
+    }
+  ];
+  prSurface.scope.affected_requirements = [
+    {
+      requirement_id: "REQ-HUMAN-1",
+      acai_id: "review-surfaces.HUMAN_REVIEW.1",
+      title: "Human surface starts with verdict",
+      group_key: "HUMAN_REVIEW",
+      reasons: [{ rule: "changed_path_requirement_group", confidence: "high", path: "docs/intent.md" }]
+    }
+  ];
+  prSurface.scope.out_of_scope_changed_files = [];
+  prSurface.coverage.deltas = [];
+  prSurface.risks.candidates = [];
+  const diff = parseStructuredDiff([
+    "diff --git a/docs/intent.md b/docs/intent.md",
+    "--- a/docs/intent.md",
+    "+++ b/docs/intent.md",
+    "@@ -1,1 +1,2 @@",
+    " # Intent",
+    "+This now covers review-surfaces.HUMAN_REVIEW.18.",
+    ""
+  ].join("\n"));
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface, diff });
+  const observed = model.intent_mismatch.observed_in_diff.find((item) => item.paths.includes("docs/intent.md"));
+
+  assert.ok(observed);
+  assert.deepEqual(observed.requirement_ids, ["review-surfaces.HUMAN_REVIEW.18"]);
+  assert.match(observed.summary, /references exact requirement/);
 });
 
 test("review-surfaces.HUMAN_REVIEW.18 observed diff includes deleted ACIDs in exact focus", () => {

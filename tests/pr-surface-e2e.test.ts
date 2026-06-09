@@ -255,6 +255,15 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     assert.match(humanPrComment.stdout, /Full human review: `\.review-surfaces\/human_review\.md`/);
     assert.match(humanPrComment.stderr, /not postable/);
     assert.doesNotMatch(humanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
+    const priorIntentHuman = { ...human };
+    delete priorIntentHuman.intent_mismatch;
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(priorIntentHuman, null, 2));
+    const staleIntentHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(staleIntentHumanPrComment.status, 4, "pre-intent-mismatch human JSON should be rebuilt before PR comment rendering");
+    assert.match(staleIntentHumanPrComment.stderr, /Refreshing stale human_review\.json for the current human review artifact set/);
+    assert.doesNotMatch(staleIntentHumanPrComment.stdout, /JSON sentinel PR comment queue/);
+    const rebuiltForPrComment = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    assert.ok(rebuiltForPrComment.intent_mismatch, "PR comment path should rebuild stale prior-v1 human_review.json");
     const staleHuman = {
       ...human,
       generated_from: { ...human.generated_from, base_ref: "refs/stale-base" }
