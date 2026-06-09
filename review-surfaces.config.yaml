@@ -133,6 +133,7 @@ areas:
     purpose: Represent and validate evidence references and packet/PR-surface contracts used by packet claims.
     pattern: evidence model
     test_keywords:
+      - areas
       - evidence
       - evaluation
   - id: SUB-PROVIDERS

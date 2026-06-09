@@ -2121,7 +2121,13 @@ function isPersistedSchemaContractPath(filePath: string): boolean {
 }
 
 function isVersionedArtifactContractPath(filePath: string): boolean {
-  return isPersistedSchemaContractPath(filePath) || /(?:^|\/)contract\.ts$/.test(filePath);
+  const lower = filePath.toLowerCase();
+  return (
+    isPersistedSchemaContractPath(filePath) ||
+    /(?:^|\/)contract\.ts$/.test(filePath) ||
+    lower.includes("review-packet-contract") ||
+    lower.includes("render/load")
+  );
 }
 
 function hasVersionedArtifactContractPath(paths: string[]): boolean {

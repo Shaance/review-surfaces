@@ -1547,6 +1547,38 @@ test("API contract lens keeps TypeScript contract sources on compatibility check
   assert.match(apiLens.suggested_comments[0]?.body ?? "", /compatibility fixture/);
 });
 
+test("API contract lens keeps schema loader paths on compatibility checks", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files = [
+    {
+      path: "src/render/load.ts",
+      status: "M",
+      areas: ["PROVIDERS"],
+      role: "implementation",
+      added_lines: 5,
+      deleted_lines: 1
+    },
+    {
+      path: "src/schema/review-packet-contract.ts",
+      status: "M",
+      areas: ["EVIDENCE"],
+      role: "implementation",
+      added_lines: 2,
+      deleted_lines: 1
+    }
+  ];
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface });
+  const apiLens = model.risk_lens_findings.find((finding) => finding.lens === "api_contract");
+
+  assert.ok(apiLens);
+  assert.match(apiLens.reviewer_action, /schema or artifact contract/);
+  assert.deepEqual(apiLens.suggested_tests.map((item) => item.suggested_file), ["tests/schema-contract.test.ts"]);
+  assert.equal(apiLens.suggested_comments[0]?.severity, "blocking");
+  assert.match(apiLens.suggested_comments[0]?.body ?? "", /compatibility fixture/);
+});
+
 test("review-surfaces.HUMAN_REVIEW.16 default config preserves the full queue beyond the markdown top seven", () => {
   const surface = prSurfaceFixture();
   surface.risks.candidates = [];

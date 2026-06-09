@@ -48,8 +48,7 @@ export interface ReviewAreaMatcher {
 
 interface ReviewAreaMatchContext {
   testPath: boolean;
-  lowerPath?: string;
-  proofTokens?: Set<string>;
+  testTokens?: Set<string>;
 }
 
 export interface BuildReviewAreasOptions {
@@ -180,7 +179,7 @@ function explainPathForAreas(
     }
     if (context.testPath) {
       for (const keyword of area.testKeywords) {
-        if (matchesTestKeywordForPurpose(filePath, keyword, options.purpose, context)) {
+        if (matchesTestKeyword(filePath, keyword, context)) {
           matches.push({ areaId: area.id, groupKey: area.groupKey, reason: "test_keyword", matched: keyword });
           addUnique(groups, area.groupKey);
         }
@@ -217,7 +216,7 @@ function areaMatchesPathForPurpose(
   }
   return (
     context.testPath &&
-    area.testKeywords.some((keyword) => matchesTestKeywordForPurpose(filePath, keyword, options.purpose, context))
+    area.testKeywords.some((keyword) => matchesTestKeyword(filePath, keyword, context))
   );
 }
 
@@ -225,8 +224,7 @@ function createMatchContext(filePath: string, options: ReviewAreaMatchOptions): 
   const testPath = filePath.startsWith("tests/");
   return {
     testPath,
-    lowerPath: testPath ? filePath.toLowerCase() : undefined,
-    proofTokens: testPath && options.purpose === "requirement_proof" ? pathTokens(filePath) : undefined
+    testTokens: testPath ? pathTokens(filePath) : undefined
   };
 }
 
@@ -234,17 +232,13 @@ function matchesPrefixForPurpose(filePath: string, prefix: string, purpose: Revi
   return purpose === "requirement_proof" ? matchesStrictPrefix(filePath, prefix) : matchesPrefix(filePath, prefix);
 }
 
-function matchesTestKeywordForPurpose(
+function matchesTestKeyword(
   filePath: string,
   keyword: string,
-  purpose: ReviewAreaMatchPurpose,
   context: ReviewAreaMatchContext
 ): boolean {
-  if (purpose === "requirement_proof") {
-    const normalized = keyword.toLowerCase();
-    return (context.proofTokens ?? pathTokens(filePath)).has(normalized);
-  }
-  return (context.lowerPath ?? filePath.toLowerCase()).includes(keyword);
+  const normalized = keyword.toLowerCase();
+  return (context.testTokens ?? pathTokens(filePath)).has(normalized);
 }
 
 function addUnique(groups: string[], group: string): void {
