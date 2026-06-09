@@ -1043,6 +1043,40 @@ test("duplicate PR risk drafts do not consume the cap before distinct focused ga
   assert.ok(model.test_plan.some((item) => item.maps_to_requirements.includes("review-surfaces.HUMAN_REVIEW.1")));
 });
 
+test("optional PR risk checks do not crowd out required focused gaps at the cap", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [{
+    requirement_id: "REQ-HUMAN-MISSING",
+    acai_id: "review-surfaces.HUMAN_TRUST.MISSING",
+    status: "missing",
+    summary: "Required human trust evidence is missing.",
+    evidence: [],
+    missing_evidence: [missingEvidence("No focused human trust test evidence.")],
+    review_focus: "Review missing human trust evidence.",
+    confidence: "medium"
+  }];
+  packet.evaluation.acai_coverage = { "review-surfaces.HUMAN_TRUST.MISSING": "missing" };
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [
+    ...Array.from({ length: 11 }, (_, index) => ({
+      ...prRiskFixture("untested_changed_impl"),
+      id: `PR-RISK-UNTESTED-${String(index + 1).padStart(3, "0")}`,
+      evidence: [fileEvidence(`src/human/impl-${index + 1}.ts`, "Untested implementation change.")]
+    })),
+    prRiskFixture("large_diff")
+  ];
+
+  const model = buildHumanReview({ packet, prSurface: surface });
+
+  assert.equal(model.test_plan.length, 12);
+  assert.ok(model.test_plan.some((item) => item.maps_to_requirements.includes("review-surfaces.HUMAN_TRUST.MISSING")));
+  assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-LARGE")), false);
+});
+
 test("coverage-regression test plan maps requirements from scoped deltas when risk evidence is path-only", () => {
   const packet = packetFixture();
   packet.evaluation.results = [];
@@ -1074,6 +1108,53 @@ test("coverage-regression test plan maps requirements from scoped deltas when ri
 
   assert.ok(item);
   assert.ok(item.maps_to_requirements.includes("review-surfaces.HUMAN_REVIEW.REGRESSION"));
+});
+
+test("coverage-regression test plan merges evidence and scoped regressed requirements", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.coverage.deltas = [
+    {
+      requirement_id: "REQ-HUMAN-EVIDENCE",
+      acai_id: "review-surfaces.HUMAN_REVIEW.EVIDENCE_REGRESSION",
+      base_status: "satisfied",
+      head_status: "partial",
+      delta: "regressed",
+      reasons: ["evidence-backed regression"],
+      head_evidence: [],
+      missing_evidence: []
+    },
+    {
+      requirement_id: "REQ-HUMAN-PATH",
+      acai_id: "review-surfaces.HUMAN_REVIEW.PATH_REGRESSION",
+      base_status: "satisfied",
+      head_status: "partial",
+      delta: "regressed",
+      reasons: ["path-backed regression"],
+      head_evidence: [fileEvidence("src/human/human-review.ts", "Path-backed coverage evidence.")],
+      missing_evidence: []
+    }
+  ];
+  surface.risks.candidates = [{
+    ...prRiskFixture("coverage_regression"),
+    evidence: [
+      { kind: "spec", acai_id: "review-surfaces.HUMAN_REVIEW.EVIDENCE_REGRESSION", note: "Coverage regressed.", confidence: "high", validation_status: "valid" },
+      fileEvidence("src/human/human-review.ts", "Path-only coverage evidence.")
+    ]
+  }];
+
+  const model = buildHumanReview({ packet, prSurface: surface });
+  const item = model.test_plan.find((testItem) => testItem.maps_to_risks.includes("PR-RISK-COVERAGE"));
+
+  assert.ok(item);
+  assert.ok(item.maps_to_requirements.includes("review-surfaces.HUMAN_REVIEW.EVIDENCE_REGRESSION"));
+  assert.ok(item.maps_to_requirements.includes("review-surfaces.HUMAN_REVIEW.PATH_REGRESSION"));
 });
 
 test("invalid PR risk evidence is not rendered as a verified trust fact", () => {

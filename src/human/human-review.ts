@@ -62,6 +62,12 @@ type MissingManualCheckGap = NonNullable<RisksModel["missing_manual_checks"]>[nu
 type PrChangedFile = PrReviewSurfaceModel["scope"]["changed_files"][number];
 type TrustFactDraft = Omit<TrustFact, "id">;
 type InvalidEvidenceDraft = Omit<InvalidEvidenceSummary, "id">;
+interface TestPlanCandidate {
+  draft: TestPlanDraft;
+  risk?: PrRiskCandidate;
+  sourceRank: number;
+  sortKey: string;
+}
 
 const MAX_QUEUE = 20;
 const MAX_BLOCKERS = 8;
@@ -579,22 +585,21 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
 
 function buildTestPlan(input: BuildHumanReviewInput): TestPlanItem[] {
   const items: TestPlanItem[] = [];
-  const prRiskDrafts = (input.prSurface?.risks.candidates ?? [])
-    .flatMap((risk) => testPlanDraftsForPrRisk(input, risk).map((draft) => ({ risk, draft })))
-    .sort(comparePrRiskTestPlanDrafts);
+  const candidates: TestPlanCandidate[] = [];
 
-  for (const { draft } of prRiskDrafts) {
-    appendTestPlanItem(items, draft);
+  for (const risk of input.prSurface?.risks.candidates ?? []) {
+    for (const draft of testPlanDraftsForPrRisk(input, risk)) {
+      candidates.push({ risk, draft, sourceRank: 0, sortKey: risk.id });
+    }
   }
 
-  if (items.length < MAX_TEST_PLAN) {
-    for (const gap of focusedRequirementGaps(input).slice(0, MAX_FOCUSED_REQUIREMENT_TESTS)) {
-      if (items.length >= MAX_TEST_PLAN) {
-        break;
-      }
-      const requirementId = gap.acai_id ?? gap.requirement_id;
-      const suggestedFile = suggestedTestFile(requirementId, gap.summary);
-      appendTestPlanItem(items, {
+  for (const [index, gap] of focusedRequirementGaps(input).slice(0, MAX_FOCUSED_REQUIREMENT_TESTS).entries()) {
+    const requirementId = gap.acai_id ?? gap.requirement_id;
+    const suggestedFile = suggestedTestFile(requirementId, gap.summary);
+    candidates.push({
+      sourceRank: 1,
+      sortKey: rankedSortKey(index, requirementId),
+      draft: {
         kind: "automatic",
         priority: gap.status === "missing" || gap.status === "invalid_evidence" ? "required" : "recommended",
         suggested_file: suggestedFile,
@@ -604,17 +609,16 @@ function buildTestPlan(input: BuildHumanReviewInput): TestPlanItem[] {
         maps_to_requirements: compactStrings([gap.acai_id, gap.requirement_id]),
         maps_to_risks: [],
         evidence_gap: gap.summary
-      });
-    }
+      }
+    });
   }
 
-  if (items.length < MAX_TEST_PLAN) {
-    for (const gap of [...(input.packet.risks.missing_automatic_tests ?? [])].sort(compareMissingGapPriority)) {
-      if (items.length >= MAX_TEST_PLAN) {
-        break;
-      }
-      const suggestedFile = suggestedTestFile(gap.acai_id, gap.suggested_test);
-      appendTestPlanItem(items, {
+  for (const [index, gap] of [...(input.packet.risks.missing_automatic_tests ?? [])].sort(compareMissingGapPriority).entries()) {
+    const suggestedFile = suggestedTestFile(gap.acai_id, gap.suggested_test);
+    candidates.push({
+      sourceRank: 2,
+      sortKey: rankedSortKey(index, gap.acai_id ?? gap.requirement_id ?? gap.id),
+      draft: {
         kind: "automatic",
         priority: "recommended",
         suggested_file: suggestedFile,
@@ -624,16 +628,15 @@ function buildTestPlan(input: BuildHumanReviewInput): TestPlanItem[] {
         maps_to_requirements: compactStrings([gap.acai_id, gap.requirement_id]),
         maps_to_risks: [],
         evidence_gap: gap.summary
-      });
-    }
+      }
+    });
   }
 
-  if (items.length < MAX_TEST_PLAN) {
-    for (const gap of [...(input.packet.risks.missing_manual_checks ?? [])].sort(compareMissingGapPriority)) {
-      if (items.length >= MAX_TEST_PLAN) {
-        break;
-      }
-      appendTestPlanItem(items, {
+  for (const [index, gap] of [...(input.packet.risks.missing_manual_checks ?? [])].sort(compareMissingGapPriority).entries()) {
+    candidates.push({
+      sourceRank: 3,
+      sortKey: rankedSortKey(index, gap.acai_id ?? gap.requirement_id ?? gap.id),
+      draft: {
         kind: "manual",
         priority: "recommended",
         scenario: gap.manual_check,
@@ -641,8 +644,12 @@ function buildTestPlan(input: BuildHumanReviewInput): TestPlanItem[] {
         maps_to_requirements: compactStrings([gap.acai_id, gap.requirement_id]),
         maps_to_risks: [],
         evidence_gap: gap.summary
-      });
-    }
+      }
+    });
+  }
+
+  for (const candidate of candidates.sort(compareTestPlanCandidates)) {
+    appendTestPlanItem(items, candidate.draft);
   }
 
   return items.slice(0, MAX_TEST_PLAN);
@@ -752,15 +759,16 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
   }
 }
 
-function comparePrRiskTestPlanDrafts(
-  left: { risk: PrRiskCandidate; draft: TestPlanDraft },
-  right: { risk: PrRiskCandidate; draft: TestPlanDraft }
+function compareTestPlanCandidates(
+  left: TestPlanCandidate,
+  right: TestPlanCandidate
 ): number {
   return (
     testPlanPriorityRank(left.draft.priority) - testPlanPriorityRank(right.draft.priority) ||
-    severityWeight(right.risk.severity) - severityWeight(left.risk.severity) ||
-    ruleWeight(right.risk.rule) - ruleWeight(left.risk.rule) ||
-    compareStrings(left.risk.id, right.risk.id)
+    (left.sourceRank - right.sourceRank) ||
+    severityWeight(right.risk?.severity ?? "unknown") - severityWeight(left.risk?.severity ?? "unknown") ||
+    ruleWeight(right.risk?.rule) - ruleWeight(left.risk?.rule) ||
+    compareStrings(left.sortKey, right.sortKey)
   );
 }
 
@@ -775,15 +783,19 @@ function testPlanPriorityRank(priority: TestPlanItem["priority"]): number {
   }
 }
 
+function rankedSortKey(index: number, key: string): string {
+  return `${String(index).padStart(4, "0")}:${key}`;
+}
+
 function requirementIdsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandidate): string[] {
   const fromEvidence = requirementIds(risk.evidence);
-  if (fromEvidence.length > 0 || risk.rule !== "coverage_regression") {
+  if (risk.rule !== "coverage_regression") {
     return fromEvidence;
   }
-  return input.prSurface?.coverage.deltas
+  const fromDeltas = input.prSurface?.coverage.deltas
     .filter((delta) => delta.delta === "regressed")
-    .map((delta) => delta.acai_id ?? delta.requirement_id)
-    .slice(0, 8) ?? [];
+    .map((delta) => delta.acai_id ?? delta.requirement_id) ?? [];
+  return uniqueTruthy([...fromEvidence, ...fromDeltas]).slice(0, 8);
 }
 
 function withTestPlanId(index: number, draft: TestPlanDraft): TestPlanItem {
@@ -1034,7 +1046,10 @@ function severityWeight(severity: PacketSeverity): number {
   }
 }
 
-function ruleWeight(rule: PrRiskCandidate["rule"]): number {
+function ruleWeight(rule: PrRiskCandidate["rule"] | undefined): number {
+  if (!rule) {
+    return 0;
+  }
   return PR_RISK_RULE_METADATA[rule].review_queue_weight;
 }
 
