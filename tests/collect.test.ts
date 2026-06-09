@@ -195,6 +195,33 @@ test("collector marks a deleted diff file as working_tree when it is dirty after
   }
 });
 
+test("collector preserves deleted diff status when a working-tree replacement exists", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-recreated-delete-"));
+  try {
+    const filePath = "src/feature.ts";
+    fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, filePath), "export const value = 1;\n");
+    execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "base"], { cwd: tmp, stdio: "ignore" });
+    const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
+
+    fs.rmSync(path.join(tmp, filePath));
+    execFileSync("git", ["add", filePath], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "delete"], { cwd: tmp, stdio: "ignore" });
+    fs.writeFileSync(path.join(tmp, filePath), "export const replacement = true;\n");
+
+    const files = collectChangedFiles(tmp, base, "HEAD").files;
+    assert.deepEqual(
+      files.filter((file) => file.path === filePath).map((file) => ({ status: file.status, source: file.source })),
+      [{ status: "D", source: "working_tree" }],
+      "a local replacement for a deleted range path must not hide the range deletion status"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.CLI.7 collection defaults command transcripts to the output directory", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-output-commands-"));
   fs.mkdirSync(path.join(tmp, "features"), { recursive: true });

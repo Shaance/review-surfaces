@@ -93,7 +93,7 @@ export function collectChangedFiles(cwd: string, baseRef: string, headRef: strin
       }
       const existing = byPath.get(filePath);
       if (existing) {
-        const mergedStatus = isRenameOrCopyStatus(existing.status) ? existing.status : status;
+        const mergedStatus = shouldPreserveRangeStatus(existing.status) ? existing.status : status;
         byPath.set(filePath, { ...existing, status: mergedStatus, source: "working_tree" });
         continue;
       }
@@ -151,6 +151,10 @@ function parsePorcelainStatusOutput(output: string): Array<{ status: string; fil
 
 function isRenameOrCopyStatus(status: string): boolean {
   return /[RC]/.test(status);
+}
+
+function shouldPreserveRangeStatus(status: string): boolean {
+  return isRenameOrCopyStatus(status) || status.startsWith("D");
 }
 
 function splitNullOutput(output: string): string[] {

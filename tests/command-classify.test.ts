@@ -25,11 +25,22 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeTestCommand("pnpm exec vitest src/risks"), true);
   assert.equal(commandLooksLikeBroadTestCommand("pnpm exec vitest src/risks"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm exec vitest src/risks"), true);
+  assert.equal(commandLooksLikeTestCommand("pnpm --filter api test"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("pnpm --filter api test"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm --filter api test"), true);
+  assert.equal(commandLooksLikeTestCommand("pnpm --filter api run test:fast"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("pnpm --filter api run test:fast"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm --filter api run test:fast"), true);
+  assert.equal(commandLooksLikeTestCommand("pnpm -F api exec vitest"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm -F api exec vitest"), true);
+  assert.equal(commandLooksLikeTestCommand("yarn workspace api test"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("yarn workspace api test"), true);
 
   assert.equal(commandLooksLikeTestCommand("pnpm run build"), false);
   assert.equal(commandLooksLikeBroadTestCommand("pnpm run build"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm run build"), false);
   assert.equal(commandLooksLikeLocalValidationCommand("pnpm run build"), true);
+  assert.equal(commandLooksLikeLocalValidationCommand("pnpm --filter api build"), true);
   assert.equal(commandLooksLikeLocalValidationCommand("pnpm exec vitest"), true);
   assert.equal(commandLooksLikeLocalValidationCommand("pnpm run start"), false);
 });
