@@ -960,7 +960,7 @@ test("human trust gaps suggest human review tests, not PR tests from incidental 
   assert.equal(model.test_plan[0].suggested_file, "tests/human-review.test.ts");
 });
 
-test("human suggested comments synthesize evidence-backed drafts for every PR risk rule", () => {
+test("human suggested comments synthesize evidence-backed drafts for non-cleared PR risk rules", () => {
   const packet = packetFixture();
   packet.evaluation.results = [];
   packet.evaluation.acai_coverage = {};
@@ -985,17 +985,52 @@ test("human suggested comments synthesize evidence-backed drafts for every PR ri
 
   const model = buildHumanReview({ packet, prSurface: surface });
   const byRisk = new Map(model.suggested_comments.flatMap((comment) => comment.risk_ids.map((riskId) => [riskId, comment] as const)));
+  const expectedRisks = surface.risks.candidates.filter((risk) => risk.rule !== "ci_secret_boundary_change");
 
-  assert.equal(model.suggested_comments.length, PR_RISK_RULES.length);
+  assert.equal(model.suggested_comments.length, expectedRisks.length);
   assert.equal(surface.risks.candidates.length, PR_RISK_RULES.length);
   assert.equal(model.suggested_comments.every((comment) => comment.evidence.length > 0), true);
   assert.equal(model.suggested_comments.every((comment) => comment.ready_to_post), true);
   assert.ok(model.suggested_comments.some((comment) => comment.severity === "blocking"));
   assert.ok(model.suggested_comments.some((comment) => comment.severity === "clarifying"));
   assert.ok(model.suggested_comments.some((comment) => comment.severity === "non_blocking"));
-  for (const risk of surface.risks.candidates) {
+  assert.equal(byRisk.has("PR-RISK-CI"), false);
+  for (const risk of expectedRisks) {
     assert.ok(byRisk.has(risk.id), `missing suggested comment for ${risk.rule}`);
   }
+});
+
+test("human suggested comments ask for CI secret-boundary manual check only when missing", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [prRiskFixture("ci_secret_boundary_change")];
+
+  const missing = buildHumanReview({ packet, prSurface: surface });
+  assert.ok(missing.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-CI")));
+  assert.ok(missing.suggested_comments.some((comment) => comment.severity === "blocking" && /manual check/.test(comment.body)));
+
+  packet.risks.test_evidence.push({
+    id: "TEST-MANUAL-CI-SECRET",
+    kind: "indirect",
+    summary: "Manual CI secret-boundary check recorded.",
+    evidence: [
+      feedbackEvidence(
+        ".review-surfaces/feedback/manual-dogfood.yaml",
+        "Manual CI secret-boundary check recorded: PR-controlled code cannot access secrets.",
+        { sha: "abc123" }
+      )
+    ]
+  });
+
+  const recorded = buildHumanReview({ packet, prSurface: surface });
+  assert.equal(recorded.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-CI")), false);
+  assert.equal(recorded.suggested_comments.some((comment) => /CI secret boundary.*manual check/.test(comment.body)), false);
 });
 
 test("blocking suggested comments stay visible when non-blocking risk drafts exceed the cap", () => {
