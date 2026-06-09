@@ -1585,9 +1585,9 @@ function humanReviewMatchesPrSurface(
     return false;
   }
   const generatedFrom = candidate.generated_from;
-  const baseShaMatches =
-    typeof generatedFrom.base_sha !== "string" ||
-    generatedFrom.base_sha === surface.scope.base_sha;
+  const baseShaMatches = typeof surface.scope.base_sha === "string"
+    ? generatedFrom.base_sha === surface.scope.base_sha
+    : typeof generatedFrom.base_sha !== "string";
   return (
     generatedFrom.base_ref === surface.scope.base_ref &&
     baseShaMatches &&

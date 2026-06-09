@@ -285,6 +285,17 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     assert.match(staleBaseShaHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
     assert.match(staleBaseShaHumanPrComment.stderr, /Ignoring stale or non-PR human_review\.json/);
     assert.doesNotMatch(staleBaseShaHumanPrComment.stdout, /JSON sentinel PR comment queue/);
+    const legacyNoBaseShaHuman = {
+      ...human,
+      generated_from: { ...human.generated_from }
+    };
+    delete legacyNoBaseShaHuman.generated_from.base_sha;
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(legacyNoBaseShaHuman, null, 2));
+    const legacyNoBaseShaHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(legacyNoBaseShaHumanPrComment.status, 4, "legacy human JSON without base_sha should fall back when the PR surface records one");
+    assert.match(legacyNoBaseShaHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
+    assert.match(legacyNoBaseShaHumanPrComment.stderr, /Ignoring stale or non-PR human_review\.json/);
+    assert.doesNotMatch(legacyNoBaseShaHumanPrComment.stdout, /JSON sentinel PR comment queue/);
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "{");
     const malformedHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
     assert.equal(malformedHumanPrComment.status, 4, "malformed optional human JSON should not block PR comment rendering");
