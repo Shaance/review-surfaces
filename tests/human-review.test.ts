@@ -11,6 +11,7 @@ import {
   HUMAN_STANDALONE_ARTIFACTS,
   renderEvidenceCardsMarkdown,
   renderHumanReviewMarkdown,
+  renderIntentMismatchMarkdown,
   renderRiskLensesMarkdown,
   renderReviewQueueMarkdown,
   renderReviewRoutesMarkdown,
@@ -52,6 +53,34 @@ function packetFixture(): ReviewPacket {
     base_ref: "origin/main",
     head_ref: "HEAD",
     head_sha: "abc123"
+  };
+  packet.intent = {
+    summary: "Human review fixture intent.",
+    requirements: [
+      {
+        id: "REQ-HUMAN-1",
+        acai_id: "review-surfaces.HUMAN_REVIEW.1",
+        title: "Human reviewer cockpit",
+        requirement: "The default human surface must start with a merge-readiness verdict, top blockers, and an ordered review queue.",
+        source_refs: [
+          {
+            kind: "spec",
+            ref: "features/review-surfaces.feature.yaml",
+            title: "review-surfaces.HUMAN_REVIEW.1",
+            evidence: [fileEvidence("features/review-surfaces.feature.yaml", "Human review fixture requirement.", "high")]
+          }
+        ],
+        constraints: [],
+        assumptions: [],
+        open_questions: [],
+        confidence: "high"
+      }
+    ],
+    constraints: [],
+    non_goals: [],
+    assumptions: [],
+    open_questions: [],
+    sources: []
   };
   packet.evaluation = {
     summary: "1 satisfied, 1 partial",
@@ -166,7 +195,7 @@ function prSurfaceFixture(): PrReviewSurfaceModel {
           acai_id: "review-surfaces.HUMAN_REVIEW.1",
           title: "Human surface starts with verdict",
           group_key: "HUMAN_REVIEW",
-          reasons: []
+          reasons: [{ rule: "changed_path_requirement_group", confidence: "high", path: "schemas/human_review.schema.json" }]
         }
       ],
       out_of_scope_changed_files: []
@@ -305,6 +334,9 @@ test("human review model is schema-valid and starts with deterministic readiness
   assert.ok(model.risk_lens_findings.some((finding) => finding.lens === "security_privacy"));
   assert.ok(model.risk_lens_findings.some((finding) => finding.lens === "api_contract"));
   assert.ok(model.risk_lens_findings.every((finding) => finding.evidence.length > 0));
+  assert.ok(model.intent_mismatch.expected_by_spec.some((item) => item.requirement_ids.includes("review-surfaces.HUMAN_REVIEW.1")));
+  assert.ok(model.intent_mismatch.observed_in_diff.some((item) => item.paths.includes("schemas/human_review.schema.json")));
+  assert.ok(model.intent_mismatch.possible_mismatches.some((item) => item.requirement_ids.includes("review-surfaces.HUMAN_REVIEW.1")));
   assert.ok(model.evidence_cards.length > 0);
   assert.ok(model.evidence_cards.some((card) => card.status === "mixed" || card.status === "missing_evidence"));
   assert.ok(model.evidence_cards.every((card) => card.reviewer_action.length > 0));
@@ -313,6 +345,207 @@ test("human review model is schema-valid and starts with deterministic readiness
 
   const validation = validateJsonSchema(schema, model);
   assert.equal(validation.valid, true, JSON.stringify(validation.issues));
+});
+
+test("review-surfaces.HUMAN_REVIEW.18 renders explicit intent mismatch buckets and reviewer questions", () => {
+  const packet = packetFixture();
+  packet.evaluation.overreach = [
+    {
+      requirement_id: "OVER-001",
+      status: "overreach",
+      summary: "Release helper changed outside stated human-review intent.",
+      evidence: [fileEvidence("scripts/release.sh", "Release helper is not mapped to the stated intent.")],
+      missing_evidence: [],
+      review_focus: "Confirm whether the release helper belongs in this PR.",
+      confidence: "medium"
+    }
+  ];
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files.push({
+    path: "scripts/release.sh",
+    status: "M",
+    areas: [],
+    role: "implementation",
+    added_lines: 3,
+    deleted_lines: 1
+  });
+  prSurface.scope.out_of_scope_changed_files.push({
+    path: "scripts/release.sh",
+    status: "M",
+    reason: "unmapped"
+  });
+
+  const model = buildHumanReview({ packet, prSurface, diff: structuredDiffFixture() });
+
+  assert.ok(model.intent_mismatch.expected_by_spec.some((item) => item.summary.includes("review-surfaces.HUMAN_REVIEW.1")));
+  assert.ok(model.intent_mismatch.observed_in_diff.some((item) => item.paths.includes("scripts/release.sh")));
+  assert.ok(model.intent_mismatch.possible_mismatches.some((item) => item.summary.includes("Partial implementation evidence")));
+  assert.ok(model.intent_mismatch.possible_overreach.some((item) => item.paths.includes("scripts/release.sh")));
+  assert.ok(model.intent_mismatch.missing_intent.some((item) => item.paths.includes("scripts/release.sh")));
+  assert.ok(model.questions.some((question) => /intent gap/.test(question.question) && question.evidence.some((ref) => ref.path === "scripts/release.sh")));
+  assert.equal(model.review_routes.find((route) => route.persona === "product")?.steps[0]?.artifact, "intent_mismatch.md");
+
+  const humanMarkdown = renderHumanReviewMarkdown(model);
+  assert.match(humanMarkdown, /## Intent mismatch/);
+  assert.match(humanMarkdown, /missing-intent item/);
+
+  const intentMarkdown = renderIntentMismatchMarkdown(model);
+  assert.match(intentMarkdown, /^# Intent Mismatch/);
+  assert.match(intentMarkdown, /## Expected by spec/);
+  assert.match(intentMarkdown, /## Observed in diff/);
+  assert.match(intentMarkdown, /## Possible mismatch/);
+  assert.match(intentMarkdown, /scripts\/release\.sh/);
+
+  const validation = validateJsonSchema(schema, model);
+  assert.equal(validation.valid, true, JSON.stringify(validation.issues));
+});
+
+test("review-surfaces.HUMAN_REVIEW.18 PR intent mismatch does not fall back to packet-wide gaps when focus is unmapped", () => {
+  const packet = packetFixture();
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files = [
+    {
+      path: "scripts/release.sh",
+      status: "M",
+      areas: [],
+      role: "implementation",
+      added_lines: 3,
+      deleted_lines: 1
+    }
+  ];
+  prSurface.scope.affected_areas = [];
+  prSurface.scope.affected_requirements = [];
+  prSurface.scope.out_of_scope_changed_files = [
+    {
+      path: "scripts/release.sh",
+      status: "M",
+      reason: "unmapped"
+    }
+  ];
+  prSurface.coverage.deltas = [];
+  prSurface.coverage.in_scope_count = 0;
+  prSurface.risks.candidates = [];
+  const diff = parseStructuredDiff([
+    "diff --git a/scripts/release.sh b/scripts/release.sh",
+    "--- a/scripts/release.sh",
+    "+++ b/scripts/release.sh",
+    "@@ -1,1 +1,2 @@",
+    " echo release",
+    "+echo ship",
+    ""
+  ].join("\n"));
+
+  const model = buildHumanReview({ packet, prSurface, diff });
+
+  assert.deepEqual(model.intent_mismatch.possible_mismatches, []);
+  assert.ok(model.intent_mismatch.missing_intent.some((item) => item.paths.includes("scripts/release.sh")));
+  assert.ok(model.questions.some((question) => /scripts\/release\.sh/.test(question.question)));
+});
+
+test("review-surfaces.HUMAN_REVIEW.18 observed diff prefers exact added ACIDs over broad spec path mappings", () => {
+  const packet = packetFixture();
+  const broadSpecAcid = ["review-surfaces", "BOOTSTRAP", "1"].join(".");
+  packet.intent.requirements.push({
+    id: "REQ-HUMAN-18",
+    acai_id: "review-surfaces.HUMAN_REVIEW.18",
+    title: "Intent mismatch",
+    requirement: "Render intent mismatch findings.",
+    source_refs: [
+      {
+        kind: "spec",
+        ref: "features/review-surfaces.feature.yaml",
+        title: "review-surfaces.HUMAN_REVIEW.18",
+        evidence: [fileEvidence("features/review-surfaces.feature.yaml", "Intent mismatch requirement.", "high")]
+      }
+    ],
+    constraints: [],
+    assumptions: [],
+    open_questions: [],
+    confidence: "high"
+  });
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files = [
+    {
+      path: "features/review-surfaces.feature.yaml",
+      status: "M",
+      areas: ["BOOTSTRAP"],
+      role: "spec",
+      added_lines: 3,
+      deleted_lines: 0
+    }
+  ];
+  prSurface.scope.affected_requirements = [
+    {
+      requirement_id: "REQ-BOOTSTRAP-1",
+      acai_id: broadSpecAcid,
+      title: "Bootstrap scaffold",
+      group_key: "BOOTSTRAP",
+      reasons: [{ rule: "changed_path_requirement_group", confidence: "high", path: "features/review-surfaces.feature.yaml" }]
+    }
+  ];
+  prSurface.scope.out_of_scope_changed_files = [];
+  prSurface.coverage.deltas = [];
+  prSurface.risks.candidates = [];
+  const diff = parseStructuredDiff([
+    "diff --git a/features/review-surfaces.feature.yaml b/features/review-surfaces.feature.yaml",
+    "--- a/features/review-surfaces.feature.yaml",
+    "+++ b/features/review-surfaces.feature.yaml",
+    "@@ -250,2 +250,4 @@",
+    "       17:",
+    "+        requirement: review-surfaces.HUMAN_REVIEW.18 renders explicit intent mismatch.",
+    ""
+  ].join("\n"));
+
+  const model = buildHumanReview({ packet, prSurface, diff });
+  const observed = model.intent_mismatch.observed_in_diff.find((item) => item.paths.includes("features/review-surfaces.feature.yaml"));
+
+  assert.ok(observed);
+  assert.deepEqual(observed.requirement_ids, ["review-surfaces.HUMAN_REVIEW.18"]);
+  assert.match(observed.summary, /references exact requirement/);
+  assert.ok(!observed.requirement_ids.some((id) => id.includes("BOOTSTRAP")));
+});
+
+test("review-surfaces.HUMAN_REVIEW.18 observed source specs without exact ACIDs avoid broad path requirements", () => {
+  const broadSpecAcid = ["review-surfaces", "BOOTSTRAP", "1"].join(".");
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files = [
+    {
+      path: "features/review-surfaces.feature.yaml",
+      status: "M",
+      areas: ["BOOTSTRAP"],
+      role: "spec",
+      added_lines: 2,
+      deleted_lines: 0
+    }
+  ];
+  prSurface.scope.affected_requirements = [
+    {
+      requirement_id: "REQ-BOOTSTRAP-1",
+      acai_id: broadSpecAcid,
+      title: "Bootstrap scaffold",
+      group_key: "BOOTSTRAP",
+      reasons: [{ rule: "changed_path_requirement_group", confidence: "high", path: "features/review-surfaces.feature.yaml" }]
+    }
+  ];
+  prSurface.scope.out_of_scope_changed_files = [];
+  prSurface.coverage.deltas = [];
+  prSurface.risks.candidates = [];
+  const diff = parseStructuredDiff([
+    "diff --git a/features/review-surfaces.feature.yaml b/features/review-surfaces.feature.yaml",
+    "--- a/features/review-surfaces.feature.yaml",
+    "+++ b/features/review-surfaces.feature.yaml",
+    "@@ -250,2 +250,4 @@",
+    "       18:",
+    "+        note: Intent mismatch findings should stay source-backed.",
+    ""
+  ].join("\n"));
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface, diff });
+  const observed = model.intent_mismatch.observed_in_diff.find((item) => item.paths.includes("features/review-surfaces.feature.yaml"));
+
+  assert.ok(observed);
+  assert.deepEqual(observed.requirement_ids, []);
+  assert.match(observed.summary, /source-of-truth spec intent/);
 });
 
 test("since-last-review model turns packet comparison into reviewer-focused deltas", () => {

@@ -87,6 +87,9 @@
         "$ref": "#/$defs/riskLensFinding"
       }
     },
+    "intent_mismatch": {
+      "$ref": "#/$defs/intentMismatch"
+    },
     "review_routes": {
       "type": "array",
       "items": {
@@ -256,6 +259,7 @@
         "summary": { "type": "string" },
         "evidence": {
           "type": "array",
+          "minItems": 1,
           "items": { "$ref": "#/$defs/evidenceRef" }
         },
         "required_action": { "type": "string" }
@@ -483,6 +487,63 @@
           "items": { "type": "string" }
         },
         "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    },
+    "intentMismatch": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "expected_by_spec",
+        "observed_in_diff",
+        "possible_mismatches",
+        "possible_overreach",
+        "missing_intent"
+      ],
+      "properties": {
+        "expected_by_spec": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/intentMismatchItem" }
+        },
+        "observed_in_diff": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/intentMismatchItem" }
+        },
+        "possible_mismatches": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/intentMismatchItem" }
+        },
+        "possible_overreach": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/intentMismatchItem" }
+        },
+        "missing_intent": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/intentMismatchItem" }
+        }
+      }
+    },
+    "intentMismatchItem": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "summary", "evidence", "requirement_ids", "paths", "confidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "summary": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "requirement_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "paths": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "severity": { "$ref": "#/$defs/severity" }
       }
     },
     "reviewRoute": {

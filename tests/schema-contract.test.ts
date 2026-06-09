@@ -461,6 +461,129 @@ test("human review schema validates inline evidence cards", () => {
   assert.equal(result.valid, true, JSON.stringify(result.issues));
 });
 
+test("human review schema validates intent-mismatch slices", () => {
+  const humanReview = {
+    schema_version: "review-surfaces.human_review.v1",
+    mode: "pr",
+    verdict: {
+      decision: "needs_author_clarification",
+      confidence: "medium",
+      reasons: []
+    },
+    summary: "Intent mismatch schema fixture.",
+    review_queue: [],
+    blockers: [],
+    questions: [],
+    suggested_comments: [],
+    trust_audit: {
+      verified_facts: [],
+      claimed_not_verified: [],
+      missing_evidence: [],
+      invalid_evidence: [],
+      confidence_summary: "Fixture."
+    },
+    intent_mismatch: {
+      expected_by_spec: [
+        {
+          id: "INTENT-EXPECTED-001",
+          summary: "review-surfaces.HUMAN_REVIEW.18: render intent mismatch.",
+          evidence: [{ kind: "spec", path: "features/review-surfaces.feature.yaml", acai_id: "review-surfaces.HUMAN_REVIEW.18", confidence: "high", validation_status: "valid" }],
+          requirement_ids: ["review-surfaces.HUMAN_REVIEW.18"],
+          paths: ["features/review-surfaces.feature.yaml"],
+          confidence: "high"
+        }
+      ],
+      observed_in_diff: [
+        {
+          id: "INTENT-OBSERVED-001",
+          summary: "Changed implementation file `src/human/human-review.ts` maps to HUMAN_REVIEW.",
+          evidence: [{ kind: "file", path: "src/human/human-review.ts", confidence: "high", validation_status: "not_checked" }],
+          requirement_ids: ["review-surfaces.HUMAN_REVIEW.18"],
+          paths: ["src/human/human-review.ts"],
+          confidence: "high"
+        }
+      ],
+      possible_mismatches: [
+        {
+          id: "INTENT-MISMATCH-001",
+          summary: "Partial implementation evidence for review-surfaces.HUMAN_REVIEW.18.",
+          evidence: [{ kind: "unknown", note: "Fixture missing evidence.", confidence: "unknown", validation_status: "unknown" }],
+          requirement_ids: ["review-surfaces.HUMAN_REVIEW.18"],
+          paths: [],
+          confidence: "medium",
+          severity: "medium"
+        }
+      ],
+      possible_overreach: [],
+      missing_intent: []
+    },
+    test_plan: [],
+    skim_safe: [],
+    generated_from: {
+      packet_path: ".review-surfaces/review_packet.json",
+      pr_surface_path: ".review-surfaces/pr_review_surface.json",
+      base_ref: "origin/main",
+      head_ref: "HEAD",
+      head_sha: "abc123"
+    }
+  };
+
+  const result = validateJsonSchema(humanReviewSchema, humanReview);
+  assert.equal(result.valid, true, JSON.stringify(result.issues));
+});
+
+test("human review schema rejects intent-mismatch items without evidence", () => {
+  const humanReview = {
+    schema_version: "review-surfaces.human_review.v1",
+    mode: "pr",
+    verdict: {
+      decision: "needs_author_clarification",
+      confidence: "medium",
+      reasons: []
+    },
+    summary: "Intent mismatch schema fixture.",
+    review_queue: [],
+    blockers: [],
+    questions: [],
+    suggested_comments: [],
+    trust_audit: {
+      verified_facts: [],
+      claimed_not_verified: [],
+      missing_evidence: [],
+      invalid_evidence: [],
+      confidence_summary: "Fixture."
+    },
+    intent_mismatch: {
+      expected_by_spec: [
+        {
+          id: "INTENT-EXPECTED-001",
+          summary: "Missing evidence fixture.",
+          evidence: [],
+          requirement_ids: ["review-surfaces.HUMAN_REVIEW.18"],
+          paths: ["features/review-surfaces.feature.yaml"],
+          confidence: "high"
+        }
+      ],
+      observed_in_diff: [],
+      possible_mismatches: [],
+      possible_overreach: [],
+      missing_intent: []
+    },
+    test_plan: [],
+    skim_safe: [],
+    generated_from: {
+      packet_path: ".review-surfaces/review_packet.json",
+      pr_surface_path: ".review-surfaces/pr_review_surface.json",
+      base_ref: "origin/main",
+      head_ref: "HEAD",
+      head_sha: "abc123"
+    }
+  };
+
+  const result = validateJsonSchema(humanReviewSchema, humanReview);
+  assert.equal(result.valid, false);
+});
+
 // Ties the runtime VERSION constant into the packet contract: the manifest's
 // tool_version is stamped from VERSION, and VERSION tracks package.json. (The
 // raw VERSION === package.json check also lives in version.test.ts; here it

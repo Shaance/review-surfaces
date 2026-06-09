@@ -253,6 +253,9 @@ components:
       17:
         requirement: Human review configuration must support required manual checks triggered by changed-path patterns.
         note: Missing configured manual checks must appear as deterministic blockers, reviewer questions, and required manual test-plan items until current-head evidence records the check.
+      18:
+        requirement: The human surface must render explicit intent-mismatch findings that distinguish expected spec intent, observed diff behavior, possible mismatches, possible overreach, and missing intent mappings.
+        note: Intent-mismatch findings must cite packet or PR-scope evidence, must not fabricate intent absent from local specs/docs/tickets, and ambiguous intent must produce reviewer questions.
 
   PROVIDERS:
     name: Later provider integrations

@@ -7,6 +7,8 @@ import type {
   EvidenceCard,
   FeedbackPolicyEffect,
   HumanReviewModel,
+  IntentMismatch,
+  IntentMismatchItem,
   ReviewQueueItem,
   ReviewRoute,
   ReviewRouteStep,
@@ -62,6 +64,13 @@ export const HUMAN_STANDALONE_ARTIFACTS = [
     label: "Risk lenses",
     heading: "# Risk Lenses",
     render: renderRiskLensesMarkdown
+  },
+  {
+    command: "intent-mismatch",
+    artifact: "intent_mismatch.md",
+    label: "Intent mismatch",
+    heading: "# Intent Mismatch",
+    render: renderIntentMismatchMarkdown
   },
   {
     command: "routes",
@@ -153,6 +162,10 @@ ${renderBlockers(model)}
 
 ${renderSinceLastReviewSummary(sinceLastReview(model))}
 
+## Intent mismatch
+
+${renderIntentMismatchSummary(intentMismatch(model))}
+
 ## Questions for author
 
 ${numbered(model.questions.slice(0, MAX_QUESTIONS).map((question) => `${question.question} (${question.severity}; evidence: ${evidenceList(question.evidence)})`), "No reviewer questions generated.")}
@@ -241,6 +254,34 @@ export function renderRiskLensesMarkdown(model: HumanReviewModel): string {
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
 
 ${riskLensFindings(model).length === 0 ? "- No domain risk lenses fired." : riskLensFindings(model).map(renderRiskLensDetail).join("\n\n---\n\n")}
+`;
+}
+
+export function renderIntentMismatchMarkdown(model: HumanReviewModel): string {
+  const intent = intentMismatch(model);
+  return `# Intent Mismatch
+
+Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
+
+## Expected by spec
+
+${renderIntentMismatchItems(intent.expected_by_spec)}
+
+## Observed in diff
+
+${renderIntentMismatchItems(intent.observed_in_diff)}
+
+## Possible mismatch
+
+${renderIntentMismatchItems(intent.possible_mismatches)}
+
+## Possible overreach
+
+${renderIntentMismatchItems(intent.possible_overreach)}
+
+## Missing intent
+
+${renderIntentMismatchItems(intent.missing_intent)}
 `;
 }
 
@@ -364,6 +405,16 @@ function riskLensFindings(model: HumanReviewModel): RiskLensFinding[] {
   return model.risk_lens_findings ?? [];
 }
 
+function intentMismatch(model: HumanReviewModel): IntentMismatch {
+  return model.intent_mismatch ?? {
+    expected_by_spec: [],
+    observed_in_diff: [],
+    possible_mismatches: [],
+    possible_overreach: [],
+    missing_intent: []
+  };
+}
+
 function reviewRoutes(model: HumanReviewModel): ReviewRoute[] {
   return model.review_routes ?? [];
 }
@@ -387,6 +438,37 @@ function renderReviewRoutesSummary(routes: ReviewRoute[]): string {
     }),
     "No review routes generated."
   );
+}
+
+function renderIntentMismatchSummary(intent: IntentMismatch): string {
+  const risky = [...intent.possible_mismatches, ...intent.possible_overreach, ...intent.missing_intent];
+  const lines = [
+    `${intent.expected_by_spec.length} expected intent item(s), ${intent.observed_in_diff.length} observed changed-file item(s).`,
+    `${intent.possible_mismatches.length} possible mismatch item(s), ${intent.possible_overreach.length} possible overreach item(s), ${intent.missing_intent.length} missing-intent item(s).`
+  ];
+  if (risky.length > 0) {
+    for (const [index, item] of risky.slice(0, 3).entries()) {
+      lines.push(`Review first ${index + 1}: ${item.summary} Evidence: ${evidenceList(item.evidence)}`);
+    }
+  } else {
+    lines.push("No explicit intent mismatch, overreach, or missing-intent item was identified.");
+  }
+  return bullets(lines, "No intent mismatch summary generated.");
+}
+
+function renderIntentMismatchItems(items: IntentMismatchItem[]): string {
+  if (items.length === 0) {
+    return "- None recorded.";
+  }
+  return items.map((item) => {
+    const paths = item.paths.length ? item.paths.map((filePath) => `\`${field(filePath)}\``).join(", ") : "none";
+    const requirements = item.requirement_ids.length ? item.requirement_ids.map((id) => `\`${field(id)}\``).join(", ") : "none";
+    return `- ${field(item.summary, 1000)}
+  - Confidence: ${item.confidence}${item.severity ? `; severity: ${item.severity}` : ""}
+  - Paths: ${paths}
+  - Requirements: ${requirements}
+  - Evidence: ${evidenceList(item.evidence)}`;
+  }).join("\n");
 }
 
 function renderReviewRouteDetail(route: ReviewRoute): string {
