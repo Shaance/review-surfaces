@@ -9,7 +9,8 @@ export function normalizeCommand(command: string): string {
 export function commandLooksLikeTestCommand(command: string): boolean {
   const normalized = normalizeCommand(command);
   return packageManagerBodyLooksLikeTest(parsedPackageManagerCommand(normalized)?.body ?? "")
-    || /^(?:node\s+--test|(?:vitest|jest|tap|uvu))(?:\s|$)/.test(normalized);
+    || nodeTestArgs(normalized) !== undefined
+    || /^(?:vitest|jest|tap|uvu)(?:\s|$)/.test(normalized);
 }
 
 export function commandLooksLikeFocusedTestCommand(command: string): boolean {
@@ -118,23 +119,23 @@ function packageManagerOptionConsumesNext(manager: string, option: string): bool
 }
 
 function nodeTestFocusClassification(normalized: string): boolean | undefined {
-  const match = normalized.match(/^node\s+--test(?:\s+(.*))?$/);
-  if (!match) {
+  const testArgs = nodeTestArgs(normalized);
+  if (testArgs === undefined) {
     return undefined;
   }
-  const args = match[1]?.trim() ?? "";
-  if (!args) {
+  if (testArgs.length === 0) {
     return false;
   }
+  const args = testArgs.join(" ");
   if (hasTestNameFilter(args)) {
     return true;
   }
-  const positionalArgs = nodeTestPositionalArgs(args);
+  const positionalArgs = nodeTestPositionalArgs(testArgs);
   if (positionalArgs.length === 0) {
     return false;
   }
   if (positionalArgs.every((token) => token.includes("*"))) {
-    return false;
+    return !positionalArgs.every(nodeTestGlobLooksBroad);
   }
   return hasFocusedTestTarget(positionalArgs.join(" "));
 }
@@ -147,33 +148,79 @@ function hasTestNameFilter(value: string): boolean {
   return TEST_NAME_FILTER_PATTERN.test(value);
 }
 
-function nodeTestPositionalArgs(args: string): string[] {
-  const tokens = args.split(" ").filter(Boolean);
-  const positionals: string[] = [];
-  for (let index = 0; index < tokens.length; index += 1) {
+function nodeTestArgs(normalized: string): string[] | undefined {
+  const tokens = normalized.split(" ").filter(Boolean);
+  if (tokens[0] !== "node") {
+    return undefined;
+  }
+  for (let index = 1; index < tokens.length; index += 1) {
     const token = tokens[index];
     if (token === "--") {
-      positionals.push(...tokens.slice(index + 1));
-      break;
+      return undefined;
+    }
+    if (token === "--test") {
+      return tokens.slice(index + 1);
     }
     if (token.startsWith("-")) {
-      if (nodeTestOptionConsumesNext(token)) {
+      if (nodeOptionConsumesNext(token)) {
         index += 1;
       }
       continue;
     }
-    positionals.push(token);
+    return undefined;
+  }
+  return undefined;
+}
+
+function nodeTestPositionalArgs(tokens: string[]): string[] {
+  const positionals: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token === "--") {
+      positionals.push(...tokens.slice(index + 1).map(cleanCommandToken));
+      break;
+    }
+    if (token.startsWith("-")) {
+      if (nodeOptionConsumesNext(token)) {
+        index += 1;
+      }
+      continue;
+    }
+    positionals.push(cleanCommandToken(token));
   }
   return positionals;
 }
 
-function nodeTestOptionConsumesNext(option: string): boolean {
+function nodeOptionConsumesNext(option: string): boolean {
   if (option.includes("=")) {
     return false;
   }
   return [
+    "-r",
+    "--conditions",
+    "--env-file",
+    "--env-file-if-exists",
+    "--experimental-loader",
+    "--icu-data-dir",
+    "--import",
+    "--inspect-port",
+    "--loader",
+    "--openssl-config",
+    "--require",
+    "--test-concurrency",
+    "--test-coverage-exclude",
+    "--test-coverage-include",
     "--test-reporter",
     "--test-reporter-destination",
     "--test-shard"
   ].includes(option);
+}
+
+function cleanCommandToken(token: string): string {
+  return token.replace(/^(['"])(.*)\1$/, "$2");
+}
+
+function nodeTestGlobLooksBroad(token: string): boolean {
+  const normalized = cleanCommandToken(token).replace(/^\.\//, "");
+  return /^(?:dist\/)?tests\/(?:\*\*\/)?\*\.(?:test|spec)\.[cm]?[jt]sx?$/.test(normalized);
 }
