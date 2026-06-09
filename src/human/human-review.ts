@@ -22,6 +22,9 @@ import {
   MissingEvidenceSummary,
   ReviewBlocker,
   ReviewerQuestion,
+  RiskLens,
+  RiskLensFinding,
+  RISK_LENS_METADATA,
   SuggestedReviewComment,
   TestPlanItem,
   TrustAudit,
@@ -76,10 +79,25 @@ interface SuggestedCommentCandidate {
 interface TestPlanCandidate {
   draft: TestPlanDraft;
   risk?: PrRiskCandidate;
+  lens?: RiskLensFinding;
   sourceRank: number;
   sortKey: string;
 }
 type FeedbackPolicyEffectDraft = Omit<FeedbackPolicyEffect, "id">;
+interface RiskLensAccumulator {
+  lens: RiskLens;
+  severity: PacketSeverity;
+  evidence: EvidenceRef[];
+  evidence_keys: Set<string>;
+  risk_ids: string[];
+  risk_id_set: Set<string>;
+  requirement_ids: string[];
+  requirement_id_set: Set<string>;
+  paths: string[];
+  path_set: Set<string>;
+  confidence: PacketConfidence;
+  has_invalid_evidence: boolean;
+}
 interface ManualCheckRecord {
   text: string;
   evidence: EvidenceRef[];
@@ -91,6 +109,8 @@ const MAX_QUESTIONS = 10;
 const MAX_COMMENTS = 10;
 const MAX_TEST_PLAN = 12;
 const MAX_TRUST_ITEMS = 10;
+const MAX_RISK_LENS_FINDINGS = 12;
+const MAX_RISK_LENS_PATHS = 12;
 const MAX_FOCUSED_REQUIREMENT_TESTS = 6;
 const MAX_CHANGED_FILE_QUEUE = 8;
 const FEEDBACK_ACTION_DOWNGRADE_TO_LOW = "downgrade_to_low";
@@ -118,15 +138,27 @@ const MANUAL_CHECK_TOKEN_STOP_WORDS = new Set([
   "the",
   "to"
 ]);
-
+const PR_RISK_RULE_LENSES: Record<PrRiskCandidate["rule"], RiskLens[]> = {
+  coverage_regression: ["test_evidence"],
+  untested_changed_impl: ["test_evidence"],
+  unmapped_change: [],
+  privacy_sensitive_change: ["security_privacy"],
+  comment_surface_change: ["reviewer_ux"],
+  ci_secret_boundary_change: ["security_privacy"],
+  schema_contract_change: ["api_contract"],
+  deleted_or_renamed_surface: ["reviewer_ux"],
+  failed_or_skipped_test: ["test_evidence"],
+  large_diff: []
+};
 export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel {
   const feedbackEffects = buildFeedbackPolicyEffects(input);
+  const riskLensFindings = buildRiskLensFindings(input);
   const blockers = buildBlockers(input, feedbackEffects);
   const reviewQueue = buildReviewQueue(input, feedbackEffects);
-  const questions = buildQuestions(input, blockers, feedbackEffects);
-  const suggestedComments = buildSuggestedComments(input, blockers);
+  const questions = buildQuestions(input, blockers, feedbackEffects, riskLensFindings);
+  const suggestedComments = buildSuggestedComments(input, blockers, riskLensFindings);
   const trustAudit = buildTrustAudit(input);
-  const testPlan = buildTestPlan(input, feedbackEffects);
+  const testPlan = buildTestPlan(input, feedbackEffects, riskLensFindings);
   const skimSafe = buildSkimSafe(input, feedbackEffects);
   const verdict = buildVerdict(input, blockers, trustAudit);
   const generatedFrom = buildGeneratedFrom(input);
@@ -141,6 +173,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     questions,
     suggested_comments: suggestedComments,
     trust_audit: trustAudit,
+    risk_lens_findings: riskLensFindings,
     test_plan: testPlan,
     skim_safe: skimSafe,
     feedback_effects: feedbackEffects,
@@ -538,6 +571,483 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput): FeedbackPolic
   }));
 }
 
+function buildRiskLensFindings(input: BuildHumanReviewInput): RiskLensFinding[] {
+  const accumulators = new Map<RiskLens, RiskLensAccumulator>();
+  const addSignal = (
+    lens: RiskLens,
+    severity: PacketSeverity,
+    evidence: EvidenceRef[],
+    riskIds: string[] = [],
+    requirementIds: string[] = [],
+    paths: string[] = []
+  ): void => {
+    const existing = accumulators.get(lens) ?? {
+      lens,
+      severity: "unknown" as const,
+      evidence: [],
+      evidence_keys: new Set<string>(),
+      risk_ids: [],
+      risk_id_set: new Set<string>(),
+      requirement_ids: [],
+      requirement_id_set: new Set<string>(),
+      paths: [],
+      path_set: new Set<string>(),
+      confidence: "medium" as const,
+      has_invalid_evidence: false
+    };
+    existing.severity = maxSeverity(existing.severity, severity);
+    const hasInvalidEvidence = evidence.some(isInvalidTrustEvidence);
+    existing.has_invalid_evidence = existing.has_invalid_evidence || hasInvalidEvidence;
+    appendUniqueEvidence(existing, evidence);
+    appendUniqueStrings(existing.risk_ids, existing.risk_id_set, riskIds);
+    appendUniqueStrings(existing.requirement_ids, existing.requirement_id_set, requirementIds);
+    appendUniqueStrings(existing.paths, existing.path_set, paths.map(normalizeEvidencePath), MAX_RISK_LENS_PATHS);
+    existing.confidence = existing.has_invalid_evidence ? "low" : riskIds.length > 0 ? "high" : existing.confidence;
+    accumulators.set(lens, existing);
+  };
+
+  for (const risk of input.prSurface?.risks.candidates ?? []) {
+    const paths = evidencePaths(risk.evidence);
+    const lenses = PR_RISK_RULE_LENSES[risk.rule];
+    for (const lens of lenses.length ? lenses : riskLensesForEvidencePaths(paths)) {
+      addSignal(
+        lens,
+        risk.severity,
+        evidenceOrMissing(risk.evidence, risk.summary),
+        [risk.id],
+        requirementIdsForPrRisk(input, risk),
+        paths
+      );
+    }
+  }
+
+  for (const file of input.prSurface?.scope.changed_files ?? []) {
+    const lenses = riskLensesForChangedFile(file);
+    if (lenses.length === 0) {
+      continue;
+    }
+    const fileRequirementIds = input.prSurface ? affectedRequirementIdsForFile(input.prSurface, file) : [];
+    for (const lens of lenses) {
+      addSignal(
+        lens,
+        defaultSeverityForLensPath(lens, file.path, file.role),
+        [fileEvidence(file.path, `${RISK_LENS_METADATA[lens].label} matched changed file ${file.path}.`)],
+        [],
+        fileRequirementIds,
+        [file.path]
+      );
+    }
+  }
+
+  return [...accumulators.values()]
+    .filter((finding) => finding.evidence.length > 0)
+    .sort(compareRiskLensAccumulators)
+    .slice(0, MAX_RISK_LENS_FINDINGS)
+    .map((finding, index) => {
+      const id = `LENS-${String(index + 1).padStart(3, "0")}`;
+      const base: Omit<RiskLensFinding, "suggested_tests" | "suggested_comments"> = {
+        id,
+        lens: finding.lens,
+        severity: finding.severity,
+        summary: riskLensSummary(finding),
+        reviewer_action: riskLensReviewerAction(finding, input),
+        evidence: finding.evidence.slice(0, 8),
+        risk_ids: finding.risk_ids,
+        requirement_ids: finding.requirement_ids,
+        paths: finding.paths,
+        confidence: finding.has_invalid_evidence ? "low" : finding.confidence
+      };
+      return {
+        ...base,
+        suggested_tests: buildRiskLensSuggestedTests(input, base),
+        suggested_comments: buildRiskLensSuggestedComments(base)
+      };
+    });
+}
+
+function riskLensesForChangedFile(file: PrChangedFile): RiskLens[] {
+  const normalizedPath = normalizeEvidencePath(file.path);
+  return compactRiskLenses([
+    isApiContractLensPath(normalizedPath, file.role) ? "api_contract" as const : undefined,
+    isSecurityPrivacyLensPath(normalizedPath, file.role) ? "security_privacy" as const : undefined,
+    isLlmTrustBoundaryLensPath(normalizedPath) ? "llm_trust_boundary" as const : undefined,
+    isTestEvidenceLensPath(normalizedPath, file.role) ? "test_evidence" as const : undefined,
+    isReviewerUxLensPath(normalizedPath) ? "reviewer_ux" as const : undefined,
+    isCacheProvenanceLensPath(normalizedPath) ? "cache_provenance" as const : undefined
+  ]);
+}
+
+function riskLensesForEvidencePaths(paths: string[]): RiskLens[] {
+  return uniqueTruthy(paths.flatMap((filePath) => riskLensesForPath(filePath)));
+}
+
+function riskLensesForPath(filePath: string): RiskLens[] {
+  const normalizedPath = normalizeEvidencePath(filePath);
+  return compactRiskLenses([
+    isApiContractLensPath(normalizedPath, "unknown") ? "api_contract" as const : undefined,
+    isSecurityPrivacyLensPath(normalizedPath, "unknown") ? "security_privacy" as const : undefined,
+    isLlmTrustBoundaryLensPath(normalizedPath) ? "llm_trust_boundary" as const : undefined,
+    isTestEvidenceLensPath(normalizedPath, "unknown") ? "test_evidence" as const : undefined,
+    isReviewerUxLensPath(normalizedPath) ? "reviewer_ux" as const : undefined,
+    isCacheProvenanceLensPath(normalizedPath) ? "cache_provenance" as const : undefined
+  ]);
+}
+
+function compactRiskLenses(values: Array<RiskLens | undefined>): RiskLens[] {
+  return uniqueTruthy(values).filter((value): value is RiskLens => typeof value === "string");
+}
+
+function isApiContractLensPath(filePath: string, role: PrChangedFile["role"]): boolean {
+  return (
+    role === "spec" ||
+    /^src\/cli\//.test(filePath) ||
+    /^schemas\//.test(filePath) ||
+    /(?:^|\/)schema(?:s)?\//.test(filePath) ||
+    /(?:^|\/)[^/]*schema[^/]*\.json$/.test(filePath) ||
+    /(?:^|\/)contract\.ts$/.test(filePath) ||
+    filePath === "review-surfaces.config.yaml" ||
+    /^features\/.*\.feature\.yaml$/.test(filePath)
+  );
+}
+
+function isSecurityPrivacyLensPath(filePath: string, role: PrChangedFile["role"]): boolean {
+  return (
+    role === "ci" ||
+    /^\.github\/workflows\//.test(filePath) ||
+    /^src\/privacy\//.test(filePath) ||
+    /^src\/llm\/provider/.test(filePath) ||
+    /\b(secret|token|redact|credential|privacy|provider)\b/i.test(filePath)
+  );
+}
+
+function isLlmTrustBoundaryLensPath(filePath: string): boolean {
+  return (
+    /^src\/llm\//.test(filePath) ||
+    /\b(prompt|narrative|allowlist|anchor|llm)\b/i.test(filePath)
+  );
+}
+
+function isTestEvidenceLensPath(filePath: string, role: PrChangedFile["role"]): boolean {
+  return (
+    role === "test" ||
+    /^tests\//.test(filePath) ||
+    /\b(test-output|junit|coverage|tests-evidence|command-transcript|transcript)\b/i.test(filePath)
+  );
+}
+
+function isReviewerUxLensPath(filePath: string): boolean {
+  return (
+    /^src\/render\//.test(filePath) ||
+    /^src\/human\/render\.ts$/.test(filePath) ||
+    /\b(comment|markdown|mermaid|diagram|review[-_]queue|human_review)\b/i.test(filePath)
+  );
+}
+
+function isCacheProvenanceLensPath(filePath: string): boolean {
+  return /\b(cache|provenance|artifact-store|previous-packet|input-hash|signature)\b/i.test(filePath);
+}
+
+function defaultSeverityForLensPath(lens: RiskLens, filePath: string, role: PrChangedFile["role"]): PacketSeverity {
+  if (lens === "security_privacy" && (role === "ci" || /^\.github\/workflows\//.test(filePath))) {
+    return "high";
+  }
+  if (lens === "api_contract" || lens === "llm_trust_boundary") {
+    return "medium";
+  }
+  return "low";
+}
+
+function riskLensSummary(finding: RiskLensAccumulator): string {
+  const source = finding.risk_ids.length
+    ? `${finding.risk_ids.length} deterministic risk(s)`
+    : `${finding.paths.length} changed file(s)`;
+  const pathText = finding.paths.length ? ` across ${finding.paths.slice(0, 4).join(", ")}` : "";
+  return `${RISK_LENS_METADATA[finding.lens].label} fired from ${source}${pathText}.`;
+}
+
+function riskLensReviewerAction(
+  finding: Pick<RiskLensFinding, "lens" | "risk_ids" | "paths" | "evidence">,
+  input: BuildHumanReviewInput
+): string {
+  switch (finding.lens) {
+    case "api_contract":
+      return "Confirm the changed contract is additive or intentionally versioned, and add a compatibility fixture for existing generated artifacts.";
+    case "security_privacy":
+      return hasCiSecretBoundaryLensRisk(finding) && !hasRecordedCiSecretBoundaryManualCheck(input)
+        ? "Inspect workflow/provider boundaries and record a manual check proving PR-controlled code cannot access secrets."
+        : "Inspect privacy, provider, redaction, token, and workflow boundaries with sensitive-input validation evidence.";
+    case "llm_trust_boundary":
+      return "Verify LLM prompt/output changes cannot fabricate paths, requirements, risks, statuses, or reviewer-facing anchors.";
+    case "test_evidence":
+      return "Confirm parsed test output, coverage, command transcripts, and skipped-test handling still produce trustworthy review evidence.";
+    case "reviewer_ux":
+      return "Render the changed reviewer-facing Markdown or diagram from fixtures and inspect boundedness, evidence links, and blocked-state messaging.";
+    case "cache_provenance":
+      return "Verify cache signatures, previous-packet comparison, and artifact provenance cannot reuse stale or mismatched review evidence.";
+    case "custom":
+      return "Inspect the custom risk lens finding and record the reviewer action taken.";
+  }
+}
+
+function buildRiskLensSuggestedTests(
+  input: BuildHumanReviewInput,
+  finding: Omit<RiskLensFinding, "suggested_tests" | "suggested_comments">
+): TestPlanItem[] {
+  const drafts: TestPlanDraft[] = [];
+  const required = finding.severity === "high" || finding.severity === "critical" ? "required" as const : "recommended" as const;
+  switch (finding.lens) {
+    case "api_contract":
+      drafts.push({
+        kind: "automatic",
+        priority: "required",
+        suggested_file: "tests/schema-contract.test.ts",
+        scenario: "Load an existing generated artifact fixture and validate it against the changed schema or contract.",
+        expected_result: "The old fixture still validates, or the schema/contract version is explicitly bumped for a breaking change.",
+        command: "pnpm run test -- tests/schema-contract.test.ts",
+        maps_to_requirements: finding.requirement_ids,
+        maps_to_risks: finding.risk_ids,
+        evidence_gap: finding.summary
+      });
+      break;
+    case "security_privacy":
+      if (hasCiSecretBoundaryLensRisk(finding) && !hasRecordedCiSecretBoundaryManualCheck(input)) {
+        drafts.push({
+          kind: "manual",
+          priority: "required",
+          scenario: "Inspect workflow/provider/comment-posting changes for the CI secret boundary.",
+          expected_result: "Reviewer records that PR-controlled code cannot access secrets and secret-bearing steps run only from trusted code.",
+          maps_to_requirements: finding.requirement_ids,
+          maps_to_risks: finding.risk_ids,
+          evidence_gap: "No manual CI secret-boundary check is recorded for this lens finding."
+        });
+      } else {
+        drafts.push({
+          kind: "automatic",
+          priority: required,
+          suggested_file: "tests/privacy.test.ts",
+          scenario: "Exercise the changed privacy, provider, redaction, token, or workflow path with sensitive-looking input.",
+          expected_result: "No secret or unredacted sensitive value reaches artifacts, logs, comments, or remote-provider prompts.",
+          command: "pnpm run test -- tests/privacy.test.ts",
+          maps_to_requirements: finding.requirement_ids,
+          maps_to_risks: finding.risk_ids,
+          evidence_gap: finding.summary
+        });
+      }
+      break;
+    case "llm_trust_boundary":
+      drafts.push({
+        kind: "automatic",
+        priority: "required",
+        suggested_file: "tests/pr-narrative.test.ts",
+        scenario: "Generate LLM narrative candidates with off-allowlist paths, ACIDs, risks, and statuses.",
+        expected_result: "Invalid anchors are dropped or marked invalid and never appear as trusted reviewer-facing facts.",
+        command: "pnpm run test -- tests/pr-narrative.test.ts",
+        maps_to_requirements: finding.requirement_ids,
+        maps_to_risks: finding.risk_ids,
+        evidence_gap: finding.summary
+      });
+      break;
+    case "test_evidence":
+      const testEvidenceFile = suggestedLensTestFile(finding, "tests/tests-evidence.test.ts");
+      drafts.push({
+        kind: "automatic",
+        priority: required,
+        suggested_file: testEvidenceFile,
+        scenario: "Run or add a fixture proving test output, coverage, skipped tests, or command transcripts are parsed into the expected evidence state.",
+        expected_result: "The human review trust audit distinguishes passed, failed, skipped, claimed, and missing validation evidence correctly.",
+        command: `pnpm run test -- ${testEvidenceFile}`,
+        maps_to_requirements: finding.requirement_ids,
+        maps_to_risks: finding.risk_ids,
+        evidence_gap: finding.summary
+      });
+      break;
+    case "reviewer_ux":
+      const reviewerUxFile = suggestedLensTestFile(finding, "tests/pr-comment.test.ts", isReviewerUxImplementationPath);
+      drafts.push({
+        kind: "automatic",
+        priority: "recommended",
+        suggested_file: reviewerUxFile,
+        scenario: "Render the changed reviewer-facing surface from a deterministic fixture.",
+        expected_result: "The Markdown stays compact, evidence-backed, and clear in blocked and ready states.",
+        command: `pnpm run test -- ${reviewerUxFile}`,
+        maps_to_requirements: finding.requirement_ids,
+        maps_to_risks: finding.risk_ids,
+        evidence_gap: finding.summary
+      });
+      break;
+    case "cache_provenance":
+      drafts.push({
+        kind: "automatic",
+        priority: "recommended",
+        suggested_file: "tests/artifact-provenance-input-hardening.test.ts",
+        scenario: "Change cache/provenance inputs and verify stale review artifacts are regenerated instead of reused.",
+        expected_result: "Cache hits occur only for matching signatures and provenance; mismatched artifacts force regeneration.",
+        command: "pnpm run test -- tests/artifact-provenance-input-hardening.test.ts",
+        maps_to_requirements: finding.requirement_ids,
+        maps_to_risks: finding.risk_ids,
+        evidence_gap: finding.summary
+      });
+      break;
+    case "custom":
+      break;
+  }
+  return drafts.map((draft, index) => ({
+    id: `${finding.id}-TEST-${String(index + 1).padStart(3, "0")}`,
+    ...draft
+  }));
+}
+
+function buildRiskLensSuggestedComments(
+  finding: Omit<RiskLensFinding, "suggested_tests" | "suggested_comments">
+): SuggestedReviewComment[] {
+  const body = riskLensSuggestedCommentBody(finding);
+  if (!body) {
+    return [];
+  }
+  const firstPath = riskLensSuggestedCommentPath(finding);
+  return [{
+    id: `${finding.id}-SC-001`,
+    severity: riskLensSuggestedCommentSeverity(finding),
+    path: firstPath,
+    body,
+    evidence: finding.evidence,
+    risk_ids: finding.risk_ids,
+    requirement_ids: finding.requirement_ids,
+    confidence: finding.confidence,
+    ready_to_post: finding.evidence.length > 0 && !finding.evidence.some(isInvalidTrustEvidence)
+  }];
+}
+
+function riskLensSuggestedCommentBody(finding: Pick<RiskLensFinding, "lens" | "reviewer_action">): string | undefined {
+  switch (finding.lens) {
+    case "api_contract":
+      return "This fires the API/schema contract lens. Can you add a compatibility fixture for an existing generated artifact, or explicitly version this as a breaking change?";
+    case "security_privacy":
+      return "This fires the security/privacy lens. Can you record the manual check or sensitive-input validation proving the changed boundary does not expose secrets or unredacted data?";
+    case "llm_trust_boundary":
+      return "This fires the LLM trust-boundary lens. Which fixture proves fabricated paths, requirement IDs, risk IDs, or statuses are rejected before rendering?";
+    case "test_evidence":
+      return "This fires the test evidence lens. Can you point to parsed test output or a command transcript proving the changed evidence path is trustworthy?";
+    case "reviewer_ux":
+      return "This fires the reviewer UX lens. Please include or inspect a rendered Markdown/diagram fixture so reviewers can verify the output directly.";
+    case "cache_provenance":
+      return "This fires the cache/provenance lens. Which fixture proves stale or mismatched artifacts cannot be reused for this change?";
+    case "custom":
+      return undefined;
+  }
+}
+
+function riskLensSuggestedCommentSeverity(finding: Pick<RiskLensFinding, "lens" | "severity">): SuggestedReviewComment["severity"] {
+  if (finding.severity === "critical" || finding.severity === "high" || finding.lens === "api_contract" || finding.lens === "llm_trust_boundary") {
+    return "blocking";
+  }
+  if (finding.lens === "reviewer_ux" || finding.lens === "cache_provenance") {
+    return "non_blocking";
+  }
+  return "clarifying";
+}
+
+function suggestedLensTestFile(
+  finding: Pick<RiskLensFinding, "paths">,
+  fallback: string,
+  preferredPath?: (filePath: string) => boolean
+): string {
+  const orderedPaths = preferredPath
+    ? [
+        ...finding.paths.filter((filePath) => preferredPath(filePath)),
+        ...finding.paths.filter((filePath) => !preferredPath(filePath))
+      ]
+    : finding.paths;
+  for (const filePath of orderedPaths) {
+    const suggested = suggestedTestFileForPath(filePath);
+    if (suggested) {
+      return suggested;
+    }
+  }
+  return fallback;
+}
+
+function riskLensSuggestedCommentPath(finding: Pick<RiskLensFinding, "lens" | "paths">): string | undefined {
+  if (finding.lens === "reviewer_ux") {
+    return preferredLensPath(finding, isReviewerUxImplementationPath) ?? finding.paths[0];
+  }
+  return finding.paths[0];
+}
+
+function preferredLensPath(
+  finding: Pick<RiskLensFinding, "paths">,
+  preferredPath: (filePath: string) => boolean
+): string | undefined {
+  return finding.paths.find((filePath) => preferredPath(filePath));
+}
+
+function isReviewerUxImplementationPath(filePath: string): boolean {
+  const normalizedPath = normalizeEvidencePath(filePath);
+  return /^src\/render\//.test(normalizedPath) || normalizedPath === "src/human/render.ts";
+}
+
+function hasCiSecretBoundaryLensRisk(finding: Pick<RiskLensFinding, "risk_ids" | "paths" | "evidence">): boolean {
+  return (
+    finding.risk_ids.some((id) => /CI-SECRET/i.test(id)) ||
+    finding.paths.some((filePath) => /^\.github\/workflows\//.test(normalizeEvidencePath(filePath))) ||
+    finding.evidence.some((ref) => /ci secret|secret-boundary|workflow/i.test([ref.note, ref.path].filter(Boolean).join(" ")))
+  );
+}
+
+function compareRiskLensAccumulators(left: RiskLensAccumulator, right: RiskLensAccumulator): number {
+  return (
+    severityWeight(right.severity) - severityWeight(left.severity) ||
+    riskLensRank(left.lens) - riskLensRank(right.lens) ||
+    compareStrings(left.paths.join(","), right.paths.join(","))
+  );
+}
+
+function riskLensRank(lens: RiskLens): number {
+  return RISK_LENS_METADATA[lens].rank;
+}
+
+function maxSeverity(left: PacketSeverity, right: PacketSeverity): PacketSeverity {
+  return severityWeight(right) > severityWeight(left) ? right : left;
+}
+
+function evidencePaths(evidence: EvidenceRef[]): string[] {
+  return uniqueTruthy(evidence.filter((ref) => ref.path).map((ref) => normalizeEvidencePath(String(ref.path))));
+}
+
+function appendUniqueEvidence(accumulator: RiskLensAccumulator, evidence: EvidenceRef[]): void {
+  for (const ref of evidence) {
+    const key = evidenceRefDedupeKey(ref);
+    if (accumulator.evidence_keys.has(key)) {
+      continue;
+    }
+    accumulator.evidence_keys.add(key);
+    accumulator.evidence.push(ref);
+  }
+}
+
+function appendUniqueStrings(target: string[], seen: Set<string>, values: string[], limit = Number.POSITIVE_INFINITY): void {
+  for (const value of values) {
+    if (!value || seen.has(value) || target.length >= limit) {
+      continue;
+    }
+    seen.add(value);
+    target.push(value);
+  }
+}
+
+function evidenceRefDedupeKey(ref: EvidenceRef): string {
+  return [
+    ref.kind,
+    ref.path,
+    ref.line_start,
+    ref.line_end,
+    ref.acai_id,
+    ref.command,
+    ref.test_name,
+    ref.note
+  ].join("|");
+}
+
 function feedbackReviewQueueDrafts(
   feedbackEffects: FeedbackPolicyEffect[],
   diffIndex: DiffIndex | undefined
@@ -801,7 +1311,8 @@ function escapeRegExp(value: string): string {
 function buildQuestions(
   input: BuildHumanReviewInput,
   blockers: ReviewBlocker[],
-  feedbackEffects: FeedbackPolicyEffect[]
+  feedbackEffects: FeedbackPolicyEffect[],
+  riskLensFindings: RiskLensFinding[]
 ): ReviewerQuestion[] {
   const questions: ReviewerQuestion[] = [];
   const focusedGaps = focusedRequirementGaps(input);
@@ -856,6 +1367,18 @@ function buildQuestions(
       evidence: feedbackEffectEvidence(effect),
       maps_to_risks: effect.risk_ids,
       maps_to_requirements: requirementIds(effect.evidence)
+    });
+  }
+
+  for (const finding of riskLensFindings.filter(isPathOnlyRiskLensFinding).slice(0, 3)) {
+    questions.push({
+      id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
+      severity: riskLensQuestionSeverity(finding),
+      question: riskLensQuestionText(finding),
+      reason: finding.summary,
+      evidence: finding.evidence,
+      maps_to_risks: finding.risk_ids,
+      maps_to_requirements: finding.requirement_ids
     });
   }
 
@@ -924,7 +1447,41 @@ function buildQuestions(
   return dedupeQuestions(questions).slice(0, MAX_QUESTIONS);
 }
 
-function buildSuggestedComments(input: BuildHumanReviewInput, blockers: ReviewBlocker[]): SuggestedReviewComment[] {
+function riskLensQuestionSeverity(finding: RiskLensFinding): ReviewerQuestion["severity"] {
+  if (finding.severity === "critical" || finding.severity === "high" || finding.lens === "api_contract" || finding.lens === "llm_trust_boundary") {
+    return "blocking";
+  }
+  return "clarifying";
+}
+
+function isPathOnlyRiskLensFinding(finding: RiskLensFinding): boolean {
+  return finding.risk_ids.length === 0;
+}
+
+function riskLensQuestionText(finding: RiskLensFinding): string {
+  switch (finding.lens) {
+    case "api_contract":
+      return "What compatibility fixture, schema versioning decision, or downstream contract check covers this API/schema contract change?";
+    case "security_privacy":
+      return "What current-head evidence proves the changed security/privacy boundary does not expose secrets or unredacted sensitive data?";
+    case "llm_trust_boundary":
+      return "Which fixture proves fabricated LLM paths, requirements, risks, statuses, or anchors are rejected before rendering?";
+    case "test_evidence":
+      return "Which parsed test output, coverage fixture, or command transcript proves this evidence path remains trustworthy?";
+    case "reviewer_ux":
+      return "Where is the rendered Markdown or diagram fixture reviewers should inspect for this UI/comment surface change?";
+    case "cache_provenance":
+      return "Which cache/provenance fixture proves stale or mismatched review artifacts cannot be reused?";
+    case "custom":
+      return "What reviewer action should close this custom risk lens finding?";
+  }
+}
+
+function buildSuggestedComments(
+  input: BuildHumanReviewInput,
+  blockers: ReviewBlocker[],
+  riskLensFindings: RiskLensFinding[]
+): SuggestedReviewComment[] {
   const comments: SuggestedReviewComment[] = [];
   const candidates: SuggestedCommentCandidate[] = [];
   const focusedGaps = focusedRequirementGaps(input);
@@ -955,9 +1512,15 @@ function buildSuggestedComments(input: BuildHumanReviewInput, blockers: ReviewBl
     }
   }
 
+  for (const finding of riskLensFindings.filter(isPathOnlyRiskLensFinding)) {
+    for (const comment of finding.suggested_comments) {
+      candidates.push({ draft: commentDraftWithoutId(comment), sourceRank: 2, sortKey: finding.id });
+    }
+  }
+
   if (hasNoValidationEvidence(input.packet.risks)) {
     candidates.push({
-      sourceRank: 2,
+      sourceRank: 3,
       sortKey: "missing-validation-evidence",
       draft: {
         severity: "clarifying",
@@ -974,7 +1537,7 @@ function buildSuggestedComments(input: BuildHumanReviewInput, blockers: ReviewBl
   const focusedGap = focusedGaps[0];
   if (focusedGap) {
     candidates.push({
-      sourceRank: 3,
+      sourceRank: 4,
       sortKey: focusedGap.acai_id ?? focusedGap.requirement_id,
       draft: {
         severity: focusedGap.status === "missing" || focusedGap.status === "invalid_evidence" ? "blocking" : "clarifying",
@@ -993,6 +1556,11 @@ function buildSuggestedComments(input: BuildHumanReviewInput, blockers: ReviewBl
   }
 
   return comments.slice(0, MAX_COMMENTS);
+}
+
+function commentDraftWithoutId(comment: SuggestedReviewComment): SuggestedCommentDraft {
+  const { id: _id, ...draft } = comment;
+  return draft;
 }
 
 function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
@@ -1059,13 +1627,28 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
   };
 }
 
-function buildTestPlan(input: BuildHumanReviewInput, feedbackEffects: FeedbackPolicyEffect[]): TestPlanItem[] {
+function buildTestPlan(
+  input: BuildHumanReviewInput,
+  feedbackEffects: FeedbackPolicyEffect[],
+  riskLensFindings: RiskLensFinding[]
+): TestPlanItem[] {
   const items: TestPlanItem[] = [];
   const candidates: TestPlanCandidate[] = [];
 
   for (const risk of input.prSurface?.risks.candidates ?? []) {
     for (const draft of testPlanDraftsForPrRisk(input, risk)) {
       candidates.push({ risk, draft, sourceRank: 0, sortKey: risk.id });
+    }
+  }
+
+  for (const finding of riskLensFindings.filter(isPathOnlyRiskLensFinding)) {
+    for (const testItem of finding.suggested_tests) {
+      candidates.push({
+        lens: finding,
+        draft: testPlanDraftWithoutId(testItem),
+        sourceRank: 2,
+        sortKey: finding.id
+      });
     }
   }
 
@@ -1092,7 +1675,7 @@ function buildTestPlan(input: BuildHumanReviewInput, feedbackEffects: FeedbackPo
   for (const [index, gap] of [...(input.packet.risks.missing_automatic_tests ?? [])].sort(compareMissingGapPriority).entries()) {
     const suggestedFile = suggestedTestFile(gap.acai_id, gap.suggested_test);
     candidates.push({
-      sourceRank: 2,
+      sourceRank: 3,
       sortKey: rankedSortKey(index, gap.acai_id ?? gap.requirement_id ?? gap.id),
       draft: {
         kind: "automatic",
@@ -1110,7 +1693,7 @@ function buildTestPlan(input: BuildHumanReviewInput, feedbackEffects: FeedbackPo
 
   for (const [index, gap] of [...(input.packet.risks.missing_manual_checks ?? [])].sort(compareMissingGapPriority).entries()) {
     candidates.push({
-      sourceRank: 3,
+      sourceRank: 4,
       sortKey: rankedSortKey(index, gap.acai_id ?? gap.requirement_id ?? gap.id),
       draft: {
         kind: "manual",
@@ -1126,7 +1709,7 @@ function buildTestPlan(input: BuildHumanReviewInput, feedbackEffects: FeedbackPo
 
   for (const [index, effect] of feedbackEffects.filter(isMissingTeamPolicyEffect).entries()) {
     candidates.push({
-      sourceRank: 4,
+      sourceRank: 5,
       sortKey: rankedSortKey(index, effect.id),
       draft: {
         kind: "manual",
@@ -1145,6 +1728,11 @@ function buildTestPlan(input: BuildHumanReviewInput, feedbackEffects: FeedbackPo
   }
 
   return items.slice(0, MAX_TEST_PLAN);
+}
+
+function testPlanDraftWithoutId(item: TestPlanItem): TestPlanDraft {
+  const { id: _id, ...draft } = item;
+  return draft;
 }
 
 function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandidate): TestPlanDraft[] {
@@ -1258,7 +1846,7 @@ function compareTestPlanCandidates(
   return (
     testPlanPriorityRank(left.draft.priority) - testPlanPriorityRank(right.draft.priority) ||
     (left.sourceRank - right.sourceRank) ||
-    severityWeight(right.risk?.severity ?? "unknown") - severityWeight(left.risk?.severity ?? "unknown") ||
+    severityWeight(right.risk?.severity ?? right.lens?.severity ?? "unknown") - severityWeight(left.risk?.severity ?? left.lens?.severity ?? "unknown") ||
     ruleWeight(right.risk?.rule) - ruleWeight(left.risk?.rule) ||
     compareStrings(left.sortKey, right.sortKey)
   );

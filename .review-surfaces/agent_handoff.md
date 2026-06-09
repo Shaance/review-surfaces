@@ -26,13 +26,12 @@ M5
 
 - M schemas/human_review.schema.json
 - M src/cli/index.ts
-- M src/feedback/feedback.ts
 - M src/human/contract.ts
 - M src/human/human-review.ts
 - M src/human/render.ts
-- M tests/feedback.test.ts
 - M tests/human-review.test.ts
 - M tests/pr-surface-e2e.test.ts
+- M tests/schema-contract.test.ts
 
 ## Validation Evidence
 

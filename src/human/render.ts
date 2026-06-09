@@ -2,7 +2,8 @@ import path from "node:path";
 import { writeJson, writeText } from "../core/files";
 import { EvidenceRef } from "../evidence/evidence";
 import { redactSecrets } from "../privacy/secrets";
-import type { FeedbackPolicyEffect, HumanReviewModel, ReviewQueueItem, SuggestedReviewComment, TestPlanItem, TrustAudit } from "./contract";
+import { RISK_LENS_METADATA } from "./contract";
+import type { FeedbackPolicyEffect, HumanReviewModel, ReviewQueueItem, RiskLensFinding, SuggestedReviewComment, TestPlanItem, TrustAudit } from "./contract";
 
 const MAX_SUMMARY_CHARS = 600;
 const MAX_FIELD_CHARS = 300;
@@ -14,6 +15,7 @@ const MAX_TEST_PLAN = 8;
 const MAX_COMMENTS = 6;
 const MAX_SKIM_SAFE = 8;
 const MAX_STANDALONE_EVIDENCE = 8;
+const MAX_RISK_LENSES = 6;
 
 export const HUMAN_STANDALONE_ARTIFACTS = [
   {
@@ -36,6 +38,13 @@ export const HUMAN_STANDALONE_ARTIFACTS = [
     label: "Trust audit",
     heading: "# Trust Audit",
     render: renderTrustAuditMarkdown
+  },
+  {
+    command: "risk-lenses",
+    artifact: "risk_lenses.md",
+    label: "Risk lenses",
+    heading: "# Risk Lenses",
+    render: renderRiskLensesMarkdown
   },
   {
     command: "test-plan",
@@ -112,6 +121,10 @@ ${bullets(missingTrustEvidence(model.trust_audit).slice(0, MAX_TRUST).map((item)
 Invalid:
 ${bullets(invalidTrustEvidence(model.trust_audit).slice(0, MAX_TRUST).map((item) => `${item.summary} Evidence: ${evidenceList(item.evidence)}`), "None recorded.")}
 
+## Risk lenses
+
+${renderRiskLenses(riskLensFindings(model).slice(0, MAX_RISK_LENSES))}
+
 ## Test plan
 
 ${renderTestPlan(model.test_plan.slice(0, MAX_TEST_PLAN))}
@@ -170,6 +183,15 @@ ${renderTrustAuditSections(model.trust_audit, Number.POSITIVE_INFINITY)}
 `;
 }
 
+export function renderRiskLensesMarkdown(model: HumanReviewModel): string {
+  return `# Risk Lenses
+
+Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
+
+${riskLensFindings(model).length === 0 ? "- No domain risk lenses fired." : riskLensFindings(model).map(renderRiskLensDetail).join("\n\n---\n\n")}
+`;
+}
+
 export function renderTestPlanMarkdown(model: HumanReviewModel): string {
   const groups: Array<[string, TestPlanItem["priority"]]> = [
     ["Required", "required"],
@@ -184,6 +206,48 @@ ${groups.map(([heading, priority]) => `## ${heading}
 
 ${renderTestPlan(model.test_plan.filter((item) => item.priority === priority))}`).join("\n\n")}
 `;
+}
+
+function renderRiskLenses(findings: RiskLensFinding[]): string {
+  if (findings.length === 0) {
+    return "- No domain risk lenses fired.";
+  }
+  return bullets(
+    findings.map((finding) => `${finding.id} [${finding.lens}; ${finding.severity}]: ${finding.summary} Action: ${finding.reviewer_action} Evidence: ${evidenceList(finding.evidence)}`),
+    "No domain risk lenses fired."
+  );
+}
+
+function renderRiskLensDetail(finding: RiskLensFinding): string {
+  const paths = finding.paths.length ? finding.paths.map((filePath) => `\`${field(filePath)}\``).join(", ") : "none";
+  const risks = finding.risk_ids.length ? finding.risk_ids.map((id) => `\`${field(id)}\``).join(", ") : "none";
+  const requirements = finding.requirement_ids.length ? finding.requirement_ids.map((id) => `\`${field(id)}\``).join(", ") : "none";
+  return `## ${field(finding.id)} - ${field(RISK_LENS_METADATA[finding.lens].label)}
+
+Severity: ${finding.severity}
+Confidence: ${finding.confidence}
+Paths: ${paths}
+Risks: ${risks}
+Requirements: ${requirements}
+
+Why this matters:
+${field(finding.summary, 1000)}
+
+Reviewer action:
+${field(finding.reviewer_action, 1000)}
+
+Evidence:
+${evidenceBullets(finding.evidence, MAX_STANDALONE_EVIDENCE)}
+
+Suggested tests:
+${renderTestPlan(finding.suggested_tests)}
+
+Suggested comments:
+${renderSuggestedComments(finding.suggested_comments)}`;
+}
+
+function riskLensFindings(model: HumanReviewModel): RiskLensFinding[] {
+  return model.risk_lens_findings ?? [];
 }
 
 function renderReviewFirst(items: ReviewQueueItem[]): string {
