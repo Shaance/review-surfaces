@@ -1094,6 +1094,60 @@ test("invalid PR risk evidence is not rendered as a verified trust fact", () => 
   assert.match(invalidSummaries, /PR-RISK-SCHEMA: PR risk evidence is invalid or not deterministic/);
 });
 
+test("trust audit reserves capped verified slots for deterministic PR risk facts", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence = Array.from({ length: 12 }, (_, index) => ({
+    id: `TEST-DIRECT-${String(index + 1).padStart(3, "0")}`,
+    kind: "direct",
+    summary: `Direct validation evidence ${index + 1}.`,
+    evidence: [commandEvidence(`pnpm test -- --case ${index + 1}`, `Direct validation evidence ${index + 1}.`, "high", { validationStatus: "valid" })]
+  }));
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [
+    prRiskFixture("ci_secret_boundary_change"),
+    prRiskFixture("schema_contract_change")
+  ];
+
+  const model = buildHumanReview({ packet, prSurface: surface });
+  const verifiedSummaries = model.trust_audit.verified_facts.map((fact) => fact.summary).join("\n");
+
+  assert.equal(model.trust_audit.verified_facts.length, 10);
+  assert.match(verifiedSummaries, /PR scope contains/);
+  assert.match(verifiedSummaries, /Deterministic PR risk PR-RISK-CI \(ci_secret_boundary_change\) fired/);
+  assert.match(verifiedSummaries, /Deterministic PR risk PR-RISK-SCHEMA \(schema_contract_change\) fired/);
+});
+
+test("trust audit reserves capped invalid-evidence slots for PR risk refs", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = Array.from({ length: 12 }, (_, index) => ({
+    requirement_id: `REQ-INVALID-${String(index + 1).padStart(3, "0")}`,
+    acai_id: `review-surfaces.INVALID.${index + 1}`,
+    status: "invalid_evidence",
+    summary: `Invalid requirement evidence ${index + 1}.`,
+    evidence: [fileEvidence(`src/invalid-${index + 1}.ts`, "Invalid requirement evidence.")],
+    missing_evidence: [missingEvidence(`Missing valid evidence ${index + 1}.`)],
+    review_focus: "Review invalid evidence.",
+    confidence: "medium"
+  }));
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [{
+    ...prRiskFixture("schema_contract_change"),
+    evidence: [{
+      ...fileEvidence("schemas/human_review.schema.json", "LLM-proposed schema evidence."),
+      llm_proposed: true
+    }]
+  }];
+
+  const model = buildHumanReview({ packet, prSurface: surface });
+  const invalidSummaries = model.trust_audit.invalid_evidence.map((item) => item.summary).join("\n");
+
+  assert.equal(model.trust_audit.invalid_evidence.length, 10);
+  assert.match(invalidSummaries, /PR-RISK-SCHEMA: PR risk evidence is invalid or not deterministic/);
+  assert.match(invalidSummaries, /review-surfaces.INVALID.1/);
+});
+
 function prRiskFixture(rule: PrRiskRule): PrReviewSurfaceModel["risks"]["candidates"][number] {
   const fixtures = {
     coverage_regression: {

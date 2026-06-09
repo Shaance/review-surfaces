@@ -15,12 +15,14 @@ import {
   HumanReviewPriority,
   HumanReviewVerdict,
   HumanReviewVerdictReason,
+  InvalidEvidenceSummary,
   MissingEvidenceSummary,
   ReviewBlocker,
   ReviewerQuestion,
   SuggestedReviewComment,
   TestPlanItem,
-  TrustAudit
+  TrustAudit,
+  TrustFact
 } from "./contract";
 
 export interface BuildHumanReviewInput {
@@ -58,6 +60,8 @@ type RequirementGap = ReviewPacket["evaluation"]["results"][number];
 type MissingAutomaticTestGap = NonNullable<RisksModel["missing_automatic_tests"]>[number];
 type MissingManualCheckGap = NonNullable<RisksModel["missing_manual_checks"]>[number];
 type PrChangedFile = PrReviewSurfaceModel["scope"]["changed_files"][number];
+type TrustFactDraft = Omit<TrustFact, "id">;
+type InvalidEvidenceDraft = Omit<InvalidEvidenceSummary, "id">;
 
 const MAX_QUEUE = 20;
 const MAX_BLOCKERS = 8;
@@ -510,34 +514,37 @@ function buildSuggestedComments(input: BuildHumanReviewInput, blockers: ReviewBl
 }
 
 function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
-  const verified = positiveValidationEvidence(input.packet.risks).slice(0, MAX_TRUST_ITEMS).map((evidence, index) => ({
-    id: `TRUST-VERIFIED-${String(index + 1).padStart(3, "0")}`,
+  const positiveEvidenceFacts = positiveValidationEvidence(input.packet.risks).map((evidence) => ({
     summary: evidence.note ?? evidence.command ?? evidence.test_name ?? "Verified validation evidence is present.",
     evidence: [evidence]
   }));
 
+  const prFacts: TrustFactDraft[] = [];
   if (input.prSurface) {
-    verified.push({
-      id: `TRUST-VERIFIED-${String(verified.length + 1).padStart(3, "0")}`,
+    prFacts.push({
       summary: `PR scope contains ${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.scope.affected_requirements.length} affected requirement(s), and ${input.prSurface.risks.candidates.length} deterministic PR risk candidate(s).`,
       evidence: input.prSurface.scope.changed_files.slice(0, 5).map((file) => fileEvidence(file.path, "Changed file included in PR scope."))
     });
 
     for (const risk of input.prSurface.risks.candidates) {
-      if (verified.length >= MAX_TRUST_ITEMS) {
+      if (prFacts.length >= MAX_TRUST_ITEMS) {
         break;
       }
       const concreteEvidence = risk.evidence.filter(isVerifiedTrustEvidence);
       if (concreteEvidence.length === 0) {
         continue;
       }
-      verified.push({
-        id: `TRUST-VERIFIED-${String(verified.length + 1).padStart(3, "0")}`,
+      prFacts.push({
         summary: `Deterministic PR risk ${risk.id} (${risk.rule}) fired: ${risk.summary}`,
         evidence: concreteEvidence.slice(0, 3)
       });
     }
   }
+
+  const verified = withTrustFactIds([
+    ...prFacts.slice(0, MAX_TRUST_ITEMS),
+    ...positiveEvidenceFacts.slice(0, Math.max(0, MAX_TRUST_ITEMS - prFacts.length))
+  ]);
 
   const claimed = [
     ...input.packet.methodology.claims_without_evidence.map((claim, index) => ({
@@ -562,7 +569,7 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
   const invalid = invalidEvidenceSummaries(input);
 
   return {
-    verified_facts: verified.slice(0, MAX_TRUST_ITEMS),
+    verified_facts: verified,
     claimed_not_verified: claimed,
     missing_evidence: missing,
     invalid_evidence: invalid,
@@ -864,27 +871,43 @@ function missingEvidenceSummaries(input: BuildHumanReviewInput): MissingEvidence
 }
 
 function invalidEvidenceSummaries(input: BuildHumanReviewInput): HumanReviewModel["trust_audit"]["invalid_evidence"] {
-  const invalid = input.packet.evaluation.results
+  const packetInvalid = input.packet.evaluation.results
     .filter((result) => result.status === "invalid_evidence")
-    .map((result, index) => ({
-      id: `INVALID-${String(index + 1).padStart(3, "0")}`,
+    .map((result) => ({
       summary: `${result.acai_id ?? result.requirement_id}: ${result.summary}`,
       evidence: [...result.evidence, ...result.missing_evidence]
     }));
 
+  const prRiskInvalid: InvalidEvidenceDraft[] = [];
   for (const risk of input.prSurface?.risks.candidates ?? []) {
     const invalidRiskEvidence = risk.evidence.filter(isInvalidTrustEvidence);
     if (invalidRiskEvidence.length === 0) {
       continue;
     }
-    invalid.push({
-      id: `INVALID-${String(invalid.length + 1).padStart(3, "0")}`,
+    prRiskInvalid.push({
       summary: `${risk.id}: PR risk evidence is invalid or not deterministic.`,
       evidence: invalidRiskEvidence
     });
   }
 
-  return invalid.slice(0, MAX_TRUST_ITEMS);
+  return withInvalidEvidenceIds([
+    ...prRiskInvalid.slice(0, MAX_TRUST_ITEMS),
+    ...packetInvalid.slice(0, Math.max(0, MAX_TRUST_ITEMS - prRiskInvalid.length))
+  ]);
+}
+
+function withTrustFactIds(drafts: TrustFactDraft[]): TrustFact[] {
+  return drafts.slice(0, MAX_TRUST_ITEMS).map((draft, index) => ({
+    id: `TRUST-VERIFIED-${String(index + 1).padStart(3, "0")}`,
+    ...draft
+  }));
+}
+
+function withInvalidEvidenceIds(drafts: InvalidEvidenceDraft[]): InvalidEvidenceSummary[] {
+  return drafts.slice(0, MAX_TRUST_ITEMS).map((draft, index) => ({
+    id: `INVALID-${String(index + 1).padStart(3, "0")}`,
+    ...draft
+  }));
 }
 
 function isVerifiedTrustEvidence(ref: EvidenceRef): boolean {
