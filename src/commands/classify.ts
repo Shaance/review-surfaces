@@ -82,17 +82,19 @@ function parsedPackageManagerCommand(normalized: string): ParsedPackageManagerCo
     if (!token.startsWith("-")) {
       break;
     }
-    if (packageManagerOptionIsFocusFilter(manager, token)) {
+    const consumesNext = packageManagerOptionConsumesNext(manager, token);
+    const optionValue = packageManagerOptionValue(manager, token, consumesNext ? tokens[index + 1] : undefined);
+    if (packageManagerOptionIsFocusFilter(manager, token, optionValue)) {
       hasFocusFilter = true;
     }
-    index += packageManagerOptionConsumesNext(manager, token) ? 2 : 1;
+    index += consumesNext ? 2 : 1;
   }
 
   return { manager, body: tokens.slice(index).join(" "), hasFocusFilter };
 }
 
 function packageManagerBodyLooksLikeTest(body: string): boolean {
-  return /^(?:(?:run\s+)?test(?::[\w.:-]+)?|exec\s+(?:--\s+)?(?:vitest|jest|tap|uvu))(?:\s|$)/.test(body)
+  return /^(?:(?:run\s+)?test(?::[\w.:-]+)?|(?:vitest|jest|tap|uvu)|exec\s+(?:--\s+)?(?:vitest|jest|tap|uvu))(?:\s|$)/.test(body)
     || packageManagerExecNodeTestCommand(body) !== undefined;
 }
 
@@ -100,12 +102,19 @@ function packageCommandBodyHasFocusFilter(parsed: ParsedPackageManagerCommand | 
   if (!parsed || parsed.manager !== "npm" || !/^(?:run\s+)?test(?::[\w.:-]+)?(?:\s|$)/.test(parsed.body)) {
     return false;
   }
-  for (const token of parsed.body.split(" ").filter(Boolean)) {
+  const tokens = parsed.body.split(" ").filter(Boolean);
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
     if (token === "--") {
       break;
     }
-    if (packageManagerOptionIsFocusFilter(parsed.manager, token)) {
+    const consumesNext = packageManagerOptionConsumesNext(parsed.manager, token);
+    const optionValue = packageManagerOptionValue(parsed.manager, token, consumesNext ? tokens[index + 1] : undefined);
+    if (packageManagerOptionIsFocusFilter(parsed.manager, token, optionValue)) {
       return true;
+    }
+    if (consumesNext) {
+      index += 1;
     }
   }
   return false;
@@ -119,9 +128,41 @@ function packageManagerExecNodeTestCommand(body: string): string | undefined {
   return nodeTestArgs(match[1]) !== undefined ? match[1] : undefined;
 }
 
-function packageManagerOptionIsFocusFilter(manager: string, option: string): boolean {
+function packageManagerOptionIsFocusFilter(manager: string, option: string, value?: string): boolean {
+  if (packageManagerOptionIsRootCwdOverride(manager, option, value)) {
+    return false;
+  }
   return /^(?:--filter(?:=|$)|-F(?:\S|$)|--workspace(?:=|$)|--scope(?:=|$)|--dir(?:=|$)|--cwd(?:=|$)|-C(?:\S|$))/.test(option)
     || (manager === "npm" && /^(?:-w|-w=|-w\S|--prefix(?:=|$))/.test(option));
+}
+
+function packageManagerOptionValue(manager: string, option: string, nextToken: string | undefined): string | undefined {
+  if (option.includes("=")) {
+    return option.slice(option.indexOf("=") + 1);
+  }
+  if (/^-C\S+/.test(option)) {
+    return option.slice(2);
+  }
+  if (/^-F\S+/.test(option)) {
+    return option.slice(2);
+  }
+  if (manager === "npm" && /^-w\S+/.test(option) && option !== "-w") {
+    return option.slice(2);
+  }
+  return nextToken;
+}
+
+function packageManagerOptionIsRootCwdOverride(manager: string, option: string, value: string | undefined): boolean {
+  if (value === undefined) {
+    return false;
+  }
+  const optionIsCwdOverride = /^(?:--dir(?:=|$)|--cwd(?:=|$)|-C(?:\S|$))/.test(option)
+    || (manager === "npm" && /^(?:--prefix(?:=|$))/.test(option));
+  if (!optionIsCwdOverride) {
+    return false;
+  }
+  const normalizedValue = cleanCommandToken(value).replace(/\/+$/, "");
+  return normalizedValue === ".";
 }
 
 function packageManagerOptionConsumesNext(manager: string, option: string): boolean {
@@ -249,6 +290,7 @@ function nodeOptionConsumesNext(option: string): boolean {
     "--test-concurrency",
     "--test-coverage-exclude",
     "--test-coverage-include",
+    "--test-global-setup",
     "--test-name-pattern",
     "--test-reporter",
     "--test-reporter-destination",
@@ -294,7 +336,6 @@ function runnerOptionConsumesNext(option: string): boolean {
     "--cacheDirectory",
     "--config",
     "--coverageDirectory",
-    "--dir",
     "--environment",
     "--outputFile",
     "--reporter",
