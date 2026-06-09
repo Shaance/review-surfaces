@@ -1,6 +1,7 @@
 const FOCUSED_TEST_TARGET_PATTERN = /(?:^|\s)(?:(?:dist\/)?tests|test|src|lib|app|packages)\/\S+|(?:^|\s)\S+\.(?:test|spec)\.[cm]?[jt]sx?(?:\s|$)/;
 const ENV_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=.*$/;
 const TEST_NAME_FILTER_PATTERN = /(?:^|\s)(?:--test-name-pattern|--testNamePattern|--grep|-t)(?:=|\s)/;
+const TEST_PATH_FILTER_PATTERN = /(?:^|\s)--testPathPatterns?(?:=|\s)/;
 const TEST_PROJECT_FILTER_PATTERN = /(?:^|\s)(?:--project|--selectProjects)(?:=|\s)/;
 const TEST_SCRIPT_ALIAS_PATTERN = /^(?:run\s+)?test:([\w.:-]+)(?:\s|$)/;
 
@@ -40,6 +41,7 @@ export function commandLooksLikeFocusedTestCommand(command: string): boolean {
     || (testScriptAlias !== undefined && !looksLikeBroadTestScriptAlias(testScriptAlias))
     || ((yarnWorkspacesBody?.hasFocusFilter ?? false) && looksLikeTest)
     || (hasChangedOnlyTestFilter(normalized) && looksLikeTest)
+    || (hasTestPathFilter(normalized) && looksLikeTest)
     || (hasProjectOnlyTestFilter(normalized) && looksLikeTest)
     || hasFocusedTestTarget(normalized)
     || hasTestNameFilter(normalized);
@@ -55,7 +57,7 @@ export function commandLooksLikeLocalValidationCommand(command: string): boolean
   const packageCommandBody = parsedPackageCommand?.body ?? "";
   return (
     commandLooksLikeTestCommandFromNormalized(normalized, parsedPackageCommand) ||
-    /^(?:(?:run\s+)?(?:lint|typecheck|build)(?:\s|$))/.test(packageCommandBody) ||
+    packageRunScriptLooksLikeLocalValidation(packageCommandBody) ||
     /^tsc(?:\s|$)/.test(normalized)
   );
 }
@@ -157,13 +159,17 @@ function packageRunScriptLooksLikeTest(body: string): boolean {
   return testScriptTokenLooksLikeTest(packageRunScriptToken(body));
 }
 
+function packageRunScriptLooksLikeLocalValidation(body: string): boolean {
+  return /^(?:lint|typecheck|build)$/.test(packageRunScriptToken(body) ?? "");
+}
+
 function packageTestScriptAlias(body: string): string | undefined {
   return packageRunScriptToken(body)?.match(TEST_SCRIPT_ALIAS_PATTERN)?.[1];
 }
 
 function packageRunScriptToken(body: string): string | undefined {
   const tokens = body.split(" ").filter(Boolean);
-  if (tokens[0] !== "run") {
+  if (tokens[0] !== "run" && tokens[0] !== "run-script") {
     return tokens[0];
   }
   for (let index = 1; index < tokens.length; index += 1) {
@@ -341,7 +347,11 @@ function hasTestNameFilter(value: string): boolean {
 }
 
 function hasChangedOnlyTestFilter(value: string): boolean {
-  return /(?:^|\s)--changed(?:=|\s|$)/.test(value);
+  return /(?:^|\s)(?:--changed|--onlyChanged|--changedSince)(?:=|\s|$)|(?:^|\s)-o(?:\s|$)/.test(value);
+}
+
+function hasTestPathFilter(value: string): boolean {
+  return TEST_PATH_FILTER_PATTERN.test(value);
 }
 
 function hasProjectOnlyTestFilter(value: string): boolean {
