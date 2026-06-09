@@ -1,4 +1,5 @@
 import { CollectionResult } from "../collector/collect";
+import { commandLooksLikeTestCommand, normalizeCommand } from "../commands/classify";
 import { COMMAND_TRANSCRIPT_OUTPUT_PATH, CommandTranscript } from "../commands/transcripts";
 import { stripUndefined } from "../core/guards";
 import { commandEvidence, EvidenceRef, feedbackEvidence, missingEvidence, specEvidence } from "../evidence/evidence";
@@ -462,14 +463,6 @@ function testEvidenceKindForTranscript(transcript: CommandTranscript): RisksMode
 function commandTranscriptSummary(transcript: CommandTranscript): string {
   const exit = transcript.exit_code === undefined ? "unknown exit" : `exit ${transcript.exit_code}`;
   return `Command transcript ${transcript.id} records ${exit}: ${transcript.command}`;
-}
-
-function commandLooksLikeTestCommand(command: string): boolean {
-  return /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?test(?::[\w.-]+)?|node\s+--test|(?:pnpm|npm|yarn|bun)\s+exec\s+(?:vitest|jest|tap|uvu)|(?:vitest|jest|tap|uvu))(?:\s|$)/.test(normalizeCommand(command));
-}
-
-function normalizeCommand(command: string): string {
-  return command.trim().replace(/\s+/g, " ");
 }
 
 function suggestedTestFor(result: RequirementResult): string {

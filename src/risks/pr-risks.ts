@@ -1,7 +1,9 @@
 import { compareStrings } from "../core/compare";
+import { commandLooksLikeBroadTestCommand, commandLooksLikeFocusedTestCommand, commandLooksLikeTestCommand } from "../commands/classify";
 import { stripUndefined } from "../core/guards";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
 import type { CollectionResult } from "../collector/collect";
+import type { ChangedFile } from "../collector/git";
 import type {
   PrRiskCandidate,
   PrRiskModel,
@@ -11,6 +13,7 @@ import type {
   ScopedChangedFile
 } from "../pr/contract";
 import { prRiskRulePriority } from "../pr/risk-metadata";
+import type { ReviewArea } from "../review-areas/areas";
 import type { PacketRiskCategory, PacketSeverity } from "../schema/review-packet-contract";
 
 // ---------------------------------------------------------------------------
@@ -29,6 +32,9 @@ export interface BuildPrRiskInput {
   scope: PrScopeModel;
   coverage: PrScopedCoverageModel;
   testResults?: CollectionResult["testResults"];
+  commandTranscripts?: CollectionResult["commandTranscripts"];
+  changedFileSources?: Record<string, ChangedFile["source"]>;
+  reviewAreas?: ReviewArea[];
   config?: { largeDiffFileCap?: number; largeDiffLineCap?: number };
 }
 
@@ -127,32 +133,28 @@ function pushCoverageRegression(drafts: DraftCandidate[], input: BuildPrRiskInpu
 }
 
 // --- Rule: untested_changed_impl (testing, medium) -------------------------
-// An implementation-role changed file whose review area has NO changed test file
-// in scope. Cites the impl file. One candidate per such file (id/path ordered).
+// An implementation-role changed file whose review area has no changed test file
+// and no current-head command transcript in scope. Cites the impl file. One
+// candidate per such file (id/path ordered).
 function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInput): void {
   const changed = input.scope.changed_files;
-  // Areas that received at least one changed TEST file in this PR.
-  const testedAreas = new Set<string>();
-  for (const file of changed) {
-    if (file.role === "test") {
-      for (const area of file.areas) {
-        testedAreas.add(area);
-      }
-    }
-  }
+  const validation = buildImplementationValidationIndex(input);
   const untested = changed
-    .filter((file) => file.role === "implementation" && !hasTestedArea(file, testedAreas))
+    .filter((file) => file.role === "implementation" && !hasImplementationValidation(file, validation))
     .sort((left, right) => compareStrings(left.path, right.path));
   for (const file of untested.slice(0, MAX_PER_FILE_CANDIDATES)) {
     drafts.push({
       rule: "untested_changed_impl",
       category: "testing",
       severity: "medium",
-      summary: `Implementation file ${file.path} changed with no changed test in its review area.`,
-      evidence: [fileEvidence(file.path, "Changed implementation file; no co-changed test in its area.")],
+      summary: `Implementation file ${file.path} changed with no changed test or current-head command transcript in its review area.`,
+      evidence: [
+        fileEvidence(file.path, "Changed implementation file; no co-changed test or current-head passing test transcript mapped to its area."),
+        missingEvidence(`No changed test or current-head passing test transcript mapped to ${areaListForMessage(file)}.`)
+      ],
       suggested_checks: [
         `Add or update a test covering the change to ${file.path}.`,
-        "Confirm existing tests exercise the new behavior."
+        "Record a current-head focused or broad test transcript if existing tests exercise the new behavior."
       ],
       sortPath: file.path
     });
@@ -164,29 +166,185 @@ function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInp
       rule: "untested_changed_impl",
       category: "testing",
       severity: "medium",
-      summary: `${omitted} additional implementation file(s) changed with no changed test in their review area.`,
+      summary: `${omitted} additional implementation file(s) changed with no changed test or current-head command transcript in their review area.`,
       evidence: evidenceForPaths(
         untested.slice(MAX_PER_FILE_CANDIDATES).map((file) => file.path),
-        "Additional untested implementation file."
+        "Additional implementation file without changed test or current-head command transcript."
       ),
       suggested_checks: [
         "Add or update tests for the additional untested implementation changes.",
-        "Confirm existing tests exercise the new behavior."
+        "Record current-head focused or broad test transcripts if existing tests exercise the new behavior."
       ],
       sortPath: firstOmitted?.path ?? ""
     });
   }
 }
 
-// An impl file is "tested" when it has no area at all (cannot judge), or when at
-// least one of its areas saw a changed test. A file with areas but none tested is
-// the untested case.
-function hasTestedArea(file: ScopedChangedFile, testedAreas: Set<string>): boolean {
+interface ImplementationValidationIndex {
+  changedTestAreas: Set<string>;
+  workingTreeChangedTestAreas: Set<string>;
+  focusedTranscriptAreas: Set<string>;
+  hasBroadCurrentHeadTestTranscript: boolean;
+  sourceByPath: Record<string, ChangedFile["source"]>;
+}
+
+function buildImplementationValidationIndex(input: BuildPrRiskInput): ImplementationValidationIndex {
+  const sourceByPath = input.changedFileSources ?? {};
+  const changedTestAreas = new Set<string>();
+  const workingTreeChangedTestAreas = new Set<string>();
+  for (const file of input.scope.changed_files) {
+    if (file.role !== "test") {
+      continue;
+    }
+    for (const area of file.areas) {
+      changedTestAreas.add(area);
+      if (changedFileSourceFromMap(file, sourceByPath) !== "diff") {
+        workingTreeChangedTestAreas.add(area);
+      }
+    }
+  }
+
+  const allAreas = uniqueAreas(input.scope.changed_files);
+  const keywordByArea = areaKeywordIndex(allAreas, input.reviewAreas ?? []);
+
+  const focusedTranscriptAreas = new Set<string>();
+  let hasBroadCurrentHeadTestTranscript = false;
+  for (const transcript of input.commandTranscripts ?? []) {
+    if (!currentHeadPassingTestTranscript(transcript, input.scope.head_sha)) {
+      continue;
+    }
+    if (commandLooksLikeBroadTestCommand(transcript.command)) {
+      hasBroadCurrentHeadTestTranscript = true;
+      continue;
+    }
+    if (!commandLooksLikeFocusedTestCommand(transcript.command)) {
+      continue;
+    }
+    for (const area of matchingAreasForText(transcript.command, keywordByArea)) {
+      focusedTranscriptAreas.add(area);
+    }
+  }
+
+  return {
+    changedTestAreas,
+    workingTreeChangedTestAreas,
+    focusedTranscriptAreas,
+    hasBroadCurrentHeadTestTranscript,
+    sourceByPath
+  };
+}
+
+function currentHeadPassingTestTranscript(
+  transcript: NonNullable<BuildPrRiskInput["commandTranscripts"]>[number],
+  headSha: string
+): boolean {
+  return (
+    headSha !== "unknown" &&
+    transcript.head_sha === headSha &&
+    transcript.status === "passed" &&
+    transcript.exit_code === 0 &&
+    commandLooksLikeTestCommand(transcript.command)
+  );
+}
+
+// An impl file is "tested" when it has no area at all (cannot judge), when at
+// least one of its areas has a changed test or current-head focused transcript,
+// or when a broad current-head test transcript proves the committed suite ran
+// after the change.
+function hasImplementationValidation(file: ScopedChangedFile, validation: ImplementationValidationIndex): boolean {
   if (file.areas.length === 0) {
     // No mapped area: not attributable to an untested area gap here.
     return true;
   }
-  return file.areas.some((area) => testedAreas.has(area));
+  const source = changedFileSource(file, validation);
+  if (file.areas.some((area) => validation.changedTestAreas.has(area))) {
+    return source === "diff" || file.areas.some((area) => validation.workingTreeChangedTestAreas.has(area));
+  }
+  if (source !== "diff") {
+    return false;
+  }
+  if (validation.hasBroadCurrentHeadTestTranscript) {
+    return true;
+  }
+  return file.areas.some((area) => validation.focusedTranscriptAreas.has(area));
+}
+
+function changedFileSource(file: ScopedChangedFile, validation: ImplementationValidationIndex): ChangedFile["source"] {
+  return changedFileSourceFromMap(file, validation.sourceByPath);
+}
+
+function changedFileSourceFromMap(file: ScopedChangedFile, sourceByPath: Record<string, ChangedFile["source"]>): ChangedFile["source"] {
+  return sourceByPath[file.path] ?? "diff";
+}
+
+function uniqueAreas(files: ScopedChangedFile[]): string[] {
+  return [...new Set(files.flatMap((file) => file.areas))].sort(compareStrings);
+}
+
+function matchingAreasForText(text: string, keywordByArea: Map<string, string[]>): string[] {
+  const tokens = tokenizeSearchText(text);
+  return [...keywordByArea.entries()]
+    .filter(([, keywords]) => keywords.some((keyword) => keywordMatchesTokens(keyword, tokens)))
+    .map(([area]) => area);
+}
+
+function areaKeywordIndex(areas: string[], reviewAreas: ReviewArea[]): Map<string, string[]> {
+  return new Map(
+    areas.map((area) => [
+      area,
+      areaKeywords(area, reviewAreas)
+        .map(normalizeSearchText)
+        .filter((keyword) => keyword.length > 0)
+    ])
+  );
+}
+
+function areaKeywords(area: string, reviewAreas: ReviewArea[]): string[] {
+  const keywords = new Set<string>([area]);
+  for (const reviewArea of reviewAreas) {
+    if (reviewArea.groupKey !== area) {
+      continue;
+    }
+    keywords.add(reviewArea.id);
+    keywords.add(reviewArea.name);
+    for (const prefix of reviewArea.prefixes) {
+      keywords.add(prefix);
+    }
+    for (const keyword of reviewArea.testKeywords) {
+      keywords.add(keyword);
+    }
+  }
+  return [...keywords];
+}
+
+function normalizeSearchText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function tokenizeSearchText(value: string): Set<string> {
+  return new Set(normalizeSearchText(value).split(" ").filter(Boolean));
+}
+
+function keywordMatchesTokens(keyword: string, tokens: Set<string>): boolean {
+  const keywordTokens = keyword.split(" ").filter(Boolean);
+  return keywordTokens.length > 0 && keywordTokens.every((token) => tokenMatches(token, tokens));
+}
+
+function tokenMatches(token: string, tokens: Set<string>): boolean {
+  if (tokens.has(token)) {
+    return true;
+  }
+  if (token.length <= 3) {
+    return false;
+  }
+  if (token.endsWith("s")) {
+    return tokens.has(token.slice(0, -1));
+  }
+  return tokens.has(`${token}s`);
+}
+
+function areaListForMessage(file: ScopedChangedFile): string {
+  return file.areas.length > 0 ? file.areas.join(", ") : "an unmapped review area";
 }
 
 // --- Rule: unmapped_change (workflow, low) ---------------------------------

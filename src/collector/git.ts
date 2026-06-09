@@ -88,7 +88,16 @@ export function collectChangedFiles(cwd: string, baseRef: string, headRef: strin
   const statusOutput = git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
   if (statusOutput) {
     for (const { status, filePath } of parsePorcelainStatusOutput(statusOutput)) {
-      if (filePath && !filePath.endsWith("/") && !byPath.has(filePath) && filePath !== ".DS_Store" && isRegularFile(path.resolve(cwd, filePath))) {
+      if (!filePath || filePath.endsWith("/") || filePath === ".DS_Store") {
+        continue;
+      }
+      const existing = byPath.get(filePath);
+      if (existing) {
+        const mergedStatus = shouldPreserveRangeStatus(existing.status, status) ? existing.status : status;
+        byPath.set(filePath, { ...existing, status: mergedStatus, source: "working_tree" });
+        continue;
+      }
+      if (status.includes("D") || isRegularFile(path.resolve(cwd, filePath))) {
         byPath.set(filePath, { path: filePath, status, source: "working_tree" });
       }
     }
@@ -142,6 +151,12 @@ function parsePorcelainStatusOutput(output: string): Array<{ status: string; fil
 
 function isRenameOrCopyStatus(status: string): boolean {
   return /[RC]/.test(status);
+}
+
+function shouldPreserveRangeStatus(rangeStatus: string, workingTreeStatus = ""): boolean {
+  return isRenameOrCopyStatus(rangeStatus)
+    || rangeStatus.startsWith("D")
+    || (rangeStatus.startsWith("A") && !workingTreeStatus.includes("D"));
 }
 
 function splitNullOutput(output: string): string[] {

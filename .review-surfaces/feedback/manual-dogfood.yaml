@@ -124,7 +124,7 @@ findings:
     finding: PR #40 dogfood still ranked bin/review-surfaces.js, src/evidence/evidence.ts, and src/risks/risks.ts as untested implementation changes even though focused regression tests and a current-head command transcript exist for the provenance/manual-check behavior.
     desired_change: Teach PR risk generation or human-review queue ranking to connect focused changed tests and current-head command transcripts to changed implementation paths before surfacing untested_changed_impl as a review-first item.
 validation:
-  updated_at: 2026-06-08T22:27:00Z
+  updated_at: 2026-06-09T11:28:15Z
   passed:
     - pnpm run test
     - node --test dist/tests/diagrams.test.js
@@ -138,6 +138,9 @@ validation:
     - node bin/review-surfaces.js run --id CMD-PNPM-TEST-FAST --command-transcripts .review-surfaces/commands -- pnpm run test:fast
     - node bin/review-surfaces.js all --review-scope pr --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
     - node bin/review-surfaces.js validate .review-surfaces
+    - node --test dist/tests/command-classify.test.js dist/tests/pr-risks.test.js dist/tests/risks.test.js dist/tests/pr-surface-e2e.test.js
+    - node bin/review-surfaces.js run --id CMD-PR-RISKS-TEST --command-transcripts .review-surfaces/commands -- node --test dist/tests/command-classify.test.js dist/tests/pr-risks.test.js dist/tests/risks.test.js dist/tests/pr-surface-e2e.test.js
+    - node bin/review-surfaces.js all --review-scope pr --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
   failed: []
   notes:
     - The dogfood run used provider=mock and did not require network access.
@@ -165,3 +168,5 @@ validation:
     - PR #40 follow-up records command transcript head_sha, requires command manual-check evidence to match the current head, handles rename-side desired-rule coverage per matched path, and preserves concrete feedback-policy prompts when missing manual checks are folded.
     - PR #40 simplify triad found one real folded-policy ID formatting bug, one lazy-index cleanup, and one missing production-hop test; all three were addressed before pushing the follow-up.
     - PR #40 dogfood still reported untested_changed_impl review items for implementation files that have focused tests; FB-2026-06-09-001 records this as a future queue/risk matching improvement.
+    - FB-2026-06-09-001 follow-up: PR risk generation now suppresses untested_changed_impl only when changed tests or current-head passing command transcripts validate a committed implementation area; parsed passing test output alone remains insufficient without current-run provenance.
+    - Simplify triad follow-up kept working-tree implementation changes conservative because HEAD-only transcripts can be stale for uncommitted content; committed PR-range files can still use current-head transcript evidence.
