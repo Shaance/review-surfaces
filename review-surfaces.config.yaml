@@ -92,6 +92,7 @@ areas:
     pattern: risk register
     test_keywords:
       - risk
+      - risks
   - id: SUB-DIAGRAM
     name: Diagram generator
     group_key: ARCH
@@ -103,6 +104,7 @@ areas:
     test_keywords:
       - arch
       - diagram
+      - diagrams
   - id: SUB-METH
     name: Methodology auditor
     group_key: METHODOLOGY
@@ -190,6 +192,7 @@ areas:
     test_keywords:
       - packet
       - render
+      - rendering
   - id: SUB-HUMAN-REVIEW
     name: Human review cockpit
     group_key: HUMAN_REVIEW

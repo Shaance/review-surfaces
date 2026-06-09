@@ -112,3 +112,25 @@ test("configured review areas preserve compound test keyword matches", async () 
     "compound keywords should match token order, not any separated token pair"
   );
 });
+
+test("configured review areas preserve plural and derived test-file mappings", async () => {
+  const areas = await defaultReviewSurfacesAreas();
+  const matcher = createReviewAreaMatcher(areas);
+
+  assert.ok(
+    matcher.groupsForPath("tests/risks.test.ts", { purpose: "review_surface" }).includes("RISK"),
+    "tests/risks.test.ts should count as RISK changed-test review signal"
+  );
+  assert.ok(
+    matcher.groupsForPath("tests/pr-risks.test.ts", { purpose: "requirement_proof" }).includes("RISK"),
+    "tests/pr-risks.test.ts should count as RISK validation evidence"
+  );
+  assert.ok(
+    matcher.groupsForPath("tests/diagrams.test.ts", { purpose: "review_surface" }).includes("ARCH"),
+    "tests/diagrams.test.ts should count as ARCH changed-test review signal"
+  );
+  assert.ok(
+    matcher.groupsForPath("tests/rendering-paths-redaction.test.ts", { purpose: "requirement_proof" }).includes("RENDER"),
+    "tests/rendering-paths-redaction.test.ts should count as RENDER validation evidence"
+  );
+});
