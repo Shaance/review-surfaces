@@ -59,10 +59,32 @@ Deferred:
 - Cache-hit human rendering still reparses packet/surface artifacts already read for cache validation; this is a moderate efficiency cleanup for a later cache helper pass.
 - Human Markdown rendering and sidecar schema validation share patterns with existing comment/schema code; extracting common helpers is a useful reuse cleanup but broader than M1.
 
-## Follow-Up Milestones
+## Completed Follow-Up Milestones
 
 - M2: stronger merge-readiness policy and blocker precedence.
+  - Implemented deterministic readiness decisions, evidence-backed blockers, conservative missing-evidence degradation, and current-head manual-check clearing.
+  - Primary anchors: `src/human/human-review.ts`, `tests/human-review.test.ts`.
 - M3: hunk-level queue from parsed diff hunks.
+  - Implemented review queue ranking with changed-file anchors, hunk headers, line ranges, renamed/deleted path handling, and pathless-risk question fallback.
+  - Primary anchors: `src/human/human-review.ts`, `tests/human-review.test.ts`.
 - M4: deeper trust audit and concrete test-plan synthesis.
-- M5: suggested reviewer comments with optional validated LLM wording.
+  - Implemented verified/claimed/missing/invalid evidence separation, concrete automatic/manual test-plan items, and required-check preservation under caps.
+  - Primary anchors: `src/human/human-review.ts`, `src/human/render.ts`, `tests/human-review.test.ts`.
+- M5: suggested reviewer comments.
+  - Implemented deterministic evidence-backed comment drafts grouped by blocking, clarifying, and non-blocking severity. Drafts are local-only and not auto-posted.
+  - Primary anchors: `src/human/human-review.ts`, `src/render/pr-comment.ts`, `tests/human-review.test.ts`, `tests/pr-comment.test.ts`.
 - M6: feedback memory and domain risk lenses.
+  - Implemented local feedback policy effects, false-positive/false-negative tuning, required manual checks, review routes, evidence cards, since-last-review deltas, risk lenses, and config caps.
+  - Primary anchors: `src/human/human-review.ts`, `src/config/config.ts`, `schemas/human_review.schema.json`, `tests/human-review.test.ts`, `tests/config.test.ts`, `tests/schema-contract.test.ts`.
+
+## Additional Proposal Slices Landed
+
+- PR comments now prefer a current schema-valid `human_review.json` while preserving `pr_review_surface.json` as the lower-level PR fact and postability model.
+- `all` prints `human_review.md` as the default reviewer entrypoint with verdict, review-first count, blockers, suggested comments, and missing-evidence count.
+- Standalone human artifacts are rendered from `human_review.json`: `review_queue.md`, `suggested_comments.md`, `trust_audit.md`, `risk_lenses.md`, `review_routes.md`, `evidence_cards.md`, `since_last_review.md`, `intent_mismatch.md`, and `test_plan.md`.
+- `review-surfaces.HUMAN_REVIEW.18` implements explicit intent-mismatch findings for expected spec intent, observed diff behavior, possible mismatches, possible overreach, and missing intent mappings.
+
+## Remaining Cleanup Candidates
+
+- Cache-hit human rendering still reparses packet/surface artifacts already read for cache validation; this is a moderate efficiency cleanup for a later cache helper pass.
+- Human Markdown rendering and sidecar schema validation share patterns with existing comment/schema code; extracting common helpers is a useful reuse cleanup when the next renderer change touches the same code.

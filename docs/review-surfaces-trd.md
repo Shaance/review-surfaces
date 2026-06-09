@@ -1,19 +1,19 @@
 # TRD: review-surfaces
 
-**Status:** final bootstrap draft  
+**Status:** final bootstrap draft; human-cockpit update applied  
 **Intended reader:** AI coding agent, maintainer, reviewer  
 **Primary implementation target:** local-first open-source CLI  
 **Core repository artifact:** `.review-surfaces/`  
 **Spec ledger:** `features/review-surfaces.feature.yaml`  
-**Last reviewed:** 2026-05-27
+**Last reviewed:** 2026-06-09
 
 ---
 
 ## 1. Executive summary
 
-`review-surfaces` is a local-first review packet compiler for agent-generated code changes.
+`review-surfaces` is a local-first human review decision cockpit for agent-generated code changes.
 
-It does not try to replace the reviewer. It reduces the reviewer’s reconstruction cost by turning specs, docs, diffs, tests, agent logs, and human feedback into structured, evidence-backed review artifacts.
+It does not try to replace the reviewer. It reduces the reviewer’s reconstruction cost by turning specs, docs, diffs, tests, agent logs, and human feedback into a compact, evidence-backed review path: verdict, review-first queue, blockers, questions, trust audit, suggested comments, and concrete checks. The review packet remains the machine-readable evidence backbone underneath the human surface.
 
 The central output is a directory:
 
@@ -31,9 +31,15 @@ The central output is a directory:
   diagrams/
   review_packet.md
   review_packet.json
+  human_review.md
+  human_review.json
+  review_queue.md
+  suggested_comments.md
+  trust_audit.md
+  test_plan.md
 ```
 
-The first product surface is the local file system. GitHub comments, GitLab comments, CI checks, dashboards, Acai sync, and SARIF exports are later renderers over the same local artifacts.
+The first product surface is the local file system, with `human_review.md` as the default reviewer entrypoint and `review_packet.json` as the default machine evidence contract. GitHub comments, GitLab comments, CI checks, dashboards, Acai sync, and SARIF exports are renderers over the same local artifacts.
 
 For this project itself, Acai-style `feature.yaml` is not merely an integration target. It is the source-of-truth requirements ledger for the repository. The repo should contain `features/review-surfaces.feature.yaml`, code/tests should preserve stable ACIDs where useful, and every milestone should run the strongest available subset of `review-surfaces` against the `review-surfaces` repo itself.
 
@@ -54,7 +60,7 @@ Agent-generated PRs/MRs are difficult to review because the human often has to r
 - what assumptions were not challenged;
 - where manual review attention should go first.
 
-Most review tools focus on diff comments or generic AI summaries. This project should instead create a review packet that is compact, source-backed, and useful to both humans and future agents.
+Most review tools focus on diff comments or generic AI summaries. This project should instead create a human-first review surface that is compact, source-backed, and useful to both reviewers and future agents.
 
 The product should be closer to a compiler than a chatbot:
 
