@@ -244,6 +244,9 @@ components:
       14:
         requirement: PR-mode comments should render from the human review model when a current schema-valid human_review.json is available, while preserving pr_review_surface.json as the lower-level PR fact and postability model.
         note: If the human model is missing or stale, the renderer may fall back to the PR sidecar; posting must still obey the validated remote-narrative gate.
+      15:
+        requirement: The all command terminal summary must make the human review surface the default entrypoint and report verdict, review-first count, blocker count, suggested-comment count, and missing-evidence count.
+        note: Agent handoff remains a secondary artifact and must not be promoted above the human review surface in the default terminal summary.
 
   PROVIDERS:
     name: Later provider integrations
