@@ -46,6 +46,16 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
   try {
     const run = runCli(tmp, [...ALL_PR, "--provider", "mock"]);
     assert.equal(run.status, 0, run.stderr);
+    // review-surfaces.HUMAN_REVIEW.15: `all` should point reviewers at the
+    // human cockpit summary rather than making agent handoff the default path.
+    assert.match(run.stdout, /Wrote review-surfaces artifacts to \.review-surfaces/);
+    assert.match(run.stdout, /Human review: \.review-surfaces\/human_review\.md/);
+    assert.match(run.stdout, /Verdict: [a-z_]+/);
+    assert.match(run.stdout, /Review first: \d+ item\(s\)/);
+    assert.match(run.stdout, /Blockers: \d+/);
+    assert.match(run.stdout, /Suggested comments: \d+/);
+    assert.match(run.stdout, /Missing evidence: \d+/);
+    assert.doesNotMatch(run.stdout, /agent_handoff\.md/);
     const surface = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "pr_review_surface.json"), "utf8"));
     const human = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
     const humanMarkdown = fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.md"), "utf8");

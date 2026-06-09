@@ -609,6 +609,15 @@ test("review-surfaces --cache --strict: a clean hit reuses the packet and still 
     const run = runAll(tmp, ["--now", FROZEN, "--cache", "--strict"]);
     assert.equal(run.status, 10, "clean strict hit must still apply the gate from the loaded evaluation");
     assert.match(run.stdout, /inputs unchanged \(signature match\)/, "a clean hit must reuse, not regenerate");
+    // review-surfaces.HUMAN_REVIEW.15: cache reuse still presents the human
+    // cockpit summary as the reviewer entrypoint.
+    assert.match(run.stdout, /Human review: \.review-surfaces\/human_review\.md/);
+    assert.match(run.stdout, /Verdict: [a-z_]+/);
+    assert.match(run.stdout, /Review first: \d+ item\(s\)/);
+    assert.match(run.stdout, /Blockers: \d+/);
+    assert.match(run.stdout, /Suggested comments: \d+/);
+    assert.match(run.stdout, /Missing evidence: \d+/);
+    assert.doesNotMatch(run.stdout, /agent_handoff\.md/);
     assert.match(read(tmp, "review_packet.json"), /_clean_hit_sentinel/, "a clean hit must leave the packet untouched");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

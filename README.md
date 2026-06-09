@@ -79,6 +79,10 @@ pnpm run review-surfaces -- all --base origin/main --head HEAD \
 
 After a run, look under `.review-surfaces/`:
 
+`all` prints the human entrypoint first, with the deterministic verdict and
+counts for review-first items, blockers, suggested comments, and missing
+evidence so reviewers do not need to start in the packet JSON.
+
 - `human_review.md` / `human_review.json` — the default human reviewer
   entrypoint: verdict, review-first queue, blockers/questions, trust audit,
   review routes, evidence cards, suggested comments, test-plan items, skim-safe
