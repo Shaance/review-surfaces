@@ -106,6 +106,7 @@ test("review-surfaces.RISK.2 treats successful command transcripts as direct or 
         command: "pnpm run test",
         status: "passed",
         exit_code: 0,
+        head_sha: "abc123",
         truncated: false,
         source_path: ".review-surfaces/commands/local.json"
       },
@@ -158,6 +159,7 @@ test("review-surfaces.RISK.2 treats successful command transcripts as direct or 
   assert.equal(risks.test_evidence[3].kind, "missing");
   assert.equal(risks.test_evidence[4].kind, "missing");
   assert.equal(risks.test_evidence[0].evidence?.[0].path, ".review-surfaces/inputs/commands.json");
+  assert.equal(risks.test_evidence[0].evidence?.[0].sha, "abc123");
 });
 
 test("review-surfaces.RISK.2 uses the actual commands.json path for custom output dirs and suppresses duplicate claims", () => {

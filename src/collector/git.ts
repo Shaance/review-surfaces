@@ -39,8 +39,8 @@ export function collectGitInfo(cwd: string, baseRef: string, headRef: string): G
     repo: remoteRepoName(cwd),
     base_ref: baseRef,
     head_ref: headRef,
-    base_sha: revParse(cwd, baseRef),
-    head_sha: revParse(cwd, headRef) ?? revParse(cwd, "HEAD") ?? "unknown"
+    base_sha: resolveGitRefSha(cwd, baseRef),
+    head_sha: resolveGitRefSha(cwd, headRef) ?? resolveGitRefSha(cwd, "HEAD") ?? "unknown"
   };
 }
 
@@ -54,7 +54,7 @@ export function gitInfoDiagnostics(cwd: string, baseRef: string): string[] {
     diagnostics.push(`not a git repository at ${cwd}; review range and diff are empty`);
     return diagnostics;
   }
-  if (revParse(cwd, baseRef) === undefined) {
+  if (resolveGitRefSha(cwd, baseRef) === undefined) {
     diagnostics.push(`base ref "${baseRef}" did not resolve; comparing against the working tree instead`);
   }
   return diagnostics;
@@ -190,7 +190,7 @@ function remoteRepoName(cwd: string): string {
   return httpsMatch ? httpsMatch[1] : trimmed;
 }
 
-function revParse(cwd: string, ref: string): string | undefined {
+export function resolveGitRefSha(cwd: string, ref: string): string | undefined {
   return git(cwd, ["rev-parse", "--verify", ref])?.trim();
 }
 

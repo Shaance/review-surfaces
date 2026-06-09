@@ -434,6 +434,7 @@ function validationEvidenceFromCommandTranscripts(collection: CollectionResult):
           transcript.exit_code === 0 ? "high" : "medium",
           {
             path: evidencePath,
+            sha: transcript.head_sha,
             eventId: transcript.id,
             excerptHash: transcript.stdout_hash ?? transcript.stderr_hash,
             validationStatus: "valid"

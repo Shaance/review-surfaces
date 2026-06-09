@@ -90,12 +90,14 @@ export function commandEvidence(
     path?: string;
     eventId?: string;
     excerptHash?: string;
+    sha?: string;
     validationStatus?: ValidationStatus;
   } = {}
 ): EvidenceRef {
   return {
     kind: "command",
     path: options.path,
+    sha: options.sha,
     event_id: options.eventId,
     command,
     excerpt_hash: options.excerptHash,

@@ -1329,7 +1329,7 @@ function changedFileQueueDrafts(
 function buildFeedbackPolicyEffects(input: BuildHumanReviewInput, config: HumanReviewBuildConfig): FeedbackPolicyEffect[] {
   const drafts: FeedbackPolicyEffectDraft[] = [];
   const changedFiles = input.prSurface?.scope.changed_files ?? [];
-  const riskRulePaths = buildPrRiskRulePathIndex(input.prSurface);
+  let riskRulePaths: Map<string, Set<string>> | undefined;
 
   for (const policy of config.required_manual_checks) {
     const matchers = policy.path_patterns.map(buildFeedbackPathMatcher);
@@ -1399,12 +1399,14 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput, config: HumanR
       const desiredRule = policy.desired_rule;
       const paths = changedFiles
         .flatMap((file) => {
-          const matchedPaths = changedFileMatchedPaths(file, [matcher]);
+          const matchedPaths = changedFilePathsMatchedByPolicy(file, [matcher]);
           if (matchedPaths.length === 0) {
             return [];
           }
-          if (desiredRule && matchedPaths.some((filePath) => prRiskRuleCoversPath(riskRulePaths, desiredRule, filePath))) {
-            return [];
+          if (desiredRule) {
+            const rulePaths = riskRulePaths ?? buildPrRiskRulePathIndex(input.prSurface);
+            riskRulePaths = rulePaths;
+            return matchedPaths.filter((filePath) => !prRiskRuleCoversPath(rulePaths, desiredRule, filePath));
           }
           return matchedPaths;
         });
@@ -2164,15 +2166,41 @@ function foldMissingTeamPolicyEffects(drafts: FeedbackPolicyEffectDraft[]): Feed
   const paths = uniqueTruthy(drafts.flatMap((draft) => draft.paths)).sort(compareStrings);
   const preview = riskIds.slice(0, 4).join(", ");
   const suffix = riskIds.length > 4 ? `, and ${riskIds.length - 4} more` : "";
+  const configured = riskIds.every((id) => id.startsWith("config:"));
+  const feedbackPolicies = riskIds.every((id) => id.startsWith("policy:"));
+  const label = configured
+    ? "configured manual check"
+    : feedbackPolicies
+      ? "feedback policy manual check"
+      : "required manual check";
   return {
     kind: "team_policy",
-    summary: `${drafts.length} additional configured manual check(s) matched changed file(s), but the required manual checks are missing${preview ? `: ${preview}${suffix}.` : "."}`,
-    action: `${RECORD_MANUAL_CHECK_PREFIX} ${drafts.length} additional configured required manual check(s) are missing; inspect matching policy IDs before approval.`,
+    summary: `${drafts.length} additional ${label}(s) matched changed file(s), but the required manual checks are missing${preview ? `: ${preview}${suffix}.` : "."}`,
+    action: `${RECORD_MANUAL_CHECK_PREFIX} ${drafts.length} additional ${label}(s) are missing: ${foldedManualCheckProcedure(drafts)}`,
     evidence: uniqueEvidenceRefs(drafts.flatMap((draft) => draft.evidence)).slice(0, 8),
     paths,
     risk_ids: riskIds,
     confidence: "high"
   };
+}
+
+function foldedManualCheckProcedure(drafts: FeedbackPolicyEffectDraft[]): string {
+  const items = drafts.map((draft) => ({
+    riskId: draft.risk_ids[0] ?? "policy",
+    prompt: manualCheckPromptFromAction(draft.action)
+  }));
+  const visible = items.slice(0, 5).map((item) => {
+    return item.prompt ? `${item.riskId}: ${item.prompt}` : item.riskId;
+  });
+  const suffix = items.length > 5 ? `; and ${items.length - 5} more policy ID(s): ${items.slice(5).map((item) => item.riskId).join(", ")}` : "";
+  return `${visible.join("; ")}${suffix}.`;
+}
+
+function manualCheckPromptFromAction(action: string): string | undefined {
+  if (action.startsWith(RECORD_MANUAL_CHECK_PREFIX)) {
+    return action.slice(RECORD_MANUAL_CHECK_PREFIX.length).trim();
+  }
+  return undefined;
 }
 
 function uniqueEvidenceRefs(evidence: EvidenceRef[]): EvidenceRef[] {
@@ -2269,6 +2297,14 @@ function changedFilePathsMatchingAny(changedFiles: PrChangedFile[], matchers: Fe
 function changedFileMatchedPaths(file: PrChangedFile, matchers: FeedbackPathMatcher[]): string[] {
   const paths = compactStrings([file.path, file.old_path]).map((filePath) => normalizeEvidencePath(filePath));
   return paths.some((filePath) => matchers.some((matcher) => matcher.matches(filePath))) ? uniqueTruthy(paths) : [];
+}
+
+function changedFilePathsMatchedByPolicy(file: PrChangedFile, matchers: FeedbackPathMatcher[]): string[] {
+  return uniqueTruthy(
+    compactStrings([file.path, file.old_path])
+      .map((filePath) => normalizeEvidencePath(filePath))
+      .filter((filePath) => matchers.some((matcher) => matcher.matches(filePath)))
+  );
 }
 
 function buildFeedbackPathMatcher(pattern: string | undefined): FeedbackPathMatcher {
@@ -3666,7 +3702,12 @@ function manualCheckEvidenceRecords(
       }))
     );
   const commandRecords = options.includeCommandEvidence === false ? [] : evidence
-    .filter((ref) => ref.kind === "command" && ref.validation_status === "valid" && commandEvidenceRecordsPassingTranscript(ref))
+    .filter((ref) =>
+      ref.kind === "command" &&
+      ref.validation_status === "valid" &&
+      ref.sha === headSha &&
+      commandEvidenceRecordsPassingTranscript(ref)
+    )
     .flatMap((ref) =>
       compactStrings([ref.command, ref.note]).map((text) => ({
         text,

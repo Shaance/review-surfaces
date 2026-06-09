@@ -104,6 +104,7 @@ function recordCommandTranscript(options) {
       command: redact(shellCommandString(options.args)),
       status: childResult.exitCode === 0 ? "passed" : "failed",
       exit_code: childResult.exitCode,
+      head_sha: currentGitHeadSha(options.cwd),
       duration_ms: Math.max(0, completed.getTime() - started.getTime()),
       started_at: started.toISOString(),
       completed_at: completed.toISOString(),
@@ -117,6 +118,16 @@ function recordCommandTranscript(options) {
     const transcriptPath = writeTranscriptFile(options.cwd, options.transcriptDir, id, transcript);
     return { transcript, transcriptPath, exitCode: childResult.exitCode };
   });
+}
+
+function currentGitHeadSha(cwd) {
+  const result = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+  const value = result.status === 0 ? result.stdout.trim() : "";
+  return /^[0-9a-f]{40}$/i.test(value) ? value : undefined;
 }
 
 function runChildCommand(options, stdoutCapture, stderrCapture) {

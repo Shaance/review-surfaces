@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
+import { resolveGitRefSha } from "../collector/git";
 import { ensureDir, relativePath, writeJson } from "../core/files";
 import { stripUndefined } from "../core/guards";
 import { redactForArtifact } from "../privacy/redact";
@@ -16,6 +17,7 @@ export interface RecordedCommandTranscript {
   command: string;
   status: "passed" | "failed";
   exit_code?: number;
+  head_sha?: string;
   duration_ms: number;
   started_at: string;
   completed_at: string;
@@ -32,6 +34,7 @@ export interface RecordCommandOptions {
   transcriptDir?: string;
   id?: string;
   streamOutput?: boolean;
+  headSha?: string;
   stdout?: { write(chunk: unknown): unknown; once?(event: string, callback: () => void): unknown };
   stderr?: { write(chunk: unknown): unknown; once?(event: string, callback: () => void): unknown };
   now?: () => Date;
@@ -66,6 +69,7 @@ export async function recordCommandTranscript(options: RecordCommandOptions): Pr
     command: redact(command) ?? "",
     status: childResult.exitCode === 0 ? "passed" : "failed",
     exit_code: childResult.exitCode,
+    head_sha: options.headSha ?? resolveGitRefSha(options.cwd, "HEAD"),
     duration_ms: Math.max(0, completed.getTime() - started.getTime()),
     started_at: started.toISOString(),
     completed_at: completed.toISOString(),
