@@ -62,7 +62,7 @@ export interface HumanReviewBuildConfig {
 }
 
 export const DEFAULT_HUMAN_REVIEW_BUILD_CONFIG: HumanReviewBuildConfig = {
-  max_review_first: 7,
+  max_review_first: 20,
   max_suggested_comments: 10,
   max_questions: 10,
   risk_lenses: {

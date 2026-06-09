@@ -1011,6 +1011,11 @@ async function runHumanStage(parsed: ParsedArgs): Promise<void> {
   const cwd = process.cwd();
   const outDir = await resolveOutputDir(cwd, parsed);
   const config = await loadConfig(cwd, stringFlag(parsed, "config") ?? "review-surfaces.config.yaml");
+  if (!config.human_review.enabled) {
+    removeHumanReviewArtifacts(outDir);
+    console.log(`Human review disabled by config; removed generated human review artifacts from ${path.relative(cwd, outDir) || "."}`);
+    return;
+  }
   await writeHumanReviewFromArtifacts(cwd, outDir, reviewScope(parsed), config);
   console.log(`Human review: ${artifactPathForLog(cwd, outDir, "human_review.md")}`);
 }
@@ -1022,8 +1027,14 @@ async function runHumanSubartifactStage(parsed: ParsedArgs): Promise<void> {
   if (!artifact) {
     throw new CliError(`Unknown human artifact command: ${parsed.command}`, ExitCodes.usageError);
   }
-  const config = await loadConfig(cwd, stringFlag(parsed, "config") ?? "review-surfaces.config.yaml");
-  const context = await loadOrBuildHumanReviewJson(cwd, outDir, reviewScope(parsed), artifact.command, config);
+  const configPath = stringFlag(parsed, "config");
+  const config = await loadConfig(cwd, configPath ?? "review-surfaces.config.yaml");
+  if (!config.human_review.enabled) {
+    removeHumanReviewArtifacts(outDir);
+    console.log(`${artifact.label}: disabled by human_review.enabled=false`);
+    return;
+  }
+  const context = await loadOrBuildHumanReviewJson(cwd, outDir, reviewScope(parsed), artifact.command, config, configPath !== undefined);
   await writeHumanStandaloneArtifact(context.outputDir, context.model, artifact);
   console.log(`${artifact.label}: ${artifactPathForLog(cwd, context.outputDir, artifact.artifact)}`);
 }
@@ -1045,9 +1056,10 @@ async function writeAndMaybeSummarizeHumanReviewFromArtifacts(
 }
 
 function removeHumanReviewArtifacts(outDir: string): void {
+  const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
   const artifacts = ["human_review.json", "human_review.md", ...HUMAN_STANDALONE_ARTIFACTS.map((artifact) => artifact.artifact)];
   for (const artifact of artifacts) {
-    fs.rmSync(path.join(outDir, artifact), { force: true });
+    fs.rmSync(path.join(outputDir, artifact), { force: true });
   }
 }
 
@@ -1071,11 +1083,12 @@ async function loadOrBuildHumanReviewJson(
   outDir: string,
   scope: ReviewScope,
   command?: string,
-  config?: ReviewSurfacesConfig
+  config?: ReviewSurfacesConfig,
+  forceRebuild = false
 ): Promise<{ outputDir: string; model: HumanReviewModel }> {
   const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
   const humanReviewPath = path.join(outputDir, "human_review.json");
-  if (fileExists(humanReviewPath)) {
+  if (!forceRebuild && fileExists(humanReviewPath)) {
     const model = await readJson(humanReviewPath) as HumanReviewModel;
     assertValidHumanReview(cwd, model);
     if (!humanReviewJsonSatisfiesStandaloneCommand(model, command)) {

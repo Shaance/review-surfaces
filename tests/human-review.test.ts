@@ -768,6 +768,26 @@ test("review-surfaces.HUMAN_REVIEW.16 config caps reviewer-facing output and dis
   assert.equal(model.review_queue.some((item) => item.path === ".github/workflows/pr-review-comment.yml" || item.path === "schemas/human_review.schema.json"), true);
 });
 
+test("review-surfaces.HUMAN_REVIEW.16 default config preserves the full queue beyond the markdown top seven", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files = Array.from({ length: 10 }, (_, index) => ({
+    path: `src/human/generated-${index}.ts`,
+    status: "M" as const,
+    areas: ["HUMAN_REVIEW"],
+    role: "implementation" as const,
+    added_lines: 2,
+    deleted_lines: 1
+  }));
+
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    prSurface: surface
+  });
+
+  assert.ok(model.review_queue.length > 7);
+});
+
 test("risk lenses classify renamed source paths as review signals", () => {
   const surface = prSurfaceFixture();
   surface.risks.candidates = [];

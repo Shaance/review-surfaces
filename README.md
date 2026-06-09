@@ -149,7 +149,7 @@ changing the evidence engine:
 human_review:
   enabled: true
   default_entrypoint: true
-  max_review_first: 7
+  max_review_first: 20
   max_suggested_comments: 10
   max_questions: 10
   risk_lenses:
@@ -160,6 +160,9 @@ human_review:
     reviewer_ux: true
     cache_provenance: true
 ```
+
+`human_review.md` still renders a compact top seven from the model; this cap
+controls the generated JSON and full `review_queue.md`.
 
 ## Providers
 

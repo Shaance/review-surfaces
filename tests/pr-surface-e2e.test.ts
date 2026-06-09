@@ -549,6 +549,13 @@ test("review-surfaces.HUMAN_REVIEW.16 all honors human_review enabled and defaul
     assert.doesNotMatch(disabledRun.stdout, /Human review:/);
     assert.equal(fs.existsSync(path.join(disabled, ".review-surfaces", "human_review.json")), false);
     assert.equal(fs.existsSync(path.join(disabled, ".review-surfaces", "human_review.md")), false);
+    fs.writeFileSync(path.join(disabled, ".review-surfaces", "human_review.json"), "{}");
+    fs.writeFileSync(path.join(disabled, ".review-surfaces", "human_review.md"), "# stale\n");
+    const disabledHuman = runCli(disabled, ["human", "--review-scope", "pr", "--out", ".review-surfaces", "--config", "human-review-disabled.yaml"]);
+    assert.equal(disabledHuman.status, 0, disabledHuman.stderr);
+    assert.match(disabledHuman.stdout, /Human review disabled by config/);
+    assert.equal(fs.existsSync(path.join(disabled, ".review-surfaces", "human_review.json")), false);
+    assert.equal(fs.existsSync(path.join(disabled, ".review-surfaces", "human_review.md")), false);
 
     fs.writeFileSync(path.join(quiet, "human-review-secondary.yaml"), ["human_review:", "  default_entrypoint: false"].join("\n"));
     const quietRun = runCli(quiet, [...ALL_PR, "--provider", "mock", "--config", "human-review-secondary.yaml"]);
@@ -560,6 +567,35 @@ test("review-surfaces.HUMAN_REVIEW.16 all honors human_review enabled and defaul
   } finally {
     fs.rmSync(disabled, { recursive: true, force: true });
     fs.rmSync(quiet, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.HUMAN_REVIEW.16 focused human artifacts rebuild when explicit config is supplied", () => {
+  const tmp = setupChangedRepo();
+  try {
+    const first = runCli(tmp, [...ALL_PR, "--provider", "mock"]);
+    assert.equal(first.status, 0, first.stderr);
+    const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
+    const human = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    assert.ok(human.review_queue.length > 0, "fixture should generate at least one review queue item");
+    human.review_queue = [
+      { ...human.review_queue[0], id: "REVIEW-STALE-001", rank: 1, title: "STALE SENTINEL QUEUE ITEM" },
+      { ...human.review_queue[0], id: "REVIEW-STALE-002", rank: 2, title: "STALE SENTINEL QUEUE ITEM 2" }
+    ];
+    fs.writeFileSync(humanPath, `${JSON.stringify(human, null, 2)}\n`);
+    fs.writeFileSync(
+      path.join(tmp, "human-review-caps.yaml"),
+      ["human_review:", "  max_review_first: 1"].join("\n")
+    );
+
+    const queue = runCli(tmp, ["queue", "--review-scope", "pr", "--out", ".review-surfaces", "--config", "human-review-caps.yaml"]);
+    assert.equal(queue.status, 0, queue.stderr);
+    const rebuiltHuman = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    const queueMarkdown = fs.readFileSync(path.join(tmp, ".review-surfaces", "review_queue.md"), "utf8");
+    assert.ok(rebuiltHuman.review_queue.length <= 1);
+    assert.doesNotMatch(queueMarkdown, /STALE SENTINEL QUEUE ITEM/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 

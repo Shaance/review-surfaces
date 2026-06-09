@@ -251,7 +251,7 @@ dogfood:
 human_review:
   enabled: true
   default_entrypoint: true
-  max_review_first: 7
+  max_review_first: 20
   max_suggested_comments: 10
   max_questions: 10
   risk_lenses:
