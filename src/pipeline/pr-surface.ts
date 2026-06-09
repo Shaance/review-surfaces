@@ -64,7 +64,10 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
   const risks = buildPrRiskCandidates({
     scope,
     coverage,
-    testResults: input.collection.testResults
+    testResults: input.collection.testResults,
+    commandTranscripts: input.collection.commandTranscripts,
+    changedFileSources: Object.fromEntries(input.collection.changedFiles.map((file) => [file.path, file.source])),
+    reviewAreas: input.reviewAreas
   });
 
   const diagram = buildPrChangeDiagram({ scope, risks });

@@ -511,6 +511,62 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
   }
 });
 
+test("review-surfaces.PROVIDERS.5 PR risks use current-head command transcripts from assembly", () => {
+  const tmp = setupChangedRepo();
+  try {
+    fs.appendFileSync(path.join(tmp, "src", "pipeline", "pr-surface.ts"), "\n// command transcript PR risk marker\n");
+    execFileSync("git", ["add", CHANGED, "src/pipeline/pr-surface.ts"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "subject"], { cwd: tmp, stdio: "ignore" });
+    const headSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
+    fs.mkdirSync(path.join(tmp, ".review-surfaces", "commands"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, ".review-surfaces", "commands", "current-head-test.json"),
+      JSON.stringify({
+        schema_version: "review-surfaces.command_transcripts.v1",
+        commands: [
+          {
+            id: "CMD-CURRENT-HEAD-TEST",
+            command: "pnpm run test:fast",
+            status: "passed",
+            exit_code: 0,
+            head_sha: headSha,
+            truncated: false
+          }
+        ]
+      })
+    );
+
+    const run = runCli(tmp, [
+      "all",
+      "--review-scope",
+      "pr",
+      "--base",
+      "HEAD~1",
+      "--head",
+      "HEAD",
+      "--spec",
+      "features/review-surfaces.feature.yaml",
+      "--out",
+      ".review-surfaces",
+      "--provider",
+      "mock"
+    ]);
+    assert.equal(run.status, 0, run.stderr);
+    const surface = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "pr_review_surface.json"), "utf8"));
+    assert.equal(
+      surface.risks.candidates.some(
+        (candidate: { rule: string; evidence: Array<{ path?: string }> }) =>
+          candidate.rule === "untested_changed_impl" &&
+          candidate.evidence.some((ref) => ref.path === "src/pipeline/pr-surface.ts")
+      ),
+      false,
+      "current-head broad test transcript should prevent a stale untested implementation risk for the PR-surface pipeline"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.HUMAN_REVIEW.16 all applies human_review config caps to generated JSON", () => {
   const tmp = setupChangedRepo();
   try {

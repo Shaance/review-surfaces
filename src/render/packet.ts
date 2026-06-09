@@ -1,5 +1,6 @@
 import path from "node:path";
 import { CollectionResult } from "../collector/collect";
+import { commandLooksLikeLocalValidationCommand } from "../commands/classify";
 import { ArchitectureModel } from "../diagrams/diagrams";
 import { DogfoodModel } from "../dogfood/dogfood";
 import { EvaluationModel, RequirementStatus } from "../evaluation/evaluate";
@@ -662,17 +663,13 @@ function isHandoffFailedValidationEvidence(evidence: RisksModel["test_evidence"]
   }
   return (evidence.evidence ?? []).some((ref) =>
     ref.kind === "feedback"
-      || (ref.kind === "command" && typeof ref.command === "string" && commandLooksLikeLocalValidation(ref.command))
+      || (ref.kind === "command" && typeof ref.command === "string" && commandLooksLikeLocalValidationCommand(ref.command))
   );
 }
 
 function isFeedbackOnlyEvidence(evidence: RisksModel["test_evidence"][number]): boolean {
   const refs = evidence.evidence ?? [];
   return refs.length > 0 && refs.every((ref) => ref.kind === "feedback");
-}
-
-function commandLooksLikeLocalValidation(command: string): boolean {
-  return /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?(?:test(?::[\w.-]+)?|lint|typecheck|build)|node\s+--test|tsc\s)/.test(command.toLowerCase().trim().replace(/\s+/g, " "));
 }
 
 function handoffMethodologyFlags(methodology: MethodologyModel): string[] {

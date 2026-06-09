@@ -7,6 +7,7 @@ import type {
   PrScopeModel,
   ScopedChangedFile
 } from "../src/pr/contract";
+import type { ReviewArea } from "../src/review-areas/areas";
 
 // --- Inline fixture builders (construct contract types directly; NO wiring to
 // other PR modules) --------------------------------------------------------
@@ -59,7 +60,22 @@ function buildInput(overrides: Partial<BuildPrRiskInput> = {}): BuildPrRiskInput
     scope: overrides.scope ?? scope(),
     coverage: overrides.coverage ?? coverage(),
     ...(overrides.testResults !== undefined ? { testResults: overrides.testResults } : {}),
+    ...(overrides.commandTranscripts !== undefined ? { commandTranscripts: overrides.commandTranscripts } : {}),
+    ...(overrides.changedFileSources !== undefined ? { changedFileSources: overrides.changedFileSources } : {}),
+    ...(overrides.reviewAreas !== undefined ? { reviewAreas: overrides.reviewAreas } : {}),
     ...(overrides.config !== undefined ? { config: overrides.config } : {})
+  };
+}
+
+function reviewArea(groupKey: string, testKeywords: string[]): ReviewArea {
+  return {
+    id: `SUB-${groupKey}`,
+    name: `${groupKey} area`,
+    groupKey,
+    prefixes: [`src/${groupKey.toLowerCase()}/`],
+    purpose: `${groupKey} fixture`,
+    pattern: "fixture",
+    testKeywords
   };
 }
 
@@ -242,6 +258,215 @@ test("impl file WITH a co-changed test in the same area does NOT fire untested_c
     model.candidates.find((c) => c.rule === "untested_changed_impl"),
     undefined,
     "co-changed test in the same area suppresses the untested candidate"
+  );
+});
+
+test("impl file with a current-head focused test transcript in its area does NOT fire untested_changed_impl", () => {
+  const input = buildInput({
+    scope: scope({
+      head_sha: "head123",
+      changed_files: [
+        changedFile({ path: "src/human/human-review.ts", role: "implementation", areas: ["HUMAN_REVIEW"] })
+      ]
+    }),
+    reviewAreas: [reviewArea("HUMAN_REVIEW", ["human", "review"])],
+    commandTranscripts: [
+      {
+        id: "CMD-HUMAN-FOCUSED",
+        command: "node --test dist/tests/human-review.test.js",
+        status: "passed",
+        exit_code: 0,
+        head_sha: "head123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-HUMAN-FOCUSED.json"
+      }
+    ]
+  });
+
+  const model = buildPrRiskCandidates(input);
+  assert.equal(
+    model.candidates.find((c) => c.rule === "untested_changed_impl"),
+    undefined,
+    "current-head focused test transcript suppresses the untested candidate"
+  );
+});
+
+test("impl file with a stale focused test transcript still fires untested_changed_impl", () => {
+  const input = buildInput({
+    scope: scope({
+      head_sha: "head123",
+      changed_files: [
+        changedFile({ path: "src/human/human-review.ts", role: "implementation", areas: ["HUMAN_REVIEW"] })
+      ]
+    }),
+    reviewAreas: [reviewArea("HUMAN_REVIEW", ["human", "review"])],
+    commandTranscripts: [
+      {
+        id: "CMD-HUMAN-STALE",
+        command: "node --test dist/tests/human-review.test.js",
+        status: "passed",
+        exit_code: 0,
+        head_sha: "oldhead",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-HUMAN-STALE.json"
+      }
+    ]
+  });
+
+  const model = buildPrRiskCandidates(input);
+  const candidate = model.candidates.find((c) => c.rule === "untested_changed_impl");
+
+  assert.ok(candidate, "stale focused transcript does not suppress the untested candidate");
+  assert.ok(candidate.summary.includes("current-head test evidence"));
+});
+
+test("impl file with a failed focused test transcript still fires untested_changed_impl", () => {
+  const input = buildInput({
+    scope: scope({
+      head_sha: "head123",
+      changed_files: [
+        changedFile({ path: "src/human/human-review.ts", role: "implementation", areas: ["HUMAN_REVIEW"] })
+      ]
+    }),
+    reviewAreas: [reviewArea("HUMAN_REVIEW", ["human", "review"])],
+    commandTranscripts: [
+      {
+        id: "CMD-HUMAN-FAILED",
+        command: "node --test dist/tests/human-review.test.js",
+        status: "failed",
+        exit_code: 1,
+        head_sha: "head123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-HUMAN-FAILED.json"
+      }
+    ]
+  });
+
+  const model = buildPrRiskCandidates(input);
+  assert.ok(
+    model.candidates.find((c) => c.rule === "untested_changed_impl"),
+    "failed focused transcript does not suppress the untested candidate"
+  );
+});
+
+test("impl file with a current-head broad test transcript does NOT fire untested_changed_impl", () => {
+  const input = buildInput({
+    scope: scope({
+      head_sha: "head123",
+      changed_files: [
+        changedFile({ path: "src/risks/risks.ts", role: "implementation", areas: ["RISK"] }),
+        changedFile({ path: "src/evidence/evidence.ts", role: "implementation", areas: ["EVIDENCE"] })
+      ]
+    }),
+    commandTranscripts: [
+      {
+        id: "CMD-TEST-FAST",
+        command: "pnpm run test:fast",
+        status: "passed",
+        exit_code: 0,
+        head_sha: "head123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-TEST-FAST.json"
+      }
+    ]
+  });
+
+  const model = buildPrRiskCandidates(input);
+  assert.equal(
+    model.candidates.find((c) => c.rule === "untested_changed_impl"),
+    undefined,
+    "current-head broad test transcript suppresses the untested candidate"
+  );
+});
+
+test("working-tree impl file with a current-head broad test transcript still fires untested_changed_impl", () => {
+  const input = buildInput({
+    scope: scope({
+      head_sha: "head123",
+      changed_files: [
+        changedFile({ path: "src/risks/risks.ts", role: "implementation", areas: ["RISK"] })
+      ]
+    }),
+    changedFileSources: {
+      "src/risks/risks.ts": "working_tree"
+    },
+    commandTranscripts: [
+      {
+        id: "CMD-TEST-FAST",
+        command: "pnpm run test:fast",
+        status: "passed",
+        exit_code: 0,
+        head_sha: "head123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-TEST-FAST.json"
+      }
+    ]
+  });
+
+  const model = buildPrRiskCandidates(input);
+  assert.ok(
+    model.candidates.find((c) => c.rule === "untested_changed_impl"),
+    "HEAD-matched transcript is not enough to suppress working-tree implementation changes"
+  );
+});
+
+test("impl file with a parsed passing test case in its area does NOT fire untested_changed_impl", () => {
+  const input = buildInput({
+    scope: scope({
+      changed_files: [
+        changedFile({ path: "src/risks/risks.ts", role: "implementation", areas: ["RISK"] })
+      ]
+    }),
+    reviewAreas: [reviewArea("RISK", ["risk"])],
+    testResults: {
+      suites: [],
+      cases: [
+        {
+          name: "review-surfaces.RISK.1 emits risk evidence",
+          status: "passed"
+        }
+      ],
+      totals: { suites: 1, cases: 1, passed: 1, failed: 0, skipped: 0 },
+      source_paths: ["junit.xml"]
+    }
+  });
+
+  const model = buildPrRiskCandidates(input);
+  assert.equal(
+    model.candidates.find((c) => c.rule === "untested_changed_impl"),
+    undefined,
+    "parsed passing test evidence suppresses the untested candidate"
+  );
+});
+
+test("working-tree impl file with parsed passing test evidence still fires untested_changed_impl", () => {
+  const input = buildInput({
+    scope: scope({
+      changed_files: [
+        changedFile({ path: "src/risks/risks.ts", role: "implementation", areas: ["RISK"] })
+      ]
+    }),
+    changedFileSources: {
+      "src/risks/risks.ts": "working_tree"
+    },
+    reviewAreas: [reviewArea("RISK", ["risk"])],
+    testResults: {
+      suites: [],
+      cases: [
+        {
+          name: "review-surfaces.RISK.1 emits risk evidence",
+          status: "passed"
+        }
+      ],
+      totals: { suites: 1, cases: 1, passed: 1, failed: 0, skipped: 0 },
+      source_paths: ["junit.xml"]
+    }
+  });
+
+  const model = buildPrRiskCandidates(input);
+  assert.ok(
+    model.candidates.find((c) => c.rule === "untested_changed_impl"),
+    "parsed test output without content provenance is not enough to suppress working-tree implementation changes"
   );
 });
 
