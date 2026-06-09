@@ -1869,7 +1869,7 @@ test("configured required manual checks clear from command transcript evidence",
     evidence: [
       commandEvidence(
         "manual-check --note 'Manual check recorded: Confirm documentation changes do not alter product contract unexpectedly.'",
-        "Command transcript recorded a manual check.",
+        "Command transcript CMD-MANUAL-CHECK recorded exit_code=0 and status=passed.",
         "high",
         {
           path: ".review-surfaces/inputs/commands.json",
@@ -1900,6 +1900,53 @@ test("configured required manual checks clear from command transcript evidence",
 
   assert.equal(model.feedback_effects.some((effect) => effect.kind === "team_policy" && effect.action.startsWith("Manual check recorded:")), true);
   assert.equal(model.blockers.some((blocker) => blocker.required_action.includes("Confirm documentation changes do not alter product contract unexpectedly.")), false);
+});
+
+test("configured required manual checks do not clear from failed command transcript evidence", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+  packet.risks.test_evidence.push({
+    id: "TEST-CONFIG-MANUAL-CHECK-CMD-FAILED",
+    kind: "indirect",
+    summary: "Configured manual check command transcript failed.",
+    evidence: [
+      commandEvidence(
+        "manual-check --note 'Manual check recorded: Confirm documentation changes do not alter product contract unexpectedly.'",
+        "Command transcript CMD-MANUAL-CHECK recorded exit_code=1 and status=failed.",
+        "medium",
+        {
+          path: ".review-surfaces/inputs/commands.json",
+          eventId: "CMD-MANUAL-CHECK",
+          validationStatus: "valid"
+        }
+      )
+    ]
+  });
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+
+  const model = buildHumanReview({
+    packet,
+    prSurface: surface,
+    config: {
+      ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+      required_manual_checks: [
+        {
+          id: "docs_product_contract",
+          path_patterns: ["docs/**"],
+          prompt: "Confirm documentation changes do not alter product contract unexpectedly."
+        }
+      ]
+    }
+  });
+
+  assert.equal(model.feedback_effects.some((effect) => effect.kind === "team_policy" && effect.action.startsWith("Manual check recorded:")), false);
+  assert.equal(model.blockers.some((blocker) => blocker.required_action.includes("Confirm documentation changes do not alter product contract unexpectedly.")), true);
 });
 
 test("path-scoped false-positive feedback does not downgrade mixed-path risk evidence", () => {

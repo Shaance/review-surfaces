@@ -3666,7 +3666,7 @@ function manualCheckEvidenceRecords(
       }))
     );
   const commandRecords = options.includeCommandEvidence === false ? [] : evidence
-    .filter((ref) => ref.kind === "command" && ref.validation_status === "valid")
+    .filter((ref) => ref.kind === "command" && ref.validation_status === "valid" && commandEvidenceRecordsPassingTranscript(ref))
     .flatMap((ref) =>
       compactStrings([ref.command, ref.note]).map((text) => ({
         text,
@@ -3674,6 +3674,11 @@ function manualCheckEvidenceRecords(
       }))
     );
   return [...feedbackRecords, ...commandRecords];
+}
+
+function commandEvidenceRecordsPassingTranscript(ref: EvidenceRef): boolean {
+  const note = ref.note?.toLowerCase() ?? "";
+  return /\bexit_code=0\b/.test(note) && /\bstatus=passed\b/.test(note);
 }
 
 function focusedRequirementGaps(input: BuildHumanReviewInput): RequirementGap[] {
