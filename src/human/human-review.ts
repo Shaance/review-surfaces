@@ -1,6 +1,7 @@
 import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
+import { comparisonRiskKey } from "../dogfood/compare";
 import { EvidenceRef, feedbackEvidence, fileEvidence, missingEvidence } from "../evidence/evidence";
 import { normalizeEvidencePath } from "../evidence/validate";
 import type { FeedbackFile } from "../feedback/feedback";
@@ -25,6 +26,8 @@ import {
   RiskLens,
   RiskLensFinding,
   RISK_LENS_METADATA,
+  SinceLastReview,
+  SinceLastReviewItem,
   SuggestedReviewComment,
   TestPlanItem,
   TrustAudit,
@@ -158,6 +161,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   const questions = buildQuestions(input, blockers, feedbackEffects, riskLensFindings);
   const suggestedComments = buildSuggestedComments(input, blockers, riskLensFindings);
   const trustAudit = buildTrustAudit(input);
+  const sinceLastReview = buildSinceLastReview(input);
   const testPlan = buildTestPlan(input, feedbackEffects, riskLensFindings);
   const skimSafe = buildSkimSafe(input, feedbackEffects);
   const verdict = buildVerdict(input, blockers, trustAudit);
@@ -174,6 +178,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     suggested_comments: suggestedComments,
     trust_audit: trustAudit,
     risk_lens_findings: riskLensFindings,
+    since_last_review: sinceLastReview,
     test_plan: testPlan,
     skim_safe: skimSafe,
     feedback_effects: feedbackEffects,
@@ -191,6 +196,184 @@ function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["gen
     head_ref: prScope?.head_ref ?? stringOr(manifest.head_ref, "HEAD"),
     head_sha: prScope?.head_sha ?? stringOr(manifest.head_sha, "unknown")
   };
+}
+
+function buildSinceLastReview(input: BuildHumanReviewInput): SinceLastReview {
+  const previousPacketPath = input.packet.dogfood?.previous_packet_path;
+  const comparison = input.packet.dogfood?.comparison;
+  const empty = emptySinceLastReview(previousPacketPath);
+  if (!previousPacketPath) {
+    return {
+      ...empty,
+      unavailable_reason: "No previous packet was supplied; pass --previous-packet to compare review rounds."
+    };
+  }
+  if (!comparison) {
+    return {
+      ...empty,
+      unavailable_reason: `Previous packet ${previousPacketPath} was absent or unreadable; no comparison computed.`
+    };
+  }
+
+  const statusChanges = comparison.status_changes ?? [];
+  const improved = statusChanges
+    .filter((change) => change.direction === "improved")
+    .map((change, index) => statusChangeItem(input, "SLR-IMPROVED", index, change));
+  const regressed = statusChanges
+    .filter((change) => change.direction === "regressed")
+    .map((change, index) => statusChangeItem(input, "SLR-REGRESSED", index, change));
+  const currentRisksByKey = new Map(input.packet.risks.items.map((risk) => [comparisonRiskKey(risk), risk]));
+
+  return {
+    previous_packet_path: previousPacketPath,
+    improved,
+    regressed,
+    new_risks: riskComparisonItems(input, "SLR-NEW-RISK", comparison.new_risks ?? [], "New risk since last review", currentRisksByKey),
+    resolved_risks: riskComparisonItems(input, "SLR-RESOLVED-RISK", comparison.resolved_risks ?? [], "Resolved risk since last review"),
+    new_overreach: overreachComparisonItems(input, "SLR-NEW-OVERREACH", comparison.new_overreach ?? [], "New overreach since last review"),
+    resolved_overreach: overreachComparisonItems(input, "SLR-RESOLVED-OVERREACH", comparison.resolved_overreach ?? [], "Resolved overreach since last review"),
+    still_open: stillOpenSinceLastReviewItems(input, comparison),
+    count_deltas: comparison.count_deltas ?? emptyCountDeltas()
+  };
+}
+
+function emptySinceLastReview(previousPacketPath?: string): SinceLastReview {
+  return {
+    previous_packet_path: previousPacketPath,
+    improved: [],
+    regressed: [],
+    new_risks: [],
+    resolved_risks: [],
+    new_overreach: [],
+    resolved_overreach: [],
+    still_open: [],
+    count_deltas: emptyCountDeltas()
+  };
+}
+
+function emptyCountDeltas(): SinceLastReview["count_deltas"] {
+  return {
+    satisfied: { before: 0, after: 0, delta: 0 },
+    partial: { before: 0, after: 0, delta: 0 },
+    missing: { before: 0, after: 0, delta: 0 },
+    unknown: { before: 0, after: 0, delta: 0 },
+    invalid_evidence: { before: 0, after: 0, delta: 0 }
+  };
+}
+
+function statusChangeItem(
+  input: BuildHumanReviewInput,
+  prefix: string,
+  index: number,
+  change: { acai_id: string; previous_status: string; current_status: string; direction: "improved" | "regressed" | "unchanged" }
+): SinceLastReviewItem {
+  return {
+    id: `${prefix}-${String(index + 1).padStart(3, "0")}`,
+    category: "requirement",
+    acai_id: change.acai_id,
+    previous_status: change.previous_status,
+    current_status: change.current_status,
+    direction: change.direction,
+    summary: `${change.acai_id}: ${change.previous_status} -> ${change.current_status} (${change.direction}).`,
+    evidence: [comparisonEvidence(input, `Previous-packet comparison reported ${change.direction} status movement for ${change.acai_id}.`, change.acai_id)]
+  };
+}
+
+function riskComparisonItems(
+  input: BuildHumanReviewInput,
+  prefix: string,
+  riskKeys: string[],
+  label: string,
+  currentRisksByKey?: Map<string, ReviewPacket["risks"]["items"][number]>
+): SinceLastReviewItem[] {
+  return riskKeys.map((key, index) => {
+    const currentRisk = currentRisksByKey?.get(key);
+    return {
+      id: `${prefix}-${String(index + 1).padStart(3, "0")}`,
+      category: "risk",
+      severity: currentRisk?.severity ?? "unknown",
+      summary: `${label}: ${trimSentenceEnd(key)}.`,
+      evidence: [comparisonEvidence(input, `${label} from previous-packet comparison: ${key}.`)]
+    };
+  });
+}
+
+function overreachComparisonItems(input: BuildHumanReviewInput, prefix: string, paths: string[], label: string): SinceLastReviewItem[] {
+  return paths.map((filePath, index) => ({
+    id: `${prefix}-${String(index + 1).padStart(3, "0")}`,
+    category: "overreach",
+    path: filePath,
+    summary: `${label}: ${filePath}.`,
+    evidence: [comparisonEvidence(input, `${label} from previous-packet comparison for ${filePath}.`)]
+  }));
+}
+
+function stillOpenSinceLastReviewItems(
+  input: BuildHumanReviewInput,
+  comparison: NonNullable<ReviewPacket["dogfood"]>["comparison"]
+): SinceLastReviewItem[] {
+  if (!comparison) {
+    return [];
+  }
+  const changedRequirementKeys = new Set((comparison.status_changes ?? []).map((change) => change.acai_id));
+  const newRiskKeys = new Set(comparison.new_risks ?? []);
+  const newOverreachPaths = new Set(comparison.new_overreach ?? []);
+  const currentOverreachPaths = new Set(
+    (input.packet.evaluation.overreach ?? []).flatMap((result) => (result.evidence ?? []).map((ref) => ref.path).filter((filePath): filePath is string => Boolean(filePath)))
+  );
+
+  const persistentRequirements = input.packet.evaluation.results
+    .filter((result) => result.status !== "satisfied")
+    .filter((result) => !changedRequirementKeys.has(requirementComparisonKey(result)))
+    .map((result) => ({
+      category: "requirement" as const,
+      acai_id: requirementComparisonKey(result),
+      current_status: result.status,
+      summary: `${requirementComparisonKey(result)} remains ${result.status}.`,
+      evidence: [comparisonEvidence(input, `Current packet still reports ${requirementComparisonKey(result)} as ${result.status}.`, requirementComparisonKey(result))]
+    }));
+
+  const persistentRisks = input.packet.risks.items
+    .filter((risk) => !newRiskKeys.has(comparisonRiskKey(risk)))
+    .map((risk) => ({
+      category: "risk" as const,
+      severity: risk.severity,
+      summary: `Risk still open: ${comparisonRiskKey(risk)}.`,
+      evidence: [comparisonEvidence(input, `Current packet still reports risk ${comparisonRiskKey(risk)}.`)]
+    }));
+
+  const persistentOverreach = [...currentOverreachPaths]
+    .filter((filePath) => !newOverreachPaths.has(filePath))
+    .map((filePath) => ({
+      category: "overreach" as const,
+      path: filePath,
+      summary: `Overreach still open: ${filePath}.`,
+      evidence: [comparisonEvidence(input, `Current packet still reports overreach for ${filePath}.`)]
+    }));
+
+  return [...persistentRequirements, ...persistentRisks, ...persistentOverreach]
+    .sort((left, right) => compareStrings(`${left.category}:${left.summary}`, `${right.category}:${right.summary}`))
+    .slice(0, 12)
+    .map((item, index) => ({ id: `SLR-STILL-OPEN-${String(index + 1).padStart(3, "0")}`, ...item }));
+}
+
+function comparisonEvidence(input: BuildHumanReviewInput, note: string, acaiId?: string): EvidenceRef {
+  return {
+    kind: "file",
+    path: input.packetPath ?? ".review-surfaces/review_packet.json",
+    acai_id: acaiId,
+    note,
+    confidence: "high",
+    validation_status: "valid"
+  };
+}
+
+function requirementComparisonKey(result: { acai_id?: string; requirement_id?: string }): string {
+  return result.acai_id || result.requirement_id || "unmapped";
+}
+
+function trimSentenceEnd(value: string): string {
+  return value.replace(/[.!?]+$/u, "");
 }
 
 function buildVerdict(input: BuildHumanReviewInput, blockers: ReviewBlocker[], trustAudit: TrustAudit): HumanReviewVerdict {

@@ -10,6 +10,7 @@ import {
   renderHumanReviewMarkdown,
   renderRiskLensesMarkdown,
   renderReviewQueueMarkdown,
+  renderSinceLastReviewMarkdown,
   writeHumanReviewArtifacts
 } from "../src/human/render";
 import { ReviewPacket } from "../src/render/packet";
@@ -303,6 +304,133 @@ test("human review model is schema-valid and starts with deterministic readiness
   assert.equal(validation.valid, true, JSON.stringify(validation.issues));
 });
 
+test("since-last-review model turns packet comparison into reviewer-focused deltas", () => {
+  const packet = packetFixture();
+  packet.dogfood = {
+    milestone: "M6",
+    command: "review-surfaces all --previous-packet .review-surfaces-prev",
+    summary: "comparison fixture",
+    previous_packet_path: ".review-surfaces-prev/review_packet.json",
+    comparison: {
+      status_changes: [
+        {
+          acai_id: "review-surfaces.PROVIDERS.6",
+          previous_status: "missing",
+          current_status: "partial",
+          direction: "improved"
+        },
+        {
+          acai_id: "review-surfaces.SCHEMA.1",
+          previous_status: "satisfied",
+          current_status: "partial",
+          direction: "regressed"
+        }
+      ],
+      new_overreach: ["src/new-overreach.ts"],
+      resolved_overreach: ["src/old-overreach.ts"],
+      new_risks: ["security: Brand new risk"],
+      resolved_risks: ["testing: Gone risk"],
+      count_deltas: {
+        satisfied: { before: 1, after: 0, delta: -1 },
+        partial: { before: 0, after: 2, delta: 2 },
+        missing: { before: 1, after: 0, delta: -1 },
+        unknown: { before: 0, after: 0, delta: 0 },
+        invalid_evidence: { before: 0, after: 0, delta: 0 }
+      }
+    },
+    findings: []
+  };
+  packet.evaluation.results.push(
+    {
+      requirement_id: "REQ-PROVIDERS-6",
+      acai_id: "review-surfaces.PROVIDERS.6",
+      status: "partial",
+      summary: "Provider secret boundary partially covered.",
+      evidence: [fileEvidence(".github/workflows/review-surfaces-pr.yml", "Workflow fixture.")],
+      missing_evidence: [missingEvidence("Manual check still required.")],
+      review_focus: "Review CI secret boundary.",
+      confidence: "medium"
+    },
+    {
+      requirement_id: "REQ-SCHEMA-1",
+      acai_id: "review-surfaces.SCHEMA.1",
+      status: "partial",
+      summary: "Schema compatibility fixture missing.",
+      evidence: [fileEvidence("schemas/human_review.schema.json", "Schema changed.")],
+      missing_evidence: [missingEvidence("Previous artifact fixture missing.")],
+      review_focus: "Review schema compatibility.",
+      confidence: "medium"
+    }
+  );
+  packet.evaluation.overreach = [
+    {
+      requirement_id: "OVERREACH-001",
+      status: "overreach",
+      summary: "Still-open overreach",
+      evidence: [fileEvidence("src/still-overreach.ts", "Overreach still present.")],
+      missing_evidence: [],
+      review_focus: "Review persistent overreach.",
+      confidence: "medium"
+    },
+    {
+      requirement_id: "OVERREACH-002",
+      status: "overreach",
+      summary: "New overreach",
+      evidence: [fileEvidence("src/new-overreach.ts", "New overreach.")],
+      missing_evidence: [],
+      review_focus: "Review new overreach.",
+      confidence: "medium"
+    }
+  ];
+  packet.risks.items.push({
+    id: "RISK-NEW",
+    category: "security",
+    severity: "high",
+    summary: "Brand new risk",
+    evidence: [fileEvidence("src/security.ts", "New risk evidence.")],
+    suggested_checks: ["Review the new risk."]
+  });
+
+  const model = buildHumanReview({ packet, packetPath: ".review-surfaces/review_packet.json" });
+  const since = model.since_last_review;
+
+  assert.equal(since.previous_packet_path, ".review-surfaces-prev/review_packet.json");
+  assert.equal(since.improved[0].acai_id, "review-surfaces.PROVIDERS.6");
+  assert.equal(since.regressed[0].acai_id, "review-surfaces.SCHEMA.1");
+  assert.equal(since.new_risks[0].summary, "New risk since last review: security: Brand new risk.");
+  assert.equal(since.new_risks[0].severity, "high");
+  assert.equal(since.resolved_risks[0].summary, "Resolved risk since last review: testing: Gone risk.");
+  assert.equal(since.new_overreach[0].path, "src/new-overreach.ts");
+  assert.equal(since.resolved_overreach[0].path, "src/old-overreach.ts");
+  assert.ok(since.still_open.some((item) => item.summary.includes("review-surfaces.HUMAN_REVIEW.1 remains partial")));
+  assert.ok(since.still_open.some((item) => item.summary.includes("testing: Human review has weak test evidence")));
+  assert.ok(since.still_open.some((item) => item.path === "src/still-overreach.ts"));
+  assert.ok([...since.improved, ...since.regressed, ...since.new_risks, ...since.still_open].every((item) => item.evidence.length > 0));
+
+  const humanMarkdown = renderHumanReviewMarkdown(model);
+  assert.match(humanMarkdown, /## Since last review/);
+  assert.match(humanMarkdown, /1 improved requirement\(s\), 1 regressed requirement\(s\)/);
+
+  const sinceMarkdown = renderSinceLastReviewMarkdown(model);
+  assert.match(sinceMarkdown, /^# Since Last Review/);
+  assert.match(sinceMarkdown, /## Improved/);
+  assert.match(sinceMarkdown, /review-surfaces\.PROVIDERS\.6: missing -> partial/);
+  assert.match(sinceMarkdown, /## Still open/);
+  assert.match(sinceMarkdown, /src\/still-overreach\.ts/);
+
+  const validation = validateJsonSchema(schema, model);
+  assert.equal(validation.valid, true, JSON.stringify(validation.issues));
+});
+
+test("since-last-review degrades cleanly when no previous packet was supplied", () => {
+  const model = buildHumanReview({ packet: packetFixture() });
+
+  assert.match(model.since_last_review.unavailable_reason ?? "", /No previous packet was supplied/);
+  assert.deepEqual(model.since_last_review.improved, []);
+  assert.match(renderHumanReviewMarkdown(model), /No previous packet was supplied/);
+  assert.match(renderSinceLastReviewMarkdown(model), /No previous packet path recorded/);
+});
+
 test("human review Markdown renders a compact cockpit surface", () => {
   const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
   const markdown = renderHumanReviewMarkdown(model);
@@ -313,6 +441,7 @@ test("human review Markdown renders a compact cockpit surface", () => {
   assert.match(markdown, /## Review first/);
   assert.match(markdown, /\.github\/workflows\/pr-review-comment\.yml/);
   assert.match(markdown, /Hunk: `@@ -10,3 \+10,5 @@`/);
+  assert.match(markdown, /## Since last review/);
   assert.match(markdown, /## Trust audit/);
   assert.match(markdown, /Claimed but not verified/);
   assert.match(markdown, /## Risk lenses/);
@@ -1461,12 +1590,14 @@ test("human review schema accepts prior v1 artifacts without optional fields", (
   const model = JSON.parse(JSON.stringify(buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture() }))) as Record<string, unknown>;
   delete model.feedback_effects;
   delete model.risk_lens_findings;
+  delete model.since_last_review;
 
   const result = validateJsonSchema(schema, model);
 
   assert.equal(result.valid, true);
   assert.match(renderHumanReviewMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /No domain risk lenses fired/);
   assert.match(renderRiskLensesMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /No domain risk lenses fired/);
+  assert.match(renderSinceLastReviewMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /generated before since-last-review support/);
 });
 
 test("human trust gaps suggest human review tests, not PR tests from incidental substrings", () => {

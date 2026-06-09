@@ -184,7 +184,7 @@ test("a review packet with the wrong schema_version fails schema validation", ()
   assert.equal(result.valid, false);
 });
 
-test("human review schema remains compatible with prior v1 artifacts without risk lenses", () => {
+test("human review schema remains compatible with prior v1 artifacts without optional human slices", () => {
   const priorV1HumanReview = {
     schema_version: "review-surfaces.human_review.v1",
     mode: "pr",
@@ -217,6 +217,94 @@ test("human review schema remains compatible with prior v1 artifacts without ris
   };
 
   const result = validateJsonSchema(humanReviewSchema, priorV1HumanReview);
+  assert.equal(result.valid, true, JSON.stringify(result.issues));
+});
+
+test("human review schema validates since-last-review comparison slices", () => {
+  const humanReview = {
+    schema_version: "review-surfaces.human_review.v1",
+    mode: "pr",
+    verdict: {
+      decision: "reviewable_with_attention",
+      confidence: "medium",
+      reasons: []
+    },
+    summary: "Since-last-review schema fixture.",
+    review_queue: [],
+    blockers: [],
+    questions: [],
+    suggested_comments: [],
+    trust_audit: {
+      verified_facts: [],
+      claimed_not_verified: [],
+      missing_evidence: [],
+      invalid_evidence: [],
+      confidence_summary: "Fixture."
+    },
+    since_last_review: {
+      previous_packet_path: ".review-surfaces-prev/review_packet.json",
+      improved: [
+        {
+          id: "SLR-IMPROVED-001",
+          category: "requirement",
+          summary: "review-surfaces.HUMAN_REVIEW.11 improved.",
+          acai_id: "review-surfaces.HUMAN_REVIEW.11",
+          previous_status: "missing",
+          current_status: "partial",
+          direction: "improved",
+          evidence: [
+            {
+              kind: "file",
+              path: ".review-surfaces/review_packet.json",
+              acai_id: "review-surfaces.HUMAN_REVIEW.11",
+              confidence: "high",
+              validation_status: "valid"
+            }
+          ]
+        }
+      ],
+      regressed: [],
+      new_risks: [
+        {
+          id: "SLR-NEW-RISK-001",
+          category: "risk",
+          summary: "New risk since last review.",
+          severity: "medium",
+          evidence: [{ kind: "file", path: ".review-surfaces/review_packet.json", confidence: "high", validation_status: "valid" }]
+        }
+      ],
+      resolved_risks: [],
+      new_overreach: [],
+      resolved_overreach: [],
+      still_open: [
+        {
+          id: "SLR-STILL-OPEN-001",
+          category: "overreach",
+          summary: "Overreach still open.",
+          path: "src/still-open.ts",
+          evidence: [{ kind: "file", path: ".review-surfaces/review_packet.json", confidence: "high", validation_status: "valid" }]
+        }
+      ],
+      count_deltas: {
+        satisfied: { before: 1, after: 1, delta: 0 },
+        partial: { before: 0, after: 1, delta: 1 },
+        missing: { before: 1, after: 0, delta: -1 },
+        unknown: { before: 0, after: 0, delta: 0 },
+        invalid_evidence: { before: 0, after: 0, delta: 0 }
+      }
+    },
+    test_plan: [],
+    skim_safe: [],
+    generated_from: {
+      packet_path: ".review-surfaces/review_packet.json",
+      pr_surface_path: ".review-surfaces/pr_review_surface.json",
+      base_ref: "origin/main",
+      head_ref: "HEAD",
+      head_sha: "abc123"
+    }
+  };
+
+  const result = validateJsonSchema(humanReviewSchema, humanReview);
   assert.equal(result.valid, true, JSON.stringify(result.issues));
 });
 

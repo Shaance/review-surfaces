@@ -286,11 +286,15 @@ function computeRiskChanges(
 function riskKeys(items: Array<{ id?: string; category?: string; summary?: string }>): Set<string> {
   const keys = new Set<string>();
   for (const item of items) {
-    const category = item.category ?? "";
-    const summary = item.summary ?? "";
-    keys.add(`${category}: ${summary}`);
+    keys.add(comparisonRiskKey(item));
   }
   return keys;
+}
+
+export function comparisonRiskKey(item: { category?: string; summary?: string }): string {
+  const category = item.category ?? "";
+  const summary = item.summary ?? "";
+  return `${category}: ${summary}`;
 }
 
 function computeCountDeltas(previous: EvaluationModel, current: EvaluationModel): CountDeltas {
