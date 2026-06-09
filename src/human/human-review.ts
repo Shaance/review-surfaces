@@ -159,6 +159,7 @@ const MAX_RISK_LENS_PATHS = 12;
 const MAX_FOCUSED_REQUIREMENT_TESTS = 6;
 const MAX_CHANGED_FILE_QUEUE = 8;
 const MAX_FEEDBACK_EFFECTS = 12;
+const MAX_MISSING_TEAM_POLICY_QUESTION_EFFECTS = 3;
 const FEEDBACK_ACTION_DOWNGRADE_TO_LOW = "downgrade_to_low";
 const FEEDBACK_ACTION_RETAIN_LOW_PRIORITY = "retain_low_priority";
 const FEEDBACK_ACTION_PRIORITIZE_REVIEW_FOCUS = "prioritize_review_focus";
@@ -2150,11 +2151,11 @@ function dedupeFeedbackEffects(drafts: FeedbackPolicyEffectDraft[]): FeedbackPol
 }
 
 function boundedMissingTeamPolicyEffects(drafts: FeedbackPolicyEffectDraft[]): FeedbackPolicyEffectDraft[] {
-  if (drafts.length <= MAX_FEEDBACK_EFFECTS) {
+  if (drafts.length <= MAX_MISSING_TEAM_POLICY_QUESTION_EFFECTS) {
     return drafts;
   }
-  const visible = drafts.slice(0, MAX_FEEDBACK_EFFECTS - 1);
-  const overflow = drafts.slice(MAX_FEEDBACK_EFFECTS - 1);
+  const visible = drafts.slice(0, MAX_MISSING_TEAM_POLICY_QUESTION_EFFECTS - 1);
+  const overflow = drafts.slice(MAX_MISSING_TEAM_POLICY_QUESTION_EFFECTS - 1);
   return [foldMissingTeamPolicyEffects(overflow), ...visible];
 }
 
@@ -2692,7 +2693,7 @@ function buildTestPlan(
 
   for (const [index, effect] of feedbackEffects.filter(isMissingTeamPolicyEffect).entries()) {
     candidates.push({
-      sourceRank: 5,
+      sourceRank: -1,
       sortKey: rankedSortKey(index, effect.id),
       draft: {
         kind: "manual",
@@ -3564,7 +3565,7 @@ function questionSeverityForRisk(severity: PacketSeverity): ReviewerQuestion["se
 }
 
 function hasRecordedCiSecretBoundaryManualCheck(input: BuildHumanReviewInput): boolean {
-  return recordedManualCheckRecords(input).some((record) => looksLikeRecordedCiSecretBoundaryManualCheck(record.text));
+  return recordedManualCheckRecords(input, { includeCommandEvidence: false }).some((record) => looksLikeRecordedCiSecretBoundaryManualCheck(record.text));
 }
 
 function recordedManualCheckEvidence(input: BuildHumanReviewInput, requiredManualCheck: string): EvidenceRef[] {
@@ -3584,12 +3585,12 @@ function recordedManualCheckEvidence(input: BuildHumanReviewInput, requiredManua
   return [];
 }
 
-function recordedManualCheckRecords(input: BuildHumanReviewInput): ManualCheckRecord[] {
+function recordedManualCheckRecords(input: BuildHumanReviewInput, options: { includeCommandEvidence?: boolean } = {}): ManualCheckRecord[] {
   const headSha = currentHeadSha(input);
   return [
     ...input.packet.risks.test_evidence
       .filter((item) => item.kind === "direct" || item.kind === "indirect")
-      .flatMap((item) => manualCheckEvidenceRecords(item.evidence ?? [], headSha)),
+      .flatMap((item) => manualCheckEvidenceRecords(item.evidence ?? [], headSha, options)),
     ...(input.feedback ?? [])
       .filter((feedbackFile) => feedbackFileAppliesToHead(feedbackFile, headSha))
       .flatMap((feedbackFile) =>
@@ -3648,11 +3649,15 @@ function currentHeadSha(input: BuildHumanReviewInput): string {
   return input.prSurface?.scope.head_sha ?? stringOr(manifest.head_sha, "unknown");
 }
 
-function manualCheckEvidenceRecords(evidence: EvidenceRef[], headSha: string): ManualCheckRecord[] {
+function manualCheckEvidenceRecords(
+  evidence: EvidenceRef[],
+  headSha: string,
+  options: { includeCommandEvidence?: boolean } = {}
+): ManualCheckRecord[] {
   if (headSha === "unknown") {
     return [];
   }
-  return evidence
+  const feedbackRecords = evidence
     .filter((ref) => ref.kind === "feedback" && ref.validation_status !== "invalid" && ref.sha === headSha)
     .flatMap((ref) =>
       compactStrings([ref.note]).map((text) => ({
@@ -3660,6 +3665,15 @@ function manualCheckEvidenceRecords(evidence: EvidenceRef[], headSha: string): M
         evidence: [ref]
       }))
     );
+  const commandRecords = options.includeCommandEvidence === false ? [] : evidence
+    .filter((ref) => ref.kind === "command" && ref.validation_status === "valid")
+    .flatMap((ref) =>
+      compactStrings([ref.command, ref.note]).map((text) => ({
+        text,
+        evidence: [ref]
+      }))
+    );
+  return [...feedbackRecords, ...commandRecords];
 }
 
 function focusedRequirementGaps(input: BuildHumanReviewInput): RequirementGap[] {

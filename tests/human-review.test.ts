@@ -1713,7 +1713,7 @@ test("missing configured manual checks are not dropped by the feedback cap", () 
   assert.equal(model.test_plan.some((item) => item.kind === "manual" && item.priority === "required" && item.maps_to_risks.includes("config:missing_docs_contract")), true);
 });
 
-test("missing configured manual checks stay bounded with an overflow signal", () => {
+test("missing configured manual checks fold before blocker and question caps", () => {
   const packet = packetFixture();
   packet.evaluation.results = [];
   packet.evaluation.acai_coverage = {};
@@ -1733,7 +1733,7 @@ test("missing configured manual checks stay bounded with an overflow signal", ()
       deleted_lines: 0
     }
   ];
-  const missingChecks = Array.from({ length: 13 }, (_, index) => ({
+  const missingChecks = Array.from({ length: 5 }, (_, index) => ({
     id: `missing_${String(index).padStart(2, "0")}`,
     path_patterns: ["docs/**"],
     prompt: `Confirm required manual check ${String(index).padStart(2, "0")} before approval.`
@@ -1748,11 +1748,158 @@ test("missing configured manual checks stay bounded with an overflow signal", ()
     }
   });
 
-  assert.equal(model.feedback_effects.length, 12);
-  assert.equal(model.feedback_effects[0].risk_ids.includes("config:missing_12"), true);
+  assert.equal(model.feedback_effects.length, 3);
+  assert.equal(model.feedback_effects[0].risk_ids.includes("config:missing_04"), true);
   assert.match(model.feedback_effects[0].summary, /additional configured manual check/);
   assert.equal(model.blockers.some((blocker) => blocker.required_action.includes("additional configured required manual check")), true);
-  assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("config:missing_12")), true);
+  assert.equal(model.questions.some((question) => question.maps_to_risks.includes("config:missing_04")), true);
+  assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("config:missing_04")), true);
+});
+
+test("missing configured manual checks stay bounded with more than twelve policies", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files = [
+    {
+      path: "docs/notes.md",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "doc",
+      added_lines: 1,
+      deleted_lines: 0
+    }
+  ];
+
+  const model = buildHumanReview({
+    packet,
+    prSurface: surface,
+    config: {
+      ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+      required_manual_checks: Array.from({ length: 13 }, (_, index) => ({
+        id: `wide_${String(index).padStart(2, "0")}`,
+        path_patterns: ["docs/**"],
+        prompt: `Confirm wide required manual check ${String(index).padStart(2, "0")} before approval.`
+      }))
+    }
+  });
+
+  assert.ok(model.feedback_effects.length <= 12);
+  assert.equal(model.feedback_effects[0].risk_ids.includes("config:wide_12"), true);
+});
+
+test("configured required manual checks reserve required test-plan space", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = Array.from({ length: 6 }, (_, index) => ({
+    requirement_id: `REQ-HUMAN-CAP-${index}`,
+    acai_id: `review-surfaces.HUMAN_REVIEW.CAP_${index}`,
+    status: "missing" as const,
+    summary: `Missing focused requirement ${index}.`,
+    evidence: [fileEvidence(`src/human/cap-${index}.ts`, "Focused gap.")],
+    missing_evidence: [missingEvidence("Needs direct test evidence.")],
+    review_focus: "Add focused validation.",
+    confidence: "medium" as const
+  }));
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const requiredRules: PrRiskRule[] = [
+    "coverage_regression",
+    "untested_changed_impl",
+    "privacy_sensitive_change",
+    "ci_secret_boundary_change",
+    "schema_contract_change",
+    "failed_or_skipped_test"
+  ];
+  const surface = prSurfaceFixture();
+  surface.scope.changed_files = [
+    {
+      path: "docs/notes.md",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "doc",
+      added_lines: 1,
+      deleted_lines: 0
+    }
+  ];
+  surface.risks.candidates = requiredRules.map((rule, index) => ({
+    ...prRiskFixture(rule),
+    id: `PR-RISK-CAP-${index}`,
+    evidence: [fileEvidence(`src/human/risk-${index}.ts`, "Required risk.")]
+  }));
+
+  const model = buildHumanReview({
+    packet,
+    prSurface: surface,
+    config: {
+      ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+      required_manual_checks: [
+        {
+          id: "docs_required_check",
+          path_patterns: ["docs/**"],
+          prompt: "Confirm documentation changes do not alter product contract unexpectedly."
+        }
+      ]
+    }
+  });
+
+  assert.equal(model.test_plan.length, 12);
+  assert.equal(model.test_plan[0].maps_to_risks.includes("config:docs_required_check"), true);
+});
+
+test("configured required manual checks clear from command transcript evidence", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+  packet.risks.test_evidence.push({
+    id: "TEST-CONFIG-MANUAL-CHECK-CMD",
+    kind: "indirect",
+    summary: "Configured manual check recorded through command transcript.",
+    evidence: [
+      commandEvidence(
+        "manual-check --note 'Manual check recorded: Confirm documentation changes do not alter product contract unexpectedly.'",
+        "Command transcript recorded a manual check.",
+        "high",
+        {
+          path: ".review-surfaces/inputs/commands.json",
+          eventId: "CMD-MANUAL-CHECK",
+          validationStatus: "valid"
+        }
+      )
+    ]
+  });
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+
+  const model = buildHumanReview({
+    packet,
+    prSurface: surface,
+    config: {
+      ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+      required_manual_checks: [
+        {
+          id: "docs_product_contract",
+          path_patterns: ["docs/**"],
+          prompt: "Confirm documentation changes do not alter product contract unexpectedly."
+        }
+      ]
+    }
+  });
+
+  assert.equal(model.feedback_effects.some((effect) => effect.kind === "team_policy" && effect.action.startsWith("Manual check recorded:")), true);
+  assert.equal(model.blockers.some((blocker) => blocker.required_action.includes("Confirm documentation changes do not alter product contract unexpectedly.")), false);
 });
 
 test("path-scoped false-positive feedback does not downgrade mixed-path risk evidence", () => {
