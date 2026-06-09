@@ -111,6 +111,75 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
       assert.match(focusedBody, new RegExp(`^${artifact.heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
       assert.match(focusedBody, new RegExp(marker));
     }
+    fs.writeFileSync(
+      path.join(tmp, ".review-surfaces", "inputs", "feedback.index.json"),
+      JSON.stringify(
+        {
+          schema_version: "review-surfaces.feedback.index.v1",
+          feedback: [
+            {
+              path: ".review-surfaces/feedback/memory.yaml",
+              schema_version: "review-surfaces.feedback.v1",
+              author: "local",
+              head_sha: surface.scope.head_sha,
+              findings: [],
+              validation: {
+                passed: [],
+                failed: [],
+                notes: ["Manual check recorded: Confirm rendered comment was inspected."]
+              },
+              false_positives: [],
+              false_negatives: [],
+              team_policy: [
+                {
+                  id: "POLICY-RENDER-001",
+                  path_pattern: CHANGED,
+                  required_manual_check: "Confirm rendered comment was inspected.",
+                  evidence: [
+                    {
+                      kind: "feedback",
+                      path: ".review-surfaces/feedback/memory.yaml",
+                      event_id: "POLICY-RENDER-001",
+                      note: "Feedback team policy POLICY-RENDER-001.",
+                      confidence: "high",
+                      validation_status: "valid"
+                    }
+                  ]
+                }
+              ],
+              reviewer_preferences: [
+                {
+                  key: "always_prioritize",
+                  value: [CHANGED],
+                  evidence: [
+                    {
+                      kind: "feedback",
+                      path: ".review-surfaces/feedback/memory.yaml",
+                      event_id: "reviewer_preference:1",
+                      note: "Feedback reviewer preference always_prioritize.",
+                      confidence: "high",
+                      validation_status: "valid"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        null,
+        2
+      )
+    );
+    const humanRebuild = runCli(tmp, ["human", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(humanRebuild.status, 0, humanRebuild.stderr);
+    const rebuiltHuman = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    const rebuiltHumanMarkdown = fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.md"), "utf8");
+    assert.equal(validateJsonSchema(HUMAN_REVIEW_SCHEMA, rebuiltHuman).valid, true);
+    assert.equal(rebuiltHuman.feedback_effects.some((effect: { kind: string; action: string; paths: string[] }) => effect.kind === "reviewer_preference" && effect.paths.includes(CHANGED)), true);
+    assert.equal(rebuiltHuman.feedback_effects.some((effect: { kind: string; action: string }) => effect.kind === "team_policy" && effect.action.startsWith("Manual check recorded:")), true);
+    assert.equal(rebuiltHuman.blockers.some((blocker: { id: string }) => blocker.id === "BLOCK-FEEDBACK-001"), false);
+    assert.match(rebuiltHumanMarkdown, /## Feedback memory/);
+    assert.match(rebuiltHumanMarkdown, /always_prioritize/);
     assert.equal(surface.mode, "pr");
     // Scoped to the actual change, NOT the whole repo.
     assert.ok(surface.scope.changed_files.some((f: { path: string }) => f.path === CHANGED), "the changed file is in scope");

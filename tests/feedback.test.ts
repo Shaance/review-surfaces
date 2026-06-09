@@ -49,6 +49,48 @@ validation:
   assert.deepEqual(feedback[0].validation.failed, ["pnpm run lint"]);
 });
 
+test("indexes reviewer feedback memory policies from local feedback files", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-feedback-memory-"));
+  fs.mkdirSync(path.join(tmp, ".review-surfaces", "feedback"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, ".review-surfaces", "feedback", "memory.yaml"),
+    `schema_version: review-surfaces.feedback.v1
+reviewer: local
+created_at: 2026-06-08T00:00:00.000Z
+false_positives:
+  - rule: large_diff
+    path_pattern: pnpm-lock.yaml
+    condition: lockfile_only
+    action: downgrade_to_low
+false_negatives:
+  - description: Schema changes should always ask for compatibility tests.
+    path_pattern: schemas/**/*.json
+    desired_rule: schema_contract_change
+team_policy:
+  - id: POLICY-CI-SECRET-001
+    trigger:
+      path_pattern: .github/workflows/*.yml
+    required_manual_check: Confirm PR-controlled code cannot access secrets.
+reviewer_preferences:
+  - always_prioritize:
+      - docs/review-surfaces-trd.md
+  - max_top_review_items: 7
+`
+  );
+
+  const feedback = await indexFeedbackFiles(tmp, [".review-surfaces/feedback/memory.yaml"]);
+
+  assert.equal(feedback[0].author, "local");
+  assert.equal(feedback[0].false_positives[0]?.rule, "large_diff");
+  assert.equal(feedback[0].false_positives[0]?.path_pattern, "pnpm-lock.yaml");
+  assert.equal(feedback[0].false_negatives[0]?.desired_rule, "schema_contract_change");
+  assert.equal(feedback[0].team_policy[0]?.id, "POLICY-CI-SECRET-001");
+  assert.equal(feedback[0].team_policy[0]?.path_pattern, ".github/workflows/*.yml");
+  assert.equal(feedback[0].reviewer_preferences[0]?.key, "always_prioritize");
+  assert.deepEqual(feedback[0].reviewer_preferences[0]?.value, ["docs/review-surfaces-trd.md"]);
+  assert.equal(feedback[0].reviewer_preferences[1]?.key, "max_top_review_items");
+});
+
 test("risk analysis maps feedback validation to claimed, indirect, and missing test evidence", () => {
   const collection = {
     changedFiles: [],

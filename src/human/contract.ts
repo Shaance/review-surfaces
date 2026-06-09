@@ -21,6 +21,9 @@ export type ReviewerQuestionSeverity = (typeof REVIEWER_QUESTION_SEVERITIES)[num
 export const SUGGESTED_COMMENT_SEVERITIES = ["blocking", "clarifying", "non_blocking"] as const;
 export type SuggestedCommentSeverity = (typeof SUGGESTED_COMMENT_SEVERITIES)[number];
 
+export const FEEDBACK_POLICY_EFFECT_KINDS = ["false_positive", "false_negative", "team_policy", "reviewer_preference"] as const;
+export type FeedbackPolicyEffectKind = (typeof FEEDBACK_POLICY_EFFECT_KINDS)[number];
+
 export interface HumanReviewVerdictReason {
   id: string;
   severity: PacketSeverity;
@@ -141,6 +144,17 @@ export interface SkimSafeItem {
   confidence: PacketConfidence;
 }
 
+export interface FeedbackPolicyEffect {
+  id: string;
+  kind: FeedbackPolicyEffectKind;
+  summary: string;
+  action: string;
+  evidence: EvidenceRef[];
+  paths: string[];
+  risk_ids: string[];
+  confidence: PacketConfidence;
+}
+
 export interface HumanReviewModel {
   schema_version: typeof HUMAN_REVIEW_SCHEMA_VERSION;
   mode: "pr" | "repo";
@@ -153,6 +167,7 @@ export interface HumanReviewModel {
   trust_audit: TrustAudit;
   test_plan: TestPlanItem[];
   skim_safe: SkimSafeItem[];
+  feedback_effects: FeedbackPolicyEffect[];
   generated_from: {
     packet_path: string;
     pr_surface_path?: string;

@@ -20,6 +20,7 @@ import { effectiveModelId, enrichPacket, parseProviderName, providerFor, Provide
 import { buildMethodology } from "../methodology/methodology";
 import { buildReviewAreas } from "../review-areas/areas";
 import { RisksModel } from "../risks/risks";
+import type { FeedbackFile } from "../feedback/feedback";
 import { splitTestOutputPaths } from "../tests-evidence/junit";
 import {
   createReviewPacket,
@@ -633,7 +634,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       console.warn(`PR review surface blocked (${persistedSurface.blocked_reason}); see pr_review_surface.json`);
     }
   }
-  await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff);
+  await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff, collection.feedback);
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
@@ -1064,13 +1065,13 @@ async function buildHumanReviewFromArtifacts(
       );
       return {
         outputDir,
-        model: buildHumanReviewForPacket(cwd, outputDir, packet)
+        model: buildHumanReviewForPacket(cwd, outputDir, packet, undefined, undefined, readHumanReviewFeedback(outputDir))
       };
     }
   }
   return {
     outputDir,
-    model: buildHumanReviewForPacket(cwd, outputDir, packet, surface)
+    model: buildHumanReviewForPacket(cwd, outputDir, packet, surface, undefined, readHumanReviewFeedback(outputDir))
   };
 }
 
@@ -1079,12 +1080,14 @@ function buildHumanReviewForPacket(
   outDir: string,
   packet: ReviewPacket,
   prSurface?: PrReviewSurfaceModel,
-  diff?: StructuredDiff
+  diff?: StructuredDiff,
+  feedback?: FeedbackFile[]
 ): HumanReviewModel {
   const humanReview = buildHumanReview({
     packet,
     prSurface,
     diff: diff ?? readHumanReviewDiff(outDir),
+    feedback,
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
@@ -1102,14 +1105,25 @@ function readHumanReviewDiff(outDir: string): StructuredDiff | undefined {
   }
 }
 
+function readHumanReviewFeedback(outDir: string): FeedbackFile[] | undefined {
+  const feedbackIndexPath = path.join(outDir, "inputs", "feedback.index.json");
+  try {
+    const parsed = JSON.parse(fs.readFileSync(feedbackIndexPath, "utf8")) as { feedback?: unknown };
+    return Array.isArray(parsed.feedback) ? parsed.feedback as FeedbackFile[] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function writeHumanReviewForPacket(
   cwd: string,
   outDir: string,
   packet: ReviewPacket,
   prSurface?: PrReviewSurfaceModel,
-  diff?: StructuredDiff
+  diff?: StructuredDiff,
+  feedback?: FeedbackFile[]
 ): Promise<HumanReviewModel> {
-  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface, diff);
+  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface, diff, feedback);
   await writeHumanReviewArtifacts(outDir, humanReview);
   return humanReview;
 }

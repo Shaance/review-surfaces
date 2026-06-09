@@ -93,6 +93,12 @@
         "$ref": "#/$defs/skimSafeItem"
       }
     },
+    "feedback_effects": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/feedbackEffect"
+      }
+    },
     "generated_from": {
       "type": "object",
       "additionalProperties": true,
@@ -408,6 +414,32 @@
         "evidence": {
           "type": "array",
           "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    },
+    "feedbackEffect": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "kind", "summary", "action", "evidence", "paths", "risk_ids", "confidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": {
+          "enum": ["false_positive", "false_negative", "team_policy", "reviewer_preference"]
+        },
+        "summary": { "type": "string" },
+        "action": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "paths": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "risk_ids": {
+          "type": "array",
+          "items": { "type": "string" }
         },
         "confidence": { "$ref": "#/$defs/confidence" }
       }
