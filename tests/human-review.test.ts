@@ -1605,6 +1605,156 @@ test("configured required manual checks block until current-head evidence record
   assert.equal(recorded.test_plan.some((item) => item.maps_to_risks.includes("config:docs_product_contract")), false);
 });
 
+test("configured required manual checks match renamed source paths", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files = [
+    {
+      path: "docs/deploy-workflow.md",
+      old_path: ".github/workflows/deploy.yml",
+      status: "R",
+      areas: ["HUMAN_REVIEW"],
+      role: "doc",
+      added_lines: 4,
+      deleted_lines: 4
+    }
+  ];
+
+  const model = buildHumanReview({
+    packet,
+    prSurface: surface,
+    config: {
+      ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+      required_manual_checks: [
+        {
+          id: "renamed_workflow_boundary",
+          path_patterns: [".github/workflows/**"],
+          prompt: "Confirm renamed workflow files preserve the CI secret boundary."
+        }
+      ]
+    }
+  });
+
+  const effect = model.feedback_effects.find((item) => item.risk_ids.includes("config:renamed_workflow_boundary"));
+  assert.ok(effect);
+  assert.equal(effect.paths.includes("docs/deploy-workflow.md"), true);
+  assert.equal(effect.paths.includes(".github/workflows/deploy.yml"), true);
+  assert.equal(model.blockers.some((blocker) => blocker.required_action.includes("Confirm renamed workflow files preserve the CI secret boundary.")), true);
+});
+
+test("missing configured manual checks are not dropped by the feedback cap", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const recordedChecks = Array.from({ length: 12 }, (_, index) => ({
+    id: `recorded_${String(index).padStart(2, "0")}`,
+    path_patterns: ["docs/**"],
+    prompt: `Verify dependency boundary remains isolated from untrusted code slot ${String(index).padStart(2, "0")}`
+  }));
+  for (const check of recordedChecks) {
+    packet.risks.test_evidence.push({
+      id: `TEST-${check.id.toUpperCase()}`,
+      kind: "indirect",
+      summary: "Configured manual check recorded.",
+      evidence: [
+        feedbackEvidence(
+          ".review-surfaces/feedback/manual-dogfood.yaml",
+          `Manual check recorded: ${check.prompt}`,
+          { sha: "abc123" }
+        )
+      ]
+    });
+  }
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files = [
+    {
+      path: "docs/notes.md",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "doc",
+      added_lines: 1,
+      deleted_lines: 0
+    }
+  ];
+
+  const missingPrompt = "Confirm documentation changes do not alter product contract unexpectedly.";
+  const model = buildHumanReview({
+    packet,
+    prSurface: surface,
+    config: {
+      ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+      required_manual_checks: [
+        ...recordedChecks,
+        {
+          id: "missing_docs_contract",
+          path_patterns: ["docs/**"],
+          prompt: missingPrompt
+        }
+      ]
+    }
+  });
+
+  assert.ok(model.feedback_effects.length <= 12);
+  assert.equal(model.feedback_effects.some((effect) => effect.risk_ids.includes("config:missing_docs_contract")), true);
+  assert.equal(model.blockers.some((blocker) => blocker.required_action.includes(missingPrompt)), true);
+  assert.equal(model.test_plan.some((item) => item.kind === "manual" && item.priority === "required" && item.maps_to_risks.includes("config:missing_docs_contract")), true);
+});
+
+test("missing configured manual checks stay bounded with an overflow signal", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files = [
+    {
+      path: "docs/notes.md",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "doc",
+      added_lines: 1,
+      deleted_lines: 0
+    }
+  ];
+  const missingChecks = Array.from({ length: 13 }, (_, index) => ({
+    id: `missing_${String(index).padStart(2, "0")}`,
+    path_patterns: ["docs/**"],
+    prompt: `Confirm required manual check ${String(index).padStart(2, "0")} before approval.`
+  }));
+
+  const model = buildHumanReview({
+    packet,
+    prSurface: surface,
+    config: {
+      ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+      required_manual_checks: missingChecks
+    }
+  });
+
+  assert.equal(model.feedback_effects.length, 12);
+  assert.equal(model.feedback_effects[0].risk_ids.includes("config:missing_12"), true);
+  assert.match(model.feedback_effects[0].summary, /additional configured manual check/);
+  assert.equal(model.blockers.some((blocker) => blocker.required_action.includes("additional configured required manual check")), true);
+  assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("config:missing_12")), true);
+});
+
 test("path-scoped false-positive feedback does not downgrade mixed-path risk evidence", () => {
   const packet = packetFixture();
   packet.evaluation.results = [];
@@ -1663,6 +1813,64 @@ test("path-scoped false-positive feedback does not downgrade mixed-path risk evi
   assert.equal(queueItem.priority, "high");
   assert.equal(queueItem.reason.includes("Feedback memory downgraded"), false);
   assert.equal(model.feedback_effects.some((effect) => effect.kind === "false_positive" && effect.paths.includes("schemas/generated.schema.json")), true);
+});
+
+test("pathless false-positive feedback can match renamed source paths", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.scope.changed_files = [
+    {
+      path: "docs/generated-schema-notes.md",
+      old_path: "schemas/generated.schema.json",
+      status: "R",
+      areas: ["HUMAN_REVIEW"],
+      role: "doc",
+      added_lines: 2,
+      deleted_lines: 2
+    }
+  ];
+  surface.risks.candidates = [{
+    ...prRiskFixture("schema_contract_change"),
+    id: "PR-RISK-PATHLESS-SCHEMA",
+    severity: "medium",
+    evidence: [missingEvidence("Pathless schema risk.")]
+  }];
+
+  const model = buildHumanReview({
+    packet,
+    prSurface: surface,
+    feedback: [
+      {
+        path: ".review-surfaces/feedback/memory.yaml",
+        schema_version: "review-surfaces.feedback.v1",
+        author: "local",
+        findings: [],
+        validation: { passed: [], failed: [], notes: [] },
+        false_positives: [
+          {
+            rule: "schema_contract_change",
+            path_pattern: "schemas/generated.schema.json",
+            action: "downgrade_to_low",
+            evidence: [feedbackEvidence(".review-surfaces/feedback/memory.yaml", "Generated schema rename is noisy.", { eventId: "false_positive:rename" })]
+          }
+        ],
+        false_negatives: [],
+        team_policy: [],
+        reviewer_preferences: []
+      }
+    ]
+  });
+
+  const effect = model.feedback_effects.find((item) => item.risk_ids.includes("PR-RISK-PATHLESS-SCHEMA"));
+  assert.ok(effect);
+  assert.equal(effect.paths.includes("docs/generated-schema-notes.md"), true);
+  assert.equal(effect.paths.includes("schemas/generated.schema.json"), true);
 });
 
 test("unsupported conditional false-positive feedback is skipped", () => {

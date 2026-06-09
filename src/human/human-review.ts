@@ -158,6 +158,7 @@ const MAX_RISK_LENS_FINDINGS = 12;
 const MAX_RISK_LENS_PATHS = 12;
 const MAX_FOCUSED_REQUIREMENT_TESTS = 6;
 const MAX_CHANGED_FILE_QUEUE = 8;
+const MAX_FEEDBACK_EFFECTS = 12;
 const FEEDBACK_ACTION_DOWNGRADE_TO_LOW = "downgrade_to_low";
 const FEEDBACK_ACTION_RETAIN_LOW_PRIORITY = "retain_low_priority";
 const FEEDBACK_ACTION_PRIORITIZE_REVIEW_FOCUS = "prioritize_review_focus";
@@ -1331,9 +1332,7 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput, config: HumanR
 
   for (const policy of config.required_manual_checks) {
     const matchers = policy.path_patterns.map(buildFeedbackPathMatcher);
-    const paths = changedFiles
-      .filter((file) => matchers.some((matcher) => matcher.matches(file.path)))
-      .map((file) => normalizeEvidencePath(file.path));
+    const paths = changedFilePathsMatchingAny(changedFiles, matchers);
     if (paths.length === 0) {
       continue;
     }
@@ -1373,7 +1372,7 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput, config: HumanR
           .filter((ref) => ref.path && matcher.matches(ref.path))
           .map((ref) => normalizeEvidencePath(String(ref.path)));
         const fallbackPaths = policy.path_pattern && !riskHasPathEvidence
-          ? changedFiles.filter((file) => matcher.matches(file.path)).map((file) => normalizeEvidencePath(file.path))
+          ? changedFilePathsMatchingAny(changedFiles, [matcher])
           : [];
         const matchedPaths = uniqueTruthy([...paths, ...fallbackPaths]);
         if (policy.path_pattern && matchedPaths.length === 0) {
@@ -1396,10 +1395,18 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput, config: HumanR
 
     for (const policy of feedbackFile.false_negatives ?? []) {
       const matcher = buildFeedbackPathMatcher(policy.path_pattern);
+      const desiredRule = policy.desired_rule;
       const paths = changedFiles
-        .filter((file) => matcher.matches(file.path))
-        .filter((file) => !policy.desired_rule || !prRiskRuleCoversPath(riskRulePaths, policy.desired_rule, file.path))
-        .map((file) => normalizeEvidencePath(file.path));
+        .flatMap((file) => {
+          const matchedPaths = changedFileMatchedPaths(file, [matcher]);
+          if (matchedPaths.length === 0) {
+            return [];
+          }
+          if (desiredRule && matchedPaths.some((filePath) => prRiskRuleCoversPath(riskRulePaths, desiredRule, filePath))) {
+            return [];
+          }
+          return matchedPaths;
+        });
       if (paths.length === 0) {
         continue;
       }
@@ -1416,9 +1423,7 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput, config: HumanR
 
     for (const policy of feedbackFile.team_policy ?? []) {
       const matcher = buildFeedbackPathMatcher(policy.path_pattern);
-      const paths = changedFiles
-        .filter((file) => matcher.matches(file.path))
-        .map((file) => normalizeEvidencePath(file.path));
+      const paths = changedFilePathsMatchingAny(changedFiles, [matcher]);
       if (paths.length === 0 || !policy.required_manual_check) {
         continue;
       }
@@ -1445,9 +1450,7 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput, config: HumanR
         continue;
       }
       const matchers = focusPatterns.map(buildFeedbackPathMatcher);
-      const paths = changedFiles
-        .filter((file) => matchers.some((matcher) => matcher.matches(file.path)))
-        .map((file) => normalizeEvidencePath(file.path));
+      const paths = changedFilePathsMatchingAny(changedFiles, matchers);
       if (paths.length === 0) {
         continue;
       }
@@ -1463,7 +1466,14 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput, config: HumanR
     }
   }
 
-  return dedupeFeedbackEffects(drafts).slice(0, 12).map((draft, index) => ({
+  const deduped = dedupeFeedbackEffects(drafts);
+  const requiredMissing = boundedMissingTeamPolicyEffects(deduped.filter(isMissingTeamPolicyEffect));
+  const optional = deduped.filter((draft) => !isMissingTeamPolicyEffect(draft));
+  const capped = [
+    ...requiredMissing,
+    ...optional.slice(0, Math.max(0, MAX_FEEDBACK_EFFECTS - requiredMissing.length))
+  ];
+  return capped.map((draft, index) => ({
     id: `FEEDBACK-${String(index + 1).padStart(3, "0")}`,
     ...draft
   }));
@@ -2083,7 +2093,7 @@ function isLockfilePath(filePath: string): boolean {
   return /(?:^|\/)(?:pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb|Cargo\.lock)$/.test(normalizedPath);
 }
 
-function isMissingTeamPolicyEffect(effect: FeedbackPolicyEffect): boolean {
+function isMissingTeamPolicyEffect(effect: Pick<FeedbackPolicyEffect, "kind" | "action">): boolean {
   return effect.kind === "team_policy" && effect.action.startsWith(RECORD_MANUAL_CHECK_PREFIX);
 }
 
@@ -2135,6 +2145,45 @@ function dedupeFeedbackEffects(drafts: FeedbackPolicyEffectDraft[]): FeedbackPol
     }
     seen.add(key);
     result.push(draft);
+  }
+  return result;
+}
+
+function boundedMissingTeamPolicyEffects(drafts: FeedbackPolicyEffectDraft[]): FeedbackPolicyEffectDraft[] {
+  if (drafts.length <= MAX_FEEDBACK_EFFECTS) {
+    return drafts;
+  }
+  const visible = drafts.slice(0, MAX_FEEDBACK_EFFECTS - 1);
+  const overflow = drafts.slice(MAX_FEEDBACK_EFFECTS - 1);
+  return [foldMissingTeamPolicyEffects(overflow), ...visible];
+}
+
+function foldMissingTeamPolicyEffects(drafts: FeedbackPolicyEffectDraft[]): FeedbackPolicyEffectDraft {
+  const riskIds = uniqueTruthy(drafts.flatMap((draft) => draft.risk_ids)).sort(compareStrings);
+  const paths = uniqueTruthy(drafts.flatMap((draft) => draft.paths)).sort(compareStrings);
+  const preview = riskIds.slice(0, 4).join(", ");
+  const suffix = riskIds.length > 4 ? `, and ${riskIds.length - 4} more` : "";
+  return {
+    kind: "team_policy",
+    summary: `${drafts.length} additional configured manual check(s) matched changed file(s), but the required manual checks are missing${preview ? `: ${preview}${suffix}.` : "."}`,
+    action: `${RECORD_MANUAL_CHECK_PREFIX} ${drafts.length} additional configured required manual check(s) are missing; inspect matching policy IDs before approval.`,
+    evidence: uniqueEvidenceRefs(drafts.flatMap((draft) => draft.evidence)).slice(0, 8),
+    paths,
+    risk_ids: riskIds,
+    confidence: "high"
+  };
+}
+
+function uniqueEvidenceRefs(evidence: EvidenceRef[]): EvidenceRef[] {
+  const seen = new Set<string>();
+  const result: EvidenceRef[] = [];
+  for (const ref of evidence) {
+    const key = JSON.stringify(ref);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(ref);
   }
   return result;
 }
@@ -2210,6 +2259,15 @@ function reviewerPreferencePathPatterns(key: string, value: unknown): string[] {
 
 interface FeedbackPathMatcher {
   matches(filePath: string | undefined): boolean;
+}
+
+function changedFilePathsMatchingAny(changedFiles: PrChangedFile[], matchers: FeedbackPathMatcher[]): string[] {
+  return uniqueTruthy(changedFiles.flatMap((file) => changedFileMatchedPaths(file, matchers)));
+}
+
+function changedFileMatchedPaths(file: PrChangedFile, matchers: FeedbackPathMatcher[]): string[] {
+  const paths = compactStrings([file.path, file.old_path]).map((filePath) => normalizeEvidencePath(filePath));
+  return paths.some((filePath) => matchers.some((matcher) => matcher.matches(filePath))) ? uniqueTruthy(paths) : [];
 }
 
 function buildFeedbackPathMatcher(pattern: string | undefined): FeedbackPathMatcher {
