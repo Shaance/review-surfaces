@@ -7,6 +7,8 @@ import type {
   FeedbackPolicyEffect,
   HumanReviewModel,
   ReviewQueueItem,
+  ReviewRoute,
+  ReviewRouteStep,
   RiskLensFinding,
   SinceLastReview,
   SinceLastReviewItem,
@@ -27,6 +29,8 @@ const MAX_SKIM_SAFE = 8;
 const MAX_STANDALONE_EVIDENCE = 8;
 const MAX_RISK_LENSES = 6;
 const MAX_SINCE_LAST_REVIEW = 5;
+const MAX_REVIEW_ROUTES = 5;
+const MAX_ROUTE_STEPS = 5;
 
 export const HUMAN_STANDALONE_ARTIFACTS = [
   {
@@ -56,6 +60,13 @@ export const HUMAN_STANDALONE_ARTIFACTS = [
     label: "Risk lenses",
     heading: "# Risk Lenses",
     render: renderRiskLensesMarkdown
+  },
+  {
+    command: "routes",
+    artifact: "review_routes.md",
+    label: "Review routes",
+    heading: "# Review Routes",
+    render: renderReviewRoutesMarkdown
   },
   {
     command: "since-last-review",
@@ -114,6 +125,10 @@ ${bullets(model.verdict.reasons.slice(0, MAX_BLOCKERS).map((reason) => `${reason
 ## Review first
 
 ${renderReviewFirst(model.review_queue.slice(0, MAX_REVIEW_FIRST))}
+
+## Review routes
+
+${renderReviewRoutesSummary(reviewRoutes(model).slice(0, MAX_REVIEW_ROUTES))}
 
 ## Blockers
 
@@ -211,6 +226,16 @@ export function renderRiskLensesMarkdown(model: HumanReviewModel): string {
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
 
 ${riskLensFindings(model).length === 0 ? "- No domain risk lenses fired." : riskLensFindings(model).map(renderRiskLensDetail).join("\n\n---\n\n")}
+`;
+}
+
+export function renderReviewRoutesMarkdown(model: HumanReviewModel): string {
+  const routes = reviewRoutes(model);
+  return `# Review Routes
+
+Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
+
+${routes.length === 0 ? "- This human review JSON was generated before review-route support." : routes.map(renderReviewRouteDetail).join("\n\n---\n\n")}
 `;
 }
 
@@ -312,6 +337,68 @@ ${renderSuggestedComments(finding.suggested_comments)}`;
 
 function riskLensFindings(model: HumanReviewModel): RiskLensFinding[] {
   return model.risk_lens_findings ?? [];
+}
+
+function reviewRoutes(model: HumanReviewModel): ReviewRoute[] {
+  return model.review_routes ?? [];
+}
+
+function renderReviewRoutesSummary(routes: ReviewRoute[]): string {
+  if (routes.length === 0) {
+    return "- This human review JSON was generated before review-route support.";
+  }
+  return bullets(
+    routes.map((route) => {
+      const flags = [
+        route.is_default ? "default" : undefined,
+        route.is_secondary ? "secondary" : undefined
+      ].filter((flag): flag is string => typeof flag === "string");
+      const stepText = route.steps.slice(0, 3).map((step) => step.title).join(" -> ");
+      return `${route.title}${flags.length ? ` (${flags.join(", ")})` : ""}: ${route.summary} Path: ${stepText || "no steps recorded."}`;
+    }),
+    "No review routes generated."
+  );
+}
+
+function renderReviewRouteDetail(route: ReviewRoute): string {
+  const flags = [
+    route.is_default ? "Default: yes" : "Default: no",
+    route.is_secondary ? "Secondary: yes" : "Secondary: no"
+  ];
+  return `## ${field(route.title)}
+
+Persona: ${route.persona}
+${flags.join("\n")}
+
+${field(route.summary, 1000)}
+
+${renderReviewRouteSteps(route.steps.slice(0, MAX_ROUTE_STEPS))}`;
+}
+
+function renderReviewRouteSteps(steps: ReviewRouteStep[]): string {
+  if (steps.length === 0) {
+    return "- No route steps recorded.";
+  }
+  return steps.map((step) => `${step.rank}. ${field(step.title)}
+   - Priority: ${step.priority}
+   - Action: ${field(step.action, 1000)}
+   - Artifact: ${step.artifact ? `\`${field(step.artifact)}\`` : "human_review.md"}
+   - Links: ${routeStepLinks(step)}
+   - Evidence: ${evidenceList(step.evidence)}`).join("\n\n");
+}
+
+function routeStepLinks(step: ReviewRouteStep): string {
+  const groups: Array<[string, string[]]> = [
+    ["queue", step.queue_item_ids],
+    ["lenses", step.risk_lens_ids],
+    ["questions", step.question_ids],
+    ["tests", step.test_plan_ids],
+    ["comments", step.suggested_comment_ids]
+  ];
+  const rendered = groups
+    .filter(([, ids]) => ids.length > 0)
+    .map(([label, ids]) => `${label}: ${ids.map((id) => `\`${field(id)}\``).join(", ")}`);
+  return rendered.length ? rendered.join("; ") : "none";
 }
 
 function sinceLastReview(model: HumanReviewModel): SinceLastReview {

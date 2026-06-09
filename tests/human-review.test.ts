@@ -10,6 +10,7 @@ import {
   renderHumanReviewMarkdown,
   renderRiskLensesMarkdown,
   renderReviewQueueMarkdown,
+  renderReviewRoutesMarkdown,
   renderSinceLastReviewMarkdown,
   writeHumanReviewArtifacts
 } from "../src/human/render";
@@ -24,6 +25,7 @@ import {
   HUMAN_REVIEW_DECISIONS,
   HUMAN_REVIEW_PRIORITIES,
   HUMAN_REVIEW_SCHEMA_VERSION,
+  REVIEW_ROUTE_PERSONAS,
   REVIEWER_QUESTION_SEVERITIES,
   RISK_LENSES,
   SUGGESTED_COMMENT_SEVERITIES
@@ -431,6 +433,51 @@ test("since-last-review degrades cleanly when no previous packet was supplied", 
   assert.match(renderSinceLastReviewMarkdown(model), /No previous packet path recorded/);
 });
 
+test("review routes provide default human and secondary agent paths from shared evidence", () => {
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
+
+  assert.equal(model.review_routes.length, 5);
+  assert.equal(model.review_routes[0].persona, "human_reviewer");
+  assert.equal(model.review_routes[0].is_default, true);
+  assert.equal(model.review_routes[0].is_secondary, false);
+  assert.equal(model.review_routes.filter((route) => route.is_default).length, 1);
+  assert.equal(model.review_routes.find((route) => route.persona === "agent_continuation")?.is_secondary, true);
+  assert.deepEqual(model.review_routes.map((route) => route.persona), [
+    "human_reviewer",
+    "maintainer",
+    "security",
+    "product",
+    "agent_continuation"
+  ]);
+  assert.ok(model.review_routes.every((route) => route.steps.length > 0));
+  assert.ok(model.review_routes.flatMap((route) => route.steps).every((step) => step.evidence.length > 0));
+  assert.ok(model.review_routes.find((route) => route.persona === "human_reviewer")?.steps.some((step) => step.queue_item_ids.length > 0));
+  assert.ok(model.review_routes.find((route) => route.persona === "maintainer")?.steps.some((step) => step.artifact === "risk_lenses.md"));
+  assert.ok(model.review_routes.find((route) => route.persona === "security")?.steps.some((step) => step.risk_lens_ids.length > 0));
+  assert.ok(model.review_routes.find((route) => route.persona === "product")?.steps.some((step) => step.artifact === "suggested_comments.md"));
+
+  const markdown = renderReviewRoutesMarkdown(model);
+  assert.match(markdown, /^# Review Routes/);
+  assert.match(markdown, /## Human reviewer route/);
+  assert.match(markdown, /Default: yes/);
+  assert.match(markdown, /## Agent-continuation route/);
+  assert.match(markdown, /Secondary: yes/);
+
+  const validation = validateJsonSchema(schema, model);
+  assert.equal(validation.valid, true, JSON.stringify(validation.issues));
+});
+
+test("security review route degrades to skim guidance when no security signal fires", () => {
+  const model = buildHumanReview({ packet: packetFixture() });
+  const securityRoute = model.review_routes.find((route) => route.persona === "security");
+
+  assert.ok(securityRoute);
+  assert.equal(securityRoute.steps.find((step) => step.title === "Security and LLM trust-boundary lenses")?.priority, "low");
+  assert.match(securityRoute.steps.find((step) => step.title === "Security and LLM trust-boundary lenses")?.action ?? "", /No security\/privacy/);
+  assert.equal(securityRoute.steps.find((step) => step.title === "Manual security checks")?.priority, "low");
+  assert.equal(securityRoute.steps.find((step) => step.title === "Privacy and trust audit gaps")?.priority, "low");
+});
+
 test("human review Markdown renders a compact cockpit surface", () => {
   const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
   const markdown = renderHumanReviewMarkdown(model);
@@ -439,6 +486,8 @@ test("human review Markdown renders a compact cockpit surface", () => {
   assert.match(markdown, /## Verdict/);
   assert.match(markdown, /\*\*Block before merge\.\*\*/);
   assert.match(markdown, /## Review first/);
+  assert.match(markdown, /## Review routes/);
+  assert.match(markdown, /Human reviewer route \(default\)/);
   assert.match(markdown, /\.github\/workflows\/pr-review-comment\.yml/);
   assert.match(markdown, /Hunk: `@@ -10,3 \+10,5 @@`/);
   assert.match(markdown, /## Since last review/);
@@ -1580,6 +1629,7 @@ test("human review schema enums stay aligned with runtime contract constants", (
   assert.deepEqual(schema.$defs.suggestedComment.properties.severity.enum, [...SUGGESTED_COMMENT_SEVERITIES]);
   assert.deepEqual(schema.$defs.feedbackEffect.properties.kind.enum, [...FEEDBACK_POLICY_EFFECT_KINDS]);
   assert.deepEqual(schema.$defs.riskLensFinding.properties.lens.enum, [...RISK_LENSES]);
+  assert.deepEqual(schema.$defs.reviewRoute.properties.persona.enum, [...REVIEW_ROUTE_PERSONAS]);
   assert.deepEqual(schema.$defs.confidence.enum, [...PACKET_CONFIDENCE_LEVELS]);
   assert.deepEqual(schema.$defs.severity.enum, [...PACKET_SEVERITIES]);
   assert.deepEqual(schema.$defs.evidenceRef.properties.kind.enum, [...PACKET_EVIDENCE_KINDS]);
@@ -1590,13 +1640,16 @@ test("human review schema accepts prior v1 artifacts without optional fields", (
   const model = JSON.parse(JSON.stringify(buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture() }))) as Record<string, unknown>;
   delete model.feedback_effects;
   delete model.risk_lens_findings;
+  delete model.review_routes;
   delete model.since_last_review;
 
   const result = validateJsonSchema(schema, model);
 
   assert.equal(result.valid, true);
   assert.match(renderHumanReviewMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /No domain risk lenses fired/);
+  assert.match(renderHumanReviewMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /generated before review-route support/);
   assert.match(renderRiskLensesMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /No domain risk lenses fired/);
+  assert.match(renderReviewRoutesMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /generated before review-route support/);
   assert.match(renderSinceLastReviewMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /generated before since-last-review support/);
 });
 

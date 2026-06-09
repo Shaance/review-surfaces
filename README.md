@@ -81,10 +81,13 @@ After a run, look under `.review-surfaces/`:
 
 - `human_review.md` / `human_review.json` — the default human reviewer
   entrypoint: verdict, review-first queue, blockers/questions, trust audit,
-  suggested comments, test-plan items, skim-safe hints, and evidence pointers.
-- `review_queue.md`, `suggested_comments.md`, `trust_audit.md`, `test_plan.md`
+  review routes, suggested comments, test-plan items, skim-safe hints, and
+  evidence pointers.
+- `review_queue.md`, `suggested_comments.md`, `trust_audit.md`,
+  `risk_lenses.md`, `review_routes.md`, `since_last_review.md`, `test_plan.md`
   — standalone human cockpit sections rendered from `human_review.json` for
-  reviewers who want a focused queue, comment drafts, trust audit, or test plan.
+  reviewers who want a focused queue, comment drafts, trust audit, risk lenses,
+  persona routes, since-last-review deltas, or test plan.
 - `review_packet.json` — the schema-validated packet (validated against
   `schemas/review_packet.schema.json`).
 - `review_packet.md` / `architecture.md` / `agent_handoff.md` — human-readable
@@ -109,7 +112,7 @@ After a run, look under `.review-surfaces/`:
 | `validate [dir-or-json]` | Validate `review_packet.json` against `schemas/review_packet.schema.json`. Defaults to `.review-surfaces`. |
 | `run [--id <id>] [--command-transcripts <dir>] -- <cmd>...` | Execute a local command and record a bounded command transcript as direct evidence. |
 | `human` | Render `human_review.json`, `human_review.md`, and standalone human artifacts from existing local packet artifacts without recomputing the pipeline. |
-| `queue` / `comments` / `trust` / `test-plan` | Render the focused standalone human artifacts from `human_review.json`. |
+| `queue` / `comments` / `trust` / `risk-lenses` / `routes` / `since-last-review` / `test-plan` | Render the focused standalone human artifacts from `human_review.json`. |
 | `init [--force]` | Scaffold a repo for review-surfaces (create-or-validate): config, packet schema, `.review-surfacesignore`, a starter feature spec, the usage skill, and `AGENTS.md`. Existing files are never overwritten without `--force`; user-owned `AGENTS.md` and feature specs are preserved even with `--force`. |
 | `bootstrap [--strict]` | Validate-only: report whether the expected scaffolding exists and parses. Exits `10` under `--strict` when a required target is missing or invalid. |
 | `comment` | Render a local review surface. `--mode repo` reads `review_packet.json`; `--mode pr` reads `pr_review_surface.json` and refuses to succeed unless the PR narrative was LLM-authored and evidence-validated. |

@@ -87,6 +87,12 @@
         "$ref": "#/$defs/riskLensFinding"
       }
     },
+    "review_routes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/reviewRoute"
+      }
+    },
     "since_last_review": {
       "$ref": "#/$defs/sinceLastReview"
     },
@@ -470,6 +476,76 @@
           "items": { "type": "string" }
         },
         "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    },
+    "reviewRoute": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "persona", "title", "summary", "is_default", "is_secondary", "steps"],
+      "properties": {
+        "id": { "type": "string" },
+        "persona": {
+          "enum": ["human_reviewer", "maintainer", "security", "product", "agent_continuation"]
+        },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "is_default": { "type": "boolean" },
+        "is_secondary": { "type": "boolean" },
+        "steps": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reviewRouteStep" }
+        }
+      }
+    },
+    "reviewRouteStep": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "rank",
+        "title",
+        "action",
+        "evidence",
+        "priority",
+        "queue_item_ids",
+        "risk_lens_ids",
+        "question_ids",
+        "test_plan_ids",
+        "suggested_comment_ids"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "rank": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string" },
+        "action": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "priority": {
+          "enum": ["blocker", "high", "medium", "low"]
+        },
+        "artifact": { "type": "string" },
+        "queue_item_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "risk_lens_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "question_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "test_plan_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "suggested_comment_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
       }
     },
     "sinceLastReview": {
