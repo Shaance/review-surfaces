@@ -254,6 +254,15 @@ render:
 dogfood:
   enabled: true
   milestone: M5
+quality_gate:
+  # The human review value uplift landed its spec entries ahead of their phased
+  # implementation (docs/human-review-value-uplift-proposal.md). Until those
+  # phases ship, the not-yet-implemented requirements evaluate as "missing", so
+  # the strict self-dogfood gate tolerates exactly that planned backlog and trips
+  # on any additional regression. Decrement this as each phase lands:
+  #   13 = NARRATIVE.1-5 (Phase 2) + SEMANTIC_DIFF.1-4 (Phase 3) + REVIEW_LOOP.1-4 (Phase 4)
+  #    8 after Phase 2, 4 after Phase 3, 0 after Phase 4.
+  max_missing: 13
 human_review:
   enabled: true
   default_entrypoint: true
