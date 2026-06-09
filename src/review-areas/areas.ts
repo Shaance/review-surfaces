@@ -48,8 +48,7 @@ export interface ReviewAreaMatcher {
 
 interface ReviewAreaMatchContext {
   testPath: boolean;
-  lowerPath?: string;
-  proofTokens?: Set<string>;
+  testTokens?: string[];
 }
 
 export interface BuildReviewAreasOptions {
@@ -93,13 +92,15 @@ export function createReviewAreaMatcher(areas: ReviewArea[]): ReviewAreaMatcher 
 // Split a path into lowercased whole tokens on directory, dot, hyphen, and
 // underscore boundaries so a test_keyword only matches a real path/filename
 // segment (e.g. "eval" matches "tests/eval.test.ts" but NOT "tests/medieval.ts").
+function pathTokenList(filePath: string): string[] {
+  return filePath
+    .toLowerCase()
+    .split(/[/.\-_]+/)
+    .filter((token) => token.length > 0);
+}
+
 function pathTokens(filePath: string): Set<string> {
-  return new Set(
-    filePath
-      .toLowerCase()
-      .split(/[/.\-_]+/)
-      .filter((token) => token.length > 0)
-  );
+  return new Set(pathTokenList(filePath));
 }
 
 // A true directory prefix (startsWith with a trailing "/"), an exact path match,
@@ -180,7 +181,7 @@ function explainPathForAreas(
     }
     if (context.testPath) {
       for (const keyword of area.testKeywords) {
-        if (matchesTestKeywordForPurpose(filePath, keyword, options.purpose, context)) {
+        if (matchesTestKeyword(filePath, keyword, context)) {
           matches.push({ areaId: area.id, groupKey: area.groupKey, reason: "test_keyword", matched: keyword });
           addUnique(groups, area.groupKey);
         }
@@ -217,7 +218,7 @@ function areaMatchesPathForPurpose(
   }
   return (
     context.testPath &&
-    area.testKeywords.some((keyword) => matchesTestKeywordForPurpose(filePath, keyword, options.purpose, context))
+    area.testKeywords.some((keyword) => matchesTestKeyword(filePath, keyword, context))
   );
 }
 
@@ -225,8 +226,7 @@ function createMatchContext(filePath: string, options: ReviewAreaMatchOptions): 
   const testPath = filePath.startsWith("tests/");
   return {
     testPath,
-    lowerPath: testPath ? filePath.toLowerCase() : undefined,
-    proofTokens: testPath && options.purpose === "requirement_proof" ? pathTokens(filePath) : undefined
+    testTokens: testPath ? pathTokenList(filePath) : undefined
   };
 }
 
@@ -234,17 +234,29 @@ function matchesPrefixForPurpose(filePath: string, prefix: string, purpose: Revi
   return purpose === "requirement_proof" ? matchesStrictPrefix(filePath, prefix) : matchesPrefix(filePath, prefix);
 }
 
-function matchesTestKeywordForPurpose(
+function matchesTestKeyword(
   filePath: string,
   keyword: string,
-  purpose: ReviewAreaMatchPurpose,
   context: ReviewAreaMatchContext
 ): boolean {
-  if (purpose === "requirement_proof") {
-    const normalized = keyword.toLowerCase();
-    return (context.proofTokens ?? pathTokens(filePath)).has(normalized);
+  const keywordTokens = pathTokenList(keyword);
+  if (keywordTokens.length === 0) {
+    return false;
   }
-  return (context.lowerPath ?? filePath.toLowerCase()).includes(keyword);
+  const testTokens = context.testTokens ?? pathTokenList(filePath);
+  if (keywordTokens.length === 1) {
+    return testTokens.includes(keywordTokens[0]);
+  }
+  return includesTokenSequence(testTokens, keywordTokens);
+}
+
+function includesTokenSequence(tokens: string[], sequence: string[]): boolean {
+  for (let index = 0; index <= tokens.length - sequence.length; index += 1) {
+    if (sequence.every((token, offset) => tokens[index + offset] === token)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function addUnique(groups: string[], group: string): void {

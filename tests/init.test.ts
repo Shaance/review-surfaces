@@ -77,6 +77,8 @@ test("review-surfaces.BOOTSTRAP.5 init scaffolds every target into a fresh repo"
 
   // (6) AGENTS.md is created and points at the feature spec + local workflow.
   const agentsText = fs.readFileSync(path.join(repo, "AGENTS.md"), "utf8");
+  assert.match(agentsText, /local-first human review decision cockpit/);
+  assert.doesNotMatch(agentsText, /review packet compiler/);
   assert.match(agentsText, /features\/\*\*\/\*\.feature\.yaml/);
   assert.match(agentsText, /review-surfaces validate/);
 
