@@ -140,7 +140,7 @@ function nodeTestFocusClassification(normalized: string): boolean | undefined {
   if (hasTestNameFilter(normalized)) {
     return true;
   }
-  if (hasNodeTestShard(normalized)) {
+  if (hasNodePartialTestFilter(normalized)) {
     return true;
   }
   if (testArgs.length === 0) {
@@ -211,13 +211,19 @@ function nodeTestPositionalArgs(tokens: string[]): string[] {
   return positionals;
 }
 
-function hasNodeTestShard(value: string): boolean {
+function hasNodePartialTestFilter(value: string): boolean {
   const tokens = value.split(" ").filter(Boolean);
   for (const token of tokens) {
     if (token === "--") {
       break;
     }
-    if (token === "--test-shard" || token.startsWith("--test-shard=")) {
+    if (
+      token === "--test-only"
+      || token === "--test-shard"
+      || token === "--test-skip-pattern"
+      || token.startsWith("--test-shard=")
+      || token.startsWith("--test-skip-pattern=")
+    ) {
       return true;
     }
   }
@@ -246,6 +252,7 @@ function nodeOptionConsumesNext(option: string): boolean {
     "--test-name-pattern",
     "--test-reporter",
     "--test-reporter-destination",
+    "--test-skip-pattern",
     "--test-shard"
   ].includes(option);
 }

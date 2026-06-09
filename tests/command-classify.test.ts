@@ -48,6 +48,15 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeTestCommand("node --test-shard=1/4 --test"), true);
   assert.equal(commandLooksLikeBroadTestCommand("node --test-shard=1/4 --test"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("node --test-shard=1/4 --test"), true);
+  assert.equal(commandLooksLikeTestCommand("node --test --test-only"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("node --test --test-only"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("node --test --test-only"), true);
+  assert.equal(commandLooksLikeTestCommand("node --test --test-skip-pattern slow"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("node --test --test-skip-pattern slow"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("node --test --test-skip-pattern slow"), true);
+  assert.equal(commandLooksLikeTestCommand("node --test-skip-pattern=slow --test"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("node --test-skip-pattern=slow --test"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("node --test-skip-pattern=slow --test"), true);
   assert.equal(commandLooksLikeTestCommand("node --test \"**/*.test.js\""), true);
   assert.equal(commandLooksLikeBroadTestCommand("node --test \"**/*.test.js\""), true);
   assert.equal(commandLooksLikeFocusedTestCommand("node --test \"**/*.test.js\""), false);
