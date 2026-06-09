@@ -363,5 +363,6 @@ export interface HumanReviewModel {
     base_ref: string;
     head_ref: string;
     head_sha: string;
+    human_review_config_signature?: string;
   };
 }

@@ -44,7 +44,7 @@ import { postStickyComment } from "../render/post-comment";
 import { writeJson, writeText } from "../core/files";
 import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
-import { buildHumanReview } from "../human/human-review";
+import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
 import { HumanReviewModel } from "../human/contract";
 import {
   HUMAN_STANDALONE_ARTIFACTS,
@@ -1091,6 +1091,11 @@ async function loadOrBuildHumanReviewJson(
   if (!forceRebuild && fileExists(humanReviewPath)) {
     const model = await readJson(humanReviewPath) as HumanReviewModel;
     assertValidHumanReview(cwd, model);
+    if (!humanReviewJsonMatchesConfig(model, config)) {
+      const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config);
+      await writeJson(path.join(context.outputDir, "human_review.json"), context.model);
+      return context;
+    }
     if (!humanReviewJsonSatisfiesStandaloneCommand(model, command)) {
       const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config);
       await writeJson(path.join(context.outputDir, "human_review.json"), context.model);
@@ -1102,6 +1107,10 @@ async function loadOrBuildHumanReviewJson(
   const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config);
   await writeJson(path.join(context.outputDir, "human_review.json"), context.model);
   return context;
+}
+
+function humanReviewJsonMatchesConfig(model: HumanReviewModel, config?: ReviewSurfacesConfig): boolean {
+  return model.generated_from.human_review_config_signature === humanReviewConfigSignature(config?.human_review);
 }
 
 function humanReviewJsonSatisfiesStandaloneCommand(model: HumanReviewModel, command: string | undefined): boolean {

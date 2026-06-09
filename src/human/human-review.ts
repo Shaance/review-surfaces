@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
@@ -33,6 +34,7 @@ import {
   ReviewerQuestion,
   RiskLens,
   RiskLensFinding,
+  RISK_LENSES,
   RISK_LENS_METADATA,
   SinceLastReview,
   SinceLastReviewItem,
@@ -300,6 +302,24 @@ function humanReviewBuildConfig(input: BuildHumanReviewInput): HumanReviewBuildC
   };
 }
 
+export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): string {
+  const resolved = {
+    ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+    ...config,
+    risk_lenses: {
+      ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG.risk_lenses,
+      ...config?.risk_lenses
+    }
+  };
+  const fingerprint = {
+    max_questions: resolved.max_questions,
+    max_review_first: resolved.max_review_first,
+    max_suggested_comments: resolved.max_suggested_comments,
+    risk_lenses: RISK_LENSES.map((lens) => [lens, resolved.risk_lenses[lens]])
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(fingerprint)).digest("hex");
+}
+
 function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["generated_from"] {
   const manifest = input.packet.manifest as { base_ref?: unknown; head_ref?: unknown; head_sha?: unknown };
   const prScope = input.prSurface?.scope;
@@ -308,7 +328,8 @@ function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["gen
     pr_surface_path: input.prSurface ? input.prSurfacePath ?? ".review-surfaces/pr_review_surface.json" : undefined,
     base_ref: prScope?.base_ref ?? stringOr(manifest.base_ref, "origin/main"),
     head_ref: prScope?.head_ref ?? stringOr(manifest.head_ref, "HEAD"),
-    head_sha: prScope?.head_sha ?? stringOr(manifest.head_sha, "unknown")
+    head_sha: prScope?.head_sha ?? stringOr(manifest.head_sha, "unknown"),
+    human_review_config_signature: humanReviewConfigSignature(input.config)
   };
 }
 

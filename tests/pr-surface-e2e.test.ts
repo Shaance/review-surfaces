@@ -599,6 +599,34 @@ test("review-surfaces.HUMAN_REVIEW.16 focused human artifacts rebuild when expli
   }
 });
 
+test("review-surfaces.HUMAN_REVIEW.16 focused human artifacts rebuild when the default config changes", () => {
+  const tmp = setupChangedRepo();
+  try {
+    const first = runCli(tmp, [...ALL_PR, "--provider", "mock"]);
+    assert.equal(first.status, 0, first.stderr);
+    const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
+    const human = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    assert.equal(typeof human.generated_from.human_review_config_signature, "string");
+    assert.ok(human.review_queue.length > 0, "fixture should generate at least one review queue item");
+    human.review_queue = [
+      { ...human.review_queue[0], id: "REVIEW-STALE-001", rank: 1, title: "DEFAULT CONFIG STALE SENTINEL" },
+      { ...human.review_queue[0], id: "REVIEW-STALE-002", rank: 2, title: "DEFAULT CONFIG STALE SENTINEL 2" }
+    ];
+    fs.writeFileSync(humanPath, `${JSON.stringify(human, null, 2)}\n`);
+    const configPath = path.join(tmp, "review-surfaces.config.yaml");
+    fs.writeFileSync(configPath, fs.readFileSync(configPath, "utf8").replace("max_review_first: 20", "max_review_first: 1"));
+
+    const queue = runCli(tmp, ["queue", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(queue.status, 0, queue.stderr);
+    const rebuiltHuman = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    const queueMarkdown = fs.readFileSync(path.join(tmp, ".review-surfaces", "review_queue.md"), "utf8");
+    assert.ok(rebuiltHuman.review_queue.length <= 1);
+    assert.doesNotMatch(queueMarkdown, /DEFAULT CONFIG STALE SENTINEL/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.PROVIDERS.6 PR comment workflow is base-controlled and uses trusted tool checkouts", () => {
   const ciWorkflow = fs.readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
   const workflow = fs.readFileSync(path.join(process.cwd(), ".github", "workflows", "pr-review-comment.yml"), "utf8");

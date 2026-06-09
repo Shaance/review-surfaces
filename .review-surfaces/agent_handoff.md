@@ -27,6 +27,7 @@ M5
 - M README.md
 - M features/review-surfaces.feature.yaml
 - M review-surfaces.config.yaml
+- M schemas/human_review.schema.json
 - M src/cli/index.ts
 - M src/config/config.ts
 - M src/human/contract.ts
