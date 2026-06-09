@@ -321,6 +321,36 @@ test("focused transcript matching uses area prefixes as well as keywords", () =>
   );
 });
 
+test("focused transcript matching handles singular and plural keyword variants", () => {
+  const input = buildInput({
+    scope: scope({
+      head_sha: "deadbeef",
+      changed_files: [
+        changedFile({ path: "src/risks/pr-risks.ts", role: "implementation", areas: ["RISK"] })
+      ]
+    }),
+    reviewAreas: [reviewArea("RISK", ["risk"])],
+    commandTranscripts: [
+      {
+        id: "CMD-RISK-PLURAL-FOCUSED",
+        command: "node --test dist/tests/pr-risks.test.js",
+        status: "passed",
+        exit_code: 0,
+        head_sha: "deadbeef",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-RISK-PLURAL-FOCUSED.json"
+      }
+    ]
+  });
+
+  const model = buildPrRiskCandidates(input);
+  assert.equal(
+    model.candidates.find((c) => c.rule === "untested_changed_impl"),
+    undefined,
+    "pluralized focused test filenames should match singular area keywords"
+  );
+});
+
 test("area-specific test scripts do not count as broad validation for unrelated areas", () => {
   const input = buildInput({
     scope: scope({
@@ -469,6 +499,39 @@ test("working-tree impl file with a current-head broad test transcript still fir
   assert.ok(
     model.candidates.find((c) => c.rule === "untested_changed_impl"),
     "HEAD-matched transcript is not enough to suppress working-tree implementation changes"
+  );
+});
+
+test("working-tree impl with a co-changed test remains validated when a broad transcript exists", () => {
+  const input = buildInput({
+    scope: scope({
+      head_sha: "head123",
+      changed_files: [
+        changedFile({ path: "src/risks/risks.ts", role: "implementation", areas: ["RISK"] }),
+        changedFile({ path: "tests/risks.test.ts", role: "test", areas: ["RISK"] })
+      ]
+    }),
+    changedFileSources: {
+      "src/risks/risks.ts": "working_tree"
+    },
+    commandTranscripts: [
+      {
+        id: "CMD-TEST-BROAD",
+        command: "pnpm run test",
+        status: "passed",
+        exit_code: 0,
+        head_sha: "head123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-TEST-BROAD.json"
+      }
+    ]
+  });
+
+  const model = buildPrRiskCandidates(input);
+  assert.equal(
+    model.candidates.find((c) => c.rule === "untested_changed_impl"),
+    undefined,
+    "co-changed tests should still validate dirty implementation files even when a broad transcript exists"
   );
 });
 

@@ -8,7 +8,8 @@ export function commandLooksLikeTestCommand(command: string): boolean {
 
 export function commandLooksLikeFocusedTestCommand(command: string): boolean {
   const normalized = normalizeCommand(command);
-  return /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?test:[\w.-]+)(?:\s|$)/.test(normalized)
+  const testScriptAlias = normalized.match(/^(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?test:([\w.-]+)(?:\s|$)/)?.[1];
+  return (testScriptAlias !== undefined && !looksLikeBroadTestScriptAlias(testScriptAlias))
     || /(?:^|\s)(?:(?:dist\/)?tests|test|src|lib|app|packages)\/\S+|(?:^|\s)\S+\.(?:test|spec)\.[cm]?[jt]sx?(?:\s|$)|(?:--test-name-pattern|--grep|-t)(?:=|\s)/.test(normalized);
 }
 
@@ -22,4 +23,8 @@ export function commandLooksLikeLocalValidationCommand(command: string): boolean
     commandLooksLikeTestCommand(normalized) ||
     /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?(?:lint|typecheck|build)|tsc(?:\s|$))/.test(normalized)
   );
+}
+
+function looksLikeBroadTestScriptAlias(alias: string): boolean {
+  return /^(?:all|ci|cov|coverage|fast|full)(?:[.:_-]|$)/.test(alias);
 }

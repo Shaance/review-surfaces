@@ -11,8 +11,10 @@ import {
 test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", () => {
   assert.equal(normalizeCommand(" pnpm   run   test:fast "), "pnpm run test:fast");
   assert.equal(commandLooksLikeTestCommand("pnpm run test:fast"), true);
-  assert.equal(commandLooksLikeBroadTestCommand("pnpm run test:fast"), false);
-  assert.equal(commandLooksLikeFocusedTestCommand("pnpm run test:fast"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("pnpm run test:fast"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm run test:fast"), false);
+  assert.equal(commandLooksLikeBroadTestCommand("pnpm run test:cov"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm run test:cov"), false);
   assert.equal(commandLooksLikeTestCommand("pnpm run test:privacy"), true);
   assert.equal(commandLooksLikeBroadTestCommand("pnpm run test:privacy"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm run test:privacy"), true);

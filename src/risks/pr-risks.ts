@@ -249,15 +249,16 @@ function hasImplementationValidation(file: ScopedChangedFile, validation: Implem
     // No mapped area: not attributable to an untested area gap here.
     return true;
   }
-  if (validation.hasBroadCurrentHeadTestTranscript) {
-    return changedFileSource(file, validation) === "diff";
+  if (file.areas.some((area) => validation.changedTestAreas.has(area))) {
+    return true;
   }
-  const validationAreas = changedFileSource(file, validation) === "diff"
-    ? [validation.changedTestAreas, validation.focusedTranscriptAreas]
-    : [validation.changedTestAreas];
-  return file.areas.some(
-    (area) => validationAreas.some((areas) => areas.has(area))
-  );
+  if (changedFileSource(file, validation) !== "diff") {
+    return false;
+  }
+  if (validation.hasBroadCurrentHeadTestTranscript) {
+    return true;
+  }
+  return file.areas.some((area) => validation.focusedTranscriptAreas.has(area));
 }
 
 function changedFileSource(file: ScopedChangedFile, validation: ImplementationValidationIndex): ChangedFile["source"] {
@@ -314,7 +315,20 @@ function tokenizeSearchText(value: string): Set<string> {
 
 function keywordMatchesTokens(keyword: string, tokens: Set<string>): boolean {
   const keywordTokens = keyword.split(" ").filter(Boolean);
-  return keywordTokens.length > 0 && keywordTokens.every((token) => tokens.has(token));
+  return keywordTokens.length > 0 && keywordTokens.every((token) => tokenMatches(token, tokens));
+}
+
+function tokenMatches(token: string, tokens: Set<string>): boolean {
+  if (tokens.has(token)) {
+    return true;
+  }
+  if (token.length <= 3) {
+    return false;
+  }
+  if (token.endsWith("s")) {
+    return tokens.has(token.slice(0, -1));
+  }
+  return tokens.has(`${token}s`);
 }
 
 function areaListForMessage(file: ScopedChangedFile): string {
