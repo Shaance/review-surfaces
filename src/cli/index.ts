@@ -35,7 +35,7 @@ import {
 } from "../render/packet";
 import { loadEvaluation } from "../render/load";
 import { renderCommentFromPacketFile, resolvePacketPath } from "../render/comment";
-import { renderPrComment } from "../render/pr-comment";
+import { renderHumanPrComment, renderPrComment } from "../render/pr-comment";
 import { assemblePrReviewSurface } from "../pipeline/pr-surface";
 import { evaluateBaseline } from "../evaluation/baseline";
 import { PrReviewSurfaceModel, ReviewScope, StructuredDiff } from "../pr/contract";
@@ -1386,7 +1386,15 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
   assertValidPrSurface(cwd, surface);
   // Point the comment's "Full PR surface" pointer at the ACTUAL artifact path
   // (honoring --out / config output_dir), not a hardcoded .review-surfaces.
-  const markdown = renderPrComment(surface, { surfacePath: path.relative(cwd, surfacePath) || surfacePath });
+  const humanCommentModel = await loadCurrentHumanReviewForPrComment(cwd, path.dirname(surfacePath), surface);
+  const relativeSurfacePath = path.relative(cwd, surfacePath) || surfacePath;
+  const markdown = humanCommentModel
+    ? renderHumanPrComment(humanCommentModel, {
+        surfacePath: relativeSurfacePath,
+        humanReviewPath: artifactPathForLog(cwd, path.dirname(surfacePath), "human_review.md"),
+        humanReviewJsonPath: artifactPathForLog(cwd, path.dirname(surfacePath), "human_review.json")
+      })
+    : renderPrComment(surface, { surfacePath: relativeSurfacePath });
   const commentPath = path.join(path.dirname(surfacePath), "comment.md");
   await writeText(commentPath, markdown);
   process.stdout.write(markdown);
@@ -1409,6 +1417,70 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
     console.error(result.reason);
   }
   return ExitCodes.success;
+}
+
+async function loadCurrentHumanReviewForPrComment(
+  cwd: string,
+  outputDir: string,
+  surface: PrReviewSurfaceModel
+): Promise<HumanReviewModel | undefined> {
+  const humanReviewPath = path.join(outputDir, "human_review.json");
+  if (!fileExists(humanReviewPath)) {
+    return undefined;
+  }
+  let model: unknown;
+  try {
+    model = await readJson(humanReviewPath);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `Ignoring unreadable human_review.json (${reason}); falling back to pr_review_surface.json for the PR comment.`
+    );
+    return undefined;
+  }
+  if (!humanReviewMatchesPrSurface(cwd, outputDir, model, surface)) {
+    console.warn(
+      `Ignoring stale or non-PR human_review.json; run review-surfaces human --review-scope pr to refresh it for the current PR surface.`
+    );
+    return undefined;
+  }
+  const issues = humanReviewIssues(cwd, model);
+  if (issues.length > 0) {
+    console.warn(
+      `Ignoring schema-invalid human_review.json (${issues.join("; ")}); falling back to pr_review_surface.json for the PR comment.`
+    );
+    return undefined;
+  }
+  return model as HumanReviewModel;
+}
+
+function humanReviewMatchesPrSurface(
+  cwd: string,
+  outputDir: string,
+  candidate: unknown,
+  surface: PrReviewSurfaceModel
+): boolean {
+  if (!isRecord(candidate) || candidate.mode !== "pr" || !isRecord(candidate.generated_from)) {
+    return false;
+  }
+  const generatedFrom = candidate.generated_from;
+  return (
+    generatedFrom.base_ref === surface.scope.base_ref &&
+    generatedFrom.head_ref === surface.scope.head_ref &&
+    generatedFrom.head_sha === surface.scope.head_sha &&
+    artifactPathMatches(cwd, generatedFrom.pr_surface_path, artifactPathForLog(cwd, outputDir, "pr_review_surface.json"))
+  );
+}
+
+function artifactPathMatches(cwd: string, actual: unknown, expected: string): boolean {
+  if (typeof actual !== "string") {
+    return false;
+  }
+  return normalizeArtifactPath(cwd, actual) === normalizeArtifactPath(cwd, expected);
+}
+
+function normalizeArtifactPath(cwd: string, value: string): string {
+  return path.relative(cwd, path.resolve(cwd, value));
 }
 
 function assertValidPrSurface(cwd: string, surface: unknown): void {

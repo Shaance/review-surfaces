@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { renderPrComment } from "../src/render/pr-comment";
+import { HUMAN_REVIEW_SCHEMA_VERSION } from "../src/human/contract";
+import type { HumanReviewModel } from "../src/human/contract";
+import { renderHumanPrComment, renderPrComment } from "../src/render/pr-comment";
 import { PrReviewSurfaceModel, PR_SURFACE_SCHEMA_VERSION } from "../src/pr/contract";
 
 function baseScope(): PrReviewSurfaceModel["scope"] {
@@ -55,6 +57,113 @@ function readySurface(): PrReviewSurfaceModel {
       risk_narratives: [{ risk_id: "PR-RISK-001", text: "Confirm the comment output is unchanged for healthy packets" }]
     },
     llm: { required: true, provider: "agent-file", status: "applied" }
+  };
+}
+
+function humanModel(): HumanReviewModel {
+  return {
+    schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
+    mode: "pr",
+    verdict: {
+      decision: "needs_author_clarification",
+      confidence: "medium",
+      reasons: [
+        {
+          id: "READY-001",
+          severity: "medium",
+          summary: "Schema compatibility evidence is missing.",
+          evidence: [{ kind: "file", path: "schemas/human_review.schema.json", confidence: "medium" }],
+          required_action: "Add or cite a compatibility fixture."
+        }
+      ]
+    },
+    summary: "The PR is reviewable, but approval should wait for a schema compatibility answer.",
+    review_queue: [
+      {
+        id: "REVIEW-001",
+        rank: 1,
+        title: "Schema contract change",
+        path: "schemas/human_review.schema.json",
+        line_start: 71,
+        line_end: 98,
+        reviewer_action: "Confirm compatibility or versioning.",
+        reason: "Public human review contract changed.",
+        evidence: [{ kind: "file", path: "schemas/human_review.schema.json", confidence: "medium" }],
+        requirement_ids: ["review-surfaces.HUMAN_REVIEW.9"],
+        risk_ids: ["PR-RISK-001"],
+        confidence: "high",
+        priority: "high"
+      }
+    ],
+    blockers: [
+      {
+        id: "BLOCK-001",
+        severity: "medium",
+        summary: "Compatibility fixture missing.",
+        evidence: [{ kind: "file", path: "schemas/human_review.schema.json", confidence: "medium" }],
+        required_action: "Add fixture coverage before merge."
+      }
+    ],
+    questions: [
+      {
+        id: "QUESTION-001",
+        severity: "blocking",
+        question: "Is the human review schema change additive-only?",
+        reason: "Schema contract changed.",
+        evidence: [{ kind: "file", path: "schemas/human_review.schema.json", confidence: "medium" }],
+        maps_to_risks: ["PR-RISK-001"],
+        maps_to_requirements: ["review-surfaces.HUMAN_REVIEW.9"]
+      }
+    ],
+    suggested_comments: [
+      {
+        id: "SC-001",
+        severity: "blocking",
+        path: "schemas/human_review.schema.json",
+        body: "Can you add a compatibility fixture for an existing human_review.json artifact?",
+        evidence: [{ kind: "file", path: "schemas/human_review.schema.json", confidence: "medium" }],
+        risk_ids: ["PR-RISK-001"],
+        requirement_ids: ["review-surfaces.HUMAN_REVIEW.9"],
+        confidence: "medium",
+        ready_to_post: true
+      }
+    ],
+    trust_audit: {
+      verified_facts: [],
+      claimed_not_verified: [],
+      missing_evidence: [],
+      invalid_evidence: [],
+      confidence_summary: "Medium confidence."
+    },
+    risk_lens_findings: [],
+    review_routes: [],
+    since_last_review: {
+      improved: [],
+      regressed: [],
+      new_risks: [],
+      resolved_risks: [],
+      new_overreach: [],
+      resolved_overreach: [],
+      still_open: [],
+      count_deltas: {
+        satisfied: { before: 0, after: 0, delta: 0 },
+        partial: { before: 0, after: 0, delta: 0 },
+        missing: { before: 0, after: 0, delta: 0 },
+        unknown: { before: 0, after: 0, delta: 0 },
+        invalid_evidence: { before: 0, after: 0, delta: 0 }
+      }
+    },
+    evidence_cards: [],
+    test_plan: [],
+    skim_safe: [],
+    feedback_effects: [],
+    generated_from: {
+      packet_path: ".review-surfaces/review_packet.json",
+      pr_surface_path: ".review-surfaces/pr_review_surface.json",
+      base_ref: "origin/main",
+      head_ref: "HEAD",
+      head_sha: "head"
+    }
   };
 }
 
@@ -126,4 +235,47 @@ test("renderPrComment blocked message points at the actual surface path too", ()
 test("renderPrComment is byte-deterministic for the same surface", () => {
   const surface = readySurface();
   assert.equal(renderPrComment(surface), renderPrComment(surface));
+});
+
+test("renderHumanPrComment renders the compact PR comment from human_review.json model", () => {
+  const md = renderHumanPrComment(humanModel(), {
+    humanReviewPath: "custom-out/human_review.md",
+    humanReviewJsonPath: "custom-out/human_review.json",
+    surfacePath: "custom-out/pr_review_surface.json"
+  });
+  assert.match(md, /review-surfaces:sticky/);
+  assert.match(md, /## review-surfaces PR review/);
+  assert.match(md, /\*\*Verdict:\*\* Needs author clarification\./);
+  assert.match(md, /### Review first/);
+  assert.match(md, /`schemas\/human_review\.schema\.json:71-98` - Schema contract change/);
+  assert.match(md, /### Blockers/);
+  assert.match(md, /Compatibility fixture missing/);
+  assert.match(md, /### Questions/);
+  assert.match(md, /Is the human review schema change additive-only/);
+  assert.match(md, /### Suggested comments/);
+  assert.match(md, /Can you add a compatibility fixture/);
+  assert.match(md, /Full human review: `custom-out\/human_review\.md`/);
+  assert.match(md, /Human review JSON: `custom-out\/human_review\.json`/);
+  assert.match(md, /Lower-level PR facts: `custom-out\/pr_review_surface\.json`/);
+  assert.doesNotMatch(md, /### Affected coverage/);
+  assert.doesNotMatch(md, /### What changed/);
+});
+
+test("renderHumanPrComment is byte-deterministic for the same model", () => {
+  const model = humanModel();
+  assert.equal(renderHumanPrComment(model), renderHumanPrComment(model));
+});
+
+test("renderHumanPrComment caps suggested comments after filtering ready drafts", () => {
+  const model = humanModel();
+  model.suggested_comments = [
+    { ...model.suggested_comments[0], id: "SC-NOT-READY-001", body: "not ready 1", ready_to_post: false },
+    { ...model.suggested_comments[0], id: "SC-NOT-READY-002", body: "not ready 2", ready_to_post: false },
+    { ...model.suggested_comments[0], id: "SC-NOT-READY-003", body: "not ready 3", ready_to_post: false },
+    { ...model.suggested_comments[0], id: "SC-READY-001", body: "ready after non-ready drafts", ready_to_post: true }
+  ];
+  const md = renderHumanPrComment(model);
+  assert.match(md, /ready after non-ready drafts/);
+  assert.doesNotMatch(md, /No ready suggested comments generated/);
+  assert.doesNotMatch(md, /not ready 1/);
 });

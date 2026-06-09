@@ -241,6 +241,9 @@ components:
       13:
         requirement: The human surface must render compact inline evidence cards that cite evidence, explain why the evidence matters, and give a reviewer action.
         note: Evidence cards must distinguish direct evidence, missing evidence, and invalid evidence so missing or untrusted signals are not rendered as proof.
+      14:
+        requirement: PR-mode comments should render from the human review model when a current schema-valid human_review.json is available, while preserving pr_review_surface.json as the lower-level PR fact and postability model.
+        note: If the human model is missing or stale, the renderer may fall back to the PR sidecar; posting must still obey the validated remote-narrative gate.
 
   PROVIDERS:
     name: Later provider integrations

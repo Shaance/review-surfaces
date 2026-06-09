@@ -116,7 +116,7 @@ After a run, look under `.review-surfaces/`:
 | `queue` / `comments` / `trust` / `risk-lenses` / `routes` / `evidence-cards` / `since-last-review` / `test-plan` | Render the focused standalone human artifacts from `human_review.json`. |
 | `init [--force]` | Scaffold a repo for review-surfaces (create-or-validate): config, packet schema, `.review-surfacesignore`, a starter feature spec, the usage skill, and `AGENTS.md`. Existing files are never overwritten without `--force`; user-owned `AGENTS.md` and feature specs are preserved even with `--force`. |
 | `bootstrap [--strict]` | Validate-only: report whether the expected scaffolding exists and parses. Exits `10` under `--strict` when a required target is missing or invalid. |
-| `comment` | Render a local review surface. `--mode repo` reads `review_packet.json`; `--mode pr` reads `pr_review_surface.json` and refuses to succeed unless the PR narrative was LLM-authored and evidence-validated. |
+| `comment` | Render a local review surface. `--mode repo` reads `review_packet.json`; `--mode pr` prefers a current schema-valid `human_review.json` and keeps `pr_review_surface.json` as the lower-level PR fact/postability gate. |
 
 Run `node bin/review-surfaces.js --help` for the full option list.
 
@@ -126,7 +126,8 @@ Run `node bin/review-surfaces.js --help` for the full option list.
 - `--spec <path>` — feature spec path (defaults to config).
 - `--out <dir>` — output directory (defaults `.review-surfaces`).
 - `--mode pr|repo|auto` — `comment` surface mode. `repo` keeps the whole-packet
-  comment; `pr` uses the PR sidecar.
+  comment; `pr` renders the human review model when available, backed by the PR
+  sidecar.
 - `--surface-mode pr|repo|auto` — `all` sidecar mode. `pr` writes
   `pr_review_surface.json`.
 - `--dogfood` — mark the run as dogfood and include the dogfood/handoff sections.

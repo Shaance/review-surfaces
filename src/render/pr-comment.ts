@@ -1,4 +1,11 @@
 import { redactSecrets } from "../privacy/secrets";
+import type {
+  HumanReviewModel,
+  ReviewBlocker,
+  ReviewerQuestion,
+  ReviewQueueItem,
+  SuggestedReviewComment
+} from "../human/contract";
 import {
   AnchoredNarrativeItem,
   PrChangeDiagramModel,
@@ -23,6 +30,9 @@ const MAX_RISKS = 8;
 const MAX_WHAT_CHANGED = 3;
 const MAX_WHY_IT_MATTERS = 3;
 const MAX_REVIEW_FIRST = 5;
+const MAX_HUMAN_BLOCKERS = 4;
+const MAX_HUMAN_QUESTIONS = 4;
+const MAX_HUMAN_COMMENTS = 3;
 
 function redact(value: string): string {
   return redactSecrets(value).text;
@@ -74,12 +84,19 @@ function renderDiagram(diagram: PrChangeDiagramModel | undefined): string[] {
 }
 
 const DEFAULT_SURFACE_PATH = ".review-surfaces/pr_review_surface.json";
+const DEFAULT_HUMAN_REVIEW_PATH = ".review-surfaces/human_review.md";
+const DEFAULT_HUMAN_REVIEW_JSON_PATH = ".review-surfaces/human_review.json";
 
 export interface RenderPrCommentOptions {
   // Relative path to the pr_review_surface.json the comment was rendered from, so
   // the "Full PR surface" pointer matches the actual --out / config output_dir
   // instead of hardcoding .review-surfaces.
   surfacePath?: string;
+}
+
+export interface RenderHumanPrCommentOptions extends RenderPrCommentOptions {
+  humanReviewPath?: string;
+  humanReviewJsonPath?: string;
 }
 
 function clampTotal(markdown: string, surfacePath: string): string {
@@ -170,6 +187,104 @@ export function renderPrComment(surface: PrReviewSurfaceModel, options: RenderPr
   );
 
   return clampTotal(`${sections.join("\n")}\n`, surfacePath);
+}
+
+/**
+ * Render the PR sticky comment from the human-review cockpit contract. This is
+ * still PR-mode output: the lower-level pr_review_surface.json remains the fact
+ * and postability gate, while the comment body uses the human decision model
+ * when that JSON is available and current.
+ */
+export function renderHumanPrComment(model: HumanReviewModel, options: RenderHumanPrCommentOptions = {}): string {
+  const humanReviewPath = options.humanReviewPath ?? DEFAULT_HUMAN_REVIEW_PATH;
+  const humanReviewJsonPath = options.humanReviewJsonPath ?? DEFAULT_HUMAN_REVIEW_JSON_PATH;
+  const surfacePath = options.surfacePath ?? DEFAULT_SURFACE_PATH;
+  const sections: string[] = [
+    PR_STICKY_MARKER,
+    "## review-surfaces PR review",
+    "",
+    `**Verdict:** ${decisionLabel(model.verdict.decision)}.`,
+    "",
+    field(model.summary),
+    "",
+    "### Review first",
+    renderHumanReviewFirst(model.review_queue.slice(0, MAX_REVIEW_FIRST)),
+    "",
+    "### Blockers",
+    renderHumanBlockers(model.blockers.slice(0, MAX_HUMAN_BLOCKERS)),
+    "",
+    "### Questions",
+    renderHumanQuestions(model.questions.slice(0, MAX_HUMAN_QUESTIONS)),
+    "",
+    "### Suggested comments",
+    renderHumanSuggestedComments(model.suggested_comments),
+    "",
+    `Full human review: \`${field(humanReviewPath)}\`.`,
+    `Human review JSON: \`${field(humanReviewJsonPath)}\`.`,
+    `Lower-level PR facts: \`${field(surfacePath)}\`.`
+  ];
+  return clampTotal(`${sections.join("\n")}\n`, humanReviewPath);
+}
+
+function decisionLabel(decision: HumanReviewModel["verdict"]["decision"]): string {
+  switch (decision) {
+    case "probably_safe":
+      return "Probably safe";
+    case "reviewable_with_attention":
+      return "Reviewable with attention";
+    case "needs_author_clarification":
+      return "Needs author clarification";
+    case "block_before_merge":
+      return "Block before merge";
+    case "no_signal":
+      return "No signal";
+  }
+}
+
+function renderHumanReviewFirst(items: ReviewQueueItem[]): string {
+  if (items.length === 0) {
+    return "- No path-backed review queue items generated.";
+  }
+  return items.map((item, index) => {
+    const ids = [...item.risk_ids, ...item.requirement_ids].slice(0, 4);
+    const anchors = ids.length > 0 ? ` Evidence: ${ids.map((id) => `\`${field(id)}\``).join(", ")}.` : "";
+    return `${index + 1}. \`${field(formatQueueLocation(item))}\` - ${field(item.title)}. Action: ${field(item.reviewer_action)}${anchors}`;
+  }).join("\n");
+}
+
+function formatQueueLocation(item: ReviewQueueItem): string {
+  if (item.line_start !== undefined && item.line_end !== undefined) {
+    return item.line_start === item.line_end ? `${item.path}:${item.line_start}` : `${item.path}:${item.line_start}-${item.line_end}`;
+  }
+  if (item.line_start !== undefined) {
+    return `${item.path}:${item.line_start}`;
+  }
+  return item.path;
+}
+
+function renderHumanBlockers(blockers: ReviewBlocker[]): string {
+  if (blockers.length === 0) {
+    return "- No merge blockers generated.";
+  }
+  return blockers.map((blocker) => `- ${field(blocker.id)} [${blocker.severity}]: ${field(blocker.summary)} Required action: ${field(blocker.required_action)}`).join("\n");
+}
+
+function renderHumanQuestions(questions: ReviewerQuestion[]): string {
+  if (questions.length === 0) {
+    return "- No reviewer questions generated.";
+  }
+  return questions.map((question) => `- ${field(question.question)} (${question.severity})`).join("\n");
+}
+
+function renderHumanSuggestedComments(comments: SuggestedReviewComment[]): string {
+  const ready = comments.filter((comment) => comment.ready_to_post).slice(0, MAX_HUMAN_COMMENTS);
+  if (ready.length === 0) {
+    return "- No ready suggested comments generated.";
+  }
+  return ready.map((comment) => {
+    const location = comment.path ? ` \`${field(comment.path)}\`:` : "";
+    return `- ${comment.severity}:${location} ${field(comment.body)}`;
+  }).join("\n");
 }
 
 function bulletsFromLines(lines: string[], emptyText: string): string {
