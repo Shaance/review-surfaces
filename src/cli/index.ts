@@ -10,6 +10,7 @@ import { loadConfig, ReviewSurfacesConfig } from "../config/config";
 import { CliError, ExitCodes } from "../core/exit-codes";
 import { VERSION } from "../core/version";
 import { fileExists, readJson } from "../core/files";
+import { isRecord } from "../core/guards";
 import { gateDecision, GateOptions } from "../core/gate";
 import { buildArchitecture } from "../diagrams/diagrams";
 import { buildDogfood, DogfoodComparisonInput } from "../dogfood/dogfood";
@@ -20,6 +21,7 @@ import { effectiveModelId, enrichPacket, parseProviderName, providerFor, Provide
 import { buildMethodology } from "../methodology/methodology";
 import { buildReviewAreas } from "../review-areas/areas";
 import { RisksModel } from "../risks/risks";
+import { normalizeFeedbackRecord, type FeedbackFile } from "../feedback/feedback";
 import { splitTestOutputPaths } from "../tests-evidence/junit";
 import {
   createReviewPacket,
@@ -633,7 +635,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       console.warn(`PR review surface blocked (${persistedSurface.blocked_reason}); see pr_review_surface.json`);
     }
   }
-  await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff);
+  await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff, collection.feedback);
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
@@ -1064,13 +1066,13 @@ async function buildHumanReviewFromArtifacts(
       );
       return {
         outputDir,
-        model: buildHumanReviewForPacket(cwd, outputDir, packet)
+        model: buildHumanReviewForPacket(cwd, outputDir, packet, undefined, undefined, readHumanReviewFeedback(outputDir))
       };
     }
   }
   return {
     outputDir,
-    model: buildHumanReviewForPacket(cwd, outputDir, packet, surface)
+    model: buildHumanReviewForPacket(cwd, outputDir, packet, surface, undefined, readHumanReviewFeedback(outputDir))
   };
 }
 
@@ -1079,12 +1081,14 @@ function buildHumanReviewForPacket(
   outDir: string,
   packet: ReviewPacket,
   prSurface?: PrReviewSurfaceModel,
-  diff?: StructuredDiff
+  diff?: StructuredDiff,
+  feedback?: FeedbackFile[]
 ): HumanReviewModel {
   const humanReview = buildHumanReview({
     packet,
     prSurface,
     diff: diff ?? readHumanReviewDiff(outDir),
+    feedback,
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
@@ -1102,14 +1106,73 @@ function readHumanReviewDiff(outDir: string): StructuredDiff | undefined {
   }
 }
 
+function readHumanReviewFeedback(outDir: string): FeedbackFile[] | undefined {
+  const feedbackIndexPath = path.join(outDir, "inputs", "feedback.index.json");
+  if (!fs.existsSync(feedbackIndexPath)) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(feedbackIndexPath, "utf8")) as { feedback?: unknown };
+    if (Array.isArray(parsed.feedback)) {
+      return sanitizeHumanReviewFeedbackIndex(parsed.feedback, feedbackIndexPath);
+    }
+    console.warn(`Warning: ignored malformed feedback memory index at ${feedbackIndexPath}; expected a feedback array.`);
+    return undefined;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`Warning: ignored malformed feedback memory index at ${feedbackIndexPath}: ${message}`);
+    return undefined;
+  }
+}
+
+function sanitizeHumanReviewFeedbackIndex(entries: unknown[], feedbackIndexPath: string): FeedbackFile[] {
+  const feedback: FeedbackFile[] = [];
+  for (const [index, entry] of entries.entries()) {
+    const feedbackFile = normalizeHumanReviewFeedbackEntry(entry);
+    if (!feedbackFile) {
+      console.warn(`Warning: ignored malformed feedback memory entry ${index + 1} in ${feedbackIndexPath}.`);
+      continue;
+    }
+    feedback.push(feedbackFile);
+  }
+  return feedback;
+}
+
+function normalizeHumanReviewFeedbackEntry(value: unknown): FeedbackFile | undefined {
+  if (!isRecord(value) || typeof value.path !== "string" || typeof value.schema_version !== "string" || typeof value.author !== "string") {
+    return undefined;
+  }
+  if (!Array.isArray(value.findings) || !isRecord(value.validation)) {
+    return undefined;
+  }
+  const validation = value.validation;
+  if (!Array.isArray(validation.passed) || !Array.isArray(validation.failed) || !Array.isArray(validation.notes)) {
+    return undefined;
+  }
+  if (
+    !isOptionalFeedbackArray(value.false_positives) ||
+    !isOptionalFeedbackArray(value.false_negatives) ||
+    !isOptionalFeedbackArray(value.team_policy) ||
+    !isOptionalFeedbackArray(value.reviewer_preferences)
+  ) {
+    return undefined;
+  }
+  return normalizeFeedbackRecord(value.path, value);
+}
+
+function isOptionalFeedbackArray(value: unknown): value is unknown[] | undefined {
+  return value === undefined || Array.isArray(value);
+}
+
 async function writeHumanReviewForPacket(
   cwd: string,
   outDir: string,
   packet: ReviewPacket,
   prSurface?: PrReviewSurfaceModel,
-  diff?: StructuredDiff
+  diff?: StructuredDiff,
+  feedback?: FeedbackFile[]
 ): Promise<HumanReviewModel> {
-  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface, diff);
+  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface, diff, feedback);
   await writeHumanReviewArtifacts(outDir, humanReview);
   return humanReview;
 }

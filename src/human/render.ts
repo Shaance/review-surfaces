@@ -2,7 +2,7 @@ import path from "node:path";
 import { writeJson, writeText } from "../core/files";
 import { EvidenceRef } from "../evidence/evidence";
 import { redactSecrets } from "../privacy/secrets";
-import { HumanReviewModel, ReviewQueueItem, SuggestedReviewComment, TestPlanItem, TrustAudit } from "./contract";
+import type { FeedbackPolicyEffect, HumanReviewModel, ReviewQueueItem, SuggestedReviewComment, TestPlanItem, TrustAudit } from "./contract";
 
 const MAX_SUMMARY_CHARS = 600;
 const MAX_FIELD_CHARS = 300;
@@ -124,6 +124,10 @@ ${renderSuggestedComments(model.suggested_comments.slice(0, MAX_COMMENTS))}
 
 ${bullets(model.skim_safe.slice(0, MAX_SKIM_SAFE).map((item) => `\`${field(item.path)}\`: ${item.reason}${item.caveat ? ` Caveat: ${item.caveat}` : ""}`), "No skim-safe files identified.")}
 
+## Feedback memory
+
+${renderFeedbackEffects(model.feedback_effects ?? [])}
+
 ## Evidence pointers
 
 ${bullets(evidencePointers(model), "No evidence pointers recorded.")}
@@ -229,6 +233,20 @@ function renderBlockers(model: HumanReviewModel): string {
   return bullets(
     model.blockers.slice(0, MAX_BLOCKERS).map((blocker) => `${blocker.summary} Required action: ${blocker.required_action} Evidence: ${evidenceList(blocker.evidence)}`),
     "No merge blockers generated from deterministic evidence."
+  );
+}
+
+function renderFeedbackEffects(effects: FeedbackPolicyEffect[]): string {
+  if (effects.length === 0) {
+    return "- No reviewer feedback policy effects applied.";
+  }
+  return bullets(
+    effects.slice(0, 8).map((effect) => {
+      const paths = effect.paths.length ? ` Paths: ${effect.paths.map((filePath) => `\`${field(filePath)}\``).join(", ")}.` : "";
+      const risks = effect.risk_ids.length ? ` Risks: ${effect.risk_ids.map((id) => `\`${field(id)}\``).join(", ")}.` : "";
+      return `${effect.id} [${effect.kind}]: ${effect.summary} Action: ${effect.action}.${paths}${risks} Evidence: ${evidenceList(effect.evidence)}`;
+    }),
+    "No reviewer feedback policy effects applied."
   );
 }
 

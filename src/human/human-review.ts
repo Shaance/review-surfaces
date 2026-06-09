@@ -1,7 +1,9 @@
 import { compareStrings } from "../core/compare";
+import { globToRegExp } from "../core/glob";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
-import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
+import { EvidenceRef, feedbackEvidence, fileEvidence, missingEvidence } from "../evidence/evidence";
 import { normalizeEvidencePath } from "../evidence/validate";
+import type { FeedbackFile } from "../feedback/feedback";
 import { PrRiskCandidate, PrReviewSurfaceModel, StructuredDiff, StructuredDiffFile, StructuredDiffHunk } from "../pr/contract";
 import { PR_RISK_RULE_METADATA } from "../pr/risk-metadata";
 import { ReviewPacket } from "../render/packet";
@@ -10,6 +12,7 @@ import { RiskItem, RisksModel } from "../risks/risks";
 import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-contract";
 import {
   HUMAN_REVIEW_SCHEMA_VERSION,
+  FeedbackPolicyEffect,
   HumanReviewDecision,
   HumanReviewModel,
   HumanReviewPriority,
@@ -29,6 +32,7 @@ export interface BuildHumanReviewInput {
   packet: ReviewPacket;
   prSurface?: PrReviewSurfaceModel;
   diff?: StructuredDiff;
+  feedback?: FeedbackFile[];
   packetPath?: string;
   prSurfacePath?: string;
 }
@@ -75,6 +79,11 @@ interface TestPlanCandidate {
   sourceRank: number;
   sortKey: string;
 }
+type FeedbackPolicyEffectDraft = Omit<FeedbackPolicyEffect, "id">;
+interface ManualCheckRecord {
+  text: string;
+  evidence: EvidenceRef[];
+}
 
 const MAX_QUEUE = 20;
 const MAX_BLOCKERS = 8;
@@ -84,15 +93,41 @@ const MAX_TEST_PLAN = 12;
 const MAX_TRUST_ITEMS = 10;
 const MAX_FOCUSED_REQUIREMENT_TESTS = 6;
 const MAX_CHANGED_FILE_QUEUE = 8;
+const FEEDBACK_ACTION_DOWNGRADE_TO_LOW = "downgrade_to_low";
+const FEEDBACK_ACTION_RETAIN_LOW_PRIORITY = "retain_low_priority";
+const FEEDBACK_ACTION_PRIORITIZE_REVIEW_FOCUS = "prioritize_review_focus";
+const RECORD_MANUAL_CHECK_PREFIX = "Record manual check:";
+const MANUAL_CHECK_RECORDED_PREFIX = "Manual check recorded:";
+const MANUAL_CHECK_TOKEN_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "be",
+  "can",
+  "check",
+  "confirm",
+  "from",
+  "in",
+  "is",
+  "manual",
+  "record",
+  "recorded",
+  "required",
+  "that",
+  "the",
+  "to"
+]);
 
 export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel {
-  const blockers = buildBlockers(input);
-  const reviewQueue = buildReviewQueue(input);
-  const questions = buildQuestions(input, blockers);
+  const feedbackEffects = buildFeedbackPolicyEffects(input);
+  const blockers = buildBlockers(input, feedbackEffects);
+  const reviewQueue = buildReviewQueue(input, feedbackEffects);
+  const questions = buildQuestions(input, blockers, feedbackEffects);
   const suggestedComments = buildSuggestedComments(input, blockers);
   const trustAudit = buildTrustAudit(input);
-  const testPlan = buildTestPlan(input);
-  const skimSafe = buildSkimSafe(input);
+  const testPlan = buildTestPlan(input, feedbackEffects);
+  const skimSafe = buildSkimSafe(input, feedbackEffects);
   const verdict = buildVerdict(input, blockers, trustAudit);
   const generatedFrom = buildGeneratedFrom(input);
 
@@ -108,6 +143,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     trust_audit: trustAudit,
     test_plan: testPlan,
     skim_safe: skimSafe,
+    feedback_effects: feedbackEffects,
     generated_from: generatedFrom
   });
 }
@@ -194,7 +230,7 @@ function buildVerdict(input: BuildHumanReviewInput, blockers: ReviewBlocker[], t
   };
 }
 
-function buildBlockers(input: BuildHumanReviewInput): ReviewBlocker[] {
+function buildBlockers(input: BuildHumanReviewInput, feedbackEffects: FeedbackPolicyEffect[]): ReviewBlocker[] {
   const blockers: ReviewBlocker[] = [];
   const prSurface = input.prSurface;
 
@@ -240,10 +276,20 @@ function buildBlockers(input: BuildHumanReviewInput): ReviewBlocker[] {
     });
   }
 
+  for (const effect of feedbackEffects.filter(isMissingTeamPolicyEffect).slice(0, 4)) {
+    blockers.push({
+      id: `BLOCK-${stableFeedbackEffectId(effect.id)}`,
+      severity: "high",
+      summary: effect.summary,
+      evidence: feedbackEffectEvidence(effect),
+      required_action: effect.action
+    });
+  }
+
   return dedupeById(blockers).slice(0, MAX_BLOCKERS);
 }
 
-function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["review_queue"] {
+function buildReviewQueue(input: BuildHumanReviewInput, feedbackEffects: FeedbackPolicyEffect[]): HumanReviewModel["review_queue"] {
   const drafts: QueueDraft[] = [];
   const prChangedPaths = input.prSurface ? prChangedFilePaths(input.prSurface) : undefined;
   const diffIndex = buildDiffIndex(input.diff);
@@ -255,6 +301,7 @@ function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["revie
       continue;
     }
     const anchor = queueAnchorForEvidence(first, diffIndex);
+    const feedbackDowngrade = feedbackFalsePositiveEffectForRisk(risk, feedbackEffects, first.path);
     prRiskQueueItemCount += 1;
     drafts.push({
       title: titleForPrRisk(risk),
@@ -264,17 +311,23 @@ function buildReviewQueue(input: BuildHumanReviewInput): HumanReviewModel["revie
       line_start: anchor.line_start,
       line_end: anchor.line_end,
       reviewer_action: risk.suggested_checks[0] ?? "Inspect the cited changed file before approving.",
-      reason: rankReasonForPrRisk(risk),
-      evidence: evidenceOrMissing(risk.evidence, risk.summary),
+      reason: feedbackDowngrade
+        ? `${rankReasonForPrRisk(risk)} Feedback memory downgraded this review priority but retained the evidence-backed item.`
+        : rankReasonForPrRisk(risk),
+      evidence: feedbackDowngrade
+        ? [...evidenceOrMissing(risk.evidence, risk.summary), ...feedbackDowngrade.evidence]
+        : evidenceOrMissing(risk.evidence, risk.summary),
       requirement_ids: requirementIds(risk.evidence),
       risk_ids: [risk.id],
       confidence: anchor.line_start || anchor.hunk_header ? "high" : "medium",
-      priority: priorityForSeverity(risk.severity),
+      priority: feedbackDowngrade ? "low" : priorityForSeverity(risk.severity),
       estimated_review_effort: effortForSeverity(risk.severity),
-      score: scorePrRisk(risk, anchor),
+      score: scorePrRisk(risk, anchor) + (feedbackDowngrade ? -60 : 0),
       sortKey: `${risk.id}:${first.path}`
     });
   }
+
+  drafts.push(...feedbackReviewQueueDrafts(feedbackEffects, diffIndex));
 
   if (input.prSurface && prRiskQueueItemCount === 0) {
     drafts.push(...changedFileQueueDrafts(input.prSurface, diffIndex));
@@ -365,7 +418,391 @@ function changedFileQueueDrafts(
     });
 }
 
-function buildQuestions(input: BuildHumanReviewInput, blockers: ReviewBlocker[]): ReviewerQuestion[] {
+function buildFeedbackPolicyEffects(input: BuildHumanReviewInput): FeedbackPolicyEffect[] {
+  const drafts: FeedbackPolicyEffectDraft[] = [];
+  const changedFiles = input.prSurface?.scope.changed_files ?? [];
+  const riskRulePaths = buildPrRiskRulePathIndex(input.prSurface);
+
+  for (const feedbackFile of input.feedback ?? []) {
+    for (const policy of feedbackFile.false_positives ?? []) {
+      if (!feedbackFalsePositiveHasSelector(policy)) {
+        continue;
+      }
+      if (!feedbackFalsePositiveConditionSupported(policy.condition)) {
+        continue;
+      }
+      const matcher = buildFeedbackPathMatcher(policy.path_pattern);
+      for (const risk of input.prSurface?.risks.candidates ?? []) {
+        const ruleMatches = policy.rule === undefined || policy.rule === risk.rule;
+        if (!ruleMatches) {
+          continue;
+        }
+        const riskHasPathEvidence = risk.evidence.some((ref) => ref.path);
+        const paths = risk.evidence
+          .filter((ref) => ref.path && matcher.matches(ref.path))
+          .map((ref) => normalizeEvidencePath(String(ref.path)));
+        const fallbackPaths = policy.path_pattern && !riskHasPathEvidence
+          ? changedFiles.filter((file) => matcher.matches(file.path)).map((file) => normalizeEvidencePath(file.path))
+          : [];
+        const matchedPaths = uniqueTruthy([...paths, ...fallbackPaths]);
+        if (policy.path_pattern && matchedPaths.length === 0) {
+          continue;
+        }
+        if (!feedbackFalsePositiveConditionSatisfied(policy.condition, matchedPaths)) {
+          continue;
+        }
+        drafts.push({
+          kind: "false_positive",
+          summary: `Feedback marks ${risk.rule} as noisy${matchedPaths.length ? ` for ${matchedPaths.join(", ")}` : ""}.`,
+          action: feedbackFalsePositiveAction(policy.action),
+          evidence: [...policy.evidence, ...evidenceOrMissing(risk.evidence, risk.summary)],
+          paths: matchedPaths,
+          risk_ids: [risk.id],
+          confidence: "medium"
+        });
+      }
+    }
+
+    for (const policy of feedbackFile.false_negatives ?? []) {
+      const matcher = buildFeedbackPathMatcher(policy.path_pattern);
+      const paths = changedFiles
+        .filter((file) => matcher.matches(file.path))
+        .filter((file) => !policy.desired_rule || !prRiskRuleCoversPath(riskRulePaths, policy.desired_rule, file.path))
+        .map((file) => normalizeEvidencePath(file.path));
+      if (paths.length === 0) {
+        continue;
+      }
+      drafts.push({
+        kind: "false_negative",
+        summary: `${policy.description}${policy.desired_rule ? ` Desired rule: ${policy.desired_rule}.` : ""}`,
+        action: policy.desired_rule ? `Queue reviewer focus for feedback rule ${policy.desired_rule}.` : "Queue reviewer focus from feedback false-negative policy.",
+        evidence: policy.evidence,
+        paths,
+        risk_ids: policy.desired_rule ? [`feedback:${policy.desired_rule}`] : [],
+        confidence: "medium"
+      });
+    }
+
+    for (const policy of feedbackFile.team_policy ?? []) {
+      const matcher = buildFeedbackPathMatcher(policy.path_pattern);
+      const paths = changedFiles
+        .filter((file) => matcher.matches(file.path))
+        .map((file) => normalizeEvidencePath(file.path));
+      if (paths.length === 0 || !policy.required_manual_check) {
+        continue;
+      }
+      const recordedEvidence = recordedManualCheckEvidence(input, policy.required_manual_check);
+      const recorded = recordedEvidence.length > 0;
+      drafts.push({
+        kind: "team_policy",
+        summary: recorded
+          ? `Team policy ${policy.id} matched changed file(s), and matching manual-check evidence is recorded.`
+          : `Team policy ${policy.id} matched changed file(s), but the required manual check is missing.`,
+        action: recorded
+          ? `${MANUAL_CHECK_RECORDED_PREFIX} ${policy.required_manual_check}`
+          : `${RECORD_MANUAL_CHECK_PREFIX} ${policy.required_manual_check}`,
+        evidence: recorded ? [...policy.evidence, ...recordedEvidence] : policy.evidence,
+        paths,
+        risk_ids: [`policy:${policy.id}`],
+        confidence: recorded ? "medium" : "high"
+      });
+    }
+
+    for (const preference of feedbackFile.reviewer_preferences ?? []) {
+      const focusPatterns = reviewerPreferencePathPatterns(preference.key, preference.value);
+      if (focusPatterns.length === 0) {
+        continue;
+      }
+      const matchers = focusPatterns.map(buildFeedbackPathMatcher);
+      const paths = changedFiles
+        .filter((file) => matchers.some((matcher) => matcher.matches(file.path)))
+        .map((file) => normalizeEvidencePath(file.path));
+      if (paths.length === 0) {
+        continue;
+      }
+      drafts.push({
+        kind: "reviewer_preference",
+        summary: `Reviewer preference ${preference.key} matched changed file(s).`,
+        action: FEEDBACK_ACTION_PRIORITIZE_REVIEW_FOCUS,
+        evidence: preference.evidence,
+        paths,
+        risk_ids: [],
+        confidence: "medium"
+      });
+    }
+  }
+
+  return dedupeFeedbackEffects(drafts).slice(0, 12).map((draft, index) => ({
+    id: `FEEDBACK-${String(index + 1).padStart(3, "0")}`,
+    ...draft
+  }));
+}
+
+function feedbackReviewQueueDrafts(
+  feedbackEffects: FeedbackPolicyEffect[],
+  diffIndex: DiffIndex | undefined
+): QueueDraft[] {
+  const drafts: QueueDraft[] = [];
+  const effectToDrafts = (effect: FeedbackPolicyEffect, baseScore: number, priority: HumanReviewPriority): QueueDraft[] =>
+    effect.paths.map((filePath) => {
+      const evidence = fileEvidence(filePath, "Changed file matched reviewer feedback memory.", "medium");
+      const anchor = queueAnchorForEvidence(evidence, diffIndex);
+      return {
+        title: feedbackQueueTitle(effect),
+        path: anchor.path,
+        old_path: anchor.old_path,
+        hunk_header: anchor.hunk_header,
+        line_start: anchor.line_start,
+        line_end: anchor.line_end,
+        reviewer_action: effect.action,
+        reason: effect.summary,
+        evidence: [evidence, ...effect.evidence],
+        requirement_ids: requirementIds(effect.evidence),
+        risk_ids: effect.risk_ids,
+        confidence: anchor.line_start || anchor.hunk_header ? "high" : effect.confidence,
+        priority,
+        estimated_review_effort: priority === "high" ? "moderate" : "quick",
+        score: baseScore + (anchor.line_start ? 8 : 0) + (anchor.hunk_header ? 8 : 0),
+        sortKey: `${effect.id}:${filePath}`
+      };
+    });
+
+  for (const effect of feedbackEffects) {
+    if (effect.kind === "false_negative") {
+      drafts.push(...effectToDrafts(effect, 70, "high"));
+    } else if (isMissingTeamPolicyEffect(effect)) {
+      drafts.push(...effectToDrafts(effect, 78, "high"));
+    } else if (isReviewerPreferenceFocusEffect(effect)) {
+      drafts.push(...effectToDrafts(effect, 55, "medium"));
+    }
+  }
+
+  return dedupeQueueDrafts(drafts);
+}
+
+function feedbackFalsePositiveEffectForRisk(
+  risk: PrRiskCandidate,
+  feedbackEffects: FeedbackPolicyEffect[],
+  anchorPath: string | undefined
+): FeedbackPolicyEffect | undefined {
+  const riskPaths = uniqueTruthy(
+    risk.evidence
+      .filter((ref) => ref.path)
+      .map((ref) => normalizeEvidencePath(String(ref.path)))
+  );
+  const normalizedAnchorPath = anchorPath ? normalizeEvidencePath(anchorPath) : undefined;
+  return feedbackEffects.find((effect) =>
+    effect.kind === "false_positive" &&
+    effect.risk_ids.includes(risk.id) &&
+    (effect.action === FEEDBACK_ACTION_DOWNGRADE_TO_LOW || effect.action === FEEDBACK_ACTION_RETAIN_LOW_PRIORITY) &&
+    feedbackFalsePositiveCoversRiskPaths(effect, riskPaths, normalizedAnchorPath)
+  );
+}
+
+function feedbackFalsePositiveCoversRiskPaths(
+  effect: FeedbackPolicyEffect,
+  riskPaths: string[],
+  anchorPath: string | undefined
+): boolean {
+  if (effect.paths.length === 0) {
+    return true;
+  }
+  const effectPaths = new Set(effect.paths.map((filePath) => normalizeEvidencePath(filePath)));
+  if (riskPaths.length > 1) {
+    return riskPaths.every((filePath) => effectPaths.has(filePath));
+  }
+  return anchorPath ? effectPaths.has(anchorPath) : false;
+}
+
+function feedbackFalsePositiveAction(action: string): string {
+  const normalized = action.trim().toLowerCase();
+  if (normalized === FEEDBACK_ACTION_DOWNGRADE_TO_LOW) {
+    return FEEDBACK_ACTION_DOWNGRADE_TO_LOW;
+  }
+  if (normalized === "suppress" || normalized === "ignore") {
+    return FEEDBACK_ACTION_RETAIN_LOW_PRIORITY;
+  }
+  return normalized || FEEDBACK_ACTION_DOWNGRADE_TO_LOW;
+}
+
+function feedbackFalsePositiveHasSelector(policy: { rule?: string; path_pattern?: string }): boolean {
+  return Boolean(policy.rule?.trim() || policy.path_pattern?.trim());
+}
+
+function feedbackFalsePositiveConditionSupported(condition: string | undefined): boolean {
+  const normalized = condition?.trim().toLowerCase();
+  return !normalized || normalized === "lockfile_only";
+}
+
+function feedbackFalsePositiveConditionSatisfied(condition: string | undefined, matchedPaths: string[]): boolean {
+  const normalized = condition?.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  if (normalized === "lockfile_only") {
+    return matchedPaths.length > 0 && matchedPaths.every(isLockfilePath);
+  }
+  return false;
+}
+
+function isLockfilePath(filePath: string): boolean {
+  const normalizedPath = normalizeEvidencePath(filePath);
+  return /(?:^|\/)(?:pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb|Cargo\.lock)$/.test(normalizedPath);
+}
+
+function isMissingTeamPolicyEffect(effect: FeedbackPolicyEffect): boolean {
+  return effect.kind === "team_policy" && effect.action.startsWith(RECORD_MANUAL_CHECK_PREFIX);
+}
+
+function isReviewerPreferenceFocusEffect(effect: FeedbackPolicyEffect): boolean {
+  return effect.kind === "reviewer_preference" && effect.action === FEEDBACK_ACTION_PRIORITIZE_REVIEW_FOCUS;
+}
+
+function manualCheckQuestionText(action: string): string {
+  return action.replace(new RegExp(`^${escapeRegExp(RECORD_MANUAL_CHECK_PREFIX)}\\s*`), "");
+}
+
+function feedbackQueueTitle(effect: FeedbackPolicyEffect): string {
+  switch (effect.kind) {
+    case "false_negative":
+      return "Feedback-requested review focus";
+    case "team_policy":
+      return "Feedback team policy manual check";
+    case "reviewer_preference":
+      return "Reviewer-preferred review focus";
+    case "false_positive":
+      return "Feedback-downgraded risk";
+  }
+}
+
+function feedbackEffectEvidence(effect: FeedbackPolicyEffect): EvidenceRef[] {
+  return [
+    ...effect.paths.map((filePath) => fileEvidence(filePath, "Feedback policy matched this changed file.", effect.confidence)),
+    ...effect.evidence
+  ];
+}
+
+function stableFeedbackEffectId(id: string): string {
+  return id.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").toUpperCase();
+}
+
+function dedupeFeedbackEffects(drafts: FeedbackPolicyEffectDraft[]): FeedbackPolicyEffectDraft[] {
+  const seen = new Set<string>();
+  const result: FeedbackPolicyEffectDraft[] = [];
+  for (const draft of drafts.sort(compareFeedbackEffectDrafts)) {
+    const key = [
+      draft.kind,
+      draft.action,
+      draft.summary,
+      draft.paths.join(","),
+      draft.risk_ids.join(",")
+    ].join("|");
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(draft);
+  }
+  return result;
+}
+
+function compareFeedbackEffectDrafts(left: FeedbackPolicyEffectDraft, right: FeedbackPolicyEffectDraft): number {
+  return (
+    feedbackEffectKindRank(left.kind) - feedbackEffectKindRank(right.kind) ||
+    compareStrings(left.action, right.action) ||
+    compareStrings(left.summary, right.summary) ||
+    compareStrings(left.paths.join(","), right.paths.join(","))
+  );
+}
+
+function feedbackEffectKindRank(kind: FeedbackPolicyEffect["kind"]): number {
+  switch (kind) {
+    case "team_policy":
+      return 0;
+    case "false_negative":
+      return 1;
+    case "false_positive":
+      return 2;
+    case "reviewer_preference":
+      return 3;
+  }
+}
+
+function dedupeQueueDrafts(drafts: QueueDraft[]): QueueDraft[] {
+  const seen = new Set<string>();
+  const result: QueueDraft[] = [];
+  for (const draft of drafts) {
+    const key = `${draft.path}|${draft.reason}|${draft.reviewer_action}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(draft);
+  }
+  return result;
+}
+
+function buildPrRiskRulePathIndex(prSurface: PrReviewSurfaceModel | undefined): Map<string, Set<string>> {
+  const index = new Map<string, Set<string>>();
+  for (const risk of prSurface?.risks.candidates ?? []) {
+    const paths = risk.evidence
+      .filter((ref) => ref.path)
+      .map((ref) => normalizeEvidencePath(String(ref.path)));
+    if (paths.length === 0) {
+      continue;
+    }
+    const existing = index.get(risk.rule) ?? new Set<string>();
+    for (const filePath of paths) {
+      existing.add(filePath);
+    }
+    index.set(risk.rule, existing);
+  }
+  return index;
+}
+
+function prRiskRuleCoversPath(index: Map<string, Set<string>>, rule: string, filePath: string): boolean {
+  const normalizedPath = normalizeEvidencePath(filePath);
+  return index.get(rule)?.has(normalizedPath) ?? false;
+}
+
+function reviewerPreferencePathPatterns(key: string, value: unknown): string[] {
+  if (key !== "always_review" && key !== "always_prioritize" && key !== "always_review_surfaces") {
+    return [];
+  }
+  if (typeof value === "string") {
+    return [value];
+  }
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+interface FeedbackPathMatcher {
+  matches(filePath: string | undefined): boolean;
+}
+
+function buildFeedbackPathMatcher(pattern: string | undefined): FeedbackPathMatcher {
+  const regex = pattern ? globToRegExp(pattern) : undefined;
+  return {
+    matches(filePath: string | undefined): boolean {
+      if (!filePath) {
+        return false;
+      }
+      if (!regex) {
+        return true;
+      }
+      return regex.test(normalizeEvidencePath(filePath));
+    }
+  };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildQuestions(
+  input: BuildHumanReviewInput,
+  blockers: ReviewBlocker[],
+  feedbackEffects: FeedbackPolicyEffect[]
+): ReviewerQuestion[] {
   const questions: ReviewerQuestion[] = [];
   const focusedGaps = focusedRequirementGaps(input);
 
@@ -395,6 +832,30 @@ function buildQuestions(input: BuildHumanReviewInput, blockers: ReviewBlocker[])
       evidence: [missingEvidence("PR coverage base_available=false.")],
       maps_to_risks: [],
       maps_to_requirements: input.prSurface.coverage.deltas.map((delta) => delta.acai_id ?? delta.requirement_id).slice(0, 8)
+    });
+  }
+
+  for (const effect of feedbackEffects.filter(isMissingTeamPolicyEffect).slice(0, 3)) {
+    questions.push({
+      id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
+      severity: "blocking",
+      question: `What current-head evidence records this team-policy manual check: ${manualCheckQuestionText(effect.action)}?`,
+      reason: effect.summary,
+      evidence: feedbackEffectEvidence(effect),
+      maps_to_risks: effect.risk_ids,
+      maps_to_requirements: requirementIds(effect.evidence)
+    });
+  }
+
+  for (const effect of feedbackEffects.filter((effect) => effect.kind === "false_negative").slice(0, 3)) {
+    questions.push({
+      id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
+      severity: "clarifying",
+      question: `Should ${effect.paths.map((filePath) => `\`${filePath}\``).join(", ")} be reviewed under this feedback policy before approval?`,
+      reason: effect.summary,
+      evidence: feedbackEffectEvidence(effect),
+      maps_to_risks: effect.risk_ids,
+      maps_to_requirements: requirementIds(effect.evidence)
     });
   }
 
@@ -598,7 +1059,7 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
   };
 }
 
-function buildTestPlan(input: BuildHumanReviewInput): TestPlanItem[] {
+function buildTestPlan(input: BuildHumanReviewInput, feedbackEffects: FeedbackPolicyEffect[]): TestPlanItem[] {
   const items: TestPlanItem[] = [];
   const candidates: TestPlanCandidate[] = [];
 
@@ -659,6 +1120,22 @@ function buildTestPlan(input: BuildHumanReviewInput): TestPlanItem[] {
         maps_to_requirements: compactStrings([gap.acai_id, gap.requirement_id]),
         maps_to_risks: [],
         evidence_gap: gap.summary
+      }
+    });
+  }
+
+  for (const [index, effect] of feedbackEffects.filter(isMissingTeamPolicyEffect).entries()) {
+    candidates.push({
+      sourceRank: 4,
+      sortKey: rankedSortKey(index, effect.id),
+      draft: {
+        kind: "manual",
+        priority: "required",
+        scenario: effect.action,
+        expected_result: "Reviewer records the files inspected, conclusion, and any follow-up action in local feedback for the current head.",
+        maps_to_requirements: requirementIds(effect.evidence),
+        maps_to_risks: effect.risk_ids,
+        evidence_gap: effect.summary
       }
     });
   }
@@ -851,7 +1328,7 @@ function withSuggestedCommentId(index: number, draft: SuggestedCommentDraft): Su
   });
 }
 
-function buildSkimSafe(input: BuildHumanReviewInput): HumanReviewModel["skim_safe"] {
+function buildSkimSafe(input: BuildHumanReviewInput, feedbackEffects: FeedbackPolicyEffect[]): HumanReviewModel["skim_safe"] {
   const highRiskPaths = new Set<string>();
   for (const item of [...(input.prSurface?.risks.candidates ?? []), ...input.packet.risks.items]) {
     if (item.severity === "high" || item.severity === "critical") {
@@ -862,9 +1339,16 @@ function buildSkimSafe(input: BuildHumanReviewInput): HumanReviewModel["skim_saf
       }
     }
   }
+  const feedbackFocusPaths = new Set(
+    feedbackEffects
+      .filter((effect) => effect.kind === "false_negative" || effect.kind === "team_policy" || isReviewerPreferenceFocusEffect(effect))
+      .flatMap((effect) => effect.paths)
+      .map((filePath) => normalizeEvidencePath(filePath))
+  );
 
   return (input.prSurface?.scope.changed_files ?? [])
     .filter((file) => !highRiskPaths.has(file.path))
+    .filter((file) => !feedbackFocusPaths.has(normalizeEvidencePath(file.path)))
     .filter((file) => isSkimSafeCandidate(file.path, file.role))
     .slice(0, 8)
     .map((file) => ({
@@ -1509,11 +1993,83 @@ function questionSeverityForRisk(severity: PacketSeverity): ReviewerQuestion["se
 }
 
 function hasRecordedCiSecretBoundaryManualCheck(input: BuildHumanReviewInput): boolean {
+  return recordedManualCheckRecords(input).some((record) => looksLikeRecordedCiSecretBoundaryManualCheck(record.text));
+}
+
+function recordedManualCheckEvidence(input: BuildHumanReviewInput, requiredManualCheck: string): EvidenceRef[] {
+  const requiredTokens = normalizedManualCheckTokens(requiredManualCheck);
+  if (requiredTokens.length === 0) {
+    return [];
+  }
+  for (const record of recordedManualCheckRecords(input)) {
+    if (!looksLikePositiveManualCheckRecord(record.text)) {
+      continue;
+    }
+    const textTokens = new Set(normalizedManualCheckTokens(record.text));
+    if (requiredTokens.every((token) => textTokens.has(token))) {
+      return record.evidence;
+    }
+  }
+  return [];
+}
+
+function recordedManualCheckRecords(input: BuildHumanReviewInput): ManualCheckRecord[] {
   const headSha = currentHeadSha(input);
-  return input.packet.risks.test_evidence
-    .filter((item) => item.kind === "direct" || item.kind === "indirect")
-    .flatMap((item) => manualCheckEvidenceText(item.evidence ?? [], headSha))
-    .some((text) => looksLikeRecordedCiSecretBoundaryManualCheck(text));
+  return [
+    ...input.packet.risks.test_evidence
+      .filter((item) => item.kind === "direct" || item.kind === "indirect")
+      .flatMap((item) => manualCheckEvidenceRecords(item.evidence ?? [], headSha)),
+    ...(input.feedback ?? [])
+      .filter((feedbackFile) => feedbackFileAppliesToHead(feedbackFile, headSha))
+      .flatMap((feedbackFile) =>
+        (feedbackFile.validation?.notes ?? []).map((note, index) => ({
+          text: note,
+          evidence: [
+            feedbackEvidence(feedbackFile.path, note, {
+              eventId: `validation-note:${index + 1}`,
+              sha: headSha
+            })
+          ]
+        }))
+      )
+  ];
+}
+
+function feedbackFileAppliesToHead(feedbackFile: FeedbackFile, headSha: string): boolean {
+  return headSha !== "unknown" && feedbackFile.head_sha === headSha;
+}
+
+function looksLikePositiveManualCheckRecord(value: string): boolean {
+  const normalized = value.toLowerCase();
+  if (/\b(?:unable|could not|cannot|can't)\s+(?:to\s+)?(?:confirm|verify)\b/.test(normalized)) {
+    return false;
+  }
+  if (/\bnot\s+(?:confirmed|verified|safe|completed|recorded|reviewed|inspected)\b/.test(normalized)) {
+    return false;
+  }
+  if (/\bno\s+(?:manual\s+)?check\s+(?:recorded|completed|reviewed|inspected|verified)\b/.test(normalized)) {
+    return false;
+  }
+  if (/\b(?:failed|unsafe|unverified|unconfirmed|unresolved|pending|planned|planning|todo|missing evidence|no evidence)\b/.test(normalized)) {
+    return false;
+  }
+  if (/\b(?:reviewed|inspected)\s+(?:whether|if|to)\b/.test(normalized)) {
+    return false;
+  }
+  return (
+    /\bmanual check\s+(?:recorded|completed|confirmed|verified|passed)\b/.test(normalized) ||
+    /\b(?:confirmed|verified)\b.*\b(?:safe|isolated|cannot access|no secrets?|does not leak|protected)\b/.test(normalized) ||
+    /\b(?:reviewed|inspected)\b.*\b(?:confirmed|verified|safe|no secrets?|cannot access|does not leak)\b/.test(normalized)
+  );
+}
+
+function normalizedManualCheckTokens(value: string): string[] {
+  return uniqueTruthy(
+    value
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((token) => token.length >= 3 && !MANUAL_CHECK_TOKEN_STOP_WORDS.has(token))
+  );
 }
 
 function currentHeadSha(input: BuildHumanReviewInput): string {
@@ -1521,13 +2077,18 @@ function currentHeadSha(input: BuildHumanReviewInput): string {
   return input.prSurface?.scope.head_sha ?? stringOr(manifest.head_sha, "unknown");
 }
 
-function manualCheckEvidenceText(evidence: EvidenceRef[], headSha: string): string[] {
+function manualCheckEvidenceRecords(evidence: EvidenceRef[], headSha: string): ManualCheckRecord[] {
   if (headSha === "unknown") {
     return [];
   }
   return evidence
     .filter((ref) => ref.kind === "feedback" && ref.validation_status !== "invalid" && ref.sha === headSha)
-    .flatMap((ref) => compactStrings([ref.note]));
+    .flatMap((ref) =>
+      compactStrings([ref.note]).map((text) => ({
+        text,
+        evidence: [ref]
+      }))
+    );
 }
 
 function focusedRequirementGaps(input: BuildHumanReviewInput): RequirementGap[] {
