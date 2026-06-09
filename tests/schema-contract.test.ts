@@ -30,6 +30,7 @@ import { VERSION } from "../src/core/version";
 import { fullyPopulatedReviewPacket, minimalReviewPacket } from "./helpers/review-packet";
 
 const schema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "review_packet.schema.json"), "utf8"));
+const humanReviewSchema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "human_review.schema.json"), "utf8"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as { version: string };
 
 const enumContracts: Array<{
@@ -181,6 +182,42 @@ test("a review packet with the wrong schema_version fails schema validation", ()
   const bad = { ...minimalReviewPacket(), schema_version: "review-surfaces.packet.vX" };
   const result = validateJsonSchema(schema, bad);
   assert.equal(result.valid, false);
+});
+
+test("human review schema remains compatible with prior v1 artifacts without risk lenses", () => {
+  const priorV1HumanReview = {
+    schema_version: "review-surfaces.human_review.v1",
+    mode: "pr",
+    verdict: {
+      decision: "needs_author_clarification",
+      confidence: "medium",
+      reasons: []
+    },
+    summary: "Prior v1 human review artifact fixture.",
+    review_queue: [],
+    blockers: [],
+    questions: [],
+    suggested_comments: [],
+    trust_audit: {
+      verified_facts: [],
+      claimed_not_verified: [],
+      missing_evidence: [],
+      invalid_evidence: [],
+      confidence_summary: "No prior risk-lens field."
+    },
+    test_plan: [],
+    skim_safe: [],
+    generated_from: {
+      packet_path: ".review-surfaces/review_packet.json",
+      pr_surface_path: ".review-surfaces/pr_review_surface.json",
+      base_ref: "origin/main",
+      head_ref: "HEAD",
+      head_sha: "abc123"
+    }
+  };
+
+  const result = validateJsonSchema(humanReviewSchema, priorV1HumanReview);
+  assert.equal(result.valid, true, JSON.stringify(result.issues));
 });
 
 // Ties the runtime VERSION constant into the packet contract: the manifest's

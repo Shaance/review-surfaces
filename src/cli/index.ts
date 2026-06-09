@@ -150,6 +150,7 @@ async function main(): Promise<number> {
     case "queue":
     case "comments":
     case "trust":
+    case "risk-lenses":
     case "test-plan":
       await runHumanSubartifactStage(parsed);
       return ExitCodes.success;

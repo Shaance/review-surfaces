@@ -8,6 +8,7 @@ import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import {
   HUMAN_STANDALONE_ARTIFACTS,
   renderHumanReviewMarkdown,
+  renderRiskLensesMarkdown,
   renderReviewQueueMarkdown,
   writeHumanReviewArtifacts
 } from "../src/human/render";
@@ -23,6 +24,7 @@ import {
   HUMAN_REVIEW_PRIORITIES,
   HUMAN_REVIEW_SCHEMA_VERSION,
   REVIEWER_QUESTION_SEVERITIES,
+  RISK_LENSES,
   SUGGESTED_COMMENT_SEVERITIES
 } from "../src/human/contract";
 import {
@@ -291,6 +293,9 @@ test("human review model is schema-valid and starts with deterministic readiness
   assert.ok(model.suggested_comments.length > 0);
   assert.ok(model.suggested_comments.every((comment) => comment.evidence.length > 0));
   assert.ok(model.trust_audit.claimed_not_verified.length > 0);
+  assert.ok(model.risk_lens_findings.some((finding) => finding.lens === "security_privacy"));
+  assert.ok(model.risk_lens_findings.some((finding) => finding.lens === "api_contract"));
+  assert.ok(model.risk_lens_findings.every((finding) => finding.evidence.length > 0));
   assert.ok(model.test_plan.some((item) => item.kind === "manual" && item.priority === "required"));
   assert.ok(model.skim_safe.some((item) => item.path === "docs/notes.md"));
 
@@ -310,6 +315,8 @@ test("human review Markdown renders a compact cockpit surface", () => {
   assert.match(markdown, /Hunk: `@@ -10,3 \+10,5 @@`/);
   assert.match(markdown, /## Trust audit/);
   assert.match(markdown, /Claimed but not verified/);
+  assert.match(markdown, /## Risk lenses/);
+  assert.match(markdown, /Security \/ privacy lens/);
   assert.match(markdown, /## Suggested comments/);
   for (const artifact of HUMAN_STANDALONE_ARTIFACTS) {
     assert.match(markdown, new RegExp(`${artifact.label}: \`\\.review-surfaces/${artifact.artifact}\``));
@@ -402,6 +409,129 @@ test("PR mode queues changed implementation files when no PR risk candidate fire
   assert.deepEqual(changedImpl.risk_ids, []);
   assert.ok(changedImpl.requirement_ids.includes("review-surfaces.HUMAN_REVIEW.1"));
   assert.ok(broadRiskIndex > changedImplIndex, "broad packet risk remains available below precise changed-file actions");
+});
+
+test("risk lenses fire from changed paths even when no PR risk candidate fires", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files = [
+    {
+      path: "src/llm/pr-narrative.ts",
+      status: "M",
+      areas: ["PROVIDERS"],
+      role: "implementation",
+      added_lines: 8,
+      deleted_lines: 2
+    },
+    {
+      path: "src/collector/artifact-provenance.ts",
+      status: "M",
+      areas: ["CACHE"],
+      role: "implementation",
+      added_lines: 6,
+      deleted_lines: 1
+    },
+    {
+      path: "src/cli/index.ts",
+      status: "M",
+      areas: ["CLI"],
+      role: "implementation",
+      added_lines: 4,
+      deleted_lines: 1
+    }
+  ];
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface });
+  const llmLens = model.risk_lens_findings.find((finding) => finding.lens === "llm_trust_boundary");
+  const cacheLens = model.risk_lens_findings.find((finding) => finding.lens === "cache_provenance");
+  const apiLens = model.risk_lens_findings.find((finding) => finding.lens === "api_contract");
+
+  assert.ok(llmLens);
+  assert.deepEqual(llmLens.risk_ids, []);
+  assert.ok(llmLens.paths.includes("src/llm/pr-narrative.ts"));
+  assert.ok(llmLens.suggested_tests.some((item) => item.suggested_file === "tests/pr-narrative.test.ts"));
+  assert.ok(llmLens.suggested_comments.every((comment) => comment.evidence.length > 0));
+
+  assert.ok(cacheLens);
+  assert.ok(cacheLens.paths.includes("src/collector/artifact-provenance.ts"));
+  assert.ok(cacheLens.suggested_tests.some((item) => item.suggested_file === "tests/artifact-provenance-input-hardening.test.ts"));
+
+  assert.ok(apiLens);
+  assert.ok(apiLens.paths.includes("src/cli/index.ts"));
+
+  assert.ok(model.questions.some((question) => /fabricated LLM paths/.test(question.question)));
+  assert.ok(model.suggested_comments.some((comment) => /LLM trust-boundary lens/.test(comment.body)));
+  assert.ok(model.test_plan.some((item) => item.maps_to_risks.length === 0 && item.suggested_file === "tests/pr-narrative.test.ts"));
+});
+
+test("risk lenses classify renamed source paths as review signals", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files = [
+    {
+      path: "src/provider-impl.ts",
+      old_path: "src/llm/provider.ts",
+      status: "R",
+      areas: ["PROVIDERS"],
+      role: "implementation",
+      added_lines: 8,
+      deleted_lines: 8
+    },
+    {
+      path: "src/schema-output.ts",
+      old_path: "schemas/legacy-review.json",
+      status: "R",
+      areas: ["HUMAN_REVIEW"],
+      role: "implementation",
+      added_lines: 4,
+      deleted_lines: 4
+    }
+  ];
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface });
+  const llmLens = model.risk_lens_findings.find((finding) => finding.lens === "llm_trust_boundary");
+  const apiLens = model.risk_lens_findings.find((finding) => finding.lens === "api_contract");
+
+  assert.ok(llmLens);
+  assert.ok(llmLens.paths.includes("src/provider-impl.ts"));
+  assert.ok(llmLens.paths.includes("src/llm/provider.ts"));
+  assert.equal(llmLens.evidence[0]?.path, "src/provider-impl.ts");
+  assert.match(llmLens.evidence[0]?.note ?? "", /renamed from src\/llm\/provider\.ts/);
+
+  assert.ok(apiLens);
+  assert.ok(apiLens.paths.includes("src/schema-output.ts"));
+  assert.ok(apiLens.paths.includes("schemas/legacy-review.json"));
+});
+
+test("reviewer UX lens prefers renderer fixtures over schema fixtures", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files = [
+    {
+      path: "schemas/human_review.schema.json",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "spec",
+      added_lines: 4,
+      deleted_lines: 1
+    },
+    {
+      path: "src/human/render.ts",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "implementation",
+      added_lines: 6,
+      deleted_lines: 2
+    }
+  ];
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface });
+  const uxLens = model.risk_lens_findings.find((finding) => finding.lens === "reviewer_ux");
+
+  assert.ok(uxLens);
+  assert.equal(uxLens.suggested_tests[0]?.suggested_file, "tests/human-review.test.ts");
+  assert.equal(uxLens.suggested_comments[0]?.path, "src/human/render.ts");
+  assert.ok(model.suggested_comments.some((comment) => comment.body.includes("reviewer UX lens") && comment.path === "src/human/render.ts"));
 });
 
 test("PR mode queues changed files when PR risk candidates are pathless", () => {
@@ -1320,19 +1450,23 @@ test("human review schema enums stay aligned with runtime contract constants", (
   assert.deepEqual(schema.$defs.question.properties.severity.enum, [...REVIEWER_QUESTION_SEVERITIES]);
   assert.deepEqual(schema.$defs.suggestedComment.properties.severity.enum, [...SUGGESTED_COMMENT_SEVERITIES]);
   assert.deepEqual(schema.$defs.feedbackEffect.properties.kind.enum, [...FEEDBACK_POLICY_EFFECT_KINDS]);
+  assert.deepEqual(schema.$defs.riskLensFinding.properties.lens.enum, [...RISK_LENSES]);
   assert.deepEqual(schema.$defs.confidence.enum, [...PACKET_CONFIDENCE_LEVELS]);
   assert.deepEqual(schema.$defs.severity.enum, [...PACKET_SEVERITIES]);
   assert.deepEqual(schema.$defs.evidenceRef.properties.kind.enum, [...PACKET_EVIDENCE_KINDS]);
   assert.deepEqual(schema.$defs.evidenceRef.properties.validation_status.enum, [...PACKET_VALIDATION_STATUSES]);
 });
 
-test("human review schema accepts prior v1 artifacts without feedback effects", () => {
+test("human review schema accepts prior v1 artifacts without optional fields", () => {
   const model = JSON.parse(JSON.stringify(buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture() }))) as Record<string, unknown>;
   delete model.feedback_effects;
+  delete model.risk_lens_findings;
 
   const result = validateJsonSchema(schema, model);
 
   assert.equal(result.valid, true);
+  assert.match(renderHumanReviewMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /No domain risk lenses fired/);
+  assert.match(renderRiskLensesMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /No domain risk lenses fired/);
 });
 
 test("human trust gaps suggest human review tests, not PR tests from incidental substrings", () => {
@@ -1719,9 +1853,13 @@ test("invalid PR risk evidence is not rendered as a verified trust fact", () => 
   const model = buildHumanReview({ packet: packetFixture(), prSurface: surface });
   const verifiedSummaries = model.trust_audit.verified_facts.map((fact) => fact.summary).join("\n");
   const invalidSummaries = model.trust_audit.invalid_evidence.map((item) => item.summary).join("\n");
+  const apiLens = model.risk_lens_findings.find((finding) => finding.lens === "api_contract");
 
   assert.doesNotMatch(verifiedSummaries, /PR-RISK-SCHEMA/);
   assert.match(invalidSummaries, /PR-RISK-SCHEMA: PR risk evidence is invalid or not deterministic/);
+  assert.ok(apiLens);
+  assert.equal(apiLens.confidence, "low");
+  assert.equal(apiLens.suggested_comments.every((comment) => !comment.ready_to_post), true);
 });
 
 test("trust audit reserves capped verified slots for deterministic PR risk facts", () => {

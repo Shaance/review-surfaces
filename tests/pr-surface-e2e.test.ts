@@ -70,6 +70,7 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
       queue: "JSON sentinel queue title",
       comments: "JSON sentinel suggested comment",
       trust: "JSON sentinel trust summary",
+      "risk-lenses": "JSON sentinel risk lens",
       "test-plan": "JSON sentinel test plan"
     };
     for (const artifact of HUMAN_STANDALONE_ARTIFACTS) {
@@ -89,6 +90,23 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
         };
       } else if (artifact.command === "trust") {
         human.trust_audit.confidence_summary = marker;
+      } else if (artifact.command === "risk-lenses") {
+        human.risk_lens_findings = [
+          {
+            id: "LENS-SENTINEL",
+            lens: "custom",
+            severity: "low",
+            summary: marker,
+            reviewer_action: "Focused renderer reads human_review.json.",
+            evidence: [{ kind: "unknown", confidence: "low", note: "JSON sentinel evidence." }],
+            suggested_tests: [],
+            suggested_comments: [],
+            risk_ids: [],
+            requirement_ids: [],
+            paths: [],
+            confidence: "low"
+          }
+        ];
       } else if (artifact.command === "test-plan") {
         human.test_plan[0] = {
           id: "TEST-SENTINEL",

@@ -24,6 +24,53 @@ export type SuggestedCommentSeverity = (typeof SUGGESTED_COMMENT_SEVERITIES)[num
 export const FEEDBACK_POLICY_EFFECT_KINDS = ["false_positive", "false_negative", "team_policy", "reviewer_preference"] as const;
 export type FeedbackPolicyEffectKind = (typeof FEEDBACK_POLICY_EFFECT_KINDS)[number];
 
+export const RISK_LENSES = [
+  "api_contract",
+  "security_privacy",
+  "llm_trust_boundary",
+  "test_evidence",
+  "reviewer_ux",
+  "cache_provenance",
+  "custom"
+] as const;
+export type RiskLens = (typeof RISK_LENSES)[number];
+
+export interface RiskLensMetadata {
+  label: string;
+  rank: number;
+}
+
+export const RISK_LENS_METADATA: Record<RiskLens, RiskLensMetadata> = {
+  security_privacy: {
+    label: "Security / privacy lens",
+    rank: 0
+  },
+  llm_trust_boundary: {
+    label: "LLM trust-boundary lens",
+    rank: 1
+  },
+  api_contract: {
+    label: "API / schema contract lens",
+    rank: 2
+  },
+  test_evidence: {
+    label: "Test evidence lens",
+    rank: 3
+  },
+  reviewer_ux: {
+    label: "Reviewer UX lens",
+    rank: 4
+  },
+  cache_provenance: {
+    label: "Cache / provenance lens",
+    rank: 5
+  },
+  custom: {
+    label: "Custom lens",
+    rank: 6
+  }
+};
+
 export interface HumanReviewVerdictReason {
   id: string;
   severity: PacketSeverity;
@@ -136,6 +183,21 @@ export interface TestPlanItem {
   evidence_gap: string;
 }
 
+export interface RiskLensFinding {
+  id: string;
+  lens: RiskLens;
+  severity: PacketSeverity;
+  summary: string;
+  reviewer_action: string;
+  evidence: EvidenceRef[];
+  suggested_tests: TestPlanItem[];
+  suggested_comments: SuggestedReviewComment[];
+  risk_ids: string[];
+  requirement_ids: string[];
+  paths: string[];
+  confidence: PacketConfidence;
+}
+
 export interface SkimSafeItem {
   path: string;
   reason: string;
@@ -165,6 +227,7 @@ export interface HumanReviewModel {
   questions: ReviewerQuestion[];
   suggested_comments: SuggestedReviewComment[];
   trust_audit: TrustAudit;
+  risk_lens_findings: RiskLensFinding[];
   test_plan: TestPlanItem[];
   skim_safe: SkimSafeItem[];
   feedback_effects: FeedbackPolicyEffect[];

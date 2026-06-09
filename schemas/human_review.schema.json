@@ -81,6 +81,12 @@
     "trust_audit": {
       "$ref": "#/$defs/trustAudit"
     },
+    "risk_lens_findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/riskLensFinding"
+      }
+    },
     "test_plan": {
       "type": "array",
       "items": {
@@ -401,6 +407,66 @@
           "items": { "type": "string" }
         },
         "evidence_gap": { "type": "string" }
+      }
+    },
+    "riskLensFinding": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "lens",
+        "severity",
+        "summary",
+        "reviewer_action",
+        "evidence",
+        "suggested_tests",
+        "suggested_comments",
+        "risk_ids",
+        "requirement_ids",
+        "paths",
+        "confidence"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "lens": {
+          "enum": [
+            "api_contract",
+            "security_privacy",
+            "llm_trust_boundary",
+            "test_evidence",
+            "reviewer_ux",
+            "cache_provenance",
+            "custom"
+          ]
+        },
+        "severity": { "$ref": "#/$defs/severity" },
+        "summary": { "type": "string" },
+        "reviewer_action": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "suggested_tests": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/testPlanItem" }
+        },
+        "suggested_comments": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/suggestedComment" }
+        },
+        "risk_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "requirement_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "paths": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "confidence": { "$ref": "#/$defs/confidence" }
       }
     },
     "skimSafeItem": {
