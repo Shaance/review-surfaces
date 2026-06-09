@@ -1,5 +1,5 @@
 const FOCUSED_TEST_TARGET_PATTERN = /(?:^|\s)(?:(?:dist\/)?tests|test|src|lib|app|packages)\/\S+|(?:^|\s)\S+\.(?:test|spec)\.[cm]?[jt]sx?(?:\s|$)/;
-const TEST_NAME_FILTER_PATTERN = /(?:^|\s)(?:--test-name-pattern|--grep|-t)(?:=|\s)/;
+const TEST_NAME_FILTER_PATTERN = /(?:^|\s)(?:--test-name-pattern|--testNamePattern|--grep|-t)(?:=|\s)/;
 const TEST_SCRIPT_ALIAS_PATTERN = /^(?:run\s+)?test:([\w.:-]+)(?:\s|$)/;
 
 export function normalizeCommand(command: string): string {
@@ -24,6 +24,10 @@ export function commandLooksLikeFocusedTestCommand(command: string): boolean {
   const testScriptAlias = packageCommandBody.match(TEST_SCRIPT_ALIAS_PATTERN)?.[1];
   const hasPackageFocusFilter = parsedPackageCommand?.hasFocusFilter === true
     || packageCommandBodyHasFocusFilter(parsedPackageCommand);
+  const execNodeTestCommand = packageManagerExecNodeTestCommand(packageCommandBody);
+  if (execNodeTestCommand !== undefined) {
+    return hasPackageFocusFilter || (nodeTestFocusClassification(execNodeTestCommand) ?? false);
+  }
   return (hasPackageFocusFilter && commandLooksLikeTestCommand(normalized))
     || (testScriptAlias !== undefined && !looksLikeBroadTestScriptAlias(testScriptAlias))
     || hasFocusedTestTarget(normalized)
@@ -87,11 +91,12 @@ function parsedPackageManagerCommand(normalized: string): ParsedPackageManagerCo
 }
 
 function packageManagerBodyLooksLikeTest(body: string): boolean {
-  return /^(?:(?:run\s+)?test(?::[\w.:-]+)?|exec\s+(?:vitest|jest|tap|uvu))(?:\s|$)/.test(body);
+  return /^(?:(?:run\s+)?test(?::[\w.:-]+)?|exec\s+(?:--\s+)?(?:vitest|jest|tap|uvu))(?:\s|$)/.test(body)
+    || packageManagerExecNodeTestCommand(body) !== undefined;
 }
 
 function packageCommandBodyHasFocusFilter(parsed: ParsedPackageManagerCommand | undefined): boolean {
-  if (!parsed) {
+  if (!parsed || parsed.manager !== "npm" || !/^(?:run\s+)?test(?::[\w.:-]+)?(?:\s|$)/.test(parsed.body)) {
     return false;
   }
   for (const token of parsed.body.split(" ").filter(Boolean)) {
@@ -103,6 +108,14 @@ function packageCommandBodyHasFocusFilter(parsed: ParsedPackageManagerCommand | 
     }
   }
   return false;
+}
+
+function packageManagerExecNodeTestCommand(body: string): string | undefined {
+  const match = body.match(/^exec\s+(?:--\s+)?(node\s+.*)$/);
+  if (!match) {
+    return undefined;
+  }
+  return nodeTestArgs(match[1]) !== undefined ? match[1] : undefined;
 }
 
 function packageManagerOptionIsFocusFilter(manager: string, option: string): boolean {
@@ -141,7 +154,7 @@ function nodeTestFocusClassification(normalized: string): boolean | undefined {
 }
 
 function hasFocusedTestTarget(value: string): boolean {
-  return FOCUSED_TEST_TARGET_PATTERN.test(value);
+  return focusedTestTargetTokens(value).some((token) => !nodeTestGlobLooksBroad(token) && FOCUSED_TEST_TARGET_PATTERN.test(` ${token} `));
 }
 
 function hasTestNameFilter(value: string): boolean {
@@ -223,4 +236,44 @@ function cleanCommandToken(token: string): string {
 function nodeTestGlobLooksBroad(token: string): boolean {
   const normalized = cleanCommandToken(token).replace(/^\.\//, "");
   return /^(?:dist\/)?tests\/(?:\*\*\/)?\*\.(?:test|spec)\.[cm]?[jt]sx?$/.test(normalized);
+}
+
+function focusedTestTargetTokens(value: string): string[] {
+  const tokens = value.split(" ").filter(Boolean);
+  const targets: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token === "--") {
+      targets.push(...tokens.slice(index + 1).map(cleanCommandToken));
+      break;
+    }
+    if (token.startsWith("-")) {
+      if (runnerOptionConsumesNext(token)) {
+        index += 1;
+      }
+      continue;
+    }
+    targets.push(cleanCommandToken(token));
+  }
+  return targets;
+}
+
+function runnerOptionConsumesNext(option: string): boolean {
+  if (option.includes("=")) {
+    return false;
+  }
+  return [
+    "-c",
+    "--cacheDirectory",
+    "--config",
+    "--coverageDirectory",
+    "--dir",
+    "--environment",
+    "--outputFile",
+    "--reporter",
+    "--root",
+    "--setupFilesAfterEnv",
+    "--testEnvironment",
+    "--workspace"
+  ].includes(option);
 }
