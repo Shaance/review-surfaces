@@ -60,6 +60,9 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeTestCommand("node --test \"**/*.test.js\""), true);
   assert.equal(commandLooksLikeBroadTestCommand("node --test \"**/*.test.js\""), true);
   assert.equal(commandLooksLikeFocusedTestCommand("node --test \"**/*.test.js\""), false);
+  assert.equal(commandLooksLikeTestCommand("node --test \"test/**/*.test.js\""), true);
+  assert.equal(commandLooksLikeBroadTestCommand("node --test \"test/**/*.test.js\""), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("node --test \"test/**/*.test.js\""), false);
   assert.equal(commandLooksLikeTestCommand("node --test --test-reporter-destination tests/results.tap"), true);
   assert.equal(commandLooksLikeBroadTestCommand("node --test --test-reporter-destination tests/results.tap"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("node --test --test-reporter-destination tests/results.tap"), false);
@@ -68,6 +71,8 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeFocusedTestCommand("node --test --test-coverage-exclude src/generated.ts dist/tests/*.test.js"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("node --test 'tests/risks/*.test.js'"), true);
   assert.equal(commandLooksLikeBroadTestCommand("node --test 'tests/risks/*.test.js'"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("node --test 'test/risks/*.test.js'"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("node --test 'test/risks/*.test.js'"), false);
   assert.equal(commandLooksLikeTestCommand("pnpm exec vitest src/risks"), true);
   assert.equal(commandLooksLikeBroadTestCommand("pnpm exec vitest src/risks"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm exec vitest src/risks"), true);

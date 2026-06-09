@@ -263,7 +263,7 @@ function cleanCommandToken(token: string): string {
 
 function nodeTestGlobLooksBroad(token: string): boolean {
   const normalized = cleanCommandToken(token).replace(/^\.\//, "");
-  return /^(?:(?:dist\/)?tests\/(?:\*\*\/)?|(?:\*\*\/)?)\*\.(?:test|spec)\.[cm]?[jt]sx?$/.test(normalized);
+  return /^(?:(?:dist\/)?tests\/(?:\*\*\/)?|test\/\*\*\/|(?:\*\*\/)?)\*\.(?:test|spec)\.[cm]?[jt]sx?$/.test(normalized);
 }
 
 function focusedTestTargetTokens(value: string): string[] {
