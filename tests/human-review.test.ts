@@ -12,7 +12,7 @@ import {
   writeHumanReviewArtifacts
 } from "../src/human/render";
 import { ReviewPacket } from "../src/render/packet";
-import { PrReviewSurfaceModel, PR_SURFACE_SCHEMA_VERSION } from "../src/pr/contract";
+import { PrReviewSurfaceModel, PR_RISK_RULES, PrRiskRule, PR_SURFACE_SCHEMA_VERSION } from "../src/pr/contract";
 import { commandEvidence, feedbackEvidence, fileEvidence, missingEvidence } from "../src/evidence/evidence";
 import { validateJsonSchema } from "../src/schema/json-schema";
 import { minimalReviewPacket } from "./helpers/review-packet";
@@ -959,3 +959,206 @@ test("human trust gaps suggest human review tests, not PR tests from incidental 
   assert.equal(model.test_plan[0].maps_to_requirements.includes("review-surfaces.HUMAN_TRUST.1"), true);
   assert.equal(model.test_plan[0].suggested_file, "tests/human-review.test.ts");
 });
+
+test("human test plan synthesizes concrete checks for every PR risk rule", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = PR_RISK_RULES.map((rule) => prRiskFixture(rule));
+
+  const model = buildHumanReview({ packet, prSurface: surface });
+  const byRisk = new Map(model.test_plan.flatMap((item) => item.maps_to_risks.map((riskId) => [riskId, item] as const)));
+
+  assert.equal(surface.risks.candidates.length, PR_RISK_RULES.length);
+  assert.equal(byRisk.get("PR-RISK-COVERAGE")?.suggested_file, "tests/scoped-coverage.test.ts");
+  assert.equal(byRisk.get("PR-RISK-COVERAGE")?.priority, "required");
+  assert.equal(byRisk.get("PR-RISK-UNTESTED")?.suggested_file, "tests/human-review.test.ts");
+  assert.equal(byRisk.get("PR-RISK-UNTESTED")?.priority, "required");
+  assert.equal(byRisk.get("PR-RISK-UNMAPPED")?.kind, "manual");
+  assert.equal(byRisk.get("PR-RISK-PRIVACY")?.suggested_file, "tests/privacy.test.ts");
+  assert.equal(byRisk.get("PR-RISK-COMMENT")?.suggested_file, "tests/pr-comment.test.ts");
+  assert.equal(byRisk.get("PR-RISK-CI")?.kind, "manual");
+  assert.equal(byRisk.get("PR-RISK-SCHEMA")?.suggested_file, "tests/schema-contract.test.ts");
+  assert.equal(byRisk.get("PR-RISK-DELETE")?.command, "pnpm run test -- tests/human-review.test.ts");
+  assert.equal(byRisk.get("PR-RISK-TEST")?.command, "pnpm run test");
+  assert.equal(byRisk.get("PR-RISK-LARGE")?.priority, "optional");
+  assert.equal(model.test_plan.every((item) => item.maps_to_risks.length > 0), true);
+});
+
+test("human trust audit records concrete deterministic PR risk firings", () => {
+  const surface = prSurfaceFixture();
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface });
+  const verifiedSummaries = model.trust_audit.verified_facts.map((fact) => fact.summary).join("\n");
+
+  assert.match(verifiedSummaries, /Deterministic PR risk PR-RISK-001 \(ci_secret_boundary_change\) fired/);
+  assert.match(verifiedSummaries, /Deterministic PR risk PR-RISK-002 \(schema_contract_change\) fired/);
+  assert.doesNotMatch(verifiedSummaries, /PR-RISK-003 \(large_diff\) fired/);
+});
+
+test("required PR risk checks stay visible when the test plan is capped", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [
+    ...Array.from({ length: 12 }, (_, index) => ({
+      ...prRiskFixture("untested_changed_impl"),
+      id: `PR-RISK-UNTESTED-${String(index + 1).padStart(3, "0")}`,
+      evidence: [fileEvidence(`src/human/impl-${index + 1}.ts`, "Untested implementation change.")]
+    })),
+    prRiskFixture("ci_secret_boundary_change")
+  ];
+
+  const model = buildHumanReview({ packet, prSurface: surface });
+
+  assert.equal(model.test_plan.length, 12);
+  assert.ok(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-CI")));
+  assert.equal(model.test_plan.find((item) => item.maps_to_risks.includes("PR-RISK-CI"))?.kind, "manual");
+});
+
+test("coverage-regression test plan maps requirements from scoped deltas when risk evidence is path-only", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.coverage.deltas = [
+    {
+      requirement_id: "REQ-HUMAN-REGRESSED",
+      acai_id: "review-surfaces.HUMAN_REVIEW.REGRESSION",
+      base_status: "satisfied",
+      head_status: "partial",
+      delta: "regressed",
+      reasons: ["path-only evidence"],
+      head_evidence: [fileEvidence("src/human/human-review.ts", "Head evidence without ACID.")],
+      missing_evidence: []
+    }
+  ];
+  surface.risks.candidates = [{
+    ...prRiskFixture("coverage_regression"),
+    evidence: [fileEvidence("src/human/human-review.ts", "Path-only coverage evidence.")]
+  }];
+
+  const model = buildHumanReview({ packet, prSurface: surface });
+  const item = model.test_plan.find((testItem) => testItem.maps_to_risks.includes("PR-RISK-COVERAGE"));
+
+  assert.ok(item);
+  assert.ok(item.maps_to_requirements.includes("review-surfaces.HUMAN_REVIEW.REGRESSION"));
+});
+
+test("invalid PR risk evidence is not rendered as a verified trust fact", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [{
+    ...prRiskFixture("schema_contract_change"),
+    evidence: [{
+      ...fileEvidence("schemas/human_review.schema.json", "Invalid schema evidence."),
+      validation_status: "invalid"
+    }]
+  }];
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface });
+  const verifiedSummaries = model.trust_audit.verified_facts.map((fact) => fact.summary).join("\n");
+  const invalidSummaries = model.trust_audit.invalid_evidence.map((item) => item.summary).join("\n");
+
+  assert.doesNotMatch(verifiedSummaries, /PR-RISK-SCHEMA/);
+  assert.match(invalidSummaries, /PR-RISK-SCHEMA: PR risk evidence is invalid or not deterministic/);
+});
+
+function prRiskFixture(rule: PrRiskRule): PrReviewSurfaceModel["risks"]["candidates"][number] {
+  const fixtures = {
+    coverage_regression: {
+      id: "PR-RISK-COVERAGE",
+      category: "testing",
+      severity: "high",
+      summary: "Coverage regressed for review-surfaces.HUMAN_REVIEW.1.",
+      evidence: [{ kind: "spec", acai_id: "review-surfaces.HUMAN_REVIEW.1", note: "Coverage regressed.", confidence: "high", validation_status: "valid" }],
+      suggested_checks: ["Restore coverage."]
+    },
+    untested_changed_impl: {
+      id: "PR-RISK-UNTESTED",
+      category: "testing",
+      severity: "medium",
+      summary: "Implementation file changed without a co-changed test.",
+      evidence: [fileEvidence("src/human/human-review.ts", "Untested implementation change.")],
+      suggested_checks: ["Add a focused test."]
+    },
+    unmapped_change: {
+      id: "PR-RISK-UNMAPPED",
+      category: "workflow",
+      severity: "low",
+      summary: "A changed file is unmapped.",
+      evidence: [fileEvidence("scripts/review-helper.ts", "Unmapped file.")],
+      suggested_checks: ["Map or defer the file."]
+    },
+    privacy_sensitive_change: {
+      id: "PR-RISK-PRIVACY",
+      category: "privacy",
+      severity: "high",
+      summary: "Privacy-sensitive file changed.",
+      evidence: [fileEvidence("src/privacy/secrets.ts", "Privacy-sensitive changed file.")],
+      suggested_checks: ["Verify redaction."]
+    },
+    comment_surface_change: {
+      id: "PR-RISK-COMMENT",
+      category: "maintainability",
+      severity: "medium",
+      summary: "Reviewer comment surface changed.",
+      evidence: [fileEvidence("src/render/pr-comment.ts", "Comment renderer changed.")],
+      suggested_checks: ["Render the comment."]
+    },
+    ci_secret_boundary_change: {
+      id: "PR-RISK-CI",
+      category: "security",
+      severity: "high",
+      summary: "CI secret boundary changed.",
+      evidence: [fileEvidence(".github/workflows/review-surfaces-pr.yml", "Workflow changed.")],
+      suggested_checks: ["Record manual check."]
+    },
+    schema_contract_change: {
+      id: "PR-RISK-SCHEMA",
+      category: "architecture",
+      severity: "medium",
+      summary: "Schema contract changed.",
+      evidence: [fileEvidence("schemas/human_review.schema.json", "Schema changed.")],
+      suggested_checks: ["Add compatibility fixture."]
+    },
+    deleted_or_renamed_surface: {
+      id: "PR-RISK-DELETE",
+      category: "maintainability",
+      severity: "low",
+      summary: "Implementation surface was renamed.",
+      evidence: [fileEvidence("src/old-human.ts", "Renamed implementation file.")],
+      suggested_checks: ["Check stale references."]
+    },
+    failed_or_skipped_test: {
+      id: "PR-RISK-TEST",
+      category: "testing",
+      severity: "high",
+      summary: "Parsed test results report one failed test.",
+      evidence: [missingEvidence("Test totals: 1 failed out of 100 cases.")],
+      suggested_checks: ["Fix failing tests."]
+    },
+    large_diff: {
+      id: "PR-RISK-LARGE",
+      category: "maintainability",
+      severity: "low",
+      summary: "Large diff exceeds review threshold.",
+      evidence: [missingEvidence("Diff size exceeded threshold.")],
+      suggested_checks: ["Allocate extra review time."]
+    }
+  } satisfies Record<PrRiskRule, Omit<PrReviewSurfaceModel["risks"]["candidates"][number], "rule">>;
+
+  return { rule, ...fixtures[rule] };
+}
