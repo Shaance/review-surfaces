@@ -18,6 +18,9 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeTestCommand("pnpm run test:privacy"), true);
   assert.equal(commandLooksLikeBroadTestCommand("pnpm run test:privacy"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm run test:privacy"), true);
+  assert.equal(commandLooksLikeTestCommand("pnpm run test:unit:api"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("pnpm run test:unit:api"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm run test:unit:api"), true);
 
   assert.equal(commandLooksLikeTestCommand("node --test dist/tests/pr-risks.test.js"), true);
   assert.equal(commandLooksLikeBroadTestCommand("node --test dist/tests/pr-risks.test.js"), false);
@@ -26,6 +29,10 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeBroadTestCommand("node --test dist/tests/*.test.js"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("node --test dist/tests/*.test.js"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("node --test --test-name-pattern risk dist/tests/*.test.js"), true);
+  assert.equal(commandLooksLikeTestCommand("node --test --test-reporter-destination tests/results.tap"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("node --test --test-reporter-destination tests/results.tap"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("node --test --test-reporter-destination tests/results.tap"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("node --test --test-reporter tap dist/tests/pr-risks.test.js"), true);
   assert.equal(commandLooksLikeTestCommand("pnpm exec vitest src/risks"), true);
   assert.equal(commandLooksLikeBroadTestCommand("pnpm exec vitest src/risks"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm exec vitest src/risks"), true);

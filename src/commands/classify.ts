@@ -1,5 +1,6 @@
 const FOCUSED_TEST_TARGET_PATTERN = /(?:^|\s)(?:(?:dist\/)?tests|test|src|lib|app|packages)\/\S+|(?:^|\s)\S+\.(?:test|spec)\.[cm]?[jt]sx?(?:\s|$)/;
 const TEST_NAME_FILTER_PATTERN = /(?:^|\s)(?:--test-name-pattern|--grep|-t)(?:=|\s)/;
+const TEST_SCRIPT_ALIAS_PATTERN = /^(?:run\s+)?test:([\w.:-]+)(?:\s|$)/;
 
 export function normalizeCommand(command: string): string {
   return command.trim().replace(/\s+/g, " ");
@@ -19,7 +20,7 @@ export function commandLooksLikeFocusedTestCommand(command: string): boolean {
   }
   const parsedPackageCommand = parsedPackageManagerCommand(normalized);
   const packageCommandBody = parsedPackageCommand?.body ?? "";
-  const testScriptAlias = packageCommandBody.match(/^(?:run\s+)?test:([\w.-]+)(?:\s|$)/)?.[1];
+  const testScriptAlias = packageCommandBody.match(TEST_SCRIPT_ALIAS_PATTERN)?.[1];
   const hasPackageFocusFilter = parsedPackageCommand?.hasFocusFilter === true
     || packageCommandBodyHasFocusFilter(parsedPackageCommand);
   return (hasPackageFocusFilter && commandLooksLikeTestCommand(normalized))
@@ -85,7 +86,7 @@ function parsedPackageManagerCommand(normalized: string): ParsedPackageManagerCo
 }
 
 function packageManagerBodyLooksLikeTest(body: string): boolean {
-  return /^(?:(?:run\s+)?test(?::[\w.-]+)?|exec\s+(?:vitest|jest|tap|uvu))(?:\s|$)/.test(body);
+  return /^(?:(?:run\s+)?test(?::[\w.:-]+)?|exec\s+(?:vitest|jest|tap|uvu))(?:\s|$)/.test(body);
 }
 
 function packageCommandBodyHasFocusFilter(parsed: ParsedPackageManagerCommand | undefined): boolean {
@@ -128,14 +129,14 @@ function nodeTestFocusClassification(normalized: string): boolean | undefined {
   if (hasTestNameFilter(args)) {
     return true;
   }
-  const positionalArgs = args.split(" ").filter((token) => token !== "" && token !== "--" && !token.startsWith("-"));
+  const positionalArgs = nodeTestPositionalArgs(args);
   if (positionalArgs.length === 0) {
     return false;
   }
   if (positionalArgs.every((token) => token.includes("*"))) {
     return false;
   }
-  return hasFocusedTestTarget(args);
+  return hasFocusedTestTarget(positionalArgs.join(" "));
 }
 
 function hasFocusedTestTarget(value: string): boolean {
@@ -144,4 +145,35 @@ function hasFocusedTestTarget(value: string): boolean {
 
 function hasTestNameFilter(value: string): boolean {
   return TEST_NAME_FILTER_PATTERN.test(value);
+}
+
+function nodeTestPositionalArgs(args: string): string[] {
+  const tokens = args.split(" ").filter(Boolean);
+  const positionals: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token === "--") {
+      positionals.push(...tokens.slice(index + 1));
+      break;
+    }
+    if (token.startsWith("-")) {
+      if (nodeTestOptionConsumesNext(token)) {
+        index += 1;
+      }
+      continue;
+    }
+    positionals.push(token);
+  }
+  return positionals;
+}
+
+function nodeTestOptionConsumesNext(option: string): boolean {
+  if (option.includes("=")) {
+    return false;
+  }
+  return [
+    "--test-reporter",
+    "--test-reporter-destination",
+    "--test-shard"
+  ].includes(option);
 }
