@@ -19,7 +19,7 @@ import {
 } from "../src/human/render";
 import { ReviewPacket } from "../src/render/packet";
 import { PrReviewSurfaceModel, PR_RISK_RULES, PrRiskRule, PR_SURFACE_SCHEMA_VERSION } from "../src/pr/contract";
-import { commandEvidence, feedbackEvidence, fileEvidence, missingEvidence } from "../src/evidence/evidence";
+import { commandEvidence, feedbackEvidence, fileEvidence, missingEvidence, testEvidence } from "../src/evidence/evidence";
 import { validateJsonSchema } from "../src/schema/json-schema";
 import { analyzeRisks } from "../src/risks/risks";
 import { minimalReviewPacket } from "./helpers/review-packet";
@@ -2706,6 +2706,38 @@ test("human trust audit records concrete deterministic PR risk firings", () => {
   assert.match(verifiedSummaries, /Deterministic PR risk PR-RISK-001 \(ci_secret_boundary_change\) fired/);
   assert.match(verifiedSummaries, /Deterministic PR risk PR-RISK-002 \(schema_contract_change\) fired/);
   assert.doesNotMatch(verifiedSummaries, /PR-RISK-003 \(large_diff\) fired/);
+});
+
+test("human trust audit ignores claimed artifact-generation commands but keeps claimed validation commands", () => {
+  const packet = packetFixture();
+  packet.methodology.claims_without_evidence = [];
+  packet.risks.test_evidence = [
+    {
+      id: "TEST-CMD-001",
+      kind: "claimed",
+      summary: "Command invoked by this run context: review-surfaces all --review-scope pr --provider mock --dogfood",
+      evidence: [commandEvidence("review-surfaces all --review-scope pr --provider mock --dogfood", "Artifact generation command.", "medium")]
+    },
+    {
+      id: "TEST-CMD-002",
+      kind: "claimed",
+      summary: "Command invoked by this run context: pnpm run test:fast",
+      evidence: [commandEvidence("pnpm run test:fast", "Validation command without captured output.", "medium")]
+    },
+    {
+      id: "TEST-CLAIM-003",
+      kind: "claimed",
+      summary: "Skipped test result requires reviewer attention.",
+      evidence: [testEvidence("tests/human-review.test.ts", "Skipped test result was parsed without command evidence.")]
+    }
+  ];
+
+  const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
+  const claims = model.trust_audit.claimed_not_verified.map((claim) => claim.claim).join("\n");
+
+  assert.doesNotMatch(claims, /review-surfaces all/);
+  assert.match(claims, /pnpm run test:fast/);
+  assert.match(claims, /Skipped test result/);
 });
 
 test("required PR risk checks stay visible when the test plan is capped", () => {

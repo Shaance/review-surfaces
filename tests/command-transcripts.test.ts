@@ -205,6 +205,40 @@ test("review-surfaces.RISK.2 uses the actual commands.json path for custom outpu
   assert.equal(risks.test_evidence[0].evidence?.[0].path, "custom-out/inputs/commands.json");
 });
 
+test("review-surfaces.RISK.2 only records untranscripted validation-like commands as claimed test evidence", () => {
+  const collection = {
+    changedFiles: [],
+    feedback: [],
+    commandTranscriptOutputPath: ".review-surfaces/inputs/commands.json",
+    commandTranscripts: []
+  } as unknown as CollectionResult;
+  const evaluation: EvaluationModel = {
+    summary: "no results",
+    results: [],
+    overreach: [],
+    acai_coverage: {}
+  };
+
+  const risks = analyzeRisks(collection, evaluation, [
+    "review-surfaces all --review-scope pr --provider mock --dogfood --out .review-surfaces",
+    "pnpm run test:fast",
+    "pnpm run build:fast"
+  ]);
+
+  assert.equal(risks.test_evidence.length, 2);
+  assert.deepEqual(
+    risks.test_evidence.map((item) => item.summary),
+    [
+      "Command invoked by this run context: pnpm run test:fast",
+      "Command invoked by this run context: pnpm run build:fast"
+    ]
+  );
+  assert.ok(
+    !risks.test_evidence.some((item) => item.summary.includes("review-surfaces all")),
+    "artifact-generation commands are methodology/provenance, not claimed test evidence"
+  );
+});
+
 test("review-surfaces.METHODOLOGY.5 feeds unverified methodology claims into risk focus", () => {
   const collection = {
     changedFiles: [],

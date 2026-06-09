@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { commandLooksLikeLocalValidationCommand } from "../commands/classify";
 import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
@@ -2625,7 +2626,7 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
       evidence: input.packet.methodology.evidence.length ? input.packet.methodology.evidence.slice(0, 3) : [missingEvidence("Methodology claim lacks evidence.")]
     })),
     ...input.packet.risks.test_evidence
-      .filter((item) => item.kind === "claimed")
+      .filter(isClaimedValidationEvidence)
       .map((item, index) => ({
         id: `TRUST-CLAIM-TEST-${String(index + 1).padStart(3, "0")}`,
         claim: item.summary,
@@ -2645,6 +2646,19 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
     invalid_evidence: invalid,
     confidence_summary: confidenceSummary(verified.length, claimed.length, missing.length, invalid.length)
   };
+}
+
+function isClaimedValidationEvidence(item: RisksModel["test_evidence"][number]): boolean {
+  if (item.kind !== "claimed") {
+    return false;
+  }
+  const commands = (item.evidence ?? [])
+    .map((ref) => ref.command)
+    .filter((command): command is string => typeof command === "string" && command.length > 0);
+  if (commands.length === 0) {
+    return true;
+  }
+  return commands.some(commandLooksLikeLocalValidationCommand);
 }
 
 function buildTestPlan(
