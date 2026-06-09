@@ -250,6 +250,9 @@ components:
       16:
         requirement: Human review configuration must support bounded reviewer-facing caps and deterministic risk-lens toggles without changing the default local-first behavior.
         note: Invalid or absent config values must fall back to safe defaults, and disabled risk lenses must remove lens-derived actions rather than hiding underlying deterministic evidence.
+      17:
+        requirement: Human review configuration must support required manual checks triggered by changed-path patterns.
+        note: Missing configured manual checks must appear as deterministic blockers, reviewer questions, and required manual test-plan items until current-head evidence records the check.
 
   PROVIDERS:
     name: Later provider integrations

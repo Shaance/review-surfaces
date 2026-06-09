@@ -159,10 +159,18 @@ human_review:
     test_evidence: true
     reviewer_ux: true
     cache_provenance: true
+  required_manual_checks:
+    - id: ci_secret_boundary
+      path_patterns:
+        - .github/workflows/**
+      prompt: Confirm PR-controlled code cannot access secrets.
 ```
 
 `human_review.md` still renders a compact top seven from the model; this cap
-controls the generated JSON and full `review_queue.md`.
+controls the generated JSON and full `review_queue.md`. Required manual checks
+matched by changed paths become blockers, reviewer questions, and required
+manual test-plan items until current-head feedback or transcript evidence records
+the check.
 
 ## Providers
 

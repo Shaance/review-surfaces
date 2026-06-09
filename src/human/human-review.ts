@@ -158,6 +158,8 @@ const MAX_RISK_LENS_FINDINGS = 12;
 const MAX_RISK_LENS_PATHS = 12;
 const MAX_FOCUSED_REQUIREMENT_TESTS = 6;
 const MAX_CHANGED_FILE_QUEUE = 8;
+const MAX_FEEDBACK_EFFECTS = 12;
+const MAX_MISSING_TEAM_POLICY_QUESTION_EFFECTS = 3;
 const FEEDBACK_ACTION_DOWNGRADE_TO_LOW = "downgrade_to_low";
 const FEEDBACK_ACTION_RETAIN_LOW_PRIORITY = "retain_low_priority";
 const FEEDBACK_ACTION_PRIORITIZE_REVIEW_FOCUS = "prioritize_review_focus";
@@ -239,7 +241,7 @@ const REVIEW_ROUTE_DEFINITIONS: Record<ReviewRoutePersona, ReviewRouteDefinition
 };
 export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel {
   const config = humanReviewBuildConfig(input);
-  const feedbackEffects = buildFeedbackPolicyEffects(input);
+  const feedbackEffects = buildFeedbackPolicyEffects(input, config);
   const riskLensFindings = buildRiskLensFindings(input, config);
   const blockers = buildBlockers(input, feedbackEffects);
   const reviewQueue = buildReviewQueue(input, feedbackEffects, config);
@@ -315,6 +317,11 @@ export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): str
     max_questions: resolved.max_questions,
     max_review_first: resolved.max_review_first,
     max_suggested_comments: resolved.max_suggested_comments,
+    required_manual_checks: resolved.required_manual_checks.map((check) => ({
+      id: check.id,
+      path_patterns: check.path_patterns,
+      prompt: check.prompt
+    })),
     risk_lenses: RISK_LENSES.map((lens) => [lens, resolved.risk_lenses[lens]])
   };
   return crypto.createHash("sha256").update(JSON.stringify(fingerprint)).digest("hex");
@@ -1319,10 +1326,33 @@ function changedFileQueueDrafts(
     });
 }
 
-function buildFeedbackPolicyEffects(input: BuildHumanReviewInput): FeedbackPolicyEffect[] {
+function buildFeedbackPolicyEffects(input: BuildHumanReviewInput, config: HumanReviewBuildConfig): FeedbackPolicyEffect[] {
   const drafts: FeedbackPolicyEffectDraft[] = [];
   const changedFiles = input.prSurface?.scope.changed_files ?? [];
-  const riskRulePaths = buildPrRiskRulePathIndex(input.prSurface);
+  let riskRulePaths: Map<string, Set<string>> | undefined;
+
+  for (const policy of config.required_manual_checks) {
+    const matchers = policy.path_patterns.map(buildFeedbackPathMatcher);
+    const paths = changedFilePathsMatchingAny(changedFiles, matchers);
+    if (paths.length === 0) {
+      continue;
+    }
+    const recordedEvidence = recordedManualCheckEvidence(input, policy.prompt);
+    const recorded = recordedEvidence.length > 0;
+    drafts.push({
+      kind: "team_policy",
+      summary: recorded
+        ? `Configured manual check ${policy.id} matched changed file(s), and matching manual-check evidence is recorded.`
+        : `Configured manual check ${policy.id} matched changed file(s), but the required manual check is missing.`,
+      action: recorded
+        ? `${MANUAL_CHECK_RECORDED_PREFIX} ${policy.prompt}`
+        : `${RECORD_MANUAL_CHECK_PREFIX} ${policy.prompt}`,
+      evidence: recordedEvidence,
+      paths,
+      risk_ids: [`config:${policy.id}`],
+      confidence: recorded ? "medium" : "high"
+    });
+  }
 
   for (const feedbackFile of input.feedback ?? []) {
     for (const policy of feedbackFile.false_positives ?? []) {
@@ -1343,7 +1373,7 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput): FeedbackPolic
           .filter((ref) => ref.path && matcher.matches(ref.path))
           .map((ref) => normalizeEvidencePath(String(ref.path)));
         const fallbackPaths = policy.path_pattern && !riskHasPathEvidence
-          ? changedFiles.filter((file) => matcher.matches(file.path)).map((file) => normalizeEvidencePath(file.path))
+          ? changedFilePathsMatchingAny(changedFiles, [matcher])
           : [];
         const matchedPaths = uniqueTruthy([...paths, ...fallbackPaths]);
         if (policy.path_pattern && matchedPaths.length === 0) {
@@ -1366,10 +1396,20 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput): FeedbackPolic
 
     for (const policy of feedbackFile.false_negatives ?? []) {
       const matcher = buildFeedbackPathMatcher(policy.path_pattern);
+      const desiredRule = policy.desired_rule;
       const paths = changedFiles
-        .filter((file) => matcher.matches(file.path))
-        .filter((file) => !policy.desired_rule || !prRiskRuleCoversPath(riskRulePaths, policy.desired_rule, file.path))
-        .map((file) => normalizeEvidencePath(file.path));
+        .flatMap((file) => {
+          const matchedPaths = changedFilePathsMatchedByPolicy(file, [matcher]);
+          if (matchedPaths.length === 0) {
+            return [];
+          }
+          if (desiredRule) {
+            const rulePaths = riskRulePaths ?? buildPrRiskRulePathIndex(input.prSurface);
+            riskRulePaths = rulePaths;
+            return matchedPaths.filter((filePath) => !prRiskRuleCoversPath(rulePaths, desiredRule, filePath));
+          }
+          return matchedPaths;
+        });
       if (paths.length === 0) {
         continue;
       }
@@ -1386,9 +1426,7 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput): FeedbackPolic
 
     for (const policy of feedbackFile.team_policy ?? []) {
       const matcher = buildFeedbackPathMatcher(policy.path_pattern);
-      const paths = changedFiles
-        .filter((file) => matcher.matches(file.path))
-        .map((file) => normalizeEvidencePath(file.path));
+      const paths = changedFilePathsMatchingAny(changedFiles, [matcher]);
       if (paths.length === 0 || !policy.required_manual_check) {
         continue;
       }
@@ -1415,9 +1453,7 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput): FeedbackPolic
         continue;
       }
       const matchers = focusPatterns.map(buildFeedbackPathMatcher);
-      const paths = changedFiles
-        .filter((file) => matchers.some((matcher) => matcher.matches(file.path)))
-        .map((file) => normalizeEvidencePath(file.path));
+      const paths = changedFilePathsMatchingAny(changedFiles, matchers);
       if (paths.length === 0) {
         continue;
       }
@@ -1433,7 +1469,14 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput): FeedbackPolic
     }
   }
 
-  return dedupeFeedbackEffects(drafts).slice(0, 12).map((draft, index) => ({
+  const deduped = dedupeFeedbackEffects(drafts);
+  const requiredMissing = boundedMissingTeamPolicyEffects(deduped.filter(isMissingTeamPolicyEffect));
+  const optional = deduped.filter((draft) => !isMissingTeamPolicyEffect(draft));
+  const capped = [
+    ...requiredMissing,
+    ...optional.slice(0, Math.max(0, MAX_FEEDBACK_EFFECTS - requiredMissing.length))
+  ];
+  return capped.map((draft, index) => ({
     id: `FEEDBACK-${String(index + 1).padStart(3, "0")}`,
     ...draft
   }));
@@ -2053,7 +2096,7 @@ function isLockfilePath(filePath: string): boolean {
   return /(?:^|\/)(?:pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb|Cargo\.lock)$/.test(normalizedPath);
 }
 
-function isMissingTeamPolicyEffect(effect: FeedbackPolicyEffect): boolean {
+function isMissingTeamPolicyEffect(effect: Pick<FeedbackPolicyEffect, "kind" | "action">): boolean {
   return effect.kind === "team_policy" && effect.action.startsWith(RECORD_MANUAL_CHECK_PREFIX);
 }
 
@@ -2105,6 +2148,71 @@ function dedupeFeedbackEffects(drafts: FeedbackPolicyEffectDraft[]): FeedbackPol
     }
     seen.add(key);
     result.push(draft);
+  }
+  return result;
+}
+
+function boundedMissingTeamPolicyEffects(drafts: FeedbackPolicyEffectDraft[]): FeedbackPolicyEffectDraft[] {
+  if (drafts.length <= MAX_MISSING_TEAM_POLICY_QUESTION_EFFECTS) {
+    return drafts;
+  }
+  const visible = drafts.slice(0, MAX_MISSING_TEAM_POLICY_QUESTION_EFFECTS - 1);
+  const overflow = drafts.slice(MAX_MISSING_TEAM_POLICY_QUESTION_EFFECTS - 1);
+  return [foldMissingTeamPolicyEffects(overflow), ...visible];
+}
+
+function foldMissingTeamPolicyEffects(drafts: FeedbackPolicyEffectDraft[]): FeedbackPolicyEffectDraft {
+  const riskIds = uniqueTruthy(drafts.flatMap((draft) => draft.risk_ids)).sort(compareStrings);
+  const paths = uniqueTruthy(drafts.flatMap((draft) => draft.paths)).sort(compareStrings);
+  const preview = riskIds.slice(0, 4).join(", ");
+  const suffix = riskIds.length > 4 ? `, and ${riskIds.length - 4} more` : "";
+  const configured = riskIds.every((id) => id.startsWith("config:"));
+  const feedbackPolicies = riskIds.every((id) => id.startsWith("policy:"));
+  const label = configured
+    ? "configured manual check"
+    : feedbackPolicies
+      ? "feedback policy manual check"
+      : "required manual check";
+  return {
+    kind: "team_policy",
+    summary: `${drafts.length} additional ${label}(s) matched changed file(s), but the required manual checks are missing${preview ? `: ${preview}${suffix}.` : "."}`,
+    action: `${RECORD_MANUAL_CHECK_PREFIX} ${drafts.length} additional ${label}(s) are missing: ${foldedManualCheckProcedure(drafts)}`,
+    evidence: uniqueEvidenceRefs(drafts.flatMap((draft) => draft.evidence)).slice(0, 8),
+    paths,
+    risk_ids: riskIds,
+    confidence: "high"
+  };
+}
+
+function foldedManualCheckProcedure(drafts: FeedbackPolicyEffectDraft[]): string {
+  const items = drafts.map((draft) => ({
+    riskId: draft.risk_ids[0] ?? "policy",
+    prompt: manualCheckPromptFromAction(draft.action)
+  }));
+  const visible = items.slice(0, 5).map((item) => {
+    return item.prompt ? `${item.riskId}: ${item.prompt}` : item.riskId;
+  });
+  const suffix = items.length > 5 ? `; and ${items.length - 5} more policy ID(s): ${items.slice(5).map((item) => item.riskId).join(", ")}` : "";
+  return `${visible.join("; ")}${suffix}.`;
+}
+
+function manualCheckPromptFromAction(action: string): string | undefined {
+  if (action.startsWith(RECORD_MANUAL_CHECK_PREFIX)) {
+    return action.slice(RECORD_MANUAL_CHECK_PREFIX.length).trim();
+  }
+  return undefined;
+}
+
+function uniqueEvidenceRefs(evidence: EvidenceRef[]): EvidenceRef[] {
+  const seen = new Set<string>();
+  const result: EvidenceRef[] = [];
+  for (const ref of evidence) {
+    const key = JSON.stringify(ref);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(ref);
   }
   return result;
 }
@@ -2180,6 +2288,23 @@ function reviewerPreferencePathPatterns(key: string, value: unknown): string[] {
 
 interface FeedbackPathMatcher {
   matches(filePath: string | undefined): boolean;
+}
+
+function changedFilePathsMatchingAny(changedFiles: PrChangedFile[], matchers: FeedbackPathMatcher[]): string[] {
+  return uniqueTruthy(changedFiles.flatMap((file) => changedFileMatchedPaths(file, matchers)));
+}
+
+function changedFileMatchedPaths(file: PrChangedFile, matchers: FeedbackPathMatcher[]): string[] {
+  const paths = compactStrings([file.path, file.old_path]).map((filePath) => normalizeEvidencePath(filePath));
+  return paths.some((filePath) => matchers.some((matcher) => matcher.matches(filePath))) ? uniqueTruthy(paths) : [];
+}
+
+function changedFilePathsMatchedByPolicy(file: PrChangedFile, matchers: FeedbackPathMatcher[]): string[] {
+  return uniqueTruthy(
+    compactStrings([file.path, file.old_path])
+      .map((filePath) => normalizeEvidencePath(filePath))
+      .filter((filePath) => matchers.some((matcher) => matcher.matches(filePath)))
+  );
 }
 
 function buildFeedbackPathMatcher(pattern: string | undefined): FeedbackPathMatcher {
@@ -2604,7 +2729,7 @@ function buildTestPlan(
 
   for (const [index, effect] of feedbackEffects.filter(isMissingTeamPolicyEffect).entries()) {
     candidates.push({
-      sourceRank: 5,
+      sourceRank: -1,
       sortKey: rankedSortKey(index, effect.id),
       draft: {
         kind: "manual",
@@ -3476,7 +3601,7 @@ function questionSeverityForRisk(severity: PacketSeverity): ReviewerQuestion["se
 }
 
 function hasRecordedCiSecretBoundaryManualCheck(input: BuildHumanReviewInput): boolean {
-  return recordedManualCheckRecords(input).some((record) => looksLikeRecordedCiSecretBoundaryManualCheck(record.text));
+  return recordedManualCheckRecords(input, { includeCommandEvidence: false }).some((record) => looksLikeRecordedCiSecretBoundaryManualCheck(record.text));
 }
 
 function recordedManualCheckEvidence(input: BuildHumanReviewInput, requiredManualCheck: string): EvidenceRef[] {
@@ -3496,12 +3621,12 @@ function recordedManualCheckEvidence(input: BuildHumanReviewInput, requiredManua
   return [];
 }
 
-function recordedManualCheckRecords(input: BuildHumanReviewInput): ManualCheckRecord[] {
+function recordedManualCheckRecords(input: BuildHumanReviewInput, options: { includeCommandEvidence?: boolean } = {}): ManualCheckRecord[] {
   const headSha = currentHeadSha(input);
   return [
     ...input.packet.risks.test_evidence
       .filter((item) => item.kind === "direct" || item.kind === "indirect")
-      .flatMap((item) => manualCheckEvidenceRecords(item.evidence ?? [], headSha)),
+      .flatMap((item) => manualCheckEvidenceRecords(item.evidence ?? [], headSha, options)),
     ...(input.feedback ?? [])
       .filter((feedbackFile) => feedbackFileAppliesToHead(feedbackFile, headSha))
       .flatMap((feedbackFile) =>
@@ -3560,11 +3685,15 @@ function currentHeadSha(input: BuildHumanReviewInput): string {
   return input.prSurface?.scope.head_sha ?? stringOr(manifest.head_sha, "unknown");
 }
 
-function manualCheckEvidenceRecords(evidence: EvidenceRef[], headSha: string): ManualCheckRecord[] {
+function manualCheckEvidenceRecords(
+  evidence: EvidenceRef[],
+  headSha: string,
+  options: { includeCommandEvidence?: boolean } = {}
+): ManualCheckRecord[] {
   if (headSha === "unknown") {
     return [];
   }
-  return evidence
+  const feedbackRecords = evidence
     .filter((ref) => ref.kind === "feedback" && ref.validation_status !== "invalid" && ref.sha === headSha)
     .flatMap((ref) =>
       compactStrings([ref.note]).map((text) => ({
@@ -3572,6 +3701,25 @@ function manualCheckEvidenceRecords(evidence: EvidenceRef[], headSha: string): M
         evidence: [ref]
       }))
     );
+  const commandRecords = options.includeCommandEvidence === false ? [] : evidence
+    .filter((ref) =>
+      ref.kind === "command" &&
+      ref.validation_status === "valid" &&
+      ref.sha === headSha &&
+      commandEvidenceRecordsPassingTranscript(ref)
+    )
+    .flatMap((ref) =>
+      compactStrings([ref.command, ref.note]).map((text) => ({
+        text,
+        evidence: [ref]
+      }))
+    );
+  return [...feedbackRecords, ...commandRecords];
+}
+
+function commandEvidenceRecordsPassingTranscript(ref: EvidenceRef): boolean {
+  const note = ref.note?.toLowerCase() ?? "";
+  return /\bexit_code=0\b/.test(note) && /\bstatus=passed\b/.test(note);
 }
 
 function focusedRequirementGaps(input: BuildHumanReviewInput): RequirementGap[] {

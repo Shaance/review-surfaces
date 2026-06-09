@@ -31,12 +31,14 @@ test("review-surfaces.CLI.7 records a passing command as a bounded transcript", 
     args: [process.execPath, "-e", "console.log('runner-ok')"],
     id: "CMD-RUN-001",
     streamOutput: false,
+    headSha: "1111111111111111111111111111111111111111",
     now: sequenceNow("2026-05-28T12:00:00.000Z", "2026-05-28T12:00:00.250Z")
   });
 
   assert.equal(result.exitCode, 0);
   assert.equal(result.transcript.id, "CMD-RUN-001");
   assert.equal(result.transcript.status, "passed");
+  assert.equal(result.transcript.head_sha, "1111111111111111111111111111111111111111");
   assert.equal(result.transcript.duration_ms, 250);
   assert.match(result.transcript.stdout_excerpt ?? "", /runner-ok/);
   assert.match(result.transcript.stdout_hash ?? "", /^[a-f0-9]{64}$/);
@@ -45,6 +47,7 @@ test("review-surfaces.CLI.7 records a passing command as a bounded transcript", 
   const indexed = await indexCommandTranscripts(tmp, [result.transcriptPath]);
   assert.equal(indexed[0].id, "CMD-RUN-001");
   assert.equal(indexed[0].status, "passed");
+  assert.equal(indexed[0].head_sha, "1111111111111111111111111111111111111111");
 });
 
 test("review-surfaces.CLI.7 records a failed command and preserves its exit code", async () => {

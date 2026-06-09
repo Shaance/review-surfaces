@@ -19,6 +19,7 @@ export interface CommandTranscript {
   command: string;
   status: CommandTranscriptStatus;
   exit_code?: number;
+  head_sha?: string;
   duration_ms?: number;
   started_at?: string;
   completed_at?: string;
@@ -141,6 +142,7 @@ function normalizeTranscript(sourcePath: string, value: unknown, index: number):
     command,
     status: normalizeStatus(record.status, exitCode),
     exit_code: exitCode,
+    head_sha: optionalString(record.head_sha ?? record.headSha),
     duration_ms: numberValue(record.duration_ms ?? record.durationMs),
     started_at: optionalString(record.started_at ?? record.startedAt),
     completed_at: optionalString(record.completed_at ?? record.completedAt),

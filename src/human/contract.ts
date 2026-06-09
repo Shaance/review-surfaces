@@ -59,6 +59,13 @@ export interface HumanReviewBuildConfig {
   max_suggested_comments: number;
   max_questions: number;
   risk_lenses: Record<RiskLens, boolean>;
+  required_manual_checks: HumanReviewRequiredManualCheckConfig[];
+}
+
+export interface HumanReviewRequiredManualCheckConfig {
+  id: string;
+  path_patterns: string[];
+  prompt: string;
 }
 
 export const DEFAULT_HUMAN_REVIEW_BUILD_CONFIG: HumanReviewBuildConfig = {
@@ -73,7 +80,8 @@ export const DEFAULT_HUMAN_REVIEW_BUILD_CONFIG: HumanReviewBuildConfig = {
     reviewer_ux: true,
     cache_provenance: true,
     custom: true
-  }
+  },
+  required_manual_checks: []
 };
 
 export interface RiskLensMetadata {
