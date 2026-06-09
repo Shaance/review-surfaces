@@ -62,6 +62,13 @@ type MissingManualCheckGap = NonNullable<RisksModel["missing_manual_checks"]>[nu
 type PrChangedFile = PrReviewSurfaceModel["scope"]["changed_files"][number];
 type TrustFactDraft = Omit<TrustFact, "id">;
 type InvalidEvidenceDraft = Omit<InvalidEvidenceSummary, "id">;
+type SuggestedCommentDraft = Omit<SuggestedReviewComment, "id">;
+interface SuggestedCommentCandidate {
+  draft: SuggestedCommentDraft;
+  risk?: PrRiskCandidate;
+  sourceRank: number;
+  sortKey: string;
+}
 interface TestPlanCandidate {
   draft: TestPlanDraft;
   risk?: PrRiskCandidate;
@@ -201,7 +208,7 @@ function buildBlockers(input: BuildHumanReviewInput): ReviewBlocker[] {
     });
   }
 
-  const failedTestEvidence = input.packet.risks.test_evidence.filter(isFailedValidationEvidence);
+  const failedTestEvidence = failedValidationEvidence(input);
   if (failedTestEvidence.length > 0) {
     blockers.push({
       id: "BLOCK-TESTS-001",
@@ -458,53 +465,57 @@ function buildQuestions(input: BuildHumanReviewInput, blockers: ReviewBlocker[])
 
 function buildSuggestedComments(input: BuildHumanReviewInput, blockers: ReviewBlocker[]): SuggestedReviewComment[] {
   const comments: SuggestedReviewComment[] = [];
+  const candidates: SuggestedCommentCandidate[] = [];
   const focusedGaps = focusedRequirementGaps(input);
 
   for (const blocker of blockers) {
-    comments.push({
-      id: `SC-${String(comments.length + 1).padStart(3, "0")}`,
-      severity: "blocking",
-      path: firstPathEvidence(blocker.evidence)?.path,
-      body: blocker.required_action,
-      evidence: blocker.evidence,
-      risk_ids: riskIdsFromBlocker(blocker),
-      requirement_ids: requirementIds(blocker.evidence),
-      confidence: "high",
-      ready_to_post: blocker.evidence.length > 0
+    const first = firstPathEvidence(blocker.evidence);
+    candidates.push({
+      sourceRank: 0,
+      sortKey: blocker.id,
+      draft: stripUndefined({
+        severity: "blocking",
+        path: first?.path,
+        line_start: first?.line_start,
+        line_end: first?.line_end,
+        body: blocker.required_action,
+        evidence: blocker.evidence,
+        risk_ids: riskIdsFromBlocker(blocker),
+        requirement_ids: requirementIds(blocker.evidence),
+        confidence: "high",
+        ready_to_post: blocker.evidence.length > 0
+      })
     });
   }
 
   for (const risk of input.prSurface?.risks.candidates ?? []) {
-    if (comments.length >= MAX_COMMENTS) {
-      break;
-    }
-    if (risk.rule === "schema_contract_change") {
-      comments.push(commentFromPrRisk(comments.length + 1, "blocking", risk, "This changes a persisted schema or artifact contract. Can you add a compatibility fixture for an existing generated artifact, or explicitly version this as a breaking change?"));
-    } else if (risk.rule === "untested_changed_impl") {
-      comments.push(commentFromPrRisk(comments.length + 1, "clarifying", risk, `What test or existing fixture covers the behavior changed in ${firstPathEvidence(risk.evidence)?.path ?? "this implementation file"}?`));
-    } else if (risk.rule === "comment_surface_change") {
-      comments.push(commentFromPrRisk(comments.length + 1, "non_blocking", risk, "Please include or inspect a rendered comment/human surface fixture so reviewers can verify the Markdown output directly."));
+    for (const draft of commentDraftsForPrRisk(input, risk)) {
+      candidates.push({ risk, draft, sourceRank: 1, sortKey: risk.id });
     }
   }
 
-  if (hasNoValidationEvidence(input.packet.risks) && comments.length < MAX_COMMENTS) {
-    comments.push({
-      id: `SC-${String(comments.length + 1).padStart(3, "0")}`,
-      severity: "clarifying",
-      body: "I do not see direct validation evidence in the packet. Can you record the relevant test/typecheck command transcript or parsed test output?",
-      evidence: [missingEvidence("No direct or indirect validation evidence found.")],
-      risk_ids: [],
-      requirement_ids: [],
-      confidence: "medium",
-      ready_to_post: true
+  if (hasNoValidationEvidence(input.packet.risks)) {
+    candidates.push({
+      sourceRank: 2,
+      sortKey: "missing-validation-evidence",
+      draft: {
+        severity: "clarifying",
+        body: "I do not see direct validation evidence in the packet. Can you record the relevant test/typecheck command transcript or parsed test output?",
+        evidence: [missingEvidence("No direct or indirect validation evidence found.")],
+        risk_ids: [],
+        requirement_ids: [],
+        confidence: "medium",
+        ready_to_post: true
+      }
     });
   }
 
-  if (comments.length < MAX_COMMENTS) {
-    const focusedGap = focusedGaps[0];
-    if (focusedGap) {
-      comments.push({
-        id: `SC-${String(comments.length + 1).padStart(3, "0")}`,
+  const focusedGap = focusedGaps[0];
+  if (focusedGap) {
+    candidates.push({
+      sourceRank: 3,
+      sortKey: focusedGap.acai_id ?? focusedGap.requirement_id,
+      draft: {
         severity: focusedGap.status === "missing" || focusedGap.status === "invalid_evidence" ? "blocking" : "clarifying",
         body: `Can you point to the validation evidence or explicit deferral for ${focusedGap.acai_id ?? focusedGap.requirement_id}? The human review surface currently marks it as ${focusedGap.status}.`,
         evidence: requirementGapEvidence(focusedGap),
@@ -512,11 +523,15 @@ function buildSuggestedComments(input: BuildHumanReviewInput, blockers: ReviewBl
         requirement_ids: compactStrings([focusedGap.acai_id, focusedGap.requirement_id]),
         confidence: "medium",
         ready_to_post: true
-      });
-    }
+      }
+    });
   }
 
-  return dedupeComments(comments).slice(0, MAX_COMMENTS);
+  for (const candidate of candidates.sort(compareSuggestedCommentCandidates)) {
+    appendSuggestedComment(comments, candidate.draft);
+  }
+
+  return comments.slice(0, MAX_COMMENTS);
 }
 
 function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
@@ -817,6 +832,25 @@ function appendTestPlanItem(items: TestPlanItem[], draft: TestPlanDraft): void {
   items.push(candidate);
 }
 
+function appendSuggestedComment(items: SuggestedReviewComment[], draft: SuggestedCommentDraft): void {
+  if (items.length >= MAX_COMMENTS) {
+    return;
+  }
+  const candidate = withSuggestedCommentId(items.length + 1, draft);
+  const candidateKey = suggestedCommentDedupeKey(candidate);
+  if (items.some((item) => suggestedCommentDedupeKey(item) === candidateKey)) {
+    return;
+  }
+  items.push(candidate);
+}
+
+function withSuggestedCommentId(index: number, draft: SuggestedCommentDraft): SuggestedReviewComment {
+  return stripUndefined({
+    id: `SC-${String(index).padStart(3, "0")}`,
+    ...draft
+  });
+}
+
 function buildSkimSafe(input: BuildHumanReviewInput): HumanReviewModel["skim_safe"] {
   const highRiskPaths = new Set<string>();
   for (const item of [...(input.prSurface?.risks.candidates ?? []), ...input.packet.risks.items]) {
@@ -1027,6 +1061,17 @@ function isFailedValidationEvidence(item: RisksModel["test_evidence"][number]): 
   return /\b(?:exit(?:_code)?=|exit\s+)(?:[1-9]\d*)\b/i.test(commandText) || /\bstatus=failed\b/i.test(commandText);
 }
 
+function failedValidationEvidence(input: BuildHumanReviewInput): RisksModel["test_evidence"] {
+  return input.packet.risks.test_evidence.filter(isFailedValidationEvidence);
+}
+
+function prRiskMentionsFailedTests(risk: PrRiskCandidate): boolean {
+  const evidenceText = risk.evidence
+    .flatMap((ref) => compactStrings([ref.note, ref.command, ref.test_name, ref.path, ref.acai_id]))
+    .join(" ");
+  return /\b(fail(?:ed|ing)?|error)\b/i.test(`${risk.summary} ${evidenceText}`);
+}
+
 function scorePrRisk(risk: PrRiskCandidate, anchor: QueueAnchor): number {
   return severityWeight(risk.severity) + ruleWeight(risk.rule) + (anchor.line_start ? 10 : 0) + (anchor.hunk_header ? 10 : 0);
 }
@@ -1206,15 +1251,44 @@ function questionFromPrRisk(
   };
 }
 
-function commentFromPrRisk(
-  index: number,
+function commentDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandidate): SuggestedCommentDraft[] {
+  const path = firstPathEvidence(risk.evidence)?.path;
+  switch (risk.rule) {
+    case "coverage_regression":
+      return [commentDraftFromPrRisk(input, "blocking", risk, "Coverage regressed for this PR. Can you add or point to validation that restores the regressed requirement coverage before approval?")];
+    case "untested_changed_impl":
+      return [commentDraftFromPrRisk(input, "clarifying", risk, `What test or existing fixture covers the behavior changed in ${path ?? "this implementation file"}?`)];
+    case "unmapped_change":
+      return [commentDraftFromPrRisk(input, "clarifying", risk, "This change is outside the mapped review areas. Can you confirm whether it is intentional and add a review-area mapping or explicit deferral if needed?")];
+    case "privacy_sensitive_change":
+      return [commentDraftFromPrRisk(input, "blocking", risk, "This touches privacy, provider, redaction, secret, or token-handling code. Can you add or point to sensitive-input validation before approval?")];
+    case "comment_surface_change":
+      return [commentDraftFromPrRisk(input, "non_blocking", risk, "Please include or inspect a rendered comment/human surface fixture so reviewers can verify the Markdown output directly.")];
+    case "ci_secret_boundary_change":
+      // The merge-readiness blocker is the canonical suggested comment for this manual-check gate.
+      return [];
+    case "schema_contract_change":
+      return [commentDraftFromPrRisk(input, "blocking", risk, "This changes a persisted schema or artifact contract. Can you add a compatibility fixture for an existing generated artifact, or explicitly version this as a breaking change?")];
+    case "deleted_or_renamed_surface":
+      return [commentDraftFromPrRisk(input, "clarifying", risk, "This deletes or renames a generated or reviewer-facing surface. Can you confirm no stale imports, generated references, or reviewer links still point to the old path?")];
+    case "failed_or_skipped_test":
+      if (failedValidationEvidence(input).length > 0 && prRiskMentionsFailedTests(risk)) {
+        return [];
+      }
+      return [commentDraftFromPrRisk(input, "blocking", risk, "Validation evidence indicates failed or skipped tests. Can you fix the failures or record why the skipped tests are intentional before approval?")];
+    case "large_diff":
+      return [commentDraftFromPrRisk(input, "non_blocking", risk, "This is a large diff. Consider splitting it or listing the areas that received deeper owner review.")];
+  }
+}
+
+function commentDraftFromPrRisk(
+  input: BuildHumanReviewInput,
   severity: SuggestedReviewComment["severity"],
   risk: PrRiskCandidate,
   body: string
-): SuggestedReviewComment {
+): SuggestedCommentDraft {
   const first = firstPathEvidence(risk.evidence);
   return stripUndefined({
-    id: `SC-${String(index).padStart(3, "0")}`,
     severity,
     path: first?.path,
     line_start: first?.line_start,
@@ -1222,10 +1296,34 @@ function commentFromPrRisk(
     body,
     evidence: evidenceOrMissing(risk.evidence, risk.summary),
     risk_ids: [risk.id],
-    requirement_ids: requirementIds(risk.evidence),
+    requirement_ids: requirementIdsForPrRisk(input, risk),
     confidence: "medium" as const,
-    ready_to_post: risk.evidence.length > 0
+    ready_to_post: true
   });
+}
+
+function compareSuggestedCommentCandidates(
+  left: SuggestedCommentCandidate,
+  right: SuggestedCommentCandidate
+): number {
+  return (
+    suggestedCommentSeverityRank(left.draft.severity) - suggestedCommentSeverityRank(right.draft.severity) ||
+    (left.sourceRank - right.sourceRank) ||
+    severityWeight(right.risk?.severity ?? "unknown") - severityWeight(left.risk?.severity ?? "unknown") ||
+    ruleWeight(right.risk?.rule) - ruleWeight(left.risk?.rule) ||
+    compareStrings(left.sortKey, right.sortKey)
+  );
+}
+
+function suggestedCommentSeverityRank(severity: SuggestedReviewComment["severity"]): number {
+  switch (severity) {
+    case "blocking":
+      return 0;
+    case "clarifying":
+      return 1;
+    case "non_blocking":
+      return 2;
+  }
 }
 
 function firstPathEvidence(evidence: EvidenceRef[]): EvidenceRef | undefined {
@@ -1602,13 +1700,17 @@ function dedupeQuestions(items: ReviewerQuestion[]): ReviewerQuestion[] {
 function dedupeComments(items: SuggestedReviewComment[]): SuggestedReviewComment[] {
   const seen = new Set<string>();
   return items.filter((item) => {
-    const key = `${item.severity}:${item.path ?? ""}:${item.body}`;
+    const key = suggestedCommentDedupeKey(item);
     if (seen.has(key)) {
       return false;
     }
     seen.add(key);
     return true;
   });
+}
+
+function suggestedCommentDedupeKey(item: SuggestedReviewComment): string {
+  return `${item.severity}:${item.path ?? ""}:${item.body}`;
 }
 
 function dedupeTests(items: TestPlanItem[]): TestPlanItem[] {
