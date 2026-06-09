@@ -14,6 +14,7 @@ import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-c
 import {
   HUMAN_REVIEW_SCHEMA_VERSION,
   REVIEW_ROUTE_PERSONAS,
+  EvidenceCard,
   FeedbackPolicyEffect,
   HumanReviewDecision,
   HumanReviewModel,
@@ -61,6 +62,13 @@ interface BuildReviewRoutesInput {
   testPlan: TestPlanItem[];
 }
 
+interface BuildEvidenceCardsInput {
+  blockers: ReviewBlocker[];
+  trustAudit: TrustAudit;
+  riskLensFindings: RiskLensFinding[];
+  testPlan: TestPlanItem[];
+}
+
 interface QueueDraft {
   title: string;
   path: string;
@@ -104,6 +112,7 @@ interface TestPlanCandidate {
   sourceRank: number;
   sortKey: string;
 }
+type EvidenceCardDraft = Omit<EvidenceCard, "id">;
 type ReviewRouteStepDraft = Omit<ReviewRouteStep, "id" | "rank">;
 type FeedbackPolicyEffectDraft = Omit<FeedbackPolicyEffect, "id">;
 interface ReviewRouteDefinition {
@@ -139,6 +148,7 @@ const MAX_QUESTIONS = 10;
 const MAX_COMMENTS = 10;
 const MAX_TEST_PLAN = 12;
 const MAX_TRUST_ITEMS = 10;
+const MAX_EVIDENCE_CARDS = 10;
 const MAX_RISK_LENS_FINDINGS = 12;
 const MAX_RISK_LENS_PATHS = 12;
 const MAX_FOCUSED_REQUIREMENT_TESTS = 6;
@@ -232,8 +242,14 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   const trustAudit = buildTrustAudit(input);
   const sinceLastReview = buildSinceLastReview(input);
   const testPlan = buildTestPlan(input, feedbackEffects, riskLensFindings);
-  const skimSafe = buildSkimSafe(input, feedbackEffects);
   const verdict = buildVerdict(input, blockers, trustAudit);
+  const evidenceCards = buildEvidenceCards({
+    blockers,
+    trustAudit,
+    riskLensFindings,
+    testPlan
+  });
+  const skimSafe = buildSkimSafe(input, feedbackEffects);
   const generatedFrom = buildGeneratedFrom(input);
   const reviewRoutes = buildReviewRoutes({
     input,
@@ -261,6 +277,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     risk_lens_findings: riskLensFindings,
     review_routes: reviewRoutes,
     since_last_review: sinceLastReview,
+    evidence_cards: evidenceCards,
     test_plan: testPlan,
     skim_safe: skimSafe,
     feedback_effects: feedbackEffects,
@@ -305,6 +322,258 @@ function reviewRoute(
       ...draft
     }))
   };
+}
+
+function buildEvidenceCards(ctx: BuildEvidenceCardsInput): EvidenceCard[] {
+  const cards: Array<{ draft: EvidenceCardDraft; score: number; sortKey: string }> = [];
+
+  for (const blocker of ctx.blockers.slice(0, 6)) {
+    const blockerEvidence = evidenceForBlockerCard(blocker);
+    cards.push({
+      score: 100 + severityWeight(blocker.severity),
+      sortKey: blocker.id,
+      draft: evidenceCardDraft({
+        title: titleFromSummary(blocker.summary),
+        summary: blocker.summary,
+        evidence: blockerEvidence,
+        why_it_matters: "This item is a deterministic merge-readiness blocker and should be resolved before approval.",
+        reviewer_action: blocker.required_action,
+        source_ids: [blocker.id],
+        risk_ids: riskIdsFromBlocker(blocker),
+        requirement_ids: requirementIds(blockerEvidence),
+        priority: priorityForSeverity(blocker.severity),
+        confidence: blockerEvidence.some(isMissingEvidenceCardRef) ? "medium" : "high"
+      })
+    });
+  }
+
+  for (const finding of ctx.riskLensFindings.slice(0, 6)) {
+    cards.push({
+      score: 70 + severityWeight(finding.severity) - riskLensRank(finding.lens),
+      sortKey: finding.id,
+      draft: evidenceCardDraft({
+        title: RISK_LENS_METADATA[finding.lens].label,
+        summary: finding.summary,
+        evidence: finding.evidence,
+        why_it_matters: evidenceCardWhyItMattersForLens(finding.lens),
+        reviewer_action: finding.reviewer_action,
+        source_ids: [finding.id, ...finding.risk_ids],
+        risk_ids: finding.risk_ids,
+        requirement_ids: finding.requirement_ids,
+        priority: priorityForSeverity(finding.severity),
+        confidence: finding.confidence
+      })
+    });
+  }
+
+  for (const item of ctx.trustAudit.invalid_evidence.slice(0, 4)) {
+    cards.push({
+      score: 95,
+      sortKey: item.id,
+      draft: evidenceCardDraft({
+        title: item.summary,
+        summary: item.summary,
+        evidence: item.evidence,
+        why_it_matters: "Invalid evidence can make reviewer-facing claims look better supported than they are.",
+        reviewer_action: "Replace the invalid evidence with a valid source or keep the claim marked as unverified.",
+        source_ids: [item.id],
+        risk_ids: [],
+        requirement_ids: requirementIds(item.evidence),
+        priority: "high",
+        confidence: "low"
+      })
+    });
+  }
+
+  for (const item of ctx.trustAudit.missing_evidence.slice(0, 4)) {
+    cards.push({
+      score: 80,
+      sortKey: item.id,
+      draft: evidenceCardDraft({
+        title: item.summary,
+        summary: item.summary,
+        evidence: item.evidence,
+        why_it_matters: "Missing evidence keeps the reviewer from verifying a claim, check, or readiness condition.",
+        reviewer_action: "Ask the author to provide the missing evidence or record an explicit deferral.",
+        source_ids: [item.id],
+        risk_ids: [],
+        requirement_ids: requirementIds(item.evidence),
+        priority: "medium",
+        confidence: "medium"
+      })
+    });
+  }
+
+  for (const item of ctx.testPlan.filter((plan) => plan.priority === "required").slice(0, 4)) {
+    const evidence = [testPlanEvidence(item)];
+    cards.push({
+      score: 60,
+      sortKey: item.id,
+      draft: evidenceCardDraft({
+        title: titleFromSummary(item.scenario),
+        summary: item.evidence_gap,
+        evidence,
+        why_it_matters: "A required test-plan item records the evidence needed to unblock review confidence.",
+        reviewer_action: item.kind === "manual" ? item.scenario : `Run or add the suggested check: ${item.scenario}`,
+        source_ids: [item.id],
+        risk_ids: item.maps_to_risks,
+        requirement_ids: item.maps_to_requirements,
+        priority: item.priority === "required" ? "high" : "medium",
+        confidence: "medium"
+      })
+    });
+  }
+
+  for (const fact of ctx.trustAudit.verified_facts.slice(0, 2)) {
+    cards.push({
+      score: 20,
+      sortKey: fact.id,
+      draft: evidenceCardDraft({
+        title: titleFromSummary(fact.summary),
+        summary: fact.summary,
+        evidence: fact.evidence,
+        why_it_matters: "This is a verified fact the reviewer can use as supporting context while reviewing the change.",
+        reviewer_action: "Use this as supporting evidence; inspect only if it conflicts with higher-priority findings.",
+        source_ids: [fact.id],
+        risk_ids: [],
+        requirement_ids: requirementIds(fact.evidence),
+        priority: "low",
+        confidence: "high"
+      })
+    });
+  }
+
+  if (cards.length === 0) {
+    cards.push({
+      score: 0,
+      sortKey: "CARD-NO-SIGNAL",
+      draft: evidenceCardDraft({
+        title: "No evidence cards generated",
+        summary: "The human review model did not contain enough blocker, trust, risk-lens, or test-plan evidence to build focused cards.",
+        evidence: [missingEvidence("No focused evidence-card signal was available.")],
+        why_it_matters: "Sparse evidence should lower reviewer confidence rather than create a false approval signal.",
+        reviewer_action: "Generate the review with PR scope, command transcripts, and parsed artifacts when available.",
+        source_ids: ["READY-NO-SIGNAL"],
+        risk_ids: [],
+        requirement_ids: [],
+        priority: "low",
+        confidence: "unknown"
+      })
+    });
+  }
+
+  return dedupeEvidenceCardDrafts(cards)
+    .sort((left, right) => right.score - left.score || compareStrings(left.sortKey, right.sortKey))
+    .slice(0, MAX_EVIDENCE_CARDS)
+    .map(({ draft }, index) => ({
+      id: `CARD-${String(index + 1).padStart(3, "0")}`,
+      ...draft
+    }));
+}
+
+function evidenceForBlockerCard(blocker: ReviewBlocker): EvidenceRef[] {
+  if (/manual check/i.test(blocker.required_action) && !blocker.evidence.some(isMissingEvidenceCardRef)) {
+    return [...blocker.evidence, missingEvidence(`Missing manual-check evidence: ${blocker.required_action}`)];
+  }
+  return blocker.evidence;
+}
+
+function evidenceCardDraft(input: {
+  title: string;
+  summary: string;
+  evidence: EvidenceRef[];
+  why_it_matters: string;
+  reviewer_action: string;
+  source_ids: string[];
+  risk_ids: string[];
+  requirement_ids: string[];
+  confidence: PacketConfidence;
+  priority: HumanReviewPriority;
+}): EvidenceCardDraft {
+  const split = splitEvidenceCardRefs(evidenceOrMissing(input.evidence, input.summary));
+  return {
+    title: input.title,
+    status: evidenceCardStatus(split),
+    summary: input.summary,
+    direct_evidence: split.direct,
+    missing_evidence: split.missing,
+    invalid_evidence: split.invalid,
+    why_it_matters: input.why_it_matters,
+    reviewer_action: input.reviewer_action,
+    source_ids: compactStrings(input.source_ids),
+    risk_ids: compactStrings(input.risk_ids),
+    requirement_ids: compactStrings(input.requirement_ids),
+    confidence: input.confidence,
+    priority: input.priority
+  };
+}
+
+function splitEvidenceCardRefs(evidence: EvidenceRef[]): { direct: EvidenceRef[]; missing: EvidenceRef[]; invalid: EvidenceRef[] } {
+  const refs = dedupeEvidenceRefs(evidence);
+  const invalid = refs.filter(isInvalidTrustEvidence);
+  const missing = refs.filter((ref) => !isInvalidTrustEvidence(ref) && isMissingEvidenceCardRef(ref));
+  const direct = refs.filter((ref) => !isInvalidTrustEvidence(ref) && !isMissingEvidenceCardRef(ref) && isVerifiedTrustEvidence(ref));
+  return { direct, missing, invalid };
+}
+
+function isMissingEvidenceCardRef(ref: EvidenceRef): boolean {
+  return ref.kind === "unknown" || ref.validation_status === "unknown";
+}
+
+function evidenceCardStatus(split: { direct: EvidenceRef[]; missing: EvidenceRef[]; invalid: EvidenceRef[] }): EvidenceCard["status"] {
+  if (split.invalid.length > 0 && (split.direct.length > 0 || split.missing.length > 0)) {
+    return "mixed";
+  }
+  if (split.invalid.length > 0) {
+    return "invalid_evidence";
+  }
+  if (split.missing.length > 0 && split.direct.length > 0) {
+    return "mixed";
+  }
+  if (split.missing.length > 0) {
+    return "missing_evidence";
+  }
+  if (split.direct.length > 0) {
+    return split.direct.every(isVerifiedEvidenceCardRef) ? "verified" : "unchecked";
+  }
+  return "unknown";
+}
+
+function isVerifiedEvidenceCardRef(ref: EvidenceRef): boolean {
+  return ref.validation_status === "valid" || ref.verified === true;
+}
+
+function evidenceCardWhyItMattersForLens(lens: RiskLens): string {
+  switch (lens) {
+    case "security_privacy":
+      return "Security and privacy changes can expose secrets or sensitive material if trusted boundaries are wrong.";
+    case "llm_trust_boundary":
+      return "LLM trust-boundary changes decide whether generated prose can surface unsupported claims to reviewers.";
+    case "api_contract":
+      return "Contract changes can break persisted artifacts, CLI users, or downstream integrations.";
+    case "test_evidence":
+      return "Test-evidence changes affect whether the reviewer can trust validation and coverage claims.";
+    case "reviewer_ux":
+      return "Reviewer-facing output changes affect whether humans see blockers, evidence, and next actions clearly.";
+    case "cache_provenance":
+      return "Cache and provenance changes affect whether generated artifacts remain reproducible and fresh.";
+    case "custom":
+      return "Custom risk-lens findings reflect local team policy or repository-specific review focus.";
+  }
+}
+
+function dedupeEvidenceCardDrafts(
+  cards: Array<{ draft: EvidenceCardDraft; score: number; sortKey: string }>
+): Array<{ draft: EvidenceCardDraft; score: number; sortKey: string }> {
+  const seen = new Set<string>();
+  return cards.filter((card) => {
+    const key = `${card.draft.title}|${card.draft.source_ids.join(",")}|${card.draft.summary}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function humanReviewerRouteSteps(ctx: BuildReviewRoutesInput): ReviewRouteStepDraft[] {

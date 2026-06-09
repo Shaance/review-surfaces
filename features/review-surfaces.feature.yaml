@@ -238,6 +238,9 @@ components:
       12:
         requirement: The human surface must generate review routes for the default human reviewer, maintainer, security reviewer, product reviewer, and agent-continuation personas.
         note: Routes must be derived from the same evidence-backed verdict, queue, risks, questions, trust audit, comments, and test-plan items; the human route is default and the agent route is secondary.
+      13:
+        requirement: The human surface must render compact inline evidence cards that cite evidence, explain why the evidence matters, and give a reviewer action.
+        note: Evidence cards must distinguish direct evidence, missing evidence, and invalid evidence so missing or untrusted signals are not rendered as proof.
 
   PROVIDERS:
     name: Later provider integrations

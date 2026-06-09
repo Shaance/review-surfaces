@@ -7,6 +7,7 @@ import { buildHumanReview } from "../src/human/human-review";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import {
   HUMAN_STANDALONE_ARTIFACTS,
+  renderEvidenceCardsMarkdown,
   renderHumanReviewMarkdown,
   renderRiskLensesMarkdown,
   renderReviewQueueMarkdown,
@@ -21,6 +22,7 @@ import { validateJsonSchema } from "../src/schema/json-schema";
 import { minimalReviewPacket } from "./helpers/review-packet";
 import type { FeedbackFile } from "../src/feedback/feedback";
 import {
+  EVIDENCE_CARD_STATUSES,
   FEEDBACK_POLICY_EFFECT_KINDS,
   HUMAN_REVIEW_DECISIONS,
   HUMAN_REVIEW_PRIORITIES,
@@ -299,6 +301,9 @@ test("human review model is schema-valid and starts with deterministic readiness
   assert.ok(model.risk_lens_findings.some((finding) => finding.lens === "security_privacy"));
   assert.ok(model.risk_lens_findings.some((finding) => finding.lens === "api_contract"));
   assert.ok(model.risk_lens_findings.every((finding) => finding.evidence.length > 0));
+  assert.ok(model.evidence_cards.length > 0);
+  assert.ok(model.evidence_cards.some((card) => card.status === "mixed" || card.status === "missing_evidence"));
+  assert.ok(model.evidence_cards.every((card) => card.reviewer_action.length > 0));
   assert.ok(model.test_plan.some((item) => item.kind === "manual" && item.priority === "required"));
   assert.ok(model.skim_safe.some((item) => item.path === "docs/notes.md"));
 
@@ -478,6 +483,77 @@ test("security review route degrades to skim guidance when no security signal fi
   assert.equal(securityRoute.steps.find((step) => step.title === "Privacy and trust audit gaps")?.priority, "low");
 });
 
+test("evidence cards separate direct, missing, and invalid evidence with reviewer actions", () => {
+  const packet = packetFixture();
+  packet.evaluation.results[0].status = "invalid_evidence";
+  packet.evaluation.results[0].evidence.push({
+    kind: "file",
+    path: "src/invalid-evidence.ts",
+    note: "Invalid evidence fixture.",
+    confidence: "low",
+    validation_status: "invalid"
+  });
+  const model = buildHumanReview({ packet, prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
+
+  const secretBoundaryCard = model.evidence_cards.find((card) => card.source_ids.includes("BLOCK-CI-SECRET-001"));
+  assert.ok(secretBoundaryCard);
+  assert.equal(secretBoundaryCard.priority, "high");
+  assert.equal(secretBoundaryCard.status, "mixed");
+  assert.ok(secretBoundaryCard.direct_evidence.some((ref) => ref.path === ".github/workflows/pr-review-comment.yml"));
+  assert.ok(secretBoundaryCard.missing_evidence.length > 0, "CI secret-boundary card should show missing manual-check evidence");
+  assert.equal(secretBoundaryCard.invalid_evidence.length, 0);
+  assert.match(secretBoundaryCard.reviewer_action, /Record a manual check/);
+
+  const invalidCard = model.evidence_cards.find((card) => card.invalid_evidence.length > 0);
+  assert.ok(invalidCard);
+  assert.ok(invalidCard.invalid_evidence.some((ref) => ref.path === "src/invalid-evidence.ts"));
+  assert.ok(model.evidence_cards.some((card) => card.status === "unchecked"));
+  assert.ok(model.evidence_cards.every((card) => card.direct_evidence.length + card.missing_evidence.length + card.invalid_evidence.length > 0));
+
+  const markdown = renderEvidenceCardsMarkdown(model);
+  assert.match(markdown, /^# Evidence Cards/);
+  assert.match(markdown, /## Evidence Card:/);
+  assert.match(markdown, /Direct:/);
+  assert.match(markdown, /Missing:/);
+  assert.match(markdown, /Invalid:/);
+  assert.match(markdown, /Reviewer action:/);
+  assert.doesNotMatch(markdown, /This human review JSON was generated before evidence-card support/);
+
+  const validation = validateJsonSchema(schema, model);
+  assert.equal(validation.valid, true, JSON.stringify(validation.issues));
+});
+
+test("evidence cards preserve risk-lens priority when equal-severity lens cards are capped", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files = [
+    {
+      path: "src/llm/pr-narrative.ts",
+      status: "M",
+      areas: ["PROVIDERS"],
+      role: "implementation",
+      added_lines: 3,
+      deleted_lines: 1
+    },
+    {
+      path: "schemas/human_review.schema.json",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "spec",
+      added_lines: 3,
+      deleted_lines: 1
+    }
+  ];
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface });
+  const llmIndex = model.evidence_cards.findIndex((card) => card.title === "LLM trust-boundary lens");
+  const apiIndex = model.evidence_cards.findIndex((card) => card.title === "API / schema contract lens");
+
+  assert.ok(llmIndex >= 0);
+  assert.ok(apiIndex >= 0);
+  assert.ok(llmIndex < apiIndex, "lower-ranked LLM trust-boundary lens should sort above API lens at equal severity");
+});
+
 test("human review Markdown renders a compact cockpit surface", () => {
   const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
   const markdown = renderHumanReviewMarkdown(model);
@@ -488,6 +564,7 @@ test("human review Markdown renders a compact cockpit surface", () => {
   assert.match(markdown, /## Review first/);
   assert.match(markdown, /## Review routes/);
   assert.match(markdown, /Human reviewer route \(default\)/);
+  assert.match(markdown, /## Evidence cards/);
   assert.match(markdown, /\.github\/workflows\/pr-review-comment\.yml/);
   assert.match(markdown, /Hunk: `@@ -10,3 \+10,5 @@`/);
   assert.match(markdown, /## Since last review/);
@@ -1630,6 +1707,8 @@ test("human review schema enums stay aligned with runtime contract constants", (
   assert.deepEqual(schema.$defs.feedbackEffect.properties.kind.enum, [...FEEDBACK_POLICY_EFFECT_KINDS]);
   assert.deepEqual(schema.$defs.riskLensFinding.properties.lens.enum, [...RISK_LENSES]);
   assert.deepEqual(schema.$defs.reviewRoute.properties.persona.enum, [...REVIEW_ROUTE_PERSONAS]);
+  assert.deepEqual(schema.$defs.evidenceCard.properties.status.enum, [...EVIDENCE_CARD_STATUSES]);
+  assert.deepEqual(schema.$defs.evidenceCard.properties.priority.enum, [...HUMAN_REVIEW_PRIORITIES]);
   assert.deepEqual(schema.$defs.confidence.enum, [...PACKET_CONFIDENCE_LEVELS]);
   assert.deepEqual(schema.$defs.severity.enum, [...PACKET_SEVERITIES]);
   assert.deepEqual(schema.$defs.evidenceRef.properties.kind.enum, [...PACKET_EVIDENCE_KINDS]);
@@ -1642,6 +1721,7 @@ test("human review schema accepts prior v1 artifacts without optional fields", (
   delete model.risk_lens_findings;
   delete model.review_routes;
   delete model.since_last_review;
+  delete model.evidence_cards;
 
   const result = validateJsonSchema(schema, model);
 
@@ -1650,6 +1730,7 @@ test("human review schema accepts prior v1 artifacts without optional fields", (
   assert.match(renderHumanReviewMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /generated before review-route support/);
   assert.match(renderRiskLensesMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /No domain risk lenses fired/);
   assert.match(renderReviewRoutesMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /generated before review-route support/);
+  assert.match(renderEvidenceCardsMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /generated before evidence-card support/);
   assert.match(renderSinceLastReviewMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /generated before since-last-review support/);
 });
 
