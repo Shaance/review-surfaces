@@ -160,7 +160,7 @@ function packageRunScriptLooksLikeTest(body: string): boolean {
 }
 
 function packageRunScriptLooksLikeLocalValidation(body: string): boolean {
-  return /^(?:lint|typecheck|build)$/.test(packageRunScriptToken(body) ?? "");
+  return /^(?:lint|typecheck|build)(?::[\w.:-]+)?$/.test(packageRunScriptToken(body) ?? "");
 }
 
 function packageTestScriptAlias(body: string): string | undefined {

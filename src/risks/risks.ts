@@ -1,5 +1,5 @@
 import { CollectionResult } from "../collector/collect";
-import { commandLooksLikeTestCommand, normalizeCommand } from "../commands/classify";
+import { commandLooksLikeLocalValidationCommand, commandLooksLikeTestCommand, normalizeCommand } from "../commands/classify";
 import { COMMAND_TRANSCRIPT_OUTPUT_PATH, CommandTranscript } from "../commands/transcripts";
 import { stripUndefined } from "../core/guards";
 import { commandEvidence, EvidenceRef, feedbackEvidence, missingEvidence, specEvidence } from "../evidence/evidence";
@@ -169,6 +169,7 @@ export function analyzeRisks(
   const transcriptCommands = new Set((collection.commandTranscripts ?? []).map((transcript) => normalizeCommand(transcript.command)));
   const feedbackEvidence = validationEvidenceFromFeedback(collection, transcriptCommands);
   const claimedCommandEvidence = commands
+    .filter((command) => commandLooksLikeLocalValidationCommand(command))
     .filter((command) => !transcriptCommands.has(normalizeCommand(command)))
     .map((command, index) => ({
       id: `TEST-CMD-${String(index + 1).padStart(3, "0")}`,
