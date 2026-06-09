@@ -1025,6 +1025,24 @@ test("required PR risk checks stay visible when the test plan is capped", () => 
   assert.equal(model.test_plan.find((item) => item.maps_to_risks.includes("PR-RISK-CI"))?.kind, "manual");
 });
 
+test("duplicate PR risk drafts do not consume the cap before distinct focused gaps", () => {
+  const packet = packetFixture();
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = Array.from({ length: 12 }, (_, index) => ({
+    ...prRiskFixture("failed_or_skipped_test"),
+    id: `PR-RISK-TEST-${String(index + 1).padStart(3, "0")}`
+  }));
+
+  const model = buildHumanReview({ packet, prSurface: surface });
+
+  assert.ok(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-TEST-001")));
+  assert.ok(model.test_plan.some((item) => item.maps_to_requirements.includes("review-surfaces.HUMAN_REVIEW.1")));
+});
+
 test("coverage-regression test plan maps requirements from scoped deltas when risk evidence is path-only", () => {
   const packet = packetFixture();
   packet.evaluation.results = [];

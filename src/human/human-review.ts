@@ -577,10 +577,7 @@ function buildTestPlan(input: BuildHumanReviewInput): TestPlanItem[] {
     .sort(comparePrRiskTestPlanDrafts);
 
   for (const { draft } of prRiskDrafts) {
-    if (items.length >= MAX_TEST_PLAN) {
-      break;
-    }
-    items.push(withTestPlanId(items.length + 1, draft));
+    appendTestPlanItem(items, draft);
   }
 
   if (items.length < MAX_TEST_PLAN) {
@@ -590,8 +587,7 @@ function buildTestPlan(input: BuildHumanReviewInput): TestPlanItem[] {
       }
       const requirementId = gap.acai_id ?? gap.requirement_id;
       const suggestedFile = suggestedTestFile(requirementId, gap.summary);
-      items.push({
-        id: `TEST-${String(items.length + 1).padStart(3, "0")}`,
+      appendTestPlanItem(items, {
         kind: "automatic",
         priority: gap.status === "missing" || gap.status === "invalid_evidence" ? "required" : "recommended",
         suggested_file: suggestedFile,
@@ -611,8 +607,7 @@ function buildTestPlan(input: BuildHumanReviewInput): TestPlanItem[] {
         break;
       }
       const suggestedFile = suggestedTestFile(gap.acai_id, gap.suggested_test);
-      items.push({
-        id: `TEST-${String(items.length + 1).padStart(3, "0")}`,
+      appendTestPlanItem(items, {
         kind: "automatic",
         priority: "recommended",
         suggested_file: suggestedFile,
@@ -631,8 +626,7 @@ function buildTestPlan(input: BuildHumanReviewInput): TestPlanItem[] {
       if (items.length >= MAX_TEST_PLAN) {
         break;
       }
-      items.push({
-        id: `TEST-${String(items.length + 1).padStart(3, "0")}`,
+      appendTestPlanItem(items, {
         kind: "manual",
         priority: "recommended",
         scenario: gap.manual_check,
@@ -644,7 +638,7 @@ function buildTestPlan(input: BuildHumanReviewInput): TestPlanItem[] {
     }
   }
 
-  return dedupeTests(items).slice(0, MAX_TEST_PLAN);
+  return items.slice(0, MAX_TEST_PLAN);
 }
 
 function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandidate): TestPlanDraft[] {
@@ -790,6 +784,18 @@ function withTestPlanId(index: number, draft: TestPlanDraft): TestPlanItem {
     id: `TEST-${String(index).padStart(3, "0")}`,
     ...draft
   });
+}
+
+function appendTestPlanItem(items: TestPlanItem[], draft: TestPlanDraft): void {
+  if (items.length >= MAX_TEST_PLAN) {
+    return;
+  }
+  const candidate = withTestPlanId(items.length + 1, draft);
+  const candidateKey = testPlanDedupeKey(candidate);
+  if (items.some((item) => testPlanDedupeKey(item) === candidateKey)) {
+    return;
+  }
+  items.push(candidate);
 }
 
 function buildSkimSafe(input: BuildHumanReviewInput): HumanReviewModel["skim_safe"] {
@@ -1570,13 +1576,17 @@ function dedupeComments(items: SuggestedReviewComment[]): SuggestedReviewComment
 function dedupeTests(items: TestPlanItem[]): TestPlanItem[] {
   const seen = new Set<string>();
   return items.filter((item) => {
-    const key = `${item.kind}:${item.suggested_file ?? ""}:${item.scenario}`;
+    const key = testPlanDedupeKey(item);
     if (seen.has(key)) {
       return false;
     }
     seen.add(key);
     return true;
   });
+}
+
+function testPlanDedupeKey(item: TestPlanItem): string {
+  return `${item.kind}:${item.suggested_file ?? ""}:${item.scenario}`;
 }
 
 function stringOr(value: unknown, fallback: string): string {
