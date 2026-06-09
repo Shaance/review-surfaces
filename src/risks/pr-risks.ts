@@ -294,6 +294,9 @@ function areaKeywords(area: string, reviewAreas: ReviewArea[]): string[] {
     }
     keywords.add(reviewArea.id);
     keywords.add(reviewArea.name);
+    for (const prefix of reviewArea.prefixes) {
+      keywords.add(prefix);
+    }
     for (const keyword of reviewArea.testKeywords) {
       keywords.add(keyword);
     }

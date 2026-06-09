@@ -291,6 +291,36 @@ test("impl file with a current-head focused test transcript in its area does NOT
   );
 });
 
+test("focused transcript matching uses area prefixes as well as keywords", () => {
+  const input = buildInput({
+    scope: scope({
+      head_sha: "deadbeef",
+      changed_files: [
+        changedFile({ path: "src/risks/pr-risks.ts", role: "implementation", areas: ["RISK"] })
+      ]
+    }),
+    reviewAreas: [{ ...reviewArea("RISK", []), prefixes: ["src/risks/"] }],
+    commandTranscripts: [
+      {
+        id: "CMD-RISK-FOCUSED",
+        command: "pnpm exec vitest src/risks",
+        status: "passed",
+        exit_code: 0,
+        head_sha: "deadbeef",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-RISK-FOCUSED.json"
+      }
+    ]
+  });
+
+  const model = buildPrRiskCandidates(input);
+  assert.equal(
+    model.candidates.find((c) => c.rule === "untested_changed_impl"),
+    undefined,
+    "a focused test command filtered to an area prefix suppresses only that area's untested candidate"
+  );
+});
+
 test("impl file with a stale focused test transcript still fires untested_changed_impl", () => {
   const input = buildInput({
     scope: scope({

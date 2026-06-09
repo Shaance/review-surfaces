@@ -160,6 +160,33 @@ test("collector marks a diff file as working_tree when it is dirty after HEAD", 
   }
 });
 
+test("collector marks a deleted diff file as working_tree when it is dirty after HEAD", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-deleted-diff-"));
+  try {
+    const filePath = "src/feature.ts";
+    fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, filePath), "export const value = 1;\n");
+    execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "base"], { cwd: tmp, stdio: "ignore" });
+    const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
+
+    fs.writeFileSync(path.join(tmp, filePath), "export const value = 2;\n");
+    execFileSync("git", ["add", filePath], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "subject"], { cwd: tmp, stdio: "ignore" });
+    fs.rmSync(path.join(tmp, filePath));
+
+    const files = collectChangedFiles(tmp, base, "HEAD").files;
+    assert.deepEqual(
+      files.filter((file) => file.path === filePath).map((file) => ({ status: file.status, source: file.source })),
+      [{ status: "D", source: "working_tree" }],
+      "a path already in the base...head diff must still be marked dirty when porcelain reports a local deletion"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.CLI.7 collection defaults command transcripts to the output directory", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-output-commands-"));
   fs.mkdirSync(path.join(tmp, "features"), { recursive: true });

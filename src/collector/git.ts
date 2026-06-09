@@ -88,13 +88,15 @@ export function collectChangedFiles(cwd: string, baseRef: string, headRef: strin
   const statusOutput = git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
   if (statusOutput) {
     for (const { status, filePath } of parsePorcelainStatusOutput(statusOutput)) {
-      if (!filePath || filePath.endsWith("/") || filePath === ".DS_Store" || !isRegularFile(path.resolve(cwd, filePath))) {
+      if (!filePath || filePath.endsWith("/") || filePath === ".DS_Store") {
         continue;
       }
       const existing = byPath.get(filePath);
       if (existing) {
-        byPath.set(filePath, { ...existing, source: "working_tree" });
-      } else {
+        byPath.set(filePath, { ...existing, status, source: "working_tree" });
+        continue;
+      }
+      if (status.includes("D") || isRegularFile(path.resolve(cwd, filePath))) {
         byPath.set(filePath, { path: filePath, status, source: "working_tree" });
       }
     }
