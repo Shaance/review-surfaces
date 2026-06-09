@@ -627,6 +627,35 @@ test("review-surfaces.HUMAN_REVIEW.16 focused human artifacts rebuild when the d
   }
 });
 
+test("review-surfaces.HUMAN_REVIEW.16 PR comments rebuild human artifacts when the default config changes", () => {
+  const tmp = setupChangedRepo();
+  try {
+    const first = runCli(tmp, [...ALL_PR, "--provider", "mock"]);
+    assert.equal(first.status, 0, first.stderr);
+    const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
+    const human = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    assert.equal(typeof human.generated_from.human_review_config_signature, "string");
+    assert.ok(human.review_queue.length > 0, "fixture should generate at least one review queue item");
+    human.review_queue = [
+      { ...human.review_queue[0], id: "REVIEW-STALE-PR-COMMENT-001", rank: 1, title: "PR COMMENT STALE SENTINEL" },
+      { ...human.review_queue[0], id: "REVIEW-STALE-PR-COMMENT-002", rank: 2, title: "PR COMMENT STALE SENTINEL 2" }
+    ];
+    fs.writeFileSync(humanPath, `${JSON.stringify(human, null, 2)}\n`);
+    const configPath = path.join(tmp, "review-surfaces.config.yaml");
+    fs.writeFileSync(configPath, fs.readFileSync(configPath, "utf8").replace("max_review_first: 20", "max_review_first: 1"));
+
+    const comment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(comment.status, 4, "mock PR surfaces still fail the postability gate");
+    assert.match(comment.stderr, /Refreshing stale human_review\.json/);
+    assert.match(comment.stdout, /Full human review: `\.review-surfaces\/human_review\.md`/);
+    assert.doesNotMatch(comment.stdout, /PR COMMENT STALE SENTINEL/);
+    const rebuiltHuman = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    assert.ok(rebuiltHuman.review_queue.length <= 1);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.PROVIDERS.6 PR comment workflow is base-controlled and uses trusted tool checkouts", () => {
   const ciWorkflow = fs.readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
   const workflow = fs.readFileSync(path.join(process.cwd(), ".github", "workflows", "pr-review-comment.yml"), "utf8");

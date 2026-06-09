@@ -1416,11 +1416,12 @@ async function runCommentGithub(parsed: ParsedArgs): Promise<number> {
   // packet `all` actually wrote. Passing undefined would hardcode .review-surfaces
   // and miss a config-set output_dir.
   const outDir = await resolveOutputDir(cwd, parsed);
+  const config = await loadConfig(cwd, stringFlag(parsed, "config") ?? "review-surfaces.config.yaml");
 
   // PR mode renders the diff-scoped surface and NEVER falls back to the
   // whole-repo comment when it is missing/blocked.
   if (reviewScope(parsed) === "pr") {
-    return runPrCommentGithub(cwd, outDir, parsed);
+    return runPrCommentGithub(cwd, outDir, parsed, config);
   }
 
   const rendered = renderCommentFromPacketFile(cwd, outDir);
@@ -1443,7 +1444,7 @@ async function runCommentGithub(parsed: ParsedArgs): Promise<number> {
 // Render the PR-mode sticky comment from the diff-scoped pr_review_surface.json
 // (written by `all --review-scope pr`). Absent surface is a clean usage error
 // pointing at `all --review-scope pr`; never a whole-repo fallback.
-async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArgs): Promise<number> {
+async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArgs, config: ReviewSurfacesConfig): Promise<number> {
   const surfacePath = path.join(outDir.endsWith(".json") ? path.dirname(outDir) : outDir, "pr_review_surface.json");
   if (!fileExists(surfacePath)) {
     throw new CliError(
@@ -1455,7 +1456,7 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
   assertValidPrSurface(cwd, surface);
   // Point the comment's "Full PR surface" pointer at the ACTUAL artifact path
   // (honoring --out / config output_dir), not a hardcoded .review-surfaces.
-  const humanCommentModel = await loadCurrentHumanReviewForPrComment(cwd, path.dirname(surfacePath), surface);
+  const humanCommentModel = await loadCurrentHumanReviewForPrComment(cwd, path.dirname(surfacePath), surface, config);
   const relativeSurfacePath = path.relative(cwd, surfacePath) || surfacePath;
   const markdown = humanCommentModel
     ? renderHumanPrComment(humanCommentModel, {
@@ -1491,8 +1492,13 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
 async function loadCurrentHumanReviewForPrComment(
   cwd: string,
   outputDir: string,
-  surface: PrReviewSurfaceModel
+  surface: PrReviewSurfaceModel,
+  config: ReviewSurfacesConfig
 ): Promise<HumanReviewModel | undefined> {
+  if (!config.human_review.enabled) {
+    removeHumanReviewArtifacts(outputDir);
+    return undefined;
+  }
   const humanReviewPath = path.join(outputDir, "human_review.json");
   if (!fileExists(humanReviewPath)) {
     return undefined;
@@ -1520,7 +1526,16 @@ async function loadCurrentHumanReviewForPrComment(
     );
     return undefined;
   }
-  return model as HumanReviewModel;
+  const humanReview = model as HumanReviewModel;
+  if (!humanReviewJsonMatchesConfig(humanReview, config)) {
+    console.warn(
+      `Refreshing stale human_review.json for the current human_review config before rendering the PR comment.`
+    );
+    const context = await buildHumanReviewFromArtifacts(cwd, outputDir, "pr", config);
+    await writeHumanReviewArtifacts(context.outputDir, context.model);
+    return context.model;
+  }
+  return humanReview;
 }
 
 function humanReviewMatchesPrSurface(
