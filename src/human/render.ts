@@ -3,7 +3,17 @@ import { writeJson, writeText } from "../core/files";
 import { EvidenceRef } from "../evidence/evidence";
 import { redactSecrets } from "../privacy/secrets";
 import { RISK_LENS_METADATA } from "./contract";
-import type { FeedbackPolicyEffect, HumanReviewModel, ReviewQueueItem, RiskLensFinding, SuggestedReviewComment, TestPlanItem, TrustAudit } from "./contract";
+import type {
+  FeedbackPolicyEffect,
+  HumanReviewModel,
+  ReviewQueueItem,
+  RiskLensFinding,
+  SinceLastReview,
+  SinceLastReviewItem,
+  SuggestedReviewComment,
+  TestPlanItem,
+  TrustAudit
+} from "./contract";
 
 const MAX_SUMMARY_CHARS = 600;
 const MAX_FIELD_CHARS = 300;
@@ -16,6 +26,7 @@ const MAX_COMMENTS = 6;
 const MAX_SKIM_SAFE = 8;
 const MAX_STANDALONE_EVIDENCE = 8;
 const MAX_RISK_LENSES = 6;
+const MAX_SINCE_LAST_REVIEW = 5;
 
 export const HUMAN_STANDALONE_ARTIFACTS = [
   {
@@ -45,6 +56,13 @@ export const HUMAN_STANDALONE_ARTIFACTS = [
     label: "Risk lenses",
     heading: "# Risk Lenses",
     render: renderRiskLensesMarkdown
+  },
+  {
+    command: "since-last-review",
+    artifact: "since_last_review.md",
+    label: "Since last review",
+    heading: "# Since Last Review",
+    render: renderSinceLastReviewMarkdown
   },
   {
     command: "test-plan",
@@ -100,6 +118,10 @@ ${renderReviewFirst(model.review_queue.slice(0, MAX_REVIEW_FIRST))}
 ## Blockers
 
 ${renderBlockers(model)}
+
+## Since last review
+
+${renderSinceLastReviewSummary(sinceLastReview(model))}
 
 ## Questions for author
 
@@ -192,6 +214,48 @@ ${riskLensFindings(model).length === 0 ? "- No domain risk lenses fired." : risk
 `;
 }
 
+export function renderSinceLastReviewMarkdown(model: HumanReviewModel): string {
+  const since = sinceLastReview(model);
+  return `# Since Last Review
+
+Generated from \`${field(model.generated_from.packet_path)}\`.
+${since.previous_packet_path ? `Compared against \`${field(since.previous_packet_path)}\`.` : "No previous packet path recorded."}
+
+${since.unavailable_reason ? `${field(since.unavailable_reason)}\n` : ""}
+## Improved
+
+${renderSinceLastReviewItems(since.improved)}
+
+## Regressed
+
+${renderSinceLastReviewItems(since.regressed)}
+
+## New risks
+
+${renderSinceLastReviewItems(since.new_risks)}
+
+## Resolved risks
+
+${renderSinceLastReviewItems(since.resolved_risks)}
+
+## New overreach
+
+${renderSinceLastReviewItems(since.new_overreach)}
+
+## Resolved overreach
+
+${renderSinceLastReviewItems(since.resolved_overreach)}
+
+## Still open
+
+${renderSinceLastReviewItems(since.still_open)}
+
+## Count deltas
+
+${renderSinceLastReviewCountDeltas(since)}
+`;
+}
+
 export function renderTestPlanMarkdown(model: HumanReviewModel): string {
   const groups: Array<[string, TestPlanItem["priority"]]> = [
     ["Required", "required"],
@@ -248,6 +312,87 @@ ${renderSuggestedComments(finding.suggested_comments)}`;
 
 function riskLensFindings(model: HumanReviewModel): RiskLensFinding[] {
   return model.risk_lens_findings ?? [];
+}
+
+function sinceLastReview(model: HumanReviewModel): SinceLastReview {
+  return model.since_last_review ?? {
+    unavailable_reason: "This human review JSON was generated before since-last-review support.",
+    improved: [],
+    regressed: [],
+    new_risks: [],
+    resolved_risks: [],
+    new_overreach: [],
+    resolved_overreach: [],
+    still_open: [],
+    count_deltas: {
+      satisfied: { before: 0, after: 0, delta: 0 },
+      partial: { before: 0, after: 0, delta: 0 },
+      missing: { before: 0, after: 0, delta: 0 },
+      unknown: { before: 0, after: 0, delta: 0 },
+      invalid_evidence: { before: 0, after: 0, delta: 0 }
+    }
+  };
+}
+
+function renderSinceLastReviewSummary(since: SinceLastReview): string {
+  if (since.unavailable_reason) {
+    return bullets([since.unavailable_reason], "No previous packet comparison available.");
+  }
+  return bullets(
+    [
+      `${since.improved.length} improved requirement(s), ${since.regressed.length} regressed requirement(s).`,
+      `${since.new_risks.length} new risk(s), ${since.resolved_risks.length} resolved risk(s).`,
+      `${since.new_overreach.length} new overreach item(s), ${since.resolved_overreach.length} resolved overreach item(s).`,
+      `${since.still_open.length} still-open item(s) to keep in review focus.`
+    ],
+    "No previous packet comparison available."
+  );
+}
+
+function renderSinceLastReviewItems(items: SinceLastReviewItem[]): string {
+  if (items.length === 0) {
+    return "- None recorded.";
+  }
+  return bullets(
+    items.slice(0, MAX_SINCE_LAST_REVIEW).map((item) => {
+      const status = formatSinceLastReviewStatus(item);
+      const pathPart = item.path ? ` Path: \`${field(item.path)}\`.` : "";
+      const severity = item.severity ? ` Severity: ${item.severity}.` : "";
+      return `${item.id} [${item.category}]: ${item.summary}${status}${pathPart}${severity} Evidence: ${evidenceList(item.evidence)}`;
+    }),
+    "None recorded."
+  );
+}
+
+function formatSinceLastReviewStatus(item: SinceLastReviewItem): string {
+  if (item.previous_status && item.current_status) {
+    return ` Status: ${item.previous_status} -> ${item.current_status}.`;
+  }
+  if (item.current_status) {
+    return ` Status: ${item.current_status}.`;
+  }
+  if (item.previous_status) {
+    return ` Previous status: ${item.previous_status}.`;
+  }
+  return "";
+}
+
+function renderSinceLastReviewCountDeltas(since: SinceLastReview): string {
+  const deltas = since.count_deltas;
+  return bullets(
+    [
+      `satisfied: ${deltas.satisfied.before} -> ${deltas.satisfied.after} (${formatSignedDelta(deltas.satisfied.delta)})`,
+      `partial: ${deltas.partial.before} -> ${deltas.partial.after} (${formatSignedDelta(deltas.partial.delta)})`,
+      `missing: ${deltas.missing.before} -> ${deltas.missing.after} (${formatSignedDelta(deltas.missing.delta)})`,
+      `unknown: ${deltas.unknown.before} -> ${deltas.unknown.after} (${formatSignedDelta(deltas.unknown.delta)})`,
+      `invalid_evidence: ${deltas.invalid_evidence.before} -> ${deltas.invalid_evidence.after} (${formatSignedDelta(deltas.invalid_evidence.delta)})`
+    ],
+    "No count deltas recorded."
+  );
+}
+
+function formatSignedDelta(value: number): string {
+  return value > 0 ? `+${value}` : String(value);
 }
 
 function renderReviewFirst(items: ReviewQueueItem[]): string {

@@ -198,6 +198,46 @@ export interface RiskLensFinding {
   confidence: PacketConfidence;
 }
 
+export type SinceLastReviewCategory = "requirement" | "risk" | "overreach" | "summary";
+
+export interface SinceLastReviewItem {
+  id: string;
+  category: SinceLastReviewCategory;
+  summary: string;
+  evidence: EvidenceRef[];
+  acai_id?: string;
+  previous_status?: string;
+  current_status?: string;
+  direction?: "improved" | "regressed" | "unchanged";
+  path?: string;
+  severity?: PacketSeverity;
+}
+
+export interface SinceLastReviewCountDelta {
+  before: number;
+  after: number;
+  delta: number;
+}
+
+export interface SinceLastReview {
+  previous_packet_path?: string;
+  unavailable_reason?: string;
+  improved: SinceLastReviewItem[];
+  regressed: SinceLastReviewItem[];
+  new_risks: SinceLastReviewItem[];
+  resolved_risks: SinceLastReviewItem[];
+  new_overreach: SinceLastReviewItem[];
+  resolved_overreach: SinceLastReviewItem[];
+  still_open: SinceLastReviewItem[];
+  count_deltas: {
+    satisfied: SinceLastReviewCountDelta;
+    partial: SinceLastReviewCountDelta;
+    missing: SinceLastReviewCountDelta;
+    unknown: SinceLastReviewCountDelta;
+    invalid_evidence: SinceLastReviewCountDelta;
+  };
+}
+
 export interface SkimSafeItem {
   path: string;
   reason: string;
@@ -228,6 +268,7 @@ export interface HumanReviewModel {
   suggested_comments: SuggestedReviewComment[];
   trust_audit: TrustAudit;
   risk_lens_findings: RiskLensFinding[];
+  since_last_review: SinceLastReview;
   test_plan: TestPlanItem[];
   skim_safe: SkimSafeItem[];
   feedback_effects: FeedbackPolicyEffect[];

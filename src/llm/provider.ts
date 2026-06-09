@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileExists, readText, writeJson, writeText } from "../core/files";
 import { errorMessage, isRecord, uniqueTruthy } from "../core/guards";
 import { parseYaml } from "../core/simple-yaml";
+import { comparisonRiskKey } from "../dogfood/compare";
 import { redactSecrets } from "../privacy/secrets";
 import { ReviewPacket } from "../render/packet";
 import { RiskItem } from "../risks/risks";
@@ -534,7 +535,7 @@ function mergeEnrichment(packet: ReviewPacket, enrichment: AgentFileEnrichment):
     // identity (category + summary) -- the SAME key compare.ts uses -- and skip any
     // risk_summary whose rendered AI-RISK summary is already present. IDs continue
     // from the count of existing AI-RISK items so a deduped re-run stays stable.
-    const existingKeys = new Set(existing.map(riskItemKey));
+    const existingKeys = new Set(existing.map(comparisonRiskKey));
     let aiRiskCounter = existing.filter((item) => typeof item.id === "string" && item.id.startsWith("AI-RISK-")).length;
     const appended: RiskItem[] = [];
     // FINDING E: normalize to strings first (drop non-string entries such as a
@@ -575,13 +576,6 @@ function mergeEnrichment(packet: ReviewPacket, enrichment: AgentFileEnrichment):
     }
     packet.risks.items = [...existing, ...appended];
   }
-}
-
-// Stable identity for a risk item, matching the dogfood comparison key
-// (category + summary). Used by FINDING B dedup so a re-enriched run does not
-// re-append an AI-RISK item that is already present.
-function riskItemKey(item: { category?: string; summary?: string }): string {
-  return `${item.category ?? "unknown"}: ${item.summary ?? ""}`;
 }
 
 async function writePrompts(outputDir: string): Promise<void> {
@@ -636,4 +630,3 @@ function asStringArray(value: unknown): string[] {
 const defaultDynamicImport = new Function("moduleName", "return import(moduleName)") as (
   moduleName: string
 ) => Promise<any>;
-

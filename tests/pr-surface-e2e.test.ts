@@ -71,6 +71,7 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
       comments: "JSON sentinel suggested comment",
       trust: "JSON sentinel trust summary",
       "risk-lenses": "JSON sentinel risk lens",
+      "since-last-review": "JSON sentinel since last review",
       "test-plan": "JSON sentinel test plan"
     };
     for (const artifact of HUMAN_STANDALONE_ARTIFACTS) {
@@ -107,6 +108,31 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
             confidence: "low"
           }
         ];
+      } else if (artifact.command === "since-last-review") {
+        human.since_last_review = {
+          previous_packet_path: ".review-surfaces-prev/review_packet.json",
+          improved: [
+            {
+              id: "SLR-SENTINEL",
+              category: "requirement",
+              summary: marker,
+              evidence: [{ kind: "unknown", confidence: "low", note: "JSON sentinel evidence." }]
+            }
+          ],
+          regressed: [],
+          new_risks: [],
+          resolved_risks: [],
+          new_overreach: [],
+          resolved_overreach: [],
+          still_open: [],
+          count_deltas: {
+            satisfied: { before: 0, after: 0, delta: 0 },
+            partial: { before: 0, after: 0, delta: 0 },
+            missing: { before: 0, after: 0, delta: 0 },
+            unknown: { before: 0, after: 0, delta: 0 },
+            invalid_evidence: { before: 0, after: 0, delta: 0 }
+          }
+        };
       } else if (artifact.command === "test-plan") {
         human.test_plan[0] = {
           id: "TEST-SENTINEL",
