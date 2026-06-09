@@ -308,6 +308,91 @@ test("human review schema validates since-last-review comparison slices", () => 
   assert.equal(result.valid, true, JSON.stringify(result.issues));
 });
 
+test("human review schema validates review route slices", () => {
+  const humanReview = {
+    schema_version: "review-surfaces.human_review.v1",
+    mode: "pr",
+    verdict: {
+      decision: "reviewable_with_attention",
+      confidence: "medium",
+      reasons: []
+    },
+    summary: "Review route schema fixture.",
+    review_queue: [],
+    blockers: [],
+    questions: [],
+    suggested_comments: [],
+    trust_audit: {
+      verified_facts: [],
+      claimed_not_verified: [],
+      missing_evidence: [],
+      invalid_evidence: [],
+      confidence_summary: "Fixture."
+    },
+    review_routes: [
+      {
+        id: "ROUTE-HUMAN",
+        persona: "human_reviewer",
+        title: "Human reviewer route",
+        summary: "Default evidence-backed review path.",
+        is_default: true,
+        is_secondary: false,
+        steps: [
+          {
+            id: "ROUTE-HUMAN-STEP-001",
+            rank: 1,
+            title: "Merge readiness verdict",
+            action: "Start with the verdict.",
+            evidence: [{ kind: "file", path: ".review-surfaces/review_packet.json", confidence: "high", validation_status: "valid" }],
+            priority: "high",
+            artifact: "human_review.md",
+            queue_item_ids: ["REVIEW-001"],
+            risk_lens_ids: ["LENS-001"],
+            question_ids: ["QUESTION-001"],
+            test_plan_ids: ["TEST-001"],
+            suggested_comment_ids: ["SC-001"]
+          }
+        ]
+      },
+      {
+        id: "ROUTE-AGENT",
+        persona: "agent_continuation",
+        title: "Agent-continuation route",
+        summary: "Secondary continuation path.",
+        is_default: false,
+        is_secondary: true,
+        steps: [
+          {
+            id: "ROUTE-AGENT-STEP-001",
+            rank: 1,
+            title: "Open risks",
+            action: "Continue from open risks.",
+            evidence: [{ kind: "file", path: ".review-surfaces/review_packet.json", confidence: "medium", validation_status: "not_checked" }],
+            priority: "medium",
+            queue_item_ids: [],
+            risk_lens_ids: [],
+            question_ids: [],
+            test_plan_ids: [],
+            suggested_comment_ids: []
+          }
+        ]
+      }
+    ],
+    test_plan: [],
+    skim_safe: [],
+    generated_from: {
+      packet_path: ".review-surfaces/review_packet.json",
+      pr_surface_path: ".review-surfaces/pr_review_surface.json",
+      base_ref: "origin/main",
+      head_ref: "HEAD",
+      head_sha: "abc123"
+    }
+  };
+
+  const result = validateJsonSchema(humanReviewSchema, humanReview);
+  assert.equal(result.valid, true, JSON.stringify(result.issues));
+});
+
 // Ties the runtime VERSION constant into the packet contract: the manifest's
 // tool_version is stamped from VERSION, and VERSION tracks package.json. (The
 // raw VERSION === package.json check also lives in version.test.ts; here it

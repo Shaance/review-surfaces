@@ -113,6 +113,11 @@ async function main(): Promise<number> {
     throw new CliError(`Unknown command: ${parsed.command}`, ExitCodes.usageError);
   }
 
+  if (humanStandaloneArtifactForCommand(parsed.command)) {
+    await runHumanSubartifactStage(parsed);
+    return ExitCodes.success;
+  }
+
   switch (parsed.command) {
     case "collect":
       await runCollect(parsed);
@@ -146,14 +151,6 @@ async function main(): Promise<number> {
       return ExitCodes.success;
     case "human":
       await runHumanStage(parsed);
-      return ExitCodes.success;
-    case "queue":
-    case "comments":
-    case "trust":
-    case "risk-lenses":
-    case "since-last-review":
-    case "test-plan":
-      await runHumanSubartifactStage(parsed);
       return ExitCodes.success;
     case "init":
       return runInitCommand(parsed);
@@ -1016,7 +1013,7 @@ async function runHumanSubartifactStage(parsed: ParsedArgs): Promise<void> {
   if (!artifact) {
     throw new CliError(`Unknown human artifact command: ${parsed.command}`, ExitCodes.usageError);
   }
-  const context = await loadOrBuildHumanReviewJson(cwd, outDir, reviewScope(parsed));
+  const context = await loadOrBuildHumanReviewJson(cwd, outDir, reviewScope(parsed), artifact.command);
   await writeHumanStandaloneArtifact(context.outputDir, context.model, artifact);
   console.log(`${artifact.label}: ${artifactPathForLog(cwd, context.outputDir, artifact.artifact)}`);
 }
@@ -1030,19 +1027,32 @@ async function writeHumanReviewFromArtifacts(cwd: string, outDir: string, scope:
 async function loadOrBuildHumanReviewJson(
   cwd: string,
   outDir: string,
-  scope: ReviewScope
+  scope: ReviewScope,
+  command?: string
 ): Promise<{ outputDir: string; model: HumanReviewModel }> {
   const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
   const humanReviewPath = path.join(outputDir, "human_review.json");
   if (fileExists(humanReviewPath)) {
     const model = await readJson(humanReviewPath) as HumanReviewModel;
     assertValidHumanReview(cwd, model);
+    if (!humanReviewJsonSatisfiesStandaloneCommand(model, command)) {
+      const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope);
+      await writeJson(path.join(context.outputDir, "human_review.json"), context.model);
+      return context;
+    }
     return { outputDir, model };
   }
 
   const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope);
   await writeJson(path.join(context.outputDir, "human_review.json"), context.model);
   return context;
+}
+
+function humanReviewJsonSatisfiesStandaloneCommand(model: HumanReviewModel, command: string | undefined): boolean {
+  if (command === "routes") {
+    return Array.isArray(model.review_routes) && model.review_routes.length > 0;
+  }
+  return true;
 }
 
 async function buildHumanReviewFromArtifacts(

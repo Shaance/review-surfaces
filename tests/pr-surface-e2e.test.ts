@@ -71,6 +71,7 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
       comments: "JSON sentinel suggested comment",
       trust: "JSON sentinel trust summary",
       "risk-lenses": "JSON sentinel risk lens",
+      routes: "JSON sentinel review route",
       "since-last-review": "JSON sentinel since last review",
       "test-plan": "JSON sentinel test plan"
     };
@@ -106,6 +107,33 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
             requirement_ids: [],
             paths: [],
             confidence: "low"
+          }
+        ];
+      } else if (artifact.command === "routes") {
+        human.review_routes = [
+          {
+            id: "ROUTE-SENTINEL",
+            persona: "human_reviewer",
+            title: marker,
+            summary: "Focused renderer reads human_review.json.",
+            is_default: true,
+            is_secondary: false,
+            steps: [
+              {
+                id: "ROUTE-SENTINEL-STEP-001",
+                rank: 1,
+                title: "JSON route step",
+                action: marker,
+                evidence: [{ kind: "unknown", confidence: "low", note: "JSON sentinel evidence." }],
+                priority: "medium",
+                artifact: "human_review.md",
+                queue_item_ids: [],
+                risk_lens_ids: [],
+                question_ids: [],
+                test_plan_ids: [],
+                suggested_comment_ids: []
+              }
+            ]
           }
         ];
       } else if (artifact.command === "since-last-review") {
@@ -155,6 +183,17 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
       assert.match(focusedBody, new RegExp(`^${artifact.heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
       assert.match(focusedBody, new RegExp(marker));
     }
+    delete human.review_routes;
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(human, null, 2));
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "review_routes.md"), "stale route artifact");
+    const staleRoutes = runCli(tmp, ["routes", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(staleRoutes.status, 0, staleRoutes.stderr);
+    const rebuiltRouteBody = fs.readFileSync(path.join(tmp, ".review-surfaces", "review_routes.md"), "utf8");
+    assert.match(rebuiltRouteBody, /^# Review Routes/);
+    assert.match(rebuiltRouteBody, /Human reviewer route/);
+    assert.doesNotMatch(rebuiltRouteBody, /generated before review-route support/);
+    const rebuiltRoutesHuman = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    assert.ok(rebuiltRoutesHuman.review_routes.length > 0, "routes command should rebuild stale prior-v1 human_review.json");
     fs.writeFileSync(
       path.join(tmp, ".review-surfaces", "inputs", "feedback.index.json"),
       JSON.stringify(

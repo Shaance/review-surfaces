@@ -235,6 +235,9 @@ components:
       11:
         requirement: When a previous packet comparison is available, the human surface must render reviewer-focused since-last-review deltas.
         note: Improved, regressed, new, resolved, and still-open items must be visible without forcing reviewers to inspect raw count deltas.
+      12:
+        requirement: The human surface must generate review routes for the default human reviewer, maintainer, security reviewer, product reviewer, and agent-continuation personas.
+        note: Routes must be derived from the same evidence-backed verdict, queue, risks, questions, trust audit, comments, and test-plan items; the human route is default and the agent route is secondary.
 
   PROVIDERS:
     name: Later provider integrations

@@ -13,6 +13,7 @@ import { RiskItem, RisksModel } from "../risks/risks";
 import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-contract";
 import {
   HUMAN_REVIEW_SCHEMA_VERSION,
+  REVIEW_ROUTE_PERSONAS,
   FeedbackPolicyEffect,
   HumanReviewDecision,
   HumanReviewModel,
@@ -22,6 +23,10 @@ import {
   InvalidEvidenceSummary,
   MissingEvidenceSummary,
   ReviewBlocker,
+  ReviewQueueItem,
+  ReviewRoute,
+  ReviewRoutePersona,
+  ReviewRouteStep,
   ReviewerQuestion,
   RiskLens,
   RiskLensFinding,
@@ -41,6 +46,19 @@ export interface BuildHumanReviewInput {
   feedback?: FeedbackFile[];
   packetPath?: string;
   prSurfacePath?: string;
+}
+
+interface BuildReviewRoutesInput {
+  input: BuildHumanReviewInput;
+  verdict: HumanReviewVerdict;
+  reviewQueue: HumanReviewModel["review_queue"];
+  blockers: ReviewBlocker[];
+  questions: ReviewerQuestion[];
+  suggestedComments: SuggestedReviewComment[];
+  trustAudit: TrustAudit;
+  riskLensFindings: RiskLensFinding[];
+  sinceLastReview: SinceLastReview;
+  testPlan: TestPlanItem[];
 }
 
 interface QueueDraft {
@@ -86,7 +104,16 @@ interface TestPlanCandidate {
   sourceRank: number;
   sortKey: string;
 }
+type ReviewRouteStepDraft = Omit<ReviewRouteStep, "id" | "rank">;
 type FeedbackPolicyEffectDraft = Omit<FeedbackPolicyEffect, "id">;
+interface ReviewRouteDefinition {
+  id: string;
+  title: string;
+  is_default: boolean;
+  is_secondary: boolean;
+  summary: string;
+  steps: (ctx: BuildReviewRoutesInput) => ReviewRouteStepDraft[];
+}
 interface RiskLensAccumulator {
   lens: RiskLens;
   severity: PacketSeverity;
@@ -153,6 +180,48 @@ const PR_RISK_RULE_LENSES: Record<PrRiskCandidate["rule"], RiskLens[]> = {
   failed_or_skipped_test: ["test_evidence"],
   large_diff: []
 };
+const REVIEW_ROUTE_DEFINITIONS: Record<ReviewRoutePersona, ReviewRouteDefinition> = {
+  human_reviewer: {
+    id: "ROUTE-HUMAN",
+    title: "Human reviewer route",
+    is_default: true,
+    is_secondary: false,
+    summary: "Default path through the verdict, review queue, blockers, questions, trust audit, and test plan.",
+    steps: humanReviewerRouteSteps
+  },
+  maintainer: {
+    id: "ROUTE-MAINTAINER",
+    title: "Maintainer route",
+    is_default: false,
+    is_secondary: false,
+    summary: "Focuses on merge readiness, public contracts, required tests, and blocking comments.",
+    steps: maintainerRouteSteps
+  },
+  security: {
+    id: "ROUTE-SECURITY",
+    title: "Security route",
+    is_default: false,
+    is_secondary: false,
+    summary: "Focuses on security/privacy lenses, CI secret-boundary checks, provider/redaction changes, and manual-check evidence.",
+    steps: securityRouteSteps
+  },
+  product: {
+    id: "ROUTE-PRODUCT",
+    title: "Product route",
+    is_default: false,
+    is_secondary: false,
+    summary: "Focuses on intent fit, reviewer-facing output, reviewer UX risks, and suggested comments.",
+    steps: productRouteSteps
+  },
+  agent_continuation: {
+    id: "ROUTE-AGENT",
+    title: "Agent-continuation route",
+    is_default: false,
+    is_secondary: true,
+    summary: "Secondary path for implementation agents to continue from open risks, missing tests, and deferrals.",
+    steps: agentContinuationRouteSteps
+  }
+};
 export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel {
   const feedbackEffects = buildFeedbackPolicyEffects(input);
   const riskLensFindings = buildRiskLensFindings(input);
@@ -166,6 +235,18 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   const skimSafe = buildSkimSafe(input, feedbackEffects);
   const verdict = buildVerdict(input, blockers, trustAudit);
   const generatedFrom = buildGeneratedFrom(input);
+  const reviewRoutes = buildReviewRoutes({
+    input,
+    verdict,
+    reviewQueue,
+    blockers,
+    questions,
+    suggestedComments,
+    trustAudit,
+    riskLensFindings,
+    sinceLastReview,
+    testPlan
+  });
 
   return stripUndefined({
     schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
@@ -178,6 +259,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     suggested_comments: suggestedComments,
     trust_audit: trustAudit,
     risk_lens_findings: riskLensFindings,
+    review_routes: reviewRoutes,
     since_last_review: sinceLastReview,
     test_plan: testPlan,
     skim_safe: skimSafe,
@@ -196,6 +278,300 @@ function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["gen
     head_ref: prScope?.head_ref ?? stringOr(manifest.head_ref, "HEAD"),
     head_sha: prScope?.head_sha ?? stringOr(manifest.head_sha, "unknown")
   };
+}
+
+function buildReviewRoutes(ctx: BuildReviewRoutesInput): ReviewRoute[] {
+  return REVIEW_ROUTE_PERSONAS.map((persona) => {
+    const definition = REVIEW_ROUTE_DEFINITIONS[persona];
+    return reviewRoute(persona, definition, definition.steps(ctx));
+  });
+}
+
+function reviewRoute(
+  persona: ReviewRoutePersona,
+  definition: ReviewRouteDefinition,
+  drafts: ReviewRouteStepDraft[]
+): ReviewRoute {
+  return {
+    id: definition.id,
+    persona,
+    title: definition.title,
+    summary: definition.summary,
+    is_default: definition.is_default,
+    is_secondary: definition.is_secondary,
+    steps: drafts.map((draft, index) => ({
+      id: `${definition.id}-STEP-${String(index + 1).padStart(3, "0")}`,
+      rank: index + 1,
+      ...draft
+    }))
+  };
+}
+
+function humanReviewerRouteSteps(ctx: BuildReviewRoutesInput): ReviewRouteStepDraft[] {
+  return [
+    routeStep(ctx, {
+      title: "Merge readiness verdict",
+      action: `Start with the ${ctx.verdict.decision} verdict and resolve blocker-level reasons before detailed diff review.`,
+      priority: ctx.verdict.decision === "block_before_merge" ? "blocker" : "high",
+      artifact: "human_review.md",
+      evidence: ctx.verdict.reasons.flatMap((reason) => reason.evidence)
+    }),
+    routeStep(ctx, {
+      title: "Top review queue",
+      action: "Inspect the top-ranked path-backed review queue items before skimming lower-risk files.",
+      priority: highestQueuePriority(ctx.reviewQueue),
+      artifact: "review_queue.md",
+      queue_item_ids: ctx.reviewQueue.slice(0, 5).map((item) => item.id),
+      evidence: ctx.reviewQueue.slice(0, 5).flatMap((item) => item.evidence)
+    }),
+    routeStep(ctx, {
+      title: "Blockers and author questions",
+      action: "Turn deterministic blockers and blocking/clarifying questions into review comments or author follow-up.",
+      priority: ctx.blockers.length > 0 ? "blocker" : "high",
+      artifact: "human_review.md",
+      question_ids: ctx.questions.slice(0, 5).map((question) => question.id),
+      evidence: [...ctx.blockers.flatMap((blocker) => blocker.evidence), ...ctx.questions.slice(0, 5).flatMap((question) => question.evidence)]
+    }),
+    routeStep(ctx, {
+      title: "Trust audit and test plan",
+      action: "Check missing/invalid evidence and run or request the required test-plan items before approval.",
+      priority: ctx.testPlan.some((item) => item.priority === "required") ? "high" : "medium",
+      artifact: "trust_audit.md",
+      test_plan_ids: ctx.testPlan.slice(0, 5).map((item) => item.id),
+      evidence: [...ctx.trustAudit.missing_evidence.flatMap((item) => item.evidence), ...ctx.testPlan.slice(0, 5).flatMap(testPlanEvidence)]
+    })
+  ];
+}
+
+function maintainerRouteSteps(ctx: BuildReviewRoutesInput): ReviewRouteStepDraft[] {
+  const contractLenses = ctx.riskLensFindings.filter((finding) => finding.lens === "api_contract" || finding.paths.some(isMaintainerContractPath));
+  const blockingComments = ctx.suggestedComments.filter((comment) => comment.severity === "blocking");
+  return [
+    routeStep(ctx, {
+      title: "Merge readiness verdict",
+      action: "Confirm the verdict, confidence, and required actions line up with repository merge policy.",
+      priority: ctx.verdict.decision === "block_before_merge" ? "blocker" : "high",
+      artifact: "human_review.md",
+      evidence: ctx.verdict.reasons.flatMap((reason) => reason.evidence)
+    }),
+    routeStep(ctx, {
+      title: "Schema, CLI, and artifact contracts",
+      action: "Review schema, CLI, config, feature-ledger, and persisted artifact contract changes for compatibility or versioning.",
+      priority: contractLenses.some((finding) => finding.severity === "high" || finding.severity === "critical") ? "blocker" : "high",
+      artifact: "risk_lenses.md",
+      risk_lens_ids: contractLenses.map((finding) => finding.id),
+      evidence: contractLenses.flatMap((finding) => finding.evidence)
+    }),
+    routeStep(ctx, {
+      title: "Required tests and manual checks",
+      action: "Verify required test-plan items exist for changed contracts and required manual checks are recorded.",
+      priority: ctx.testPlan.some((item) => item.priority === "required") ? "high" : "medium",
+      artifact: "test_plan.md",
+      test_plan_ids: ctx.testPlan.filter((item) => item.priority === "required").slice(0, 6).map((item) => item.id),
+      evidence: ctx.testPlan.filter((item) => item.priority === "required").slice(0, 6).flatMap(testPlanEvidence)
+    }),
+    routeStep(ctx, {
+      title: "Blocking suggested comments",
+      action: "Use blocking comment drafts only when their cited evidence still applies to the current head.",
+      priority: blockingComments.length > 0 ? "high" : "medium",
+      artifact: "suggested_comments.md",
+      suggested_comment_ids: blockingComments.slice(0, 5).map((comment) => comment.id),
+      evidence: blockingComments.slice(0, 5).flatMap((comment) => comment.evidence)
+    })
+  ];
+}
+
+function securityRouteSteps(ctx: BuildReviewRoutesInput): ReviewRouteStepDraft[] {
+  const securityLenses = ctx.riskLensFindings.filter((finding) => finding.lens === "security_privacy" || finding.lens === "llm_trust_boundary");
+  const securityQueue = ctx.reviewQueue.filter((item) => routeText(item.title, item.reason, item.reviewer_action, item.path).match(/\b(secret|security|privacy|provider|redact|llm|prompt|anchor|workflow|ci)\b/i));
+  const manualChecks = ctx.testPlan.filter((item) => item.kind === "manual" || routeText(item.scenario, item.evidence_gap).match(/\b(secret|security|privacy|manual|provider|redact|ci)\b/i));
+  const privacyAuditGaps = [...ctx.trustAudit.missing_evidence, ...ctx.trustAudit.invalid_evidence]
+    .filter((item) => routeText(item.summary).match(/\b(secret|security|privacy|provider|redact|llm|ci)\b/i));
+  return [
+    routeStep(ctx, {
+      title: "Security and LLM trust-boundary lenses",
+      action: securityLenses.length > 0
+        ? "Review security/privacy and LLM trust-boundary lens findings before lower-risk implementation changes."
+        : "No security/privacy or LLM trust-boundary lens fired; skim unless the changed files manually imply that boundary.",
+      priority: securityLenses.length === 0 ? "low" : securityLenses.some((finding) => finding.severity === "high" || finding.severity === "critical") ? "blocker" : "high",
+      artifact: "risk_lenses.md",
+      risk_lens_ids: securityLenses.map((finding) => finding.id),
+      evidence: securityLenses.flatMap((finding) => finding.evidence)
+    }),
+    routeStep(ctx, {
+      title: "CI, provider, and redaction paths",
+      action: securityQueue.length > 0
+        ? "Inspect workflow, provider, prompt, anchor-validation, and redaction changes that can affect trust boundaries."
+        : "No CI, provider, prompt, anchor-validation, or redaction queue item was detected for this review.",
+      priority: highestQueuePriority(securityQueue),
+      artifact: "review_queue.md",
+      queue_item_ids: securityQueue.slice(0, 6).map((item) => item.id),
+      evidence: securityQueue.slice(0, 6).flatMap((item) => item.evidence)
+    }),
+    routeStep(ctx, {
+      title: "Manual security checks",
+      action: manualChecks.length > 0
+        ? "Confirm required manual security/privacy checks are recorded against the current head, not as future intent."
+        : "No manual security/privacy check was generated for this review.",
+      priority: manualChecks.length === 0 ? "low" : manualChecks.some((item) => item.priority === "required") ? "blocker" : "high",
+      artifact: "test_plan.md",
+      test_plan_ids: manualChecks.slice(0, 6).map((item) => item.id),
+      evidence: manualChecks.slice(0, 6).flatMap(testPlanEvidence)
+    }),
+    routeStep(ctx, {
+      title: "Privacy and trust audit gaps",
+      action: privacyAuditGaps.length > 0
+        ? "Treat missing privacy, secret-boundary, provider, or LLM evidence as clarification work before approval."
+        : "No privacy, secret-boundary, provider, or LLM trust-audit gap was detected for this review.",
+      priority: privacyAuditGaps.length > 0 ? "high" : "low",
+      artifact: "trust_audit.md",
+      evidence: privacyAuditGaps.flatMap((item) => item.evidence)
+    })
+  ];
+}
+
+function productRouteSteps(ctx: BuildReviewRoutesInput): ReviewRouteStepDraft[] {
+  const uxLenses = ctx.riskLensFindings.filter((finding) => finding.lens === "reviewer_ux");
+  const routeQuestions = ctx.questions.filter((question) => routeText(question.question, question.reason).match(/\b(intent|reviewer|human|surface|comment|markdown|output|ux|baseline)\b/i));
+  return [
+    routeStep(ctx, {
+      title: "Intent and reviewer workflow fit",
+      action: "Check whether the changed surface still gives reviewers the fastest safe path through the PR.",
+      priority: routeQuestions.some((question) => question.severity === "blocking") ? "high" : "medium",
+      artifact: "human_review.md",
+      question_ids: routeQuestions.slice(0, 5).map((question) => question.id),
+      evidence: routeQuestions.slice(0, 5).flatMap((question) => question.evidence)
+    }),
+    routeStep(ctx, {
+      title: "Reviewer UX lens",
+      action: "Review renderer, Markdown, comment, queue, and diagram changes for human readability and bounded output.",
+      priority: uxLenses.some((finding) => finding.severity === "high" || finding.severity === "critical") ? "high" : "medium",
+      artifact: "risk_lenses.md",
+      risk_lens_ids: uxLenses.map((finding) => finding.id),
+      evidence: uxLenses.flatMap((finding) => finding.evidence)
+    }),
+    routeStep(ctx, {
+      title: "Human review output",
+      action: "Read the generated human review summary and standalone artifacts before relying on lower-level packet details.",
+      priority: "medium",
+      artifact: "human_review.md",
+      evidence: routeEvidence(ctx.input, "Human review route points reviewers at generated human_review.md and standalone human artifacts.")
+    }),
+    routeStep(ctx, {
+      title: "Suggested comments",
+      action: "Use suggested comments as evidence-backed drafts, and keep non-blocking drafts separate from merge blockers.",
+      priority: ctx.suggestedComments.some((comment) => comment.severity === "blocking") ? "high" : "medium",
+      artifact: "suggested_comments.md",
+      suggested_comment_ids: ctx.suggestedComments.slice(0, 6).map((comment) => comment.id),
+      evidence: ctx.suggestedComments.slice(0, 6).flatMap((comment) => comment.evidence)
+    })
+  ];
+}
+
+function agentContinuationRouteSteps(ctx: BuildReviewRoutesInput): ReviewRouteStepDraft[] {
+  const openRiskEvidence = [...ctx.blockers.flatMap((blocker) => blocker.evidence), ...ctx.riskLensFindings.flatMap((finding) => finding.evidence)];
+  return [
+    routeStep(ctx, {
+      title: "Open risks and blockers",
+      action: "Start continuation work from deterministic blockers, high-risk lenses, and still-open risk evidence.",
+      priority: ctx.blockers.length > 0 ? "blocker" : "high",
+      artifact: "human_review.md",
+      risk_lens_ids: ctx.riskLensFindings.slice(0, 6).map((finding) => finding.id),
+      evidence: openRiskEvidence
+    }),
+    routeStep(ctx, {
+      title: "Missing tests and manual checks",
+      action: "Implement or record the required test-plan items before changing reviewer-facing summaries.",
+      priority: ctx.testPlan.some((item) => item.priority === "required") ? "high" : "medium",
+      artifact: "test_plan.md",
+      test_plan_ids: ctx.testPlan.slice(0, 8).map((item) => item.id),
+      evidence: ctx.testPlan.slice(0, 8).flatMap(testPlanEvidence)
+    }),
+    routeStep(ctx, {
+      title: "Since-last-review open items",
+      action: "Prioritize regressed, new, and still-open items before adding unrelated features.",
+      priority: ctx.sinceLastReview.regressed.length > 0 || ctx.sinceLastReview.new_risks.length > 0 ? "high" : "medium",
+      artifact: "since_last_review.md",
+      evidence: [
+        ...ctx.sinceLastReview.regressed,
+        ...ctx.sinceLastReview.new_risks,
+        ...ctx.sinceLastReview.still_open
+      ].flatMap((item) => item.evidence)
+    }),
+    routeStep(ctx, {
+      title: "Agent handoff and deferrals",
+      action: "Use the generated agent handoff for next tasks and deferrals, but keep it secondary to the human route.",
+      priority: "low",
+      artifact: "agent_handoff.md",
+      evidence: routeEvidence(ctx.input, "Agent-continuation route points at agent_handoff.md as the secondary continuation surface.")
+    })
+  ];
+}
+
+function routeStep(
+  ctx: BuildReviewRoutesInput,
+  draft: Omit<ReviewRouteStepDraft, "evidence" | "queue_item_ids" | "risk_lens_ids" | "question_ids" | "test_plan_ids" | "suggested_comment_ids"> &
+    Partial<Pick<ReviewRouteStepDraft, "evidence" | "queue_item_ids" | "risk_lens_ids" | "question_ids" | "test_plan_ids" | "suggested_comment_ids">>
+): ReviewRouteStepDraft {
+  return {
+    ...draft,
+    evidence: routeStepEvidence(ctx.input, draft.title, draft.evidence ?? []),
+    queue_item_ids: draft.queue_item_ids ?? [],
+    risk_lens_ids: draft.risk_lens_ids ?? [],
+    question_ids: draft.question_ids ?? [],
+    test_plan_ids: draft.test_plan_ids ?? [],
+    suggested_comment_ids: draft.suggested_comment_ids ?? []
+  };
+}
+
+function routeStepEvidence(input: BuildHumanReviewInput, title: string, evidence: EvidenceRef[]): EvidenceRef[] {
+  const refs = evidence.length ? evidence : routeEvidence(input, `Review route step "${title}" is derived from the generated human review model.`);
+  return dedupeEvidenceRefs(refs).slice(0, 8);
+}
+
+function routeEvidence(input: BuildHumanReviewInput, note: string): EvidenceRef[] {
+  return [fileEvidence(input.packetPath ?? ".review-surfaces/review_packet.json", note, "medium")];
+}
+
+function dedupeEvidenceRefs(evidence: EvidenceRef[]): EvidenceRef[] {
+  const seen = new Set<string>();
+  return evidence.filter((ref) => {
+    const key = evidenceRefDedupeKey(ref);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function testPlanEvidence(item: TestPlanItem): EvidenceRef {
+  return missingEvidence(item.evidence_gap);
+}
+
+function highestQueuePriority(items: ReviewQueueItem[]): HumanReviewPriority {
+  if (items.some((item) => item.priority === "blocker")) {
+    return "blocker";
+  }
+  if (items.some((item) => item.priority === "high")) {
+    return "high";
+  }
+  if (items.some((item) => item.priority === "medium")) {
+    return "medium";
+  }
+  return "low";
+}
+
+function isMaintainerContractPath(filePath: string): boolean {
+  return /^schemas\//.test(filePath) ||
+    /^src\/cli\//.test(filePath) ||
+    /^features\//.test(filePath) ||
+    /(?:^|\/)contract\.ts$/.test(filePath) ||
+    /schema/i.test(filePath);
+}
+
+function routeText(...values: Array<string | undefined>): string {
+  return values.filter((value): value is string => typeof value === "string").join(" ");
 }
 
 function buildSinceLastReview(input: BuildHumanReviewInput): SinceLastReview {

@@ -35,6 +35,15 @@ export const RISK_LENSES = [
 ] as const;
 export type RiskLens = (typeof RISK_LENSES)[number];
 
+export const REVIEW_ROUTE_PERSONAS = [
+  "human_reviewer",
+  "maintainer",
+  "security",
+  "product",
+  "agent_continuation"
+] as const;
+export type ReviewRoutePersona = (typeof REVIEW_ROUTE_PERSONAS)[number];
+
 export interface RiskLensMetadata {
   label: string;
   rank: number;
@@ -198,6 +207,31 @@ export interface RiskLensFinding {
   confidence: PacketConfidence;
 }
 
+export interface ReviewRouteStep {
+  id: string;
+  rank: number;
+  title: string;
+  action: string;
+  evidence: EvidenceRef[];
+  priority: HumanReviewPriority;
+  artifact?: string;
+  queue_item_ids: string[];
+  risk_lens_ids: string[];
+  question_ids: string[];
+  test_plan_ids: string[];
+  suggested_comment_ids: string[];
+}
+
+export interface ReviewRoute {
+  id: string;
+  persona: ReviewRoutePersona;
+  title: string;
+  summary: string;
+  is_default: boolean;
+  is_secondary: boolean;
+  steps: ReviewRouteStep[];
+}
+
 export type SinceLastReviewCategory = "requirement" | "risk" | "overreach" | "summary";
 
 export interface SinceLastReviewItem {
@@ -268,6 +302,7 @@ export interface HumanReviewModel {
   suggested_comments: SuggestedReviewComment[];
   trust_audit: TrustAudit;
   risk_lens_findings: RiskLensFinding[];
+  review_routes: ReviewRoute[];
   since_last_review: SinceLastReview;
   test_plan: TestPlanItem[];
   skim_safe: SkimSafeItem[];
