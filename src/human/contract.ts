@@ -54,6 +54,28 @@ export const EVIDENCE_CARD_STATUSES = [
 ] as const;
 export type EvidenceCardStatus = (typeof EVIDENCE_CARD_STATUSES)[number];
 
+export interface HumanReviewBuildConfig {
+  max_review_first: number;
+  max_suggested_comments: number;
+  max_questions: number;
+  risk_lenses: Record<RiskLens, boolean>;
+}
+
+export const DEFAULT_HUMAN_REVIEW_BUILD_CONFIG: HumanReviewBuildConfig = {
+  max_review_first: 7,
+  max_suggested_comments: 10,
+  max_questions: 10,
+  risk_lenses: {
+    api_contract: true,
+    security_privacy: true,
+    llm_trust_boundary: true,
+    test_evidence: true,
+    reviewer_ux: true,
+    cache_provenance: true,
+    custom: true
+  }
+};
+
 export interface RiskLensMetadata {
   label: string;
   rank: number;

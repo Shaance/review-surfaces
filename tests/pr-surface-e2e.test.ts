@@ -511,6 +511,58 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
   }
 });
 
+test("review-surfaces.HUMAN_REVIEW.16 all applies human_review config caps to generated JSON", () => {
+  const tmp = setupChangedRepo();
+  try {
+    fs.writeFileSync(
+      path.join(tmp, "human-review-caps.yaml"),
+      [
+        "human_review:",
+        "  max_review_first: 1",
+        "  max_suggested_comments: 1",
+        "  max_questions: 1"
+      ].join("\n")
+    );
+    const run = runCli(tmp, [...ALL_PR, "--provider", "mock", "--config", "human-review-caps.yaml"]);
+    assert.equal(run.status, 0, run.stderr);
+    const human = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+
+    assert.equal(validateJsonSchema(HUMAN_REVIEW_SCHEMA, human).valid, true);
+    assert.ok(human.review_queue.length <= 1);
+    assert.ok(human.suggested_comments.length <= 1);
+    assert.ok(human.questions.length <= 1);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.HUMAN_REVIEW.16 all honors human_review enabled and default entrypoint controls", () => {
+  const disabled = setupChangedRepo();
+  const quiet = setupChangedRepo();
+  try {
+    fs.writeFileSync(path.join(disabled, "human-review-disabled.yaml"), ["human_review:", "  enabled: false"].join("\n"));
+    fs.mkdirSync(path.join(disabled, ".review-surfaces"), { recursive: true });
+    fs.writeFileSync(path.join(disabled, ".review-surfaces", "human_review.json"), "{}");
+    fs.writeFileSync(path.join(disabled, ".review-surfaces", "human_review.md"), "# stale\n");
+    const disabledRun = runCli(disabled, [...ALL_PR, "--provider", "mock", "--config", "human-review-disabled.yaml"]);
+    assert.equal(disabledRun.status, 0, disabledRun.stderr);
+    assert.doesNotMatch(disabledRun.stdout, /Human review:/);
+    assert.equal(fs.existsSync(path.join(disabled, ".review-surfaces", "human_review.json")), false);
+    assert.equal(fs.existsSync(path.join(disabled, ".review-surfaces", "human_review.md")), false);
+
+    fs.writeFileSync(path.join(quiet, "human-review-secondary.yaml"), ["human_review:", "  default_entrypoint: false"].join("\n"));
+    const quietRun = runCli(quiet, [...ALL_PR, "--provider", "mock", "--config", "human-review-secondary.yaml"]);
+    assert.equal(quietRun.status, 0, quietRun.stderr);
+    assert.doesNotMatch(quietRun.stdout, /Human review:/);
+    assert.match(quietRun.stdout, /Wrote review-surfaces artifacts to \.review-surfaces/);
+    assert.equal(fs.existsSync(path.join(quiet, ".review-surfaces", "human_review.json")), true);
+    assert.equal(fs.existsSync(path.join(quiet, ".review-surfaces", "human_review.md")), true);
+  } finally {
+    fs.rmSync(disabled, { recursive: true, force: true });
+    fs.rmSync(quiet, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.PROVIDERS.6 PR comment workflow is base-controlled and uses trusted tool checkouts", () => {
   const ciWorkflow = fs.readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
   const workflow = fs.readFileSync(path.join(process.cwd(), ".github", "workflows", "pr-review-comment.yml"), "utf8");

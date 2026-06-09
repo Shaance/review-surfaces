@@ -248,3 +248,16 @@ render:
 dogfood:
   enabled: true
   milestone: M5
+human_review:
+  enabled: true
+  default_entrypoint: true
+  max_review_first: 7
+  max_suggested_comments: 10
+  max_questions: 10
+  risk_lenses:
+    api_contract: true
+    security_privacy: true
+    llm_trust_boundary: true
+    test_evidence: true
+    reviewer_ux: true
+    cache_provenance: true

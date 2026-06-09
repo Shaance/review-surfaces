@@ -57,3 +57,62 @@ test("review-surfaces.QUALITY.7 quality_gate.max_missing rejects invalid values 
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("review-surfaces.HUMAN_REVIEW.16 parses human_review caps and risk lens toggles", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-config-human-"));
+  try {
+    fs.writeFileSync(
+      path.join(tmp, "review-surfaces.config.yaml"),
+      [
+        "human_review:",
+        "  enabled: false",
+        "  default_entrypoint: false",
+        "  max_review_first: 3",
+        "  max_suggested_comments: 4",
+        "  max_questions: 5",
+        "  risk_lenses:",
+        "    api_contract: false",
+        "    security_privacy: true",
+        "    llm_trust_boundary: false"
+      ].join("\n")
+    );
+    const config = await loadConfig(tmp);
+    assert.equal(config.human_review.enabled, false);
+    assert.equal(config.human_review.default_entrypoint, false);
+    assert.equal(config.human_review.max_review_first, 3);
+    assert.equal(config.human_review.max_suggested_comments, 4);
+    assert.equal(config.human_review.max_questions, 5);
+    assert.equal(config.human_review.risk_lenses.api_contract, false);
+    assert.equal(config.human_review.risk_lenses.security_privacy, true);
+    assert.equal(config.human_review.risk_lenses.llm_trust_boundary, false);
+    assert.equal(config.human_review.risk_lenses.test_evidence, true);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.HUMAN_REVIEW.16 invalid human_review caps fall back to safe defaults", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-config-human-bad-"));
+  try {
+    fs.writeFileSync(
+      path.join(tmp, "review-surfaces.config.yaml"),
+      [
+        "human_review:",
+        "  max_review_first: 0",
+        "  max_suggested_comments: -1",
+        "  max_questions: nope",
+        "  risk_lenses:",
+        "    api_contract: nope",
+        "    security_privacy: false"
+      ].join("\n")
+    );
+    const config = await loadConfig(tmp);
+    assert.equal(config.human_review.max_review_first, defaultConfig.human_review.max_review_first);
+    assert.equal(config.human_review.max_suggested_comments, defaultConfig.human_review.max_suggested_comments);
+    assert.equal(config.human_review.max_questions, defaultConfig.human_review.max_questions);
+    assert.equal(config.human_review.risk_lenses.api_contract, true);
+    assert.equal(config.human_review.risk_lenses.security_privacy, false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
