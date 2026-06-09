@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileExists, readText } from "../core/files";
 import { isRecord } from "../core/guards";
 import { parseYaml } from "../core/simple-yaml";
+import { DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, HumanReviewBuildConfig, RISK_LENSES, RiskLens } from "../human/contract";
 
 export interface ReviewAreaConfig {
   id: string;
@@ -43,6 +44,10 @@ export interface ReviewSurfacesConfig {
   quality_gate: {
     max_missing: number;
   };
+  human_review: HumanReviewBuildConfig & {
+    enabled: boolean;
+    default_entrypoint: boolean;
+  };
 }
 
 export const defaultConfig: ReviewSurfacesConfig = {
@@ -78,6 +83,11 @@ export const defaultConfig: ReviewSurfacesConfig = {
     // Tune upward in config (quality_gate.max_missing) or via --max-missing N
     // to tolerate a known number of missing requirements before failing.
     max_missing: 0
+  },
+  human_review: {
+    enabled: true,
+    default_entrypoint: true,
+    ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG
   }
 };
 
@@ -129,12 +139,38 @@ export function normalizeConfig(raw: Record<string, unknown>): ReviewSurfacesCon
     },
     quality_gate: {
       max_missing: nonNegativeIntValue(readRecord(raw.quality_gate).max_missing, defaultConfig.quality_gate.max_missing)
+    },
+    human_review: {
+      enabled: booleanValue(readRecord(raw.human_review).enabled, defaultConfig.human_review.enabled),
+      default_entrypoint: booleanValue(readRecord(raw.human_review).default_entrypoint, defaultConfig.human_review.default_entrypoint),
+      max_review_first: positiveIntValue(readRecord(raw.human_review).max_review_first, defaultConfig.human_review.max_review_first),
+      max_suggested_comments: positiveIntValue(
+        readRecord(raw.human_review).max_suggested_comments,
+        defaultConfig.human_review.max_suggested_comments
+      ),
+      max_questions: positiveIntValue(readRecord(raw.human_review).max_questions, defaultConfig.human_review.max_questions),
+      risk_lenses: riskLensConfig(readRecord(raw.human_review).risk_lenses, defaultConfig.human_review.risk_lenses)
     }
   };
 }
 
+function positiveIntValue(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
 function nonNegativeIntValue(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : fallback;
+}
+
+function riskLensConfig(value: unknown, fallback: Record<RiskLens, boolean>): Record<RiskLens, boolean> {
+  const record = readRecord(value);
+  const config = { ...fallback };
+  for (const lens of RISK_LENSES) {
+    if (typeof record[lens] === "boolean") {
+      config[lens] = record[lens];
+    }
+  }
+  return config;
 }
 
 function stringValue(value: unknown, fallback: string): string {

@@ -44,7 +44,7 @@ import { postStickyComment } from "../render/post-comment";
 import { writeJson, writeText } from "../core/files";
 import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
-import { buildHumanReview } from "../human/human-review";
+import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
 import { HumanReviewModel } from "../human/contract";
 import {
   HUMAN_STANDALONE_ARTIFACTS,
@@ -469,13 +469,11 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // strict-without-evaluation falls through to regenerate below) we keep the
       // prior reuse-and-succeed behavior rather than forcing a regenerate.
       if (evaluation) {
-        const humanReview = await writeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed));
-        printHumanReviewTerminalSummary(cwd, collection.outputDir, humanReview);
+        await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config);
         console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
         return applyGate(parsed, evaluation, collection, provider, config);
       }
-      const humanReview = await writeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed));
-      printHumanReviewTerminalSummary(cwd, collection.outputDir, humanReview);
+      await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config);
       console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
       return ExitCodes.success;
     }
@@ -637,11 +635,18 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       console.warn(`PR review surface blocked (${persistedSurface.blocked_reason}); see pr_review_surface.json`);
     }
   }
-  const humanReview = await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff, collection.feedback);
+  const humanReview = config.human_review.enabled
+    ? await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff, collection.feedback, config)
+    : undefined;
+  if (!config.human_review.enabled) {
+    removeHumanReviewArtifacts(collection.outputDir);
+  }
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
-  printHumanReviewTerminalSummary(cwd, collection.outputDir, humanReview);
+  if (humanReview && config.human_review.default_entrypoint) {
+    printHumanReviewTerminalSummary(cwd, collection.outputDir, humanReview);
+  }
   console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
   debug(parsed, `completed in ${Date.now() - startedAt}ms`);
   // Gate on the REQUESTED provider, not wholeRepoProvider: in pr mode the narrative
@@ -1005,7 +1010,13 @@ async function runHandoffStage(parsed: ParsedArgs): Promise<void> {
 async function runHumanStage(parsed: ParsedArgs): Promise<void> {
   const cwd = process.cwd();
   const outDir = await resolveOutputDir(cwd, parsed);
-  await writeHumanReviewFromArtifacts(cwd, outDir, reviewScope(parsed));
+  const config = await loadConfig(cwd, stringFlag(parsed, "config") ?? "review-surfaces.config.yaml");
+  if (!config.human_review.enabled) {
+    removeHumanReviewArtifacts(outDir);
+    console.log(`Human review disabled by config; removed generated human review artifacts from ${path.relative(cwd, outDir) || "."}`);
+    return;
+  }
+  await writeHumanReviewFromArtifacts(cwd, outDir, reviewScope(parsed), config);
   console.log(`Human review: ${artifactPathForLog(cwd, outDir, "human_review.md")}`);
 }
 
@@ -1016,13 +1027,44 @@ async function runHumanSubartifactStage(parsed: ParsedArgs): Promise<void> {
   if (!artifact) {
     throw new CliError(`Unknown human artifact command: ${parsed.command}`, ExitCodes.usageError);
   }
-  const context = await loadOrBuildHumanReviewJson(cwd, outDir, reviewScope(parsed), artifact.command);
+  const configPath = stringFlag(parsed, "config");
+  const config = await loadConfig(cwd, configPath ?? "review-surfaces.config.yaml");
+  if (!config.human_review.enabled) {
+    removeHumanReviewArtifacts(outDir);
+    console.log(`${artifact.label}: disabled by human_review.enabled=false`);
+    return;
+  }
+  const context = await loadOrBuildHumanReviewJson(cwd, outDir, reviewScope(parsed), artifact.command, config, configPath !== undefined);
   await writeHumanStandaloneArtifact(context.outputDir, context.model, artifact);
   console.log(`${artifact.label}: ${artifactPathForLog(cwd, context.outputDir, artifact.artifact)}`);
 }
 
-async function writeHumanReviewFromArtifacts(cwd: string, outDir: string, scope: ReviewScope): Promise<HumanReviewModel> {
-  const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope);
+async function writeAndMaybeSummarizeHumanReviewFromArtifacts(
+  cwd: string,
+  outDir: string,
+  scope: ReviewScope,
+  config: ReviewSurfacesConfig
+): Promise<void> {
+  if (!config.human_review.enabled) {
+    removeHumanReviewArtifacts(outDir);
+    return;
+  }
+  const humanReview = await writeHumanReviewFromArtifacts(cwd, outDir, scope, config);
+  if (config.human_review.default_entrypoint) {
+    printHumanReviewTerminalSummary(cwd, outDir, humanReview);
+  }
+}
+
+function removeHumanReviewArtifacts(outDir: string): void {
+  const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
+  const artifacts = ["human_review.json", "human_review.md", ...HUMAN_STANDALONE_ARTIFACTS.map((artifact) => artifact.artifact)];
+  for (const artifact of artifacts) {
+    fs.rmSync(path.join(outputDir, artifact), { force: true });
+  }
+}
+
+async function writeHumanReviewFromArtifacts(cwd: string, outDir: string, scope: ReviewScope, config?: ReviewSurfacesConfig): Promise<HumanReviewModel> {
+  const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config);
   await writeHumanReviewArtifacts(context.outputDir, context.model);
   return context.model;
 }
@@ -1040,24 +1082,35 @@ async function loadOrBuildHumanReviewJson(
   cwd: string,
   outDir: string,
   scope: ReviewScope,
-  command?: string
+  command?: string,
+  config?: ReviewSurfacesConfig,
+  forceRebuild = false
 ): Promise<{ outputDir: string; model: HumanReviewModel }> {
   const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
   const humanReviewPath = path.join(outputDir, "human_review.json");
-  if (fileExists(humanReviewPath)) {
+  if (!forceRebuild && fileExists(humanReviewPath)) {
     const model = await readJson(humanReviewPath) as HumanReviewModel;
     assertValidHumanReview(cwd, model);
+    if (!humanReviewJsonMatchesConfig(model, config)) {
+      const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config);
+      await writeJson(path.join(context.outputDir, "human_review.json"), context.model);
+      return context;
+    }
     if (!humanReviewJsonSatisfiesStandaloneCommand(model, command)) {
-      const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope);
+      const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config);
       await writeJson(path.join(context.outputDir, "human_review.json"), context.model);
       return context;
     }
     return { outputDir, model };
   }
 
-  const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope);
+  const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config);
   await writeJson(path.join(context.outputDir, "human_review.json"), context.model);
   return context;
+}
+
+function humanReviewJsonMatchesConfig(model: HumanReviewModel, config?: ReviewSurfacesConfig): boolean {
+  return model.generated_from.human_review_config_signature === humanReviewConfigSignature(config?.human_review);
 }
 
 function humanReviewJsonSatisfiesStandaloneCommand(model: HumanReviewModel, command: string | undefined): boolean {
@@ -1068,7 +1121,8 @@ function humanReviewJsonSatisfiesStandaloneCommand(model: HumanReviewModel, comm
 async function buildHumanReviewFromArtifacts(
   cwd: string,
   outDir: string,
-  scope: ReviewScope
+  scope: ReviewScope,
+  config?: ReviewSurfacesConfig
 ): Promise<{ outputDir: string; model: HumanReviewModel }> {
   const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
   const packetPath = path.join(outputDir, "review_packet.json");
@@ -1088,13 +1142,13 @@ async function buildHumanReviewFromArtifacts(
       );
       return {
         outputDir,
-        model: buildHumanReviewForPacket(cwd, outputDir, packet, undefined, undefined, readHumanReviewFeedback(outputDir))
+        model: buildHumanReviewForPacket(cwd, outputDir, packet, undefined, undefined, readHumanReviewFeedback(outputDir), config)
       };
     }
   }
   return {
     outputDir,
-    model: buildHumanReviewForPacket(cwd, outputDir, packet, surface, undefined, readHumanReviewFeedback(outputDir))
+    model: buildHumanReviewForPacket(cwd, outputDir, packet, surface, undefined, readHumanReviewFeedback(outputDir), config)
   };
 }
 
@@ -1104,13 +1158,15 @@ function buildHumanReviewForPacket(
   packet: ReviewPacket,
   prSurface?: PrReviewSurfaceModel,
   diff?: StructuredDiff,
-  feedback?: FeedbackFile[]
+  feedback?: FeedbackFile[],
+  config?: ReviewSurfacesConfig
 ): HumanReviewModel {
   const humanReview = buildHumanReview({
     packet,
     prSurface,
     diff: diff ?? readHumanReviewDiff(outDir),
     feedback,
+    config: config?.human_review,
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
@@ -1192,9 +1248,10 @@ async function writeHumanReviewForPacket(
   packet: ReviewPacket,
   prSurface?: PrReviewSurfaceModel,
   diff?: StructuredDiff,
-  feedback?: FeedbackFile[]
+  feedback?: FeedbackFile[],
+  config?: ReviewSurfacesConfig
 ): Promise<HumanReviewModel> {
-  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface, diff, feedback);
+  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface, diff, feedback, config);
   await writeHumanReviewArtifacts(outDir, humanReview);
   return humanReview;
 }
@@ -1359,11 +1416,12 @@ async function runCommentGithub(parsed: ParsedArgs): Promise<number> {
   // packet `all` actually wrote. Passing undefined would hardcode .review-surfaces
   // and miss a config-set output_dir.
   const outDir = await resolveOutputDir(cwd, parsed);
+  const config = await loadConfig(cwd, stringFlag(parsed, "config") ?? "review-surfaces.config.yaml");
 
   // PR mode renders the diff-scoped surface and NEVER falls back to the
   // whole-repo comment when it is missing/blocked.
   if (reviewScope(parsed) === "pr") {
-    return runPrCommentGithub(cwd, outDir, parsed);
+    return runPrCommentGithub(cwd, outDir, parsed, config);
   }
 
   const rendered = renderCommentFromPacketFile(cwd, outDir);
@@ -1386,7 +1444,7 @@ async function runCommentGithub(parsed: ParsedArgs): Promise<number> {
 // Render the PR-mode sticky comment from the diff-scoped pr_review_surface.json
 // (written by `all --review-scope pr`). Absent surface is a clean usage error
 // pointing at `all --review-scope pr`; never a whole-repo fallback.
-async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArgs): Promise<number> {
+async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArgs, config: ReviewSurfacesConfig): Promise<number> {
   const surfacePath = path.join(outDir.endsWith(".json") ? path.dirname(outDir) : outDir, "pr_review_surface.json");
   if (!fileExists(surfacePath)) {
     throw new CliError(
@@ -1398,7 +1456,7 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
   assertValidPrSurface(cwd, surface);
   // Point the comment's "Full PR surface" pointer at the ACTUAL artifact path
   // (honoring --out / config output_dir), not a hardcoded .review-surfaces.
-  const humanCommentModel = await loadCurrentHumanReviewForPrComment(cwd, path.dirname(surfacePath), surface);
+  const humanCommentModel = await loadCurrentHumanReviewForPrComment(cwd, path.dirname(surfacePath), surface, config);
   const relativeSurfacePath = path.relative(cwd, surfacePath) || surfacePath;
   const markdown = humanCommentModel
     ? renderHumanPrComment(humanCommentModel, {
@@ -1434,8 +1492,13 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
 async function loadCurrentHumanReviewForPrComment(
   cwd: string,
   outputDir: string,
-  surface: PrReviewSurfaceModel
+  surface: PrReviewSurfaceModel,
+  config: ReviewSurfacesConfig
 ): Promise<HumanReviewModel | undefined> {
+  if (!config.human_review.enabled) {
+    removeHumanReviewArtifacts(outputDir);
+    return undefined;
+  }
   const humanReviewPath = path.join(outputDir, "human_review.json");
   if (!fileExists(humanReviewPath)) {
     return undefined;
@@ -1463,7 +1526,16 @@ async function loadCurrentHumanReviewForPrComment(
     );
     return undefined;
   }
-  return model as HumanReviewModel;
+  const humanReview = model as HumanReviewModel;
+  if (!humanReviewJsonMatchesConfig(humanReview, config)) {
+    console.warn(
+      `Refreshing stale human_review.json for the current human_review config before rendering the PR comment.`
+    );
+    const context = await buildHumanReviewFromArtifacts(cwd, outputDir, "pr", config);
+    await writeHumanReviewArtifacts(context.outputDir, context.model);
+    return context.model;
+  }
+  return humanReview;
 }
 
 function humanReviewMatchesPrSurface(

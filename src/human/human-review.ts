@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
@@ -12,10 +13,12 @@ import { looksLikeRecordedCiSecretBoundaryManualCheck } from "../risks/manual-ch
 import { RiskItem, RisksModel } from "../risks/risks";
 import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-contract";
 import {
+  DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
   HUMAN_REVIEW_SCHEMA_VERSION,
   REVIEW_ROUTE_PERSONAS,
   EvidenceCard,
   FeedbackPolicyEffect,
+  HumanReviewBuildConfig,
   HumanReviewDecision,
   HumanReviewModel,
   HumanReviewPriority,
@@ -31,6 +34,7 @@ import {
   ReviewerQuestion,
   RiskLens,
   RiskLensFinding,
+  RISK_LENSES,
   RISK_LENS_METADATA,
   SinceLastReview,
   SinceLastReviewItem,
@@ -45,6 +49,7 @@ export interface BuildHumanReviewInput {
   prSurface?: PrReviewSurfaceModel;
   diff?: StructuredDiff;
   feedback?: FeedbackFile[];
+  config?: HumanReviewBuildConfig;
   packetPath?: string;
   prSurfacePath?: string;
 }
@@ -233,12 +238,13 @@ const REVIEW_ROUTE_DEFINITIONS: Record<ReviewRoutePersona, ReviewRouteDefinition
   }
 };
 export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel {
+  const config = humanReviewBuildConfig(input);
   const feedbackEffects = buildFeedbackPolicyEffects(input);
-  const riskLensFindings = buildRiskLensFindings(input);
+  const riskLensFindings = buildRiskLensFindings(input, config);
   const blockers = buildBlockers(input, feedbackEffects);
-  const reviewQueue = buildReviewQueue(input, feedbackEffects);
-  const questions = buildQuestions(input, blockers, feedbackEffects, riskLensFindings);
-  const suggestedComments = buildSuggestedComments(input, blockers, riskLensFindings);
+  const reviewQueue = buildReviewQueue(input, feedbackEffects, config);
+  const questions = buildQuestions(input, blockers, feedbackEffects, riskLensFindings, config);
+  const suggestedComments = buildSuggestedComments(input, blockers, riskLensFindings, config);
   const trustAudit = buildTrustAudit(input);
   const sinceLastReview = buildSinceLastReview(input);
   const testPlan = buildTestPlan(input, feedbackEffects, riskLensFindings);
@@ -285,6 +291,35 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   });
 }
 
+function humanReviewBuildConfig(input: BuildHumanReviewInput): HumanReviewBuildConfig {
+  return {
+    ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+    ...input.config,
+    risk_lenses: {
+      ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG.risk_lenses,
+      ...input.config?.risk_lenses
+    }
+  };
+}
+
+export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): string {
+  const resolved = {
+    ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+    ...config,
+    risk_lenses: {
+      ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG.risk_lenses,
+      ...config?.risk_lenses
+    }
+  };
+  const fingerprint = {
+    max_questions: resolved.max_questions,
+    max_review_first: resolved.max_review_first,
+    max_suggested_comments: resolved.max_suggested_comments,
+    risk_lenses: RISK_LENSES.map((lens) => [lens, resolved.risk_lenses[lens]])
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(fingerprint)).digest("hex");
+}
+
 function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["generated_from"] {
   const manifest = input.packet.manifest as { base_ref?: unknown; head_ref?: unknown; head_sha?: unknown };
   const prScope = input.prSurface?.scope;
@@ -293,7 +328,8 @@ function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["gen
     pr_surface_path: input.prSurface ? input.prSurfacePath ?? ".review-surfaces/pr_review_surface.json" : undefined,
     base_ref: prScope?.base_ref ?? stringOr(manifest.base_ref, "origin/main"),
     head_ref: prScope?.head_ref ?? stringOr(manifest.head_ref, "HEAD"),
-    head_sha: prScope?.head_sha ?? stringOr(manifest.head_sha, "unknown")
+    head_sha: prScope?.head_sha ?? stringOr(manifest.head_sha, "unknown"),
+    human_review_config_signature: humanReviewConfigSignature(input.config)
   };
 }
 
@@ -1150,7 +1186,11 @@ function buildBlockers(input: BuildHumanReviewInput, feedbackEffects: FeedbackPo
   return dedupeById(blockers).slice(0, MAX_BLOCKERS);
 }
 
-function buildReviewQueue(input: BuildHumanReviewInput, feedbackEffects: FeedbackPolicyEffect[]): HumanReviewModel["review_queue"] {
+function buildReviewQueue(
+  input: BuildHumanReviewInput,
+  feedbackEffects: FeedbackPolicyEffect[],
+  config: HumanReviewBuildConfig
+): HumanReviewModel["review_queue"] {
   const drafts: QueueDraft[] = [];
   const prChangedPaths = input.prSurface ? prChangedFilePaths(input.prSurface) : undefined;
   const diffIndex = buildDiffIndex(input.diff);
@@ -1223,7 +1263,7 @@ function buildReviewQueue(input: BuildHumanReviewInput, feedbackEffects: Feedbac
   }
 
   drafts.sort((left, right) => right.score - left.score || compareStrings(left.sortKey, right.sortKey));
-  return drafts.slice(0, MAX_QUEUE).map((draft, index) =>
+  return drafts.slice(0, Math.min(MAX_QUEUE, config.max_review_first)).map((draft, index) =>
     stripUndefined({
       id: `REVIEW-${String(index + 1).padStart(3, "0")}`,
       rank: index + 1,
@@ -1399,7 +1439,7 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput): FeedbackPolic
   }));
 }
 
-function buildRiskLensFindings(input: BuildHumanReviewInput): RiskLensFinding[] {
+function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReviewBuildConfig): RiskLensFinding[] {
   const accumulators = new Map<RiskLens, RiskLensAccumulator>();
   const addSignal = (
     lens: RiskLens,
@@ -1409,6 +1449,9 @@ function buildRiskLensFindings(input: BuildHumanReviewInput): RiskLensFinding[] 
     requirementIds: string[] = [],
     paths: string[] = []
   ): void => {
+    if (!config.risk_lenses[lens]) {
+      return;
+    }
     const existing = accumulators.get(lens) ?? {
       lens,
       severity: "unknown" as const,
@@ -2162,7 +2205,8 @@ function buildQuestions(
   input: BuildHumanReviewInput,
   blockers: ReviewBlocker[],
   feedbackEffects: FeedbackPolicyEffect[],
-  riskLensFindings: RiskLensFinding[]
+  riskLensFindings: RiskLensFinding[],
+  config: HumanReviewBuildConfig
 ): ReviewerQuestion[] {
   const questions: ReviewerQuestion[] = [];
   const focusedGaps = focusedRequirementGaps(input);
@@ -2294,7 +2338,7 @@ function buildQuestions(
     });
   }
 
-  return dedupeQuestions(questions).slice(0, MAX_QUESTIONS);
+  return dedupeQuestions(questions).slice(0, Math.min(MAX_QUESTIONS, config.max_questions));
 }
 
 function riskLensQuestionSeverity(finding: RiskLensFinding): ReviewerQuestion["severity"] {
@@ -2330,7 +2374,8 @@ function riskLensQuestionText(finding: RiskLensFinding): string {
 function buildSuggestedComments(
   input: BuildHumanReviewInput,
   blockers: ReviewBlocker[],
-  riskLensFindings: RiskLensFinding[]
+  riskLensFindings: RiskLensFinding[],
+  config: HumanReviewBuildConfig
 ): SuggestedReviewComment[] {
   const comments: SuggestedReviewComment[] = [];
   const candidates: SuggestedCommentCandidate[] = [];
@@ -2405,7 +2450,7 @@ function buildSuggestedComments(
     appendSuggestedComment(comments, candidate.draft);
   }
 
-  return comments.slice(0, MAX_COMMENTS);
+  return comments.slice(0, Math.min(MAX_COMMENTS, config.max_suggested_comments));
 }
 
 function commentDraftWithoutId(comment: SuggestedReviewComment): SuggestedCommentDraft {

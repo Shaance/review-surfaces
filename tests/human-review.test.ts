@@ -22,6 +22,7 @@ import { validateJsonSchema } from "../src/schema/json-schema";
 import { minimalReviewPacket } from "./helpers/review-packet";
 import type { FeedbackFile } from "../src/feedback/feedback";
 import {
+  DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
   EVIDENCE_CARD_STATUSES,
   FEEDBACK_POLICY_EFFECT_KINDS,
   HUMAN_REVIEW_DECISIONS,
@@ -717,6 +718,74 @@ test("risk lenses fire from changed paths even when no PR risk candidate fires",
   assert.ok(model.questions.some((question) => /fabricated LLM paths/.test(question.question)));
   assert.ok(model.suggested_comments.some((comment) => /LLM trust-boundary lens/.test(comment.body)));
   assert.ok(model.test_plan.some((item) => item.maps_to_risks.length === 0 && item.suggested_file === "tests/pr-narrative.test.ts"));
+});
+
+test("review-surfaces.HUMAN_REVIEW.16 config caps reviewer-facing output and disables lens-derived actions", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files.push(
+    {
+      path: "src/llm/pr-narrative.ts",
+      status: "M",
+      areas: ["PROVIDERS"],
+      role: "implementation",
+      added_lines: 9,
+      deleted_lines: 2
+    },
+    {
+      path: "src/collector/artifact-provenance.ts",
+      status: "M",
+      areas: ["COLLECTOR"],
+      role: "implementation",
+      added_lines: 5,
+      deleted_lines: 1
+    }
+  );
+
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    prSurface: surface,
+    config: {
+      ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+      max_review_first: 2,
+      max_suggested_comments: 1,
+      max_questions: 2,
+      risk_lenses: {
+        ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG.risk_lenses,
+        api_contract: false,
+        security_privacy: false,
+        llm_trust_boundary: false
+      }
+    }
+  });
+
+  assert.equal(model.review_queue.length, 2);
+  assert.ok(model.questions.length <= 2);
+  assert.ok(model.suggested_comments.length <= 1);
+  assert.equal(model.risk_lens_findings.some((finding) => finding.lens === "api_contract"), false);
+  assert.equal(model.risk_lens_findings.some((finding) => finding.lens === "security_privacy"), false);
+  assert.equal(model.risk_lens_findings.some((finding) => finding.lens === "llm_trust_boundary"), false);
+  assert.equal(model.review_queue.some((item) => item.path === ".github/workflows/pr-review-comment.yml" || item.path === "schemas/human_review.schema.json"), true);
+});
+
+test("review-surfaces.HUMAN_REVIEW.16 default config preserves the full queue beyond the markdown top seven", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files = Array.from({ length: 10 }, (_, index) => ({
+    path: `src/human/generated-${index}.ts`,
+    status: "M" as const,
+    areas: ["HUMAN_REVIEW"],
+    role: "implementation" as const,
+    added_lines: 2,
+    deleted_lines: 1
+  }));
+
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    prSurface: surface
+  });
+
+  assert.ok(model.review_queue.length > 7);
 });
 
 test("risk lenses classify renamed source paths as review signals", () => {

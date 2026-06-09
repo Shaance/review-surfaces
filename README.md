@@ -140,6 +140,30 @@ Run `node bin/review-surfaces.js --help` for the full option list.
   `agent-file` (bounded agent hypotheses via `--agent-input <json|yaml>`), or
   `ai-sdk` (optional live enrichment).
 
+### Human review config
+
+`review-surfaces.config.yaml` can tune bounded human-review output without
+changing the evidence engine:
+
+```yaml
+human_review:
+  enabled: true
+  default_entrypoint: true
+  max_review_first: 20
+  max_suggested_comments: 10
+  max_questions: 10
+  risk_lenses:
+    api_contract: true
+    security_privacy: true
+    llm_trust_boundary: true
+    test_evidence: true
+    reviewer_ux: true
+    cache_provenance: true
+```
+
+`human_review.md` still renders a compact top seven from the model; this cap
+controls the generated JSON and full `review_queue.md`.
+
 ## Providers
 
 - **`mock`** (default): fully deterministic, offline. Use this for normal runs,
