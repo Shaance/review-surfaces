@@ -93,6 +93,12 @@
         "$ref": "#/$defs/reviewRoute"
       }
     },
+    "evidence_cards": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidenceCard"
+      }
+    },
     "since_last_review": {
       "$ref": "#/$defs/sinceLastReview"
     },
@@ -545,6 +551,64 @@
         "suggested_comment_ids": {
           "type": "array",
           "items": { "type": "string" }
+        }
+      }
+    },
+    "evidenceCard": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "title",
+        "status",
+        "summary",
+        "direct_evidence",
+        "missing_evidence",
+        "invalid_evidence",
+        "why_it_matters",
+        "reviewer_action",
+        "source_ids",
+        "risk_ids",
+        "requirement_ids",
+        "confidence",
+        "priority"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "status": {
+          "enum": ["verified", "unchecked", "missing_evidence", "invalid_evidence", "mixed", "unknown"]
+        },
+        "summary": { "type": "string" },
+        "direct_evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "missing_evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "invalid_evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "why_it_matters": { "type": "string" },
+        "reviewer_action": { "type": "string" },
+        "source_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "risk_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "requirement_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "priority": {
+          "enum": ["blocker", "high", "medium", "low"]
         }
       }
     },

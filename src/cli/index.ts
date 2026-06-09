@@ -1049,10 +1049,8 @@ async function loadOrBuildHumanReviewJson(
 }
 
 function humanReviewJsonSatisfiesStandaloneCommand(model: HumanReviewModel, command: string | undefined): boolean {
-  if (command === "routes") {
-    return Array.isArray(model.review_routes) && model.review_routes.length > 0;
-  }
-  return true;
+  const artifact = command ? humanStandaloneArtifactForCommand(command) : undefined;
+  return artifact && "isSatisfied" in artifact ? artifact.isSatisfied(model) : true;
 }
 
 async function buildHumanReviewFromArtifacts(

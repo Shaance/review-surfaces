@@ -44,6 +44,16 @@ export const REVIEW_ROUTE_PERSONAS = [
 ] as const;
 export type ReviewRoutePersona = (typeof REVIEW_ROUTE_PERSONAS)[number];
 
+export const EVIDENCE_CARD_STATUSES = [
+  "verified",
+  "unchecked",
+  "missing_evidence",
+  "invalid_evidence",
+  "mixed",
+  "unknown"
+] as const;
+export type EvidenceCardStatus = (typeof EVIDENCE_CARD_STATUSES)[number];
+
 export interface RiskLensMetadata {
   label: string;
   rank: number;
@@ -272,6 +282,23 @@ export interface SinceLastReview {
   };
 }
 
+export interface EvidenceCard {
+  id: string;
+  title: string;
+  status: EvidenceCardStatus;
+  summary: string;
+  direct_evidence: EvidenceRef[];
+  missing_evidence: EvidenceRef[];
+  invalid_evidence: EvidenceRef[];
+  why_it_matters: string;
+  reviewer_action: string;
+  source_ids: string[];
+  risk_ids: string[];
+  requirement_ids: string[];
+  confidence: PacketConfidence;
+  priority: HumanReviewPriority;
+}
+
 export interface SkimSafeItem {
   path: string;
   reason: string;
@@ -304,6 +331,7 @@ export interface HumanReviewModel {
   risk_lens_findings: RiskLensFinding[];
   review_routes: ReviewRoute[];
   since_last_review: SinceLastReview;
+  evidence_cards: EvidenceCard[];
   test_plan: TestPlanItem[];
   skim_safe: SkimSafeItem[];
   feedback_effects: FeedbackPolicyEffect[];

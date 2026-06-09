@@ -4,6 +4,7 @@ import { EvidenceRef } from "../evidence/evidence";
 import { redactSecrets } from "../privacy/secrets";
 import { RISK_LENS_METADATA } from "./contract";
 import type {
+  EvidenceCard,
   FeedbackPolicyEffect,
   HumanReviewModel,
   ReviewQueueItem,
@@ -27,6 +28,7 @@ const MAX_TEST_PLAN = 8;
 const MAX_COMMENTS = 6;
 const MAX_SKIM_SAFE = 8;
 const MAX_STANDALONE_EVIDENCE = 8;
+const MAX_EVIDENCE_CARDS = 6;
 const MAX_RISK_LENSES = 6;
 const MAX_SINCE_LAST_REVIEW = 5;
 const MAX_REVIEW_ROUTES = 5;
@@ -66,7 +68,16 @@ export const HUMAN_STANDALONE_ARTIFACTS = [
     artifact: "review_routes.md",
     label: "Review routes",
     heading: "# Review Routes",
-    render: renderReviewRoutesMarkdown
+    render: renderReviewRoutesMarkdown,
+    isSatisfied: (model: HumanReviewModel) => reviewRoutes(model).length > 0
+  },
+  {
+    command: "evidence-cards",
+    artifact: "evidence_cards.md",
+    label: "Evidence cards",
+    heading: "# Evidence Cards",
+    render: renderEvidenceCardsMarkdown,
+    isSatisfied: (model: HumanReviewModel) => evidenceCards(model).length > 0
   },
   {
     command: "since-last-review",
@@ -129,6 +140,10 @@ ${renderReviewFirst(model.review_queue.slice(0, MAX_REVIEW_FIRST))}
 ## Review routes
 
 ${renderReviewRoutesSummary(reviewRoutes(model).slice(0, MAX_REVIEW_ROUTES))}
+
+## Evidence cards
+
+${renderEvidenceCardsSummary(evidenceCards(model).slice(0, MAX_EVIDENCE_CARDS))}
 
 ## Blockers
 
@@ -239,6 +254,16 @@ ${routes.length === 0 ? "- This human review JSON was generated before review-ro
 `;
 }
 
+export function renderEvidenceCardsMarkdown(model: HumanReviewModel): string {
+  const cards = evidenceCards(model);
+  return `# Evidence Cards
+
+Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
+
+${cards.length === 0 ? "- This human review JSON was generated before evidence-card support." : cards.map(renderEvidenceCardDetail).join("\n\n---\n\n")}
+`;
+}
+
 export function renderSinceLastReviewMarkdown(model: HumanReviewModel): string {
   const since = sinceLastReview(model);
   return `# Since Last Review
@@ -343,6 +368,10 @@ function reviewRoutes(model: HumanReviewModel): ReviewRoute[] {
   return model.review_routes ?? [];
 }
 
+function evidenceCards(model: HumanReviewModel): EvidenceCard[] {
+  return model.evidence_cards ?? [];
+}
+
 function renderReviewRoutesSummary(routes: ReviewRoute[]): string {
   if (routes.length === 0) {
     return "- This human review JSON was generated before review-route support.";
@@ -399,6 +428,76 @@ function routeStepLinks(step: ReviewRouteStep): string {
     .filter(([, ids]) => ids.length > 0)
     .map(([label, ids]) => `${label}: ${ids.map((id) => `\`${field(id)}\``).join(", ")}`);
   return rendered.length ? rendered.join("; ") : "none";
+}
+
+function renderEvidenceCardsSummary(cards: EvidenceCard[]): string {
+  if (cards.length === 0) {
+    return "- This human review JSON was generated before evidence-card support.";
+  }
+  return bullets(
+    cards.map((card) => `${card.id} [${evidenceCardStatusLabel(card.status)}; ${card.priority}]: ${card.summary} Action: ${card.reviewer_action} Evidence: direct ${card.direct_evidence.length}, missing ${card.missing_evidence.length}, invalid ${card.invalid_evidence.length}.`),
+    "No evidence cards generated."
+  );
+}
+
+function renderEvidenceCardDetail(card: EvidenceCard): string {
+  const sources = idList(card.source_ids);
+  const risks = idList(card.risk_ids);
+  const requirements = idList(card.requirement_ids);
+  return `## Evidence Card: ${field(card.title)}
+
+Status: ${evidenceCardStatusLabel(card.status)}.
+Priority: ${card.priority}
+Confidence: ${card.confidence}
+Sources: ${sources}
+Risks: ${risks}
+Requirements: ${requirements}
+
+Summary:
+${field(card.summary, 800)}
+
+Evidence:
+
+Direct:
+${evidenceBullets(card.direct_evidence, MAX_STANDALONE_EVIDENCE)}
+
+Missing:
+${evidenceBullets(card.missing_evidence, MAX_STANDALONE_EVIDENCE)}
+
+Invalid:
+${evidenceBullets(card.invalid_evidence, MAX_STANDALONE_EVIDENCE)}
+
+Why it matters:
+- ${field(card.why_it_matters, 500)}
+
+Reviewer action:
+- ${field(card.reviewer_action, 500)}`;
+}
+
+function evidenceCardStatusLabel(status: EvidenceCard["status"]): string {
+  switch (status) {
+    case "verified":
+      return "Verified";
+    case "unchecked":
+      return "Unchecked direct evidence";
+    case "missing_evidence":
+      return "Missing evidence";
+    case "invalid_evidence":
+      return "Invalid evidence";
+    case "mixed":
+      return "Mixed evidence";
+    case "unknown":
+      return "Unknown";
+  }
+}
+
+function idList(ids: string[], limit = 6): string {
+  if (ids.length === 0) {
+    return "none";
+  }
+  const visible = ids.slice(0, limit).map((id) => `\`${field(id)}\``);
+  const omitted = ids.length - visible.length;
+  return omitted > 0 ? `${visible.join(", ")}, ... ${omitted} more` : visible.join(", ");
 }
 
 function sinceLastReview(model: HumanReviewModel): SinceLastReview {

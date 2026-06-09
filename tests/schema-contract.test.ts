@@ -393,6 +393,74 @@ test("human review schema validates review route slices", () => {
   assert.equal(result.valid, true, JSON.stringify(result.issues));
 });
 
+test("human review schema validates inline evidence cards", () => {
+  const humanReview = {
+    schema_version: "review-surfaces.human_review.v1",
+    mode: "pr",
+    verdict: {
+      decision: "needs_author_clarification",
+      confidence: "medium",
+      reasons: []
+    },
+    summary: "Evidence card schema fixture.",
+    review_queue: [],
+    blockers: [],
+    questions: [],
+    suggested_comments: [],
+    trust_audit: {
+      verified_facts: [],
+      claimed_not_verified: [],
+      missing_evidence: [],
+      invalid_evidence: [],
+      confidence_summary: "Fixture."
+    },
+    evidence_cards: [
+      {
+        id: "CARD-001",
+        title: "CI secret boundary",
+        status: "mixed",
+        summary: "CI secret-boundary files changed without recorded manual check.",
+        direct_evidence: [
+          {
+            kind: "file",
+            path: ".github/workflows/review-surfaces-pr.yml",
+            confidence: "high",
+            validation_status: "valid"
+          }
+        ],
+        missing_evidence: [
+          {
+            kind: "unknown",
+            note: "No manual CI secret-boundary check was recorded.",
+            confidence: "unknown",
+            validation_status: "unknown"
+          }
+        ],
+        invalid_evidence: [],
+        why_it_matters: "Secret-bearing workflow changes can expose credentials if trust boundaries are wrong.",
+        reviewer_action: "Inspect workflow permissions and record the manual check.",
+        source_ids: ["BLOCK-CI-SECRET-001"],
+        risk_ids: ["PR-RISK-001"],
+        requirement_ids: ["review-surfaces.HUMAN_REVIEW.13"],
+        confidence: "medium",
+        priority: "high"
+      }
+    ],
+    test_plan: [],
+    skim_safe: [],
+    generated_from: {
+      packet_path: ".review-surfaces/review_packet.json",
+      pr_surface_path: ".review-surfaces/pr_review_surface.json",
+      base_ref: "origin/main",
+      head_ref: "HEAD",
+      head_sha: "abc123"
+    }
+  };
+
+  const result = validateJsonSchema(humanReviewSchema, humanReview);
+  assert.equal(result.valid, true, JSON.stringify(result.issues));
+});
+
 // Ties the runtime VERSION constant into the packet contract: the manifest's
 // tool_version is stamped from VERSION, and VERSION tracks package.json. (The
 // raw VERSION === package.json check also lives in version.test.ts; here it

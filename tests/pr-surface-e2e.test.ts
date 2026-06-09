@@ -72,6 +72,7 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
       trust: "JSON sentinel trust summary",
       "risk-lenses": "JSON sentinel risk lens",
       routes: "JSON sentinel review route",
+      "evidence-cards": "JSON sentinel evidence card",
       "since-last-review": "JSON sentinel since last review",
       "test-plan": "JSON sentinel test plan"
     };
@@ -136,6 +137,25 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
             ]
           }
         ];
+      } else if (artifact.command === "evidence-cards") {
+        human.evidence_cards = [
+          {
+            id: "CARD-SENTINEL",
+            title: marker,
+            status: "missing_evidence",
+            summary: marker,
+            direct_evidence: [{ kind: "file", path: "src/sentinel.ts", confidence: "medium", validation_status: "not_checked" }],
+            missing_evidence: [{ kind: "unknown", confidence: "unknown", validation_status: "unknown", note: "JSON sentinel missing evidence." }],
+            invalid_evidence: [],
+            why_it_matters: "Focused renderer reads human_review.json.",
+            reviewer_action: marker,
+            source_ids: ["CARD-SENTINEL"],
+            risk_ids: [],
+            requirement_ids: [],
+            confidence: "medium",
+            priority: "medium"
+          }
+        ];
       } else if (artifact.command === "since-last-review") {
         human.since_last_review = {
           previous_packet_path: ".review-surfaces-prev/review_packet.json",
@@ -194,6 +214,17 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     assert.doesNotMatch(rebuiltRouteBody, /generated before review-route support/);
     const rebuiltRoutesHuman = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
     assert.ok(rebuiltRoutesHuman.review_routes.length > 0, "routes command should rebuild stale prior-v1 human_review.json");
+    delete rebuiltRoutesHuman.evidence_cards;
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(rebuiltRoutesHuman, null, 2));
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "evidence_cards.md"), "stale evidence-card artifact");
+    const staleEvidenceCards = runCli(tmp, ["evidence-cards", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(staleEvidenceCards.status, 0, staleEvidenceCards.stderr);
+    const rebuiltEvidenceCardBody = fs.readFileSync(path.join(tmp, ".review-surfaces", "evidence_cards.md"), "utf8");
+    assert.match(rebuiltEvidenceCardBody, /^# Evidence Cards/);
+    assert.match(rebuiltEvidenceCardBody, /Evidence Card:/);
+    assert.doesNotMatch(rebuiltEvidenceCardBody, /generated before evidence-card support/);
+    const rebuiltEvidenceCardsHuman = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    assert.ok(rebuiltEvidenceCardsHuman.evidence_cards.length > 0, "evidence-cards command should rebuild stale prior-v1 human_review.json");
     fs.writeFileSync(
       path.join(tmp, ".review-surfaces", "inputs", "feedback.index.json"),
       JSON.stringify(
