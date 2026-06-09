@@ -1,7 +1,7 @@
 import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
-import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
+import { EvidenceRef, feedbackEvidence, fileEvidence, missingEvidence } from "../evidence/evidence";
 import { normalizeEvidencePath } from "../evidence/validate";
 import type { FeedbackFile } from "../feedback/feedback";
 import { PrRiskCandidate, PrReviewSurfaceModel, StructuredDiff, StructuredDiffFile, StructuredDiffHunk } from "../pr/contract";
@@ -80,6 +80,10 @@ interface TestPlanCandidate {
   sortKey: string;
 }
 type FeedbackPolicyEffectDraft = Omit<FeedbackPolicyEffect, "id">;
+interface ManualCheckRecord {
+  text: string;
+  evidence: EvidenceRef[];
+}
 
 const MAX_QUEUE = 20;
 const MAX_BLOCKERS = 8;
@@ -297,7 +301,7 @@ function buildReviewQueue(input: BuildHumanReviewInput, feedbackEffects: Feedbac
       continue;
     }
     const anchor = queueAnchorForEvidence(first, diffIndex);
-    const feedbackDowngrade = feedbackFalsePositiveEffectForRisk(risk, feedbackEffects);
+    const feedbackDowngrade = feedbackFalsePositiveEffectForRisk(risk, feedbackEffects, first.path);
     prRiskQueueItemCount += 1;
     drafts.push({
       title: titleForPrRisk(risk),
@@ -478,7 +482,8 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput): FeedbackPolic
       if (paths.length === 0 || !policy.required_manual_check) {
         continue;
       }
-      const recorded = hasRecordedManualCheck(input, policy.required_manual_check);
+      const recordedEvidence = recordedManualCheckEvidence(input, policy.required_manual_check);
+      const recorded = recordedEvidence.length > 0;
       drafts.push({
         kind: "team_policy",
         summary: recorded
@@ -487,7 +492,7 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput): FeedbackPolic
         action: recorded
           ? `${MANUAL_CHECK_RECORDED_PREFIX} ${policy.required_manual_check}`
           : `${RECORD_MANUAL_CHECK_PREFIX} ${policy.required_manual_check}`,
-        evidence: policy.evidence,
+        evidence: recorded ? [...policy.evidence, ...recordedEvidence] : policy.evidence,
         paths,
         risk_ids: [`policy:${policy.id}`],
         confidence: recorded ? "medium" : "high"
@@ -568,13 +573,36 @@ function feedbackReviewQueueDrafts(
 
 function feedbackFalsePositiveEffectForRisk(
   risk: PrRiskCandidate,
-  feedbackEffects: FeedbackPolicyEffect[]
+  feedbackEffects: FeedbackPolicyEffect[],
+  anchorPath: string | undefined
 ): FeedbackPolicyEffect | undefined {
+  const riskPaths = uniqueTruthy(
+    risk.evidence
+      .filter((ref) => ref.path)
+      .map((ref) => normalizeEvidencePath(String(ref.path)))
+  );
+  const normalizedAnchorPath = anchorPath ? normalizeEvidencePath(anchorPath) : undefined;
   return feedbackEffects.find((effect) =>
     effect.kind === "false_positive" &&
     effect.risk_ids.includes(risk.id) &&
-    (effect.action === FEEDBACK_ACTION_DOWNGRADE_TO_LOW || effect.action === FEEDBACK_ACTION_RETAIN_LOW_PRIORITY)
+    (effect.action === FEEDBACK_ACTION_DOWNGRADE_TO_LOW || effect.action === FEEDBACK_ACTION_RETAIN_LOW_PRIORITY) &&
+    feedbackFalsePositiveCoversRiskPaths(effect, riskPaths, normalizedAnchorPath)
   );
+}
+
+function feedbackFalsePositiveCoversRiskPaths(
+  effect: FeedbackPolicyEffect,
+  riskPaths: string[],
+  anchorPath: string | undefined
+): boolean {
+  if (effect.paths.length === 0) {
+    return true;
+  }
+  const effectPaths = new Set(effect.paths.map((filePath) => normalizeEvidencePath(filePath)));
+  if (riskPaths.length > 1) {
+    return riskPaths.every((filePath) => effectPaths.has(filePath));
+  }
+  return anchorPath ? effectPaths.has(anchorPath) : false;
 }
 
 function feedbackFalsePositiveAction(action: string): string {
@@ -1931,33 +1959,45 @@ function questionSeverityForRisk(severity: PacketSeverity): ReviewerQuestion["se
 }
 
 function hasRecordedCiSecretBoundaryManualCheck(input: BuildHumanReviewInput): boolean {
-  return recordedManualCheckTexts(input).some((text) => looksLikeRecordedCiSecretBoundaryManualCheck(text));
+  return recordedManualCheckRecords(input).some((record) => looksLikeRecordedCiSecretBoundaryManualCheck(record.text));
 }
 
-function hasRecordedManualCheck(input: BuildHumanReviewInput, requiredManualCheck: string): boolean {
+function recordedManualCheckEvidence(input: BuildHumanReviewInput, requiredManualCheck: string): EvidenceRef[] {
   const requiredTokens = normalizedManualCheckTokens(requiredManualCheck);
   if (requiredTokens.length === 0) {
-    return false;
+    return [];
   }
-  return recordedManualCheckTexts(input)
-    .some((text) => {
-      if (!looksLikePositiveManualCheckRecord(text)) {
-        return false;
-      }
-      const textTokens = new Set(normalizedManualCheckTokens(text));
-      return requiredTokens.every((token) => textTokens.has(token));
-    });
+  for (const record of recordedManualCheckRecords(input)) {
+    if (!looksLikePositiveManualCheckRecord(record.text)) {
+      continue;
+    }
+    const textTokens = new Set(normalizedManualCheckTokens(record.text));
+    if (requiredTokens.every((token) => textTokens.has(token))) {
+      return record.evidence;
+    }
+  }
+  return [];
 }
 
-function recordedManualCheckTexts(input: BuildHumanReviewInput): string[] {
+function recordedManualCheckRecords(input: BuildHumanReviewInput): ManualCheckRecord[] {
   const headSha = currentHeadSha(input);
   return [
     ...input.packet.risks.test_evidence
       .filter((item) => item.kind === "direct" || item.kind === "indirect")
-      .flatMap((item) => manualCheckEvidenceText(item.evidence ?? [], headSha)),
+      .flatMap((item) => manualCheckEvidenceRecords(item.evidence ?? [], headSha)),
     ...(input.feedback ?? [])
       .filter((feedbackFile) => feedbackFileAppliesToHead(feedbackFile, headSha))
-      .flatMap((feedbackFile) => feedbackFile.validation?.notes ?? [])
+      .flatMap((feedbackFile) =>
+        (feedbackFile.validation?.notes ?? []).map((note, index) => ({
+          text: note,
+          evidence: [
+            feedbackEvidence(feedbackFile.path, note, {
+              eventId: `validation-note:${index + 1}`,
+              sha: headSha
+            })
+          ]
+        }))
+      )
   ];
 }
 
@@ -1973,10 +2013,17 @@ function looksLikePositiveManualCheckRecord(value: string): boolean {
   if (/\bnot\s+(?:confirmed|verified|safe|completed|recorded|reviewed|inspected)\b/.test(normalized)) {
     return false;
   }
-  if (/\b(?:failed|unsafe|missing evidence|no evidence)\b/.test(normalized)) {
+  if (/\b(?:failed|unsafe|unverified|unconfirmed|unresolved|pending|planned|planning|todo|missing evidence|no evidence)\b/.test(normalized)) {
     return false;
   }
-  return /\b(?:recorded|completed|inspected|reviewed|confirmed|verified)\b/.test(normalized);
+  if (/\b(?:reviewed|inspected)\s+(?:whether|if|to)\b/.test(normalized)) {
+    return false;
+  }
+  return (
+    /\bmanual check\s+(?:recorded|completed|confirmed|verified|passed)\b/.test(normalized) ||
+    /\b(?:confirmed|verified)\b.*\b(?:safe|isolated|cannot access|no secrets?|does not leak|protected)\b/.test(normalized) ||
+    /\b(?:reviewed|inspected)\b.*\b(?:confirmed|verified|safe|no secrets?|cannot access|does not leak)\b/.test(normalized)
+  );
 }
 
 function normalizedManualCheckTokens(value: string): string[] {
@@ -1993,13 +2040,18 @@ function currentHeadSha(input: BuildHumanReviewInput): string {
   return input.prSurface?.scope.head_sha ?? stringOr(manifest.head_sha, "unknown");
 }
 
-function manualCheckEvidenceText(evidence: EvidenceRef[], headSha: string): string[] {
+function manualCheckEvidenceRecords(evidence: EvidenceRef[], headSha: string): ManualCheckRecord[] {
   if (headSha === "unknown") {
     return [];
   }
   return evidence
     .filter((ref) => ref.kind === "feedback" && ref.validation_status !== "invalid" && ref.sha === headSha)
-    .flatMap((ref) => compactStrings([ref.note]));
+    .flatMap((ref) =>
+      compactStrings([ref.note]).map((text) => ({
+        text,
+        evidence: [ref]
+      }))
+    );
 }
 
 function focusedRequirementGaps(input: BuildHumanReviewInput): RequirementGap[] {

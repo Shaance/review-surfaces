@@ -1107,10 +1107,19 @@ function readHumanReviewDiff(outDir: string): StructuredDiff | undefined {
 
 function readHumanReviewFeedback(outDir: string): FeedbackFile[] | undefined {
   const feedbackIndexPath = path.join(outDir, "inputs", "feedback.index.json");
+  if (!fs.existsSync(feedbackIndexPath)) {
+    return undefined;
+  }
   try {
     const parsed = JSON.parse(fs.readFileSync(feedbackIndexPath, "utf8")) as { feedback?: unknown };
-    return Array.isArray(parsed.feedback) ? parsed.feedback as FeedbackFile[] : undefined;
-  } catch {
+    if (Array.isArray(parsed.feedback)) {
+      return parsed.feedback as FeedbackFile[];
+    }
+    console.warn(`Warning: ignored malformed feedback memory index at ${feedbackIndexPath}; expected a feedback array.`);
+    return undefined;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`Warning: ignored malformed feedback memory index at ${feedbackIndexPath}: ${message}`);
     return undefined;
   }
 }
