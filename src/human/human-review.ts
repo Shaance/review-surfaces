@@ -425,6 +425,12 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput): FeedbackPolic
 
   for (const feedbackFile of input.feedback ?? []) {
     for (const policy of feedbackFile.false_positives ?? []) {
+      if (!feedbackFalsePositiveHasSelector(policy)) {
+        continue;
+      }
+      if (!feedbackFalsePositiveConditionSupported(policy.condition)) {
+        continue;
+      }
       const matcher = buildFeedbackPathMatcher(policy.path_pattern);
       for (const risk of input.prSurface?.risks.candidates ?? []) {
         const ruleMatches = policy.rule === undefined || policy.rule === risk.rule;
@@ -617,6 +623,15 @@ function feedbackFalsePositiveAction(action: string): string {
     return FEEDBACK_ACTION_RETAIN_LOW_PRIORITY;
   }
   return normalized || FEEDBACK_ACTION_DOWNGRADE_TO_LOW;
+}
+
+function feedbackFalsePositiveHasSelector(policy: { rule?: string; path_pattern?: string }): boolean {
+  return Boolean(policy.rule?.trim() || policy.path_pattern?.trim());
+}
+
+function feedbackFalsePositiveConditionSupported(condition: string | undefined): boolean {
+  const normalized = condition?.trim().toLowerCase();
+  return !normalized || normalized === "lockfile_only";
 }
 
 function feedbackFalsePositiveConditionSatisfied(condition: string | undefined, matchedPaths: string[]): boolean {

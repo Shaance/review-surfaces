@@ -87,7 +87,12 @@ export async function indexFeedbackFiles(cwd: string, feedbackPaths: string[]): 
 
 async function readFeedbackFile(cwd: string, feedbackPath: string): Promise<FeedbackFile> {
   const parsed = parseYaml(await readText(path.resolve(cwd, feedbackPath)));
-  const record = isRecord(parsed) ? parsed : {};
+  return normalizeFeedbackRecord(feedbackPath, parsed);
+}
+
+export function normalizeFeedbackRecord(defaultFeedbackPath: string, value: unknown): FeedbackFile {
+  const record = isRecord(value) ? value : {};
+  const feedbackPath = optionalString(record.path) ?? defaultFeedbackPath;
   const findings = asArray(record.findings).map((finding, index) => normalizeFinding(feedbackPath, finding, index));
   const validationRecord = isRecord(record.validation) ? record.validation : {};
 
@@ -176,6 +181,10 @@ function normalizeReviewerPreferences(feedbackPath: string, value: unknown): Fee
   if (Array.isArray(value)) {
     for (const [index, item] of value.entries()) {
       if (!isRecord(item)) {
+        continue;
+      }
+      if (typeof item.key === "string" && Object.hasOwn(item, "value")) {
+        pushPreference(item.key, item.value, preferences.length);
         continue;
       }
       for (const [key, preferenceValue] of Object.entries(item).sort(([left], [right]) => compareStrings(left, right))) {

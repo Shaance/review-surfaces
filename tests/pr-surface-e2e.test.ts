@@ -182,6 +182,100 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     assert.match(rebuiltHumanMarkdown, /always_prioritize/);
     fs.writeFileSync(
       path.join(tmp, ".review-surfaces", "inputs", "feedback.index.json"),
+      JSON.stringify(
+        {
+          schema_version: "review-surfaces.feedback.index.v1",
+          feedback: [
+            {
+              path: ".review-surfaces/feedback/policy.yaml",
+              schema_version: "review-surfaces.feedback.v1",
+              author: "local",
+              head_sha: surface.scope.head_sha,
+              findings: [],
+              validation: {
+                passed: [],
+                failed: [],
+                notes: []
+              },
+              false_positives: [],
+              false_negatives: [],
+              team_policy: [
+                {
+                  id: "POLICY-RENDER-LEGACY-001",
+                  path_pattern: CHANGED,
+                  required_manual_check: "Confirm rendered comment was inspected.",
+                  evidence: [
+                    {
+                      kind: "feedback",
+                      path: ".review-surfaces/feedback/policy.yaml",
+                      event_id: "POLICY-RENDER-LEGACY-001",
+                      note: "Feedback team policy POLICY-RENDER-LEGACY-001.",
+                      confidence: "high",
+                      validation_status: "valid"
+                    }
+                  ]
+                }
+              ],
+              reviewer_preferences: []
+            },
+            {
+              path: ".review-surfaces/feedback/legacy-manual.yaml",
+              schema_version: "review-surfaces.feedback.v1",
+              author: "local",
+              head_sha: surface.scope.head_sha,
+              findings: [],
+              validation: {
+                passed: [],
+                failed: [],
+                notes: ["Manual check recorded: Confirm rendered comment was inspected."]
+              }
+            }
+          ]
+        },
+        null,
+        2
+      )
+    );
+    const legacyFeedbackRebuild = runCli(tmp, ["human", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(legacyFeedbackRebuild.status, 0, legacyFeedbackRebuild.stderr);
+    const legacyHuman = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    assert.equal(legacyHuman.feedback_effects.some((effect: { kind: string; action: string }) => effect.kind === "team_policy" && effect.action.startsWith("Manual check recorded:")), true);
+    assert.equal(legacyHuman.blockers.some((blocker: { id: string }) => blocker.id === "BLOCK-FEEDBACK-001"), false);
+    fs.writeFileSync(
+      path.join(tmp, ".review-surfaces", "inputs", "feedback.index.json"),
+      JSON.stringify(
+        {
+          schema_version: "review-surfaces.feedback.index.v1",
+          feedback: [
+            {
+              path: ".review-surfaces/feedback/partial-policy.yaml",
+              schema_version: "review-surfaces.feedback.v1",
+              author: "local",
+              findings: [],
+              validation: {
+                passed: [],
+                failed: [],
+                notes: []
+              },
+              false_positives: [
+                {
+                  rule: "comment_surface_change"
+                }
+              ],
+              false_negatives: [],
+              team_policy: [],
+              reviewer_preferences: []
+            }
+          ]
+        },
+        null,
+        2
+      )
+    );
+    const partialPolicyRebuild = runCli(tmp, ["human", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(partialPolicyRebuild.status, 0, partialPolicyRebuild.stderr);
+    fs.writeFileSync(
+      path.join(tmp, ".review-surfaces", "inputs", "feedback.index.json"),
       JSON.stringify({ schema_version: "review-surfaces.feedback.index.v1", feedback: {} }, null, 2)
     );
     const malformedFeedbackRebuild = runCli(tmp, ["human", "--review-scope", "pr", "--out", ".review-surfaces"]);

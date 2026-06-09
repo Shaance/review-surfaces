@@ -21,7 +21,7 @@ import { effectiveModelId, enrichPacket, parseProviderName, providerFor, Provide
 import { buildMethodology } from "../methodology/methodology";
 import { buildReviewAreas } from "../review-areas/areas";
 import { RisksModel } from "../risks/risks";
-import type { FeedbackFile } from "../feedback/feedback";
+import { normalizeFeedbackRecord, type FeedbackFile } from "../feedback/feedback";
 import { splitTestOutputPaths } from "../tests-evidence/junit";
 import {
   createReviewPacket,
@@ -1128,32 +1128,40 @@ function readHumanReviewFeedback(outDir: string): FeedbackFile[] | undefined {
 function sanitizeHumanReviewFeedbackIndex(entries: unknown[], feedbackIndexPath: string): FeedbackFile[] {
   const feedback: FeedbackFile[] = [];
   for (const [index, entry] of entries.entries()) {
-    if (!isFeedbackFileLike(entry)) {
+    const feedbackFile = normalizeHumanReviewFeedbackEntry(entry);
+    if (!feedbackFile) {
       console.warn(`Warning: ignored malformed feedback memory entry ${index + 1} in ${feedbackIndexPath}.`);
       continue;
     }
-    feedback.push(entry);
+    feedback.push(feedbackFile);
   }
   return feedback;
 }
 
-function isFeedbackFileLike(value: unknown): value is FeedbackFile {
+function normalizeHumanReviewFeedbackEntry(value: unknown): FeedbackFile | undefined {
   if (!isRecord(value) || typeof value.path !== "string" || typeof value.schema_version !== "string" || typeof value.author !== "string") {
-    return false;
+    return undefined;
   }
   if (!Array.isArray(value.findings) || !isRecord(value.validation)) {
-    return false;
+    return undefined;
   }
   const validation = value.validation;
-  return (
-    Array.isArray(validation.passed) &&
-    Array.isArray(validation.failed) &&
-    Array.isArray(validation.notes) &&
-    Array.isArray(value.false_positives) &&
-    Array.isArray(value.false_negatives) &&
-    Array.isArray(value.team_policy) &&
-    Array.isArray(value.reviewer_preferences)
-  );
+  if (!Array.isArray(validation.passed) || !Array.isArray(validation.failed) || !Array.isArray(validation.notes)) {
+    return undefined;
+  }
+  if (
+    !isOptionalFeedbackArray(value.false_positives) ||
+    !isOptionalFeedbackArray(value.false_negatives) ||
+    !isOptionalFeedbackArray(value.team_policy) ||
+    !isOptionalFeedbackArray(value.reviewer_preferences)
+  ) {
+    return undefined;
+  }
+  return normalizeFeedbackRecord(value.path, value);
+}
+
+function isOptionalFeedbackArray(value: unknown): value is unknown[] | undefined {
+  return value === undefined || Array.isArray(value);
 }
 
 async function writeHumanReviewForPacket(

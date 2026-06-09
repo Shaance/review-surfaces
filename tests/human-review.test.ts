@@ -1188,6 +1188,51 @@ test("unsupported conditional false-positive feedback is skipped", () => {
   assert.equal(model.feedback_effects.some((effect) => effect.kind === "false_positive"), false);
 });
 
+test("false-positive feedback without a rule or path selector is skipped", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [{
+    ...prRiskFixture("schema_contract_change"),
+    id: "PR-RISK-NO-SELECTOR",
+    severity: "high",
+    evidence: [fileEvidence("schemas/human_review.schema.json", "Hand-edited schema changed.")]
+  }];
+
+  const model = buildHumanReview({
+    packet,
+    prSurface: surface,
+    feedback: [
+      {
+        path: ".review-surfaces/feedback/memory.yaml",
+        schema_version: "review-surfaces.feedback.v1",
+        author: "local",
+        findings: [],
+        validation: { passed: [], failed: [], notes: [] },
+        false_positives: [
+          {
+            action: "downgrade_to_low",
+            evidence: [feedbackEvidence(".review-surfaces/feedback/memory.yaml", "Incomplete false-positive policy.", { eventId: "false_positive:1" })]
+          }
+        ],
+        false_negatives: [],
+        team_policy: [],
+        reviewer_preferences: []
+      }
+    ]
+  });
+
+  const queueItem = model.review_queue.find((item) => item.risk_ids.includes("PR-RISK-NO-SELECTOR"));
+  assert.ok(queueItem);
+  assert.equal(queueItem.priority, "high");
+  assert.equal(model.feedback_effects.some((effect) => effect.kind === "false_positive"), false);
+});
+
 test("legacy feedback indexes without policy arrays do not break human review rebuild", () => {
   const model = buildHumanReview({
     packet: packetFixture(),
