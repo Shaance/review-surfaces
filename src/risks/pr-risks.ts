@@ -133,9 +133,9 @@ function pushCoverageRegression(drafts: DraftCandidate[], input: BuildPrRiskInpu
 }
 
 // --- Rule: untested_changed_impl (testing, medium) -------------------------
-// An implementation-role changed file whose review area has NO changed test file
-// and NO current-head test evidence in scope. Cites the impl file. One candidate
-// per such file (id/path ordered).
+// An implementation-role changed file whose review area has no changed test file
+// and no current-head command transcript in scope. Cites the impl file. One
+// candidate per such file (id/path ordered).
 function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInput): void {
   const changed = input.scope.changed_files;
   const validation = buildImplementationValidationIndex(input);
@@ -147,10 +147,10 @@ function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInp
       rule: "untested_changed_impl",
       category: "testing",
       severity: "medium",
-      summary: `Implementation file ${file.path} changed with no changed or current-head test evidence in its review area.`,
+      summary: `Implementation file ${file.path} changed with no changed test or current-head command transcript in its review area.`,
       evidence: [
-        fileEvidence(file.path, "Changed implementation file; no co-changed test, parsed passing test case, or current-head passing test transcript mapped to its area."),
-        missingEvidence(`No changed test, parsed passing test case, or current-head passing test transcript mapped to ${areaListForMessage(file)}.`)
+        fileEvidence(file.path, "Changed implementation file; no co-changed test or current-head passing test transcript mapped to its area."),
+        missingEvidence(`No changed test or current-head passing test transcript mapped to ${areaListForMessage(file)}.`)
       ],
       suggested_checks: [
         `Add or update a test covering the change to ${file.path}.`,
@@ -166,10 +166,10 @@ function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInp
       rule: "untested_changed_impl",
       category: "testing",
       severity: "medium",
-      summary: `${omitted} additional implementation file(s) changed with no changed or current-head test evidence in their review area.`,
+      summary: `${omitted} additional implementation file(s) changed with no changed test or current-head command transcript in their review area.`,
       evidence: evidenceForPaths(
         untested.slice(MAX_PER_FILE_CANDIDATES).map((file) => file.path),
-        "Additional implementation file without changed or current-head test evidence."
+        "Additional implementation file without changed test or current-head command transcript."
       ),
       suggested_checks: [
         "Add or update tests for the additional untested implementation changes.",
@@ -182,7 +182,6 @@ function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInp
 
 interface ImplementationValidationIndex {
   changedTestAreas: Set<string>;
-  parsedPassingTestAreas: Set<string>;
   focusedTranscriptAreas: Set<string>;
   hasBroadCurrentHeadTestTranscript: boolean;
   sourceByPath: Record<string, ChangedFile["source"]>;
@@ -201,16 +200,6 @@ function buildImplementationValidationIndex(input: BuildPrRiskInput): Implementa
 
   const allAreas = uniqueAreas(input.scope.changed_files);
   const keywordByArea = areaKeywordIndex(allAreas, input.reviewAreas ?? []);
-  const parsedPassingTestAreas = new Set<string>();
-  for (const testCase of input.testResults?.cases ?? []) {
-    if (testCase.status !== "passed") {
-      continue;
-    }
-    const haystack = [testCase.name, testCase.classname, testCase.suite].filter(Boolean).join(" ");
-    for (const area of matchingAreasForText(haystack, keywordByArea)) {
-      parsedPassingTestAreas.add(area);
-    }
-  }
 
   const focusedTranscriptAreas = new Set<string>();
   let hasBroadCurrentHeadTestTranscript = false;
@@ -232,7 +221,6 @@ function buildImplementationValidationIndex(input: BuildPrRiskInput): Implementa
 
   return {
     changedTestAreas,
-    parsedPassingTestAreas,
     focusedTranscriptAreas,
     hasBroadCurrentHeadTestTranscript,
     sourceByPath: input.changedFileSources ?? {}
@@ -253,8 +241,9 @@ function currentHeadPassingTestTranscript(
 }
 
 // An impl file is "tested" when it has no area at all (cannot judge), when at
-// least one of its areas has changed/parsed/focused evidence, or when a broad
-// current-head test transcript proves the suite ran after the change.
+// least one of its areas has a changed test or current-head focused transcript,
+// or when a broad current-head test transcript proves the committed suite ran
+// after the change.
 function hasImplementationValidation(file: ScopedChangedFile, validation: ImplementationValidationIndex): boolean {
   if (file.areas.length === 0) {
     // No mapped area: not attributable to an untested area gap here.
@@ -264,7 +253,7 @@ function hasImplementationValidation(file: ScopedChangedFile, validation: Implem
     return changedFileSource(file, validation) === "diff";
   }
   const validationAreas = changedFileSource(file, validation) === "diff"
-    ? [validation.changedTestAreas, validation.parsedPassingTestAreas, validation.focusedTranscriptAreas]
+    ? [validation.changedTestAreas, validation.focusedTranscriptAreas]
     : [validation.changedTestAreas];
   return file.areas.some(
     (area) => validationAreas.some((areas) => areas.has(area))
@@ -280,9 +269,9 @@ function uniqueAreas(files: ScopedChangedFile[]): string[] {
 }
 
 function matchingAreasForText(text: string, keywordByArea: Map<string, string[]>): string[] {
-  const normalizedText = normalizeSearchText(text);
+  const tokens = tokenizeSearchText(text);
   return [...keywordByArea.entries()]
-    .filter(([, keywords]) => keywords.some((keyword) => normalizedText.includes(keyword)))
+    .filter(([, keywords]) => keywords.some((keyword) => keywordMatchesTokens(keyword, tokens)))
     .map(([area]) => area);
 }
 
@@ -314,6 +303,15 @@ function areaKeywords(area: string, reviewAreas: ReviewArea[]): string[] {
 
 function normalizeSearchText(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function tokenizeSearchText(value: string): Set<string> {
+  return new Set(normalizeSearchText(value).split(" ").filter(Boolean));
+}
+
+function keywordMatchesTokens(keyword: string, tokens: Set<string>): boolean {
+  const keywordTokens = keyword.split(" ").filter(Boolean);
+  return keywordTokens.length > 0 && keywordTokens.every((token) => tokens.has(token));
 }
 
 function areaListForMessage(file: ScopedChangedFile): string {

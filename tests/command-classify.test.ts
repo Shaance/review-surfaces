@@ -17,6 +17,9 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeTestCommand("node --test dist/tests/pr-risks.test.js"), true);
   assert.equal(commandLooksLikeBroadTestCommand("node --test dist/tests/pr-risks.test.js"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("node --test dist/tests/pr-risks.test.js"), true);
+  assert.equal(commandLooksLikeTestCommand("pnpm exec vitest src/risks"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("pnpm exec vitest src/risks"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm exec vitest src/risks"), true);
 
   assert.equal(commandLooksLikeTestCommand("pnpm run build"), false);
   assert.equal(commandLooksLikeBroadTestCommand("pnpm run build"), false);

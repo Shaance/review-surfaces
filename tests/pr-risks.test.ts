@@ -317,7 +317,7 @@ test("impl file with a stale focused test transcript still fires untested_change
   const candidate = model.candidates.find((c) => c.rule === "untested_changed_impl");
 
   assert.ok(candidate, "stale focused transcript does not suppress the untested candidate");
-  assert.ok(candidate.summary.includes("current-head test evidence"));
+  assert.ok(candidate.summary.includes("current-head command transcript"));
 });
 
 test("impl file with a failed focused test transcript still fires untested_changed_impl", () => {
@@ -410,7 +410,7 @@ test("working-tree impl file with a current-head broad test transcript still fir
   );
 });
 
-test("impl file with a parsed passing test case in its area does NOT fire untested_changed_impl", () => {
+test("impl file with only parsed passing test output still fires untested_changed_impl", () => {
   const input = buildInput({
     scope: scope({
       changed_files: [
@@ -432,10 +432,9 @@ test("impl file with a parsed passing test case in its area does NOT fire untest
   });
 
   const model = buildPrRiskCandidates(input);
-  assert.equal(
+  assert.ok(
     model.candidates.find((c) => c.rule === "untested_changed_impl"),
-    undefined,
-    "parsed passing test evidence suppresses the untested candidate"
+    "parsed test output without current-run provenance is not enough to suppress the untested candidate"
   );
 });
 
@@ -467,6 +466,34 @@ test("working-tree impl file with parsed passing test evidence still fires untes
   assert.ok(
     model.candidates.find((c) => c.rule === "untested_changed_impl"),
     "parsed test output without content provenance is not enough to suppress working-tree implementation changes"
+  );
+});
+
+test("parsed test keyword matching requires tokens, not substrings", () => {
+  const input = buildInput({
+    scope: scope({
+      changed_files: [
+        changedFile({ path: "src/cli/index.ts", role: "implementation", areas: ["CLI"] })
+      ]
+    }),
+    reviewAreas: [reviewArea("CLI", ["cli"])],
+    commandTranscripts: [
+      {
+        id: "CMD-CLIENT-FOCUSED",
+        command: "pnpm exec vitest src/client",
+        status: "passed",
+        exit_code: 0,
+        head_sha: "deadbeef",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-CLIENT-FOCUSED.json"
+      }
+    ]
+  });
+
+  const model = buildPrRiskCandidates(input);
+  assert.ok(
+    model.candidates.find((c) => c.rule === "untested_changed_impl"),
+    "client should not token-match the CLI area keyword"
   );
 });
 
