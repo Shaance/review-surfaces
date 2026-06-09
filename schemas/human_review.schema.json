@@ -259,7 +259,6 @@
         "summary": { "type": "string" },
         "evidence": {
           "type": "array",
-          "minItems": 1,
           "items": { "$ref": "#/$defs/evidenceRef" }
         },
         "required_action": { "type": "string" }

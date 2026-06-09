@@ -505,6 +505,50 @@ test("review-surfaces.HUMAN_REVIEW.18 observed diff prefers exact added ACIDs ov
   assert.ok(!observed.requirement_ids.some((id) => id.includes("BOOTSTRAP")));
 });
 
+test("review-surfaces.HUMAN_REVIEW.18 observed diff requires whole-token exact ACIDs", () => {
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files = [
+    {
+      path: "tests/human-review.test.ts",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "test",
+      added_lines: 2,
+      deleted_lines: 0
+    }
+  ];
+  prSurface.scope.affected_requirements = [
+    {
+      requirement_id: "REQ-HUMAN-1",
+      acai_id: "review-surfaces.HUMAN_REVIEW.1",
+      title: "Human surface starts with verdict",
+      group_key: "HUMAN_REVIEW",
+      reasons: [{ rule: "changed_path_requirement_group", confidence: "high", path: "tests/human-review.test.ts" }]
+    }
+  ];
+  prSurface.scope.out_of_scope_changed_files = [];
+  prSurface.coverage.deltas = [];
+  prSurface.risks.candidates = [];
+  const diff = parseStructuredDiff([
+    "diff --git a/tests/human-review.test.ts b/tests/human-review.test.ts",
+    "--- a/tests/human-review.test.ts",
+    "+++ b/tests/human-review.test.ts",
+    "@@ -10,2 +10,4 @@",
+    " test('intent') {",
+    "+  const suffix = 'review-surfaces.HUMAN_REVIEW.18-beta';",
+    "+  const word = 'review-surfaces.HUMAN_REVIEW.18foo';",
+    ""
+  ].join("\n"));
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface, diff });
+  const observed = model.intent_mismatch.observed_in_diff.find((item) => item.paths.includes("tests/human-review.test.ts"));
+
+  assert.ok(observed);
+  assert.deepEqual(observed.requirement_ids, ["review-surfaces.HUMAN_REVIEW.1"]);
+  assert.ok(!observed.requirement_ids.includes("review-surfaces.HUMAN_REVIEW.18"));
+  assert.doesNotMatch(observed.summary, /references exact requirement/);
+});
+
 test("review-surfaces.HUMAN_REVIEW.18 observed source specs without exact ACIDs avoid broad path requirements", () => {
   const broadSpecAcid = ["review-surfaces", "BOOTSTRAP", "1"].join(".");
   const prSurface = prSurfaceFixture();
@@ -546,6 +590,50 @@ test("review-surfaces.HUMAN_REVIEW.18 observed source specs without exact ACIDs 
   assert.ok(observed);
   assert.deepEqual(observed.requirement_ids, []);
   assert.match(observed.summary, /source-of-truth spec intent/);
+});
+
+test("review-surfaces.HUMAN_REVIEW.18 missing intent skips generated and ignored out-of-scope files", () => {
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files = [
+    {
+      path: "pnpm-lock.yaml",
+      status: "M",
+      areas: [],
+      role: "generated",
+      added_lines: 20,
+      deleted_lines: 10
+    },
+    {
+      path: "tmp/generated.txt",
+      status: "M",
+      areas: [],
+      role: "generated",
+      added_lines: 2,
+      deleted_lines: 1
+    },
+    {
+      path: "scripts/release.sh",
+      status: "M",
+      areas: [],
+      role: "implementation",
+      added_lines: 2,
+      deleted_lines: 1
+    }
+  ];
+  prSurface.scope.affected_areas = [];
+  prSurface.scope.affected_requirements = [];
+  prSurface.scope.out_of_scope_changed_files = [
+    { path: "pnpm-lock.yaml", status: "M", reason: "generated" },
+    { path: "tmp/generated.txt", status: "M", reason: "ignored" },
+    { path: "scripts/release.sh", status: "M", reason: "unmapped" }
+  ];
+  prSurface.coverage.deltas = [];
+  prSurface.risks.candidates = [];
+  const model = buildHumanReview({ packet: packetFixture(), prSurface });
+
+  assert.ok(model.intent_mismatch.missing_intent.some((item) => item.paths.includes("scripts/release.sh")));
+  assert.ok(!model.intent_mismatch.missing_intent.some((item) => item.paths.includes("pnpm-lock.yaml")));
+  assert.ok(!model.intent_mismatch.missing_intent.some((item) => item.paths.includes("tmp/generated.txt")));
 });
 
 test("since-last-review model turns packet comparison into reviewer-focused deltas", () => {

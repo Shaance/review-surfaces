@@ -1036,8 +1036,16 @@ function missingIntentDrafts(input: BuildHumanReviewInput): IntentMismatchDraft[
       .filter((file) => file.reason === "unmapped")
       .map((file) => normalizeEvidencePath(file.path))
   );
+  const ignoredOrGeneratedPaths = new Set(
+    (input.prSurface?.scope.out_of_scope_changed_files ?? [])
+      .filter((file) => file.reason === "generated" || file.reason === "ignored")
+      .map((file) => normalizeEvidencePath(file.path))
+  );
   const drafts: IntentMismatchDraft[] = [];
   for (const file of changedFiles) {
+    if (ignoredOrGeneratedPaths.has(normalizeEvidencePath(file.path))) {
+      continue;
+    }
     const requirementIds = input.prSurface ? affectedRequirementIdsForFile(input.prSurface, file) : [];
     if (!outOfScopePaths.has(normalizeEvidencePath(file.path)) && changedFileAreas(file).length > 0 && requirementIds.length > 0) {
       continue;
@@ -1171,11 +1179,23 @@ function sortedDiffAcidKeysForFile(
 }
 
 function addedLineAcidKeys(text: string): string[] {
-  return [...text.matchAll(ACID_PATTERN)].map((match) => match[0]);
+  return [...text.matchAll(ACID_PATTERN)]
+    .filter((match) => isWholeAcidToken(text, match.index ?? 0, match[0]))
+    .map((match) => match[0]);
 }
 
 function isSourceSpecFile(filePath: string): boolean {
   return /^features\//.test(normalizeEvidencePath(filePath));
+}
+
+function isAcidChar(ch: string): boolean {
+  return ch !== "" && /[A-Za-z0-9_.-]/.test(ch);
+}
+
+function isWholeAcidToken(text: string, index: number, acid: string): boolean {
+  const before = index > 0 ? text[index - 1] : "";
+  const after = index + acid.length < text.length ? text[index + acid.length] : "";
+  return !isAcidChar(before) && !isAcidChar(after);
 }
 
 function intentMismatchResultIsStrictlyInFocus(result: RequirementGap, focus: IntentMismatchFocus): boolean {

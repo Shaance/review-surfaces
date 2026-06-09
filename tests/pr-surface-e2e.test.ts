@@ -85,6 +85,7 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
       comments: "JSON sentinel suggested comment",
       trust: "JSON sentinel trust summary",
       "risk-lenses": "JSON sentinel risk lens",
+      "intent-mismatch": "JSON sentinel intent mismatch",
       routes: "JSON sentinel review route",
       "evidence-cards": "JSON sentinel evidence card",
       "since-last-review": "JSON sentinel since last review",
@@ -124,6 +125,23 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
             confidence: "low"
           }
         ];
+      } else if (artifact.command === "intent-mismatch") {
+        human.intent_mismatch = {
+          expected_by_spec: [
+            {
+              id: "INTENT-SENTINEL",
+              summary: marker,
+              evidence: [{ kind: "unknown", confidence: "low", note: "JSON sentinel evidence." }],
+              requirement_ids: [],
+              paths: [],
+              confidence: "low"
+            }
+          ],
+          observed_in_diff: [],
+          possible_mismatches: [],
+          possible_overreach: [],
+          missing_intent: []
+        };
       } else if (artifact.command === "routes") {
         human.review_routes = [
           {
@@ -282,6 +300,17 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     assert.doesNotMatch(rebuiltEvidenceCardBody, /generated before evidence-card support/);
     const rebuiltEvidenceCardsHuman = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
     assert.ok(rebuiltEvidenceCardsHuman.evidence_cards.length > 0, "evidence-cards command should rebuild stale prior-v1 human_review.json");
+    delete rebuiltEvidenceCardsHuman.intent_mismatch;
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(rebuiltEvidenceCardsHuman, null, 2));
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "intent_mismatch.md"), "stale intent-mismatch artifact");
+    const staleIntentMismatch = runCli(tmp, ["intent-mismatch", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(staleIntentMismatch.status, 0, staleIntentMismatch.stderr);
+    const rebuiltIntentMismatchBody = fs.readFileSync(path.join(tmp, ".review-surfaces", "intent_mismatch.md"), "utf8");
+    assert.match(rebuiltIntentMismatchBody, /^# Intent Mismatch/);
+    assert.match(rebuiltIntentMismatchBody, /## Expected by spec/);
+    assert.doesNotMatch(rebuiltIntentMismatchBody, /stale intent-mismatch artifact/);
+    const rebuiltIntentMismatchHuman = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    assert.ok(rebuiltIntentMismatchHuman.intent_mismatch, "intent-mismatch command should rebuild stale prior-v1 human_review.json");
     fs.writeFileSync(
       path.join(tmp, ".review-surfaces", "inputs", "feedback.index.json"),
       JSON.stringify(

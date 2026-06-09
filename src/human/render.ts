@@ -70,7 +70,8 @@ export const HUMAN_STANDALONE_ARTIFACTS = [
     artifact: "intent_mismatch.md",
     label: "Intent mismatch",
     heading: "# Intent Mismatch",
-    render: renderIntentMismatchMarkdown
+    render: renderIntentMismatchMarkdown,
+    isSatisfied: (model: HumanReviewModel) => Object.prototype.hasOwnProperty.call(model, "intent_mismatch")
   },
   {
     command: "routes",
