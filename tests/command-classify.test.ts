@@ -58,6 +58,12 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeBroadTestCommand("npm exec -- node --test dist/tests/*.test.js"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("npm exec -- node --test tests/foo.test.ts"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm --filter api exec node --test dist/tests/*.test.js"), true);
+  assert.equal(commandLooksLikeTestCommand("pnpm --dir services/api test"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("pnpm --dir services/api test"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm --dir services/api test"), true);
+  assert.equal(commandLooksLikeTestCommand("pnpm -C services/api test"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("pnpm -C services/api test"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm -C services/api test"), true);
   assert.equal(commandLooksLikeTestCommand("pnpm --filter api test"), true);
   assert.equal(commandLooksLikeBroadTestCommand("pnpm --filter api test"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm --filter api test"), true);

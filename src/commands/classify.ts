@@ -119,7 +119,7 @@ function packageManagerExecNodeTestCommand(body: string): string | undefined {
 }
 
 function packageManagerOptionIsFocusFilter(manager: string, option: string): boolean {
-  return /^(?:--filter(?:=|$)|-F(?:\S|$)|--workspace(?:=|$)|--scope(?:=|$))/.test(option)
+  return /^(?:--filter(?:=|$)|-F(?:\S|$)|--workspace(?:=|$)|--scope(?:=|$)|--dir(?:=|$)|--cwd(?:=|$)|-C(?:\S|$))/.test(option)
     || (manager === "npm" && /^(?:-w|-w=|-w\S)/.test(option));
 }
 
