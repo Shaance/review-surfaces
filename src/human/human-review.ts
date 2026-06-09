@@ -15,12 +15,14 @@ import {
   HumanReviewPriority,
   HumanReviewVerdict,
   HumanReviewVerdictReason,
+  InvalidEvidenceSummary,
   MissingEvidenceSummary,
   ReviewBlocker,
   ReviewerQuestion,
   SuggestedReviewComment,
   TestPlanItem,
-  TrustAudit
+  TrustAudit,
+  TrustFact
 } from "./contract";
 
 export interface BuildHumanReviewInput {
@@ -50,10 +52,22 @@ interface QueueDraft {
   sortKey: string;
 }
 
+type TestPlanDraft = Omit<TestPlanItem, "id">;
+type TestPlanDraftCore =
+  Omit<TestPlanDraft, "maps_to_requirements" | "maps_to_risks" | "evidence_gap"> &
+  Partial<Pick<TestPlanDraft, "maps_to_requirements" | "maps_to_risks" | "evidence_gap">>;
 type RequirementGap = ReviewPacket["evaluation"]["results"][number];
 type MissingAutomaticTestGap = NonNullable<RisksModel["missing_automatic_tests"]>[number];
 type MissingManualCheckGap = NonNullable<RisksModel["missing_manual_checks"]>[number];
 type PrChangedFile = PrReviewSurfaceModel["scope"]["changed_files"][number];
+type TrustFactDraft = Omit<TrustFact, "id">;
+type InvalidEvidenceDraft = Omit<InvalidEvidenceSummary, "id">;
+interface TestPlanCandidate {
+  draft: TestPlanDraft;
+  risk?: PrRiskCandidate;
+  sourceRank: number;
+  sortKey: string;
+}
 
 const MAX_QUEUE = 20;
 const MAX_BLOCKERS = 8;
@@ -506,19 +520,37 @@ function buildSuggestedComments(input: BuildHumanReviewInput, blockers: ReviewBl
 }
 
 function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
-  const verified = positiveValidationEvidence(input.packet.risks).slice(0, MAX_TRUST_ITEMS).map((evidence, index) => ({
-    id: `TRUST-VERIFIED-${String(index + 1).padStart(3, "0")}`,
+  const positiveEvidenceFacts = positiveValidationEvidence(input.packet.risks).map((evidence) => ({
     summary: evidence.note ?? evidence.command ?? evidence.test_name ?? "Verified validation evidence is present.",
     evidence: [evidence]
   }));
 
+  const prFacts: TrustFactDraft[] = [];
   if (input.prSurface) {
-    verified.push({
-      id: `TRUST-VERIFIED-${String(verified.length + 1).padStart(3, "0")}`,
+    prFacts.push({
       summary: `PR scope contains ${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.scope.affected_requirements.length} affected requirement(s), and ${input.prSurface.risks.candidates.length} deterministic PR risk candidate(s).`,
       evidence: input.prSurface.scope.changed_files.slice(0, 5).map((file) => fileEvidence(file.path, "Changed file included in PR scope."))
     });
+
+    for (const risk of input.prSurface.risks.candidates) {
+      if (prFacts.length >= MAX_TRUST_ITEMS) {
+        break;
+      }
+      const concreteEvidence = risk.evidence.filter(isVerifiedTrustEvidence);
+      if (concreteEvidence.length === 0) {
+        continue;
+      }
+      prFacts.push({
+        summary: `Deterministic PR risk ${risk.id} (${risk.rule}) fired: ${risk.summary}`,
+        evidence: concreteEvidence.slice(0, 3)
+      });
+    }
   }
+
+  const verified = withTrustFactIds([
+    ...prFacts.slice(0, MAX_TRUST_ITEMS),
+    ...positiveEvidenceFacts.slice(0, Math.max(0, MAX_TRUST_ITEMS - prFacts.length))
+  ]);
 
   const claimed = [
     ...input.packet.methodology.claims_without_evidence.map((claim, index) => ({
@@ -543,7 +575,7 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
   const invalid = invalidEvidenceSummaries(input);
 
   return {
-    verified_facts: verified.slice(0, MAX_TRUST_ITEMS),
+    verified_facts: verified,
     claimed_not_verified: claimed,
     missing_evidence: missing,
     invalid_evidence: invalid,
@@ -553,105 +585,236 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
 
 function buildTestPlan(input: BuildHumanReviewInput): TestPlanItem[] {
   const items: TestPlanItem[] = [];
-  const focusedGaps = focusedRequirementGaps(input);
+  const candidates: TestPlanCandidate[] = [];
 
   for (const risk of input.prSurface?.risks.candidates ?? []) {
-    if (risk.rule === "schema_contract_change") {
-      items.push({
-        id: `TEST-${String(items.length + 1).padStart(3, "0")}`,
+    for (const draft of testPlanDraftsForPrRisk(input, risk)) {
+      candidates.push({ risk, draft, sourceRank: 0, sortKey: risk.id });
+    }
+  }
+
+  for (const [index, gap] of focusedRequirementGaps(input).slice(0, MAX_FOCUSED_REQUIREMENT_TESTS).entries()) {
+    const requirementId = gap.acai_id ?? gap.requirement_id;
+    const suggestedFile = suggestedTestFile(requirementId, gap.summary);
+    candidates.push({
+      sourceRank: 1,
+      sortKey: rankedSortKey(index, requirementId),
+      draft: {
+        kind: "automatic",
+        priority: gap.status === "missing" || gap.status === "invalid_evidence" ? "required" : "recommended",
+        suggested_file: suggestedFile,
+        scenario: `Add a focused unit or fixture test tied to ${requirementId}.`,
+        expected_result: "The generated human review JSON and Markdown retain deterministic, evidence-backed behavior for this requirement.",
+        command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test",
+        maps_to_requirements: compactStrings([gap.acai_id, gap.requirement_id]),
+        maps_to_risks: [],
+        evidence_gap: gap.summary
+      }
+    });
+  }
+
+  for (const [index, gap] of [...(input.packet.risks.missing_automatic_tests ?? [])].sort(compareMissingGapPriority).entries()) {
+    const suggestedFile = suggestedTestFile(gap.acai_id, gap.suggested_test);
+    candidates.push({
+      sourceRank: 2,
+      sortKey: rankedSortKey(index, gap.acai_id ?? gap.requirement_id ?? gap.id),
+      draft: {
+        kind: "automatic",
+        priority: "recommended",
+        suggested_file: suggestedFile,
+        scenario: gap.suggested_test,
+        expected_result: "The packet records direct or requirement-specific test evidence for the mapped requirement.",
+        command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test",
+        maps_to_requirements: compactStrings([gap.acai_id, gap.requirement_id]),
+        maps_to_risks: [],
+        evidence_gap: gap.summary
+      }
+    });
+  }
+
+  for (const [index, gap] of [...(input.packet.risks.missing_manual_checks ?? [])].sort(compareMissingGapPriority).entries()) {
+    candidates.push({
+      sourceRank: 3,
+      sortKey: rankedSortKey(index, gap.acai_id ?? gap.requirement_id ?? gap.id),
+      draft: {
+        kind: "manual",
+        priority: "recommended",
+        scenario: gap.manual_check,
+        expected_result: "Reviewer records the files inspected, conclusion, and any follow-up action.",
+        maps_to_requirements: compactStrings([gap.acai_id, gap.requirement_id]),
+        maps_to_risks: [],
+        evidence_gap: gap.summary
+      }
+    });
+  }
+
+  for (const candidate of candidates.sort(compareTestPlanCandidates)) {
+    appendTestPlanItem(items, candidate.draft);
+  }
+
+  return items.slice(0, MAX_TEST_PLAN);
+}
+
+function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandidate): TestPlanDraft[] {
+  const riskEvidence = evidenceOrMissing(risk.evidence, risk.summary);
+  const path = firstPathEvidence(risk.evidence)?.path;
+  const suggestedFile = suggestedTestFileForPath(path);
+  const mapsToRisks = [risk.id];
+  const riskDraft = (draft: TestPlanDraftCore): TestPlanDraft => ({
+    ...draft,
+    maps_to_requirements: draft.maps_to_requirements ?? requirementIdsForPrRisk(input, risk),
+    maps_to_risks: draft.maps_to_risks ?? mapsToRisks,
+    evidence_gap: draft.evidence_gap ?? risk.summary
+  });
+
+  switch (risk.rule) {
+    case "coverage_regression":
+      return [riskDraft({
         kind: "automatic",
         priority: "required",
-        suggested_file: "tests/schema-contract.test.ts",
-        scenario: "Load a previous valid human or PR review surface fixture and validate it against the current schema.",
-        expected_result: "The fixture validates, or the schema version is intentionally bumped for a breaking contract change.",
-        command: "pnpm run test -- tests/schema-contract.test.ts",
-        maps_to_requirements: requirementIds(risk.evidence),
-        maps_to_risks: [risk.id],
-        evidence_gap: risk.summary
-      });
-    } else if (risk.rule === "ci_secret_boundary_change" && !hasRecordedCiSecretBoundaryManualCheck(input)) {
-      items.push({
-        id: `TEST-${String(items.length + 1).padStart(3, "0")}`,
-        kind: "manual",
+        suggested_file: "tests/scoped-coverage.test.ts",
+        scenario: "Add or restore a fixture proving the regressed requirement returns to satisfied or partial-with-evidence coverage.",
+        expected_result: "The scoped coverage delta no longer reports a regression for the mapped requirement.",
+        command: "pnpm run test -- tests/scoped-coverage.test.ts"
+      })];
+    case "untested_changed_impl":
+      return [riskDraft({
+        kind: "automatic",
         priority: "required",
-        scenario: "Inspect workflow/provider/comment-posting changes for the CI secret boundary.",
-        expected_result: "Manual CI secret-boundary check recorded: PR-controlled code cannot access secrets, and secret-bearing steps run only from trusted code.",
-        maps_to_requirements: requirementIds(risk.evidence),
-        maps_to_risks: [risk.id],
-        evidence_gap: "No manual CI secret-boundary check is recorded."
-      });
-    } else if (risk.rule === "comment_surface_change") {
-      items.push({
-        id: `TEST-${String(items.length + 1).padStart(3, "0")}`,
+        suggested_file: suggestedFile,
+        scenario: `Add or identify a focused test that exercises the changed implementation${path ? ` in ${path}` : ""}.`,
+        expected_result: "A direct test or command transcript demonstrates the changed implementation behavior before approval.",
+        command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test"
+      })];
+    case "unmapped_change":
+      return [riskDraft({
+        kind: "manual",
+        priority: "recommended",
+        scenario: "Inspect the unmapped changed files and decide whether they need review-area or requirement mappings.",
+        expected_result: "Each unmapped file is either mapped to a review area/requirement or explicitly recorded as generated, ignored, or non-product behavior."
+      })];
+    case "privacy_sensitive_change":
+      return [riskDraft({
+        kind: "automatic",
+        priority: "required",
+        suggested_file: suggestedFile ?? "tests/privacy.test.ts",
+        scenario: "Exercise the changed privacy, provider, redaction, secret, or token-handling path with sensitive-looking input.",
+        expected_result: "No secret or unredacted sensitive value is emitted to artifacts, logs, comments, or remote-provider prompts.",
+        command: `pnpm run test -- ${suggestedFile ?? "tests/privacy.test.ts"}`
+      })];
+    case "comment_surface_change":
+      return [riskDraft({
         kind: "automatic",
         priority: "recommended",
         suggested_file: "tests/pr-comment.test.ts",
         scenario: "Render the changed reviewer-facing Markdown surface from a deterministic fixture.",
         expected_result: "The Markdown stays bounded, evidence-backed, and avoids whole-packet fallback in PR mode.",
-        command: "pnpm run test -- tests/pr-comment.test.ts",
-        maps_to_requirements: requirementIds(risk.evidence),
-        maps_to_risks: [risk.id],
-        evidence_gap: risk.summary
-      });
-    }
+        command: "pnpm run test -- tests/pr-comment.test.ts"
+      })];
+    case "ci_secret_boundary_change":
+      if (hasRecordedCiSecretBoundaryManualCheck(input)) {
+        return [];
+      }
+      return [riskDraft({
+        kind: "manual",
+        priority: "required",
+        scenario: "Inspect workflow/provider/comment-posting changes for the CI secret boundary.",
+        expected_result: "Manual CI secret-boundary check recorded: PR-controlled code cannot access secrets, and secret-bearing steps run only from trusted code.",
+        evidence_gap: "No manual CI secret-boundary check is recorded."
+      })];
+    case "schema_contract_change":
+      return [riskDraft({
+        kind: "automatic",
+        priority: "required",
+        suggested_file: "tests/schema-contract.test.ts",
+        scenario: "Load a previous valid human or PR review surface fixture and validate it against the current schema.",
+        expected_result: "The fixture validates, or the schema version is intentionally bumped for a breaking contract change.",
+        command: "pnpm run test -- tests/schema-contract.test.ts"
+      })];
+    case "deleted_or_renamed_surface":
+      return [riskDraft({
+        kind: "automatic",
+        priority: "recommended",
+        suggested_file: suggestedFile,
+        scenario: `Run or add a reference/import test for the deleted or renamed surface${path ? ` around ${path}` : ""}.`,
+        expected_result: "No stale imports, generated artifact references, or reviewer-facing links point at the removed path.",
+        command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test"
+      })];
+    case "failed_or_skipped_test":
+      return [riskDraft({
+        kind: "automatic",
+        priority: "required",
+        scenario: "Rerun the affected test command after fixing failures and confirming skipped tests are intentional.",
+        expected_result: "Parsed test output records zero failures, and any skipped tests are explicitly justified or removed.",
+        command: "pnpm run test"
+      })];
+    case "large_diff":
+      return [riskDraft({
+        kind: "manual",
+        priority: "optional",
+        scenario: "Decide whether the large diff should be split or reviewed with extra owner attention.",
+        expected_result: "Reviewer records whether the diff size is acceptable for one review and which areas received deeper inspection.",
+        evidence_gap: riskEvidence[0]?.note ?? risk.summary
+      })];
   }
+}
 
-  for (const gap of focusedGaps.slice(0, MAX_FOCUSED_REQUIREMENT_TESTS)) {
-    if (items.length >= MAX_TEST_PLAN) {
-      break;
-    }
-    const requirementId = gap.acai_id ?? gap.requirement_id;
-    const suggestedFile = suggestedTestFile(requirementId, gap.summary);
-    items.push({
-      id: `TEST-${String(items.length + 1).padStart(3, "0")}`,
-      kind: "automatic",
-      priority: gap.status === "missing" || gap.status === "invalid_evidence" ? "required" : "recommended",
-      suggested_file: suggestedFile,
-      scenario: `Add a focused unit or fixture test tied to ${requirementId}.`,
-      expected_result: "The generated human review JSON and Markdown retain deterministic, evidence-backed behavior for this requirement.",
-      command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test",
-      maps_to_requirements: compactStrings([gap.acai_id, gap.requirement_id]),
-      maps_to_risks: [],
-      evidence_gap: gap.summary
-    });
+function compareTestPlanCandidates(
+  left: TestPlanCandidate,
+  right: TestPlanCandidate
+): number {
+  return (
+    testPlanPriorityRank(left.draft.priority) - testPlanPriorityRank(right.draft.priority) ||
+    (left.sourceRank - right.sourceRank) ||
+    severityWeight(right.risk?.severity ?? "unknown") - severityWeight(left.risk?.severity ?? "unknown") ||
+    ruleWeight(right.risk?.rule) - ruleWeight(left.risk?.rule) ||
+    compareStrings(left.sortKey, right.sortKey)
+  );
+}
+
+function testPlanPriorityRank(priority: TestPlanItem["priority"]): number {
+  switch (priority) {
+    case "required":
+      return 0;
+    case "recommended":
+      return 1;
+    case "optional":
+      return 2;
   }
+}
 
-  for (const gap of [...(input.packet.risks.missing_automatic_tests ?? [])].sort(compareMissingGapPriority)) {
-    if (items.length >= MAX_TEST_PLAN) {
-      break;
-    }
-    const suggestedFile = suggestedTestFile(gap.acai_id, gap.suggested_test);
-    items.push({
-      id: `TEST-${String(items.length + 1).padStart(3, "0")}`,
-      kind: "automatic",
-      priority: "recommended",
-      suggested_file: suggestedFile,
-      scenario: gap.suggested_test,
-      expected_result: "The packet records direct or requirement-specific test evidence for the mapped requirement.",
-      command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test",
-      maps_to_requirements: compactStrings([gap.acai_id, gap.requirement_id]),
-      maps_to_risks: [],
-      evidence_gap: gap.summary
-    });
+function rankedSortKey(index: number, key: string): string {
+  return `${String(index).padStart(4, "0")}:${key}`;
+}
+
+function requirementIdsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandidate): string[] {
+  const fromEvidence = requirementIds(risk.evidence);
+  if (risk.rule !== "coverage_regression") {
+    return fromEvidence;
   }
+  const fromDeltas = input.prSurface?.coverage.deltas
+    .filter((delta) => delta.delta === "regressed")
+    .map((delta) => delta.acai_id ?? delta.requirement_id) ?? [];
+  return uniqueTruthy([...fromEvidence, ...fromDeltas]).slice(0, 8);
+}
 
-  for (const gap of [...(input.packet.risks.missing_manual_checks ?? [])].sort(compareMissingGapPriority)) {
-    if (items.length >= MAX_TEST_PLAN) {
-      break;
-    }
-    items.push({
-      id: `TEST-${String(items.length + 1).padStart(3, "0")}`,
-      kind: "manual",
-      priority: "recommended",
-      scenario: gap.manual_check,
-      expected_result: "Reviewer records the files inspected, conclusion, and any follow-up action.",
-      maps_to_requirements: compactStrings([gap.acai_id, gap.requirement_id]),
-      maps_to_risks: [],
-      evidence_gap: gap.summary
-    });
+function withTestPlanId(index: number, draft: TestPlanDraft): TestPlanItem {
+  return stripUndefined({
+    id: `TEST-${String(index).padStart(3, "0")}`,
+    ...draft
+  });
+}
+
+function appendTestPlanItem(items: TestPlanItem[], draft: TestPlanDraft): void {
+  if (items.length >= MAX_TEST_PLAN) {
+    return;
   }
-
-  return dedupeTests(items).slice(0, MAX_TEST_PLAN);
+  const candidate = withTestPlanId(items.length + 1, draft);
+  const candidateKey = testPlanDedupeKey(candidate);
+  if (items.some((item) => testPlanDedupeKey(item) === candidateKey)) {
+    return;
+  }
+  items.push(candidate);
 }
 
 function buildSkimSafe(input: BuildHumanReviewInput): HumanReviewModel["skim_safe"] {
@@ -720,14 +883,51 @@ function missingEvidenceSummaries(input: BuildHumanReviewInput): MissingEvidence
 }
 
 function invalidEvidenceSummaries(input: BuildHumanReviewInput): HumanReviewModel["trust_audit"]["invalid_evidence"] {
-  return input.packet.evaluation.results
+  const packetInvalid = input.packet.evaluation.results
     .filter((result) => result.status === "invalid_evidence")
-    .slice(0, MAX_TRUST_ITEMS)
-    .map((result, index) => ({
-      id: `INVALID-${String(index + 1).padStart(3, "0")}`,
+    .map((result) => ({
       summary: `${result.acai_id ?? result.requirement_id}: ${result.summary}`,
       evidence: [...result.evidence, ...result.missing_evidence]
     }));
+
+  const prRiskInvalid: InvalidEvidenceDraft[] = [];
+  for (const risk of input.prSurface?.risks.candidates ?? []) {
+    const invalidRiskEvidence = risk.evidence.filter(isInvalidTrustEvidence);
+    if (invalidRiskEvidence.length === 0) {
+      continue;
+    }
+    prRiskInvalid.push({
+      summary: `${risk.id}: PR risk evidence is invalid or not deterministic.`,
+      evidence: invalidRiskEvidence
+    });
+  }
+
+  return withInvalidEvidenceIds([
+    ...prRiskInvalid.slice(0, MAX_TRUST_ITEMS),
+    ...packetInvalid.slice(0, Math.max(0, MAX_TRUST_ITEMS - prRiskInvalid.length))
+  ]);
+}
+
+function withTrustFactIds(drafts: TrustFactDraft[]): TrustFact[] {
+  return drafts.slice(0, MAX_TRUST_ITEMS).map((draft, index) => ({
+    id: `TRUST-VERIFIED-${String(index + 1).padStart(3, "0")}`,
+    ...draft
+  }));
+}
+
+function withInvalidEvidenceIds(drafts: InvalidEvidenceDraft[]): InvalidEvidenceSummary[] {
+  return drafts.slice(0, MAX_TRUST_ITEMS).map((draft, index) => ({
+    id: `INVALID-${String(index + 1).padStart(3, "0")}`,
+    ...draft
+  }));
+}
+
+function isVerifiedTrustEvidence(ref: EvidenceRef): boolean {
+  return ref.kind !== "unknown" && ref.validation_status !== "invalid" && ref.llm_proposed !== true;
+}
+
+function isInvalidTrustEvidence(ref: EvidenceRef): boolean {
+  return ref.validation_status === "invalid" || ref.llm_proposed === true;
 }
 
 function positiveValidationEvidence(risks: RisksModel): EvidenceRef[] {
@@ -846,7 +1046,10 @@ function severityWeight(severity: PacketSeverity): number {
   }
 }
 
-function ruleWeight(rule: PrRiskCandidate["rule"]): number {
+function ruleWeight(rule: PrRiskCandidate["rule"] | undefined): number {
+  if (!rule) {
+    return 0;
+  }
   return PR_RISK_RULE_METADATA[rule].review_queue_weight;
 }
 
@@ -1292,18 +1495,66 @@ function missingGapPriority(gap: MissingAutomaticTestGap | MissingManualCheckGap
 }
 
 function suggestedTestFile(acaiId: string | undefined, suggested: string): string | undefined {
-  const haystack = `${acaiId ?? ""} ${suggested}`.toLowerCase();
-  if (haystack.includes("schema")) {
+  return suggestedTestFileFromKeywords(`${acaiId ?? ""} ${suggested}`);
+}
+
+function suggestedTestFileForPath(filePath: string | undefined): string | undefined {
+  if (!filePath) {
+    return undefined;
+  }
+  const normalizedPath = normalizeEvidencePath(filePath);
+  const shared = suggestedTestFileFromKeywords(normalizedPath);
+  if (shared) {
+    return shared;
+  }
+  const lower = normalizedPath.toLowerCase();
+  if (!lower.startsWith("src/")) {
+    return undefined;
+  }
+  const basename = normalizedPath.split("/").pop()?.replace(/\.[cm]?[tj]sx?$/, "");
+  return basename ? `tests/${basename}.test.ts` : undefined;
+}
+
+function suggestedTestFileFromKeywords(value: string): string | undefined {
+  const lower = value.toLowerCase();
+  if (lower.includes("schema")) {
     return "tests/schema-contract.test.ts";
   }
-  if (haystack.includes("human")) {
+  if (lower.includes("human")) {
     return "tests/human-review.test.ts";
   }
-  if (haystack.includes("render") || haystack.includes("comment")) {
+  if (lower.includes("pr-risks")) {
+    return "tests/pr-risks.test.ts";
+  }
+  if (lower.includes("pr-scope")) {
+    return "tests/pr-scope.test.ts";
+  }
+  if (lower.includes("pr-comment")) {
+    return "tests/pr-comment.test.ts";
+  }
+  if (lower.includes("pr-narrative")) {
+    return "tests/pr-narrative.test.ts";
+  }
+  if (lower.includes("render/") || lower.includes("comment")) {
     return "tests/render.test.ts";
   }
-  if (haystack.includes("provider") || /\bpr\b|pr-surface/.test(haystack)) {
+  if (lower.includes("privacy") || lower.includes("redact") || lower.includes("secret")) {
+    return "tests/privacy.test.ts";
+  }
+  if (lower.includes("provider")) {
+    return "tests/provider.test.ts";
+  }
+  if (lower.includes("coverage")) {
+    return "tests/scoped-coverage.test.ts";
+  }
+  if (lower.includes("provider")) {
+    return "tests/provider.test.ts";
+  }
+  if (/\bpr\b|pr-surface/.test(lower)) {
     return "tests/pr-surface-e2e.test.ts";
+  }
+  if (lower.includes("render/") || lower.includes("render") || lower.includes("comment")) {
+    return "tests/render.test.ts";
   }
   return undefined;
 }
@@ -1363,13 +1614,17 @@ function dedupeComments(items: SuggestedReviewComment[]): SuggestedReviewComment
 function dedupeTests(items: TestPlanItem[]): TestPlanItem[] {
   const seen = new Set<string>();
   return items.filter((item) => {
-    const key = `${item.kind}:${item.suggested_file ?? ""}:${item.scenario}`;
+    const key = testPlanDedupeKey(item);
     if (seen.has(key)) {
       return false;
     }
     seen.add(key);
     return true;
   });
+}
+
+function testPlanDedupeKey(item: TestPlanItem): string {
+  return `${item.kind}:${item.suggested_file ?? ""}:${item.scenario}`;
 }
 
 function stringOr(value: unknown, fallback: string): string {
