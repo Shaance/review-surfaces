@@ -1,18 +1,21 @@
 # review-surfaces
 
-A **local-first, evidence-first review-packet compiler for agent-generated code changes.**
+A **local-first review decision cockpit for agent-generated code changes.**
 
 `review-surfaces` reads a repository's Acai-style feature spec, docs, tests, and
-git diff, then compiles a deterministic *review packet*: intent, an
-implementation-vs-intent evaluation, architecture surfaces (Mermaid diagrams
-with validation), a methodology audit, and a ranked risks / test-gap report.
-Every claim in the packet is tied to local evidence (files, diffs, command
-transcripts, feedback) rather than hidden chat context, and it can dogfood
-itself while it is being built.
+git diff, then turns the evidence into the shortest safe human review path:
+merge-readiness verdict, review-first queue, blockers, reviewer questions, trust
+audit, concrete test plan, suggested comments, and skim-safe hints. The
+schema-validated review packet remains the evidence backbone underneath the
+human cockpit: intent, implementation-vs-intent evaluation, architecture
+surfaces, methodology audit, risks, test gaps, command transcripts, and feedback.
 
-The output lives under `.review-surfaces/` as compact, human-readable
-JSON/YAML/Markdown artifacts. Hosted Acai sync, CI checks, and PR/MR comment
-renderers are deliberately *later* surfaces — the local artifacts are the MVP.
+Every claim is tied to local evidence (files, diffs, command transcripts,
+feedback) rather than hidden chat context, and the project dogfoods its own
+artifacts while it is being built. The output lives under `.review-surfaces/` as
+compact, human-readable JSON/YAML/Markdown artifacts. Hosted Acai sync, CI
+checks, and PR/MR integrations are optional renderers over the same local
+evidence; the local human review surface is the default product entrypoint.
 
 ## Principles
 
