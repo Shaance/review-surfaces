@@ -203,6 +203,49 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
       assert.match(focusedBody, new RegExp(`^${artifact.heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
       assert.match(focusedBody, new RegExp(marker));
     }
+    human.review_queue[0].title = "JSON sentinel PR comment queue";
+    human.suggested_comments[0] = {
+      id: "SC-PR-COMMENT-SENTINEL",
+      severity: "clarifying",
+      path: CHANGED,
+      body: "JSON sentinel PR comment draft",
+      evidence: [{ kind: "unknown", confidence: "low", note: "JSON sentinel comment evidence." }],
+      risk_ids: [],
+      requirement_ids: [],
+      confidence: "low",
+      ready_to_post: true
+    };
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(human, null, 2));
+    const humanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(humanPrComment.status, 4, "mock PR surfaces still fail the postability gate");
+    assert.match(humanPrComment.stdout, /JSON sentinel PR comment queue/);
+    assert.match(humanPrComment.stdout, /JSON sentinel PR comment draft/);
+    assert.match(humanPrComment.stdout, /Full human review: `\.review-surfaces\/human_review\.md`/);
+    assert.match(humanPrComment.stderr, /not postable/);
+    assert.doesNotMatch(humanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
+    const staleHuman = {
+      ...human,
+      generated_from: { ...human.generated_from, base_ref: "refs/stale-base" }
+    };
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(staleHuman, null, 2));
+    const staleHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(staleHumanPrComment.status, 4, "stale human JSON should fall back to the blocked PR sidecar");
+    assert.match(staleHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
+    assert.match(staleHumanPrComment.stderr, /Ignoring stale or non-PR human_review\.json/);
+    assert.doesNotMatch(staleHumanPrComment.stdout, /JSON sentinel PR comment queue/);
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "{");
+    const malformedHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(malformedHumanPrComment.status, 4, "malformed optional human JSON should not block PR comment rendering");
+    assert.match(malformedHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
+    assert.match(malformedHumanPrComment.stderr, /Ignoring unreadable human_review\.json/);
+    assert.doesNotMatch(malformedHumanPrComment.stdout, /JSON sentinel PR comment queue/);
+    const schemaInvalidHuman = { ...human, verdict: {} };
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(schemaInvalidHuman, null, 2));
+    const schemaInvalidHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(schemaInvalidHumanPrComment.status, 4, "schema-invalid optional human JSON should not block PR comment rendering");
+    assert.match(schemaInvalidHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
+    assert.match(schemaInvalidHumanPrComment.stderr, /Ignoring schema-invalid human_review\.json/);
+    assert.doesNotMatch(schemaInvalidHumanPrComment.stdout, /JSON sentinel PR comment queue/);
     delete human.review_routes;
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(human, null, 2));
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "review_routes.md"), "stale route artifact");
@@ -436,8 +479,13 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     assert.equal(Object.hasOwn(surface.llm, "model"), false, "serialized llm meta must omit undefined model");
     const blockedComment = runCli(tmp, ["comment", "--mode", "pr", "--out", ".review-surfaces"]);
     assert.equal(blockedComment.status, 4, "blocked PR surfaces are not postable successful comments");
-    assert.match(blockedComment.stdout, /blocked \(`llm_unavailable`\)/);
+    assert.match(blockedComment.stdout, /## review-surfaces PR review/);
+    assert.match(blockedComment.stdout, /\*\*Verdict:\*\*/);
+    assert.match(blockedComment.stdout, /Full human review: `\.review-surfaces\/human_review\.md`/);
+    assert.match(blockedComment.stdout, /Human review JSON: `\.review-surfaces\/human_review\.json`/);
+    assert.match(blockedComment.stdout, /Lower-level PR facts: `\.review-surfaces\/pr_review_surface\.json`/);
     assert.match(blockedComment.stderr, /not postable/);
+    assert.doesNotMatch(blockedComment.stdout, /\d+ satisfied, \d+ partial, \d+ missing/);
     // The diagram artifact the surface advertises is actually materialized on disk.
     if (surface.diagram) {
       const diagramFile = path.join(tmp, ".review-surfaces", surface.diagram.path);
@@ -496,13 +544,16 @@ test("comment --review-scope pr renders agent-file narratives locally but does n
     const comment = runCli(tmp, ["comment", "--mode", "pr", "--out", ".review-surfaces"]);
     assert.equal(comment.status, 4, "agent-file PR narratives render locally but cannot satisfy the sticky-post gate");
     assert.match(comment.stdout, /## review-surfaces PR review/);
-    assert.match(comment.stdout, /### What changed/);
-    assert.match(comment.stdout, new RegExp(`Tweaked the sticky comment renderer.*${CHANGED.replace(/[/.]/g, "\\$&")}`, "s"));
-    assert.match(comment.stdout, /### Affected coverage/);
+    assert.match(comment.stdout, /\*\*Verdict:\*\*/);
+    assert.match(comment.stdout, /### Review first/);
+    assert.match(comment.stdout, /Full human review: `\.review-surfaces\/human_review\.md`/);
+    assert.match(comment.stdout, /Human review JSON: `\.review-surfaces\/human_review\.json`/);
+    assert.match(comment.stdout, /Lower-level PR facts: `\.review-surfaces\/pr_review_surface\.json`/);
     assert.match(comment.stderr, /not postable \(applied\/agent-file\)/);
     // Not the whole-spec dump or boilerplate.
     assert.doesNotMatch(comment.stdout, /\d+ satisfied, \d+ partial, \d+ missing/);
     assert.doesNotMatch(comment.stdout, /Start with missing and partial requirement results/);
+    assert.doesNotMatch(comment.stdout, /### Affected coverage/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
