@@ -95,6 +95,12 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeTestCommand("yarn vitest src/risks"), true);
   assert.equal(commandLooksLikeBroadTestCommand("yarn vitest src/risks"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("yarn vitest src/risks"), true);
+  assert.equal(commandLooksLikeTestCommand("pnpm exec vitest --project api"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("pnpm exec vitest --project api"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm exec vitest --project api"), true);
+  assert.equal(commandLooksLikeTestCommand("jest --selectProjects api"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("jest --selectProjects api"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("jest --selectProjects api"), true);
   assert.equal(commandLooksLikeTestCommand("vitest --changed HEAD~1"), true);
   assert.equal(commandLooksLikeBroadTestCommand("vitest --changed HEAD~1"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("vitest --changed HEAD~1"), true);
@@ -130,6 +136,12 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm -F api exec vitest"), true);
   assert.equal(commandLooksLikeTestCommand("yarn workspace api test"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("yarn workspace api test"), true);
+  assert.equal(commandLooksLikeTestCommand("yarn workspaces foreach -A run test"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("yarn workspaces foreach -A run test"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("yarn workspaces foreach -A run test"), false);
+  assert.equal(commandLooksLikeTestCommand("yarn workspaces run test"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("yarn workspaces run test"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("yarn workspaces run test"), false);
   assert.equal(commandLooksLikeTestCommand("npm run test -w api"), true);
   assert.equal(commandLooksLikeBroadTestCommand("npm run test -w api"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("npm run test -w api"), true);

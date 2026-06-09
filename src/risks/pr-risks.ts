@@ -182,19 +182,25 @@ function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInp
 
 interface ImplementationValidationIndex {
   changedTestAreas: Set<string>;
+  workingTreeChangedTestAreas: Set<string>;
   focusedTranscriptAreas: Set<string>;
   hasBroadCurrentHeadTestTranscript: boolean;
   sourceByPath: Record<string, ChangedFile["source"]>;
 }
 
 function buildImplementationValidationIndex(input: BuildPrRiskInput): ImplementationValidationIndex {
+  const sourceByPath = input.changedFileSources ?? {};
   const changedTestAreas = new Set<string>();
+  const workingTreeChangedTestAreas = new Set<string>();
   for (const file of input.scope.changed_files) {
     if (file.role !== "test") {
       continue;
     }
     for (const area of file.areas) {
       changedTestAreas.add(area);
+      if (changedFileSourceFromMap(file, sourceByPath) !== "diff") {
+        workingTreeChangedTestAreas.add(area);
+      }
     }
   }
 
@@ -221,9 +227,10 @@ function buildImplementationValidationIndex(input: BuildPrRiskInput): Implementa
 
   return {
     changedTestAreas,
+    workingTreeChangedTestAreas,
     focusedTranscriptAreas,
     hasBroadCurrentHeadTestTranscript,
-    sourceByPath: input.changedFileSources ?? {}
+    sourceByPath
   };
 }
 
@@ -249,10 +256,11 @@ function hasImplementationValidation(file: ScopedChangedFile, validation: Implem
     // No mapped area: not attributable to an untested area gap here.
     return true;
   }
+  const source = changedFileSource(file, validation);
   if (file.areas.some((area) => validation.changedTestAreas.has(area))) {
-    return true;
+    return source === "diff" || file.areas.some((area) => validation.workingTreeChangedTestAreas.has(area));
   }
-  if (changedFileSource(file, validation) !== "diff") {
+  if (source !== "diff") {
     return false;
   }
   if (validation.hasBroadCurrentHeadTestTranscript) {
@@ -262,7 +270,11 @@ function hasImplementationValidation(file: ScopedChangedFile, validation: Implem
 }
 
 function changedFileSource(file: ScopedChangedFile, validation: ImplementationValidationIndex): ChangedFile["source"] {
-  return validation.sourceByPath[file.path] ?? "diff";
+  return changedFileSourceFromMap(file, validation.sourceByPath);
+}
+
+function changedFileSourceFromMap(file: ScopedChangedFile, sourceByPath: Record<string, ChangedFile["source"]>): ChangedFile["source"] {
+  return sourceByPath[file.path] ?? "diff";
 }
 
 function uniqueAreas(files: ScopedChangedFile[]): string[] {

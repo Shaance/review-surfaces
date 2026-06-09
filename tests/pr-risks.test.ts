@@ -502,7 +502,7 @@ test("working-tree impl file with a current-head broad test transcript still fir
   );
 });
 
-test("working-tree impl with a co-changed test remains validated when a broad transcript exists", () => {
+test("working-tree impl with only a committed co-changed test still fires untested_changed_impl", () => {
   const input = buildInput({
     scope: scope({
       head_sha: "head123",
@@ -528,10 +528,43 @@ test("working-tree impl with a co-changed test remains validated when a broad tr
   });
 
   const model = buildPrRiskCandidates(input);
+  assert.ok(
+    model.candidates.find((c) => c.rule === "untested_changed_impl"),
+    "a committed co-changed test must not validate later working-tree implementation edits"
+  );
+});
+
+test("working-tree impl with a dirty co-changed test remains validated when a broad transcript exists", () => {
+  const input = buildInput({
+    scope: scope({
+      head_sha: "head123",
+      changed_files: [
+        changedFile({ path: "src/risks/risks.ts", role: "implementation", areas: ["RISK"] }),
+        changedFile({ path: "tests/risks.test.ts", role: "test", areas: ["RISK"] })
+      ]
+    }),
+    changedFileSources: {
+      "src/risks/risks.ts": "working_tree",
+      "tests/risks.test.ts": "working_tree"
+    },
+    commandTranscripts: [
+      {
+        id: "CMD-TEST-BROAD",
+        command: "pnpm run test",
+        status: "passed",
+        exit_code: 0,
+        head_sha: "head123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-TEST-BROAD.json"
+      }
+    ]
+  });
+
+  const model = buildPrRiskCandidates(input);
   assert.equal(
     model.candidates.find((c) => c.rule === "untested_changed_impl"),
     undefined,
-    "co-changed tests should still validate dirty implementation files even when a broad transcript exists"
+    "dirty co-changed tests should still validate dirty implementation files even when a broad transcript exists"
   );
 });
 

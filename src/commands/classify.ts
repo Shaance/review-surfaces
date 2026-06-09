@@ -1,5 +1,6 @@
 const FOCUSED_TEST_TARGET_PATTERN = /(?:^|\s)(?:(?:dist\/)?tests|test|src|lib|app|packages)\/\S+|(?:^|\s)\S+\.(?:test|spec)\.[cm]?[jt]sx?(?:\s|$)/;
 const TEST_NAME_FILTER_PATTERN = /(?:^|\s)(?:--test-name-pattern|--testNamePattern|--grep|-t)(?:=|\s)/;
+const TEST_PROJECT_FILTER_PATTERN = /(?:^|\s)(?:--project|--selectProjects)(?:=|\s)/;
 const TEST_SCRIPT_ALIAS_PATTERN = /^(?:run\s+)?test:([\w.:-]+)(?:\s|$)/;
 
 export function normalizeCommand(command: string): string {
@@ -31,6 +32,7 @@ export function commandLooksLikeFocusedTestCommand(command: string): boolean {
   return (hasPackageFocusFilter && commandLooksLikeTestCommand(normalized))
     || (testScriptAlias !== undefined && !looksLikeBroadTestScriptAlias(testScriptAlias))
     || (hasChangedOnlyTestFilter(normalized) && commandLooksLikeTestCommand(normalized))
+    || (hasProjectOnlyTestFilter(normalized) && commandLooksLikeTestCommand(normalized))
     || hasFocusedTestTarget(normalized)
     || hasTestNameFilter(normalized);
 }
@@ -95,7 +97,27 @@ function parsedPackageManagerCommand(normalized: string): ParsedPackageManagerCo
 
 function packageManagerBodyLooksLikeTest(body: string): boolean {
   return /^(?:(?:run\s+)?test(?::[\w.:-]+)?|(?:vitest|jest|tap|uvu)|exec\s+(?:--\s+)?(?:vitest|jest|tap|uvu))(?:\s|$)/.test(body)
+    || yarnWorkspacesBodyLooksLikeTest(body)
     || packageManagerExecNodeTestCommand(body) !== undefined;
+}
+
+function yarnWorkspacesBodyLooksLikeTest(body: string): boolean {
+  const tokens = body.split(" ").filter(Boolean);
+  if (tokens[0] !== "workspaces") {
+    return false;
+  }
+  if (tokens[1] === "run") {
+    return testScriptTokenLooksLikeTest(tokens[2]);
+  }
+  if (tokens[1] === "foreach") {
+    const runIndex = tokens.indexOf("run", 2);
+    return runIndex >= 0 && testScriptTokenLooksLikeTest(tokens[runIndex + 1]);
+  }
+  return false;
+}
+
+function testScriptTokenLooksLikeTest(token: string | undefined): boolean {
+  return token !== undefined && /^test(?::[\w.:-]+)?$/.test(token);
 }
 
 function packageCommandBodyHasFocusFilter(parsed: ParsedPackageManagerCommand | undefined): boolean {
@@ -207,6 +229,10 @@ function hasTestNameFilter(value: string): boolean {
 
 function hasChangedOnlyTestFilter(value: string): boolean {
   return /(?:^|\s)--changed(?:=|\s|$)/.test(value);
+}
+
+function hasProjectOnlyTestFilter(value: string): boolean {
+  return TEST_PROJECT_FILTER_PATTERN.test(value);
 }
 
 function nodeTestArgs(normalized: string): string[] | undefined {
