@@ -39,6 +39,15 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeBroadTestCommand("node --test-name-pattern risk --test dist/tests/*.test.js"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("node --test-name-pattern risk --test dist/tests/*.test.js"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("node --test --test-name-pattern risk dist/tests/*.test.js"), true);
+  assert.equal(commandLooksLikeTestCommand("node --test --test-shard=1/4"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("node --test --test-shard=1/4"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("node --test --test-shard=1/4"), true);
+  assert.equal(commandLooksLikeTestCommand("node --test --test-shard 1/4"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("node --test --test-shard 1/4"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("node --test --test-shard 1/4"), true);
+  assert.equal(commandLooksLikeTestCommand("node --test-shard=1/4 --test"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("node --test-shard=1/4 --test"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("node --test-shard=1/4 --test"), true);
   assert.equal(commandLooksLikeTestCommand("node --test \"**/*.test.js\""), true);
   assert.equal(commandLooksLikeBroadTestCommand("node --test \"**/*.test.js\""), true);
   assert.equal(commandLooksLikeFocusedTestCommand("node --test \"**/*.test.js\""), false);
@@ -60,6 +69,12 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm exec vitest --workspace vitest.workspace.ts"), false);
   assert.equal(commandLooksLikeBroadTestCommand("pnpm exec vitest --config src/vitest.config.ts"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm exec vitest --config src/vitest.config.ts"), false);
+  assert.equal(commandLooksLikeTestCommand("vitest --changed HEAD~1"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("vitest --changed HEAD~1"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("vitest --changed HEAD~1"), true);
+  assert.equal(commandLooksLikeTestCommand("pnpm exec vitest --changed"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("pnpm exec vitest --changed"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm exec vitest --changed"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("vitest --testNamePattern risk"), true);
   assert.equal(commandLooksLikeTestCommand("npm exec -- vitest src/risks"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("npm exec -- vitest src/risks"), true);
@@ -91,6 +106,9 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeFocusedTestCommand("npm test --workspace api"), true);
   assert.equal(commandLooksLikeTestCommand("npm -w api test"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("npm -w api test"), true);
+  assert.equal(commandLooksLikeTestCommand("npm --prefix services/api test"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("npm --prefix services/api test"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("npm --prefix services/api test"), true);
 
   assert.equal(commandLooksLikeTestCommand("pnpm run build"), false);
   assert.equal(commandLooksLikeBroadTestCommand("pnpm run build"), false);

@@ -30,6 +30,7 @@ export function commandLooksLikeFocusedTestCommand(command: string): boolean {
   }
   return (hasPackageFocusFilter && commandLooksLikeTestCommand(normalized))
     || (testScriptAlias !== undefined && !looksLikeBroadTestScriptAlias(testScriptAlias))
+    || (hasChangedOnlyTestFilter(normalized) && commandLooksLikeTestCommand(normalized))
     || hasFocusedTestTarget(normalized)
     || hasTestNameFilter(normalized);
 }
@@ -120,7 +121,7 @@ function packageManagerExecNodeTestCommand(body: string): string | undefined {
 
 function packageManagerOptionIsFocusFilter(manager: string, option: string): boolean {
   return /^(?:--filter(?:=|$)|-F(?:\S|$)|--workspace(?:=|$)|--scope(?:=|$)|--dir(?:=|$)|--cwd(?:=|$)|-C(?:\S|$))/.test(option)
-    || (manager === "npm" && /^(?:-w|-w=|-w\S)/.test(option));
+    || (manager === "npm" && /^(?:-w|-w=|-w\S|--prefix(?:=|$))/.test(option));
 }
 
 function packageManagerOptionConsumesNext(manager: string, option: string): boolean {
@@ -137,6 +138,9 @@ function nodeTestFocusClassification(normalized: string): boolean | undefined {
     return undefined;
   }
   if (hasTestNameFilter(normalized)) {
+    return true;
+  }
+  if (hasNodeTestShard(normalized)) {
     return true;
   }
   if (testArgs.length === 0) {
@@ -158,6 +162,10 @@ function hasFocusedTestTarget(value: string): boolean {
 
 function hasTestNameFilter(value: string): boolean {
   return TEST_NAME_FILTER_PATTERN.test(value);
+}
+
+function hasChangedOnlyTestFilter(value: string): boolean {
+  return /(?:^|\s)--changed(?:=|\s|$)/.test(value);
 }
 
 function nodeTestArgs(normalized: string): string[] | undefined {
@@ -201,6 +209,19 @@ function nodeTestPositionalArgs(tokens: string[]): string[] {
     positionals.push(cleanCommandToken(token));
   }
   return positionals;
+}
+
+function hasNodeTestShard(value: string): boolean {
+  const tokens = value.split(" ").filter(Boolean);
+  for (const token of tokens) {
+    if (token === "--") {
+      break;
+    }
+    if (token === "--test-shard" || token.startsWith("--test-shard=")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function nodeOptionConsumesNext(option: string): boolean {
