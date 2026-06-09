@@ -198,7 +198,7 @@ export function buildPrScope(input: BuildPrScopeInput): PrScopeModel {
 
 // --- role classification ---------------------------------------------------
 
-function classifyRole(filePath: string, areas: string[]): ChangedFileRole {
+export function classifyRole(filePath: string, areas: string[]): ChangedFileRole {
   if (isGeneratedPath(filePath)) {
     return "generated";
   }

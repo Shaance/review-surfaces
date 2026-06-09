@@ -1118,6 +1118,12 @@ function humanReviewJsonSatisfiesStandaloneCommand(model: HumanReviewModel, comm
   return artifact && "isSatisfied" in artifact ? artifact.isSatisfied(model) : true;
 }
 
+function humanReviewJsonSatisfiesPrComment(model: HumanReviewModel): boolean {
+  return ["routes", "evidence-cards", "intent-mismatch"].every((command) =>
+    humanReviewJsonSatisfiesStandaloneCommand(model, command)
+  );
+}
+
 async function buildHumanReviewFromArtifacts(
   cwd: string,
   outDir: string,
@@ -1530,6 +1536,14 @@ async function loadCurrentHumanReviewForPrComment(
   if (!humanReviewJsonMatchesConfig(humanReview, config)) {
     console.warn(
       `Refreshing stale human_review.json for the current human_review config before rendering the PR comment.`
+    );
+    const context = await buildHumanReviewFromArtifacts(cwd, outputDir, "pr", config);
+    await writeHumanReviewArtifacts(context.outputDir, context.model);
+    return context.model;
+  }
+  if (!humanReviewJsonSatisfiesPrComment(humanReview)) {
+    console.warn(
+      `Refreshing stale human_review.json for the current human review artifact set before rendering the PR comment.`
     );
     const context = await buildHumanReviewFromArtifacts(cwd, outputDir, "pr", config);
     await writeHumanReviewArtifacts(context.outputDir, context.model);

@@ -247,6 +247,24 @@ export interface RiskLensFinding {
   confidence: PacketConfidence;
 }
 
+export interface IntentMismatchItem {
+  id: string;
+  summary: string;
+  evidence: EvidenceRef[];
+  requirement_ids: string[];
+  paths: string[];
+  confidence: PacketConfidence;
+  severity?: PacketSeverity;
+}
+
+export interface IntentMismatch {
+  expected_by_spec: IntentMismatchItem[];
+  observed_in_diff: IntentMismatchItem[];
+  possible_mismatches: IntentMismatchItem[];
+  possible_overreach: IntentMismatchItem[];
+  missing_intent: IntentMismatchItem[];
+}
+
 export interface ReviewRouteStep {
   id: string;
   rank: number;
@@ -359,6 +377,7 @@ export interface HumanReviewModel {
   suggested_comments: SuggestedReviewComment[];
   trust_audit: TrustAudit;
   risk_lens_findings: RiskLensFinding[];
+  intent_mismatch: IntentMismatch;
   review_routes: ReviewRoute[];
   since_last_review: SinceLastReview;
   evidence_cards: EvidenceCard[];
