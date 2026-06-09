@@ -55,6 +55,8 @@ components:
       7:
         requirement: The CLI should provide a run helper that executes a local command and records a bounded command transcript artifact.
         note: The helper must keep local/offline operation, redact secrets, and avoid storing unbounded raw stdout or stderr.
+      8:
+        requirement: validate must support validating human_review.json and pr_review_surface.json in addition to review_packet.json, for example via a --surface packet|human|pr|all option.
 
   COLLECTOR:
     name: Input collection and indexing
@@ -202,6 +204,8 @@ components:
         requirement: PR-mode comments must avoid whole-spec coverage dumps, generic review-focus boilerplate, and static whole-repo diagrams.
       7:
         requirement: The CLI must support comment --mode pr|repo|auto and all --surface-mode pr|repo|auto.
+      8:
+        requirement: Local PR-comment rendering without --post must exit successfully after writing the local comment and diagnostics; postability failures must produce non-zero exits only when posting is requested or a strict postability flag is set.
 
   HUMAN_REVIEW:
     name: Human reviewer cockpit
@@ -256,6 +260,61 @@ components:
       18:
         requirement: The human surface must render explicit intent-mismatch findings that distinguish expected spec intent, observed diff behavior, possible mismatches, possible overreach, and missing intent mappings.
         note: Intent-mismatch findings must cite packet or PR-scope evidence, must not fabricate intent absent from local specs/docs/tickets, and ambiguous intent must produce reviewer questions.
+      19:
+        requirement: Rendered human review surfaces must aggregate near-identical templated findings into single rollup items instead of repeating the same sentence per requirement ID.
+        note: Test-plan items, reviewer questions, and evidence cards that differ only by ACID must render as one rollup listing the affected ACIDs, with per-item detail preserved in the JSON model and standalone artifacts.
+      20:
+        requirement: Review-first queue items with hunk or line anchors should render a bounded inline diff excerpt so reviewers can act without opening another tool.
+        note: Excerpts must be bounded (around 10-15 lines), sourced from collected diff inputs, and must respect privacy exclusions and redaction rules.
+      21:
+        requirement: Reviewer-facing prose must lead with the changed file, the observable behavior, and the concrete reviewer action; internal identifiers such as ACIDs, risk IDs, and card IDs must appear as trailing metadata rather than as the subject of the sentence.
+        note: Self-referential bookkeeping phrasing (for example "ranked from whole-packet medium testing risk RISK-001") must be replaced by the underlying reason the item matters.
+
+  NARRATIVE:
+    name: Grounded change narrative
+    description: Optional provider-written prose that explains what the change does, with every claim anchored to evidence and trust-marked by deterministic validation.
+    requirements:
+      1:
+        requirement: The human surface should open with a bounded plain-language narrative covering what the change does, why it matters, and where risk concentrates, produced through the existing provider boundary (mock, agent-file, ai-sdk).
+        note: The narrative reuses the PR-narrative anchor discipline; it is prose over deterministic facts, never a new fact source.
+      2:
+        requirement: Every narrative claim must cite allowlisted anchors (changed files, hunks, ACIDs, command transcripts, schema artifacts) and pass deterministic anchor validation.
+        note: Claims with missing or invalid anchors must be demoted to visibly marked unverified claims rather than dropped silently or rendered as fact.
+      3:
+        requirement: The rendered narrative must mark the trust state of each claim (verified or claimed) so reviewers can see at a glance which sentences are evidence-backed.
+      4:
+        requirement: Narrative output must not create or clear blockers, change coverage status, or alter the merge-readiness verdict.
+        note: This restates review-surfaces.HUMAN_TRUST.2 for the narrative surface specifically.
+      5:
+        requirement: When no narrative provider output is available or validation rejects it, the human surface must render the deterministic fallback summary without failing.
+
+  SEMANTIC_DIFF:
+    name: Semantic change facts
+    description: Deterministic facts computed from the meaning of the diff rather than from path or filename matching.
+    requirements:
+      1:
+        requirement: When JSON schema files change, the tool must compute a semantic schema diff (properties added or removed, required-list changes, type or enum changes) and attach the specifics to schema-contract risks, queue items, and suggested comments.
+        note: A schema-contract finding should say what changed in the contract (for example a field became required), not merely that a schema file was touched.
+      2:
+        requirement: The tool should compute an exported API surface diff for changed TypeScript sources (exported symbols added, removed, or signature-changed) and attach it to contract-related risks and queue items.
+      3:
+        requirement: The tool must detect test-weakening signals (deleted test files, newly skipped tests, removed assertions, regenerated snapshots) as a distinct deterministic risk class surfaced near the top of the human surface.
+      4:
+        requirement: Semantic change facts must flow into review queue ranking, risk lenses, and suggested comments using concrete language instead of generic path-based phrasing.
+
+  REVIEW_LOOP:
+    name: Interactive review session
+    description: A guided terminal loop that walks the reviewer through the ranked queue and feeds decisions back into feedback memory.
+    requirements:
+      1:
+        requirement: The CLI should provide a review walkthrough command that steps through the ranked review queue item by item, showing the inline hunk excerpt, the reason, and the evidence for each item.
+      2:
+        requirement: Reviewer decisions captured in the session (accept, flag, false positive, needs comment) must persist into local feedback files so later runs downgrade or promote matching findings.
+        note: This is the primary ergonomic feeder for the existing feedback-memory requirements; decisions must never silently delete evidence.
+      3:
+        requirement: Comment drafts captured during the session must be written into the suggested-comments artifact and marked as draft or ready to post.
+      4:
+        requirement: In non-interactive environments the walkthrough command must degrade gracefully by printing the next queue item and exiting cleanly.
 
   PROVIDERS:
     name: Later provider integrations
@@ -273,6 +332,8 @@ components:
         requirement: Posted PR-mode comments must require a non-mock LLM narrative whose file, requirement, risk, and status anchors are validated against deterministic PR facts.
       6:
         requirement: The CI PR comment workflow must keep LLM API keys out of PR-controlled workflow YAML, install, build, and executable code by running secret-bearing steps from a base-controlled workflow with a trusted tool checkout against a credentialless PR subject checkout.
+      7:
+        requirement: GitHub integration should support exporting hunk-anchored suggested comments as a pending draft review for the human to edit and submit, and must never auto-submit reviews or comments without explicit opt-in.
 
 constraints:
   EVIDENCE:
@@ -353,3 +414,5 @@ constraints:
         requirement: schemas/review_packet.schema.json must validate review_packet.json fields for architecture diagram validation metadata.
       2:
         requirement: schemas/review_packet.schema.json must validate methodology claim evidence metadata and agent handoff validation/deferral metadata.
+      3:
+        requirement: schemas/human_review.schema.json must require every field present in the current HumanReviewModel, or expose a versioned strict validation mode, so stale partial human_review.json artifacts fail validation instead of degrading quietly.
