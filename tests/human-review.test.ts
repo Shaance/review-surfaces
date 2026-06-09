@@ -549,6 +549,268 @@ test("review-surfaces.HUMAN_REVIEW.18 observed diff requires whole-token exact A
   assert.doesNotMatch(observed.summary, /references exact requirement/);
 });
 
+test("review-surfaces.HUMAN_REVIEW.18 observed diff includes deleted ACIDs in exact focus", () => {
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files = [
+    {
+      path: "tests/human-review.test.ts",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "test",
+      added_lines: 0,
+      deleted_lines: 1
+    }
+  ];
+  prSurface.scope.affected_requirements = [
+    {
+      requirement_id: "REQ-HUMAN-1",
+      acai_id: "review-surfaces.HUMAN_REVIEW.1",
+      title: "Human surface starts with verdict",
+      group_key: "HUMAN_REVIEW",
+      reasons: [{ rule: "changed_path_requirement_group", confidence: "high", path: "tests/human-review.test.ts" }]
+    }
+  ];
+  prSurface.scope.out_of_scope_changed_files = [];
+  prSurface.coverage.deltas = [];
+  prSurface.risks.candidates = [];
+  const diff = parseStructuredDiff([
+    "diff --git a/tests/human-review.test.ts b/tests/human-review.test.ts",
+    "--- a/tests/human-review.test.ts",
+    "+++ b/tests/human-review.test.ts",
+    "@@ -10,2 +10,1 @@",
+    " test('intent') {",
+    "-  const removed = 'review-surfaces.HUMAN_REVIEW.18';",
+    ""
+  ].join("\n"));
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface, diff });
+  const observed = model.intent_mismatch.observed_in_diff.find((item) => item.paths.includes("tests/human-review.test.ts"));
+
+  assert.ok(observed);
+  assert.deepEqual(observed.requirement_ids, ["review-surfaces.HUMAN_REVIEW.18"]);
+  assert.match(observed.summary, /references exact requirement/);
+});
+
+test("review-surfaces.HUMAN_REVIEW.18 possible mismatches combine exact and scoped focus", () => {
+  const packet = packetFixture();
+  packet.intent.requirements.push({
+    id: "REQ-HUMAN-18",
+    acai_id: "review-surfaces.HUMAN_REVIEW.18",
+    title: "Intent mismatch",
+    requirement: "Render explicit intent mismatch buckets.",
+    source_refs: [
+      {
+        kind: "spec",
+        ref: "features/review-surfaces.feature.yaml",
+        title: "review-surfaces.HUMAN_REVIEW.18",
+        evidence: [fileEvidence("features/review-surfaces.feature.yaml", "Intent mismatch requirement.", "high")]
+      }
+    ],
+    constraints: [],
+    assumptions: [],
+    open_questions: [],
+    confidence: "high"
+  });
+  packet.evaluation.results.push({
+    requirement_id: "REQ-HUMAN-18",
+    acai_id: "review-surfaces.HUMAN_REVIEW.18",
+    status: "missing",
+    summary: "Intent mismatch output lacks removal coverage.",
+    evidence: [fileEvidence("docs/intent.md", "Diff names the intent mismatch requirement.")],
+    missing_evidence: [missingEvidence("No removal-focused intent mismatch test.")],
+    review_focus: "Review exact intent mismatch coverage.",
+    confidence: "medium"
+  });
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files = [
+    {
+      path: "src/human/human-review.ts",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "implementation",
+      added_lines: 2,
+      deleted_lines: 0
+    },
+    {
+      path: "docs/intent.md",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "doc",
+      added_lines: 1,
+      deleted_lines: 0
+    }
+  ];
+  prSurface.scope.affected_requirements = [
+    {
+      requirement_id: "REQ-HUMAN-1",
+      acai_id: "review-surfaces.HUMAN_REVIEW.1",
+      title: "Human surface starts with verdict",
+      group_key: "HUMAN_REVIEW",
+      reasons: [{ rule: "changed_path_requirement_group", confidence: "high", path: "src/human/human-review.ts" }]
+    }
+  ];
+  prSurface.scope.out_of_scope_changed_files = [];
+  prSurface.coverage.deltas = [];
+  prSurface.risks.candidates = [];
+  const diff = parseStructuredDiff([
+    "diff --git a/docs/intent.md b/docs/intent.md",
+    "--- a/docs/intent.md",
+    "+++ b/docs/intent.md",
+    "@@ -1,1 +1,2 @@",
+    " # Intent",
+    "+review-surfaces.HUMAN_REVIEW.18 should cover removals.",
+    ""
+  ].join("\n"));
+
+  const model = buildHumanReview({ packet, prSurface, diff });
+  const mismatchRequirementIds = model.intent_mismatch.possible_mismatches.flatMap((item) => item.requirement_ids);
+
+  assert.ok(mismatchRequirementIds.includes("review-surfaces.HUMAN_REVIEW.18"));
+  assert.ok(mismatchRequirementIds.includes("review-surfaces.HUMAN_REVIEW.1"));
+});
+
+test("review-surfaces.HUMAN_REVIEW.18 possible mismatch cap keeps higher-severity scoped gaps before exact partials", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [
+    {
+      requirement_id: "REQ-HUMAN-18",
+      acai_id: "review-surfaces.HUMAN_REVIEW.18",
+      status: "partial",
+      summary: "Exact intent mismatch requirement is only partial.",
+      evidence: [fileEvidence("docs/intent.md", "Diff names the intent mismatch requirement.")],
+      missing_evidence: [missingEvidence("No exact implementation evidence for intent mismatch.")],
+      review_focus: "Review exact partial intent evidence.",
+      confidence: "medium"
+    },
+    {
+      requirement_id: "REQ-HUMAN-2",
+      acai_id: "review-surfaces.HUMAN_REVIEW.2",
+      status: "missing",
+      summary: "Scoped verdict policy evidence is missing.",
+      evidence: [fileEvidence("src/human/human-review.ts", "Changed human review builder.")],
+      missing_evidence: [missingEvidence("No scoped verdict policy evidence.")],
+      review_focus: "Review scoped missing intent evidence.",
+      confidence: "medium"
+    }
+  ];
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files = [
+    {
+      path: "src/human/human-review.ts",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "implementation",
+      added_lines: 2,
+      deleted_lines: 0
+    },
+    {
+      path: "docs/intent.md",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "doc",
+      added_lines: 1,
+      deleted_lines: 0
+    }
+  ];
+  prSurface.scope.affected_requirements = [
+    {
+      requirement_id: "REQ-HUMAN-2",
+      acai_id: "review-surfaces.HUMAN_REVIEW.2",
+      title: "Merge readiness policy",
+      group_key: "HUMAN_REVIEW",
+      reasons: [{ rule: "changed_path_requirement_group", confidence: "high", path: "src/human/human-review.ts" }]
+    }
+  ];
+  prSurface.scope.out_of_scope_changed_files = [];
+  prSurface.coverage.deltas = [];
+  prSurface.risks.candidates = [];
+  const diff = parseStructuredDiff([
+    "diff --git a/docs/intent.md b/docs/intent.md",
+    "--- a/docs/intent.md",
+    "+++ b/docs/intent.md",
+    "@@ -1,1 +1,2 @@",
+    " # Intent",
+    "+review-surfaces.HUMAN_REVIEW.18 should cover removals.",
+    ""
+  ].join("\n"));
+
+  const model = buildHumanReview({ packet, prSurface, diff });
+
+  assert.equal(model.intent_mismatch.possible_mismatches[0].requirement_ids[0], "review-surfaces.HUMAN_REVIEW.2");
+  assert.match(model.intent_mismatch.possible_mismatches[0].summary, /Missing implementation evidence/);
+});
+
+test("review-surfaces.HUMAN_REVIEW.18 exact nonblocking mismatches outrank broad scoped unknowns", () => {
+  const packet = packetFixture();
+  const providerAcid = ["review-surfaces", "PROVIDERS", "2"].join(".");
+  packet.evaluation.results = [
+    {
+      requirement_id: "REQ-HUMAN-18",
+      acai_id: "review-surfaces.HUMAN_REVIEW.18",
+      status: "partial",
+      summary: "Exact intent mismatch requirement is only partial.",
+      evidence: [fileEvidence("docs/intent.md", "Diff names the intent mismatch requirement.")],
+      missing_evidence: [missingEvidence("No exact implementation evidence for intent mismatch.")],
+      review_focus: "Review exact partial intent evidence.",
+      confidence: "medium"
+    },
+    {
+      requirement_id: "REQ-PROVIDER-2",
+      acai_id: providerAcid,
+      status: "unknown",
+      summary: "Broad provider requirement is ambiguous.",
+      evidence: [fileEvidence("tests/pr-surface-e2e.test.ts", "Changed broad provider test.")],
+      missing_evidence: [],
+      review_focus: "Review broad provider ambiguity.",
+      confidence: "unknown"
+    }
+  ];
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files = [
+    {
+      path: "docs/intent.md",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "doc",
+      added_lines: 1,
+      deleted_lines: 0
+    },
+    {
+      path: "tests/pr-surface-e2e.test.ts",
+      status: "M",
+      areas: ["PROVIDERS"],
+      role: "test",
+      added_lines: 1,
+      deleted_lines: 0
+    }
+  ];
+  prSurface.scope.affected_requirements = [
+    {
+      requirement_id: "REQ-PROVIDER-2",
+      acai_id: providerAcid,
+      title: "SARIF provider",
+      group_key: "PROVIDERS",
+      reasons: [{ rule: "changed_path_requirement_group", confidence: "high", path: "tests/pr-surface-e2e.test.ts" }]
+    }
+  ];
+  prSurface.scope.out_of_scope_changed_files = [];
+  prSurface.coverage.deltas = [];
+  prSurface.risks.candidates = [];
+  const diff = parseStructuredDiff([
+    "diff --git a/docs/intent.md b/docs/intent.md",
+    "--- a/docs/intent.md",
+    "+++ b/docs/intent.md",
+    "@@ -1,1 +1,2 @@",
+    " # Intent",
+    "+review-surfaces.HUMAN_REVIEW.18 should cover removals.",
+    ""
+  ].join("\n"));
+
+  const model = buildHumanReview({ packet, prSurface, diff });
+
+  assert.equal(model.intent_mismatch.possible_mismatches[0].requirement_ids[0], "review-surfaces.HUMAN_REVIEW.18");
+});
+
 test("review-surfaces.HUMAN_REVIEW.18 observed source specs without exact ACIDs avoid broad path requirements", () => {
   const broadSpecAcid = ["review-surfaces", "BOOTSTRAP", "1"].join(".");
   const prSurface = prSurfaceFixture();
@@ -634,6 +896,39 @@ test("review-surfaces.HUMAN_REVIEW.18 missing intent skips generated and ignored
   assert.ok(model.intent_mismatch.missing_intent.some((item) => item.paths.includes("scripts/release.sh")));
   assert.ok(!model.intent_mismatch.missing_intent.some((item) => item.paths.includes("pnpm-lock.yaml")));
   assert.ok(!model.intent_mismatch.missing_intent.some((item) => item.paths.includes("tmp/generated.txt")));
+});
+
+test("review-surfaces.HUMAN_REVIEW.18 preserves an intent question under a tight question cap", () => {
+  const prSurface = prSurfaceFixture();
+  prSurface.risks.candidates = [];
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    prSurface,
+    diff: structuredDiffFixture(),
+    config: {
+      ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+      max_questions: 2
+    }
+  });
+
+  assert.equal(model.questions.length, 2);
+  assert.ok(model.questions.some((question) => /intent gap/.test(question.question)));
+});
+
+test("review-surfaces.HUMAN_REVIEW.18 does not evict blocking questions for clarifying intent gaps", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    prSurface: prSurfaceFixture(),
+    diff: structuredDiffFixture(),
+    config: {
+      ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+      max_questions: 1
+    }
+  });
+
+  assert.equal(model.questions.length, 1);
+  assert.equal(model.questions[0].severity, "blocking");
+  assert.doesNotMatch(model.questions[0].question, /intent gap/);
 });
 
 test("since-last-review model turns packet comparison into reviewer-focused deltas", () => {

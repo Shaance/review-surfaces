@@ -172,6 +172,7 @@ const MAX_FOCUSED_REQUIREMENT_TESTS = 6;
 const MAX_CHANGED_FILE_QUEUE = 8;
 const MAX_FEEDBACK_EFFECTS = 12;
 const MAX_MISSING_TEAM_POLICY_QUESTION_EFFECTS = 3;
+const INTENT_MISMATCH_QUESTION_REASON = "The intent-mismatch surface found changed behavior or missing evidence that does not cleanly map to stated intent.";
 const FEEDBACK_ACTION_DOWNGRADE_TO_LOW = "downgrade_to_low";
 const FEEDBACK_ACTION_RETAIN_LOW_PRIORITY = "retain_low_priority";
 const FEEDBACK_ACTION_PRIORITIZE_REVIEW_FOCUS = "prioritize_review_focus";
@@ -976,18 +977,15 @@ function possibleMismatchDrafts(input: BuildHumanReviewInput, focus: IntentMisma
   const candidates = input.packet.evaluation.results
     .filter((result) => result.status === "missing" || result.status === "partial" || result.status === "unknown" || result.status === "invalid_evidence")
     .sort((left, right) => mismatchStatusRank(left.status) - mismatchStatusRank(right.status) || compareStrings(requirementComparisonKey(left), requirementComparisonKey(right)));
-  const exactResults = candidates.filter((result) => requirementResultKeys(result).some((key) => focus.exactRequirementKeys.has(key)));
-  const strictResults = candidates.filter((result) => intentMismatchResultIsStrictlyInFocus(result, focus));
-  const scopedResults = candidates.filter((result) => requirementResultKeys(result).some((key) => focus.scopedRequirementKeys.has(key)));
-  const results = exactResults.length > 0
-    ? exactResults
-    : strictResults.length > 0
-      ? strictResults
-      : scopedResults.length > 0
-        ? scopedResults
-        : input.prSurface
-          ? []
-          : candidates;
+  const focusedResults = candidates.filter((result) =>
+    intentMismatchResultIsStrictlyInFocus(result, focus) ||
+    requirementResultKeys(result).some((key) => focus.scopedRequirementKeys.has(key))
+  ).sort((left, right) => compareFocusedMismatch(left, right, focus));
+  const results = focusedResults.length > 0
+    ? focusedResults
+    : input.prSurface
+      ? []
+      : candidates;
 
   return results.slice(0, MAX_INTENT_MISMATCH_ITEMS).map((result) => {
     const evidence = requirementGapEvidence(result);
@@ -1129,10 +1127,10 @@ function diffAcidKeys(diff: StructuredDiff | undefined): Set<string> {
   for (const file of diff?.files ?? []) {
     for (const hunk of file.hunks) {
       for (const line of hunk.lines) {
-        if (line.kind !== "add") {
+        if (!isChangedDiffLine(line.kind)) {
           continue;
         }
-        for (const key of addedLineAcidKeys(line.text)) {
+        for (const key of changedLineAcidKeys(line.text)) {
           keys.add(key);
         }
       }
@@ -1147,10 +1145,10 @@ function diffAcidKeysByPath(diff: StructuredDiff | undefined): Map<string, Set<s
     const keys = new Set<string>();
     for (const hunk of file.hunks) {
       for (const line of hunk.lines) {
-        if (line.kind !== "add") {
+        if (!isChangedDiffLine(line.kind)) {
           continue;
         }
-        for (const key of addedLineAcidKeys(line.text)) {
+        for (const key of changedLineAcidKeys(line.text)) {
           keys.add(key);
         }
       }
@@ -1178,10 +1176,14 @@ function sortedDiffAcidKeysForFile(
   return [...keys].sort(compareStrings);
 }
 
-function addedLineAcidKeys(text: string): string[] {
+function changedLineAcidKeys(text: string): string[] {
   return [...text.matchAll(ACID_PATTERN)]
     .filter((match) => isWholeAcidToken(text, match.index ?? 0, match[0]))
     .map((match) => match[0]);
+}
+
+function isChangedDiffLine(kind: StructuredDiff["files"][number]["hunks"][number]["lines"][number]["kind"]): boolean {
+  return kind === "add" || kind === "delete";
 }
 
 function isSourceSpecFile(filePath: string): boolean {
@@ -1203,6 +1205,33 @@ function intentMismatchResultIsStrictlyInFocus(result: RequirementGap, focus: In
     requirementResultKeys(result).some((key) => focus.exactRequirementKeys.has(key)) ||
     [...(result.evidence ?? []), ...(result.missing_evidence ?? [])].some((ref) => ref.kind !== "spec" && ref.path && focus.changedPaths.has(normalizeEvidencePath(ref.path)))
   );
+}
+
+function compareFocusedMismatch(left: RequirementGap, right: RequirementGap, focus: IntentMismatchFocus): number {
+  return (
+    blockingMismatchRank(left.status) - blockingMismatchRank(right.status) ||
+    intentMismatchFocusRank(left, focus) - intentMismatchFocusRank(right, focus) ||
+    mismatchStatusRank(left.status) - mismatchStatusRank(right.status) ||
+    compareStrings(requirementComparisonKey(left), requirementComparisonKey(right))
+  );
+}
+
+function blockingMismatchRank(status: RequirementGap["status"]): number {
+  return status === "invalid_evidence" || status === "missing" ? 0 : 1;
+}
+
+function intentMismatchFocusRank(result: RequirementGap, focus: IntentMismatchFocus): number {
+  const keys = requirementResultKeys(result);
+  if (keys.some((key) => focus.exactRequirementKeys.has(key))) {
+    return 0;
+  }
+  if ([...(result.evidence ?? []), ...(result.missing_evidence ?? [])].some((ref) => ref.kind !== "spec" && ref.path && focus.changedPaths.has(normalizeEvidencePath(ref.path)))) {
+    return 1;
+  }
+  if (keys.some((key) => focus.scopedRequirementKeys.has(key))) {
+    return 2;
+  }
+  return 3;
 }
 
 function intentRequirementKeys(requirement: ReviewPacket["intent"]["requirements"][number]): string[] {
@@ -2813,7 +2842,7 @@ function buildQuestions(
       id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
       severity: questionSeverityForRisk(item.severity ?? "unknown"),
       question: `How should reviewers resolve this intent gap: ${item.summary}?`,
-      reason: "The intent-mismatch surface found changed behavior or missing evidence that does not cleanly map to stated intent.",
+      reason: INTENT_MISMATCH_QUESTION_REASON,
       evidence: item.evidence,
       maps_to_risks: [],
       maps_to_requirements: item.requirement_ids
@@ -2846,7 +2875,64 @@ function buildQuestions(
     });
   }
 
-  return dedupeQuestions(questions).slice(0, Math.min(MAX_QUESTIONS, config.max_questions));
+  return capQuestionsPreservingIntent(dedupeQuestions(questions), Math.min(MAX_QUESTIONS, config.max_questions));
+}
+
+function capQuestionsPreservingIntent(questions: ReviewerQuestion[], limit: number): ReviewerQuestion[] {
+  if (limit <= 0) {
+    return [];
+  }
+  if (questions.length <= limit) {
+    return renumberQuestions(questions);
+  }
+
+  const selected = questions.slice(0, limit);
+  const firstIntentQuestion = questions.find(isIntentMismatchQuestion);
+  if (!firstIntentQuestion || selected.some(isIntentMismatchQuestion)) {
+    return renumberQuestions(selected);
+  }
+
+  const intentRank = questionSeverityRank(firstIntentQuestion.severity);
+  const replacementIndex = findLastQuestionIndex(selected, (question) => questionSeverityRank(question.severity) <= intentRank);
+  if (replacementIndex < 0) {
+    return renumberQuestions(selected);
+  }
+
+  selected[replacementIndex] = firstIntentQuestion;
+  return renumberQuestions(dedupeQuestions(selected).slice(0, limit));
+}
+
+function isIntentMismatchQuestion(question: ReviewerQuestion): boolean {
+  return question.reason === INTENT_MISMATCH_QUESTION_REASON;
+}
+
+function findLastQuestionIndex(questions: ReviewerQuestion[], predicate: (question: ReviewerQuestion) => boolean): number {
+  for (let index = questions.length - 1; index >= 0; index -= 1) {
+    if (predicate(questions[index])) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function questionSeverityRank(severity: ReviewerQuestion["severity"]): number {
+  switch (severity) {
+    case "blocking":
+      return 3;
+    case "clarifying":
+      return 2;
+    case "optional":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function renumberQuestions(questions: ReviewerQuestion[]): ReviewerQuestion[] {
+  return questions.map((question, index) => ({
+    ...question,
+    id: `QUESTION-${String(index + 1).padStart(3, "0")}`
+  }));
 }
 
 function intentMismatchQuestionItems(intentMismatch: IntentMismatch, limit: number): IntentMismatchItem[] {
@@ -3960,7 +4046,7 @@ function hunkOverlapsRange(
 }
 
 function firstChangedHunk(diffFile: StructuredDiffFile): StructuredDiffHunk | undefined {
-  return diffFile.hunks.find((hunk) => hunk.lines.some((line) => line.kind === "add" || line.kind === "delete"));
+  return diffFile.hunks.find((hunk) => hunk.lines.some((line) => isChangedDiffLine(line.kind)));
 }
 
 function changedLineRange(hunk: StructuredDiffHunk, side: "old" | "new"): { line_start: number; line_end: number } | undefined {
