@@ -168,6 +168,33 @@ test("collector marks a diff file as working_tree when it is dirty after HEAD", 
   }
 });
 
+test("collector preserves added diff status when an added file is dirty after HEAD", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-dirty-add-"));
+  try {
+    const filePath = "src/feature.ts";
+    execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+    fs.writeFileSync(path.join(tmp, "README.md"), "# base\n");
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "base"], { cwd: tmp, stdio: "ignore" });
+    const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
+
+    fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, filePath), "export const value = 1;\n");
+    execFileSync("git", ["add", filePath], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "add feature"], { cwd: tmp, stdio: "ignore" });
+    fs.writeFileSync(path.join(tmp, filePath), "export const value = 2;\n");
+
+    const files = collectChangedFiles(tmp, base, "HEAD").files;
+    assert.deepEqual(
+      files.filter((file) => file.path === filePath).map((file) => ({ status: file.status, source: file.source })),
+      [{ status: "A", source: "working_tree" }],
+      "dirty edits to a range-added file must preserve the range-added status"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("collector marks a deleted diff file as working_tree when it is dirty after HEAD", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-deleted-diff-"));
   try {

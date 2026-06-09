@@ -22,6 +22,10 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeTestCommand("node --test dist/tests/pr-risks.test.js"), true);
   assert.equal(commandLooksLikeBroadTestCommand("node --test dist/tests/pr-risks.test.js"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("node --test dist/tests/pr-risks.test.js"), true);
+  assert.equal(commandLooksLikeTestCommand("node --test dist/tests/*.test.js"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("node --test dist/tests/*.test.js"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("node --test dist/tests/*.test.js"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("node --test --test-name-pattern risk dist/tests/*.test.js"), true);
   assert.equal(commandLooksLikeTestCommand("pnpm exec vitest src/risks"), true);
   assert.equal(commandLooksLikeBroadTestCommand("pnpm exec vitest src/risks"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm exec vitest src/risks"), true);
@@ -35,6 +39,14 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm -F api exec vitest"), true);
   assert.equal(commandLooksLikeTestCommand("yarn workspace api test"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("yarn workspace api test"), true);
+  assert.equal(commandLooksLikeTestCommand("npm run test -w api"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("npm run test -w api"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("npm run test -w api"), true);
+  assert.equal(commandLooksLikeTestCommand("npm test --workspace api"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("npm test --workspace api"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("npm test --workspace api"), true);
+  assert.equal(commandLooksLikeTestCommand("npm -w api test"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("npm -w api test"), true);
 
   assert.equal(commandLooksLikeTestCommand("pnpm run build"), false);
   assert.equal(commandLooksLikeBroadTestCommand("pnpm run build"), false);

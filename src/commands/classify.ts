@@ -1,3 +1,6 @@
+const FOCUSED_TEST_TARGET_PATTERN = /(?:^|\s)(?:(?:dist\/)?tests|test|src|lib|app|packages)\/\S+|(?:^|\s)\S+\.(?:test|spec)\.[cm]?[jt]sx?(?:\s|$)/;
+const TEST_NAME_FILTER_PATTERN = /(?:^|\s)(?:--test-name-pattern|--grep|-t)(?:=|\s)/;
+
 export function normalizeCommand(command: string): string {
   return command.trim().replace(/\s+/g, " ");
 }
@@ -10,12 +13,19 @@ export function commandLooksLikeTestCommand(command: string): boolean {
 
 export function commandLooksLikeFocusedTestCommand(command: string): boolean {
   const normalized = normalizeCommand(command);
+  const nodeTestFocused = nodeTestFocusClassification(normalized);
+  if (nodeTestFocused !== undefined) {
+    return nodeTestFocused;
+  }
   const parsedPackageCommand = parsedPackageManagerCommand(normalized);
   const packageCommandBody = parsedPackageCommand?.body ?? "";
   const testScriptAlias = packageCommandBody.match(/^(?:run\s+)?test:([\w.-]+)(?:\s|$)/)?.[1];
-  return (parsedPackageCommand?.hasFocusFilter === true && commandLooksLikeTestCommand(normalized))
+  const hasPackageFocusFilter = parsedPackageCommand?.hasFocusFilter === true
+    || packageCommandBodyHasFocusFilter(parsedPackageCommand);
+  return (hasPackageFocusFilter && commandLooksLikeTestCommand(normalized))
     || (testScriptAlias !== undefined && !looksLikeBroadTestScriptAlias(testScriptAlias))
-    || /(?:^|\s)(?:(?:dist\/)?tests|test|src|lib|app|packages)\/\S+|(?:^|\s)\S+\.(?:test|spec)\.[cm]?[jt]sx?(?:\s|$)|(?:--test-name-pattern|--grep|-t)(?:=|\s)/.test(normalized);
+    || hasFocusedTestTarget(normalized)
+    || hasTestNameFilter(normalized);
 }
 
 export function commandLooksLikeBroadTestCommand(command: string): boolean {
@@ -37,13 +47,15 @@ function looksLikeBroadTestScriptAlias(alias: string): boolean {
 }
 
 interface ParsedPackageManagerCommand {
+  manager: string;
   body: string;
   hasFocusFilter: boolean;
 }
 
 function parsedPackageManagerCommand(normalized: string): ParsedPackageManagerCommand | undefined {
   const tokens = normalized.split(" ").filter(Boolean);
-  if (!["pnpm", "npm", "yarn", "bun"].includes(tokens[0])) {
+  const manager = tokens[0];
+  if (!["pnpm", "npm", "yarn", "bun"].includes(manager)) {
     return undefined;
   }
 
@@ -63,26 +75,73 @@ function parsedPackageManagerCommand(normalized: string): ParsedPackageManagerCo
     if (!token.startsWith("-")) {
       break;
     }
-    if (packageManagerOptionIsFocusFilter(token)) {
+    if (packageManagerOptionIsFocusFilter(manager, token)) {
       hasFocusFilter = true;
     }
-    index += packageManagerOptionConsumesNext(token) ? 2 : 1;
+    index += packageManagerOptionConsumesNext(manager, token) ? 2 : 1;
   }
 
-  return { body: tokens.slice(index).join(" "), hasFocusFilter };
+  return { manager, body: tokens.slice(index).join(" "), hasFocusFilter };
 }
 
 function packageManagerBodyLooksLikeTest(body: string): boolean {
   return /^(?:(?:run\s+)?test(?::[\w.-]+)?|exec\s+(?:vitest|jest|tap|uvu))(?:\s|$)/.test(body);
 }
 
-function packageManagerOptionIsFocusFilter(option: string): boolean {
-  return /^(?:--filter(?:=|$)|-F(?:\S|$)|--workspace(?:=|$)|--scope(?:=|$))/.test(option);
-}
-
-function packageManagerOptionConsumesNext(option: string): boolean {
-  if (option.includes("=") || /^-F\S+/.test(option)) {
+function packageCommandBodyHasFocusFilter(parsed: ParsedPackageManagerCommand | undefined): boolean {
+  if (!parsed) {
     return false;
   }
-  return ["--filter", "-F", "--workspace", "--scope", "--cwd", "--prefix", "--dir", "-C", "--config", "--registry"].includes(option);
+  for (const token of parsed.body.split(" ").filter(Boolean)) {
+    if (token === "--") {
+      break;
+    }
+    if (packageManagerOptionIsFocusFilter(parsed.manager, token)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function packageManagerOptionIsFocusFilter(manager: string, option: string): boolean {
+  return /^(?:--filter(?:=|$)|-F(?:\S|$)|--workspace(?:=|$)|--scope(?:=|$))/.test(option)
+    || (manager === "npm" && /^(?:-w|-w=|-w\S)/.test(option));
+}
+
+function packageManagerOptionConsumesNext(manager: string, option: string): boolean {
+  if (option.includes("=") || /^-F\S+/.test(option) || (manager === "npm" && /^-w\S+/.test(option) && option !== "-w")) {
+    return false;
+  }
+  return ["--filter", "-F", "--workspace", "--scope", "--cwd", "--prefix", "--dir", "-C", "--config", "--registry"].includes(option)
+    || (manager === "npm" && option === "-w");
+}
+
+function nodeTestFocusClassification(normalized: string): boolean | undefined {
+  const match = normalized.match(/^node\s+--test(?:\s+(.*))?$/);
+  if (!match) {
+    return undefined;
+  }
+  const args = match[1]?.trim() ?? "";
+  if (!args) {
+    return false;
+  }
+  if (hasTestNameFilter(args)) {
+    return true;
+  }
+  const positionalArgs = args.split(" ").filter((token) => token !== "" && token !== "--" && !token.startsWith("-"));
+  if (positionalArgs.length === 0) {
+    return false;
+  }
+  if (positionalArgs.every((token) => token.includes("*"))) {
+    return false;
+  }
+  return hasFocusedTestTarget(args);
+}
+
+function hasFocusedTestTarget(value: string): boolean {
+  return FOCUSED_TEST_TARGET_PATTERN.test(value);
+}
+
+function hasTestNameFilter(value: string): boolean {
+  return TEST_NAME_FILTER_PATTERN.test(value);
 }
