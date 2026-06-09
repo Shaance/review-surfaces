@@ -79,3 +79,17 @@ test("configured review areas map review-area matcher tests to EVIDENCE", async 
     "tests/review-areas.test.ts should count as EVIDENCE validation evidence"
   );
 });
+
+test("configured review areas map methodology tests to METHODOLOGY", async () => {
+  const areas = await defaultReviewSurfacesAreas();
+  const matcher = createReviewAreaMatcher(areas);
+
+  assert.ok(
+    matcher.groupsForPath("tests/methodology.test.ts", { purpose: "review_surface" }).includes("METHODOLOGY"),
+    "tests/methodology.test.ts should count as METHODOLOGY changed-test review signal"
+  );
+  assert.ok(
+    matcher.groupsForPath("tests/methodology.test.ts", { purpose: "requirement_proof" }).includes("METHODOLOGY"),
+    "tests/methodology.test.ts should count as METHODOLOGY validation evidence"
+  );
+});

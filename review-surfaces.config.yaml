@@ -112,6 +112,7 @@ areas:
     pattern: log normalizer
     test_keywords:
       - method
+      - methodology
   - id: SUB-LLM
     name: Optional enrichment
     group_key: EVIDENCE
