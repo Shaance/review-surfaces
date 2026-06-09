@@ -51,6 +51,7 @@ function packetFixture(): ReviewPacket {
   packet.manifest = {
     ...packet.manifest,
     base_ref: "origin/main",
+    base_sha: "base123",
     head_ref: "HEAD",
     head_sha: "abc123"
   };
@@ -157,6 +158,7 @@ function prSurfaceFixture(): PrReviewSurfaceModel {
     blocked_reason: "llm_unavailable",
     scope: {
       base_ref: "origin/main",
+      base_sha: "base123",
       head_ref: "HEAD",
       head_sha: "abc123",
       diff_source: "range",
@@ -317,6 +319,7 @@ test("human review model is schema-valid and starts with deterministic readiness
 
   assert.equal(model.schema_version, "review-surfaces.human_review.v1");
   assert.equal(model.mode, "pr");
+  assert.equal(model.generated_from.base_sha, "base123");
   assert.equal(model.verdict.decision, "block_before_merge");
   assert.equal(model.blockers[0].id, "BLOCK-CI-SECRET-001");
   assert.equal(model.review_queue[0].path, ".github/workflows/pr-review-comment.yml");

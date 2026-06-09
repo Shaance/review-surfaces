@@ -131,6 +131,7 @@
         "packet_path": { "type": "string" },
         "pr_surface_path": { "type": "string" },
         "base_ref": { "type": "string" },
+        "base_sha": { "type": "string" },
         "head_ref": { "type": "string" },
         "head_sha": { "type": "string" },
         "human_review_config_signature": { "type": "string" }
