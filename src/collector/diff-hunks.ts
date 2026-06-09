@@ -466,3 +466,31 @@ function toInt(value: string | undefined): number | undefined {
   const n = Number.parseInt(value, 10);
   return Number.isFinite(n) ? n : undefined;
 }
+
+// ---------------------------------------------------------------------------
+// Hunk geometry helpers, shared by the human-review queue anchoring
+// (src/human/human-review.ts) and the inline hunk excerpt renderer
+// (src/human/hunk-excerpt.ts) so the header format and overlap math stay in one
+// place.
+// ---------------------------------------------------------------------------
+
+/** Reconstruct the `@@ -os,ol +ns,nl @@` header for a structured hunk. */
+export function formatHunkHeader(hunk: StructuredDiffHunk): string {
+  return `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@`;
+}
+
+/**
+ * True when the hunk's range on the given side overlaps the inclusive
+ * [lineStart, lineEnd] window. Counts below 1 are clamped to a single line.
+ */
+export function hunkOverlapsRange(
+  hunk: StructuredDiffHunk,
+  side: "old" | "new",
+  lineStart: number,
+  lineEnd: number
+): boolean {
+  const hunkStart = side === "old" ? hunk.old_start : hunk.new_start;
+  const hunkLines = side === "old" ? hunk.old_lines : hunk.new_lines;
+  const hunkEnd = hunkStart + Math.max(hunkLines, 1) - 1;
+  return hunkStart > 0 && hunkStart <= lineEnd && hunkEnd >= lineStart;
+}

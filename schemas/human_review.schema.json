@@ -14,8 +14,14 @@
     "questions",
     "suggested_comments",
     "trust_audit",
+    "risk_lens_findings",
+    "intent_mismatch",
+    "review_routes",
+    "since_last_review",
+    "evidence_cards",
     "test_plan",
     "skim_safe",
+    "feedback_effects",
     "generated_from"
   ],
   "properties": {

@@ -595,3 +595,57 @@ test("review-surfaces.CLI --verbose prints debug lines to stderr while a non-ver
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// review-surfaces.CLI.8 + review-surfaces.SCHEMA.3: validate --surface covers the
+// human and PR sidecars, and the strict human schema rejects stale partial
+// artifacts instead of degrading quietly.
+test("review-surfaces.CLI.8 validate --surface covers packet, human, and all surfaces", () => {
+  const tmp = setupComposeFixture("review-surfaces-validate-surface-");
+  try {
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
+    runStage(tmp, "all");
+
+    const out = ".review-surfaces";
+    const human = (args: string[]) => spawnSync("node", [CLI, ...args, "--out", out], { cwd: tmp, encoding: "utf8" });
+
+    assert.equal(human(["validate", "--surface", "packet"]).status, ExitCodes.success);
+    assert.equal(human(["validate", "--surface", "human"]).status, ExitCodes.success);
+    // PR sidecar is absent in repo mode: explicit --surface pr is a usage error,
+    // but --surface all skips the absent sidecar and still passes.
+    assert.equal(human(["validate", "--surface", "pr"]).status, ExitCodes.usageError);
+    assert.equal(human(["validate", "--surface", "all"]).status, ExitCodes.success);
+    // An unknown surface is a usage error.
+    assert.equal(human(["validate", "--surface", "bogus"]).status, ExitCodes.usageError);
+
+    // review-surfaces.SCHEMA.3: a stale partial human_review.json (missing a now
+    // required field) fails validation rather than degrading quietly.
+    const humanPath = path.join(tmp, out, "human_review.json");
+    const model = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    delete model.review_routes;
+    fs.writeFileSync(humanPath, JSON.stringify(model, null, 2));
+    const stale = human(["validate", "--surface", "human"]);
+    assert.equal(stale.status, ExitCodes.schemaValidationFailed, stale.stderr);
+    assert.match(stale.stderr, /review_routes/);
+    // --surface all also surfaces the human failure.
+    assert.equal(human(["validate", "--surface", "all"]).status, ExitCodes.schemaValidationFailed);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces.SCHEMA.3 (unit): the human schema requires every field the
+// current HumanReviewModel emits, so each is independently load-bearing.
+test("review-surfaces.SCHEMA.3 human schema requires all current model fields", () => {
+  const schema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "human_review.schema.json"), "utf8"));
+  for (const field of [
+    "risk_lens_findings",
+    "intent_mismatch",
+    "review_routes",
+    "since_last_review",
+    "evidence_cards",
+    "feedback_effects"
+  ]) {
+    assert.ok(schema.required.includes(field), `human schema must require ${field}`);
+  }
+});

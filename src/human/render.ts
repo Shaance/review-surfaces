@@ -2,6 +2,9 @@ import path from "node:path";
 import { writeJson, writeText } from "../core/files";
 import { EvidenceRef } from "../evidence/evidence";
 import { redactSecrets } from "../privacy/secrets";
+import { StructuredDiff } from "../pr/contract";
+import { renderHunkExcerpt } from "./hunk-excerpt";
+import { extractAcids, fillAcidTemplate, normalizeAcidTemplate, RollupGroup, rollupBy } from "./rollup";
 import { RISK_LENS_METADATA } from "./contract";
 import type {
   EvidenceCard,
@@ -9,12 +12,15 @@ import type {
   HumanReviewModel,
   IntentMismatch,
   IntentMismatchItem,
+  MissingEvidenceSummary,
+  ReviewerQuestion,
   ReviewQueueItem,
   ReviewRoute,
   ReviewRouteStep,
   RiskLensFinding,
   SinceLastReview,
   SinceLastReviewItem,
+  SuggestedCommentSeverity,
   SuggestedReviewComment,
   TestPlanItem,
   TrustAudit
@@ -35,6 +41,14 @@ const MAX_RISK_LENSES = 6;
 const MAX_SINCE_LAST_REVIEW = 5;
 const MAX_REVIEW_ROUTES = 5;
 const MAX_ROUTE_STEPS = 5;
+
+// review-surfaces.HUMAN_REVIEW.20: render-time inputs sourced from collected
+// diff artifacts (never from the human_review.json model itself), used to inline
+// bounded hunk excerpts. Optional so standalone re-renders without a diff still
+// work (they simply omit the excerpt).
+export interface HumanRenderContext {
+  diff?: StructuredDiff;
+}
 
 export const HUMAN_STANDALONE_ARTIFACTS = [
   {
@@ -111,23 +125,28 @@ export function humanStandaloneArtifactForCommand(command: string): HumanStandal
   return HUMAN_STANDALONE_ARTIFACTS.find((artifact) => artifact.command === command);
 }
 
-export async function writeHumanReviewArtifacts(outputDir: string, model: HumanReviewModel): Promise<void> {
+export async function writeHumanReviewArtifacts(
+  outputDir: string,
+  model: HumanReviewModel,
+  context: HumanRenderContext = {}
+): Promise<void> {
   await writeJson(path.join(outputDir, "human_review.json"), model);
-  await writeText(path.join(outputDir, "human_review.md"), renderHumanReviewMarkdown(model));
+  await writeText(path.join(outputDir, "human_review.md"), renderHumanReviewMarkdown(model, context));
   for (const artifact of HUMAN_STANDALONE_ARTIFACTS) {
-    await writeHumanStandaloneArtifact(outputDir, model, artifact);
+    await writeHumanStandaloneArtifact(outputDir, model, artifact, context);
   }
 }
 
 export async function writeHumanStandaloneArtifact(
   outputDir: string,
   model: HumanReviewModel,
-  artifact: HumanStandaloneArtifact
+  artifact: HumanStandaloneArtifact,
+  context: HumanRenderContext = {}
 ): Promise<void> {
-  await writeText(path.join(outputDir, artifact.artifact), artifact.render(model));
+  await writeText(path.join(outputDir, artifact.artifact), artifact.render(model, context));
 }
 
-export function renderHumanReviewMarkdown(model: HumanReviewModel): string {
+export function renderHumanReviewMarkdown(model: HumanReviewModel, context: HumanRenderContext = {}): string {
   return `# Human Review
 
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
@@ -141,11 +160,11 @@ ${field(model.summary, MAX_SUMMARY_CHARS)}
 Confidence: ${model.verdict.confidence}.
 
 Reasons:
-${bullets(model.verdict.reasons.slice(0, MAX_BLOCKERS).map((reason) => `${reason.id} [${reason.severity}]: ${reason.summary}${reason.required_action ? ` Required action: ${reason.required_action}` : ""}`), "No readiness reasons recorded.")}
+${bullets(model.verdict.reasons.slice(0, MAX_BLOCKERS).map((reason) => `${reason.summary}${reason.required_action ? ` Required action: ${reason.required_action}` : ""} (${reason.id}; ${reason.severity})`), "No readiness reasons recorded.")}
 
 ## Review first
 
-${renderReviewFirst(model.review_queue.slice(0, MAX_REVIEW_FIRST))}
+${renderReviewFirst(model.review_queue.slice(0, MAX_REVIEW_FIRST), context)}
 
 ## Review routes
 
@@ -153,7 +172,7 @@ ${renderReviewRoutesSummary(reviewRoutes(model).slice(0, MAX_REVIEW_ROUTES))}
 
 ## Evidence cards
 
-${renderEvidenceCardsSummary(evidenceCards(model).slice(0, MAX_EVIDENCE_CARDS))}
+${renderEvidenceCardsRollupSummary(evidenceCards(model).slice(0, MAX_EVIDENCE_CARDS))}
 
 ## Blockers
 
@@ -169,7 +188,7 @@ ${renderIntentMismatchSummary(intentMismatch(model))}
 
 ## Questions for author
 
-${numbered(model.questions.slice(0, MAX_QUESTIONS).map((question) => `${question.question} (${question.severity}; evidence: ${evidenceList(question.evidence)})`), "No reviewer questions generated.")}
+${renderQuestionRollups(model.questions.slice(0, MAX_QUESTIONS))}
 
 ## Trust audit
 
@@ -182,7 +201,7 @@ Claimed but not verified:
 ${bullets(unverifiedTrustClaims(model.trust_audit).slice(0, MAX_TRUST).map((claim) => `${claim.claim} Missing: ${claim.missing_evidence}`), "No unverified claims recorded.")}
 
 Missing:
-${bullets(missingTrustEvidence(model.trust_audit).slice(0, MAX_TRUST).map((item) => `${item.summary} Evidence: ${evidenceList(item.evidence)}`), "No missing evidence recorded.")}
+${renderTrustMissingRollups(missingTrustEvidence(model.trust_audit), MAX_TRUST)}
 
 Invalid:
 ${bullets(invalidTrustEvidence(model.trust_audit).slice(0, MAX_TRUST).map((item) => `${item.summary} Evidence: ${evidenceList(item.evidence)}`), "None recorded.")}
@@ -193,7 +212,7 @@ ${renderRiskLenses(riskLensFindings(model).slice(0, MAX_RISK_LENSES))}
 
 ## Test plan
 
-${renderTestPlan(model.test_plan.slice(0, MAX_TEST_PLAN))}
+${renderTestPlanRollups(model.test_plan.slice(0, MAX_TEST_PLAN))}
 
 ## Suggested comments
 
@@ -213,16 +232,16 @@ ${bullets(evidencePointers(model), "No evidence pointers recorded.")}
 `;
 }
 
-export function renderReviewQueueMarkdown(model: HumanReviewModel): string {
+export function renderReviewQueueMarkdown(model: HumanReviewModel, context: HumanRenderContext = {}): string {
   return `# Review Queue
 
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
 
-${model.review_queue.length === 0 ? "- No path-backed review queue items generated." : model.review_queue.map(renderQueueDetail).join("\n\n---\n\n")}
+${model.review_queue.length === 0 ? "- No path-backed review queue items generated." : model.review_queue.map((item) => renderQueueDetail(item, context)).join("\n\n---\n\n")}
 `;
 }
 
-export function renderSuggestedCommentsMarkdown(model: HumanReviewModel): string {
+export function renderSuggestedCommentsMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
   const groups: Array<[string, SuggestedReviewComment["severity"]]> = [
     ["Blocking", "blocking"],
     ["Clarifying", "clarifying"],
@@ -238,7 +257,7 @@ ${renderSuggestedComments(model.suggested_comments.filter((item) => item.severit
 `;
 }
 
-export function renderTrustAuditMarkdown(model: HumanReviewModel): string {
+export function renderTrustAuditMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
   return `# Trust Audit
 
 ## Confidence summary
@@ -249,7 +268,7 @@ ${renderTrustAuditSections(model.trust_audit, Number.POSITIVE_INFINITY)}
 `;
 }
 
-export function renderRiskLensesMarkdown(model: HumanReviewModel): string {
+export function renderRiskLensesMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
   return `# Risk Lenses
 
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
@@ -258,7 +277,7 @@ ${riskLensFindings(model).length === 0 ? "- No domain risk lenses fired." : risk
 `;
 }
 
-export function renderIntentMismatchMarkdown(model: HumanReviewModel): string {
+export function renderIntentMismatchMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
   const intent = intentMismatch(model);
   return `# Intent Mismatch
 
@@ -286,7 +305,7 @@ ${renderIntentMismatchItems(intent.missing_intent)}
 `;
 }
 
-export function renderReviewRoutesMarkdown(model: HumanReviewModel): string {
+export function renderReviewRoutesMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
   const routes = reviewRoutes(model);
   return `# Review Routes
 
@@ -296,7 +315,7 @@ ${routes.length === 0 ? "- This human review JSON was generated before review-ro
 `;
 }
 
-export function renderEvidenceCardsMarkdown(model: HumanReviewModel): string {
+export function renderEvidenceCardsMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
   const cards = evidenceCards(model);
   return `# Evidence Cards
 
@@ -306,7 +325,7 @@ ${cards.length === 0 ? "- This human review JSON was generated before evidence-c
 `;
 }
 
-export function renderSinceLastReviewMarkdown(model: HumanReviewModel): string {
+export function renderSinceLastReviewMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
   const since = sinceLastReview(model);
   return `# Since Last Review
 
@@ -348,7 +367,7 @@ ${renderSinceLastReviewCountDeltas(since)}
 `;
 }
 
-export function renderTestPlanMarkdown(model: HumanReviewModel): string {
+export function renderTestPlanMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
   const groups: Array<[string, TestPlanItem["priority"]]> = [
     ["Required", "required"],
     ["Recommended", "recommended"],
@@ -368,8 +387,10 @@ function renderRiskLenses(findings: RiskLensFinding[]): string {
   if (findings.length === 0) {
     return "- No domain risk lenses fired.";
   }
+  // review-surfaces.HUMAN_REVIEW.21: lead with the concern and reviewer action;
+  // lens/severity/id trail as metadata.
   return bullets(
-    findings.map((finding) => `${finding.id} [${finding.lens}; ${finding.severity}]: ${finding.summary} Action: ${finding.reviewer_action} Evidence: ${evidenceList(finding.evidence)}`),
+    findings.map((finding) => `${finding.summary} Action: ${finding.reviewer_action} Evidence: ${evidenceList(finding.evidence)} (${finding.id}; ${RISK_LENS_METADATA[finding.lens].label}; ${finding.severity})`),
     "No domain risk lenses fired."
   );
 }
@@ -378,7 +399,7 @@ function renderRiskLensDetail(finding: RiskLensFinding): string {
   const paths = finding.paths.length ? finding.paths.map((filePath) => `\`${field(filePath)}\``).join(", ") : "none";
   const risks = finding.risk_ids.length ? finding.risk_ids.map((id) => `\`${field(id)}\``).join(", ") : "none";
   const requirements = finding.requirement_ids.length ? finding.requirement_ids.map((id) => `\`${field(id)}\``).join(", ") : "none";
-  return `## ${field(finding.id)} - ${field(RISK_LENS_METADATA[finding.lens].label)}
+  return `## ${field(RISK_LENS_METADATA[finding.lens].label)} (${field(finding.id)})
 
 Severity: ${finding.severity}
 Confidence: ${finding.confidence}
@@ -513,16 +534,6 @@ function routeStepLinks(step: ReviewRouteStep): string {
   return rendered.length ? rendered.join("; ") : "none";
 }
 
-function renderEvidenceCardsSummary(cards: EvidenceCard[]): string {
-  if (cards.length === 0) {
-    return "- This human review JSON was generated before evidence-card support.";
-  }
-  return bullets(
-    cards.map((card) => `${card.id} [${evidenceCardStatusLabel(card.status)}; ${card.priority}]: ${card.summary} Action: ${card.reviewer_action} Evidence: direct ${card.direct_evidence.length}, missing ${card.missing_evidence.length}, invalid ${card.invalid_evidence.length}.`),
-    "No evidence cards generated."
-  );
-}
-
 function renderEvidenceCardDetail(card: EvidenceCard): string {
   const sources = idList(card.source_ids);
   const risks = idList(card.risk_ids);
@@ -627,7 +638,8 @@ function renderSinceLastReviewItems(items: SinceLastReviewItem[]): string {
       const status = formatSinceLastReviewStatus(item);
       const pathPart = item.path ? ` Path: \`${field(item.path)}\`.` : "";
       const severity = item.severity ? ` Severity: ${item.severity}.` : "";
-      return `${item.id} [${item.category}]: ${item.summary}${status}${pathPart}${severity} Evidence: ${evidenceList(item.evidence)}`;
+      // review-surfaces.HUMAN_REVIEW.21: lead with the item summary; id/category trail.
+      return `${item.summary}${status}${pathPart}${severity} Evidence: ${evidenceList(item.evidence)} (${item.id}; ${item.category})`;
     }),
     "None recorded."
   );
@@ -664,27 +676,59 @@ function formatSignedDelta(value: number): string {
   return value > 0 ? `+${value}` : String(value);
 }
 
-function renderReviewFirst(items: ReviewQueueItem[]): string {
+function renderReviewFirst(items: ReviewQueueItem[], context: HumanRenderContext = {}): string {
   if (items.length === 0) {
     return "- No path-backed review queue items generated.";
   }
   return items
     .map((item) => {
       const location = formatQueueLocation(item);
+      const excerpt = inlineHunkExcerpt(item, context);
       return `${item.rank}. \`${field(location)}\`
-${item.hunk_header ? `   - Hunk: \`${field(item.hunk_header)}\`\n` : ""}   - Action: ${field(item.reviewer_action)}
-   - Why ranked: ${field(item.reason)}
+${item.hunk_header ? `   - Hunk: \`${field(item.hunk_header)}\`\n` : ""}   - Why it matters: ${field(item.reason)}
+   - Action: ${field(item.reviewer_action)}${excerpt ? `\n${excerpt}` : ""}
    - Risk: ${item.risk_ids.map((risk) => `\`${field(risk)}\``).join(", ") || "none"}
    - Evidence: ${evidenceList(item.evidence)}`;
     })
     .join("\n\n");
 }
 
-function renderQueueDetail(item: ReviewQueueItem): string {
+// review-surfaces.HUMAN_REVIEW.20: render a bounded, indented fenced diff
+// excerpt for a queue item that carries hunk/line anchors. Returns "" when no
+// diff context or no matching hunk is available so the queue item degrades to
+// its anchor metadata.
+function inlineHunkExcerpt(item: ReviewQueueItem, context: HumanRenderContext): string {
+  const excerpt = renderHunkExcerpt(context.diff, {
+    path: item.path,
+    old_path: item.old_path,
+    hunk_header: item.hunk_header,
+    line_start: item.line_start,
+    line_end: item.line_end
+  });
+  if (!excerpt) {
+    return "";
+  }
+  // Indent the fenced block under the queue list item so it nests visually.
+  return excerpt
+    .split("\n")
+    .map((line) => `   ${line}`)
+    .join("\n");
+}
+
+function renderQueueDetail(item: ReviewQueueItem, context: HumanRenderContext = {}): string {
   const location = formatQueueLocation(item);
   const requirements = item.requirement_ids.map((id) => `\`${field(id)}\``).join(", ") || "none";
   const risks = item.risk_ids.map((id) => `\`${field(id)}\``).join(", ") || "none";
-  return `## ${field(item.id)} - ${field(item.title)}
+  const excerpt = renderHunkExcerpt(context.diff, {
+    path: item.path,
+    old_path: item.old_path,
+    hunk_header: item.hunk_header,
+    line_start: item.line_start,
+    line_end: item.line_end
+  });
+  // review-surfaces.HUMAN_REVIEW.21: lead the heading with the changed file and
+  // observable behavior; the queue id trails as metadata.
+  return `## ${field(item.title)} — \`${field(location)}\` (${field(item.id)})
 
 Priority: ${item.priority}
 Confidence: ${item.confidence}
@@ -696,7 +740,7 @@ ${field(item.reason, 1000)}
 
 Reviewer action:
 ${field(item.reviewer_action, 1000)}
-
+${excerpt ? `\n${excerpt}\n` : ""}
 Evidence:
 ${evidenceBullets(item.evidence, MAX_STANDALONE_EVIDENCE)}
 
@@ -718,11 +762,13 @@ function renderFeedbackEffects(effects: FeedbackPolicyEffect[]): string {
   if (effects.length === 0) {
     return "- No reviewer feedback policy effects applied.";
   }
+  // review-surfaces.HUMAN_REVIEW.21: lead with the effect summary and action;
+  // the effect id and kind trail as metadata.
   return bullets(
     effects.slice(0, 8).map((effect) => {
       const paths = effect.paths.length ? ` Paths: ${effect.paths.map((filePath) => `\`${field(filePath)}\``).join(", ")}.` : "";
       const risks = effect.risk_ids.length ? ` Risks: ${effect.risk_ids.map((id) => `\`${field(id)}\``).join(", ")}.` : "";
-      return `${effect.id} [${effect.kind}]: ${effect.summary} Action: ${effect.action}.${paths}${risks} Evidence: ${evidenceList(effect.evidence)}`;
+      return `${effect.summary} Action: ${effect.action}.${paths}${risks} Evidence: ${evidenceList(effect.evidence)} (${effect.id}; ${effect.kind})`;
     }),
     "No reviewer feedback policy effects applied."
   );
@@ -736,9 +782,10 @@ function renderTestPlan(items: TestPlanItem[]): string {
     .map((item) => {
       const file = item.suggested_file ? `\n- Suggested file: \`${field(item.suggested_file)}\`` : "";
       const command = item.command ? `\n- Command: \`${field(item.command)}\`` : "";
-      return `### ${field(item.id)} — ${item.kind} (${item.priority})
+      // review-surfaces.HUMAN_REVIEW.21: lead with the scenario (the concrete
+      // test to add); kind/priority/id trail as metadata.
+      return `### ${field(item.scenario)} — ${item.kind} (${item.priority}; ${field(item.id)})
 
-- Scenario: ${field(item.scenario)}
 - Expected: ${field(item.expected_result)}${file}${command}
 - Evidence gap: ${field(item.evidence_gap)}`;
     })
@@ -752,7 +799,9 @@ function renderSuggestedComments(items: SuggestedReviewComment[]): string {
   return items
     .map((item) => {
       const pathLine = item.path ? `\nPath: \`${field(item.path)}\`\n` : "\n";
-      return `### ${field(item.id)} — ${item.severity}${pathLine}
+      // review-surfaces.HUMAN_REVIEW.21: lead with the comment severity (and
+      // path when present); the SC id trails as metadata.
+      return `### ${suggestedCommentSeverityLabel(item.severity)} comment${item.path ? ` on \`${field(item.path)}\`` : ""} (${field(item.id)})${pathLine}
 > ${field(item.body, 800)}
 
 Evidence: ${evidenceList(item.evidence)}
@@ -760,6 +809,146 @@ Evidence: ${evidenceList(item.evidence)}
 Ready to post: ${item.ready_to_post ? "yes" : "no"}.`;
     })
     .join("\n\n");
+}
+
+// ---------------------------------------------------------------------------
+// review-surfaces.HUMAN_REVIEW.19: rollups for the default human_review.md
+// surface. Items that are identical modulo Acai ID render once, listing the
+// affected ACIDs. The JSON model and standalone artifacts keep per-item detail;
+// only this entrypoint surface aggregates so a reviewer is not shown the same
+// templated sentence per requirement.
+// ---------------------------------------------------------------------------
+
+function renderTestPlanRollups(items: TestPlanItem[]): string {
+  if (items.length === 0) {
+    return "- No concrete test-plan items generated.";
+  }
+  const groups = rollupBy(
+    items,
+    (item) =>
+      [
+        item.kind,
+        item.priority,
+        normalizeAcidTemplate(item.scenario),
+        normalizeAcidTemplate(item.expected_result),
+        item.suggested_file ?? "",
+        normalizeAcidTemplate(item.command ?? ""),
+        normalizeAcidTemplate(item.evidence_gap)
+      ].join("|"),
+    (item) => rollupAcids(item.maps_to_requirements, item.scenario, item.evidence_gap)
+  );
+  return groups.map(renderTestPlanRollup).join("\n\n");
+}
+
+function renderTestPlanRollup(group: RollupGroup<TestPlanItem>): string {
+  const rep = group.representative;
+  const scenario = fillAcidTemplate(normalizeAcidTemplate(rep.scenario), group.acids);
+  const expected = fillAcidTemplate(normalizeAcidTemplate(rep.expected_result), group.acids);
+  // Lead with the evidence gap (the distinguishing reason this test is needed)
+  // so near-identical scenarios do not render as repeated headings; the generic
+  // scenario action moves to a bullet. review-surfaces.HUMAN_REVIEW.19/.21.
+  const gap = fillAcidTemplate(normalizeAcidTemplate(rep.evidence_gap), group.acids);
+  const file = rep.suggested_file ? `\n- Suggested file: \`${field(rep.suggested_file)}\`` : "";
+  const command = rep.command ? `\n- Command: \`${field(rep.command)}\`` : "";
+  const requirements = group.acids.length
+    ? `\n- Requirements (${group.acids.length}): ${group.acids.map((acid) => `\`${field(acid)}\``).join(", ")}`
+    : "";
+  const ids = group.items.map((item) => `\`${field(item.id)}\``).join(", ");
+  return `### ${field(gap)} — ${rep.kind} (${rep.priority})${requirements}
+- Add test: ${field(scenario)}
+- Expected: ${field(expected)}${file}${command}
+- Items: ${ids}`;
+}
+
+function renderQuestionRollups(questions: ReviewerQuestion[]): string {
+  if (questions.length === 0) {
+    return "- No reviewer questions generated.";
+  }
+  const groups = rollupBy(
+    questions,
+    (question) => `${question.severity}|${normalizeAcidTemplate(question.question)}`,
+    (question) => rollupAcids(question.maps_to_requirements, question.question)
+  );
+  return groups
+    .map((group, index) => {
+      const text = fillAcidTemplate(normalizeAcidTemplate(group.representative.question), group.acids);
+      const requirements = group.acids.length ? `; requirements: ${group.acids.map((acid) => `\`${field(acid)}\``).join(", ")}` : "";
+      const count = group.items.length > 1 ? `; ${group.items.length} questions` : "";
+      return `${index + 1}. ${field(text)} (${group.representative.severity}${requirements}${count})`;
+    })
+    .join("\n");
+}
+
+function renderEvidenceCardsRollupSummary(cards: EvidenceCard[]): string {
+  if (cards.length === 0) {
+    return "- This human review JSON was generated before evidence-card support.";
+  }
+  const groups = rollupBy(
+    cards,
+    (card) => `${card.status}|${card.priority}|${normalizeAcidTemplate(card.summary)}|${normalizeAcidTemplate(card.reviewer_action)}`,
+    (card) => rollupAcids(card.requirement_ids, card.summary)
+  );
+  return bullets(
+    groups.map((group) => {
+      const card = group.representative;
+      const summary = fillAcidTemplate(normalizeAcidTemplate(card.summary), group.acids);
+      const action = fillAcidTemplate(normalizeAcidTemplate(card.reviewer_action), group.acids);
+      const requirements = group.acids.length ? ` Requirements: ${group.acids.map((acid) => `\`${field(acid)}\``).join(", ")}.` : "";
+      const ids = group.items.map((item) => `\`${field(item.id)}\``).join(", ");
+      return `${endSentence(summary)} Action: ${endSentence(action)}${requirements} [${evidenceCardStatusLabel(card.status)}; ${card.priority}] (${ids})`;
+    }),
+    "No evidence cards generated."
+  );
+}
+
+function renderTrustMissingRollups(items: MissingEvidenceSummary[], limit: number): string {
+  if (items.length === 0) {
+    return "- No missing evidence recorded.";
+  }
+  const groups = rollupBy(
+    items,
+    (item) => normalizeAcidTemplate(item.summary),
+    (item) => rollupAcids([], item.summary)
+  );
+  return bullets(
+    groups.slice(0, limit).map((group) => {
+      const summary = fillAcidTemplate(normalizeAcidTemplate(group.representative.summary), group.acids);
+      const count = group.items.length > 1 ? ` (${group.items.length} requirements)` : "";
+      return `${summary}${count} Evidence: ${evidenceList(group.representative.evidence)}`;
+    }),
+    "No missing evidence recorded."
+  );
+}
+
+// Union of explicitly mapped requirement IDs and any ACIDs embedded in the
+// item's templated text, so a rollup lists every affected requirement even when
+// the mapping array is sparse.
+// Normalize a clause to end with exactly one sentence terminator so concatenated
+// "summary. Action: action." prose never doubles a period.
+function endSentence(text: string): string {
+  const trimmed = text.replace(/[\s.]+$/, "");
+  return trimmed.length === 0 ? "" : `${trimmed}.`;
+}
+
+function rollupAcids(mapped: string[], ...texts: string[]): string[] {
+  const acids = new Set<string>(mapped);
+  for (const text of texts) {
+    for (const acid of extractAcids(text)) {
+      acids.add(acid);
+    }
+  }
+  return [...acids];
+}
+
+function suggestedCommentSeverityLabel(severity: SuggestedCommentSeverity): string {
+  switch (severity) {
+    case "blocking":
+      return "Blocking";
+    case "clarifying":
+      return "Clarifying";
+    case "non_blocking":
+      return "Non-blocking";
+  }
 }
 
 function renderTrustAuditSections(audit: TrustAudit, limit: number): string {
@@ -841,10 +1030,6 @@ function formatEvidenceRef(ref: EvidenceRef): string {
 
 function bullets(items: string[], emptyText: string): string {
   return items.length ? items.map((item) => `- ${field(item, 900)}`).join("\n") : `- ${emptyText}`;
-}
-
-function numbered(items: string[], emptyText: string): string {
-  return items.length ? items.map((item, index) => `${index + 1}. ${field(item, 900)}`).join("\n") : `- ${emptyText}`;
 }
 
 function evidencePointers(model: HumanReviewModel): string[] {

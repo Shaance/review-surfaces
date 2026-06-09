@@ -1,0 +1,310 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { fileEvidence, missingEvidence } from "../src/evidence/evidence";
+import { parseStructuredDiff } from "../src/collector/diff-hunks";
+import { renderHunkExcerpt, DEFAULT_HUNK_EXCERPT_MAX_LINES } from "../src/human/hunk-excerpt";
+import {
+  extractAcids,
+  fillAcidTemplate,
+  leadsWithInternalId,
+  normalizeAcidTemplate,
+  rollupBy
+} from "../src/human/rollup";
+import { renderHumanReviewMarkdown, renderReviewQueueMarkdown } from "../src/human/render";
+import type {
+  HumanReviewModel,
+  ReviewQueueItem,
+  TestPlanItem
+} from "../src/human/contract";
+import { HUMAN_REVIEW_SCHEMA_VERSION } from "../src/human/contract";
+
+// ---------------------------------------------------------------------------
+// review-surfaces.HUMAN_REVIEW.19 / .20 / .21 — density, inline hunks, and
+// reviewer-language rendering.
+// ---------------------------------------------------------------------------
+
+function baseModel(overrides: Partial<HumanReviewModel>): HumanReviewModel {
+  return {
+    schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
+    mode: "repo",
+    verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
+    summary: "Density fixture.",
+    review_queue: [],
+    blockers: [],
+    questions: [],
+    suggested_comments: [],
+    trust_audit: {
+      verified_facts: [],
+      claimed_not_verified: [],
+      missing_evidence: [],
+      invalid_evidence: [],
+      confidence_summary: "Medium confidence fixture."
+    },
+    risk_lens_findings: [],
+    intent_mismatch: {
+      expected_by_spec: [],
+      observed_in_diff: [],
+      possible_mismatches: [],
+      possible_overreach: [],
+      missing_intent: []
+    },
+    review_routes: [],
+    since_last_review: {
+      unavailable_reason: "No previous packet.",
+      improved: [],
+      regressed: [],
+      new_risks: [],
+      resolved_risks: [],
+      new_overreach: [],
+      resolved_overreach: [],
+      still_open: [],
+      count_deltas: {
+        satisfied: { before: 0, after: 0, delta: 0 },
+        partial: { before: 0, after: 0, delta: 0 },
+        missing: { before: 0, after: 0, delta: 0 },
+        unknown: { before: 0, after: 0, delta: 0 },
+        invalid_evidence: { before: 0, after: 0, delta: 0 }
+      }
+    },
+    evidence_cards: [],
+    test_plan: [],
+    skim_safe: [],
+    feedback_effects: [],
+    generated_from: {
+      packet_path: ".review-surfaces/review_packet.json",
+      base_ref: "origin/main",
+      head_ref: "HEAD",
+      head_sha: "abc123"
+    },
+    ...overrides
+  };
+}
+
+function templatedTestItem(index: number, acid: string): TestPlanItem {
+  return {
+    id: `TEST-${String(index).padStart(3, "0")}`,
+    kind: "automatic",
+    priority: "recommended",
+    suggested_file: "tests/human-review.test.ts",
+    scenario: `Add a focused unit or fixture test tied to ${acid}.`,
+    expected_result: "The generated human review JSON and Markdown retain deterministic behavior for this requirement.",
+    command: "pnpm run test -- tests/human-review.test.ts",
+    maps_to_requirements: [acid],
+    maps_to_risks: [],
+    evidence_gap: "Test evidence exists, but implementation evidence is missing or weak."
+  };
+}
+
+// review-surfaces.HUMAN_REVIEW.19: N templated test-plan items that differ only
+// by ACID render as a single rollup listing all N ACIDs and item IDs.
+test("review-surfaces.HUMAN_REVIEW.19 rolls up templated test-plan items into one block", () => {
+  const acids = [
+    "review-surfaces.HUMAN_TRUST.1",
+    "review-surfaces.HUMAN_TRUST.2",
+    "review-surfaces.HUMAN_TRUST.3"
+  ];
+  const model = baseModel({
+    test_plan: acids.map((acid, i) => templatedTestItem(i + 1, acid))
+  });
+  const md = renderHumanReviewMarkdown(model);
+  const testPlanSection = md.split("## Test plan")[1].split("\n## ")[0];
+  // Exactly one rollup heading for the three identical-modulo-ACID items.
+  const headings = testPlanSection.match(/^### /gm) ?? [];
+  assert.equal(headings.length, 1, "three templated items must collapse to one rollup");
+  // All three ACIDs and all three item IDs are listed in the single block.
+  for (const acid of acids) {
+    assert.ok(testPlanSection.includes(acid), `rollup must list ${acid}`);
+  }
+  for (const id of ["TEST-001", "TEST-002", "TEST-003"]) {
+    assert.ok(testPlanSection.includes(id), `rollup must list ${id}`);
+  }
+  // The same sentence is not repeated once per ACID.
+  const sentenceCount = (testPlanSection.match(/Add a focused unit or fixture test/g) ?? []).length;
+  assert.equal(sentenceCount, 1, "templated sentence must appear once, not per-ACID");
+});
+
+// review-surfaces.HUMAN_REVIEW.20: a queue item with hunk/line anchors renders a
+// bounded fenced diff excerpt inline.
+test("review-surfaces.HUMAN_REVIEW.20 renders a bounded inline hunk excerpt for an anchored queue item", () => {
+  const diffText = [
+    "diff --git a/src/sample.ts b/src/sample.ts",
+    "--- a/src/sample.ts",
+    "+++ b/src/sample.ts",
+    "@@ -1,3 +1,4 @@",
+    " const a = 1;",
+    "-const b = 2;",
+    "+const b = 3;",
+    "+const c = 4;",
+    " const d = 5;",
+    ""
+  ].join("\n");
+  const diff = parseStructuredDiff(diffText);
+  const queueItem: ReviewQueueItem = {
+    id: "REVIEW-001",
+    rank: 1,
+    title: "Changed implementation file",
+    path: "src/sample.ts",
+    hunk_header: "@@ -1,3 +1,4 @@",
+    line_start: 2,
+    line_end: 3,
+    reviewer_action: "Inspect the changed lines.",
+    reason: "Modifies a constant other code depends on.",
+    evidence: [fileEvidence("src/sample.ts")],
+    requirement_ids: [],
+    risk_ids: ["RISK-001"],
+    confidence: "high",
+    priority: "medium"
+  };
+  const model = baseModel({ review_queue: [queueItem] });
+  const md = renderHumanReviewMarkdown(model, { diff });
+  assert.match(md, /```diff/, "anchored queue item must render a fenced diff excerpt");
+  assert.match(md, /\+const b = 3;/, "excerpt must contain the changed added line");
+  assert.match(md, /-const b = 2;/, "excerpt must contain the changed removed line");
+
+  // Without a diff context, the same queue item renders no excerpt (graceful).
+  const noExcerpt = renderHumanReviewMarkdown(model, {});
+  assert.doesNotMatch(noExcerpt, /```diff/);
+
+  // Standalone queue artifact also honors the excerpt.
+  const queueMd = renderReviewQueueMarkdown(model, { diff });
+  assert.match(queueMd, /```diff/);
+});
+
+test("review-surfaces.HUMAN_REVIEW.20 bounds the excerpt to the configured cap", () => {
+  const header = "@@ -1,40 +1,40 @@";
+  const body = Array.from({ length: 40 }, (_unused, i) => ` line ${i + 1}`);
+  body[20] = "+changed line";
+  const diffText = [
+    "diff --git a/src/big.ts b/src/big.ts",
+    "--- a/src/big.ts",
+    "+++ b/src/big.ts",
+    header,
+    ...body,
+    ""
+  ].join("\n");
+  const diff = parseStructuredDiff(diffText);
+  const excerpt = renderHunkExcerpt(diff, { path: "src/big.ts", hunk_header: header, line_start: 21, line_end: 21 });
+  assert.ok(excerpt, "excerpt should render");
+  const contentLines = excerpt!.split("\n").filter((line) => line !== "```diff" && line !== "```");
+  // Header line + bounded body + at most two elision markers.
+  assert.ok(
+    contentLines.length <= DEFAULT_HUNK_EXCERPT_MAX_LINES + 3,
+    `excerpt body must be bounded, got ${contentLines.length} lines`
+  );
+  assert.match(excerpt!, /elided/, "a long hunk must mark elided context");
+});
+
+// review-surfaces.HUMAN_REVIEW.21: no reviewer-facing line on the default human
+// surface leads with an internal identifier as its subject.
+test("review-surfaces.HUMAN_REVIEW.21 keeps internal identifiers out of the sentence subject", () => {
+  const model = baseModel({
+    verdict: {
+      decision: "needs_author_clarification",
+      confidence: "medium",
+      reasons: [
+        {
+          id: "READY-MISSING-EVIDENCE",
+          severity: "medium",
+          summary: "Required review evidence is missing or claimed without proof.",
+          evidence: [missingEvidence("No transcript")],
+          required_action: "Record validation evidence."
+        }
+      ]
+    },
+    evidence_cards: [
+      {
+        id: "CARD-001",
+        title: "Missing manual check",
+        status: "missing_evidence",
+        summary: "Missing manual review check for review-surfaces.BOOTSTRAP.1.",
+        direct_evidence: [],
+        missing_evidence: [missingEvidence("No evidence")],
+        invalid_evidence: [],
+        why_it_matters: "The check is required.",
+        reviewer_action: "Ask the author to provide the evidence.",
+        source_ids: [],
+        risk_ids: [],
+        requirement_ids: ["review-surfaces.BOOTSTRAP.1"],
+        confidence: "medium",
+        priority: "medium"
+      }
+    ],
+    feedback_effects: [
+      {
+        id: "FB-001",
+        kind: "false_positive",
+        summary: "Downgraded a noisy finding.",
+        action: "Lowered its review priority.",
+        evidence: [fileEvidence("feedback/local.yaml")],
+        paths: [],
+        risk_ids: ["RISK-002"],
+        confidence: "medium"
+      }
+    ]
+  });
+  const md = renderHumanReviewMarkdown(model);
+  const offenders = reviewerFacingViolations(md);
+  assert.deepEqual(offenders, [], `lines must not lead with an internal id: ${offenders.join(" | ")}`);
+});
+
+// Scan rendered markdown for reviewer-facing lines that lead with an internal
+// id, skipping fenced code blocks (diff excerpts legitimately start with +/-/@@).
+function reviewerFacingViolations(markdown: string): string[] {
+  const offenders: string[] = [];
+  let inFence = false;
+  for (const line of markdown.split("\n")) {
+    if (line.trim().startsWith("```")) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) {
+      continue;
+    }
+    if (leadsWithInternalId(line)) {
+      offenders.push(line);
+    }
+  }
+  return offenders;
+}
+
+// ---- rollup unit helpers --------------------------------------------------
+
+test("normalizeAcidTemplate and extractAcids handle prefixed and bare ACIDs", () => {
+  assert.deepEqual(extractAcids("close review-surfaces.HUMAN_TRUST.1 and BOOTSTRAP.4"), [
+    "review-surfaces.HUMAN_TRUST.1",
+    "BOOTSTRAP.4"
+  ]);
+  assert.equal(
+    normalizeAcidTemplate("Add a test tied to review-surfaces.HUMAN_TRUST.1."),
+    normalizeAcidTemplate("Add a test tied to review-surfaces.CLI.8.")
+  );
+});
+
+test("fillAcidTemplate inlines a single ACID and pluralizes a group", () => {
+  const template = normalizeAcidTemplate("Close review-surfaces.CLI.8 now.");
+  assert.equal(fillAcidTemplate(template, ["review-surfaces.CLI.8"]), "Close review-surfaces.CLI.8 now.");
+  assert.equal(fillAcidTemplate(template, ["a.B.1", "a.B.2"]), "Close the listed requirements now.");
+});
+
+test("rollupBy groups by template key and unions ACIDs in first-seen order", () => {
+  const items = [
+    { key: "x", acid: "a.A.1" },
+    { key: "y", acid: "a.B.1" },
+    { key: "x", acid: "a.A.2" }
+  ];
+  const groups = rollupBy(items, (item) => item.key, (item) => [item.acid]);
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups[0].acids, ["a.A.1", "a.A.2"]);
+  assert.equal(groups[0].items.length, 2);
+  assert.deepEqual(groups[1].acids, ["a.B.1"]);
+});
+
+test("leadsWithInternalId flags id-subject lines but not reviewer prose", () => {
+  assert.ok(leadsWithInternalId("- CARD-001 [missing]: foo"));
+  assert.ok(leadsWithInternalId("RISK-002: something"));
+  assert.ok(leadsWithInternalId("### review-surfaces.HUMAN_TRUST.1 needs a test"));
+  assert.ok(leadsWithInternalId("READY-MISSING-EVIDENCE [medium]: x"));
+  assert.ok(!leadsWithInternalId("- Missing manual review check for the listed requirements."));
+  assert.ok(!leadsWithInternalId("1. What evidence closes the requirement?"));
+  assert.ok(!leadsWithInternalId("Changed implementation file in src/cli."));
+});

@@ -3,6 +3,7 @@ import { commandLooksLikeLocalValidationCommand } from "../commands/classify";
 import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
+import { formatHunkHeader, hunkOverlapsRange } from "../collector/diff-hunks";
 import { comparisonRiskKey } from "../dogfood/compare";
 import { EvidenceRef, feedbackEvidence, fileEvidence, missingEvidence } from "../evidence/evidence";
 import { normalizeEvidencePath } from "../evidence/validate";
@@ -1726,7 +1727,10 @@ function buildReviewQueue(
       line_start: anchor.line_start,
       line_end: anchor.line_end,
       reviewer_action: risk.suggested_checks?.[0] ?? "Inspect the cited packet risk evidence.",
-      reason: `Ranked from whole-packet ${risk.severity} ${risk.category} risk ${risk.id}.`,
+      // review-surfaces.HUMAN_REVIEW.21: lead with the underlying reason (the
+      // risk summary), not "ranked from whole-packet <severity> <category> risk
+      // <id>". The risk id stays in risk_ids / trailing queue metadata.
+      reason: reviewerReasonFromSummary(risk.summary, `Changed file in a ${risk.category} risk area; inspect it before approving.`),
       evidence: evidenceOrMissing(risk.evidence ?? [], risk.summary),
       requirement_ids: requirementIds(risk.evidence ?? []),
       risk_ids: [risk.id],
@@ -1782,7 +1786,9 @@ function changedFileQueueDrafts(
         line_start: anchor.line_start,
         line_end: anchor.line_end,
         reviewer_action: actionForChangedFile(file),
-        reason: `No deterministic PR risk candidate fired; queued changed ${file.role} file in ${areas}.`,
+        // review-surfaces.HUMAN_REVIEW.21: lead with the changed file behavior,
+        // not the bookkeeping "no deterministic PR risk candidate fired".
+        reason: `Changed ${file.role} file in ${areas}; no risk rule fired, so scan it manually before approving.`,
         evidence: [evidence],
         requirement_ids: affectedRequirementIdsForFile(prSurface, file),
         risk_ids: [],
@@ -3869,8 +3875,21 @@ function titleForPrRisk(risk: PrRiskCandidate): string {
   return PR_RISK_RULE_METADATA[risk.rule].title;
 }
 
+// review-surfaces.HUMAN_REVIEW.21: the queue reason states the underlying reason
+// the change matters (the risk's own summary), not self-referential bookkeeping
+// ("ranked from deterministic PR risk rule X"). The rule id and severity already
+// surface as trailing queue metadata (Risk: `…`, priority), so they are not
+// repeated as the sentence subject here.
 function rankReasonForPrRisk(risk: PrRiskCandidate): string {
-  return `Ranked from deterministic PR risk rule ${risk.rule} with ${risk.severity} severity.`;
+  return reviewerReasonFromSummary(risk.summary, `Changed file flagged by the ${PR_RISK_RULE_METADATA[risk.rule].title.toLowerCase()} risk rule.`);
+}
+
+// Normalize a deterministic finding's summary into a reviewer-facing reason.
+// Falls back to a concrete default when the summary is empty so the rendered
+// "Why this matters" line is never blank.
+function reviewerReasonFromSummary(summary: string, fallback: string): string {
+  const trimmed = summary.trim();
+  return trimmed.length > 0 ? trimmed : fallback;
 }
 
 function titleFromSummary(summary: string): string {
@@ -4200,18 +4219,6 @@ function normalizedEvidenceRange(evidence: EvidenceRef): { line_start: number; l
   return { line_start: evidence.line_start, line_end: lineEnd };
 }
 
-function hunkOverlapsRange(
-  hunk: StructuredDiffHunk,
-  side: "old" | "new",
-  lineStart: number,
-  lineEnd: number
-): boolean {
-  const hunkStart = side === "old" ? hunk.old_start : hunk.new_start;
-  const hunkLines = side === "old" ? hunk.old_lines : hunk.new_lines;
-  const hunkEnd = hunkStart + Math.max(hunkLines, 1) - 1;
-  return hunkStart > 0 && hunkStart <= lineEnd && hunkEnd >= lineStart;
-}
-
 function firstChangedHunk(diffFile: StructuredDiffFile): StructuredDiffHunk | undefined {
   return diffFile.hunks.find((hunk) => hunk.lines.some((line) => isChangedDiffLine(line.kind)));
 }
@@ -4232,10 +4239,6 @@ function changedLineRange(hunk: StructuredDiffHunk, side: "old" | "new"): { line
     return undefined;
   }
   return { line_start: lineStart, line_end: lineEnd };
-}
-
-function formatHunkHeader(hunk: StructuredDiffHunk): string {
-  return `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@`;
 }
 
 function anchorPathForSide(diffFile: StructuredDiffFile, side: "old" | "new"): string {
