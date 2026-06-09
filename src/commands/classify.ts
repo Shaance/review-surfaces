@@ -136,12 +136,11 @@ function nodeTestFocusClassification(normalized: string): boolean | undefined {
   if (testArgs === undefined) {
     return undefined;
   }
+  if (hasTestNameFilter(normalized)) {
+    return true;
+  }
   if (testArgs.length === 0) {
     return false;
-  }
-  const args = testArgs.join(" ");
-  if (hasTestNameFilter(args)) {
-    return true;
   }
   const positionalArgs = nodeTestPositionalArgs(testArgs);
   if (positionalArgs.length === 0) {
@@ -223,6 +222,7 @@ function nodeOptionConsumesNext(option: string): boolean {
     "--test-concurrency",
     "--test-coverage-exclude",
     "--test-coverage-include",
+    "--test-name-pattern",
     "--test-reporter",
     "--test-reporter-destination",
     "--test-shard"
@@ -235,7 +235,7 @@ function cleanCommandToken(token: string): string {
 
 function nodeTestGlobLooksBroad(token: string): boolean {
   const normalized = cleanCommandToken(token).replace(/^\.\//, "");
-  return /^(?:dist\/)?tests\/(?:\*\*\/)?\*\.(?:test|spec)\.[cm]?[jt]sx?$/.test(normalized);
+  return /^(?:(?:dist\/)?tests\/(?:\*\*\/)?|(?:\*\*\/)?)\*\.(?:test|spec)\.[cm]?[jt]sx?$/.test(normalized);
 }
 
 function focusedTestTargetTokens(value: string): string[] {
@@ -244,8 +244,7 @@ function focusedTestTargetTokens(value: string): string[] {
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
     if (token === "--") {
-      targets.push(...tokens.slice(index + 1).map(cleanCommandToken));
-      break;
+      continue;
     }
     if (token.startsWith("-")) {
       if (runnerOptionConsumesNext(token)) {

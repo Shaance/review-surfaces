@@ -13,6 +13,9 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeTestCommand("pnpm run test:fast"), true);
   assert.equal(commandLooksLikeBroadTestCommand("pnpm run test:fast"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm run test:fast"), false);
+  assert.equal(commandLooksLikeTestCommand("pnpm run test -- --config tests/jest.config.js"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("pnpm run test -- --config tests/jest.config.js"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm run test -- --config tests/jest.config.js"), false);
   assert.equal(commandLooksLikeBroadTestCommand("pnpm run test:cov"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm run test:cov"), false);
   assert.equal(commandLooksLikeTestCommand("pnpm run test:privacy"), true);
@@ -32,7 +35,13 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeBroadTestCommand("node --experimental-test-coverage --test dist/tests/*.test.js"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("node --import=tsx --test tests/foo.test.ts"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("node --import tsx --test tests/foo.test.ts"), true);
+  assert.equal(commandLooksLikeTestCommand("node --test-name-pattern risk --test dist/tests/*.test.js"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("node --test-name-pattern risk --test dist/tests/*.test.js"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("node --test-name-pattern risk --test dist/tests/*.test.js"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("node --test --test-name-pattern risk dist/tests/*.test.js"), true);
+  assert.equal(commandLooksLikeTestCommand("node --test \"**/*.test.js\""), true);
+  assert.equal(commandLooksLikeBroadTestCommand("node --test \"**/*.test.js\""), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("node --test \"**/*.test.js\""), false);
   assert.equal(commandLooksLikeTestCommand("node --test --test-reporter-destination tests/results.tap"), true);
   assert.equal(commandLooksLikeBroadTestCommand("node --test --test-reporter-destination tests/results.tap"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("node --test --test-reporter-destination tests/results.tap"), false);
