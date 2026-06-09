@@ -464,6 +464,45 @@ test("risk lenses fire from changed paths even when no PR risk candidate fires",
   assert.ok(model.test_plan.some((item) => item.maps_to_risks.length === 0 && item.suggested_file === "tests/pr-narrative.test.ts"));
 });
 
+test("risk lenses classify renamed source paths as review signals", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files = [
+    {
+      path: "src/provider-impl.ts",
+      old_path: "src/llm/provider.ts",
+      status: "R",
+      areas: ["PROVIDERS"],
+      role: "implementation",
+      added_lines: 8,
+      deleted_lines: 8
+    },
+    {
+      path: "src/schema-output.ts",
+      old_path: "schemas/legacy-review.json",
+      status: "R",
+      areas: ["HUMAN_REVIEW"],
+      role: "implementation",
+      added_lines: 4,
+      deleted_lines: 4
+    }
+  ];
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface });
+  const llmLens = model.risk_lens_findings.find((finding) => finding.lens === "llm_trust_boundary");
+  const apiLens = model.risk_lens_findings.find((finding) => finding.lens === "api_contract");
+
+  assert.ok(llmLens);
+  assert.ok(llmLens.paths.includes("src/provider-impl.ts"));
+  assert.ok(llmLens.paths.includes("src/llm/provider.ts"));
+  assert.equal(llmLens.evidence[0]?.path, "src/provider-impl.ts");
+  assert.match(llmLens.evidence[0]?.note ?? "", /renamed from src\/llm\/provider\.ts/);
+
+  assert.ok(apiLens);
+  assert.ok(apiLens.paths.includes("src/schema-output.ts"));
+  assert.ok(apiLens.paths.includes("schemas/legacy-review.json"));
+});
+
 test("reviewer UX lens prefers renderer fixtures over schema fixtures", () => {
   const surface = prSurfaceFixture();
   surface.risks.candidates = [];

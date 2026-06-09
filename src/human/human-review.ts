@@ -622,19 +622,19 @@ function buildRiskLensFindings(input: BuildHumanReviewInput): RiskLensFinding[] 
   }
 
   for (const file of input.prSurface?.scope.changed_files ?? []) {
-    const lenses = riskLensesForChangedFile(file);
-    if (lenses.length === 0) {
+    const lensMatches = riskLensMatchesForChangedFile(file);
+    if (lensMatches.length === 0) {
       continue;
     }
     const fileRequirementIds = input.prSurface ? affectedRequirementIdsForFile(input.prSurface, file) : [];
-    for (const lens of lenses) {
+    for (const match of lensMatches) {
       addSignal(
-        lens,
-        defaultSeverityForLensPath(lens, file.path, file.role),
-        [fileEvidence(file.path, `${RISK_LENS_METADATA[lens].label} matched changed file ${file.path}.`)],
+        match.lens,
+        defaultSeverityForLensPath(match.lens, match.matched_paths[0] ?? file.path, file.role),
+        [fileEvidence(file.path, riskLensChangedFileEvidenceNote(match.lens, file, match.matched_paths))],
         [],
         fileRequirementIds,
-        [file.path]
+        uniqueTruthy([file.path, ...match.matched_paths])
       );
     }
   }
@@ -665,16 +665,38 @@ function buildRiskLensFindings(input: BuildHumanReviewInput): RiskLensFinding[] 
     });
 }
 
-function riskLensesForChangedFile(file: PrChangedFile): RiskLens[] {
-  const normalizedPath = normalizeEvidencePath(file.path);
+function riskLensMatchesForChangedFile(file: PrChangedFile): Array<{ lens: RiskLens; matched_paths: string[] }> {
+  const matches = new Map<RiskLens, string[]>();
+  const candidatePaths = [file.path, file.old_path]
+    .filter((filePath): filePath is string => Boolean(filePath))
+    .map(normalizeEvidencePath);
+  for (const filePath of uniqueTruthy(candidatePaths)) {
+    for (const lens of riskLensesForChangedFilePath(filePath, file.role)) {
+      const paths = matches.get(lens) ?? [];
+      if (!paths.includes(filePath)) {
+        paths.push(filePath);
+      }
+      matches.set(lens, paths);
+    }
+  }
+  return [...matches.entries()].map(([lens, matched_paths]) => ({ lens, matched_paths }));
+}
+
+function riskLensesForChangedFilePath(filePath: string, role: PrChangedFile["role"]): RiskLens[] {
   return compactRiskLenses([
-    isApiContractLensPath(normalizedPath, file.role) ? "api_contract" as const : undefined,
-    isSecurityPrivacyLensPath(normalizedPath, file.role) ? "security_privacy" as const : undefined,
-    isLlmTrustBoundaryLensPath(normalizedPath) ? "llm_trust_boundary" as const : undefined,
-    isTestEvidenceLensPath(normalizedPath, file.role) ? "test_evidence" as const : undefined,
-    isReviewerUxLensPath(normalizedPath) ? "reviewer_ux" as const : undefined,
-    isCacheProvenanceLensPath(normalizedPath) ? "cache_provenance" as const : undefined
+    isApiContractLensPath(filePath, role) ? "api_contract" as const : undefined,
+    isSecurityPrivacyLensPath(filePath, role) ? "security_privacy" as const : undefined,
+    isLlmTrustBoundaryLensPath(filePath) ? "llm_trust_boundary" as const : undefined,
+    isTestEvidenceLensPath(filePath, role) ? "test_evidence" as const : undefined,
+    isReviewerUxLensPath(filePath) ? "reviewer_ux" as const : undefined,
+    isCacheProvenanceLensPath(filePath) ? "cache_provenance" as const : undefined
   ]);
+}
+
+function riskLensChangedFileEvidenceNote(lens: RiskLens, file: PrChangedFile, matchedPaths: string[]): string {
+  const renameText = file.old_path ? ` renamed from ${file.old_path}` : "";
+  const matchedText = matchedPaths.length > 0 ? ` Matched path(s): ${matchedPaths.join(", ")}.` : "";
+  return `${RISK_LENS_METADATA[lens].label} matched changed file ${file.path}${renameText}.${matchedText}`;
 }
 
 function riskLensesForEvidencePaths(paths: string[]): RiskLens[] {
