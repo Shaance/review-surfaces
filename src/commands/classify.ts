@@ -29,7 +29,7 @@ export function commandLooksLikeFocusedTestCommand(command: string): boolean {
   const packageCommandBody = parsedPackageCommand?.body ?? "";
   const yarnWorkspacesBody = parseYarnWorkspacesBody(packageCommandBody);
   const looksLikeTest = commandLooksLikeTestCommandFromNormalized(normalized, parsedPackageCommand);
-  const testScriptAlias = packageCommandBody.match(TEST_SCRIPT_ALIAS_PATTERN)?.[1];
+  const testScriptAlias = packageTestScriptAlias(packageCommandBody);
   const hasPackageFocusFilter = parsedPackageCommand?.hasFocusFilter === true
     || packageCommandBodyHasFocusFilter(parsedPackageCommand);
   const execNodeTestCommand = packageManagerExecNodeTestCommand(packageCommandBody);
@@ -147,9 +147,45 @@ function parsedPackageManagerCommand(normalized: string): ParsedPackageManagerCo
 }
 
 function packageManagerBodyLooksLikeTest(body: string): boolean {
-  return /^(?:(?:run\s+)?test(?::[\w.:-]+)?|(?:vitest|jest|tap|uvu)|exec\s+(?:--\s+)?(?:vitest|jest|tap|uvu))(?:\s|$)/.test(body)
+  return packageRunScriptLooksLikeTest(body)
+    || /^(?:(?:vitest|jest|tap|uvu)|exec\s+(?:--\s+)?(?:vitest|jest|tap|uvu))(?:\s|$)/.test(body)
     || (parseYarnWorkspacesBody(body)?.looksLikeTest ?? false)
     || packageManagerExecNodeTestCommand(body) !== undefined;
+}
+
+function packageRunScriptLooksLikeTest(body: string): boolean {
+  return testScriptTokenLooksLikeTest(packageRunScriptToken(body));
+}
+
+function packageTestScriptAlias(body: string): string | undefined {
+  return packageRunScriptToken(body)?.match(TEST_SCRIPT_ALIAS_PATTERN)?.[1];
+}
+
+function packageRunScriptToken(body: string): string | undefined {
+  const tokens = body.split(" ").filter(Boolean);
+  if (tokens[0] !== "run") {
+    return tokens[0];
+  }
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token === "--") {
+      return undefined;
+    }
+    if (!token.startsWith("-")) {
+      return token;
+    }
+    if (packageRunOptionConsumesNext(token)) {
+      index += 1;
+    }
+  }
+  return undefined;
+}
+
+function packageRunOptionConsumesNext(option: string): boolean {
+  if (option.includes("=")) {
+    return false;
+  }
+  return ["--filter", "-F", "--workspace", "-w", "--prefix", "--jobs"].includes(option);
 }
 
 interface YarnWorkspacesBody {
@@ -195,7 +231,7 @@ function testScriptTokenLooksLikeTest(token: string | undefined): boolean {
 }
 
 function packageCommandBodyHasFocusFilter(parsed: ParsedPackageManagerCommand | undefined): boolean {
-  if (!parsed || parsed.manager !== "npm" || !/^(?:run\s+)?test(?::[\w.:-]+)?(?:\s|$)/.test(parsed.body)) {
+  if (!parsed || parsed.manager !== "npm" || !packageRunScriptLooksLikeTest(parsed.body)) {
     return false;
   }
   const tokens = parsed.body.split(" ").filter(Boolean);

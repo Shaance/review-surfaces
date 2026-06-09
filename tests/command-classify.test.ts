@@ -13,6 +13,12 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeTestCommand("pnpm run test:fast"), true);
   assert.equal(commandLooksLikeBroadTestCommand("pnpm run test:fast"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm run test:fast"), false);
+  assert.equal(commandLooksLikeTestCommand("pnpm run --if-present test"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("pnpm run --if-present test"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm run --if-present test"), false);
+  assert.equal(commandLooksLikeTestCommand("pnpm run --if-present test:privacy"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("pnpm run --if-present test:privacy"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm run --if-present test:privacy"), true);
   assert.equal(commandLooksLikeTestCommand("CI=1 pnpm run test"), true);
   assert.equal(commandLooksLikeBroadTestCommand("CI=1 pnpm run test"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("CI=1 pnpm run test"), false);
@@ -172,6 +178,9 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeTestCommand("npm run test -w api"), true);
   assert.equal(commandLooksLikeBroadTestCommand("npm run test -w api"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("npm run test -w api"), true);
+  assert.equal(commandLooksLikeTestCommand("npm run --if-present test -w api"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("npm run --if-present test -w api"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("npm run --if-present test -w api"), true);
   assert.equal(commandLooksLikeTestCommand("npm test --workspace api"), true);
   assert.equal(commandLooksLikeBroadTestCommand("npm test --workspace api"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("npm test --workspace api"), true);
