@@ -62,6 +62,7 @@ areas:
     test_keywords:
       - config
       - bootstrap
+      - init
   - id: SUB-INTENT
     name: Intent builder
     group_key: INTENT

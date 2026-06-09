@@ -463,7 +463,7 @@ async function scaffoldAgents(cwd: string, force: boolean, validateOnly: boolean
 function renderAgents(featureName: string): string {
   return `# AGENTS.md — ${featureName}
 
-This repository is reviewed with \`review-surfaces\`, a local-first review packet compiler.
+This repository is reviewed with \`review-surfaces\`, a local-first human review decision cockpit.
 
 ## Source of truth
 

@@ -2106,13 +2106,26 @@ function isApiContractLensPath(filePath: string, role: PrChangedFile["role"]): b
   return (
     role === "spec" ||
     /^src\/cli\//.test(filePath) ||
-    /^schemas\//.test(filePath) ||
-    /(?:^|\/)schema(?:s)?\//.test(filePath) ||
-    /(?:^|\/)[^/]*schema[^/]*\.json$/.test(filePath) ||
-    /(?:^|\/)contract\.ts$/.test(filePath) ||
+    isVersionedArtifactContractPath(filePath) ||
     filePath === "review-surfaces.config.yaml" ||
     /^features\/.*\.feature\.yaml$/.test(filePath)
   );
+}
+
+function isPersistedSchemaContractPath(filePath: string): boolean {
+  return (
+    /^schemas\//.test(filePath) ||
+    /(?:^|\/)schema(?:s)?\//.test(filePath) ||
+    /(?:^|\/)[^/]*schema[^/]*\.json$/.test(filePath)
+  );
+}
+
+function isVersionedArtifactContractPath(filePath: string): boolean {
+  return isPersistedSchemaContractPath(filePath) || /(?:^|\/)contract\.ts$/.test(filePath);
+}
+
+function hasVersionedArtifactContractPath(paths: string[]): boolean {
+  return paths.some(isVersionedArtifactContractPath);
 }
 
 function isSecurityPrivacyLensPath(filePath: string, role: PrChangedFile["role"]): boolean {
@@ -2176,7 +2189,9 @@ function riskLensReviewerAction(
 ): string {
   switch (finding.lens) {
     case "api_contract":
-      return "Confirm the changed contract is additive or intentionally versioned, and add a compatibility fixture for existing generated artifacts.";
+      return hasVersionedArtifactContractPath(finding.paths)
+        ? "Confirm the changed schema or artifact contract is additive or intentionally versioned, and add a compatibility fixture for existing generated artifacts."
+        : "Confirm the changed CLI, config, or feature-ledger contract is documented and covered by focused command/config tests.";
     case "security_privacy":
       return hasCiSecretBoundaryLensRisk(finding) && !hasRecordedCiSecretBoundaryManualCheck(input)
         ? "Inspect workflow/provider boundaries and record a manual check proving PR-controlled code cannot access secrets."
@@ -2202,17 +2217,7 @@ function buildRiskLensSuggestedTests(
   const required = finding.severity === "high" || finding.severity === "critical" ? "required" as const : "recommended" as const;
   switch (finding.lens) {
     case "api_contract":
-      drafts.push({
-        kind: "automatic",
-        priority: "required",
-        suggested_file: "tests/schema-contract.test.ts",
-        scenario: "Load an existing generated artifact fixture and validate it against the changed schema or contract.",
-        expected_result: "The old fixture still validates, or the schema/contract version is explicitly bumped for a breaking change.",
-        command: "pnpm run test -- tests/schema-contract.test.ts",
-        maps_to_requirements: finding.requirement_ids,
-        maps_to_risks: finding.risk_ids,
-        evidence_gap: finding.summary
-      });
+      drafts.push(...apiContractTestPlanDrafts(finding));
       break;
     case "security_privacy":
       if (hasCiSecretBoundaryLensRisk(finding) && !hasRecordedCiSecretBoundaryManualCheck(input)) {
@@ -2323,10 +2328,12 @@ function buildRiskLensSuggestedComments(
   }];
 }
 
-function riskLensSuggestedCommentBody(finding: Pick<RiskLensFinding, "lens" | "reviewer_action">): string | undefined {
+function riskLensSuggestedCommentBody(finding: Pick<RiskLensFinding, "lens" | "paths" | "reviewer_action">): string | undefined {
   switch (finding.lens) {
     case "api_contract":
-      return "This fires the API/schema contract lens. Can you add a compatibility fixture for an existing generated artifact, or explicitly version this as a breaking change?";
+      return hasVersionedArtifactContractPath(finding.paths)
+        ? "This fires the API/schema contract lens. Can you add a compatibility fixture for an existing generated artifact, or explicitly version this as a breaking change?"
+        : "This fires the API/CLI/config contract lens. Can you point to the focused CLI, config, or feature-ledger test covering the changed public behavior?";
     case "security_privacy":
       return "This fires the security/privacy lens. Can you record the manual check or sensitive-input validation proving the changed boundary does not expose secrets or unredacted data?";
     case "llm_trust_boundary":
@@ -2342,8 +2349,13 @@ function riskLensSuggestedCommentBody(finding: Pick<RiskLensFinding, "lens" | "r
   }
 }
 
-function riskLensSuggestedCommentSeverity(finding: Pick<RiskLensFinding, "lens" | "severity">): SuggestedReviewComment["severity"] {
-  if (finding.severity === "critical" || finding.severity === "high" || finding.lens === "api_contract" || finding.lens === "llm_trust_boundary") {
+function riskLensSuggestedCommentSeverity(finding: Pick<RiskLensFinding, "lens" | "severity" | "paths">): SuggestedReviewComment["severity"] {
+  if (
+    finding.severity === "critical" ||
+    finding.severity === "high" ||
+    (finding.lens === "api_contract" && hasVersionedArtifactContractPath(finding.paths)) ||
+    finding.lens === "llm_trust_boundary"
+  ) {
     return "blocking";
   }
   if (finding.lens === "reviewer_ux" || finding.lens === "cache_provenance") {
@@ -2370,6 +2382,78 @@ function suggestedLensTestFile(
     }
   }
   return fallback;
+}
+
+function apiContractTestPlanDrafts(
+  finding: Omit<RiskLensFinding, "suggested_tests" | "suggested_comments">
+): TestPlanDraft[] {
+  const drafts: TestPlanDraft[] = [];
+  if (hasVersionedArtifactContractPath(finding.paths)) {
+    drafts.push({
+      kind: "automatic",
+      priority: "required",
+      suggested_file: "tests/schema-contract.test.ts",
+      scenario: "Load an existing generated artifact fixture and validate it against the changed schema or artifact contract.",
+      expected_result: "The old fixture still validates, or the schema/artifact contract version is explicitly bumped for a breaking change.",
+      command: "pnpm run test -- tests/schema-contract.test.ts",
+      maps_to_requirements: finding.requirement_ids,
+      maps_to_risks: finding.risk_ids,
+      evidence_gap: finding.summary
+    });
+  }
+  for (const suggestedFile of suggestedApiContractTestFiles(finding.paths)) {
+    drafts.push({
+      kind: "automatic",
+      priority: "recommended",
+      suggested_file: suggestedFile,
+      scenario: "Run or add a focused fixture covering the changed CLI, config, or feature-ledger contract.",
+      expected_result: "The public command/config behavior remains documented, deterministic, and compatible with existing reviewer workflows.",
+      command: `pnpm run test -- ${suggestedFile}`,
+      maps_to_requirements: finding.requirement_ids,
+      maps_to_risks: finding.risk_ids,
+      evidence_gap: finding.summary
+    });
+  }
+  return drafts.length ? drafts : [{
+    kind: "automatic",
+    priority: "recommended",
+    suggested_file: "tests/schema-contract.test.ts",
+    scenario: "Run or add a focused fixture covering the changed API or artifact contract.",
+    expected_result: "The changed contract remains documented, deterministic, and compatible with existing reviewer workflows.",
+    command: "pnpm run test -- tests/schema-contract.test.ts",
+    maps_to_requirements: finding.requirement_ids,
+    maps_to_risks: finding.risk_ids,
+    evidence_gap: finding.summary
+  }];
+}
+
+function suggestedApiContractTestFiles(paths: string[]): string[] {
+  const files: string[] = [];
+  const seen = new Set<string>();
+  for (const filePath of paths) {
+    if (isVersionedArtifactContractPath(filePath)) {
+      continue;
+    }
+    const suggested = suggestedApiContractTestFileForPath(filePath);
+    if (suggested && !seen.has(suggested)) {
+      seen.add(suggested);
+      files.push(suggested);
+    }
+  }
+  return files;
+}
+
+function suggestedApiContractTestFileForPath(filePath: string): string | undefined {
+  if (/^src\/cli\//.test(filePath)) {
+    return "tests/cli.test.ts";
+  }
+  if (filePath === "review-surfaces.config.yaml") {
+    return "tests/config.test.ts";
+  }
+  if (/^features\/.*\.feature\.yaml$/.test(filePath)) {
+    return "tests/acai.test.ts";
+  }
+  return suggestedTestFileForPath(filePath);
 }
 
 function riskLensSuggestedCommentPath(finding: Pick<RiskLensFinding, "lens" | "paths">): string | undefined {
@@ -3032,7 +3116,12 @@ function intentMismatchQuestionItems(intentMismatch: IntentMismatch, limit: numb
 }
 
 function riskLensQuestionSeverity(finding: RiskLensFinding): ReviewerQuestion["severity"] {
-  if (finding.severity === "critical" || finding.severity === "high" || finding.lens === "api_contract" || finding.lens === "llm_trust_boundary") {
+  if (
+    finding.severity === "critical" ||
+    finding.severity === "high" ||
+    (finding.lens === "api_contract" && hasVersionedArtifactContractPath(finding.paths)) ||
+    finding.lens === "llm_trust_boundary"
+  ) {
     return "blocking";
   }
   return "clarifying";
@@ -3045,7 +3134,9 @@ function isPathOnlyRiskLensFinding(finding: RiskLensFinding): boolean {
 function riskLensQuestionText(finding: RiskLensFinding): string {
   switch (finding.lens) {
     case "api_contract":
-      return "What compatibility fixture, schema versioning decision, or downstream contract check covers this API/schema contract change?";
+      return hasVersionedArtifactContractPath(finding.paths)
+        ? "What compatibility fixture, schema versioning decision, or downstream contract check covers this API/schema contract change?"
+        : "Which focused CLI, config, or feature-ledger test covers this public contract change?";
     case "security_privacy":
       return "What current-head evidence proves the changed security/privacy boundary does not expose secrets or unredacted sensitive data?";
     case "llm_trust_boundary":

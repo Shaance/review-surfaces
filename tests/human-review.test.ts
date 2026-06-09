@@ -1430,8 +1430,14 @@ test("risk lenses fire from changed paths even when no PR risk candidate fires",
 
   assert.ok(apiLens);
   assert.ok(apiLens.paths.includes("src/cli/index.ts"));
+  assert.match(apiLens.reviewer_action, /CLI, config, or feature-ledger contract/);
+  assert.ok(apiLens.suggested_tests.some((item) => item.suggested_file === "tests/cli.test.ts"));
+  assert.equal(apiLens.suggested_comments[0]?.severity, "clarifying");
+  assert.match(apiLens.suggested_comments[0]?.body ?? "", /focused CLI, config, or feature-ledger test/);
+  assert.doesNotMatch(apiLens.suggested_comments[0]?.body ?? "", /compatibility fixture/);
 
   assert.ok(model.questions.some((question) => /fabricated LLM paths/.test(question.question)));
+  assert.ok(model.questions.some((question) => /focused CLI, config, or feature-ledger test/.test(question.question)));
   assert.ok(model.suggested_comments.some((comment) => /LLM trust-boundary lens/.test(comment.body)));
   assert.ok(model.test_plan.some((item) => item.maps_to_risks.length === 0 && item.suggested_file === "tests/pr-narrative.test.ts"));
 });
@@ -1482,6 +1488,63 @@ test("review-surfaces.HUMAN_REVIEW.16 config caps reviewer-facing output and dis
   assert.equal(model.risk_lens_findings.some((finding) => finding.lens === "security_privacy"), false);
   assert.equal(model.risk_lens_findings.some((finding) => finding.lens === "llm_trust_boundary"), false);
   assert.equal(model.review_queue.some((item) => item.path === ".github/workflows/pr-review-comment.yml" || item.path === "schemas/human_review.schema.json"), true);
+});
+
+test("API contract lens suggests each focused CLI and config test for mixed contract paths", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files = [
+    {
+      path: "src/cli/index.ts",
+      status: "M",
+      areas: ["CLI"],
+      role: "implementation",
+      added_lines: 4,
+      deleted_lines: 1
+    },
+    {
+      path: "review-surfaces.config.yaml",
+      status: "M",
+      areas: ["BOOTSTRAP"],
+      role: "config",
+      added_lines: 1,
+      deleted_lines: 0
+    }
+  ];
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface });
+  const apiLens = model.risk_lens_findings.find((finding) => finding.lens === "api_contract");
+
+  assert.ok(apiLens);
+  assert.deepEqual(apiLens.suggested_tests.map((item) => item.suggested_file), ["tests/cli.test.ts", "tests/config.test.ts"]);
+  assert.equal(apiLens.suggested_tests.every((item) => item.priority === "recommended"), true);
+  assert.equal(apiLens.suggested_comments[0]?.severity, "clarifying");
+  assert.match(model.questions.find((question) => question.evidence.some((ref) => ref.path === "review-surfaces.config.yaml"))?.question ?? "", /focused CLI, config, or feature-ledger test/);
+});
+
+test("API contract lens keeps TypeScript contract sources on compatibility checks", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  surface.scope.changed_files = [
+    {
+      path: "src/human/contract.ts",
+      status: "M",
+      areas: ["HUMAN_REVIEW"],
+      role: "implementation",
+      added_lines: 6,
+      deleted_lines: 2
+    }
+  ];
+
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: surface });
+  const apiLens = model.risk_lens_findings.find((finding) => finding.lens === "api_contract");
+
+  assert.ok(apiLens);
+  assert.match(apiLens.reviewer_action, /schema or artifact contract/);
+  assert.deepEqual(apiLens.suggested_tests.map((item) => item.suggested_file), ["tests/schema-contract.test.ts"]);
+  assert.equal(apiLens.suggested_tests[0]?.priority, "required");
+  assert.equal(apiLens.suggested_comments[0]?.severity, "blocking");
+  assert.match(apiLens.suggested_comments[0]?.body ?? "", /compatibility fixture/);
 });
 
 test("review-surfaces.HUMAN_REVIEW.16 default config preserves the full queue beyond the markdown top seven", () => {
@@ -1557,6 +1620,9 @@ test("risk lenses classify renamed source paths as review signals", () => {
   assert.ok(apiLens);
   assert.ok(apiLens.paths.includes("src/schema-output.ts"));
   assert.ok(apiLens.paths.includes("schemas/legacy-review.json"));
+  assert.match(apiLens.reviewer_action, /compatibility fixture/);
+  assert.equal(apiLens.suggested_comments[0]?.severity, "blocking");
+  assert.match(apiLens.suggested_comments[0]?.body ?? "", /compatibility fixture/);
 });
 
 test("reviewer UX lens prefers renderer fixtures over schema fixtures", () => {

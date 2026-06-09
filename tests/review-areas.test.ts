@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createReviewAreaMatcher, ReviewArea } from "../src/review-areas/areas";
+import { defaultReviewSurfacesAreas } from "./helpers/review-areas";
 
 const AREAS: ReviewArea[] = [
   {
@@ -44,4 +45,14 @@ test("review area matcher exposes diagnostics without enforcing config validity"
   assert.deepEqual(diagnostic.matches, [
     { areaId: "SUB-CLI", groupKey: "CLI", reason: "test_keyword", matched: "cli" }
   ]);
+});
+
+test("configured review areas map init scaffolding tests to BOOTSTRAP", async () => {
+  const areas = await defaultReviewSurfacesAreas();
+  const matcher = createReviewAreaMatcher(areas);
+
+  assert.ok(
+    matcher.groupsForPath("tests/init.test.ts", { purpose: "requirement_proof" }).includes("BOOTSTRAP"),
+    "tests/init.test.ts should count as BOOTSTRAP validation evidence"
+  );
 });

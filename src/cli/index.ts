@@ -1882,7 +1882,7 @@ function transcriptDirFromOut(parsed: ParsedArgs): string | undefined {
 function printHelp(): void {
   console.log(`review-surfaces ${VERSION}
 
-Local-first review packet compiler for agent-generated code changes.
+Local-first human review decision cockpit for agent-generated code changes.
 
 Usage:
   review-surfaces <command> [options]
@@ -1904,7 +1904,7 @@ ${humanStandaloneCommandHelp()}
   all           Run the whole available local pipeline
   validate      Validate review_packet.json against schemas/review_packet.schema.json
   run           Execute a local command and write a bounded command transcript
-  comment       Render a review surface from the local review_packet.json. With
+  comment       Render a review surface from local artifacts. With
                 --format github (default) writes .review-surfaces/comment.md (a compact
                 GitHub sticky comment); with --format sarif writes
                 .review-surfaces/review.sarif (a SARIF 2.1.0 log). Reads local artifacts
