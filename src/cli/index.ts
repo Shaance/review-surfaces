@@ -10,6 +10,7 @@ import { loadConfig, ReviewSurfacesConfig } from "../config/config";
 import { CliError, ExitCodes } from "../core/exit-codes";
 import { VERSION } from "../core/version";
 import { fileExists, readJson } from "../core/files";
+import { isRecord } from "../core/guards";
 import { gateDecision, GateOptions } from "../core/gate";
 import { buildArchitecture } from "../diagrams/diagrams";
 import { buildDogfood, DogfoodComparisonInput } from "../dogfood/dogfood";
@@ -1113,7 +1114,7 @@ function readHumanReviewFeedback(outDir: string): FeedbackFile[] | undefined {
   try {
     const parsed = JSON.parse(fs.readFileSync(feedbackIndexPath, "utf8")) as { feedback?: unknown };
     if (Array.isArray(parsed.feedback)) {
-      return parsed.feedback as FeedbackFile[];
+      return sanitizeHumanReviewFeedbackIndex(parsed.feedback, feedbackIndexPath);
     }
     console.warn(`Warning: ignored malformed feedback memory index at ${feedbackIndexPath}; expected a feedback array.`);
     return undefined;
@@ -1122,6 +1123,37 @@ function readHumanReviewFeedback(outDir: string): FeedbackFile[] | undefined {
     console.warn(`Warning: ignored malformed feedback memory index at ${feedbackIndexPath}: ${message}`);
     return undefined;
   }
+}
+
+function sanitizeHumanReviewFeedbackIndex(entries: unknown[], feedbackIndexPath: string): FeedbackFile[] {
+  const feedback: FeedbackFile[] = [];
+  for (const [index, entry] of entries.entries()) {
+    if (!isFeedbackFileLike(entry)) {
+      console.warn(`Warning: ignored malformed feedback memory entry ${index + 1} in ${feedbackIndexPath}.`);
+      continue;
+    }
+    feedback.push(entry);
+  }
+  return feedback;
+}
+
+function isFeedbackFileLike(value: unknown): value is FeedbackFile {
+  if (!isRecord(value) || typeof value.path !== "string" || typeof value.schema_version !== "string" || typeof value.author !== "string") {
+    return false;
+  }
+  if (!Array.isArray(value.findings) || !isRecord(value.validation)) {
+    return false;
+  }
+  const validation = value.validation;
+  return (
+    Array.isArray(validation.passed) &&
+    Array.isArray(validation.failed) &&
+    Array.isArray(validation.notes) &&
+    Array.isArray(value.false_positives) &&
+    Array.isArray(value.false_negatives) &&
+    Array.isArray(value.team_policy) &&
+    Array.isArray(value.reviewer_preferences)
+  );
 }
 
 async function writeHumanReviewForPacket(

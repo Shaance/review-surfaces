@@ -442,6 +442,9 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput): FeedbackPolic
         if (policy.path_pattern && matchedPaths.length === 0) {
           continue;
         }
+        if (!feedbackFalsePositiveConditionSatisfied(policy.condition, matchedPaths)) {
+          continue;
+        }
         drafts.push({
           kind: "false_positive",
           summary: `Feedback marks ${risk.rule} as noisy${matchedPaths.length ? ` for ${matchedPaths.join(", ")}` : ""}.`,
@@ -614,6 +617,22 @@ function feedbackFalsePositiveAction(action: string): string {
     return FEEDBACK_ACTION_RETAIN_LOW_PRIORITY;
   }
   return normalized || FEEDBACK_ACTION_DOWNGRADE_TO_LOW;
+}
+
+function feedbackFalsePositiveConditionSatisfied(condition: string | undefined, matchedPaths: string[]): boolean {
+  const normalized = condition?.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  if (normalized === "lockfile_only") {
+    return matchedPaths.length > 0 && matchedPaths.every(isLockfilePath);
+  }
+  return false;
+}
+
+function isLockfilePath(filePath: string): boolean {
+  const normalizedPath = normalizeEvidencePath(filePath);
+  return /(?:^|\/)(?:pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb|Cargo\.lock)$/.test(normalizedPath);
 }
 
 function isMissingTeamPolicyEffect(effect: FeedbackPolicyEffect): boolean {
@@ -2011,6 +2030,9 @@ function looksLikePositiveManualCheckRecord(value: string): boolean {
     return false;
   }
   if (/\bnot\s+(?:confirmed|verified|safe|completed|recorded|reviewed|inspected)\b/.test(normalized)) {
+    return false;
+  }
+  if (/\bno\s+(?:manual\s+)?check\s+(?:recorded|completed|reviewed|inspected|verified)\b/.test(normalized)) {
     return false;
   }
   if (/\b(?:failed|unsafe|unverified|unconfirmed|unresolved|pending|planned|planning|todo|missing evidence|no evidence)\b/.test(normalized)) {

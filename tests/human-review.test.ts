@@ -1121,7 +1121,6 @@ test("path-scoped false-positive feedback does not downgrade mixed-path risk evi
           {
             rule: "schema_contract_change",
             path_pattern: "schemas/generated.schema.json",
-            condition: "generated_schema",
             action: "downgrade_to_low",
             evidence: [feedbackEvidence(".review-surfaces/feedback/memory.yaml", "Generated schema change is noisy.", { eventId: "false_positive:1" })]
           }
@@ -1139,6 +1138,54 @@ test("path-scoped false-positive feedback does not downgrade mixed-path risk evi
   assert.equal(queueItem.priority, "high");
   assert.equal(queueItem.reason.includes("Feedback memory downgraded"), false);
   assert.equal(model.feedback_effects.some((effect) => effect.kind === "false_positive" && effect.paths.includes("schemas/generated.schema.json")), true);
+});
+
+test("unsupported conditional false-positive feedback is skipped", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [{
+    ...prRiskFixture("schema_contract_change"),
+    id: "PR-RISK-CONDITIONAL-SCHEMA",
+    severity: "high",
+    evidence: [fileEvidence("schemas/human_review.schema.json", "Hand-edited schema changed.")]
+  }];
+
+  const model = buildHumanReview({
+    packet,
+    prSurface: surface,
+    feedback: [
+      {
+        path: ".review-surfaces/feedback/memory.yaml",
+        schema_version: "review-surfaces.feedback.v1",
+        author: "local",
+        findings: [],
+        validation: { passed: [], failed: [], notes: [] },
+        false_positives: [
+          {
+            rule: "schema_contract_change",
+            path_pattern: "schemas/**/*.json",
+            condition: "generated_schema",
+            action: "downgrade_to_low",
+            evidence: [feedbackEvidence(".review-surfaces/feedback/memory.yaml", "Generated schema condition is unsupported.", { eventId: "false_positive:1" })]
+          }
+        ],
+        false_negatives: [],
+        team_policy: [],
+        reviewer_preferences: []
+      }
+    ]
+  });
+
+  const queueItem = model.review_queue.find((item) => item.risk_ids.includes("PR-RISK-CONDITIONAL-SCHEMA"));
+  assert.ok(queueItem);
+  assert.equal(queueItem.priority, "high");
+  assert.equal(model.feedback_effects.some((effect) => effect.kind === "false_positive"), false);
 });
 
 test("legacy feedback indexes without policy arrays do not break human review rebuild", () => {
@@ -1209,6 +1256,7 @@ test("team-policy manual checks require recorded positive evidence, not policy o
   const notInspectedText = build("Manual check not inspected: Confirm PR-controlled code cannot access secrets.");
   const reviewedWhetherText = build("Reviewed whether to confirm PR-controlled code cannot access secrets.");
   const unverifiedText = build("Unverified: manual check recorded: Confirm PR-controlled code cannot access secrets.");
+  const noManualCheckText = build("No manual check recorded: Confirm PR-controlled code cannot access secrets.");
 
   assert.equal(policyText.blockers.some((blocker) => blocker.id === "BLOCK-FEEDBACK-001"), true);
   assert.equal(inconclusiveText.blockers.some((blocker) => blocker.id === "BLOCK-FEEDBACK-001"), true);
@@ -1217,6 +1265,7 @@ test("team-policy manual checks require recorded positive evidence, not policy o
   assert.equal(notInspectedText.blockers.some((blocker) => blocker.id === "BLOCK-FEEDBACK-001"), true);
   assert.equal(reviewedWhetherText.blockers.some((blocker) => blocker.id === "BLOCK-FEEDBACK-001"), true);
   assert.equal(unverifiedText.blockers.some((blocker) => blocker.id === "BLOCK-FEEDBACK-001"), true);
+  assert.equal(noManualCheckText.blockers.some((blocker) => blocker.id === "BLOCK-FEEDBACK-001"), true);
 });
 
 test("human review schema enums stay aligned with runtime contract constants", () => {

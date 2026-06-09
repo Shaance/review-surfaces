@@ -187,6 +187,33 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     const malformedFeedbackRebuild = runCli(tmp, ["human", "--review-scope", "pr", "--out", ".review-surfaces"]);
     assert.equal(malformedFeedbackRebuild.status, 0, malformedFeedbackRebuild.stderr);
     assert.match(malformedFeedbackRebuild.stderr, /ignored malformed feedback memory index/);
+    fs.writeFileSync(
+      path.join(tmp, ".review-surfaces", "inputs", "feedback.index.json"),
+      JSON.stringify(
+        {
+          schema_version: "review-surfaces.feedback.index.v1",
+          feedback: [
+            null,
+            {
+              path: ".review-surfaces/feedback/bad-memory.yaml",
+              schema_version: "review-surfaces.feedback.v1",
+              author: "local",
+              findings: [],
+              validation: { passed: [], failed: [], notes: [] },
+              false_positives: {},
+              false_negatives: [],
+              team_policy: [],
+              reviewer_preferences: []
+            }
+          ]
+        },
+        null,
+        2
+      )
+    );
+    const malformedEntryRebuild = runCli(tmp, ["human", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(malformedEntryRebuild.status, 0, malformedEntryRebuild.stderr);
+    assert.match(malformedEntryRebuild.stderr, /ignored malformed feedback memory entry/);
     assert.equal(surface.mode, "pr");
     // Scoped to the actual change, NOT the whole repo.
     assert.ok(surface.scope.changed_files.some((f: { path: string }) => f.path === CHANGED), "the changed file is in scope");
