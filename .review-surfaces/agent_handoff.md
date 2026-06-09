@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Local E2E packet generated with provider=mock/not_requested; 9 satisfied, 102 partial, 0 missing, 2 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
+Local E2E packet generated with provider=mock/not_requested; 8 satisfied, 103 partial, 0 missing, 2 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
 
 ## Current Milestone
 
@@ -25,18 +25,14 @@ M5
 ## Implemented Changes
 
 - M .review-surfaces/feedback/manual-dogfood.yaml
-- M README.md
-- M bin/review-surfaces.js
-- M features/review-surfaces.feature.yaml
-- M review-surfaces.config.yaml
-- M src/collector/git.ts
-- M src/commands/runner.ts
-- M src/commands/transcripts.ts
-- M src/config/config.ts
-- M src/evidence/evidence.ts
-- M src/human/contract.ts
-- M src/human/human-review.ts
-- ... 5 more changed file(s) in .review-surfaces/inputs/changed_files.json
+- A src/commands/classify.ts
+- M src/pipeline/pr-surface.ts
+- M src/render/packet.ts
+- M src/risks/pr-risks.ts
+- M src/risks/risks.ts
+- A tests/command-classify.test.ts
+- M tests/pr-risks.test.ts
+- M tests/pr-surface-e2e.test.ts
 
 ## Validation Evidence
 
@@ -44,6 +40,7 @@ M5
 - TEST-TR-002 [indirect]: Command transcript CMD-PNPM-LINT records exit 0: pnpm run lint
 - TEST-TR-003 [direct]: Command transcript CMD-PNPM-TEST-FAST records exit 0: pnpm run test:fast
 - TEST-TR-004 [direct]: Command transcript CMD-PNPM-TEST records exit 0: pnpm run test
+- TEST-TR-005 [direct]: Command transcript CMD-PR-RISKS-TEST records exit 0: node --test dist/tests/command-classify.test.js dist/tests/pr-risks.test.js dist/tests/risks.test.js dist/tests/pr-surface-e2e.test.js
 
 ## Failed Or Missing Validation
 
@@ -69,7 +66,7 @@ M5
 
 ## Open Risks
 
-- RISK-001: 102 requirement(s) have implementation evidence but weak or missing test evidence.
+- RISK-001: 103 requirement(s) have implementation evidence but weak or missing test evidence.
 - RISK-002: 2 requirement(s) remain unknown due to weak evidence.
 
 ## Deferrals
