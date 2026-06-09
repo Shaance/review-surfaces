@@ -321,6 +321,38 @@ test("focused transcript matching uses area prefixes as well as keywords", () =>
   );
 });
 
+test("area-specific test scripts do not count as broad validation for unrelated areas", () => {
+  const input = buildInput({
+    scope: scope({
+      head_sha: "deadbeef",
+      changed_files: [
+        changedFile({ path: "src/risks/pr-risks.ts", role: "implementation", areas: ["RISK"] })
+      ]
+    }),
+    reviewAreas: [
+      { ...reviewArea("RISK", []), prefixes: ["src/risks/"] },
+      { ...reviewArea("PRIVACY", ["privacy"]), prefixes: ["src/privacy/"] }
+    ],
+    commandTranscripts: [
+      {
+        id: "CMD-PRIVACY-SCRIPT",
+        command: "pnpm run test:privacy",
+        status: "passed",
+        exit_code: 0,
+        head_sha: "deadbeef",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-PRIVACY-SCRIPT.json"
+      }
+    ]
+  });
+
+  const model = buildPrRiskCandidates(input);
+  assert.ok(
+    model.candidates.find((c) => c.rule === "untested_changed_impl"),
+    "area-specific test scripts must not suppress unrelated implementation risks as broad suite evidence"
+  );
+});
+
 test("impl file with a stale focused test transcript still fires untested_changed_impl", () => {
   const input = buildInput({
     scope: scope({
@@ -391,7 +423,7 @@ test("impl file with a current-head broad test transcript does NOT fire untested
     commandTranscripts: [
       {
         id: "CMD-TEST-FAST",
-        command: "pnpm run test:fast",
+        command: "pnpm run test",
         status: "passed",
         exit_code: 0,
         head_sha: "head123",
@@ -423,7 +455,7 @@ test("working-tree impl file with a current-head broad test transcript still fir
     commandTranscripts: [
       {
         id: "CMD-TEST-FAST",
-        command: "pnpm run test:fast",
+        command: "pnpm run test",
         status: "passed",
         exit_code: 0,
         head_sha: "head123",

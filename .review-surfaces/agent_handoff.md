@@ -26,13 +26,13 @@ M5
 
 - M .review-surfaces/feedback/manual-dogfood.yaml
 - M src/collector/git.ts
-- A src/commands/classify.ts
+- M src/commands/classify.ts
 - M src/pipeline/pr-surface.ts
 - M src/render/packet.ts
 - M src/risks/pr-risks.ts
 - M src/risks/risks.ts
 - M tests/collect.test.ts
-- A tests/command-classify.test.ts
+- M tests/command-classify.test.ts
 - M tests/pr-risks.test.ts
 - M tests/pr-surface-e2e.test.ts
 

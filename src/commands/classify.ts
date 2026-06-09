@@ -8,7 +8,8 @@ export function commandLooksLikeTestCommand(command: string): boolean {
 
 export function commandLooksLikeFocusedTestCommand(command: string): boolean {
   const normalized = normalizeCommand(command);
-  return /(?:^|\s)(?:(?:dist\/)?tests|test|src|lib|app|packages)\/\S+|(?:^|\s)\S+\.(?:test|spec)\.[cm]?[jt]sx?(?:\s|$)|(?:--test-name-pattern|--grep|-t)(?:=|\s)/.test(normalized);
+  return /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?test:[\w.-]+)(?:\s|$)/.test(normalized)
+    || /(?:^|\s)(?:(?:dist\/)?tests|test|src|lib|app|packages)\/\S+|(?:^|\s)\S+\.(?:test|spec)\.[cm]?[jt]sx?(?:\s|$)|(?:--test-name-pattern|--grep|-t)(?:=|\s)/.test(normalized);
 }
 
 export function commandLooksLikeBroadTestCommand(command: string): boolean {

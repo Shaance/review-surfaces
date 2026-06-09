@@ -93,7 +93,8 @@ export function collectChangedFiles(cwd: string, baseRef: string, headRef: strin
       }
       const existing = byPath.get(filePath);
       if (existing) {
-        byPath.set(filePath, { ...existing, status, source: "working_tree" });
+        const mergedStatus = isRenameOrCopyStatus(existing.status) ? existing.status : status;
+        byPath.set(filePath, { ...existing, status: mergedStatus, source: "working_tree" });
         continue;
       }
       if (status.includes("D") || isRegularFile(path.resolve(cwd, filePath))) {

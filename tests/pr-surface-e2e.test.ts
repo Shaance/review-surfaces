@@ -526,7 +526,7 @@ test("review-surfaces.PROVIDERS.5 PR risks use current-head command transcripts 
         commands: [
           {
             id: "CMD-CURRENT-HEAD-TEST",
-            command: "pnpm run test:fast",
+            command: "pnpm run test",
             status: "passed",
             exit_code: 0,
             head_sha: headSha,

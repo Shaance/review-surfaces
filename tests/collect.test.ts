@@ -128,6 +128,14 @@ test("collector records staged and committed renames by their new path", () => {
       "committed rename diff must use the new path"
     );
     assert.ok(!committed.some((file) => file.path === oldPath), "committed rename must not report the old path as changed");
+
+    fs.writeFileSync(path.join(tmp, newPath), "export const renamed = 3;\n");
+    const dirty = collectChangedFiles(tmp, base, "HEAD").files;
+    assert.deepEqual(
+      dirty.filter((file) => file.path === newPath).map((file) => ({ status: file.status, source: file.source })),
+      [{ status: "R100", source: "working_tree" }],
+      "dirty edits to a committed rename must preserve the committed rename status"
+    );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
