@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Local E2E packet generated with provider=mock/not_requested; 9 satisfied, 101 partial, 0 missing, 2 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
+Local E2E packet generated with provider=mock/not_requested; 8 satisfied, 103 partial, 0 missing, 2 unknown, 0 invalid evidence, 0 overreach item(s). Statuses are conservative and evidence-backed.
 
 ## Current Milestone
 
@@ -27,15 +27,11 @@ M5
 - M README.md
 - M features/review-surfaces.feature.yaml
 - M review-surfaces.config.yaml
-- M schemas/human_review.schema.json
-- M src/cli/index.ts
 - M src/config/config.ts
 - M src/human/contract.ts
 - M src/human/human-review.ts
-- M tests/collect.test.ts
 - M tests/config.test.ts
 - M tests/human-review.test.ts
-- M tests/pr-surface-e2e.test.ts
 
 ## Validation Evidence
 
@@ -68,7 +64,7 @@ M5
 
 ## Open Risks
 
-- RISK-001: 101 requirement(s) have implementation evidence but weak or missing test evidence.
+- RISK-001: 103 requirement(s) have implementation evidence but weak or missing test evidence.
 - RISK-002: 2 requirement(s) remain unknown due to weak evidence.
 
 ## Deferrals

@@ -261,3 +261,4 @@ human_review:
     test_evidence: true
     reviewer_ux: true
     cache_provenance: true
+  required_manual_checks: []

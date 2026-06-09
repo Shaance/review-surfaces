@@ -239,7 +239,7 @@ const REVIEW_ROUTE_DEFINITIONS: Record<ReviewRoutePersona, ReviewRouteDefinition
 };
 export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel {
   const config = humanReviewBuildConfig(input);
-  const feedbackEffects = buildFeedbackPolicyEffects(input);
+  const feedbackEffects = buildFeedbackPolicyEffects(input, config);
   const riskLensFindings = buildRiskLensFindings(input, config);
   const blockers = buildBlockers(input, feedbackEffects);
   const reviewQueue = buildReviewQueue(input, feedbackEffects, config);
@@ -315,6 +315,11 @@ export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): str
     max_questions: resolved.max_questions,
     max_review_first: resolved.max_review_first,
     max_suggested_comments: resolved.max_suggested_comments,
+    required_manual_checks: resolved.required_manual_checks.map((check) => ({
+      id: check.id,
+      path_patterns: check.path_patterns,
+      prompt: check.prompt
+    })),
     risk_lenses: RISK_LENSES.map((lens) => [lens, resolved.risk_lenses[lens]])
   };
   return crypto.createHash("sha256").update(JSON.stringify(fingerprint)).digest("hex");
@@ -1319,10 +1324,35 @@ function changedFileQueueDrafts(
     });
 }
 
-function buildFeedbackPolicyEffects(input: BuildHumanReviewInput): FeedbackPolicyEffect[] {
+function buildFeedbackPolicyEffects(input: BuildHumanReviewInput, config: HumanReviewBuildConfig): FeedbackPolicyEffect[] {
   const drafts: FeedbackPolicyEffectDraft[] = [];
   const changedFiles = input.prSurface?.scope.changed_files ?? [];
   const riskRulePaths = buildPrRiskRulePathIndex(input.prSurface);
+
+  for (const policy of config.required_manual_checks) {
+    const matchers = policy.path_patterns.map(buildFeedbackPathMatcher);
+    const paths = changedFiles
+      .filter((file) => matchers.some((matcher) => matcher.matches(file.path)))
+      .map((file) => normalizeEvidencePath(file.path));
+    if (paths.length === 0) {
+      continue;
+    }
+    const recordedEvidence = recordedManualCheckEvidence(input, policy.prompt);
+    const recorded = recordedEvidence.length > 0;
+    drafts.push({
+      kind: "team_policy",
+      summary: recorded
+        ? `Configured manual check ${policy.id} matched changed file(s), and matching manual-check evidence is recorded.`
+        : `Configured manual check ${policy.id} matched changed file(s), but the required manual check is missing.`,
+      action: recorded
+        ? `${MANUAL_CHECK_RECORDED_PREFIX} ${policy.prompt}`
+        : `${RECORD_MANUAL_CHECK_PREFIX} ${policy.prompt}`,
+      evidence: recordedEvidence,
+      paths,
+      risk_ids: [`config:${policy.id}`],
+      confidence: recorded ? "medium" : "high"
+    });
+  }
 
   for (const feedbackFile of input.feedback ?? []) {
     for (const policy of feedbackFile.false_positives ?? []) {

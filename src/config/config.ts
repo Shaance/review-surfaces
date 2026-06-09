@@ -2,7 +2,13 @@ import path from "node:path";
 import { fileExists, readText } from "../core/files";
 import { isRecord } from "../core/guards";
 import { parseYaml } from "../core/simple-yaml";
-import { DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, HumanReviewBuildConfig, RISK_LENSES, RiskLens } from "../human/contract";
+import {
+  DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+  HumanReviewBuildConfig,
+  HumanReviewRequiredManualCheckConfig,
+  RISK_LENSES,
+  RiskLens
+} from "../human/contract";
 
 export interface ReviewAreaConfig {
   id: string;
@@ -149,7 +155,11 @@ export function normalizeConfig(raw: Record<string, unknown>): ReviewSurfacesCon
         defaultConfig.human_review.max_suggested_comments
       ),
       max_questions: positiveIntValue(readRecord(raw.human_review).max_questions, defaultConfig.human_review.max_questions),
-      risk_lenses: riskLensConfig(readRecord(raw.human_review).risk_lenses, defaultConfig.human_review.risk_lenses)
+      risk_lenses: riskLensConfig(readRecord(raw.human_review).risk_lenses, defaultConfig.human_review.risk_lenses),
+      required_manual_checks: requiredManualChecksConfig(
+        readRecord(raw.human_review).required_manual_checks,
+        defaultConfig.human_review.required_manual_checks
+      )
     }
   };
 }
@@ -173,6 +183,33 @@ function riskLensConfig(value: unknown, fallback: Record<RiskLens, boolean>): Re
   return config;
 }
 
+function requiredManualChecksConfig(value: unknown, fallback: HumanReviewRequiredManualCheckConfig[]): HumanReviewRequiredManualCheckConfig[] {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+  const checks: HumanReviewRequiredManualCheckConfig[] = [];
+  for (const [index, entry] of value.entries()) {
+    const record = readRecord(entry);
+    const id = stringValue(record.id, `manual_check_${index + 1}`).trim();
+    const prompt = stringValue(record.prompt, stringValue(record.required_manual_check, "")).trim();
+    const pathPatterns = uniqueStrings([
+      ...stringArray(record.path_patterns, []),
+      ...stringArray(record.paths, []),
+      ...compactString(record.path_pattern),
+      ...compactString(record.path)
+    ]);
+    if (!id || !prompt || pathPatterns.length === 0) {
+      continue;
+    }
+    checks.push({
+      id,
+      path_patterns: pathPatterns,
+      prompt
+    });
+  }
+  return checks;
+}
+
 function stringValue(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
 }
@@ -194,6 +231,14 @@ function stringArray(value: unknown, fallback: string[]): string[] {
 
 function onlyStrings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function compactString(value: unknown): string[] {
+  return typeof value === "string" && value.trim() ? [value] : [];
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
 
 function parseAreas(value: unknown): ReviewAreaConfig[] | undefined {

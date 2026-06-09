@@ -73,7 +73,13 @@ test("review-surfaces.HUMAN_REVIEW.16 parses human_review caps and risk lens tog
         "  risk_lenses:",
         "    api_contract: false",
         "    security_privacy: true",
-        "    llm_trust_boundary: false"
+        "    llm_trust_boundary: false",
+        "  required_manual_checks:",
+        "    - id: workflow_secret_boundary",
+        "      path_patterns:",
+        "        - .github/workflows/**",
+        "        - src/llm/provider*",
+        "      prompt: Confirm PR-controlled code cannot access secrets."
       ].join("\n")
     );
     const config = await loadConfig(tmp);
@@ -86,6 +92,13 @@ test("review-surfaces.HUMAN_REVIEW.16 parses human_review caps and risk lens tog
     assert.equal(config.human_review.risk_lenses.security_privacy, true);
     assert.equal(config.human_review.risk_lenses.llm_trust_boundary, false);
     assert.equal(config.human_review.risk_lenses.test_evidence, true);
+    assert.deepEqual(config.human_review.required_manual_checks, [
+      {
+        id: "workflow_secret_boundary",
+        path_patterns: [".github/workflows/**", "src/llm/provider*"],
+        prompt: "Confirm PR-controlled code cannot access secrets."
+      }
+    ]);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -103,7 +116,13 @@ test("review-surfaces.HUMAN_REVIEW.16 invalid human_review caps fall back to saf
         "  max_questions: nope",
         "  risk_lenses:",
         "    api_contract: nope",
-        "    security_privacy: false"
+        "    security_privacy: false",
+        "  required_manual_checks:",
+        "    - id: missing_prompt",
+        "      path_patterns:",
+        "        - .github/workflows/**",
+        "    - id: missing_paths",
+        "      prompt: Confirm PR-controlled code cannot access secrets."
       ].join("\n")
     );
     const config = await loadConfig(tmp);
@@ -112,6 +131,7 @@ test("review-surfaces.HUMAN_REVIEW.16 invalid human_review caps fall back to saf
     assert.equal(config.human_review.max_questions, defaultConfig.human_review.max_questions);
     assert.equal(config.human_review.risk_lenses.api_contract, true);
     assert.equal(config.human_review.risk_lenses.security_privacy, false);
+    assert.deepEqual(config.human_review.required_manual_checks, []);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

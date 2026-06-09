@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildHumanReview } from "../src/human/human-review";
+import { buildHumanReview, humanReviewConfigSignature } from "../src/human/human-review";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import {
   HUMAN_STANDALONE_ARTIFACTS,
@@ -788,6 +788,22 @@ test("review-surfaces.HUMAN_REVIEW.16 default config preserves the full queue be
   assert.ok(model.review_queue.length > 7);
 });
 
+test("review-surfaces.HUMAN_REVIEW.17 required manual checks participate in the config signature", () => {
+  assert.notEqual(
+    humanReviewConfigSignature(DEFAULT_HUMAN_REVIEW_BUILD_CONFIG),
+    humanReviewConfigSignature({
+      ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+      required_manual_checks: [
+        {
+          id: "docs_product_contract",
+          path_patterns: ["docs/**"],
+          prompt: "Confirm documentation changes do not alter product contract unexpectedly."
+        }
+      ]
+    })
+  );
+});
+
 test("risk lenses classify renamed source paths as review signals", () => {
   const surface = prSurfaceFixture();
   surface.risks.candidates = [];
@@ -1532,6 +1548,61 @@ test("recorded team-policy manual check clears the feedback policy blocker", () 
   assert.equal(recordedEffect.evidence.some((ref) => ref.note?.includes("Manual check recorded: Confirm PR-controlled code cannot access secrets.")), true);
   assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-FEEDBACK-001"), false);
   assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("policy:POLICY-CI-SECRET-001")), false);
+});
+
+test("configured required manual checks block until current-head evidence records them", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  const config = {
+    ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
+    required_manual_checks: [
+      {
+        id: "docs_product_contract",
+        path_patterns: ["docs/**"],
+        prompt: "Confirm documentation changes do not alter product contract unexpectedly."
+      }
+    ]
+  };
+
+  const missing = buildHumanReview({
+    packet,
+    prSurface: surface,
+    config
+  });
+
+  assert.equal(missing.feedback_effects.some((effect) => effect.kind === "team_policy" && effect.risk_ids.includes("config:docs_product_contract")), true);
+  assert.equal(missing.blockers.some((blocker) => blocker.required_action.includes("Confirm documentation changes do not alter product contract unexpectedly.")), true);
+  assert.equal(missing.questions.some((question) => question.maps_to_risks.includes("config:docs_product_contract")), true);
+  assert.equal(missing.test_plan.some((item) => item.kind === "manual" && item.priority === "required" && item.maps_to_risks.includes("config:docs_product_contract")), true);
+
+  packet.risks.test_evidence.push({
+    id: "TEST-CONFIG-MANUAL-CHECK",
+    kind: "indirect",
+    summary: "Configured manual check recorded.",
+    evidence: [
+      feedbackEvidence(
+        ".review-surfaces/feedback/manual-dogfood.yaml",
+        "Manual check recorded: Confirm documentation changes do not alter product contract unexpectedly.",
+        { sha: "abc123" }
+      )
+    ]
+  });
+  const recorded = buildHumanReview({
+    packet,
+    prSurface: surface,
+    config
+  });
+
+  assert.equal(recorded.feedback_effects.some((effect) => effect.kind === "team_policy" && effect.action.startsWith("Manual check recorded:")), true);
+  assert.equal(recorded.blockers.some((blocker) => blocker.required_action.includes("Confirm documentation changes do not alter product contract unexpectedly.")), false);
+  assert.equal(recorded.test_plan.some((item) => item.maps_to_risks.includes("config:docs_product_contract")), false);
 });
 
 test("path-scoped false-positive feedback does not downgrade mixed-path risk evidence", () => {
