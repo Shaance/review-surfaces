@@ -1012,8 +1012,10 @@ test("human suggested comments ask for CI secret-boundary manual check only when
   surface.risks.candidates = [prRiskFixture("ci_secret_boundary_change")];
 
   const missing = buildHumanReview({ packet, prSurface: surface });
-  assert.ok(missing.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-CI")));
-  assert.ok(missing.suggested_comments.some((comment) => comment.severity === "blocking" && /manual check/.test(comment.body)));
+  const missingManualCheckComments = missing.suggested_comments.filter((comment) => /manual check/.test(comment.body));
+  assert.equal(missingManualCheckComments.length, 1);
+  assert.equal(missingManualCheckComments[0]?.severity, "blocking");
+  assert.equal(missing.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-CI")), false);
 
   packet.risks.test_evidence.push({
     id: "TEST-MANUAL-CI-SECRET",

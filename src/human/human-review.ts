@@ -1254,10 +1254,8 @@ function commentDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandid
     case "comment_surface_change":
       return [commentDraftFromPrRisk(input, "non_blocking", risk, "Please include or inspect a rendered comment/human surface fixture so reviewers can verify the Markdown output directly.")];
     case "ci_secret_boundary_change":
-      if (hasRecordedCiSecretBoundaryManualCheck(input)) {
-        return [];
-      }
-      return [commentDraftFromPrRisk(input, "blocking", risk, "This touches the CI secret boundary. Can you record the manual check confirming PR-controlled code cannot access secrets?")];
+      // The merge-readiness blocker is the canonical suggested comment for this manual-check gate.
+      return [];
     case "schema_contract_change":
       return [commentDraftFromPrRisk(input, "blocking", risk, "This changes a persisted schema or artifact contract. Can you add a compatibility fixture for an existing generated artifact, or explicitly version this as a breaking change?")];
     case "deleted_or_renamed_surface":
