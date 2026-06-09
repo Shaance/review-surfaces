@@ -1,4 +1,5 @@
 const FOCUSED_TEST_TARGET_PATTERN = /(?:^|\s)(?:(?:dist\/)?tests|test|src|lib|app|packages)\/\S+|(?:^|\s)\S+\.(?:test|spec)\.[cm]?[jt]sx?(?:\s|$)/;
+const ENV_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=.*$/;
 const TEST_NAME_FILTER_PATTERN = /(?:^|\s)(?:--test-name-pattern|--testNamePattern|--grep|-t)(?:=|\s)/;
 const TEST_PROJECT_FILTER_PATTERN = /(?:^|\s)(?:--project|--selectProjects)(?:=|\s)/;
 const TEST_SCRIPT_ALIAS_PATTERN = /^(?:run\s+)?test:([\w.:-]+)(?:\s|$)/;
@@ -8,20 +9,26 @@ export function normalizeCommand(command: string): string {
 }
 
 export function commandLooksLikeTestCommand(command: string): boolean {
-  const normalized = normalizeCommand(command);
-  return packageManagerBodyLooksLikeTest(parsedPackageManagerCommand(normalized)?.body ?? "")
+  const normalized = normalizeCommandForClassification(command);
+  return commandLooksLikeTestCommandFromNormalized(normalized);
+}
+
+function commandLooksLikeTestCommandFromNormalized(normalized: string, parsedPackageCommand = parsedPackageManagerCommand(normalized)): boolean {
+  return packageManagerBodyLooksLikeTest(parsedPackageCommand?.body ?? "")
     || nodeTestArgs(normalized) !== undefined
     || /^(?:vitest|jest|tap|uvu)(?:\s|$)/.test(normalized);
 }
 
 export function commandLooksLikeFocusedTestCommand(command: string): boolean {
-  const normalized = normalizeCommand(command);
+  const normalized = normalizeCommandForClassification(command);
   const nodeTestFocused = nodeTestFocusClassification(normalized);
   if (nodeTestFocused !== undefined) {
     return nodeTestFocused;
   }
   const parsedPackageCommand = parsedPackageManagerCommand(normalized);
   const packageCommandBody = parsedPackageCommand?.body ?? "";
+  const yarnWorkspacesBody = parseYarnWorkspacesBody(packageCommandBody);
+  const looksLikeTest = commandLooksLikeTestCommandFromNormalized(normalized, parsedPackageCommand);
   const testScriptAlias = packageCommandBody.match(TEST_SCRIPT_ALIAS_PATTERN)?.[1];
   const hasPackageFocusFilter = parsedPackageCommand?.hasFocusFilter === true
     || packageCommandBodyHasFocusFilter(parsedPackageCommand);
@@ -29,10 +36,11 @@ export function commandLooksLikeFocusedTestCommand(command: string): boolean {
   if (execNodeTestCommand !== undefined) {
     return hasPackageFocusFilter || (nodeTestFocusClassification(execNodeTestCommand) ?? false);
   }
-  return (hasPackageFocusFilter && commandLooksLikeTestCommand(normalized))
+  return (hasPackageFocusFilter && looksLikeTest)
     || (testScriptAlias !== undefined && !looksLikeBroadTestScriptAlias(testScriptAlias))
-    || (hasChangedOnlyTestFilter(normalized) && commandLooksLikeTestCommand(normalized))
-    || (hasProjectOnlyTestFilter(normalized) && commandLooksLikeTestCommand(normalized))
+    || ((yarnWorkspacesBody?.hasFocusFilter ?? false) && looksLikeTest)
+    || (hasChangedOnlyTestFilter(normalized) && looksLikeTest)
+    || (hasProjectOnlyTestFilter(normalized) && looksLikeTest)
     || hasFocusedTestTarget(normalized)
     || hasTestNameFilter(normalized);
 }
@@ -42,13 +50,56 @@ export function commandLooksLikeBroadTestCommand(command: string): boolean {
 }
 
 export function commandLooksLikeLocalValidationCommand(command: string): boolean {
-  const normalized = normalizeCommand(command);
-  const packageCommandBody = parsedPackageManagerCommand(normalized)?.body ?? "";
+  const normalized = normalizeCommandForClassification(command);
+  const parsedPackageCommand = parsedPackageManagerCommand(normalized);
+  const packageCommandBody = parsedPackageCommand?.body ?? "";
   return (
-    commandLooksLikeTestCommand(normalized) ||
+    commandLooksLikeTestCommandFromNormalized(normalized, parsedPackageCommand) ||
     /^(?:(?:run\s+)?(?:lint|typecheck|build)(?:\s|$))/.test(packageCommandBody) ||
     /^tsc(?:\s|$)/.test(normalized)
   );
+}
+
+function normalizeCommandForClassification(command: string): string {
+  const normalized = normalizeCommand(command);
+  const firstWordEnd = shellWordEnd(normalized, 0);
+  if (!ENV_ASSIGNMENT_PATTERN.test(normalized.slice(0, firstWordEnd))) {
+    return normalized;
+  }
+
+  let index = 0;
+  while (index < normalized.length) {
+    const wordEnd = shellWordEnd(normalized, index);
+    if (!ENV_ASSIGNMENT_PATTERN.test(normalized.slice(index, wordEnd))) {
+      break;
+    }
+    index = wordEnd;
+    while (normalized[index] === " ") {
+      index += 1;
+    }
+  }
+  return normalized.slice(index);
+}
+
+function shellWordEnd(value: string, start: number): number {
+  let quote: string | undefined;
+  for (let index = start; index < value.length; index += 1) {
+    const char = value[index];
+    if (quote !== undefined) {
+      if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+    if (char === " ") {
+      return index;
+    }
+  }
+  return value.length;
 }
 
 function looksLikeBroadTestScriptAlias(alias: string): boolean {
@@ -97,23 +148,46 @@ function parsedPackageManagerCommand(normalized: string): ParsedPackageManagerCo
 
 function packageManagerBodyLooksLikeTest(body: string): boolean {
   return /^(?:(?:run\s+)?test(?::[\w.:-]+)?|(?:vitest|jest|tap|uvu)|exec\s+(?:--\s+)?(?:vitest|jest|tap|uvu))(?:\s|$)/.test(body)
-    || yarnWorkspacesBodyLooksLikeTest(body)
+    || (parseYarnWorkspacesBody(body)?.looksLikeTest ?? false)
     || packageManagerExecNodeTestCommand(body) !== undefined;
 }
 
-function yarnWorkspacesBodyLooksLikeTest(body: string): boolean {
+interface YarnWorkspacesBody {
+  looksLikeTest: boolean;
+  hasFocusFilter: boolean;
+}
+
+function parseYarnWorkspacesBody(body: string): YarnWorkspacesBody | undefined {
   const tokens = body.split(" ").filter(Boolean);
   if (tokens[0] !== "workspaces") {
-    return false;
+    return undefined;
   }
   if (tokens[1] === "run") {
-    return testScriptTokenLooksLikeTest(tokens[2]);
+    return {
+      looksLikeTest: testScriptTokenLooksLikeTest(tokens[2]),
+      hasFocusFilter: false
+    };
   }
   if (tokens[1] === "foreach") {
     const runIndex = tokens.indexOf("run", 2);
-    return runIndex >= 0 && testScriptTokenLooksLikeTest(tokens[runIndex + 1]);
+    return {
+      looksLikeTest: runIndex >= 0 && testScriptTokenLooksLikeTest(tokens[runIndex + 1]),
+      hasFocusFilter: tokens.slice(2, runIndex >= 0 ? runIndex : undefined).some(yarnForeachOptionIsFocusFilter)
+    };
   }
-  return false;
+  return {
+    looksLikeTest: false,
+    hasFocusFilter: false
+  };
+}
+
+function yarnForeachOptionIsFocusFilter(token: string): boolean {
+  return token === "--include"
+    || token.startsWith("--include=")
+    || token === "--from"
+    || token.startsWith("--from=")
+    || token === "--since"
+    || token.startsWith("--since=");
 }
 
 function testScriptTokenLooksLikeTest(token: string | undefined): boolean {
@@ -220,7 +294,10 @@ function nodeTestFocusClassification(normalized: string): boolean | undefined {
 }
 
 function hasFocusedTestTarget(value: string): boolean {
-  return focusedTestTargetTokens(value).some((token) => !nodeTestGlobLooksBroad(token) && FOCUSED_TEST_TARGET_PATTERN.test(` ${token} `));
+  return focusedTestTargetTokens(value).some((token) => {
+    const normalized = normalizeTargetToken(token);
+    return !nodeTestGlobLooksBroad(normalized) && FOCUSED_TEST_TARGET_PATTERN.test(` ${normalized} `);
+  });
 }
 
 function hasTestNameFilter(value: string): boolean {
@@ -329,8 +406,12 @@ function cleanCommandToken(token: string): string {
   return token.replace(/^(['"])(.*)\1$/, "$2");
 }
 
+function normalizeTargetToken(token: string): string {
+  return cleanCommandToken(token).replace(/^\.\//, "");
+}
+
 function nodeTestGlobLooksBroad(token: string): boolean {
-  const normalized = cleanCommandToken(token).replace(/^\.\//, "");
+  const normalized = normalizeTargetToken(token);
   return /^(?:(?:dist\/)?tests\/(?:\*\*\/)?|test\/\*\*\/|(?:\*\*\/)?)\*\.(?:test|spec)\.[cm]?[jt]sx?$/.test(normalized);
 }
 
@@ -343,6 +424,10 @@ function focusedTestTargetTokens(value: string): string[] {
       continue;
     }
     if (token.startsWith("-")) {
+      const inlineTarget = runnerInlineFocusTarget(token);
+      if (inlineTarget !== undefined) {
+        targets.push(inlineTarget);
+      }
       if (runnerOptionConsumesNext(token)) {
         index += 1;
       }
@@ -351,6 +436,18 @@ function focusedTestTargetTokens(value: string): string[] {
     targets.push(cleanCommandToken(token));
   }
   return targets;
+}
+
+function runnerInlineFocusTarget(option: string): string | undefined {
+  const separatorIndex = option.indexOf("=");
+  if (separatorIndex <= 0) {
+    return undefined;
+  }
+  const name = option.slice(0, separatorIndex);
+  if (name !== "--dir") {
+    return undefined;
+  }
+  return cleanCommandToken(option.slice(separatorIndex + 1));
 }
 
 function runnerOptionConsumesNext(option: string): boolean {
