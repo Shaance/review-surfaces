@@ -1035,6 +1035,56 @@ test("human suggested comments ask for CI secret-boundary manual check only when
   assert.equal(recorded.suggested_comments.some((comment) => /CI secret boundary.*manual check/.test(comment.body)), false);
 });
 
+test("human suggested comments do not duplicate failed-test blocker comments", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+  packet.risks.test_evidence.push({
+    id: "TEST-FAILED",
+    kind: "missing",
+    summary: "Parsed test results report one failed test.",
+    evidence: [missingEvidence("Test totals: 1 failed out of 100 cases.")]
+  });
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [prRiskFixture("failed_or_skipped_test")];
+
+  const model = buildHumanReview({ packet, prSurface: surface });
+  const failedValidationComments = model.suggested_comments.filter((comment) => /fail/i.test(comment.body));
+
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-TESTS-001"), true);
+  assert.equal(failedValidationComments.length, 1);
+  assert.equal(failedValidationComments[0]?.body, "Fix or explicitly defer the failing validation before merge.");
+  assert.equal(model.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-TEST")), false);
+});
+
+test("human suggested comments keep skipped-only test risk drafts", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [
+    {
+      ...prRiskFixture("failed_or_skipped_test"),
+      summary: "Parsed test results report one skipped test.",
+      evidence: [missingEvidence("Test totals: 1 skipped out of 100 cases.")]
+    }
+  ];
+
+  const model = buildHumanReview({ packet, prSurface: surface });
+
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-TESTS-001"), false);
+  assert.equal(model.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-TEST")), true);
+  assert.equal(model.suggested_comments.find((comment) => comment.risk_ids.includes("PR-RISK-TEST"))?.severity, "blocking");
+});
+
 test("blocking suggested comments stay visible when non-blocking risk drafts exceed the cap", () => {
   const packet = packetFixture();
   packet.evaluation.results = [];

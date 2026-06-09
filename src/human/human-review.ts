@@ -208,7 +208,7 @@ function buildBlockers(input: BuildHumanReviewInput): ReviewBlocker[] {
     });
   }
 
-  const failedTestEvidence = input.packet.risks.test_evidence.filter(isFailedValidationEvidence);
+  const failedTestEvidence = failedValidationEvidence(input);
   if (failedTestEvidence.length > 0) {
     blockers.push({
       id: "BLOCK-TESTS-001",
@@ -1061,6 +1061,17 @@ function isFailedValidationEvidence(item: RisksModel["test_evidence"][number]): 
   return /\b(?:exit(?:_code)?=|exit\s+)(?:[1-9]\d*)\b/i.test(commandText) || /\bstatus=failed\b/i.test(commandText);
 }
 
+function failedValidationEvidence(input: BuildHumanReviewInput): RisksModel["test_evidence"] {
+  return input.packet.risks.test_evidence.filter(isFailedValidationEvidence);
+}
+
+function prRiskMentionsFailedTests(risk: PrRiskCandidate): boolean {
+  const evidenceText = risk.evidence
+    .flatMap((ref) => compactStrings([ref.note, ref.command, ref.test_name, ref.path, ref.acai_id]))
+    .join(" ");
+  return /\b(fail(?:ed|ing)?|error)\b/i.test(`${risk.summary} ${evidenceText}`);
+}
+
 function scorePrRisk(risk: PrRiskCandidate, anchor: QueueAnchor): number {
   return severityWeight(risk.severity) + ruleWeight(risk.rule) + (anchor.line_start ? 10 : 0) + (anchor.hunk_header ? 10 : 0);
 }
@@ -1261,6 +1272,9 @@ function commentDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandid
     case "deleted_or_renamed_surface":
       return [commentDraftFromPrRisk(input, "clarifying", risk, "This deletes or renames a generated or reviewer-facing surface. Can you confirm no stale imports, generated references, or reviewer links still point to the old path?")];
     case "failed_or_skipped_test":
+      if (failedValidationEvidence(input).length > 0 && prRiskMentionsFailedTests(risk)) {
+        return [];
+      }
       return [commentDraftFromPrRisk(input, "blocking", risk, "Validation evidence indicates failed or skipped tests. Can you fix the failures or record why the skipped tests are intentional before approval?")];
     case "large_diff":
       return [commentDraftFromPrRisk(input, "non_blocking", risk, "This is a large diff. Consider splitting it or listing the areas that received deeper owner review.")];
