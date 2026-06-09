@@ -65,6 +65,7 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     const humanMarkdown = fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.md"), "utf8");
     assert.equal(validateJsonSchema(HUMAN_REVIEW_SCHEMA, human).valid, true);
     assert.equal(human.mode, "pr");
+    assert.equal(human.generated_from.base_sha, surface.scope.base_sha);
     const changedQueueItem = human.review_queue.find((item: { path: string }) => item.path === CHANGED);
     assert.ok(changedQueueItem, "human review queue should include the changed renderer file");
     assert.match(changedQueueItem.hunk_header, /^@@ -\d+,\d+ \+\d+,\d+ @@$/);
@@ -274,6 +275,16 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     assert.match(staleHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
     assert.match(staleHumanPrComment.stderr, /Ignoring stale or non-PR human_review\.json/);
     assert.doesNotMatch(staleHumanPrComment.stdout, /JSON sentinel PR comment queue/);
+    const staleBaseShaHuman = {
+      ...human,
+      generated_from: { ...human.generated_from, base_sha: "stale-base-sha" }
+    };
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(staleBaseShaHuman, null, 2));
+    const staleBaseShaHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(staleBaseShaHumanPrComment.status, 4, "base-SHA-stale human JSON should fall back to the blocked PR sidecar");
+    assert.match(staleBaseShaHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
+    assert.match(staleBaseShaHumanPrComment.stderr, /Ignoring stale or non-PR human_review\.json/);
+    assert.doesNotMatch(staleBaseShaHumanPrComment.stdout, /JSON sentinel PR comment queue/);
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "{");
     const malformedHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
     assert.equal(malformedHumanPrComment.status, 4, "malformed optional human JSON should not block PR comment rendering");
@@ -807,6 +818,42 @@ test("comment --review-scope pr renders agent-file narratives locally but does n
     assert.doesNotMatch(comment.stdout, /\d+ satisfied, \d+ partial, \d+ missing/);
     assert.doesNotMatch(comment.stdout, /Start with missing and partial requirement results/);
     assert.doesNotMatch(comment.stdout, /### Affected coverage/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("all --review-scope pr --cache reuses a ready PR surface while keeping human review PR-scoped", () => {
+  const tmp = setupChangedRepo();
+  try {
+    const narrative = {
+      summary: "Adjusts the comment renderer.",
+      what_changed: [{ text: "Tweaked the sticky comment renderer", paths: [CHANGED] }],
+      why_it_matters: [{ text: "Affects reviewer-facing output", paths: [CHANGED] }],
+      review_first: [{ text: "Confirm the rendered comment", paths: [CHANGED] }],
+      risk_narratives: []
+    };
+    fs.writeFileSync(path.join(tmp, "narrative.json"), JSON.stringify(narrative));
+
+    const prime = runCli(tmp, [...ALL_PR, "--cache", "--provider", "agent-file", "--agent-input", "narrative.json"]);
+    assert.equal(prime.status, 0, prime.stderr);
+    const surface = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "pr_review_surface.json"), "utf8"));
+    assert.equal(surface.status, "ready");
+
+    const hit = runCli(tmp, [...ALL_PR, "--cache", "--provider", "agent-file", "--agent-input", "narrative.json"]);
+    assert.equal(hit.status, 0, hit.stderr);
+    assert.match(hit.stdout, /inputs unchanged \(signature match\)/);
+    assert.doesNotMatch(hit.stdout, /Wrote review-surfaces artifacts to \.review-surfaces/);
+
+    const human = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    assert.equal(human.mode, "pr");
+    assert.equal(human.generated_from.pr_surface_path, ".review-surfaces/pr_review_surface.json");
+    assert.equal(human.generated_from.base_sha, surface.scope.base_sha);
+    assert.equal(human.generated_from.head_sha, surface.scope.head_sha);
+    const changedQueueItem = human.review_queue.find((item: { path: string }) => item.path === CHANGED);
+    assert.ok(changedQueueItem, "cache-hit human review should still be built from the PR surface and diff");
+    assert.match(changedQueueItem.hunk_header, /^@@ -\d+,\d+ \+\d+,\d+ @@$/);
+    assert.ok(changedQueueItem.line_start > 0, "cache-hit human review should preserve diff-derived hunk anchors");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

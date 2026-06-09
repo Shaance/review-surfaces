@@ -325,7 +325,18 @@ interface CacheSnapshot {
   // reuse a packet whose coverage/risks predate the current inputs.
   packetProducingSignature?: string;
   packetPath: string;
-  packetValid: boolean;
+  packet?: ReviewPacket;
+}
+
+interface PrSurfaceCacheReuse {
+  reusable: boolean;
+  surface?: PrReviewSurfaceModel;
+}
+
+interface HumanReviewArtifactInputs {
+  packet?: ReviewPacket;
+  prSurface?: PrReviewSurfaceModel;
+  feedback?: FeedbackFile[];
 }
 
 // Resolve the EFFECTIVE output dir with the SAME precedence collectInputs uses
@@ -377,11 +388,11 @@ async function readCacheSnapshot(cwd: string, parsed: ParsedArgs): Promise<Cache
       packetProducingSignature = undefined;
     }
   }
-  let packetValid = false;
+  let packet: ReviewPacket | undefined;
   if (fileExists(packetPath)) {
-    packetValid = await isSchemaValidPacket(cwd, parsed, packetPath);
+    packet = await readSchemaValidPacket(cwd, parsed, packetPath);
   }
-  return { manifestPath, manifestRaw, priorSignature, packetProducingSignature, packetPath, packetValid };
+  return { manifestPath, manifestRaw, priorSignature, packetProducingSignature, packetPath, packet };
 }
 
 // FINDING E (cache schema validity): a --cache signature hit must reuse a packet
@@ -395,12 +406,12 @@ async function readCacheSnapshot(cwd: string, parsed: ParsedArgs): Promise<Cache
 // If the schema itself cannot be read (a repo without schemas/), we conservatively
 // fall back to the parseable-only check so caching is not silently disabled for
 // repos that lack the schema file; `all` still writes a schema-valid packet there.
-async function isSchemaValidPacket(cwd: string, parsed: ParsedArgs, packetPath: string): Promise<boolean> {
+async function readSchemaValidPacket(cwd: string, parsed: ParsedArgs, packetPath: string): Promise<ReviewPacket | undefined> {
   let packetData: unknown;
   try {
     packetData = JSON.parse(fs.readFileSync(packetPath, "utf8"));
   } catch {
-    return false; // unparseable => cache miss
+    return undefined; // unparseable => cache miss
   }
   const schemaPath = path.resolve(cwd, stringFlag(parsed, "schema") ?? "schemas/review_packet.schema.json");
   let schema: unknown;
@@ -409,14 +420,14 @@ async function isSchemaValidPacket(cwd: string, parsed: ParsedArgs, packetPath: 
   } catch {
     // Schema unavailable: keep the prior parseable-only behavior so caching still
     // works on repos without a checked-in schema.
-    return true;
+    return packetData as ReviewPacket;
   }
-  return validateJsonSchema(schema, packetData).valid;
+  return validateJsonSchema(schema, packetData).valid ? packetData as ReviewPacket : undefined;
 }
 
 function isCacheHit(snapshot: CacheSnapshot, currentSignature: string | undefined): boolean {
   return (
-    snapshot.packetValid &&
+    snapshot.packet !== undefined &&
     snapshot.manifestRaw !== "" &&
     typeof currentSignature === "string" &&
     snapshot.priorSignature === currentSignature &&
@@ -446,7 +457,9 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // missing or stale-for-another-head. So in pr mode only honor the cache shortcut
   // when a surface for the CURRENT head already exists; otherwise fall through to a
   // full regenerate so the PR block runs and (re)writes it.
-  if (cacheSnapshot && isCacheHit(cacheSnapshot, collection.manifest.signature) && prSurfaceCacheReusable(parsed, collection, config)) {
+  const cacheHit = cacheSnapshot ? isCacheHit(cacheSnapshot, collection.manifest.signature) : false;
+  const prSurfaceReuse = cacheHit ? prSurfaceCacheReuse(parsed, collection, config) : undefined;
+  if (cacheSnapshot && cacheHit && prSurfaceReuse?.reusable) {
     const strict = booleanFlag(parsed, "strict");
     const evaluation = loadEvaluation(collection.outputDir);
     // Under --strict the gate MUST run. If the cached output dir is incomplete
@@ -469,11 +482,19 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // strict-without-evaluation falls through to regenerate below) we keep the
       // prior reuse-and-succeed behavior rather than forcing a regenerate.
       if (evaluation) {
-        await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config);
+        await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, {
+          packet: cacheSnapshot.packet,
+          prSurface: prSurfaceReuse.surface,
+          feedback: collection.feedback
+        });
         console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
         return applyGate(parsed, evaluation, collection, provider, config);
       }
-      await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config);
+      await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, {
+        packet: cacheSnapshot.packet,
+        prSurface: prSurfaceReuse.surface,
+        feedback: collection.feedback
+      });
       console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
       return ExitCodes.success;
     }
@@ -711,26 +732,19 @@ function effectiveNarrativeModel(parsed: ParsedArgs, config: ReviewSurfacesConfi
   return stringFlag(parsed, "model") ?? config.llm.model ?? process.env.REVIEW_SURFACES_AI_MODEL ?? undefined;
 }
 
-function prSurfaceCacheReusable(parsed: ParsedArgs, collection: CollectionResult, config: ReviewSurfacesConfig): boolean {
+function prSurfaceCacheReuse(parsed: ParsedArgs, collection: CollectionResult, config: ReviewSurfacesConfig): PrSurfaceCacheReuse {
   if (reviewScope(parsed) !== "pr") {
-    return true;
+    return { reusable: true };
   }
   const surfacePath = path.join(collection.outputDir, "pr_review_surface.json");
   try {
-    const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8")) as {
-      status?: string;
-      scope?: { head_sha?: string; base_sha?: string; base_ref?: string };
-      llm?: { provider?: string; model?: string };
-    };
-    if (prSurfaceIssues(collection.cwd, surface).length > 0) {
-      return false;
-    }
+    const surface = readPrSurfaceArtifact(collection.cwd, surfacePath);
     const requestedModel = effectiveNarrativeModel(parsed, config);
     // The surface depends on head AND base (coverage delta) AND the narrative
     // provider/model, none of which are in the whole-repo packet signature in pr
     // mode. Reuse only a READY surface that matches all of them; otherwise (stale
     // base, blocked surface, swapped provider/model) force a regenerate.
-    return (
+    const reusable = (
       surface?.status === "ready" &&
       surface.scope?.head_sha === collection.git.head_sha &&
       surface.scope?.base_sha === collection.git.base_sha &&
@@ -738,8 +752,9 @@ function prSurfaceCacheReusable(parsed: ParsedArgs, collection: CollectionResult
       surface.llm?.provider === providerFlag(parsed, config) &&
       (surface.llm?.model ?? undefined) === requestedModel
     );
+    return { reusable, surface: reusable ? surface : undefined };
   } catch {
-    return false;
+    return { reusable: false };
   }
 }
 
@@ -1043,13 +1058,14 @@ async function writeAndMaybeSummarizeHumanReviewFromArtifacts(
   cwd: string,
   outDir: string,
   scope: ReviewScope,
-  config: ReviewSurfacesConfig
+  config: ReviewSurfacesConfig,
+  inputs?: HumanReviewArtifactInputs
 ): Promise<void> {
   if (!config.human_review.enabled) {
     removeHumanReviewArtifacts(outDir);
     return;
   }
-  const humanReview = await writeHumanReviewFromArtifacts(cwd, outDir, scope, config);
+  const humanReview = await writeHumanReviewFromArtifacts(cwd, outDir, scope, config, inputs);
   if (config.human_review.default_entrypoint) {
     printHumanReviewTerminalSummary(cwd, outDir, humanReview);
   }
@@ -1063,8 +1079,14 @@ function removeHumanReviewArtifacts(outDir: string): void {
   }
 }
 
-async function writeHumanReviewFromArtifacts(cwd: string, outDir: string, scope: ReviewScope, config?: ReviewSurfacesConfig): Promise<HumanReviewModel> {
-  const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config);
+async function writeHumanReviewFromArtifacts(
+  cwd: string,
+  outDir: string,
+  scope: ReviewScope,
+  config?: ReviewSurfacesConfig,
+  inputs?: HumanReviewArtifactInputs
+): Promise<HumanReviewModel> {
+  const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config, inputs);
   await writeHumanReviewArtifacts(context.outputDir, context.model);
   return context.model;
 }
@@ -1128,33 +1150,35 @@ async function buildHumanReviewFromArtifacts(
   cwd: string,
   outDir: string,
   scope: ReviewScope,
-  config?: ReviewSurfacesConfig
+  config?: ReviewSurfacesConfig,
+  inputs?: HumanReviewArtifactInputs
 ): Promise<{ outputDir: string; model: HumanReviewModel }> {
   const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
   const packetPath = path.join(outputDir, "review_packet.json");
-  if (!fileExists(packetPath)) {
+  if (inputs?.packet === undefined && !fileExists(packetPath)) {
     throw missingPacketError(cwd, outDir);
   }
-  const packet = await readJson(packetPath) as ReviewPacket;
+  const packet = inputs?.packet ?? (await readJson(packetPath) as ReviewPacket);
   const surfacePath = path.join(path.dirname(packetPath), "pr_review_surface.json");
-  const surface = scope === "pr" && fileExists(surfacePath)
-    ? JSON.parse(fs.readFileSync(surfacePath, "utf8")) as PrReviewSurfaceModel
-    : undefined;
+  const surface = scope !== "pr"
+    ? undefined
+    : inputs?.prSurface ?? (fileExists(surfacePath)
+      ? readPrSurfaceArtifact(cwd, surfacePath)
+      : undefined);
   if (surface) {
-    assertValidPrSurface(cwd, surface);
     if (!prSurfaceMatchesPacketManifest(packet, surface)) {
       console.warn(
         `Ignoring stale pr_review_surface.json; run review-surfaces all --review-scope pr to regenerate it for the current packet.`
       );
       return {
         outputDir,
-        model: buildHumanReviewForPacket(cwd, outputDir, packet, undefined, undefined, readHumanReviewFeedback(outputDir), config)
+        model: buildHumanReviewForPacket(cwd, outputDir, packet, undefined, undefined, inputs?.feedback ?? readHumanReviewFeedback(outputDir), config)
       };
     }
   }
   return {
     outputDir,
-    model: buildHumanReviewForPacket(cwd, outputDir, packet, surface, undefined, readHumanReviewFeedback(outputDir), config)
+    model: buildHumanReviewForPacket(cwd, outputDir, packet, surface, undefined, inputs?.feedback ?? readHumanReviewFeedback(outputDir), config)
   };
 }
 
@@ -1458,8 +1482,7 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
       ExitCodes.usageError
     );
   }
-  const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8")) as PrReviewSurfaceModel;
-  assertValidPrSurface(cwd, surface);
+  const surface = readPrSurfaceArtifact(cwd, surfacePath);
   // Point the comment's "Full PR surface" pointer at the ACTUAL artifact path
   // (honoring --out / config output_dir), not a hardcoded .review-surfaces.
   const humanCommentModel = await loadCurrentHumanReviewForPrComment(cwd, path.dirname(surfacePath), surface, config);
@@ -1562,8 +1585,12 @@ function humanReviewMatchesPrSurface(
     return false;
   }
   const generatedFrom = candidate.generated_from;
+  const baseShaMatches =
+    typeof generatedFrom.base_sha !== "string" ||
+    generatedFrom.base_sha === surface.scope.base_sha;
   return (
     generatedFrom.base_ref === surface.scope.base_ref &&
+    baseShaMatches &&
     generatedFrom.head_ref === surface.scope.head_ref &&
     generatedFrom.head_sha === surface.scope.head_sha &&
     artifactPathMatches(cwd, generatedFrom.pr_surface_path, artifactPathForLog(cwd, outputDir, "pr_review_surface.json"))
@@ -1579,6 +1606,12 @@ function artifactPathMatches(cwd: string, actual: unknown, expected: string): bo
 
 function normalizeArtifactPath(cwd: string, value: string): string {
   return path.relative(cwd, path.resolve(cwd, value));
+}
+
+function readPrSurfaceArtifact(cwd: string, surfacePath: string): PrReviewSurfaceModel {
+  const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8")) as PrReviewSurfaceModel;
+  assertValidPrSurface(cwd, surface);
+  return surface;
 }
 
 function assertValidPrSurface(cwd: string, surface: unknown): void {

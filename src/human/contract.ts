@@ -388,6 +388,7 @@ export interface HumanReviewModel {
     packet_path: string;
     pr_surface_path?: string;
     base_ref: string;
+    base_sha?: string;
     head_ref: string;
     head_sha: string;
     human_review_config_signature?: string;

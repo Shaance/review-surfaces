@@ -346,12 +346,14 @@ export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): str
 }
 
 function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["generated_from"] {
-  const manifest = input.packet.manifest as { base_ref?: unknown; head_ref?: unknown; head_sha?: unknown };
+  const manifest = input.packet.manifest as { base_ref?: unknown; base_sha?: unknown; head_ref?: unknown; head_sha?: unknown };
   const prScope = input.prSurface?.scope;
+  const baseSha = prScope?.base_sha ?? stringOr(manifest.base_sha, "");
   return {
     packet_path: input.packetPath ?? ".review-surfaces/review_packet.json",
     pr_surface_path: input.prSurface ? input.prSurfacePath ?? ".review-surfaces/pr_review_surface.json" : undefined,
     base_ref: prScope?.base_ref ?? stringOr(manifest.base_ref, "origin/main"),
+    ...(baseSha ? { base_sha: baseSha } : {}),
     head_ref: prScope?.head_ref ?? stringOr(manifest.head_ref, "HEAD"),
     head_sha: prScope?.head_sha ?? stringOr(manifest.head_sha, "unknown"),
     human_review_config_signature: humanReviewConfigSignature(input.config)

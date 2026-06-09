@@ -299,6 +299,7 @@ test("human review schema validates since-last-review comparison slices", () => 
       packet_path: ".review-surfaces/review_packet.json",
       pr_surface_path: ".review-surfaces/pr_review_surface.json",
       base_ref: "origin/main",
+      base_sha: "base123",
       head_ref: "HEAD",
       head_sha: "abc123"
     }
