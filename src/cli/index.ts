@@ -458,7 +458,6 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // Inputs unchanged: restore the prior manifest bytes (collect just rewrote
       // it; only created_at could differ) and reuse the existing packet untouched.
       await writeText(cacheSnapshot.manifestPath, cacheSnapshot.manifestRaw);
-      console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
       const provider = providerFlag(parsed, config);
       // Round 6: a cache hit must match a normal run's gate behavior. Run
       // applyGate on the cached evaluation so a cached packet with a
@@ -472,10 +471,12 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       if (evaluation) {
         const humanReview = await writeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed));
         printHumanReviewTerminalSummary(cwd, collection.outputDir, humanReview);
+        console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
         return applyGate(parsed, evaluation, collection, provider, config);
       }
       const humanReview = await writeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed));
       printHumanReviewTerminalSummary(cwd, collection.outputDir, humanReview);
+      console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
       return ExitCodes.success;
     }
     console.warn("Cached output is incomplete (evaluation.yaml missing/unreadable); regenerating to apply the --strict gate.");
@@ -640,8 +641,8 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
-  console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
   printHumanReviewTerminalSummary(cwd, collection.outputDir, humanReview);
+  console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
   debug(parsed, `completed in ${Date.now() - startedAt}ms`);
   // Gate on the REQUESTED provider, not wholeRepoProvider: in pr mode the narrative
   // IS a remote call with the live provider, so a privacy-blocked diff must still
@@ -1027,7 +1028,6 @@ async function writeHumanReviewFromArtifacts(cwd: string, outDir: string, scope:
 }
 
 function printHumanReviewTerminalSummary(cwd: string, outDir: string, humanReview: HumanReviewModel): void {
-  console.log("");
   console.log(`Human review: ${artifactPathForLog(cwd, outDir, "human_review.md")}`);
   console.log(`Verdict: ${humanReview.verdict.decision}`);
   console.log(`Review first: ${humanReview.review_queue.length} item(s)`);

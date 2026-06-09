@@ -612,6 +612,10 @@ test("review-surfaces --cache --strict: a clean hit reuses the packet and still 
     // review-surfaces.HUMAN_REVIEW.15: cache reuse still presents the human
     // cockpit summary as the reviewer entrypoint.
     assert.match(run.stdout, /Human review: \.review-surfaces\/human_review\.md/);
+    assert.ok(
+      run.stdout.indexOf("Human review: .review-surfaces/human_review.md") < run.stdout.indexOf("inputs unchanged (signature match)"),
+      "the human review entrypoint should be printed before the cache reuse detail"
+    );
     assert.match(run.stdout, /Verdict: [a-z_]+/);
     assert.match(run.stdout, /Review first: \d+ item\(s\)/);
     assert.match(run.stdout, /Blockers: \d+/);
