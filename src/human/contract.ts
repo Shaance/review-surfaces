@@ -415,6 +415,25 @@ export interface FeedbackPolicyEffect {
   confidence: PacketConfidence;
 }
 
+// review-surfaces.COVERAGE.3/.4: per-changed-file coverage evidence computed by
+// intersecting an ingested lcov report with the changed lines of each hunk.
+// status "no_report" is the honest negative — distinct from "uncovered" — and a
+// repository is never penalized for not providing coverage.
+export interface CoverageEvidenceFile {
+  path: string;
+  changed_lines: number;
+  covered_lines: number;
+  classification: "covered" | "uncovered" | "partial";
+}
+
+export interface CoverageEvidence {
+  status: "no_report" | "report";
+  source_path?: string;
+  // False when the report predates the head commit (stale, not trusted).
+  postdates_head?: boolean;
+  files: CoverageEvidenceFile[];
+}
+
 export interface HumanReviewModel {
   schema_version: typeof HUMAN_REVIEW_SCHEMA_VERSION;
   mode: "pr" | "repo";
@@ -438,6 +457,7 @@ export interface HumanReviewModel {
   intent_mismatch: IntentMismatch;
   review_routes: ReviewRoute[];
   since_last_review: SinceLastReview;
+  coverage_evidence: CoverageEvidence;
   evidence_cards: EvidenceCard[];
   test_plan: TestPlanItem[];
   skim_safe: SkimSafeItem[];

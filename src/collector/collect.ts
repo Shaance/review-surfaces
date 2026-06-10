@@ -21,7 +21,8 @@ import {
   TEST_RESULTS_SCHEMA_VERSION,
   TestResults
 } from "../tests-evidence/junit";
-import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, gitInfoDiagnostics, GitInfo } from "./git";
+import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, commitTimeAtRef, gitInfoDiagnostics, GitInfo } from "./git";
+import { LcovCoverage, looksLikeLcov, parseLcov } from "../tests-evidence/lcov";
 
 export const REPO_INDEX_SCHEMA_VERSION = "review-surfaces.repo.index.v1";
 
@@ -50,6 +51,17 @@ export interface ManifestInputHash {
   kind: string;
 }
 
+export interface CoverageProvenance {
+  source_path: string;
+  algorithm: "sha256";
+  hash: string;
+  head_committed_at?: string;
+  report_modified_at?: string;
+  // False when the report predates the head commit: a stale report must be
+  // marked stale, never trusted (review-surfaces.COVERAGE.2).
+  postdates_head: boolean;
+}
+
 export interface RunManifest {
   tool_version: string;
   created_at: string;
@@ -61,6 +73,10 @@ export interface RunManifest {
   run_mode: PacketRunMode;
   milestone?: string;
   input_hashes: ManifestInputHash[];
+  // review-surfaces.COVERAGE.2: provenance of an ingested lcov coverage report
+  // (path, content hash, whether it postdates the head commit). Present only
+  // when a report was found, so no-coverage runs stay byte-stable.
+  coverage?: CoverageProvenance;
   // Deterministic cache key over the meaningful inputs (tool version, base/head
   // sha, provider, model, hashed input files, AND content hashes of every
   // changed file). Excludes created_at and the --out path so frozen-clock and
@@ -281,9 +297,16 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // Missing files hash to a sentinel so toggling a flag on/off still moves the
   // key. Kind is part of the fingerprint so two flags pointing at the same path
   // never collide.
+  // review-surfaces.COVERAGE.1: resolve the lcov report — the explicit
+  // --coverage path when its content is lcov, else auto-detected
+  // coverage/lcov.info. The istanbul coverage-summary path keeps flowing to
+  // ingestTestOutputs unchanged.
+  const lcovSource = resolveLcovSource(options.cwd, options.coverageOutputPath);
+
   const flagInputHashes = await hashFlagInputs(options.cwd, [
     { kind: "conversation", path: options.conversationPath },
     { kind: "coverage", path: options.coverageOutputPath },
+    { kind: "coverage-lcov", path: lcovSource?.sourcePath },
     { kind: "agent-input", path: options.agentInputPath },
     { kind: "config", path: options.configPath },
     { kind: "previous-packet", path: options.previousPacketPath },
@@ -340,6 +363,16 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // readers (cache snapshot, per-artifact loaders, artifact stamping) all go
   // through the pipeline artifact store, which reads the on-disk manifest.json
   // directly, so they see the map regardless.
+  const coverageRecord = lcovSource ? buildCoverageRecord(options.cwd, git.head_sha, lcovSource) : undefined;
+  if (coverageRecord) {
+    manifest.coverage = coverageRecord.provenance;
+    await writeJson(path.join(inputsDir, "coverage.json"), {
+      schema_version: "review-surfaces.coverage.v1",
+      ...coverageRecord.provenance,
+      files: coverageRecord.coverage.files
+    });
+  }
+
   const priorArtifactSignatures = readPriorArtifactSignatures(path.join(outputDir, "manifest.json"));
   await writeJson(path.join(outputDir, "manifest.json"), {
     ...manifest,
@@ -478,6 +511,65 @@ export interface FlagInputHash {
 // was not supplied, and an absent flag means there is nothing in the fingerprint
 // to change). A supplied-but-missing/unreadable file hashes to a sentinel so a
 // later create/repair still moves the key.
+interface LcovSource {
+  sourcePath: string;
+  text: string;
+}
+
+function resolveLcovSource(cwd: string, coverageOutputPath: string | undefined): LcovSource | undefined {
+  const candidates = coverageOutputPath ? [coverageOutputPath] : ["coverage/lcov.info"];
+  for (const candidate of candidates) {
+    const absolute = path.resolve(cwd, candidate);
+    if (!isRegularFile(absolute)) {
+      continue;
+    }
+    try {
+      const text = fs.readFileSync(absolute, "utf8");
+      if (looksLikeLcov(text)) {
+        return { sourcePath: candidate, text };
+      }
+    } catch {
+      // Unreadable report -> no coverage evidence, never a guess.
+    }
+  }
+  return undefined;
+}
+
+function buildCoverageRecord(
+  cwd: string,
+  headSha: string,
+  source: LcovSource
+): { provenance: CoverageProvenance; coverage: LcovCoverage } | undefined {
+  const coverage = parseLcov(source.text, cwd);
+  if (!coverage) {
+    return undefined;
+  }
+  const hash = crypto.createHash("sha256").update(source.text).digest("hex");
+  const headCommittedAt = headSha !== "unknown" ? commitTimeAtRef(cwd, headSha) : undefined;
+  let reportModifiedAt: string | undefined;
+  try {
+    reportModifiedAt = fs.statSync(path.resolve(cwd, source.sourcePath)).mtime.toISOString();
+  } catch {
+    reportModifiedAt = undefined;
+  }
+  // Unknown timestamps degrade conservatively: without both times we cannot
+  // prove the report postdates the head commit, so it is marked stale.
+  const postdatesHead = Boolean(
+    headCommittedAt && reportModifiedAt && Date.parse(reportModifiedAt) >= Date.parse(headCommittedAt)
+  );
+  return {
+    provenance: {
+      source_path: source.sourcePath,
+      algorithm: "sha256",
+      hash,
+      head_committed_at: headCommittedAt,
+      report_modified_at: reportModifiedAt,
+      postdates_head: postdatesHead
+    },
+    coverage
+  };
+}
+
 async function hashFlagInputs(
   cwd: string,
   entries: Array<{ kind: string; path: string | undefined }>

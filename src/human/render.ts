@@ -193,6 +193,10 @@ ${renderBlockers(model)}
 
 ${renderSinceLastReviewSummary(sinceLastReview(model))}
 
+## Coverage evidence
+
+${renderCoverageEvidence(model)}
+
 ## Intent mismatch
 
 ${renderIntentMismatchSummary(intentMismatch(model))}
@@ -765,6 +769,26 @@ ${hunkLine}   - Why it matters: ${field(item.reason)}
    - Evidence: ${evidenceList(item.evidence)}`;
     })
     .join("\n\n");
+}
+
+// review-surfaces.COVERAGE.3/.4: changed-line coverage per file when a report
+// exists; the honest negative ("no coverage evidence") when none was provided —
+// explicitly distinct from "uncovered", and never a penalty.
+function renderCoverageEvidence(model: HumanReviewModel): string {
+  const coverage = model.coverage_evidence;
+  if (!coverage || coverage.status === "no_report") {
+    return "- No coverage evidence: no coverage report was provided. This is different from changed lines being uncovered.";
+  }
+  const stale = coverage.postdates_head === false
+    ? `\n- Note: the report at \`${field(coverage.source_path ?? "")}\` predates the head commit, so it is recorded but NOT trusted as evidence.`
+    : "";
+  if (coverage.files.length === 0) {
+    return `- Report ingested from \`${field(coverage.source_path ?? "")}\`, but no changed file appears in it (no coverage evidence for this diff).${stale}`;
+  }
+  return bullets(
+    coverage.files.map((file) => `\`${field(file.path)}\`: ${file.covered_lines} of ${file.changed_lines} changed line(s) executed by tests (${file.classification}).`),
+    "No coverage evidence recorded."
+  ) + stale;
 }
 
 // review-surfaces.RANKING.2: the "why ranked here" line — the per-item evidence

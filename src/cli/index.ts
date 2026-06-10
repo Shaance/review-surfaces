@@ -10,6 +10,8 @@ import { blobExistsAtRef, readFileAtRef, resolveGitRefSha, resolveMergeBaseSha }
 import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { computeRankingEvidence, emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { isTestPath } from "../scope/pr-scope";
+import { intersectCoverageWithDiff } from "../tests-evidence/lcov";
+import type { CoverageEvidence } from "../human/contract";
 import { PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
 import { CliError, ExitCodes } from "../core/exit-codes";
@@ -1447,6 +1449,9 @@ function buildHumanReviewForPacket(
     // review-surfaces.RANKING.1: per-changed-impl-path evidence (changed test ->
     // impl import map) computed here so it is uniform on every build path.
     rankingEvidence: computeRankingEvidenceForPacket(cwd, packet, resolvedDiff),
+    // review-surfaces.COVERAGE.3/.4: intersect the collected lcov model (if any)
+    // with the diff; absent report -> the honest "no_report" negative.
+    coverageEvidence: computeCoverageEvidenceForPacket(outDir, resolvedDiff),
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
@@ -1533,6 +1538,34 @@ function computeRankingEvidenceForPacket(cwd: string, packet: ReviewPacket, diff
       }
     : (repoRelativePath: string): boolean => blobExistsAtRef(cwd, headSha, repoRelativePath);
   return computeRankingEvidence({ diff, isTestPath, readHead, exists });
+}
+
+// review-surfaces.COVERAGE.3/.4: read the collected lcov model written by
+// collect (inputs/coverage.json) and intersect it with the changed lines per
+// hunk. Missing/unreadable report or empty diff -> status "no_report".
+function computeCoverageEvidenceForPacket(outDir: string, diff: StructuredDiff | undefined): CoverageEvidence {
+  const noReport: CoverageEvidence = { status: "no_report", files: [] };
+  const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
+  const coveragePath = path.join(outputDir, "inputs", "coverage.json");
+  if (!diff || diff.files.length === 0 || !fileExists(coveragePath)) {
+    return noReport;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(coveragePath, "utf8"));
+  } catch {
+    return noReport;
+  }
+  const record = parsed as { source_path?: string; postdates_head?: boolean; files?: Record<string, number[]> };
+  if (!record.files || typeof record.files !== "object") {
+    return noReport;
+  }
+  return {
+    status: "report",
+    source_path: typeof record.source_path === "string" ? record.source_path : undefined,
+    postdates_head: record.postdates_head === true,
+    files: intersectCoverageWithDiff(diff, { files: record.files })
+  };
 }
 
 function readHumanReviewDiff(outDir: string): StructuredDiff | undefined {
