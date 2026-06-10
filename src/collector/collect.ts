@@ -532,51 +532,53 @@ export interface SecretFinding {
 }
 
 // Scan the RAW (pre-redaction) diff's ADDED lines for blocked secret patterns,
-// recording path + first matching line + kinds only. Per-line scanning anchors
-// single-line tokens exactly; a whole-file joined pass catches multi-line
-// secrets (private keys), anchored to their BEGIN line.
+// recording path + line + kind only. Per-line scanning anchors single-line
+// tokens exactly; a per-HUNK joined pass catches multi-line secrets (private
+// keys) without synthesizing a "key" from BEGIN/END markers that live in
+// different hunks (e.g. documentation examples). One finding per (file, kind),
+// each anchored to its own matching line.
 function collectSecretFindings(rawDiff: string): SecretFinding[] {
   const findings: SecretFinding[] = [];
   for (const file of parseStructuredDiff(rawDiff).files) {
-    const kinds = new Set<string>();
-    let firstLine: number | undefined;
-    const added: Array<{ text: string; line?: number }> = [];
+    const lineByKind = new Map<string, number | undefined>();
     for (const hunk of file.hunks) {
-      for (const line of hunk.lines) {
-        if (line.kind !== "add") {
+      const added = hunk.lines.filter((line) => line.kind === "add");
+      for (const line of added) {
+        const redaction = redactSecrets(line.text);
+        if (!redaction.blocked) {
           continue;
         }
-        added.push({ text: line.text, line: line.new_line });
-        const redaction = redactSecrets(line.text);
-        if (redaction.blocked) {
-          for (const entry of redaction.redactions.filter((r) => r.blocked)) {
-            kinds.add(entry.kind);
-          }
-          firstLine ??= line.new_line;
-        }
-      }
-    }
-    if (added.length > 0) {
-      // Multi-line secrets (BEGIN/END private keys) never match per line.
-      const joined = redactSecrets(added.map((entry) => entry.text).join("\n"));
-      if (joined.blocked) {
-        for (const entry of joined.redactions.filter((r) => r.blocked)) {
-          if (!kinds.has(entry.kind)) {
-            kinds.add(entry.kind);
-            firstLine ??= added.find((entry2) => /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(entry2.text))?.line ?? added[0]?.line;
+        for (const entry of redaction.redactions.filter((r) => r.blocked)) {
+          if (!lineByKind.has(entry.kind)) {
+            lineByKind.set(entry.kind, line.new_line);
           }
         }
       }
+      if (added.length > 1) {
+        // Multi-line secrets (BEGIN/END private keys) never match per line; the
+        // join stays WITHIN one hunk so non-contiguous markers cannot combine.
+        const joined = redactSecrets(added.map((line) => line.text).join("\n"));
+        if (joined.blocked) {
+          for (const entry of joined.redactions.filter((r) => r.blocked)) {
+            if (!lineByKind.has(entry.kind)) {
+              lineByKind.set(
+                entry.kind,
+                added.find((line) => /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(line.text))?.new_line ?? added[0]?.new_line
+              );
+            }
+          }
+        }
+      }
     }
-    if (kinds.size > 0) {
-      const finding: SecretFinding = { path: file.path, kinds: [...kinds].sort() };
-      if (firstLine !== undefined) {
-        finding.line = firstLine;
+    for (const [kind, line] of lineByKind) {
+      const finding: SecretFinding = { path: file.path, kinds: [kind] };
+      if (line !== undefined) {
+        finding.line = line;
       }
       findings.push(finding);
     }
   }
-  findings.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  findings.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0) || (a.kinds[0] < b.kinds[0] ? -1 : 1));
   return findings;
 }
 
