@@ -1,5 +1,7 @@
 # Agent goal: implement the human review value uplift, one PR per phase
 
+> **STATUS: COMPLETE (2026-06-10).** All 5 phases (plus a 3.5 follow-up) merged to `main` via PRs #47–#52; the quality gate is back to `max_missing: 0, allow_missing: []`. Kept for reference. The active goal contract is `NEXT_VALUE_UPLIFT_GOAL.md`.
+
 Goal: implement all 5 phases of `docs/human-review-value-uplift-proposal.md`, sequentially, with each phase delivered as its own PR that is simplified, reviewed, and landed on `main` before the next phase begins.
 
 Use these as the contract:

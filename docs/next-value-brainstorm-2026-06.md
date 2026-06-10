@@ -441,7 +441,10 @@ crosses into the extension.
    changes land against a regression gate.
 4. **Milestone "M8: fear-class facts"** — ideas #4 + #5 + #9. One theme: the
    change classes reviewers fear most become deterministic facts.
-5. **Policy + intent** — ideas #10 + #12.
+5. **HTML cockpit** — idea #7, placed after the fact phases on purpose: by then
+   the model carries ranking reasons, the budget cut, coverage evidence, and the
+   new fact classes, so the cockpit renders all of it on day one.
+6. **Policy + intent** — ideas #10 + #12.
 
 Existing discipline carries over unchanged: spec-first (promote chosen ideas to
 ACIDs before implementation), deterministic evidence over LLM claims, mock provider
