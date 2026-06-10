@@ -57,9 +57,11 @@ test("review-surfaces.EVAL_HARNESS.1 the fixture builder creates a temp repo and
 });
 
 test("review-surfaces.EVAL_HARNESS.4 the scoreboard records passed/total per class", () => {
-  // The after() hook writes the scoreboard; this asserts the recording mechanism.
+  // The after() hook writes the scoreboard; assert the recording mechanism,
+  // then remove the synthetic class so it never pollutes the emitted file.
   record("scoreboard_self_check", () => {});
   assert.ok(scoreboard["scoreboard_self_check"].passed === 1 && scoreboard["scoreboard_self_check"].total === 1);
+  delete scoreboard["scoreboard_self_check"];
 });
 
 test("review-surfaces.EVAL_HARNESS.2 weakened test ranks in the top N", () => {
