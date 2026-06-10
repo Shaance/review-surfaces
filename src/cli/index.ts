@@ -1335,7 +1335,7 @@ async function writeAndMaybeSummarizeHumanReviewFromArtifacts(
 
 function removeHumanReviewArtifacts(outDir: string): void {
   const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
-  const artifacts = ["human_review.json", "human_review.md", ...HUMAN_STANDALONE_ARTIFACTS.map((artifact) => artifact.artifact)];
+  const artifacts = ["human_review.json", "human_review.md", "human_review.html", ...HUMAN_STANDALONE_ARTIFACTS.map((artifact) => artifact.artifact)];
   for (const artifact of artifacts) {
     fs.rmSync(path.join(outputDir, artifact), { force: true });
   }

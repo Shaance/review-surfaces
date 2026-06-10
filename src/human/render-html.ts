@@ -13,6 +13,7 @@ import { renderHunkExcerpt } from "./hunk-excerpt";
 import { decisionLabel, formatQueueLocation, HumanRenderContext } from "./render";
 import { RISK_LENS_METADATA } from "./contract";
 import type { HumanReviewModel, ReviewQueueItem } from "./contract";
+import type { EvidenceRef } from "../evidence/evidence";
 
 // Redact first (multi-line secrets must be matched before any slicing), then
 // HTML-escape. EVERY interpolated value goes through this helper.
@@ -163,8 +164,22 @@ function renderQueueItem(model: HumanReviewModel, item: ReviewQueueItem, context
 <p class="muted">Why ranked here: ${esc(item.ranking_reasons.join("; "))}</p>
 <p>Action: ${esc(item.reviewer_action)}</p>
 ${excerptHtml}
-<p class="muted">${esc(item.id)}${item.risk_ids.length ? ` · risks: ${esc(item.risk_ids.join(", "))}` : ""}${cardLinks ? ` · evidence: ` : ""}${cardLinks}</p>
+<p class="muted">Evidence: ${evidenceRefsHtml(item.evidence)}</p>
+<p class="muted">${esc(item.id)}${item.risk_ids.length ? ` · risks: ${esc(item.risk_ids.join(", "))}` : ""}${cardLinks ? ` · cards: ` : ""}${cardLinks}</p>
 </div>`;
+}
+
+// Bounded inline evidence references — the same refs the markdown sibling
+// renders per queue item, so deterministic items without an evidence card still
+// show their evidence.
+function evidenceRefsHtml(evidence: EvidenceRef[]): string {
+  if (evidence.length === 0) {
+    return `<span class="muted">missing</span>`;
+  }
+  return evidence
+    .slice(0, 4)
+    .map((ref) => `<code>${esc(ref.path ?? ref.acai_id ?? ref.kind)}</code>`)
+    .join(", ");
 }
 
 function renderNarrative(model: HumanReviewModel): string {
@@ -172,7 +187,15 @@ function renderNarrative(model: HumanReviewModel): string {
     return `<p class="muted">No grounded narrative available; rely on the verdict and review queue.</p>`;
   }
   const claims = model.narrative.claims
-    .map((claim) => `<li>${claim.trust === "verified" ? "✓" : "~"} ${esc(claim.text)}${claim.trust === "claimed" ? ` <span class="muted">(claimed — unverified anchor)</span>` : ""}</li>`)
+    .map((claim) => {
+      const anchors = claim.anchors.length ? ` <span class="muted">(anchors: ${evidenceRefsHtml(claim.anchors)})</span>` : "";
+      const invalid = claim.invalid_anchors.length
+        ? ` <span class="muted">[claimed; unverified anchor(s): ${claim.invalid_anchors.map((token) => `<code>${esc(token)}</code>`).join(", ")}]</span>`
+        : claim.trust === "claimed"
+          ? ` <span class="muted">(claimed — unverified anchor)</span>`
+          : "";
+      return `<li>${claim.trust === "verified" ? "✓" : "~"} ${esc(claim.text)}${anchors}${invalid}</li>`;
+    })
     .join("");
   return `<ul>${claims}</ul>`;
 }
