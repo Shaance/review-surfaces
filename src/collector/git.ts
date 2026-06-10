@@ -225,6 +225,12 @@ export function readFileAtRef(cwd: string, ref: string, filePath: string): strin
   return git(cwd, ["show", `${ref}:${filePath}`]);
 }
 
+// True only when ref:path is a BLOB (a file). `git show ref:dir` succeeds with a
+// tree listing, so a show-based existence check would treat directories as files.
+export function blobExistsAtRef(cwd: string, ref: string, filePath: string): boolean {
+  return git(cwd, ["cat-file", "-e", `${ref}:${filePath}^{blob}`]) !== undefined;
+}
+
 function git(cwd: string, args: string[]): string | undefined {
   try {
     return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trimEnd();

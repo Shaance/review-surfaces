@@ -6,7 +6,7 @@ import { recordCommandTranscript } from "../commands/runner";
 import { commandTranscriptInputDir } from "../commands/transcripts";
 import { collectInputs, CollectionResult } from "../collector/collect";
 import { parseStructuredDiff } from "../collector/diff-hunks";
-import { readFileAtRef, resolveGitRefSha, resolveMergeBaseSha } from "../collector/git";
+import { blobExistsAtRef, readFileAtRef, resolveGitRefSha, resolveMergeBaseSha } from "../collector/git";
 import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { computeRankingEvidence, emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { isTestPath } from "../scope/pr-scope";
@@ -1531,7 +1531,7 @@ function computeRankingEvidenceForPacket(cwd: string, packet: ReviewPacket, diff
           return false;
         }
       }
-    : (repoRelativePath: string): boolean => readFileAtRef(cwd, headSha, repoRelativePath) !== undefined;
+    : (repoRelativePath: string): boolean => blobExistsAtRef(cwd, headSha, repoRelativePath);
   return computeRankingEvidence({ diff, isTestPath, readHead, exists });
 }
 

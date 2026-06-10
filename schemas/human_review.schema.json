@@ -365,7 +365,8 @@
         "reviewer_action": { "type": "string" },
         "ranking_reasons": {
           "type": "array",
-          "items": { "type": "string" }
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
         },
         "evidence": {
           "type": "array",

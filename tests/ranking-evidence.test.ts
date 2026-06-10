@@ -72,6 +72,30 @@ test("review-surfaces.RANKING.1 a resolved import suppresses the basename fallba
   assert.ok(!("src/legacy/foo.ts" in evidence.changed_tests_by_impl));
 });
 
+test("review-surfaces.RANKING.1 a deleted test (no head content) yields no basename evidence", () => {
+  const diff = diffWith(["src/foo.ts", "tests/foo.test.ts"]);
+  const evidence = computeRankingEvidence({
+    diff,
+    isTestPath,
+    // The test file is gone at head: it must not count as positive coverage.
+    readHead: () => undefined,
+    exists
+  });
+  assert.deepEqual(evidence.changed_tests_by_impl, {});
+});
+
+test("review-surfaces.RANKING.1 an exact .js import wins over the same-stem .ts file", () => {
+  const repo = new Set(["src/foo.ts", "src/foo.js", "tests/foo.test.ts"]);
+  const diff = diffWith(["src/foo.js", "tests/foo.test.ts"]);
+  const evidence = computeRankingEvidence({
+    diff,
+    isTestPath,
+    readHead: (p) => (p === "tests/foo.test.ts" ? `import { foo } from "../src/foo.js";` : undefined),
+    exists: (p) => repo.has(p)
+  });
+  assert.deepEqual(evidence.changed_tests_by_impl, { "src/foo.js": ["tests/foo.test.ts"] });
+});
+
 test("review-surfaces.RANKING.3 computeRankingEvidence is deterministic and sorted for identical inputs", () => {
   const diff = diffWith(["src/foo.ts", "src/cli/index.ts", "tests/foo.test.ts"]);
   const args = {

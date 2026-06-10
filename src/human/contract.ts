@@ -187,7 +187,8 @@ export interface ReviewQueueItem {
   reason: string;
   // review-surfaces.RANKING.2: one plain-language line per item explaining why it
   // ranked where it did (evidence signals — changed tests, transcripts, coverage).
-  // Required by the strict schema; empty only when no evidence signal applied.
+  // Required and non-empty in the strict schema; items with no evidence signal
+  // carry the default severity/anchor reason.
   ranking_reasons: string[];
   evidence: EvidenceRef[];
   requirement_ids: string[];

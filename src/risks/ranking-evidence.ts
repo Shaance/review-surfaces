@@ -53,11 +53,11 @@ export function computeRankingEvidence(options: {
         }
       }
     }
-    // Fallback ONLY when imports identified no changed-impl target: otherwise a
-    // resolved `tests/foo.test.ts -> src/foo.ts` would also falsely claim every
-    // other same-stem changed impl (e.g. src/legacy/foo.ts). When imports did
-    // resolve, trust them and skip the ambiguous basename heuristic.
-    if (matched.size === 0) {
+    // Fallback ONLY when imports identified no changed-impl target AND the test
+    // exists at the reviewed head: a deleted test must not count as positive
+    // coverage evidence, and a resolved `tests/foo.test.ts -> src/foo.ts` must
+    // not falsely claim every other same-stem changed impl (src/legacy/foo.ts).
+    if (matched.size === 0 && content !== undefined) {
       for (const impl of implByStem.get(testStem(testPath)) ?? []) {
         matched.add(impl);
       }

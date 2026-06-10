@@ -53,9 +53,13 @@ export function resolveRelativeImports(
 }
 
 function resolveSpecifier(fromDir: string, specifier: string, exists: (p: string) => boolean): string | undefined {
-  // TS sources frequently import "./x.js" to mean the sibling "./x.ts"; drop a
-  // trailing .js/.jsx/.mjs/.cjs before probing source extensions.
-  const base = normalize(path.posix.join(fromDir, specifier)).replace(/\.(js|jsx|mjs|cjs)$/i, "");
+  const exact = normalize(path.posix.join(fromDir, specifier));
+  // An import naming an existing JS file is that file — only fall back to the
+  // "./x.js means ./x.ts" TS convention when the exact target does not exist.
+  if (/\.(js|jsx|mjs|cjs)$/i.test(exact) && exists(exact)) {
+    return exact;
+  }
+  const base = exact.replace(/\.(js|jsx|mjs|cjs)$/i, "");
   const candidates = [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}/index.ts`, `${base}/index.tsx`, `${base}/index.js`];
   for (const candidate of candidates) {
     if (candidate && exists(candidate)) {
