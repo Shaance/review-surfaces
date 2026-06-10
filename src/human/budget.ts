@@ -51,6 +51,11 @@ export function buildReviewPlan(
       }
     }
     changedLinesByPath.set(file.path, lines);
+    // A renamed file's queue item can anchor on the OLD path; index both sides
+    // so its estimate uses the real changed-hunk lines, not the base cost.
+    if (file.old_path) {
+      changedLinesByPath.set(file.old_path, lines);
+    }
   }
 
   const read: ReviewPlanItem[] = [];
@@ -62,10 +67,11 @@ export function buildReviewPlan(
   for (const item of queue) {
     const cost = estimateMinutes(item, changedLinesByPath.get(item.path) ?? 0);
     const planItem: ReviewPlanItem = { queue_item_id: item.id, path: item.path, estimated_minutes: cost };
-    // review-surfaces.BUDGET.2: blockers are budget-exempt — always read.
+    // review-surfaces.BUDGET.2: blockers are budget-exempt — always read, and
+    // their time is OUTSIDE the budget (it must not squeeze later items into
+    // skim/defer).
     if (item.priority === "blocker") {
       read.push({ ...planItem, reason: "carries a blocker; budget-exempt" });
-      spent += cost;
       continue;
     }
     // `read.length === 0`: even a too-tight budget reads at least the top item.

@@ -1580,13 +1580,15 @@ function computeCoverageEvidenceForPacket(outDir: string, diff: StructuredDiff |
 // review-surfaces.BUDGET.1: --budget <duration> overrides the config default
 // (off). An unparseable duration is a usage error, not a silent off.
 function applyBudgetFlag(parsed: ParsedArgs, config: ReviewSurfacesConfig): void {
-  const flag = stringFlag(parsed, "budget");
-  if (flag === undefined) {
+  const raw = parsed.flags["budget"];
+  if (raw === undefined) {
     return;
   }
-  const minutes = parseBudgetDuration(flag);
+  // A bare `--budget` (no value / followed by another flag) parses as boolean
+  // true; that must be a loud usage error, not a silent "budget off".
+  const minutes = typeof raw === "string" ? parseBudgetDuration(raw) : undefined;
   if (minutes === undefined) {
-    throw new CliError(`Invalid --budget: ${flag}. Use forms like 15m, 1h, or 1h30m.`, ExitCodes.usageError);
+    throw new CliError(`Invalid --budget: ${raw === true ? "(no value)" : String(raw)}. Use forms like 15m, 1h, or 1h30m.`, ExitCodes.usageError);
   }
   config.human_review.review_budget_minutes = minutes;
 }

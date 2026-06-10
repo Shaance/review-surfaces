@@ -66,6 +66,44 @@ test("review-surfaces.BUDGET.2 blocker items are budget-exempt and never deferre
   assert.ok(!plan.defer.some((entry) => entry.queue_item_id === "QB"));
 });
 
+test("review-surfaces.BUDGET.2 blocker time is OUTSIDE the budget (does not squeeze later items)", () => {
+  // Budget 4m: the blocker (3m, exempt) must not consume capacity — both
+  // non-blocker items (2m each, ceiling 2.8 -> first read, second skims).
+  const queue = [
+    item({ id: "QB", rank: 1, priority: "blocker" }),
+    item({ id: "Q1", rank: 2 }),
+    item({ id: "Q2", rank: 3 })
+  ];
+  const plan = buildReviewPlan(queue, undefined, 4);
+  assert.ok(plan.read.some((e) => e.queue_item_id === "QB"));
+  assert.ok(plan.read.some((e) => e.queue_item_id === "Q1"), "blocker cost must not displace Q1 from read");
+  assert.equal(plan.defer.length, 0);
+});
+
+test("review-surfaces.BUDGET.1 renamed-file old-path anchors use the real changed-line count", () => {
+  const diff = {
+    files: [
+      {
+        path: "src/new.ts",
+        old_path: "src/old.ts",
+        status: "R",
+        hunks: [
+          {
+            old_start: 1,
+            old_lines: 40,
+            new_start: 1,
+            new_lines: 40,
+            lines: Array.from({ length: 40 }, (_, i) => ({ kind: "add" as const, text: "x", new_line: i + 1 }))
+          }
+        ]
+      }
+    ]
+  };
+  const viaOldPath = buildReviewPlan([item({ path: "src/old.ts", priority: "high" })], diff, 60).read[0];
+  // (2 + 40*0.1) * 1.5 = 9 — not the base cost.
+  assert.equal(viaOldPath.estimated_minutes, 9);
+});
+
 test("review-surfaces.BUDGET.1 per-item cost scales with changed hunk lines and risk class weight", () => {
   const diff = {
     files: [
