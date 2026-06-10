@@ -293,6 +293,43 @@ test("review-surfaces.NARRATIVE.2 demotes a claim with a malformed structured an
   assert.ok(narrative.claims[0].invalid_anchors.some((v) => /malformed/.test(v)));
 });
 
+// review-surfaces.NARRATIVE.2: a FAILED command transcript (valid command ref but
+// row kind "missing") is not a verified command anchor.
+test("review-surfaces.NARRATIVE.2 excludes failed transcript rows from command anchors", () => {
+  const { packet, diff } = narrativeFacts();
+  packet.risks.test_evidence = [
+    { id: "TEST-TR-001", kind: "missing", summary: "pnpm run test failed.", evidence: [{ kind: "command", command: "pnpm run test", event_id: "CMD-FAILED-1", confidence: "high", validation_status: "valid" }] }
+  ] as ReviewPacket["risks"]["test_evidence"];
+  const allowlist = buildNarrativeAllowlist({ packet, diff, headSha: "head123" });
+  assert.ok(!allowlist.commandIds.has("TEST-TR-001"), "a failed (missing-kind) transcript row must not be an anchor");
+  assert.ok(!allowlist.commandIds.has("CMD-FAILED-1"));
+});
+
+// review-surfaces.NARRATIVE.2: a custom transcript id (not CMD-/TEST-shaped) is
+// preserved in the allowlist from event_id.
+test("review-surfaces.NARRATIVE.2 allowlists custom transcript event ids", () => {
+  const { packet, diff } = narrativeFacts();
+  packet.risks.test_evidence = [
+    { id: "TEST-TR-001", kind: "direct", summary: "Smoke transcript.", evidence: [{ kind: "command", command: "pnpm smoke", event_id: "smoke_1", confidence: "high", validation_status: "valid" }] }
+  ] as ReviewPacket["risks"]["test_evidence"];
+  const allowlist = buildNarrativeAllowlist({ packet, diff, headSha: "head123" });
+  assert.ok(allowlist.commandIds.has("smoke_1"), "a custom transcript event id must be allowlisted");
+});
+
+// review-surfaces.NARRATIVE.2: the fallback risk claim is anchored to the risk's
+// real evidence (changed files / ACIDs), not the risk row id.
+test("review-surfaces.NARRATIVE.2 anchors the fallback risk claim to real evidence", () => {
+  const { packet, diff } = narrativeFacts();
+  packet.risks.items = [
+    { id: "RISK-001", evidence: [{ kind: "file", path: "src/real.ts", confidence: "high", validation_status: "valid" }] }
+  ] as unknown as ReviewPacket["risks"]["items"];
+  const narrative = buildFallbackNarrative({ packet, diff, headSha: "head123" });
+  const riskClaim = narrative.claims.find((claim) => /packet risk/.test(claim.text));
+  assert.ok(riskClaim, "a risk claim renders");
+  assert.ok(riskClaim!.anchors.some((ref) => ref.path === "src/real.ts"), "anchored to the changed file");
+  assert.ok(!riskClaim!.anchors.some((ref) => ref.acai_id === "RISK-001"), "the risk id is not used as an anchor");
+});
+
 // review-surfaces.NARRATIVE.4: the narrative never alters the verdict.
 test("review-surfaces.NARRATIVE.4 narrative does not change the verdict", () => {
   const { packet, diff } = narrativeFacts();

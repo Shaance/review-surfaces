@@ -147,9 +147,14 @@ export function buildNarrativeAllowlist(input: NarrativeFacts): NarrativeAllowli
       commandIds.add(id);
     }
     // The transcript id is stored in event_id (and sometimes the note), not just
-    // the shell text, so scan all three for ids.
+    // the shell text. Allowlist the RAW event_id too — a custom transcript id like
+    // `smoke_1` (from `run --id smoke_1`) does not match the CMD-/TEST- token
+    // pattern, so a claim citing it would otherwise be wrongly demoted.
     for (const ref of entry.evidence ?? []) {
       if (ref.kind === "command" && ref.validation_status === "valid") {
+        if (ref.event_id) {
+          commandIds.add(ref.event_id);
+        }
         for (const token of [ref.command, ref.note, ref.event_id]) {
           for (const id of commandIdTokens(token)) {
             commandIds.add(id);
@@ -307,11 +312,14 @@ export function buildFallbackNarrative(
   }
 
   const riskItems = input.packet.risks.items ?? [];
+  // Anchor the risk claim to the risks' REAL evidence (changed files / ACIDs on
+  // the allowlist) — NARRATIVE.2 allowed anchor types — rather than the risk row
+  // id (RISK-001), which is not an allowlisted anchor type.
+  const riskAnchors = dedupeAnchors(
+    riskItems.flatMap((risk) => risk.evidence ?? []).flatMap((ref) => allowlistedRiskAnchor(ref, allowlist))
+  ).slice(0, 4);
   if (riskItems.length > 0) {
-    add(
-      `${riskItems.length} packet risk(s) were identified for review.`,
-      riskItems.slice(0, 4).map((risk) => validAnchor({ kind: "spec", acai_id: risk.id, note: risk.summary }))
-    );
+    add(`${riskItems.length} packet risk(s) were identified for review.`, riskAnchors);
   }
 
   // Count distinct transcript-backed ROWS (not the allowlist, which may hold both
@@ -366,6 +374,32 @@ function validAnchor(ref: Omit<EvidenceRef, "confidence" | "validation_status">)
   return { ...ref, confidence: "high", validation_status: "valid" };
 }
 
+// Map a packet-risk evidence ref to an allowlisted narrative anchor (a changed
+// file or an ACID). Returns [] for evidence that is not an allowed anchor type or
+// not on the allowlist, so a risk claim is only anchored to real, allowed proof.
+function allowlistedRiskAnchor(ref: EvidenceRef, allowlist: NarrativeAllowlist): EvidenceRef[] {
+  if (ref.path && allowlist.paths.has(ref.path)) {
+    return [validAnchor({ kind: "file", path: ref.path })];
+  }
+  if (ref.acai_id && allowlist.requirementIds.has(ref.acai_id)) {
+    return [validAnchor({ kind: "spec", acai_id: ref.acai_id })];
+  }
+  return [];
+}
+
+function dedupeAnchors(anchors: EvidenceRef[]): EvidenceRef[] {
+  const seen = new Set<string>();
+  const out: EvidenceRef[] = [];
+  for (const anchor of anchors) {
+    const key = `${anchor.kind}:${anchor.path ?? ""}:${anchor.acai_id ?? ""}:${anchor.command ?? ""}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(anchor);
+    }
+  }
+  return out;
+}
+
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
@@ -410,15 +444,21 @@ function commandIdTokens(value: string | undefined): string[] {
   return [...value.matchAll(COMMAND_ID_TOKEN)].map((match) => match[0]);
 }
 
-// test-evidence rows actually backed by a transcript or a parsed-test result: a
-// valid command/test evidence ref. Feedback-only rows (feedback evidence) and
-// failed/claimed/missing rows are excluded, so only real validation backs a
-// verified command anchor.
+// test-evidence rows that actually back validation: a passing/usable row
+// (direct/indirect) AND a valid command/test evidence ref. A FAILED transcript
+// still carries a "valid" command ref (the transcript itself is valid evidence)
+// but its row kind is `missing`, so the kind check is required too; this also
+// excludes feedback-only rows (no valid command/test ref) and claimed/unknown
+// rows, so only real, passing validation backs a verified command anchor.
+const USABLE_TEST_EVIDENCE_KINDS = new Set(["direct", "indirect"]);
+
 function transcriptBackedTestEvidence(packet: ReviewPacket): ReviewPacket["risks"]["test_evidence"] {
-  return (packet.risks.test_evidence ?? []).filter((entry) =>
-    (entry.evidence ?? []).some(
-      (ref) => (ref.kind === "command" || ref.kind === "test") && ref.validation_status === "valid"
-    )
+  return (packet.risks.test_evidence ?? []).filter(
+    (entry) =>
+      USABLE_TEST_EVIDENCE_KINDS.has(entry.kind) &&
+      (entry.evidence ?? []).some(
+        (ref) => (ref.kind === "command" || ref.kind === "test") && ref.validation_status === "valid"
+      )
   );
 }
 
