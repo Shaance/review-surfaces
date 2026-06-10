@@ -662,3 +662,40 @@ test("review-surfaces.SCHEMA.3 human schema requires all current model fields", 
     assert.ok(schema.required.includes(field), `human schema must require ${field}`);
   }
 });
+
+// review-surfaces.NARRATIVE.1/.2: in repo scope the human narrative anchors
+// against the collected diff, so an agent-file claim citing a real changed file
+// is verified while a fabricated path is demoted (not dropped). Guards the
+// repo-scope diff wiring (the diff is only parsed eagerly for PR scope).
+test("review-surfaces.NARRATIVE.1 human narrative anchors against the repo-scope diff", () => {
+  const tmp = setupComposeFixture("review-surfaces-narrative-");
+  try {
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
+    fs.appendFileSync(path.join(tmp, "README.md"), "\nnarrative diff marker\n");
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "change"], { cwd: tmp, stdio: "ignore" });
+    fs.writeFileSync(
+      path.join(tmp, "narr.json"),
+      JSON.stringify({
+        claims: [
+          { text: "Updates the project readme.", paths: ["README.md"] },
+          { text: "Edits a file that does not exist.", paths: ["src/nope-fabricated.ts"] }
+        ]
+      })
+    );
+    const run = spawnSync(
+      "node",
+      [CLI, "all", "--base", "HEAD~1", "--head", "HEAD", "--spec", "features/review-surfaces.feature.yaml", "--provider", "agent-file", "--agent-input", "narr.json", "--out", ".review-surfaces"],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(run.status, 0, run.stderr);
+    const md = fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.md"), "utf8");
+    const section = md.split("## Change narrative")[1].split("## Review first")[0];
+    assert.match(section, /✓ Updates the project readme\./, "a claim citing a real changed file is verified");
+    assert.match(section, /~ Edits a file that does not exist\./, "a fabricated-path claim is demoted, not dropped");
+    assert.match(section, /unverified anchor\(s\): `src\/nope-fabricated\.ts`/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

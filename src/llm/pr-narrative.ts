@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { redactSecrets } from "../privacy/secrets";
+import { TEXT_ACID_TOKEN, TEXT_PATH_TOKEN, TEXT_ROOT_FILE_TOKEN } from "../core/anchor-tokens";
 import { compareStrings } from "../core/compare";
 import { isRecord } from "../core/guards";
 import { ProviderName, ReasoningProvider } from "./provider";
@@ -310,18 +311,6 @@ function validateItems(
 // treat it as having fabricated a reference. A clean text passes; a polluted one is
 // replaced (summary) or its whole item/narrative is dropped. Risk ids (PR-RISK-NNN)
 // match neither pattern, so a risk narrative may still name its own risk id freely.
-// Path token: a slash-bearing token ending in an extension. A leading-dot segment
-// (.github/workflows/ci.yml) is captured too — the prior \b anchor excluded the
-// leading dot, so a dot-prefixed allowlisted path was extracted WITHOUT its dot,
-// failed the allowlist match, and wrongly dropped valid items mentioning it.
-const TEXT_PATH_TOKEN = /(?<![\w./-])\.?[\w-]+(?:\/[\w.-]+)+\.[A-Za-z][\w]*/g; // e.g. src/foo/bar.ts, .github/x/ci.yml
-const TEXT_ACID_TOKEN = /\b[A-Za-z][\w-]*\.[A-Za-z][\w-]*\.\d+\b/g; // e.g. review-surfaces.PRIVACY.2
-// A ROOT-level filename has no slash, so TEXT_PATH_TOKEN misses it. Match a bare
-// filename with a known, file-only extension (e.g. package.json, tsconfig.json,
-// README.md). .js/.jsx are deliberately excluded: prose like "Node.js"/"Next.js"
-// would otherwise be misread as a fabricated path and drop a valid item.
-const TEXT_ROOT_FILE_TOKEN = /(?<![\w./-])[\w-]+\.(?:json|jsonc|ya?ml|toml|cfg|lock|sh|md|tsx?)\b/g;
-
 function textCitesOnlyAllowed(text: string, allowedPaths: Set<string>, allowedReqs: Set<string>): boolean {
   for (const match of text.matchAll(TEXT_PATH_TOKEN)) {
     if (!allowedPaths.has(match[0])) {

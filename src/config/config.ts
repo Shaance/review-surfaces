@@ -165,6 +165,11 @@ export function normalizeConfig(raw: Record<string, unknown>): ReviewSurfacesCon
       required_manual_checks: requiredManualChecksConfig(
         readRecord(raw.human_review).required_manual_checks,
         defaultConfig.human_review.required_manual_checks
+      ),
+      // YAML path human_review.narrative.max_claims -> flat build-config field.
+      narrative_max_claims: positiveIntValue(
+        readRecord(readRecord(raw.human_review).narrative).max_claims,
+        defaultConfig.human_review.narrative_max_claims
       )
     }
   };

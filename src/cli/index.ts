@@ -45,7 +45,8 @@ import { writeJson, writeText } from "../core/files";
 import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
-import { HumanReviewModel } from "../human/contract";
+import { buildChangeNarrative } from "../human/narrative";
+import { ChangeNarrative, HumanReviewModel } from "../human/contract";
 import {
   HUMAN_STANDALONE_ARTIFACTS,
   HumanRenderContext,
@@ -657,8 +658,14 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       console.warn(`PR review surface blocked (${persistedSurface.blocked_reason}); see pr_review_surface.json`);
     }
   }
+  // review-surfaces.NARRATIVE.1: build the grounded narrative through the
+  // requested provider (offline for mock/agent-file). It is anchor-validated here
+  // and passed read-only into the human review build, never affecting the verdict.
+  const narrative = config.human_review.enabled
+    ? await buildHumanNarrativeForAll(cwd, parsed, config, writtenPacket, persistedSurface, humanReviewDiff, collection)
+    : undefined;
   const humanReview = config.human_review.enabled
-    ? await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff, collection.feedback, config)
+    ? await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff, collection.feedback, config, narrative)
     : undefined;
   if (!config.human_review.enabled) {
     removeHumanReviewArtifacts(collection.outputDir);
@@ -731,6 +738,42 @@ function isPrEnvironment(): boolean {
 // an env-only model swap (where --model and config are both absent).
 function effectiveNarrativeModel(parsed: ParsedArgs, config: ReviewSurfacesConfig): string | undefined {
   return stringFlag(parsed, "model") ?? config.llm.model ?? process.env.REVIEW_SURFACES_AI_MODEL ?? undefined;
+}
+
+// review-surfaces.NARRATIVE.1: build the human-surface change narrative through
+// the requested provider (mock/agent-file are offline; ai-sdk only with a key
+// and after privacy filtering). The result is anchor-validated inside
+// buildChangeNarrative and returned read-only.
+async function buildHumanNarrativeForAll(
+  cwd: string,
+  parsed: ParsedArgs,
+  config: ReviewSurfacesConfig,
+  packet: ReviewPacket,
+  prSurface: PrReviewSurfaceModel | undefined,
+  diff: StructuredDiff | undefined,
+  collection: CollectionResult
+): Promise<ChangeNarrative> {
+  const providerName = providerFlag(parsed, config);
+  const provider = providerFor(providerName, {
+    model: effectiveNarrativeModel(parsed, config),
+    cwd,
+    remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
+    agentInput: stringFlag(parsed, "agent-input")
+  });
+  return buildChangeNarrative({
+    provider,
+    providerName,
+    packet,
+    prSurface,
+    // In repo scope the caller's diff is undefined (it is only parsed eagerly for
+    // PR scope), so read the collected, redacted diff from the output dir — the
+    // same source the human-review queue uses — to populate the anchor allowlist.
+    diff: diff ?? readHumanReviewDiff(collection.outputDir),
+    headSha: String(collection.manifest.head_sha ?? ""),
+    maxClaims: config.human_review.narrative_max_claims,
+    redactSecrets: redactSecretsFlag(parsed, config),
+    remotePrivacyBlocked: collection.privacy.remote_provider_blocked
+  });
 }
 
 function prSurfaceCacheReuse(parsed: ParsedArgs, collection: CollectionResult, config: ReviewSurfacesConfig): PrSurfaceCacheReuse {
@@ -1193,7 +1236,8 @@ function buildHumanReviewForPacket(
   prSurface?: PrReviewSurfaceModel,
   diff?: StructuredDiff,
   feedback?: FeedbackFile[],
-  config?: ReviewSurfacesConfig
+  config?: ReviewSurfacesConfig,
+  narrative?: ChangeNarrative
 ): HumanReviewModel {
   const humanReview = buildHumanReview({
     packet,
@@ -1201,6 +1245,7 @@ function buildHumanReviewForPacket(
     diff: diff ?? readHumanReviewDiff(outDir),
     feedback,
     config: config?.human_review,
+    narrative,
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
@@ -1292,9 +1337,10 @@ async function writeHumanReviewForPacket(
   prSurface?: PrReviewSurfaceModel,
   diff?: StructuredDiff,
   feedback?: FeedbackFile[],
-  config?: ReviewSurfacesConfig
+  config?: ReviewSurfacesConfig,
+  narrative?: ChangeNarrative
 ): Promise<HumanReviewModel> {
-  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface, diff, feedback, config);
+  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface, diff, feedback, config, narrative);
   await writeHumanReviewArtifacts(outDir, humanReview, humanRenderContext(outDir, diff));
   return humanReview;
 }

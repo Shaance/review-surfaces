@@ -1,0 +1,374 @@
+// review-surfaces.NARRATIVE.1-5: build the grounded change narrative that opens
+// the human surface.
+//
+// The narrative is prose over deterministic facts produced through the provider
+// boundary (mock / agent-file / ai-sdk). Every claim is validated against a
+// deterministic anchor allowlist (changed files, ACIDs, command transcripts):
+//   - all anchors valid (and the prose names nothing off-allowlist) -> `verified`
+//   - any anchor missing/invalid -> `claimed` (DEMOTED and visibly marked with
+//     the offending tokens, never dropped silently or rendered as fact).
+// It never creates/clears blockers or alters the verdict — the builder only
+// returns claims; the caller stores them read-only on the model.
+//
+// Mock, a non-ok provider result, or a narrative with nothing usable falls back
+// to a deterministic summary so the section always renders without failing.
+
+import { TEXT_ACID_TOKEN, TEXT_PATH_TOKEN, TEXT_ROOT_FILE_TOKEN } from "../core/anchor-tokens";
+import { isRecord } from "../core/guards";
+import { EvidenceRef } from "../evidence/evidence";
+import { ProviderName, ReasoningProvider } from "../llm/provider";
+import { PrReviewSurfaceModel, StructuredDiff } from "../pr/contract";
+import { redactSecrets } from "../privacy/secrets";
+import { ReviewPacket } from "../render/packet";
+import { ChangeNarrative, NarrativeClaim, NarrativeClaimTrust } from "./contract";
+
+export const DEFAULT_NARRATIVE_MAX_CLAIMS = 8;
+const MAX_NARRATIVE_MAX_CLAIMS = 16;
+const MAX_CLAIM_TEXT_CHARS = 280;
+
+// Provider output contract: claims with optional structured anchors.
+export const HUMAN_NARRATIVE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    claims: {
+      type: "array",
+      maxItems: MAX_NARRATIVE_MAX_CLAIMS,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          text: { type: "string" },
+          paths: { type: "array", items: { type: "string" } },
+          requirement_ids: { type: "array", items: { type: "string" } },
+          command_ids: { type: "array", items: { type: "string" } }
+        },
+        required: ["text"]
+      }
+    }
+  },
+  required: ["claims"]
+} as const;
+
+export interface NarrativeAllowlist {
+  paths: Set<string>;
+  requirementIds: Set<string>;
+  commandIds: Set<string>;
+}
+
+// The deterministic facts the narrative is anchored against (no provider).
+export interface NarrativeFacts {
+  packet: ReviewPacket;
+  prSurface?: PrReviewSurfaceModel;
+  diff?: StructuredDiff;
+  headSha: string;
+  maxClaims?: number;
+}
+
+export interface BuildChangeNarrativeInput extends NarrativeFacts {
+  provider: ReasoningProvider;
+  providerName: ProviderName;
+  redactSecrets: boolean;
+  remotePrivacyBlocked: boolean;
+}
+
+export async function buildChangeNarrative(input: BuildChangeNarrativeInput): Promise<ChangeNarrative> {
+  const allowlist = buildNarrativeAllowlist(input);
+  const maxClaims = clampMaxClaims(input.maxClaims);
+  // Reuse the already-built allowlist for any fallback path below.
+  const fallback = (): ChangeNarrative => buildFallbackNarrative(input, input.providerName, allowlist);
+
+  // Mock never enriches (review-surfaces.NARRATIVE.5): deterministic fallback.
+  if (input.providerName === "mock") {
+    return fallback();
+  }
+
+  const result = await input.provider.generateStructured(
+    "human_narrative",
+    narrativePrompt(input, allowlist),
+    HUMAN_NARRATIVE_SCHEMA,
+    { redactSecrets: input.redactSecrets, remotePrivacyBlocked: input.remotePrivacyBlocked }
+  );
+  if (!result.ok || !isRecord(result.data)) {
+    return fallback();
+  }
+  const claims = validateClaims(result.data.claims, allowlist, maxClaims);
+  if (claims.length === 0) {
+    // Provider returned nothing usable: render the deterministic fallback rather
+    // than an empty narrative section.
+    return fallback();
+  }
+  return {
+    source: "provider",
+    provider: input.providerName,
+    validated_at_head: input.headSha,
+    claims
+  };
+}
+
+// Build the deterministic anchor allowlist from the changed files, affected
+// requirements, and recorded command transcripts available at build time.
+export function buildNarrativeAllowlist(input: NarrativeFacts): NarrativeAllowlist {
+  const paths = new Set<string>();
+  for (const file of input.diff?.files ?? []) {
+    paths.add(file.path);
+    if (file.old_path) {
+      paths.add(file.old_path);
+    }
+  }
+  for (const file of input.prSurface?.scope.changed_files ?? []) {
+    paths.add(file.path);
+  }
+
+  const requirementIds = new Set<string>();
+  for (const result of input.packet.evaluation.results ?? []) {
+    requirementIds.add(result.requirement_id);
+    if (result.acai_id) {
+      requirementIds.add(result.acai_id);
+    }
+  }
+  for (const requirement of input.prSurface?.scope.affected_requirements ?? []) {
+    requirementIds.add(requirement.requirement_id);
+    if (requirement.acai_id) {
+      requirementIds.add(requirement.acai_id);
+    }
+  }
+
+  const commandIds = new Set<string>();
+  for (const ref of packetEvidenceRefs(input.packet)) {
+    if (ref.kind === "command") {
+      for (const token of [ref.command, ref.note]) {
+        for (const id of commandIdTokens(token)) {
+          commandIds.add(id);
+        }
+      }
+    }
+  }
+
+  return { paths, requirementIds, commandIds };
+}
+
+function validateClaims(value: unknown, allowlist: NarrativeAllowlist, maxClaims: number): NarrativeClaim[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const claims: NarrativeClaim[] = [];
+  for (const raw of value) {
+    if (!isRecord(raw) || typeof raw.text !== "string") {
+      continue;
+    }
+    const text = boundedRedacted(raw.text);
+    if (text.length === 0) {
+      continue;
+    }
+    const { anchors, invalid } = classifyAnchors(raw, allowlist, text);
+    // Verified only when the claim is backed by at least one valid anchor AND
+    // cites nothing off-allowlist (structured or in prose); otherwise DEMOTE to
+    // claimed and surface the offending tokens.
+    const trust: NarrativeClaimTrust = invalid.length === 0 && anchors.length > 0 ? "verified" : "claimed";
+    claims.push({
+      id: `NARR-${String(claims.length + 1).padStart(3, "0")}`,
+      text,
+      trust,
+      anchors,
+      invalid_anchors: invalid
+    });
+    if (claims.length >= maxClaims) {
+      break;
+    }
+  }
+  return claims;
+}
+
+function classifyAnchors(
+  raw: Record<string, unknown>,
+  allowlist: NarrativeAllowlist,
+  text: string
+): { anchors: EvidenceRef[]; invalid: string[] } {
+  const anchors: EvidenceRef[] = [];
+  const invalid: string[] = [];
+  const note = (value: string): void => {
+    if (!invalid.includes(value)) {
+      invalid.push(value);
+    }
+  };
+
+  for (const path of asStringArray(raw.paths)) {
+    if (allowlist.paths.has(path)) {
+      anchors.push(validAnchor({ kind: "file", path }));
+    } else {
+      note(path);
+    }
+  }
+  for (const id of asStringArray(raw.requirement_ids)) {
+    if (allowlist.requirementIds.has(id)) {
+      anchors.push(validAnchor({ kind: "spec", acai_id: id }));
+    } else {
+      note(id);
+    }
+  }
+  for (const command of asStringArray(raw.command_ids)) {
+    if (allowlist.commandIds.has(command)) {
+      anchors.push(validAnchor({ kind: "command", command }));
+    } else {
+      note(command);
+    }
+  }
+  // The prose itself must not smuggle a fabricated path/ACID. A token the prose
+  // names that is not on an allowlist demotes the claim (it is still shown, but
+  // marked claimed with the token surfaced).
+  for (const token of proseAnchorTokens(text)) {
+    if (!allowlist.paths.has(token) && !allowlist.requirementIds.has(token) && !allowlist.commandIds.has(token)) {
+      note(token);
+    }
+  }
+  return { anchors, invalid };
+}
+
+// Deterministic fallback narrative (review-surfaces.NARRATIVE.5): a bounded set
+// of verified claims derived from packet facts, each anchored to real evidence.
+// Synchronous and provider-free, so every build path (all / cache / standalone)
+// can always render a narrative without an LLM call.
+export function buildFallbackNarrative(
+  input: NarrativeFacts,
+  provider: ProviderName = "mock",
+  reusableAllowlist?: NarrativeAllowlist
+): ChangeNarrative {
+  const allowlist = reusableAllowlist ?? buildNarrativeAllowlist(input);
+  const maxClaims = clampMaxClaims(input.maxClaims);
+  const claims: NarrativeClaim[] = [];
+  const add = (text: string, anchors: EvidenceRef[]): void => {
+    if (claims.length >= maxClaims || anchors.length === 0) {
+      return;
+    }
+    claims.push({
+      id: `NARR-${String(claims.length + 1).padStart(3, "0")}`,
+      text: boundedRedacted(text),
+      trust: "verified",
+      anchors,
+      invalid_anchors: []
+    });
+  };
+
+  const changedPaths = [...allowlist.paths];
+  if (changedPaths.length > 0) {
+    add(
+      `The change touches ${changedPaths.length} file(s).`,
+      changedPaths.slice(0, 4).map((path) => validAnchor({ kind: "file", path }))
+    );
+  }
+
+  const missing = (input.packet.evaluation.results ?? []).filter((result) => result.status === "missing" || result.status === "partial");
+  const missingAcids = compact(missing.map((result) => result.acai_id ?? result.requirement_id));
+  if (missingAcids.length > 0) {
+    add(
+      `${missing.length} requirement(s) still need implementation or test evidence.`,
+      missingAcids.slice(0, 4).map((id) => validAnchor({ kind: "spec", acai_id: id }))
+    );
+  }
+
+  const riskItems = input.packet.risks.items ?? [];
+  if (riskItems.length > 0) {
+    add(
+      `${riskItems.length} packet risk(s) were identified for review.`,
+      riskItems.slice(0, 4).map((risk) => validAnchor({ kind: "spec", acai_id: risk.id, note: risk.summary }))
+    );
+  }
+
+  const commandIds = [...allowlist.commandIds];
+  if (commandIds.length > 0) {
+    add(
+      `${commandIds.length} command transcript(s) back the recorded validation evidence.`,
+      commandIds.slice(0, 4).map((command) => validAnchor({ kind: "command", command }))
+    );
+  }
+
+  return {
+    source: "fallback",
+    provider,
+    validated_at_head: input.headSha,
+    claims
+  };
+}
+
+function narrativePrompt(input: BuildChangeNarrativeInput, allowlist: NarrativeAllowlist): string {
+  return [
+    "Write 5-8 short plain-language claims describing what this change does, why it matters, and where risk concentrates.",
+    "Each claim MUST cite at least one anchor from the allowed lists below; do NOT invent paths, requirement IDs, or commands.",
+    "Return compact JSON only: { claims: [ { text, paths?, requirement_ids?, command_ids? } ] }.",
+    `allowed_paths: ${[...allowlist.paths].slice(0, 60).join(", ") || "(none)"}`,
+    `allowed_requirement_ids: ${[...allowlist.requirementIds].slice(0, 60).join(", ") || "(none)"}`,
+    `allowed_command_ids: ${[...allowlist.commandIds].slice(0, 30).join(", ") || "(none)"}`,
+    `intent: ${String(input.packet.intent.summary)}`,
+    `evaluation: ${String(input.packet.evaluation.summary)}`,
+    `risks: ${String(input.packet.risks.summary)}`
+  ].join("\n");
+}
+
+// --- helpers ---------------------------------------------------------------
+
+function clampMaxClaims(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    return DEFAULT_NARRATIVE_MAX_CLAIMS;
+  }
+  return Math.min(value, MAX_NARRATIVE_MAX_CLAIMS);
+}
+
+function boundedRedacted(text: string): string {
+  const cleaned = redactSecrets(text).text.replace(/\s+/g, " ").trim();
+  return cleaned.length <= MAX_CLAIM_TEXT_CHARS ? cleaned : `${cleaned.slice(0, MAX_CLAIM_TEXT_CHARS - 1)}…`;
+}
+
+// A deterministically-validated anchor: high confidence, validation_status valid.
+function validAnchor(ref: Omit<EvidenceRef, "confidence" | "validation_status">): EvidenceRef {
+  return { ...ref, confidence: "high", validation_status: "valid" };
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function compact(values: (string | undefined)[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    if (value && !seen.has(value)) {
+      seen.add(value);
+      out.push(value);
+    }
+  }
+  return out;
+}
+
+// Path/ACID/root-file tokens in prose, using the shared anchored-or-flagged
+// scanners so the human narrative stays in lockstep with the PR narrative.
+function proseAnchorTokens(text: string): string[] {
+  const tokens: string[] = [];
+  for (const pattern of [TEXT_PATH_TOKEN, TEXT_ROOT_FILE_TOKEN, TEXT_ACID_TOKEN]) {
+    for (const match of text.matchAll(pattern)) {
+      tokens.push(match[0]);
+    }
+  }
+  return tokens;
+}
+
+// A command transcript id like CMD-PNPM-BUILD embedded in command evidence text.
+const COMMAND_ID_TOKEN = /\bCMD-[A-Z0-9-]+\b/g;
+
+function commandIdTokens(value: string | undefined): string[] {
+  if (typeof value !== "string") {
+    return [];
+  }
+  return [...value.matchAll(COMMAND_ID_TOKEN)].map((match) => match[0]);
+}
+
+function packetEvidenceRefs(packet: ReviewPacket): EvidenceRef[] {
+  const refs: EvidenceRef[] = [];
+  for (const result of packet.evaluation.results ?? []) {
+    refs.push(...(result.evidence ?? []));
+  }
+  for (const risk of packet.risks.items ?? []) {
+    refs.push(...(risk.evidence ?? []));
+  }
+  return refs;
+}

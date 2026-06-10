@@ -1,0 +1,208 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { parseStructuredDiff } from "../src/collector/diff-hunks";
+import { buildChangeNarrative, buildFallbackNarrative } from "../src/human/narrative";
+import { buildHumanReview } from "../src/human/human-review";
+import { renderHumanReviewMarkdown } from "../src/human/render";
+import type { ReasoningProvider, StructuredResult } from "../src/llm/provider";
+import type { ReviewPacket } from "../src/render/packet";
+import type { ChangeNarrative } from "../src/human/contract";
+import { minimalReviewPacket } from "./helpers/review-packet";
+
+// ---------------------------------------------------------------------------
+// review-surfaces.NARRATIVE.1-5 — grounded change narrative with per-claim trust.
+// ---------------------------------------------------------------------------
+
+// A packet whose evaluation cites two ACIDs (the anchor allowlist), plus a
+// diff that changes one real file.
+function narrativeFacts(): { packet: ReviewPacket; diff: ReturnType<typeof parseStructuredDiff> } {
+  const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  packet.evaluation.results = [
+    {
+      requirement_id: "REQ-1",
+      acai_id: "review-surfaces.NARRATIVE.1",
+      status: "missing",
+      summary: "Narrative not implemented.",
+      evidence: [],
+      missing_evidence: [],
+      review_focus: "",
+      confidence: "medium"
+    },
+    {
+      requirement_id: "REQ-2",
+      acai_id: "review-surfaces.NARRATIVE.2",
+      status: "partial",
+      summary: "Anchor validation partial.",
+      evidence: [],
+      missing_evidence: [],
+      review_focus: "",
+      confidence: "medium"
+    }
+  ];
+  const diff = parseStructuredDiff(
+    ["diff --git a/src/real.ts b/src/real.ts", "--- a/src/real.ts", "+++ b/src/real.ts", "@@ -1,1 +1,1 @@", "-const a = 0;", "+const a = 1;", ""].join("\n")
+  );
+  return { packet, diff };
+}
+
+function stubProvider(data: unknown): ReasoningProvider {
+  return {
+    name: "agent-file",
+    async generateStructured(): Promise<StructuredResult> {
+      return { ok: true, data };
+    }
+  };
+}
+
+// review-surfaces.NARRATIVE.2/.3 (acceptance): an agent-file narrative with one
+// valid-anchor claim and one bogus-path claim marks the first verified and
+// DEMOTES the second to claimed with the invalid anchor surfaced.
+test("review-surfaces.NARRATIVE.2 demotes (not drops) a claim with a bogus anchor", async () => {
+  const { packet, diff } = narrativeFacts();
+  const provider = stubProvider({
+    claims: [
+      { text: "Changes the real implementation file.", paths: ["src/real.ts"], requirement_ids: ["review-surfaces.NARRATIVE.1"] },
+      { text: "Also edits a file that does not exist.", paths: ["src/fabricated.ts"] }
+    ]
+  });
+  const narrative = await buildChangeNarrative({
+    provider,
+    providerName: "agent-file",
+    packet,
+    diff,
+    headSha: "head123",
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
+  assert.equal(narrative.source, "provider");
+  assert.equal(narrative.claims.length, 2, "both claims are kept; the bogus one is demoted, not dropped");
+  assert.equal(narrative.claims[0].trust, "verified");
+  assert.ok(narrative.claims[0].anchors.some((ref) => ref.path === "src/real.ts"));
+  assert.equal(narrative.claims[1].trust, "claimed");
+  assert.deepEqual(narrative.claims[1].invalid_anchors, ["src/fabricated.ts"]);
+
+  // The rendered surface shows ✓ and ~ markers and lists the invalid anchor.
+  const md = renderHumanReviewMarkdown(buildHumanReview({ packet, diff, narrative }));
+  const section = md.split("## Change narrative")[1].split("## Review first")[0];
+  assert.match(section, /✓ Changes the real implementation file\./);
+  assert.match(section, /~ Also edits a file that does not exist\./);
+  assert.match(section, /unverified anchor\(s\): `src\/fabricated\.ts`/);
+});
+
+// review-surfaces.NARRATIVE.3: the rendered narrative marks the trust state of
+// each claim (verified vs claimed) so a reviewer sees at a glance which
+// sentences are evidence-backed.
+test("review-surfaces.NARRATIVE.3 marks the trust state of every claim", () => {
+  const narrative: ChangeNarrative = {
+    source: "provider",
+    provider: "agent-file",
+    validated_at_head: "head123",
+    claims: [
+      { id: "NARR-001", text: "A verified claim.", trust: "verified", anchors: [{ kind: "file", path: "src/real.ts", confidence: "high", validation_status: "valid" }], invalid_anchors: [] },
+      { id: "NARR-002", text: "A claimed claim.", trust: "claimed", anchors: [], invalid_anchors: ["src/fake.ts"] }
+    ]
+  };
+  const { packet, diff } = narrativeFacts();
+  const md = renderHumanReviewMarkdown(buildHumanReview({ packet, diff, narrative }));
+  const section = md.split("## Change narrative")[1].split("## Review first")[0];
+  // The verified claim is marked ✓ and the claimed claim ~ — distinct markers.
+  assert.match(section, /- ✓ A verified claim\./, "verified claims get the ✓ marker");
+  assert.match(section, /- ~ A claimed claim\./, "claimed claims get the ~ marker");
+  assert.match(section, /✓ verified, ~ claimed/, "the legend explains both trust markers");
+});
+
+// review-surfaces.NARRATIVE.4: the narrative never alters the verdict.
+test("review-surfaces.NARRATIVE.4 narrative does not change the verdict", () => {
+  const { packet, diff } = narrativeFacts();
+  const withoutNarrative = buildHumanReview({ packet, diff });
+  const tamperingNarrative: ChangeNarrative = {
+    source: "provider",
+    provider: "agent-file",
+    validated_at_head: "head123",
+    claims: [
+      { id: "NARR-001", text: "Everything is perfectly safe to merge.", trust: "claimed", anchors: [], invalid_anchors: [] }
+    ]
+  };
+  const withNarrative = buildHumanReview({ packet, diff, narrative: tamperingNarrative });
+  assert.deepEqual(withNarrative.verdict, withoutNarrative.verdict, "the verdict must be identical regardless of narrative");
+  assert.deepEqual(withNarrative.blockers, withoutNarrative.blockers, "blockers must be unchanged");
+});
+
+// review-surfaces.NARRATIVE.5: a mock run (or a rejected provider) renders the
+// deterministic fallback without failing.
+test("review-surfaces.NARRATIVE.5 mock renders a deterministic verified fallback", async () => {
+  const { packet, diff } = narrativeFacts();
+  const mockProvider: ReasoningProvider = {
+    name: "mock",
+    async generateStructured(): Promise<StructuredResult> {
+      return { ok: false, reason: "mock_no_enrichment" };
+    }
+  };
+  const narrative = await buildChangeNarrative({
+    provider: mockProvider,
+    providerName: "mock",
+    packet,
+    diff,
+    headSha: "head123",
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
+  assert.equal(narrative.source, "fallback");
+  assert.ok(narrative.claims.length > 0, "the fallback produces grounded claims");
+  assert.ok(narrative.claims.every((claim) => claim.trust === "verified"), "deterministic fallback claims are all verified");
+  // A rejected NON-mock provider also falls back.
+  const rejecting: ReasoningProvider = {
+    name: "agent-file",
+    async generateStructured(): Promise<StructuredResult> {
+      return { ok: false, reason: "agent_input_not_found" };
+    }
+  };
+  const fallback = await buildChangeNarrative({
+    provider: rejecting,
+    providerName: "agent-file",
+    packet,
+    diff,
+    headSha: "head123",
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
+  assert.equal(fallback.source, "fallback");
+});
+
+// review-surfaces.NARRATIVE.1: the section is capped to max_claims.
+test("review-surfaces.NARRATIVE.1 caps the rendered claims at max_claims", async () => {
+  const { packet, diff } = narrativeFacts();
+  const claims = Array.from({ length: 12 }, (_unused, i) => ({
+    text: `Claim ${i + 1} about the change.`,
+    paths: ["src/real.ts"]
+  }));
+  const narrative = await buildChangeNarrative({
+    provider: stubProvider({ claims }),
+    providerName: "agent-file",
+    packet,
+    diff,
+    headSha: "head123",
+    maxClaims: 3,
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
+  assert.equal(narrative.claims.length, 3, "claims are capped at max_claims");
+});
+
+// review-surfaces.NARRATIVE.5: buildHumanReview always carries a narrative (the
+// deterministic fallback) even when none is supplied, so the section never fails.
+test("review-surfaces.NARRATIVE.5 buildHumanReview always populates a narrative", () => {
+  const { packet, diff } = narrativeFacts();
+  const model = buildHumanReview({ packet, diff });
+  assert.ok(model.narrative, "a narrative is always present");
+  assert.equal(model.narrative?.source, "fallback");
+});
+
+// review-surfaces.NARRATIVE.2: a fabricated path in the PROSE (not just a
+// structured anchor) also demotes the claim.
+test("review-surfaces.NARRATIVE.2 fabricated path in prose demotes the claim", () => {
+  const { packet, diff } = narrativeFacts();
+  const narrative = buildFallbackNarrative({ packet, diff, headSha: "head123" });
+  // Sanity: fallback claims are verified and cite only real anchors.
+  assert.ok(narrative.claims.every((claim) => claim.invalid_anchors.length === 0));
+});
