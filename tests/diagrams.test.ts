@@ -153,7 +153,8 @@ function collectionFixture(cwd: string, outputDir: string): CollectionResult {
       ignore_patterns: [],
       ignored_changed_files: [],
       diff_redactions: [],
-      remote_provider_blocked: false
+      remote_provider_blocked: false,
+    secret_findings: []
     },
     git: {
       repo: "review-surfaces",

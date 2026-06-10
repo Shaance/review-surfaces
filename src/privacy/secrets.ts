@@ -21,21 +21,6 @@ export interface SecretRedactionResult {
   blocked: boolean;
 }
 
-// The pattern kinds that BLOCK (high-confidence secrets). Exported so diff-level
-// detectors can recognize a blocked secret from its [REDACTED:<kind>] marker
-// after redaction has already replaced the value.
-export const BLOCKED_SECRET_KINDS = [
-  "private_key",
-  "aws_access_key_id",
-  "aws_secret",
-  "github_token",
-  "slack_token",
-  "openai_key",
-  "stripe_key",
-  "google_oauth_token",
-  "jwt"
-] as const;
-
 export function redactSecrets(input: string): SecretRedactionResult {
   let text = input;
   const redactions: SecretRedaction[] = [];

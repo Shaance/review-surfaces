@@ -295,7 +295,8 @@ function collectionFixture(tmp: string, overrides: Partial<CollectionResult> = {
       ignore_patterns: [],
       ignored_changed_files: [],
       diff_redactions: [],
-      remote_provider_blocked: false
+      remote_provider_blocked: false,
+    secret_findings: []
     },
     git: {
       repo: "fixture",

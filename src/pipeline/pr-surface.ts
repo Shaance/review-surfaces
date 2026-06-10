@@ -64,8 +64,7 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
   const risks = buildPrRiskCandidates({
     scope,
     coverage,
-    diff,
-    diffRedactions: input.collection.privacy.diff_redactions,
+    secretFindings: input.collection.privacy.secret_findings,
     testResults: input.collection.testResults,
     commandTranscripts: input.collection.commandTranscripts,
     changedFileSources: Object.fromEntries(input.collection.changedFiles.map((file) => [file.path, file.source])),
