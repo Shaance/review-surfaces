@@ -124,3 +124,36 @@ test("review-surfaces.QUALITY.7 gateDecision returns a reason string for each tr
   const ok = gateDecision(evaluation([result("satisfied")]), collection(false), "mock", DEFAULT_OPTIONS);
   assert.equal(ok.code, ExitCodes.success);
 });
+
+// review-surfaces.QUALITY: an allowlisted "missing" requirement (a planned,
+// not-yet-implemented backlog) is excluded from the gate count, but an UNRELATED
+// requirement regressing to missing still trips the gate — the allowlist must
+// not mask a swapped regression.
+test("review-surfaces.QUALITY allow_missing excludes the planned backlog but not other regressions", () => {
+  const planned = evaluation([result("missing", "REQ-PLANNED-1"), result("missing", "REQ-PLANNED-2")]);
+  const allowed = { maxMissing: 0, allowMissing: ["REQ-PLANNED-1", "REQ-PLANNED-2"] };
+  // Both missing requirements are allowlisted -> gate passes at maxMissing 0.
+  assert.equal(gateExitCode(planned, collection(false), "mock", allowed), ExitCodes.success);
+
+  // An unrelated requirement regresses to missing while the planned ones stay
+  // missing: the total count is unchanged, but the regression is NOT allowlisted,
+  // so the gate trips.
+  const swapped = evaluation([
+    result("missing", "REQ-PLANNED-1"),
+    result("missing", "REQ-PLANNED-2"),
+    result("missing", "REQ-REGRESSION")
+  ]);
+  assert.equal(gateExitCode(swapped, collection(false), "mock", allowed), ExitCodes.qualityGateFailed);
+});
+
+// review-surfaces.QUALITY: a blank allow_missing entry must not match a result
+// that simply has no acai_id (which would silently exclude it from the gate).
+test("review-surfaces.QUALITY blank allow_missing entries are ignored", () => {
+  const evalModel = evaluation([result("missing", "REQ-NO-ACID")]);
+  const withBlank = { maxMissing: 0, allowMissing: ["", "review-surfaces.PLANNED.1"] };
+  assert.equal(
+    gateExitCode(evalModel, collection(false), "mock", withBlank),
+    ExitCodes.qualityGateFailed,
+    "a blank allowlist entry must not exclude a non-Acai missing requirement"
+  );
+});

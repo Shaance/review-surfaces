@@ -276,7 +276,7 @@ test("review-surfaces.CLI.7 collection defaults command transcripts to the outpu
       diagrams: { format: "mermaid" },
       render: { mode: "compact", include_evidence_appendix: true },
       dogfood: { enabled: true, milestone: "M1" },
-      quality_gate: { max_missing: 0 },
+      quality_gate: { max_missing: 0, allow_missing: [] },
       human_review: defaultConfig.human_review
     },
     baseRef: "HEAD",

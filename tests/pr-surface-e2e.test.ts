@@ -250,28 +250,38 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     };
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(human, null, 2));
     const humanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
-    assert.equal(humanPrComment.status, 4, "mock PR surfaces still fail the postability gate");
+    // review-surfaces.RENDER.8: a local render without --post writes the comment
+    // and exits 0; the not-postable warning is still printed.
+    assert.equal(humanPrComment.status, 0, "local PR comment render without --post succeeds (RENDER.8)");
     assert.match(humanPrComment.stdout, /JSON sentinel PR comment queue/);
     assert.match(humanPrComment.stdout, /JSON sentinel PR comment draft/);
     assert.match(humanPrComment.stdout, /Full human review: `\.review-surfaces\/human_review\.md`/);
     assert.match(humanPrComment.stderr, /not postable/);
     assert.doesNotMatch(humanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
+    // review-surfaces.RENDER.8: --strict-postability re-arms the gate to a
+    // non-zero (evidence-validation) exit even without --post.
+    const strictPostability = runCli(tmp, ["comment", "--review-scope", "pr", "--strict-postability", "--out", ".review-surfaces"]);
+    assert.equal(strictPostability.status, 4, "--strict-postability re-arms the postability gate without --post");
+    assert.match(strictPostability.stderr, /not postable/);
+    // review-surfaces.SCHEMA.3: a partial prior-version human_review.json (missing
+    // a now-required slice such as intent_mismatch) is schema-invalid, so the PR
+    // comment path no longer trusts it; it falls back to the validated PR sidecar
+    // instead of degrading quietly.
     const priorIntentHuman = { ...human };
     delete priorIntentHuman.intent_mismatch;
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(priorIntentHuman, null, 2));
     const staleIntentHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
-    assert.equal(staleIntentHumanPrComment.status, 4, "pre-intent-mismatch human JSON should be rebuilt before PR comment rendering");
-    assert.match(staleIntentHumanPrComment.stderr, /Refreshing stale human_review\.json for the current human review artifact set/);
+    assert.equal(staleIntentHumanPrComment.status, 0, "local PR comment render without --post still succeeds (RENDER.8)");
+    assert.match(staleIntentHumanPrComment.stderr, /Ignoring schema-invalid human_review\.json \([^)]*intent_mismatch[^)]*\)/);
+    assert.match(staleIntentHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
     assert.doesNotMatch(staleIntentHumanPrComment.stdout, /JSON sentinel PR comment queue/);
-    const rebuiltForPrComment = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
-    assert.ok(rebuiltForPrComment.intent_mismatch, "PR comment path should rebuild stale prior-v1 human_review.json");
     const staleHuman = {
       ...human,
       generated_from: { ...human.generated_from, base_ref: "refs/stale-base" }
     };
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(staleHuman, null, 2));
     const staleHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
-    assert.equal(staleHumanPrComment.status, 4, "stale human JSON should fall back to the blocked PR sidecar");
+    assert.equal(staleHumanPrComment.status, 0, "stale human JSON should fall back to the blocked PR sidecar");
     assert.match(staleHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
     assert.match(staleHumanPrComment.stderr, /Ignoring stale or non-PR human_review\.json/);
     assert.doesNotMatch(staleHumanPrComment.stdout, /JSON sentinel PR comment queue/);
@@ -281,7 +291,7 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     };
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(staleBaseShaHuman, null, 2));
     const staleBaseShaHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
-    assert.equal(staleBaseShaHumanPrComment.status, 4, "base-SHA-stale human JSON should fall back to the blocked PR sidecar");
+    assert.equal(staleBaseShaHumanPrComment.status, 0, "base-SHA-stale human JSON should fall back to the blocked PR sidecar");
     assert.match(staleBaseShaHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
     assert.match(staleBaseShaHumanPrComment.stderr, /Ignoring stale or non-PR human_review\.json/);
     assert.doesNotMatch(staleBaseShaHumanPrComment.stdout, /JSON sentinel PR comment queue/);
@@ -292,20 +302,20 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     delete legacyNoBaseShaHuman.generated_from.base_sha;
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(legacyNoBaseShaHuman, null, 2));
     const legacyNoBaseShaHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
-    assert.equal(legacyNoBaseShaHumanPrComment.status, 4, "legacy human JSON without base_sha should fall back when the PR surface records one");
+    assert.equal(legacyNoBaseShaHumanPrComment.status, 0, "legacy human JSON without base_sha should fall back when the PR surface records one");
     assert.match(legacyNoBaseShaHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
     assert.match(legacyNoBaseShaHumanPrComment.stderr, /Ignoring stale or non-PR human_review\.json/);
     assert.doesNotMatch(legacyNoBaseShaHumanPrComment.stdout, /JSON sentinel PR comment queue/);
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "{");
     const malformedHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
-    assert.equal(malformedHumanPrComment.status, 4, "malformed optional human JSON should not block PR comment rendering");
+    assert.equal(malformedHumanPrComment.status, 0, "malformed optional human JSON should not block PR comment rendering");
     assert.match(malformedHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
     assert.match(malformedHumanPrComment.stderr, /Ignoring unreadable human_review\.json/);
     assert.doesNotMatch(malformedHumanPrComment.stdout, /JSON sentinel PR comment queue/);
     const schemaInvalidHuman = { ...human, verdict: {} };
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(schemaInvalidHuman, null, 2));
     const schemaInvalidHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
-    assert.equal(schemaInvalidHumanPrComment.status, 4, "schema-invalid optional human JSON should not block PR comment rendering");
+    assert.equal(schemaInvalidHumanPrComment.status, 0, "schema-invalid optional human JSON should not block PR comment rendering");
     assert.match(schemaInvalidHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
     assert.match(schemaInvalidHumanPrComment.stderr, /Ignoring schema-invalid human_review\.json/);
     assert.doesNotMatch(schemaInvalidHumanPrComment.stdout, /JSON sentinel PR comment queue/);
@@ -552,7 +562,7 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     assert.equal(Object.hasOwn(surface, "narrative"), false, "blocked serialized surfaces must omit undefined narrative");
     assert.equal(Object.hasOwn(surface.llm, "model"), false, "serialized llm meta must omit undefined model");
     const blockedComment = runCli(tmp, ["comment", "--mode", "pr", "--out", ".review-surfaces"]);
-    assert.equal(blockedComment.status, 4, "blocked PR surfaces are not postable successful comments");
+    assert.equal(blockedComment.status, 0, "blocked PR surfaces render a local comment without --post (RENDER.8)");
     assert.match(blockedComment.stdout, /## review-surfaces PR review/);
     assert.match(blockedComment.stdout, /\*\*Verdict:\*\*/);
     assert.match(blockedComment.stdout, /Full human review: `\.review-surfaces\/human_review\.md`/);
@@ -761,7 +771,7 @@ test("review-surfaces.HUMAN_REVIEW.16 PR comments rebuild human artifacts when t
     fs.writeFileSync(configPath, fs.readFileSync(configPath, "utf8").replace("max_review_first: 20", "max_review_first: 1"));
 
     const comment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
-    assert.equal(comment.status, 4, "mock PR surfaces still fail the postability gate");
+    assert.equal(comment.status, 0, "local PR comment render without --post succeeds after refreshing stale human JSON (RENDER.8)");
     assert.match(comment.stderr, /Refreshing stale human_review\.json/);
     assert.match(comment.stdout, /Full human review: `\.review-surfaces\/human_review\.md`/);
     assert.doesNotMatch(comment.stdout, /PR COMMENT STALE SENTINEL/);
@@ -817,7 +827,7 @@ test("comment --review-scope pr renders agent-file narratives locally but does n
     assert.ok(surface.narrative.what_changed.length > 0);
 
     const comment = runCli(tmp, ["comment", "--mode", "pr", "--out", ".review-surfaces"]);
-    assert.equal(comment.status, 4, "agent-file PR narratives render locally but cannot satisfy the sticky-post gate");
+    assert.equal(comment.status, 0, "agent-file PR narratives render locally without --post and exit 0 (RENDER.8); still not postable");
     assert.match(comment.stdout, /## review-surfaces PR review/);
     assert.match(comment.stdout, /\*\*Verdict:\*\*/);
     assert.match(comment.stdout, /### Review first/);

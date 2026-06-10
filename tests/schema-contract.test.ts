@@ -33,6 +33,45 @@ const schema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "r
 const humanReviewSchema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "human_review.schema.json"), "utf8"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as { version: string };
 
+// review-surfaces.SCHEMA.3: the strict human schema requires every field the
+// current model emits. These slice fixtures exercise one feature at a time, so
+// fill the remaining required fields with empty defaults; the slice under test
+// is preserved (spread last) and the test stays focused on that slice.
+const HUMAN_REQUIRED_DEFAULTS = {
+  risk_lens_findings: [],
+  intent_mismatch: {
+    expected_by_spec: [],
+    observed_in_diff: [],
+    possible_mismatches: [],
+    possible_overreach: [],
+    missing_intent: []
+  },
+  review_routes: [],
+  since_last_review: {
+    unavailable_reason: "No previous packet.",
+    improved: [],
+    regressed: [],
+    new_risks: [],
+    resolved_risks: [],
+    new_overreach: [],
+    resolved_overreach: [],
+    still_open: [],
+    count_deltas: {
+      satisfied: { before: 0, after: 0, delta: 0 },
+      partial: { before: 0, after: 0, delta: 0 },
+      missing: { before: 0, after: 0, delta: 0 },
+      unknown: { before: 0, after: 0, delta: 0 },
+      invalid_evidence: { before: 0, after: 0, delta: 0 }
+    }
+  },
+  evidence_cards: [],
+  feedback_effects: []
+};
+
+function withRequiredHumanFields<T extends Record<string, unknown>>(model: T): T & typeof HUMAN_REQUIRED_DEFAULTS {
+  return { ...HUMAN_REQUIRED_DEFAULTS, ...model };
+}
+
 const enumContracts: Array<{
   name: string;
   path: string[];
@@ -184,7 +223,7 @@ test("a review packet with the wrong schema_version fails schema validation", ()
   assert.equal(result.valid, false);
 });
 
-test("human review schema remains compatible with prior v1 artifacts without optional human slices", () => {
+test("review-surfaces.SCHEMA.3 human review schema rejects stale partial v1 artifacts missing current slices", () => {
   const priorV1HumanReview = {
     schema_version: "review-surfaces.human_review.v1",
     mode: "pr",
@@ -216,8 +255,12 @@ test("human review schema remains compatible with prior v1 artifacts without opt
     }
   };
 
+  // review-surfaces.SCHEMA.3: a partial artifact (no risk_lens_findings,
+  // intent_mismatch, review_routes, since_last_review, evidence_cards,
+  // feedback_effects) now fails validation instead of degrading quietly.
   const result = validateJsonSchema(humanReviewSchema, priorV1HumanReview);
-  assert.equal(result.valid, true, JSON.stringify(result.issues));
+  assert.equal(result.valid, false);
+  assert.ok(result.issues.some((issue) => /review_routes/.test(issue.message)));
 });
 
 test("human review schema validates since-last-review comparison slices", () => {
@@ -305,7 +348,7 @@ test("human review schema validates since-last-review comparison slices", () => 
     }
   };
 
-  const result = validateJsonSchema(humanReviewSchema, humanReview);
+  const result = validateJsonSchema(humanReviewSchema, withRequiredHumanFields(humanReview));
   assert.equal(result.valid, true, JSON.stringify(result.issues));
 });
 
@@ -390,7 +433,7 @@ test("human review schema validates review route slices", () => {
     }
   };
 
-  const result = validateJsonSchema(humanReviewSchema, humanReview);
+  const result = validateJsonSchema(humanReviewSchema, withRequiredHumanFields(humanReview));
   assert.equal(result.valid, true, JSON.stringify(result.issues));
 });
 
@@ -458,7 +501,7 @@ test("human review schema validates inline evidence cards", () => {
     }
   };
 
-  const result = validateJsonSchema(humanReviewSchema, humanReview);
+  const result = validateJsonSchema(humanReviewSchema, withRequiredHumanFields(humanReview));
   assert.equal(result.valid, true, JSON.stringify(result.issues));
 });
 
@@ -529,7 +572,7 @@ test("human review schema validates intent-mismatch slices", () => {
     }
   };
 
-  const result = validateJsonSchema(humanReviewSchema, humanReview);
+  const result = validateJsonSchema(humanReviewSchema, withRequiredHumanFields(humanReview));
   assert.equal(result.valid, true, JSON.stringify(result.issues));
 });
 
@@ -581,7 +624,7 @@ test("human review schema rejects intent-mismatch items without evidence", () =>
     }
   };
 
-  const result = validateJsonSchema(humanReviewSchema, humanReview);
+  const result = validateJsonSchema(humanReviewSchema, withRequiredHumanFields(humanReview));
   assert.equal(result.valid, false);
 });
 

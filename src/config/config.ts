@@ -49,6 +49,7 @@ export interface ReviewSurfacesConfig {
   };
   quality_gate: {
     max_missing: number;
+    allow_missing: string[];
   };
   human_review: HumanReviewBuildConfig & {
     enabled: boolean;
@@ -88,7 +89,11 @@ export const defaultConfig: ReviewSurfacesConfig = {
     // The default quality gate trips when there is ANY missing requirement.
     // Tune upward in config (quality_gate.max_missing) or via --max-missing N
     // to tolerate a known number of missing requirements before failing.
-    max_missing: 0
+    max_missing: 0,
+    // Acai IDs allowed to be missing (a planned, not-yet-implemented backlog).
+    // Allowlisted misses are excluded from the gate so an unrelated regression
+    // still trips it. Empty by default.
+    allow_missing: []
   },
   human_review: {
     enabled: true,
@@ -144,7 +149,8 @@ export function normalizeConfig(raw: Record<string, unknown>): ReviewSurfacesCon
       milestone: stringValue(readRecord(raw.dogfood).milestone, defaultConfig.dogfood.milestone)
     },
     quality_gate: {
-      max_missing: nonNegativeIntValue(readRecord(raw.quality_gate).max_missing, defaultConfig.quality_gate.max_missing)
+      max_missing: nonNegativeIntValue(readRecord(raw.quality_gate).max_missing, defaultConfig.quality_gate.max_missing),
+      allow_missing: stringArray(readRecord(raw.quality_gate).allow_missing, defaultConfig.quality_gate.allow_missing)
     },
     human_review: {
       enabled: booleanValue(readRecord(raw.human_review).enabled, defaultConfig.human_review.enabled),

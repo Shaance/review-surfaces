@@ -48,6 +48,7 @@ import { buildHumanReview, humanReviewConfigSignature } from "../human/human-rev
 import { HumanReviewModel } from "../human/contract";
 import {
   HUMAN_STANDALONE_ARTIFACTS,
+  HumanRenderContext,
   humanStandaloneArtifactForCommand,
   writeHumanReviewArtifacts,
   writeHumanStandaloneArtifact
@@ -1050,7 +1051,7 @@ async function runHumanSubartifactStage(parsed: ParsedArgs): Promise<void> {
     return;
   }
   const context = await loadOrBuildHumanReviewJson(cwd, outDir, reviewScope(parsed), artifact.command, config, configPath !== undefined);
-  await writeHumanStandaloneArtifact(context.outputDir, context.model, artifact);
+  await writeHumanStandaloneArtifact(context.outputDir, context.model, artifact, humanRenderContext(context.outputDir));
   console.log(`${artifact.label}: ${artifactPathForLog(cwd, context.outputDir, artifact.artifact)}`);
 }
 
@@ -1087,7 +1088,7 @@ async function writeHumanReviewFromArtifacts(
   inputs?: HumanReviewArtifactInputs
 ): Promise<HumanReviewModel> {
   const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config, inputs);
-  await writeHumanReviewArtifacts(context.outputDir, context.model);
+  await writeHumanReviewArtifacts(context.outputDir, context.model, humanRenderContext(context.outputDir));
   return context.model;
 }
 
@@ -1112,13 +1113,16 @@ async function loadOrBuildHumanReviewJson(
   const humanReviewPath = path.join(outputDir, "human_review.json");
   if (!forceRebuild && fileExists(humanReviewPath)) {
     const model = await readJson(humanReviewPath) as HumanReviewModel;
-    assertValidHumanReview(cwd, model);
-    if (!humanReviewJsonMatchesConfig(model, config)) {
-      const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config);
-      await writeJson(path.join(context.outputDir, "human_review.json"), context.model);
-      return context;
-    }
-    if (!humanReviewJsonSatisfiesStandaloneCommand(model, command)) {
+    // review-surfaces.SCHEMA.3: a schema-invalid (e.g. stale prior-version,
+    // partial) artifact is treated as stale and rebuilt from current artifacts
+    // rather than hard-failing; the rebuilt model is always schema-valid. The
+    // rebuild also fires on a config-signature change or when the model does not
+    // satisfy the requested standalone command.
+    const isStale =
+      humanReviewIssues(cwd, model).length > 0 ||
+      !humanReviewJsonMatchesConfig(model, config) ||
+      !humanReviewJsonSatisfiesStandaloneCommand(model, command);
+    if (isStale) {
       const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config);
       await writeJson(path.join(context.outputDir, "human_review.json"), context.model);
       return context;
@@ -1214,6 +1218,15 @@ function readHumanReviewDiff(outDir: string): StructuredDiff | undefined {
   }
 }
 
+// review-surfaces.HUMAN_REVIEW.20: the render context carries the collected diff
+// so review-queue items can inline bounded hunk excerpts. It is sourced from the
+// already-redacted inputs/diff.patch (falling back to an in-memory diff when the
+// caller already parsed one), so it works for both `all` and standalone
+// re-renders without recomputing the pipeline.
+function humanRenderContext(outDir: string, diff?: StructuredDiff): HumanRenderContext {
+  return { diff: diff ?? readHumanReviewDiff(outDir) };
+}
+
 function readHumanReviewFeedback(outDir: string): FeedbackFile[] | undefined {
   const feedbackIndexPath = path.join(outDir, "inputs", "feedback.index.json");
   if (!fs.existsSync(feedbackIndexPath)) {
@@ -1282,7 +1295,7 @@ async function writeHumanReviewForPacket(
   config?: ReviewSurfacesConfig
 ): Promise<HumanReviewModel> {
   const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface, diff, feedback, config);
-  await writeHumanReviewArtifacts(outDir, humanReview);
+  await writeHumanReviewArtifacts(outDir, humanReview, humanRenderContext(outDir, diff));
   return humanReview;
 }
 
@@ -1351,10 +1364,129 @@ function matchesManifestString(packetValue: unknown, surfaceValue: string | unde
 }
 
 
+// review-surfaces.CLI.8: validate covers the human review and PR sidecar
+// surfaces in addition to the review packet. `--surface packet|human|pr|all`
+// selects which artifact(s) to validate; the default stays `packet` so the
+// historical `validate [path]` behavior (and its exit codes) is unchanged.
+const VALIDATE_SURFACES = ["packet", "human", "pr", "all"] as const;
+type ValidateSurface = (typeof VALIDATE_SURFACES)[number];
+
+function validateSurfaceFlag(parsed: ParsedArgs): ValidateSurface {
+  const raw = stringFlag(parsed, "surface");
+  if (raw === undefined) {
+    return "packet";
+  }
+  if ((VALIDATE_SURFACES as readonly string[]).includes(raw)) {
+    return raw as ValidateSurface;
+  }
+  throw new CliError(`--surface must be one of ${VALIDATE_SURFACES.join("|")}`, ExitCodes.usageError);
+}
+
 async function runValidate(parsed: ParsedArgs): Promise<number> {
+  const surface = validateSurfaceFlag(parsed);
+  if (surface === "packet") {
+    return runValidatePacket(parsed);
+  }
+  if (surface === "human") {
+    return runValidateSidecar(parsed, "human");
+  }
+  if (surface === "pr") {
+    return runValidateSidecar(parsed, "pr");
+  }
+  return runValidateAll(parsed);
+}
+
+// `--surface all`: validate every artifact present in the output dir. An absent
+// human/PR sidecar is skipped (not every run produces one), but the packet is
+// still required. The first failing surface determines the exit code.
+async function runValidateAll(parsed: ParsedArgs): Promise<number> {
+  const packetExit = await runValidatePacket(parsed);
+  if (packetExit !== ExitCodes.success) {
+    return packetExit;
+  }
+  for (const sidecar of ["human", "pr"] as const) {
+    // resolveSidecarFromDir: under `--surface all` a `.json` positional is the
+    // PACKET path, so each sidecar must resolve to its own artifact in the same
+    // directory — not reuse the packet JSON path (which would validate
+    // review_packet.json against the human/PR schema and spuriously fail).
+    const exit = await runValidateSidecar(parsed, sidecar, { skipIfAbsent: true, resolveSidecarFromDir: true });
+    if (exit !== ExitCodes.success) {
+      return exit;
+    }
+  }
+  return ExitCodes.success;
+}
+
+interface SidecarValidateOptions {
+  skipIfAbsent?: boolean;
+  resolveSidecarFromDir?: boolean;
+}
+
+const SIDECAR_VALIDATORS = {
+  human: {
+    artifact: "human_review.json",
+    label: "human review surface",
+    issues: humanReviewIssues
+  },
+  pr: {
+    artifact: "pr_review_surface.json",
+    label: "PR review surface",
+    issues: prSurfaceIssues
+  }
+} as const;
+
+async function runValidateSidecar(
+  parsed: ParsedArgs,
+  sidecar: "human" | "pr",
+  options: SidecarValidateOptions = {}
+): Promise<number> {
   const cwd = process.cwd();
-  const target = parsed.positionals[0] ?? ".review-surfaces/review_packet.json";
-  const targetPath = path.resolve(cwd, target);
+  const { artifact, label, issues: issuesFor } = SIDECAR_VALIDATORS[sidecar];
+  // Default to the effective output dir (--out / config output_dir) so a
+  // custom-output run validates the sidecar it actually wrote.
+  const target = parsed.positionals[0];
+  const targetPath = target ? path.resolve(cwd, target) : path.join(await resolveOutputDir(cwd, parsed), artifact);
+  // A `.json` positional is the exact sidecar file for an explicit `--surface
+  // human|pr`, but under `--surface all` it is the packet path, so resolve the
+  // sidecar artifact from its parent directory instead.
+  const surfacePath = !targetPath.endsWith(".json")
+    ? path.join(targetPath, artifact)
+    : options.resolveSidecarFromDir
+      ? path.join(path.dirname(targetPath), artifact)
+      : targetPath;
+  if (!fileExists(surfacePath)) {
+    if (options.skipIfAbsent) {
+      return ExitCodes.success;
+    }
+    throw new CliError(
+      `No ${label} JSON found at ${path.relative(cwd, surfacePath)}. Run \`review-surfaces all\` first to generate it.`,
+      ExitCodes.usageError
+    );
+  }
+  let surface: unknown;
+  try {
+    surface = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
+  } catch (error) {
+    console.error(`${path.relative(cwd, surfacePath)}: ${error instanceof Error ? error.message : String(error)}`);
+    return ExitCodes.schemaValidationFailed;
+  }
+  const issues = issuesFor(cwd, surface);
+  if (issues.length > 0) {
+    for (const issue of issues) {
+      console.error(issue);
+    }
+    return ExitCodes.schemaValidationFailed;
+  }
+  console.log(`Validated ${path.relative(cwd, surfacePath)} against the ${label} schema`);
+  return ExitCodes.success;
+}
+
+async function runValidatePacket(parsed: ParsedArgs): Promise<number> {
+  const cwd = process.cwd();
+  // Default to the effective output dir (--out / config output_dir), so a
+  // custom-output run validates the artifact it actually wrote.
+  const target = parsed.positionals[0];
+  const targetPath = target ? path.resolve(cwd, target) : path.join(await resolveOutputDir(cwd, parsed), "review_packet.json");
   const packetPath = targetPath.endsWith(".json") ? targetPath : path.join(targetPath, "review_packet.json");
   // R7 (a): an ABSENT packet is a USAGE error (exit 2), not a schema-validation
   // failure (exit 3). It points the user at `review-surfaces all` rather than
@@ -1506,12 +1638,20 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
     surface.llm.status === "applied" &&
     surface.llm.provider === "ai-sdk" &&
     surface.narrative !== undefined;
+  // review-surfaces.RENDER.8: a local render (no --post) succeeds once the
+  // comment and diagnostics are written. Postability is a *posting* gate, so a
+  // non-postable surface is only a non-zero exit when posting is actually
+  // requested (--post) or the caller opts into strict postability checking
+  // (--strict-postability). Without either, the local comment.md is the
+  // deliverable and the command exits 0 after warning about postability.
+  const posting = booleanFlag(parsed, "post");
+  const strictPostability = booleanFlag(parsed, "strict-postability");
   if (!hasRemoteNarrative) {
     const reason = surface.blocked_reason ?? `${surface.llm.status}/${surface.llm.provider}`;
     console.error(`PR review surface is not postable (${reason}); skipping sticky post.`);
-    return ExitCodes.evidenceValidationFailed;
+    return posting || strictPostability ? ExitCodes.evidenceValidationFailed : ExitCodes.success;
   }
-  if (booleanFlag(parsed, "post")) {
+  if (posting) {
     const result = postStickyComment(cwd, markdown);
     console.error(result.reason);
   }
@@ -1561,7 +1701,7 @@ async function loadCurrentHumanReviewForPrComment(
       `Refreshing stale human_review.json for the current human_review config before rendering the PR comment.`
     );
     const context = await buildHumanReviewFromArtifacts(cwd, outputDir, "pr", config);
-    await writeHumanReviewArtifacts(context.outputDir, context.model);
+    await writeHumanReviewArtifacts(context.outputDir, context.model, humanRenderContext(context.outputDir));
     return context.model;
   }
   if (!humanReviewJsonSatisfiesPrComment(humanReview)) {
@@ -1569,7 +1709,7 @@ async function loadCurrentHumanReviewForPrComment(
       `Refreshing stale human_review.json for the current human review artifact set before rendering the PR comment.`
     );
     const context = await buildHumanReviewFromArtifacts(cwd, outputDir, "pr", config);
-    await writeHumanReviewArtifacts(context.outputDir, context.model);
+    await writeHumanReviewArtifacts(context.outputDir, context.model, humanRenderContext(context.outputDir));
     return context.model;
   }
   return humanReview;
@@ -1734,7 +1874,7 @@ function parseArgs(args: string[]): ParsedArgs {
 
 // Flags that are always boolean switches (no value argument). Listed so the
 // permissive parser does not consume a following positional as their "value".
-const BOOLEAN_FLAGS = new Set(["cache", "dogfood", "force", "no-redact-secrets", "post", "strict", "verbose", "help"]);
+const BOOLEAN_FLAGS = new Set(["cache", "dogfood", "force", "no-redact-secrets", "post", "strict", "strict-postability", "verbose", "help"]);
 
 function stringFlag(parsed: ParsedArgs, key: string): string | undefined {
   const value = parsed.flags[key];
@@ -1836,7 +1976,8 @@ function numberFlag(parsed: ParsedArgs, key: string): number | undefined {
 
 function gateOptionsFor(parsed: ParsedArgs, config: ReviewSurfacesConfig): GateOptions {
   return {
-    maxMissing: numberFlag(parsed, "max-missing") ?? config.quality_gate.max_missing
+    maxMissing: numberFlag(parsed, "max-missing") ?? config.quality_gate.max_missing,
+    allowMissing: config.quality_gate.allow_missing
   };
 }
 
@@ -1902,7 +2043,9 @@ Commands:
 ${humanStandaloneCommandHelp()}
   packet        Run the available local pipeline and write review packet
   all           Run the whole available local pipeline
-  validate      Validate review_packet.json against schemas/review_packet.schema.json
+  validate      Validate generated artifacts against their schemas. Default validates
+                review_packet.json; --surface packet|human|pr|all extends this to the
+                human_review.json and pr_review_surface.json sidecars.
   run           Execute a local command and write a bounded command transcript
   comment       Render a review surface from local artifacts. With
                 --format github (default) writes .review-surfaces/comment.md (a compact
@@ -1935,6 +2078,12 @@ Options:
   --dogfood         Mark run as dogfood and include dogfood/handoff sections
   --config <path>   Config path, default review-surfaces.config.yaml
   --schema <path>   Schema path for validate, default schemas/review_packet.schema.json
+  --surface <s>     validate: packet (default), human, pr, or all. Selects which
+                   generated artifact(s) to validate against their schema.
+  --strict-postability
+                   comment --review-scope pr: treat a non-postable PR surface as a
+                   non-zero (evidence-validation) exit even without --post. Default off:
+                   a local render writes comment.md and exits 0 (review-surfaces.RENDER.8).
   --conversation <path>
                    Optional text/Markdown/JSONL/YAML conversation log for methodology
   --command-transcripts <dir>

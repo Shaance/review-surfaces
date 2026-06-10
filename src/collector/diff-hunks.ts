@@ -343,7 +343,10 @@ function parseDiffGitHeader(line: string): DiffGitHeader | undefined {
   if (rest.startsWith('"')) {
     const quoted = splitQuotedPair(rest);
     if (quoted) {
-      return { oldPath: stripAbPrefix(quoted.first), newPath: stripAbPrefix(quoted.second) };
+      return {
+        oldPath: decodeGitQuotedPath(stripAbPrefix(quoted.first)),
+        newPath: decodeGitQuotedPath(stripAbPrefix(quoted.second))
+      };
     }
   }
 
@@ -406,13 +409,65 @@ function parsePathLine(operand: string): string | undefined {
   if (value.length === 0) {
     return undefined;
   }
+  let wasQuoted = false;
   if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
     value = value.slice(1, -1);
+    wasQuoted = true;
   }
   if (value === DEV_NULL) {
     return DEV_NULL;
   }
-  return stripAbPrefix(value);
+  const stripped = stripAbPrefix(value);
+  // A quoted path keeps git's C-style escapes (\t, \", octal \NNN for non-ASCII
+  // bytes); decode them to the real filename so it matches the repo-indexed
+  // anchor path and the inline excerpt resolves.
+  return wasQuoted ? decodeGitQuotedPath(stripped) : stripped;
+}
+
+// Decode the inner text of a git-quoted path: C escapes (\t \n \r \" \\ \a \b
+// \f \v) and octal \NNN byte runs (git escapes each UTF-8 byte of a non-ASCII
+// name), reassembled as UTF-8. Pure and never throws.
+function decodeGitQuotedPath(input: string): string {
+  const bytes: number[] = [];
+  let i = 0;
+  const simple: Record<string, number> = { t: 9, n: 10, r: 13, a: 7, b: 8, f: 12, v: 11, '"': 0x22, "\\": 0x5c };
+  while (i < input.length) {
+    const ch = input[i];
+    if (ch !== "\\") {
+      for (const byte of Buffer.from(ch, "utf8")) {
+        bytes.push(byte);
+      }
+      i += 1;
+      continue;
+    }
+    const next = input[i + 1];
+    if (next === undefined) {
+      bytes.push(0x5c);
+      break;
+    }
+    if (next >= "0" && next <= "7") {
+      let oct = "";
+      let j = i + 1;
+      while (j < input.length && oct.length < 3 && input[j] >= "0" && input[j] <= "7") {
+        oct += input[j];
+        j += 1;
+      }
+      bytes.push(Number.parseInt(oct, 8) & 0xff);
+      i = j;
+      continue;
+    }
+    if (simple[next] !== undefined) {
+      bytes.push(simple[next]);
+      i += 2;
+      continue;
+    }
+    // Unknown escape: keep the escaped character literally.
+    for (const byte of Buffer.from(next, "utf8")) {
+      bytes.push(byte);
+    }
+    i += 2;
+  }
+  return Buffer.from(bytes).toString("utf8");
 }
 
 function stripAbPrefix(value: string): string {
@@ -465,4 +520,32 @@ function toInt(value: string | undefined): number | undefined {
   }
   const n = Number.parseInt(value, 10);
   return Number.isFinite(n) ? n : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Hunk geometry helpers, shared by the human-review queue anchoring
+// (src/human/human-review.ts) and the inline hunk excerpt renderer
+// (src/human/hunk-excerpt.ts) so the header format and overlap math stay in one
+// place.
+// ---------------------------------------------------------------------------
+
+/** Reconstruct the `@@ -os,ol +ns,nl @@` header for a structured hunk. */
+export function formatHunkHeader(hunk: StructuredDiffHunk): string {
+  return `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@`;
+}
+
+/**
+ * True when the hunk's range on the given side overlaps the inclusive
+ * [lineStart, lineEnd] window. Counts below 1 are clamped to a single line.
+ */
+export function hunkOverlapsRange(
+  hunk: StructuredDiffHunk,
+  side: "old" | "new",
+  lineStart: number,
+  lineEnd: number
+): boolean {
+  const hunkStart = side === "old" ? hunk.old_start : hunk.new_start;
+  const hunkLines = side === "old" ? hunk.old_lines : hunk.new_lines;
+  const hunkEnd = hunkStart + Math.max(hunkLines, 1) - 1;
+  return hunkStart > 0 && hunkStart <= lineEnd && hunkEnd >= lineStart;
 }

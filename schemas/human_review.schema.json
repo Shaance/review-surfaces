@@ -14,8 +14,14 @@
     "questions",
     "suggested_comments",
     "trust_audit",
+    "risk_lens_findings",
+    "intent_mismatch",
+    "review_routes",
+    "since_last_review",
+    "evidence_cards",
     "test_plan",
     "skim_safe",
+    "feedback_effects",
     "generated_from"
   ],
   "properties": {
@@ -227,6 +233,7 @@
         "line_start": { "type": "integer", "minimum": 1 },
         "line_end": { "type": "integer", "minimum": 1 },
         "hunk_header": { "type": "string" },
+        "anchor_side": { "enum": ["old", "new"] },
         "reason": { "type": "string" },
         "reviewer_action": { "type": "string" },
         "evidence": {

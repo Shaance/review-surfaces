@@ -1374,7 +1374,9 @@ test("PR mode queues changed implementation files when no PR risk candidate fire
   const changedImplIndex = model.review_queue.findIndex((item) => item.path === "src/human/human-review.ts");
 
   assert.deepEqual(first.risk_ids, []);
-  assert.match(first.reason, /No deterministic PR risk candidate fired/);
+  // review-surfaces.HUMAN_REVIEW.21: the reason leads with the changed-file
+  // behavior, not the bookkeeping "no deterministic PR risk candidate fired".
+  assert.match(first.reason, /^Changed \w+ file in .*no risk rule fired/);
   assert.ok(changedImpl);
   assert.equal(changedImpl.title, "Changed implementation file");
   assert.equal(changedImpl.hunk_header, "@@ -220,2 +220,3 @@");
@@ -3286,7 +3288,7 @@ test("human review schema enums stay aligned with runtime contract constants", (
   assert.deepEqual(schema.$defs.evidenceRef.properties.validation_status.enum, [...PACKET_VALIDATION_STATUSES]);
 });
 
-test("human review schema accepts prior v1 artifacts without optional fields", () => {
+test("review-surfaces.SCHEMA.3 rejects prior v1 artifacts without optional fields but the renderer still degrades", () => {
   const model = JSON.parse(JSON.stringify(buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture() }))) as Record<string, unknown>;
   delete model.feedback_effects;
   delete model.risk_lens_findings;
@@ -3294,9 +3296,14 @@ test("human review schema accepts prior v1 artifacts without optional fields", (
   delete model.since_last_review;
   delete model.evidence_cards;
 
+  // review-surfaces.SCHEMA.3: the strict schema rejects the partial artifact so
+  // a stale human_review.json fails validation instead of degrading quietly...
   const result = validateJsonSchema(schema, model);
+  assert.equal(result.valid, false);
+  assert.ok(result.issues.some((issue) => /review_routes/.test(issue.message)));
 
-  assert.equal(result.valid, true);
+  // ...while the RENDERER stays backward-compatible: an old artifact that bypassed
+  // validation still renders with explicit "generated before X support" fallbacks.
   assert.match(renderHumanReviewMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /No domain risk lenses fired/);
   assert.match(renderHumanReviewMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /generated before review-route support/);
   assert.match(renderRiskLensesMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /No domain risk lenses fired/);
