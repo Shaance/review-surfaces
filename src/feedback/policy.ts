@@ -22,6 +22,60 @@ import type { HumanReviewPriority, HumanReviewRequiredManualCheckConfig } from "
 export const POLICY_FILE = "review-surfaces.policy.yaml";
 export const POLICY_SCHEMA_PATH = "schemas/review_policy.schema.json";
 
+// Inline source of truth for policy validation (the .json file mirrors this).
+export const POLICY_SCHEMA = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "https://review-surfaces.local/schemas/review_policy.schema.v1.json",
+  title: "review-surfaces team review policy",
+  type: "object",
+  additionalProperties: false,
+  required: ["schema_version"],
+  properties: {
+    schema_version: { const: "review-surfaces.policy.v1" },
+    suppressions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["rule", "path_glob", "reason", "expires"],
+        properties: {
+          id: { type: "string" },
+          rule: { type: "string", minLength: 1 },
+          path_glob: { type: "string", minLength: 1 },
+          reason: { type: "string", minLength: 1 },
+          expires: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}(T[0-9:.Z+-]+)?$" }
+        }
+      }
+    },
+    severity_overrides: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["rule", "priority"],
+        properties: {
+          rule: { type: "string", minLength: 1 },
+          path_glob: { type: "string" },
+          priority: { enum: ["blocker", "high", "medium", "low"] }
+        }
+      }
+    },
+    required_manual_checks: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "path_patterns", "prompt"],
+        properties: {
+          id: { type: "string", minLength: 1 },
+          path_patterns: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+          prompt: { type: "string", minLength: 1 }
+        }
+      }
+    }
+  }
+} as const;
+
 export interface PolicySuppression {
   id?: string;
   rule: string;
@@ -68,8 +122,10 @@ export function loadReviewPolicy(cwd: string, policyFile = POLICY_FILE): ReviewP
   } catch (error) {
     throw new PolicyValidationError(`${policyFile} is not valid YAML: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const schema = JSON.parse(fs.readFileSync(path.resolve(cwd, POLICY_SCHEMA_PATH), "utf8"));
-  const result = validateJsonSchema(schema, parsed);
+  // The schema is INLINE so policy works in init'd external repos that only
+  // ship the packet schema; schemas/review_policy.schema.json mirrors it for
+  // humans and `validate` parity (a test guards against drift).
+  const result = validateJsonSchema(POLICY_SCHEMA, parsed);
   if (!result.valid) {
     throw new PolicyValidationError(
       `${policyFile} failed schema validation: ${result.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; ")}`
@@ -110,7 +166,10 @@ export function matchPolicySuppression(
     if (!compiledGlob(suppression.path_glob).test(filePath)) {
       continue;
     }
-    const expired = Date.parse(suppression.expires) < Date.parse(nowIso);
+    // An unparseable expiry is treated as EXPIRED (conservative: a suppression
+    // must prove it is current to demote anything).
+    const expiresAt = Date.parse(suppression.expires);
+    const expired = Number.isNaN(expiresAt) || expiresAt < Date.parse(nowIso);
     return { suppression, expired };
   }
   return undefined;
@@ -136,5 +195,8 @@ export function matchPolicySeverityOverride(
 // Expired suppressions surface as their own findings (POLICY.2) so the policy
 // file stays maintained instead of rotting.
 export function expiredPolicySuppressions(policy: ReviewPolicy | undefined, nowIso: string): PolicySuppression[] {
-  return (policy?.suppressions ?? []).filter((suppression) => Date.parse(suppression.expires) < Date.parse(nowIso));
+  return (policy?.suppressions ?? []).filter((suppression) => {
+    const expiresAt = Date.parse(suppression.expires);
+    return Number.isNaN(expiresAt) || expiresAt < Date.parse(nowIso);
+  });
 }

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  POLICY_SCHEMA,
   expiredPolicySuppressions,
   loadReviewPolicy,
   matchPolicySeverityOverride,
@@ -56,6 +57,20 @@ test("review-surfaces.POLICY.1 a valid committed policy loads; suppressions requ
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("review-surfaces.POLICY.1 the inline schema and schemas/review_policy.schema.json stay in sync", () => {
+  const fileSchema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "review_policy.schema.json"), "utf8"));
+  assert.deepEqual(JSON.parse(JSON.stringify(POLICY_SCHEMA)), fileSchema);
+});
+
+test("review-surfaces.POLICY.2 an unparseable expiry is treated as expired (never an indefinite suppression)", () => {
+  const policy: ReviewPolicy = {
+    schema_version: "review-surfaces.policy.v1",
+    suppressions: [{ rule: "large_diff", path_glob: "docs/**", reason: "r", expires: "soonish" as never }]
+  };
+  assert.equal(matchPolicySuppression(policy, "large_diff", "docs/a.md", "2026-01-01T00:00:00Z")?.expired, true);
+  assert.equal(expiredPolicySuppressions(policy, "2026-01-01T00:00:00Z").length, 1);
 });
 
 test("review-surfaces.POLICY.2 suppressions match stable keys (rule + path glob) with deterministic expiry", () => {

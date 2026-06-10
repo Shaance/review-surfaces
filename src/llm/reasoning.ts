@@ -372,7 +372,7 @@ function intentPrompt(inputs: ReasoningInputs, sparse: boolean): string {
   const candidateClause = sparse
     ? "The authoritative spec is sparse/absent. You MAY propose up to 5 candidate_requirements, each as {statement, anchors, confidence} where every anchor is a real repository-relative spec/doc path or an ACID that exists in the spec. Do not invent anchors."
     : "The authoritative spec already has requirements. Propose candidate_requirements ONLY for intent you can anchor to real spec/doc paths or existing ACIDs; otherwise leave the array empty.";
-  return `Return compact JSON only matching the provided schema. Every assumption/non_goal/open_question and any candidate_requirement source_ref MUST cite a real repository file. Do not invent file paths, line numbers, ACIDs, or tests.
+  return `Return compact JSON only matching the provided schema. Every assumption/non_goal/open_question MUST cite real repository context, and every candidate_requirement anchor MUST be a real repository-relative spec/doc path or an ACID that exists in the spec. Do not invent file paths, line numbers, ACIDs, or tests.
 
 ${candidateClause}
 

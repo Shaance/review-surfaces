@@ -17,6 +17,7 @@ import { loadReviewPolicy, POLICY_FILE, POLICY_SCHEMA_PATH, ReviewPolicy } from 
 import { computeConfigFacts } from "../risks/config-facts";
 import { buildImportGraph, findSymbolImporters } from "../collector/import-graph";
 import { execFileSync } from "node:child_process";
+import crypto from "node:crypto";
 import { loadPrivacyIgnoreSync } from "../privacy/ignore";
 import { stripUndefined } from "../core/guards";
 import type { CoverageEvidence } from "../human/contract";
@@ -1472,13 +1473,18 @@ function buildHumanReviewForPacket(
     throw new CliError(error instanceof Error ? error.message : String(error), ExitCodes.schemaValidationFailed);
   }
   // Policy-required manual checks merge ahead of config (committed policy >
-  // local config/feedback), reusing the existing blocker machinery.
-  const effectiveConfig = policy?.required_manual_checks?.length && config
+  // local config/feedback), and the policy content hash joins the config
+  // signature so a policy edit regenerates cached human artifacts.
+  const policySignature = policy ? crypto.createHash("sha256").update(JSON.stringify(policy)).digest("hex") : "";
+  const effectiveConfig = config
     ? {
         ...config,
         human_review: {
           ...config.human_review,
-          required_manual_checks: [...policy.required_manual_checks, ...config.human_review.required_manual_checks]
+          policy_signature: policySignature,
+          required_manual_checks: policy?.required_manual_checks?.length
+            ? [...policy.required_manual_checks, ...config.human_review.required_manual_checks]
+            : config.human_review.required_manual_checks
         }
       }
     : config;
@@ -1881,7 +1887,7 @@ function matchesManifestString(packetValue: unknown, surfaceValue: string | unde
 
 
 // review-surfaces.CLI.8: validate covers the human review and PR sidecar
-// surfaces in addition to the review packet. `--surface packet|human|pr|all`
+// surfaces in addition to the review packet. `--surface packet|human|pr|all|policy`
 // selects which artifact(s) to validate; the default stays `packet` so the
 // historical `validate [path]` behavior (and its exit codes) is unchanged.
 const VALIDATE_SURFACES = ["packet", "human", "pr", "all", "policy"] as const;
@@ -2697,7 +2703,7 @@ ${humanStandaloneCommandHelp()}
   packet        Run the available local pipeline and write review packet
   all           Run the whole available local pipeline
   validate      Validate generated artifacts against their schemas. Default validates
-                review_packet.json; --surface packet|human|pr|all extends this to the
+                review_packet.json; --surface packet|human|pr|all|policy extends this to the
                 human_review.json and pr_review_surface.json sidecars.
   run           Execute a local command and write a bounded command transcript
   comment       Render a review surface from local artifacts. With

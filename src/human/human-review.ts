@@ -427,6 +427,8 @@ export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): str
     // review-surfaces.BUDGET.1: a budget change (config or --budget) changes the
     // rendered review_plan, so it must regenerate rather than serve stale cache.
     review_budget_minutes: resolved.review_budget_minutes,
+    // review-surfaces.POLICY.2: a committed-policy change busts the cache.
+    policy_signature: resolved.policy_signature ?? "",
     required_manual_checks: resolved.required_manual_checks.map((check) => ({
       id: check.id,
       path_patterns: check.path_patterns,
@@ -1069,11 +1071,16 @@ function claimedCandidateDrafts(input: BuildHumanReviewInput): IntentMismatchDra
     .slice(0, 6)
     .map((candidate) => {
       const anchors = Array.isArray(candidate.anchors) ? candidate.anchors.filter((a): a is string => typeof a === "string") : [];
+      const acidAnchors = anchors.filter((anchor) => /^[A-Za-z][\w-]*\.[A-Za-z][\w-]*\.\d+$/.test(anchor));
+      const pathAnchors = anchors.filter((anchor) => !acidAnchors.includes(anchor));
       return {
         summary: `Provider-claimed intent (confirm, do not trust): ${candidate.statement as string}`,
-        evidence: anchors.map((anchor) => fileEvidence(anchor, "Validated candidate anchor.")),
-        requirement_ids: [],
-        paths: anchors,
+        evidence: [
+          ...pathAnchors.map((anchor) => fileEvidence(anchor, "Validated candidate anchor.")),
+          ...acidAnchors.map((anchor) => ({ kind: "spec" as const, acai_id: anchor, note: "Validated candidate ACID anchor.", confidence: "low" as const }))
+        ],
+        requirement_ids: acidAnchors,
+        paths: pathAnchors,
         confidence: "low" as const
       };
     });
@@ -1870,7 +1877,11 @@ function buildReviewQueue(
       confidence: anchor.line_start || anchor.hunk_header ? "high" : "medium",
       priority: suppressedByPolicy ? "low" : policyOverride ? policyOverride.priority : feedbackDowngrade ? "low" : priorityForSeverity(risk.severity),
       estimated_review_effort: effortForSeverity(risk.severity),
-      score: scorePrRisk(risk, anchor) + (suppressedByPolicy || feedbackDowngrade ? -60 : 0) + (policyOverride?.priority === "blocker" ? 60 : 0),
+      // A policy severity override re-ranks consistently with the displayed
+      // priority (not just the label), so an upgraded item survives the queue cap.
+      score:
+        (policyOverride ? scorePrRiskWithPriority(risk, anchor, policyOverride.priority) : scorePrRisk(risk, anchor)) +
+        (suppressedByPolicy || feedbackDowngrade ? -60 : 0),
       sortKey: `${risk.id}:${first.path}`
     });
   }
@@ -4431,6 +4442,13 @@ function prRiskMentionsFailedTests(risk: PrRiskCandidate): boolean {
     .flatMap((ref) => compactStrings([ref.note, ref.command, ref.test_name, ref.path, ref.acai_id]))
     .join(" ");
   return /\b(fail(?:ed|ing)?|error)\b/i.test(`${risk.summary} ${evidenceText}`);
+}
+
+// Score with the policy-overridden priority's weight in place of the risk's own
+// severity weight (POLICY.2: overrides re-rank, not merely re-label).
+function scorePrRiskWithPriority(risk: PrRiskCandidate, anchor: QueueAnchor, priority: HumanReviewPriority): number {
+  const weightByPriority: Record<HumanReviewPriority, number> = { blocker: 100, high: 75, medium: 40, low: 15 };
+  return weightByPriority[priority] + ruleWeight(risk.rule) + (anchor.line_start ? 10 : 0) + (anchor.hunk_header ? 10 : 0);
 }
 
 function scorePrRisk(risk: PrRiskCandidate, anchor: QueueAnchor): number {
