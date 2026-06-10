@@ -10,6 +10,7 @@ import { emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence
 import { buildReviewPlan } from "./budget";
 import { DependencyFact, dependencyFactSeverityRank } from "../risks/dependency-facts";
 import { ConfigFact } from "../risks/config-facts";
+import { expiredPolicySuppressions, matchPolicySeverityOverride, matchPolicySuppression, ReviewPolicy } from "../feedback/policy";
 import type { CoverageEvidence } from "./contract";
 import { comparisonRiskKey } from "../dogfood/compare";
 import { EvidenceRef, feedbackEvidence, fileEvidence, missingEvidence } from "../evidence/evidence";
@@ -87,6 +88,10 @@ export interface BuildHumanReviewInput {
   // review-surfaces.CONFIG_FACTS.1-3: deterministic env/CI/Dockerfile/SQL facts
   // computed in the pipeline. Absent -> empty.
   configFacts?: ConfigFact[];
+  // review-surfaces.POLICY.1/.2: the committed team policy (validated by the
+  // loader) and the deterministic run clock for suppression expiry.
+  policy?: ReviewPolicy;
+  policyNowIso?: string;
 }
 
 interface BuildReviewRoutesInput {
@@ -304,6 +309,20 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   // language instead of generic path-touch phrasing.
   const semanticFacts = input.semanticFacts ?? emptySemanticChangeFacts();
   const feedbackEffects = buildFeedbackPolicyEffects(input, config);
+  // review-surfaces.POLICY.2: an expired suppression is never silently dropped —
+  // it surfaces as its own team-policy finding so the file stays maintained.
+  for (const [index, suppression] of expiredPolicySuppressions(input.policy, input.policyNowIso ?? "").entries()) {
+    feedbackEffects.push({
+      id: `POLICY-EXPIRED-${String(index + 1).padStart(3, "0")}`,
+      kind: "team_policy",
+      summary: `Policy suppression for rule \`${suppression.rule}\` on \`${suppression.path_glob}\` expired ${suppression.expires}.`,
+      action: "Renew the suppression with a new expiry and reason, or remove it from review-surfaces.policy.yaml.",
+      evidence: [fileEvidence("review-surfaces.policy.yaml", `Expired suppression: ${suppression.reason}`)],
+      paths: [],
+      risk_ids: [],
+      confidence: "high"
+    });
+  }
   const riskLensFindings = buildRiskLensFindings(input, config, semanticFacts);
   const blockers = buildBlockers(input, feedbackEffects);
   const reviewQueue = buildReviewQueue(input, feedbackEffects, config, semanticFacts);
@@ -1033,8 +1052,31 @@ function buildIntentMismatch(input: BuildHumanReviewInput): IntentMismatch {
     observed_in_diff: cappedIntentMismatchItems("INTENT-OBSERVED", observedDiffDrafts(input)),
     possible_mismatches: cappedIntentMismatchItems("INTENT-MISMATCH", possibleMismatchDrafts(input, focus)),
     possible_overreach: cappedIntentMismatchItems("INTENT-OVERREACH", possibleOverreachDrafts(input, focus)),
-    missing_intent: cappedIntentMismatchItems("INTENT-MISSING", missingIntentDrafts(input))
+    missing_intent: cappedIntentMismatchItems("INTENT-MISSING", missingIntentDrafts(input)),
+    // review-surfaces.INTENT.7: provider-claimed candidates render distinctly;
+    // they widen what the human is asked to confirm and never touch coverage.
+    claimed_candidates: cappedIntentMismatchItems("INTENT-CLAIMED", claimedCandidateDrafts(input))
   };
+}
+
+function claimedCandidateDrafts(input: BuildHumanReviewInput): IntentMismatchDraft[] {
+  const candidates = (input.packet.intent as { claimed_candidates?: Array<{ statement?: unknown; anchors?: unknown; confidence?: unknown }> }).claimed_candidates;
+  if (!Array.isArray(candidates)) {
+    return [];
+  }
+  return candidates
+    .filter((candidate) => typeof candidate.statement === "string")
+    .slice(0, 6)
+    .map((candidate) => {
+      const anchors = Array.isArray(candidate.anchors) ? candidate.anchors.filter((a): a is string => typeof a === "string") : [];
+      return {
+        summary: `Provider-claimed intent (confirm, do not trust): ${candidate.statement as string}`,
+        evidence: anchors.map((anchor) => fileEvidence(anchor, "Validated candidate anchor.")),
+        requirement_ids: [],
+        paths: anchors,
+        confidence: "low" as const
+      };
+    });
 }
 
 function expectedIntentDrafts(input: BuildHumanReviewInput, focus: IntentMismatchFocus): IntentMismatchDraft[] {
@@ -1799,6 +1841,12 @@ function buildReviewQueue(
     }
     const anchor = queueAnchorForEvidence(first, diffIndex);
     const feedbackDowngrade = feedbackFalsePositiveEffectForRisk(risk, feedbackEffects, first.path);
+    // review-surfaces.POLICY.2: committed policy outranks local feedback. A
+    // current (non-expired) suppression matching the STABLE key (rule + path
+    // glob) demotes the item — downgrade + annotate, never delete.
+    const policySuppression = matchPolicySuppression(input.policy, risk.rule, first.path ?? "", input.policyNowIso ?? "");
+    const policyOverride = matchPolicySeverityOverride(input.policy, risk.rule, first.path ?? "");
+    const suppressedByPolicy = policySuppression && !policySuppression.expired ? policySuppression.suppression : undefined;
     prRiskQueueItemCount += 1;
     drafts.push({
       title: titleForPrRisk(risk),
@@ -1809,18 +1857,20 @@ function buildReviewQueue(
       line_end: anchor.line_end,
       anchor_side: anchor.side,
       reviewer_action: risk.suggested_checks[0] ?? "Inspect the cited changed file before approving.",
-      reason: feedbackDowngrade
-        ? `${rankReasonForPrRisk(risk)} Feedback memory downgraded this review priority but retained the evidence-backed item.`
-        : rankReasonForPrRisk(risk),
+      reason: suppressedByPolicy
+        ? `${rankReasonForPrRisk(risk)} Suppressed by policy: ${suppressedByPolicy.reason} (expires ${suppressedByPolicy.expires}); the evidence-backed item is retained.`
+        : feedbackDowngrade
+          ? `${rankReasonForPrRisk(risk)} Feedback memory downgraded this review priority but retained the evidence-backed item.`
+          : rankReasonForPrRisk(risk),
       evidence: feedbackDowngrade
         ? [...evidenceOrMissing(risk.evidence, risk.summary), ...feedbackDowngrade.evidence]
         : evidenceOrMissing(risk.evidence, risk.summary),
       requirement_ids: requirementIds(risk.evidence),
       risk_ids: [risk.id],
       confidence: anchor.line_start || anchor.hunk_header ? "high" : "medium",
-      priority: feedbackDowngrade ? "low" : priorityForSeverity(risk.severity),
+      priority: suppressedByPolicy ? "low" : policyOverride ? policyOverride.priority : feedbackDowngrade ? "low" : priorityForSeverity(risk.severity),
       estimated_review_effort: effortForSeverity(risk.severity),
-      score: scorePrRisk(risk, anchor) + (feedbackDowngrade ? -60 : 0),
+      score: scorePrRisk(risk, anchor) + (suppressedByPolicy || feedbackDowngrade ? -60 : 0) + (policyOverride?.priority === "blocker" ? 60 : 0),
       sortKey: `${risk.id}:${first.path}`
     });
   }

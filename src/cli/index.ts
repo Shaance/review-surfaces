@@ -13,6 +13,7 @@ import { isTestPath } from "../scope/pr-scope";
 import { intersectCoverageWithDiff } from "../tests-evidence/lcov";
 import { parseBudgetDuration } from "../human/budget";
 import { computeDependencyFacts } from "../risks/dependency-facts";
+import { loadReviewPolicy, POLICY_FILE, POLICY_SCHEMA_PATH, ReviewPolicy } from "../feedback/policy";
 import { computeConfigFacts } from "../risks/config-facts";
 import { buildImportGraph, findSymbolImporters } from "../collector/import-graph";
 import { execFileSync } from "node:child_process";
@@ -1463,13 +1464,33 @@ function buildHumanReviewForPacket(
 ): HumanReviewModel {
   const resolvedDiff = diff ?? readHumanReviewDiff(outDir);
   const factReaders = buildFactReaders(cwd, packet, resolvedDiff);
+  // review-surfaces.POLICY.1: a malformed committed policy fails LOUDLY.
+  let policy: ReviewPolicy | undefined;
+  try {
+    policy = loadReviewPolicy(cwd);
+  } catch (error) {
+    throw new CliError(error instanceof Error ? error.message : String(error), ExitCodes.schemaValidationFailed);
+  }
+  // Policy-required manual checks merge ahead of config (committed policy >
+  // local config/feedback), reusing the existing blocker machinery.
+  const effectiveConfig = policy?.required_manual_checks?.length && config
+    ? {
+        ...config,
+        human_review: {
+          ...config.human_review,
+          required_manual_checks: [...policy.required_manual_checks, ...config.human_review.required_manual_checks]
+        }
+      }
+    : config;
   const humanReview = buildHumanReview({
     packet,
     prSurface,
     diff: resolvedDiff,
     feedback,
-    config: config?.human_review,
+    config: effectiveConfig?.human_review,
     narrative,
+    policy,
+    policyNowIso: typeof (packet.manifest as { created_at?: unknown }).created_at === "string" ? (packet.manifest as { created_at: string }).created_at : "",
     // review-surfaces.SEMANTIC_DIFF.1-4: computed here (sync git access) so the
     // facts are present uniformly on every build path — main, cache, standalone.
     semanticFacts: withBlastRadius(cwd, computeSemanticFactsForPacket(resolvedDiff, factReaders), factReaders),
@@ -1863,7 +1884,7 @@ function matchesManifestString(packetValue: unknown, surfaceValue: string | unde
 // surfaces in addition to the review packet. `--surface packet|human|pr|all`
 // selects which artifact(s) to validate; the default stays `packet` so the
 // historical `validate [path]` behavior (and its exit codes) is unchanged.
-const VALIDATE_SURFACES = ["packet", "human", "pr", "all"] as const;
+const VALIDATE_SURFACES = ["packet", "human", "pr", "all", "policy"] as const;
 type ValidateSurface = (typeof VALIDATE_SURFACES)[number];
 
 function validateSurfaceFlag(parsed: ParsedArgs): ValidateSurface {
@@ -1879,6 +1900,25 @@ function validateSurfaceFlag(parsed: ParsedArgs): ValidateSurface {
 
 async function runValidate(parsed: ParsedArgs): Promise<number> {
   const surface = validateSurfaceFlag(parsed);
+  // review-surfaces.POLICY.1: a present-but-malformed committed policy fails
+  // every validate run loudly (it would silently shape review output otherwise).
+  if (surface === "policy" || fileExists(path.resolve(process.cwd(), POLICY_FILE))) {
+    let loaded: ReviewPolicy | undefined;
+    try {
+      loaded = loadReviewPolicy(process.cwd());
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      return ExitCodes.schemaValidationFailed;
+    }
+    if (surface === "policy") {
+      if (!loaded) {
+        console.error(`No ${POLICY_FILE} found to validate.`);
+        return ExitCodes.usageError;
+      }
+      console.log(`Validated ${POLICY_FILE} against ${POLICY_SCHEMA_PATH}`);
+      return ExitCodes.success;
+    }
+  }
   if (surface === "packet") {
     return runValidatePacket(parsed);
   }

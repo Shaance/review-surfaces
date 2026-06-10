@@ -265,9 +265,8 @@ function setupSparseRepo(prefix: string): string {
         summary: "Sparse-repo intent hypothesis.",
         candidate_requirements: [
           {
-            title: "Worker entrypoint",
-            requirement: "The worker entrypoint in src/worker.ts must run.",
-            source_ref: { path: "src/worker.ts", note: "worker module" }
+            statement: "The worker entrypoint in src/worker.ts must run.",
+            anchors: ["src/worker.ts"]
           }
         ]
       },
@@ -290,21 +289,22 @@ function runSparseStage(cwd: string, command: string): { status: number | null; 
   return { status: result.status, stderr: result.stderr };
 }
 
-test("review-surfaces.CLI.4a evaluate (no prior intent.yaml) runs enriched intent so candidate_requirements match `intent` then `evaluate` in a sparse repo", () => {
+test("review-surfaces.CLI.4a evaluate (no prior intent.yaml) matches `intent` then `evaluate`; review-surfaces.INTENT.7 candidates never enter evaluation", () => {
   const evalDir = setupSparseRepo("review-surfaces-sparse-eval-");
   const stagedDir = setupSparseRepo("review-surfaces-sparse-staged-");
   try {
     // Reference: `intent` then `evaluate` evaluates the ENRICHED intent (with the
     // candidate requirement), so the candidate flows into evaluation.yaml.
     assert.equal(runSparseStage(stagedDir, "intent").status, 0);
+    // review-surfaces.INTENT.7: the candidate lands in intent.yaml's claimed
+    // section, and the evaluation NEVER carries a result for it.
+    const stagedIntent = fs.readFileSync(path.join(stagedDir, ".review-surfaces", "intent.yaml"), "utf8");
+    assert.match(stagedIntent, /claimed_candidates:/, "intent.yaml renders the claimed-candidate section");
+    assert.match(stagedIntent, /CAND-001/);
     const stagedEvalRun = runSparseStage(stagedDir, "evaluate");
     assert.equal(stagedEvalRun.status, 0, stagedEvalRun.stderr);
     const stagedEval = fs.readFileSync(path.join(stagedDir, ".review-surfaces", "evaluation.yaml"), "utf8");
-    assert.match(
-      stagedEval,
-      /REQ-LLM-/,
-      "intent then evaluate must include the LLM-derived candidate requirement (otherwise this test is vacuous)"
-    );
+    assert.doesNotMatch(stagedEval, /REQ-LLM-|CAND-/, "candidates never receive evaluation results");
 
     // `evaluate` standalone with NO prior intent.yaml must reproduce the same
     // candidate requirement: the fix runs the intent-reasoning fallback so the
@@ -317,11 +317,7 @@ test("review-surfaces.CLI.4a evaluate (no prior intent.yaml) runs enriched inten
     const evalRun = runSparseStage(evalDir, "evaluate");
     assert.equal(evalRun.status, 0, evalRun.stderr);
     const standaloneEval = fs.readFileSync(path.join(evalDir, ".review-surfaces", "evaluation.yaml"), "utf8");
-    assert.match(
-      standaloneEval,
-      /REQ-LLM-/,
-      "evaluate (no prior intent.yaml) must include the candidate requirement via the enriched-intent fallback"
-    );
+    assert.doesNotMatch(standaloneEval, /REQ-LLM-|CAND-/, "the standalone evaluate fallback also keeps candidates out of evaluation");
   } finally {
     fs.rmSync(evalDir, { recursive: true, force: true });
     fs.rmSync(stagedDir, { recursive: true, force: true });

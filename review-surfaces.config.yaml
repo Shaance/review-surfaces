@@ -270,18 +270,12 @@ quality_gate:
   # an allowlisted ACID is excluded from the missing count, but an UNRELATED
   # requirement regressing to "missing" still trips the strict self-dogfood gate.
   max_missing: 0
-  allow_missing:
-    # Phase 1 — PR surface (M6) SHIPPED (PR_SURFACE.1-5 removed from the allowlist).
-    # Phase 2 — Ranking & evidence (M7): brainstorm ideas 3 + 6 + 8
-    # Phase 2 (RANKING.1-3, COVERAGE.1-4, BUDGET.1-2) fully SHIPPED (2a/2b/2c).
-    # Phase 3 — Eval harness SHIPPED (EVAL_HARNESS.1-4 removed).
-    # Phase 4 — Fear-class facts (M8) SHIPPED (DEP_FACTS/BLAST_RADIUS/CONFIG_FACTS removed).
-    # Phase 5 — HTML cockpit SHIPPED (RENDER.9-10 removed).
-    # Phase 6 — Team policy + intent synthesis: brainstorm ideas 10 + 12
-    - review-surfaces.POLICY.1
-    - review-surfaces.POLICY.2
-    - review-surfaces.INTENT.6
-    - review-surfaces.INTENT.7
+  # The next-value uplift (NEXT_VALUE_UPLIFT_GOAL.md) is fully shipped: all 33
+  # staged ACIDs landed phase by phase and were removed as they shipped, so the
+  # allowlist is EMPTY again — any missing requirement fails the strict
+  # self-dogfood gate. Re-add an ACID here only to stage a new not-yet-shipped
+  # requirement, and remove it as that work lands.
+  allow_missing: []
 human_review:
   enabled: true
   default_entrypoint: true

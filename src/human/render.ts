@@ -321,6 +321,10 @@ ${renderIntentMismatchItems(intent.possible_overreach)}
 ## Missing intent
 
 ${renderIntentMismatchItems(intent.missing_intent)}
+
+## Provider-claimed candidates (unverified)
+
+${renderIntentMismatchItems(intent.claimed_candidates ?? [])}
 `;
 }
 
