@@ -415,6 +415,21 @@
             "type": "string"
           }
         },
+        "claimed_candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "statement", "anchors", "confidence", "trust"],
+            "properties": {
+              "id": { "type": "string" },
+              "statement": { "type": "string" },
+              "anchors": { "type": "array", "items": { "type": "string" } },
+              "confidence": { "enum": ["medium", "low"] },
+              "trust": { "const": "claimed" }
+            }
+          }
+        },
         "sources": {
           "type": "array",
           "items": {

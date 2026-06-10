@@ -23,9 +23,24 @@ export interface IntentRequirement {
   llm_derived?: boolean;
 }
 
+// review-surfaces.INTENT.6/.7: a provider-proposed candidate requirement whose
+// anchors resolved under deterministic validation. Lives in a SEPARATE section —
+// never in `requirements` — so the evaluator can never produce a coverage
+// result for it and the verdict stays provider-untouchable.
+export interface ClaimedIntentCandidate {
+  id: string;
+  statement: string;
+  // The validated anchor tokens the provider cited (spec/doc paths or ACIDs).
+  anchors: string[];
+  confidence: "medium" | "low";
+  trust: "claimed";
+}
+
 export interface IntentModel {
   summary: string;
   requirements: IntentRequirement[];
+  // review-surfaces.INTENT.7: provider candidates, excluded from evaluation.
+  claimed_candidates?: ClaimedIntentCandidate[];
   constraints: string[];
   non_goals: string[];
   assumptions: string[];

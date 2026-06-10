@@ -1175,7 +1175,7 @@ test("distinct rationales remain distinct global review_focus lines", async () =
   assert.ok(!added.some((line) => /requirements share this hypothesis/.test(line)), "distinct rationales are not collapsed");
 });
 
-test("intent synthesis proposes non-authoritative requirements only when the spec is sparse", async () => {
+test("review-surfaces.INTENT.6 schema-bound candidates with validated anchors land in the claimed section; invalid anchors demote to open questions", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-sparse-"));
   fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
   fs.writeFileSync(path.join(tmp, "src", "api.ts"), "export const api = 1;\n");
@@ -1203,26 +1203,29 @@ test("intent synthesis proposes non-authoritative requirements only when the spe
       non_goals: ["No persistence layer in scope."],
       open_questions: ["Is there a test harness?"],
       candidate_requirements: [
-        { requirement: "The API module should expose a stable surface.", title: "API surface", source_ref: { kind: "file", path: "src/api.ts", note: "changed file" } },
-        // This one cites a nonexistent path and must be dropped.
-        { requirement: "Fabricated requirement.", source_ref: { kind: "file", path: "src/ghost.ts" } }
+        { statement: "The API module should expose a stable surface.", anchors: ["src/api.ts"], confidence: "medium" },
+        // This one cites a nonexistent path: demoted to an open question, never dropped silently.
+        { statement: "Fabricated requirement.", anchors: ["src/ghost.ts"] }
       ]
     }
   });
 
   await runReasoningStages(provider, { collection, intent, evaluation: { summary: "x", results: [], overreach: [], acai_coverage: {} }, methodology: emptyMethodology(), risks: emptyRisks() });
 
-  const proposed = intent.requirements.filter((req) => req.llm_derived);
-  assert.equal(proposed.length, 1, "only the requirement with a valid source ref is kept");
-  const requirement = proposed[0];
-  assert.equal(requirement.acai_id, undefined, "no fabricated acai_id");
-  assert.notEqual(requirement.confidence, "high", "proposed requirements are never high confidence");
-  assert.equal(requirement.llm_derived, true);
-  assert.equal(requirement.source_refs[0].evidence?.[0].validation_status, "valid");
+  // review-surfaces.INTENT.7: candidates live in the SEPARATE claimed section —
+  // never in requirements, so the evaluator can never score them.
+  assert.equal(intent.requirements.length, 0, "provider candidates never enter intent.requirements");
+  assert.equal(intent.claimed_candidates?.length, 1, "the valid-anchored candidate is claimed");
+  const candidate = intent.claimed_candidates![0];
+  assert.equal(candidate.trust, "claimed");
+  assert.deepEqual(candidate.anchors, ["src/api.ts"]);
+  assert.notEqual(candidate.confidence, "high" as never);
+  // The invalid-anchored candidate is demoted to an open question naming the token.
+  assert.ok(intent.open_questions.some((q) => /invalid anchor/.test(q) && /src\/ghost\.ts/.test(q)), "invalid anchor demotes, never drops silently");
   assert.ok(intent.assumptions.some((item) => item.startsWith("LLM-proposed:")), "narrative additions are marked");
 });
 
-test("intent synthesis never adds candidate requirements when authoritative Acai requirements exist", async () => {
+test("review-surfaces.INTENT.7 candidates never enter requirements even with an authoritative spec", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-authoritative-"));
   fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
   fs.writeFileSync(path.join(tmp, "src", "api.ts"), "export const api = 1;\n");
@@ -1234,15 +1237,16 @@ test("intent synthesis never adds candidate requirements when authoritative Acai
   const provider = stubProvider({
     "intent-synthesis": {
       candidate_requirements: [
-        { requirement: "Should be ignored.", source_ref: { kind: "file", path: "src/api.ts" } }
+        { statement: "An additional intent hypothesis.", anchors: ["src/api.ts"] }
       ]
     }
   });
 
   await runReasoningStages(provider, { collection, intent, evaluation: evaluationWithStatus("missing"), methodology: emptyMethodology(), risks: emptyRisks() });
 
-  assert.equal(intent.requirements.length, before, "authoritative spec means no proposed requirements");
+  assert.equal(intent.requirements.length, before, "requirements are never touched by provider candidates");
   assert.ok(!intent.requirements.some((req) => req.llm_derived));
+  assert.equal(intent.claimed_candidates?.length, 1, "the candidate is recorded in the claimed section instead");
 });
 
 test("mock provider is a guaranteed no-op: deterministic packet is byte-stable", async () => {
@@ -1465,9 +1469,8 @@ test("review-surfaces.PRIVACY.2 agent-file reasoning stages redact secrets befor
     summary: `Summary that mentions SECRET=${secrets.risksecret}`,
     candidate_requirements: [
       {
-        requirement: `Requirement leaking password=${secrets.password}`,
-        title: `Title with API_KEY=${secrets.apikey}`,
-        source_ref: { kind: "file", path: "src/real.ts", note: `note has SECRET=${secrets.risksecret}` }
+        statement: `Requirement leaking password=${secrets.password} and API_KEY=${secrets.apikey}`,
+        anchors: ["src/real.ts"]
       }
     ],
     // Consumed by the methodology + risk narrative stage.
@@ -1520,12 +1523,11 @@ test("review-surfaces.PRIVACY.2 agent-file reasoning stages redact secrets befor
     /\[REDACTED:google_api_key\]/
   );
 
-  // The candidate-requirement title / requirement text / source-ref note are
-  // also redacted (these bypass markHypothesis and land directly in intent).
-  const proposed = intent.requirements.find((req) => req.llm_derived);
-  assert.ok(proposed, "the candidate requirement with a valid source ref is built");
-  assert.match(JSON.stringify(proposed), /\[REDACTED:secret\]/);
-  assert.ok(!JSON.stringify(proposed).includes(secrets.apikey), "candidate title api key redacted");
-  assert.ok(!JSON.stringify(proposed).includes(secrets.password), "candidate requirement password redacted");
-  assert.ok(!JSON.stringify(proposed).includes(secrets.risksecret), "candidate source-ref note secret redacted");
+  // The candidate statement is also redacted before landing in the claimed
+  // section (it bypasses markHypothesis and lands directly in intent).
+  const candidate = intent.claimed_candidates?.[0];
+  assert.ok(candidate, "the valid-anchored candidate is claimed");
+  assert.match(candidate.statement, /\[REDACTED:secret\]/);
+  assert.ok(!candidate.statement.includes(secrets.apikey), "candidate api key redacted");
+  assert.ok(!candidate.statement.includes(secrets.password), "candidate password redacted");
 });

@@ -15,11 +15,10 @@ function readArtifact(cwd: string, file: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// FINDING A: in a sparse/foreign repo, the agent-file intent-reasoning stage may
-// append LLM candidate_requirements. Because intent synthesis now runs BEFORE
-// evaluateIntent, EVERY intent requirement -- including the LLM candidate -- must
-// have a matching evaluation.results entry (the one-result-per-requirement
-// contract) in both `all` and `packet`.
+// FINDING A (re-scoped by review-surfaces.INTENT.7): provider candidates now
+// live in intent.claimed_candidates — NEVER in intent.requirements — so the
+// evaluator must produce one result per AUTHORITATIVE requirement and ZERO
+// results for candidates, in both `all` and `packet`.
 // ---------------------------------------------------------------------------
 
 function setupSparseRepoWithCandidate(prefix: string): string {
@@ -37,9 +36,8 @@ function setupSparseRepoWithCandidate(prefix: string): string {
         summary: "Sparse-repo intent hypothesis.",
         candidate_requirements: [
           {
-            title: "Worker entrypoint",
-            requirement: "The worker entrypoint in src/worker.ts must run.",
-            source_ref: { path: "src/worker.ts", note: "worker module" }
+            statement: "The worker entrypoint in src/worker.ts must run.",
+            anchors: ["src/worker.ts"]
           }
         ]
       },
@@ -52,7 +50,7 @@ function setupSparseRepoWithCandidate(prefix: string): string {
 }
 
 function assertEveryRequirementHasResult(packet: Record<string, unknown>): void {
-  const intent = packet.intent as { requirements: Array<{ id: string }> };
+  const intent = packet.intent as { requirements: Array<{ id: string }>; claimed_candidates?: Array<{ id: string; trust: string }> };
   const evaluation = packet.evaluation as { results: Array<{ requirement_id: string }> };
   const resultIds = new Set(evaluation.results.map((result) => result.requirement_id));
   for (const requirement of intent.requirements) {
@@ -61,14 +59,18 @@ function assertEveryRequirementHasResult(packet: Record<string, unknown>): void 
       `intent requirement ${requirement.id} must have a matching evaluation.results entry`
     );
   }
-  // And the LLM candidate requirement is actually present (otherwise the test is vacuous).
-  assert.ok(
-    intent.requirements.some((requirement) => requirement.id.startsWith("REQ-LLM-")),
-    "the LLM candidate requirement must be present so the contract is meaningfully exercised"
-  );
+  // review-surfaces.INTENT.7: the provider candidate is present in the SEPARATE
+  // claimed section (otherwise the test is vacuous) and the evaluator produced
+  // NO result for it — candidates never affect coverage or the verdict.
+  assert.ok((intent.claimed_candidates ?? []).length > 0, "the provider candidate must land in claimed_candidates");
+  for (const candidate of intent.claimed_candidates ?? []) {
+    assert.equal(candidate.trust, "claimed");
+    assert.ok(!resultIds.has(candidate.id), `claimed candidate ${candidate.id} must have NO evaluation result`);
+  }
+  assert.ok(!intent.requirements.some((requirement) => requirement.id.startsWith("REQ-LLM-")), "no candidate enters intent.requirements");
 }
 
-test("FINDING A: `all` (agent-file, sparse repo) gives every LLM candidate_requirement a matching evaluation.results entry", () => {
+test("review-surfaces.INTENT.7 `all` (agent-file, sparse repo) keeps provider candidates out of evaluation results", () => {
   const tmp = setupSparseRepoWithCandidate("review-surfaces-findingA-all-");
   try {
     const run = runCli(tmp, ["all", "--base", "HEAD", "--head", "HEAD", "--provider", "agent-file", "--agent-input", "agent-input.json"]);
@@ -79,7 +81,7 @@ test("FINDING A: `all` (agent-file, sparse repo) gives every LLM candidate_requi
   }
 });
 
-test("FINDING A: `packet` (agent-file, sparse repo) gives every LLM candidate_requirement a matching evaluation.results entry", () => {
+test("review-surfaces.INTENT.7 `packet` (agent-file, sparse repo) keeps provider candidates out of evaluation results", () => {
   const tmp = setupSparseRepoWithCandidate("review-surfaces-findingA-packet-");
   try {
     // Standalone packet computes all stage deps in-memory (no prior artifacts).

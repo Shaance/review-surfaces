@@ -55,7 +55,22 @@ export function loadIntent(outputDir: string): IntentModel | null {
     non_goals: asStringArray(parsed.non_goals),
     assumptions: asStringArray(parsed.assumptions),
     open_questions: asStringArray(parsed.open_questions),
-    sources: asArray(parsed.sources).map(normalizeSourceRef)
+    sources: asArray(parsed.sources).map(normalizeSourceRef),
+    // review-surfaces.INTENT.7: provider candidates must round-trip through the
+    // artifact loader, or a reused intent.yaml would silently drop them.
+    ...(Array.isArray(parsed.claimed_candidates) && parsed.claimed_candidates.length > 0
+      ? {
+          claimed_candidates: asArray(parsed.claimed_candidates)
+            .filter(isRecord)
+            .map((candidate) => ({
+              id: asString(candidate.id),
+              statement: asString(candidate.statement),
+              anchors: asStringArray(candidate.anchors),
+              confidence: candidate.confidence === "medium" ? ("medium" as const) : ("low" as const),
+              trust: "claimed" as const
+            }))
+        }
+      : {})
   };
 }
 

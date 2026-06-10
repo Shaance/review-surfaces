@@ -99,6 +99,9 @@ export interface HumanReviewBuildConfig {
   // review-surfaces.BUDGET.1: review time budget in whole minutes (YAML:
   // human_review.review_budget, e.g. "15m"/"1h"; --budget overrides). null = off.
   review_budget_minutes: number | null;
+  // review-surfaces.POLICY.2: content hash of the committed policy, folded into
+  // the config signature so a policy change regenerates cached human artifacts.
+  policy_signature?: string;
 }
 
 export interface HumanReviewRequiredManualCheckConfig {
@@ -322,6 +325,10 @@ export interface IntentMismatch {
   possible_mismatches: IntentMismatchItem[];
   possible_overreach: IntentMismatchItem[];
   missing_intent: IntentMismatchItem[];
+  // review-surfaces.INTENT.7: provider-proposed claimed candidates, rendered
+  // DISTINCTLY (they widen what the human is asked to confirm; they never touch
+  // coverage or the verdict). Optional so prior artifacts degrade.
+  claimed_candidates?: IntentMismatchItem[];
 }
 
 export interface ReviewRouteStep {

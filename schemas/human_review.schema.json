@@ -723,6 +723,10 @@
         "missing_intent": {
           "type": "array",
           "items": { "$ref": "#/$defs/intentMismatchItem" }
+        },
+        "claimed_candidates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/intentMismatchItem" }
         }
       }
     },

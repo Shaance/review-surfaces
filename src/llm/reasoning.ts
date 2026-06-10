@@ -14,7 +14,7 @@ import type {
 } from "../evaluation/candidate-evidence";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 import { markHypothesis, redactHypothesisText } from "../evidence/hypothesis";
-import { IntentModel, IntentRequirement } from "../intent/intent";
+import { ClaimedIntentCandidate, IntentModel, IntentRequirement } from "../intent/intent";
 import { MethodologyModel } from "../methodology/methodology";
 import { RisksModel } from "../risks/risks";
 import { buildReviewAreas, createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
@@ -238,27 +238,19 @@ const INTENT_SYNTHESIS_SCHEMA = {
     non_goals: { type: "array", items: { type: "string" } },
     assumptions: { type: "array", items: { type: "string" } },
     open_questions: { type: "array", items: { type: "string" } },
+    // review-surfaces.INTENT.6: candidates are {statement, anchors, confidence};
+    // anchors are tokens on the narrative allowlist (spec/doc paths, ACIDs).
     candidate_requirements: {
       type: "array",
       items: {
         type: "object",
         additionalProperties: false,
         properties: {
-          requirement: { type: "string" },
-          title: { type: "string" },
-          source_ref: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              kind: { type: "string" },
-              path: { type: "string" },
-              line_start: { type: "integer", minimum: 1 },
-              line_end: { type: "integer", minimum: 1 },
-              note: { type: "string" }
-            }
-          }
+          statement: { type: "string" },
+          anchors: { type: "array", items: { type: "string" } },
+          confidence: { enum: ["medium", "low"] }
         },
-        required: ["requirement", "source_ref"]
+        required: ["statement", "anchors"]
       }
     }
   }
@@ -302,15 +294,68 @@ async function runIntentSynthesis(
     intent.summary = `${intent.summary} ${markHypothesis(data.summary.trim())}`;
   }
 
-  // Candidate requirements ONLY when the authoritative spec is sparse/absent
-  // (e.g. foreign repos). Each must cite a source ref that validates; drop
-  // those that do not. Proposed requirements never carry an acai_id and never
-  // reach confidence "high".
-  if (sparse) {
-    const proposed = buildCandidateRequirements(data.candidate_requirements, intent, evidenceContext);
-    if (proposed.length > 0) {
-      intent.requirements = [...intent.requirements, ...proposed];
+  // review-surfaces.INTENT.6/.7: provider candidates land in a SEPARATE
+  // claimed-candidates section — never in intent.requirements, so the evaluator
+  // (one coverage result per requirement) can never score them and the verdict
+  // stays provider-untouchable. A candidate with an invalid anchor is demoted to
+  // an open question naming the bad token — never dropped silently.
+  applyCandidateRequirements(data.candidate_requirements, intent, evidenceContext);
+}
+
+function applyCandidateRequirements(
+  raw: unknown,
+  intent: IntentModel,
+  evidenceContext: EvidenceValidationContext
+): void {
+  if (!Array.isArray(raw)) {
+    return;
+  }
+  const knownAcids = new Set(
+    intent.requirements.map((requirement) => requirement.acai_id).filter((id): id is string => Boolean(id))
+  );
+  const claimed: ClaimedIntentCandidate[] = intent.claimed_candidates ? [...intent.claimed_candidates] : [];
+  const demoted: string[] = [];
+  for (const entry of raw.slice(0, MAX_PROPOSED_REQUIREMENTS)) {
+    if (!isRecord(entry)) {
+      continue;
     }
+    const statement = typeof entry.statement === "string" ? redactHypothesisText(entry.statement).trim() : "";
+    const anchors = asStringArray(entry.anchors).map((token) => redactHypothesisText(token).trim()).filter(Boolean);
+    if (statement === "" || anchors.length === 0) {
+      continue;
+    }
+    // Anchor validation against the deterministic allowlist: an ACID must exist
+    // in the indexed spec; a path token must validate as real spec/doc/file
+    // evidence. ANY invalid anchor demotes the whole candidate.
+    const invalid = anchors.filter((token) => {
+      if (knownAcids.has(token)) {
+        return false;
+      }
+      const validated = validateEvidenceRef(
+        llmProposedEvidence("file", { path: token, note: "Anchor cited for proposed requirement.", confidence: "low" }),
+        evidenceContext
+      );
+      return validated.validation_status !== "valid";
+    });
+    if (invalid.length > 0) {
+      demoted.push(
+        `Provider-proposed requirement could not be verified (invalid anchor(s): ${invalid.join(", ")}): ${statement}`
+      );
+      continue;
+    }
+    claimed.push({
+      id: `CAND-${String(claimed.length + 1).padStart(3, "0")}`,
+      statement,
+      anchors,
+      confidence: entry.confidence === "medium" ? "medium" : "low",
+      trust: "claimed"
+    });
+  }
+  if (claimed.length > 0) {
+    intent.claimed_candidates = claimed;
+  }
+  if (demoted.length > 0) {
+    intent.open_questions = uniqueTruthy([...intent.open_questions, ...demoted.map(markHypothesis)]).slice(0, 16);
   }
 }
 
@@ -319,73 +364,15 @@ function isSparseSpec(intent: IntentModel): boolean {
   return authoritative.length === 0;
 }
 
-function buildCandidateRequirements(
-  raw: unknown,
-  intent: IntentModel,
-  evidenceContext: EvidenceValidationContext
-): IntentRequirement[] {
-  if (!Array.isArray(raw)) {
-    return [];
-  }
-  const result: IntentRequirement[] = [];
-  let counter = intent.requirements.length;
-  for (const entry of raw) {
-    if (result.length >= MAX_PROPOSED_REQUIREMENTS || !isRecord(entry)) {
-      continue;
-    }
-    // Redact agent/LLM-controlled free text before it can reach intent fields.
-    const requirementText = typeof entry.requirement === "string" ? redactHypothesisText(entry.requirement).trim() : "";
-    if (requirementText === "") {
-      continue;
-    }
-    const sourceRefRaw = isRecord(entry.source_ref) ? entry.source_ref : undefined;
-    if (!sourceRefRaw || typeof sourceRefRaw.path !== "string") {
-      continue; // every proposed item MUST cite a source ref
-    }
-    const candidateEvidence = llmProposedEvidence("file", {
-      path: sourceRefRaw.path,
-      line_start: numericField(sourceRefRaw.line_start),
-      line_end: numericField(sourceRefRaw.line_end),
-      note: typeof sourceRefRaw.note === "string" ? redactHypothesisText(sourceRefRaw.note) : "Source cited for proposed requirement.",
-      confidence: "low"
-    });
-    const validated = validateEvidenceRef(candidateEvidence, evidenceContext);
-    if (validated.validation_status !== "valid") {
-      continue; // drop proposed requirements whose source ref does not validate
-    }
-    counter += 1;
-    result.push({
-      id: `REQ-LLM-${String(counter).padStart(3, "0")}`,
-      acai_id: undefined, // NEVER fabricate an acai_id
-      title: typeof entry.title === "string" ? redactHypothesisText(entry.title) : "LLM-proposed requirement",
-      requirement: requirementText,
-      source_refs: [
-        {
-          kind: "file",
-          ref: sourceRefRaw.path,
-          title: "LLM-proposed source",
-          evidence: [validated]
-        }
-      ],
-      constraints: [],
-      assumptions: [],
-      open_questions: ["LLM-proposed requirement; confirm scope against authoritative intent before relying on it."],
-      confidence: "low", // never "high"
-      llm_derived: true
-    });
-  }
-  return result;
-}
-
 function intentPrompt(inputs: ReasoningInputs, sparse: boolean): string {
   const changedFiles = inputs.collection.changedFiles
     .slice(0, 30)
     .map((file) => `${file.status} ${file.path}`)
     .join("\n");
   const candidateClause = sparse
-    ? "The authoritative spec is sparse/absent. You MAY propose up to 5 candidate_requirements, each citing a source_ref with a real repository-relative path. Do not invent ACIDs."
-    : "The authoritative spec already has requirements. Do NOT propose candidate_requirements; leave that array empty.";
-  return `Return compact JSON only matching the provided schema. Every assumption/non_goal/open_question and any candidate_requirement source_ref MUST cite a real repository file. Do not invent file paths, line numbers, ACIDs, or tests.
+    ? "The authoritative spec is sparse/absent. You MAY propose up to 5 candidate_requirements, each as {statement, anchors, confidence} where every anchor is a real repository-relative spec/doc path or an ACID that exists in the spec. Do not invent anchors."
+    : "The authoritative spec already has requirements. Propose candidate_requirements ONLY for intent you can anchor to real spec/doc paths or existing ACIDs; otherwise leave the array empty.";
+  return `Return compact JSON only matching the provided schema. Every assumption/non_goal/open_question MUST cite real repository context, and every candidate_requirement anchor MUST be a real repository-relative spec/doc path or an ACID that exists in the spec. Do not invent file paths, line numbers, ACIDs, or tests.
 
 ${candidateClause}
 
