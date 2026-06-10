@@ -93,6 +93,7 @@ function humanModel(): HumanReviewModel {
         evidence: [{ kind: "file", path: "schemas/human_review.schema.json", confidence: "medium" }],
         requirement_ids: ["review-surfaces.HUMAN_REVIEW.9"],
         risk_ids: ["PR-RISK-001"],
+        ranking_reasons: [],
         confidence: "high",
         priority: "high"
       }

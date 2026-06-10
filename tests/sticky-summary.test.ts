@@ -44,6 +44,7 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
         evidence: [{ kind: "file", path: "src/cli/index.ts", confidence: "medium" }],
         requirement_ids: ["review-surfaces.PR_SURFACE.2"],
         risk_ids: ["PR-RISK-001"],
+        ranking_reasons: ["no changed test or current-head transcript covers this file, so it ranks higher"],
         confidence: "high",
         priority: "high"
       },
@@ -57,6 +58,7 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
         evidence: [{ kind: "file", path: "src/render/sticky-summary.ts", confidence: "medium" }],
         requirement_ids: ["review-surfaces.PR_SURFACE.2"],
         risk_ids: ["PR-RISK-002"],
+        ranking_reasons: [],
         confidence: "high",
         priority: "medium"
       }

@@ -185,6 +185,11 @@ export interface ReviewQueueItem {
   anchor_side?: "old" | "new";
   reviewer_action: string;
   reason: string;
+  // review-surfaces.RANKING.2: one plain-language line per item explaining why it
+  // ranked where it did (evidence signals — changed tests, transcripts, coverage).
+  // Required and non-empty in the strict schema; items with no evidence signal
+  // carry the default severity/anchor reason.
+  ranking_reasons: string[];
   evidence: EvidenceRef[];
   requirement_ids: string[];
   risk_ids: string[];

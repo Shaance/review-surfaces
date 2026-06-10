@@ -20,6 +20,7 @@ function queueItem(over: Partial<ReviewQueueItem> = {}): ReviewQueueItem {
     evidence: [{ kind: "file" as const, path: "src/server.ts", line_start: 12, confidence: "medium" as const }],
     requirement_ids: ["review-surfaces.PRIVACY.2"],
     risk_ids: ["PR-RISK-1"],
+    ranking_reasons: [],
     confidence: "medium",
     priority: "high",
     ...over

@@ -344,6 +344,7 @@
         "path",
         "reason",
         "reviewer_action",
+        "ranking_reasons",
         "evidence",
         "requirement_ids",
         "risk_ids",
@@ -362,6 +363,11 @@
         "anchor_side": { "enum": ["old", "new"] },
         "reason": { "type": "string" },
         "reviewer_action": { "type": "string" },
+        "ranking_reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
         "evidence": {
           "type": "array",
           "items": { "$ref": "#/$defs/evidenceRef" }

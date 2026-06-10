@@ -759,11 +759,20 @@ function renderReviewFirst(items: ReviewQueueItem[], context: HumanRenderContext
       const hunkLine = item.hunk_header && !excerpt ? `   - Hunk: \`${field(item.hunk_header)}\`\n` : "";
       return `${item.rank}. \`${field(location)}\`
 ${hunkLine}   - Why it matters: ${field(item.reason)}
+   - Why ranked here: ${rankingReasonsLine(item)}
    - Action: ${field(item.reviewer_action)}${excerpt ? `\n${excerpt}` : ""}
    - Risk: ${item.risk_ids.map((risk) => `\`${field(risk)}\``).join(", ") || "none"}
    - Evidence: ${evidenceList(item.evidence)}`;
     })
     .join("\n\n");
+}
+
+// review-surfaces.RANKING.2: the "why ranked here" line — the per-item evidence
+// signals that moved it up or down. Joined with "; "; older JSON written before
+// ranking support degrades to a neutral note rather than an empty line.
+function rankingReasonsLine(item: ReviewQueueItem): string {
+  const reasons = item.ranking_reasons ?? [];
+  return reasons.length > 0 ? field(reasons.join("; "), 600) : "ranked by deterministic risk severity";
 }
 
 // review-surfaces.HUMAN_REVIEW.20: render a bounded, indented fenced diff
@@ -814,6 +823,9 @@ ${item.hunk_header && !excerpt ? `Hunk: \`${field(item.hunk_header)}\`\n` : ""}
 ${item.old_path ? `Old path: \`${field(item.old_path)}\`\n` : ""}
 Why this matters:
 ${field(item.reason, 1000)}
+
+Why ranked here:
+${rankingReasonsLine(item)}
 
 Reviewer action:
 ${field(item.reviewer_action, 1000)}
