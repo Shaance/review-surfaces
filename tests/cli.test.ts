@@ -888,3 +888,16 @@ test("review-surfaces.PROVIDERS.7 comment --format review rejects a stale/invali
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("review-surfaces.PROVIDERS.7 comment --format review --review-scope pr fails fast on a repo-scope artifact", () => {
+  const tmp = setupReviewFixture("rs-draft-prscope-");
+  try {
+    // The fixture generated a repo-scope review (no pr_review_surface.json). A
+    // PR-scope draft export must fail fast rather than export repo-scope comments.
+    const result = spawnSync("node", [CLI, "comment", "--format", "review", "--review-scope", "pr", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    assert.equal(result.status, ExitCodes.usageError, result.stdout + result.stderr);
+    assert.match(result.stderr + result.stdout, /PR-scope draft review requires a current pr_review_surface\.json/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

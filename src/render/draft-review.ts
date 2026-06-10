@@ -63,9 +63,10 @@ export function buildDraftReview(model: HumanReviewModel, diff?: StructuredDiff)
   }
   const payload: DraftReviewPayload = { body: reviewBody(model, unanchored), comments };
   const headSha = model.generated_from?.head_sha;
-  // Pin only to a REAL sha — the collector records "unknown" when it cannot
-  // determine the head, and `commit_id: "unknown"` would be rejected by GitHub.
-  if (headSha && headSha !== "unknown") {
+  // Pin only to a full, resolvable 40-hex SHA. The schema only requires head_sha
+  // to be a string, so placeholders ("unknown", "HEAD") or abbreviated values can
+  // appear; `commit_id` must be a real commit SHA or GitHub rejects the review (422).
+  if (headSha && /^[0-9a-f]{40}$/.test(headSha)) {
     payload.commit_id = headSha;
   }
   return { payload, unanchored: unanchored.length };

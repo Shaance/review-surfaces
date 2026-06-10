@@ -92,14 +92,19 @@ test("review-surfaces.PROVIDERS.7 anchors old-side comments to LEFT (deletions),
   assert.equal(byPath("src/d.ts").side, "RIGHT", "an omitted side defaults to RIGHT");
 });
 
-test("review-surfaces.PROVIDERS.7 pins the draft review to the reviewed head sha", () => {
-  const pinned = buildDraftReview(model([comment({ path: "src/a.ts", line_start: 1 })], "abc123def456"));
-  assert.equal(pinned.payload.commit_id, "abc123def456", "commit_id pins to the reviewed head");
+test("review-surfaces.PROVIDERS.7 pins the draft review to a full reviewed head sha only", () => {
+  const sha = "0123456789abcdef0123456789abcdef01234567"; // 40 hex
+  const pinned = buildDraftReview(model([comment({ path: "src/a.ts", line_start: 1 })], sha));
+  assert.equal(pinned.payload.commit_id, sha, "commit_id pins to the reviewed head");
   // ...still no event — pinning does not make it auto-submit.
   assert.equal("event" in pinned.payload, false);
 
   const unpinned = buildDraftReview(model([comment({ path: "src/a.ts", line_start: 1 })]));
   assert.equal("commit_id" in unpinned.payload, false, "commit_id is omitted when no head sha is known");
+
+  // A non-SHA placeholder (e.g. "HEAD", abbreviated) is NOT pinned — GitHub needs a real SHA.
+  const placeholder = buildDraftReview(model([comment({ path: "src/a.ts", line_start: 1 })], "HEAD"));
+  assert.equal("commit_id" in placeholder.payload, false, "a non-SHA head is not pinned");
 });
 
 // When the reviewed diff is available it is the authority: it sets the side and

@@ -1901,9 +1901,22 @@ async function runCommentDraftReview(parsed: ParsedArgs): Promise<number> {
     );
   }
   const model = loaded as HumanReviewModel;
-  // The reviewed diff is the authority for inline-anchoring and side; absent, the
-  // export falls back to the comment's own side hint.
-  const draft = buildDraftReview(model, readHumanReviewDiff(outputDir));
+  // Honor an explicit PR-scope request: a GitHub pending review must be built from
+  // the current PR surface, not a cached repo-scope model (whole-repo evidence
+  // lines are not PR-diff anchors). Mirror the `review` walkthrough's gate.
+  if (reviewScope(parsed) === "pr" && (model.mode !== "pr" || prSurfaceHeadSha(outputDir) !== model.generated_from.head_sha)) {
+    throw new CliError(
+      "PR-scope draft review requires a current pr_review_surface.json matching the review. Run `review-surfaces all --review-scope pr` first.",
+      ExitCodes.usageError
+    );
+  }
+  // The reviewed diff is the authority for inline-anchoring and side. A PRESENT but
+  // empty diff (zero changed files) is still authoritative — every path+line
+  // comment then folds into the body, never an invalid inline comment. Only a
+  // genuinely ABSENT diff artifact falls back to the comment's own side hint.
+  const diffPath = path.join(outputDir, "inputs", "diff.patch");
+  const diff = fileExists(diffPath) ? parseStructuredDiff(fs.readFileSync(diffPath, "utf8")) : undefined;
+  const draft = buildDraftReview(model, diff);
   const reviewPath = path.join(outputDir, "pending_review.json");
   await writeJson(reviewPath, draft.payload);
   process.stdout.write(`${JSON.stringify(draft.payload, null, 2)}\n`);
