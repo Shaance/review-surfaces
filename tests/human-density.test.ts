@@ -123,6 +123,41 @@ test("review-surfaces.HUMAN_REVIEW.19 rolls up templated test-plan items into on
   assert.equal(sentenceCount, 1, "templated sentence must appear once, not per-ACID");
 });
 
+// review-surfaces.HUMAN_REVIEW.19: rolling up happens before the display cap, so
+// a distinct item beyond the raw item cap is not hidden behind earlier duplicates.
+test("review-surfaces.HUMAN_REVIEW.19 rolls up before capping so distinct items survive", () => {
+  const dupes = Array.from({ length: 9 }, (_unused, i) => ({
+    ...templatedTestItem(i + 1, `review-surfaces.HUMAN_TRUST.${i + 1}`),
+    evidence_gap: "Identical templated gap."
+  }));
+  const distinct: TestPlanItem = {
+    ...templatedTestItem(99, "review-surfaces.CLI.8"),
+    evidence_gap: "A distinct required test the reviewer must not lose.",
+    priority: "required"
+  };
+  const model = baseModel({ test_plan: [...dupes, distinct] });
+  const section = renderHumanReviewMarkdown(model).split("## Test plan")[1].split("\n## ")[0];
+  assert.match(section, /A distinct required test the reviewer must not lose\./, "the distinct item must survive the cap");
+});
+
+// review-surfaces.HUMAN_REVIEW.19: a rollup must list every affected ACID, even
+// when the only difference is an ACID embedded in the expected_result/command.
+test("review-surfaces.HUMAN_REVIEW.19 lists ACIDs that differ only in the expected result", () => {
+  const items: TestPlanItem[] = ["review-surfaces.CLI.1", "review-surfaces.CLI.2"].map((acid, i) => ({
+    id: `TEST-${i + 1}`,
+    kind: "automatic",
+    priority: "recommended",
+    scenario: "Add a focused test.",
+    expected_result: `The behavior for ${acid} is retained.`,
+    maps_to_requirements: [],
+    maps_to_risks: [],
+    evidence_gap: "Weak test evidence."
+  }));
+  const section = renderHumanReviewMarkdown(baseModel({ test_plan: items })).split("## Test plan")[1].split("\n## ")[0];
+  assert.match(section, /review-surfaces\.CLI\.1/);
+  assert.match(section, /review-surfaces\.CLI\.2/, "both ACIDs must be listed even though they differ only in expected_result");
+});
+
 // review-surfaces.HUMAN_REVIEW.20: a queue item with hunk/line anchors renders a
 // bounded fenced diff excerpt inline.
 test("review-surfaces.HUMAN_REVIEW.20 renders a bounded inline hunk excerpt for an anchored queue item", () => {
@@ -267,6 +302,50 @@ test("review-surfaces.HUMAN_REVIEW.19 rollups preserve evidence across grouped i
   assert.match(trust, /src\/bootstrap2\.ts/, "rolled-up trust gap must union evidence across requirements");
   const cards = md.split("## Evidence cards")[1].split("\n## ")[0];
   assert.match(cards, /evidence: direct 0, missing 2, invalid 0/, "evidence card rollup must show the unioned evidence mix");
+});
+
+// review-surfaces.HUMAN_REVIEW.20: a diff line containing a ``` fence must not
+// prematurely close the excerpt's own fence.
+test("review-surfaces.HUMAN_REVIEW.20 uses a fence that diff content cannot close", () => {
+  const diffText = [
+    "diff --git a/README.md b/README.md",
+    "--- a/README.md",
+    "+++ b/README.md",
+    "@@ -1,2 +1,2 @@",
+    "-old text",
+    "+```ts",
+    " const x = 1;",
+    ""
+  ].join("\n");
+  const diff = parseStructuredDiff(diffText);
+  const excerpt = renderHunkExcerpt(diff, { path: "README.md", hunk_header: "@@ -1,2 +1,2 @@", line_start: 1, line_end: 1 });
+  assert.ok(excerpt, "excerpt should render");
+  // The opening fence must be longer than the backtick run in the content.
+  const opening = excerpt!.split("\n")[0];
+  assert.ok(opening.startsWith("````"), `fence must be >=4 backticks, got: ${opening}`);
+  assert.match(excerpt!, /```ts/, "the backtick content is preserved inside the longer fence");
+});
+
+// review-surfaces.HUMAN_REVIEW.20: a queue item anchored to a rename's old path
+// windows on old-side line numbers.
+test("review-surfaces.HUMAN_REVIEW.20 anchors rename excerpts on the old-side line", () => {
+  const diffText = [
+    "diff --git a/src/old-name.ts b/src/new-name.ts",
+    "rename from src/old-name.ts",
+    "rename to src/new-name.ts",
+    "--- a/src/old-name.ts",
+    "+++ b/src/new-name.ts",
+    "@@ -10,3 +20,3 @@",
+    " context",
+    "-removed at old line 11",
+    "+added at new line 21",
+    ""
+  ].join("\n");
+  const diff = parseStructuredDiff(diffText);
+  // Anchor to the OLD path and an old-side line number (11).
+  const excerpt = renderHunkExcerpt(diff, { path: "src/old-name.ts", old_path: "src/old-name.ts", line_start: 11, line_end: 11 });
+  assert.ok(excerpt, "excerpt should render for a rename anchored to the old path");
+  assert.match(excerpt!, /removed at old line 11/);
 });
 
 // review-surfaces.HUMAN_REVIEW.21: no reviewer-facing line on the default human

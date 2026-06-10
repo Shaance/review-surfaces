@@ -172,7 +172,7 @@ ${renderReviewRoutesSummary(reviewRoutes(model).slice(0, MAX_REVIEW_ROUTES))}
 
 ## Evidence cards
 
-${renderEvidenceCardsRollupSummary(evidenceCards(model).slice(0, MAX_EVIDENCE_CARDS))}
+${renderEvidenceCardsRollupSummary(evidenceCards(model), MAX_EVIDENCE_CARDS)}
 
 ## Blockers
 
@@ -188,7 +188,7 @@ ${renderIntentMismatchSummary(intentMismatch(model))}
 
 ## Questions for author
 
-${renderQuestionRollups(model.questions.slice(0, MAX_QUESTIONS))}
+${renderQuestionRollups(model.questions, MAX_QUESTIONS)}
 
 ## Trust audit
 
@@ -212,7 +212,7 @@ ${renderRiskLenses(riskLensFindings(model).slice(0, MAX_RISK_LENSES))}
 
 ## Test plan
 
-${renderTestPlanRollups(model.test_plan.slice(0, MAX_TEST_PLAN))}
+${renderTestPlanRollups(model.test_plan, MAX_TEST_PLAN)}
 
 ## Suggested comments
 
@@ -819,10 +819,13 @@ Ready to post: ${item.ready_to_post ? "yes" : "no"}.`;
 // templated sentence per requirement.
 // ---------------------------------------------------------------------------
 
-function renderTestPlanRollups(items: TestPlanItem[]): string {
+function renderTestPlanRollups(items: TestPlanItem[], maxGroups: number): string {
   if (items.length === 0) {
     return "- No concrete test-plan items generated.";
   }
+  // Roll up the FULL list first, then cap the number of rendered groups, so a
+  // distinct item beyond the raw item cap is not hidden behind earlier
+  // duplicates (review-surfaces.HUMAN_REVIEW.19).
   const groups = rollupBy(
     items,
     (item) =>
@@ -835,9 +838,11 @@ function renderTestPlanRollups(items: TestPlanItem[]): string {
         normalizeAcidTemplate(item.command ?? ""),
         normalizeAcidTemplate(item.evidence_gap)
       ].join("|"),
-    (item) => rollupAcids(item.maps_to_requirements, item.scenario, item.evidence_gap)
+    // Extract ACIDs from every field the rollup key normalizes, so two items
+    // merged on an ACID in the expected result or command still list it.
+    (item) => rollupAcids(item.maps_to_requirements, item.scenario, item.evidence_gap, item.expected_result, item.command ?? "")
   );
-  return groups.map(renderTestPlanRollup).join("\n\n");
+  return groups.slice(0, maxGroups).map(renderTestPlanRollup).join("\n\n");
 }
 
 function renderTestPlanRollup(group: RollupGroup<TestPlanItem>): string {
@@ -860,39 +865,43 @@ function renderTestPlanRollup(group: RollupGroup<TestPlanItem>): string {
 - Items: ${ids}`;
 }
 
-function renderQuestionRollups(questions: ReviewerQuestion[]): string {
+function renderQuestionRollups(questions: ReviewerQuestion[], maxGroups: number): string {
   if (questions.length === 0) {
     return "- No reviewer questions generated.";
   }
+  // Roll up the full list, then cap rendered groups (review-surfaces.HUMAN_REVIEW.19).
   const groups = rollupBy(
     questions,
     (question) => `${question.severity}|${normalizeAcidTemplate(question.question)}`,
     (question) => rollupAcids(question.maps_to_requirements, question.question)
   );
   return groups
+    .slice(0, maxGroups)
     .map((group, index) => {
       const text = fillAcidTemplate(normalizeAcidTemplate(group.representative.question), group.acids);
       const requirements = group.acids.length ? `; requirements: ${group.acids.map((acid) => `\`${field(acid)}\``).join(", ")}` : "";
       const count = group.items.length > 1 ? `; ${group.items.length} questions` : "";
       // Preserve the evidence pointer the per-question renderer carried, unioned
-      // across the rolled-up questions so the reviewer still sees why to ask.
-      const evidence = evidenceList(group.items.flatMap((question) => question.evidence));
+      // across the rolled-up questions (with an omitted-count marker) so the
+      // reviewer still sees why to ask and is not misled by the 4-ref cap.
+      const evidence = evidenceListWithOmission(group.items.flatMap((question) => question.evidence));
       return `${index + 1}. ${field(text)} (${group.representative.severity}${requirements}${count}; evidence: ${evidence})`;
     })
     .join("\n");
 }
 
-function renderEvidenceCardsRollupSummary(cards: EvidenceCard[]): string {
+function renderEvidenceCardsRollupSummary(cards: EvidenceCard[], maxGroups: number): string {
   if (cards.length === 0) {
     return "- This human review JSON was generated before evidence-card support.";
   }
+  // Roll up the full list, then cap rendered groups (review-surfaces.HUMAN_REVIEW.19).
   const groups = rollupBy(
     cards,
     (card) => `${card.status}|${card.priority}|${normalizeAcidTemplate(card.summary)}|${normalizeAcidTemplate(card.reviewer_action)}`,
-    (card) => rollupAcids(card.requirement_ids, card.summary)
+    (card) => rollupAcids(card.requirement_ids, card.summary, card.reviewer_action)
   );
   return bullets(
-    groups.map((group) => {
+    groups.slice(0, maxGroups).map((group) => {
       const card = group.representative;
       const summary = fillAcidTemplate(normalizeAcidTemplate(card.summary), group.acids);
       const action = fillAcidTemplate(normalizeAcidTemplate(card.reviewer_action), group.acids);
@@ -1006,6 +1015,19 @@ function evidenceList(evidence: EvidenceRef[]): string {
     return "missing";
   }
   return formatUniqueEvidenceRefs(evidence, 4).refs.join(", ");
+}
+
+// Like evidenceList, but appends a "(+N more)" marker when distinct refs are
+// truncated, so a rolled-up line does not look fully evidenced while hiding the
+// remaining grouped pointers.
+function evidenceListWithOmission(evidence: EvidenceRef[], limit = 4): string {
+  if (evidence.length === 0) {
+    return "missing";
+  }
+  const total = uniqueEvidenceCount(evidence);
+  const { refs } = formatUniqueEvidenceRefs(evidence, limit);
+  const omitted = total - refs.length;
+  return omitted > 0 ? `${refs.join(", ")} (+${omitted} more)` : refs.join(", ");
 }
 
 // Count distinct evidence refs (by their rendered location), used to summarize

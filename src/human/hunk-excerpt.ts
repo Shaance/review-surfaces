@@ -37,7 +37,7 @@ export function renderHunkExcerpt(
   if (!file) {
     return undefined;
   }
-  const side: "old" | "new" = file.status === "D" ? "old" : "new";
+  const side = sideForAnchor(file, anchor);
   const hunk = selectHunk(file, anchor, side);
   if (!hunk) {
     return undefined;
@@ -47,7 +47,37 @@ export function renderHunkExcerpt(
     return undefined;
   }
   const header = anchor.hunk_header ?? formatHunkHeader(hunk);
-  return ["```diff", header, ...body, "```"].join("\n");
+  // Use a fence longer than any backtick run in the content so a diff line that
+  // itself contains ``` (common in Markdown/test changes) cannot prematurely
+  // close the excerpt and corrupt the surrounding review surface.
+  const fence = "`".repeat(Math.max(3, longestBacktickRun([header, ...body]) + 1));
+  return [`${fence}diff`, header, ...body, fence].join("\n");
+}
+
+// Choose which side's line numbers the excerpt should use. A deletion lives on
+// the old side; a rename whose anchor points at the old path is also old-side
+// (its old/new hunk line numbers differ). Everything else is new-side.
+function sideForAnchor(file: StructuredDiffFile, anchor: HunkAnchor): "old" | "new" {
+  if (file.status === "D") {
+    return "old";
+  }
+  if (file.old_path) {
+    const anchorPath = normalizePath(anchor.path);
+    if (normalizePath(file.old_path) === anchorPath && normalizePath(file.path) !== anchorPath) {
+      return "old";
+    }
+  }
+  return "new";
+}
+
+function longestBacktickRun(lines: string[]): number {
+  let max = 0;
+  for (const line of lines) {
+    for (const match of line.matchAll(/`+/g)) {
+      max = Math.max(max, match[0].length);
+    }
+  }
+  return max;
 }
 
 function findFile(diff: StructuredDiff, anchor: HunkAnchor): StructuredDiffFile | undefined {

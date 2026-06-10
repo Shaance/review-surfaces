@@ -1442,8 +1442,10 @@ async function runValidateSidecar(
 ): Promise<number> {
   const cwd = process.cwd();
   const { artifact, label, issues: issuesFor } = SIDECAR_VALIDATORS[sidecar];
-  const target = parsed.positionals[0] ?? path.join(".review-surfaces", artifact);
-  const targetPath = path.resolve(cwd, target);
+  // Default to the effective output dir (--out / config output_dir) so a
+  // custom-output run validates the sidecar it actually wrote.
+  const target = parsed.positionals[0];
+  const targetPath = target ? path.resolve(cwd, target) : path.join(await resolveOutputDir(cwd, parsed), artifact);
   // A `.json` positional is the exact sidecar file for an explicit `--surface
   // human|pr`, but under `--surface all` it is the packet path, so resolve the
   // sidecar artifact from its parent directory instead.
@@ -1481,8 +1483,10 @@ async function runValidateSidecar(
 
 async function runValidatePacket(parsed: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
-  const target = parsed.positionals[0] ?? ".review-surfaces/review_packet.json";
-  const targetPath = path.resolve(cwd, target);
+  // Default to the effective output dir (--out / config output_dir), so a
+  // custom-output run validates the artifact it actually wrote.
+  const target = parsed.positionals[0];
+  const targetPath = target ? path.resolve(cwd, target) : path.join(await resolveOutputDir(cwd, parsed), "review_packet.json");
   const packetPath = targetPath.endsWith(".json") ? targetPath : path.join(targetPath, "review_packet.json");
   // R7 (a): an ABSENT packet is a USAGE error (exit 2), not a schema-validation
   // failure (exit 3). It points the user at `review-surfaces all` rather than

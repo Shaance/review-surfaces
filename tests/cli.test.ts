@@ -624,6 +624,13 @@ test("review-surfaces.CLI.8 validate --surface covers packet, human, and all sur
     const jsonPositional = human(["validate", path.join(out, "review_packet.json"), "--surface", "all"]);
     assert.equal(jsonPositional.status, ExitCodes.success, jsonPositional.stderr);
 
+    // review-surfaces.CLI.8: validate defaults honor --out, so a custom-output run
+    // validates the artifacts it actually wrote (not the default .review-surfaces).
+    runStage(tmp, "all", ["--out", "tmp-review"]);
+    const custom = (args: string[]) => spawnSync("node", [CLI, ...args, "--out", "tmp-review"], { cwd: tmp, encoding: "utf8" });
+    assert.equal(custom(["validate", "--surface", "human"]).status, ExitCodes.success, "validate --surface human must honor --out");
+    assert.equal(custom(["validate", "--surface", "all"]).status, ExitCodes.success, "validate --surface all must honor --out");
+
     // review-surfaces.SCHEMA.3: a stale partial human_review.json (missing a now
     // required field) fails validation rather than degrading quietly.
     const humanPath = path.join(tmp, out, "human_review.json");
