@@ -450,21 +450,26 @@ function buildEvidenceCards(ctx: BuildEvidenceCardsInput): EvidenceCard[] {
   // evidence" signal; fully covered files need no card. A stale report is not
   // trusted (COVERAGE.2), and no report emits no card (COVERAGE.4).
   if (ctx.coverage?.status === "report" && ctx.coverage.postdates_head !== false) {
-    for (const file of ctx.coverage.files.filter((f) => f.classification !== "covered").slice(0, 4)) {
-      const summary = `${file.covered_lines} of ${file.changed_lines} changed line(s) in \`${file.path}\` are executed by tests.`;
+    // review-surfaces.COVERAGE.3: PER-HUNK cards — name the exact hunk whose
+    // changed lines no test executes, not merely the file.
+    const hunkCards = ctx.coverage.files
+      .flatMap((file) => file.hunks.filter((hunk) => hunk.classification !== "covered").map((hunk) => ({ file, hunk })))
+      .slice(0, 4);
+    for (const { file, hunk } of hunkCards) {
+      const summary = `${hunk.covered_lines} of ${hunk.changed_lines} changed line(s) in \`${file.path}\` ${hunk.hunk_header} are executed by tests.`;
       cards.push({
-        score: 60 + (file.classification === "uncovered" ? 20 : 0),
-        sortKey: `coverage:${file.path}`,
+        score: 60 + (hunk.classification === "uncovered" ? 20 : 0),
+        sortKey: `coverage:${file.path}:${hunk.hunk_header}`,
         draft: evidenceCardDraft({
-          title: file.classification === "uncovered" ? "Changed lines uncovered" : "Changed lines partially covered",
+          title: hunk.classification === "uncovered" ? "Changed lines uncovered" : "Changed lines partially covered",
           summary,
           evidence: [{ kind: "file", path: file.path, confidence: "high" }],
           why_it_matters: "Passing tests are weak evidence for changed lines that no test executes.",
           reviewer_action: "Inspect the uncovered changed lines or add a test that executes them.",
-          source_ids: [`coverage:${file.path}`],
+          source_ids: [`coverage:${file.path}:${hunk.hunk_header}`],
           risk_ids: [],
           requirement_ids: [],
-          priority: file.classification === "uncovered" ? "high" : "medium",
+          priority: hunk.classification === "uncovered" ? "high" : "medium",
           confidence: "high"
         })
       });

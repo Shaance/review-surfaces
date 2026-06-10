@@ -319,7 +319,13 @@ test("review-surfaces.COVERAGE.3 a current report feeds ranking reasons and emit
       source_path: "coverage/lcov.info",
       postdates_head: true,
       files: [
-        { path: "schemas/human_review.schema.json", changed_lines: 4, covered_lines: 0, classification: "uncovered" }
+        {
+          path: "schemas/human_review.schema.json",
+          changed_lines: 4,
+          covered_lines: 0,
+          classification: "uncovered",
+          hunks: [{ hunk_header: "@@ -70,2 +70,3 @@", changed_lines: 4, covered_lines: 0, classification: "uncovered" }]
+        }
       ]
     }
   });
@@ -340,7 +346,15 @@ test("review-surfaces.COVERAGE.2 a stale report (predates head) is recorded but 
       status: "report",
       source_path: "coverage/lcov.info",
       postdates_head: false,
-      files: [{ path: "src/human/human-review.ts", changed_lines: 4, covered_lines: 0, classification: "uncovered" }]
+      files: [
+        {
+          path: "src/human/human-review.ts",
+          changed_lines: 4,
+          covered_lines: 0,
+          classification: "uncovered",
+          hunks: [{ hunk_header: "@@ -220,2 +220,3 @@", changed_lines: 4, covered_lines: 0, classification: "uncovered" }]
+        }
+      ]
     }
   });
   assert.equal(model.coverage_evidence.postdates_head, false);

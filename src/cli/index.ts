@@ -1556,7 +1556,11 @@ function computeCoverageEvidenceForPacket(outDir: string, diff: StructuredDiff |
   } catch {
     return noReport;
   }
-  const record = parsed as { source_path?: string; postdates_head?: boolean; files?: Record<string, number[]> };
+  const record = parsed as {
+    source_path?: string;
+    postdates_head?: boolean;
+    files?: Record<string, { instrumented: number[]; covered: number[] }>;
+  };
   if (!record.files || typeof record.files !== "object") {
     return noReport;
   }

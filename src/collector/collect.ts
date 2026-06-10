@@ -371,6 +371,11 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
       ...coverageRecord.provenance,
       files: coverageRecord.coverage.files
     });
+  } else {
+    // A reused --out dir must not leak a PRIOR run's report into this run: no
+    // current report means "no coverage evidence" (COVERAGE.4), so remove any
+    // stale inputs/coverage.json.
+    fs.rmSync(path.join(inputsDir, "coverage.json"), { force: true });
   }
 
   const priorArtifactSignatures = readPriorArtifactSignatures(path.join(outputDir, "manifest.json"));

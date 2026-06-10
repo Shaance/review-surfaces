@@ -133,12 +133,26 @@
           "items": {
             "type": "object",
             "additionalProperties": true,
-            "required": ["path", "changed_lines", "covered_lines", "classification"],
+            "required": ["path", "changed_lines", "covered_lines", "classification", "hunks"],
             "properties": {
               "path": { "type": "string" },
               "changed_lines": { "type": "integer", "minimum": 0 },
               "covered_lines": { "type": "integer", "minimum": 0 },
-              "classification": { "enum": ["covered", "uncovered", "partial"] }
+              "classification": { "enum": ["covered", "uncovered", "partial"] },
+              "hunks": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "required": ["hunk_header", "changed_lines", "covered_lines", "classification"],
+                  "properties": {
+                    "hunk_header": { "type": "string" },
+                    "changed_lines": { "type": "integer", "minimum": 0 },
+                    "covered_lines": { "type": "integer", "minimum": 0 },
+                    "classification": { "enum": ["covered", "uncovered", "partial"] }
+                  }
+                }
+              }
             }
           }
         }

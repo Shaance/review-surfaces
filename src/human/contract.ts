@@ -419,11 +419,20 @@ export interface FeedbackPolicyEffect {
 // intersecting an ingested lcov report with the changed lines of each hunk.
 // status "no_report" is the honest negative — distinct from "uncovered" — and a
 // repository is never penalized for not providing coverage.
+export interface CoverageEvidenceHunk {
+  hunk_header: string;
+  changed_lines: number;
+  covered_lines: number;
+  classification: "covered" | "uncovered" | "partial";
+}
+
 export interface CoverageEvidenceFile {
   path: string;
   changed_lines: number;
   covered_lines: number;
   classification: "covered" | "uncovered" | "partial";
+  // review-surfaces.COVERAGE.3: the per-hunk breakdown the evidence cards cite.
+  hunks: CoverageEvidenceHunk[];
 }
 
 export interface CoverageEvidence {
