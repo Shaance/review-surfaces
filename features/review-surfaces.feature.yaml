@@ -94,6 +94,12 @@ components:
       5:
         requirement: Intent extraction must be schema-bound and provider-agnostic.
         note: llm.mock should support deterministic tests.
+      6:
+        requirement: The intent builder should support provider-assisted intent synthesis through the existing provider boundary (mock, agent-file, ai-sdk), taking indexed spec and doc excerpts and proposing schema-bound candidate requirements (statement, anchors, confidence) whose anchors are restricted to the same allowlist mechanism as the narrative (spec sections, doc files, ACIDs).
+        note: Next-value Phase 6 (brainstorm idea 12, deferred FB-2026-05-28-007). Deterministic extraction remains the spine and the fallback; the agent-file provider gets the same contract so a coding agent can contribute hypotheses offline.
+      7:
+        requirement: A provider-proposed candidate requirement whose anchors resolve under deterministic validation must be rendered distinctly in a separate claimed-candidate section of intent.yaml and in intent_mismatch.md, kept out of the evaluated requirements list so the evaluator never produces a coverage result for it, while a candidate with invalid anchors must be demoted to an open question rather than dropped silently; provider candidates must never change requirement coverage status or the merge-readiness verdict.
+        note: Next-value Phase 6 (brainstorm idea 12). The separate claimed-candidate section is what keeps the never-affect-coverage promise enforceable — evaluated requirements (EVAL.1 produces one coverage result per intent requirement) must not include provider candidates. This restates the human-trust boundary for intent synthesis — provider output widens what the human is asked to confirm but never becomes proof.
 
   EVAL:
     name: Implementation evaluation
@@ -206,6 +212,12 @@ components:
         requirement: The CLI must support comment --mode pr|repo|auto and all --surface-mode pr|repo|auto.
       8:
         requirement: Local PR-comment rendering without --post must exit successfully after writing the local comment and diagnostics; postability failures must produce non-zero exits only when posting is requested or a strict postability flag is set.
+      9:
+        requirement: The human surface must support a human --format html mode that emits a single self-contained HTML file (inline CSS and a small amount of vanilla JS, no server, no CDN, and no framework) rendered strictly from the HumanReviewModel and nothing else.
+        note: Next-value Phase 5 (brainstorm idea 7). A strict sibling of the markdown renderer — if the HTML needs data the model lacks, the model and strict schema grow first so the JSON, Markdown, and HTML surfaces can never diverge.
+      10:
+        requirement: The HTML cockpit must escape every interpolated value through one shared helper, re-run the redaction pass on render, and produce byte-deterministic output (no timestamps), laying out a verdict and narrative header, the review queue as the spine (each item with its excerpt, evidence, ranking reason, and links between queue, evidence, and narrative claims), and lens filters, with collapsible hunks and localStorage-persisted checkable queue items.
+        note: Next-value Phase 5 (brainstorm idea 7). The file must open from disk offline, be safe to attach in chat, and stay printable.
 
   HUMAN_REVIEW:
     name: Human reviewer cockpit
@@ -334,6 +346,162 @@ components:
         requirement: The CI PR comment workflow must keep LLM API keys out of PR-controlled workflow YAML, install, build, and executable code by running secret-bearing steps from a base-controlled workflow with a trusted tool checkout against a credentialless PR subject checkout.
       7:
         requirement: GitHub integration should support exporting hunk-anchored suggested comments as a pending draft review for the human to edit and submit, and must never auto-submit reviews or comments without explicit opt-in.
+
+  PR_SURFACE:
+    name: GitHub PR review surface
+    description: >-
+      Next-value Phase 1 / milestone M6 (brainstorm ideas 1 and 2). A reusable
+      GitHub Action that runs the local pipeline on a PR, posts one idempotent
+      sticky comment rendered from human_review.json, uploads the artifact
+      directory, and leads with the since-last-review delta on re-pushes. The
+      Action is a renderer over local artifacts, never a separate analysis path.
+    requirements:
+      1:
+        requirement: The repository must publish a reusable composite GitHub Action that runs review-surfaces all --review-scope pr on a pull request, defaulting to --provider mock so a consuming repository gets full value with zero secrets, with inputs for provider, base/head refs, output directory, and comment top-N.
+        note: Generalize the existing base-controlled pr-review-comment workflow (PROVIDERS.6); the repo-local workflow must become a thin consumer of the action so CI and local artifacts share one implementation and cannot disagree.
+      2:
+        requirement: The Action must post or update exactly one sticky PR comment rendered from human_review.json via a compact sticky-summary renderer (verdict, top-N review-queue items with their existing hunk excerpts, trust-audit counts, and a link to the uploaded artifact), using marker-based idempotent upsert so re-runs edit the same comment.
+        note: Reuse the human-review rollup logic so the comment stays short; the sticky renders from the human review model, not the lower-level PR sidecar.
+      3:
+        requirement: The Action must upload the full .review-surfaces/ directory as a workflow artifact under a stable name keyed by PR number; for fork pull requests it must still generate and upload the artifact but skip posting, never exposing the write token to PR-controlled code.
+      4:
+        requirement: The strict postability gate and secret redaction must run before any rendered text leaves the runner, and the Action must post only the sticky summary comment; suggested review comments remain local drafts and must never be auto-posted.
+        note: The sticky summary is the deterministic human-review rollup, not provider-written narrative prose, so it is exempt from the PROVIDERS.5 non-mock-narrative posting gate and may be posted under --provider mock; PROVIDERS.5 continues to govern any LLM narrative comment. The redaction and postability gates apply to the sticky regardless of provider.
+      5:
+        requirement: On a subsequent push the Action must recover the previous review packet (most recent prior PR-keyed artifact, with an in-comment fingerprint as a fallback pointer) and lead the sticky comment with the since-last-review delta (improved, regressed, new, resolved) computed against the last posted sticky, collapsing the unchanged remainder.
+        note: Item identity across runs must use stable finding keys (rule id plus file path plus anchor), not array positions; a missing or expired prior artifact must be treated as the first-review case, never an error.
+
+  RANKING:
+    name: Queue ranking v2
+    description: >-
+      Next-value Phase 2 / milestone M7 (brainstorm idea 3, recorded as
+      FB-2026-06-09-001). A deterministic evidence-based scoring pass that
+      connects changed tests, current-head transcripts, and coverage facts to
+      changed implementation paths, and makes every queue item explain why it
+      ranked where it did.
+    requirements:
+      1:
+        requirement: The tool must compute a per-changed-implementation-path evidence score from deterministic signals — whether focused tests changed alongside it (mapping test files to impl paths via parsed import statements, falling back to path/basename heuristics), whether a passing current-head command transcript covers those tests, and coverage facts when present — applied as a modifier on the existing rank rather than a replacement.
+        note: Semantic-risk class remains the primary ranking key; evidence breaks ties and demotes well-evidenced items. Higher evidence lowers urgency and vice versa.
+      2:
+        requirement: Every review-queue item must carry a required ranking_reasons field in the human review contract and strict schema, rendered as one plain-language "why ranked here" line per item (for example "no test changes touch this file; no transcript exercises it").
+      3:
+        requirement: Ranking must be fully deterministic — identical inputs must produce byte-identical ordering with a stable tie-break on file path — and the evidence score must never hide an item entirely; a well-evidenced item moves down the queue, it never disappears.
+        note: pnpm run determinism-check must stay green; ranking weights must not be tuned beyond the obvious before the effectiveness eval harness exists.
+
+  COVERAGE:
+    name: Coverage-delta evidence
+    description: >-
+      Next-value Phase 2 / milestone M7 (brainstorm idea 6). Deterministic,
+      offline ingestion of a coverage report to compute, per changed hunk,
+      whether the changed lines are executed by any test — feeding evidence
+      cards and the ranking evidence score.
+    requirements:
+      1:
+        requirement: The tool must parse an lcov coverage report (its SF and DA records) into an internal coverage model, sourced from an explicit --coverage <path> flag or auto-detected coverage/lcov.info, mirroring the existing external-test-result evidence ingestion shape.
+        note: Other coverage formats may come later behind the same internal model; an unsupported or unparseable report must degrade to "no coverage evidence", never a guess.
+      2:
+        requirement: Coverage report provenance (path, content hash, and whether the report postdates the head commit) must be recorded in the manifest, and a stale report must be marked stale rather than trusted, using the existing artifact-provenance pattern.
+      3:
+        requirement: The tool must intersect coverage with the changed lines of each hunk to classify it covered, uncovered, or partial, emit per-hunk coverage evidence cards, and feed the per-path evidence score in the ranking pass.
+      4:
+        requirement: The absence of a coverage report must render as "no coverage evidence", which is distinct from "changed lines uncovered"; a repository must never be penalized for not providing coverage, and coverage is used only when a report exists.
+
+  BUDGET:
+    name: Time-budgeted review mode
+    description: >-
+      Next-value Phase 2 / milestone M7 (brainstorm idea 8). A deterministic
+      post-ranking annotation pass that turns the implicit top-of-queue cut into
+      an explicit read/skim/defer review plan under a stated time budget.
+    requirements:
+      1:
+        requirement: The human surface must accept a --budget <duration> input (parsing forms such as 15m and 1h; config default off) and estimate a per-item review cost from a deterministic, deliberately crude model (a base cost per item plus changed-hunk lines times a per-line factor, weighted by risk class), rounded to whole minutes and documented as an estimate rather than a promise.
+      2:
+        requirement: The tool must greedily fill items by rank order into read until roughly 70 percent of the budget is consumed, then skim to 100 percent, with the remainder deferred and each deferral carrying its reason from the evidence score, surfaced as a review_plan section on the human review model and strict schema.
+        note: Items carrying a blocker are budget-exempt and must never be deferred; the render must state that blockers are exempt.
+
+  EVAL_HARNESS:
+    name: Effectiveness eval harness
+    description: >-
+      Next-value Phase 3 (brainstorm idea 11), pulled ahead of further fact
+      expansion. A fixture suite of seeded regressions that measures whether the
+      review queue ranks each seeded issue in the top N, run in CI as a
+      regression gate on review quality itself. Named distinctly from the
+      implementation-evaluation component (EVAL) to avoid repurposing its IDs.
+    requirements:
+      1:
+        requirement: The test suite must include a programmatic fixture builder that creates a temporary git repository, writes a small base project and commits it, applies a seeded mutation and commits it, then runs the real pipeline with --provider mock against base..head and asserts on the resulting human_review.json.
+        note: Fixtures must be built programmatically (about thirty lines of builder calls each, readable in the test file) rather than committed as static fixture repositories.
+      2:
+        requirement: The Phase 3 suite must seed one case per fact class already shipped by the time the eval harness lands (weakened test, breaking API change via the exported-surface diff, schema-contract change, secret in the diff, and uncovered changed lines with a synthetic lcov report) plus negative fixtures (benign rename-only or format-only changes that must not rank in the top N), so removing the eval-harness ACIDs from the allowlist never depends on a not-yet-built detector.
+        note: As each later fact class ships, this suite gains one seeded case for it in the same phase that ships the detector — sneaky new dependency with an install script (Phase 4 DEP_FACTS), call-site blast radius for the API change (Phase 4 BLAST_RADIUS), and destructive migration plus CI permission broadening (Phase 4 CONFIG_FACTS) — so the gate ends up covering every shipped fact class without front-loading Phase 4 work into Phase 3.
+      3:
+        requirement: Each assertion must take the shape "the finding with key K appears in the top N (N generous, around ten) of the queue" for seeded cases and "no finding above severity S" for benign cases, and the suite must run inside pnpm run test so CI gates review quality automatically.
+      4:
+        requirement: The harness must emit a compact eval_scoreboard.json recording cases passed over total per fact class, and no ranking tuning beyond Phase 2 may land without this gate in place.
+
+  DEP_FACTS:
+    name: Dependency and supply-chain facts
+    description: >-
+      Next-value Phase 4 / milestone M8 (brainstorm idea 4). Deterministic,
+      offline semantic facts for manifest and lockfile changes, surfaced through
+      a dedicated supply-chain risk lens. Registry metadata is optional provider
+      enrichment only.
+    requirements:
+      1:
+        requirement: A deterministic offline detector must diff package.json (dependencies added, removed, or moved between dependency groups; semver-major bumps; version ranges loosened such as a pinned version becoming a caret range) and the lockfile (transitive additions and install-script/requiresBuild flags), parsing pnpm-lock.yaml first and then package-lock.json.
+        note: Model the detector on the existing semantic-diff detector, reading base/head file contents at the resolved refs; an unsupported lockfile must yield "no lockfile facts" rather than a guess.
+      2:
+        requirement: Dependency facts must emit into the existing risk plumbing under a new supply_chain lens id, which requires extending the fixed lens enum across the human-review contract, the strict schema, risk metadata, and the risk_lenses config so a human_review.json carrying the new lens still passes strict validation; once extended, rendering in the risk lenses, queue, and suggested comments follows the existing path, with deterministic severity (a new dependency with install scripts outranks a plain new dependency, which outranks a major bump, which outranks a range loosening) and fact language naming the package and the concrete change.
+      3:
+        requirement: Registry metadata such as package age and weekly downloads must be deferred behind the existing provider boundary as optional enrichment that adorns deterministic facts; it must never create or remove a fact and the verdict must never depend on it.
+
+  BLAST_RADIUS:
+    name: Blast-radius facts
+    description: >-
+      Next-value Phase 4 / milestone M8 (brainstorm idea 5). Extend the existing
+      TypeScript surface parsing with in-repo reference resolution so each
+      changed or removed export carries how many files depend on it. Stays at
+      module-graph altitude; does not invoke the type checker.
+    requirements:
+      1:
+        requirement: The tool must build a one-pass in-repo import graph over indexed source files, parsing each with ts.createSourceFile and recording import and re-export specifiers resolved to repo-relative module paths via simple suffix rules (./x resolving to x.ts or x/index.ts), extracted into a shared import-graph module that both this and the ranking test-import mapping consume.
+        note: Path-alias resolution may be skipped in v1 as a documented bound; parsed files must be cached within the run so the graph is built once.
+      2:
+        requirement: For each changed or removed export from the existing surface diff, the tool must compute its blast radius as the set of files that import that module and reference the symbol, attaching used_by metadata (a count and the top three to five paths, alphabetical for determinism) to the queue item and contract risks, and feeding it into ranking so a removed export with many importers outranks one with none.
+      3:
+        requirement: The import-graph build must be bounded — parsing only indexed source files, skipping generated directories via the existing ignore rules, and recording a truncation note if the repository exceeds a file cap — so that "used by 0" is never produced from a silently partial graph.
+
+  CONFIG_FACTS:
+    name: Config and infrastructure facts
+    description: >-
+      Next-value Phase 4 / milestone M8 (brainstorm idea 9). A family of small,
+      independent, deterministic detectors for environment-variable, CI-workflow,
+      Dockerfile, and SQL/migration changes, each routing facts into an existing
+      risk lens. Shipped as separable units so a noisy detector can be reverted
+      alone.
+    requirements:
+      1:
+        requirement: An environment-variable detector must flag new or removed process.env references in changed code and key changes in .env example files, with fact language such as "introduces env var X (no default)".
+      2:
+        requirement: A CI-workflow detector must, for changed .github/workflows files, diff the parsed YAML for permissions broadening, new secrets references, new pull_request_target triggers, and unpinned third-party actions, routing findings into the security lens.
+      3:
+        requirement: A Dockerfile detector (new RUN curl-pipe-shell patterns, base-image changes, dropped USER) and a SQL/migration detector (destructive statements such as DROP TABLE/COLUMN, ALTER ... TYPE, TRUNCATE, and DELETE without WHERE in changed .sql or migration-directory files) must flag changes for human attention, routing into existing lenses.
+        note: Regex altitude is acceptable for these detectors; the fact language must say it is flagging for attention, not proving semantics.
+
+  POLICY:
+    name: Team-shared review policy
+    description: >-
+      Next-value Phase 6 (brainstorm idea 10). A committed, schema-validated
+      review-surfaces.policy.yaml that lets the team own false-positive tuning
+      through PR, composing with the local walkthrough feedback memory rather
+      than replacing it.
+    requirements:
+      1:
+        requirement: The tool must support a committed, schema-validated review-surfaces.policy.yaml (with a dedicated schema and loader) defining suppression rules that each require a reason and an absolute expiry date, severity overrides, and required manual checks per path glob, validated via validate --surface so a malformed policy fails loudly.
+      2:
+        requirement: Policy precedence must be committed policy over local feedback files over defaults; policy suppressions must demote (downgrade and annotate the finding as suppressed by policy with the stated reason) rather than delete, must match on stable finding keys (rule id plus path glob) rather than free text, and an expired suppression must render as its own finding rather than being silently dropped.
+        note: The policy composes with, and does not replace, the walkthrough feedback engine, and is the home for the previously deferred decision_policy question.
 
 constraints:
   EVIDENCE:

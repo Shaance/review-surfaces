@@ -257,14 +257,59 @@ dogfood:
 quality_gate:
   # The human review value uplift (docs/human-review-value-uplift-proposal.md)
   # landed its spec entries ahead of their phased implementation, so each phase's
-  # ACIDs were allowlisted here until that phase shipped. All five phases have now
-  # landed (HUMAN_REVIEW.19-21/SCHEMA.3/CLI.8/RENDER.8, NARRATIVE.1-5,
-  # SEMANTIC_DIFF.1-4, REVIEW_LOOP.1-4), so the allowlist is empty: with
-  # max_missing 0 and no allowlist, ANY missing requirement fails the strict
-  # self-dogfood gate. Re-add an ACID here only to stage a new not-yet-shipped
-  # requirement, and remove it as that work lands.
+  # ACIDs were allowlisted here until that phase shipped. All five of those phases
+  # landed, emptying the allowlist.
+  #
+  # The next-value uplift (NEXT_VALUE_UPLIFT_GOAL.md, brainstorm ideas 1-12)
+  # promotes its spec entries the same way: Phase 0 stages every not-yet-shipped
+  # ACID below, and each later phase removes its ACIDs from this allowlist in the
+  # PR that ships them. The gate must be back to `allow_missing: []` when the
+  # final phase lands.
+  #
+  # We keep max_missing at 0 and allowlist by ACID rather than raising max_missing:
+  # an allowlisted ACID is excluded from the missing count, but an UNRELATED
+  # requirement regressing to "missing" still trips the strict self-dogfood gate.
   max_missing: 0
-  allow_missing: []
+  allow_missing:
+    # Phase 1 — PR surface (M6): brainstorm ideas 1 + 2
+    - review-surfaces.PR_SURFACE.1
+    - review-surfaces.PR_SURFACE.2
+    - review-surfaces.PR_SURFACE.3
+    - review-surfaces.PR_SURFACE.4
+    - review-surfaces.PR_SURFACE.5
+    # Phase 2 — Ranking & evidence (M7): brainstorm ideas 3 + 6 + 8
+    - review-surfaces.RANKING.1
+    - review-surfaces.RANKING.2
+    - review-surfaces.RANKING.3
+    - review-surfaces.COVERAGE.1
+    - review-surfaces.COVERAGE.2
+    - review-surfaces.COVERAGE.3
+    - review-surfaces.COVERAGE.4
+    - review-surfaces.BUDGET.1
+    - review-surfaces.BUDGET.2
+    # Phase 3 — Eval harness: brainstorm idea 11
+    - review-surfaces.EVAL_HARNESS.1
+    - review-surfaces.EVAL_HARNESS.2
+    - review-surfaces.EVAL_HARNESS.3
+    - review-surfaces.EVAL_HARNESS.4
+    # Phase 4 — Fear-class facts (M8): brainstorm ideas 4 + 5 + 9
+    - review-surfaces.DEP_FACTS.1
+    - review-surfaces.DEP_FACTS.2
+    - review-surfaces.DEP_FACTS.3
+    - review-surfaces.BLAST_RADIUS.1
+    - review-surfaces.BLAST_RADIUS.2
+    - review-surfaces.BLAST_RADIUS.3
+    - review-surfaces.CONFIG_FACTS.1
+    - review-surfaces.CONFIG_FACTS.2
+    - review-surfaces.CONFIG_FACTS.3
+    # Phase 5 — HTML cockpit: brainstorm idea 7
+    - review-surfaces.RENDER.9
+    - review-surfaces.RENDER.10
+    # Phase 6 — Team policy + intent synthesis: brainstorm ideas 10 + 12
+    - review-surfaces.POLICY.1
+    - review-surfaces.POLICY.2
+    - review-surfaces.INTENT.6
+    - review-surfaces.INTENT.7
 human_review:
   enabled: true
   default_entrypoint: true

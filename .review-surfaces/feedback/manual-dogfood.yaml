@@ -123,6 +123,12 @@ findings:
     affected_section: Human review queue
     finding: PR #40 dogfood still ranked bin/review-surfaces.js, src/evidence/evidence.ts, and src/risks/risks.ts as untested implementation changes even though focused regression tests and a current-head command transcript exist for the provenance/manual-check behavior.
     desired_change: Teach PR risk generation or human-review queue ranking to connect focused changed tests and current-head command transcripts to changed implementation paths before surfacing untested_changed_impl as a review-first item.
+  - id: FB-2026-06-10-001
+    category: review_value
+    severity: low
+    affected_section: Requirement coverage
+    finding: Next-value Phase 0 promotes brainstorm ideas 1-12 into 33 new ACIDs (PR_SURFACE, RANKING, COVERAGE, BUDGET, EVAL_HARNESS, DEP_FACTS, BLAST_RADIUS, CONFIG_FACTS, POLICY families plus RENDER.9-10 and INTENT.6-7) and stages them all in quality_gate.allow_missing. As a spec-only promotion phase it intentionally does not change the rendered human_review.md surface; the dogfood run confirms the strict gate still passes (exit 0) with the new not-yet-implemented requirements allowlisted, and the 33 new ACIDs evaluate as partial (doc-anchored) rather than tripping the gate.
+    desired_change: No surface change is expected until Phase 1 ships PR_SURFACE; each later phase removes its ACIDs from the allowlist as it lands, returning the gate to allow_missing [] when the final phase merges.
 validation:
   updated_at: 2026-06-09T11:28:15Z
   passed:
@@ -170,3 +176,4 @@ validation:
     - PR #40 dogfood still reported untested_changed_impl review items for implementation files that have focused tests; FB-2026-06-09-001 records this as a future queue/risk matching improvement.
     - FB-2026-06-09-001 follow-up: PR risk generation now suppresses untested_changed_impl only when changed tests or current-head passing command transcripts validate a committed implementation area; parsed passing test output alone remains insufficient without current-run provenance.
     - Simplify triad follow-up kept working-tree implementation changes conservative because HEAD-only transcripts can be stale for uncommitted content; committed PR-range files can still use current-head transcript evidence.
+    - Next-value Phase 0 (spec promotion) added 33 ACIDs for brainstorm ideas 1-12 and staged them in quality_gate.allow_missing; pnpm run test (728 pass), lint, typecheck, and a mock-provider `all --strict` self-dogfood all pass with the gate green. No rendered-surface change is expected for a spec-only phase.
