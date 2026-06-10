@@ -408,10 +408,11 @@ export interface HumanReviewModel {
   mode: "pr" | "repo";
   verdict: HumanReviewVerdict;
   summary: string;
-  // review-surfaces.NARRATIVE.1: optional grounded narrative that opens the
-  // surface. Optional-but-strict: absent on pre-narrative artifacts, but when
-  // present every claim is anchor-validated and trust-marked.
-  narrative?: ChangeNarrative;
+  // review-surfaces.NARRATIVE.1: grounded narrative that opens the surface. Always
+  // emitted (provider-built or the deterministic fallback) and required by the
+  // schema, so a stale artifact lacking it fails validation and is rebuilt rather
+  // than rendering an empty section (SCHEMA.3 strictness for new fields).
+  narrative: ChangeNarrative;
   review_queue: ReviewQueueItem[];
   blockers: ReviewBlocker[];
   questions: ReviewerQuestion[];

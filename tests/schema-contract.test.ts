@@ -38,6 +38,7 @@ const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package
 // fill the remaining required fields with empty defaults; the slice under test
 // is preserved (spread last) and the test stays focused on that slice.
 const HUMAN_REQUIRED_DEFAULTS = {
+  narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
   risk_lens_findings: [],
   intent_mismatch: {
     expected_by_spec: [],
@@ -261,6 +262,30 @@ test("review-surfaces.SCHEMA.3 human review schema rejects stale partial v1 arti
   const result = validateJsonSchema(humanReviewSchema, priorV1HumanReview);
   assert.equal(result.valid, false);
   assert.ok(result.issues.some((issue) => /review_routes/.test(issue.message)));
+});
+
+test("review-surfaces.SCHEMA.3 human review schema requires the narrative field", () => {
+  // narrative is always emitted (provider or deterministic fallback), so a stale
+  // artifact lacking it must fail validation and be rebuilt, not render empty.
+  assert.ok(humanReviewSchema.required.includes("narrative"), "narrative must be a required field");
+  const withoutNarrative = withRequiredHumanFields({
+    schema_version: "review-surfaces.human_review.v1",
+    mode: "repo",
+    verdict: { decision: "no_signal", confidence: "low", reasons: [] },
+    summary: "No narrative fixture.",
+    review_queue: [],
+    blockers: [],
+    questions: [],
+    suggested_comments: [],
+    trust_audit: { verified_facts: [], claimed_not_verified: [], missing_evidence: [], invalid_evidence: [], confidence_summary: "x" },
+    test_plan: [],
+    skim_safe: [],
+    generated_from: { packet_path: "p", base_ref: "origin/main", head_ref: "HEAD", head_sha: "abc" }
+  }) as Record<string, unknown>;
+  delete withoutNarrative.narrative;
+  const result = validateJsonSchema(humanReviewSchema, withoutNarrative);
+  assert.equal(result.valid, false);
+  assert.ok(result.issues.some((issue) => /narrative/.test(issue.message)));
 });
 
 test("human review schema validates since-last-review comparison slices", () => {

@@ -148,6 +148,25 @@ test("review-surfaces.NARRATIVE.2 allowlists command transcripts from test evide
   assert.ok(narrative.claims[0].anchors.some((ref) => ref.command === "CMD-PNPM-TEST"));
 });
 
+// review-surfaces.NARRATIVE.2: a non-CMD test-evidence row id (e.g. a parsed
+// TEST-RESULT-001) is also a valid command anchor.
+test("review-surfaces.NARRATIVE.2 allowlists non-CMD test-evidence row ids", async () => {
+  const { packet, diff } = narrativeFacts();
+  packet.risks.test_evidence = [
+    { id: "TEST-RESULT-001", kind: "direct", summary: "Parsed passing test case.", evidence: [] }
+  ] as ReviewPacket["risks"]["test_evidence"];
+  const narrative = await buildChangeNarrative({
+    provider: stubProvider({ claims: [{ text: "Backed by a parsed test case.", command_ids: ["TEST-RESULT-001"] }] }),
+    providerName: "agent-file",
+    packet,
+    diff,
+    headSha: "head123",
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
+  assert.equal(narrative.claims[0].trust, "verified", "a real test-evidence row id is a valid anchor");
+});
+
 // review-surfaces.NARRATIVE.4: the narrative never alters the verdict.
 test("review-surfaces.NARRATIVE.4 narrative does not change the verdict", () => {
   const { packet, diff } = narrativeFacts();

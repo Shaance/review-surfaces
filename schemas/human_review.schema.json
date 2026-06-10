@@ -9,6 +9,7 @@
     "mode",
     "verdict",
     "summary",
+    "narrative",
     "review_queue",
     "blockers",
     "questions",

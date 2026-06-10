@@ -699,3 +699,32 @@ test("review-surfaces.NARRATIVE.1 human narrative anchors against the repo-scope
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// review-surfaces.NARRATIVE.1: an `all --cache` hit reuses the narrative already
+// in human_review.json rather than re-invoking the provider, so a cache hit keeps
+// the provider-authored narrative (lossless reuse, no fresh provider call).
+test("review-surfaces.NARRATIVE.1 cache hit preserves the provider narrative", () => {
+  const tmp = setupComposeFixture("review-surfaces-narrative-cache-");
+  try {
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
+    fs.appendFileSync(path.join(tmp, "README.md"), "\nnarrative cache marker\n");
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "change"], { cwd: tmp, stdio: "ignore" });
+    fs.writeFileSync(path.join(tmp, "narr.json"), JSON.stringify({ claims: [{ text: "Updates the readme.", paths: ["README.md"] }] }));
+    const args = ["all", "--cache", "--base", "HEAD~1", "--head", "HEAD", "--spec", "features/review-surfaces.feature.yaml", "--provider", "agent-file", "--agent-input", "narr.json", "--now", "2026-01-01T00:00:00Z", "--out", ".review-surfaces"];
+    const first = spawnSync("node", [CLI, ...args], { cwd: tmp, encoding: "utf8" });
+    assert.equal(first.status, 0, first.stderr);
+    const firstModel = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    assert.equal(firstModel.narrative.source, "provider");
+    // Second run is a cache hit; the provider narrative must survive (not be
+    // overwritten by the deterministic fallback).
+    const second = spawnSync("node", [CLI, ...args], { cwd: tmp, encoding: "utf8" });
+    assert.equal(second.status, 0, second.stderr);
+    assert.match(second.stdout + second.stderr, /inputs unchanged/, "second run is a cache hit");
+    const secondModel = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    assert.equal(secondModel.narrative.source, "provider", "cache hit preserves the provider narrative");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

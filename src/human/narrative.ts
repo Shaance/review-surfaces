@@ -135,10 +135,14 @@ export function buildNarrativeAllowlist(input: NarrativeFacts): NarrativeAllowli
   }
 
   const commandIds = new Set<string>();
-  // Recorded command transcripts are emitted under risks.test_evidence with a
-  // CMD-* id, so allowlist those ids directly in addition to scanning command
-  // evidence refs across results/risks/test-evidence.
+  // Recorded validation evidence is emitted under risks.test_evidence with a
+  // deterministic id (CMD-PNPM-TEST, TEST-TR-001, TEST-RESULT-001, ...). Allowlist
+  // the ACTUAL id so a claim citing it as a command anchor is verified, plus any
+  // CMD-* tokens, in addition to scanning command evidence refs.
   for (const entry of input.packet.risks.test_evidence ?? []) {
+    if (entry.id) {
+      commandIds.add(entry.id);
+    }
     for (const id of commandIdTokens(entry.id)) {
       commandIds.add(id);
     }

@@ -64,6 +64,7 @@ function humanModel(): HumanReviewModel {
   return {
     schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
     mode: "pr",
+    narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
     verdict: {
       decision: "needs_author_clarification",
       confidence: "medium",

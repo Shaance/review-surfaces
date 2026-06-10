@@ -477,12 +477,15 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // it; only created_at could differ) and reuse the existing packet untouched.
       await writeText(cacheSnapshot.manifestPath, cacheSnapshot.manifestRaw);
       const provider = providerFlag(parsed, config);
-      // review-surfaces.NARRATIVE.1: rebuild the provider narrative on a cache
-      // hit too (the provider/agent-input are part of the cache signature, so a
-      // hit means they are unchanged), so the artifact rebuild does not overwrite
-      // a provider-authored narrative with the deterministic fallback.
-      const cachedNarrative = config.human_review.enabled && cacheSnapshot.packet
-        ? await buildHumanNarrativeForAll(cwd, parsed, config, cacheSnapshot.packet, prSurfaceReuse.surface, undefined, collection)
+      // review-surfaces.NARRATIVE.1: on a cache hit the inputs (and the
+      // provider/agent-input, which are part of the cache signature) are
+      // unchanged, so REUSE the narrative already in human_review.json rather than
+      // re-invoking the provider. This keeps cache reuse lossless and avoids a
+      // fresh ai-sdk call (which could now fail and clobber good cached prose with
+      // the fallback). When no prior narrative exists, buildHumanReview renders
+      // the deterministic fallback.
+      const cachedNarrative = config.human_review.enabled
+        ? readCachedNarrative(collection.outputDir)
         : undefined;
       const cachedHumanInputs: HumanReviewArtifactInputs = {
         packet: cacheSnapshot.packet,
@@ -1266,6 +1269,20 @@ function readHumanReviewDiff(outDir: string): StructuredDiff | undefined {
   try {
     const diff = parseStructuredDiff(fs.readFileSync(diffPath, "utf8"));
     return diff.files.length > 0 ? diff : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// review-surfaces.NARRATIVE.1: read the narrative from a previously written
+// human_review.json so a cache hit can reuse it without re-invoking the provider.
+// Returns undefined when the artifact is absent/unreadable or carries no
+// narrative (the caller then renders the deterministic fallback).
+function readCachedNarrative(outDir: string): ChangeNarrative | undefined {
+  const humanReviewPath = path.join(outDir.endsWith(".json") ? path.dirname(outDir) : outDir, "human_review.json");
+  try {
+    const model = JSON.parse(fs.readFileSync(humanReviewPath, "utf8")) as { narrative?: ChangeNarrative };
+    return model.narrative;
   } catch {
     return undefined;
   }
