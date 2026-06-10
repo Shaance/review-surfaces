@@ -131,7 +131,9 @@ export function buildImportGraph(options: {
 // resolving to the module, or a namespace import of the module whose
 // `ns.symbol` appears in the body. An identically-named symbol imported from a
 // DIFFERENT module never counts. Returns sorted unique paths.
-const IMPORT_DECL = /import\s+(?:type\s+)?(?:[A-Za-z_$][\w$]*\s*,\s*)?(?:\*\s+as\s+([A-Za-z_$][\w$]*)|\{([^}]*)\})?\s*from\s*["']([^"']+)["']/g;
+// Matches import declarations AND re-export barrels (`export { x } from "..."`).
+// Captures: 1 = default binding, 2 = namespace alias, 3 = named list, 4 = spec.
+const IMPORT_DECL = /(?:import|export)\s+(?:type\s+)?(?:([A-Za-z_$][\w$]*)\s*,?\s*)?(?:\*\s+as\s+([A-Za-z_$][\w$]*)|\{([^}]*)\})?\s*from\s*["']([^"']+)["']/g;
 
 export function findSymbolImporters(options: {
   graph: ImportGraph;
@@ -157,13 +159,18 @@ export function findSymbolImporters(options: {
     const fromDir = path.posix.dirname(toPosix(importer));
     let references = false;
     for (const decl of content.matchAll(IMPORT_DECL)) {
-      const [, nsAlias, named, specifier] = decl;
+      const [, defaultBinding, nsAlias, named, specifier] = decl;
       if (!specifier.startsWith(".")) {
         continue;
       }
       const resolved = resolveSpecifier(fromDir, specifier, exists);
       if (resolved !== options.modulePath) {
         continue;
+      }
+      // `import Foo from "./module"` consumes the default export.
+      if (defaultBinding && symbolSet.has("default")) {
+        references = true;
+        break;
       }
       if (named && named.split(",").some((entry) => symbolSet.has(entry.replace(/\s+as\s+.*/, "").replace(/^type\s+/, "").trim()))) {
         references = true;

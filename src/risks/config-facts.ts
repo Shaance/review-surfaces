@@ -187,6 +187,11 @@ function workflowFacts(file: StructuredDiffFile, input: ComputeConfigFactsInput)
   return facts;
 }
 
+// Collect write grants from the WORKFLOW root and jobs.<id>.permissions blocks
+// only — a `permissions` key nested in action inputs or step `with:` blocks is
+// not a GitHub grant. Workflow-level vs job-level scope is deliberately NOT
+// distinguished (a documented bound): moving the same grant between levels is
+// neither flagged as broadening nor as reduction.
 function workflowWritePermissions(text: string | undefined): Set<string> {
   const result = new Set<string>();
   if (!text) {
@@ -198,12 +203,7 @@ function workflowWritePermissions(text: string | undefined): Set<string> {
   } catch {
     return result;
   }
-  const visit = (node: unknown): void => {
-    if (typeof node !== "object" || node === null) {
-      return;
-    }
-    const record = node as Record<string, unknown>;
-    const permissions = record.permissions;
+  const collect = (permissions: unknown): void => {
     if (typeof permissions === "string" && WRITE_PERMISSIONS.has(permissions)) {
       result.add(permissions);
     } else if (typeof permissions === "object" && permissions !== null) {
@@ -213,11 +213,16 @@ function workflowWritePermissions(text: string | undefined): Set<string> {
         }
       }
     }
-    for (const value of Object.values(record)) {
-      visit(value);
-    }
   };
-  visit(parsed);
+  const root = (typeof parsed === "object" && parsed !== null ? parsed : {}) as Record<string, unknown>;
+  collect(root.permissions);
+  if (typeof root.jobs === "object" && root.jobs !== null) {
+    for (const job of Object.values(root.jobs as Record<string, unknown>)) {
+      if (typeof job === "object" && job !== null) {
+        collect((job as Record<string, unknown>).permissions);
+      }
+    }
+  }
   return result;
 }
 

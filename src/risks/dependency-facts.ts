@@ -25,23 +25,25 @@ export interface DependencyFact {
 const DEP_GROUPS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] as const;
 
 export interface ComputeDependencyFactsInput {
-  // Changed file paths in the diff (the detector only reads manifests/lockfiles
-  // that actually changed).
-  changedPaths: string[];
+  // Changed files in the diff (the detector only reads manifests/lockfiles that
+  // actually changed). old_path lets a renamed/moved manifest read its BASE
+  // content from the rename source instead of reporting every dep as added.
+  changedFiles: Array<{ path: string; old_path?: string }>;
   readBase: (filePath: string) => string | undefined;
   readHead: (filePath: string) => string | undefined;
 }
 
 export function computeDependencyFacts(input: ComputeDependencyFactsInput): DependencyFact[] {
   const facts: DependencyFact[] = [];
-  for (const manifestPath of input.changedPaths.filter((p) => p === "package.json" || p.endsWith("/package.json"))) {
-    facts.push(...diffPackageJson(manifestPath, input.readBase(manifestPath), input.readHead(manifestPath)));
+  const matching = (suffix: string) => input.changedFiles.filter((file) => file.path === suffix || file.path.endsWith(`/${suffix}`));
+  for (const file of matching("package.json")) {
+    facts.push(...diffPackageJson(file.path, input.readBase(file.old_path ?? file.path), input.readHead(file.path)));
   }
-  for (const lockPath of input.changedPaths.filter((p) => p === "pnpm-lock.yaml" || p.endsWith("/pnpm-lock.yaml"))) {
-    facts.push(...diffPnpmLock(lockPath, input.readBase(lockPath), input.readHead(lockPath)));
+  for (const file of matching("pnpm-lock.yaml")) {
+    facts.push(...diffPnpmLock(file.path, input.readBase(file.old_path ?? file.path), input.readHead(file.path)));
   }
-  for (const lockPath of input.changedPaths.filter((p) => p === "package-lock.json" || p.endsWith("/package-lock.json"))) {
-    facts.push(...diffPackageLock(lockPath, input.readBase(lockPath), input.readHead(lockPath)));
+  for (const file of matching("package-lock.json")) {
+    facts.push(...diffPackageLock(file.path, input.readBase(file.old_path ?? file.path), input.readHead(file.path)));
   }
   // Unsupported lockfiles (yarn.lock, ...) yield NO lockfile facts — never guess.
   facts.sort((a, b) => (a.package < b.package ? -1 : a.package > b.package ? 1 : 0) || (a.kind < b.kind ? -1 : 1));

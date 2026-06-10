@@ -2193,7 +2193,9 @@ function apiChangeReason(change: ApiSurfaceChange): string {
   const usedBy = change.used_by;
   const blast = usedBy
     ? usedBy.count > 0
-      ? ` Used by ${usedBy.count} file(s) (top: ${usedBy.top.map((p) => `\`${p}\``).join(", ")}).`
+      ? usedBy.truncated
+        ? ` Used by at least ${usedBy.count} file(s) (top: ${usedBy.top.map((p) => `\`${p}\``).join(", ")}; import graph truncated at the file cap).`
+        : ` Used by ${usedBy.count} file(s) (top: ${usedBy.top.map((p) => `\`${p}\``).join(", ")}).`
       : usedBy.truncated
         ? " Import graph truncated at the file cap; importer count unknown."
         : " No in-repo importers reference the changed exports."

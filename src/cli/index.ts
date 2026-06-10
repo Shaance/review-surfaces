@@ -16,6 +16,8 @@ import { computeDependencyFacts } from "../risks/dependency-facts";
 import { computeConfigFacts } from "../risks/config-facts";
 import { buildImportGraph, findSymbolImporters } from "../collector/import-graph";
 import { execFileSync } from "node:child_process";
+import { loadPrivacyIgnoreSync } from "../privacy/ignore";
+import { stripUndefined } from "../core/guards";
 import type { CoverageEvidence } from "../human/contract";
 import { PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
@@ -1464,7 +1466,7 @@ function buildHumanReviewForPacket(
     coverageEvidence: computeCoverageEvidenceForPacket(outDir, resolvedDiff),
     // review-surfaces.DEP_FACTS / CONFIG_FACTS: deterministic, offline detectors
     // computed here so every build path carries them uniformly.
-    dependencyFacts: factReaders ? computeDependencyFacts({ changedPaths: factReaders.changedPaths, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
+    dependencyFacts: factReaders ? computeDependencyFacts({ changedFiles: factReaders.changedFiles, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
     configFacts: factReaders && resolvedDiff ? computeConfigFacts({ diff: resolvedDiff, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
@@ -1509,7 +1511,7 @@ function applyBudgetFlag(parsed: ParsedArgs, config: ReviewSurfacesConfig): void
 // of base and head (the three-dot diff's old side); the NEW side reads the
 // working tree when head is checked out, else the committed blob.
 interface FactReaders {
-  changedPaths: string[];
+  changedFiles: Array<{ path: string; old_path?: string }>;
   readBase: (filePath: string) => string | undefined;
   readHead: (filePath: string) => string | undefined;
   headIsWorktree: boolean;
@@ -1535,7 +1537,7 @@ function buildFactReaders(cwd: string, packet: ReviewPacket, diff: StructuredDif
     }
   };
   return {
-    changedPaths: diff.files.map((file) => file.path),
+    changedFiles: diff.files.map((file) => stripUndefined({ path: file.path, old_path: file.old_path }) as { path: string; old_path?: string }),
     readBase: baseReadRef ? (filePath) => readFileAtRef(cwd, baseReadRef, filePath) : () => undefined,
     readHead: headIsWorktree ? readWorktree : (filePath) => readFileAtRef(cwd, headSha, filePath),
     headIsWorktree,
@@ -1567,6 +1569,10 @@ function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactR
   } catch {
     return facts;
   }
+  // Honor the existing privacy/generated exclusions: an ignored tree must not
+  // contribute importers to the blast radius.
+  const ignore = loadPrivacyIgnoreSync(cwd);
+  tracked = tracked.filter((filePath) => !ignore.isIgnored(filePath));
   const graph = buildImportGraph({
     files: tracked,
     read: readers.readHead,

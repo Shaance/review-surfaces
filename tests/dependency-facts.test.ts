@@ -12,7 +12,7 @@ test("review-surfaces.DEP_FACTS.1 package.json diff yields added/removed/moved/m
     dependencies: { stable: "^3.0.0", fresh: "^1.0.0", tool: "3.0.0", left: "^1.2.3" }
   });
   const facts = computeDependencyFacts({
-    changedPaths: ["package.json"],
+    changedFiles: [{ path: "package.json" }],
     readBase: () => BASE_PKG,
     readHead: () => head
   });
@@ -29,14 +29,14 @@ test("review-surfaces.DEP_FACTS.1 pnpm-lock additions and requiresBuild yield tr
   const baseLock = "lockfileVersion: '9.0'\npackages:\n  /known@1.0.0:\n    resolution: {}\n";
   const headLock = "lockfileVersion: '9.0'\npackages:\n  /known@1.0.0:\n    resolution: {}\n  /sneaky@2.0.0:\n    resolution: {}\n    requiresBuild: true\n";
   const facts = computeDependencyFacts({
-    changedPaths: ["pnpm-lock.yaml"],
+    changedFiles: [{ path: "pnpm-lock.yaml" }],
     readBase: () => baseLock,
     readHead: () => headLock
   });
   assert.ok(facts.some((fact) => fact.kind === "transitive_added" && fact.package === "sneaky"));
   assert.ok(facts.some((fact) => fact.kind === "install_scripts" && fact.package === "sneaky"));
   // Unsupported lockfile -> no lockfile facts, never a guess.
-  const yarn = computeDependencyFacts({ changedPaths: ["yarn.lock"], readBase: () => "x", readHead: () => "y" });
+  const yarn = computeDependencyFacts({ changedFiles: [{ path: "yarn.lock" }], readBase: () => "x", readHead: () => "y" });
   assert.deepEqual(yarn, []);
 });
 
@@ -48,7 +48,7 @@ test("review-surfaces.DEP_FACTS.2 severity ordering puts install scripts above n
 
 test("review-surfaces.DEP_FACTS.3 facts are deterministic, offline, and carry no registry metadata", () => {
   const head = JSON.stringify({ dependencies: { fresh: "^1.0.0" } });
-  const args = { changedPaths: ["package.json"], readBase: () => "{}", readHead: () => head };
+  const args = { changedFiles: [{ path: "package.json" }], readBase: () => "{}", readHead: () => head };
   const a = computeDependencyFacts(args);
   const b = computeDependencyFacts(args);
   // Identical inputs -> identical facts (pure content function, no network).
