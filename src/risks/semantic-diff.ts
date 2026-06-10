@@ -12,6 +12,7 @@
 // (head) readers; tests provide fakes. Schema/API diffs need both file versions;
 // test-weakening is computed from the diff hunks alone.
 
+import * as ts from "typescript";
 import { StructuredDiff, StructuredDiffFile } from "../pr/contract";
 import { isTestPath } from "../scope/pr-scope";
 
@@ -301,8 +302,8 @@ function isSnapshotPath(path: string): boolean {
 // --- .2 exported TypeScript API-surface diff -------------------------------
 
 // `.ts`/`.tsx` and `.d.ts` declaration files (often the published API contract),
-// excluding tests. `.d.ts` content is read the same way; its `export declare`
-// forms are matched by EXPORT_DECL.
+// excluding tests. `.d.ts` content is parsed the same way; its `export declare`
+// forms are ordinary exported declarations to the TS parser.
 function isTypeScriptSourcePath(path: string): boolean {
   return /\.tsx?$/.test(path) && !isTestPath(path);
 }
@@ -325,8 +326,8 @@ function diffApiSurfaceFile(file: StructuredDiffFile, sources: SemanticDiffSourc
   // module (no head) removes all of its exports. Both are concrete add/remove
   // facts SEMANTIC_DIFF.2 should surface, so treat the missing side as no
   // exports rather than skipping the file.
-  const oldExports = oldText === undefined ? new Map<string, string>() : extractExports(oldText);
-  const newExports = newText === undefined ? new Map<string, string>() : extractExports(newText);
+  const oldExports = oldText === undefined ? new Map<string, string>() : extractExports(oldText, baseReadPath(file));
+  const newExports = newText === undefined ? new Map<string, string>() : extractExports(newText, path);
   const change: ApiSurfaceChange = { path, exports_added: [], exports_removed: [], signatures_changed: [] };
   for (const [name, signature] of newExports) {
     const previous = oldExports.get(name);
@@ -347,132 +348,285 @@ function diffApiSurfaceFile(file: StructuredDiffFile, sources: SemanticDiffSourc
   return change;
 }
 
-// Bounded export extractor: maps an exported symbol name to a normalized
-// signature string. Not a full TS parse, but the signature carries enough of the
-// declaration to detect breaking shape changes:
-//   - interface/type/enum: the full body/RHS (a member addition or alias change
-//     is a signature change), captured by balancing braces / running to the `;`.
-//   - function/class (incl. `export default function/class`): the multi-line head
-//     up to the body `{` or terminating `;` (so a param-type or return-type change
-//     across continuation lines is captured), excluding the implementation body.
-//   - const/let/var: the single-line head only (the initializer is not contract).
-// Known bounds (regex-altitude, by design): overload sets collapse to the last
-// signature; namespace/`export *` re-exports and value default exports
-// (`export default someExpr`) are not tracked.
-const EXPORT_DECL = /^export\s+(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(function|const|let|var|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)([^\n{=;]*)/;
-
-// A declaration whose contract is its body/RHS rather than its head. (A class
-// body is intentionally excluded — it is implementation-heavy and member-level
-// tracking is beyond this regex-altitude extractor.)
-const BODY_DEFINING = new Set(["interface", "type", "enum"]);
-// A declaration whose contract spans a multi-line head (params/return/extends)
-// but whose implementation body must NOT be captured.
-const HEAD_DEFINING = new Set(["function", "class"]);
-const MAX_DECL_LINES = 400;
-
-function extractExports(source: string): Map<string, string> {
+// Export extractor: maps an exported symbol name to a normalized signature
+// string, parsed from the real TypeScript AST (ts.createSourceFile). The
+// signature carries enough of each declaration to detect breaking shape changes:
+//   - function: name + type params + parameter list + return type (NOT the body),
+//     so a param- or return-type change is a signature change and an
+//     implementation edit is not. Overload sets keep every signature.
+//   - class: name + type params + heritage (extends/implements), excluding members.
+//   - interface/type/enum: the full declaration text (a member addition or alias
+//     change is a signature change).
+//   - const/let/var: name + type annotation; for an arrow/function-expression
+//     initializer, its parameter list + return type (excluding the body).
+//   - `export default function/class`, default expressions (keyed `default`),
+//     `export =` (keyed `export=`), named re-exports, and `export *`/`export * as`.
+// Parsing is pure and deterministic, so base and head are extracted by the same
+// rule: a real change is detected and a non-change is not.
+function extractExports(source: string, path = "module.ts"): Map<string, string> {
+  const scriptKind = /\.tsx$/.test(path) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, scriptKind);
   const exports = new Map<string, string>();
-  const lines = source.split("\n");
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index].trim();
-    const match = EXPORT_DECL.exec(line);
-    if (match) {
-      const [, keyword, name] = match;
-      if (BODY_DEFINING.has(keyword)) {
-        const declaration = captureDeclaration(lines, index, "body");
-        exports.set(name, normalizeSignature(declaration.text));
-        index = declaration.endIndex;
-      } else if (HEAD_DEFINING.has(keyword)) {
-        const declaration = captureDeclaration(lines, index, "head");
-        exports.set(name, normalizeSignature(declaration.text));
-        index = declaration.endIndex;
-      } else {
-        exports.set(name, normalizeSignature(line.replace(/\s*=.*/, "")));
+  const norm = (text: string): string => text.replace(/\s+/g, " ").trim();
+  // The declaration text from its first token to a stop offset, excluding any
+  // implementation body so only the contract is compared.
+  const slice = (node: ts.Node, stop: number): string => norm(source.slice(node.getStart(sourceFile), stop));
+  const hasModifier = (node: ts.HasModifiers, kind: ts.SyntaxKind): boolean =>
+    ts.getModifiers(node)?.some((modifier) => modifier.kind === kind) ?? false;
+  const isExported = (node: ts.HasModifiers): boolean => hasModifier(node, ts.SyntaxKind.ExportKeyword);
+  const defaultOr = (node: ts.HasModifiers, name: string | undefined): string | undefined =>
+    hasModifier(node, ts.SyntaxKind.DefaultKeyword) ? "default" : name;
+  // The offset where a declaration's implementation body begins (its start when
+  // bodyless, e.g. an overload, an ambient `.d.ts` declaration, or a namespace
+  // head). Slicing up to it compares the contract, not the body.
+  const bodyStop = (node: { body?: ts.Node }, fallback: number): number => (node.body ? node.body.getStart(sourceFile) : fallback);
+
+  // Declaration text up to `stop` with the declared name spliced out — identity
+  // comes from the export key, so a default export's local name, a function
+  // expression's inner name, or a class's own name (which a default importer
+  // cannot observe) never create noisy signature changes.
+  const sliceExcludingName = (node: ts.Node, nameNode: ts.Node | undefined, stop: number): string =>
+    nameNode
+      ? norm(source.slice(node.getStart(sourceFile), nameNode.getStart(sourceFile)) + source.slice(nameNode.end, stop))
+      : slice(node, stop);
+
+  // A function-like signature is the SHAPE — type params, parameters, return type
+  // — name-independent and with the body excluded. `export`/`default`/`async`
+  // modifiers before the name are kept.
+  const functionLikeSignature = (node: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression, prefix: string): string =>
+    norm(`${prefix} ${sliceExcludingName(node, node.name, bodyStop(node, node.end))}`);
+
+  // Peel redundant parentheses so `((x) => {})` is recognized as a function.
+  const unwrap = (expression: ts.Expression): ts.Expression =>
+    ts.isParenthesizedExpression(expression) ? unwrap(expression.expression) : expression;
+
+  // A class's head — type params + extends/implements — name-independent and
+  // excluding the member bodies. For an anonymous default class with no heritage
+  // the boundary is the body's opening brace.
+  const classHeadSignature = (node: ts.ClassDeclaration): string => {
+    const headEnd = node.heritageClauses?.at(-1)?.end ?? node.typeParameters?.end ?? node.name?.end;
+    const stop = headEnd ?? (node.members.length > 0 ? node.members[0].getStart(sourceFile) : node.end);
+    return sliceExcludingName(node, node.name, stop).replace(/\s*\{\s*$/, "");
+  };
+
+  // The SHAPE of one variable binding target — name-independent (identity is the
+  // export key): an explicit type annotation, a function/arrow initializer's
+  // signature (body excluded), or a destructured leaf's own member type.
+  const variableLeafSignature = (keyword: string, declaration: ts.VariableDeclaration, target: BindingTarget): string => {
+    if (ts.isIdentifier(declaration.name)) {
+      if (declaration.type) {
+        return norm(`${keyword} ${sliceExcludingName(declaration, declaration.name, declaration.type.end)}`);
       }
-      continue;
+      const initializer = declaration.initializer ? unwrap(declaration.initializer) : undefined;
+      if (initializer && (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))) {
+        return functionLikeSignature(initializer, keyword);
+      }
+      return keyword;
     }
-    // `export { a, b as c }` named re-exports: track the exported names only.
-    const named = /^export\s+(?:type\s+)?\{([^}]*)\}/.exec(line);
-    if (named) {
-      for (const part of named[1].split(",")) {
-        const name = part.trim().split(/\s+as\s+/).pop()?.trim();
-        if (name) {
-          exports.set(name, `named ${name}`);
+    const memberType = target.property ? memberTypeText(declaration.type, target.property, slice) : undefined;
+    const annotation = memberType ?? (declaration.type ? slice(declaration.type, declaration.type.end) : "");
+    return norm(`${keyword}${annotation ? `: ${annotation}` : ""}`);
+  };
+
+  // The name-independent signature of a top-level declaration named `name`
+  // (exported or not), so an `export default <ident>` or a local `export { ident }`
+  // is compared by what the identifier refers to rather than by its text.
+  const resolveLocalSignature = (name: string): string | undefined => {
+    // Function overloads: aggregate all matching declarations (the public overloads
+    // when a set exists, else the standalone function).
+    const functions = sourceFile.statements.filter(
+      (statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && statement.name?.text === name
+    );
+    if (functions.length > 0) {
+      const overloaded = functions.some((fn) => fn.body === undefined);
+      const surface = functions.filter((fn) => !(overloaded && fn.body !== undefined));
+      return (surface.length > 0 ? surface : functions).map((fn) => functionLikeSignature(fn, "function")).join(" ;; ");
+    }
+    for (const statement of sourceFile.statements) {
+      if (ts.isClassDeclaration(statement) && statement.name?.text === name) {
+        return classHeadSignature(statement);
+      }
+      if ((ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement) || ts.isEnumDeclaration(statement)) && statement.name.text === name) {
+        return slice(statement, statement.end);
+      }
+      if (ts.isVariableStatement(statement)) {
+        const keyword = statement.declarationList.flags & ts.NodeFlags.Const ? "const" : statement.declarationList.flags & ts.NodeFlags.Let ? "let" : "var";
+        for (const declaration of statement.declarationList.declarations) {
+          for (const target of bindingTargets(declaration.name)) {
+            if (target.name === name) {
+              return variableLeafSignature(keyword, declaration, target);
+            }
+          }
         }
       }
     }
-  }
+    return undefined;
+  };
+
+  // Collect exports from a statement list under a name prefix; recursed for the
+  // body of an exported namespace so nested members are part of the surface.
+  const collect = (statements: readonly ts.Statement[], prefix: string): void => {
+    for (const statement of statements) {
+      if (ts.isFunctionDeclaration(statement) && isExported(statement)) {
+        const name = defaultOr(statement, statement.name?.text);
+        // When an overload SET exists (sibling bodyless declarations of the same
+        // name), the bodied declaration is the private implementation — not callable
+        // from outside — so its signature is excluded; the public overloads define
+        // the surface. A standalone bodied function is the surface and is kept.
+        const isOverloadImpl = statement.body !== undefined && statements.some((sibling) =>
+          sibling !== statement && ts.isFunctionDeclaration(sibling) && sibling.body === undefined && sibling.name?.text === statement.name?.text && isExported(sibling));
+        if (name && !isOverloadImpl) {
+          // An overload set shares one name across several signatures; concatenate so
+          // adding/removing/altering any overload is a signature change. The
+          // signature is name-independent (identity is the key), so a default
+          // export's local rename is not a spurious change.
+          const key = `${prefix}${name}`;
+          const previous = exports.get(key);
+          const signature = functionLikeSignature(statement, "function");
+          exports.set(key, previous ? `${previous} ;; ${signature}` : signature);
+        }
+        continue;
+      }
+      if (ts.isClassDeclaration(statement) && isExported(statement)) {
+        const name = defaultOr(statement, statement.name?.text);
+        if (name) {
+          exports.set(`${prefix}${name}`, classHeadSignature(statement));
+        }
+        continue;
+      }
+      if ((ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement) || ts.isEnumDeclaration(statement)) && isExported(statement)) {
+        exports.set(`${prefix}${statement.name.text}`, slice(statement, statement.end));
+        continue;
+      }
+      if (ts.isModuleDeclaration(statement) && isExported(statement) && ts.isIdentifier(statement.name)) {
+        // `export namespace N {}` — record its presence/head, then recurse so a
+        // change to a nested exported member (N.foo) is part of the API surface.
+        // A dotted `namespace A.B {}` nests another ModuleDeclaration as its body;
+        // follow the chain so A.B's members are reached under the `A.B.` prefix.
+        let moduleName = statement.name.text;
+        let body: ts.ModuleBody | undefined = statement.body;
+        while (body && ts.isModuleDeclaration(body) && ts.isIdentifier(body.name)) {
+          moduleName += `.${body.name.text}`;
+          body = body.body;
+        }
+        exports.set(`namespace:${prefix}${moduleName}`, slice(statement, bodyStop(statement, statement.end)));
+        if (body && ts.isModuleBlock(body)) {
+          collect(body.statements, `${prefix}${moduleName}.`);
+        }
+        continue;
+      }
+      if (ts.isVariableStatement(statement) && isExported(statement)) {
+        const keyword = statement.declarationList.flags & ts.NodeFlags.Const ? "const" : statement.declarationList.flags & ts.NodeFlags.Let ? "let" : "var";
+        for (const declaration of statement.declarationList.declarations) {
+          for (const target of bindingTargets(declaration.name)) {
+            exports.set(`${prefix}${target.name}`, variableLeafSignature(keyword, declaration, target));
+          }
+        }
+        continue;
+      }
+      if (ts.isExportAssignment(statement)) {
+        // `export default <expr>` (isExportEquals false) or `export = <expr>`.
+        // A function/arrow expression is compared by its signature shape (body
+        // excluded), so an implementation-only edit is not a spurious change; any
+        // other value expression is compared by its full text.
+        const word = statement.isExportEquals ? "export=" : "default";
+        const key = `${prefix}${word}`;
+        const expr = unwrap(statement.expression);
+        if (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr)) {
+          exports.set(key, functionLikeSignature(expr, word));
+        } else if (ts.isIdentifier(expr)) {
+          // `export default handler` — compare by what `handler` refers to (the
+          // common local-then-export pattern), falling back to the identifier text.
+          exports.set(key, resolveLocalSignature(expr.text) ?? slice(statement, statement.end));
+        } else {
+          exports.set(key, slice(statement, statement.end));
+        }
+        continue;
+      }
+      if (ts.isExportDeclaration(statement)) {
+        // Fold the source module into the signature so a re-export's origin change is
+        // a fact, and a local `export { x }` and `export { x } from "y"` do not collide.
+        const from = statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier) ? ` from ${statement.moduleSpecifier.text}` : "";
+        // `type` (statement-level) drops the runtime export — a real contract change
+        // for value importers — so it is part of every signature below.
+        const statementType = statement.isTypeOnly ? "type " : "";
+        if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+          for (const element of statement.exportClause.elements) {
+            const typeOnly = statement.isTypeOnly || element.isTypeOnly ? "type " : "";
+            const local = element.propertyName?.text ?? element.name.text;
+            // A local `export { handler }` / `export type { Options }` (no `from`)
+            // refers to a declaration in this file — compare by what it refers to
+            // (resolving local types too) so a change to the local's shape is seen.
+            // The type-only marker is kept so a runtime→type-only switch still shows.
+            const resolved = from ? undefined : resolveLocalSignature(local);
+            // `propertyName` (the binding before `as`) makes an alias-target change
+            // (`{ a as x }` → `{ b as x }`) a fact.
+            const target = element.propertyName ? `${element.propertyName.text} as ` : "";
+            exports.set(`${prefix}${element.name.text}`, resolved ? `${typeOnly}${resolved}` : `named ${typeOnly}${target}${element.name.text}${from}`);
+          }
+        } else if (statement.exportClause && ts.isNamespaceExport(statement.exportClause)) {
+          exports.set(`${prefix}${statement.exportClause.name.text}`, `namespace-reexport ${statementType}${statement.exportClause.name.text}${from}`);
+        } else if (statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+          // `export * from "./x"` — keyed by the source module so adding/removing the
+          // star re-export is detected even though the names cannot be enumerated.
+          exports.set(`*:${prefix}${statement.moduleSpecifier.text}`, `export-star ${statementType}${statement.moduleSpecifier.text}`);
+        }
+        continue;
+      }
+    }
+  };
+
+  collect(sourceFile.statements, "");
   return exports;
 }
 
-function normalizeSignature(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
+// The identifier leaves bound by a variable declaration name: the single
+// identifier itself, or each identifier in a destructuring `{ a, b }` / `[a, b]`
+// pattern — so `export const { a, b } = x` records both `a` and `b`. `property` is
+// the source property name a DIRECT object-pattern leaf reads (so its type can be
+// looked up in a type-literal annotation); undefined for nested or array leaves.
+interface BindingTarget {
+  name: string;
+  node: ts.Node;
+  property?: string;
 }
 
-const CONTINUATION = /[=|&,(<[:?+\-*/]$|\b(?:extends|implements|keyof|typeof|infer|in)$/;
-
-// Capture a single declaration starting at `startIndex`, joining continuation
-// lines until the statement closes. "body" mode runs through the matching closing
-// brace / terminating `;` (interface/type/enum). "head" mode stops at the body
-// `{` so the implementation is excluded (function/class). A semicolon-less,
-// brace-less statement (e.g. `export type X = A | B` in a no-semicolon project)
-// is terminated by lookahead — the line whose successor begins a new top-level
-// construct — so it never swallows the exports that follow it. Bounded by
-// MAX_DECL_LINES; base and head are captured by the same rule, so a real change
-// is detected and a non-change is not.
-function captureDeclaration(lines: string[], startIndex: number, mode: "body" | "head"): { text: string; endIndex: number } {
-  let depth = 0;
-  let opened = false;
-  // The last non-whitespace character seen (across lines), used in head mode to
-  // tell a return-type object literal (`(): { a: string }`) from the body brace:
-  // a `{` in type position follows a type operator (`: | & < , ( = [`), whereas
-  // the body brace follows the end of the signature (`)`, an identifier, `>`).
-  let lastChar = "";
-  const TYPE_BRACE_PREDECESSORS = new Set([":", "|", "&", "<", ",", "(", "=", "["]);
-  const parts: string[] = [];
-  const end = Math.min(lines.length, startIndex + MAX_DECL_LINES);
-  for (let index = startIndex; index < end; index += 1) {
-    const raw = lines[index];
-    const trimmed = raw.trim();
-    for (let cursor = 0; cursor < raw.length; cursor += 1) {
-      const char = raw[cursor];
-      if (char === "{") {
-        if (mode === "head" && depth === 0 && !TYPE_BRACE_PREDECESSORS.has(lastChar)) {
-          // The implementation body begins here; record the head up to (not
-          // including) the brace and stop.
-          parts.push(raw.slice(0, cursor).trim());
-          return { text: parts.join(" "), endIndex: index };
-        }
-        depth += 1;
-        opened = true;
-      } else if (char === "(" || char === "[") {
-        depth += 1;
-        opened = true;
-      } else if (char === "}" || char === ")" || char === "]") {
-        depth -= 1;
-      } else if (char === ";" && depth <= 0) {
-        parts.push(trimmed);
-        return { text: parts.join(" "), endIndex: index };
-      }
-      if (!/\s/.test(char)) {
-        lastChar = char;
-      }
+function bindingTargets(name: ts.BindingName): BindingTarget[] {
+  if (ts.isIdentifier(name)) {
+    return [{ name: name.text, node: name }];
+  }
+  const targets: BindingTarget[] = [];
+  for (const element of name.elements) {
+    if (!ts.isBindingElement(element)) {
+      continue;
     }
-    parts.push(trimmed);
-    if (opened && depth <= 0) {
-      return { text: parts.join(" "), endIndex: index };
-    }
-    // Semicolon-less / brace-less termination: if nothing is open and this line
-    // does not end with a continuation token, the statement is complete unless the
-    // next line is plainly a continuation of it.
-    if (depth <= 0 && trimmed.length > 0 && !CONTINUATION.test(trimmed)) {
-      const next = (lines[index + 1] ?? "").trim();
-      if (next === "" || /^(export|import|\}|\/\/|\/\*|\*|function|const|let|var|class|interface|type|enum|declare|@)/.test(next)) {
-        return { text: parts.join(" "), endIndex: index };
-      }
+    const property = ts.isObjectBindingPattern(name)
+      ? (element.propertyName && ts.isIdentifier(element.propertyName) ? element.propertyName.text : ts.isIdentifier(element.name) ? element.name.text : undefined)
+      : undefined;
+    for (const leaf of bindingTargets(element.name)) {
+      // Only a DIRECT leaf (the element's own identifier) gets this element's
+      // property; a nested-pattern leaf keeps its own (undefined) property.
+      targets.push({ ...leaf, property: leaf.node === element.name ? property : leaf.property });
     }
   }
-  return { text: parts.join(" "), endIndex: end - 1 };
+  return targets;
+}
+
+// The text of the member type for `property` within a type-literal annotation, so
+// a destructured leaf's signature reflects only its own member. Undefined when the
+// annotation is absent, not a type literal, or has no matching member.
+function memberTypeText(typeNode: ts.TypeNode | undefined, property: string, slice: (node: ts.Node, stop: number) => string): string | undefined {
+  if (!typeNode || !ts.isTypeLiteralNode(typeNode)) {
+    return undefined;
+  }
+  for (const member of typeNode.members) {
+    if (ts.isPropertySignature(member) && member.type && ts.isIdentifier(member.name) && member.name.text === property) {
+      // Keep optionality (`a?: string` widens the leaf's type to include undefined)
+      // so a required↔optional change is a real, detected contract change.
+      return `${member.questionToken ? "?" : ""}${slice(member.type, member.type.end)}`;
+    }
+  }
+  return undefined;
 }
 
 // --- helpers ---------------------------------------------------------------

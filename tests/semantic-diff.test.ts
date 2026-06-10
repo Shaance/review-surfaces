@@ -280,14 +280,15 @@ test("review-surfaces.SEMANTIC_DIFF.2 captures multi-line function signatures", 
 });
 
 // review-surfaces.SEMANTIC_DIFF.2: default-exported function/class APIs are
-// tracked.
+// tracked under the `default` import contract (not the internal local name, so
+// renaming only the local name of a default export is not a breaking change).
 test("review-surfaces.SEMANTIC_DIFF.2 detects default-exported signature changes", () => {
   const path = "src/handler.ts";
   const oldText = "export default function handler(req: Req): void {}\n";
   const newText = "export default function handler(req: Req, res: Res): void {}\n";
   const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
   const change = computeSemanticChangeFacts(sources(diffText, { [path]: oldText }, { [path]: newText })).api_changes[0];
-  assert.ok(change && change.signatures_changed.some((s) => s.name === "handler"), "default export signature change captured");
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "default"), "default export signature change captured");
 });
 
 // review-surfaces.SEMANTIC_DIFF.2: a semicolon-less type alias does not swallow
@@ -374,6 +375,289 @@ test("review-surfaces.SEMANTIC_DIFF.1 diffs an added schema composition branch",
   const change = computeSemanticChangeFacts(sources(diffText, { [path]: oldSchema }, { [path]: newSchema })).schema_changes[0];
   assert.ok(change, "the added branch produces a contract change");
   assert.ok(change.required_added.some((f) => f.includes("allOf[1].b")), "the new branch's required field is reported");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a changed overload in an overload set is a
+// signature change (the AST keeps every signature for the shared name).
+test("review-surfaces.SEMANTIC_DIFF.2 tracks overload set changes", () => {
+  const path = "src/overload.ts";
+  const oldText = "export function f(a: string): string;\nexport function f(a: number): number;\nexport function f(a: any): any { return a; }\n";
+  const newText = "export function f(a: string): string;\nexport function f(a: boolean): boolean;\nexport function f(a: any): any { return a; }\n";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: oldText }, { [path]: newText })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "f"), "an altered overload is a signature change");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: an exported const arrow function's parameter
+// change is a signature change; its body is not.
+test("review-surfaces.SEMANTIC_DIFF.2 captures const arrow-function signatures, not bodies", () => {
+  const path = "src/arrow.ts";
+  const paramChange = computeSemanticChangeFacts(sources(
+    [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n"),
+    { [path]: "export const f = (a: string): void => { run(a); };" },
+    { [path]: "export const f = (a: number): void => { run(a); };" }
+  )).api_changes[0];
+  assert.ok(paramChange && paramChange.signatures_changed.some((s) => s.name === "f"), "arrow param-type change is a signature change");
+
+  const bodyOnly = computeSemanticChangeFacts(sources(
+    [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n"),
+    { [path]: "export const f = (a: string): void => { run(a); };" },
+    { [path]: "export const f = (a: string): void => { walk(a); };" }
+  )).api_changes;
+  assert.equal(bodyOnly.length, 0, "an arrow body-only change is not an API signature change");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: adding/removing an `export *` re-export is a
+// surface change keyed by the source module.
+test("review-surfaces.SEMANTIC_DIFF.2 detects added star re-exports", () => {
+  const path = "src/barrel.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export * from \"./a\";" }, { [path]: "export * from \"./a\";\nexport * from \"./b\";" })).api_changes[0];
+  assert.ok(change, "a new star re-export is reported");
+  assert.ok(change.exports_added.some((e) => e.includes("./b")), "the added star re-export is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: an exported namespace's presence is tracked.
+test("review-surfaces.SEMANTIC_DIFF.2 tracks added/removed exported namespaces", () => {
+  const path = "src/ns.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export const x = 1;" }, { [path]: "export const x = 1;\nexport namespace N { export const y = 2; }" })).api_changes[0];
+  assert.ok(change && change.exports_added.some((e) => e.includes("N")), "an added exported namespace is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a re-export whose source module changes is a
+// fact (and does not collide with a local export of the same name).
+test("review-surfaces.SEMANTIC_DIFF.2 detects a changed re-export source module", () => {
+  const path = "src/barrel.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export { thing } from \"./a\";" }, { [path]: "export { thing } from \"./b\";" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "thing"), "the re-export origin change is a signature change");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: destructuring exports record each bound name.
+test("review-surfaces.SEMANTIC_DIFF.2 records destructuring exports", () => {
+  const path = "src/destructure.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export const { a } = src;" }, { [path]: "export const { a, b } = src;" })).api_changes[0];
+  assert.ok(change && change.exports_added.includes("b"), "a newly destructured export name is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a re-export whose alias TARGET changes (same
+// public name) is a fact.
+test("review-surfaces.SEMANTIC_DIFF.2 detects a changed re-export alias target", () => {
+  const path = "src/alias.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export { oldName as publicName } from \"./mod\";" }, { [path]: "export { newName as publicName } from \"./mod\";" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "publicName"), "the alias target change is a signature change");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: an anonymous default class body edit is NOT a
+// signature change (only API signatures are compared, not member bodies).
+test("review-surfaces.SEMANTIC_DIFF.2 ignores anonymous default class body edits", () => {
+  const path = "src/anon.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const facts = computeSemanticChangeFacts(sources(diffText, { [path]: "export default class { run() { return 1; } }" }, { [path]: "export default class { run() { return 2; } }" }));
+  assert.equal(facts.api_changes.length, 0, "a default-class member body edit is not an API signature change");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a const with an explicit callable type
+// annotation surfaces a type change even when the initializer is unchanged.
+test("review-surfaces.SEMANTIC_DIFF.2 preserves declared callable types on const exports", () => {
+  const path = "src/typed.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export const f: (x: string) => void = (x) => {};" }, { [path]: "export const f: (x: number) => void = (x) => {};" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "f"), "the declared callable type change is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a change to a nested exported namespace member
+// is part of the API surface.
+test("review-surfaces.SEMANTIC_DIFF.2 diffs exported namespace members", () => {
+  const path = "src/nsmembers.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export namespace N { export function foo(a: string): void {} }" }, { [path]: "export namespace N { export function foo(a: number): void {} }" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "N.foo"), "a nested namespace member signature change is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a function/expression signature is compared by
+// SHAPE, not by names callers cannot observe or by implementation bodies.
+test("review-surfaces.SEMANTIC_DIFF.2 ignores local/inner names and bodies in signatures", () => {
+  const path = "src/names.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+
+  // A default export's local name is invisible to importers — renaming it is a no-op.
+  assert.equal(
+    computeSemanticChangeFacts(sources(diffText, { [path]: "export default function handler(req: Req): void {}" }, { [path]: "export default function renamed(req: Req): void {}" })).api_changes.length,
+    0,
+    "renaming a default export's local name is not a change"
+  );
+
+  // A default arrow expression's body edit is not a signature change.
+  assert.equal(
+    computeSemanticChangeFacts(sources(diffText, { [path]: "export default (req: Req): number => { return 1; }" }, { [path]: "export default (req: Req): number => { return 2; }" })).api_changes.length,
+    0,
+    "a default arrow body edit is not a signature change"
+  );
+
+  // A named function expression's inner name is not part of the const's surface.
+  assert.equal(
+    computeSemanticChangeFacts(sources(diffText, { [path]: "export const f = function internal(x: string): void {};" }, { [path]: "export const f = function renamed(x: string): void {};" })).api_changes.length,
+    0,
+    "renaming a function expression's inner name is not a change"
+  );
+
+  // ...but the actual parameter shape change IS still detected.
+  const real = computeSemanticChangeFacts(sources(diffText, { [path]: "export default function h(req: Req): void {}" }, { [path]: "export default function h(req: Req, res: Res): void {}" })).api_changes[0];
+  assert.ok(real && real.signatures_changed.some((s) => s.name === "default"), "a real default signature change is still detected");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a default class local rename is a no-op, but a
+// heritage change is still a fact.
+test("review-surfaces.SEMANTIC_DIFF.2 ignores default class local names", () => {
+  const path = "src/dc.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  assert.equal(
+    computeSemanticChangeFacts(sources(diffText, { [path]: "export default class Handler extends Base {}" }, { [path]: "export default class Renamed extends Base {}" })).api_changes.length,
+    0,
+    "renaming a default class is not a change"
+  );
+  const real = computeSemanticChangeFacts(sources(diffText, { [path]: "export default class C extends Base {}" }, { [path]: "export default class C extends Other {}" })).api_changes[0];
+  assert.ok(real && real.signatures_changed.some((s) => s.name === "default"), "a heritage change is still a fact");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a destructured export's type annotation change
+// is surfaced.
+test("review-surfaces.SEMANTIC_DIFF.2 surfaces destructured export type changes", () => {
+  const path = "src/dt.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export const { a }: { a: string } = src;" }, { [path]: "export const { a }: { a: number } = src;" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "a"), "the destructured type change is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a re-export switching to type-only drops the
+// runtime export — a fact for value importers.
+test("review-surfaces.SEMANTIC_DIFF.2 tracks type-only re-export markers", () => {
+  const path = "src/to.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export { Foo } from \"./mod\";" }, { [path]: "export { type Foo } from \"./mod\";" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "Foo"), "the runtime→type-only change is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a dotted namespace's nested members are reached.
+test("review-surfaces.SEMANTIC_DIFF.2 recurses into dotted namespaces", () => {
+  const path = "src/dn.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export namespace A.B { export function f(x: string): void {} }" }, { [path]: "export namespace A.B { export function f(x: number): void {} }" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "A.B.f"), "a dotted-namespace member change is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: `export default <identifier>` is compared by
+// what the identifier refers to.
+test("review-surfaces.SEMANTIC_DIFF.2 resolves identifier default exports", () => {
+  const path = "src/id.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "const handler = (req: Req): void => {};\nexport default handler;" }, { [path]: "const handler = (req: Req, res: Res): void => {};\nexport default handler;" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "default"), "a change to the referenced local is a default-export change");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a star/namespace re-export switching to
+// type-only drops the runtime export.
+test("review-surfaces.SEMANTIC_DIFF.2 tracks type-only star re-exports", () => {
+  const path = "src/star.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export * from \"./mod\";" }, { [path]: "export type * from \"./mod\";" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.length > 0, "the runtime→type-only star change is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a typed default-var local rename is a no-op.
+test("review-surfaces.SEMANTIC_DIFF.2 ignores typed default-var local names", () => {
+  const path = "src/tdv.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  assert.equal(
+    computeSemanticChangeFacts(sources(diffText, { [path]: "const handler: Handler = make();\nexport default handler;" }, { [path]: "const renamed: Handler = make();\nexport default renamed;" })).api_changes.length,
+    0,
+    "renaming a typed default-export local is not a change"
+  );
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a local `export { handler }` is compared by
+// what the local refers to.
+test("review-surfaces.SEMANTIC_DIFF.2 resolves local named exports", () => {
+  const path = "src/lne.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "const handler = (req: Req): void => {};\nexport { handler };" }, { [path]: "const handler = (req: Req, res: Res): void => {};\nexport { handler };" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "handler"), "a change to the local export's shape is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: an overload implementation edit is not an API
+// change when the public overloads are unchanged.
+test("review-surfaces.SEMANTIC_DIFF.2 excludes overload implementation signatures", () => {
+  const path = "src/ovl.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const oldText = "export function f(x: string): string;\nexport function f(x: number): number;\nexport function f(x: any): any { return x; }";
+  const newText = "export function f(x: string): string;\nexport function f(x: number): number;\nexport function f(x: unknown): unknown { return x; }";
+  assert.equal(
+    computeSemanticChangeFacts(sources(diffText, { [path]: oldText }, { [path]: newText })).api_changes.length,
+    0,
+    "editing only the overload implementation is not an API change"
+  );
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a destructured type change is attributed to the
+// changed leaf, not its siblings.
+test("review-surfaces.SEMANTIC_DIFF.2 attributes destructured type changes to the changed leaf", () => {
+  const path = "src/dla.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export const { a, b }: { a: string; b: number } = src;" }, { [path]: "export const { a, b }: { a: string; b: string } = src;" })).api_changes[0];
+  assert.ok(change, "the change is reported");
+  const changedNames = change.signatures_changed.map((s) => s.name);
+  assert.ok(changedNames.includes("b"), "the changed leaf b is reported");
+  assert.ok(!changedNames.includes("a"), "the unchanged leaf a is NOT reported");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a locally-exported type's body change is seen.
+test("review-surfaces.SEMANTIC_DIFF.2 resolves local type-only exports", () => {
+  const path = "src/lt.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "interface Options { a: string; }\nexport type { Options };" }, { [path]: "interface Options { a: string; b: number; }\nexport type { Options };" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "Options"), "a local interface body change behind a type-only export is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a destructured local re-exported via a list is
+// compared by its leaf shape.
+test("review-surfaces.SEMANTIC_DIFF.2 resolves destructured locals in export lists", () => {
+  const path = "src/dlx.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "const { handler }: { handler: (a: string) => void } = mod;\nexport { handler };" }, { [path]: "const { handler }: { handler: (a: number) => void } = mod;\nexport { handler };" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "handler"), "a destructured local's type change behind an export list is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: optionality on a destructured member type is
+// part of the contract.
+test("review-surfaces.SEMANTIC_DIFF.2 preserves optionality on destructured member types", () => {
+  const path = "src/opt.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export const { a }: { a?: string } = src;" }, { [path]: "export const { a }: { a: string } = src;" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "a"), "optional→required on a destructured member is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a parenthesized function initializer is
+// recognized.
+test("review-surfaces.SEMANTIC_DIFF.2 unwraps parenthesized function initializers", () => {
+  const path = "src/paren.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export const f = ((x: string): void => {});" }, { [path]: "export const f = ((x: number): void => {});" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "f"), "a parenthesized arrow's param change is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: all overloads of a locally-exported function
+// contribute to the signature.
+test("review-surfaces.SEMANTIC_DIFF.2 aggregates overloads for local export lists", () => {
+  const path = "src/ovx.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const oldText = "function f(x: string): string;\nfunction f(x: number): number;\nfunction f(x: any): any { return x; }\nexport { f };";
+  const newText = "function f(x: string): string;\nfunction f(x: boolean): boolean;\nfunction f(x: any): any { return x; }\nexport { f };";
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: oldText }, { [path]: newText })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "f"), "a change to a later overload behind an export list is surfaced");
 });
 
 // A test file is not treated as an API surface.
