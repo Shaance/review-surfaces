@@ -167,6 +167,74 @@ test("review-surfaces.NARRATIVE.2 allowlists non-CMD test-evidence row ids", asy
   assert.equal(narrative.claims[0].trust, "verified", "a real test-evidence row id is a valid anchor");
 });
 
+// review-surfaces.NARRATIVE.2: an unproven test-evidence row (claimed/missing/
+// unknown) is NOT a verified command anchor.
+test("review-surfaces.NARRATIVE.2 unproven test-evidence ids do not verify a claim", async () => {
+  const { packet, diff } = narrativeFacts();
+  packet.risks.test_evidence = [
+    { id: "CMD-FLAKY-TEST", kind: "claimed", summary: "Claimed-only validation.", evidence: [] }
+  ] as ReviewPacket["risks"]["test_evidence"];
+  const narrative = await buildChangeNarrative({
+    provider: stubProvider({ claims: [{ text: "Backed by a claimed-only transcript.", command_ids: ["CMD-FLAKY-TEST"] }] }),
+    providerName: "agent-file",
+    packet,
+    diff,
+    headSha: "head123",
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
+  assert.equal(narrative.claims[0].trust, "claimed", "an unproven test-evidence id must not become a verified anchor");
+  assert.ok(narrative.claims[0].invalid_anchors.includes("CMD-FLAKY-TEST"));
+});
+
+// review-surfaces.NARRATIVE.2: a fabricated non-CMD test id mentioned only in
+// prose demotes the claim.
+test("review-surfaces.NARRATIVE.2 fabricated non-CMD test id in prose demotes the claim", async () => {
+  const { packet, diff } = narrativeFacts();
+  const narrative = await buildChangeNarrative({
+    provider: stubProvider({ claims: [{ text: "Validated by TEST-RESULT-999 against src/real.ts.", paths: ["src/real.ts"] }] }),
+    providerName: "agent-file",
+    packet,
+    diff,
+    headSha: "head123",
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
+  assert.equal(narrative.claims[0].trust, "claimed", "a fabricated TEST-* id in prose demotes the claim");
+  assert.ok(narrative.claims[0].invalid_anchors.includes("TEST-RESULT-999"));
+});
+
+// review-surfaces.NARRATIVE.2: a secret-looking invalid anchor is redacted, not
+// stored verbatim.
+test("review-surfaces.NARRATIVE.2 redacts secret-looking invalid anchors", async () => {
+  const { packet, diff } = narrativeFacts();
+  const token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const narrative = await buildChangeNarrative({
+    provider: stubProvider({ claims: [{ text: "Cites a token path.", paths: [token] }] }),
+    providerName: "agent-file",
+    packet,
+    diff,
+    headSha: "head123",
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
+  assert.ok(!narrative.claims[0].invalid_anchors.includes(token), "the raw secret must not be stored");
+  assert.ok(narrative.claims[0].invalid_anchors.some((v) => v.includes("REDACTED")), "the invalid anchor is redacted");
+});
+
+// review-surfaces.NARRATIVE.5: the fallback counts transcript ROWS, not the
+// allowlist (which may hold both a row id and a CMD-* token from one row).
+test("review-surfaces.NARRATIVE.5 fallback does not double-count a transcript row", () => {
+  const { packet, diff } = narrativeFacts();
+  packet.risks.test_evidence = [
+    { id: "TEST-TR-001", kind: "direct", summary: "Ran CMD-PNPM-TEST.", evidence: [{ kind: "command", command: "CMD-PNPM-TEST", confidence: "high", validation_status: "valid" }] }
+  ] as ReviewPacket["risks"]["test_evidence"];
+  const narrative = buildFallbackNarrative({ packet, diff, headSha: "head123" });
+  const transcriptClaim = narrative.claims.find((claim) => /command transcript/.test(claim.text));
+  assert.ok(transcriptClaim, "a transcript claim is present");
+  assert.match(transcriptClaim!.text, /^1 command transcript/, "one row must be counted once, not twice");
+});
+
 // review-surfaces.NARRATIVE.4: the narrative never alters the verdict.
 test("review-surfaces.NARRATIVE.4 narrative does not change the verdict", () => {
   const { packet, diff } = narrativeFacts();

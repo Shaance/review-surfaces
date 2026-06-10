@@ -136,18 +136,26 @@ export function buildNarrativeAllowlist(input: NarrativeFacts): NarrativeAllowli
 
   const commandIds = new Set<string>();
   // Recorded validation evidence is emitted under risks.test_evidence with a
-  // deterministic id (CMD-PNPM-TEST, TEST-TR-001, TEST-RESULT-001, ...). Allowlist
-  // the ACTUAL id so a claim citing it as a command anchor is verified, plus any
-  // CMD-* tokens, in addition to scanning command evidence refs.
-  for (const entry of input.packet.risks.test_evidence ?? []) {
+  // deterministic id (CMD-PNPM-TEST, TEST-TR-001, TEST-RESULT-001, ...). Only
+  // PROVEN rows (direct/indirect) are accepted as verified anchors; a claimed,
+  // missing, or unknown row (feedback-only or a failed transcript) must not let a
+  // claim citing it render as verified.
+  for (const entry of provenTestEvidence(input.packet)) {
     if (entry.id) {
       commandIds.add(entry.id);
     }
     for (const id of commandIdTokens(entry.id)) {
       commandIds.add(id);
     }
+    for (const ref of entry.evidence ?? []) {
+      if (ref.kind === "command") {
+        for (const id of commandIdTokens(ref.command ?? ref.note)) {
+          commandIds.add(id);
+        }
+      }
+    }
   }
-  for (const ref of packetEvidenceRefs(input.packet)) {
+  for (const ref of resultAndRiskEvidence(input.packet)) {
     if (ref.kind === "command") {
       for (const token of [ref.command, ref.note]) {
         for (const id of commandIdTokens(token)) {
@@ -199,9 +207,13 @@ function classifyAnchors(
 ): { anchors: EvidenceRef[]; invalid: string[] } {
   const anchors: EvidenceRef[] = [];
   const invalid: string[] = [];
+  // Redact invalid anchor tokens before storing them: they are written verbatim
+  // into human_review.json/Markdown, so a secret-looking value in a malformed
+  // provider/agent payload must be redacted like the claim prose.
   const note = (value: string): void => {
-    if (!invalid.includes(value)) {
-      invalid.push(value);
+    const redacted = redactSecrets(value).text;
+    if (!invalid.includes(redacted)) {
+      invalid.push(redacted);
     }
   };
 
@@ -287,10 +299,13 @@ export function buildFallbackNarrative(
     );
   }
 
+  // Count distinct proven transcript ROWS (not the allowlist, which may hold both
+  // a row id and a CMD-* token from the same row, double-counting it).
+  const transcriptCount = provenTestEvidence(input.packet).length;
   const commandIds = [...allowlist.commandIds];
-  if (commandIds.length > 0) {
+  if (transcriptCount > 0 && commandIds.length > 0) {
     add(
-      `${commandIds.length} command transcript(s) back the recorded validation evidence.`,
+      `${transcriptCount} command transcript(s) back the recorded validation evidence.`,
       commandIds.slice(0, 4).map((command) => validAnchor({ kind: "command", command }))
     );
   }
@@ -366,8 +381,10 @@ function proseAnchorTokens(text: string): string[] {
   return tokens;
 }
 
-// A command transcript id like CMD-PNPM-BUILD embedded in command evidence text.
-const COMMAND_ID_TOKEN = /\bCMD-[A-Z0-9-]+\b/g;
+// A command-transcript / test-evidence row id embedded in text, e.g.
+// CMD-PNPM-BUILD, TEST-TR-001, TEST-RESULT-001. Scanned in prose so a fabricated
+// id is demoted, and used to pull ids out of command evidence.
+const COMMAND_ID_TOKEN = /\b(?:CMD|TEST)-[A-Z][A-Z0-9-]*\b/g;
 
 function commandIdTokens(value: string | undefined): string[] {
   if (typeof value !== "string") {
@@ -376,16 +393,22 @@ function commandIdTokens(value: string | undefined): string[] {
   return [...value.matchAll(COMMAND_ID_TOKEN)].map((match) => match[0]);
 }
 
-function packetEvidenceRefs(packet: ReviewPacket): EvidenceRef[] {
+// Evidence rows under risks.test_evidence that actually back validation
+// (direct/indirect). claimed/missing/unknown rows are excluded so an unproven or
+// failed transcript id cannot become a verified command anchor.
+const PROVEN_TEST_EVIDENCE_KINDS = new Set(["direct", "indirect"]);
+
+function provenTestEvidence(packet: ReviewPacket): ReviewPacket["risks"]["test_evidence"] {
+  return (packet.risks.test_evidence ?? []).filter((entry) => PROVEN_TEST_EVIDENCE_KINDS.has(entry.kind));
+}
+
+function resultAndRiskEvidence(packet: ReviewPacket): EvidenceRef[] {
   const refs: EvidenceRef[] = [];
   for (const result of packet.evaluation.results ?? []) {
     refs.push(...(result.evidence ?? []));
   }
   for (const risk of packet.risks.items ?? []) {
     refs.push(...(risk.evidence ?? []));
-  }
-  for (const entry of packet.risks.test_evidence ?? []) {
-    refs.push(...(entry.evidence ?? []));
   }
   return refs;
 }
