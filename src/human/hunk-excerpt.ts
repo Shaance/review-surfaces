@@ -97,6 +97,7 @@ function selectHunk(
   anchor: HunkAnchor,
   side: "old" | "new"
 ): StructuredDiffHunk | undefined {
+  const hasAnchor = Boolean(anchor.hunk_header) || (typeof anchor.line_start === "number" && anchor.line_start > 0);
   if (anchor.hunk_header) {
     const byHeader = file.hunks.find((hunk) => formatHunkHeader(hunk) === anchor.hunk_header);
     if (byHeader) {
@@ -109,6 +110,13 @@ function selectHunk(
     if (overlapping) {
       return overlapping;
     }
+  }
+  // When the item carried a hunk/line anchor but nothing matched (stale, out of
+  // range, or wrong-side), omit the excerpt rather than showing an unrelated
+  // first-changed hunk — a plausible-but-wrong excerpt is worse than none. The
+  // first-changed-hunk fallback only applies to items with no usable anchor.
+  if (hasAnchor) {
+    return undefined;
   }
   return file.hunks.find((hunk) => hunk.lines.some((line) => line.kind === "add" || line.kind === "delete"));
 }

@@ -332,6 +332,48 @@ test("review-surfaces.HUMAN_REVIEW.19 trust rollup lists ACIDs from evidence met
   assert.match(trust, /review-surfaces\.SEMANTIC_DIFF\.2/);
 });
 
+// review-surfaces.HUMAN_REVIEW.19: a trust rollup that unions more than four
+// distinct evidence refs marks the omission instead of looking fully evidenced.
+test("review-surfaces.HUMAN_REVIEW.19 trust rollup marks omitted evidence past the cap", () => {
+  const model = baseModel({
+    trust_audit: {
+      verified_facts: [],
+      claimed_not_verified: [],
+      missing_evidence: [1, 2, 3, 4, 5, 6].map((n) => ({
+        id: `ME-${n}`,
+        summary: `Missing implementation evidence for review-surfaces.SEMANTIC_DIFF.${n}.`,
+        evidence: [fileEvidence(`src/file${n}.ts`)]
+      })),
+      invalid_evidence: [],
+      confidence_summary: "Fixture."
+    }
+  });
+  const trust = renderHumanReviewMarkdown(model).split("Missing:")[1].split("\n\n")[0];
+  assert.match(trust, /\(\+\d+ more\)/, "rolled-up trust evidence past the 4-ref cap must show a (+N more) marker");
+});
+
+// review-surfaces.HUMAN_REVIEW.20: a stale/out-of-range anchor must omit the
+// excerpt rather than showing an unrelated first-changed hunk.
+test("review-surfaces.HUMAN_REVIEW.20 omits the excerpt when the anchor matches no hunk", () => {
+  const diffText = [
+    "diff --git a/src/sample.ts b/src/sample.ts",
+    "--- a/src/sample.ts",
+    "+++ b/src/sample.ts",
+    "@@ -1,2 +1,2 @@",
+    "-const a = 1;",
+    "+const a = 2;",
+    ""
+  ].join("\n");
+  const diff = parseStructuredDiff(diffText);
+  // Anchor to a line far outside any hunk: no overlap, and a hunk_header that
+  // does not match. The excerpt must be omitted, not faked from the first hunk.
+  const excerpt = renderHunkExcerpt(diff, { path: "src/sample.ts", hunk_header: "@@ -900,2 +900,2 @@", line_start: 950, line_end: 950 });
+  assert.equal(excerpt, undefined, "a stale anchor must not render an unrelated hunk");
+  // An item with NO anchor still falls back to the first changed hunk.
+  const fallback = renderHunkExcerpt(diff, { path: "src/sample.ts" });
+  assert.ok(fallback, "an unanchored item falls back to the first changed hunk");
+});
+
 // review-surfaces.HUMAN_REVIEW.20: a diff line containing a ``` fence must not
 // prematurely close the excerpt's own fence.
 test("review-surfaces.HUMAN_REVIEW.20 uses a fence that diff content cannot close", () => {

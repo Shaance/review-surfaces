@@ -938,9 +938,10 @@ function renderTrustMissingRollups(items: MissingEvidenceSummary[], limit: numbe
       // List the affected ACIDs (as the other rollups do) so the actionable
       // requirement identifiers are not lost on the default surface.
       const requirements = group.acids.length ? ` Requirements: ${group.acids.map((acid) => `\`${field(acid)}\``).join(", ")}.` : "";
-      // Union the evidence across the rolled-up gaps so the line does not drop
-      // the other requirements' proof points.
-      const evidence = evidenceList(group.items.flatMap((item) => item.evidence));
+      // Union the evidence across the rolled-up gaps, with an omitted-count
+      // marker so the line does not look fully evidenced while hiding the other
+      // requirements' proof points past the display cap.
+      const evidence = evidenceListWithOmission(group.items.flatMap((item) => item.evidence));
       return `${summary}${count}${requirements} Evidence: ${evidence}`;
     }),
     "No missing evidence recorded."
