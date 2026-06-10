@@ -220,11 +220,14 @@ test("review-surfaces.HUMAN_REVIEW.20 bounds the excerpt to the configured cap",
   const diff = parseStructuredDiff(diffText);
   const excerpt = renderHunkExcerpt(diff, { path: "src/big.ts", hunk_header: header, line_start: 21, line_end: 21 });
   assert.ok(excerpt, "excerpt should render");
-  const contentLines = excerpt!.split("\n").filter((line) => line !== "```diff" && line !== "```");
-  // Header line + bounded body + at most two elision markers.
+  // Body lines = everything except the opening fence+lang, the header, and the
+  // closing fence. The body (including any elision markers) must stay within the
+  // configured cap.
+  const allLines = excerpt!.split("\n");
+  const excerptBody = allLines.slice(2, allLines.length - 1); // drop ```diff, header, closing fence
   assert.ok(
-    contentLines.length <= DEFAULT_HUNK_EXCERPT_MAX_LINES + 3,
-    `excerpt body must be bounded, got ${contentLines.length} lines`
+    excerptBody.length <= DEFAULT_HUNK_EXCERPT_MAX_LINES,
+    `excerpt body (incl. elision markers) must stay within the cap, got ${excerptBody.length} lines`
   );
   assert.match(excerpt!, /elided/, "a long hunk must mark elided context");
 });
@@ -300,6 +303,8 @@ test("review-surfaces.HUMAN_REVIEW.19 rollups preserve evidence across grouped i
   const trust = md.split("Missing:")[1].split("\n\n")[0];
   assert.match(trust, /src\/bootstrap1\.ts/);
   assert.match(trust, /src\/bootstrap2\.ts/, "rolled-up trust gap must union evidence across requirements");
+  assert.match(trust, /review-surfaces\.BOOTSTRAP\.1/, "rolled-up trust gap must list the affected ACIDs");
+  assert.match(trust, /review-surfaces\.BOOTSTRAP\.2/);
   const cards = md.split("## Evidence cards")[1].split("\n## ")[0];
   assert.match(cards, /evidence: direct 0, missing 2, invalid 0/, "evidence card rollup must show the unioned evidence mix");
 });

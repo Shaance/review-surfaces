@@ -128,10 +128,13 @@ function excerptLines(
   if (formatted.length <= maxLines) {
     return formatted;
   }
+  // Reserve up to two lines for the leading/trailing elision markers so the
+  // returned body never exceeds maxLines once the markers are added.
+  const budget = Math.max(1, maxLines - 2);
   const focus = focusIndexForAnchor(hunk, side, anchor);
-  let start = Math.max(0, focus - Math.floor(maxLines / 2));
-  let end = Math.min(formatted.length, start + maxLines);
-  start = Math.max(0, end - maxLines);
+  let start = Math.max(0, focus - Math.floor(budget / 2));
+  let end = Math.min(formatted.length, start + budget);
+  start = Math.max(0, end - budget);
   const window = formatted.slice(start, end);
   if (start > 0) {
     window.unshift(`@@ … ${start} earlier line(s) elided @@`);

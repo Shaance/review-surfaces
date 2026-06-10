@@ -932,18 +932,18 @@ function renderTrustMissingRollups(items: MissingEvidenceSummary[], limit: numbe
     groups.slice(0, limit).map((group) => {
       const summary = fillAcidTemplate(normalizeAcidTemplate(group.representative.summary), group.acids);
       const count = group.items.length > 1 ? ` (${group.items.length} requirements)` : "";
+      // List the affected ACIDs (as the other rollups do) so the actionable
+      // requirement identifiers are not lost on the default surface.
+      const requirements = group.acids.length ? ` Requirements: ${group.acids.map((acid) => `\`${field(acid)}\``).join(", ")}.` : "";
       // Union the evidence across the rolled-up gaps so the line does not drop
       // the other requirements' proof points.
       const evidence = evidenceList(group.items.flatMap((item) => item.evidence));
-      return `${summary}${count} Evidence: ${evidence}`;
+      return `${summary}${count}${requirements} Evidence: ${evidence}`;
     }),
     "No missing evidence recorded."
   );
 }
 
-// Union of explicitly mapped requirement IDs and any ACIDs embedded in the
-// item's templated text, so a rollup lists every affected requirement even when
-// the mapping array is sparse.
 // Normalize a clause to end with exactly one sentence terminator so concatenated
 // "summary. Action: action." prose never doubles a period.
 function endSentence(text: string): string {
@@ -951,6 +951,9 @@ function endSentence(text: string): string {
   return trimmed.length === 0 ? "" : `${trimmed}.`;
 }
 
+// Union of explicitly mapped requirement IDs and any ACIDs embedded in the
+// item's templated text, so a rollup lists every affected requirement even when
+// the mapping array is sparse.
 function rollupAcids(mapped: string[], ...texts: string[]): string[] {
   const acids = new Set<string>(mapped);
   for (const text of texts) {
