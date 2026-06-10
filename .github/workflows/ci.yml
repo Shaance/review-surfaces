@@ -80,3 +80,32 @@ jobs:
       contents: read
     steps:
       - run: echo "LLM-backed PR comments run from the base-controlled pr-review-comment workflow."
+
+  pr-surface-smoke:
+    # review-surfaces.PR_SURFACE.1: dogfood the composite action live on the PR's
+    # own code (mock, zero secrets, post=false) so its build/run/render/upload are
+    # validated before the action goes live on main. Live POSTING is exercised by
+    # the base-controlled pr-review-comment workflow post-merge (pull_request_target
+    # always runs the base-branch workflow, so a PR cannot test its own posting).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need origin/main for --base origin/main
+      - name: Run the review-surfaces PR-surface action (mock, no post)
+        uses: ./
+        with:
+          provider: mock
+          base-ref: origin/main
+          head-ref: HEAD
+          output-dir: .review-surfaces
+          subject-directory: .
+          pr-number: ${{ github.event.pull_request.number }}
+          post: "false"
+      - name: Assert the sticky comment rendered
+        run: |
+          test -f .review-surfaces/comment.md
+          head -n 1 .review-surfaces/comment.md | grep -qx '<!-- review-surfaces:sticky -->'

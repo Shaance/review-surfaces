@@ -39,6 +39,7 @@ import {
 import { loadEvaluation } from "../render/load";
 import { renderCommentFromPacketFile, resolvePacketPath } from "../render/comment";
 import { renderHumanPrComment, renderPrComment } from "../render/pr-comment";
+import { renderStickySummary } from "../render/sticky-summary";
 import { assemblePrReviewSurface } from "../pipeline/pr-surface";
 import { evaluateBaseline } from "../evaluation/baseline";
 import { PrReviewSurfaceModel, ReviewScope, StructuredDiff } from "../pr/contract";
@@ -1871,10 +1872,58 @@ async function runComment(parsed: ParsedArgs): Promise<number> {
   if (format === "review") {
     return runCommentDraftReview(parsed);
   }
+  if (format === "sticky") {
+    return runCommentSticky(parsed);
+  }
   if (format !== "github") {
-    throw new CliError(`Unknown --format: ${format}. Use github, sarif, or review.`, ExitCodes.usageError);
+    throw new CliError(`Unknown --format: ${format}. Use github, sticky, sarif, or review.`, ExitCodes.usageError);
   }
   return runCommentGithub(parsed);
+}
+
+// Load human_review.json for a render command (draft review, sticky comment),
+// guarding a missing / unreadable / stale-or-invalid artifact with actionable
+// guidance, and — in PR scope — enforcing that the model matches the current PR
+// surface (whole-repo evidence lines are not PR-diff anchors). `label` names the
+// surface for the PR-scope gate and the regeneration guidance.
+async function loadHumanReviewForRender(
+  cwd: string,
+  outputDir: string,
+  parsed: ParsedArgs,
+  label: string
+): Promise<HumanReviewModel> {
+  const humanReviewPath = path.join(outputDir, "human_review.json");
+  const rel = path.relative(cwd, humanReviewPath) || humanReviewPath;
+  if (!fileExists(humanReviewPath)) {
+    throw new CliError(
+      `No human_review.json at ${rel}. Run \`review-surfaces all\` (or \`human\`) first.`,
+      ExitCodes.usageError
+    );
+  }
+  let loaded: unknown;
+  try {
+    loaded = await readJson(humanReviewPath);
+  } catch {
+    throw new CliError(
+      `human_review.json at ${rel} is not valid JSON. Regenerate it with \`review-surfaces all\` (or \`human\`) before rendering the ${label}.`,
+      ExitCodes.usageError
+    );
+  }
+  const issues = humanReviewIssues(cwd, loaded);
+  if (issues.length > 0) {
+    throw new CliError(
+      `human_review.json at ${rel} is stale or invalid (${issues[0]}). Regenerate it with \`review-surfaces all\` (or \`human\`) before rendering the ${label}.`,
+      ExitCodes.usageError
+    );
+  }
+  const model = loaded as HumanReviewModel;
+  if (reviewScope(parsed) === "pr") {
+    const gateError = prScopeReviewGateError(cwd, outputDir, model, label);
+    if (gateError) {
+      throw gateError;
+    }
+  }
+  return model;
 }
 
 // review-surfaces.PROVIDERS.7: export the suggested comments as a GitHub PENDING
@@ -1884,43 +1933,7 @@ async function runCommentDraftReview(parsed: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
   const outDir = await resolveOutputDir(cwd, parsed);
   const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
-  const humanReviewPath = path.join(outputDir, "human_review.json");
-  if (!fileExists(humanReviewPath)) {
-    throw new CliError(
-      `No human_review.json at ${path.relative(cwd, humanReviewPath) || humanReviewPath}. Run \`review-surfaces human\` (or \`all\`) first.`,
-      ExitCodes.usageError
-    );
-  }
-  // Guard against a stale, partially-written, or hand-edited artifact: a malformed
-  // file (or a schema-invalid model) fails cleanly with guidance, like the other
-  // human-review paths, instead of throwing a SyntaxError to the runtime-error
-  // handler or emitting a malformed payload.
-  let loaded: unknown;
-  try {
-    loaded = await readJson(humanReviewPath);
-  } catch {
-    throw new CliError(
-      `human_review.json at ${path.relative(cwd, humanReviewPath) || humanReviewPath} is not valid JSON. Regenerate it with \`review-surfaces human\` (or \`all\`) before exporting a draft review.`,
-      ExitCodes.usageError
-    );
-  }
-  const issues = humanReviewIssues(cwd, loaded);
-  if (issues.length > 0) {
-    throw new CliError(
-      `human_review.json at ${path.relative(cwd, humanReviewPath) || humanReviewPath} is stale or invalid (${issues[0]}). Regenerate it with \`review-surfaces human\` (or \`all\`) before exporting a draft review.`,
-      ExitCodes.usageError
-    );
-  }
-  const model = loaded as HumanReviewModel;
-  // Honor an explicit PR-scope request: a GitHub pending review must be built from
-  // the current PR surface, not a cached repo-scope model (whole-repo evidence
-  // lines are not PR-diff anchors). Mirror the `review` walkthrough's gate.
-  if (reviewScope(parsed) === "pr") {
-    const gateError = prScopeReviewGateError(cwd, outputDir, model, "draft review");
-    if (gateError) {
-      throw gateError;
-    }
-  }
+  const model = await loadHumanReviewForRender(cwd, outputDir, parsed, "draft review");
   // The reviewed diff is the authority for inline-anchoring and side. A PRESENT but
   // empty diff (zero changed files) is still authoritative — every path+line
   // comment then folds into the body, never an invalid inline comment. Only a
@@ -1935,6 +1948,47 @@ async function runCommentDraftReview(parsed: ParsedArgs): Promise<number> {
     `Wrote ${path.relative(cwd, reviewPath) || reviewPath} — ${draft.payload.comments.length} inline comment(s), ${draft.unanchored} general. ` +
     "This is a PENDING (draft) review with no event; create and submit it yourself on GitHub — nothing is auto-submitted."
   );
+  return ExitCodes.success;
+}
+
+// review-surfaces.PR_SURFACE.2/.4/.5: render the compact sticky-summary comment
+// from human_review.json. Unlike `--format github`, the sticky is the
+// DETERMINISTIC human rollup (not provider narrative), so it is NOT gated on the
+// PROVIDERS.5 remote-narrative requirement and is postable under --provider mock;
+// its only posting gate is the hard secret-block check. It leads with the
+// since-last-review delta when a prior packet was compared in.
+async function runCommentSticky(parsed: ParsedArgs): Promise<number> {
+  const cwd = process.cwd();
+  const outDir = await resolveOutputDir(cwd, parsed);
+  const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
+  const model = await loadHumanReviewForRender(cwd, outputDir, parsed, "sticky comment");
+  const diffPath = path.join(outputDir, "inputs", "diff.patch");
+  const diff = fileExists(diffPath) ? parseStructuredDiff(fs.readFileSync(diffPath, "utf8")) : undefined;
+  const sticky = renderStickySummary(model, {
+    diff,
+    topN: numberFlag(parsed, "comment-top-n"),
+    artifactName: stringFlag(parsed, "artifact-name"),
+    runId: stringFlag(parsed, "run-id") ?? process.env.GITHUB_RUN_ID
+  });
+  const commentPath = path.join(outputDir, "comment.md");
+  await writeText(commentPath, sticky.markdown);
+  process.stdout.write(sticky.markdown);
+  console.error(`Wrote ${path.relative(cwd, commentPath) || commentPath}`);
+
+  // review-surfaces.PR_SURFACE.4: redaction and the strict postability gate run
+  // before anything is posted. A blocked body (a high-confidence secret survived
+  // into the render) is never posted; it is a non-zero exit only when posting was
+  // actually requested or strict postability was opted into.
+  const posting = booleanFlag(parsed, "post");
+  const strictPostability = booleanFlag(parsed, "strict-postability");
+  if (sticky.blocked) {
+    console.error("Sticky comment blocked: redaction flagged a high-confidence secret; skipping post.");
+    return posting || strictPostability ? ExitCodes.privacyBlocked : ExitCodes.success;
+  }
+  if (posting) {
+    const result = postStickyComment(cwd, sticky.markdown);
+    console.error(result.reason);
+  }
   return ExitCodes.success;
 }
 
