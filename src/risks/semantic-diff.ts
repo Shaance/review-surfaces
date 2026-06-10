@@ -381,8 +381,18 @@ function extractExports(source: string, path = "module.ts"): Map<string, string>
   // head). Slicing up to it compares the contract, not the body.
   const bodyStop = (node: { body?: ts.Node }, fallback: number): number => (node.body ? node.body.getStart(sourceFile) : fallback);
 
-  const functionLikeSignature = (node: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression, prefix: string): string =>
-    norm(`${prefix} ${slice(node, bodyStop(node, node.end))}`);
+  // A function-like signature is the SHAPE — type params, parameters, return type
+  // — with the declared/inner name removed (identity comes from the export key, so
+  // a default export's local name or a function expression's inner name, which
+  // callers cannot observe, do not create noisy signature changes) and the body
+  // excluded. `export`/`default`/`async` modifiers before the name are kept.
+  const functionLikeSignature = (node: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression, prefix: string): string => {
+    const start = node.getStart(sourceFile);
+    const stop = bodyStop(node, node.end);
+    const name = "name" in node ? node.name : undefined;
+    const text = name ? source.slice(start, name.getStart(sourceFile)) + source.slice(name.end, stop) : source.slice(start, stop);
+    return norm(`${prefix} ${text}`);
+  };
 
   // Collect exports from a statement list under a name prefix; recursed for the
   // body of an exported namespace so nested members are part of the surface.
@@ -392,10 +402,12 @@ function extractExports(source: string, path = "module.ts"): Map<string, string>
         const name = defaultOr(statement, statement.name?.text);
         if (name) {
           // An overload set shares one name across several signatures; concatenate so
-          // adding/removing/altering any overload is a signature change.
+          // adding/removing/altering any overload is a signature change. The
+          // signature is name-independent (identity is the key), so a default
+          // export's local rename is not a spurious change.
           const key = `${prefix}${name}`;
           const previous = exports.get(key);
-          const signature = slice(statement, bodyStop(statement, statement.end));
+          const signature = functionLikeSignature(statement, "function");
           exports.set(key, previous ? `${previous} ;; ${signature}` : signature);
         }
         continue;
@@ -447,7 +459,14 @@ function extractExports(source: string, path = "module.ts"): Map<string, string>
       }
       if (ts.isExportAssignment(statement)) {
         // `export default <expr>` (isExportEquals false) or `export = <expr>`.
-        exports.set(`${prefix}${statement.isExportEquals ? "export=" : "default"}`, slice(statement, statement.end));
+        // A function/arrow expression is compared by its signature shape (body
+        // excluded), so an implementation-only edit is not a spurious change; any
+        // other value expression is compared by its full text.
+        const key = `${prefix}${statement.isExportEquals ? "export=" : "default"}`;
+        const expr = statement.expression;
+        exports.set(key, ts.isArrowFunction(expr) || ts.isFunctionExpression(expr)
+          ? functionLikeSignature(expr, statement.isExportEquals ? "export=" : "default")
+          : slice(statement, statement.end));
         continue;
       }
       if (ts.isExportDeclaration(statement)) {

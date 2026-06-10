@@ -478,6 +478,38 @@ test("review-surfaces.SEMANTIC_DIFF.2 diffs exported namespace members", () => {
   assert.ok(change && change.signatures_changed.some((s) => s.name === "N.foo"), "a nested namespace member signature change is surfaced");
 });
 
+// review-surfaces.SEMANTIC_DIFF.2: a function/expression signature is compared by
+// SHAPE, not by names callers cannot observe or by implementation bodies.
+test("review-surfaces.SEMANTIC_DIFF.2 ignores local/inner names and bodies in signatures", () => {
+  const path = "src/names.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+
+  // A default export's local name is invisible to importers — renaming it is a no-op.
+  assert.equal(
+    computeSemanticChangeFacts(sources(diffText, { [path]: "export default function handler(req: Req): void {}" }, { [path]: "export default function renamed(req: Req): void {}" })).api_changes.length,
+    0,
+    "renaming a default export's local name is not a change"
+  );
+
+  // A default arrow expression's body edit is not a signature change.
+  assert.equal(
+    computeSemanticChangeFacts(sources(diffText, { [path]: "export default (req: Req): number => { return 1; }" }, { [path]: "export default (req: Req): number => { return 2; }" })).api_changes.length,
+    0,
+    "a default arrow body edit is not a signature change"
+  );
+
+  // A named function expression's inner name is not part of the const's surface.
+  assert.equal(
+    computeSemanticChangeFacts(sources(diffText, { [path]: "export const f = function internal(x: string): void {};" }, { [path]: "export const f = function renamed(x: string): void {};" })).api_changes.length,
+    0,
+    "renaming a function expression's inner name is not a change"
+  );
+
+  // ...but the actual parameter shape change IS still detected.
+  const real = computeSemanticChangeFacts(sources(diffText, { [path]: "export default function h(req: Req): void {}" }, { [path]: "export default function h(req: Req, res: Res): void {}" })).api_changes[0];
+  assert.ok(real && real.signatures_changed.some((s) => s.name === "default"), "a real default signature change is still detected");
+});
+
 // A test file is not treated as an API surface.
 test("review-surfaces.SEMANTIC_DIFF.2 ignores test files for API surface", () => {
   const path = "tests/x.test.ts";
