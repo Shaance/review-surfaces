@@ -155,6 +155,80 @@ test("review-surfaces.SEMANTIC_DIFF.2 reports exported signature, add, and remov
   assert.deepEqual(api.exports_removed, ["gone"]);
 });
 
+// review-surfaces.SEMANTIC_DIFF.1: enum members that are not strings (numbers,
+// booleans, null) are compared as JSON values, not dropped.
+test("review-surfaces.SEMANTIC_DIFF.1 detects non-string enum changes", () => {
+  const path = "schemas/code.schema.json";
+  const oldSchema = JSON.stringify({ properties: { code: { enum: [1, 2] } } });
+  const newSchema = JSON.stringify({ properties: { code: { enum: [1, 3] } } });
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: oldSchema }, { [path]: newSchema })).schema_changes[0];
+  const enumChange = change.enum_changes.find((e) => e.field === "properties.code");
+  assert.ok(enumChange, "a numeric enum change is reported");
+  assert.deepEqual(enumChange!.added, ["3"]);
+  assert.deepEqual(enumChange!.removed, ["2"]);
+});
+
+// review-surfaces.SEMANTIC_DIFF.3: a newly-added snapshot file is a new test's
+// first snapshot, not a regeneration that could mask a regression.
+test("review-surfaces.SEMANTIC_DIFF.3 ignores an added snapshot but flags a modified one", () => {
+  const added = [`diff --git a/tests/__snapshots__/new.snap b/tests/__snapshots__/new.snap`, "new file mode 100644", "--- /dev/null", `+++ b/tests/__snapshots__/new.snap`, "@@ -0,0 +1,1 @@", "+exports['x'] = `1`;", ""].join("\n");
+  assert.equal(computeSemanticChangeFacts(sources(added, {}, {})).test_weakening.length, 0, "an added snapshot is not weakening");
+
+  const modified = [`diff --git a/tests/__snapshots__/a.snap b/tests/__snapshots__/a.snap`, `--- a/tests/__snapshots__/a.snap`, `+++ b/tests/__snapshots__/a.snap`, "@@ -1,1 +1,1 @@", "-old", "+new", ""].join("\n");
+  assert.ok(computeSemanticChangeFacts(sources(modified, {}, {})).test_weakening.some((s) => s.kind === "regenerated_snapshot"), "a modified snapshot is flagged");
+});
+
+// review-surfaces.SEMANTIC_DIFF.3: a renamed test file still carries prior
+// coverage, so a rename that also skips a test or drops an assertion fires.
+test("review-surfaces.SEMANTIC_DIFF.3 inspects renamed test files for weakening", () => {
+  const path = "tests/renamed.test.ts";
+  const diffText = [
+    `diff --git a/tests/old.test.ts b/${path}`,
+    "similarity index 80%",
+    `rename from tests/old.test.ts`,
+    `rename to ${path}`,
+    `--- a/tests/old.test.ts`,
+    `+++ b/${path}`,
+    "@@ -1,3 +1,3 @@",
+    "-test('x', () => { assert.equal(a, 1); });",
+    "+test.skip('x', () => {});",
+    " keep();",
+    ""
+  ].join("\n");
+  const weakening = computeSemanticChangeFacts(sources(diffText, {}, {})).test_weakening;
+  assert.ok(weakening.some((s) => s.kind === "skipped_test"), "a renamed test that adds .skip fires");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: an added exported module reports its exports
+// as additions; a deleted one reports removals.
+test("review-surfaces.SEMANTIC_DIFF.2 reports added and deleted exported modules", () => {
+  const addedPath = "src/added.ts";
+  const addedDiff = [`diff --git a/${addedPath} b/${addedPath}`, "new file mode 100644", "--- /dev/null", `+++ b/${addedPath}`, "@@ -0,0 +1,1 @@", "+export const fresh = 1;", ""].join("\n");
+  const addedChange = computeSemanticChangeFacts(sources(addedDiff, {}, { [addedPath]: "export const fresh = 1;\nexport function go() {}\n" })).api_changes[0];
+  assert.ok(addedChange, "an added module produces an API change");
+  assert.deepEqual(addedChange.exports_added.sort(), ["fresh", "go"]);
+
+  const deletedPath = "src/gone.ts";
+  const deletedDiff = [`diff --git a/${deletedPath} b/${deletedPath}`, "deleted file mode 100644", `--- a/${deletedPath}`, "+++ /dev/null", "@@ -1,1 +0,0 @@", "-export const old = 1;", ""].join("\n");
+  const deletedChange = computeSemanticChangeFacts(sources(deletedDiff, { [deletedPath]: "export const old = 1;" }, {})).api_changes[0];
+  assert.ok(deletedChange, "a deleted module produces an API change");
+  assert.deepEqual(deletedChange.exports_removed, ["old"]);
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a changed interface body or type-alias RHS is
+// a signature change (the common breaking TS API edit), not invisible.
+test("review-surfaces.SEMANTIC_DIFF.2 detects interface body and type alias changes", () => {
+  const path = "src/types.ts";
+  const oldText = "export interface Options {\n  a: string;\n}\nexport type Result = A | B;\n";
+  const newText = "export interface Options {\n  a: string;\n  b: number;\n}\nexport type Result = A | B | C;\n";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: oldText }, { [path]: newText })).api_changes[0];
+  assert.ok(change, "an interface/type change produces an API change");
+  assert.ok(change.signatures_changed.some((s) => s.name === "Options"), "interface member addition is a signature change");
+  assert.ok(change.signatures_changed.some((s) => s.name === "Result"), "type alias RHS change is a signature change");
+});
+
 // A test file is not treated as an API surface.
 test("review-surfaces.SEMANTIC_DIFF.2 ignores test files for API surface", () => {
   const path = "tests/x.test.ts";

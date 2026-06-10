@@ -5,7 +5,7 @@ import { recordCommandTranscript } from "../commands/runner";
 import { commandTranscriptInputDir } from "../commands/transcripts";
 import { collectInputs, CollectionResult } from "../collector/collect";
 import { parseStructuredDiff } from "../collector/diff-hunks";
-import { readFileAtRef } from "../collector/git";
+import { readFileAtRef, resolveGitRefSha, resolveMergeBaseSha } from "../collector/git";
 import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
@@ -1278,26 +1278,40 @@ function computeSemanticFactsForPacket(cwd: string, packet: ReviewPacket, diff: 
   if (!diff || diff.files.length === 0) {
     return emptySemanticChangeFacts();
   }
-  const manifest = packet.manifest as { base_sha?: unknown; base_ref?: unknown };
-  const baseRef = typeof manifest.base_sha === "string" && manifest.base_sha.length > 0
-    ? manifest.base_sha
-    : typeof manifest.base_ref === "string"
-      ? manifest.base_ref
-      : "";
-  if (!baseRef) {
-    // Still surface test-weakening, which is computed from the diff alone.
-    return computeSemanticChangeFacts({ diff, readBase: () => undefined, readHead: () => undefined });
-  }
+  const manifest = packet.manifest as { base_sha?: unknown; base_ref?: unknown; head_sha?: unknown; head_ref?: unknown };
+  const manifestString = (value: unknown): string => (typeof value === "string" ? value : "");
+  const baseRef = manifestString(manifest.base_sha) || manifestString(manifest.base_ref);
+  const headSha = manifestString(manifest.head_sha);
+  const headRef = manifestString(manifest.head_ref);
+
+  // The diff.patch is a `base...head` (three-dot) range diff, whose OLD side is
+  // the merge-base of base and head — not the base branch tip. Compare schema/API
+  // content against that merge-base so the facts describe exactly the reviewed
+  // change set even when the base branch advanced after the PR forked.
+  const baseReadRef = baseRef ? resolveMergeBaseSha(cwd, baseRef, headSha || headRef || "HEAD") ?? baseRef : "";
+
+  // The NEW side: when head is the current worktree (head_sha == checked-out
+  // HEAD), read the working tree so uncommitted edits are reflected. When head is
+  // an explicit committed ref that is NOT the worktree, read that committed blob
+  // via `git show` so the facts describe the reviewed revision, not whatever
+  // happens to be checked out.
+  const worktreeHead = resolveGitRefSha(cwd, "HEAD");
+  const headIsWorktree = !headSha || !worktreeHead || headSha === worktreeHead;
+  const readWorktree = (filePath: string): string | undefined => {
+    try {
+      return fs.readFileSync(path.resolve(cwd, filePath), "utf8");
+    } catch {
+      return undefined;
+    }
+  };
+  const readHead = headIsWorktree
+    ? readWorktree
+    : (filePath: string) => readFileAtRef(cwd, headSha, filePath);
+
   return computeSemanticChangeFacts({
     diff,
-    readBase: (filePath) => readFileAtRef(cwd, baseRef, filePath),
-    readHead: (filePath) => {
-      try {
-        return fs.readFileSync(path.resolve(cwd, filePath), "utf8");
-      } catch {
-        return undefined;
-      }
-    }
+    readBase: baseReadRef ? (filePath) => readFileAtRef(cwd, baseReadRef, filePath) : () => undefined,
+    readHead
   });
 }
 

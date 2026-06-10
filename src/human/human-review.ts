@@ -273,7 +273,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   // language instead of generic path-touch phrasing.
   const semanticFacts = input.semanticFacts ?? emptySemanticChangeFacts();
   const feedbackEffects = buildFeedbackPolicyEffects(input, config);
-  const riskLensFindings = buildRiskLensFindings(input, config);
+  const riskLensFindings = buildRiskLensFindings(input, config, semanticFacts);
   const blockers = buildBlockers(input, feedbackEffects);
   const reviewQueue = buildReviewQueue(input, feedbackEffects, config, semanticFacts);
   const intentMismatch = buildIntentMismatch(input);
@@ -2122,7 +2122,7 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput, config: HumanR
   }));
 }
 
-function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReviewBuildConfig): RiskLensFinding[] {
+function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReviewBuildConfig, semanticFacts: SemanticChangeFacts): RiskLensFinding[] {
   const accumulators = new Map<RiskLens, RiskLensAccumulator>();
   const addSignal = (
     lens: RiskLens,
@@ -2191,6 +2191,23 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
         uniqueTruthy([file.path, ...match.matched_paths])
       );
     }
+  }
+
+  // review-surfaces.SEMANTIC_DIFF.4: the concrete change facts also flow into the
+  // risk lenses, so the api_contract / test_evidence lenses carry field-level and
+  // signature-level detail rather than generic path-touch findings. Evidence is
+  // anchored to the (allowlisted) changed file path.
+  for (const change of semanticFacts.schema_changes) {
+    const breaking = change.required_added.length > 0 || change.properties_removed.length > 0 || change.type_changes.length > 0;
+    addSignal("api_contract", breaking ? "high" : "medium", [fileEvidence(change.path, schemaChangeReason(change))], [], [], [change.path]);
+  }
+  for (const change of semanticFacts.api_changes) {
+    const breaking = change.exports_removed.length > 0 || change.signatures_changed.length > 0;
+    addSignal("api_contract", breaking ? "high" : "medium", [fileEvidence(change.path, apiChangeReason(change))], [], [], [change.path]);
+  }
+  for (const signal of semanticFacts.test_weakening) {
+    const severe = signal.kind === "deleted_test_file" || signal.kind === "removed_assertion";
+    addSignal("test_evidence", severe ? "high" : "medium", [fileEvidence(signal.path, signal.detail)], [], [], [signal.path]);
   }
 
   return [...accumulators.values()]

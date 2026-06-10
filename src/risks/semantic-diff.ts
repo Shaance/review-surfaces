@@ -152,12 +152,16 @@ function diffSchemaNode(oldNode: unknown, newNode: unknown, pointer: string, cha
     change.type_changes.push({ field: pointer || "(root)", from: oldType, to: newType });
   }
 
-  // enum change at this node.
-  const oldEnum = stringArray(oldNode.enum);
-  const newEnum = stringArray(newNode.enum);
+  // enum change at this node. Enum members may be strings, numbers, booleans, or
+  // null — compare them as JSON values (so `[1, 2]` → `[1, 3]` is detected) and
+  // stringify only for the recorded/displayed value.
+  const oldEnum = enumValues(oldNode.enum);
+  const newEnum = enumValues(newNode.enum);
   if (oldEnum.length > 0 || newEnum.length > 0) {
-    const added = newEnum.filter((value) => !oldEnum.includes(value));
-    const removed = oldEnum.filter((value) => !newEnum.includes(value));
+    const oldKeys = new Set(oldEnum.map(enumKey));
+    const newKeys = new Set(newEnum.map(enumKey));
+    const added = newEnum.filter((value) => !oldKeys.has(enumKey(value))).map(enumDisplay);
+    const removed = oldEnum.filter((value) => !newKeys.has(enumKey(value))).map(enumDisplay);
     if (added.length > 0 || removed.length > 0) {
       change.enum_changes.push({ field: pointer || "(root)", added, removed });
     }
@@ -207,7 +211,13 @@ function detectTestWeakening(diff: StructuredDiff): TestWeakeningSignal[] {
   const signals: TestWeakeningSignal[] = [];
   for (const file of diff.files) {
     if (isSnapshotPath(file.path)) {
-      signals.push({ kind: "regenerated_snapshot", path: file.path, detail: "Snapshot file changed; confirm it was regenerated for an intended behavior change, not to mask a regression." });
+      // Only a MODIFIED snapshot is a regeneration that could mask a regression.
+      // A newly-added snapshot (status "A") is a new test's first snapshot — there
+      // is no prior baseline it could have been regenerated over — so it is not a
+      // weakening signal.
+      if (file.status === "modified") {
+        signals.push({ kind: "regenerated_snapshot", path: file.path, detail: "Snapshot file changed; confirm it was regenerated for an intended behavior change, not to mask a regression." });
+      }
       continue;
     }
     if (!isTestPath(file.path)) {
@@ -217,11 +227,12 @@ function detectTestWeakening(diff: StructuredDiff): TestWeakeningSignal[] {
       signals.push({ kind: "deleted_test_file", path: file.path, detail: "Test file deleted; confirm its coverage moved elsewhere and was not silently dropped." });
       continue;
     }
-    // Skip/assertion weakening only applies to a MODIFIED test (one with a prior
-    // version). A brand-new test file (status "A") or rename has no prior
-    // coverage to weaken, and treating its added lines as "newly skipped" /
-    // "removed assertions" would be noise.
-    if (file.status !== "modified") {
+    // Skip/assertion weakening needs a prior version to weaken. A brand-new test
+    // file (status "A") has none — treating its added lines as "newly skipped" /
+    // "removed assertions" would be noise (and its `.skip(` fixture strings would
+    // false-fire). A modified OR renamed file does carry prior coverage, so a
+    // rename that also disables a test or drops assertions is still inspected.
+    if (file.status === "A") {
       continue;
     }
     const added = file.hunks.flatMap((hunk) => hunk.lines.filter((line) => line.kind === "add").map((line) => line.text));
@@ -258,11 +269,16 @@ function isTypeScriptSourcePath(path: string): boolean {
 function diffApiSurfaceFile(path: string, sources: SemanticDiffSources): ApiSurfaceChange | undefined {
   const oldText = sources.readBase(path);
   const newText = sources.readHead(path);
-  if (oldText === undefined || newText === undefined) {
+  // A file present on neither side is not analyzable.
+  if (oldText === undefined && newText === undefined) {
     return undefined;
   }
-  const oldExports = extractExports(oldText);
-  const newExports = extractExports(newText);
+  // An ADDED module (no base) makes all its exports new API surface; a DELETED
+  // module (no head) removes all of its exports. Both are concrete add/remove
+  // facts SEMANTIC_DIFF.2 should surface, so treat the missing side as no
+  // exports rather than skipping the file.
+  const oldExports = oldText === undefined ? new Map<string, string>() : extractExports(oldText);
+  const newExports = newText === undefined ? new Map<string, string>() : extractExports(newText);
   const change: ApiSurfaceChange = { path, exports_added: [], exports_removed: [], signatures_changed: [] };
   for (const [name, signature] of newExports) {
     const previous = oldExports.get(name);
@@ -284,19 +300,34 @@ function diffApiSurfaceFile(path: string, sources: SemanticDiffSources): ApiSurf
 }
 
 // Bounded export extractor: maps an exported symbol name to a normalized
-// signature string (the declaration head). Not a full TS parse — it captures the
-// common `export function/const/class/interface/type/enum NAME ...` forms, which
-// is enough to detect added/removed/signature-changed exports.
+// signature string. Not a full TS parse, but the signature carries enough of the
+// declaration to detect breaking shape changes: for function/const/class the head
+// (params, return type, extends), and for interface/type/enum the full body/RHS —
+// so adding a required interface member or changing a type alias is a
+// signature change, not invisible.
 const EXPORT_DECL = /^export\s+(?:declare\s+)?(?:async\s+)?(function|const|let|var|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)([^\n{=;]*)/;
+
+// A declaration whose contract is its body/RHS rather than its head. (A class
+// body is intentionally excluded — it is implementation-heavy and member-level
+// tracking is beyond this regex-altitude extractor.)
+const BODY_DEFINING = new Set(["interface", "type", "enum"]);
+const MAX_DECL_LINES = 400;
 
 function extractExports(source: string): Map<string, string> {
   const exports = new Map<string, string>();
-  for (const rawLine of source.split("\n")) {
-    const line = rawLine.trim();
+  const lines = source.split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
     const match = EXPORT_DECL.exec(line);
     if (match) {
       const [, keyword, name, rest] = match;
-      exports.set(name, `${keyword} ${name}${rest}`.replace(/\s+/g, " ").trim());
+      if (BODY_DEFINING.has(keyword)) {
+        const declaration = captureDeclaration(lines, index);
+        exports.set(name, normalizeSignature(declaration.text));
+        index = declaration.endIndex;
+      } else {
+        exports.set(name, normalizeSignature(`${keyword} ${name}${rest}`));
+      }
       continue;
     }
     // `export { a, b as c }` named re-exports: track the exported names only.
@@ -311,6 +342,41 @@ function extractExports(source: string): Map<string, string> {
     }
   }
   return exports;
+}
+
+function normalizeSignature(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+// Capture a full single-statement declaration starting at `startIndex`, joining
+// continuation lines until the statement closes: the first `;` at bracket depth 0
+// (type aliases), or the line where an opened `{`/`(`/`[` balances back to 0
+// (interface/enum/object bodies). Bounded by MAX_DECL_LINES so a malformed or
+// unterminated source can never loop unboundedly; base and head are captured by
+// the same rule, so a real body change is detected and a non-change is not.
+function captureDeclaration(lines: string[], startIndex: number): { text: string; endIndex: number } {
+  let depth = 0;
+  let opened = false;
+  const parts: string[] = [];
+  const end = Math.min(lines.length, startIndex + MAX_DECL_LINES);
+  for (let index = startIndex; index < end; index += 1) {
+    const line = lines[index];
+    parts.push(line.trim());
+    for (const char of line) {
+      if (char === "{" || char === "(" || char === "[") {
+        depth += 1;
+        opened = true;
+      } else if (char === "}" || char === ")" || char === "]") {
+        depth -= 1;
+      } else if (char === ";" && depth <= 0) {
+        return { text: parts.join(" "), endIndex: index };
+      }
+    }
+    if (opened && depth <= 0) {
+      return { text: parts.join(" "), endIndex: index };
+    }
+  }
+  return { text: parts.join(" "), endIndex: end - 1 };
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -332,6 +398,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function enumValues(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+// A canonical identity key for an enum member, so members are compared as JSON
+// values rather than by string identity (`1` and `"1"` are distinct members).
+function enumKey(value: unknown): string {
+  return JSON.stringify(value) ?? String(value);
+}
+
+// The recorded/displayed form of an enum member: strings as-is, everything else
+// (numbers, booleans, null) as its JSON literal.
+function enumDisplay(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value) ?? String(value);
 }
 
 function typeLabel(value: unknown): string | undefined {
