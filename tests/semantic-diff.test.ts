@@ -510,6 +510,55 @@ test("review-surfaces.SEMANTIC_DIFF.2 ignores local/inner names and bodies in si
   assert.ok(real && real.signatures_changed.some((s) => s.name === "default"), "a real default signature change is still detected");
 });
 
+// review-surfaces.SEMANTIC_DIFF.2: a default class local rename is a no-op, but a
+// heritage change is still a fact.
+test("review-surfaces.SEMANTIC_DIFF.2 ignores default class local names", () => {
+  const path = "src/dc.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  assert.equal(
+    computeSemanticChangeFacts(sources(diffText, { [path]: "export default class Handler extends Base {}" }, { [path]: "export default class Renamed extends Base {}" })).api_changes.length,
+    0,
+    "renaming a default class is not a change"
+  );
+  const real = computeSemanticChangeFacts(sources(diffText, { [path]: "export default class C extends Base {}" }, { [path]: "export default class C extends Other {}" })).api_changes[0];
+  assert.ok(real && real.signatures_changed.some((s) => s.name === "default"), "a heritage change is still a fact");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a destructured export's type annotation change
+// is surfaced.
+test("review-surfaces.SEMANTIC_DIFF.2 surfaces destructured export type changes", () => {
+  const path = "src/dt.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export const { a }: { a: string } = src;" }, { [path]: "export const { a }: { a: number } = src;" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "a"), "the destructured type change is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a re-export switching to type-only drops the
+// runtime export — a fact for value importers.
+test("review-surfaces.SEMANTIC_DIFF.2 tracks type-only re-export markers", () => {
+  const path = "src/to.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export { Foo } from \"./mod\";" }, { [path]: "export { type Foo } from \"./mod\";" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "Foo"), "the runtime→type-only change is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a dotted namespace's nested members are reached.
+test("review-surfaces.SEMANTIC_DIFF.2 recurses into dotted namespaces", () => {
+  const path = "src/dn.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export namespace A.B { export function f(x: string): void {} }" }, { [path]: "export namespace A.B { export function f(x: number): void {} }" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "A.B.f"), "a dotted-namespace member change is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: `export default <identifier>` is compared by
+// what the identifier refers to.
+test("review-surfaces.SEMANTIC_DIFF.2 resolves identifier default exports", () => {
+  const path = "src/id.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "const handler = (req: Req): void => {};\nexport default handler;" }, { [path]: "const handler = (req: Req, res: Res): void => {};\nexport default handler;" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "default"), "a change to the referenced local is a default-export change");
+});
+
 // A test file is not treated as an API surface.
 test("review-surfaces.SEMANTIC_DIFF.2 ignores test files for API surface", () => {
   const path = "tests/x.test.ts";
