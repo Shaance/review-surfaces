@@ -454,6 +454,13 @@ function buildEvidenceCards(ctx: BuildEvidenceCardsInput): EvidenceCard[] {
     // changed lines no test executes, not merely the file.
     const hunkCards = ctx.coverage.files
       .flatMap((file) => file.hunks.filter((hunk) => hunk.classification !== "covered").map((hunk) => ({ file, hunk })))
+      // Uncovered is the stronger signal: select it ahead of partial BEFORE the
+      // cap so a large diff cannot silently drop a fully uncovered hunk.
+      .sort((a, b) =>
+        (a.hunk.classification === "uncovered" ? 0 : 1) - (b.hunk.classification === "uncovered" ? 0 : 1) ||
+        (a.file.path < b.file.path ? -1 : a.file.path > b.file.path ? 1 : 0) ||
+        (a.hunk.hunk_header < b.hunk.hunk_header ? -1 : 1)
+      )
       .slice(0, 4);
     for (const { file, hunk } of hunkCards) {
       const summary = `${hunk.covered_lines} of ${hunk.changed_lines} changed line(s) in \`${file.path}\` ${hunk.hunk_header} are executed by tests.`;
@@ -1915,6 +1922,9 @@ function applyRankingEvidence(drafts: QueueDraft[], input: BuildHumanReviewInput
         draft.evidenceTier = Math.max(draft.evidenceTier ?? 0, 1);
         reasons.push(`all ${fileCoverage.changed_lines} changed line(s) are executed by tests, so it ranks lower among equal-severity items`);
       } else {
+        // Partial coverage: uncovered changed lines remain — neutralize any
+        // demotion from co-changed tests rather than leaving it purely prose.
+        draft.evidenceTier = Math.min(draft.evidenceTier ?? 0, 0);
         reasons.push(`${fileCoverage.covered_lines} of ${fileCoverage.changed_lines} changed line(s) are executed by tests`);
       }
     }

@@ -363,7 +363,9 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // readers (cache snapshot, per-artifact loaders, artifact stamping) all go
   // through the pipeline artifact store, which reads the on-disk manifest.json
   // directly, so they see the map regardless.
-  const coverageRecord = lcovSource ? buildCoverageRecord(options.cwd, git.head_sha, lcovSource) : undefined;
+  const coverageRecord = lcovSource
+    ? buildCoverageRecord(options.cwd, git.head_sha, lcovSource, changedFiles.map((file) => file.path))
+    : undefined;
   if (coverageRecord) {
     manifest.coverage = coverageRecord.provenance;
     await writeJson(path.join(inputsDir, "coverage.json"), {
@@ -522,7 +524,9 @@ interface LcovSource {
 }
 
 function resolveLcovSource(cwd: string, coverageOutputPath: string | undefined): LcovSource | undefined {
-  const candidates = coverageOutputPath ? [coverageOutputPath] : ["coverage/lcov.info"];
+  // An explicit --coverage pointing at the istanbul SUMMARY must not disable the
+  // documented auto channel: try the explicit path first, then coverage/lcov.info.
+  const candidates = coverageOutputPath ? [coverageOutputPath, "coverage/lcov.info"] : ["coverage/lcov.info"];
   for (const candidate of candidates) {
     const absolute = path.resolve(cwd, candidate);
     if (!isRegularFile(absolute)) {
@@ -543,7 +547,8 @@ function resolveLcovSource(cwd: string, coverageOutputPath: string | undefined):
 function buildCoverageRecord(
   cwd: string,
   headSha: string,
-  source: LcovSource
+  source: LcovSource,
+  changedPaths: string[]
 ): { provenance: CoverageProvenance; coverage: LcovCoverage } | undefined {
   const coverage = parseLcov(source.text, cwd);
   if (!coverage) {
@@ -558,9 +563,24 @@ function buildCoverageRecord(
     reportModifiedAt = undefined;
   }
   // Unknown timestamps degrade conservatively: without both times we cannot
-  // prove the report postdates the head commit, so it is marked stale.
+  // prove the report postdates the reviewed code, so it is marked stale. The
+  // reviewed code includes WORKING-TREE edits (collectDiff appends staged +
+  // unstaged changes), so a changed file edited on disk after the report also
+  // marks it stale — the report never measured that code.
+  const reportTime = reportModifiedAt ? Date.parse(reportModifiedAt) : Number.NaN;
+  let newestChangedMtime = 0;
+  for (const changedPath of changedPaths) {
+    try {
+      newestChangedMtime = Math.max(newestChangedMtime, fs.statSync(path.resolve(cwd, changedPath)).mtime.getTime());
+    } catch {
+      // Deleted changed files have no on-disk mtime; the head-commit check covers them.
+    }
+  }
   const postdatesHead = Boolean(
-    headCommittedAt && reportModifiedAt && Date.parse(reportModifiedAt) >= Date.parse(headCommittedAt)
+    headCommittedAt &&
+      reportModifiedAt &&
+      reportTime >= Date.parse(headCommittedAt) &&
+      reportTime >= newestChangedMtime
   );
   return {
     provenance: {

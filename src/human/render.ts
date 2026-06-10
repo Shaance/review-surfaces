@@ -779,16 +779,18 @@ function renderCoverageEvidence(model: HumanReviewModel): string {
   if (!coverage || coverage.status === "no_report") {
     return "- No coverage evidence: no coverage report was provided. This is different from changed lines being uncovered.";
   }
-  const stale = coverage.postdates_head === false
-    ? `\n- Note: the report at \`${field(coverage.source_path ?? "")}\` predates the head commit, so it is recorded but NOT trusted as evidence.`
-    : "";
+  if (coverage.postdates_head === false) {
+    // A stale report is recorded but NOT trusted: render only the warning, never
+    // its per-file classifications as if they were current evidence.
+    return `- The report at \`${field(coverage.source_path ?? "")}\` predates the reviewed code, so it is recorded but NOT trusted: no current coverage evidence.`;
+  }
   if (coverage.files.length === 0) {
-    return `- Report ingested from \`${field(coverage.source_path ?? "")}\`, but no changed file appears in it (no coverage evidence for this diff).${stale}`;
+    return `- Report ingested from \`${field(coverage.source_path ?? "")}\`, but none of the changed lines are instrumented by it (no coverage evidence for this diff — distinct from uncovered).`;
   }
   return bullets(
     coverage.files.map((file) => `\`${field(file.path)}\`: ${file.covered_lines} of ${file.changed_lines} changed line(s) executed by tests (${file.classification}).`),
     "No coverage evidence recorded."
-  ) + stale;
+  );
 }
 
 // review-surfaces.RANKING.2: the "why ranked here" line — the per-item evidence
