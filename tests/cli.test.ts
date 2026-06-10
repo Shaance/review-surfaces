@@ -792,6 +792,12 @@ test("review-surfaces.REVIEW_LOOP.2 review command persists a false-positive int
     const feedback = fs.readFileSync(path.join(feedbackDir, walkthroughFiles[0]), "utf8");
     assert.match(feedback, /false_positives:/);
     assert.match(feedback, /downgrade_to_low/);
+
+    // A second session on the same head must not overwrite the first.
+    const second = spawnSync("node", [CLI, "review", "--interactive", "--out", ".review-surfaces"], { cwd: tmp, input: "p\n", encoding: "utf8" });
+    assert.equal(second.status, ExitCodes.success, second.stderr);
+    const afterSecond = fs.readdirSync(feedbackDir).filter((name) => name.startsWith("walkthrough-"));
+    assert.equal(afterSecond.length, 2, "a second session writes a distinct feedback file, preserving the first");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

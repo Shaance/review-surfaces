@@ -149,3 +149,41 @@ test("review-surfaces.REVIEW_LOOP.2 produces no feedback record for skip-only se
   assert.equal(buildFeedbackRecord([], OPTIONS), undefined);
   assert.equal(buildCommentDrafts([], OPTIONS).length, 0);
 });
+
+// REVIEW_LOOP.2: a false positive is scoped to the reviewed finding's rule when it
+// resolves to a single rule, so siblings on the same path are not downgraded.
+test("review-surfaces.REVIEW_LOOP.2 scopes a false positive to the item's rule when known", () => {
+  const item = queueItem({ id: "Q1", path: "src/x.ts", risk_ids: ["PR-RISK-1"] });
+  const rulesForItem = (queued: ReviewQueueItem) => (queued.risk_ids.includes("PR-RISK-1") ? ["large_diff"] : []);
+  const scoped = buildFeedbackRecord([{ item, choice: "false_positive" }], { ...OPTIONS, rulesForItem });
+  assert.deepEqual(scoped!.false_positives, [{ rule: "large_diff", path_pattern: "src/x.ts", action: "downgrade_to_low" }]);
+
+  // No resolver (repo scope) → path-only policy, no rule key.
+  const pathOnly = buildFeedbackRecord([{ item, choice: "false_positive" }], OPTIONS);
+  assert.deepEqual(pathOnly!.false_positives, [{ path_pattern: "src/x.ts", action: "downgrade_to_low" }]);
+
+  // Ambiguous (multiple rules) → path-only, so we never guess which rule.
+  const multi = buildFeedbackRecord([{ item, choice: "false_positive" }], { ...OPTIONS, rulesForItem: () => ["a", "b"] });
+  assert.deepEqual(multi!.false_positives, [{ path_pattern: "src/x.ts", action: "downgrade_to_low" }]);
+});
+
+// REVIEW_LOOP.2: a comment-only session still persists the reviewer's intent to
+// feedback memory (not only the regenerable comments artifact).
+test("review-surfaces.REVIEW_LOOP.2 records needs-comment intent in feedback memory", async () => {
+  const items = [queueItem({ id: "Q1", path: "src/api.ts" })];
+  const { io } = fakeIO(true, ["c", "Please add a test.", "n"]);
+  const result = await runWalkthrough(modelWithQueue(items), undefined, io, OPTIONS);
+  assert.ok(result.feedback, "a comment-only session writes a feedback record");
+  const notes = (result.feedback!.validation as { notes: string[] }).notes;
+  assert.ok(notes.some((note) => /requested a comment on src\/api\.ts/.test(note)), "the comment request is recorded durably");
+});
+
+// REVIEW_LOOP.3: an over-long comment body is truncated to the schema limit so the
+// regenerated artifact still validates.
+test("review-surfaces.REVIEW_LOOP.3 truncates an over-long comment body to the schema limit", async () => {
+  const items = [queueItem({ id: "Q1" })];
+  const huge = "x".repeat(5000);
+  const { io } = fakeIO(true, ["c", huge, "y"]);
+  const result = await runWalkthrough(modelWithQueue(items), undefined, io, OPTIONS);
+  assert.equal(result.commentDrafts[0].body.length, 2000, "the body is capped at the 2000-char schema limit");
+});

@@ -49,7 +49,7 @@ import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
 import { buildChangeNarrative } from "../human/narrative";
-import { ChangeNarrative, HumanReviewModel } from "../human/contract";
+import { ChangeNarrative, HumanReviewModel, ReviewQueueItem } from "../human/contract";
 import { runWalkthrough, WalkthroughIO, WalkthroughOptions } from "../review/walkthrough";
 import { stringifyYaml } from "../core/simple-yaml";
 import {
@@ -1120,7 +1120,8 @@ async function runReviewWalkthrough(parsed: ParsedArgs): Promise<number> {
     author: stringFlag(parsed, "author") ?? "reviewer",
     createdAt: nowFlag(parsed),
     headSha: model.generated_from.head_sha,
-    packetPath: model.generated_from.packet_path
+    packetPath: model.generated_from.packet_path,
+    rulesForItem: reviewRiskRuleResolver(outputDir)
   };
   try {
     const result = await runWalkthrough(model, diff, io, options);
@@ -1128,7 +1129,9 @@ async function runReviewWalkthrough(parsed: ParsedArgs): Promise<number> {
       const feedbackDir = path.join(outputDir, "feedback");
       fs.mkdirSync(feedbackDir, { recursive: true });
       const sessionId = model.generated_from.head_sha?.slice(0, 12) || "session";
-      const feedbackPath = path.join(feedbackDir, `walkthrough-${sessionId}.yaml`);
+      // A fresh, non-colliding name per session on the same head, so re-running the
+      // walkthrough never overwrites a prior session's captured decisions.
+      const feedbackPath = nextAvailablePath(feedbackDir, `walkthrough-${sessionId}`, ".yaml");
       await writeText(feedbackPath, stringifyYaml(result.feedback));
       io.write(`Wrote reviewer feedback: ${path.relative(cwd, feedbackPath) || feedbackPath}`);
     }
@@ -1147,6 +1150,35 @@ async function runReviewWalkthrough(parsed: ParsedArgs): Promise<number> {
   } finally {
     close();
   }
+}
+
+// Resolve a queue item's originating PR-risk rule(s) from pr_review_surface.json
+// (when present), so a false-positive can be scoped to that rule. Returns an empty
+// list in repo scope or when the surface is absent — the walkthrough then writes a
+// path-only downgrade policy.
+function reviewRiskRuleResolver(outputDir: string): (item: ReviewQueueItem) => string[] {
+  const ruleByRiskId = new Map<string, string>();
+  try {
+    const surface = JSON.parse(fs.readFileSync(path.join(outputDir, "pr_review_surface.json"), "utf8")) as PrReviewSurfaceModel;
+    for (const candidate of surface.risks?.candidates ?? []) {
+      if (typeof candidate.id === "string" && typeof candidate.rule === "string") {
+        ruleByRiskId.set(candidate.id, candidate.rule);
+      }
+    }
+  } catch {
+    // No PR surface (repo scope) — every item resolves to no rule.
+  }
+  return (item) => [...new Set(item.risk_ids.map((id) => ruleByRiskId.get(id)).filter((rule): rule is string => Boolean(rule)))];
+}
+
+// The first of `<dir>/<base><ext>`, `<dir>/<base>-2<ext>`, … that does not exist,
+// so repeated writes never clobber an earlier file.
+function nextAvailablePath(dir: string, base: string, ext: string): string {
+  let candidate = path.join(dir, `${base}${ext}`);
+  for (let index = 2; fileExists(candidate); index += 1) {
+    candidate = path.join(dir, `${base}-${index}${ext}`);
+  }
+  return candidate;
 }
 
 // A readline-backed walkthrough IO, or a no-op prompt IO when non-interactive.

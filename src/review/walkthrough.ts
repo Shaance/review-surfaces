@@ -33,7 +33,15 @@ export interface WalkthroughOptions {
   createdAt?: string;
   headSha?: string;
   packetPath?: string;
+  // Resolve a queue item's originating PR-risk rule(s), so a false-positive is
+  // scoped to that rule rather than downgrading every finding sharing the path.
+  // Undefined (e.g. repo scope, no PR risks) falls back to a path-only policy.
+  rulesForItem?: (item: ReviewQueueItem) => string[];
 }
+
+// The human-review schema caps a suggested-comment body at 2000 chars; truncate a
+// longer in-session draft so the regenerated artifact still validates.
+const MAX_COMMENT_BODY = 2000;
 
 export interface ReviewDecision {
   item: ReviewQueueItem;
@@ -150,7 +158,8 @@ export async function runWalkthrough(
     }
     const decision: ReviewDecision = { item, choice };
     if (choice === "needs_comment") {
-      decision.commentBody = (await io.prompt("  Comment body: "))?.trim() || item.reviewer_action;
+      const body = (await io.prompt("  Comment body: "))?.trim() || item.reviewer_action;
+      decision.commentBody = body.slice(0, MAX_COMMENT_BODY);
       const ready = (await io.prompt("  Ready to post? [y/N]: ")) ?? "";
       decision.commentReady = /^y(es)?$/i.test(ready.trim());
     }
@@ -172,15 +181,19 @@ export async function runWalkthrough(
 // recorded finding; accepts are recorded as validation passes. Returns undefined
 // when no decision produces persistable feedback.
 export function buildFeedbackRecord(decisions: ReviewDecision[], options: WalkthroughOptions): Record<string, unknown> | undefined {
-  // A path-scoped downgrade policy. `condition` is intentionally omitted: it is a
-  // structured matcher token (e.g. "lockfile_only"), not free text — setting it to
-  // a note would block the match. The reviewer's rationale lives in validation.notes.
+  // A downgrade policy scoped, where possible, to the reviewed finding's rule so a
+  // file with several risks does not get all of them downgraded. When the item's
+  // rule cannot be resolved (repo scope, or several rules on one item) it falls
+  // back to a path-only policy. `condition` is intentionally omitted: it is a
+  // structured matcher token (e.g. "lockfile_only"), not free text — a note there
+  // would block the match. The reviewer's rationale lives in validation.notes.
   const falsePositives = decisions
     .filter((decision) => decision.choice === "false_positive")
-    .map((decision) => ({
-      path_pattern: decision.item.path,
-      action: "downgrade_to_low"
-    }));
+    .map((decision) => {
+      const rules = options.rulesForItem?.(decision.item) ?? [];
+      const rule = rules.length === 1 ? rules[0] : undefined;
+      return stripUndefined({ rule, path_pattern: decision.item.path, action: "downgrade_to_low" });
+    });
   const findings = decisions
     .filter((decision) => decision.choice === "flag")
     .map((decision, index) => ({
@@ -194,8 +207,14 @@ export function buildFeedbackRecord(decisions: ReviewDecision[], options: Walkth
   const accepted = decisions
     .filter((decision) => decision.choice === "accept")
     .map((decision) => `Reviewer accepted: ${decision.item.title} (${decision.item.path})`);
+  // REVIEW_LOOP.2: a needs-comment decision is recorded durably in feedback memory
+  // (not only in the regenerable comments artifact), so the reviewer's intent
+  // survives a later rebuild even though the draft itself lives in the artifact.
+  const commentRequests = decisions
+    .filter((decision) => decision.choice === "needs_comment")
+    .map((decision) => `Reviewer requested a comment on ${decision.item.path}: ${decision.commentBody ?? decision.item.reviewer_action}`);
 
-  if (falsePositives.length === 0 && findings.length === 0 && accepted.length === 0) {
+  if (falsePositives.length === 0 && findings.length === 0 && accepted.length === 0 && commentRequests.length === 0) {
     return undefined;
   }
 
@@ -206,7 +225,7 @@ export function buildFeedbackRecord(decisions: ReviewDecision[], options: Walkth
     head_sha: options.headSha,
     packet_path: options.packetPath,
     findings,
-    validation: { passed: accepted, failed: [], notes: ["Captured by the interactive review walkthrough."] },
+    validation: { passed: accepted, failed: [], notes: ["Captured by the interactive review walkthrough.", ...commentRequests] },
     false_positives: falsePositives
   });
 }
