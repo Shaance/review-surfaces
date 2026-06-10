@@ -51,6 +51,7 @@ import { loadEvaluation } from "../render/load";
 import { renderCommentFromPacketFile, resolvePacketPath } from "../render/comment";
 import { renderHumanPrComment, renderPrComment } from "../render/pr-comment";
 import { renderStickySummary } from "../render/sticky-summary";
+import { renderHumanReviewHtml } from "../human/render-html";
 import { assemblePrReviewSurface } from "../pipeline/pr-surface";
 import { evaluateBaseline } from "../evaluation/baseline";
 import { PrReviewSurfaceModel, ReviewScope, StructuredDiff } from "../pr/contract";
@@ -1111,6 +1112,20 @@ async function runHumanStage(parsed: ParsedArgs): Promise<void> {
     return;
   }
   await writeHumanReviewFromArtifacts(cwd, outDir, reviewScope(parsed), config);
+  // review-surfaces.RENDER.9: `human --format html` ALSO writes the single-file
+  // offline cockpit, rendered from the same freshly-built model (a strict
+  // sibling of the markdown renderer, with the same diff context for excerpts).
+  const humanFormat = stringFlag(parsed, "format") ?? "markdown";
+  if (humanFormat === "html") {
+    const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
+    const model = (await readJson(path.join(outputDir, "human_review.json"))) as HumanReviewModel;
+    const html = renderHumanReviewHtml(model, { diff: readHumanReviewDiff(outputDir) });
+    const htmlPath = path.join(outputDir, "human_review.html");
+    await writeText(htmlPath, html);
+    console.log(`Human review (HTML): ${path.relative(cwd, htmlPath) || htmlPath}`);
+  } else if (humanFormat !== "markdown") {
+    throw new CliError(`Unknown --format: ${humanFormat}. Use markdown (default) or html.`, ExitCodes.usageError);
+  }
   console.log(`Human review: ${artifactPathForLog(cwd, outDir, "human_review.md")}`);
 }
 
@@ -1320,7 +1335,7 @@ async function writeAndMaybeSummarizeHumanReviewFromArtifacts(
 
 function removeHumanReviewArtifacts(outDir: string): void {
   const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
-  const artifacts = ["human_review.json", "human_review.md", ...HUMAN_STANDALONE_ARTIFACTS.map((artifact) => artifact.artifact)];
+  const artifacts = ["human_review.json", "human_review.md", "human_review.html", ...HUMAN_STANDALONE_ARTIFACTS.map((artifact) => artifact.artifact)];
   for (const artifact of artifacts) {
     fs.rmSync(path.join(outputDir, artifact), { force: true });
   }
