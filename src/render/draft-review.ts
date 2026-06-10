@@ -10,19 +10,22 @@ import { HumanReviewModel, SuggestedReviewComment } from "../human/contract";
 // A single hunk-anchored comment in the GitHub "Create a review" payload.
 export interface DraftReviewComment {
   path: string;
-  // The (new-side) line the comment anchors to; `start_line` is set for a
-  // multi-line range. GitHub anchors review comments to the diff's RIGHT side.
+  // The line the comment anchors to; `start_line` is set for a multi-line range.
+  // `side` is LEFT for a deleted/rename-source (old-side) line and RIGHT for an
+  // added/context (new-side) line — GitHub rejects (422) the wrong side.
   line: number;
   start_line?: number;
-  side: "RIGHT";
-  start_side?: "RIGHT";
+  side: "LEFT" | "RIGHT";
+  start_side?: "LEFT" | "RIGHT";
   body: string;
 }
 
 // The GitHub POST /repos/{owner}/{repo}/pulls/{n}/reviews body. The ABSENCE of an
 // `event` field is load-bearing: it makes the created review PENDING, never
-// submitted. The type therefore has no `event` member by construction.
+// submitted. The type therefore has no `event` member by construction. `commit_id`
+// pins the review to the reviewed head so a later push does not re-anchor it.
 export interface DraftReviewPayload {
+  commit_id?: string;
   body: string;
   comments: DraftReviewComment[];
 }
@@ -40,22 +43,28 @@ export function buildDraftReview(model: HumanReviewModel): DraftReviewExport {
   const unanchored: string[] = [];
   for (const suggested of model.suggested_comments) {
     if (suggested.path && suggested.line_start !== undefined) {
+      const side = suggested.side === "old" ? "LEFT" : "RIGHT";
       const comment: DraftReviewComment = {
         path: suggested.path,
         line: suggested.line_end ?? suggested.line_start,
-        side: "RIGHT",
+        side,
         body: commentBody(suggested)
       };
       if (suggested.line_end !== undefined && suggested.line_end !== suggested.line_start) {
         comment.start_line = suggested.line_start;
-        comment.start_side = "RIGHT";
+        comment.start_side = side;
       }
       comments.push(comment);
     } else {
       unanchored.push(`- ${commentBody(suggested)}`);
     }
   }
-  return { payload: { body: reviewBody(model, unanchored), comments }, unanchored: unanchored.length };
+  const payload: DraftReviewPayload = { body: reviewBody(model, unanchored), comments };
+  const headSha = model.generated_from?.head_sha;
+  if (headSha) {
+    payload.commit_id = headSha;
+  }
+  return { payload, unanchored: unanchored.length };
 }
 
 // A not-yet-ready draft is prefixed so the reviewer can tell which comments they

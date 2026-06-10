@@ -435,6 +435,7 @@
         "path": { "type": "string" },
         "line_start": { "type": "integer", "minimum": 1 },
         "line_end": { "type": "integer", "minimum": 1 },
+        "side": { "enum": ["old", "new"] },
         "body": { "type": "string", "maxLength": 2000 },
         "evidence": {
           "type": "array",

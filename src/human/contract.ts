@@ -217,6 +217,10 @@ export interface SuggestedReviewComment {
   path?: string;
   line_start?: number;
   line_end?: number;
+  // Which diff side the line anchors to (old for a deleted/rename-source line, new
+  // otherwise). Drives the GitHub review-comment side (LEFT/RIGHT) on export; new
+  // when omitted.
+  side?: "old" | "new";
   body: string;
   evidence: EvidenceRef[];
   risk_ids: string[];

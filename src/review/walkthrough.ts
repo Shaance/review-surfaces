@@ -260,6 +260,9 @@ export function buildCommentDrafts(decisions: ReviewDecision[], options: Walkthr
       path: decision.item.path,
       line_start: decision.item.line_start,
       line_end: decision.item.line_end,
+      // Carry the queue item's diff side so a comment on a deleted/rename-source
+      // line exports as a LEFT-side GitHub review comment (PROVIDERS.7), not RIGHT.
+      side: decision.item.anchor_side,
       body: decision.commentBody ?? decision.item.reviewer_action,
       evidence: decision.item.evidence,
       risk_ids: decision.item.risk_ids,

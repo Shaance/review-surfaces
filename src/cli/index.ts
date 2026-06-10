@@ -1880,7 +1880,18 @@ async function runCommentDraftReview(parsed: ParsedArgs): Promise<number> {
       ExitCodes.usageError
     );
   }
-  const model = await readJson(humanReviewPath) as HumanReviewModel;
+  const loaded = await readJson(humanReviewPath);
+  // Guard against a stale, partially-written, or hand-edited artifact: validate
+  // before iterating its fields, like the other human-review paths, so the export
+  // fails cleanly with guidance instead of throwing or emitting a malformed payload.
+  const issues = humanReviewIssues(cwd, loaded);
+  if (issues.length > 0) {
+    throw new CliError(
+      `human_review.json at ${path.relative(cwd, humanReviewPath) || humanReviewPath} is stale or invalid (${issues[0]}). Regenerate it with \`review-surfaces human\` (or \`all\`) before exporting a draft review.`,
+      ExitCodes.usageError
+    );
+  }
+  const model = loaded as HumanReviewModel;
   const draft = buildDraftReview(model);
   const reviewPath = path.join(outputDir, "pending_review.json");
   await writeJson(reviewPath, draft.payload);

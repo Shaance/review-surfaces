@@ -22,10 +22,11 @@ function comment(over: Partial<SuggestedReviewComment>): SuggestedReviewComment 
   };
 }
 
-function model(comments: SuggestedReviewComment[]): HumanReviewModel {
+function model(comments: SuggestedReviewComment[], headSha?: string): HumanReviewModel {
   return {
     verdict: { decision: "needs_author_clarification" },
     summary: "2 review-first item(s).",
+    generated_from: headSha ? { head_sha: headSha } : {},
     suggested_comments: comments
   } as unknown as HumanReviewModel;
 }
@@ -73,6 +74,31 @@ test("review-surfaces.PROVIDERS.7 marks not-ready comments as drafts to confirm"
   const ready = draft.payload.comments.find((c) => c.path === "src/b.ts")!;
   assert.match(notReady.body, /^Draft \(confirm before submitting\): Needs a test\./);
   assert.equal(ready.body, "Looks risky.", "a ready comment is unprefixed");
+});
+
+test("review-surfaces.PROVIDERS.7 anchors old-side comments to LEFT (deletions), new-side to RIGHT", () => {
+  const draft = buildDraftReview(model([
+    comment({ id: "SC-1", path: "src/a.ts", line_start: 10, side: "old" }),
+    comment({ id: "SC-2", path: "src/b.ts", line_start: 4, line_end: 8, side: "old" }),
+    comment({ id: "SC-3", path: "src/c.ts", line_start: 2, side: "new" }),
+    comment({ id: "SC-4", path: "src/d.ts", line_start: 5 }) // no side => new/RIGHT
+  ]));
+  const byPath = (p: string) => draft.payload.comments.find((c) => c.path === p)!;
+  assert.equal(byPath("src/a.ts").side, "LEFT", "a deleted-line comment is LEFT");
+  assert.equal(byPath("src/b.ts").side, "LEFT");
+  assert.equal(byPath("src/b.ts").start_side, "LEFT", "multi-line keeps the side on start_side");
+  assert.equal(byPath("src/c.ts").side, "RIGHT");
+  assert.equal(byPath("src/d.ts").side, "RIGHT", "an omitted side defaults to RIGHT");
+});
+
+test("review-surfaces.PROVIDERS.7 pins the draft review to the reviewed head sha", () => {
+  const pinned = buildDraftReview(model([comment({ path: "src/a.ts", line_start: 1 })], "abc123def456"));
+  assert.equal(pinned.payload.commit_id, "abc123def456", "commit_id pins to the reviewed head");
+  // ...still no event — pinning does not make it auto-submit.
+  assert.equal("event" in pinned.payload, false);
+
+  const unpinned = buildDraftReview(model([comment({ path: "src/a.ts", line_start: 1 })]));
+  assert.equal("commit_id" in unpinned.payload, false, "commit_id is omitted when no head sha is known");
 });
 
 test("review-surfaces.PROVIDERS.7 produces a stable payload for an empty comment set", () => {
