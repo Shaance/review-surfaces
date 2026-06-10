@@ -841,3 +841,24 @@ test("review-surfaces.REVIEW_LOOP.1 review --review-scope pr fails fast without 
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("review-surfaces.REVIEW_LOOP.2 feedback under a repo-root output dir (--out .) is ingested", () => {
+  const tmp = setupComposeFixture("rs-review-rootout-");
+  try {
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
+    runStage(tmp, "all", ["--dogfood", "--out", "."]);
+    const feedbackDir = path.join(tmp, "feedback");
+    fs.mkdirSync(feedbackDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(feedbackDir, "walkthrough-x.yaml"),
+      "schema_version: review-surfaces.feedback.v1\nauthor: tester\nvalidation:\n  passed: []\n  failed: []\n  notes: [root-marker]\nfalse_positives: []\n"
+    );
+    runStage(tmp, "all", ["--dogfood", "--out", "."]);
+    const index = JSON.parse(fs.readFileSync(path.join(tmp, "inputs", "feedback.index.json"), "utf8"));
+    const files = (index.feedback ?? index.files ?? []).map((entry: { path?: string } | string) => (typeof entry === "string" ? entry : entry.path ?? ""));
+    assert.ok(files.some((file: string) => file.includes("feedback/walkthrough-x.yaml")), "feedback under --out . is ingested");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

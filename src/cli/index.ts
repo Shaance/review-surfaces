@@ -1112,20 +1112,22 @@ async function runReviewWalkthrough(parsed: ParsedArgs): Promise<number> {
   }
   const scope = reviewScope(parsed);
   const { outputDir, model } = await loadOrBuildHumanReviewJson(cwd, outDir, scope, "review", config);
-  // Fail fast rather than silently walking a repo queue under a PR-scope request:
-  // a PR-scope review needs a current pr_review_surface.json (the model's mode is
-  // "pr" only when that surface is present). Without it, false-positive decisions
-  // would save as repo-scope audit notes with no PR risk rule/ids — misleading.
-  if (scope === "pr" && model.mode !== "pr") {
+  // Fail fast rather than silently walking a repo queue under a PR-scope request.
+  // A PR-scope review needs a CURRENT pr_review_surface.json whose head matches the
+  // review — both so the queue is the PR queue AND so the rule resolver has PR risk
+  // rules to scope false-positive downgrades to. A PR-mode cached model with a
+  // missing/stale sidecar would otherwise record audit notes, not scoped policies.
+  if (scope === "pr" && (model.mode !== "pr" || prSurfaceHeadSha(outputDir) !== model.generated_from.head_sha)) {
     throw new CliError(
-      "PR-scope review requires a current pr_review_surface.json. Run `review-surfaces all --review-scope pr` first, then re-run `review --review-scope pr`.",
+      "PR-scope review requires a current pr_review_surface.json matching the review. Run `review-surfaces all --review-scope pr` first, then re-run `review --review-scope pr`.",
       ExitCodes.usageError
     );
   }
   const diff = readHumanReviewDiff(outputDir);
-  // REVIEW_LOOP.4: interactive only on a real TTY, unless explicitly forced
-  // (`--interactive`, used by tests driving the loop over piped stdin).
-  const interactive = booleanFlag(parsed, "interactive") || process.stdin.isTTY === true;
+  // REVIEW_LOOP.4: interactive only when BOTH stdin and stdout are a TTY (so a
+  // piped `review | cat` degrades to printing the next item), unless explicitly
+  // forced with `--interactive` (used by tests driving the loop over piped stdin).
+  const interactive = booleanFlag(parsed, "interactive") || (process.stdin.isTTY === true && process.stdout.isTTY === true);
   const { io, close } = createWalkthroughIO(interactive);
   const options: WalkthroughOptions = {
     author: stringFlag(parsed, "author") ?? "reviewer",
@@ -1180,6 +1182,17 @@ function reviewRiskRuleResolver(outputDir: string): (item: ReviewQueueItem) => s
     // No PR surface (repo scope) — every item resolves to no rule.
   }
   return (item) => [...new Set(item.risk_ids.map((id) => ruleByRiskId.get(id)).filter((rule): rule is string => Boolean(rule)))];
+}
+
+// The head sha the PR sidecar was generated at, or undefined when it is absent or
+// unreadable — used to confirm a PR-scope walkthrough has a current PR surface.
+function prSurfaceHeadSha(outputDir: string): string | undefined {
+  try {
+    const surface = JSON.parse(fs.readFileSync(path.join(outputDir, "pr_review_surface.json"), "utf8")) as PrReviewSurfaceModel;
+    return surface.scope?.head_sha;
+  } catch {
+    return undefined;
+  }
 }
 
 // The first of `<dir>/<base><ext>`, `<dir>/<base>-2<ext>`, … that does not exist,

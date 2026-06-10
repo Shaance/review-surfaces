@@ -184,7 +184,10 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // machine-specific paths into otherwise byte-stable artifacts, breaking the
   // determinism / locale-invariance gates. Keep the output dir within the repo.
   const outputDirRelative = normalizeRelativeDir(path.relative(realpathOrSelf(options.cwd), realpathOrSelf(outputDir)));
-  const feedbackPaths = filterPathsByPatterns(repositoryFiles, [`${outputDirRelative}/feedback/*.yaml`]);
+  // An output dir AT the repo root (`--out .`) relativizes to "", so glob the
+  // bare `feedback/*.yaml` rather than a leading-slash `/feedback/*.yaml`.
+  const feedbackGlob = outputDirRelative ? `${outputDirRelative}/feedback/*.yaml` : "feedback/*.yaml";
+  const feedbackPaths = filterPathsByPatterns(repositoryFiles, [feedbackGlob]);
   const commandTranscriptDir = normalizeRelativeDir(options.commandTranscriptDir ?? commandTranscriptInputDir(options.cwd, outputDir));
   const commandTranscriptPaths = filterPathsByPatterns(repositoryFiles, [`${commandTranscriptDir}/*.json`]);
   const specIndex = await indexAcaiSpecs(options.cwd, specPaths);
