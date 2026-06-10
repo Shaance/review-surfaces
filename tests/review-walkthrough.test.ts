@@ -77,9 +77,27 @@ test("review-surfaces.REVIEW_LOOP.2 captures accept/flag/false-positive into a f
   assert.ok(feedback, "a feedback record is produced");
   assert.deepEqual((feedback.false_positives as Array<{ path_pattern: string }>).map((fp) => fp.path_pattern), ["src/noisy.ts"]);
   assert.deepEqual((feedback.findings as Array<{ affected_section: string }>).map((f) => f.affected_section), ["src/problem.ts"]);
-  assert.match((feedback.validation as { passed: string[] }).passed[0], /Reviewer accepted/);
+  // Acceptances are notes, NOT validation.passed (which would be read as a passing
+  // test command and suppress missing-validation questions).
+  const validation = feedback.validation as { passed: string[]; notes: string[] };
+  assert.equal(validation.passed.length, 0, "no acceptance is recorded as a passing validation command");
+  assert.ok(validation.notes.some((note) => /Reviewer accepted/.test(note)), "the acceptance is recorded as a note");
   // Never silently delete evidence: a false positive is a downgrade policy, not a removal.
   assert.equal((feedback.false_positives as Array<{ action: string }>)[0].action, "downgrade_to_low");
+});
+
+// REVIEW_LOOP.2: in repo scope the walkthrough is explicit that the automatic
+// downgrade-on-rerun is a PR-scope capability (decisions are still recorded).
+test("review-surfaces.REVIEW_LOOP.2 advises that auto-downgrade is PR-scoped in repo mode", async () => {
+  const repoModel = { review_queue: [queueItem({})], suggested_comments: [], mode: "repo" } as unknown as HumanReviewModel;
+  const { io: repoIO, output: repoOut } = fakeIO(true, ["s"]);
+  await runWalkthrough(repoModel, undefined, repoIO, OPTIONS);
+  assert.match(repoOut.join("\n"), /Automatic finding-downgrade on rerun applies to PR-scoped/);
+
+  const prModel = { review_queue: [queueItem({})], suggested_comments: [], mode: "pr" } as unknown as HumanReviewModel;
+  const { io: prIO, output: prOut } = fakeIO(true, ["s"]);
+  await runWalkthrough(prModel, undefined, prIO, OPTIONS);
+  assert.doesNotMatch(prOut.join("\n"), /Automatic finding-downgrade on rerun applies to PR-scoped/);
 });
 
 // REVIEW_LOOP.3: a needs-comment decision becomes a suggested-comment draft,

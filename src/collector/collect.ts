@@ -171,7 +171,10 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const specPaths = filterPathsByPatterns(repositoryFiles, options.config.specs);
   const docPaths = filterPathsByPatterns(repositoryFiles, options.config.docs);
   const testPaths = filterPathsByPatterns(repositoryFiles, options.config.tests);
-  const feedbackPaths = filterPathsByPatterns(repositoryFiles, [".review-surfaces/feedback/*.yaml"]);
+  // Feedback lives under the (possibly custom) output dir, so the `review`
+  // walkthrough writing to `<out>/feedback/*.yaml` is ingested on the next run
+  // regardless of --out. Defaults to `.review-surfaces/feedback/*.yaml`.
+  const feedbackPaths = filterPathsByPatterns(repositoryFiles, [`${normalizeRelativeDir(options.outputDir ?? options.config.output_dir)}/feedback/*.yaml`]);
   const commandTranscriptDir = normalizeRelativeDir(options.commandTranscriptDir ?? commandTranscriptInputDir(options.cwd, outputDir));
   const commandTranscriptPaths = filterPathsByPatterns(repositoryFiles, [`${commandTranscriptDir}/*.json`]);
   const specIndex = await indexAcaiSpecs(options.cwd, specPaths);

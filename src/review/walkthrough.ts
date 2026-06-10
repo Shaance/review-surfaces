@@ -139,6 +139,13 @@ export async function runWalkthrough(
   }
 
   io.write(`Review walkthrough — ${queue.length} item(s) in the ranked queue.`);
+  // The automatic downgrade-on-rerun matches PR-risk candidates by rule/path
+  // (buildFeedbackPolicyEffects); in repo scope decisions are still recorded
+  // durably to feedback memory, but the rerun downgrade applies to PR-scoped
+  // reviews. Be explicit rather than silently not downgrading.
+  if (model.mode !== "pr") {
+    io.write("Note: decisions are saved to feedback memory. Automatic finding-downgrade on rerun applies to PR-scoped reviews (--review-scope pr); repo-scope decisions are recorded for the audit trail.");
+  }
   const decisions: ReviewDecision[] = [];
   for (let index = 0; index < queue.length; index += 1) {
     const item = queue[index];
@@ -204,6 +211,10 @@ export function buildFeedbackRecord(decisions: ReviewDecision[], options: Walkth
       finding: decision.item.reason,
       desired_change: decision.item.reviewer_action
     }));
+  // Acceptances are recorded as NOTES, not validation.passed: a `passed` entry is
+  // treated by feedback ingestion as a passing validation command (indirect test
+  // evidence), which would wrongly suppress missing-validation questions. An
+  // acceptance is a review acknowledgement, not a test that ran.
   const accepted = decisions
     .filter((decision) => decision.choice === "accept")
     .map((decision) => `Reviewer accepted: ${decision.item.title} (${decision.item.path})`);
@@ -225,7 +236,7 @@ export function buildFeedbackRecord(decisions: ReviewDecision[], options: Walkth
     head_sha: options.headSha,
     packet_path: options.packetPath,
     findings,
-    validation: { passed: accepted, failed: [], notes: ["Captured by the interactive review walkthrough.", ...commentRequests] },
+    validation: { passed: [], failed: [], notes: ["Captured by the interactive review walkthrough.", ...accepted, ...commentRequests] },
     false_positives: falsePositives
   });
 }
