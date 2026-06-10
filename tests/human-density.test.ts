@@ -194,6 +194,81 @@ test("review-surfaces.HUMAN_REVIEW.20 bounds the excerpt to the configured cap",
   assert.match(excerpt!, /elided/, "a long hunk must mark elided context");
 });
 
+// review-surfaces.HUMAN_REVIEW.20: when a long hunk has multiple changed
+// clusters, the excerpt centers on the queue item's anchored line, not the first
+// change in the hunk.
+test("review-surfaces.HUMAN_REVIEW.20 centers the excerpt on the anchored line, not the first change", () => {
+  const header = "@@ -1,40 +1,40 @@";
+  const lines: string[] = [];
+  for (let i = 1; i <= 40; i += 1) {
+    if (i === 3) {
+      lines.push("+early change near the top");
+    } else if (i === 34) {
+      lines.push("+ANCHORED change the reviewer must see");
+    } else {
+      lines.push(` context line ${i}`);
+    }
+  }
+  const diffText = ["diff --git a/src/multi.ts b/src/multi.ts", "--- a/src/multi.ts", "+++ b/src/multi.ts", header, ...lines, ""].join("\n");
+  const diff = parseStructuredDiff(diffText);
+  const excerpt = renderHunkExcerpt(diff, { path: "src/multi.ts", hunk_header: header, line_start: 34, line_end: 34 }, 10);
+  assert.ok(excerpt, "excerpt should render");
+  assert.match(excerpt!, /ANCHORED change the reviewer must see/, "excerpt must include the anchored later cluster");
+  assert.doesNotMatch(excerpt!, /early change near the top/, "excerpt must not window on the unrelated first change");
+});
+
+// review-surfaces.HUMAN_REVIEW.19: rollups must preserve the evidence pointers
+// the per-item renderer carried (questions, evidence cards, trust gaps).
+test("review-surfaces.HUMAN_REVIEW.19 rollups preserve evidence across grouped items", () => {
+  const model = baseModel({
+    questions: [1, 2].map((n) => ({
+      id: `Q-00${n}`,
+      severity: "clarifying" as const,
+      question: `What evidence closes review-surfaces.HUMAN_TRUST.${n}?`,
+      reason: "Partial coverage.",
+      evidence: [fileEvidence(`tests/q${n}.test.ts`)],
+      maps_to_risks: [],
+      maps_to_requirements: [`review-surfaces.HUMAN_TRUST.${n}`]
+    })),
+    trust_audit: {
+      verified_facts: [],
+      claimed_not_verified: [],
+      missing_evidence: [1, 2].map((n) => ({
+        id: `ME-00${n}`,
+        summary: `Missing manual review check for review-surfaces.BOOTSTRAP.${n}.`,
+        evidence: [fileEvidence(`src/bootstrap${n}.ts`)]
+      })),
+      invalid_evidence: [],
+      confidence_summary: "Fixture."
+    },
+    evidence_cards: [1, 2].map((n) => ({
+      id: `CARD-00${n}`,
+      title: "Missing manual check",
+      status: "missing_evidence" as const,
+      summary: `Missing manual review check for review-surfaces.BOOTSTRAP.${n}.`,
+      direct_evidence: [],
+      missing_evidence: [missingEvidence(`No evidence ${n}`)],
+      invalid_evidence: [],
+      why_it_matters: "Required.",
+      reviewer_action: "Ask the author to provide the evidence.",
+      source_ids: [],
+      risk_ids: [],
+      requirement_ids: [`review-surfaces.BOOTSTRAP.${n}`],
+      confidence: "medium" as const,
+      priority: "medium" as const
+    }))
+  });
+  const md = renderHumanReviewMarkdown(model);
+  const questions = md.split("## Questions for author")[1].split("\n## ")[0];
+  assert.match(questions, /evidence: .*tests\/q1\.test\.ts/, "rolled-up question must keep evidence pointers");
+  assert.match(questions, /tests\/q2\.test\.ts/, "rolled-up question must union evidence across items");
+  const trust = md.split("Missing:")[1].split("\n\n")[0];
+  assert.match(trust, /src\/bootstrap1\.ts/);
+  assert.match(trust, /src\/bootstrap2\.ts/, "rolled-up trust gap must union evidence across requirements");
+  const cards = md.split("## Evidence cards")[1].split("\n## ")[0];
+  assert.match(cards, /evidence: direct 0, missing 2, invalid 0/, "evidence card rollup must show the unioned evidence mix");
+});
+
 // review-surfaces.HUMAN_REVIEW.21: no reviewer-facing line on the default human
 // surface leads with an internal identifier as its subject.
 test("review-surfaces.HUMAN_REVIEW.21 keeps internal identifiers out of the sentence subject", () => {

@@ -1405,7 +1405,11 @@ async function runValidateAll(parsed: ParsedArgs): Promise<number> {
     return packetExit;
   }
   for (const sidecar of ["human", "pr"] as const) {
-    const exit = await runValidateSidecar(parsed, sidecar, { skipIfAbsent: true });
+    // resolveSidecarFromDir: under `--surface all` a `.json` positional is the
+    // PACKET path, so each sidecar must resolve to its own artifact in the same
+    // directory — not reuse the packet JSON path (which would validate
+    // review_packet.json against the human/PR schema and spuriously fail).
+    const exit = await runValidateSidecar(parsed, sidecar, { skipIfAbsent: true, resolveSidecarFromDir: true });
     if (exit !== ExitCodes.success) {
       return exit;
     }
@@ -1415,6 +1419,7 @@ async function runValidateAll(parsed: ParsedArgs): Promise<number> {
 
 interface SidecarValidateOptions {
   skipIfAbsent?: boolean;
+  resolveSidecarFromDir?: boolean;
 }
 
 const SIDECAR_VALIDATORS = {
@@ -1439,7 +1444,14 @@ async function runValidateSidecar(
   const { artifact, label, issues: issuesFor } = SIDECAR_VALIDATORS[sidecar];
   const target = parsed.positionals[0] ?? path.join(".review-surfaces", artifact);
   const targetPath = path.resolve(cwd, target);
-  const surfacePath = targetPath.endsWith(".json") ? targetPath : path.join(targetPath, artifact);
+  // A `.json` positional is the exact sidecar file for an explicit `--surface
+  // human|pr`, but under `--surface all` it is the packet path, so resolve the
+  // sidecar artifact from its parent directory instead.
+  const surfacePath = !targetPath.endsWith(".json")
+    ? path.join(targetPath, artifact)
+    : options.resolveSidecarFromDir
+      ? path.join(path.dirname(targetPath), artifact)
+      : targetPath;
   if (!fileExists(surfacePath)) {
     if (options.skipIfAbsent) {
       return ExitCodes.success;

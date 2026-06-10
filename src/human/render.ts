@@ -874,7 +874,10 @@ function renderQuestionRollups(questions: ReviewerQuestion[]): string {
       const text = fillAcidTemplate(normalizeAcidTemplate(group.representative.question), group.acids);
       const requirements = group.acids.length ? `; requirements: ${group.acids.map((acid) => `\`${field(acid)}\``).join(", ")}` : "";
       const count = group.items.length > 1 ? `; ${group.items.length} questions` : "";
-      return `${index + 1}. ${field(text)} (${group.representative.severity}${requirements}${count})`;
+      // Preserve the evidence pointer the per-question renderer carried, unioned
+      // across the rolled-up questions so the reviewer still sees why to ask.
+      const evidence = evidenceList(group.items.flatMap((question) => question.evidence));
+      return `${index + 1}. ${field(text)} (${group.representative.severity}${requirements}${count}; evidence: ${evidence})`;
     })
     .join("\n");
 }
@@ -895,7 +898,13 @@ function renderEvidenceCardsRollupSummary(cards: EvidenceCard[]): string {
       const action = fillAcidTemplate(normalizeAcidTemplate(card.reviewer_action), group.acids);
       const requirements = group.acids.length ? ` Requirements: ${group.acids.map((acid) => `\`${field(acid)}\``).join(", ")}.` : "";
       const ids = group.items.map((item) => `\`${field(item.id)}\``).join(", ");
-      return `${endSentence(summary)} Action: ${endSentence(action)}${requirements} [${evidenceCardStatusLabel(card.status)}; ${card.priority}] (${ids})`;
+      // Keep the direct/missing/invalid evidence mix visible (unioned across the
+      // group) so the reviewer can tell from human_review.md whether the rollup
+      // is backed by proof, missing evidence, or invalid evidence.
+      const counts = `direct ${uniqueEvidenceCount(group.items.flatMap((item) => item.direct_evidence))}, ` +
+        `missing ${uniqueEvidenceCount(group.items.flatMap((item) => item.missing_evidence))}, ` +
+        `invalid ${uniqueEvidenceCount(group.items.flatMap((item) => item.invalid_evidence))}`;
+      return `${endSentence(summary)} Action: ${endSentence(action)}${requirements} [${evidenceCardStatusLabel(card.status)}; ${card.priority}; evidence: ${counts}] (${ids})`;
     }),
     "No evidence cards generated."
   );
@@ -914,7 +923,10 @@ function renderTrustMissingRollups(items: MissingEvidenceSummary[], limit: numbe
     groups.slice(0, limit).map((group) => {
       const summary = fillAcidTemplate(normalizeAcidTemplate(group.representative.summary), group.acids);
       const count = group.items.length > 1 ? ` (${group.items.length} requirements)` : "";
-      return `${summary}${count} Evidence: ${evidenceList(group.representative.evidence)}`;
+      // Union the evidence across the rolled-up gaps so the line does not drop
+      // the other requirements' proof points.
+      const evidence = evidenceList(group.items.flatMap((item) => item.evidence));
+      return `${summary}${count} Evidence: ${evidence}`;
     }),
     "No missing evidence recorded."
   );
@@ -994,6 +1006,12 @@ function evidenceList(evidence: EvidenceRef[]): string {
     return "missing";
   }
   return formatUniqueEvidenceRefs(evidence, 4).refs.join(", ");
+}
+
+// Count distinct evidence refs (by their rendered location), used to summarize
+// the evidence mix of a rolled-up group without double-counting shared refs.
+function uniqueEvidenceCount(evidence: EvidenceRef[]): number {
+  return new Set(evidence.map(formatEvidenceRef)).size;
 }
 
 function evidenceBullets(evidence: EvidenceRef[], limit: number): string {

@@ -618,6 +618,12 @@ test("review-surfaces.CLI.8 validate --surface covers packet, human, and all sur
     // An unknown surface is a usage error.
     assert.equal(human(["validate", "--surface", "bogus"]).status, ExitCodes.usageError);
 
+    // review-surfaces.CLI.8: `--surface all` with the packet JSON as a positional
+    // resolves the human/PR sidecars from the packet's directory rather than
+    // re-validating review_packet.json against the sidecar schemas.
+    const jsonPositional = human(["validate", path.join(out, "review_packet.json"), "--surface", "all"]);
+    assert.equal(jsonPositional.status, ExitCodes.success, jsonPositional.stderr);
+
     // review-surfaces.SCHEMA.3: a stale partial human_review.json (missing a now
     // required field) fails validation rather than degrading quietly.
     const humanPath = path.join(tmp, out, "human_review.json");

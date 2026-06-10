@@ -42,7 +42,7 @@ export function renderHunkExcerpt(
   if (!hunk) {
     return undefined;
   }
-  const body = excerptLines(hunk, Math.max(4, maxLines));
+  const body = excerptLines(hunk, side, anchor, Math.max(4, maxLines));
   if (body.length === 0) {
     return undefined;
   }
@@ -84,17 +84,22 @@ function selectHunk(
 }
 
 // Format the hunk body, bounded to maxLines. When the hunk is longer, keep a
-// window centered on the changed lines and mark the elided context.
-function excerptLines(hunk: StructuredDiffHunk, maxLines: number): string[] {
+// window centered on the queue item's anchored line(s) — not merely the first
+// change in the hunk — so an item anchored to a later cluster in the same hunk
+// still shows the line the reviewer must inspect. Falls back to the first
+// changed line when the anchor carries no usable range.
+function excerptLines(
+  hunk: StructuredDiffHunk,
+  side: "old" | "new",
+  anchor: HunkAnchor,
+  maxLines: number
+): string[] {
   const formatted = hunk.lines.map(formatDiffLine);
   if (formatted.length <= maxLines) {
     return formatted;
   }
-  const changed = hunk.lines
-    .map((line, index) => (line.kind === "add" || line.kind === "delete" ? index : -1))
-    .filter((index) => index >= 0);
-  const firstChanged = changed.length > 0 ? changed[0] : 0;
-  let start = Math.max(0, firstChanged - 2);
+  const focus = focusIndexForAnchor(hunk, side, anchor);
+  let start = Math.max(0, focus - Math.floor(maxLines / 2));
   let end = Math.min(formatted.length, start + maxLines);
   start = Math.max(0, end - maxLines);
   const window = formatted.slice(start, end);
@@ -105,6 +110,24 @@ function excerptLines(hunk: StructuredDiffHunk, maxLines: number): string[] {
     window.push(`@@ … ${formatted.length - end} more line(s) elided @@`);
   }
   return window;
+}
+
+// Pick the line index to center the excerpt window on: the first line whose
+// side-specific line number falls within the anchor's [line_start, line_end]
+// range, else the first changed line in the hunk, else the start of the hunk.
+function focusIndexForAnchor(hunk: StructuredDiffHunk, side: "old" | "new", anchor: HunkAnchor): number {
+  if (typeof anchor.line_start === "number" && anchor.line_start > 0) {
+    const lineEnd = anchor.line_end && anchor.line_end >= anchor.line_start ? anchor.line_end : anchor.line_start;
+    const anchored = hunk.lines.findIndex((line) => {
+      const lineNumber = side === "old" ? line.old_line : line.new_line;
+      return typeof lineNumber === "number" && lineNumber >= (anchor.line_start as number) && lineNumber <= lineEnd;
+    });
+    if (anchored >= 0) {
+      return anchored;
+    }
+  }
+  const firstChanged = hunk.lines.findIndex((line) => line.kind === "add" || line.kind === "delete");
+  return firstChanged >= 0 ? firstChanged : 0;
 }
 
 function formatDiffLine(line: StructuredDiffLine): string {
