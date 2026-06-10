@@ -145,3 +145,15 @@ test("review-surfaces.QUALITY allow_missing excludes the planned backlog but not
   ]);
   assert.equal(gateExitCode(swapped, collection(false), "mock", allowed), ExitCodes.qualityGateFailed);
 });
+
+// review-surfaces.QUALITY: a blank allow_missing entry must not match a result
+// that simply has no acai_id (which would silently exclude it from the gate).
+test("review-surfaces.QUALITY blank allow_missing entries are ignored", () => {
+  const evalModel = evaluation([result("missing", "REQ-NO-ACID")]);
+  const withBlank = { maxMissing: 0, allowMissing: ["", "review-surfaces.PLANNED.1"] };
+  assert.equal(
+    gateExitCode(evalModel, collection(false), "mock", withBlank),
+    ExitCodes.qualityGateFailed,
+    "a blank allowlist entry must not exclude a non-Acai missing requirement"
+  );
+});

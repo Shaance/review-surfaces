@@ -81,11 +81,13 @@ export function gateExitCode(
 }
 
 function countMissing(results: RequirementResult[], allowMissing?: string[]): number {
-  const allowed = new Set(allowMissing ?? []);
+  // Drop blank allowlist entries so a stray empty YAML item cannot match a
+  // result that simply has no acai_id and silently exclude it from the gate.
+  const allowed = new Set((allowMissing ?? []).filter((id) => id.length > 0));
   return results.filter(
     (result) =>
       result.status === "missing" &&
-      !allowed.has(result.acai_id ?? "") &&
+      !(result.acai_id !== undefined && allowed.has(result.acai_id)) &&
       !allowed.has(result.requirement_id)
   ).length;
 }

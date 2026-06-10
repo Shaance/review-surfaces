@@ -21,6 +21,10 @@ export interface HunkAnchor {
   hunk_header?: string;
   line_start?: number;
   line_end?: number;
+  // The diff side the anchor path matched (old for a deletion / rename source).
+  // When set it overrides the path heuristic and orders candidate files, so a
+  // path shared by a new file and a rename source resolves unambiguously.
+  side?: "old" | "new";
 }
 
 // Return a fenced ```diff excerpt for the anchor, or undefined when no diff,
@@ -71,6 +75,10 @@ export function renderHunkExcerpt(
 // the old side; a rename whose anchor points at the old path is also old-side
 // (its old/new hunk line numbers differ). Everything else is new-side.
 function sideForAnchor(file: StructuredDiffFile, anchor: HunkAnchor): "old" | "new" {
+  // An explicit side from the queue anchor is authoritative.
+  if (anchor.side) {
+    return anchor.side;
+  }
   if (file.status === "D") {
     return "old";
   }
@@ -100,18 +108,21 @@ function longestBacktickRun(lines: string[]): number {
 function candidateFiles(diff: StructuredDiff, anchor: HunkAnchor): StructuredDiffFile[] {
   const wantedNew = normalizePath(anchor.path);
   const wantedOld = anchor.old_path ? normalizePath(anchor.old_path) : undefined;
-  const ordered: StructuredDiffFile[] = [
-    // 1: exact new-path match (the changed file the queue item points at).
-    ...diff.files.filter((file) => normalizePath(file.path) === wantedNew),
-    // 2: a rename whose SOURCE is the anchor's primary path (old-side anchors).
-    ...diff.files.filter((file) => Boolean(file.old_path) && normalizePath(file.old_path as string) === wantedNew),
-    // 3: the anchor's explicit old_path on either side.
-    ...(wantedOld === undefined
-      ? []
-      : diff.files.filter(
-          (file) => normalizePath(file.path) === wantedOld || (Boolean(file.old_path) && normalizePath(file.old_path as string) === wantedOld)
-        ))
-  ];
+  const byNewPath = diff.files.filter((file) => normalizePath(file.path) === wantedNew);
+  const byRenameSource = diff.files.filter((file) => Boolean(file.old_path) && normalizePath(file.old_path as string) === wantedNew);
+  const byOldPath = wantedOld === undefined
+    ? []
+    : diff.files.filter(
+        (file) => normalizePath(file.path) === wantedOld || (Boolean(file.old_path) && normalizePath(file.old_path as string) === wantedOld)
+      );
+  // For an OLD-side anchor, a rename whose source is the anchor path is the
+  // intended file, so try it before an exact new-path match (which would be an
+  // unrelated replacement file re-adding the same path). Otherwise prefer the
+  // exact new-path match.
+  const ordered: StructuredDiffFile[] =
+    anchor.side === "old"
+      ? [...byRenameSource, ...byNewPath, ...byOldPath]
+      : [...byNewPath, ...byRenameSource, ...byOldPath];
   const seen = new Set<StructuredDiffFile>();
   return ordered.filter((file) => (seen.has(file) ? false : (seen.add(file), true)));
 }

@@ -88,6 +88,7 @@ interface QueueDraft {
   hunk_header?: string;
   line_start?: number;
   line_end?: number;
+  anchor_side?: "old" | "new";
   reviewer_action: string;
   reason: string;
   evidence: EvidenceRef[];
@@ -1688,6 +1689,7 @@ function buildReviewQueue(
       hunk_header: anchor.hunk_header,
       line_start: anchor.line_start,
       line_end: anchor.line_end,
+      anchor_side: anchor.side,
       reviewer_action: risk.suggested_checks[0] ?? "Inspect the cited changed file before approving.",
       reason: feedbackDowngrade
         ? `${rankReasonForPrRisk(risk)} Feedback memory downgraded this review priority but retained the evidence-backed item.`
@@ -1726,6 +1728,7 @@ function buildReviewQueue(
       hunk_header: anchor.hunk_header,
       line_start: anchor.line_start,
       line_end: anchor.line_end,
+      anchor_side: anchor.side,
       reviewer_action: risk.suggested_checks?.[0] ?? "Inspect the cited packet risk evidence.",
       // review-surfaces.HUMAN_REVIEW.21: lead with the underlying reason (the
       // risk summary), not "ranked from whole-packet <severity> <category> risk
@@ -1753,6 +1756,7 @@ function buildReviewQueue(
       hunk_header: draft.hunk_header,
       line_start: draft.line_start,
       line_end: draft.line_end,
+      anchor_side: draft.anchor_side,
       reviewer_action: draft.reviewer_action,
       reason: draft.reason,
       evidence: draft.evidence,
@@ -1785,6 +1789,7 @@ function changedFileQueueDrafts(
         hunk_header: anchor.hunk_header,
         line_start: anchor.line_start,
         line_end: anchor.line_end,
+        anchor_side: anchor.side,
         reviewer_action: actionForChangedFile(file),
         // review-surfaces.HUMAN_REVIEW.21: lead with the changed file behavior,
         // not the bookkeeping "no deterministic PR risk candidate fired".
@@ -2565,6 +2570,7 @@ function feedbackReviewQueueDrafts(
         hunk_header: anchor.hunk_header,
         line_start: anchor.line_start,
         line_end: anchor.line_end,
+        anchor_side: anchor.side,
         reviewer_action: effect.action,
         reason: effect.summary,
         evidence: [evidence, ...effect.evidence],
@@ -4144,6 +4150,10 @@ interface QueueAnchor {
   hunk_header?: string;
   line_start?: number;
   line_end?: number;
+  // Which diff side the anchor path matched (old for a deletion or a rename
+  // source, new otherwise). Disambiguates a path shared by a new file and a
+  // rename source when the inline excerpt is rendered.
+  side?: "old" | "new";
 }
 
 function buildDiffIndex(diff: StructuredDiff | undefined): DiffIndex | undefined {
@@ -4183,7 +4193,8 @@ function queueAnchorForEvidence(evidence: EvidenceRef, diffIndex: DiffIndex | un
       path: anchorPath,
       old_path: oldPathForAnchor(diffFile, anchorPath),
       line_start: fallbackRange?.line_start,
-      line_end: fallbackRange?.line_end
+      line_end: fallbackRange?.line_end,
+      side
     });
   }
   const changedRange = fallbackRange ?? changedLineRange(hunk, side);
@@ -4192,7 +4203,8 @@ function queueAnchorForEvidence(evidence: EvidenceRef, diffIndex: DiffIndex | un
     old_path: oldPathForAnchor(diffFile, anchorPath),
     hunk_header: formatHunkHeader(hunk),
     line_start: changedRange?.line_start,
-    line_end: changedRange?.line_end
+    line_end: changedRange?.line_end,
+    side
   });
 }
 

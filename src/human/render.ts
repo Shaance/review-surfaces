@@ -707,7 +707,8 @@ function inlineHunkExcerpt(item: ReviewQueueItem, context: HumanRenderContext): 
     old_path: item.old_path,
     hunk_header: item.hunk_header,
     line_start: item.line_start,
-    line_end: item.line_end
+    line_end: item.line_end,
+    side: item.anchor_side
   });
   if (!excerpt) {
     return "";
@@ -728,7 +729,8 @@ function renderQueueDetail(item: ReviewQueueItem, context: HumanRenderContext = 
     old_path: item.old_path,
     hunk_header: item.hunk_header,
     line_start: item.line_start,
-    line_end: item.line_end
+    line_end: item.line_end,
+    side: item.anchor_side
   });
   // review-surfaces.HUMAN_REVIEW.21: lead the heading with the changed file and
   // observable behavior; the queue id trails as metadata. When an excerpt

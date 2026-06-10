@@ -143,6 +143,10 @@ export interface ReviewQueueItem {
   hunk_header?: string;
   line_start?: number;
   line_end?: number;
+  // Which diff side the anchor path matched (old for a deletion / rename source,
+  // new otherwise). Lets the inline excerpt renderer disambiguate a path shared
+  // by a new file and a rename source.
+  anchor_side?: "old" | "new";
   reviewer_action: string;
   reason: string;
   evidence: EvidenceRef[];

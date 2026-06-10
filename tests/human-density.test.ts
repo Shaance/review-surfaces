@@ -263,6 +263,59 @@ test("review-surfaces.HUMAN_REVIEW.20 prefers the anchor path over old_path for 
   assert.doesNotMatch(excerpt!, /brandNewA/, "must not take the excerpt from the unrelated new A");
 });
 
+// review-surfaces.HUMAN_REVIEW.20: a git-quoted diff path (escaped special
+// chars) is decoded so it matches the real anchor filename and the excerpt
+// resolves.
+test("review-surfaces.HUMAN_REVIEW.20 decodes git-quoted diff paths for excerpt matching", () => {
+  const diffText = [
+    'diff --git "a/src/weird\\tname.ts" "b/src/weird\\tname.ts"',
+    '--- "a/src/weird\\tname.ts"',
+    '+++ "b/src/weird\\tname.ts"',
+    "@@ -1,1 +1,1 @@",
+    "-const x = 0;",
+    "+const x = 1;",
+    ""
+  ].join("\n");
+  const diff = parseStructuredDiff(diffText);
+  // The parsed file path is the real (decoded) filename with a literal tab.
+  assert.equal(diff.files[0].path, "src/weird\tname.ts");
+  // An anchor carrying the real filename resolves the excerpt.
+  const excerpt = renderHunkExcerpt(diff, { path: "src/weird\tname.ts", line_start: 1, line_end: 1 });
+  assert.ok(excerpt, "decoded path should match the anchor and render an excerpt");
+  assert.match(excerpt!, /const x = 1;/);
+});
+
+// review-surfaces.HUMAN_REVIEW.20: an explicit old-side anchor (side: "old")
+// resolves to the rename source even when a replacement file re-adds the same
+// path and its line range coincides.
+test("review-surfaces.HUMAN_REVIEW.20 uses the anchor side hint to resolve a replacement rename", () => {
+  const diffText = [
+    // New file at src/a.ts whose change is at new line 1 (coincides with the rename source's old line 1).
+    "diff --git a/src/a.ts b/src/a.ts",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/src/a.ts",
+    "@@ -0,0 +1,1 @@",
+    "+const replacementA = 1;",
+    // Rename src/a.ts -> src/b.ts; old side carries the source line at old line 1.
+    "diff --git a/src/a.ts b/src/b.ts",
+    "rename from src/a.ts",
+    "rename to src/b.ts",
+    "--- a/src/a.ts",
+    "+++ b/src/b.ts",
+    "@@ -1,1 +5,1 @@",
+    "-const sourceA = 0;",
+    "+const inB = 1;",
+    ""
+  ].join("\n");
+  const diff = parseStructuredDiff(diffText);
+  // Old-side anchor with the side hint: must resolve to the rename source, not the new file.
+  const excerpt = renderHunkExcerpt(diff, { path: "src/a.ts", line_start: 1, line_end: 1, side: "old" });
+  assert.ok(excerpt, "old-side anchor should resolve");
+  assert.match(excerpt!, /sourceA/, "side hint must pick the rename source's old-side hunk");
+  assert.doesNotMatch(excerpt!, /replacementA/, "must not pick the coinciding-line replacement file");
+});
+
 // review-surfaces.HUMAN_REVIEW.20: a side-aware line overlap takes precedence
 // over a header that happens to match a different hunk, so the excerpt shows the
 // hunk the line anchor points at.
