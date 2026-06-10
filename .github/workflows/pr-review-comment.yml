@@ -32,6 +32,10 @@ jobs:
       - name: Checkout PR subject (head ref, credentialless)
         uses: actions/checkout@v4
         with:
+          # A fork-only head sha does not exist in the base repo, so the subject
+          # checkout must name the head repository explicitly; otherwise the
+          # advertised fork path fails before it can upload the mock artifact.
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           path: subject
           fetch-depth: 0

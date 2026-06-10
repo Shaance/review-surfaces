@@ -32,6 +32,12 @@ test("review-surfaces.PR_SURFACE.1 the composite action runs the PR pipeline wit
   // The sticky is rendered from human_review.json via the deterministic format.
   assert.match(runStep.run, /node "\$RS_BIN" comment \\/);
   assert.match(runStep.run, /--format sticky/);
+  // review-surfaces.PR_SURFACE.4: --strict-postability makes a blocked (secret)
+  // body a non-zero exit, so the action fails before upload/post — never posting it.
+  assert.match(runStep.run, /--strict-postability/);
+  // Caller inputs flow through env, never interpolated into the shell (injection).
+  assert.doesNotMatch(runStep.run, /\$\{\{ inputs\.(head-ref|base-ref|model|provider) \}\}/);
+  assert.match(runStep.run, /--head "\$RS_HEAD"/);
 });
 
 test("review-surfaces.PR_SURFACE.3 the action uploads the full packet under a stable PR-keyed name and forks upload but skip posting", () => {
@@ -84,4 +90,7 @@ test("review-surfaces.PR_SURFACE.1 the repo workflow is a thin consumer of the a
   assert.ok(usesAction, "workflow consumes the ./tool composite action");
   // The LLM key only flows to same-repo PRs (forks get mock + no key).
   assert.match(raw, /head\.repo\.full_name == github\.repository/);
+  // review-surfaces.PR_SURFACE.3: the subject checkout names the head repository
+  // so a fork-only head sha resolves (otherwise the fork path fails before upload).
+  assert.match(raw, /repository: \$\{\{ github\.event\.pull_request\.head\.repo\.full_name \}\}\n\s*ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/);
 });

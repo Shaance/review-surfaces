@@ -119,39 +119,54 @@ runs:
     - name: Generate PR review surface (trusted tool)
       shell: bash
       working-directory: ${{ inputs.subject-directory }}
+      # All caller-supplied inputs flow through env, never interpolated into the
+      # script: a ref name can contain shell metacharacters such as $(...), so
+      # `--head ${{ inputs.head-ref }}` would let a PR-controlled ref execute code
+      # in this step (which also holds the LLM key). Referenced below as "$VAR".
       env:
         RS_BIN: ${{ github.action_path }}/bin/review-surfaces.js
         RS_CONFIG: ${{ github.action_path }}/review-surfaces.config.yaml
         GOOGLE_GENERATIVE_AI_API_KEY: ${{ inputs.llm-api-key }}
         PREVIOUS_PACKET: ${{ steps.prior.outputs.previous-packet }}
+        RS_PROVIDER: ${{ inputs.provider }}
+        RS_MODEL: ${{ inputs.model }}
+        RS_BASE: ${{ inputs.base-ref }}
+        RS_HEAD: ${{ inputs.head-ref }}
+        RS_SPEC: ${{ inputs.spec }}
+        RS_OUT: ${{ inputs.output-dir }}
+        RS_TOP_N: ${{ inputs.comment-top-n }}
+        RS_ARTIFACT: review-surfaces-pr-${{ inputs.pr-number }}
       run: |
-        prev_flag=""
-        if [ -n "$PREVIOUS_PACKET" ]; then prev_flag="--previous-packet $PREVIOUS_PACKET"; fi
-        model_flag=""
-        if [ -n "${{ inputs.model }}" ]; then model_flag="--model ${{ inputs.model }}"; fi
+        prev_flag=()
+        if [ -n "$PREVIOUS_PACKET" ]; then prev_flag=(--previous-packet "$PREVIOUS_PACKET"); fi
+        model_flag=()
+        if [ -n "$RS_MODEL" ]; then model_flag=(--model "$RS_MODEL"); fi
         node "$RS_BIN" all \
-          --provider "${{ inputs.provider }}" \
-          $model_flag \
+          --provider "$RS_PROVIDER" \
+          "${model_flag[@]}" \
           --config "$RS_CONFIG" \
           --redact-secrets true \
-          --base "${{ inputs.base-ref }}" \
-          --head "${{ inputs.head-ref }}" \
-          --spec "${{ inputs.spec }}" \
+          --base "$RS_BASE" \
+          --head "$RS_HEAD" \
+          --spec "$RS_SPEC" \
           --dogfood \
           --review-scope pr \
-          $prev_flag \
-          --out "${{ inputs.output-dir }}"
-        node "$RS_BIN" validate "${{ inputs.output-dir }}"
+          "${prev_flag[@]}" \
+          --out "$RS_OUT"
+        node "$RS_BIN" validate "$RS_OUT"
         # review-surfaces.PR_SURFACE.2/.4: render the deterministic sticky from
-        # human_review.json. Redaction and the postability (secret-block) gate run
-        # inside the renderer before comment.md is written; suggested comments stay
-        # local drafts (PROVIDERS.7) and are never posted here.
+        # human_review.json. Redaction and the secret-block postability gate run
+        # inside the renderer; --strict-postability makes a blocked body a non-zero
+        # exit so the action fails before the later upload/post steps run — a
+        # blocked sticky is never posted. Suggested comments stay local drafts
+        # (PROVIDERS.7) and are never posted here.
         node "$RS_BIN" comment \
           --review-scope pr \
           --format sticky \
-          --comment-top-n "${{ inputs.comment-top-n }}" \
-          --artifact-name "review-surfaces-pr-${{ inputs.pr-number }}" \
-          --out "${{ inputs.output-dir }}"
+          --strict-postability \
+          --comment-top-n "$RS_TOP_N" \
+          --artifact-name "$RS_ARTIFACT" \
+          --out "$RS_OUT"
     - name: Upload review-surfaces artifact
       uses: actions/upload-artifact@v4
       with:

@@ -158,6 +158,29 @@ test("review-surfaces.PR_SURFACE.5 a first review (no prior packet) shows the qu
   assert.match(markdown, /### Review first\n\n1\. `src\/cli\/index\.ts:42`/);
 });
 
+test("review-surfaces.PR_SURFACE.5 an overreach-only delta still renders its group (not 'no changes')", () => {
+  const since: SinceLastReview = {
+    ...emptySince(),
+    previous_packet_path: ".rs-prev/review_packet.json",
+    new_overreach: [{ id: "S-OR", category: "overreach", summary: "src/new.ts changed with no mapped intent", evidence: [] }]
+  };
+  const { markdown } = renderStickySummary(model({ since_last_review: since }));
+  assert.match(markdown, /### Since your last review/);
+  assert.match(markdown, /➕ New overreach: src\/new\.ts changed with no mapped intent/);
+  assert.doesNotMatch(markdown, /No requirement or risk changes since the last review/);
+});
+
+test("review-surfaces.PR_SURFACE.5 the fingerprint sanitizes keys so a path with --> cannot close the HTML comment", () => {
+  const m = model();
+  m.review_queue[0].path = "src/evil-->inject.ts";
+  const { markdown } = renderStickySummary(m);
+  const fingerprint = markdown.split("\n").find((line) => line.includes("review-surfaces:fingerprint")) ?? "";
+  // The only `-->` left is the comment terminator; the key's `-->` is neutralized.
+  assert.equal(fingerprint.match(/-->/g)?.length, 1);
+  assert.ok(fingerprint.endsWith("-->"));
+  assert.doesNotMatch(fingerprint, /evil-->inject/);
+});
+
 test("review-surfaces.PR_SURFACE.5 the in-comment fingerprint pins the head sha and stable finding keys (rule+path+anchor, not array index)", () => {
   const { markdown } = renderStickySummary(model());
   assert.match(markdown, /<!-- review-surfaces:fingerprint head=deadbeef keys=/);

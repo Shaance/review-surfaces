@@ -152,7 +152,9 @@ function renderSinceSection(since: SinceLastReview, state: RedactionState): stri
     formatSinceGroup("✅ Resolved risks", since.resolved_risks, state),
     formatSinceGroup("⚠️ Regressed", since.regressed, state),
     formatSinceGroup("🆕 New risks", since.new_risks, state),
-    formatSinceGroup("📈 Improved", since.improved, state)
+    formatSinceGroup("📈 Improved", since.improved, state),
+    formatSinceGroup("➕ New overreach", since.new_overreach, state),
+    formatSinceGroup("✅ Resolved overreach", since.resolved_overreach, state)
   ].filter((line): line is string => line !== undefined);
   return `### Since your last review
 
@@ -175,9 +177,15 @@ function formatSinceGroup(label: string, items: SinceLastReviewItem[], state: Re
 
 function renderFingerprint(model: HumanReviewModel): string {
   const keys = model.review_queue.map((item) => stickyQueueItemKey(item)).join(",");
-  // Plain (no field()): kept inside an HTML comment, never shown, and must stay a
-  // byte-stable machine pointer. The final redactSecrets pass still runs over it.
-  return `<!-- review-surfaces:fingerprint head=${model.generated_from.head_sha} keys=${keys} -->`;
+  // Strip characters that could close the HTML comment early: a path or hunk
+  // anchor containing `-->` would otherwise break out and render the rest as
+  // visible Markdown (an injection surface for arbitrary comment text).
+  const safe = sanitizeForHtmlComment(`head=${model.generated_from.head_sha} keys=${keys}`);
+  return `<!-- review-surfaces:fingerprint ${safe} -->`;
+}
+
+function sanitizeForHtmlComment(text: string): string {
+  return text.replace(/[<>]/g, "").replace(/-{2,}/g, "-");
 }
 
 function sinceLastReviewIsAvailable(since: SinceLastReview | undefined): since is SinceLastReview {
