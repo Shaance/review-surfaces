@@ -485,7 +485,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // the fallback). When no prior narrative exists, buildHumanReview renders
       // the deterministic fallback.
       const cachedNarrative = config.human_review.enabled
-        ? readCachedNarrative(collection.outputDir)
+        ? readCachedNarrative(collection.outputDir, String(collection.manifest.head_sha ?? ""))
         : undefined;
       const cachedHumanInputs: HumanReviewArtifactInputs = {
         packet: cacheSnapshot.packet,
@@ -1276,13 +1276,20 @@ function readHumanReviewDiff(outDir: string): StructuredDiff | undefined {
 
 // review-surfaces.NARRATIVE.1: read the narrative from a previously written
 // human_review.json so a cache hit can reuse it without re-invoking the provider.
-// Returns undefined when the artifact is absent/unreadable or carries no
-// narrative (the caller then renders the deterministic fallback).
-function readCachedNarrative(outDir: string): ChangeNarrative | undefined {
+// Only reuse it when it was validated against the CURRENT head — a stale artifact
+// (older than the packet, e.g. after a stage command rewrote review_packet.json,
+// or an interrupted run) is not reused, so claims validated against another
+// head/diff are never rendered as current verified prose. Returns undefined when
+// the artifact is absent/unreadable, carries no narrative, or is stale (the
+// caller then renders the deterministic fallback against the current packet).
+function readCachedNarrative(outDir: string, headSha: string): ChangeNarrative | undefined {
   const humanReviewPath = path.join(outDir.endsWith(".json") ? path.dirname(outDir) : outDir, "human_review.json");
   try {
     const model = JSON.parse(fs.readFileSync(humanReviewPath, "utf8")) as { narrative?: ChangeNarrative };
-    return model.narrative;
+    if (model.narrative && headSha && model.narrative.validated_at_head === headSha) {
+      return model.narrative;
+    }
+    return undefined;
   } catch {
     return undefined;
   }

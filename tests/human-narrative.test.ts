@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
-import { buildChangeNarrative, buildFallbackNarrative } from "../src/human/narrative";
+import { buildChangeNarrative, buildFallbackNarrative, buildNarrativeAllowlist } from "../src/human/narrative";
 import { buildHumanReview } from "../src/human/human-review";
 import { renderHumanReviewMarkdown } from "../src/human/render";
 import type { ReasoningProvider, StructuredResult } from "../src/llm/provider";
@@ -233,6 +233,35 @@ test("review-surfaces.NARRATIVE.5 fallback does not double-count a transcript ro
   const transcriptClaim = narrative.claims.find((claim) => /command transcript/.test(claim.text));
   assert.ok(transcriptClaim, "a transcript claim is present");
   assert.match(transcriptClaim!.text, /^1 command transcript/, "one row must be counted once, not twice");
+});
+
+// review-surfaces.NARRATIVE.2: a fabricated NUMERIC transcript id (CMD-001) in
+// prose demotes the claim.
+test("review-surfaces.NARRATIVE.2 fabricated numeric command id in prose demotes the claim", async () => {
+  const { packet, diff } = narrativeFacts();
+  const narrative = await buildChangeNarrative({
+    provider: stubProvider({ claims: [{ text: "Validated by CMD-001 against src/real.ts.", paths: ["src/real.ts"] }] }),
+    providerName: "agent-file",
+    packet,
+    diff,
+    headSha: "head123",
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
+  assert.equal(narrative.claims[0].trust, "claimed", "a fabricated numeric CMD-001 in prose demotes the claim");
+  assert.ok(narrative.claims[0].invalid_anchors.includes("CMD-001"));
+});
+
+// review-surfaces.NARRATIVE.2: a command id recorded in risk/evaluation evidence
+// that is NOT validation_status "valid" (e.g. a failed transcript) is not an
+// allowlisted command anchor.
+test("review-surfaces.NARRATIVE.2 restricts command anchors to proven (valid) evidence", () => {
+  const { packet, diff } = narrativeFacts();
+  packet.risks.items = [
+    { evidence: [{ kind: "command", command: "CMD-FAILED-001", confidence: "low", validation_status: "not_checked" }] }
+  ] as unknown as ReviewPacket["risks"]["items"];
+  const allowlist = buildNarrativeAllowlist({ packet, diff, headSha: "head123" });
+  assert.ok(!allowlist.commandIds.has("CMD-FAILED-001"), "an unproven command ref must not be an anchor");
 });
 
 // review-surfaces.NARRATIVE.4: the narrative never alters the verdict.

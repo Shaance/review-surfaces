@@ -155,8 +155,11 @@ export function buildNarrativeAllowlist(input: NarrativeFacts): NarrativeAllowli
       }
     }
   }
+  // Command ids from general evaluation/risk evidence are only allowlisted when
+  // the ref itself is a VALID (proven) command — methodology/risk evidence can
+  // record failed transcript ids too, and those must not become verified anchors.
   for (const ref of resultAndRiskEvidence(input.packet)) {
-    if (ref.kind === "command") {
+    if (ref.kind === "command" && ref.validation_status === "valid") {
       for (const token of [ref.command, ref.note]) {
         for (const id of commandIdTokens(token)) {
           commandIds.add(id);
@@ -382,9 +385,11 @@ function proseAnchorTokens(text: string): string[] {
 }
 
 // A command-transcript / test-evidence row id embedded in text, e.g.
-// CMD-PNPM-BUILD, TEST-TR-001, TEST-RESULT-001. Scanned in prose so a fabricated
-// id is demoted, and used to pull ids out of command evidence.
-const COMMAND_ID_TOKEN = /\b(?:CMD|TEST)-[A-Z][A-Z0-9-]*\b/g;
+// CMD-PNPM-BUILD, CMD-001, TEST-TR-001, TEST-001. Scanned in prose so a
+// fabricated id is demoted, and used to pull ids out of command evidence. The
+// first character after the dash may be a digit (the built-in numeric CMD-001
+// form), so a fabricated numeric id is surfaced too.
+const COMMAND_ID_TOKEN = /\b(?:CMD|TEST)-[A-Z0-9][A-Z0-9-]*\b/g;
 
 function commandIdTokens(value: string | undefined): string[] {
   if (typeof value !== "string") {
