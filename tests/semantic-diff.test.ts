@@ -559,6 +559,61 @@ test("review-surfaces.SEMANTIC_DIFF.2 resolves identifier default exports", () =
   assert.ok(change && change.signatures_changed.some((s) => s.name === "default"), "a change to the referenced local is a default-export change");
 });
 
+// review-surfaces.SEMANTIC_DIFF.2: a star/namespace re-export switching to
+// type-only drops the runtime export.
+test("review-surfaces.SEMANTIC_DIFF.2 tracks type-only star re-exports", () => {
+  const path = "src/star.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export * from \"./mod\";" }, { [path]: "export type * from \"./mod\";" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.length > 0, "the runtime→type-only star change is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a typed default-var local rename is a no-op.
+test("review-surfaces.SEMANTIC_DIFF.2 ignores typed default-var local names", () => {
+  const path = "src/tdv.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  assert.equal(
+    computeSemanticChangeFacts(sources(diffText, { [path]: "const handler: Handler = make();\nexport default handler;" }, { [path]: "const renamed: Handler = make();\nexport default renamed;" })).api_changes.length,
+    0,
+    "renaming a typed default-export local is not a change"
+  );
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a local `export { handler }` is compared by
+// what the local refers to.
+test("review-surfaces.SEMANTIC_DIFF.2 resolves local named exports", () => {
+  const path = "src/lne.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "const handler = (req: Req): void => {};\nexport { handler };" }, { [path]: "const handler = (req: Req, res: Res): void => {};\nexport { handler };" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "handler"), "a change to the local export's shape is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: an overload implementation edit is not an API
+// change when the public overloads are unchanged.
+test("review-surfaces.SEMANTIC_DIFF.2 excludes overload implementation signatures", () => {
+  const path = "src/ovl.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const oldText = "export function f(x: string): string;\nexport function f(x: number): number;\nexport function f(x: any): any { return x; }";
+  const newText = "export function f(x: string): string;\nexport function f(x: number): number;\nexport function f(x: unknown): unknown { return x; }";
+  assert.equal(
+    computeSemanticChangeFacts(sources(diffText, { [path]: oldText }, { [path]: newText })).api_changes.length,
+    0,
+    "editing only the overload implementation is not an API change"
+  );
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a destructured type change is attributed to the
+// changed leaf, not its siblings.
+test("review-surfaces.SEMANTIC_DIFF.2 attributes destructured type changes to the changed leaf", () => {
+  const path = "src/dla.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export const { a, b }: { a: string; b: number } = src;" }, { [path]: "export const { a, b }: { a: string; b: string } = src;" })).api_changes[0];
+  assert.ok(change, "the change is reported");
+  const changedNames = change.signatures_changed.map((s) => s.name);
+  assert.ok(changedNames.includes("b"), "the changed leaf b is reported");
+  assert.ok(!changedNames.includes("a"), "the unchanged leaf a is NOT reported");
+});
+
 // A test file is not treated as an API surface.
 test("review-surfaces.SEMANTIC_DIFF.2 ignores test files for API surface", () => {
   const path = "tests/x.test.ts";

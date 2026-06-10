@@ -411,7 +411,8 @@ function extractExports(source: string, path = "module.ts"): Map<string, string>
         for (const declaration of statement.declarationList.declarations) {
           if (ts.isIdentifier(declaration.name) && declaration.name.text === name) {
             if (declaration.type) {
-              return norm(slice(declaration, declaration.type.end));
+              // Name-independent: a default importer sees the type, not the local name.
+              return norm(`const ${sliceExcludingName(declaration, declaration.name, declaration.type.end)}`);
             }
             if (declaration.initializer && (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))) {
               return functionLikeSignature(declaration.initializer, "const");
@@ -439,7 +440,13 @@ function extractExports(source: string, path = "module.ts"): Map<string, string>
     for (const statement of statements) {
       if (ts.isFunctionDeclaration(statement) && isExported(statement)) {
         const name = defaultOr(statement, statement.name?.text);
-        if (name) {
+        // When an overload SET exists (sibling bodyless declarations of the same
+        // name), the bodied declaration is the private implementation — not callable
+        // from outside — so its signature is excluded; the public overloads define
+        // the surface. A standalone bodied function is the surface and is kept.
+        const isOverloadImpl = statement.body !== undefined && statements.some((sibling) =>
+          sibling !== statement && ts.isFunctionDeclaration(sibling) && sibling.body === undefined && sibling.name?.text === statement.name?.text && isExported(sibling));
+        if (name && !isOverloadImpl) {
           // An overload set shares one name across several signatures; concatenate so
           // adding/removing/altering any overload is a signature change. The
           // signature is name-independent (identity is the key), so a default
@@ -483,7 +490,7 @@ function extractExports(source: string, path = "module.ts"): Map<string, string>
         const keyword = statement.declarationList.flags & ts.NodeFlags.Const ? "const" : statement.declarationList.flags & ts.NodeFlags.Let ? "let" : "var";
         for (const declaration of statement.declarationList.declarations) {
           const whole = ts.isIdentifier(declaration.name);
-          for (const { name, node } of bindingTargets(declaration.name)) {
+          for (const { name, node, property } of bindingTargets(declaration.name)) {
             const key = `${prefix}${name}`;
             if (whole && declaration.type) {
               // An explicit type annotation IS the declared contract (it wins over the
@@ -493,10 +500,12 @@ function extractExports(source: string, path = "module.ts"): Map<string, string>
               exports.set(key, functionLikeSignature(declaration.initializer, `${keyword} ${name}`));
             } else {
               // A destructured leaf carries no own type, but the declaration's type
-              // annotation is the contract — append it so a type change to a
-              // destructured export (`{ a }: { a: string }` → `{ a: number }`) is seen.
-              const annotation = !whole && declaration.type ? `: ${slice(declaration.type, declaration.type.end)}` : "";
-              exports.set(key, norm(`${keyword} ${slice(node, node.end)}${annotation}`));
+              // annotation is the contract. Attribute the specific member's type to
+              // this leaf (so changing one leaf's type does not mark its siblings),
+              // falling back to the whole annotation when the member can't be resolved.
+              const memberType = property ? memberTypeText(declaration.type, property, slice) : undefined;
+              const annotation = memberType ?? (!whole && declaration.type ? slice(declaration.type, declaration.type.end) : "");
+              exports.set(key, norm(`${keyword} ${slice(node, node.end)}${annotation ? `: ${annotation}` : ""}`));
             }
           }
         }
@@ -525,22 +534,28 @@ function extractExports(source: string, path = "module.ts"): Map<string, string>
         // Fold the source module into the signature so a re-export's origin change is
         // a fact, and a local `export { x }` and `export { x } from "y"` do not collide.
         const from = statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier) ? ` from ${statement.moduleSpecifier.text}` : "";
+        // `type` (statement-level) drops the runtime export — a real contract change
+        // for value importers — so it is part of every signature below.
+        const statementType = statement.isTypeOnly ? "type " : "";
         if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
           for (const element of statement.exportClause.elements) {
-            // `propertyName` is the underlying binding before `as`; include it so an
-            // alias whose target changes (`{ a as x }` → `{ b as x }`) is a fact.
-            // `type` (statement- or element-level) drops the runtime export, a real
-            // contract change for value importers, so it is part of the signature.
-            const target = element.propertyName ? `${element.propertyName.text} as ` : "";
             const typeOnly = statement.isTypeOnly || element.isTypeOnly ? "type " : "";
-            exports.set(`${prefix}${element.name.text}`, `named ${typeOnly}${target}${element.name.text}${from}`);
+            const local = element.propertyName?.text ?? element.name.text;
+            // A local `export { handler }` (no `from`, not type-only) refers to a
+            // declaration in this file — compare by what it refers to, the common
+            // local-then-export pattern, so a change to the local's shape is seen.
+            const resolved = !from && !typeOnly ? resolveLocalSignature(local) : undefined;
+            // `propertyName` (the binding before `as`) makes an alias-target change
+            // (`{ a as x }` → `{ b as x }`) a fact.
+            const target = element.propertyName ? `${element.propertyName.text} as ` : "";
+            exports.set(`${prefix}${element.name.text}`, resolved ?? `named ${typeOnly}${target}${element.name.text}${from}`);
           }
         } else if (statement.exportClause && ts.isNamespaceExport(statement.exportClause)) {
-          exports.set(`${prefix}${statement.exportClause.name.text}`, `namespace-reexport ${statement.exportClause.name.text}${from}`);
+          exports.set(`${prefix}${statement.exportClause.name.text}`, `namespace-reexport ${statementType}${statement.exportClause.name.text}${from}`);
         } else if (statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
           // `export * from "./x"` — keyed by the source module so adding/removing the
           // star re-export is detected even though the names cannot be enumerated.
-          exports.set(`*:${prefix}${statement.moduleSpecifier.text}`, `export-star ${statement.moduleSpecifier.text}`);
+          exports.set(`*:${prefix}${statement.moduleSpecifier.text}`, `export-star ${statementType}${statement.moduleSpecifier.text}`);
         }
         continue;
       }
@@ -553,18 +568,49 @@ function extractExports(source: string, path = "module.ts"): Map<string, string>
 
 // The identifier leaves bound by a variable declaration name: the single
 // identifier itself, or each identifier in a destructuring `{ a, b }` / `[a, b]`
-// pattern — so `export const { a, b } = x` records both `a` and `b`.
-function bindingTargets(name: ts.BindingName): Array<{ name: string; node: ts.Node }> {
+// pattern — so `export const { a, b } = x` records both `a` and `b`. `property` is
+// the source property name a DIRECT object-pattern leaf reads (so its type can be
+// looked up in a type-literal annotation); undefined for nested or array leaves.
+interface BindingTarget {
+  name: string;
+  node: ts.Node;
+  property?: string;
+}
+
+function bindingTargets(name: ts.BindingName): BindingTarget[] {
   if (ts.isIdentifier(name)) {
     return [{ name: name.text, node: name }];
   }
-  const targets: Array<{ name: string; node: ts.Node }> = [];
+  const targets: BindingTarget[] = [];
   for (const element of name.elements) {
-    if (ts.isBindingElement(element)) {
-      targets.push(...bindingTargets(element.name));
+    if (!ts.isBindingElement(element)) {
+      continue;
+    }
+    const property = ts.isObjectBindingPattern(name)
+      ? (element.propertyName && ts.isIdentifier(element.propertyName) ? element.propertyName.text : ts.isIdentifier(element.name) ? element.name.text : undefined)
+      : undefined;
+    for (const leaf of bindingTargets(element.name)) {
+      // Only a DIRECT leaf (the element's own identifier) gets this element's
+      // property; a nested-pattern leaf keeps its own (undefined) property.
+      targets.push({ ...leaf, property: leaf.node === element.name ? property : leaf.property });
     }
   }
   return targets;
+}
+
+// The text of the member type for `property` within a type-literal annotation, so
+// a destructured leaf's signature reflects only its own member. Undefined when the
+// annotation is absent, not a type literal, or has no matching member.
+function memberTypeText(typeNode: ts.TypeNode | undefined, property: string, slice: (node: ts.Node, stop: number) => string): string | undefined {
+  if (!typeNode || !ts.isTypeLiteralNode(typeNode)) {
+    return undefined;
+  }
+  for (const member of typeNode.members) {
+    if (ts.isPropertySignature(member) && member.type && ts.isIdentifier(member.name) && member.name.text === property) {
+      return slice(member.type, member.type.end);
+    }
+  }
+  return undefined;
 }
 
 // --- helpers ---------------------------------------------------------------
