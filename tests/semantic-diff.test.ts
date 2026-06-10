@@ -229,6 +229,83 @@ test("review-surfaces.SEMANTIC_DIFF.2 detects interface body and type alias chan
   assert.ok(change.signatures_changed.some((s) => s.name === "Result"), "type alias RHS change is a signature change");
 });
 
+// review-surfaces.SEMANTIC_DIFF.1: a contract change inside an array field's
+// `items` schema is not invisible.
+test("review-surfaces.SEMANTIC_DIFF.1 recurses into array item schemas", () => {
+  const path = "schemas/tags.schema.json";
+  const oldSchema = JSON.stringify({ properties: { tags: { type: "array", items: { type: "string" } } } });
+  const newSchema = JSON.stringify({ properties: { tags: { type: "array", items: { type: "number" } } } });
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: oldSchema }, { [path]: newSchema })).schema_changes[0];
+  assert.ok(change, "a change inside items is reported");
+  assert.ok(change.type_changes.some((t) => t.field === "properties.tags.items" && t.from === "string" && t.to === "number"), "items.type change captured");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a renamed module surfaces the removed old
+// import path as well as the added new one.
+test("review-surfaces.SEMANTIC_DIFF.2 reports removed exports at a renamed module's old path", () => {
+  const oldPath = "src/api.ts";
+  const newPath = "src/api2.ts";
+  const diffText = [
+    `diff --git a/${oldPath} b/${newPath}`,
+    "similarity index 90%",
+    `rename from ${oldPath}`,
+    `rename to ${newPath}`,
+    `--- a/${oldPath}`,
+    `+++ b/${newPath}`,
+    "@@ -1,1 +1,1 @@",
+    "-export const moved = 1;",
+    "+export const moved = 2;",
+    ""
+  ].join("\n");
+  // Base content lives at the OLD path; head content at the new path.
+  const change = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(diffText),
+    readBase: (p) => (p === oldPath ? "export const moved = 1;\nexport const dropped = 9;" : undefined),
+    readHead: (p) => (p === newPath ? "export const moved = 2;" : undefined)
+  }).api_changes[0];
+  assert.ok(change, "a renamed module produces an API change");
+  assert.deepEqual(change.exports_removed, ["dropped"], "the export only in the old version is reported removed");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a multi-line exported function signature is
+// captured whole (param/return type changes on continuation lines are detected).
+test("review-surfaces.SEMANTIC_DIFF.2 captures multi-line function signatures", () => {
+  const path = "src/build.ts";
+  const oldText = "export function build(\n  a: string,\n  b: number\n): Result {\n  return x;\n}\n";
+  const newText = "export function build(\n  a: string,\n  b: string\n): Result {\n  return x;\n}\n";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: oldText }, { [path]: newText })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "build"), "param-type change on a continuation line is a signature change");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: default-exported function/class APIs are
+// tracked.
+test("review-surfaces.SEMANTIC_DIFF.2 detects default-exported signature changes", () => {
+  const path = "src/handler.ts";
+  const oldText = "export default function handler(req: Req): void {}\n";
+  const newText = "export default function handler(req: Req, res: Res): void {}\n";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: oldText }, { [path]: newText })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "handler"), "default export signature change captured");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a semicolon-less type alias does not swallow
+// the exports that follow it.
+test("review-surfaces.SEMANTIC_DIFF.2 a semicolonless type alias does not swallow later exports", () => {
+  const path = "src/nosemi.ts";
+  // No semicolons (e.g. a project with ASI/no-semi style).
+  const oldText = "export type Result = A | B\nexport const after = 1\n";
+  const newText = "export type Result = A | B\nexport const after = 2\nexport const added = 3\n";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: oldText }, { [path]: newText })).api_changes[0];
+  assert.ok(change, "an API change is reported");
+  // `added` must be seen as a new export, not swallowed into the type alias.
+  assert.deepEqual(change.exports_added, ["added"]);
+  // The type alias itself did not change, so it must NOT be a fabricated signature change.
+  assert.ok(!change.signatures_changed.some((s) => s.name === "Result"), "the unchanged alias is not a fabricated change");
+});
+
 // A test file is not treated as an API surface.
 test("review-surfaces.SEMANTIC_DIFF.2 ignores test files for API surface", () => {
   const path = "tests/x.test.ts";

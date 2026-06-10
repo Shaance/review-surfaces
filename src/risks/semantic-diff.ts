@@ -12,7 +12,7 @@
 // (head) readers; tests provide fakes. Schema/API diffs need both file versions;
 // test-weakening is computed from the diff hunks alone.
 
-import { StructuredDiff } from "../pr/contract";
+import { StructuredDiff, StructuredDiffFile } from "../pr/contract";
 import { isTestPath } from "../scope/pr-scope";
 
 export interface SchemaContractChange {
@@ -82,7 +82,7 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
         schema_changes.push(change);
       }
     } else if (isTypeScriptSourcePath(file.path)) {
-      const change = diffApiSurfaceFile(file.path, sources);
+      const change = diffApiSurfaceFile(file, sources);
       if (change) {
         api_changes.push(change);
       }
@@ -186,6 +186,32 @@ function diffSchemaNode(oldNode: unknown, newNode: unknown, pointer: string, cha
       }
     }
   }
+
+  // Subschema keywords whose value is itself a schema (or, for `items`, possibly a
+  // tuple array of schemas). Recurse so a contract change inside an array element
+  // (e.g. `properties.tags.items.type` string→number) is not invisible.
+  for (const keyword of ["items", "additionalItems", "contains", "additionalProperties", "propertyNames", "not"]) {
+    const oldChild = oldNode[keyword];
+    const newChild = newNode[keyword];
+    if (Array.isArray(oldChild) && Array.isArray(newChild)) {
+      const count = Math.min(oldChild.length, newChild.length);
+      for (let index = 0; index < count; index += 1) {
+        diffSchemaNode(oldChild[index], newChild[index], `${pointer ? `${pointer}.` : ""}${keyword}[${index}]`, change);
+      }
+    } else {
+      diffSchemaNode(oldChild, newChild, fieldPath(pointer, keyword), change);
+    }
+  }
+
+  // Schema composition keywords (arrays of subschemas): recurse positionally.
+  for (const keyword of ["allOf", "anyOf", "oneOf"]) {
+    const oldBranch = Array.isArray(oldNode[keyword]) ? (oldNode[keyword] as unknown[]) : [];
+    const newBranch = Array.isArray(newNode[keyword]) ? (newNode[keyword] as unknown[]) : [];
+    const count = Math.min(oldBranch.length, newBranch.length);
+    for (let index = 0; index < count; index += 1) {
+      diffSchemaNode(oldBranch[index], newBranch[index], `${pointer ? `${pointer}.` : ""}${keyword}[${index}]`, change);
+    }
+  }
 }
 
 function isEmptySchemaChange(change: SchemaContractChange): boolean {
@@ -211,11 +237,12 @@ function detectTestWeakening(diff: StructuredDiff): TestWeakeningSignal[] {
   const signals: TestWeakeningSignal[] = [];
   for (const file of diff.files) {
     if (isSnapshotPath(file.path)) {
-      // Only a MODIFIED snapshot is a regeneration that could mask a regression.
-      // A newly-added snapshot (status "A") is a new test's first snapshot — there
-      // is no prior baseline it could have been regenerated over — so it is not a
-      // weakening signal.
-      if (file.status === "modified") {
+      // A regeneration that could mask a regression requires a prior baseline:
+      // fire for a MODIFIED snapshot, and for a RENAMED one that was also edited
+      // (status "R" with hunks). A newly-added snapshot (status "A") is a new
+      // test's first snapshot — no prior baseline — so it is not weakening.
+      const editedRename = file.status === "R" && file.hunks.length > 0;
+      if (file.status === "modified" || editedRename) {
         signals.push({ kind: "regenerated_snapshot", path: file.path, detail: "Snapshot file changed; confirm it was regenerated for an intended behavior change, not to mask a regression." });
       }
       continue;
@@ -266,8 +293,12 @@ function isTypeScriptSourcePath(path: string): boolean {
   return (/\.tsx?$/.test(path) && !/\.d\.ts$/.test(path)) && !isTestPath(path);
 }
 
-function diffApiSurfaceFile(path: string, sources: SemanticDiffSources): ApiSurfaceChange | undefined {
-  const oldText = sources.readBase(path);
+function diffApiSurfaceFile(file: StructuredDiffFile, sources: SemanticDiffSources): ApiSurfaceChange | undefined {
+  const path = file.path;
+  // For a renamed module the previous content lives at old_path, so the removed
+  // export at the old import path is surfaced (not silently treated as absent).
+  const basePath = file.old_path && file.old_path !== path ? file.old_path : path;
+  const oldText = sources.readBase(basePath);
   const newText = sources.readHead(path);
   // A file present on neither side is not analyzable.
   if (oldText === undefined && newText === undefined) {
@@ -301,16 +332,25 @@ function diffApiSurfaceFile(path: string, sources: SemanticDiffSources): ApiSurf
 
 // Bounded export extractor: maps an exported symbol name to a normalized
 // signature string. Not a full TS parse, but the signature carries enough of the
-// declaration to detect breaking shape changes: for function/const/class the head
-// (params, return type, extends), and for interface/type/enum the full body/RHS —
-// so adding a required interface member or changing a type alias is a
-// signature change, not invisible.
-const EXPORT_DECL = /^export\s+(?:declare\s+)?(?:async\s+)?(function|const|let|var|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)([^\n{=;]*)/;
+// declaration to detect breaking shape changes:
+//   - interface/type/enum: the full body/RHS (a member addition or alias change
+//     is a signature change), captured by balancing braces / running to the `;`.
+//   - function/class (incl. `export default function/class`): the multi-line head
+//     up to the body `{` or terminating `;` (so a param-type or return-type change
+//     across continuation lines is captured), excluding the implementation body.
+//   - const/let/var: the single-line head only (the initializer is not contract).
+// Known bounds (regex-altitude, by design): overload sets collapse to the last
+// signature; namespace/`export *` re-exports and value default exports
+// (`export default someExpr`) are not tracked.
+const EXPORT_DECL = /^export\s+(?:default\s+)?(?:declare\s+)?(?:async\s+)?(function|const|let|var|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)([^\n{=;]*)/;
 
 // A declaration whose contract is its body/RHS rather than its head. (A class
 // body is intentionally excluded — it is implementation-heavy and member-level
 // tracking is beyond this regex-altitude extractor.)
 const BODY_DEFINING = new Set(["interface", "type", "enum"]);
+// A declaration whose contract spans a multi-line head (params/return/extends)
+// but whose implementation body must NOT be captured.
+const HEAD_DEFINING = new Set(["function", "class"]);
 const MAX_DECL_LINES = 400;
 
 function extractExports(source: string): Map<string, string> {
@@ -320,13 +360,17 @@ function extractExports(source: string): Map<string, string> {
     const line = lines[index].trim();
     const match = EXPORT_DECL.exec(line);
     if (match) {
-      const [, keyword, name, rest] = match;
+      const [, keyword, name] = match;
       if (BODY_DEFINING.has(keyword)) {
-        const declaration = captureDeclaration(lines, index);
+        const declaration = captureDeclaration(lines, index, "body");
+        exports.set(name, normalizeSignature(declaration.text));
+        index = declaration.endIndex;
+      } else if (HEAD_DEFINING.has(keyword)) {
+        const declaration = captureDeclaration(lines, index, "head");
         exports.set(name, normalizeSignature(declaration.text));
         index = declaration.endIndex;
       } else {
-        exports.set(name, normalizeSignature(`${keyword} ${name}${rest}`));
+        exports.set(name, normalizeSignature(line.replace(/\s*=.*/, "")));
       }
       continue;
     }
@@ -348,32 +392,58 @@ function normalizeSignature(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-// Capture a full single-statement declaration starting at `startIndex`, joining
-// continuation lines until the statement closes: the first `;` at bracket depth 0
-// (type aliases), or the line where an opened `{`/`(`/`[` balances back to 0
-// (interface/enum/object bodies). Bounded by MAX_DECL_LINES so a malformed or
-// unterminated source can never loop unboundedly; base and head are captured by
-// the same rule, so a real body change is detected and a non-change is not.
-function captureDeclaration(lines: string[], startIndex: number): { text: string; endIndex: number } {
+const CONTINUATION = /[=|&,(<[:?+\-*/]$|\b(?:extends|implements|keyof|typeof|infer|in)$/;
+
+// Capture a single declaration starting at `startIndex`, joining continuation
+// lines until the statement closes. "body" mode runs through the matching closing
+// brace / terminating `;` (interface/type/enum). "head" mode stops at the body
+// `{` so the implementation is excluded (function/class). A semicolon-less,
+// brace-less statement (e.g. `export type X = A | B` in a no-semicolon project)
+// is terminated by lookahead — the line whose successor begins a new top-level
+// construct — so it never swallows the exports that follow it. Bounded by
+// MAX_DECL_LINES; base and head are captured by the same rule, so a real change
+// is detected and a non-change is not.
+function captureDeclaration(lines: string[], startIndex: number, mode: "body" | "head"): { text: string; endIndex: number } {
   let depth = 0;
   let opened = false;
   const parts: string[] = [];
   const end = Math.min(lines.length, startIndex + MAX_DECL_LINES);
   for (let index = startIndex; index < end; index += 1) {
-    const line = lines[index];
-    parts.push(line.trim());
-    for (const char of line) {
-      if (char === "{" || char === "(" || char === "[") {
+    const raw = lines[index];
+    const trimmed = raw.trim();
+    for (let cursor = 0; cursor < raw.length; cursor += 1) {
+      const char = raw[cursor];
+      if (char === "{") {
+        if (mode === "head" && depth === 0) {
+          // The implementation body begins here; record the head up to (not
+          // including) the brace and stop.
+          parts.push(raw.slice(0, cursor).trim());
+          return { text: parts.join(" "), endIndex: index };
+        }
+        depth += 1;
+        opened = true;
+      } else if (char === "(" || char === "[") {
         depth += 1;
         opened = true;
       } else if (char === "}" || char === ")" || char === "]") {
         depth -= 1;
       } else if (char === ";" && depth <= 0) {
+        parts.push(trimmed);
         return { text: parts.join(" "), endIndex: index };
       }
     }
+    parts.push(trimmed);
     if (opened && depth <= 0) {
       return { text: parts.join(" "), endIndex: index };
+    }
+    // Semicolon-less / brace-less termination: if nothing is open and this line
+    // does not end with a continuation token, the statement is complete unless the
+    // next line is plainly a continuation of it.
+    if (depth <= 0 && trimmed.length > 0 && !CONTINUATION.test(trimmed)) {
+      const next = (lines[index + 1] ?? "").trim();
+      if (next === "" || /^(export|import|\}|\/\/|\/\*|\*|function|const|let|var|class|interface|type|enum|declare|@)/.test(next)) {
+        return { text: parts.join(" "), endIndex: index };
+      }
     }
   }
   return { text: parts.join(" "), endIndex: end - 1 };
