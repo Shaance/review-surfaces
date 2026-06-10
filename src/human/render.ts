@@ -926,7 +926,10 @@ function renderTrustMissingRollups(items: MissingEvidenceSummary[], limit: numbe
   const groups = rollupBy(
     items,
     (item) => normalizeAcidTemplate(item.summary),
-    (item) => rollupAcids([], item.summary)
+    // Collect ACIDs from the structured evidence metadata as well as the summary
+    // text, so a gap that carries its requirement only in EvidenceRef.acai_id
+    // still contributes to the rolled-up Requirements list.
+    (item) => rollupAcids(evidenceAcids(item.evidence), item.summary)
   );
   return bullets(
     groups.slice(0, limit).map((group) => {
@@ -949,6 +952,12 @@ function renderTrustMissingRollups(items: MissingEvidenceSummary[], limit: numbe
 function endSentence(text: string): string {
   const trimmed = text.replace(/[\s.]+$/, "");
   return trimmed.length === 0 ? "" : `${trimmed}.`;
+}
+
+// Acai IDs carried in structured evidence metadata (EvidenceRef.acai_id), used
+// by rollups whose items keep the requirement in evidence rather than in prose.
+function evidenceAcids(evidence: EvidenceRef[]): string[] {
+  return evidence.flatMap((ref) => (ref.acai_id ? [ref.acai_id] : []));
 }
 
 // Union of explicitly mapped requirement IDs and any ACIDs embedded in the

@@ -309,6 +309,29 @@ test("review-surfaces.HUMAN_REVIEW.19 rollups preserve evidence across grouped i
   assert.match(cards, /evidence: direct 0, missing 2, invalid 0/, "evidence card rollup must show the unioned evidence mix");
 });
 
+// review-surfaces.HUMAN_REVIEW.19: a trust-gap rollup must list ACIDs that are
+// carried only in structured evidence metadata (EvidenceRef.acai_id), not just
+// those embedded in the summary prose.
+test("review-surfaces.HUMAN_REVIEW.19 trust rollup lists ACIDs from evidence metadata", () => {
+  const model = baseModel({
+    trust_audit: {
+      verified_facts: [],
+      claimed_not_verified: [],
+      missing_evidence: [1, 2].map((n) => ({
+        id: `ME-${n}`,
+        // Generic prose with NO ACID; the requirement lives only in evidence.
+        summary: "Missing implementation evidence for a required area.",
+        evidence: [{ kind: "file" as const, path: `src/x${n}.ts`, acai_id: `review-surfaces.SEMANTIC_DIFF.${n}`, confidence: "medium" as const }]
+      })),
+      invalid_evidence: [],
+      confidence_summary: "Fixture."
+    }
+  });
+  const trust = renderHumanReviewMarkdown(model).split("Missing:")[1].split("\n\n")[0];
+  assert.match(trust, /review-surfaces\.SEMANTIC_DIFF\.1/, "must list ACID from evidence metadata");
+  assert.match(trust, /review-surfaces\.SEMANTIC_DIFF\.2/);
+});
+
 // review-surfaces.HUMAN_REVIEW.20: a diff line containing a ``` fence must not
 // prematurely close the excerpt's own fence.
 test("review-surfaces.HUMAN_REVIEW.20 uses a fence that diff content cannot close", () => {
