@@ -7,6 +7,8 @@ import { formatHunkHeader, hunkOverlapsRange } from "../collector/diff-hunks";
 import { buildFallbackNarrative } from "./narrative";
 import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTypeChanges, SchemaContractChange, SemanticChangeFacts, TestWeakeningSignal } from "../risks/semantic-diff";
 import { emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
+import { buildReviewPlan } from "./budget";
+import type { CoverageEvidence } from "./contract";
 import { comparisonRiskKey } from "../dogfood/compare";
 import { EvidenceRef, feedbackEvidence, fileEvidence, missingEvidence } from "../evidence/evidence";
 import { normalizeEvidencePath } from "../evidence/validate";
@@ -73,6 +75,10 @@ export interface BuildHumanReviewInput {
   // imports which changed impl) computed in the pipeline (needs head file
   // contents). Absent -> no test-change ranking modifier.
   rankingEvidence?: RankingEvidence;
+  // review-surfaces.COVERAGE.3/.4: per-changed-file coverage computed from an
+  // ingested lcov report in the pipeline. Absent -> status "no_report" (the
+  // honest negative; never a penalty).
+  coverageEvidence?: CoverageEvidence;
 }
 
 interface BuildReviewRoutesInput {
@@ -94,6 +100,7 @@ interface BuildEvidenceCardsInput {
   trustAudit: TrustAudit;
   riskLensFindings: RiskLensFinding[];
   testPlan: TestPlanItem[];
+  coverage?: CoverageEvidence;
 }
 
 interface QueueDraft {
@@ -294,13 +301,17 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   const suggestedComments = buildSuggestedComments(input, blockers, riskLensFindings, config, semanticFacts);
   const trustAudit = buildTrustAudit(input);
   const sinceLastReview = buildSinceLastReview(input);
+  const coverageEvidence: CoverageEvidence = input.coverageEvidence ?? { status: "no_report", files: [] };
+  // review-surfaces.BUDGET.1/.2: a pure post-ranking annotation; off by default.
+  const reviewPlan = buildReviewPlan(reviewQueue, input.diff, config.review_budget_minutes ?? undefined);
   const testPlan = buildTestPlan(input, feedbackEffects, riskLensFindings);
   const verdict = buildVerdict(input, blockers, trustAudit);
   const evidenceCards = buildEvidenceCards({
     blockers,
     trustAudit,
     riskLensFindings,
-    testPlan
+    testPlan,
+    coverage: coverageEvidence
   });
   const skimSafe = buildSkimSafe(input, feedbackEffects);
   const generatedFrom = buildGeneratedFrom(input);
@@ -346,6 +357,8 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     intent_mismatch: intentMismatch,
     review_routes: reviewRoutes,
     since_last_review: sinceLastReview,
+    coverage_evidence: coverageEvidence,
+    review_plan: reviewPlan,
     evidence_cards: evidenceCards,
     test_plan: testPlan,
     skim_safe: skimSafe,
@@ -381,6 +394,9 @@ export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): str
     // narrative_max_claims changes the rendered model, so a config-only change
     // to it must bust the cache / trigger a standalone rebuild.
     narrative_max_claims: resolved.narrative_max_claims,
+    // review-surfaces.BUDGET.1: a budget change (config or --budget) changes the
+    // rendered review_plan, so it must regenerate rather than serve stale cache.
+    review_budget_minutes: resolved.review_budget_minutes,
     required_manual_checks: resolved.required_manual_checks.map((check) => ({
       id: check.id,
       path_patterns: check.path_patterns,
@@ -435,6 +451,44 @@ function reviewRoute(
 
 function buildEvidenceCards(ctx: BuildEvidenceCardsInput): EvidenceCard[] {
   const cards: Array<{ draft: EvidenceCardDraft; score: number; sortKey: string }> = [];
+
+  // review-surfaces.COVERAGE.3: per-changed-file coverage cards. Uncovered and
+  // partial changed lines are the strongest deterministic "tests pass is weak
+  // evidence" signal; fully covered files need no card. A stale report is not
+  // trusted (COVERAGE.2), and no report emits no card (COVERAGE.4).
+  if (ctx.coverage?.status === "report" && ctx.coverage.postdates_head !== false) {
+    // review-surfaces.COVERAGE.3: PER-HUNK cards — name the exact hunk whose
+    // changed lines no test executes, not merely the file.
+    const hunkCards = ctx.coverage.files
+      .flatMap((file) => file.hunks.filter((hunk) => hunk.classification !== "covered").map((hunk) => ({ file, hunk })))
+      // Uncovered is the stronger signal: select it ahead of partial BEFORE the
+      // cap so a large diff cannot silently drop a fully uncovered hunk.
+      .sort((a, b) =>
+        (a.hunk.classification === "uncovered" ? 0 : 1) - (b.hunk.classification === "uncovered" ? 0 : 1) ||
+        (a.file.path < b.file.path ? -1 : a.file.path > b.file.path ? 1 : 0) ||
+        (a.hunk.hunk_header < b.hunk.hunk_header ? -1 : 1)
+      )
+      .slice(0, 4);
+    for (const { file, hunk } of hunkCards) {
+      const summary = `${hunk.covered_lines} of ${hunk.changed_lines} changed line(s) in \`${file.path}\` ${hunk.hunk_header} are executed by tests.`;
+      cards.push({
+        score: 60 + (hunk.classification === "uncovered" ? 20 : 0),
+        sortKey: `coverage:${file.path}:${hunk.hunk_header}`,
+        draft: evidenceCardDraft({
+          title: hunk.classification === "uncovered" ? "Changed lines uncovered" : "Changed lines partially covered",
+          summary,
+          evidence: [{ kind: "file", path: file.path, confidence: "high" }],
+          why_it_matters: "Passing tests are weak evidence for changed lines that no test executes.",
+          reviewer_action: "Inspect the uncovered changed lines or add a test that executes them.",
+          source_ids: [`coverage:${file.path}:${hunk.hunk_header}`],
+          risk_ids: [],
+          requirement_ids: [],
+          priority: hunk.classification === "uncovered" ? "high" : "medium",
+          confidence: "high"
+        })
+      });
+    }
+  }
 
   for (const blocker of ctx.blockers.slice(0, 6)) {
     const blockerEvidence = evidenceForBlockerCard(blocker);
@@ -1841,6 +1895,15 @@ function applyRankingEvidence(drafts: QueueDraft[], input: BuildHumanReviewInput
   const changedTestsByImpl = evidence.changed_tests_by_impl;
   const untestedImplPaths = untestedChangedImplPaths(input.prSurface);
   const changedImplPaths = changedImplPathSet(input.prSurface);
+  // review-surfaces.COVERAGE.3: a current (non-stale) report feeds the score;
+  // a stale report is recorded but never trusted (COVERAGE.2), and no report
+  // means no coverage signal at all (COVERAGE.4 — absence is never a penalty).
+  const coverage = input.coverageEvidence;
+  const coverageByPath = new Map(
+    coverage?.status === "report" && coverage.postdates_head !== false
+      ? coverage.files.map((file) => [file.path, file] as const)
+      : []
+  );
   for (const draft of drafts) {
     const reasons: string[] = [];
     const tests = changedTestsByImpl[draft.path];
@@ -1856,6 +1919,21 @@ function applyRankingEvidence(drafts: QueueDraft[], input: BuildHumanReviewInput
       // treats equally) — so name both, not transcript alone.
       draft.evidenceTier = 1;
       reasons.push("a changed test or current-head transcript covers this file's review area, so it ranks lower among equal-severity items");
+    }
+    const fileCoverage = coverageByPath.get(draft.path);
+    if (fileCoverage) {
+      if (fileCoverage.classification === "uncovered") {
+        draft.evidenceTier = Math.min(draft.evidenceTier ?? 0, -1);
+        reasons.push(`none of its ${fileCoverage.changed_lines} changed line(s) are executed by any test, so it ranks higher among equal-severity items`);
+      } else if (fileCoverage.classification === "covered") {
+        draft.evidenceTier = Math.max(draft.evidenceTier ?? 0, 1);
+        reasons.push(`all ${fileCoverage.changed_lines} changed line(s) are executed by tests, so it ranks lower among equal-severity items`);
+      } else {
+        // Partial coverage: uncovered changed lines remain — neutralize any
+        // demotion from co-changed tests rather than leaving it purely prose.
+        draft.evidenceTier = Math.min(draft.evidenceTier ?? 0, 0);
+        reasons.push(`${fileCoverage.covered_lines} of ${fileCoverage.changed_lines} changed line(s) are executed by tests`);
+      }
     }
     if (reasons.length === 0) {
       reasons.push(defaultRankReason(draft));

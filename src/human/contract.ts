@@ -95,6 +95,9 @@ export interface HumanReviewBuildConfig {
   // review-surfaces.NARRATIVE: bounded count of rendered narrative claims
   // (YAML: human_review.narrative.max_claims).
   narrative_max_claims: number;
+  // review-surfaces.BUDGET.1: review time budget in whole minutes (YAML:
+  // human_review.review_budget, e.g. "15m"/"1h"; --budget overrides). null = off.
+  review_budget_minutes: number | null;
 }
 
 export interface HumanReviewRequiredManualCheckConfig {
@@ -104,6 +107,7 @@ export interface HumanReviewRequiredManualCheckConfig {
 }
 
 export const DEFAULT_HUMAN_REVIEW_BUILD_CONFIG: HumanReviewBuildConfig = {
+  review_budget_minutes: null,
   max_review_first: 20,
   max_suggested_comments: 10,
   max_questions: 10,
@@ -415,6 +419,51 @@ export interface FeedbackPolicyEffect {
   confidence: PacketConfidence;
 }
 
+// review-surfaces.COVERAGE.3/.4: per-changed-file coverage evidence computed by
+// intersecting an ingested lcov report with the changed lines of each hunk.
+// status "no_report" is the honest negative — distinct from "uncovered" — and a
+// repository is never penalized for not providing coverage.
+export interface CoverageEvidenceHunk {
+  hunk_header: string;
+  changed_lines: number;
+  covered_lines: number;
+  classification: "covered" | "uncovered" | "partial";
+}
+
+export interface CoverageEvidenceFile {
+  path: string;
+  changed_lines: number;
+  covered_lines: number;
+  classification: "covered" | "uncovered" | "partial";
+  // review-surfaces.COVERAGE.3: the per-hunk breakdown the evidence cards cite.
+  hunks: CoverageEvidenceHunk[];
+}
+
+export interface CoverageEvidence {
+  status: "no_report" | "report";
+  source_path?: string;
+  // False when the report predates the head commit (stale, not trusted).
+  postdates_head?: boolean;
+  files: CoverageEvidenceFile[];
+}
+
+// review-surfaces.BUDGET.2: the explicit read/skim/defer cut under a time
+// budget. enabled=false (the default) renders nothing.
+export interface ReviewPlanItem {
+  queue_item_id: string;
+  path: string;
+  estimated_minutes: number;
+  reason?: string;
+}
+
+export interface ReviewPlan {
+  enabled: boolean;
+  budget_minutes?: number;
+  read: ReviewPlanItem[];
+  skim: ReviewPlanItem[];
+  defer: ReviewPlanItem[];
+}
+
 export interface HumanReviewModel {
   schema_version: typeof HUMAN_REVIEW_SCHEMA_VERSION;
   mode: "pr" | "repo";
@@ -438,6 +487,8 @@ export interface HumanReviewModel {
   intent_mismatch: IntentMismatch;
   review_routes: ReviewRoute[];
   since_last_review: SinceLastReview;
+  coverage_evidence: CoverageEvidence;
+  review_plan: ReviewPlan;
   evidence_cards: EvidenceCard[];
   test_plan: TestPlanItem[];
   skim_safe: SkimSafeItem[];

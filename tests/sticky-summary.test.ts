@@ -77,6 +77,8 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
     intent_mismatch: { expected_by_spec: [], observed_in_diff: [], possible_mismatches: [], possible_overreach: [], missing_intent: [] },
     review_routes: [],
     since_last_review: emptySince(),
+    coverage_evidence: { status: "no_report", files: [] },
+    review_plan: { enabled: false, read: [], skim: [], defer: [] },
     evidence_cards: [],
     test_plan: [],
     skim_safe: [],

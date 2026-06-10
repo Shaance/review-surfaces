@@ -20,6 +20,8 @@
     "intent_mismatch",
     "review_routes",
     "since_last_review",
+    "coverage_evidence",
+    "review_plan",
     "evidence_cards",
     "test_plan",
     "skim_safe",
@@ -118,6 +120,56 @@
     },
     "since_last_review": {
       "$ref": "#/$defs/sinceLastReview"
+    },
+    "review_plan": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["enabled", "read", "skim", "defer"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "budget_minutes": { "type": "integer", "minimum": 1 },
+        "read": { "type": "array", "items": { "$ref": "#/$defs/reviewPlanItem" } },
+        "skim": { "type": "array", "items": { "$ref": "#/$defs/reviewPlanItem" } },
+        "defer": { "type": "array", "items": { "$ref": "#/$defs/reviewPlanItem" } }
+      }
+    },
+    "coverage_evidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["status", "files"],
+      "properties": {
+        "status": { "enum": ["no_report", "report"] },
+        "source_path": { "type": "string" },
+        "postdates_head": { "type": "boolean" },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["path", "changed_lines", "covered_lines", "classification", "hunks"],
+            "properties": {
+              "path": { "type": "string" },
+              "changed_lines": { "type": "integer", "minimum": 0 },
+              "covered_lines": { "type": "integer", "minimum": 0 },
+              "classification": { "enum": ["covered", "uncovered", "partial"] },
+              "hunks": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "required": ["hunk_header", "changed_lines", "covered_lines", "classification"],
+                  "properties": {
+                    "hunk_header": { "type": "string" },
+                    "changed_lines": { "type": "integer", "minimum": 0 },
+                    "covered_lines": { "type": "integer", "minimum": 0 },
+                    "classification": { "enum": ["covered", "uncovered", "partial"] }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     },
     "test_plan": {
       "type": "array",
@@ -332,6 +384,17 @@
           "items": { "$ref": "#/$defs/evidenceRef" }
         },
         "required_action": { "type": "string" }
+      }
+    },
+    "reviewPlanItem": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["queue_item_id", "path", "estimated_minutes"],
+      "properties": {
+        "queue_item_id": { "type": "string" },
+        "path": { "type": "string" },
+        "estimated_minutes": { "type": "integer", "minimum": 1 },
+        "reason": { "type": "string" }
       }
     },
     "reviewQueueItem": {

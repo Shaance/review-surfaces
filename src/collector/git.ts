@@ -225,6 +225,12 @@ export function readFileAtRef(cwd: string, ref: string, filePath: string): strin
   return git(cwd, ["show", `${ref}:${filePath}`]);
 }
 
+// Committer time of a ref as ISO-8601, for coverage-report staleness checks
+// (a report older than the head commit cannot describe the reviewed code).
+export function commitTimeAtRef(cwd: string, ref: string): string | undefined {
+  return git(cwd, ["show", "-s", "--format=%cI", ref]);
+}
+
 // True only when ref:path is a BLOB (a file). `git show ref:dir` succeeds with a
 // tree listing, so a show-based existence check would treat directories as files.
 export function blobExistsAtRef(cwd: string, ref: string, filePath: string): boolean {

@@ -309,6 +309,67 @@ function structuredDiffFixture() {
   ].join("\n"));
 }
 
+test("review-surfaces.COVERAGE.3 a current report feeds ranking reasons and emits uncovered/partial evidence cards", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    prSurface: prSurfaceFixture(),
+    diff: structuredDiffFixture(),
+    coverageEvidence: {
+      status: "report",
+      source_path: "coverage/lcov.info",
+      postdates_head: true,
+      files: [
+        {
+          path: "schemas/human_review.schema.json",
+          changed_lines: 4,
+          covered_lines: 0,
+          classification: "uncovered",
+          hunks: [{ hunk_header: "@@ -70,2 +70,3 @@", changed_lines: 4, covered_lines: 0, classification: "uncovered" }]
+        }
+      ]
+    }
+  });
+  const uncoveredItem = model.review_queue.find((i) => i.path === "schemas/human_review.schema.json");
+  assert.ok(uncoveredItem?.ranking_reasons.some((r) => /none of its 4 changed line\(s\) are executed by any test/.test(r)));
+  const card = model.evidence_cards.find((c) => c.title === "Changed lines uncovered");
+  assert.ok(card, "uncovered changed lines produce an evidence card");
+  assert.match(card.summary, /0 of 4 changed line\(s\)/);
+  assert.equal(model.coverage_evidence.status, "report");
+});
+
+test("review-surfaces.COVERAGE.2 a stale report (predates head) is recorded but never trusted as ranking or card evidence", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    prSurface: prSurfaceFixture(),
+    diff: structuredDiffFixture(),
+    coverageEvidence: {
+      status: "report",
+      source_path: "coverage/lcov.info",
+      postdates_head: false,
+      files: [
+        {
+          path: "src/human/human-review.ts",
+          changed_lines: 4,
+          covered_lines: 0,
+          classification: "uncovered",
+          hunks: [{ hunk_header: "@@ -220,2 +220,3 @@", changed_lines: 4, covered_lines: 0, classification: "uncovered" }]
+        }
+      ]
+    }
+  });
+  assert.equal(model.coverage_evidence.postdates_head, false);
+  assert.ok(!model.review_queue.some((i) => i.ranking_reasons.some((r) => /executed by any test/.test(r))));
+  assert.ok(!model.evidence_cards.some((c) => c.title === "Changed lines uncovered"));
+});
+
+test("review-surfaces.COVERAGE.4 no report renders the honest negative, never a penalty", () => {
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
+  assert.equal(model.coverage_evidence.status, "no_report");
+  const markdown = renderHumanReviewMarkdown(model);
+  assert.match(markdown, /No coverage evidence: no coverage report was provided\. This is different from changed lines being uncovered\./);
+  assert.ok(!model.review_queue.some((i) => i.ranking_reasons.some((r) => /uncovered|executed by any test/.test(r))));
+});
+
 test("review-surfaces.RANKING.2 every review-queue item carries a why-ranked-here line", () => {
   const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
   assert.ok(model.review_queue.length > 0);

@@ -66,6 +66,8 @@ const HUMAN_REQUIRED_DEFAULTS = {
       invalid_evidence: { before: 0, after: 0, delta: 0 }
     }
   },
+  coverage_evidence: { status: "no_report", files: [] },
+  review_plan: { enabled: false, read: [], skim: [], defer: [] },
   evidence_cards: [],
   feedback_effects: []
 };

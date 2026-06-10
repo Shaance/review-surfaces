@@ -10,6 +10,9 @@ import { blobExistsAtRef, readFileAtRef, resolveGitRefSha, resolveMergeBaseSha }
 import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { computeRankingEvidence, emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { isTestPath } from "../scope/pr-scope";
+import { intersectCoverageWithDiff } from "../tests-evidence/lcov";
+import { parseBudgetDuration } from "../human/budget";
+import type { CoverageEvidence } from "../human/contract";
 import { PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
 import { CliError, ExitCodes } from "../core/exit-codes";
@@ -256,6 +259,7 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
   // to defaults when the file is absent, and the "missing" sentinel covers that.
   const configPath = stringFlag(parsed, "config") ?? "review-surfaces.config.yaml";
   const config = await loadConfig(cwd, configPath);
+  applyBudgetFlag(parsed, config);
   const specFlag = stringFlag(parsed, "spec");
   const runConfig = specFlag ? { ...config, specs: [specFlag] } : config;
   const provider = providerFlag(parsed, runConfig);
@@ -1090,9 +1094,11 @@ async function runHandoffStage(parsed: ParsedArgs): Promise<void> {
 }
 
 async function runHumanStage(parsed: ParsedArgs): Promise<void> {
+  // (config budget override applied below once the config is loaded)
   const cwd = process.cwd();
   const outDir = await resolveOutputDir(cwd, parsed);
   const config = await loadConfig(cwd, stringFlag(parsed, "config") ?? "review-surfaces.config.yaml");
+  applyBudgetFlag(parsed, config);
   if (!config.human_review.enabled) {
     removeHumanReviewArtifacts(outDir);
     console.log(`Human review disabled by config; removed generated human review artifacts from ${path.relative(cwd, outDir) || "."}`);
@@ -1111,6 +1117,7 @@ async function runReviewWalkthrough(parsed: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
   const outDir = await resolveOutputDir(cwd, parsed);
   const config = await loadConfig(cwd, stringFlag(parsed, "config") ?? "review-surfaces.config.yaml");
+  applyBudgetFlag(parsed, config);
   if (!config.human_review.enabled) {
     throw new CliError("Human review is disabled by config; enable it to run the review walkthrough.", ExitCodes.usageError);
   }
@@ -1447,6 +1454,9 @@ function buildHumanReviewForPacket(
     // review-surfaces.RANKING.1: per-changed-impl-path evidence (changed test ->
     // impl import map) computed here so it is uniform on every build path.
     rankingEvidence: computeRankingEvidenceForPacket(cwd, packet, resolvedDiff),
+    // review-surfaces.COVERAGE.3/.4: intersect the collected lcov model (if any)
+    // with the diff; absent report -> the honest "no_report" negative.
+    coverageEvidence: computeCoverageEvidenceForPacket(outDir, resolvedDiff),
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
@@ -1533,6 +1543,54 @@ function computeRankingEvidenceForPacket(cwd: string, packet: ReviewPacket, diff
       }
     : (repoRelativePath: string): boolean => blobExistsAtRef(cwd, headSha, repoRelativePath);
   return computeRankingEvidence({ diff, isTestPath, readHead, exists });
+}
+
+// review-surfaces.COVERAGE.3/.4: read the collected lcov model written by
+// collect (inputs/coverage.json) and intersect it with the changed lines per
+// hunk. Missing/unreadable report or empty diff -> status "no_report".
+function computeCoverageEvidenceForPacket(outDir: string, diff: StructuredDiff | undefined): CoverageEvidence {
+  const noReport: CoverageEvidence = { status: "no_report", files: [] };
+  const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
+  const coveragePath = path.join(outputDir, "inputs", "coverage.json");
+  if (!diff || diff.files.length === 0 || !fileExists(coveragePath)) {
+    return noReport;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(coveragePath, "utf8"));
+  } catch {
+    return noReport;
+  }
+  const record = parsed as {
+    source_path?: string;
+    postdates_head?: boolean;
+    files?: Record<string, { instrumented: number[]; covered: number[] }>;
+  };
+  if (!record.files || typeof record.files !== "object") {
+    return noReport;
+  }
+  return {
+    status: "report",
+    source_path: typeof record.source_path === "string" ? record.source_path : undefined,
+    postdates_head: record.postdates_head === true,
+    files: intersectCoverageWithDiff(diff, { files: record.files })
+  };
+}
+
+// review-surfaces.BUDGET.1: --budget <duration> overrides the config default
+// (off). An unparseable duration is a usage error, not a silent off.
+function applyBudgetFlag(parsed: ParsedArgs, config: ReviewSurfacesConfig): void {
+  const raw = parsed.flags["budget"];
+  if (raw === undefined) {
+    return;
+  }
+  // A bare `--budget` (no value / followed by another flag) parses as boolean
+  // true; that must be a loud usage error, not a silent "budget off".
+  const minutes = typeof raw === "string" ? parseBudgetDuration(raw) : undefined;
+  if (minutes === undefined) {
+    throw new CliError(`Invalid --budget: ${raw === true ? "(no value)" : String(raw)}. Use forms like 15m, 1h, or 1h30m.`, ExitCodes.usageError);
+  }
+  config.human_review.review_budget_minutes = minutes;
 }
 
 function readHumanReviewDiff(outDir: string): StructuredDiff | undefined {
@@ -2045,6 +2103,7 @@ async function runCommentGithub(parsed: ParsedArgs): Promise<number> {
   // and miss a config-set output_dir.
   const outDir = await resolveOutputDir(cwd, parsed);
   const config = await loadConfig(cwd, stringFlag(parsed, "config") ?? "review-surfaces.config.yaml");
+  applyBudgetFlag(parsed, config);
 
   // PR mode renders the diff-scoped surface and NEVER falls back to the
   // whole-repo comment when it is missing/blocked.

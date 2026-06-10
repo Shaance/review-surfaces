@@ -139,6 +139,36 @@
           "additionalProperties": {
             "type": "string"
           }
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source_path",
+            "algorithm",
+            "hash",
+            "postdates_head"
+          ],
+          "properties": {
+            "source_path": {
+              "type": "string"
+            },
+            "algorithm": {
+              "const": "sha256"
+            },
+            "hash": {
+              "type": "string"
+            },
+            "head_committed_at": {
+              "type": "string"
+            },
+            "report_modified_at": {
+              "type": "string"
+            },
+            "postdates_head": {
+              "type": "boolean"
+            }
+          }
         }
       }
     },

@@ -193,6 +193,14 @@ ${renderBlockers(model)}
 
 ${renderSinceLastReviewSummary(sinceLastReview(model))}
 
+## Coverage evidence
+
+${renderCoverageEvidence(model)}
+
+## Review plan
+
+${renderReviewPlan(model)}
+
 ## Intent mismatch
 
 ${renderIntentMismatchSummary(intentMismatch(model))}
@@ -765,6 +773,47 @@ ${hunkLine}   - Why it matters: ${field(item.reason)}
    - Evidence: ${evidenceList(item.evidence)}`;
     })
     .join("\n\n");
+}
+
+// review-surfaces.BUDGET.1/.2: the explicit read/skim/defer cut. Off (the
+// default) renders a single note; estimates are stated as estimates. Blockers
+// are budget-exempt and the render says so on the item.
+function renderReviewPlan(model: HumanReviewModel): string {
+  const plan = model.review_plan;
+  if (!plan || !plan.enabled) {
+    return "- No time budget configured (pass --budget 15m or set human_review.review_budget).";
+  }
+  const group = (label: string, items: typeof plan.read): string =>
+    `${label}:\n${items.length === 0 ? "- None." : items.map((item) => `- \`${field(item.path)}\` (~${item.estimated_minutes} min${item.reason ? `; ${field(item.reason)}` : ""}) [${item.queue_item_id}]`).join("\n")}`;
+  return `Budget: ${plan.budget_minutes} minute(s). Estimates are deterministic approximations, not promises. Blocker items are budget-exempt.
+
+${group("Read", plan.read)}
+
+${group("Skim (read the excerpt, not the file)", plan.skim)}
+
+${group("Safe to defer", plan.defer)}`;
+}
+
+// review-surfaces.COVERAGE.3/.4: changed-line coverage per file when a report
+// exists; the honest negative ("no coverage evidence") when none was provided —
+// explicitly distinct from "uncovered", and never a penalty.
+function renderCoverageEvidence(model: HumanReviewModel): string {
+  const coverage = model.coverage_evidence;
+  if (!coverage || coverage.status === "no_report") {
+    return "- No coverage evidence: no coverage report was provided. This is different from changed lines being uncovered.";
+  }
+  if (coverage.postdates_head === false) {
+    // A stale report is recorded but NOT trusted: render only the warning, never
+    // its per-file classifications as if they were current evidence.
+    return `- The report at \`${field(coverage.source_path ?? "")}\` predates the reviewed code, so it is recorded but NOT trusted: no current coverage evidence.`;
+  }
+  if (coverage.files.length === 0) {
+    return `- Report ingested from \`${field(coverage.source_path ?? "")}\`, but none of the changed lines are instrumented by it (no coverage evidence for this diff — distinct from uncovered).`;
+  }
+  return bullets(
+    coverage.files.map((file) => `\`${field(file.path)}\`: ${file.covered_lines} of ${file.changed_lines} changed line(s) executed by tests (${file.classification}).`),
+    "No coverage evidence recorded."
+  );
 }
 
 // review-surfaces.RANKING.2: the "why ranked here" line — the per-item evidence
