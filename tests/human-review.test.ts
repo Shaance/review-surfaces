@@ -308,6 +308,58 @@ function structuredDiffFixture() {
   ].join("\n"));
 }
 
+// review-surfaces.SEMANTIC_DIFF.4: the deterministic semantic facts carry their
+// concrete, field/signature-level language into the review queue, the suggested
+// comments, AND the risk lenses — not generic path-touch phrasing.
+test("review-surfaces.SEMANTIC_DIFF.4 facts carry concrete language into the queue, comments, and lenses", () => {
+  const semanticFacts = {
+    schema_changes: [
+      {
+        path: "schemas/human_review.schema.json",
+        properties_added: [],
+        properties_removed: [],
+        required_added: ["semantic_facts"],
+        required_removed: [],
+        type_changes: [],
+        enum_changes: []
+      }
+    ],
+    api_changes: [
+      { path: "src/api.ts", exports_added: [], exports_removed: ["legacyExport"], signatures_changed: [] }
+    ],
+    test_weakening: []
+  };
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    prSurface: prSurfaceFixture(),
+    diff: structuredDiffFixture(),
+    semanticFacts
+  });
+
+  // Stored verbatim on the model.
+  assert.deepEqual(model.semantic_facts, semanticFacts);
+
+  // Queue: concrete field-level language, not a generic path-touch reason.
+  assert.ok(
+    model.review_queue.some((item) => /became required/.test(item.reason)),
+    "a queue item reason carries the field-level schema language"
+  );
+
+  // Comments: the removed export is named concretely.
+  assert.ok(
+    model.suggested_comments.some((comment) => /legacyExport/.test(comment.body)),
+    "a suggested comment names the removed export"
+  );
+
+  // Lenses: the schema/API facts feed the api_contract lens (paths reach it).
+  const apiLens = model.risk_lens_findings.find((finding) => finding.lens === "api_contract");
+  assert.ok(apiLens, "an api_contract lens finding is produced from the facts");
+  assert.ok(
+    apiLens!.paths.includes("src/api.ts") || apiLens!.paths.includes("schemas/human_review.schema.json"),
+    "the lens carries the changed contract paths from the facts"
+  );
+});
+
 test("human review model is schema-valid and starts with deterministic readiness signals", () => {
   const model = buildHumanReview({
     packet: packetFixture(),

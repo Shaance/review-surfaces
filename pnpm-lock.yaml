@@ -17,6 +17,9 @@ importers:
       fast-xml-parser:
         specifier: ^5.8.0
         version: 5.8.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -24,9 +27,6 @@ importers:
       '@types/node':
         specifier: ^25.9.1
         version: 25.9.1
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
     optionalDependencies:
       '@ai-sdk/anthropic':
         specifier: ^3.0.81
