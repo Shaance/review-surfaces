@@ -9,6 +9,7 @@
     "mode",
     "verdict",
     "summary",
+    "narrative",
     "review_queue",
     "blockers",
     "questions",
@@ -59,6 +60,9 @@
     "summary": {
       "type": "string",
       "maxLength": 2000
+    },
+    "narrative": {
+      "$ref": "#/$defs/changeNarrative"
     },
     "review_queue": {
       "type": "array",
@@ -147,6 +151,37 @@
   "$defs": {
     "confidence": {
       "enum": ["high", "medium", "low", "unknown"]
+    },
+    "changeNarrative": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["source", "provider", "validated_at_head", "claims"],
+      "properties": {
+        "source": { "enum": ["provider", "fallback"] },
+        "provider": { "enum": ["mock", "agent-file", "ai-sdk"] },
+        "validated_at_head": { "type": "string" },
+        "claims": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["id", "text", "trust", "anchors", "invalid_anchors"],
+            "properties": {
+              "id": { "type": "string" },
+              "text": { "type": "string" },
+              "trust": { "enum": ["verified", "claimed"] },
+              "anchors": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/evidenceRef" }
+              },
+              "invalid_anchors": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
     },
     "severity": {
       "enum": ["low", "medium", "high", "critical", "unknown"]

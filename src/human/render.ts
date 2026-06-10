@@ -7,12 +7,14 @@ import { renderHunkExcerpt } from "./hunk-excerpt";
 import { extractAcids, fillAcidTemplate, normalizeAcidTemplate, RollupGroup, rollupBy } from "./rollup";
 import { RISK_LENS_METADATA } from "./contract";
 import type {
+  ChangeNarrative,
   EvidenceCard,
   FeedbackPolicyEffect,
   HumanReviewModel,
   IntentMismatch,
   IntentMismatchItem,
   MissingEvidenceSummary,
+  NarrativeClaim,
   ReviewerQuestion,
   ReviewQueueItem,
   ReviewRoute,
@@ -161,6 +163,10 @@ Confidence: ${model.verdict.confidence}.
 
 Reasons:
 ${bullets(model.verdict.reasons.slice(0, MAX_BLOCKERS).map((reason) => `${reason.summary}${reason.required_action ? ` Required action: ${reason.required_action}` : ""} (${reason.id}; ${reason.severity})`), "No readiness reasons recorded.")}
+
+## Change narrative
+
+${renderNarrativeSection(model.narrative)}
 
 ## Review first
 
@@ -674,6 +680,28 @@ function renderSinceLastReviewCountDeltas(since: SinceLastReview): string {
 
 function formatSignedDelta(value: number): string {
   return value > 0 ? `+${value}` : String(value);
+}
+
+// review-surfaces.NARRATIVE.1/.3: render the grounded narrative with a per-claim
+// trust marker — `✓` for verified (all anchors valid) and `~` for claimed
+// (demoted; an anchor is missing/invalid). Each line leads with the claim text
+// (reviewer-language); anchors and any invalid anchors trail as metadata.
+function renderNarrativeSection(narrative: ChangeNarrative | undefined): string {
+  if (!narrative || narrative.claims.length === 0) {
+    return "- No grounded narrative available; rely on the verdict and review queue below.";
+  }
+  const header = `_Source: ${narrative.source} (${narrative.provider}); validated at \`${field(narrative.validated_at_head)}\`. ✓ verified, ~ claimed (unverified anchor)._`;
+  const lines = narrative.claims.map((claim) => renderNarrativeClaim(claim));
+  return `${header}\n${lines.join("\n")}`;
+}
+
+function renderNarrativeClaim(claim: NarrativeClaim): string {
+  const marker = claim.trust === "verified" ? "✓" : "~";
+  const anchors = claim.anchors.length ? ` (anchors: ${evidenceList(claim.anchors)})` : "";
+  const invalid = claim.invalid_anchors.length
+    ? ` [claimed; unverified anchor(s): ${claim.invalid_anchors.map((token) => `\`${field(token)}\``).join(", ")}]`
+    : "";
+  return `- ${marker} ${field(claim.text, 600)}${anchors}${invalid}`;
 }
 
 function renderReviewFirst(items: ReviewQueueItem[], context: HumanRenderContext = {}): string {

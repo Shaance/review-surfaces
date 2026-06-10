@@ -4,6 +4,7 @@ import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
 import { formatHunkHeader, hunkOverlapsRange } from "../collector/diff-hunks";
+import { buildFallbackNarrative } from "./narrative";
 import { comparisonRiskKey } from "../dogfood/compare";
 import { EvidenceRef, feedbackEvidence, fileEvidence, missingEvidence } from "../evidence/evidence";
 import { normalizeEvidencePath } from "../evidence/validate";
@@ -20,6 +21,7 @@ import {
   DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
   HUMAN_REVIEW_SCHEMA_VERSION,
   REVIEW_ROUTE_PERSONAS,
+  ChangeNarrative,
   EvidenceCard,
   FeedbackPolicyEffect,
   HumanReviewBuildConfig,
@@ -58,6 +60,10 @@ export interface BuildHumanReviewInput {
   config?: HumanReviewBuildConfig;
   packetPath?: string;
   prSurfacePath?: string;
+  // review-surfaces.NARRATIVE.1-4: an already-anchor-validated change narrative
+  // built through the provider boundary. Stored read-only; it NEVER influences
+  // the verdict, blockers, or coverage. Absent -> no narrative section.
+  narrative?: ChangeNarrative;
 }
 
 interface BuildReviewRoutesInput {
@@ -277,6 +283,16 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   });
   const skimSafe = buildSkimSafe(input, feedbackEffects);
   const generatedFrom = buildGeneratedFrom(input);
+  // review-surfaces.NARRATIVE.5: a provider-built narrative is passed in when
+  // available; otherwise always render the deterministic fallback so the section
+  // never fails and standalone/cache rebuilds still carry a narrative.
+  const narrative = input.narrative ?? buildFallbackNarrative({
+    packet: input.packet,
+    prSurface: input.prSurface,
+    diff: input.diff,
+    headSha: generatedFrom.head_sha,
+    maxClaims: config.narrative_max_claims
+  });
   const reviewRoutes = buildReviewRoutes({
     input,
     verdict,
@@ -296,6 +312,9 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     mode: input.prSurface ? "pr" : "repo",
     verdict,
     summary: summarizeHumanReview(input, verdict, reviewQueue.length, blockers.length),
+    // review-surfaces.NARRATIVE.4: the narrative is stored read-only AFTER the
+    // verdict/blockers/coverage are computed, so it can never influence them.
+    narrative,
     review_queue: reviewQueue,
     blockers,
     questions,
@@ -337,6 +356,9 @@ export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): str
     max_questions: resolved.max_questions,
     max_review_first: resolved.max_review_first,
     max_suggested_comments: resolved.max_suggested_comments,
+    // narrative_max_claims changes the rendered model, so a config-only change
+    // to it must bust the cache / trigger a standalone rebuild.
+    narrative_max_claims: resolved.narrative_max_claims,
     required_manual_checks: resolved.required_manual_checks.map((check) => ({
       id: check.id,
       path_patterns: check.path_patterns,

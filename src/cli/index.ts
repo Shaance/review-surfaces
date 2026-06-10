@@ -45,7 +45,8 @@ import { writeJson, writeText } from "../core/files";
 import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
-import { HumanReviewModel } from "../human/contract";
+import { buildChangeNarrative } from "../human/narrative";
+import { ChangeNarrative, HumanReviewModel } from "../human/contract";
 import {
   HUMAN_STANDALONE_ARTIFACTS,
   HumanRenderContext,
@@ -338,6 +339,9 @@ interface HumanReviewArtifactInputs {
   packet?: ReviewPacket;
   prSurface?: PrReviewSurfaceModel;
   feedback?: FeedbackFile[];
+  // A provider-built narrative to carry through a cache-hit rebuild so it is not
+  // overwritten by the deterministic fallback (review-surfaces.NARRATIVE.1).
+  narrative?: ChangeNarrative;
 }
 
 // Resolve the EFFECTIVE output dir with the SAME precedence collectInputs uses
@@ -473,6 +477,22 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // it; only created_at could differ) and reuse the existing packet untouched.
       await writeText(cacheSnapshot.manifestPath, cacheSnapshot.manifestRaw);
       const provider = providerFlag(parsed, config);
+      // review-surfaces.NARRATIVE.1: on a cache hit the inputs (and the
+      // provider/agent-input, which are part of the cache signature) are
+      // unchanged, so REUSE the narrative already in human_review.json rather than
+      // re-invoking the provider. This keeps cache reuse lossless and avoids a
+      // fresh ai-sdk call (which could now fail and clobber good cached prose with
+      // the fallback). When no prior narrative exists, buildHumanReview renders
+      // the deterministic fallback.
+      const cachedNarrative = config.human_review.enabled
+        ? readCachedNarrative(collection.outputDir, String(collection.manifest.head_sha ?? ""))
+        : undefined;
+      const cachedHumanInputs: HumanReviewArtifactInputs = {
+        packet: cacheSnapshot.packet,
+        prSurface: prSurfaceReuse.surface,
+        feedback: collection.feedback,
+        narrative: cachedNarrative
+      };
       // Round 6: a cache hit must match a normal run's gate behavior. Run
       // applyGate on the cached evaluation so a cached packet with a
       // gate-tripping condition is NOT silently passed: without --strict
@@ -483,19 +503,11 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // strict-without-evaluation falls through to regenerate below) we keep the
       // prior reuse-and-succeed behavior rather than forcing a regenerate.
       if (evaluation) {
-        await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, {
-          packet: cacheSnapshot.packet,
-          prSurface: prSurfaceReuse.surface,
-          feedback: collection.feedback
-        });
+        await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
         console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
         return applyGate(parsed, evaluation, collection, provider, config);
       }
-      await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, {
-        packet: cacheSnapshot.packet,
-        prSurface: prSurfaceReuse.surface,
-        feedback: collection.feedback
-      });
+      await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
       console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
       return ExitCodes.success;
     }
@@ -657,8 +669,14 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       console.warn(`PR review surface blocked (${persistedSurface.blocked_reason}); see pr_review_surface.json`);
     }
   }
+  // review-surfaces.NARRATIVE.1: build the grounded narrative through the
+  // requested provider (offline for mock/agent-file). It is anchor-validated here
+  // and passed read-only into the human review build, never affecting the verdict.
+  const narrative = config.human_review.enabled
+    ? await buildHumanNarrativeForAll(cwd, parsed, config, writtenPacket, persistedSurface, humanReviewDiff, collection)
+    : undefined;
   const humanReview = config.human_review.enabled
-    ? await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff, collection.feedback, config)
+    ? await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff, collection.feedback, config, narrative)
     : undefined;
   if (!config.human_review.enabled) {
     removeHumanReviewArtifacts(collection.outputDir);
@@ -731,6 +749,42 @@ function isPrEnvironment(): boolean {
 // an env-only model swap (where --model and config are both absent).
 function effectiveNarrativeModel(parsed: ParsedArgs, config: ReviewSurfacesConfig): string | undefined {
   return stringFlag(parsed, "model") ?? config.llm.model ?? process.env.REVIEW_SURFACES_AI_MODEL ?? undefined;
+}
+
+// review-surfaces.NARRATIVE.1: build the human-surface change narrative through
+// the requested provider (mock/agent-file are offline; ai-sdk only with a key
+// and after privacy filtering). The result is anchor-validated inside
+// buildChangeNarrative and returned read-only.
+async function buildHumanNarrativeForAll(
+  cwd: string,
+  parsed: ParsedArgs,
+  config: ReviewSurfacesConfig,
+  packet: ReviewPacket,
+  prSurface: PrReviewSurfaceModel | undefined,
+  diff: StructuredDiff | undefined,
+  collection: CollectionResult
+): Promise<ChangeNarrative> {
+  const providerName = providerFlag(parsed, config);
+  const provider = providerFor(providerName, {
+    model: effectiveNarrativeModel(parsed, config),
+    cwd,
+    remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
+    agentInput: stringFlag(parsed, "agent-input")
+  });
+  return buildChangeNarrative({
+    provider,
+    providerName,
+    packet,
+    prSurface,
+    // In repo scope the caller's diff is undefined (it is only parsed eagerly for
+    // PR scope), so read the collected, redacted diff from the output dir — the
+    // same source the human-review queue uses — to populate the anchor allowlist.
+    diff: diff ?? readHumanReviewDiff(collection.outputDir),
+    headSha: String(collection.manifest.head_sha ?? ""),
+    maxClaims: config.human_review.narrative_max_claims,
+    redactSecrets: redactSecretsFlag(parsed, config),
+    remotePrivacyBlocked: collection.privacy.remote_provider_blocked
+  });
 }
 
 function prSurfaceCacheReuse(parsed: ParsedArgs, collection: CollectionResult, config: ReviewSurfacesConfig): PrSurfaceCacheReuse {
@@ -1176,13 +1230,13 @@ async function buildHumanReviewFromArtifacts(
       );
       return {
         outputDir,
-        model: buildHumanReviewForPacket(cwd, outputDir, packet, undefined, undefined, inputs?.feedback ?? readHumanReviewFeedback(outputDir), config)
+        model: buildHumanReviewForPacket(cwd, outputDir, packet, undefined, undefined, inputs?.feedback ?? readHumanReviewFeedback(outputDir), config, inputs?.narrative)
       };
     }
   }
   return {
     outputDir,
-    model: buildHumanReviewForPacket(cwd, outputDir, packet, surface, undefined, inputs?.feedback ?? readHumanReviewFeedback(outputDir), config)
+    model: buildHumanReviewForPacket(cwd, outputDir, packet, surface, undefined, inputs?.feedback ?? readHumanReviewFeedback(outputDir), config, inputs?.narrative)
   };
 }
 
@@ -1193,7 +1247,8 @@ function buildHumanReviewForPacket(
   prSurface?: PrReviewSurfaceModel,
   diff?: StructuredDiff,
   feedback?: FeedbackFile[],
-  config?: ReviewSurfacesConfig
+  config?: ReviewSurfacesConfig,
+  narrative?: ChangeNarrative
 ): HumanReviewModel {
   const humanReview = buildHumanReview({
     packet,
@@ -1201,6 +1256,7 @@ function buildHumanReviewForPacket(
     diff: diff ?? readHumanReviewDiff(outDir),
     feedback,
     config: config?.human_review,
+    narrative,
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
@@ -1213,6 +1269,27 @@ function readHumanReviewDiff(outDir: string): StructuredDiff | undefined {
   try {
     const diff = parseStructuredDiff(fs.readFileSync(diffPath, "utf8"));
     return diff.files.length > 0 ? diff : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// review-surfaces.NARRATIVE.1: read the narrative from a previously written
+// human_review.json so a cache hit can reuse it without re-invoking the provider.
+// Only reuse it when it was validated against the CURRENT head — a stale artifact
+// (older than the packet, e.g. after a stage command rewrote review_packet.json,
+// or an interrupted run) is not reused, so claims validated against another
+// head/diff are never rendered as current verified prose. Returns undefined when
+// the artifact is absent/unreadable, carries no narrative, or is stale (the
+// caller then renders the deterministic fallback against the current packet).
+function readCachedNarrative(outDir: string, headSha: string): ChangeNarrative | undefined {
+  const humanReviewPath = path.join(outDir.endsWith(".json") ? path.dirname(outDir) : outDir, "human_review.json");
+  try {
+    const model = JSON.parse(fs.readFileSync(humanReviewPath, "utf8")) as { narrative?: ChangeNarrative };
+    if (model.narrative && headSha && model.narrative.validated_at_head === headSha) {
+      return model.narrative;
+    }
+    return undefined;
   } catch {
     return undefined;
   }
@@ -1292,9 +1369,10 @@ async function writeHumanReviewForPacket(
   prSurface?: PrReviewSurfaceModel,
   diff?: StructuredDiff,
   feedback?: FeedbackFile[],
-  config?: ReviewSurfacesConfig
+  config?: ReviewSurfacesConfig,
+  narrative?: ChangeNarrative
 ): Promise<HumanReviewModel> {
-  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface, diff, feedback, config);
+  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface, diff, feedback, config, narrative);
   await writeHumanReviewArtifacts(outDir, humanReview, humanRenderContext(outDir, diff));
   return humanReview;
 }

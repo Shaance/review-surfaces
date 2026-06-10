@@ -1,7 +1,36 @@
 import type { EvidenceRef } from "../evidence/evidence";
+import type { ProviderName } from "../llm/provider";
 import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-contract";
 
 export const HUMAN_REVIEW_SCHEMA_VERSION = "review-surfaces.human_review.v1" as const;
+
+// review-surfaces.NARRATIVE.1-5: a bounded, plain-language change narrative that
+// opens the human surface. Every claim carries a deterministically-validated
+// trust state — `verified` when all of its anchors are on the deterministic
+// allowlist, `claimed` when an anchor is missing/invalid (DEMOTED and visibly
+// marked, never dropped or rendered as fact). It is prose over deterministic
+// facts and never alters the merge-readiness verdict.
+export const NARRATIVE_CLAIM_TRUST = ["verified", "claimed"] as const;
+export type NarrativeClaimTrust = (typeof NARRATIVE_CLAIM_TRUST)[number];
+
+export interface NarrativeClaim {
+  id: string;
+  text: string;
+  trust: NarrativeClaimTrust;
+  /** Anchors that were validated against the deterministic allowlist. */
+  anchors: EvidenceRef[];
+  /** Off-allowlist anchor tokens the claim cited, surfaced rather than hidden. */
+  invalid_anchors: string[];
+}
+
+export interface ChangeNarrative {
+  /** Whether the claims came from the provider or the deterministic fallback. */
+  source: "provider" | "fallback";
+  provider: ProviderName;
+  /** The head SHA the anchor validation ran against. */
+  validated_at_head: string;
+  claims: NarrativeClaim[];
+}
 
 export const HUMAN_REVIEW_DECISIONS = [
   "probably_safe",
@@ -60,6 +89,9 @@ export interface HumanReviewBuildConfig {
   max_questions: number;
   risk_lenses: Record<RiskLens, boolean>;
   required_manual_checks: HumanReviewRequiredManualCheckConfig[];
+  // review-surfaces.NARRATIVE: bounded count of rendered narrative claims
+  // (YAML: human_review.narrative.max_claims).
+  narrative_max_claims: number;
 }
 
 export interface HumanReviewRequiredManualCheckConfig {
@@ -81,7 +113,8 @@ export const DEFAULT_HUMAN_REVIEW_BUILD_CONFIG: HumanReviewBuildConfig = {
     cache_provenance: true,
     custom: true
   },
-  required_manual_checks: []
+  required_manual_checks: [],
+  narrative_max_claims: 8
 };
 
 export interface RiskLensMetadata {
@@ -375,6 +408,11 @@ export interface HumanReviewModel {
   mode: "pr" | "repo";
   verdict: HumanReviewVerdict;
   summary: string;
+  // review-surfaces.NARRATIVE.1: grounded narrative that opens the surface. Always
+  // emitted (provider-built or the deterministic fallback) and required by the
+  // schema, so a stale artifact lacking it fails validation and is rebuilt rather
+  // than rendering an empty section (SCHEMA.3 strictness for new fields).
+  narrative: ChangeNarrative;
   review_queue: ReviewQueueItem[];
   blockers: ReviewBlocker[];
   questions: ReviewerQuestion[];
