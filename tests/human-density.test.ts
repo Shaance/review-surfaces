@@ -295,6 +295,57 @@ test("review-surfaces.HUMAN_REVIEW.20 matches the anchor's new path before old-p
   assert.doesNotMatch(excerpt!, /inC/, "must not resolve to the B->C file via its old_path");
 });
 
+// review-surfaces.HUMAN_REVIEW.20: an OLD-side anchor pointing at a rename source
+// resolves to the rename (the source hunk), not the unrelated replacement file
+// that reuses the same path on the new side.
+test("review-surfaces.HUMAN_REVIEW.20 resolves an old-side rename anchor to the rename source, not the replacement file", () => {
+  const diffText = [
+    // A new file A is added (new-side path a.ts).
+    "diff --git a/src/a.ts b/src/a.ts",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/src/a.ts",
+    "@@ -0,0 +1,1 @@",
+    "+const newA = 1;",
+    // A is renamed to B; the old side (a.ts) carries the removed line at line 5.
+    "diff --git a/src/a.ts b/src/b.ts",
+    "rename from src/a.ts",
+    "rename to src/b.ts",
+    "--- a/src/a.ts",
+    "+++ b/src/b.ts",
+    "@@ -5,1 +9,1 @@",
+    "-const removedFromA = 0;",
+    "+const inB = 1;",
+    ""
+  ].join("\n");
+  const diff = parseStructuredDiff(diffText);
+  // Old-side anchor: path is the old path a.ts, line is an old-side line (5).
+  const excerpt = renderHunkExcerpt(diff, { path: "src/a.ts", line_start: 5, line_end: 5 });
+  assert.ok(excerpt, "old-side anchor should resolve to the rename source hunk");
+  assert.match(excerpt!, /removedFromA/, "must show the rename source's old-side hunk");
+  assert.doesNotMatch(excerpt!, /newA/, "must not resolve to the unrelated replacement file");
+});
+
+// review-surfaces.HUMAN_REVIEW.19: a rollup that merged items differing only by
+// an ACID in the command renders the command through the ACID template instead
+// of naming only the first requirement.
+test("review-surfaces.HUMAN_REVIEW.19 normalizes a rolled-up command", () => {
+  const items: TestPlanItem[] = ["review-surfaces.CLI.1", "review-surfaces.CLI.2"].map((acid, i) => ({
+    id: `TEST-${i + 1}`,
+    kind: "automatic",
+    priority: "recommended",
+    scenario: "Add a focused test.",
+    expected_result: "Behavior retained.",
+    command: `pnpm run test -- ${acid}`,
+    maps_to_requirements: [acid],
+    maps_to_risks: [],
+    evidence_gap: "Weak test evidence."
+  }));
+  const section = renderHumanReviewMarkdown(baseModel({ test_plan: items })).split("## Test plan")[1].split("\n## ")[0];
+  assert.match(section, /Command: `pnpm run test -- the listed requirements`/, "merged command must be ACID-templated");
+  assert.doesNotMatch(section, /pnpm run test -- review-surfaces\.CLI\.1`/, "must not show only the first ACID's command");
+});
+
 // review-surfaces.HUMAN_REVIEW.20/.21: when an excerpt renders, the separate
 // "Hunk:" metadata line is suppressed so it cannot contradict the excerpt header.
 test("review-surfaces.HUMAN_REVIEW.20 suppresses the Hunk metadata line when an excerpt renders", () => {

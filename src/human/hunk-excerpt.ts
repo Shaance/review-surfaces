@@ -33,15 +33,25 @@ export function renderHunkExcerpt(
   if (!diff || diff.files.length === 0) {
     return undefined;
   }
-  const file = findFile(diff, anchor);
-  if (!file) {
+  // Resolve the (file, side, hunk) the anchor actually points at. Several files
+  // can share a path in a replacement/chain rename (a new A plus a rename
+  // A->B), so try the candidates in precision order and pick the FIRST whose
+  // hunk matches the anchor. Letting the hunk match disambiguate handles both a
+  // new-side anchor (resolves to the rename target) and an old-side anchor
+  // (resolves to the rename source) without guessing from the path alone.
+  let resolved: { side: "old" | "new"; hunk: StructuredDiffHunk } | undefined;
+  for (const candidate of candidateFiles(diff, anchor)) {
+    const side = sideForAnchor(candidate, anchor);
+    const hunk = selectHunk(candidate, anchor, side);
+    if (hunk) {
+      resolved = { side, hunk };
+      break;
+    }
+  }
+  if (!resolved) {
     return undefined;
   }
-  const side = sideForAnchor(file, anchor);
-  const hunk = selectHunk(file, anchor, side);
-  if (!hunk) {
-    return undefined;
-  }
+  const { side, hunk } = resolved;
   const body = excerptLines(hunk, side, anchor, Math.max(4, maxLines));
   if (body.length === 0) {
     return undefined;
@@ -83,29 +93,27 @@ function longestBacktickRun(lines: string[]): number {
   return max;
 }
 
-function findFile(diff: StructuredDiff, anchor: HunkAnchor): StructuredDiffFile | undefined {
+// Candidate files the anchor might refer to, ordered most- to least-precise and
+// de-duplicated. The caller picks the first whose hunk matches the anchor, so a
+// path shared by a new file and a rename source both appear and the hunk match
+// decides between them.
+function candidateFiles(diff: StructuredDiff, anchor: HunkAnchor): StructuredDiffFile[] {
   const wantedNew = normalizePath(anchor.path);
-  // Tier 1: the file whose NEW path is exactly the anchor's primary path. This is
-  // the changed file the queue item points at; comparing only file.path (never
-  // old_path) keeps a chain replacement (e.g. B->C appearing before A->B) from
-  // resolving a `path: B` anchor to the B->C file just because its old_path is B.
-  const byNewPath = diff.files.find((file) => normalizePath(file.path) === wantedNew);
-  if (byNewPath) {
-    return byNewPath;
-  }
-  // Tier 2: a rename whose SOURCE is the anchor's primary path.
-  const byOldPath = diff.files.find((file) => Boolean(file.old_path) && normalizePath(file.old_path as string) === wantedNew);
-  if (byOldPath) {
-    return byOldPath;
-  }
-  // Tier 3: fall back to the anchor's explicit old_path on either side.
-  if (anchor.old_path) {
-    const wantedOld = normalizePath(anchor.old_path);
-    return diff.files.find(
-      (file) => normalizePath(file.path) === wantedOld || (Boolean(file.old_path) && normalizePath(file.old_path as string) === wantedOld)
-    );
-  }
-  return undefined;
+  const wantedOld = anchor.old_path ? normalizePath(anchor.old_path) : undefined;
+  const ordered: StructuredDiffFile[] = [
+    // 1: exact new-path match (the changed file the queue item points at).
+    ...diff.files.filter((file) => normalizePath(file.path) === wantedNew),
+    // 2: a rename whose SOURCE is the anchor's primary path (old-side anchors).
+    ...diff.files.filter((file) => Boolean(file.old_path) && normalizePath(file.old_path as string) === wantedNew),
+    // 3: the anchor's explicit old_path on either side.
+    ...(wantedOld === undefined
+      ? []
+      : diff.files.filter(
+          (file) => normalizePath(file.path) === wantedOld || (Boolean(file.old_path) && normalizePath(file.old_path as string) === wantedOld)
+        ))
+  ];
+  const seen = new Set<StructuredDiffFile>();
+  return ordered.filter((file) => (seen.has(file) ? false : (seen.add(file), true)));
 }
 
 function selectHunk(

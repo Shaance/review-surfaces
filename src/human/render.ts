@@ -860,7 +860,12 @@ function renderTestPlanRollup(group: RollupGroup<TestPlanItem>): string {
   // scenario action moves to a bullet. review-surfaces.HUMAN_REVIEW.19/.21.
   const gap = fillAcidTemplate(normalizeAcidTemplate(rep.evidence_gap), group.acids);
   const file = rep.suggested_file ? `\n- Suggested file: \`${field(rep.suggested_file)}\`` : "";
-  const command = rep.command ? `\n- Command: \`${field(rep.command)}\`` : "";
+  // Fill the command through the same ACID template as the other fields, so a
+  // rollup that merged items differing only by an ACID in the command does not
+  // show a command naming just the first requirement (the exact per-item command
+  // stays in the standalone test_plan.md). A single-item group restores the
+  // verbatim command.
+  const command = rep.command ? `\n- Command: \`${field(fillAcidTemplate(normalizeAcidTemplate(rep.command), group.acids))}\`` : "";
   const requirements = group.acids.length
     ? `\n- Requirements (${group.acids.length}): ${group.acids.map((acid) => `\`${field(acid)}\``).join(", ")}`
     : "";
