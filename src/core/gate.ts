@@ -7,6 +7,11 @@ export interface GateOptions {
   // Maximum number of "missing" requirement results tolerated before the
   // quality gate trips. Defaults to 0 (any missing requirement fails).
   maxMissing: number;
+  // Acai IDs (or requirement IDs) explicitly allowed to be missing — a planned
+  // backlog that has not been implemented yet. Allowlisted misses are excluded
+  // from the gate count, so an UNRELATED requirement regressing to missing still
+  // trips the gate even when the total miss count is unchanged.
+  allowMissing?: string[];
 }
 
 export interface GateDecision {
@@ -52,8 +57,9 @@ export function gateDecision(
     };
   }
 
-  // 10: more "missing" requirement results than the configured tolerance.
-  const missingCount = countMissing(evaluation.results);
+  // 10: more "missing" requirement results than the configured tolerance,
+  // excluding the explicitly allowlisted planned backlog.
+  const missingCount = countMissing(evaluation.results, options.allowMissing);
   if (missingCount > options.maxMissing) {
     return {
       code: ExitCodes.qualityGateFailed,
@@ -74,6 +80,12 @@ export function gateExitCode(
   return gateDecision(evaluation, collection, provider, options).code;
 }
 
-function countMissing(results: RequirementResult[]): number {
-  return results.filter((result) => result.status === "missing").length;
+function countMissing(results: RequirementResult[], allowMissing?: string[]): number {
+  const allowed = new Set(allowMissing ?? []);
+  return results.filter(
+    (result) =>
+      result.status === "missing" &&
+      !allowed.has(result.acai_id ?? "") &&
+      !allowed.has(result.requirement_id)
+  ).length;
 }

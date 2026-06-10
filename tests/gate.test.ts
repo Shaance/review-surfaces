@@ -124,3 +124,24 @@ test("review-surfaces.QUALITY.7 gateDecision returns a reason string for each tr
   const ok = gateDecision(evaluation([result("satisfied")]), collection(false), "mock", DEFAULT_OPTIONS);
   assert.equal(ok.code, ExitCodes.success);
 });
+
+// review-surfaces.QUALITY: an allowlisted "missing" requirement (a planned,
+// not-yet-implemented backlog) is excluded from the gate count, but an UNRELATED
+// requirement regressing to missing still trips the gate — the allowlist must
+// not mask a swapped regression.
+test("review-surfaces.QUALITY allow_missing excludes the planned backlog but not other regressions", () => {
+  const planned = evaluation([result("missing", "REQ-PLANNED-1"), result("missing", "REQ-PLANNED-2")]);
+  const allowed = { maxMissing: 0, allowMissing: ["REQ-PLANNED-1", "REQ-PLANNED-2"] };
+  // Both missing requirements are allowlisted -> gate passes at maxMissing 0.
+  assert.equal(gateExitCode(planned, collection(false), "mock", allowed), ExitCodes.success);
+
+  // An unrelated requirement regresses to missing while the planned ones stay
+  // missing: the total count is unchanged, but the regression is NOT allowlisted,
+  // so the gate trips.
+  const swapped = evaluation([
+    result("missing", "REQ-PLANNED-1"),
+    result("missing", "REQ-PLANNED-2"),
+    result("missing", "REQ-REGRESSION")
+  ]);
+  assert.equal(gateExitCode(swapped, collection(false), "mock", allowed), ExitCodes.qualityGateFailed);
+});

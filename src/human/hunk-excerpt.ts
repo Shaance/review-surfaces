@@ -84,15 +84,24 @@ function longestBacktickRun(lines: string[]): number {
 }
 
 function findFile(diff: StructuredDiff, anchor: HunkAnchor): StructuredDiffFile | undefined {
-  const wanted = normalizePath(anchor.path);
-  const oldWanted = anchor.old_path ? normalizePath(anchor.old_path) : undefined;
-  return diff.files.find((file) => {
-    const candidates = [normalizePath(file.path)];
-    if (file.old_path) {
-      candidates.push(normalizePath(file.old_path));
+  const matches = (file: StructuredDiffFile, wanted: string): boolean => {
+    if (normalizePath(file.path) === wanted) {
+      return true;
     }
-    return candidates.includes(wanted) || (oldWanted !== undefined && candidates.includes(oldWanted));
-  });
+    return Boolean(file.old_path) && normalizePath(file.old_path as string) === wanted;
+  };
+  // Prefer a match on the anchor's primary (new) path first, so a
+  // replacement-rename (rename A->B plus a new A) resolves the excerpt to B
+  // rather than the unrelated A that happens to appear earlier in the diff. Only
+  // then fall back to the anchor's old_path.
+  const byPath = diff.files.find((file) => matches(file, normalizePath(anchor.path)));
+  if (byPath) {
+    return byPath;
+  }
+  if (anchor.old_path) {
+    return diff.files.find((file) => matches(file, normalizePath(anchor.old_path as string)));
+  }
+  return undefined;
 }
 
 function selectHunk(

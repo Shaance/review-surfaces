@@ -257,12 +257,29 @@ dogfood:
 quality_gate:
   # The human review value uplift landed its spec entries ahead of their phased
   # implementation (docs/human-review-value-uplift-proposal.md). Until those
-  # phases ship, the not-yet-implemented requirements evaluate as "missing", so
-  # the strict self-dogfood gate tolerates exactly that planned backlog and trips
-  # on any additional regression. Decrement this as each phase lands:
-  #   13 = NARRATIVE.1-5 (Phase 2) + SEMANTIC_DIFF.1-4 (Phase 3) + REVIEW_LOOP.1-4 (Phase 4)
-  #    8 after Phase 2, 4 after Phase 3, 0 after Phase 4.
-  max_missing: 13
+  # phases ship, the not-yet-implemented requirements evaluate as "missing".
+  # Rather than raising max_missing (which would let an UNRELATED requirement
+  # regress to missing without tripping the gate), allowlist exactly that planned
+  # backlog by ACID. Any missing requirement outside the allowlist still fails the
+  # strict self-dogfood gate. Remove each entry as its phase lands.
+  max_missing: 0
+  allow_missing:
+    # Phase 2 — Grounded narrative
+    - review-surfaces.NARRATIVE.1
+    - review-surfaces.NARRATIVE.2
+    - review-surfaces.NARRATIVE.3
+    - review-surfaces.NARRATIVE.4
+    - review-surfaces.NARRATIVE.5
+    # Phase 3 — Semantic change facts
+    - review-surfaces.SEMANTIC_DIFF.1
+    - review-surfaces.SEMANTIC_DIFF.2
+    - review-surfaces.SEMANTIC_DIFF.3
+    - review-surfaces.SEMANTIC_DIFF.4
+    # Phase 4 — Interactive review session
+    - review-surfaces.REVIEW_LOOP.1
+    - review-surfaces.REVIEW_LOOP.2
+    - review-surfaces.REVIEW_LOOP.3
+    - review-surfaces.REVIEW_LOOP.4
 human_review:
   enabled: true
   default_entrypoint: true

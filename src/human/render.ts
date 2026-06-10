@@ -684,8 +684,12 @@ function renderReviewFirst(items: ReviewQueueItem[], context: HumanRenderContext
     .map((item) => {
       const location = formatQueueLocation(item);
       const excerpt = inlineHunkExcerpt(item, context);
+      // When an excerpt renders, its fenced @@ header names the hunk
+      // authoritatively, so suppress the separate (possibly stale) Hunk: metadata
+      // line to avoid contradictory labels.
+      const hunkLine = item.hunk_header && !excerpt ? `   - Hunk: \`${field(item.hunk_header)}\`\n` : "";
       return `${item.rank}. \`${field(location)}\`
-${item.hunk_header ? `   - Hunk: \`${field(item.hunk_header)}\`\n` : ""}   - Why it matters: ${field(item.reason)}
+${hunkLine}   - Why it matters: ${field(item.reason)}
    - Action: ${field(item.reviewer_action)}${excerpt ? `\n${excerpt}` : ""}
    - Risk: ${item.risk_ids.map((risk) => `\`${field(risk)}\``).join(", ") || "none"}
    - Evidence: ${evidenceList(item.evidence)}`;
@@ -727,13 +731,15 @@ function renderQueueDetail(item: ReviewQueueItem, context: HumanRenderContext = 
     line_end: item.line_end
   });
   // review-surfaces.HUMAN_REVIEW.21: lead the heading with the changed file and
-  // observable behavior; the queue id trails as metadata.
+  // observable behavior; the queue id trails as metadata. When an excerpt
+  // renders, suppress the separate (possibly stale) Hunk: line — the fenced
+  // excerpt header is authoritative.
   return `## ${field(item.title)} — \`${field(location)}\` (${field(item.id)})
 
 Priority: ${item.priority}
 Confidence: ${item.confidence}
 File: \`${field(location)}\`
-${item.hunk_header ? `Hunk: \`${field(item.hunk_header)}\`\n` : ""}
+${item.hunk_header && !excerpt ? `Hunk: \`${field(item.hunk_header)}\`\n` : ""}
 ${item.old_path ? `Old path: \`${field(item.old_path)}\`\n` : ""}
 Why this matters:
 ${field(item.reason, 1000)}

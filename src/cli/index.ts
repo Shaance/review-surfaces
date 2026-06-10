@@ -1976,7 +1976,8 @@ function numberFlag(parsed: ParsedArgs, key: string): number | undefined {
 
 function gateOptionsFor(parsed: ParsedArgs, config: ReviewSurfacesConfig): GateOptions {
   return {
-    maxMissing: numberFlag(parsed, "max-missing") ?? config.quality_gate.max_missing
+    maxMissing: numberFlag(parsed, "max-missing") ?? config.quality_gate.max_missing,
+    allowMissing: config.quality_gate.allow_missing
   };
 }
 

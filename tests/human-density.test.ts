@@ -232,6 +232,64 @@ test("review-surfaces.HUMAN_REVIEW.20 bounds the excerpt to the configured cap",
   assert.match(excerpt!, /elided/, "a long hunk must mark elided context");
 });
 
+// review-surfaces.HUMAN_REVIEW.20: a replacement-rename (rename A->B plus a new
+// A) resolves the excerpt to B (the anchor's primary path), not the unrelated A
+// that appears earlier in the diff.
+test("review-surfaces.HUMAN_REVIEW.20 prefers the anchor path over old_path for replacement renames", () => {
+  const diffText = [
+    // The new A file appears FIRST in the diff.
+    "diff --git a/src/a.ts b/src/a.ts",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/src/a.ts",
+    "@@ -0,0 +1,1 @@",
+    "+const brandNewA = 1;",
+    // The rename A->B appears second.
+    "diff --git a/src/a.ts b/src/b.ts",
+    "rename from src/a.ts",
+    "rename to src/b.ts",
+    "--- a/src/a.ts",
+    "+++ b/src/b.ts",
+    "@@ -1,1 +1,1 @@",
+    "-const movedToB = 0;",
+    "+const movedToB = 1;",
+    ""
+  ].join("\n");
+  const diff = parseStructuredDiff(diffText);
+  // Anchor for B carries old_path A; must resolve to B, not the new A.
+  const excerpt = renderHunkExcerpt(diff, { path: "src/b.ts", old_path: "src/a.ts", line_start: 1, line_end: 1 });
+  assert.ok(excerpt, "excerpt should resolve to the rename target");
+  assert.match(excerpt!, /movedToB/, "must take the excerpt from the anchor path B");
+  assert.doesNotMatch(excerpt!, /brandNewA/, "must not take the excerpt from the unrelated new A");
+});
+
+// review-surfaces.HUMAN_REVIEW.20/.21: when an excerpt renders, the separate
+// "Hunk:" metadata line is suppressed so it cannot contradict the excerpt header.
+test("review-surfaces.HUMAN_REVIEW.20 suppresses the Hunk metadata line when an excerpt renders", () => {
+  const diffText = [
+    "diff --git a/src/s.ts b/src/s.ts",
+    "--- a/src/s.ts",
+    "+++ b/src/s.ts",
+    "@@ -1,2 +1,2 @@",
+    " const a = 1;",
+    "-const b = 2;",
+    "+const b = 3;",
+    ""
+  ].join("\n");
+  const diff = parseStructuredDiff(diffText);
+  const item: ReviewQueueItem = {
+    id: "REVIEW-001", rank: 1, title: "Changed file", path: "src/s.ts",
+    hunk_header: "@@ -1,2 +1,2 @@", line_start: 2, line_end: 2,
+    reviewer_action: "Inspect.", reason: "Changed a constant.",
+    evidence: [fileEvidence("src/s.ts")], requirement_ids: [], risk_ids: [],
+    confidence: "high", priority: "medium"
+  };
+  const md = renderHumanReviewMarkdown(baseModel({ review_queue: [item] }), { diff });
+  const reviewFirst = md.split("## Review first")[1].split("\n## ")[0];
+  assert.match(reviewFirst, /```diff/, "excerpt renders");
+  assert.doesNotMatch(reviewFirst, /- Hunk: `/, "the separate Hunk: line is suppressed when an excerpt renders");
+});
+
 // review-surfaces.HUMAN_REVIEW.20: when a long hunk has multiple changed
 // clusters, the excerpt centers on the queue item's anchored line, not the first
 // change in the hunk.
