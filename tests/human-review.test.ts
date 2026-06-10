@@ -1617,6 +1617,15 @@ test("review-surfaces.HUMAN_REVIEW.17 required manual checks participate in the 
   );
 });
 
+test("review-surfaces.NARRATIVE.1 narrative_max_claims participates in the config signature", () => {
+  // A config-only change to the narrative cap must bust the cache / trigger a
+  // standalone rebuild so the requested cap is actually applied.
+  assert.notEqual(
+    humanReviewConfigSignature(DEFAULT_HUMAN_REVIEW_BUILD_CONFIG),
+    humanReviewConfigSignature({ ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, narrative_max_claims: 3 })
+  );
+});
+
 test("risk lenses classify renamed source paths as review signals", () => {
   const surface = prSurfaceFixture();
   surface.risks.candidates = [];

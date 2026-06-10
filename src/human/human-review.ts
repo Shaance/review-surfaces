@@ -356,6 +356,9 @@ export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): str
     max_questions: resolved.max_questions,
     max_review_first: resolved.max_review_first,
     max_suggested_comments: resolved.max_suggested_comments,
+    // narrative_max_claims changes the rendered model, so a config-only change
+    // to it must bust the cache / trigger a standalone rebuild.
+    narrative_max_claims: resolved.narrative_max_claims,
     required_manual_checks: resolved.required_manual_checks.map((check) => ({
       id: check.id,
       path_patterns: check.path_patterns,

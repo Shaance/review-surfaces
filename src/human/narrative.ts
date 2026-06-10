@@ -135,6 +135,14 @@ export function buildNarrativeAllowlist(input: NarrativeFacts): NarrativeAllowli
   }
 
   const commandIds = new Set<string>();
+  // Recorded command transcripts are emitted under risks.test_evidence with a
+  // CMD-* id, so allowlist those ids directly in addition to scanning command
+  // evidence refs across results/risks/test-evidence.
+  for (const entry of input.packet.risks.test_evidence ?? []) {
+    for (const id of commandIdTokens(entry.id)) {
+      commandIds.add(id);
+    }
+  }
   for (const ref of packetEvidenceRefs(input.packet)) {
     if (ref.kind === "command") {
       for (const token of [ref.command, ref.note]) {
@@ -340,11 +348,13 @@ function compact(values: (string | undefined)[]): string[] {
   return out;
 }
 
-// Path/ACID/root-file tokens in prose, using the shared anchored-or-flagged
-// scanners so the human narrative stays in lockstep with the PR narrative.
+// Path/ACID/root-file/command tokens in prose, using the shared anchored-or-
+// flagged scanners so the human narrative stays in lockstep with the PR
+// narrative. The command-id scan is included so a fabricated `CMD-...` mentioned
+// in prose is demoted the same way as a fabricated path or ACID.
 function proseAnchorTokens(text: string): string[] {
   const tokens: string[] = [];
-  for (const pattern of [TEXT_PATH_TOKEN, TEXT_ROOT_FILE_TOKEN, TEXT_ACID_TOKEN]) {
+  for (const pattern of [TEXT_PATH_TOKEN, TEXT_ROOT_FILE_TOKEN, TEXT_ACID_TOKEN, COMMAND_ID_TOKEN]) {
     for (const match of text.matchAll(pattern)) {
       tokens.push(match[0]);
     }
@@ -369,6 +379,9 @@ function packetEvidenceRefs(packet: ReviewPacket): EvidenceRef[] {
   }
   for (const risk of packet.risks.items ?? []) {
     refs.push(...(risk.evidence ?? []));
+  }
+  for (const entry of packet.risks.test_evidence ?? []) {
+    refs.push(...(entry.evidence ?? []));
   }
   return refs;
 }

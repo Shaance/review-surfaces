@@ -111,6 +111,43 @@ test("review-surfaces.NARRATIVE.3 marks the trust state of every claim", () => {
   assert.match(section, /✓ verified, ~ claimed/, "the legend explains both trust markers");
 });
 
+// review-surfaces.NARRATIVE.2: a fabricated CMD- transcript id in the PROSE
+// demotes the claim even when it also cites a valid path anchor.
+test("review-surfaces.NARRATIVE.2 fabricated command id in prose demotes the claim", async () => {
+  const { packet, diff } = narrativeFacts();
+  const narrative = await buildChangeNarrative({
+    provider: stubProvider({ claims: [{ text: "Runs CMD-FABRICATED-TEST to validate src/real.ts.", paths: ["src/real.ts"] }] }),
+    providerName: "agent-file",
+    packet,
+    diff,
+    headSha: "head123",
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
+  assert.equal(narrative.claims[0].trust, "claimed", "a fabricated CMD- in prose demotes the claim");
+  assert.ok(narrative.claims[0].invalid_anchors.includes("CMD-FABRICATED-TEST"));
+});
+
+// review-surfaces.NARRATIVE.2: a command transcript recorded under
+// risks.test_evidence is a valid anchor (its CMD- id is allowlisted).
+test("review-surfaces.NARRATIVE.2 allowlists command transcripts from test evidence", async () => {
+  const { packet, diff } = narrativeFacts();
+  packet.risks.test_evidence = [
+    { id: "CMD-PNPM-TEST", kind: "direct", summary: "pnpm run test passed.", evidence: [] }
+  ] as ReviewPacket["risks"]["test_evidence"];
+  const narrative = await buildChangeNarrative({
+    provider: stubProvider({ claims: [{ text: "Validated by the recorded test transcript.", command_ids: ["CMD-PNPM-TEST"] }] }),
+    providerName: "agent-file",
+    packet,
+    diff,
+    headSha: "head123",
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
+  assert.equal(narrative.claims[0].trust, "verified", "a CMD- id from test_evidence is a valid anchor");
+  assert.ok(narrative.claims[0].anchors.some((ref) => ref.command === "CMD-PNPM-TEST"));
+});
+
 // review-surfaces.NARRATIVE.4: the narrative never alters the verdict.
 test("review-surfaces.NARRATIVE.4 narrative does not change the verdict", () => {
   const { packet, diff } = narrativeFacts();

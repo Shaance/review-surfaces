@@ -339,6 +339,9 @@ interface HumanReviewArtifactInputs {
   packet?: ReviewPacket;
   prSurface?: PrReviewSurfaceModel;
   feedback?: FeedbackFile[];
+  // A provider-built narrative to carry through a cache-hit rebuild so it is not
+  // overwritten by the deterministic fallback (review-surfaces.NARRATIVE.1).
+  narrative?: ChangeNarrative;
 }
 
 // Resolve the EFFECTIVE output dir with the SAME precedence collectInputs uses
@@ -474,6 +477,19 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // it; only created_at could differ) and reuse the existing packet untouched.
       await writeText(cacheSnapshot.manifestPath, cacheSnapshot.manifestRaw);
       const provider = providerFlag(parsed, config);
+      // review-surfaces.NARRATIVE.1: rebuild the provider narrative on a cache
+      // hit too (the provider/agent-input are part of the cache signature, so a
+      // hit means they are unchanged), so the artifact rebuild does not overwrite
+      // a provider-authored narrative with the deterministic fallback.
+      const cachedNarrative = config.human_review.enabled && cacheSnapshot.packet
+        ? await buildHumanNarrativeForAll(cwd, parsed, config, cacheSnapshot.packet, prSurfaceReuse.surface, undefined, collection)
+        : undefined;
+      const cachedHumanInputs: HumanReviewArtifactInputs = {
+        packet: cacheSnapshot.packet,
+        prSurface: prSurfaceReuse.surface,
+        feedback: collection.feedback,
+        narrative: cachedNarrative
+      };
       // Round 6: a cache hit must match a normal run's gate behavior. Run
       // applyGate on the cached evaluation so a cached packet with a
       // gate-tripping condition is NOT silently passed: without --strict
@@ -484,19 +500,11 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // strict-without-evaluation falls through to regenerate below) we keep the
       // prior reuse-and-succeed behavior rather than forcing a regenerate.
       if (evaluation) {
-        await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, {
-          packet: cacheSnapshot.packet,
-          prSurface: prSurfaceReuse.surface,
-          feedback: collection.feedback
-        });
+        await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
         console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
         return applyGate(parsed, evaluation, collection, provider, config);
       }
-      await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, {
-        packet: cacheSnapshot.packet,
-        prSurface: prSurfaceReuse.surface,
-        feedback: collection.feedback
-      });
+      await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
       console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
       return ExitCodes.success;
     }
@@ -1219,13 +1227,13 @@ async function buildHumanReviewFromArtifacts(
       );
       return {
         outputDir,
-        model: buildHumanReviewForPacket(cwd, outputDir, packet, undefined, undefined, inputs?.feedback ?? readHumanReviewFeedback(outputDir), config)
+        model: buildHumanReviewForPacket(cwd, outputDir, packet, undefined, undefined, inputs?.feedback ?? readHumanReviewFeedback(outputDir), config, inputs?.narrative)
       };
     }
   }
   return {
     outputDir,
-    model: buildHumanReviewForPacket(cwd, outputDir, packet, surface, undefined, inputs?.feedback ?? readHumanReviewFeedback(outputDir), config)
+    model: buildHumanReviewForPacket(cwd, outputDir, packet, surface, undefined, inputs?.feedback ?? readHumanReviewFeedback(outputDir), config, inputs?.narrative)
   };
 }
 
