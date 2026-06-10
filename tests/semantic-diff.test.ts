@@ -614,6 +614,52 @@ test("review-surfaces.SEMANTIC_DIFF.2 attributes destructured type changes to th
   assert.ok(!changedNames.includes("a"), "the unchanged leaf a is NOT reported");
 });
 
+// review-surfaces.SEMANTIC_DIFF.2: a locally-exported type's body change is seen.
+test("review-surfaces.SEMANTIC_DIFF.2 resolves local type-only exports", () => {
+  const path = "src/lt.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "interface Options { a: string; }\nexport type { Options };" }, { [path]: "interface Options { a: string; b: number; }\nexport type { Options };" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "Options"), "a local interface body change behind a type-only export is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a destructured local re-exported via a list is
+// compared by its leaf shape.
+test("review-surfaces.SEMANTIC_DIFF.2 resolves destructured locals in export lists", () => {
+  const path = "src/dlx.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "const { handler }: { handler: (a: string) => void } = mod;\nexport { handler };" }, { [path]: "const { handler }: { handler: (a: number) => void } = mod;\nexport { handler };" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "handler"), "a destructured local's type change behind an export list is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: optionality on a destructured member type is
+// part of the contract.
+test("review-surfaces.SEMANTIC_DIFF.2 preserves optionality on destructured member types", () => {
+  const path = "src/opt.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export const { a }: { a?: string } = src;" }, { [path]: "export const { a }: { a: string } = src;" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "a"), "optional→required on a destructured member is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a parenthesized function initializer is
+// recognized.
+test("review-surfaces.SEMANTIC_DIFF.2 unwraps parenthesized function initializers", () => {
+  const path = "src/paren.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export const f = ((x: string): void => {});" }, { [path]: "export const f = ((x: number): void => {});" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "f"), "a parenthesized arrow's param change is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: all overloads of a locally-exported function
+// contribute to the signature.
+test("review-surfaces.SEMANTIC_DIFF.2 aggregates overloads for local export lists", () => {
+  const path = "src/ovx.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const oldText = "function f(x: string): string;\nfunction f(x: number): number;\nfunction f(x: any): any { return x; }\nexport { f };";
+  const newText = "function f(x: string): string;\nfunction f(x: boolean): boolean;\nfunction f(x: any): any { return x; }\nexport { f };";
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: oldText }, { [path]: newText })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "f"), "a change to a later overload behind an export list is surfaced");
+});
+
 // A test file is not treated as an API surface.
 test("review-surfaces.SEMANTIC_DIFF.2 ignores test files for API surface", () => {
   const path = "tests/x.test.ts";
