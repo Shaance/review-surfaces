@@ -1513,6 +1513,7 @@ interface FactReaders {
   readBase: (filePath: string) => string | undefined;
   readHead: (filePath: string) => string | undefined;
   headIsWorktree: boolean;
+  headSha: string;
 }
 
 function buildFactReaders(cwd: string, packet: ReviewPacket, diff: StructuredDiff | undefined): FactReaders | undefined {
@@ -1537,7 +1538,8 @@ function buildFactReaders(cwd: string, packet: ReviewPacket, diff: StructuredDif
     changedPaths: diff.files.map((file) => file.path),
     readBase: baseReadRef ? (filePath) => readFileAtRef(cwd, baseReadRef, filePath) : () => undefined,
     readHead: headIsWorktree ? readWorktree : (filePath) => readFileAtRef(cwd, headSha, filePath),
-    headIsWorktree
+    headIsWorktree,
+    headSha
   };
 }
 
@@ -1550,9 +1552,18 @@ function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactR
   if (!readers || targets.length === 0) {
     return facts;
   }
+  // The graph must enumerate the REVIEWED head's tree: ls-files reads the
+  // current index, which is stale when --head is a committed ref that is not
+  // checked out.
   let tracked: string[];
   try {
-    tracked = execFileSync("git", ["ls-files"], { cwd, encoding: "utf8" }).split("\n").filter(Boolean);
+    tracked = execFileSync(
+      "git",
+      readers.headIsWorktree ? ["ls-files"] : ["ls-tree", "-r", "--name-only", readers.headSha],
+      { cwd, encoding: "utf8" }
+    )
+      .split("\n")
+      .filter(Boolean);
   } catch {
     return facts;
   }

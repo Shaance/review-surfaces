@@ -142,14 +142,18 @@ function workflowFacts(file: StructuredDiffFile, input: ComputeConfigFactsInput)
   const facts: ConfigFact[] = [];
   const basePermissions = workflowWritePermissions(input.readBase(file.old_path ?? file.path));
   const headPermissions = workflowWritePermissions(input.readHead(file.path));
+  // A base with blanket write access ("write"/"write-all") already covers any
+  // per-scope write: narrowing to scoped writes is a REDUCTION, not broadening.
+  const baseHasBlanketWrite = basePermissions.has("write") || basePermissions.has("write-all");
   for (const permission of [...headPermissions].sort()) {
-    if (!basePermissions.has(permission)) {
-      facts.push({
-        kind: "ci_permissions_broadened",
-        path: file.path,
-        detail: `broadens workflow permissions: \`${permission}\` — flagged for attention, not proven exploitable`
-      });
+    if (baseHasBlanketWrite || basePermissions.has(permission)) {
+      continue;
     }
+    facts.push({
+      kind: "ci_permissions_broadened",
+      path: file.path,
+      detail: `broadens workflow permissions: \`${permission}\` — flagged for attention, not proven exploitable`
+    });
   }
   for (const { text, line } of addedLines(file)) {
     for (const match of text.matchAll(/secrets\.([A-Za-z0-9_]+)/g)) {
@@ -162,7 +166,7 @@ function workflowFacts(file: StructuredDiffFile, input: ComputeConfigFactsInput)
         });
       }
     }
-    if (/^\s*pull_request_target\s*:/.test(text)) {
+    if (/^\s*pull_request_target\s*:/.test(text) || /^\s*on\s*:.*\bpull_request_target\b/.test(text) || /^\s*-\s*pull_request_target\s*$/.test(text)) {
       facts.push({
         kind: "ci_pull_request_target_added",
         path: file.path,
@@ -234,12 +238,22 @@ function dockerfileFacts(file: StructuredDiffFile, input: ComputeConfigFactsInpu
       facts.push({ kind: "docker_base_image_changed", path: file.path, line, detail: `changes/adds base image: \`${text.trim()}\`` });
     }
   }
-  const baseHasUser = /^\s*USER\s+\S+/im.test(input.readBase(file.old_path ?? file.path) ?? "");
-  const headHasUser = /^\s*USER\s+\S+/im.test(input.readHead(file.path) ?? "");
+  // Multi-stage images: only the FINAL stage's USER governs the runtime user, so
+  // compare the content after the last FROM on each side.
+  const baseHasUser = /^\s*USER\s+\S+/im.test(finalStage(input.readBase(file.old_path ?? file.path)));
+  const headHasUser = /^\s*USER\s+\S+/im.test(finalStage(input.readHead(file.path)));
   if (baseHasUser && !headHasUser) {
-    facts.push({ kind: "docker_user_dropped", path: file.path, detail: "drops the USER directive — the container now runs as root" });
+    facts.push({ kind: "docker_user_dropped", path: file.path, detail: "drops the USER directive from the final stage — the container now runs as root" });
   }
   return facts;
+}
+
+function finalStage(content: string | undefined): string {
+  if (!content) {
+    return "";
+  }
+  const parts = content.split(/^\s*FROM\s+/im);
+  return parts[parts.length - 1] ?? "";
 }
 
 // --- SQL / migrations (CONFIG_FACTS.3) -----------------------------------------

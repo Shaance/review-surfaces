@@ -127,43 +127,57 @@ export function buildImportGraph(options: {
 }
 
 // BLAST_RADIUS.2: the importers of `modulePath` that actually reference one of
-// `symbols` — a named import of the symbol, or a namespace import whose `ns.symbol`
-// appears in the file body. Returns sorted unique paths.
+// `symbols` THROUGH that module — a named import of the symbol from a specifier
+// resolving to the module, or a namespace import of the module whose
+// `ns.symbol` appears in the body. An identically-named symbol imported from a
+// DIFFERENT module never counts. Returns sorted unique paths.
+const IMPORT_DECL = /import\s+(?:type\s+)?(?:[A-Za-z_$][\w$]*\s*,\s*)?(?:\*\s+as\s+([A-Za-z_$][\w$]*)|\{([^}]*)\})?\s*from\s*["']([^"']+)["']/g;
+
 export function findSymbolImporters(options: {
   graph: ImportGraph;
   modulePath: string;
   symbols: string[];
   read: (filePath: string) => string | undefined;
+  exists?: (filePath: string) => boolean;
 }): string[] {
-  const readCached = (filePath: string): string | undefined =>
-    options.graph.contents.get(filePath) ?? options.read(filePath);
   const importerPaths = options.graph.importers.get(options.modulePath) ?? [];
   if (importerPaths.length === 0 || options.symbols.length === 0) {
     return [];
   }
+  const exists = options.exists ?? ((filePath: string) => options.graph.contents.has(filePath));
+  const readCached = (filePath: string): string | undefined =>
+    options.graph.contents.get(filePath) ?? options.read(filePath);
+  const symbolSet = new Set(options.symbols);
   const result: string[] = [];
   for (const importer of importerPaths) {
     const content = readCached(importer);
     if (!content) {
       continue;
     }
-    const referencesSymbol = options.symbols.some((symbol) => {
-      const named = new RegExp(`import\\s+(type\\s+)?\\{[^}]*\\b${escapeRegExp(symbol)}\\b[^}]*\\}`);
-      if (named.test(content)) {
-        return true;
+    const fromDir = path.posix.dirname(toPosix(importer));
+    let references = false;
+    for (const decl of content.matchAll(IMPORT_DECL)) {
+      const [, nsAlias, named, specifier] = decl;
+      if (!specifier.startsWith(".")) {
+        continue;
       }
-      const ns = content.match(/import\s+\*\s+as\s+([A-Za-z_$][\w$]*)/g);
-      if (ns) {
-        for (const decl of ns) {
-          const alias = decl.replace(/import\s+\*\s+as\s+/, "");
-          if (new RegExp(`\\b${escapeRegExp(alias)}\\.${escapeRegExp(symbol)}\\b`).test(content)) {
-            return true;
-          }
+      const resolved = resolveSpecifier(fromDir, specifier, exists);
+      if (resolved !== options.modulePath) {
+        continue;
+      }
+      if (named && named.split(",").some((entry) => symbolSet.has(entry.replace(/\s+as\s+.*/, "").replace(/^type\s+/, "").trim()))) {
+        references = true;
+        break;
+      }
+      if (nsAlias) {
+        const used = [...symbolSet].some((symbol) => new RegExp(`\\b${escapeRegExp(nsAlias)}\\.${escapeRegExp(symbol)}\\b`).test(content));
+        if (used) {
+          references = true;
+          break;
         }
       }
-      return false;
-    });
-    if (referencesSymbol) {
+    }
+    if (references) {
       result.push(importer);
     }
   }

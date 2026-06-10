@@ -2000,7 +2000,12 @@ function defaultRankReason(draft: QueueDraft): string {
 // review-surfaces.DEP_FACTS.2: dependency facts rank as concrete supply-chain
 // queue items naming the package and the change ("adds `leftpad@2` ...").
 function dependencyQueueDrafts(facts: DependencyFact[], diffIndex: DiffIndex | undefined): QueueDraft[] {
-  return facts.slice(0, 6).map((fact, index) => {
+  // Select by SEVERITY before capping: an alphabetically late install-script
+  // fact must not be dropped by six earlier ordinary additions.
+  const ordered = [...facts].sort(
+    (a, b) => dependencyFactSeverityRank(a.kind) - dependencyFactSeverityRank(b.kind) || (a.package < b.package ? -1 : a.package > b.package ? 1 : 0)
+  );
+  return ordered.slice(0, 6).map((fact, index) => {
     const rank = dependencyFactSeverityRank(fact.kind);
     return semanticDraft(diffIndex, {
       title: "Dependency change",
@@ -2027,7 +2032,15 @@ function isHighSeverityConfigFact(kind: ConfigFact["kind"]): boolean {
 // review-surfaces.CONFIG_FACTS.1-3: config/infra facts rank as concrete queue
 // items; the language flags for attention rather than proving semantics.
 function configFactQueueDrafts(facts: ConfigFact[], diffIndex: DiffIndex | undefined): QueueDraft[] {
-  return facts.slice(0, 6).map((fact, index) => semanticDraft(diffIndex, {
+  // High-severity kinds (CI/Docker/SQL) are selected ahead of the cap so earlier
+  // low-risk env facts cannot crowd them out.
+  const ordered = [...facts].sort(
+    (a, b) =>
+      (isHighSeverityConfigFact(a.kind) ? 0 : 1) - (isHighSeverityConfigFact(b.kind) ? 0 : 1) ||
+      (a.path < b.path ? -1 : a.path > b.path ? 1 : 0) ||
+      (a.detail < b.detail ? -1 : 1)
+  );
+  return ordered.slice(0, 6).map((fact, index) => semanticDraft(diffIndex, {
     title: configFactTitle(fact.kind),
     path: fact.path,
     reason: `${fact.detail}.`,
