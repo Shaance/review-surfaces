@@ -156,6 +156,12 @@ Two items from that review were considered and deliberately deferred, not adopte
 - **`human/`/`evidence/`/`agent/` directory split** — deferred; root-level layout is intentional for backward compatibility for now. Revisit if artifact count keeps growing.
 - **Config-level `decision_policy`** — deferred until `REVIEW_LOOP` lands; session-captured feedback may make hand-written policy config partially redundant, and we should design policy-as-code with that data in hand.
 
+  **Revisit decision (after `REVIEW_LOOP` landed, Phase 4):** keep it deferred — but the design is now concrete. Two needs surfaced that `decision_policy` should own when built:
+  1. **Repo-scope feedback downgrade.** The interactive walkthrough's false-positive → downgrade only applies in PR scope today, because the feedback engine matches PR-risk candidates by `rule`/path; repo-scope packet risks use `category` (not `rule`) and the repo queue items don't map to packet-risk ids, so a clean rule-based extension isn't available. A `decision_policy` layer (category/path/finding-signature matchers over BOTH PR risks and packet risks) is the right home for repo-scope downgrade rather than overloading the PR-risk matcher.
+  2. **Promoting recurring session feedback into reusable policy.** The `review` walkthrough now writes per-session feedback files. Once enough sessions accumulate, recurring accept/false-positive patterns are the *data* to derive policy-as-code from — rather than asking users to hand-author `decision_policy` YAML up front (the original reason for deferral).
+
+  So the call is: **do not add a hand-written `decision_policy` config block now.** Build it only when (a) repo-scope downgrade is genuinely needed and (b) there is real session-feedback data to shape the matchers. Until then, session feedback files are the durable record and PR-scope downgrade is the supported automatic path.
+
 ---
 
 ## 8. Sequencing for implementation agents
@@ -165,7 +171,7 @@ Each phase is independently shippable and dogfoodable. Run `--provider mock` dog
 1. **Phase 1 — Density (B) + hardening (7).** Renderer-only rollups, inline hunks, reviewer-language pass; `SCHEMA.3`, `CLI.8`, `RENDER.8`. No model changes except what strictness requires. Smallest diff, immediate readability gain.
 2. **Phase 2 — Grounded narrative (A).** Contract + schema field, anchor validation reuse, agent-file/mock paths, trust-marked rendering.
 3. **Phase 3 — Semantic facts (C),** schema diff first, then test-weakening, then API surface diff.
-4. **Phase 4 — Interactive loop (D),** then revisit deferred decision-policy config.
-5. **Phase 5 — Positioning + `PROVIDERS.7`** draft-review export.
+4. **Phase 4 — Interactive loop (D),** then revisit deferred decision-policy config. ✅ landed (PR #51); decision_policy revisit recorded above (keep deferred, design now concrete).
+5. **Phase 5 — Positioning + `PROVIDERS.7`** draft-review export. ✅ README reframed to "the trust layer for agent-written code"; `comment --format review` exports a GitHub pending (draft) review.
 
 Discipline reminders for the implementing agent (per `AGENTS.md` / `CLAUDE.md`): preserve Acai IDs in tests and notes; never treat narrative/agent-file output as proof until deterministic validation accepts it; keep artifacts compact and local-first.

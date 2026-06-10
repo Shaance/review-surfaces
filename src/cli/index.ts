@@ -43,6 +43,7 @@ import { assemblePrReviewSurface } from "../pipeline/pr-surface";
 import { evaluateBaseline } from "../evaluation/baseline";
 import { PrReviewSurfaceModel, ReviewScope, StructuredDiff } from "../pr/contract";
 import { renderSarifFromPacketFile } from "../render/sarif";
+import { buildDraftReview } from "../render/draft-review";
 import { postStickyComment } from "../render/post-comment";
 import { writeJson, writeText } from "../core/files";
 import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
@@ -1113,15 +1114,14 @@ async function runReviewWalkthrough(parsed: ParsedArgs): Promise<number> {
   const scope = reviewScope(parsed);
   const { outputDir, model } = await loadOrBuildHumanReviewJson(cwd, outDir, scope, "review", config);
   // Fail fast rather than silently walking a repo queue under a PR-scope request.
-  // A PR-scope review needs a CURRENT pr_review_surface.json whose head matches the
-  // review — both so the queue is the PR queue AND so the rule resolver has PR risk
-  // rules to scope false-positive downgrades to. A PR-mode cached model with a
-  // missing/stale sidecar would otherwise record audit notes, not scoped policies.
-  if (scope === "pr" && (model.mode !== "pr" || prSurfaceHeadSha(outputDir) !== model.generated_from.head_sha)) {
-    throw new CliError(
-      "PR-scope review requires a current pr_review_surface.json matching the review. Run `review-surfaces all --review-scope pr` first, then re-run `review --review-scope pr`.",
-      ExitCodes.usageError
-    );
+  // A PR-scope review needs a CURRENT pr_review_surface.json matching the review
+  // (full identity, not just head) — both so the queue is the PR queue AND so the
+  // rule resolver has PR risk rules to scope false-positive downgrades to.
+  if (scope === "pr") {
+    const gateError = prScopeReviewGateError(cwd, outputDir, model, "review");
+    if (gateError) {
+      throw gateError;
+    }
   }
   const diff = readHumanReviewDiff(outputDir);
   // REVIEW_LOOP.4: interactive only when BOTH stdin and stdout are a TTY (so a
@@ -1184,15 +1184,27 @@ function reviewRiskRuleResolver(outputDir: string): (item: ReviewQueueItem) => s
   return (item) => [...new Set(item.risk_ids.map((id) => ruleByRiskId.get(id)).filter((rule): rule is string => Boolean(rule)))];
 }
 
-// The head sha the PR sidecar was generated at, or undefined when it is absent or
-// unreadable — used to confirm a PR-scope walkthrough has a current PR surface.
-function prSurfaceHeadSha(outputDir: string): string | undefined {
-  try {
-    const surface = JSON.parse(fs.readFileSync(path.join(outputDir, "pr_review_surface.json"), "utf8")) as PrReviewSurfaceModel;
-    return surface.scope?.head_sha;
-  } catch {
+// A PR-scope review/export needs a CURRENT pr_review_surface.json whose full
+// identity (mode, base ref/sha, head ref/sha, sidecar path) matches the model —
+// not just the head sha, so a base-ref change with an unchanged head is still
+// caught. Returns the usage error to throw, or undefined when the gate passes.
+function prScopeReviewGateError(cwd: string, outputDir: string, model: HumanReviewModel, command: string): CliError | undefined {
+  const surfacePath = path.join(outputDir, "pr_review_surface.json");
+  let surface: PrReviewSurfaceModel | undefined;
+  if (fileExists(surfacePath)) {
+    try {
+      surface = readPrSurfaceArtifact(cwd, surfacePath);
+    } catch {
+      surface = undefined;
+    }
+  }
+  if (surface && humanReviewMatchesPrSurface(cwd, outputDir, model, surface)) {
     return undefined;
   }
+  return new CliError(
+    `PR-scope ${command} requires a current pr_review_surface.json matching the review. Run \`review-surfaces all --review-scope pr\` first.`,
+    ExitCodes.usageError
+  );
 }
 
 // The first of `<dir>/<base><ext>`, `<dir>/<base>-2<ext>`, … that does not exist,
@@ -1856,10 +1868,74 @@ async function runComment(parsed: ParsedArgs): Promise<number> {
   if (format === "sarif") {
     return runCommentSarif(parsed);
   }
+  if (format === "review") {
+    return runCommentDraftReview(parsed);
+  }
   if (format !== "github") {
-    throw new CliError(`Unknown --format: ${format}. Use github or sarif.`, ExitCodes.usageError);
+    throw new CliError(`Unknown --format: ${format}. Use github, sarif, or review.`, ExitCodes.usageError);
   }
   return runCommentGithub(parsed);
+}
+
+// review-surfaces.PROVIDERS.7: export the suggested comments as a GitHub PENDING
+// (draft) review payload the reviewer edits and submits. Reads local artifacts
+// only; the payload omits `event`, so it is never auto-submitted.
+async function runCommentDraftReview(parsed: ParsedArgs): Promise<number> {
+  const cwd = process.cwd();
+  const outDir = await resolveOutputDir(cwd, parsed);
+  const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
+  const humanReviewPath = path.join(outputDir, "human_review.json");
+  if (!fileExists(humanReviewPath)) {
+    throw new CliError(
+      `No human_review.json at ${path.relative(cwd, humanReviewPath) || humanReviewPath}. Run \`review-surfaces human\` (or \`all\`) first.`,
+      ExitCodes.usageError
+    );
+  }
+  // Guard against a stale, partially-written, or hand-edited artifact: a malformed
+  // file (or a schema-invalid model) fails cleanly with guidance, like the other
+  // human-review paths, instead of throwing a SyntaxError to the runtime-error
+  // handler or emitting a malformed payload.
+  let loaded: unknown;
+  try {
+    loaded = await readJson(humanReviewPath);
+  } catch {
+    throw new CliError(
+      `human_review.json at ${path.relative(cwd, humanReviewPath) || humanReviewPath} is not valid JSON. Regenerate it with \`review-surfaces human\` (or \`all\`) before exporting a draft review.`,
+      ExitCodes.usageError
+    );
+  }
+  const issues = humanReviewIssues(cwd, loaded);
+  if (issues.length > 0) {
+    throw new CliError(
+      `human_review.json at ${path.relative(cwd, humanReviewPath) || humanReviewPath} is stale or invalid (${issues[0]}). Regenerate it with \`review-surfaces human\` (or \`all\`) before exporting a draft review.`,
+      ExitCodes.usageError
+    );
+  }
+  const model = loaded as HumanReviewModel;
+  // Honor an explicit PR-scope request: a GitHub pending review must be built from
+  // the current PR surface, not a cached repo-scope model (whole-repo evidence
+  // lines are not PR-diff anchors). Mirror the `review` walkthrough's gate.
+  if (reviewScope(parsed) === "pr") {
+    const gateError = prScopeReviewGateError(cwd, outputDir, model, "draft review");
+    if (gateError) {
+      throw gateError;
+    }
+  }
+  // The reviewed diff is the authority for inline-anchoring and side. A PRESENT but
+  // empty diff (zero changed files) is still authoritative — every path+line
+  // comment then folds into the body, never an invalid inline comment. Only a
+  // genuinely ABSENT diff artifact falls back to the comment's own side hint.
+  const diffPath = path.join(outputDir, "inputs", "diff.patch");
+  const diff = fileExists(diffPath) ? parseStructuredDiff(fs.readFileSync(diffPath, "utf8")) : undefined;
+  const draft = buildDraftReview(model, diff);
+  const reviewPath = path.join(outputDir, "pending_review.json");
+  await writeJson(reviewPath, draft.payload);
+  process.stdout.write(`${JSON.stringify(draft.payload, null, 2)}\n`);
+  console.error(
+    `Wrote ${path.relative(cwd, reviewPath) || reviewPath} — ${draft.payload.comments.length} inline comment(s), ${draft.unanchored} general. ` +
+    "This is a PENDING (draft) review with no event; create and submit it yourself on GitHub — nothing is auto-submitted."
+  );
+  return ExitCodes.success;
 }
 
 // --post is OPTIONAL and best-effort: only when set AND `gh` is available AND a
@@ -2345,8 +2421,11 @@ ${humanStandaloneCommandHelp()}
   comment       Render a review surface from local artifacts. With
                 --format github (default) writes .review-surfaces/comment.md (a compact
                 GitHub sticky comment); with --format sarif writes
-                .review-surfaces/review.sarif (a SARIF 2.1.0 log). Reads local artifacts
-                only and never recomputes the pipeline.
+                .review-surfaces/review.sarif (a SARIF 2.1.0 log); with --format review
+                writes .review-surfaces/pending_review.json (a GitHub PENDING draft
+                review of the hunk-anchored suggested comments — you edit and submit it;
+                nothing is auto-submitted). Reads local artifacts only and never
+                recomputes the pipeline.
   review        Interactive walkthrough of the ranked review queue. Steps through each
                 item (inline hunk excerpt, reason, evidence) and captures decisions —
                 accept / flag / false positive / comment — into a local feedback file so

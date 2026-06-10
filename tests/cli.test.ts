@@ -862,3 +862,42 @@ test("review-surfaces.REVIEW_LOOP.2 feedback under a repo-root output dir (--out
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("review-surfaces.PROVIDERS.7 comment --format review exports a pending (no-event) draft review", () => {
+  const tmp = setupReviewFixture("rs-draft-review-");
+  try {
+    const result = spawnSync("node", [CLI, "comment", "--format", "review", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    assert.equal(result.status, ExitCodes.success, result.stderr);
+    const payload = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "pending_review.json"), "utf8"));
+    assert.equal("event" in payload, false, "the exported review omits event so it is never auto-submitted");
+    assert.ok(Array.isArray(payload.comments), "the payload has a comments array");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.PROVIDERS.7 comment --format review rejects a stale/invalid human_review.json", () => {
+  const tmp = setupReviewFixture("rs-draft-review-stale-");
+  try {
+    // Corrupt the artifact into a schema-invalid shape.
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify({ not: "a valid human review" }));
+    const result = spawnSync("node", [CLI, "comment", "--format", "review", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    assert.equal(result.status, ExitCodes.usageError, result.stdout + result.stderr);
+    assert.match(result.stderr + result.stdout, /stale or invalid/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.PROVIDERS.7 comment --format review --review-scope pr fails fast on a repo-scope artifact", () => {
+  const tmp = setupReviewFixture("rs-draft-prscope-");
+  try {
+    // The fixture generated a repo-scope review (no pr_review_surface.json). A
+    // PR-scope draft export must fail fast rather than export repo-scope comments.
+    const result = spawnSync("node", [CLI, "comment", "--format", "review", "--review-scope", "pr", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    assert.equal(result.status, ExitCodes.usageError, result.stdout + result.stderr);
+    assert.match(result.stderr + result.stdout, /PR-scope draft review requires a current pr_review_surface\.json/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
