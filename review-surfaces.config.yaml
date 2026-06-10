@@ -275,16 +275,7 @@ quality_gate:
     # Phase 2 — Ranking & evidence (M7): brainstorm ideas 3 + 6 + 8
     # Phase 2 (RANKING.1-3, COVERAGE.1-4, BUDGET.1-2) fully SHIPPED (2a/2b/2c).
     # Phase 3 — Eval harness SHIPPED (EVAL_HARNESS.1-4 removed).
-    # Phase 4 — Fear-class facts (M8): brainstorm ideas 4 + 5 + 9
-    - review-surfaces.DEP_FACTS.1
-    - review-surfaces.DEP_FACTS.2
-    - review-surfaces.DEP_FACTS.3
-    - review-surfaces.BLAST_RADIUS.1
-    - review-surfaces.BLAST_RADIUS.2
-    - review-surfaces.BLAST_RADIUS.3
-    - review-surfaces.CONFIG_FACTS.1
-    - review-surfaces.CONFIG_FACTS.2
-    - review-surfaces.CONFIG_FACTS.3
+    # Phase 4 — Fear-class facts (M8) SHIPPED (DEP_FACTS/BLAST_RADIUS/CONFIG_FACTS removed).
     # Phase 5 — HTML cockpit: brainstorm idea 7
     - review-surfaces.RENDER.9
     - review-surfaces.RENDER.10
@@ -306,4 +297,5 @@ human_review:
     test_evidence: true
     reviewer_ux: true
     cache_provenance: true
+    supply_chain: true
   required_manual_checks: []

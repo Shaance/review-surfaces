@@ -659,6 +659,7 @@
             "test_evidence",
             "reviewer_ux",
             "cache_provenance",
+            "supply_chain",
             "custom"
           ]
         },

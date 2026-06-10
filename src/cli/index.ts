@@ -12,6 +12,12 @@ import { computeRankingEvidence, emptyRankingEvidence, RankingEvidence } from ".
 import { isTestPath } from "../scope/pr-scope";
 import { intersectCoverageWithDiff } from "../tests-evidence/lcov";
 import { parseBudgetDuration } from "../human/budget";
+import { computeDependencyFacts } from "../risks/dependency-facts";
+import { computeConfigFacts } from "../risks/config-facts";
+import { buildImportGraph, findSymbolImporters } from "../collector/import-graph";
+import { execFileSync } from "node:child_process";
+import { loadPrivacyIgnoreSync } from "../privacy/ignore";
+import { stripUndefined } from "../core/guards";
 import type { CoverageEvidence } from "../human/contract";
 import { PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
@@ -1441,6 +1447,7 @@ function buildHumanReviewForPacket(
   narrative?: ChangeNarrative
 ): HumanReviewModel {
   const resolvedDiff = diff ?? readHumanReviewDiff(outDir);
+  const factReaders = buildFactReaders(cwd, packet, resolvedDiff);
   const humanReview = buildHumanReview({
     packet,
     prSurface,
@@ -1450,13 +1457,17 @@ function buildHumanReviewForPacket(
     narrative,
     // review-surfaces.SEMANTIC_DIFF.1-4: computed here (sync git access) so the
     // facts are present uniformly on every build path — main, cache, standalone.
-    semanticFacts: computeSemanticFactsForPacket(cwd, packet, resolvedDiff),
+    semanticFacts: withBlastRadius(cwd, computeSemanticFactsForPacket(resolvedDiff, factReaders), factReaders),
     // review-surfaces.RANKING.1: per-changed-impl-path evidence (changed test ->
     // impl import map) computed here so it is uniform on every build path.
     rankingEvidence: computeRankingEvidenceForPacket(cwd, packet, resolvedDiff),
     // review-surfaces.COVERAGE.3/.4: intersect the collected lcov model (if any)
     // with the diff; absent report -> the honest "no_report" negative.
     coverageEvidence: computeCoverageEvidenceForPacket(outDir, resolvedDiff),
+    // review-surfaces.DEP_FACTS / CONFIG_FACTS: deterministic, offline detectors
+    // computed here so every build path carries them uniformly.
+    dependencyFacts: factReaders ? computeDependencyFacts({ changedFiles: factReaders.changedFiles, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
+    configFacts: factReaders && resolvedDiff ? computeConfigFacts({ diff: resolvedDiff, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
@@ -1465,30 +1476,57 @@ function buildHumanReviewForPacket(
 }
 
 // review-surfaces.SEMANTIC_DIFF.1-4: compute the semantic change facts from the
-// collected diff plus the base (git) and head (working tree) file contents. The
-// base ref comes from the packet manifest, so this works for any build path. A
-// pure add/delete (no base version) yields no schema/API contract diff.
-function computeSemanticFactsForPacket(cwd: string, packet: ReviewPacket, diff: StructuredDiff | undefined): SemanticChangeFacts {
-  if (!diff || diff.files.length === 0) {
+// collected diff plus the shared base/head readers (merge-base for the OLD side,
+// worktree-or-committed-blob for the NEW side — see buildFactReaders).
+function computeSemanticFactsForPacket(diff: StructuredDiff | undefined, readers: FactReaders | undefined): SemanticChangeFacts {
+  if (!diff || diff.files.length === 0 || !readers) {
     return emptySemanticChangeFacts();
   }
+  return computeSemanticChangeFacts({
+    diff,
+    readBase: readers.readBase,
+    readHead: readers.readHead
+  });
+}
+
+
+// review-surfaces.BUDGET.1: --budget <duration> overrides the config default
+// (off). An unparseable duration is a usage error, not a silent off.
+function applyBudgetFlag(parsed: ParsedArgs, config: ReviewSurfacesConfig): void {
+  const raw = parsed.flags["budget"];
+  if (raw === undefined) {
+    return;
+  }
+  // A bare `--budget` (no value / followed by another flag) parses as boolean
+  // true; that must be a loud usage error, not a silent "budget off".
+  const minutes = typeof raw === "string" ? parseBudgetDuration(raw) : undefined;
+  if (minutes === undefined) {
+    throw new CliError(`Invalid --budget: ${raw === true ? "(no value)" : String(raw)}. Use forms like 15m, 1h, or 1h30m.`, ExitCodes.usageError);
+  }
+  config.human_review.review_budget_minutes = minutes;
+}
+
+// Shared base/head readers for the semantic + Phase 4 fact detectors, resolved
+// with the same merge-base / worktree rules: the OLD side reads the merge-base
+// of base and head (the three-dot diff's old side); the NEW side reads the
+// working tree when head is checked out, else the committed blob.
+interface FactReaders {
+  changedFiles: Array<{ path: string; old_path?: string }>;
+  readBase: (filePath: string) => string | undefined;
+  readHead: (filePath: string) => string | undefined;
+  headIsWorktree: boolean;
+  headSha: string;
+}
+
+function buildFactReaders(cwd: string, packet: ReviewPacket, diff: StructuredDiff | undefined): FactReaders | undefined {
+  if (!diff || diff.files.length === 0) {
+    return undefined;
+  }
   const manifest = packet.manifest as { base_sha?: unknown; base_ref?: unknown; head_sha?: unknown; head_ref?: unknown };
-  const manifestString = (value: unknown): string => (typeof value === "string" ? value : "");
-  const baseRef = manifestString(manifest.base_sha) || manifestString(manifest.base_ref);
-  const headSha = manifestString(manifest.head_sha);
-  const headRef = manifestString(manifest.head_ref);
-
-  // The diff.patch is a `base...head` (three-dot) range diff, whose OLD side is
-  // the merge-base of base and head — not the base branch tip. Compare schema/API
-  // content against that merge-base so the facts describe exactly the reviewed
-  // change set even when the base branch advanced after the PR forked.
-  const baseReadRef = baseRef ? resolveMergeBaseSha(cwd, baseRef, headSha || headRef || "HEAD") ?? baseRef : "";
-
-  // The NEW side: when head is the current worktree (head_sha == checked-out
-  // HEAD), read the working tree so uncommitted edits are reflected. When head is
-  // an explicit committed ref that is NOT the worktree, read that committed blob
-  // via `git show` so the facts describe the reviewed revision, not whatever
-  // happens to be checked out.
+  const str = (value: unknown): string => (typeof value === "string" ? value : "");
+  const baseRef = str(manifest.base_sha) || str(manifest.base_ref);
+  const headSha = str(manifest.head_sha);
+  const baseReadRef = baseRef ? resolveMergeBaseSha(cwd, baseRef, headSha || str(manifest.head_ref) || "HEAD") ?? baseRef : "";
   const worktreeHead = resolveGitRefSha(cwd, "HEAD");
   const headIsWorktree = !headSha || !worktreeHead || headSha === worktreeHead;
   const readWorktree = (filePath: string): string | undefined => {
@@ -1498,15 +1536,66 @@ function computeSemanticFactsForPacket(cwd: string, packet: ReviewPacket, diff: 
       return undefined;
     }
   };
-  const readHead = headIsWorktree
-    ? readWorktree
-    : (filePath: string) => readFileAtRef(cwd, headSha, filePath);
-
-  return computeSemanticChangeFacts({
-    diff,
+  return {
+    changedFiles: diff.files.map((file) => stripUndefined({ path: file.path, old_path: file.old_path }) as { path: string; old_path?: string }),
     readBase: baseReadRef ? (filePath) => readFileAtRef(cwd, baseReadRef, filePath) : () => undefined,
-    readHead
+    readHead: headIsWorktree ? readWorktree : (filePath) => readFileAtRef(cwd, headSha, filePath),
+    headIsWorktree,
+    headSha
+  };
+}
+
+// review-surfaces.BLAST_RADIUS.1/.2/.3: enrich changed/removed exports with
+// in-repo importer counts from a bounded reverse import graph over the
+// git-tracked source files. A truncated graph carries the note rather than
+// presenting "used by 0" as fact.
+function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactReaders | undefined): SemanticChangeFacts {
+  const targets = facts.api_changes.filter((change) => change.exports_removed.length > 0 || change.signatures_changed.length > 0);
+  if (!readers || targets.length === 0) {
+    return facts;
+  }
+  // The graph must enumerate the REVIEWED head's tree: ls-files reads the
+  // current index, which is stale when --head is a committed ref that is not
+  // checked out.
+  let tracked: string[];
+  try {
+    tracked = execFileSync(
+      "git",
+      readers.headIsWorktree ? ["ls-files"] : ["ls-tree", "-r", "--name-only", readers.headSha],
+      { cwd, encoding: "utf8" }
+    )
+      .split("\n")
+      .filter(Boolean);
+  } catch {
+    return facts;
+  }
+  // Honor the existing privacy/generated exclusions: an ignored tree must not
+  // contribute importers to the blast radius.
+  const ignore = loadPrivacyIgnoreSync(cwd);
+  tracked = tracked.filter((filePath) => !ignore.isIgnored(filePath));
+  const graph = buildImportGraph({
+    files: tracked,
+    read: readers.readHead,
+    exists: readers.headIsWorktree
+      ? (filePath) => {
+          try {
+            return fs.statSync(path.resolve(cwd, filePath)).isFile();
+          } catch {
+            return false;
+          }
+        }
+      : (filePath) => readers.readHead(filePath) !== undefined
   });
+  for (const change of targets) {
+    const symbols = [...change.exports_removed, ...change.signatures_changed.map((sig) => sig.name)];
+    const importers = findSymbolImporters({ graph, modulePath: change.path, symbols, read: readers.readHead });
+    change.used_by = {
+      count: importers.length,
+      top: importers.slice(0, 5),
+      ...(graph.truncated ? { truncated: true } : {})
+    };
+  }
+  return facts;
 }
 
 // review-surfaces.RANKING.1: build the changed-test -> changed-impl import map.
@@ -1575,22 +1664,6 @@ function computeCoverageEvidenceForPacket(outDir: string, diff: StructuredDiff |
     postdates_head: record.postdates_head === true,
     files: intersectCoverageWithDiff(diff, { files: record.files })
   };
-}
-
-// review-surfaces.BUDGET.1: --budget <duration> overrides the config default
-// (off). An unparseable duration is a usage error, not a silent off.
-function applyBudgetFlag(parsed: ParsedArgs, config: ReviewSurfacesConfig): void {
-  const raw = parsed.flags["budget"];
-  if (raw === undefined) {
-    return;
-  }
-  // A bare `--budget` (no value / followed by another flag) parses as boolean
-  // true; that must be a loud usage error, not a silent "budget off".
-  const minutes = typeof raw === "string" ? parseBudgetDuration(raw) : undefined;
-  if (minutes === undefined) {
-    throw new CliError(`Invalid --budget: ${raw === true ? "(no value)" : String(raw)}. Use forms like 15m, 1h, or 1h30m.`, ExitCodes.usageError);
-  }
-  config.human_review.review_budget_minutes = minutes;
 }
 
 function readHumanReviewDiff(outDir: string): StructuredDiff | undefined {

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileExists, readText, toPosixPath } from "../core/files";
 import { globToRegExp } from "../core/glob";
@@ -103,4 +104,32 @@ function hasGlob(pattern: string): boolean {
 
 function normalizeRelativePath(filePath: string): string {
   return toPosixPath(filePath).replace(/^\.\/+/, "").replace(/^\/+/, "");
+}
+
+// Synchronous variant for sync build paths (the blast-radius graph): same
+// default + file patterns, default ignore-file name.
+export function loadPrivacyIgnoreSync(cwd: string, ignoreFile = ".review-surfacesignore"): PrivacyIgnoreRules {
+  const ignorePath = path.resolve(cwd, ignoreFile);
+  let fileText = "";
+  try {
+    fileText = fs.readFileSync(ignorePath, "utf8");
+  } catch {
+    fileText = "";
+  }
+  const patterns = unique([...DEFAULT_PRIVACY_IGNORE_PATTERNS, ...parseIgnoreFile(fileText)]);
+  const rules = patterns.map(compileRule);
+  return {
+    ignoreFile,
+    patterns,
+    isIgnored(filePath: string): boolean {
+      const normalized = normalizeRelativePath(filePath);
+      let ignored = false;
+      for (const rule of rules) {
+        if (matchesRule(rule, normalized)) {
+          ignored = !rule.negate;
+        }
+      }
+      return ignored;
+    }
+  };
 }

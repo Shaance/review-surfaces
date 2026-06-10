@@ -63,6 +63,7 @@ export const RISK_LENSES = [
   "test_evidence",
   "reviewer_ux",
   "cache_provenance",
+  "supply_chain",
   "custom"
 ] as const;
 export type RiskLens = (typeof RISK_LENSES)[number];
@@ -118,6 +119,7 @@ export const DEFAULT_HUMAN_REVIEW_BUILD_CONFIG: HumanReviewBuildConfig = {
     test_evidence: true,
     reviewer_ux: true,
     cache_provenance: true,
+    supply_chain: true,
     custom: true
   },
   required_manual_checks: [],
@@ -154,9 +156,13 @@ export const RISK_LENS_METADATA: Record<RiskLens, RiskLensMetadata> = {
     label: "Cache / provenance lens",
     rank: 5
   },
+  supply_chain: {
+    label: "Supply-chain lens",
+    rank: 6
+  },
   custom: {
     label: "Custom lens",
-    rank: 6
+    rank: 7
   }
 };
 

@@ -32,6 +32,11 @@ export interface ApiSurfaceChange {
   exports_added: string[];
   exports_removed: string[];
   signatures_changed: Array<{ name: string; from: string; to: string }>;
+  // review-surfaces.BLAST_RADIUS.2: in-repo reference resolution for the changed
+  // or removed exports — how many files import this module and reference the
+  // symbols, with the top paths (alphabetical, bounded). Absent when the import
+  // graph was not computed; truncated graphs carry the note instead of "0".
+  used_by?: { count: number; top: string[]; truncated?: boolean };
 }
 
 export type TestWeakeningKind = "deleted_test_file" | "skipped_test" | "removed_assertion" | "regenerated_snapshot";

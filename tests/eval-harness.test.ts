@@ -207,6 +207,91 @@ export function risky(value: number): number {
   }
 });
 
+test("review-surfaces.EVAL_HARNESS.2 a sneaky new dependency with an install script ranks in the top N (DEP_FACTS)", () => {
+  const fixture = createEvalFixture("sneaky-dep");
+  try {
+    fixture.write("package.json", `{\n  "name": "fixture-app",\n  "dependencies": {}\n}\n`);
+    fixture.write("pnpm-lock.yaml", "lockfileVersion: '9.0'\npackages: {}\n");
+    fixture.commit("add manifest");
+    const fixture2 = fixture; // mutate from this committed base
+    fixture2.write("package.json", `{\n  "name": "fixture-app",\n  "dependencies": {\n    "leftpad": "^2.0.0"\n  }\n}\n`);
+    fixture2.write("pnpm-lock.yaml", "lockfileVersion: '9.0'\npackages:\n  /leftpad@2.0.0:\n    resolution: {}\n    requiresBuild: true\n");
+    fixture2.commit("add sneaky dependency");
+    record("sneaky_dependency", () => {
+      const model = fixture2.run(["--base", "HEAD~1"]);
+      assert.ok(
+        inTopQueue(model, (item) => /dependency/i.test(item.title) && /leftpad/.test(item.reason)),
+        "the new dependency must rank in the top N with concrete language"
+      );
+      assert.ok(
+        model.risk_lens_findings.some((finding) => finding.lens === "supply_chain"),
+        "the supply_chain lens must fire"
+      );
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("review-surfaces.EVAL_HARNESS.2 a breaking API change with call sites carries its blast radius (BLAST_RADIUS)", () => {
+  const fixture = createEvalFixture("blast");
+  try {
+    fixture.write("src/caller1.ts", `import { add } from "./calc";\nexport const one = add(1, 2);\n`);
+    fixture.write("src/caller2.ts", `import { add } from "./calc";\nexport const two = add(2, 3);\n`);
+    fixture.commit("add callers");
+    fixture.write(
+      "src/calc.ts",
+      `export function add(left: number, right: number, base: number): number {\n  return left + right + base;\n}\n`
+    );
+    fixture.commit("break add signature");
+    record("blast_radius", () => {
+      const model = fixture.run(["--base", "HEAD~1"]);
+      const item = topQueue(model).find((entry) => entry.path === "src/calc.ts" && /API|signature/i.test(entry.title));
+      assert.ok(item, "the API change must rank in the top N");
+      assert.match(item.reason, /Used by 3 file\(s\)/); // caller1, caller2, and the base fixture test
+      assert.match(item.reason, /caller1\.ts/);
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("review-surfaces.EVAL_HARNESS.2 a destructive migration ranks in the top N (CONFIG_FACTS)", () => {
+  const fixture = createEvalFixture("migration");
+  try {
+    fixture.write("migrations/0002_drop.sql", "DROP TABLE users;\n");
+    fixture.commit("add destructive migration");
+    record("destructive_migration", () => {
+      const model = fixture.run();
+      assert.ok(
+        inTopQueue(model, (item) => item.path === "migrations/0002_drop.sql" && /destructive|DROP/i.test(`${item.title} ${item.reason}`)),
+        "the destructive migration must rank in the top N"
+      );
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("review-surfaces.EVAL_HARNESS.2 CI permission broadening ranks in the top N (CONFIG_FACTS)", () => {
+  const fixture = createEvalFixture("ci-perms");
+  try {
+    fixture.write(".github/workflows/build.yml", "on: push\npermissions:\n  contents: read\njobs: {}\n");
+    fixture.commit("add workflow");
+    fixture.write(".github/workflows/build.yml", "on: push\npermissions:\n  contents: write\njobs: {}\n");
+    fixture.commit("broaden permissions");
+    record("ci_permission_broadening", () => {
+      const model = fixture.run(["--base", "HEAD~1"]);
+      assert.ok(
+        inTopQueue(model, (item) => item.path === ".github/workflows/build.yml" && /workflow|permission/i.test(`${item.title} ${item.reason}`)),
+        "the broadened workflow permissions must rank in the top N"
+      );
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 // --- Negative fixtures (review-surfaces.EVAL_HARNESS.2/.3) -------------------
 
 test("review-surfaces.EVAL_HARNESS.3 a literal [REDACTED:...] placeholder in docs does not block", () => {
