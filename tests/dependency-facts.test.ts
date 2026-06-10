@@ -40,6 +40,16 @@ test("review-surfaces.DEP_FACTS.1 pnpm-lock additions and requiresBuild yield tr
   assert.deepEqual(yarn, []);
 });
 
+test("review-surfaces.DEP_FACTS.1 pnpm peer-suffixed and scoped keys parse to the right package name", () => {
+  const headLock = "lockfileVersion: '9.0'\npackages:\n  '@scope/pkg@1.0.0(peer@2.0.0)':\n    resolution: {}\n";
+  const facts = computeDependencyFacts({
+    changedFiles: [{ path: "pnpm-lock.yaml" }],
+    readBase: () => "lockfileVersion: '9.0'\npackages: {}\n",
+    readHead: () => headLock
+  });
+  assert.equal(facts.find((fact) => fact.kind === "transitive_added")?.package, "@scope/pkg");
+});
+
 test("review-surfaces.DEP_FACTS.2 severity ordering puts install scripts above new deps above major bumps above loosening", () => {
   assert.ok(dependencyFactSeverityRank("install_scripts") < dependencyFactSeverityRank("dependency_added"));
   assert.ok(dependencyFactSeverityRank("dependency_added") < dependencyFactSeverityRank("major_version_bump"));

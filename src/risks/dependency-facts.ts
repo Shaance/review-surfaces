@@ -210,8 +210,10 @@ function pnpmPackages(text: string | undefined): Map<string, unknown> | undefine
 }
 
 function pnpmPackageName(key: string): string {
-  // Keys look like /name@1.2.3 or /@scope/name@1.2.3 (or name@1.2.3 in v9).
-  const cleaned = key.replace(/^\//, "");
+  // Keys look like /name@1.2.3, /@scope/name@1.2.3, or v9 name@1.2.3 with an
+  // optional peer suffix: name@1.2.3(peer@2.0.0). Strip the peer suffix BEFORE
+  // locating the version separator, or scoped+peer keys slice mid-name.
+  const cleaned = key.replace(/^\//, "").replace(/\(.*$/, "");
   const at = cleaned.lastIndexOf("@");
   return at > 0 ? cleaned.slice(0, at) : cleaned;
 }
