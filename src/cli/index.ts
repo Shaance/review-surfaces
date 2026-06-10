@@ -8,6 +8,8 @@ import { collectInputs, CollectionResult } from "../collector/collect";
 import { parseStructuredDiff } from "../collector/diff-hunks";
 import { readFileAtRef, resolveGitRefSha, resolveMergeBaseSha } from "../collector/git";
 import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
+import { computeRankingEvidence, emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
+import { isTestPath } from "../scope/pr-scope";
 import { PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
 import { CliError, ExitCodes } from "../core/exit-codes";
@@ -1442,6 +1444,9 @@ function buildHumanReviewForPacket(
     // review-surfaces.SEMANTIC_DIFF.1-4: computed here (sync git access) so the
     // facts are present uniformly on every build path — main, cache, standalone.
     semanticFacts: computeSemanticFactsForPacket(cwd, packet, resolvedDiff),
+    // review-surfaces.RANKING.1: per-changed-impl-path evidence (changed test ->
+    // impl import map) computed here so it is uniform on every build path.
+    rankingEvidence: computeRankingEvidenceForPacket(cwd, packet, resolvedDiff),
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
@@ -1491,6 +1496,41 @@ function computeSemanticFactsForPacket(cwd: string, packet: ReviewPacket, diff: 
     diff,
     readBase: baseReadRef ? (filePath) => readFileAtRef(cwd, baseReadRef, filePath) : () => undefined,
     readHead
+  });
+}
+
+// review-surfaces.RANKING.1: build the changed-test -> changed-impl import map.
+// Reads each changed test file's head content (worktree or committed blob, same
+// resolution as the semantic facts) and resolves its relative imports against the
+// on-disk repo. Pure of clocks; the on-disk file set is stable for a given tree.
+function computeRankingEvidenceForPacket(cwd: string, packet: ReviewPacket, diff: StructuredDiff | undefined): RankingEvidence {
+  if (!diff || diff.files.length === 0) {
+    return emptyRankingEvidence();
+  }
+  const manifest = packet.manifest as { head_sha?: unknown; head_ref?: unknown };
+  const headSha = typeof manifest.head_sha === "string" ? manifest.head_sha : "";
+  const worktreeHead = resolveGitRefSha(cwd, "HEAD");
+  const headIsWorktree = !headSha || !worktreeHead || headSha === worktreeHead;
+  const readHead = headIsWorktree
+    ? (filePath: string): string | undefined => {
+        try {
+          return fs.readFileSync(path.resolve(cwd, filePath), "utf8");
+        } catch {
+          return undefined;
+        }
+      }
+    : (filePath: string) => readFileAtRef(cwd, headSha, filePath);
+  return computeRankingEvidence({
+    diff,
+    isTestPath,
+    readHead,
+    exists: (repoRelativePath) => {
+      try {
+        return fs.statSync(path.resolve(cwd, repoRelativePath)).isFile();
+      } catch {
+        return false;
+      }
+    }
   });
 }
 

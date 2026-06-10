@@ -189,6 +189,7 @@ test("review-surfaces.HUMAN_REVIEW.20 renders a bounded inline hunk excerpt for 
     evidence: [fileEvidence("src/sample.ts")],
     requirement_ids: [],
     risk_ids: ["RISK-001"],
+    ranking_reasons: [],
     confidence: "high",
     priority: "medium"
   };
@@ -444,7 +445,7 @@ test("review-surfaces.HUMAN_REVIEW.20 suppresses the Hunk metadata line when an 
     id: "REVIEW-001", rank: 1, title: "Changed file", path: "src/s.ts",
     hunk_header: "@@ -1,2 +1,2 @@", line_start: 2, line_end: 2,
     reviewer_action: "Inspect.", reason: "Changed a constant.",
-    evidence: [fileEvidence("src/s.ts")], requirement_ids: [], risk_ids: [],
+    evidence: [fileEvidence("src/s.ts")], requirement_ids: [], risk_ids: [], ranking_reasons: [],
     confidence: "high", priority: "medium"
   };
   const md = renderHumanReviewMarkdown(baseModel({ review_queue: [item] }), { diff });

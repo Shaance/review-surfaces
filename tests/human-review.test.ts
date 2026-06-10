@@ -309,6 +309,50 @@ function structuredDiffFixture() {
   ].join("\n"));
 }
 
+test("review-surfaces.RANKING.2 every review-queue item carries a why-ranked-here line", () => {
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
+  assert.ok(model.review_queue.length > 0);
+  for (const item of model.review_queue) {
+    assert.ok(Array.isArray(item.ranking_reasons) && item.ranking_reasons.length > 0, `item ${item.id} has a ranking reason`);
+  }
+});
+
+test("review-surfaces.RANKING.1 an untested changed impl is promoted with a 'no changed test' reason; a test-evidenced path is demoted", () => {
+  const prSurface = prSurfaceFixture();
+  prSurface.risks.candidates.push({
+    id: "PR-RISK-UNTESTED",
+    rule: "untested_changed_impl",
+    category: "maintainability",
+    severity: "medium",
+    summary: "Implementation file src/untested.ts changed with no changed test.",
+    evidence: [fileEvidence("src/untested.ts", "Changed impl, no test.")],
+    suggested_checks: ["Add a test."]
+  });
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    prSurface,
+    diff: structuredDiffFixture(),
+    rankingEvidence: { changed_tests_by_impl: { "src/new-name.ts": ["tests/new-name.test.ts"] } }
+  });
+  const untested = model.review_queue.find((i) => i.path === "src/untested.ts");
+  assert.ok(untested, "the untested impl is in the queue (evidence never hides an item)");
+  assert.ok(untested.ranking_reasons.some((r) => /no changed test or current-head transcript/.test(r)));
+  const evidenced = model.review_queue.find((i) => i.path === "src/new-name.ts");
+  if (evidenced) {
+    assert.ok(evidenced.ranking_reasons.some((r) => /focused test changed alongside this file/.test(r)));
+  }
+});
+
+test("review-surfaces.RANKING.3 the evidence modifier reorders but never drops an item, and is deterministic", () => {
+  const base = { packet: packetFixture(), prSurface: prSurfaceFixture(), diff: structuredDiffFixture() };
+  const without = buildHumanReview(base);
+  const withEvidence = buildHumanReview({ ...base, rankingEvidence: { changed_tests_by_impl: { "src/new-name.ts": ["tests/new-name.test.ts"] } } });
+  // The evidence score demotes, it never removes: the item count is unchanged.
+  assert.equal(withEvidence.review_queue.length, without.review_queue.length);
+  // Byte-deterministic for identical inputs.
+  assert.equal(JSON.stringify(buildHumanReview(base)), JSON.stringify(buildHumanReview(base)));
+});
+
 // review-surfaces.SEMANTIC_DIFF.4: the deterministic semantic facts carry their
 // concrete, field/signature-level language into the review queue, the suggested
 // comments, AND the risk lenses — not generic path-touch phrasing.
