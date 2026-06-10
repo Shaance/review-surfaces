@@ -69,6 +69,7 @@ function baseModel(overrides: Partial<HumanReviewModel>): HumanReviewModel {
       }
     },
     coverage_evidence: { status: "no_report", files: [] },
+    review_plan: { enabled: false, read: [], skim: [], defer: [] },
     evidence_cards: [],
     test_plan: [],
     skim_safe: [],

@@ -7,6 +7,7 @@ import { formatHunkHeader, hunkOverlapsRange } from "../collector/diff-hunks";
 import { buildFallbackNarrative } from "./narrative";
 import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTypeChanges, SchemaContractChange, SemanticChangeFacts, TestWeakeningSignal } from "../risks/semantic-diff";
 import { emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
+import { buildReviewPlan } from "./budget";
 import type { CoverageEvidence } from "./contract";
 import { comparisonRiskKey } from "../dogfood/compare";
 import { EvidenceRef, feedbackEvidence, fileEvidence, missingEvidence } from "../evidence/evidence";
@@ -301,6 +302,8 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   const trustAudit = buildTrustAudit(input);
   const sinceLastReview = buildSinceLastReview(input);
   const coverageEvidence: CoverageEvidence = input.coverageEvidence ?? { status: "no_report", files: [] };
+  // review-surfaces.BUDGET.1/.2: a pure post-ranking annotation; off by default.
+  const reviewPlan = buildReviewPlan(reviewQueue, input.diff, config.review_budget_minutes ?? undefined);
   const testPlan = buildTestPlan(input, feedbackEffects, riskLensFindings);
   const verdict = buildVerdict(input, blockers, trustAudit);
   const evidenceCards = buildEvidenceCards({
@@ -355,6 +358,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     review_routes: reviewRoutes,
     since_last_review: sinceLastReview,
     coverage_evidence: coverageEvidence,
+    review_plan: reviewPlan,
     evidence_cards: evidenceCards,
     test_plan: testPlan,
     skim_safe: skimSafe,
@@ -390,6 +394,9 @@ export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): str
     // narrative_max_claims changes the rendered model, so a config-only change
     // to it must bust the cache / trigger a standalone rebuild.
     narrative_max_claims: resolved.narrative_max_claims,
+    // review-surfaces.BUDGET.1: a budget change (config or --budget) changes the
+    // rendered review_plan, so it must regenerate rather than serve stale cache.
+    review_budget_minutes: resolved.review_budget_minutes,
     required_manual_checks: resolved.required_manual_checks.map((check) => ({
       id: check.id,
       path_patterns: check.path_patterns,

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { parseBudgetDuration } from "../human/budget";
 import { fileExists, readText } from "../core/files";
 import { isRecord } from "../core/guards";
 import { parseYaml } from "../core/simple-yaml";
@@ -170,7 +171,12 @@ export function normalizeConfig(raw: Record<string, unknown>): ReviewSurfacesCon
       narrative_max_claims: positiveIntValue(
         readRecord(readRecord(raw.human_review).narrative).max_claims,
         defaultConfig.human_review.narrative_max_claims
-      )
+      ),
+      // review-surfaces.BUDGET.1: human_review.review_budget ("15m"/"1h"), default
+      // off. Invalid values fall back to off rather than failing the load.
+      review_budget_minutes:
+        parseBudgetDuration(typeof readRecord(raw.human_review).review_budget === "string" ? (readRecord(raw.human_review).review_budget as string) : undefined) ??
+        defaultConfig.human_review.review_budget_minutes
     }
   };
 }

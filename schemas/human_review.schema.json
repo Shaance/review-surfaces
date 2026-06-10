@@ -21,6 +21,7 @@
     "review_routes",
     "since_last_review",
     "coverage_evidence",
+    "review_plan",
     "evidence_cards",
     "test_plan",
     "skim_safe",
@@ -119,6 +120,18 @@
     },
     "since_last_review": {
       "$ref": "#/$defs/sinceLastReview"
+    },
+    "review_plan": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["enabled", "read", "skim", "defer"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "budget_minutes": { "type": "integer", "minimum": 1 },
+        "read": { "type": "array", "items": { "$ref": "#/$defs/reviewPlanItem" } },
+        "skim": { "type": "array", "items": { "$ref": "#/$defs/reviewPlanItem" } },
+        "defer": { "type": "array", "items": { "$ref": "#/$defs/reviewPlanItem" } }
+      }
     },
     "coverage_evidence": {
       "type": "object",
@@ -371,6 +384,17 @@
           "items": { "$ref": "#/$defs/evidenceRef" }
         },
         "required_action": { "type": "string" }
+      }
+    },
+    "reviewPlanItem": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["queue_item_id", "path", "estimated_minutes"],
+      "properties": {
+        "queue_item_id": { "type": "string" },
+        "path": { "type": "string" },
+        "estimated_minutes": { "type": "integer", "minimum": 1 },
+        "reason": { "type": "string" }
       }
     },
     "reviewQueueItem": {

@@ -197,6 +197,10 @@ ${renderSinceLastReviewSummary(sinceLastReview(model))}
 
 ${renderCoverageEvidence(model)}
 
+## Review plan
+
+${renderReviewPlan(model)}
+
 ## Intent mismatch
 
 ${renderIntentMismatchSummary(intentMismatch(model))}
@@ -769,6 +773,25 @@ ${hunkLine}   - Why it matters: ${field(item.reason)}
    - Evidence: ${evidenceList(item.evidence)}`;
     })
     .join("\n\n");
+}
+
+// review-surfaces.BUDGET.1/.2: the explicit read/skim/defer cut. Off (the
+// default) renders a single note; estimates are stated as estimates. Blockers
+// are budget-exempt and the render says so on the item.
+function renderReviewPlan(model: HumanReviewModel): string {
+  const plan = model.review_plan;
+  if (!plan || !plan.enabled) {
+    return "- No time budget configured (pass --budget 15m or set human_review.review_budget).";
+  }
+  const group = (label: string, items: typeof plan.read): string =>
+    `${label}:\n${items.length === 0 ? "- None." : items.map((item) => `- \`${field(item.path)}\` (~${item.estimated_minutes} min${item.reason ? `; ${field(item.reason)}` : ""}) [${item.queue_item_id}]`).join("\n")}`;
+  return `Budget: ${plan.budget_minutes} minute(s). Estimates are deterministic approximations, not promises. Blocker items are budget-exempt.
+
+${group("Read", plan.read)}
+
+${group("Skim (read the excerpt, not the file)", plan.skim)}
+
+${group("Safe to defer", plan.defer)}`;
 }
 
 // review-surfaces.COVERAGE.3/.4: changed-line coverage per file when a report
