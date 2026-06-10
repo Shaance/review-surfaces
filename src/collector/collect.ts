@@ -23,6 +23,7 @@ import {
 } from "../tests-evidence/junit";
 import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, commitTimeAtRef, gitInfoDiagnostics, GitInfo } from "./git";
 import { LcovCoverage, looksLikeLcov, parseLcov } from "../tests-evidence/lcov";
+import { parseStructuredDiff } from "./diff-hunks";
 
 export const REPO_INDEX_SCHEMA_VERSION = "review-surfaces.repo.index.v1";
 
@@ -124,6 +125,11 @@ export interface CollectionResult {
     ignored_changed_files: string[];
     diff_redactions: SecretRedaction[];
     remote_provider_blocked: boolean;
+    // Per-file blocked-secret findings computed from the RAW diff's ADDED lines
+    // (path + line + pattern kinds, never the secret text). The provenance the
+    // secret_in_diff risk consumes — a literal [REDACTED:...] placeholder in the
+    // raw text matches no secret pattern, so it can never appear here.
+    secret_findings: SecretFinding[];
   };
   git: GitInfo;
   // R6: human-readable collection warnings (unresolved base ref, working-tree
@@ -252,7 +258,8 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     ignore_patterns: ignore.patterns,
     ignored_changed_files: ignoredChangedFiles,
     diff_redactions: redactedDiff.redactions,
-    remote_provider_blocked: redactedDiff.blocked
+    remote_provider_blocked: redactedDiff.blocked,
+    secret_findings: collectSecretFindings(filteredDiff)
   };
 
   const inputHashes: ManifestInputHash[] = [];
@@ -518,6 +525,63 @@ export interface FlagInputHash {
 // was not supplied, and an absent flag means there is nothing in the fingerprint
 // to change). A supplied-but-missing/unreadable file hashes to a sentinel so a
 // later create/repair still moves the key.
+export interface SecretFinding {
+  path: string;
+  line?: number;
+  kinds: string[];
+}
+
+// Scan the RAW (pre-redaction) diff's ADDED lines for blocked secret patterns,
+// recording path + line + kind only. Per-line scanning anchors single-line
+// tokens exactly; a per-HUNK joined pass catches multi-line secrets (private
+// keys) without synthesizing a "key" from BEGIN/END markers that live in
+// different hunks (e.g. documentation examples). One finding per (file, kind),
+// each anchored to its own matching line.
+function collectSecretFindings(rawDiff: string): SecretFinding[] {
+  const findings: SecretFinding[] = [];
+  for (const file of parseStructuredDiff(rawDiff).files) {
+    const lineByKind = new Map<string, number | undefined>();
+    for (const hunk of file.hunks) {
+      const added = hunk.lines.filter((line) => line.kind === "add");
+      for (const line of added) {
+        const redaction = redactSecrets(line.text);
+        if (!redaction.blocked) {
+          continue;
+        }
+        for (const entry of redaction.redactions.filter((r) => r.blocked)) {
+          if (!lineByKind.has(entry.kind)) {
+            lineByKind.set(entry.kind, line.new_line);
+          }
+        }
+      }
+      if (added.length > 1) {
+        // Multi-line secrets (BEGIN/END private keys) never match per line; the
+        // join stays WITHIN one hunk so non-contiguous markers cannot combine.
+        const joined = redactSecrets(added.map((line) => line.text).join("\n"));
+        if (joined.blocked) {
+          for (const entry of joined.redactions.filter((r) => r.blocked)) {
+            if (!lineByKind.has(entry.kind)) {
+              lineByKind.set(
+                entry.kind,
+                added.find((line) => /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(line.text))?.new_line ?? added[0]?.new_line
+              );
+            }
+          }
+        }
+      }
+    }
+    for (const [kind, line] of lineByKind) {
+      const finding: SecretFinding = { path: file.path, kinds: [kind] };
+      if (line !== undefined) {
+        finding.line = line;
+      }
+      findings.push(finding);
+    }
+  }
+  findings.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0) || (a.kinds[0] < b.kinds[0] ? -1 : 1));
+  return findings;
+}
+
 interface LcovSource {
   sourcePath: string;
   text: string;

@@ -71,7 +71,8 @@ function baseCollection(cwd: string, overrides: Partial<CollectionResult> = {}):
       ignore_patterns: [],
       ignored_changed_files: [],
       diff_redactions: [],
-      remote_provider_blocked: false
+      remote_provider_blocked: false,
+    secret_findings: []
     },
     git: { repo: "fixture", base_ref: "HEAD", head_ref: "HEAD", head_sha: "abc" },
     ...overrides

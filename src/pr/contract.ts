@@ -189,6 +189,7 @@ export const PR_RISK_RULES = [
   "untested_changed_impl",
   "unmapped_change",
   "privacy_sensitive_change",
+  "secret_in_diff",
   "comment_surface_change",
   "ci_secret_boundary_change",
   "schema_contract_change",

@@ -2,6 +2,7 @@ import { compareStrings } from "../core/compare";
 import { commandLooksLikeBroadTestCommand, commandLooksLikeFocusedTestCommand, commandLooksLikeTestCommand } from "../commands/classify";
 import { stripUndefined } from "../core/guards";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
+
 import type { CollectionResult } from "../collector/collect";
 import type { ChangedFile } from "../collector/git";
 import type {
@@ -30,6 +31,12 @@ import type { PacketRiskCategory, PacketSeverity } from "../schema/review-packet
 
 export interface BuildPrRiskInput {
   scope: PrScopeModel;
+  // Collection-time per-file blocked-secret findings computed from the RAW
+  // diff's ADDED lines (path + line + kinds, never the secret text). Computed
+  // before redaction, so a literal [REDACTED:...] placeholder typed by the
+  // author can never appear here, and a deleted/rotated old secret (a removed
+  // line) is never attributed to this change.
+  secretFindings?: Array<{ path: string; line?: number; kinds: string[] }>;
   coverage: PrScopedCoverageModel;
   testResults?: CollectionResult["testResults"];
   commandTranscripts?: CollectionResult["commandTranscripts"];
@@ -64,6 +71,7 @@ export function buildPrRiskCandidates(input: BuildPrRiskInput): PrRiskModel {
   pushUntestedChangedImpl(drafts, input);
   pushUnmappedChange(drafts, input);
   pushPrivacySensitiveChange(drafts, input);
+  pushSecretInDiff(drafts, input);
   pushCommentSurfaceChange(drafts, input);
   pushCiSecretBoundaryChange(drafts, input);
   pushSchemaContractChange(drafts, input);
@@ -130,6 +138,36 @@ function pushCoverageRegression(drafts: DraftCandidate[], input: BuildPrRiskInpu
     ],
     sortPath: ids[0] ?? ""
   });
+}
+
+// --- Rule: secret_in_diff (security, critical) ------------------------------
+// Consumes the collection-time raw-diff scan (path + first line + pattern
+// kinds). The summary cites the file and pattern KIND only — the secret text
+// never enters any artifact.
+function pushSecretInDiff(drafts: DraftCandidate[], input: BuildPrRiskInput): void {
+  for (const finding of input.secretFindings ?? []) {
+    const kindList = finding.kinds.join(", ");
+    drafts.push({
+      rule: "secret_in_diff",
+      category: "security",
+      severity: "critical",
+      summary: `Added line(s) in ${finding.path} match high-confidence secret pattern(s): ${kindList}. The committed value must be treated as leaked.`,
+      evidence: [
+        stripUndefined({
+          kind: "file" as const,
+          path: finding.path,
+          line_start: finding.line,
+          note: `Added line matches secret pattern(s): ${kindList}.`,
+          confidence: "high" as const
+        }) as EvidenceRef
+      ],
+      suggested_checks: [
+        "Remove the secret from the change and rotate the credential — committed secrets must be treated as compromised.",
+        "Move the value to an environment variable or secret store before merge."
+      ],
+      sortPath: finding.path
+    });
+  }
 }
 
 // --- Rule: untested_changed_impl (testing, medium) -------------------------

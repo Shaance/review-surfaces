@@ -22,6 +22,10 @@ export const PR_RISK_RULE_METADATA: Record<PrRiskRule, PrRiskRuleMetadata> = {
     title: "Privacy-sensitive change",
     review_queue_weight: 85
   },
+  secret_in_diff: {
+    title: "Secret committed in diff",
+    review_queue_weight: 95
+  },
   comment_surface_change: {
     title: "Reviewer surface change",
     review_queue_weight: 50
