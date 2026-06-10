@@ -43,6 +43,7 @@ import { assemblePrReviewSurface } from "../pipeline/pr-surface";
 import { evaluateBaseline } from "../evaluation/baseline";
 import { PrReviewSurfaceModel, ReviewScope, StructuredDiff } from "../pr/contract";
 import { renderSarifFromPacketFile } from "../render/sarif";
+import { buildDraftReview } from "../render/draft-review";
 import { postStickyComment } from "../render/post-comment";
 import { writeJson, writeText } from "../core/files";
 import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
@@ -1856,10 +1857,39 @@ async function runComment(parsed: ParsedArgs): Promise<number> {
   if (format === "sarif") {
     return runCommentSarif(parsed);
   }
+  if (format === "review") {
+    return runCommentDraftReview(parsed);
+  }
   if (format !== "github") {
-    throw new CliError(`Unknown --format: ${format}. Use github or sarif.`, ExitCodes.usageError);
+    throw new CliError(`Unknown --format: ${format}. Use github, sarif, or review.`, ExitCodes.usageError);
   }
   return runCommentGithub(parsed);
+}
+
+// review-surfaces.PROVIDERS.7: export the suggested comments as a GitHub PENDING
+// (draft) review payload the reviewer edits and submits. Reads local artifacts
+// only; the payload omits `event`, so it is never auto-submitted.
+async function runCommentDraftReview(parsed: ParsedArgs): Promise<number> {
+  const cwd = process.cwd();
+  const outDir = await resolveOutputDir(cwd, parsed);
+  const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
+  const humanReviewPath = path.join(outputDir, "human_review.json");
+  if (!fileExists(humanReviewPath)) {
+    throw new CliError(
+      `No human_review.json at ${path.relative(cwd, humanReviewPath) || humanReviewPath}. Run \`review-surfaces human\` (or \`all\`) first.`,
+      ExitCodes.usageError
+    );
+  }
+  const model = await readJson(humanReviewPath) as HumanReviewModel;
+  const draft = buildDraftReview(model);
+  const reviewPath = path.join(outputDir, "pending_review.json");
+  await writeJson(reviewPath, draft.payload);
+  process.stdout.write(`${JSON.stringify(draft.payload, null, 2)}\n`);
+  console.error(
+    `Wrote ${path.relative(cwd, reviewPath) || reviewPath} — ${draft.payload.comments.length} inline comment(s), ${draft.unanchored} general. ` +
+    "This is a PENDING (draft) review with no event; create and submit it yourself on GitHub — nothing is auto-submitted."
+  );
+  return ExitCodes.success;
 }
 
 // --post is OPTIONAL and best-effort: only when set AND `gh` is available AND a
@@ -2345,8 +2375,11 @@ ${humanStandaloneCommandHelp()}
   comment       Render a review surface from local artifacts. With
                 --format github (default) writes .review-surfaces/comment.md (a compact
                 GitHub sticky comment); with --format sarif writes
-                .review-surfaces/review.sarif (a SARIF 2.1.0 log). Reads local artifacts
-                only and never recomputes the pipeline.
+                .review-surfaces/review.sarif (a SARIF 2.1.0 log); with --format review
+                writes .review-surfaces/pending_review.json (a GitHub PENDING draft
+                review of the hunk-anchored suggested comments — you edit and submit it;
+                nothing is auto-submitted). Reads local artifacts only and never
+                recomputes the pipeline.
   review        Interactive walkthrough of the ranked review queue. Steps through each
                 item (inline hunk excerpt, reason, evidence) and captures decisions —
                 accept / flag / false positive / comment — into a local feedback file so

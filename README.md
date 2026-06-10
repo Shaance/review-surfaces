@@ -1,14 +1,32 @@
 # review-surfaces
 
-A **local-first review decision cockpit for agent-generated code changes.**
+**The trust layer for agent-written code.** A local-first review cockpit that
+answers the three questions a human actually has when reviewing a change an agent
+produced:
+
+1. **Did the agent overreach its instructions?** — intent-vs-diff mismatch plus
+   semantic change facts (schema/API contract changes) make the scope concrete.
+2. **Did the agent weaken tests to make them pass?** — test-weakening detection
+   flags deleted tests, newly skipped tests, removed assertions, and regenerated
+   snapshots.
+3. **Did the agent claim things it didn't do?** — a trust audit and per-sentence
+   narrative trust markers separate verified claims from unbacked prose. *"The
+   agent says the tests passed; no transcript backs it"* is a headline no generic
+   review bot produces.
+
+Every answer is grounded in local evidence — files, diffs, command transcripts,
+feedback — never hidden chat context.
 
 `review-surfaces` reads a repository's Acai-style feature spec, docs, tests, and
 git diff, then turns the evidence into the shortest safe human review path:
 merge-readiness verdict, review-first queue, blockers, reviewer questions, trust
-audit, concrete test plan, suggested comments, and skim-safe hints. The
-schema-validated review packet remains the evidence backbone underneath the
-human cockpit: intent, implementation-vs-intent evaluation, architecture
-surfaces, methodology audit, risks, test gaps, command transcripts, and feedback.
+audit, concrete test plan, suggested comments, and skim-safe hints. An
+interactive `review` walkthrough steps a human through the ranked queue and feeds
+their accept / flag / false-positive / comment decisions back into local feedback
+memory. The schema-validated review packet remains the evidence backbone
+underneath the human cockpit: intent, implementation-vs-intent evaluation,
+architecture surfaces, methodology audit, risks, test gaps, command transcripts,
+and feedback.
 
 Every claim is tied to local evidence (files, diffs, command transcripts,
 feedback) rather than hidden chat context, and the project dogfoods its own
@@ -121,9 +139,10 @@ evidence so reviewers do not need to start in the packet JSON.
 | `run [--id <id>] [--command-transcripts <dir>] -- <cmd>...` | Execute a local command and record a bounded command transcript as direct evidence. |
 | `human` | Render `human_review.json`, `human_review.md`, and standalone human artifacts from existing local packet artifacts without recomputing the pipeline. |
 | `queue` / `comments` / `trust` / `risk-lenses` / `intent-mismatch` / `routes` / `evidence-cards` / `since-last-review` / `test-plan` | Render the focused standalone human artifacts from `human_review.json`. |
+| `review` | Interactive walkthrough of the ranked review queue. Steps through each item (inline hunk excerpt, reason, evidence) and captures accept / flag / false-positive / comment decisions into local feedback memory so later runs downgrade or promote matching findings; comment drafts land in `suggested_comments.md`. A non-TTY environment prints the next item and exits. |
 | `init [--force]` | Scaffold a repo for review-surfaces (create-or-validate): config, packet schema, `.review-surfacesignore`, a starter feature spec, the usage skill, and `AGENTS.md`. Existing files are never overwritten without `--force`; user-owned `AGENTS.md` and feature specs are preserved even with `--force`. |
 | `bootstrap [--strict]` | Validate-only: report whether the expected scaffolding exists and parses. Exits `10` under `--strict` when a required target is missing or invalid. |
-| `comment` | Render a local review surface. `--mode repo` reads `review_packet.json`; `--mode pr` prefers a current schema-valid `human_review.json` and keeps `pr_review_surface.json` as the lower-level PR fact/postability gate. |
+| `comment` | Render a local review surface. `--mode repo` reads `review_packet.json`; `--mode pr` prefers a current schema-valid `human_review.json` and keeps `pr_review_surface.json` as the lower-level PR fact/postability gate. `--format github` (default) writes the sticky comment, `--format sarif` a SARIF log, and `--format review` a GitHub **pending (draft) review** of the hunk-anchored suggested comments (`pending_review.json`) for the human to edit and submit — never auto-submitted. |
 
 Run `node bin/review-surfaces.js --help` for the full option list.
 
