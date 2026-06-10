@@ -46,7 +46,10 @@ export function renderHunkExcerpt(
   if (body.length === 0) {
     return undefined;
   }
-  const header = anchor.hunk_header ?? formatHunkHeader(hunk);
+  // Always print the SELECTED hunk's header. A stale anchor.hunk_header may have
+  // failed the header lookup and been replaced by a line-overlap match, so
+  // echoing the anchor header could name a different hunk than the body shown.
+  const header = formatHunkHeader(hunk);
   // Use a fence longer than any backtick run in the content so a diff line that
   // itself contains ``` (common in Markdown/test changes) cannot prematurely
   // close the excerpt and corrupt the surrounding review surface.

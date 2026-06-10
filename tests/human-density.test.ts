@@ -374,6 +374,31 @@ test("review-surfaces.HUMAN_REVIEW.20 omits the excerpt when the anchor matches 
   assert.ok(fallback, "an unanchored item falls back to the first changed hunk");
 });
 
+// review-surfaces.HUMAN_REVIEW.20: when a stale hunk_header fails to match but a
+// line anchor selects a real hunk, the rendered header names the SELECTED hunk,
+// not the stale anchor header.
+test("review-surfaces.HUMAN_REVIEW.20 renders the selected hunk's header, not a stale anchor header", () => {
+  const diffText = [
+    "diff --git a/src/two.ts b/src/two.ts",
+    "--- a/src/two.ts",
+    "+++ b/src/two.ts",
+    "@@ -1,2 +1,2 @@",
+    "-const a = 1;",
+    "+const a = 2;",
+    "@@ -10,2 +10,2 @@",
+    "-const b = 1;",
+    "+const b = 2;",
+    ""
+  ].join("\n");
+  const diff = parseStructuredDiff(diffText);
+  // Stale header that matches no hunk, but a line anchor that overlaps the SECOND hunk.
+  const excerpt = renderHunkExcerpt(diff, { path: "src/two.ts", hunk_header: "@@ -99,2 +99,2 @@", line_start: 10, line_end: 10 });
+  assert.ok(excerpt, "line anchor should still select a hunk");
+  assert.match(excerpt!, /@@ -10,2 \+10,2 @@/, "header must name the selected hunk");
+  assert.doesNotMatch(excerpt!, /@@ -99,2 \+99,2 @@/, "the stale anchor header must not be shown");
+  assert.match(excerpt!, /const b = 2;/, "body must come from the selected hunk");
+});
+
 // review-surfaces.HUMAN_REVIEW.20: a diff line containing a ``` fence must not
 // prematurely close the excerpt's own fence.
 test("review-surfaces.HUMAN_REVIEW.20 uses a fence that diff content cannot close", () => {
@@ -508,6 +533,15 @@ test("fillAcidTemplate inlines a single ACID and pluralizes a group", () => {
   const template = normalizeAcidTemplate("Close review-surfaces.CLI.8 now.");
   assert.equal(fillAcidTemplate(template, ["review-surfaces.CLI.8"]), "Close review-surfaces.CLI.8 now.");
   assert.equal(fillAcidTemplate(template, ["a.B.1", "a.B.2"]), "Close the listed requirements now.");
+});
+
+test("fillAcidTemplate preserves prose between multiple ACID placeholders", () => {
+  const template = normalizeAcidTemplate("Compare review-surfaces.A.1 to review-surfaces.B.2 carefully.");
+  // Both placeholders are filled and the connecting prose ("to", "carefully") is kept.
+  assert.equal(
+    fillAcidTemplate(template, ["review-surfaces.A.1", "review-surfaces.B.2"]),
+    "Compare the listed requirements to the listed requirements carefully."
+  );
 });
 
 test("rollupBy groups by template key and unions ACIDs in first-seen order", () => {

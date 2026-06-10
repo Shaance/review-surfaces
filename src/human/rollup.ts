@@ -76,11 +76,11 @@ export function rollupBy<T>(
 // one, or "the listed requirements" when several were merged.
 export function fillAcidTemplate(template: string, acids: string[]): string {
   const replacement = acids.length === 1 ? acids[0] : "the listed requirements";
-  // Fill the first placeholder with the phrase and drop any trailing ones
-  // (multiple ACIDs in one sentence collapse to a single phrase).
-  const [head, ...rest] = template.split(ACID_PLACEHOLDER);
-  const body = rest.length === 0 ? head : `${head}${replacement}${rest.join("")}`;
-  return body.replace(/\s+/g, " ").trim();
+  // Replace EVERY placeholder with the phrase, preserving the prose between them
+  // so a sentence that cites multiple requirements (e.g. "Compare A to B") stays
+  // readable ("Compare the listed requirements to the listed requirements")
+  // instead of dropping the text after the first placeholder.
+  return template.split(ACID_PLACEHOLDER).join(replacement).replace(/\s+/g, " ").trim();
 }
 
 // review-surfaces.HUMAN_REVIEW.21 lint: detect a reviewer-facing line whose
