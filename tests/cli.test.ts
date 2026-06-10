@@ -828,3 +828,16 @@ test("review-surfaces.REVIEW_LOOP.2 feedback under a custom (absolute) --out dir
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("review-surfaces.REVIEW_LOOP.1 review --review-scope pr fails fast without a PR surface", () => {
+  const tmp = setupReviewFixture("rs-review-prscope-");
+  try {
+    // The fixture generated a repo-scope review (no pr_review_surface.json). A
+    // PR-scope walkthrough must fail fast rather than silently walking the repo queue.
+    const result = spawnSync("node", [CLI, "review", "--review-scope", "pr", "--out", ".review-surfaces"], { cwd: tmp, input: "", encoding: "utf8" });
+    assert.equal(result.status, ExitCodes.usageError, result.stdout + result.stderr);
+    assert.match(result.stderr + result.stdout, /PR-scope review requires a current pr_review_surface\.json/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

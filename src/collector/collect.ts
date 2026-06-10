@@ -177,6 +177,12 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // (possibly absolute) resolved output dir before globbing — via realpath on
   // both, so a symlinked temp/cwd prefix (e.g. macOS /var vs /private/var) does
   // not produce a `../…` mismatch. Defaults to `.review-surfaces/feedback/*.yaml`.
+  //
+  // Deliberate boundary: an output dir OUTSIDE the checkout is not ingested. This
+  // tool is local-first — artifacts (and their feedback) belong with the repo —
+  // and an absolute out-of-repo path in feedback evidence would inject
+  // machine-specific paths into otherwise byte-stable artifacts, breaking the
+  // determinism / locale-invariance gates. Keep the output dir within the repo.
   const outputDirRelative = normalizeRelativeDir(path.relative(realpathOrSelf(options.cwd), realpathOrSelf(outputDir)));
   const feedbackPaths = filterPathsByPatterns(repositoryFiles, [`${outputDirRelative}/feedback/*.yaml`]);
   const commandTranscriptDir = normalizeRelativeDir(options.commandTranscriptDir ?? commandTranscriptInputDir(options.cwd, outputDir));

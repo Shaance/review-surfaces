@@ -1110,7 +1110,18 @@ async function runReviewWalkthrough(parsed: ParsedArgs): Promise<number> {
   if (!config.human_review.enabled) {
     throw new CliError("Human review is disabled by config; enable it to run the review walkthrough.", ExitCodes.usageError);
   }
-  const { outputDir, model } = await loadOrBuildHumanReviewJson(cwd, outDir, reviewScope(parsed), "review", config);
+  const scope = reviewScope(parsed);
+  const { outputDir, model } = await loadOrBuildHumanReviewJson(cwd, outDir, scope, "review", config);
+  // Fail fast rather than silently walking a repo queue under a PR-scope request:
+  // a PR-scope review needs a current pr_review_surface.json (the model's mode is
+  // "pr" only when that surface is present). Without it, false-positive decisions
+  // would save as repo-scope audit notes with no PR risk rule/ids — misleading.
+  if (scope === "pr" && model.mode !== "pr") {
+    throw new CliError(
+      "PR-scope review requires a current pr_review_surface.json. Run `review-surfaces all --review-scope pr` first, then re-run `review --review-scope pr`.",
+      ExitCodes.usageError
+    );
+  }
   const diff = readHumanReviewDiff(outputDir);
   // REVIEW_LOOP.4: interactive only on a real TTY, unless explicitly forced
   // (`--interactive`, used by tests driving the loop over piped stdin).
