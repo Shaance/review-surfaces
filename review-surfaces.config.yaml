@@ -271,12 +271,7 @@ quality_gate:
   # requirement regressing to "missing" still trips the strict self-dogfood gate.
   max_missing: 0
   allow_missing:
-    # Phase 1 — PR surface (M6): brainstorm ideas 1 + 2
-    - review-surfaces.PR_SURFACE.1
-    - review-surfaces.PR_SURFACE.2
-    - review-surfaces.PR_SURFACE.3
-    - review-surfaces.PR_SURFACE.4
-    - review-surfaces.PR_SURFACE.5
+    # Phase 1 — PR surface (M6) SHIPPED (PR_SURFACE.1-5 removed from the allowlist).
     # Phase 2 — Ranking & evidence (M7): brainstorm ideas 3 + 6 + 8
     - review-surfaces.RANKING.1
     - review-surfaces.RANKING.2

@@ -1090,7 +1090,7 @@ ${bullets(missing.map((item) => `${item.summary} Evidence: ${evidenceList(item.e
 ${bullets(invalid.map((item) => `${item.summary} Evidence: ${evidenceList(item.evidence)}`), "None recorded.")}`;
 }
 
-function decisionLabel(decision: HumanReviewModel["verdict"]["decision"]): string {
+export function decisionLabel(decision: HumanReviewModel["verdict"]["decision"]): string {
   switch (decision) {
     case "probably_safe":
       return "Probably safe";

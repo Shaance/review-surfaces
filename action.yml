@@ -1,0 +1,199 @@
+# review-surfaces.PR_SURFACE.1/.3: a reusable composite action that runs the
+# local review-surfaces pipeline on a pull request, posts ONE idempotent sticky
+# comment rendered from human_review.json, and uploads the full .review-surfaces/
+# directory as a workflow artifact. It is a renderer over local artifacts, never a
+# separate analysis path: it calls the same CLI commands a local user runs.
+#
+# Defaults to --provider mock so a consuming repository gets full value with zero
+# secrets. The deterministic sticky needs no LLM; an LLM provider only enriches the
+# uploaded artifact's narrative and is never required to post.
+#
+# Fork-handling contract (the caller decides via inputs, the action just obeys):
+# pass provider=mock + llm-api-key='' + post=false for fork PRs (upload-only, no
+# secrets), and provider=ai-sdk + the key + post=true for same-repo PRs.
+name: review-surfaces PR surface
+description: Run review-surfaces on a PR, post a sticky human-review summary, and upload the artifact.
+inputs:
+  provider:
+    description: review-surfaces provider (mock | ai-sdk | agent-file). Default mock — zero secrets.
+    required: false
+    default: mock
+  model:
+    description: LLM model id for --provider ai-sdk (e.g. google:gemini-2.5-flash). Ignored for mock.
+    required: false
+    default: ""
+  llm-api-key:
+    description: Optional LLM API key, set as env only for the trusted generation step. Empty for mock.
+    required: false
+    default: ""
+  base-ref:
+    description: Base ref to diff against.
+    required: false
+    default: origin/main
+  head-ref:
+    description: Head ref to review.
+    required: false
+    default: HEAD
+  spec:
+    description: Feature spec path.
+    required: false
+    default: features/review-surfaces.feature.yaml
+  output-dir:
+    description: Output directory for .review-surfaces artifacts.
+    required: false
+    default: .review-surfaces
+  comment-top-n:
+    description: How many review-queue items to surface in the sticky comment.
+    required: false
+    default: "5"
+  subject-directory:
+    description: Working directory holding the PR code to analyze (the credentialless subject checkout).
+    required: false
+    default: "."
+  pr-number:
+    description: PR number, used to key the uploaded artifact and to post the sticky comment.
+    required: true
+  repository:
+    description: owner/repo, used for artifact lookup and comment posting.
+    required: false
+    default: ${{ github.repository }}
+  post:
+    description: Whether to upsert the sticky comment (set false for fork PRs — upload only).
+    required: false
+    default: "true"
+  github-token:
+    description: Token with pull-requests:write and actions:read, for posting and prior-artifact lookup.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: 10.8.0
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: pnpm
+        cache-dependency-path: ${{ github.action_path }}/pnpm-lock.yaml
+    - name: Build trusted tool
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: |
+        pnpm install --frozen-lockfile
+        pnpm run build
+    - name: Recover previous review packet (since-last-review state)
+      id: prior
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repository }}
+        ARTIFACT: review-surfaces-pr-${{ inputs.pr-number }}
+        SUBJECT: ${{ inputs.subject-directory }}
+      run: |
+        # review-surfaces.PR_SURFACE.5: download the most recent prior PR-keyed
+        # artifact and unpack it as the previous-packet input. A missing/expired
+        # artifact (or no token) is the FIRST-REVIEW case, never an error.
+        set +e
+        prev_dir="$RUNNER_TEMP/rs-prev"
+        echo "previous-packet=" >> "$GITHUB_OUTPUT"
+        if [ -z "$GH_TOKEN" ]; then
+          echo "No token for artifact lookup; treating as first review."; exit 0
+        fi
+        id="$(gh api "repos/$REPO/actions/artifacts?name=$ARTIFACT&per_page=1" \
+          --jq '.artifacts[0].id' 2>/dev/null)"
+        case "$id" in ""|null|*[!0-9]*) echo "No prior artifact; first review."; exit 0 ;; esac
+        rm -rf "$prev_dir" && mkdir -p "$prev_dir"
+        if gh api "repos/$REPO/actions/artifacts/$id/zip" > "$RUNNER_TEMP/rs-prev.zip" 2>/dev/null \
+          && unzip -q -o "$RUNNER_TEMP/rs-prev.zip" -d "$prev_dir" 2>/dev/null \
+          && [ -f "$prev_dir/review_packet.json" ]; then
+          echo "previous-packet=$prev_dir" >> "$GITHUB_OUTPUT"
+          echo "Recovered prior packet from artifact #$id."
+        else
+          echo "Prior artifact present but unreadable; first-review fallback."
+        fi
+    - name: Generate PR review surface (trusted tool)
+      shell: bash
+      working-directory: ${{ inputs.subject-directory }}
+      env:
+        RS_BIN: ${{ github.action_path }}/bin/review-surfaces.js
+        RS_CONFIG: ${{ github.action_path }}/review-surfaces.config.yaml
+        GOOGLE_GENERATIVE_AI_API_KEY: ${{ inputs.llm-api-key }}
+        PREVIOUS_PACKET: ${{ steps.prior.outputs.previous-packet }}
+      run: |
+        prev_flag=""
+        if [ -n "$PREVIOUS_PACKET" ]; then prev_flag="--previous-packet $PREVIOUS_PACKET"; fi
+        model_flag=""
+        if [ -n "${{ inputs.model }}" ]; then model_flag="--model ${{ inputs.model }}"; fi
+        node "$RS_BIN" all \
+          --provider "${{ inputs.provider }}" \
+          $model_flag \
+          --config "$RS_CONFIG" \
+          --redact-secrets true \
+          --base "${{ inputs.base-ref }}" \
+          --head "${{ inputs.head-ref }}" \
+          --spec "${{ inputs.spec }}" \
+          --dogfood \
+          --review-scope pr \
+          $prev_flag \
+          --out "${{ inputs.output-dir }}"
+        node "$RS_BIN" validate "${{ inputs.output-dir }}"
+        # review-surfaces.PR_SURFACE.2/.4: render the deterministic sticky from
+        # human_review.json. Redaction and the postability (secret-block) gate run
+        # inside the renderer before comment.md is written; suggested comments stay
+        # local drafts (PROVIDERS.7) and are never posted here.
+        node "$RS_BIN" comment \
+          --review-scope pr \
+          --format sticky \
+          --comment-top-n "${{ inputs.comment-top-n }}" \
+          --artifact-name "review-surfaces-pr-${{ inputs.pr-number }}" \
+          --out "${{ inputs.output-dir }}"
+    - name: Upload review-surfaces artifact
+      uses: actions/upload-artifact@v4
+      with:
+        # review-surfaces.PR_SURFACE.3: stable PR-keyed name so the next run can
+        # recover it for the since-last-review delta. Fork PRs still reach here
+        # (upload), they only skip the posting step below.
+        name: review-surfaces-pr-${{ inputs.pr-number }}
+        path: ${{ inputs.subject-directory }}/${{ inputs.output-dir }}
+        if-no-files-found: warn
+        overwrite: true
+    - name: Upsert sticky comment (trusted gh over the generated file)
+      if: ${{ inputs.post == 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        REPO: ${{ inputs.repository }}
+        BODY: ${{ inputs.subject-directory }}/${{ inputs.output-dir }}/comment.md
+      run: |
+        # review-surfaces.PR_SURFACE.3/.4: only THIS step holds the write token and
+        # it runs `gh` (trusted) over the generated comment.md — never PR code — so
+        # a tampered CLI entrypoint cannot reach the token. Best-effort: a
+        # missing/symlinked body or a transient API failure never fails the check.
+        set +e
+        if [ -z "$GH_TOKEN" ]; then echo "No token; skipping post (upload-only)."; exit 0; fi
+        if [ -z "$GITHUB_WORKSPACE" ] || [ -L "$BODY" ] || [ ! -f "$BODY" ]; then
+          echo "comment.md missing or a symlink; skipping post (best-effort)"; exit 0
+        fi
+        case "$(realpath "$BODY" 2>/dev/null)" in
+          "$GITHUB_WORKSPACE"/*) : ;;
+          *) echo "comment.md resolves outside the workspace; skipping post"; exit 0 ;;
+        esac
+        marker='<!-- review-surfaces:sticky -->'
+        if [ "$(head -n 1 "$BODY" 2>/dev/null)" != "$marker" ]; then
+          echo "comment.md missing sticky marker; skipping post"; exit 0
+        fi
+        id="$(gh api --paginate --slurp "repos/$REPO/issues/$PR_NUMBER/comments" 2>/dev/null \
+          | jq -r "[.[][] | select(.body | contains(\"$marker\")) | .id] | last // \"\"")"
+        case "$id" in ""|*[!0-9]*) id="" ;; esac
+        if [ -n "$id" ]; then
+          gh api --method PATCH "repos/$REPO/issues/comments/$id" -F "body=@$BODY" >/dev/null 2>&1 \
+            && echo "updated sticky comment #$id" || echo "warning: sticky update failed (best-effort)"
+        else
+          gh api "repos/$REPO/issues/$PR_NUMBER/comments" -F "body=@$BODY" >/dev/null 2>&1 \
+            && echo "posted sticky comment" || echo "warning: sticky post failed (best-effort)"
+        fi
+        exit 0

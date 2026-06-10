@@ -797,13 +797,22 @@ test("review-surfaces.PROVIDERS.6 PR comment workflow is base-controlled and use
   assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/);
   assert.match(workflow, /path: subject/);
   assert.match(workflow, /persist-credentials: false/);
-  assert.match(workflow, /working-directory: tool[\s\S]*pnpm install --frozen-lockfile[\s\S]*pnpm run build/);
-  assert.match(workflow, /GOOGLE_GENERATIVE_AI_API_KEY: \$\{\{ secrets\.GOOGLE_GENERATIVE_AI_API_KEY \}\}/);
-  assert.match(workflow, /node \.\.\/tool\/bin\/review-surfaces\.js all[\s\S]*--review-scope pr/);
-  assert.match(workflow, /--model google:gemini-2\.5-flash/);
-  assert.match(workflow, /--config "\$GITHUB_WORKSPACE\/tool\/review-surfaces\.config\.yaml"/);
-  assert.match(workflow, /--redact-secrets true/);
-  assert.match(workflow, /if node -e[\s\S]*s\.llm\?\.provider!=="ai-sdk"[\s\S]*skipping sticky PR comment/);
+  // review-surfaces.PR_SURFACE.1: the build + secret-bearing generation moved into
+  // the trusted composite action (./tool), which this base-controlled workflow
+  // consumes. The boundary is intact: the action builds and runs from
+  // github.action_path (the base-ref tool checkout), never from PR code.
+  assert.match(workflow, /uses: \.\/tool/);
+  assert.match(workflow, /model: google:gemini-2\.5-flash/);
+  // The LLM key only flows to same-repo PRs (forks get mock + an empty key).
+  assert.match(
+    workflow,
+    /github\.event\.pull_request\.head\.repo\.full_name == github\.repository[\s\S]*secrets\.GOOGLE_GENERATIVE_AI_API_KEY/
+  );
+  const action = fs.readFileSync(path.join(process.cwd(), "action.yml"), "utf8");
+  assert.match(action, /working-directory: \$\{\{ github\.action_path \}\}[\s\S]*pnpm install --frozen-lockfile[\s\S]*pnpm run build/);
+  assert.match(action, /node "\$RS_BIN" all[\s\S]*--review-scope pr/);
+  assert.match(action, /--config "\$RS_CONFIG"/);
+  assert.match(action, /--redact-secrets true/);
   assert.doesNotMatch(workflow, /--surface-mode pr/);
 });
 
