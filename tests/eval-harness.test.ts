@@ -187,6 +187,21 @@ export function risky(value: number): number {
 
 // --- Negative fixtures (review-surfaces.EVAL_HARNESS.2/.3) -------------------
 
+test("review-surfaces.EVAL_HARNESS.3 a literal [REDACTED:...] placeholder in docs does not block", () => {
+  const fixture = createEvalFixture("placeholder");
+  try {
+    fixture.write("README.md", "# fixture app\n\nExpected output: `[REDACTED:github_token]`\n");
+    fixture.commit("document the redaction marker");
+    record("benign_redaction_placeholder", () => {
+      const model = fixture.run();
+      assert.equal(model.blockers.length, 0, "a literal placeholder must not block");
+      assert.ok(!topQueue(model).some((item) => /secret/i.test(item.title)), "no secret finding for a placeholder");
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("review-surfaces.EVAL_HARNESS.3 a rename-only change does not rank high or block", () => {
   const fixture = createEvalFixture("rename-only");
   try {

@@ -4688,14 +4688,11 @@ function compactStrings(values: Array<string | undefined>): string[] {
 }
 
 function riskIdsFromBlocker(blocker: ReviewBlocker): string[] {
-  // BLOCK-<risk id> wraps the originating risk id verbatim (ids are not always
-  // numeric — fixtures and future rules may use named ids).
-  const wrapped = blocker.id.match(/^BLOCK-(.+)$/);
-  if (wrapped) {
-    return [wrapped[1]];
-  }
-  const match = blocker.id.match(/(PR-RISK-\d+|RISK-\d+)/);
-  return match ? [match[1]] : [];
+  // BLOCK-<risk id> wraps the originating RISK id; non-risk blockers
+  // (BLOCK-TESTS-001, BLOCK-PRIVACY-001, ...) must not yield fake risk ids, so
+  // only unwrap remainders that look like a risk id.
+  const wrapped = blocker.id.match(/^BLOCK-((?:PR-)?RISK-.+)$/);
+  return wrapped ? [wrapped[1]] : [];
 }
 
 function questionSeverityForRisk(severity: PacketSeverity): ReviewerQuestion["severity"] {

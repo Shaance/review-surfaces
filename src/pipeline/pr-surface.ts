@@ -65,6 +65,7 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     scope,
     coverage,
     diff,
+    diffRedactions: input.collection.privacy.diff_redactions,
     testResults: input.collection.testResults,
     commandTranscripts: input.collection.commandTranscripts,
     changedFileSources: Object.fromEntries(input.collection.changedFiles.map((file) => [file.path, file.source])),

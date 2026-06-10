@@ -2,7 +2,7 @@ import { compareStrings } from "../core/compare";
 import { commandLooksLikeBroadTestCommand, commandLooksLikeFocusedTestCommand, commandLooksLikeTestCommand } from "../commands/classify";
 import { stripUndefined } from "../core/guards";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
-import { BLOCKED_SECRET_KINDS, redactSecrets } from "../privacy/secrets";
+import { BLOCKED_SECRET_KINDS, redactSecrets, SecretRedaction } from "../privacy/secrets";
 import type { CollectionResult } from "../collector/collect";
 import type { ChangedFile } from "../collector/git";
 import type {
@@ -34,6 +34,11 @@ export interface BuildPrRiskInput {
   scope: PrScopeModel;
   // Structured diff for content-level rules (secret_in_diff scans ADDED lines).
   diff?: StructuredDiff;
+  // The collection-time redaction inventory over the RAW diff. Used as
+  // provenance: a [REDACTED:<kind>] marker in the (already redacted) diff only
+  // counts as a real secret when collection actually redacted that kind —
+  // a literal placeholder added in docs/fixtures must not block.
+  diffRedactions?: SecretRedaction[];
   coverage: PrScopedCoverageModel;
   testResults?: CollectionResult["testResults"];
   commandTranscripts?: CollectionResult["commandTranscripts"];
@@ -146,34 +151,39 @@ function pushCoverageRegression(drafts: DraftCandidate[], input: BuildPrRiskInpu
 const BLOCKED_REDACTION_MARKER = new RegExp(`\\[REDACTED:(${BLOCKED_SECRET_KINDS.join("|")})\\]`, "g");
 
 function pushSecretInDiff(drafts: DraftCandidate[], input: BuildPrRiskInput): void {
+  // Kinds collection ACTUALLY redacted (blocked) from the raw diff: the
+  // provenance gate for markers found in the redacted diff text.
+  const redactedKinds = new Set<string>(
+    (input.diffRedactions ?? []).filter((entry) => entry.blocked).map((entry) => entry.kind)
+  );
   for (const file of input.diff?.files ?? []) {
     const kinds = new Set<string>();
     let firstLine: number | undefined;
+    const rawAddedLines: Array<{ text: string; line?: number }> = [];
     for (const hunk of file.hunks) {
       for (const line of hunk.lines) {
         if (line.kind !== "add") {
           continue;
         }
-        let matched = false;
+        rawAddedLines.push({ text: line.text, line: line.new_line });
         for (const marker of line.text.matchAll(BLOCKED_REDACTION_MARKER)) {
-          kinds.add(marker[1]);
-          matched = true;
-        }
-        // Raw-secret scan only when no marker matched: the collected diff is
-        // normally already redacted, so this fallback exists for
-        // redact_secrets: false runs and costs nothing on the common path.
-        if (!matched) {
-          const redaction = redactSecrets(line.text);
-          if (redaction.blocked) {
-            for (const entry of redaction.redactions.filter((r) => r.blocked)) {
-              kinds.add(entry.kind);
-            }
-            matched = true;
+          if (redactedKinds.has(marker[1])) {
+            kinds.add(marker[1]);
+            firstLine ??= line.new_line;
           }
         }
-        if (matched) {
-          firstLine ??= line.new_line;
+      }
+    }
+    // Raw fallback for redact_secrets:false runs: scan the file's added lines as
+    // ONE text so multi-line secrets (private keys) are recognized; per-line
+    // scanning would split the BEGIN/END block and miss them.
+    if (kinds.size === 0 && rawAddedLines.length > 0) {
+      const redaction = redactSecrets(rawAddedLines.map((entry) => entry.text).join("\n"));
+      if (redaction.blocked) {
+        for (const entry of redaction.redactions.filter((r) => r.blocked)) {
+          kinds.add(entry.kind);
         }
+        firstLine = rawAddedLines[0]?.line;
       }
     }
     if (kinds.size === 0) {
