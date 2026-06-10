@@ -173,8 +173,12 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const testPaths = filterPathsByPatterns(repositoryFiles, options.config.tests);
   // Feedback lives under the (possibly custom) output dir, so the `review`
   // walkthrough writing to `<out>/feedback/*.yaml` is ingested on the next run
-  // regardless of --out. Defaults to `.review-surfaces/feedback/*.yaml`.
-  const feedbackPaths = filterPathsByPatterns(repositoryFiles, [`${normalizeRelativeDir(options.outputDir ?? options.config.output_dir)}/feedback/*.yaml`]);
+  // regardless of --out. `repositoryFiles` are repo-relative, so relativize the
+  // (possibly absolute) resolved output dir before globbing — via realpath on
+  // both, so a symlinked temp/cwd prefix (e.g. macOS /var vs /private/var) does
+  // not produce a `../…` mismatch. Defaults to `.review-surfaces/feedback/*.yaml`.
+  const outputDirRelative = normalizeRelativeDir(path.relative(realpathOrSelf(options.cwd), realpathOrSelf(outputDir)));
+  const feedbackPaths = filterPathsByPatterns(repositoryFiles, [`${outputDirRelative}/feedback/*.yaml`]);
   const commandTranscriptDir = normalizeRelativeDir(options.commandTranscriptDir ?? commandTranscriptInputDir(options.cwd, outputDir));
   const commandTranscriptPaths = filterPathsByPatterns(repositoryFiles, [`${commandTranscriptDir}/*.json`]);
   const specIndex = await indexAcaiSpecs(options.cwd, specPaths);
@@ -548,4 +552,14 @@ function classifyDoc(filePath: string): string {
 
 function normalizeRelativeDir(dirPath: string): string {
   return dirPath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+}
+
+// Canonicalize a path, falling back to the input when it does not resolve, so a
+// symlinked cwd/output prefix does not skew a path.relative() between them.
+function realpathOrSelf(dirPath: string): string {
+  try {
+    return fs.realpathSync(dirPath);
+  } catch {
+    return dirPath;
+  }
 }

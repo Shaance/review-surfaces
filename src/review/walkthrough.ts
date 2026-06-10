@@ -188,19 +188,26 @@ export async function runWalkthrough(
 // recorded finding; accepts are recorded as validation passes. Returns undefined
 // when no decision produces persistable feedback.
 export function buildFeedbackRecord(decisions: ReviewDecision[], options: WalkthroughOptions): Record<string, unknown> | undefined {
-  // A downgrade policy scoped, where possible, to the reviewed finding's rule so a
-  // file with several risks does not get all of them downgraded. When the item's
-  // rule cannot be resolved (repo scope, or several rules on one item) it falls
-  // back to a path-only policy. `condition` is intentionally omitted: it is a
-  // structured matcher token (e.g. "lockfile_only"), not free text — a note there
-  // would block the match. The reviewer's rationale lives in validation.notes.
-  const falsePositives = decisions
-    .filter((decision) => decision.choice === "false_positive")
-    .map((decision) => {
-      const rules = options.rulesForItem?.(decision.item) ?? [];
-      const rule = rules.length === 1 ? rules[0] : undefined;
-      return stripUndefined({ rule, path_pattern: decision.item.path, action: "downgrade_to_low" });
-    });
+  // A false positive becomes a downgrade policy ONLY when its originating rule is
+  // known (PR scope) — one scoped `rule + path` entry per rule, so a file with
+  // several risks does not get them all downgraded. When no rule resolves (repo
+  // scope), it is recorded as an audit note instead of a path-only policy: a
+  // path-only entry would be a wildcard the engine applies to EVERY PR risk on
+  // that path, contradicting the repo-scope advisory that decisions are recorded,
+  // not auto-applied. `condition` is intentionally omitted (it is a structured
+  // matcher token, not free text — a note there would block the match).
+  const falsePositives: Array<{ rule: string; path_pattern: string; action: string }> = [];
+  const falsePositiveNotes: string[] = [];
+  for (const decision of decisions.filter((candidate) => candidate.choice === "false_positive")) {
+    const rules = options.rulesForItem?.(decision.item) ?? [];
+    if (rules.length > 0) {
+      for (const rule of rules) {
+        falsePositives.push({ rule, path_pattern: decision.item.path, action: "downgrade_to_low" });
+      }
+    } else {
+      falsePositiveNotes.push(`Reviewer marked a false positive (recorded; auto-downgrade applies to PR-scoped reruns): ${decision.item.title} (${decision.item.path})`);
+    }
+  }
   const findings = decisions
     .filter((decision) => decision.choice === "flag")
     .map((decision, index) => ({
@@ -225,7 +232,7 @@ export function buildFeedbackRecord(decisions: ReviewDecision[], options: Walkth
     .filter((decision) => decision.choice === "needs_comment")
     .map((decision) => `Reviewer requested a comment on ${decision.item.path}: ${decision.commentBody ?? decision.item.reviewer_action}`);
 
-  if (falsePositives.length === 0 && findings.length === 0 && accepted.length === 0 && commentRequests.length === 0) {
+  if (falsePositives.length === 0 && findings.length === 0 && accepted.length === 0 && commentRequests.length === 0 && falsePositiveNotes.length === 0) {
     return undefined;
   }
 
@@ -236,7 +243,7 @@ export function buildFeedbackRecord(decisions: ReviewDecision[], options: Walkth
     head_sha: options.headSha,
     packet_path: options.packetPath,
     findings,
-    validation: { passed: [], failed: [], notes: ["Captured by the interactive review walkthrough.", ...accepted, ...commentRequests] },
+    validation: { passed: [], failed: [], notes: ["Captured by the interactive review walkthrough.", ...accepted, ...commentRequests, ...falsePositiveNotes] },
     false_positives: falsePositives
   });
 }

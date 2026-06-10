@@ -1315,7 +1315,11 @@ async function loadOrBuildHumanReviewJson(
     const isStale =
       humanReviewIssues(cwd, model).length > 0 ||
       !humanReviewJsonMatchesConfig(model, config) ||
-      !humanReviewJsonSatisfiesStandaloneCommand(model, command);
+      !humanReviewJsonSatisfiesStandaloneCommand(model, command) ||
+      // A cached review built for a different scope must not satisfy this request
+      // (e.g. `review --review-scope pr` reusing a repo-scoped model), so the
+      // walkthrough walks the PR queue and captures PR-risk rule/ids.
+      model.mode !== scope;
     if (isStale) {
       const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config);
       await writeJson(path.join(context.outputDir, "human_review.json"), context.model);

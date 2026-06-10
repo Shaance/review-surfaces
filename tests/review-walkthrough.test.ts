@@ -75,15 +75,16 @@ test("review-surfaces.REVIEW_LOOP.2 captures accept/flag/false-positive into a f
   assert.equal(result.decisions.length, 3);
   const feedback = result.feedback!;
   assert.ok(feedback, "a feedback record is produced");
-  assert.deepEqual((feedback.false_positives as Array<{ path_pattern: string }>).map((fp) => fp.path_pattern), ["src/noisy.ts"]);
   assert.deepEqual((feedback.findings as Array<{ affected_section: string }>).map((f) => f.affected_section), ["src/problem.ts"]);
+  const validation = feedback.validation as { passed: string[]; notes: string[] };
   // Acceptances are notes, NOT validation.passed (which would be read as a passing
   // test command and suppress missing-validation questions).
-  const validation = feedback.validation as { passed: string[]; notes: string[] };
   assert.equal(validation.passed.length, 0, "no acceptance is recorded as a passing validation command");
   assert.ok(validation.notes.some((note) => /Reviewer accepted/.test(note)), "the acceptance is recorded as a note");
-  // Never silently delete evidence: a false positive is a downgrade policy, not a removal.
-  assert.equal((feedback.false_positives as Array<{ action: string }>)[0].action, "downgrade_to_low");
+  // Repo scope (no rule resolver): the false positive is an audit note, NOT a
+  // path-only downgrade policy (which would wildcard-match every PR risk on the path).
+  assert.equal((feedback.false_positives as unknown[]).length, 0, "no path-only downgrade policy is written without a rule");
+  assert.ok(validation.notes.some((note) => /false positive.*src\/noisy\.ts/.test(note)), "the false positive is recorded as an audit note");
 });
 
 // REVIEW_LOOP.2: in repo scope the walkthrough is explicit that the automatic
@@ -176,13 +177,18 @@ test("review-surfaces.REVIEW_LOOP.2 scopes a false positive to the item's rule w
   const scoped = buildFeedbackRecord([{ item, choice: "false_positive" }], { ...OPTIONS, rulesForItem });
   assert.deepEqual(scoped!.false_positives, [{ rule: "large_diff", path_pattern: "src/x.ts", action: "downgrade_to_low" }]);
 
-  // No resolver (repo scope) → path-only policy, no rule key.
+  // No resolver (repo scope) → NO downgrade policy (a path-only entry would
+  // wildcard-match every PR risk on the path); recorded as an audit note instead.
   const pathOnly = buildFeedbackRecord([{ item, choice: "false_positive" }], OPTIONS);
-  assert.deepEqual(pathOnly!.false_positives, [{ path_pattern: "src/x.ts", action: "downgrade_to_low" }]);
+  assert.deepEqual(pathOnly!.false_positives, []);
+  assert.ok((pathOnly!.validation as { notes: string[] }).notes.some((note) => /false positive/.test(note)));
 
-  // Ambiguous (multiple rules) → path-only, so we never guess which rule.
+  // Several rules on one item → one scoped entry per rule (never a wildcard).
   const multi = buildFeedbackRecord([{ item, choice: "false_positive" }], { ...OPTIONS, rulesForItem: () => ["a", "b"] });
-  assert.deepEqual(multi!.false_positives, [{ path_pattern: "src/x.ts", action: "downgrade_to_low" }]);
+  assert.deepEqual(multi!.false_positives, [
+    { rule: "a", path_pattern: "src/x.ts", action: "downgrade_to_low" },
+    { rule: "b", path_pattern: "src/x.ts", action: "downgrade_to_low" }
+  ]);
 });
 
 // REVIEW_LOOP.2: a comment-only session still persists the reviewer's intent to

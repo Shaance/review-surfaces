@@ -790,8 +790,9 @@ test("review-surfaces.REVIEW_LOOP.2 review command persists a false-positive int
     const walkthroughFiles = fs.readdirSync(feedbackDir).filter((name) => name.startsWith("walkthrough-"));
     assert.equal(walkthroughFiles.length, 1, "a walkthrough feedback file is written");
     const feedback = fs.readFileSync(path.join(feedbackDir, walkthroughFiles[0]), "utf8");
-    assert.match(feedback, /false_positives:/);
-    assert.match(feedback, /downgrade_to_low/);
+    // This fixture is repo-scoped, so the false positive is recorded as an audit
+    // note rather than a wildcard downgrade policy (scoped policies are PR-scope).
+    assert.match(feedback, /Reviewer marked a false positive/);
 
     // A second session on the same head must not overwrite the first.
     const second = spawnSync("node", [CLI, "review", "--interactive", "--out", ".review-surfaces"], { cwd: tmp, input: "p\n", encoding: "utf8" });
@@ -803,25 +804,26 @@ test("review-surfaces.REVIEW_LOOP.2 review command persists a false-positive int
   }
 });
 
-test("review-surfaces.REVIEW_LOOP.2 feedback under a custom --out dir is ingested on the next run", () => {
+test("review-surfaces.REVIEW_LOOP.2 feedback under a custom (absolute) --out dir is ingested on the next run", () => {
   const tmp = setupComposeFixture("rs-review-customout-");
   try {
     execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
     execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
-    // Generate into a NON-default output dir.
-    runStage(tmp, "all", ["--dogfood", "--out", ".rs-out"]);
-    // Drop a feedback file under the custom output dir.
-    const feedbackDir = path.join(tmp, ".rs-out", "feedback");
+    // An ABSOLUTE output dir inside the repo: the collector must relativize it
+    // before matching repo-relative file paths (round-3 fix).
+    const absOut = path.join(tmp, ".rs-out");
+    runStage(tmp, "all", ["--dogfood", "--out", absOut]);
+    const feedbackDir = path.join(absOut, "feedback");
     fs.mkdirSync(feedbackDir, { recursive: true });
     fs.writeFileSync(
       path.join(feedbackDir, "walkthrough-x.yaml"),
       "schema_version: review-surfaces.feedback.v1\nauthor: tester\nvalidation:\n  passed: []\n  failed: []\n  notes: [marker-note-xyz]\nfalse_positives: []\n"
     );
     // Re-run; the collector must index feedback from the custom dir, not just .review-surfaces.
-    runStage(tmp, "all", ["--dogfood", "--out", ".rs-out"]);
-    const index = JSON.parse(fs.readFileSync(path.join(tmp, ".rs-out", "inputs", "feedback.index.json"), "utf8"));
+    runStage(tmp, "all", ["--dogfood", "--out", absOut]);
+    const index = JSON.parse(fs.readFileSync(path.join(absOut, "inputs", "feedback.index.json"), "utf8"));
     const files = (index.feedback ?? index.files ?? []).map((entry: { path?: string } | string) => (typeof entry === "string" ? entry : entry.path ?? ""));
-    assert.ok(files.some((file: string) => file.includes(".rs-out/feedback/walkthrough-x.yaml")), "feedback under the custom --out dir is ingested");
+    assert.ok(files.some((file: string) => file.includes(".rs-out/feedback/walkthrough-x.yaml")), "feedback under an absolute --out dir is ingested");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

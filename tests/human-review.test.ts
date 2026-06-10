@@ -3070,7 +3070,10 @@ test("review-surfaces.REVIEW_LOOP.2 a walkthrough false-positive downgrades the 
   const answers = initial.review_queue.map((item) => (item.id === target.id ? "p" : "s"));
   let index = 0;
   const io = { interactive: true, write: () => undefined, prompt: async () => (index < answers.length ? answers[index++] : undefined) };
-  const result = await runWalkthrough(initial, undefined, io, { author: "tester", headSha: "h", packetPath: ".review-surfaces/review_packet.json" });
+  // The handler resolves a PR-risk rule per item from the surface; mirror that so
+  // the false positive is a scoped downgrade policy.
+  const rulesForItem = (queued: typeof target) => (queued.risk_ids.includes("PR-RISK-WT") ? ["schema_contract_change"] : []);
+  const result = await runWalkthrough(initial, undefined, io, { author: "tester", headSha: "h", packetPath: ".review-surfaces/review_packet.json", rulesForItem });
   assert.ok(result.feedback, "the false-positive decision produced a feedback record");
 
   // The written feedback, re-read by the pipeline, downgrades the finding on rerun.
