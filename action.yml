@@ -92,27 +92,36 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         REPO: ${{ inputs.repository }}
+        PR_NUMBER: ${{ inputs.pr-number }}
         ARTIFACT: review-surfaces-pr-${{ inputs.pr-number }}
         SUBJECT: ${{ inputs.subject-directory }}
       run: |
-        # review-surfaces.PR_SURFACE.5: download the most recent prior PR-keyed
-        # artifact and unpack it as the previous-packet input. A missing/expired
-        # artifact (or no token) is the FIRST-REVIEW case, never an error.
+        # review-surfaces.PR_SURFACE.5: recover the packet from the LAST POSTED
+        # sticky, not merely the most recent upload. The posted sticky carries a
+        # `run=<id>` fingerprint; we read it and download THAT run's artifact, so a
+        # run that uploaded but failed to post never becomes the baseline and the
+        # delta is always computed against what the reviewer last saw. A missing
+        # sticky / fingerprint / expired artifact (or no token) is the FIRST-REVIEW
+        # case, never an error.
         set +e
         prev_dir="$RUNNER_TEMP/rs-prev"
         echo "previous-packet=" >> "$GITHUB_OUTPUT"
         if [ -z "$GH_TOKEN" ]; then
-          echo "No token for artifact lookup; treating as first review."; exit 0
+          echo "No token for sticky lookup; treating as first review."; exit 0
         fi
-        id="$(gh api "repos/$REPO/actions/artifacts?name=$ARTIFACT&per_page=1" \
-          --jq '.artifacts[0].id' 2>/dev/null)"
-        case "$id" in ""|null|*[!0-9]*) echo "No prior artifact; first review."; exit 0 ;; esac
+        body="$(gh api --paginate --slurp "repos/$REPO/issues/$PR_NUMBER/comments" 2>/dev/null \
+          | jq -r '[.[][] | select(.body | contains("review-surfaces:sticky"))] | last | .body // ""')"
+        prior_run="$(printf '%s' "$body" | grep -oE 'review-surfaces:fingerprint[^>]*run=[0-9]+' | grep -oE 'run=[0-9]+' | head -n1 | cut -d= -f2)"
+        case "$prior_run" in ""|*[!0-9]*) echo "No prior posted sticky with a run fingerprint; first review."; exit 0 ;; esac
+        id="$(gh api "repos/$REPO/actions/runs/$prior_run/artifacts" \
+          --jq ".artifacts[] | select(.name==\"$ARTIFACT\") | .id" 2>/dev/null | head -n1)"
+        case "$id" in ""|null|*[!0-9]*) echo "Prior sticky run $prior_run has no recoverable artifact (expired?); first review."; exit 0 ;; esac
         rm -rf "$prev_dir" && mkdir -p "$prev_dir"
         if gh api "repos/$REPO/actions/artifacts/$id/zip" > "$RUNNER_TEMP/rs-prev.zip" 2>/dev/null \
           && unzip -q -o "$RUNNER_TEMP/rs-prev.zip" -d "$prev_dir" 2>/dev/null \
           && [ -f "$prev_dir/review_packet.json" ]; then
           echo "previous-packet=$prev_dir" >> "$GITHUB_OUTPUT"
-          echo "Recovered prior packet from artifact #$id."
+          echo "Recovered the last posted sticky's packet from run $prior_run (artifact #$id)."
         else
           echo "Prior artifact present but unreadable; first-review fallback."
         fi
@@ -166,6 +175,7 @@ runs:
           --strict-postability \
           --comment-top-n "$RS_TOP_N" \
           --artifact-name "$RS_ARTIFACT" \
+          --run-id "$GITHUB_RUN_ID" \
           --out "$RS_OUT"
     - name: Upload review-surfaces artifact
       uses: actions/upload-artifact@v4

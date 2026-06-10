@@ -29,10 +29,18 @@ export interface HunkAnchor {
 
 // Return a fenced ```diff excerpt for the anchor, or undefined when no diff,
 // matching file, or hunk is available (the caller then renders no excerpt).
+// Optional sink for the redaction block signal: formatDiffLine redacts each line
+// and, when given a state, records whether any line held a high-confidence secret
+// so a caller (the sticky comment) can refuse to post a blocked excerpt.
+export interface ExcerptRedactionState {
+  blocked: boolean;
+}
+
 export function renderHunkExcerpt(
   diff: StructuredDiff | undefined,
   anchor: HunkAnchor,
-  maxLines: number = DEFAULT_HUNK_EXCERPT_MAX_LINES
+  maxLines: number = DEFAULT_HUNK_EXCERPT_MAX_LINES,
+  redactionState?: ExcerptRedactionState
 ): string | undefined {
   if (!diff || diff.files.length === 0) {
     return undefined;
@@ -56,7 +64,7 @@ export function renderHunkExcerpt(
     return undefined;
   }
   const { side, hunk } = resolved;
-  const body = excerptLines(hunk, side, anchor, Math.max(4, maxLines));
+  const body = excerptLines(hunk, side, anchor, Math.max(4, maxLines), redactionState);
   if (body.length === 0) {
     return undefined;
   }
@@ -170,9 +178,10 @@ function excerptLines(
   hunk: StructuredDiffHunk,
   side: "old" | "new",
   anchor: HunkAnchor,
-  maxLines: number
+  maxLines: number,
+  redactionState?: ExcerptRedactionState
 ): string[] {
-  const formatted = hunk.lines.map(formatDiffLine);
+  const formatted = hunk.lines.map((line) => formatDiffLine(line, redactionState));
   if (formatted.length <= maxLines) {
     return formatted;
   }
@@ -211,9 +220,13 @@ function focusIndexForAnchor(hunk: StructuredDiffHunk, side: "old" | "new", anch
   return firstChanged >= 0 ? firstChanged : 0;
 }
 
-function formatDiffLine(line: StructuredDiffLine): string {
+function formatDiffLine(line: StructuredDiffLine, redactionState?: ExcerptRedactionState): string {
   const marker = line.kind === "add" ? "+" : line.kind === "delete" ? "-" : " ";
-  const text = redactSecrets(line.text).text.replace(/\r?\n/g, " ");
+  const redaction = redactSecrets(line.text);
+  if (redaction.blocked && redactionState) {
+    redactionState.blocked = true;
+  }
+  const text = redaction.text.replace(/\r?\n/g, " ");
   const bounded = text.length <= MAX_EXCERPT_LINE_CHARS ? text : `${text.slice(0, MAX_EXCERPT_LINE_CHARS - 1)}…`;
   return `${marker}${bounded}`;
 }

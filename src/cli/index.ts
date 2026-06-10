@@ -1967,7 +1967,8 @@ async function runCommentSticky(parsed: ParsedArgs): Promise<number> {
   const sticky = renderStickySummary(model, {
     diff,
     topN: numberFlag(parsed, "comment-top-n"),
-    artifactName: stringFlag(parsed, "artifact-name")
+    artifactName: stringFlag(parsed, "artifact-name"),
+    runId: stringFlag(parsed, "run-id") ?? process.env.GITHUB_RUN_ID
   });
   const commentPath = path.join(outputDir, "comment.md");
   await writeText(commentPath, sticky.markdown);

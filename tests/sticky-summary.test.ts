@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { HUMAN_REVIEW_SCHEMA_VERSION } from "../src/human/contract";
 import type { HumanReviewModel, SinceLastReview } from "../src/human/contract";
 import { renderStickySummary, stickyQueueItemKey } from "../src/render/sticky-summary";
+import { parseStructuredDiff } from "../src/collector/diff-hunks";
 
 function emptySince(): SinceLastReview {
   return {
@@ -156,6 +157,44 @@ test("review-surfaces.PR_SURFACE.5 a first review (no prior packet) shows the qu
   assert.doesNotMatch(markdown, /<summary>Full review/);
   // Queue is expanded, not collapsed.
   assert.match(markdown, /### Review first\n\n1\. `src\/cli\/index\.ts:42`/);
+});
+
+test("review-surfaces.PR_SURFACE.5 a recovered prior packet with no changes still leads with the delta (collapsed), not a first review", () => {
+  const since: SinceLastReview = { ...emptySince(), previous_packet_path: ".rs-prev/review_packet.json" };
+  const { markdown } = renderStickySummary(model({ since_last_review: since }));
+  // Re-review mode even with all-empty buckets: lead with the delta, then collapse
+  // the unchanged queue under <details> (not expanded as a first review).
+  assert.match(markdown, /No requirement or risk changes since the last review/);
+  const deltaIdx = markdown.indexOf("### Since your last review");
+  const detailsIdx = markdown.indexOf("<summary>Full review");
+  const queueIdx = markdown.indexOf("### Review first");
+  assert.ok(deltaIdx > -1 && detailsIdx > deltaIdx && queueIdx > detailsIdx, "delta leads; queue collapsed after it");
+});
+
+test("review-surfaces.PR_SURFACE.5 the fingerprint records the run id so the next run can recover this run's artifact", () => {
+  const { markdown } = renderStickySummary(model(), { runId: "987654" });
+  assert.match(markdown, /<!-- review-surfaces:fingerprint head=deadbeef run=987654 keys=/);
+  // Omitted when no run id is supplied (local renders).
+  assert.doesNotMatch(renderStickySummary(model()).markdown, /run=/);
+});
+
+test("review-surfaces.PR_SURFACE.4 a high-confidence secret in a hunk excerpt trips the block gate too", () => {
+  const leak = "ghp_" + "b".repeat(36);
+  const diff = parseStructuredDiff(
+    [
+      "diff --git a/src/cli/index.ts b/src/cli/index.ts",
+      "--- a/src/cli/index.ts",
+      "+++ b/src/cli/index.ts",
+      "@@ -41,1 +41,2 @@",
+      " context line",
+      `+const token = "${leak}";`
+    ].join("\n")
+  );
+  const { markdown, blocked } = renderStickySummary(model(), { diff });
+  // The excerpt renders, the token is redacted, AND the block gate trips.
+  assert.match(markdown, /```diff/);
+  assert.doesNotMatch(markdown, /ghp_b{36}/);
+  assert.equal(blocked, true);
 });
 
 test("review-surfaces.PR_SURFACE.5 an overreach-only delta still renders its group (not 'no changes')", () => {

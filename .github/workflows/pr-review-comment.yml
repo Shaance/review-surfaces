@@ -12,15 +12,18 @@ jobs:
     # ./tool) against a credentialless PR subject checkout; PR-controlled
     # install/build code never receives the LLM key.
     #
-    # The repo-local workflow is a thin consumer of the published composite action
-    # (one implementation, dogfooded here). Same-repo PRs get the ai-sdk narrative
-    # enrichment + sticky post; fork PRs run the deterministic mock pipeline and
-    # upload the artifact but never post and never receive the key.
+    # SAME-REPO ONLY: this secret-bearing pull_request_target job posts the sticky
+    # for same-repo PRs. Fork PRs are served by the ci.yml `pr-surface-smoke` job
+    # on plain pull_request — deterministic mock, no secrets, post=false — which
+    # uploads the artifact (review-surfaces.PR_SURFACE.3) without ever exposing the
+    # write token or LLM key to fork-controlled code or comparing against a fork's
+    # `origin/main`.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
-      actions: read # prior-artifact lookup for the since-last-review delta
+      actions: read # prior-sticky artifact lookup for the since-last-review delta
     steps:
       - name: Checkout trusted tool (base ref)
         uses: actions/checkout@v4
@@ -32,10 +35,6 @@ jobs:
       - name: Checkout PR subject (head ref, credentialless)
         uses: actions/checkout@v4
         with:
-          # A fork-only head sha does not exist in the base repo, so the subject
-          # checkout must name the head repository explicitly; otherwise the
-          # advertised fork path fails before it can upload the mock artifact.
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           path: subject
           fetch-depth: 0
@@ -43,9 +42,9 @@ jobs:
       - name: review-surfaces PR surface (trusted action over credentialless subject)
         uses: ./tool
         with:
-          provider: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'ai-sdk' || 'mock' }}
+          provider: ai-sdk
           model: google:gemini-2.5-flash
-          llm-api-key: ${{ github.event.pull_request.head.repo.full_name == github.repository && secrets.GOOGLE_GENERATIVE_AI_API_KEY || '' }}
+          llm-api-key: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
           base-ref: origin/${{ github.base_ref }}
           head-ref: HEAD
           spec: features/review-surfaces.feature.yaml
@@ -54,6 +53,5 @@ jobs:
           subject-directory: subject
           pr-number: ${{ github.event.pull_request.number }}
           repository: ${{ github.repository }}
-          # Fork PRs upload the artifact but never post (review-surfaces.PR_SURFACE.3).
-          post: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          post: "true"
           github-token: ${{ github.token }}

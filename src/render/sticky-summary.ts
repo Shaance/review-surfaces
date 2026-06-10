@@ -30,6 +30,10 @@ export interface StickySummaryOptions {
   // The workflow-artifact name the full .review-surfaces/ packet was uploaded
   // under, so the comment can point a reviewer at it (review-surfaces.PR_SURFACE.3).
   artifactName?: string;
+  // The workflow run id that produced this posted sticky. Recorded in the
+  // fingerprint so the NEXT run can recover this run's artifact as the comparison
+  // baseline — the last sticky the reviewer actually saw (review-surfaces.PR_SURFACE.5).
+  runId?: string;
 }
 
 export interface StickySummaryResult {
@@ -98,10 +102,10 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
     );
   }
 
-  // review-surfaces.PR_SURFACE.5: an in-comment fingerprint (head sha + stable
-  // finding keys) is the fallback pointer when the prior workflow artifact has
-  // expired and the delta cannot be recovered from it.
-  sections.push("", renderFingerprint(model));
+  // review-surfaces.PR_SURFACE.5: an in-comment fingerprint (head sha, the run id
+  // that produced this posted sticky, and stable finding keys) lets the next run
+  // recover THIS run's artifact as the baseline reviewers last saw.
+  sections.push("", renderFingerprint(model, options.runId));
 
   const body = `${sections.join("\n")}\n`;
   // Final whole-body redaction pass: field-level redaction already ran on prose
@@ -117,22 +121,30 @@ function renderQueue(items: ReviewQueueItem[], diff: StructuredDiff | undefined,
   }
   return items
     .map((item) => {
-      const excerpt = inlineExcerpt(item, diff);
+      const excerpt = inlineExcerpt(item, diff, state);
       return `${item.rank}. \`${field(formatQueueLocation(item), state)}\` — ${field(item.reason, state)}
    - Action: ${field(item.reviewer_action, state)}${excerpt ? `\n${excerpt}` : ""}`;
     })
     .join("\n\n");
 }
 
-function inlineExcerpt(item: ReviewQueueItem, diff: StructuredDiff | undefined): string {
-  const excerpt = renderHunkExcerpt(diff, {
-    path: item.path,
-    old_path: item.old_path,
-    hunk_header: item.hunk_header,
-    line_start: item.line_start,
-    line_end: item.line_end,
-    side: item.anchor_side
-  });
+function inlineExcerpt(item: ReviewQueueItem, diff: StructuredDiff | undefined, state: RedactionState): string {
+  // review-surfaces.PR_SURFACE.4: thread the block state so a high-confidence
+  // secret in an excerpt line also trips the postability gate, not just the
+  // field-level prose redaction.
+  const excerpt = renderHunkExcerpt(
+    diff,
+    {
+      path: item.path,
+      old_path: item.old_path,
+      hunk_header: item.hunk_header,
+      line_start: item.line_start,
+      line_end: item.line_end,
+      side: item.anchor_side
+    },
+    undefined,
+    state
+  );
   if (!excerpt) {
     return "";
   }
@@ -175,12 +187,13 @@ function formatSinceGroup(label: string, items: SinceLastReviewItem[], state: Re
   return `- ${label}: ${shown}${more}`;
 }
 
-function renderFingerprint(model: HumanReviewModel): string {
+function renderFingerprint(model: HumanReviewModel, runId: string | undefined): string {
   const keys = model.review_queue.map((item) => stickyQueueItemKey(item)).join(",");
+  const runPart = runId ? ` run=${runId}` : "";
   // Strip characters that could close the HTML comment early: a path or hunk
   // anchor containing `-->` would otherwise break out and render the rest as
   // visible Markdown (an injection surface for arbitrary comment text).
-  const safe = sanitizeForHtmlComment(`head=${model.generated_from.head_sha} keys=${keys}`);
+  const safe = sanitizeForHtmlComment(`head=${model.generated_from.head_sha}${runPart} keys=${keys}`);
   return `<!-- review-surfaces:fingerprint ${safe} -->`;
 }
 
@@ -188,18 +201,12 @@ function sanitizeForHtmlComment(text: string): string {
   return text.replace(/[<>]/g, "").replace(/-{2,}/g, "-");
 }
 
+// A compared-in prior packet means re-review mode, even when every delta bucket
+// is empty: the reviewer already saw the queue, so the sticky leads with "no
+// changes since last review" and collapses the unchanged remainder rather than
+// re-expanding the full queue as a first review (review-surfaces.PR_SURFACE.5).
 function sinceLastReviewIsAvailable(since: SinceLastReview | undefined): since is SinceLastReview {
-  if (!since || since.unavailable_reason || !since.previous_packet_path) {
-    return false;
-  }
-  return [
-    since.improved,
-    since.regressed,
-    since.new_risks,
-    since.resolved_risks,
-    since.new_overreach,
-    since.resolved_overreach
-  ].some((items) => items.length > 0);
+  return Boolean(since && !since.unavailable_reason && since.previous_packet_path);
 }
 
 // Redact secrets first, then collapse whitespace and truncate — same invariant as

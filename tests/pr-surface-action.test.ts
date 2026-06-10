@@ -64,18 +64,24 @@ test("review-surfaces.PR_SURFACE.4 the action posts only the sticky comment.md (
   assert.doesNotMatch(String(postStep.run), /suggested_comments\.md|pending_review\.json/);
 });
 
-test("review-surfaces.PR_SURFACE.5 the action recovers a prior PR-keyed artifact and feeds it as --previous-packet, first-review on miss", () => {
+test("review-surfaces.PR_SURFACE.5 recovery pins to the last POSTED sticky's run via its fingerprint, first-review on miss", () => {
   const action = readYaml("action.yml");
   const steps: any[] = action.runs.steps;
-  const prior = steps.find((s) => typeof s.run === "string" && s.run.includes("actions/artifacts"));
-  assert.ok(prior, "a step recovers the prior artifact");
-  // A missing/expired artifact is the first-review case, not an error.
+  const prior = steps.find((s) => typeof s.run === "string" && s.run.includes("review-surfaces:fingerprint"));
+  assert.ok(prior, "a step reads the prior sticky's fingerprint");
+  // It extracts run=<id> from the last posted sticky and downloads THAT run's artifact.
+  assert.match(String(prior.run), /run=\[0-9\]\+/);
+  assert.match(String(prior.run), /actions\/runs\/\$prior_run\/artifacts/);
+  // A missing sticky / fingerprint / expired artifact is the first-review case.
   assert.match(String(prior.run), /first review/i);
+  // The generation wires the recovered packet as --previous-packet and records
+  // this run's id in the new sticky's fingerprint.
   const runStep = steps.find((s) => typeof s.run === "string" && s.run.includes("--previous-packet"));
   assert.ok(runStep, "the prior packet is wired as --previous-packet");
+  assert.match(String(runStep.run), /--run-id "\$GITHUB_RUN_ID"/);
 });
 
-test("review-surfaces.PR_SURFACE.1 the repo workflow is a thin consumer of the action and preserves the PROVIDERS.6 secret boundary", () => {
+test("review-surfaces.PR_SURFACE.1 the repo workflow is a same-repo-only thin consumer that preserves the PROVIDERS.6 secret boundary", () => {
   const workflow = readYaml(".github/workflows/pr-review-comment.yml");
   const job = workflow.jobs["review-comment"];
   // PROVIDERS.6: base-controlled pull_request_target with a trusted tool checkout
@@ -86,11 +92,16 @@ test("review-surfaces.PR_SURFACE.1 the repo workflow is a thin consumer of the a
   assert.match(raw, /pull_request\.head\.sha/);
   assert.match(raw, /persist-credentials: false/);
   // Thin consumer: it uses the local composite action rather than inlining steps.
-  const usesAction = job.steps.some((s: any) => s.uses === "./tool");
-  assert.ok(usesAction, "workflow consumes the ./tool composite action");
-  // The LLM key only flows to same-repo PRs (forks get mock + no key).
-  assert.match(raw, /head\.repo\.full_name == github\.repository/);
-  // review-surfaces.PR_SURFACE.3: the subject checkout names the head repository
-  // so a fork-only head sha resolves (otherwise the fork path fails before upload).
-  assert.match(raw, /repository: \$\{\{ github\.event\.pull_request\.head\.repo\.full_name \}\}\n\s*ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/);
+  assert.ok(job.steps.some((s: any) => s.uses === "./tool"), "workflow consumes the ./tool composite action");
+  // The secret-bearing job is gated to same-repo PRs; forks never reach it.
+  assert.match(String(job.if), /head\.repo\.full_name == github\.repository/);
+
+  // Fork PRs are served by the ci pull_request smoke job (mock, post=false), so
+  // they upload the artifact without the secret-bearing pull_request_target path.
+  const ci = readYaml(".github/workflows/ci.yml");
+  const smoke = ci.jobs["pr-surface-smoke"];
+  assert.ok(smoke, "ci has the pr-surface-smoke job");
+  const smokeStep = smoke.steps.find((s: any) => s.uses === "./");
+  assert.equal(smokeStep.with.provider, "mock");
+  assert.equal(String(smokeStep.with.post), "false");
 });
