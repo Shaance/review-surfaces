@@ -133,7 +133,7 @@ test("review-surfaces.NARRATIVE.2 fabricated command id in prose demotes the cla
 test("review-surfaces.NARRATIVE.2 allowlists command transcripts from test evidence", async () => {
   const { packet, diff } = narrativeFacts();
   packet.risks.test_evidence = [
-    { id: "CMD-PNPM-TEST", kind: "direct", summary: "pnpm run test passed.", evidence: [] }
+    { id: "CMD-PNPM-TEST", kind: "direct", summary: "pnpm run test passed.", evidence: [{ kind: "command", command: "pnpm run test", event_id: "CMD-PNPM-TEST", confidence: "high", validation_status: "valid" }] }
   ] as ReviewPacket["risks"]["test_evidence"];
   const narrative = await buildChangeNarrative({
     provider: stubProvider({ claims: [{ text: "Validated by the recorded test transcript.", command_ids: ["CMD-PNPM-TEST"] }] }),
@@ -153,7 +153,7 @@ test("review-surfaces.NARRATIVE.2 allowlists command transcripts from test evide
 test("review-surfaces.NARRATIVE.2 allowlists non-CMD test-evidence row ids", async () => {
   const { packet, diff } = narrativeFacts();
   packet.risks.test_evidence = [
-    { id: "TEST-RESULT-001", kind: "direct", summary: "Parsed passing test case.", evidence: [] }
+    { id: "TEST-RESULT-001", kind: "direct", summary: "Parsed passing test case.", evidence: [{ kind: "test", test_name: "passes", confidence: "high", validation_status: "valid" }] }
   ] as ReviewPacket["risks"]["test_evidence"];
   const narrative = await buildChangeNarrative({
     provider: stubProvider({ claims: [{ text: "Backed by a parsed test case.", command_ids: ["TEST-RESULT-001"] }] }),
@@ -262,6 +262,35 @@ test("review-surfaces.NARRATIVE.2 restricts command anchors to proven (valid) ev
   ] as unknown as ReviewPacket["risks"]["items"];
   const allowlist = buildNarrativeAllowlist({ packet, diff, headSha: "head123" });
   assert.ok(!allowlist.commandIds.has("CMD-FAILED-001"), "an unproven command ref must not be an anchor");
+});
+
+// review-surfaces.NARRATIVE.2: a feedback-only test-evidence row (no transcript /
+// parsed-test ref) is not a verified command anchor.
+test("review-surfaces.NARRATIVE.2 excludes feedback-only rows from command anchors", () => {
+  const { packet, diff } = narrativeFacts();
+  packet.risks.test_evidence = [
+    { id: "TEST-FB-001", kind: "indirect", summary: "Feedback records a passing command.", evidence: [{ kind: "feedback", path: "feedback/x.yaml", confidence: "low", validation_status: "not_checked" }] }
+  ] as ReviewPacket["risks"]["test_evidence"];
+  const allowlist = buildNarrativeAllowlist({ packet, diff, headSha: "head123" });
+  assert.ok(!allowlist.commandIds.has("TEST-FB-001"), "a feedback-only row id must not be a command anchor");
+});
+
+// review-surfaces.NARRATIVE.2: a malformed structured anchor (a non-string
+// element in an unvalidated agent payload) demotes the claim.
+test("review-surfaces.NARRATIVE.2 demotes a claim with a malformed structured anchor", async () => {
+  const { packet, diff } = narrativeFacts();
+  const narrative = await buildChangeNarrative({
+    // 123 is a non-string element a schema-unvalidated agent-file payload can carry.
+    provider: stubProvider({ claims: [{ text: "Edits the real file.", paths: ["src/real.ts", 123] }] }),
+    providerName: "agent-file",
+    packet,
+    diff,
+    headSha: "head123",
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
+  assert.equal(narrative.claims[0].trust, "claimed", "a malformed anchor element must demote the claim");
+  assert.ok(narrative.claims[0].invalid_anchors.some((v) => /malformed/.test(v)));
 });
 
 // review-surfaces.NARRATIVE.4: the narrative never alters the verdict.

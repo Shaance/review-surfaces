@@ -135,22 +135,25 @@ export function buildNarrativeAllowlist(input: NarrativeFacts): NarrativeAllowli
   }
 
   const commandIds = new Set<string>();
-  // Recorded validation evidence is emitted under risks.test_evidence with a
-  // deterministic id (CMD-PNPM-TEST, TEST-TR-001, TEST-RESULT-001, ...). Only
-  // PROVEN rows (direct/indirect) are accepted as verified anchors; a claimed,
-  // missing, or unknown row (feedback-only or a failed transcript) must not let a
-  // claim citing it render as verified.
-  for (const entry of provenTestEvidence(input.packet)) {
+  // Only test-evidence rows actually backed by a transcript or a parsed-test
+  // result (a valid command/test evidence ref) are verified command anchors. This
+  // excludes feedback-only rows (feedback evidence, no captured output) and
+  // failed/claimed/missing rows, so a claim citing such an id is not over-trusted.
+  for (const entry of transcriptBackedTestEvidence(input.packet)) {
     if (entry.id) {
       commandIds.add(entry.id);
     }
     for (const id of commandIdTokens(entry.id)) {
       commandIds.add(id);
     }
+    // The transcript id is stored in event_id (and sometimes the note), not just
+    // the shell text, so scan all three for ids.
     for (const ref of entry.evidence ?? []) {
-      if (ref.kind === "command") {
-        for (const id of commandIdTokens(ref.command ?? ref.note)) {
-          commandIds.add(id);
+      if (ref.kind === "command" && ref.validation_status === "valid") {
+        for (const token of [ref.command, ref.note, ref.event_id]) {
+          for (const id of commandIdTokens(token)) {
+            commandIds.add(id);
+          }
         }
       }
     }
@@ -160,7 +163,7 @@ export function buildNarrativeAllowlist(input: NarrativeFacts): NarrativeAllowli
   // record failed transcript ids too, and those must not become verified anchors.
   for (const ref of resultAndRiskEvidence(input.packet)) {
     if (ref.kind === "command" && ref.validation_status === "valid") {
-      for (const token of [ref.command, ref.note]) {
+      for (const token of [ref.command, ref.note, ref.event_id]) {
         for (const id of commandIdTokens(token)) {
           commandIds.add(id);
         }
@@ -220,27 +223,36 @@ function classifyAnchors(
     }
   };
 
-  for (const path of asStringArray(raw.paths)) {
-    if (allowlist.paths.has(path)) {
-      anchors.push(validAnchor({ kind: "file", path }));
-    } else {
-      note(path);
+  // Walk a structured anchor field. An agent-file payload is NOT schema-validated,
+  // so a malformed field (not an array) or a malformed element (not a string)
+  // must demote the claim rather than be silently dropped by asStringArray, which
+  // would let the remaining valid anchors over-trust it.
+  const eachAnchor = (value: unknown, onValid: (token: string) => void): void => {
+    if (value === undefined) {
+      return;
     }
-  }
-  for (const id of asStringArray(raw.requirement_ids)) {
-    if (allowlist.requirementIds.has(id)) {
-      anchors.push(validAnchor({ kind: "spec", acai_id: id }));
-    } else {
-      note(id);
+    if (!Array.isArray(value)) {
+      note("[malformed anchor field]");
+      return;
     }
-  }
-  for (const command of asStringArray(raw.command_ids)) {
-    if (allowlist.commandIds.has(command)) {
-      anchors.push(validAnchor({ kind: "command", command }));
-    } else {
-      note(command);
+    for (const element of value) {
+      if (typeof element !== "string") {
+        note("[malformed anchor]");
+      } else {
+        onValid(element);
+      }
     }
-  }
+  };
+
+  eachAnchor(raw.paths, (path) =>
+    allowlist.paths.has(path) ? anchors.push(validAnchor({ kind: "file", path })) : note(path)
+  );
+  eachAnchor(raw.requirement_ids, (id) =>
+    allowlist.requirementIds.has(id) ? anchors.push(validAnchor({ kind: "spec", acai_id: id })) : note(id)
+  );
+  eachAnchor(raw.command_ids, (command) =>
+    allowlist.commandIds.has(command) ? anchors.push(validAnchor({ kind: "command", command })) : note(command)
+  );
   // The prose itself must not smuggle a fabricated path/ACID. A token the prose
   // names that is not on an allowlist demotes the claim (it is still shown, but
   // marked claimed with the token surfaced).
@@ -302,9 +314,9 @@ export function buildFallbackNarrative(
     );
   }
 
-  // Count distinct proven transcript ROWS (not the allowlist, which may hold both
+  // Count distinct transcript-backed ROWS (not the allowlist, which may hold both
   // a row id and a CMD-* token from the same row, double-counting it).
-  const transcriptCount = provenTestEvidence(input.packet).length;
+  const transcriptCount = transcriptBackedTestEvidence(input.packet).length;
   const commandIds = [...allowlist.commandIds];
   if (transcriptCount > 0 && commandIds.length > 0) {
     add(
@@ -398,13 +410,16 @@ function commandIdTokens(value: string | undefined): string[] {
   return [...value.matchAll(COMMAND_ID_TOKEN)].map((match) => match[0]);
 }
 
-// Evidence rows under risks.test_evidence that actually back validation
-// (direct/indirect). claimed/missing/unknown rows are excluded so an unproven or
-// failed transcript id cannot become a verified command anchor.
-const PROVEN_TEST_EVIDENCE_KINDS = new Set(["direct", "indirect"]);
-
-function provenTestEvidence(packet: ReviewPacket): ReviewPacket["risks"]["test_evidence"] {
-  return (packet.risks.test_evidence ?? []).filter((entry) => PROVEN_TEST_EVIDENCE_KINDS.has(entry.kind));
+// test-evidence rows actually backed by a transcript or a parsed-test result: a
+// valid command/test evidence ref. Feedback-only rows (feedback evidence) and
+// failed/claimed/missing rows are excluded, so only real validation backs a
+// verified command anchor.
+function transcriptBackedTestEvidence(packet: ReviewPacket): ReviewPacket["risks"]["test_evidence"] {
+  return (packet.risks.test_evidence ?? []).filter((entry) =>
+    (entry.evidence ?? []).some(
+      (ref) => (ref.kind === "command" || ref.kind === "test") && ref.validation_status === "valid"
+    )
+  );
 }
 
 function resultAndRiskEvidence(packet: ReviewPacket): EvidenceRef[] {
