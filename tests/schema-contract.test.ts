@@ -39,6 +39,7 @@ const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package
 // is preserved (spread last) and the test stays focused on that slice.
 const HUMAN_REQUIRED_DEFAULTS = {
   narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
+  semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
   risk_lens_findings: [],
   intent_mismatch: {
     expected_by_spec: [],

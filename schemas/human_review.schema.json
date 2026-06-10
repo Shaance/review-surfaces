@@ -10,6 +10,7 @@
     "verdict",
     "summary",
     "narrative",
+    "semantic_facts",
     "review_queue",
     "blockers",
     "questions",
@@ -63,6 +64,9 @@
     },
     "narrative": {
       "$ref": "#/$defs/changeNarrative"
+    },
+    "semantic_facts": {
+      "$ref": "#/$defs/semanticChangeFacts"
     },
     "review_queue": {
       "type": "array",
@@ -151,6 +155,93 @@
   "$defs": {
     "confidence": {
       "enum": ["high", "medium", "low", "unknown"]
+    },
+    "semanticChangeFacts": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["schema_changes", "api_changes", "test_weakening"],
+      "properties": {
+        "schema_changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["path", "properties_added", "properties_removed", "required_added", "required_removed", "type_changes", "enum_changes"],
+            "properties": {
+              "path": { "type": "string" },
+              "properties_added": { "type": "array", "items": { "type": "string" } },
+              "properties_removed": { "type": "array", "items": { "type": "string" } },
+              "required_added": { "type": "array", "items": { "type": "string" } },
+              "required_removed": { "type": "array", "items": { "type": "string" } },
+              "type_changes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "required": ["field", "from", "to"],
+                  "properties": {
+                    "field": { "type": "string" },
+                    "from": { "type": "string" },
+                    "to": { "type": "string" }
+                  }
+                }
+              },
+              "enum_changes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "required": ["field", "added", "removed"],
+                  "properties": {
+                    "field": { "type": "string" },
+                    "added": { "type": "array", "items": { "type": "string" } },
+                    "removed": { "type": "array", "items": { "type": "string" } }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "api_changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["path", "exports_added", "exports_removed", "signatures_changed"],
+            "properties": {
+              "path": { "type": "string" },
+              "exports_added": { "type": "array", "items": { "type": "string" } },
+              "exports_removed": { "type": "array", "items": { "type": "string" } },
+              "signatures_changed": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "required": ["name", "from", "to"],
+                  "properties": {
+                    "name": { "type": "string" },
+                    "from": { "type": "string" },
+                    "to": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "test_weakening": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["kind", "path", "detail"],
+            "properties": {
+              "kind": { "enum": ["deleted_test_file", "skipped_test", "removed_assertion", "regenerated_snapshot"] },
+              "path": { "type": "string" },
+              "detail": { "type": "string" }
+            }
+          }
+        }
+      }
     },
     "changeNarrative": {
       "type": "object",

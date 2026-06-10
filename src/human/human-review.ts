@@ -5,6 +5,7 @@ import { globToRegExp } from "../core/glob";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
 import { formatHunkHeader, hunkOverlapsRange } from "../collector/diff-hunks";
 import { buildFallbackNarrative } from "./narrative";
+import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTypeChanges, SchemaContractChange, SemanticChangeFacts, TestWeakeningSignal } from "../risks/semantic-diff";
 import { comparisonRiskKey } from "../dogfood/compare";
 import { EvidenceRef, feedbackEvidence, fileEvidence, missingEvidence } from "../evidence/evidence";
 import { normalizeEvidencePath } from "../evidence/validate";
@@ -64,6 +65,9 @@ export interface BuildHumanReviewInput {
   // built through the provider boundary. Stored read-only; it NEVER influences
   // the verdict, blockers, or coverage. Absent -> no narrative section.
   narrative?: ChangeNarrative;
+  // review-surfaces.SEMANTIC_DIFF.1-4: deterministic semantic facts computed in
+  // the pipeline (it needs git access to base file content). Absent -> empty.
+  semanticFacts?: SemanticChangeFacts;
 }
 
 interface BuildReviewRoutesInput {
@@ -264,13 +268,17 @@ const REVIEW_ROUTE_DEFINITIONS: Record<ReviewRoutePersona, ReviewRouteDefinition
 };
 export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel {
   const config = humanReviewBuildConfig(input);
+  // review-surfaces.SEMANTIC_DIFF.1-4: concrete change facts feed the queue and
+  // suggested comments with field-level / signature-level / test-weakening
+  // language instead of generic path-touch phrasing.
+  const semanticFacts = input.semanticFacts ?? emptySemanticChangeFacts();
   const feedbackEffects = buildFeedbackPolicyEffects(input, config);
-  const riskLensFindings = buildRiskLensFindings(input, config);
+  const riskLensFindings = buildRiskLensFindings(input, config, semanticFacts);
   const blockers = buildBlockers(input, feedbackEffects);
-  const reviewQueue = buildReviewQueue(input, feedbackEffects, config);
+  const reviewQueue = buildReviewQueue(input, feedbackEffects, config, semanticFacts);
   const intentMismatch = buildIntentMismatch(input);
   const questions = buildQuestions(input, blockers, feedbackEffects, riskLensFindings, intentMismatch, config);
-  const suggestedComments = buildSuggestedComments(input, blockers, riskLensFindings, config);
+  const suggestedComments = buildSuggestedComments(input, blockers, riskLensFindings, config, semanticFacts);
   const trustAudit = buildTrustAudit(input);
   const sinceLastReview = buildSinceLastReview(input);
   const testPlan = buildTestPlan(input, feedbackEffects, riskLensFindings);
@@ -315,6 +323,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     // review-surfaces.NARRATIVE.4: the narrative is stored read-only AFTER the
     // verdict/blockers/coverage are computed, so it can never influence them.
     narrative,
+    semantic_facts: semanticFacts,
     review_queue: reviewQueue,
     blockers,
     questions,
@@ -1689,12 +1698,17 @@ function buildBlockers(input: BuildHumanReviewInput, feedbackEffects: FeedbackPo
 function buildReviewQueue(
   input: BuildHumanReviewInput,
   feedbackEffects: FeedbackPolicyEffect[],
-  config: HumanReviewBuildConfig
+  config: HumanReviewBuildConfig,
+  semanticFacts: SemanticChangeFacts
 ): HumanReviewModel["review_queue"] {
   const drafts: QueueDraft[] = [];
   const prChangedPaths = input.prSurface ? prChangedFilePaths(input.prSurface) : undefined;
   const diffIndex = buildDiffIndex(input.diff);
   let prRiskQueueItemCount = 0;
+
+  // review-surfaces.SEMANTIC_DIFF.4: concrete change facts rank near the top with
+  // field/signature/test-weakening language, not generic path-touch phrasing.
+  drafts.push(...semanticQueueDrafts(semanticFacts, diffIndex));
 
   for (const risk of input.prSurface?.risks.candidates ?? []) {
     const first = firstPathEvidence(risk.evidence);
@@ -1789,6 +1803,130 @@ function buildReviewQueue(
       estimated_review_effort: draft.estimated_review_effort
     })
   );
+}
+
+// review-surfaces.SEMANTIC_DIFF.1/.2/.3/.4: turn the semantic facts into
+// review-queue items with concrete, field/signature/test-weakening language.
+// They score high so they rank near the top of the surface.
+function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | undefined): QueueDraft[] {
+  const drafts: QueueDraft[] = [];
+  for (const [index, signal] of facts.test_weakening.entries()) {
+    drafts.push(semanticDraft(diffIndex, {
+      title: testWeakeningTitle(signal.kind),
+      path: signal.path,
+      reason: signal.detail,
+      reviewer_action: "Confirm the test change does not silently drop or weaken coverage.",
+      priority: "high",
+      score: 240 - index,
+      sortKey: `semantic-test:${signal.kind}:${signal.path}`
+    }));
+  }
+  for (const [index, change] of facts.schema_changes.entries()) {
+    const breaking = change.required_added.length > 0 || change.properties_removed.length > 0 || change.type_changes.length > 0;
+    drafts.push(semanticDraft(diffIndex, {
+      title: "Schema contract change",
+      path: change.path,
+      reason: schemaChangeReason(change),
+      reviewer_action: "Confirm the contract change is versioned or existing artifacts are migrated before merge.",
+      priority: breaking ? "high" : "medium",
+      score: 200 - index,
+      sortKey: `semantic-schema:${change.path}`
+    }));
+  }
+  for (const [index, change] of facts.api_changes.entries()) {
+    const breaking = change.exports_removed.length > 0 || change.signatures_changed.length > 0;
+    drafts.push(semanticDraft(diffIndex, {
+      title: "Exported API surface change",
+      path: change.path,
+      reason: apiChangeReason(change),
+      reviewer_action: "Confirm callers of the changed exports are updated.",
+      priority: breaking ? "high" : "medium",
+      score: 160 - index,
+      sortKey: `semantic-api:${change.path}`
+    }));
+  }
+  return drafts;
+}
+
+function semanticDraft(
+  diffIndex: DiffIndex | undefined,
+  fields: { title: string; path: string; reason: string; reviewer_action: string; priority: HumanReviewPriority; score: number; sortKey: string }
+): QueueDraft {
+  const evidence = fileEvidence(fields.path, "Semantic change fact.");
+  const anchor = queueAnchorForEvidence(evidence, diffIndex);
+  return {
+    title: fields.title,
+    path: anchor.path,
+    old_path: anchor.old_path,
+    hunk_header: anchor.hunk_header,
+    line_start: anchor.line_start,
+    line_end: anchor.line_end,
+    anchor_side: anchor.side,
+    reviewer_action: fields.reviewer_action,
+    reason: fields.reason,
+    evidence: [evidence],
+    requirement_ids: [],
+    risk_ids: [],
+    confidence: "high",
+    priority: fields.priority,
+    estimated_review_effort: "moderate",
+    score: fields.score,
+    sortKey: fields.sortKey
+  };
+}
+
+function testWeakeningTitle(kind: TestWeakeningSignal["kind"]): string {
+  switch (kind) {
+    case "deleted_test_file":
+      return "Test weakening: deleted test file";
+    case "skipped_test":
+      return "Test weakening: newly skipped test";
+    case "removed_assertion":
+      return "Test weakening: removed assertion";
+    case "regenerated_snapshot":
+      return "Test weakening: regenerated snapshot";
+  }
+}
+
+function schemaChangeReason(change: SchemaContractChange): string {
+  const parts: string[] = [];
+  if (change.required_added.length > 0) {
+    parts.push(`field(s) ${joinIds(change.required_added)} became required — existing artifacts without them will fail validation`);
+  }
+  if (change.required_removed.length > 0) {
+    parts.push(`field(s) ${joinIds(change.required_removed)} no longer required`);
+  }
+  if (change.properties_removed.length > 0) {
+    parts.push(`propert(ies) ${joinIds(change.properties_removed)} removed`);
+  }
+  if (change.properties_added.length > 0) {
+    parts.push(`propert(ies) ${joinIds(change.properties_added)} added`);
+  }
+  if (change.type_changes.length > 0) {
+    parts.push(`type change(s): ${formatTypeChanges(change.type_changes)}`);
+  }
+  if (change.enum_changes.length > 0) {
+    parts.push(`enum change(s): ${formatEnumChanges(change.enum_changes)}`);
+  }
+  return `\`${change.path}\` contract changed: ${parts.join("; ")}.`;
+}
+
+function apiChangeReason(change: ApiSurfaceChange): string {
+  const parts: string[] = [];
+  if (change.signatures_changed.length > 0) {
+    parts.push(`signature change(s): ${change.signatures_changed.map((s) => `\`${s.name}\``).join(", ")}`);
+  }
+  if (change.exports_removed.length > 0) {
+    parts.push(`removed export(s): ${joinIds(change.exports_removed)}`);
+  }
+  if (change.exports_added.length > 0) {
+    parts.push(`added export(s): ${joinIds(change.exports_added)}`);
+  }
+  return `\`${change.path}\` exported API changed: ${parts.join("; ")}.`;
+}
+
+function joinIds(ids: string[]): string {
+  return ids.map((id) => `\`${id}\``).join(", ");
 }
 
 function changedFileQueueDrafts(
@@ -1984,7 +2122,7 @@ function buildFeedbackPolicyEffects(input: BuildHumanReviewInput, config: HumanR
   }));
 }
 
-function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReviewBuildConfig): RiskLensFinding[] {
+function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReviewBuildConfig, semanticFacts: SemanticChangeFacts): RiskLensFinding[] {
   const accumulators = new Map<RiskLens, RiskLensAccumulator>();
   const addSignal = (
     lens: RiskLens,
@@ -2053,6 +2191,23 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
         uniqueTruthy([file.path, ...match.matched_paths])
       );
     }
+  }
+
+  // review-surfaces.SEMANTIC_DIFF.4: the concrete change facts also flow into the
+  // risk lenses, so the api_contract / test_evidence lenses carry field-level and
+  // signature-level detail rather than generic path-touch findings. Evidence is
+  // anchored to the (allowlisted) changed file path.
+  for (const change of semanticFacts.schema_changes) {
+    const breaking = change.required_added.length > 0 || change.properties_removed.length > 0 || change.type_changes.length > 0;
+    addSignal("api_contract", breaking ? "high" : "medium", [fileEvidence(change.path, schemaChangeReason(change))], [], [], [change.path]);
+  }
+  for (const change of semanticFacts.api_changes) {
+    const breaking = change.exports_removed.length > 0 || change.signatures_changed.length > 0;
+    addSignal("api_contract", breaking ? "high" : "medium", [fileEvidence(change.path, apiChangeReason(change))], [], [], [change.path]);
+  }
+  for (const signal of semanticFacts.test_weakening) {
+    const severe = signal.kind === "deleted_test_file" || signal.kind === "removed_assertion";
+    addSignal("test_evidence", severe ? "high" : "medium", [fileEvidence(signal.path, signal.detail)], [], [], [signal.path]);
   }
 
   return [...accumulators.values()]
@@ -3196,11 +3351,16 @@ function buildSuggestedComments(
   input: BuildHumanReviewInput,
   blockers: ReviewBlocker[],
   riskLensFindings: RiskLensFinding[],
-  config: HumanReviewBuildConfig
+  config: HumanReviewBuildConfig,
+  semanticFacts: SemanticChangeFacts
 ): SuggestedReviewComment[] {
   const comments: SuggestedReviewComment[] = [];
   const candidates: SuggestedCommentCandidate[] = [];
   const focusedGaps = focusedRequirementGaps(input);
+
+  // review-surfaces.SEMANTIC_DIFF.1/.4: suggested comments naming the concrete
+  // contract change (e.g. the field that became required), ranked first.
+  candidates.push(...semanticCommentCandidates(semanticFacts));
 
   for (const blocker of blockers) {
     const first = firstPathEvidence(blocker.evidence);
@@ -3272,6 +3432,39 @@ function buildSuggestedComments(
   }
 
   return comments.slice(0, Math.min(MAX_COMMENTS, config.max_suggested_comments));
+}
+
+// review-surfaces.SEMANTIC_DIFF.1/.3/.4: suggested comments from semantic facts,
+// naming the concrete change (a field that became required, a removed assertion,
+// a changed export). Ranked above the generic comments.
+function semanticCommentCandidates(facts: SemanticChangeFacts): SuggestedCommentCandidate[] {
+  const candidates: SuggestedCommentCandidate[] = [];
+  const add = (severity: SuggestedReviewComment["severity"], path: string, body: string, sortKey: string): void => {
+    candidates.push({
+      sourceRank: -1,
+      sortKey,
+      draft: {
+        severity,
+        path,
+        body,
+        evidence: [fileEvidence(path, "Semantic change fact.")],
+        risk_ids: [],
+        requirement_ids: [],
+        confidence: "high",
+        ready_to_post: true
+      }
+    });
+  };
+  for (const signal of facts.test_weakening) {
+    add("blocking", signal.path, `${signal.detail} (${signal.kind.replace(/_/g, " ")})`, `semantic-test:${signal.kind}:${signal.path}`);
+  }
+  for (const change of facts.schema_changes) {
+    add("blocking", change.path, `${schemaChangeReason(change)} Please version the contract or migrate existing artifacts.`, `semantic-schema:${change.path}`);
+  }
+  for (const change of facts.api_changes) {
+    add("clarifying", change.path, `${apiChangeReason(change)} Please confirm callers are updated.`, `semantic-api:${change.path}`);
+  }
+  return candidates;
 }
 
 function commentDraftWithoutId(comment: SuggestedReviewComment): SuggestedCommentDraft {

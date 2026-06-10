@@ -223,7 +223,7 @@ export function classifyRole(filePath: string, areas: string[]): ChangedFileRole
   return "unknown";
 }
 
-function isTestPath(filePath: string): boolean {
+export function isTestPath(filePath: string): boolean {
   return filePath.startsWith("tests/") || /\.test\.[^./]+$/.test(filePath) || /\.spec\.[^./]+$/.test(filePath);
 }
 

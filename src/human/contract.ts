@@ -1,6 +1,9 @@
 import type { EvidenceRef } from "../evidence/evidence";
 import type { ProviderName } from "../llm/provider";
+import type { SemanticChangeFacts } from "../risks/semantic-diff";
 import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-contract";
+
+export type { SemanticChangeFacts };
 
 export const HUMAN_REVIEW_SCHEMA_VERSION = "review-surfaces.human_review.v1" as const;
 
@@ -413,6 +416,10 @@ export interface HumanReviewModel {
   // schema, so a stale artifact lacking it fails validation and is rebuilt rather
   // than rendering an empty section (SCHEMA.3 strictness for new fields).
   narrative: ChangeNarrative;
+  // review-surfaces.SEMANTIC_DIFF.1-4: deterministic facts about what the change
+  // means (schema contract changes, exported API surface changes, test-weakening
+  // signals). Always present (empty when nothing applies).
+  semantic_facts: SemanticChangeFacts;
   review_queue: ReviewQueueItem[];
   blockers: ReviewBlocker[];
   questions: ReviewerQuestion[];

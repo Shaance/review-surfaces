@@ -209,6 +209,22 @@ export function resolveGitRefSha(cwd: string, ref: string): string | undefined {
   return git(cwd, ["rev-parse", "--verify", ref])?.trim();
 }
 
+// The OLD side of a `base...head` (three-dot) range diff is the merge-base of the
+// two refs, not the base branch tip. Semantic schema/API diffs must compare
+// against this same merge-base so they describe exactly the reviewed change set
+// (and not unrelated commits the base branch gained after the fork point).
+// Returns undefined when either ref is missing or there is no common ancestor.
+export function resolveMergeBaseSha(cwd: string, baseRef: string, headRef: string): string | undefined {
+  return git(cwd, ["merge-base", baseRef, headRef])?.trim();
+}
+
+// Read a file's content at a git ref (the OLD version of a changed file), for
+// semantic diffs that compare base vs head. Returns undefined when the ref/path
+// does not resolve (e.g. an added file has no base version), never throwing.
+export function readFileAtRef(cwd: string, ref: string, filePath: string): string | undefined {
+  return git(cwd, ["show", `${ref}:${filePath}`]);
+}
+
 function git(cwd: string, args: string[]): string | undefined {
   try {
     return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trimEnd();

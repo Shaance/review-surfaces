@@ -5,6 +5,8 @@ import { recordCommandTranscript } from "../commands/runner";
 import { commandTranscriptInputDir } from "../commands/transcripts";
 import { collectInputs, CollectionResult } from "../collector/collect";
 import { parseStructuredDiff } from "../collector/diff-hunks";
+import { readFileAtRef, resolveGitRefSha, resolveMergeBaseSha } from "../collector/git";
+import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
 import { CliError, ExitCodes } from "../core/exit-codes";
@@ -1250,18 +1252,67 @@ function buildHumanReviewForPacket(
   config?: ReviewSurfacesConfig,
   narrative?: ChangeNarrative
 ): HumanReviewModel {
+  const resolvedDiff = diff ?? readHumanReviewDiff(outDir);
   const humanReview = buildHumanReview({
     packet,
     prSurface,
-    diff: diff ?? readHumanReviewDiff(outDir),
+    diff: resolvedDiff,
     feedback,
     config: config?.human_review,
     narrative,
+    // review-surfaces.SEMANTIC_DIFF.1-4: computed here (sync git access) so the
+    // facts are present uniformly on every build path — main, cache, standalone.
+    semanticFacts: computeSemanticFactsForPacket(cwd, packet, resolvedDiff),
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
   assertValidHumanReview(cwd, humanReview);
   return humanReview;
+}
+
+// review-surfaces.SEMANTIC_DIFF.1-4: compute the semantic change facts from the
+// collected diff plus the base (git) and head (working tree) file contents. The
+// base ref comes from the packet manifest, so this works for any build path. A
+// pure add/delete (no base version) yields no schema/API contract diff.
+function computeSemanticFactsForPacket(cwd: string, packet: ReviewPacket, diff: StructuredDiff | undefined): SemanticChangeFacts {
+  if (!diff || diff.files.length === 0) {
+    return emptySemanticChangeFacts();
+  }
+  const manifest = packet.manifest as { base_sha?: unknown; base_ref?: unknown; head_sha?: unknown; head_ref?: unknown };
+  const manifestString = (value: unknown): string => (typeof value === "string" ? value : "");
+  const baseRef = manifestString(manifest.base_sha) || manifestString(manifest.base_ref);
+  const headSha = manifestString(manifest.head_sha);
+  const headRef = manifestString(manifest.head_ref);
+
+  // The diff.patch is a `base...head` (three-dot) range diff, whose OLD side is
+  // the merge-base of base and head — not the base branch tip. Compare schema/API
+  // content against that merge-base so the facts describe exactly the reviewed
+  // change set even when the base branch advanced after the PR forked.
+  const baseReadRef = baseRef ? resolveMergeBaseSha(cwd, baseRef, headSha || headRef || "HEAD") ?? baseRef : "";
+
+  // The NEW side: when head is the current worktree (head_sha == checked-out
+  // HEAD), read the working tree so uncommitted edits are reflected. When head is
+  // an explicit committed ref that is NOT the worktree, read that committed blob
+  // via `git show` so the facts describe the reviewed revision, not whatever
+  // happens to be checked out.
+  const worktreeHead = resolveGitRefSha(cwd, "HEAD");
+  const headIsWorktree = !headSha || !worktreeHead || headSha === worktreeHead;
+  const readWorktree = (filePath: string): string | undefined => {
+    try {
+      return fs.readFileSync(path.resolve(cwd, filePath), "utf8");
+    } catch {
+      return undefined;
+    }
+  };
+  const readHead = headIsWorktree
+    ? readWorktree
+    : (filePath: string) => readFileAtRef(cwd, headSha, filePath);
+
+  return computeSemanticChangeFacts({
+    diff,
+    readBase: baseReadRef ? (filePath) => readFileAtRef(cwd, baseReadRef, filePath) : () => undefined,
+    readHead
+  });
 }
 
 function readHumanReviewDiff(outDir: string): StructuredDiff | undefined {
