@@ -306,6 +306,76 @@ test("review-surfaces.SEMANTIC_DIFF.2 a semicolonless type alias does not swallo
   assert.ok(!change.signatures_changed.some((s) => s.name === "Result"), "the unchanged alias is not a fabricated change");
 });
 
+// review-surfaces.SEMANTIC_DIFF.1: a renamed-and-edited schema is diffed against
+// its old path, not silently skipped.
+test("review-surfaces.SEMANTIC_DIFF.1 diffs a renamed schema against its old path", () => {
+  const oldPath = "schemas/old.schema.json";
+  const newPath = "schemas/new.schema.json";
+  const diffText = [
+    `diff --git a/${oldPath} b/${newPath}`,
+    "similarity index 90%",
+    `rename from ${oldPath}`,
+    `rename to ${newPath}`,
+    `--- a/${oldPath}`,
+    `+++ b/${newPath}`,
+    "@@ -1,1 +1,1 @@",
+    "-x",
+    "+y",
+    ""
+  ].join("\n");
+  const change = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(diffText),
+    readBase: (p) => (p === oldPath ? JSON.stringify({ required: ["a"], properties: { a: {} } }) : undefined),
+    readHead: (p) => (p === newPath ? JSON.stringify({ required: ["a", "b"], properties: { a: {}, b: {} } }) : undefined)
+  }).schema_changes[0];
+  assert.ok(change, "a renamed schema is diffed");
+  assert.deepEqual(change.required_added, ["b"]);
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a function whose return type is an inline
+// object literal does not get truncated at the type-literal brace.
+test("review-surfaces.SEMANTIC_DIFF.2 does not stop a signature at a return-type object brace", () => {
+  const path = "src/ret.ts";
+  const oldText = "export function f(): { a: string } {\n  return { a: '' };\n}\n";
+  const newText = "export function f(): { a: number } {\n  return { a: 0 };\n}\n";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: oldText }, { [path]: newText })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "f"), "return-type object field change is a signature change");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: declaration (.d.ts) files are part of the API
+// surface.
+test("review-surfaces.SEMANTIC_DIFF.2 includes .d.ts declaration files", () => {
+  const path = "src/public.d.ts";
+  const oldText = "export declare interface Options { a: string; }\n";
+  const newText = "export declare interface Options { a: string; b: number; }\n";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: oldText }, { [path]: newText })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "Options"), "a .d.ts interface change is an API change");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: exported abstract classes are recognized.
+test("review-surfaces.SEMANTIC_DIFF.2 recognizes exported abstract classes", () => {
+  const path = "src/base.ts";
+  const oldText = "export abstract class Base extends Foo {}\n";
+  const newText = "export abstract class Base extends Bar {}\n";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: oldText }, { [path]: newText })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "Base"), "abstract class extends change is a signature change");
+});
+
+// review-surfaces.SEMANTIC_DIFF.1: a newly-added allOf branch that introduces a
+// required field is surfaced, not invisible because the array grew.
+test("review-surfaces.SEMANTIC_DIFF.1 diffs an added schema composition branch", () => {
+  const path = "schemas/compose.schema.json";
+  const oldSchema = JSON.stringify({ allOf: [{ required: ["a"] }] });
+  const newSchema = JSON.stringify({ allOf: [{ required: ["a"] }, { required: ["b"], properties: { b: {} } }] });
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: oldSchema }, { [path]: newSchema })).schema_changes[0];
+  assert.ok(change, "the added branch produces a contract change");
+  assert.ok(change.required_added.some((f) => f.includes("allOf[1].b")), "the new branch's required field is reported");
+});
+
 // A test file is not treated as an API surface.
 test("review-surfaces.SEMANTIC_DIFF.2 ignores test files for API surface", () => {
   const path = "tests/x.test.ts";

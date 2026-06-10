@@ -77,7 +77,7 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
   const api_changes: ApiSurfaceChange[] = [];
   for (const file of sources.diff.files) {
     if (isJsonSchemaPath(file.path)) {
-      const change = diffSchemaFile(file.path, sources);
+      const change = diffSchemaFile(file, sources);
       if (change) {
         schema_changes.push(change);
       }
@@ -102,8 +102,15 @@ function isJsonSchemaPath(path: string): boolean {
   return lower.endsWith(".json") && (lower.includes("schema") || lower.includes("/schemas/"));
 }
 
-function diffSchemaFile(path: string, sources: SemanticDiffSources): SchemaContractChange | undefined {
-  const oldSchema = parseJson(sources.readBase(path));
+// For a renamed file the previous content lives at old_path; everything else is
+// read at its own path.
+function baseReadPath(file: StructuredDiffFile): string {
+  return file.old_path && file.old_path !== file.path ? file.old_path : file.path;
+}
+
+function diffSchemaFile(file: StructuredDiffFile, sources: SemanticDiffSources): SchemaContractChange | undefined {
+  const path = file.path;
+  const oldSchema = parseJson(sources.readBase(baseReadPath(file)));
   const newSchema = parseJson(sources.readHead(path));
   // A pure add or delete is not a CONTRACT change to diff (the path-touched risk
   // already covers it); only a modified schema with both versions is diffed.
@@ -203,13 +210,17 @@ function diffSchemaNode(oldNode: unknown, newNode: unknown, pointer: string, cha
     }
   }
 
-  // Schema composition keywords (arrays of subschemas): recurse positionally.
+  // Schema composition keywords (arrays of subschemas): recurse positionally, and
+  // diff added/removed branches against an empty schema so a NEW `allOf` branch
+  // that introduces required fields or properties (or a removed branch that
+  // relaxes them) still feeds the contract facts rather than being invisible
+  // whenever the composition array grows or shrinks.
   for (const keyword of ["allOf", "anyOf", "oneOf"]) {
     const oldBranch = Array.isArray(oldNode[keyword]) ? (oldNode[keyword] as unknown[]) : [];
     const newBranch = Array.isArray(newNode[keyword]) ? (newNode[keyword] as unknown[]) : [];
-    const count = Math.min(oldBranch.length, newBranch.length);
-    for (let index = 0; index < count; index += 1) {
-      diffSchemaNode(oldBranch[index], newBranch[index], `${pointer ? `${pointer}.` : ""}${keyword}[${index}]`, change);
+    const branchCount = Math.max(oldBranch.length, newBranch.length);
+    for (let index = 0; index < branchCount; index += 1) {
+      diffSchemaNode(oldBranch[index] ?? {}, newBranch[index] ?? {}, `${pointer ? `${pointer}.` : ""}${keyword}[${index}]`, change);
     }
   }
 }
@@ -289,16 +300,22 @@ function isSnapshotPath(path: string): boolean {
 
 // --- .2 exported TypeScript API-surface diff -------------------------------
 
+// `.ts`/`.tsx` and `.d.ts` declaration files (often the published API contract),
+// excluding tests. `.d.ts` content is read the same way; its `export declare`
+// forms are matched by EXPORT_DECL.
 function isTypeScriptSourcePath(path: string): boolean {
-  return (/\.tsx?$/.test(path) && !/\.d\.ts$/.test(path)) && !isTestPath(path);
+  return /\.tsx?$/.test(path) && !isTestPath(path);
 }
 
 function diffApiSurfaceFile(file: StructuredDiffFile, sources: SemanticDiffSources): ApiSurfaceChange | undefined {
   const path = file.path;
-  // For a renamed module the previous content lives at old_path, so the removed
-  // export at the old import path is surfaced (not silently treated as absent).
-  const basePath = file.old_path && file.old_path !== path ? file.old_path : path;
-  const oldText = sources.readBase(basePath);
+  // For a renamed module the previous content lives at old_path, so an export
+  // dropped during the rename is surfaced (not silently treated as absent).
+  // Deliberate scope: a PURE rename that preserves every export is not emitted as
+  // a wholesale removal+addition of all symbols — the moved import path is already
+  // surfaced as a renamed changed file, and re-listing every symbol on both sides
+  // would be noise. Only symbol-level adds/removes/signature changes are facts here.
+  const oldText = sources.readBase(baseReadPath(file));
   const newText = sources.readHead(path);
   // A file present on neither side is not analyzable.
   if (oldText === undefined && newText === undefined) {
@@ -342,7 +359,7 @@ function diffApiSurfaceFile(file: StructuredDiffFile, sources: SemanticDiffSourc
 // Known bounds (regex-altitude, by design): overload sets collapse to the last
 // signature; namespace/`export *` re-exports and value default exports
 // (`export default someExpr`) are not tracked.
-const EXPORT_DECL = /^export\s+(?:default\s+)?(?:declare\s+)?(?:async\s+)?(function|const|let|var|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)([^\n{=;]*)/;
+const EXPORT_DECL = /^export\s+(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(function|const|let|var|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)([^\n{=;]*)/;
 
 // A declaration whose contract is its body/RHS rather than its head. (A class
 // body is intentionally excluded — it is implementation-heavy and member-level
@@ -406,6 +423,12 @@ const CONTINUATION = /[=|&,(<[:?+\-*/]$|\b(?:extends|implements|keyof|typeof|inf
 function captureDeclaration(lines: string[], startIndex: number, mode: "body" | "head"): { text: string; endIndex: number } {
   let depth = 0;
   let opened = false;
+  // The last non-whitespace character seen (across lines), used in head mode to
+  // tell a return-type object literal (`(): { a: string }`) from the body brace:
+  // a `{` in type position follows a type operator (`: | & < , ( = [`), whereas
+  // the body brace follows the end of the signature (`)`, an identifier, `>`).
+  let lastChar = "";
+  const TYPE_BRACE_PREDECESSORS = new Set([":", "|", "&", "<", ",", "(", "=", "["]);
   const parts: string[] = [];
   const end = Math.min(lines.length, startIndex + MAX_DECL_LINES);
   for (let index = startIndex; index < end; index += 1) {
@@ -414,7 +437,7 @@ function captureDeclaration(lines: string[], startIndex: number, mode: "body" | 
     for (let cursor = 0; cursor < raw.length; cursor += 1) {
       const char = raw[cursor];
       if (char === "{") {
-        if (mode === "head" && depth === 0) {
+        if (mode === "head" && depth === 0 && !TYPE_BRACE_PREDECESSORS.has(lastChar)) {
           // The implementation body begins here; record the head up to (not
           // including) the brace and stop.
           parts.push(raw.slice(0, cursor).trim());
@@ -430,6 +453,9 @@ function captureDeclaration(lines: string[], startIndex: number, mode: "body" | 
       } else if (char === ";" && depth <= 0) {
         parts.push(trimmed);
         return { text: parts.join(" "), endIndex: index };
+      }
+      if (!/\s/.test(char)) {
+        lastChar = char;
       }
     }
     parts.push(trimmed);
