@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { HumanReviewModel, SuggestedReviewComment } from "../src/human/contract";
 import { buildDraftReview } from "../src/render/draft-review";
+import { parseStructuredDiff } from "../src/collector/diff-hunks";
 
 // ---------------------------------------------------------------------------
 // review-surfaces.PROVIDERS.7 — export suggested comments as a GitHub PENDING
@@ -99,6 +100,39 @@ test("review-surfaces.PROVIDERS.7 pins the draft review to the reviewed head sha
 
   const unpinned = buildDraftReview(model([comment({ path: "src/a.ts", line_start: 1 })]));
   assert.equal("commit_id" in unpinned.payload, false, "commit_id is omitted when no head sha is known");
+});
+
+// When the reviewed diff is available it is the authority: it sets the side and
+// folds comments whose line is not in the diff into the body (so GitHub never 422s).
+test("review-surfaces.PROVIDERS.7 resolves side and inline-ability against the diff", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/src/a.ts b/src/a.ts",
+    "--- a/src/a.ts",
+    "+++ b/src/a.ts",
+    "@@ -10,3 +10,3 @@",
+    " context",
+    "-old removed line",
+    "+new added line",
+    " context2",
+    ""
+  ].join("\n"));
+  const draft = buildDraftReview(model([
+    comment({ id: "SC-1", path: "src/a.ts", line_start: 11, side: "new" }),   // added line 11 -> RIGHT
+    comment({ id: "SC-2", path: "src/a.ts", line_start: 11, side: "old" }),   // deleted line 11 -> LEFT
+    comment({ id: "SC-3", path: "src/a.ts", line_start: 999 }),               // not in the diff -> body
+    comment({ id: "SC-4", path: "src/other.ts", line_start: 1 })              // file not in the diff -> body
+  ]), diff);
+
+  const onA = draft.payload.comments.filter((c) => c.path === "src/a.ts");
+  assert.ok(onA.some((c) => c.side === "RIGHT"), "the added line anchors RIGHT");
+  assert.ok(onA.some((c) => c.side === "LEFT"), "the deleted line anchors LEFT");
+  assert.equal(draft.payload.comments.some((c) => c.line === 999 || c.path === "src/other.ts"), false, "non-diff comments are not inlined");
+  assert.equal(draft.unanchored, 2, "the two non-diff comments fold into the body");
+});
+
+test("review-surfaces.PROVIDERS.7 omits a sentinel `unknown` head sha", () => {
+  const draft = buildDraftReview(model([comment({ path: "src/a.ts", line_start: 1 })], "unknown"));
+  assert.equal("commit_id" in draft.payload, false, "the sentinel head sha is not pinned");
 });
 
 test("review-surfaces.PROVIDERS.7 produces a stable payload for an empty comment set", () => {

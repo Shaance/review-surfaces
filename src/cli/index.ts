@@ -1880,10 +1880,19 @@ async function runCommentDraftReview(parsed: ParsedArgs): Promise<number> {
       ExitCodes.usageError
     );
   }
-  const loaded = await readJson(humanReviewPath);
-  // Guard against a stale, partially-written, or hand-edited artifact: validate
-  // before iterating its fields, like the other human-review paths, so the export
-  // fails cleanly with guidance instead of throwing or emitting a malformed payload.
+  // Guard against a stale, partially-written, or hand-edited artifact: a malformed
+  // file (or a schema-invalid model) fails cleanly with guidance, like the other
+  // human-review paths, instead of throwing a SyntaxError to the runtime-error
+  // handler or emitting a malformed payload.
+  let loaded: unknown;
+  try {
+    loaded = await readJson(humanReviewPath);
+  } catch {
+    throw new CliError(
+      `human_review.json at ${path.relative(cwd, humanReviewPath) || humanReviewPath} is not valid JSON. Regenerate it with \`review-surfaces human\` (or \`all\`) before exporting a draft review.`,
+      ExitCodes.usageError
+    );
+  }
   const issues = humanReviewIssues(cwd, loaded);
   if (issues.length > 0) {
     throw new CliError(
@@ -1892,7 +1901,9 @@ async function runCommentDraftReview(parsed: ParsedArgs): Promise<number> {
     );
   }
   const model = loaded as HumanReviewModel;
-  const draft = buildDraftReview(model);
+  // The reviewed diff is the authority for inline-anchoring and side; absent, the
+  // export falls back to the comment's own side hint.
+  const draft = buildDraftReview(model, readHumanReviewDiff(outputDir));
   const reviewPath = path.join(outputDir, "pending_review.json");
   await writeJson(reviewPath, draft.payload);
   process.stdout.write(`${JSON.stringify(draft.payload, null, 2)}\n`);
