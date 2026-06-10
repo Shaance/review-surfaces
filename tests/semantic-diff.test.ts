@@ -442,6 +442,42 @@ test("review-surfaces.SEMANTIC_DIFF.2 records destructuring exports", () => {
   assert.ok(change && change.exports_added.includes("b"), "a newly destructured export name is surfaced");
 });
 
+// review-surfaces.SEMANTIC_DIFF.2: a re-export whose alias TARGET changes (same
+// public name) is a fact.
+test("review-surfaces.SEMANTIC_DIFF.2 detects a changed re-export alias target", () => {
+  const path = "src/alias.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export { oldName as publicName } from \"./mod\";" }, { [path]: "export { newName as publicName } from \"./mod\";" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "publicName"), "the alias target change is a signature change");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: an anonymous default class body edit is NOT a
+// signature change (only API signatures are compared, not member bodies).
+test("review-surfaces.SEMANTIC_DIFF.2 ignores anonymous default class body edits", () => {
+  const path = "src/anon.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const facts = computeSemanticChangeFacts(sources(diffText, { [path]: "export default class { run() { return 1; } }" }, { [path]: "export default class { run() { return 2; } }" }));
+  assert.equal(facts.api_changes.length, 0, "a default-class member body edit is not an API signature change");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a const with an explicit callable type
+// annotation surfaces a type change even when the initializer is unchanged.
+test("review-surfaces.SEMANTIC_DIFF.2 preserves declared callable types on const exports", () => {
+  const path = "src/typed.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export const f: (x: string) => void = (x) => {};" }, { [path]: "export const f: (x: number) => void = (x) => {};" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "f"), "the declared callable type change is surfaced");
+});
+
+// review-surfaces.SEMANTIC_DIFF.2: a change to a nested exported namespace member
+// is part of the API surface.
+test("review-surfaces.SEMANTIC_DIFF.2 diffs exported namespace members", () => {
+  const path = "src/nsmembers.ts";
+  const diffText = [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1,1 +1,1 @@", "-x", "+y", ""].join("\n");
+  const change = computeSemanticChangeFacts(sources(diffText, { [path]: "export namespace N { export function foo(a: string): void {} }" }, { [path]: "export namespace N { export function foo(a: number): void {} }" })).api_changes[0];
+  assert.ok(change && change.signatures_changed.some((s) => s.name === "N.foo"), "a nested namespace member signature change is surfaced");
+});
+
 // A test file is not treated as an API surface.
 test("review-surfaces.SEMANTIC_DIFF.2 ignores test files for API surface", () => {
   const path = "tests/x.test.ts";

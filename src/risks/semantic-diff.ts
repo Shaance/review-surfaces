@@ -384,76 +384,96 @@ function extractExports(source: string, path = "module.ts"): Map<string, string>
   const functionLikeSignature = (node: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression, prefix: string): string =>
     norm(`${prefix} ${slice(node, bodyStop(node, node.end))}`);
 
-  for (const statement of sourceFile.statements) {
-    if (ts.isFunctionDeclaration(statement) && isExported(statement)) {
-      const name = defaultOr(statement, statement.name?.text);
-      if (name) {
-        // An overload set shares one name across several signatures; concatenate so
-        // adding/removing/altering any overload is a signature change.
-        const previous = exports.get(name);
-        const signature = slice(statement, bodyStop(statement, statement.end));
-        exports.set(name, previous ? `${previous} ;; ${signature}` : signature);
+  // Collect exports from a statement list under a name prefix; recursed for the
+  // body of an exported namespace so nested members are part of the surface.
+  const collect = (statements: readonly ts.Statement[], prefix: string): void => {
+    for (const statement of statements) {
+      if (ts.isFunctionDeclaration(statement) && isExported(statement)) {
+        const name = defaultOr(statement, statement.name?.text);
+        if (name) {
+          // An overload set shares one name across several signatures; concatenate so
+          // adding/removing/altering any overload is a signature change.
+          const key = `${prefix}${name}`;
+          const previous = exports.get(key);
+          const signature = slice(statement, bodyStop(statement, statement.end));
+          exports.set(key, previous ? `${previous} ;; ${signature}` : signature);
+        }
+        continue;
       }
-      continue;
-    }
-    if (ts.isClassDeclaration(statement) && isExported(statement)) {
-      const name = defaultOr(statement, statement.name?.text);
-      if (name) {
-        // Compare the head — name, type params, extends/implements — not the member
-        // bodies; the heritage clause end is the precise boundary.
-        const stop = statement.heritageClauses?.at(-1)?.end ?? statement.typeParameters?.end ?? statement.name?.end ?? statement.end;
-        exports.set(name, slice(statement, stop));
+      if (ts.isClassDeclaration(statement) && isExported(statement)) {
+        const name = defaultOr(statement, statement.name?.text);
+        if (name) {
+          // Compare the head — name, type params, extends/implements — not the member
+          // bodies. Stop at the heritage/type-param/name boundary, or (for an
+          // anonymous default class) the body's opening brace, so an implementation
+          // edit to a member body is never read as a signature change.
+          const headEnd = statement.heritageClauses?.at(-1)?.end ?? statement.typeParameters?.end ?? statement.name?.end;
+          const stop = headEnd ?? (statement.members.length > 0 ? statement.members[0].getStart(sourceFile) : statement.end);
+          exports.set(`${prefix}${name}`, slice(statement, stop).replace(/\s*\{\s*$/, ""));
+        }
+        continue;
       }
-      continue;
-    }
-    if ((ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement) || ts.isEnumDeclaration(statement)) && isExported(statement)) {
-      exports.set(statement.name.text, slice(statement, statement.end));
-      continue;
-    }
-    if (ts.isModuleDeclaration(statement) && isExported(statement) && ts.isIdentifier(statement.name)) {
-      // `export namespace N {}` — track presence/head; members are not enumerated.
-      exports.set(`namespace:${statement.name.text}`, slice(statement, bodyStop(statement, statement.end)));
-      continue;
-    }
-    if (ts.isVariableStatement(statement) && isExported(statement)) {
-      const keyword = statement.declarationList.flags & ts.NodeFlags.Const ? "const" : statement.declarationList.flags & ts.NodeFlags.Let ? "let" : "var";
-      for (const declaration of statement.declarationList.declarations) {
-        for (const { name, node } of bindingTargets(declaration.name)) {
-          const initializer = ts.isIdentifier(declaration.name) ? declaration.initializer : undefined;
-          if (initializer && (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))) {
-            exports.set(name, functionLikeSignature(initializer, `${keyword} ${name}`));
-          } else {
-            const typed = node !== declaration.name; // a destructured leaf carries no own type
-            const stop = !typed && declaration.type ? declaration.type.end : node.end;
-            exports.set(name, norm(`${keyword} ${slice(node, stop)}`));
+      if ((ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement) || ts.isEnumDeclaration(statement)) && isExported(statement)) {
+        exports.set(`${prefix}${statement.name.text}`, slice(statement, statement.end));
+        continue;
+      }
+      if (ts.isModuleDeclaration(statement) && isExported(statement) && ts.isIdentifier(statement.name)) {
+        // `export namespace N {}` — record its presence/head, then recurse so a
+        // change to a nested exported member (N.foo) is part of the API surface.
+        exports.set(`namespace:${prefix}${statement.name.text}`, slice(statement, bodyStop(statement, statement.end)));
+        if (statement.body && ts.isModuleBlock(statement.body)) {
+          collect(statement.body.statements, `${prefix}${statement.name.text}.`);
+        }
+        continue;
+      }
+      if (ts.isVariableStatement(statement) && isExported(statement)) {
+        const keyword = statement.declarationList.flags & ts.NodeFlags.Const ? "const" : statement.declarationList.flags & ts.NodeFlags.Let ? "let" : "var";
+        for (const declaration of statement.declarationList.declarations) {
+          const whole = ts.isIdentifier(declaration.name);
+          for (const { name, node } of bindingTargets(declaration.name)) {
+            const key = `${prefix}${name}`;
+            if (whole && declaration.type) {
+              // An explicit type annotation IS the declared contract (it wins over the
+              // initializer), so a callable-type change is surfaced.
+              exports.set(key, norm(`${keyword} ${slice(declaration, declaration.type.end)}`));
+            } else if (whole && declaration.initializer && (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))) {
+              exports.set(key, functionLikeSignature(declaration.initializer, `${keyword} ${name}`));
+            } else {
+              exports.set(key, norm(`${keyword} ${slice(node, node.end)}`));
+            }
           }
         }
+        continue;
       }
-      continue;
-    }
-    if (ts.isExportAssignment(statement)) {
-      // `export default <expr>` (isExportEquals false) or `export = <expr>`.
-      exports.set(statement.isExportEquals ? "export=" : "default", slice(statement, statement.end));
-      continue;
-    }
-    if (ts.isExportDeclaration(statement)) {
-      // Fold the source module into the signature so a re-export's origin change is
-      // a fact, and a local `export { x }` and `export { x } from "y"` do not collide.
-      const from = statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier) ? ` from ${statement.moduleSpecifier.text}` : "";
-      if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
-        for (const element of statement.exportClause.elements) {
-          exports.set(element.name.text, `named ${element.name.text}${from}`);
+      if (ts.isExportAssignment(statement)) {
+        // `export default <expr>` (isExportEquals false) or `export = <expr>`.
+        exports.set(`${prefix}${statement.isExportEquals ? "export=" : "default"}`, slice(statement, statement.end));
+        continue;
+      }
+      if (ts.isExportDeclaration(statement)) {
+        // Fold the source module into the signature so a re-export's origin change is
+        // a fact, and a local `export { x }` and `export { x } from "y"` do not collide.
+        const from = statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier) ? ` from ${statement.moduleSpecifier.text}` : "";
+        if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+          for (const element of statement.exportClause.elements) {
+            // `propertyName` is the underlying binding before `as`; include it so an
+            // alias whose target changes (`{ a as x }` → `{ b as x }`) is a fact.
+            const target = element.propertyName ? `${element.propertyName.text} as ` : "";
+            exports.set(`${prefix}${element.name.text}`, `named ${target}${element.name.text}${from}`);
+          }
+        } else if (statement.exportClause && ts.isNamespaceExport(statement.exportClause)) {
+          exports.set(`${prefix}${statement.exportClause.name.text}`, `namespace-reexport ${statement.exportClause.name.text}${from}`);
+        } else if (statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+          // `export * from "./x"` — keyed by the source module so adding/removing the
+          // star re-export is detected even though the names cannot be enumerated.
+          exports.set(`*:${prefix}${statement.moduleSpecifier.text}`, `export-star ${statement.moduleSpecifier.text}`);
         }
-      } else if (statement.exportClause && ts.isNamespaceExport(statement.exportClause)) {
-        exports.set(statement.exportClause.name.text, `namespace-reexport ${statement.exportClause.name.text}${from}`);
-      } else if (statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
-        // `export * from "./x"` — keyed by the source module so adding/removing the
-        // star re-export is detected even though the names cannot be enumerated.
-        exports.set(`*:${statement.moduleSpecifier.text}`, `export-star ${statement.moduleSpecifier.text}`);
+        continue;
       }
-      continue;
     }
-  }
+  };
+
+  collect(sourceFile.statements, "");
   return exports;
 }
 
