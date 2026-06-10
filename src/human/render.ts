@@ -3,6 +3,7 @@ import { writeJson, writeText } from "../core/files";
 import { EvidenceRef } from "../evidence/evidence";
 import { redactSecrets } from "../privacy/secrets";
 import { StructuredDiff } from "../pr/contract";
+import { formatEnumChanges, formatTypeChanges } from "../risks/semantic-diff";
 import { renderHunkExcerpt } from "./hunk-excerpt";
 import { extractAcids, fillAcidTemplate, normalizeAcidTemplate, RollupGroup, rollupBy } from "./rollup";
 import { RISK_LENS_METADATA } from "./contract";
@@ -167,6 +168,10 @@ ${bullets(model.verdict.reasons.slice(0, MAX_BLOCKERS).map((reason) => `${reason
 ## Change narrative
 
 ${renderNarrativeSection(model.narrative)}
+
+## Semantic change facts
+
+${renderSemanticFacts(model.semantic_facts)}
 
 ## Review first
 
@@ -702,6 +707,42 @@ function renderNarrativeClaim(claim: NarrativeClaim): string {
     ? ` [claimed; unverified anchor(s): ${claim.invalid_anchors.map((token) => `\`${field(token)}\``).join(", ")}]`
     : "";
   return `- ${marker} ${field(claim.text, 600)}${anchors}${invalid}`;
+}
+
+// review-surfaces.SEMANTIC_DIFF.1-4: render the concrete change facts (schema
+// contract changes, exported API surface changes, test-weakening signals) near
+// the top of the surface, leading with the observable fact (reviewer-language).
+function renderSemanticFacts(facts: HumanReviewModel["semantic_facts"]): string {
+  const lines: string[] = [];
+  for (const signal of facts.test_weakening) {
+    lines.push(`⚠️ Test weakening — ${field(signal.detail)} (\`${field(signal.path)}\`; ${signal.kind.replace(/_/g, " ")})`);
+  }
+  for (const change of facts.schema_changes) {
+    lines.push(`Schema contract — ${field(semanticSchemaSummary(change))} (\`${field(change.path)}\`)`);
+  }
+  for (const change of facts.api_changes) {
+    lines.push(`Exported API — ${field(semanticApiSummary(change))} (\`${field(change.path)}\`)`);
+  }
+  return bullets(lines, "No semantic schema/API/test-weakening facts detected in this change.");
+}
+
+function semanticSchemaSummary(change: HumanReviewModel["semantic_facts"]["schema_changes"][number]): string {
+  const parts: string[] = [];
+  if (change.required_added.length) parts.push(`now requires ${change.required_added.join(", ")} (existing artifacts without them fail validation)`);
+  if (change.required_removed.length) parts.push(`no longer requires ${change.required_removed.join(", ")}`);
+  if (change.properties_removed.length) parts.push(`removed ${change.properties_removed.join(", ")}`);
+  if (change.properties_added.length) parts.push(`added ${change.properties_added.join(", ")}`);
+  if (change.type_changes.length) parts.push(`type: ${formatTypeChanges(change.type_changes)}`);
+  if (change.enum_changes.length) parts.push(`enum: ${formatEnumChanges(change.enum_changes)}`);
+  return parts.join("; ");
+}
+
+function semanticApiSummary(change: HumanReviewModel["semantic_facts"]["api_changes"][number]): string {
+  const parts: string[] = [];
+  if (change.signatures_changed.length) parts.push(`signature changed: ${change.signatures_changed.map((s) => s.name).join(", ")}`);
+  if (change.exports_removed.length) parts.push(`removed: ${change.exports_removed.join(", ")}`);
+  if (change.exports_added.length) parts.push(`added: ${change.exports_added.join(", ")}`);
+  return parts.join("; ");
 }
 
 function renderReviewFirst(items: ReviewQueueItem[], context: HumanRenderContext = {}): string {

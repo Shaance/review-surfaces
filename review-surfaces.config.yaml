@@ -264,12 +264,8 @@ quality_gate:
   # strict self-dogfood gate. Remove each entry as its phase lands.
   max_missing: 0
   allow_missing:
-    # Phase 2 (NARRATIVE.1-5) landed — its requirements are now implemented.
-    # Phase 3 — Semantic change facts
-    - review-surfaces.SEMANTIC_DIFF.1
-    - review-surfaces.SEMANTIC_DIFF.2
-    - review-surfaces.SEMANTIC_DIFF.3
-    - review-surfaces.SEMANTIC_DIFF.4
+    # Phase 2 (NARRATIVE.1-5) and Phase 3 (SEMANTIC_DIFF.1-4) landed — their
+    # requirements are now implemented.
     # Phase 4 — Interactive review session
     - review-surfaces.REVIEW_LOOP.1
     - review-surfaces.REVIEW_LOOP.2

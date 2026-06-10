@@ -209,6 +209,13 @@ export function resolveGitRefSha(cwd: string, ref: string): string | undefined {
   return git(cwd, ["rev-parse", "--verify", ref])?.trim();
 }
 
+// Read a file's content at a git ref (the OLD version of a changed file), for
+// semantic diffs that compare base vs head. Returns undefined when the ref/path
+// does not resolve (e.g. an added file has no base version), never throwing.
+export function readFileAtRef(cwd: string, ref: string, filePath: string): string | undefined {
+  return git(cwd, ["show", `${ref}:${filePath}`]);
+}
+
 function git(cwd: string, args: string[]): string | undefined {
   try {
     return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trimEnd();

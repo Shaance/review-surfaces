@@ -28,6 +28,7 @@ function baseModel(overrides: Partial<HumanReviewModel>): HumanReviewModel {
     schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
     mode: "repo",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
+    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Density fixture.",
     review_queue: [],

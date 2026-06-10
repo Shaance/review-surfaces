@@ -5,6 +5,8 @@ import { recordCommandTranscript } from "../commands/runner";
 import { commandTranscriptInputDir } from "../commands/transcripts";
 import { collectInputs, CollectionResult } from "../collector/collect";
 import { parseStructuredDiff } from "../collector/diff-hunks";
+import { readFileAtRef } from "../collector/git";
+import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
 import { CliError, ExitCodes } from "../core/exit-codes";
@@ -1250,18 +1252,53 @@ function buildHumanReviewForPacket(
   config?: ReviewSurfacesConfig,
   narrative?: ChangeNarrative
 ): HumanReviewModel {
+  const resolvedDiff = diff ?? readHumanReviewDiff(outDir);
   const humanReview = buildHumanReview({
     packet,
     prSurface,
-    diff: diff ?? readHumanReviewDiff(outDir),
+    diff: resolvedDiff,
     feedback,
     config: config?.human_review,
     narrative,
+    // review-surfaces.SEMANTIC_DIFF.1-4: computed here (sync git access) so the
+    // facts are present uniformly on every build path — main, cache, standalone.
+    semanticFacts: computeSemanticFactsForPacket(cwd, packet, resolvedDiff),
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
   assertValidHumanReview(cwd, humanReview);
   return humanReview;
+}
+
+// review-surfaces.SEMANTIC_DIFF.1-4: compute the semantic change facts from the
+// collected diff plus the base (git) and head (working tree) file contents. The
+// base ref comes from the packet manifest, so this works for any build path. A
+// pure add/delete (no base version) yields no schema/API contract diff.
+function computeSemanticFactsForPacket(cwd: string, packet: ReviewPacket, diff: StructuredDiff | undefined): SemanticChangeFacts {
+  if (!diff || diff.files.length === 0) {
+    return emptySemanticChangeFacts();
+  }
+  const manifest = packet.manifest as { base_sha?: unknown; base_ref?: unknown };
+  const baseRef = typeof manifest.base_sha === "string" && manifest.base_sha.length > 0
+    ? manifest.base_sha
+    : typeof manifest.base_ref === "string"
+      ? manifest.base_ref
+      : "";
+  if (!baseRef) {
+    // Still surface test-weakening, which is computed from the diff alone.
+    return computeSemanticChangeFacts({ diff, readBase: () => undefined, readHead: () => undefined });
+  }
+  return computeSemanticChangeFacts({
+    diff,
+    readBase: (filePath) => readFileAtRef(cwd, baseRef, filePath),
+    readHead: (filePath) => {
+      try {
+        return fs.readFileSync(path.resolve(cwd, filePath), "utf8");
+      } catch {
+        return undefined;
+      }
+    }
+  });
 }
 
 function readHumanReviewDiff(outDir: string): StructuredDiff | undefined {
