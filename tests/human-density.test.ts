@@ -263,6 +263,31 @@ test("review-surfaces.HUMAN_REVIEW.20 prefers the anchor path over old_path for 
   assert.doesNotMatch(excerpt!, /brandNewA/, "must not take the excerpt from the unrelated new A");
 });
 
+// review-surfaces.HUMAN_REVIEW.20: a side-aware line overlap takes precedence
+// over a header that happens to match a different hunk, so the excerpt shows the
+// hunk the line anchor points at.
+test("review-surfaces.HUMAN_REVIEW.20 prefers the line-overlap hunk over a header matching another hunk", () => {
+  const diffText = [
+    "diff --git a/src/two-hunks.ts b/src/two-hunks.ts",
+    "--- a/src/two-hunks.ts",
+    "+++ b/src/two-hunks.ts",
+    "@@ -1,1 +1,1 @@",
+    "-const first = 0;",
+    "+const first = 1;",
+    "@@ -10,1 +10,1 @@",
+    "-const second = 0;",
+    "+const second = 1;",
+    ""
+  ].join("\n");
+  const diff = parseStructuredDiff(diffText);
+  // The header names the FIRST hunk, but the line anchor points into the SECOND.
+  const excerpt = renderHunkExcerpt(diff, { path: "src/two-hunks.ts", hunk_header: "@@ -1,1 +1,1 @@", line_start: 10, line_end: 10 });
+  assert.ok(excerpt, "should render");
+  assert.match(excerpt!, /const second = 1;/, "the line anchor must win over the header");
+  assert.match(excerpt!, /@@ -10,1 \+10,1 @@/, "header names the line-selected hunk");
+  assert.doesNotMatch(excerpt!, /const first = 1;/);
+});
+
 // review-surfaces.HUMAN_REVIEW.20: a chain replacement (rename B->C appearing
 // before A->B) must resolve a `path: B` anchor to the A->B file (whose new path
 // is B), not the B->C file (whose old_path is B).

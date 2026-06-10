@@ -122,17 +122,22 @@ function selectHunk(
   side: "old" | "new"
 ): StructuredDiffHunk | undefined {
   const hasAnchor = Boolean(anchor.hunk_header) || (typeof anchor.line_start === "number" && anchor.line_start > 0);
-  if (anchor.hunk_header) {
-    const byHeader = file.hunks.find((hunk) => formatHunkHeader(hunk) === anchor.hunk_header);
-    if (byHeader) {
-      return byHeader;
-    }
-  }
+  // Prefer a SIDE-AWARE line-overlap match when a line range is present. A shared
+  // hunk header/range (common for one-line top-of-file changes) can otherwise let
+  // a new-side candidate win for an old-side anchor; the line overlap is computed
+  // on the resolved side, so it disambiguates the intended file before a
+  // header-only match is accepted.
   if (typeof anchor.line_start === "number" && anchor.line_start > 0) {
     const lineEnd = anchor.line_end && anchor.line_end >= anchor.line_start ? anchor.line_end : anchor.line_start;
     const overlapping = file.hunks.find((hunk) => hunkOverlapsRange(hunk, side, anchor.line_start as number, lineEnd));
     if (overlapping) {
       return overlapping;
+    }
+  }
+  if (anchor.hunk_header) {
+    const byHeader = file.hunks.find((hunk) => formatHunkHeader(hunk) === anchor.hunk_header);
+    if (byHeader) {
+      return byHeader;
     }
   }
   // When the item carried a hunk/line anchor but nothing matched (stale, out of
