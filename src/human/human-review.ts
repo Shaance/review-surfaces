@@ -8,6 +8,8 @@ import { buildFallbackNarrative } from "./narrative";
 import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTypeChanges, SchemaContractChange, SemanticChangeFacts, TestWeakeningSignal } from "../risks/semantic-diff";
 import { emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { buildReviewPlan } from "./budget";
+import { DependencyFact, dependencyFactSeverityRank } from "../risks/dependency-facts";
+import { ConfigFact } from "../risks/config-facts";
 import type { CoverageEvidence } from "./contract";
 import { comparisonRiskKey } from "../dogfood/compare";
 import { EvidenceRef, feedbackEvidence, fileEvidence, missingEvidence } from "../evidence/evidence";
@@ -79,6 +81,12 @@ export interface BuildHumanReviewInput {
   // ingested lcov report in the pipeline. Absent -> status "no_report" (the
   // honest negative; never a penalty).
   coverageEvidence?: CoverageEvidence;
+  // review-surfaces.DEP_FACTS.1/.2: deterministic dependency/lockfile facts
+  // computed in the pipeline. Absent -> empty (no supply-chain signal).
+  dependencyFacts?: DependencyFact[];
+  // review-surfaces.CONFIG_FACTS.1-3: deterministic env/CI/Dockerfile/SQL facts
+  // computed in the pipeline. Absent -> empty.
+  configFacts?: ConfigFact[];
 }
 
 interface BuildReviewRoutesInput {
@@ -721,6 +729,8 @@ function evidenceCardWhyItMattersForLens(lens: RiskLens): string {
       return "Test-evidence changes affect whether the reviewer can trust validation and coverage claims.";
     case "reviewer_ux":
       return "Reviewer-facing output changes affect whether humans see blockers, evidence, and next actions clearly.";
+    case "supply_chain":
+      return "New or changed dependencies alter what third-party code runs at install or build time — exactly where supply-chain overreach hides.";
     case "cache_provenance":
       return "Cache and provenance changes affect whether generated artifacts remain reproducible and fresh.";
     case "custom":
@@ -1779,6 +1789,8 @@ function buildReviewQueue(
   // review-surfaces.SEMANTIC_DIFF.4: concrete change facts rank near the top with
   // field/signature/test-weakening language, not generic path-touch phrasing.
   drafts.push(...semanticQueueDrafts(semanticFacts, diffIndex));
+  drafts.push(...dependencyQueueDrafts(input.dependencyFacts ?? [], diffIndex));
+  drafts.push(...configFactQueueDrafts(input.configFacts ?? [], diffIndex));
 
   for (const risk of input.prSurface?.risks.candidates ?? []) {
     const first = firstPathEvidence(risk.evidence);
@@ -1985,6 +1997,67 @@ function defaultRankReason(draft: QueueDraft): string {
 // review-surfaces.SEMANTIC_DIFF.1/.2/.3/.4: turn the semantic facts into
 // review-queue items with concrete, field/signature/test-weakening language.
 // They score high so they rank near the top of the surface.
+// review-surfaces.DEP_FACTS.2: dependency facts rank as concrete supply-chain
+// queue items naming the package and the change ("adds `leftpad@2` ...").
+function dependencyQueueDrafts(facts: DependencyFact[], diffIndex: DiffIndex | undefined): QueueDraft[] {
+  return facts.slice(0, 6).map((fact, index) => {
+    const rank = dependencyFactSeverityRank(fact.kind);
+    return semanticDraft(diffIndex, {
+      title: "Dependency change",
+      path: fact.source_path,
+      reason: `${fact.detail}.`,
+      reviewer_action: "Confirm the dependency change is intentional, vetted, and appropriately pinned.",
+      priority: rank <= 1 ? "high" : "medium",
+      score: (rank === 0 ? 230 : 150) - index,
+      sortKey: `dependency:${fact.kind}:${fact.package}`
+    });
+  });
+}
+
+// CI/Docker/SQL kinds where agent overreach is most dangerous rank high.
+function isHighSeverityConfigFact(kind: ConfigFact["kind"]): boolean {
+  return (
+    kind === "ci_permissions_broadened" ||
+    kind === "ci_pull_request_target_added" ||
+    kind === "docker_curl_pipe_shell" ||
+    kind === "sql_destructive_statement"
+  );
+}
+
+// review-surfaces.CONFIG_FACTS.1-3: config/infra facts rank as concrete queue
+// items; the language flags for attention rather than proving semantics.
+function configFactQueueDrafts(facts: ConfigFact[], diffIndex: DiffIndex | undefined): QueueDraft[] {
+  return facts.slice(0, 6).map((fact, index) => semanticDraft(diffIndex, {
+    title: configFactTitle(fact.kind),
+    path: fact.path,
+    reason: `${fact.detail}.`,
+    reviewer_action: "Inspect the flagged change before approving.",
+    priority: isHighSeverityConfigFact(fact.kind) ? "high" : "medium",
+    score: 145 - index,
+    sortKey: `config:${fact.kind}:${fact.path}:${fact.detail}`
+  }));
+}
+
+function configFactTitle(kind: ConfigFact["kind"]): string {
+  switch (kind) {
+    case "env_var_added":
+    case "env_var_removed":
+    case "env_example_key_change":
+      return "Environment variable change";
+    case "ci_permissions_broadened":
+    case "ci_new_secret_reference":
+    case "ci_pull_request_target_added":
+    case "ci_unpinned_action":
+      return "CI workflow change";
+    case "docker_curl_pipe_shell":
+    case "docker_base_image_changed":
+    case "docker_user_dropped":
+      return "Dockerfile change";
+    case "sql_destructive_statement":
+      return "Destructive migration statement";
+  }
+}
+
 function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | undefined): QueueDraft[] {
   const drafts: QueueDraft[] = [];
   for (const [index, signal] of facts.test_weakening.entries()) {
@@ -2018,7 +2091,10 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
       reason: apiChangeReason(change),
       reviewer_action: "Confirm callers of the changed exports are updated.",
       priority: breaking ? "high" : "medium",
-      score: 160 - index,
+      // review-surfaces.BLAST_RADIUS.2: a removed/changed export with many
+      // importers outranks one with none (bounded so blast radius cannot lift
+      // an API change above test-weakening signals).
+      score: 160 - index + Math.min(change.used_by?.count ?? 0, 20),
       sortKey: `semantic-api:${change.path}`
     }));
   }
@@ -2099,7 +2175,17 @@ function apiChangeReason(change: ApiSurfaceChange): string {
   if (change.exports_added.length > 0) {
     parts.push(`added export(s): ${joinIds(change.exports_added)}`);
   }
-  return `\`${change.path}\` exported API changed: ${parts.join("; ")}.`;
+  // review-surfaces.BLAST_RADIUS.2: "signature changed" becomes "signature
+  // changed and N call sites depend on it".
+  const usedBy = change.used_by;
+  const blast = usedBy
+    ? usedBy.count > 0
+      ? ` Used by ${usedBy.count} file(s) (top: ${usedBy.top.map((p) => `\`${p}\``).join(", ")}).`
+      : usedBy.truncated
+        ? " Import graph truncated at the file cap; importer count unknown."
+        : " No in-repo importers reference the changed exports."
+    : "";
+  return `\`${change.path}\` exported API changed: ${parts.join("; ")}.${blast}`;
 }
 
 function joinIds(ids: string[]): string {
@@ -2382,6 +2468,16 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
     const breaking = change.exports_removed.length > 0 || change.signatures_changed.length > 0;
     addSignal("api_contract", breaking ? "high" : "medium", [fileEvidence(change.path, apiChangeReason(change))], [], [], [change.path]);
   }
+  // review-surfaces.DEP_FACTS.2: dependency facts feed the supply_chain lens.
+  for (const fact of input.dependencyFacts ?? []) {
+    const rank = dependencyFactSeverityRank(fact.kind);
+    addSignal("supply_chain", rank === 0 ? "high" : rank === 1 ? "medium" : "low", [fileEvidence(fact.source_path, fact.detail)], [], [], [fact.source_path]);
+  }
+  // review-surfaces.CONFIG_FACTS.1-3: config/infra facts feed the security lens.
+  for (const fact of input.configFacts ?? []) {
+    addSignal("security_privacy", isHighSeverityConfigFact(fact.kind) ? "high" : "medium", [fileEvidence(fact.path, fact.detail)], [], [], [fact.path]);
+  }
+
   for (const signal of semanticFacts.test_weakening) {
     const severe = signal.kind === "deleted_test_file" || signal.kind === "removed_assertion";
     addSignal("test_evidence", severe ? "high" : "medium", [fileEvidence(signal.path, signal.detail)], [], [], [signal.path]);
@@ -2573,6 +2669,8 @@ function riskLensReviewerAction(
       return "Confirm parsed test output, coverage, command transcripts, and skipped-test handling still produce trustworthy review evidence.";
     case "reviewer_ux":
       return "Render the changed reviewer-facing Markdown or diagram from fixtures and inspect boundedness, evidence links, and blocked-state messaging.";
+    case "supply_chain":
+      return "Inspect the added or changed dependency: confirm it is intentional, pinned appropriately, and free of unexpected install scripts.";
     case "cache_provenance":
       return "Verify cache signatures, previous-packet comparison, and artifact provenance cannot reuse stale or mismatched review evidence.";
     case "custom":
@@ -2656,6 +2754,17 @@ function buildRiskLensSuggestedTests(
         evidence_gap: finding.summary
       });
       break;
+    case "supply_chain":
+      drafts.push({
+        kind: "manual",
+        priority: "required",
+        scenario: "Vet the added or changed dependency: confirm it is intentional, appropriately pinned, and free of unexpected install scripts.",
+        expected_result: "The dependency change is confirmed intentional and safe, or removed.",
+        maps_to_requirements: finding.requirement_ids,
+        maps_to_risks: finding.risk_ids,
+        evidence_gap: finding.summary
+      });
+      break;
     case "cache_provenance":
       drafts.push({
         kind: "automatic",
@@ -2713,6 +2822,8 @@ function riskLensSuggestedCommentBody(finding: Pick<RiskLensFinding, "lens" | "p
       return "This fires the test evidence lens. Can you point to parsed test output or a command transcript proving the changed evidence path is trustworthy?";
     case "reviewer_ux":
       return "This fires the reviewer UX lens. Please include or inspect a rendered Markdown/diagram fixture so reviewers can verify the output directly.";
+    case "supply_chain":
+      return "Is this dependency change intentional, and has the package been vetted for install scripts and maintenance?";
     case "cache_provenance":
       return "This fires the cache/provenance lens. Which fixture proves stale or mismatched artifacts cannot be reused for this change?";
     case "custom":
@@ -3519,6 +3630,8 @@ function riskLensQuestionText(finding: RiskLensFinding): string {
       return "Where is the rendered Markdown or diagram fixture reviewers should inspect for this UI/comment surface change?";
     case "cache_provenance":
       return "Which cache/provenance fixture proves stale or mismatched review artifacts cannot be reused?";
+    case "supply_chain":
+      return "Is this dependency change intentional, and has the package been vetted for install scripts, pinning, and maintenance?";
     case "custom":
       return "What reviewer action should close this custom risk lens finding?";
   }
