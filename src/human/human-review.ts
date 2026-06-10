@@ -195,7 +195,9 @@ interface ManualCheckRecord {
 const MAX_QUEUE = 20;
 const MAX_BLOCKERS = 8;
 const MAX_QUESTIONS = 10;
-const MAX_COMMENTS = 10;
+// Hard ceiling above the config default (10): one draft per PR-risk rule must
+// stay representable as rules grow (11 rules since secret_in_diff).
+const MAX_COMMENTS = 12;
 const MAX_TEST_PLAN = 12;
 const MAX_TRUST_ITEMS = 10;
 const MAX_EVIDENCE_CARDS = 10;
@@ -237,6 +239,7 @@ const PR_RISK_RULE_LENSES: Record<PrRiskCandidate["rule"], RiskLens[]> = {
   untested_changed_impl: ["test_evidence"],
   unmapped_change: [],
   privacy_sensitive_change: ["security_privacy"],
+  secret_in_diff: ["security_privacy"],
   comment_surface_change: ["reviewer_ux"],
   ci_secret_boundary_change: ["security_privacy"],
   schema_contract_change: ["api_contract"],
@@ -3557,6 +3560,11 @@ function buildSuggestedComments(
   }
 
   for (const risk of input.prSurface?.risks.candidates ?? []) {
+    // A critical risk already escalated to a blocker has a blocker comment above;
+    // a second per-rule draft for the same risk would be a duplicate ask.
+    if (blockers.some((blocker) => blocker.id === `BLOCK-${risk.id}`)) {
+      continue;
+    }
     for (const draft of commentDraftsForPrRisk(input, risk)) {
       candidates.push({ risk, draft, sourceRank: 1, sortKey: risk.id });
     }
@@ -3877,6 +3885,13 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
         scenario: "Exercise the changed privacy, provider, redaction, secret, or token-handling path with sensitive-looking input.",
         expected_result: "No secret or unredacted sensitive value is emitted to artifacts, logs, comments, or remote-provider prompts.",
         command: `pnpm run test -- ${suggestedFile ?? "tests/privacy.test.ts"}`
+      })];
+    case "secret_in_diff":
+      return [riskDraft({
+        kind: "manual",
+        priority: "required",
+        scenario: "Remove the committed secret from the change and rotate the credential.",
+        expected_result: "The secret no longer appears in the diff and the credential has been rotated (a committed secret is leaked)."
       })];
     case "comment_surface_change":
       return [riskDraft({
@@ -4443,6 +4458,8 @@ function commentDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandid
       return [commentDraftFromPrRisk(input, "clarifying", risk, "This change is outside the mapped review areas. Can you confirm whether it is intentional and add a review-area mapping or explicit deferral if needed?")];
     case "privacy_sensitive_change":
       return [commentDraftFromPrRisk(input, "blocking", risk, "This touches privacy, provider, redaction, secret, or token-handling code. Can you add or point to sensitive-input validation before approval?")];
+    case "secret_in_diff":
+      return [commentDraftFromPrRisk(input, "blocking", risk, `An added line in ${path ?? "this change"} matches a high-confidence secret pattern. Please remove it and rotate the credential — a committed secret must be treated as leaked.`)];
     case "comment_surface_change":
       return [commentDraftFromPrRisk(input, "non_blocking", risk, "Please include or inspect a rendered comment/human surface fixture so reviewers can verify the Markdown output directly.")];
     case "ci_secret_boundary_change":
@@ -4671,6 +4688,12 @@ function compactStrings(values: Array<string | undefined>): string[] {
 }
 
 function riskIdsFromBlocker(blocker: ReviewBlocker): string[] {
+  // BLOCK-<risk id> wraps the originating risk id verbatim (ids are not always
+  // numeric — fixtures and future rules may use named ids).
+  const wrapped = blocker.id.match(/^BLOCK-(.+)$/);
+  if (wrapped) {
+    return [wrapped[1]];
+  }
   const match = blocker.id.match(/(PR-RISK-\d+|RISK-\d+)/);
   return match ? [match[1]] : [];
 }

@@ -2,9 +2,11 @@ import { compareStrings } from "../core/compare";
 import { commandLooksLikeBroadTestCommand, commandLooksLikeFocusedTestCommand, commandLooksLikeTestCommand } from "../commands/classify";
 import { stripUndefined } from "../core/guards";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
+import { BLOCKED_SECRET_KINDS, redactSecrets } from "../privacy/secrets";
 import type { CollectionResult } from "../collector/collect";
 import type { ChangedFile } from "../collector/git";
 import type {
+  StructuredDiff,
   PrRiskCandidate,
   PrRiskModel,
   PrRiskRule,
@@ -30,6 +32,8 @@ import type { PacketRiskCategory, PacketSeverity } from "../schema/review-packet
 
 export interface BuildPrRiskInput {
   scope: PrScopeModel;
+  // Structured diff for content-level rules (secret_in_diff scans ADDED lines).
+  diff?: StructuredDiff;
   coverage: PrScopedCoverageModel;
   testResults?: CollectionResult["testResults"];
   commandTranscripts?: CollectionResult["commandTranscripts"];
@@ -64,6 +68,7 @@ export function buildPrRiskCandidates(input: BuildPrRiskInput): PrRiskModel {
   pushUntestedChangedImpl(drafts, input);
   pushUnmappedChange(drafts, input);
   pushPrivacySensitiveChange(drafts, input);
+  pushSecretInDiff(drafts, input);
   pushCommentSurfaceChange(drafts, input);
   pushCiSecretBoundaryChange(drafts, input);
   pushSchemaContractChange(drafts, input);
@@ -130,6 +135,72 @@ function pushCoverageRegression(drafts: DraftCandidate[], input: BuildPrRiskInpu
     ],
     sortPath: ids[0] ?? ""
   });
+}
+
+// --- Rule: secret_in_diff (security, critical) ------------------------------
+// An ADDED diff line carries a high-confidence (blocking) secret. The collected
+// diff is usually ALREADY redacted, so a blocked secret appears as its
+// [REDACTED:<kind>] marker — detect those; when redact_secrets is off, the raw
+// line is scanned directly. The summary cites the file and pattern KIND only —
+// the secret text itself never enters any artifact.
+const BLOCKED_REDACTION_MARKER = new RegExp(`\\[REDACTED:(${BLOCKED_SECRET_KINDS.join("|")})\\]`, "g");
+
+function pushSecretInDiff(drafts: DraftCandidate[], input: BuildPrRiskInput): void {
+  for (const file of input.diff?.files ?? []) {
+    const kinds = new Set<string>();
+    let firstLine: number | undefined;
+    for (const hunk of file.hunks) {
+      for (const line of hunk.lines) {
+        if (line.kind !== "add") {
+          continue;
+        }
+        let matched = false;
+        for (const marker of line.text.matchAll(BLOCKED_REDACTION_MARKER)) {
+          kinds.add(marker[1]);
+          matched = true;
+        }
+        // Raw-secret scan only when no marker matched: the collected diff is
+        // normally already redacted, so this fallback exists for
+        // redact_secrets: false runs and costs nothing on the common path.
+        if (!matched) {
+          const redaction = redactSecrets(line.text);
+          if (redaction.blocked) {
+            for (const entry of redaction.redactions.filter((r) => r.blocked)) {
+              kinds.add(entry.kind);
+            }
+            matched = true;
+          }
+        }
+        if (matched) {
+          firstLine ??= line.new_line;
+        }
+      }
+    }
+    if (kinds.size === 0) {
+      continue;
+    }
+    const kindList = [...kinds].sort().join(", ");
+    drafts.push({
+      rule: "secret_in_diff",
+      category: "security",
+      severity: "critical",
+      summary: `Added line(s) in ${file.path} match high-confidence secret pattern(s): ${kindList}. The committed value must be treated as leaked.`,
+      evidence: [
+        stripUndefined({
+          kind: "file" as const,
+          path: file.path,
+          line_start: firstLine,
+          note: `Added line matches secret pattern(s): ${kindList}.`,
+          confidence: "high" as const
+        }) as EvidenceRef
+      ],
+      suggested_checks: [
+        "Remove the secret from the change and rotate the credential — committed secrets must be treated as compromised.",
+        "Move the value to an environment variable or secret store before merge."
+      ],
+      sortPath: file.path
+    });
+  }
 }
 
 // --- Rule: untested_changed_impl (testing, medium) -------------------------

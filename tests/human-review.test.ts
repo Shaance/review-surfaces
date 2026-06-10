@@ -3567,7 +3567,9 @@ test("human suggested comments synthesize evidence-backed drafts for non-cleared
   const surface = prSurfaceFixture();
   surface.risks.candidates = PR_RISK_RULES.map((rule) => prRiskFixture(rule));
 
-  const model = buildHumanReview({ packet, prSurface: surface });
+  // 11 rules now exceed the default max_suggested_comments cap (10); raise it so
+  // the per-rule synthesis (not the cap) is what this test exercises.
+  const model = buildHumanReview({ packet, prSurface: surface, config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_suggested_comments: PR_RISK_RULES.length + 2 } });
   const byRisk = new Map(model.suggested_comments.flatMap((comment) => comment.risk_ids.map((riskId) => [riskId, comment] as const)));
   const expectedRisks = surface.risks.candidates.filter((risk) => risk.rule !== "ci_secret_boundary_change");
 
@@ -4081,6 +4083,14 @@ function prRiskFixture(rule: PrRiskRule): PrReviewSurfaceModel["risks"]["candida
       summary: "Large diff exceeds review threshold.",
       evidence: [missingEvidence("Diff size exceeded threshold.")],
       suggested_checks: ["Allocate extra review time."]
+    },
+    secret_in_diff: {
+      id: "PR-RISK-SECRET",
+      category: "security",
+      severity: "critical",
+      summary: "Added line(s) in src/server.ts match high-confidence secret pattern(s): github_token.",
+      evidence: [fileEvidence("src/server.ts", "Added line matches secret pattern(s): github_token.")],
+      suggested_checks: ["Remove the secret and rotate the credential."]
     }
   } satisfies Record<PrRiskRule, Omit<PrReviewSurfaceModel["risks"]["candidates"][number], "rule">>;
 
