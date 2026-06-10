@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import readline from "node:readline";
 import { formatReports, hasRequiredFailure, runBootstrap, runInit } from "../bootstrap/init";
 import { recordCommandTranscript } from "../commands/runner";
 import { commandTranscriptInputDir } from "../commands/transcripts";
@@ -48,7 +49,9 @@ import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
 import { buildChangeNarrative } from "../human/narrative";
-import { ChangeNarrative, HumanReviewModel } from "../human/contract";
+import { ChangeNarrative, HumanReviewModel, ReviewQueueItem } from "../human/contract";
+import { runWalkthrough, WalkthroughIO, WalkthroughOptions } from "../review/walkthrough";
+import { stringifyYaml } from "../core/simple-yaml";
 import {
   HUMAN_STANDALONE_ARTIFACTS,
   HumanRenderContext,
@@ -97,7 +100,8 @@ const COMMANDS = [
   "all",
   "validate",
   "run",
-  "comment"
+  "comment",
+  "review"
 ];
 
 interface ParsedArgs {
@@ -162,6 +166,8 @@ async function main(): Promise<number> {
       return runBootstrapCommand(parsed);
     case "comment":
       return runComment(parsed);
+    case "review":
+      return runReviewWalkthrough(parsed);
     default:
       throw new CliError(`Unhandled command: ${parsed.command}`, ExitCodes.runtimeError);
   }
@@ -1092,6 +1098,162 @@ async function runHumanStage(parsed: ParsedArgs): Promise<void> {
   console.log(`Human review: ${artifactPathForLog(cwd, outDir, "human_review.md")}`);
 }
 
+// review-surfaces.REVIEW_LOOP.1-4: the interactive review walkthrough. Loads the
+// human review (building it if absent), steps the reviewer through the ranked
+// queue, writes captured decisions to a local feedback file (so later runs
+// downgrade/promote matching findings), merges comment drafts into the
+// suggested-comments artifact, and degrades gracefully in a non-TTY environment.
+async function runReviewWalkthrough(parsed: ParsedArgs): Promise<number> {
+  const cwd = process.cwd();
+  const outDir = await resolveOutputDir(cwd, parsed);
+  const config = await loadConfig(cwd, stringFlag(parsed, "config") ?? "review-surfaces.config.yaml");
+  if (!config.human_review.enabled) {
+    throw new CliError("Human review is disabled by config; enable it to run the review walkthrough.", ExitCodes.usageError);
+  }
+  const scope = reviewScope(parsed);
+  const { outputDir, model } = await loadOrBuildHumanReviewJson(cwd, outDir, scope, "review", config);
+  // Fail fast rather than silently walking a repo queue under a PR-scope request.
+  // A PR-scope review needs a CURRENT pr_review_surface.json whose head matches the
+  // review — both so the queue is the PR queue AND so the rule resolver has PR risk
+  // rules to scope false-positive downgrades to. A PR-mode cached model with a
+  // missing/stale sidecar would otherwise record audit notes, not scoped policies.
+  if (scope === "pr" && (model.mode !== "pr" || prSurfaceHeadSha(outputDir) !== model.generated_from.head_sha)) {
+    throw new CliError(
+      "PR-scope review requires a current pr_review_surface.json matching the review. Run `review-surfaces all --review-scope pr` first, then re-run `review --review-scope pr`.",
+      ExitCodes.usageError
+    );
+  }
+  const diff = readHumanReviewDiff(outputDir);
+  // REVIEW_LOOP.4: interactive only when BOTH stdin and stdout are a TTY (so a
+  // piped `review | cat` degrades to printing the next item), unless explicitly
+  // forced with `--interactive` (used by tests driving the loop over piped stdin).
+  const interactive = booleanFlag(parsed, "interactive") || (process.stdin.isTTY === true && process.stdout.isTTY === true);
+  const { io, close } = createWalkthroughIO(interactive);
+  const options: WalkthroughOptions = {
+    author: stringFlag(parsed, "author") ?? "reviewer",
+    createdAt: nowFlag(parsed),
+    headSha: model.generated_from.head_sha,
+    packetPath: model.generated_from.packet_path,
+    rulesForItem: reviewRiskRuleResolver(outputDir)
+  };
+  try {
+    const result = await runWalkthrough(model, diff, io, options);
+    if (result.feedback) {
+      const feedbackDir = path.join(outputDir, "feedback");
+      fs.mkdirSync(feedbackDir, { recursive: true });
+      const sessionId = model.generated_from.head_sha?.slice(0, 12) || "session";
+      // A fresh, non-colliding name per session on the same head, so re-running the
+      // walkthrough never overwrites a prior session's captured decisions.
+      const feedbackPath = nextAvailablePath(feedbackDir, `walkthrough-${sessionId}`, ".yaml");
+      await writeText(feedbackPath, stringifyYaml(result.feedback));
+      io.write(`Wrote reviewer feedback: ${path.relative(cwd, feedbackPath) || feedbackPath}`);
+    }
+    if (result.commentDrafts.length > 0) {
+      // Merge the drafts into the model and re-render only the suggested-comments
+      // artifact (and the JSON model) — the other standalone artifacts are unchanged.
+      const merged: HumanReviewModel = { ...model, suggested_comments: [...model.suggested_comments, ...result.commentDrafts] };
+      const commentsArtifact = humanStandaloneArtifactForCommand("comments");
+      await writeJson(path.join(outputDir, "human_review.json"), merged);
+      if (commentsArtifact) {
+        await writeHumanStandaloneArtifact(outputDir, merged, commentsArtifact, humanRenderContext(outputDir, diff));
+      }
+      io.write(`Captured ${result.commentDrafts.length} comment draft(s) into ${artifactPathForLog(cwd, outputDir, "suggested_comments.md")}`);
+    }
+    return ExitCodes.success;
+  } finally {
+    close();
+  }
+}
+
+// Resolve a queue item's originating PR-risk rule(s) from pr_review_surface.json
+// (when present), so a false-positive can be scoped to that rule. Returns an empty
+// list in repo scope or when the surface is absent — the walkthrough then writes a
+// path-only downgrade policy.
+function reviewRiskRuleResolver(outputDir: string): (item: ReviewQueueItem) => string[] {
+  const ruleByRiskId = new Map<string, string>();
+  try {
+    const surface = JSON.parse(fs.readFileSync(path.join(outputDir, "pr_review_surface.json"), "utf8")) as PrReviewSurfaceModel;
+    for (const candidate of surface.risks?.candidates ?? []) {
+      if (typeof candidate.id === "string" && typeof candidate.rule === "string") {
+        ruleByRiskId.set(candidate.id, candidate.rule);
+      }
+    }
+  } catch {
+    // No PR surface (repo scope) — every item resolves to no rule.
+  }
+  return (item) => [...new Set(item.risk_ids.map((id) => ruleByRiskId.get(id)).filter((rule): rule is string => Boolean(rule)))];
+}
+
+// The head sha the PR sidecar was generated at, or undefined when it is absent or
+// unreadable — used to confirm a PR-scope walkthrough has a current PR surface.
+function prSurfaceHeadSha(outputDir: string): string | undefined {
+  try {
+    const surface = JSON.parse(fs.readFileSync(path.join(outputDir, "pr_review_surface.json"), "utf8")) as PrReviewSurfaceModel;
+    return surface.scope?.head_sha;
+  } catch {
+    return undefined;
+  }
+}
+
+// The first of `<dir>/<base><ext>`, `<dir>/<base>-2<ext>`, … that does not exist,
+// so repeated writes never clobber an earlier file.
+function nextAvailablePath(dir: string, base: string, ext: string): string {
+  let candidate = path.join(dir, `${base}${ext}`);
+  for (let index = 2; fileExists(candidate); index += 1) {
+    candidate = path.join(dir, `${base}-${index}${ext}`);
+  }
+  return candidate;
+}
+
+// A readline-backed walkthrough IO, or a no-op prompt IO when non-interactive.
+// Lines are buffered from `line` events and handed out by `prompt` (rather than
+// `rl.question`, which races `close` on piped input). `prompt` resolves to
+// undefined once stdin closes, so a piped run that runs out of input ends the
+// loop cleanly instead of hanging or throwing. `terminal: false` keeps the OS
+// tty's own cooked-mode echo on a real terminal and avoids readline managing it.
+function createWalkthroughIO(interactive: boolean): { io: WalkthroughIO; close: () => void } {
+  const write = (text: string): void => {
+    process.stdout.write(`${text}\n`);
+  };
+  if (!interactive) {
+    return { io: { interactive: false, write, prompt: async () => undefined }, close: () => undefined };
+  }
+  const rl = readline.createInterface({ input: process.stdin, terminal: false });
+  const pending: string[] = [];
+  const waiters: Array<(value: string | undefined) => void> = [];
+  let closed = false;
+  rl.on("line", (line) => {
+    const waiter = waiters.shift();
+    if (waiter) {
+      waiter(line);
+    } else {
+      pending.push(line);
+    }
+  });
+  rl.on("close", () => {
+    closed = true;
+    while (waiters.length > 0) {
+      waiters.shift()?.(undefined);
+    }
+  });
+  const io: WalkthroughIO = {
+    interactive: true,
+    write,
+    prompt: (question) =>
+      new Promise((resolve) => {
+        process.stdout.write(question);
+        if (pending.length > 0) {
+          resolve(pending.shift());
+        } else if (closed) {
+          resolve(undefined);
+        } else {
+          waiters.push(resolve);
+        }
+      })
+  };
+  return { io, close: () => rl.close() };
+}
+
 async function runHumanSubartifactStage(parsed: ParsedArgs): Promise<void> {
   const cwd = process.cwd();
   const outDir = await resolveOutputDir(cwd, parsed);
@@ -1177,7 +1339,11 @@ async function loadOrBuildHumanReviewJson(
     const isStale =
       humanReviewIssues(cwd, model).length > 0 ||
       !humanReviewJsonMatchesConfig(model, config) ||
-      !humanReviewJsonSatisfiesStandaloneCommand(model, command);
+      !humanReviewJsonSatisfiesStandaloneCommand(model, command) ||
+      // A cached review built for a different scope must not satisfy this request
+      // (e.g. `review --review-scope pr` reusing a repo-scoped model), so the
+      // walkthrough walks the PR queue and captures PR-risk rule/ids.
+      model.mode !== scope;
     if (isStale) {
       const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config);
       await writeJson(path.join(context.outputDir, "human_review.json"), context.model);
@@ -2003,7 +2169,7 @@ function parseArgs(args: string[]): ParsedArgs {
 
 // Flags that are always boolean switches (no value argument). Listed so the
 // permissive parser does not consume a following positional as their "value".
-const BOOLEAN_FLAGS = new Set(["cache", "dogfood", "force", "no-redact-secrets", "post", "strict", "strict-postability", "verbose", "help"]);
+const BOOLEAN_FLAGS = new Set(["cache", "dogfood", "force", "no-redact-secrets", "post", "strict", "strict-postability", "verbose", "help", "interactive"]);
 
 function stringFlag(parsed: ParsedArgs, key: string): string | undefined {
   const value = parsed.flags[key];
@@ -2181,6 +2347,12 @@ ${humanStandaloneCommandHelp()}
                 GitHub sticky comment); with --format sarif writes
                 .review-surfaces/review.sarif (a SARIF 2.1.0 log). Reads local artifacts
                 only and never recomputes the pipeline.
+  review        Interactive walkthrough of the ranked review queue. Steps through each
+                item (inline hunk excerpt, reason, evidence) and captures decisions —
+                accept / flag / false positive / comment — into a local feedback file so
+                later runs downgrade or promote matching findings; comment drafts land in
+                suggested_comments.md. A non-TTY environment prints the next item and exits.
+                --interactive forces the loop over piped stdin; --author <name> labels feedback.
 
 Options:
   --base <ref>      Base ref for diff collection, default origin/main

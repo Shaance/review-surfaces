@@ -171,7 +171,23 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const specPaths = filterPathsByPatterns(repositoryFiles, options.config.specs);
   const docPaths = filterPathsByPatterns(repositoryFiles, options.config.docs);
   const testPaths = filterPathsByPatterns(repositoryFiles, options.config.tests);
-  const feedbackPaths = filterPathsByPatterns(repositoryFiles, [".review-surfaces/feedback/*.yaml"]);
+  // Feedback lives under the (possibly custom) output dir, so the `review`
+  // walkthrough writing to `<out>/feedback/*.yaml` is ingested on the next run
+  // regardless of --out. `repositoryFiles` are repo-relative, so relativize the
+  // (possibly absolute) resolved output dir before globbing — via realpath on
+  // both, so a symlinked temp/cwd prefix (e.g. macOS /var vs /private/var) does
+  // not produce a `../…` mismatch. Defaults to `.review-surfaces/feedback/*.yaml`.
+  //
+  // Deliberate boundary: an output dir OUTSIDE the checkout is not ingested. This
+  // tool is local-first — artifacts (and their feedback) belong with the repo —
+  // and an absolute out-of-repo path in feedback evidence would inject
+  // machine-specific paths into otherwise byte-stable artifacts, breaking the
+  // determinism / locale-invariance gates. Keep the output dir within the repo.
+  const outputDirRelative = normalizeRelativeDir(path.relative(realpathOrSelf(options.cwd), realpathOrSelf(outputDir)));
+  // An output dir AT the repo root (`--out .`) relativizes to "", so glob the
+  // bare `feedback/*.yaml` rather than a leading-slash `/feedback/*.yaml`.
+  const feedbackGlob = outputDirRelative ? `${outputDirRelative}/feedback/*.yaml` : "feedback/*.yaml";
+  const feedbackPaths = filterPathsByPatterns(repositoryFiles, [feedbackGlob]);
   const commandTranscriptDir = normalizeRelativeDir(options.commandTranscriptDir ?? commandTranscriptInputDir(options.cwd, outputDir));
   const commandTranscriptPaths = filterPathsByPatterns(repositoryFiles, [`${commandTranscriptDir}/*.json`]);
   const specIndex = await indexAcaiSpecs(options.cwd, specPaths);
@@ -545,4 +561,14 @@ function classifyDoc(filePath: string): string {
 
 function normalizeRelativeDir(dirPath: string): string {
   return dirPath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+}
+
+// Canonicalize a path, falling back to the input when it does not resolve, so a
+// symlinked cwd/output prefix does not skew a path.relative() between them.
+function realpathOrSelf(dirPath: string): string {
+  try {
+    return fs.realpathSync(dirPath);
+  } catch {
+    return dirPath;
+  }
 }

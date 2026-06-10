@@ -24,7 +24,8 @@ import { commandEvidence, feedbackEvidence, fileEvidence, missingEvidence, testE
 import { validateJsonSchema } from "../src/schema/json-schema";
 import { analyzeRisks } from "../src/risks/risks";
 import { minimalReviewPacket } from "./helpers/review-packet";
-import type { FeedbackFile } from "../src/feedback/feedback";
+import { normalizeFeedbackRecord, type FeedbackFile } from "../src/feedback/feedback";
+import { runWalkthrough } from "../src/review/walkthrough";
 import {
   DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
   EVIDENCE_CARD_STATUSES,
@@ -3043,6 +3044,45 @@ test("path-scoped false-positive feedback does not downgrade mixed-path risk evi
   assert.equal(queueItem.priority, "high");
   assert.equal(queueItem.reason.includes("Feedback memory downgraded"), false);
   assert.equal(model.feedback_effects.some((effect) => effect.kind === "false_positive" && effect.paths.includes("schemas/generated.schema.json")), true);
+});
+
+// review-surfaces.REVIEW_LOOP.2: the full loop — a reviewer marks a risk-backed
+// queue item a false positive in the walkthrough; the written feedback, re-read by
+// the pipeline on the next run, downgrades the matching finding with a visible
+// feedback-effect note (and never deletes its evidence).
+test("review-surfaces.REVIEW_LOOP.2 a walkthrough false-positive downgrades the matching finding on rerun", async () => {
+  const packet = packetFixture();
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [{
+    ...prRiskFixture("schema_contract_change"),
+    id: "PR-RISK-WT",
+    severity: "high",
+    evidence: [fileEvidence("schemas/human_review.schema.json", "Hand-edited schema changed.")]
+  }];
+
+  // First pass: the review the reviewer walks through.
+  const initial = buildHumanReview({ packet, prSurface: surface });
+  const target = initial.review_queue.find((item) => item.risk_ids.includes("PR-RISK-WT"));
+  assert.ok(target);
+  assert.equal(target.reason.includes("Feedback memory downgraded"), false);
+
+  // Walk the queue, marking the target a false positive (skip the rest).
+  const answers = initial.review_queue.map((item) => (item.id === target.id ? "p" : "s"));
+  let index = 0;
+  const io = { interactive: true, write: () => undefined, prompt: async () => (index < answers.length ? answers[index++] : undefined) };
+  // The handler resolves a PR-risk rule per item from the surface; mirror that so
+  // the false positive is a scoped downgrade policy.
+  const rulesForItem = (queued: typeof target) => (queued.risk_ids.includes("PR-RISK-WT") ? ["schema_contract_change"] : []);
+  const result = await runWalkthrough(initial, undefined, io, { author: "tester", headSha: "h", packetPath: ".review-surfaces/review_packet.json", rulesForItem });
+  assert.ok(result.feedback, "the false-positive decision produced a feedback record");
+
+  // The written feedback, re-read by the pipeline, downgrades the finding on rerun.
+  const feedback = normalizeFeedbackRecord(".review-surfaces/feedback/walkthrough.yaml", result.feedback);
+  const rerun = buildHumanReview({ packet, prSurface: surface, feedback: [feedback] });
+  const downgraded = rerun.review_queue.find((item) => item.risk_ids.includes("PR-RISK-WT"));
+  assert.ok(downgraded, "the finding is retained, not deleted");
+  assert.equal(downgraded.reason.includes("Feedback memory downgraded"), true, "the matching finding carries the visible feedback-effect note");
+  assert.equal(rerun.feedback_effects.some((effect) => effect.kind === "false_positive" && effect.action === "downgrade_to_low"), true);
 });
 
 test("pathless false-positive feedback can match renamed source paths", () => {
