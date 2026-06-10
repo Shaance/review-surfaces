@@ -1114,15 +1114,14 @@ async function runReviewWalkthrough(parsed: ParsedArgs): Promise<number> {
   const scope = reviewScope(parsed);
   const { outputDir, model } = await loadOrBuildHumanReviewJson(cwd, outDir, scope, "review", config);
   // Fail fast rather than silently walking a repo queue under a PR-scope request.
-  // A PR-scope review needs a CURRENT pr_review_surface.json whose head matches the
-  // review — both so the queue is the PR queue AND so the rule resolver has PR risk
-  // rules to scope false-positive downgrades to. A PR-mode cached model with a
-  // missing/stale sidecar would otherwise record audit notes, not scoped policies.
-  if (scope === "pr" && (model.mode !== "pr" || prSurfaceHeadSha(outputDir) !== model.generated_from.head_sha)) {
-    throw new CliError(
-      "PR-scope review requires a current pr_review_surface.json matching the review. Run `review-surfaces all --review-scope pr` first, then re-run `review --review-scope pr`.",
-      ExitCodes.usageError
-    );
+  // A PR-scope review needs a CURRENT pr_review_surface.json matching the review
+  // (full identity, not just head) — both so the queue is the PR queue AND so the
+  // rule resolver has PR risk rules to scope false-positive downgrades to.
+  if (scope === "pr") {
+    const gateError = prScopeReviewGateError(cwd, outputDir, model, "review");
+    if (gateError) {
+      throw gateError;
+    }
   }
   const diff = readHumanReviewDiff(outputDir);
   // REVIEW_LOOP.4: interactive only when BOTH stdin and stdout are a TTY (so a
@@ -1185,15 +1184,27 @@ function reviewRiskRuleResolver(outputDir: string): (item: ReviewQueueItem) => s
   return (item) => [...new Set(item.risk_ids.map((id) => ruleByRiskId.get(id)).filter((rule): rule is string => Boolean(rule)))];
 }
 
-// The head sha the PR sidecar was generated at, or undefined when it is absent or
-// unreadable — used to confirm a PR-scope walkthrough has a current PR surface.
-function prSurfaceHeadSha(outputDir: string): string | undefined {
-  try {
-    const surface = JSON.parse(fs.readFileSync(path.join(outputDir, "pr_review_surface.json"), "utf8")) as PrReviewSurfaceModel;
-    return surface.scope?.head_sha;
-  } catch {
+// A PR-scope review/export needs a CURRENT pr_review_surface.json whose full
+// identity (mode, base ref/sha, head ref/sha, sidecar path) matches the model —
+// not just the head sha, so a base-ref change with an unchanged head is still
+// caught. Returns the usage error to throw, or undefined when the gate passes.
+function prScopeReviewGateError(cwd: string, outputDir: string, model: HumanReviewModel, command: string): CliError | undefined {
+  const surfacePath = path.join(outputDir, "pr_review_surface.json");
+  let surface: PrReviewSurfaceModel | undefined;
+  if (fileExists(surfacePath)) {
+    try {
+      surface = readPrSurfaceArtifact(cwd, surfacePath);
+    } catch {
+      surface = undefined;
+    }
+  }
+  if (surface && humanReviewMatchesPrSurface(cwd, outputDir, model, surface)) {
     return undefined;
   }
+  return new CliError(
+    `PR-scope ${command} requires a current pr_review_surface.json matching the review. Run \`review-surfaces all --review-scope pr\` first.`,
+    ExitCodes.usageError
+  );
 }
 
 // The first of `<dir>/<base><ext>`, `<dir>/<base>-2<ext>`, … that does not exist,
@@ -1904,11 +1915,11 @@ async function runCommentDraftReview(parsed: ParsedArgs): Promise<number> {
   // Honor an explicit PR-scope request: a GitHub pending review must be built from
   // the current PR surface, not a cached repo-scope model (whole-repo evidence
   // lines are not PR-diff anchors). Mirror the `review` walkthrough's gate.
-  if (reviewScope(parsed) === "pr" && (model.mode !== "pr" || prSurfaceHeadSha(outputDir) !== model.generated_from.head_sha)) {
-    throw new CliError(
-      "PR-scope draft review requires a current pr_review_surface.json matching the review. Run `review-surfaces all --review-scope pr` first.",
-      ExitCodes.usageError
-    );
+  if (reviewScope(parsed) === "pr") {
+    const gateError = prScopeReviewGateError(cwd, outputDir, model, "draft review");
+    if (gateError) {
+      throw gateError;
+    }
   }
   // The reviewed diff is the authority for inline-anchoring and side. A PRESENT but
   // empty diff (zero changed files) is still authoritative — every path+line

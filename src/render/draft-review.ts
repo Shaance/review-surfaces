@@ -91,11 +91,11 @@ function resolveAnchor(comment: SuggestedReviewComment, diff: StructuredDiff | u
     }
     for (const hunk of file.hunks) {
       for (const line of hunk.lines) {
-        if (line.kind === "delete") {
-          if (line.old_line !== undefined) oldLines.add(line.old_line);
-        } else if (line.new_line !== undefined) {
-          newLines.add(line.new_line);
-        }
+        // A context line exists on BOTH sides, so record it in both — an explicit
+        // old-side anchor on unchanged context then still resolves LEFT. A deletion
+        // is old-side only; an addition is new-side only.
+        if (line.kind !== "add" && line.old_line !== undefined) oldLines.add(line.old_line);
+        if (line.kind !== "delete" && line.new_line !== undefined) newLines.add(line.new_line);
       }
     }
   }

@@ -135,6 +135,24 @@ test("review-surfaces.PROVIDERS.7 resolves side and inline-ability against the d
   assert.equal(draft.unanchored, 2, "the two non-diff comments fold into the body");
 });
 
+// An explicit old-side anchor on an UNCHANGED context line (e.g. a rename-source
+// reference) must still resolve LEFT — context lines exist on both sides.
+test("review-surfaces.PROVIDERS.7 keeps old-side anchors on context lines LEFT", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/src/a.ts b/src/a.ts",
+    "--- a/src/a.ts",
+    "+++ b/src/a.ts",
+    "@@ -10,3 +10,3 @@",
+    " context",          // old_line 10, new_line 10 (unchanged context)
+    "-old removed line", // old_line 11
+    "+new added line",   // new_line 11
+    " context2",
+    ""
+  ].join("\n"));
+  const draft = buildDraftReview(model([comment({ id: "SC-1", path: "src/a.ts", line_start: 10, side: "old" })]), diff);
+  assert.equal(draft.payload.comments[0]?.side, "LEFT", "an old-side anchor on a context line stays LEFT");
+});
+
 test("review-surfaces.PROVIDERS.7 omits a sentinel `unknown` head sha", () => {
   const draft = buildDraftReview(model([comment({ path: "src/a.ts", line_start: 1 })], "unknown"));
   assert.equal("commit_id" in draft.payload, false, "the sentinel head sha is not pinned");
