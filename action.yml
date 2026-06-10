@@ -160,7 +160,12 @@ runs:
         # (upload), they only skip the posting step below.
         name: review-surfaces-pr-${{ inputs.pr-number }}
         path: ${{ inputs.subject-directory }}/${{ inputs.output-dir }}
-        if-no-files-found: warn
+        # .review-surfaces/ is dot-prefixed; upload-artifact@v4 excludes hidden
+        # files by default, so this is required or the artifact is empty.
+        include-hidden-files: true
+        # Fail loudly if the packet dir is somehow empty — a missing artifact
+        # would silently break the since-last-review recovery on the next run.
+        if-no-files-found: error
         overwrite: true
     - name: Upsert sticky comment (trusted gh over the generated file)
       if: ${{ inputs.post == 'true' }}
