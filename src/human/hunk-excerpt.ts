@@ -84,22 +84,26 @@ function longestBacktickRun(lines: string[]): number {
 }
 
 function findFile(diff: StructuredDiff, anchor: HunkAnchor): StructuredDiffFile | undefined {
-  const matches = (file: StructuredDiffFile, wanted: string): boolean => {
-    if (normalizePath(file.path) === wanted) {
-      return true;
-    }
-    return Boolean(file.old_path) && normalizePath(file.old_path as string) === wanted;
-  };
-  // Prefer a match on the anchor's primary (new) path first, so a
-  // replacement-rename (rename A->B plus a new A) resolves the excerpt to B
-  // rather than the unrelated A that happens to appear earlier in the diff. Only
-  // then fall back to the anchor's old_path.
-  const byPath = diff.files.find((file) => matches(file, normalizePath(anchor.path)));
-  if (byPath) {
-    return byPath;
+  const wantedNew = normalizePath(anchor.path);
+  // Tier 1: the file whose NEW path is exactly the anchor's primary path. This is
+  // the changed file the queue item points at; comparing only file.path (never
+  // old_path) keeps a chain replacement (e.g. B->C appearing before A->B) from
+  // resolving a `path: B` anchor to the B->C file just because its old_path is B.
+  const byNewPath = diff.files.find((file) => normalizePath(file.path) === wantedNew);
+  if (byNewPath) {
+    return byNewPath;
   }
+  // Tier 2: a rename whose SOURCE is the anchor's primary path.
+  const byOldPath = diff.files.find((file) => Boolean(file.old_path) && normalizePath(file.old_path as string) === wantedNew);
+  if (byOldPath) {
+    return byOldPath;
+  }
+  // Tier 3: fall back to the anchor's explicit old_path on either side.
   if (anchor.old_path) {
-    return diff.files.find((file) => matches(file, normalizePath(anchor.old_path as string)));
+    const wantedOld = normalizePath(anchor.old_path);
+    return diff.files.find(
+      (file) => normalizePath(file.path) === wantedOld || (Boolean(file.old_path) && normalizePath(file.old_path as string) === wantedOld)
+    );
   }
   return undefined;
 }

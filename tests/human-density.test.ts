@@ -263,6 +263,38 @@ test("review-surfaces.HUMAN_REVIEW.20 prefers the anchor path over old_path for 
   assert.doesNotMatch(excerpt!, /brandNewA/, "must not take the excerpt from the unrelated new A");
 });
 
+// review-surfaces.HUMAN_REVIEW.20: a chain replacement (rename B->C appearing
+// before A->B) must resolve a `path: B` anchor to the A->B file (whose new path
+// is B), not the B->C file (whose old_path is B).
+test("review-surfaces.HUMAN_REVIEW.20 matches the anchor's new path before old-path renames", () => {
+  const diffText = [
+    // B -> C appears FIRST; its old_path is B.
+    "diff --git a/src/b.ts b/src/c.ts",
+    "rename from src/b.ts",
+    "rename to src/c.ts",
+    "--- a/src/b.ts",
+    "+++ b/src/c.ts",
+    "@@ -1,1 +1,1 @@",
+    "-const inC = 0;",
+    "+const inC = 1;",
+    // A -> B appears second; its new path is B.
+    "diff --git a/src/a.ts b/src/b.ts",
+    "rename from src/a.ts",
+    "rename to src/b.ts",
+    "--- a/src/a.ts",
+    "+++ b/src/b.ts",
+    "@@ -1,1 +1,1 @@",
+    "-const inB = 0;",
+    "+const inB = 1;",
+    ""
+  ].join("\n");
+  const diff = parseStructuredDiff(diffText);
+  const excerpt = renderHunkExcerpt(diff, { path: "src/b.ts", old_path: "src/a.ts", line_start: 1, line_end: 1 });
+  assert.ok(excerpt, "excerpt should resolve to the file whose new path is B");
+  assert.match(excerpt!, /inB/, "must take the excerpt from the A->B file (new path B)");
+  assert.doesNotMatch(excerpt!, /inC/, "must not resolve to the B->C file via its old_path");
+});
+
 // review-surfaces.HUMAN_REVIEW.20/.21: when an excerpt renders, the separate
 // "Hunk:" metadata line is suppressed so it cannot contradict the excerpt header.
 test("review-surfaces.HUMAN_REVIEW.20 suppresses the Hunk metadata line when an excerpt renders", () => {
