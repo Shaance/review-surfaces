@@ -255,22 +255,16 @@ dogfood:
   enabled: true
   milestone: M5
 quality_gate:
-  # The human review value uplift landed its spec entries ahead of their phased
-  # implementation (docs/human-review-value-uplift-proposal.md). Until those
-  # phases ship, the not-yet-implemented requirements evaluate as "missing".
-  # Rather than raising max_missing (which would let an UNRELATED requirement
-  # regress to missing without tripping the gate), allowlist exactly that planned
-  # backlog by ACID. Any missing requirement outside the allowlist still fails the
-  # strict self-dogfood gate. Remove each entry as its phase lands.
+  # The human review value uplift (docs/human-review-value-uplift-proposal.md)
+  # landed its spec entries ahead of their phased implementation, so each phase's
+  # ACIDs were allowlisted here until that phase shipped. All five phases have now
+  # landed (HUMAN_REVIEW.19-21/SCHEMA.3/CLI.8/RENDER.8, NARRATIVE.1-5,
+  # SEMANTIC_DIFF.1-4, REVIEW_LOOP.1-4), so the allowlist is empty: with
+  # max_missing 0 and no allowlist, ANY missing requirement fails the strict
+  # self-dogfood gate. Re-add an ACID here only to stage a new not-yet-shipped
+  # requirement, and remove it as that work lands.
   max_missing: 0
-  allow_missing:
-    # Phase 2 (NARRATIVE.1-5) and Phase 3 (SEMANTIC_DIFF.1-4) landed — their
-    # requirements are now implemented.
-    # Phase 4 — Interactive review session
-    - review-surfaces.REVIEW_LOOP.1
-    - review-surfaces.REVIEW_LOOP.2
-    - review-surfaces.REVIEW_LOOP.3
-    - review-surfaces.REVIEW_LOOP.4
+  allow_missing: []
 human_review:
   enabled: true
   default_entrypoint: true

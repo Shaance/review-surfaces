@@ -728,3 +728,71 @@ test("review-surfaces.NARRATIVE.1 cache hit preserves the provider narrative", (
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// review-surfaces.REVIEW_LOOP.1-4 — the interactive review walkthrough command.
+// ---------------------------------------------------------------------------
+
+function setupReviewFixture(prefix: string): string {
+  const tmp = setupComposeFixture(prefix);
+  execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
+  // Generate the full review (human_review.json + a ranked queue) to walk through.
+  runStage(tmp, "all", ["--dogfood"]);
+  return tmp;
+}
+
+test("review-surfaces.REVIEW_LOOP.4 review command degrades gracefully in a non-TTY environment", () => {
+  const tmp = setupReviewFixture("rs-review-nontty-");
+  try {
+    // Piped (non-TTY) stdin, no --interactive: print the next item, exit cleanly.
+    const result = spawnSync("node", [CLI, "review", "--out", ".review-surfaces"], { cwd: tmp, input: "", encoding: "utf8" });
+    assert.equal(result.status, ExitCodes.success, result.stderr);
+    assert.match(result.stdout, /Non-interactive environment/);
+    assert.match(result.stdout, /\(1\//, "prints the next ranked queue item");
+    // No feedback is written by a non-interactive run.
+    const feedbackDir = path.join(tmp, ".review-surfaces", "feedback");
+    const walkthroughFiles = fs.existsSync(feedbackDir) ? fs.readdirSync(feedbackDir).filter((name) => name.startsWith("walkthrough-")) : [];
+    assert.equal(walkthroughFiles.length, 0, "a non-interactive run writes no feedback");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.REVIEW_LOOP.3 review command captures a comment draft into suggested_comments.md", () => {
+  const tmp = setupReviewFixture("rs-review-comment-");
+  try {
+    // Drive the first item: comment, body, ready=yes. Remaining items end on EOF.
+    const result = spawnSync(
+      "node",
+      [CLI, "review", "--interactive", "--out", ".review-surfaces"],
+      { cwd: tmp, input: "c\nNeeds a regression test before merge\ny\n", encoding: "utf8" }
+    );
+    assert.equal(result.status, ExitCodes.success, result.stderr);
+    const suggested = fs.readFileSync(path.join(tmp, ".review-surfaces", "suggested_comments.md"), "utf8");
+    assert.match(suggested, /Needs a regression test before merge/, "the captured draft lands in suggested_comments.md");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.REVIEW_LOOP.2 review command persists a false-positive into a local feedback file", () => {
+  const tmp = setupReviewFixture("rs-review-feedback-");
+  try {
+    // Mark the first item a false positive; remaining items end on EOF.
+    const result = spawnSync(
+      "node",
+      [CLI, "review", "--interactive", "--out", ".review-surfaces"],
+      { cwd: tmp, input: "p\n", encoding: "utf8" }
+    );
+    assert.equal(result.status, ExitCodes.success, result.stderr);
+    const feedbackDir = path.join(tmp, ".review-surfaces", "feedback");
+    const walkthroughFiles = fs.readdirSync(feedbackDir).filter((name) => name.startsWith("walkthrough-"));
+    assert.equal(walkthroughFiles.length, 1, "a walkthrough feedback file is written");
+    const feedback = fs.readFileSync(path.join(feedbackDir, walkthroughFiles[0]), "utf8");
+    assert.match(feedback, /false_positives:/);
+    assert.match(feedback, /downgrade_to_low/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

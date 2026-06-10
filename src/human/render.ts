@@ -1205,7 +1205,7 @@ function invalidTrustEvidence(audit: TrustAudit): TrustAudit["invalid_evidence"]
   );
 }
 
-function formatQueueLocation(item: ReviewQueueItem): string {
+export function formatQueueLocation(item: ReviewQueueItem): string {
   return item.line_start
     ? `${item.path}:${item.line_start}${item.line_end && item.line_end !== item.line_start ? `-${item.line_end}` : ""}`
     : item.path;
