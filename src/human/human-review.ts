@@ -114,8 +114,13 @@ interface QueueDraft {
   estimated_review_effort: "quick" | "moderate" | "deep";
   score: number;
   sortKey: string;
-  // review-surfaces.RANKING.2: the "primary" rank reason for this draft (its score
-  // driver). The evidence-score pass prepends/appends the per-path signals to it.
+  // review-surfaces.RANKING.1/.3: evidence ordering tier — a SECONDARY sort key so
+  // evidence breaks ties and demotes well-evidenced items WITHOUT changing the
+  // primary score (the semantic-risk class stays the primary key and evidence can
+  // never lift an item across a class). -1 promotes (ranks earlier among equal
+  // scores), +1 demotes, 0 is neutral.
+  evidenceTier?: number;
+  // review-surfaces.RANKING.2: the "why ranked here" lines for this draft.
   ranking_reasons?: string[];
 }
 
@@ -1789,12 +1794,19 @@ function buildReviewQueue(
     });
   }
 
-  // review-surfaces.RANKING.1: apply the per-path evidence score as a MODIFIER on
-  // the existing rank (semantic-risk class stays the primary key), then sort. The
-  // modifier only moves an item up or down — it never removes one (RANKING.3).
+  // review-surfaces.RANKING.1/.3: annotate each draft with its evidence tier and
+  // "why ranked here" lines, then sort. Evidence is the SECONDARY key — it breaks
+  // ties and demotes well-evidenced items within a score band — so the primary
+  // score (semantic-risk class) always wins and evidence never hides or reclasses
+  // an item.
   applyRankingEvidence(drafts, input, input.rankingEvidence ?? emptyRankingEvidence());
 
-  drafts.sort((left, right) => right.score - left.score || compareStrings(left.sortKey, right.sortKey));
+  drafts.sort(
+    (left, right) =>
+      right.score - left.score ||
+      (left.evidenceTier ?? 0) - (right.evidenceTier ?? 0) ||
+      compareStrings(left.sortKey, right.sortKey)
+  );
   return drafts.slice(0, Math.min(MAX_QUEUE, config.max_review_first)).map((draft, index) =>
     stripUndefined({
       id: `REVIEW-${String(index + 1).padStart(3, "0")}`,
@@ -1819,18 +1831,12 @@ function buildReviewQueue(
   );
 }
 
-// review-surfaces.RANKING.1/.2: demote queue items whose changed implementation
-// path is well-evidenced (a focused test changed alongside it, or a current-head
-// passing transcript exercises its area) and promote a changed impl file with no
-// such evidence — recording a plain-language "why ranked here" line on each.
-//
-// The modifier (25) is deliberately small relative to the class spacing
-// (semantic facts 160-240, PR-risk severity 15-100): it breaks ties and reorders
-// items WITHIN a severity band — semantic-risk class stays the primary key
-// (RANKING.1) — and never lifts a low item across a higher class.
-const EVIDENCE_DEMOTE = 25;
-const EVIDENCE_PROMOTE = 25;
-
+// review-surfaces.RANKING.1/.2/.3: assign each queue item an evidence ordering
+// tier (a SECONDARY sort key — see buildReviewQueue) and a plain-language "why
+// ranked here" line. A changed impl with a focused test changed alongside it (or
+// validated in its review area) is demoted within its band; one flagged untested
+// is promoted. Evidence never changes the primary score, so it cannot reorder an
+// item across a risk class.
 function applyRankingEvidence(drafts: QueueDraft[], input: BuildHumanReviewInput, evidence: RankingEvidence): void {
   const changedTestsByImpl = evidence.changed_tests_by_impl;
   const untestedImplPaths = untestedChangedImplPaths(input.prSurface);
@@ -1839,14 +1845,17 @@ function applyRankingEvidence(drafts: QueueDraft[], input: BuildHumanReviewInput
     const reasons: string[] = [];
     const tests = changedTestsByImpl[draft.path];
     if (tests && tests.length > 0) {
-      draft.score -= EVIDENCE_DEMOTE;
-      reasons.push(`a focused test changed alongside this file (${tests.map((t) => `\`${t}\``).join(", ")}), so it ranks lower`);
+      draft.evidenceTier = 1;
+      reasons.push(`a focused test changed alongside this file (${tests.map((t) => `\`${t}\``).join(", ")}), so it ranks lower among equal-severity items`);
     } else if (untestedImplPaths.has(draft.path)) {
-      draft.score += EVIDENCE_PROMOTE;
-      reasons.push("no changed test or current-head transcript covers this file, so it ranks higher");
+      draft.evidenceTier = -1;
+      reasons.push("no changed test or current-head transcript covers this file, so it ranks higher among equal-severity items");
     } else if (changedImplPaths.has(draft.path)) {
-      draft.score -= Math.round(EVIDENCE_DEMOTE / 2);
-      reasons.push("a current-head test transcript exercises this file's area, so it ranks lower");
+      // Not flagged untested: a changed test in its review area OR a current-head
+      // passing transcript cleared it (the two validation paths the PR risk rule
+      // treats equally) — so name both, not transcript alone.
+      draft.evidenceTier = 1;
+      reasons.push("a changed test or current-head transcript covers this file's review area, so it ranks lower among equal-severity items");
     }
     if (reasons.length === 0) {
       reasons.push(defaultRankReason(draft));

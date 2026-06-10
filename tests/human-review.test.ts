@@ -347,8 +347,11 @@ test("review-surfaces.RANKING.3 the evidence modifier reorders but never drops a
   const base = { packet: packetFixture(), prSurface: prSurfaceFixture(), diff: structuredDiffFixture() };
   const without = buildHumanReview(base);
   const withEvidence = buildHumanReview({ ...base, rankingEvidence: { changed_tests_by_impl: { "src/new-name.ts": ["tests/new-name.test.ts"] } } });
-  // The evidence score demotes, it never removes: the item count is unchanged.
+  // The evidence tier demotes, it never removes: the item count is unchanged.
   assert.equal(withEvidence.review_queue.length, without.review_queue.length);
+  // Evidence is a SECONDARY key, so it cannot reorder across the primary score —
+  // the top (highest-class) item is unchanged by the evidence signal.
+  assert.equal(withEvidence.review_queue[0].path, without.review_queue[0].path);
   // Byte-deterministic for identical inputs.
   assert.equal(JSON.stringify(buildHumanReview(base)), JSON.stringify(buildHumanReview(base)));
 });

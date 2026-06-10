@@ -57,6 +57,21 @@ test("review-surfaces.RANKING.1 basename fallback maps a changed test to a chang
   assert.deepEqual(evidence.changed_tests_by_impl, { "src/foo.ts": ["tests/foo.test.ts"] });
 });
 
+test("review-surfaces.RANKING.1 a resolved import suppresses the basename fallback (no false same-stem match)", () => {
+  const repo = new Set(["src/foo.ts", "src/legacy/foo.ts", "tests/foo.test.ts"]);
+  const diff = diffWith(["src/foo.ts", "src/legacy/foo.ts", "tests/foo.test.ts"]);
+  const evidence = computeRankingEvidence({
+    diff,
+    isTestPath,
+    // Imports resolve to src/foo.ts only; src/legacy/foo.ts shares the stem but is
+    // NOT imported and must not be marked as having a focused test.
+    readHead: (p) => (p === "tests/foo.test.ts" ? `import { foo } from "../src/foo";` : undefined),
+    exists: (p) => repo.has(p)
+  });
+  assert.deepEqual(evidence.changed_tests_by_impl, { "src/foo.ts": ["tests/foo.test.ts"] });
+  assert.ok(!("src/legacy/foo.ts" in evidence.changed_tests_by_impl));
+});
+
 test("review-surfaces.RANKING.3 computeRankingEvidence is deterministic and sorted for identical inputs", () => {
   const diff = diffWith(["src/foo.ts", "src/cli/index.ts", "tests/foo.test.ts"]);
   const args = {

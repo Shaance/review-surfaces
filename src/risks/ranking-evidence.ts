@@ -53,10 +53,14 @@ export function computeRankingEvidence(options: {
         }
       }
     }
-    // Fallback: a `tests/.../foo.test.ts` whose basename matches a changed impl
-    // file `.../foo.ts` even when imports could not resolve (path alias, JS-only).
-    for (const impl of implByStem.get(testStem(testPath)) ?? []) {
-      matched.add(impl);
+    // Fallback ONLY when imports identified no changed-impl target: otherwise a
+    // resolved `tests/foo.test.ts -> src/foo.ts` would also falsely claim every
+    // other same-stem changed impl (e.g. src/legacy/foo.ts). When imports did
+    // resolve, trust them and skip the ambiguous basename heuristic.
+    if (matched.size === 0) {
+      for (const impl of implByStem.get(testStem(testPath)) ?? []) {
+        matched.add(impl);
+      }
     }
     for (const impl of matched) {
       (byImpl[impl] ??= new Set()).add(testPath);

@@ -1520,18 +1520,19 @@ function computeRankingEvidenceForPacket(cwd: string, packet: ReviewPacket, diff
         }
       }
     : (filePath: string) => readFileAtRef(cwd, headSha, filePath);
-  return computeRankingEvidence({
-    diff,
-    isTestPath,
-    readHead,
-    exists: (repoRelativePath) => {
-      try {
-        return fs.statSync(path.resolve(cwd, repoRelativePath)).isFile();
-      } catch {
-        return false;
+  // Resolve imports against the SAME tree the test content came from: the worktree
+  // when head is checked out, otherwise the reviewed head blob — so ranking does
+  // not depend on whatever branch happens to be checked out.
+  const exists = headIsWorktree
+    ? (repoRelativePath: string): boolean => {
+        try {
+          return fs.statSync(path.resolve(cwd, repoRelativePath)).isFile();
+        } catch {
+          return false;
+        }
       }
-    }
-  });
+    : (repoRelativePath: string): boolean => readFileAtRef(cwd, headSha, repoRelativePath) !== undefined;
+  return computeRankingEvidence({ diff, isTestPath, readHead, exists });
 }
 
 function readHumanReviewDiff(outDir: string): StructuredDiff | undefined {
