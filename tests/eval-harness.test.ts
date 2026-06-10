@@ -42,6 +42,26 @@ after(() => {
   );
 });
 
+test("review-surfaces.EVAL_HARNESS.1 the fixture builder creates a temp repo and runs the real pipeline", () => {
+  const fixture = createEvalFixture("builder");
+  try {
+    fixture.write("src/calc.ts", `export function add(left: number, right: number): number {\n  return right + left;\n}\n`);
+    fixture.commit("reorder addition");
+    const model = fixture.run();
+    // The REAL pipeline ran against base..head and produced a schema-shaped model.
+    assert.equal(typeof model.verdict.decision, "string");
+    assert.ok(Array.isArray(model.review_queue));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("review-surfaces.EVAL_HARNESS.4 the scoreboard records passed/total per class", () => {
+  // The after() hook writes the scoreboard; this asserts the recording mechanism.
+  record("scoreboard_self_check", () => {});
+  assert.ok(scoreboard["scoreboard_self_check"].passed === 1 && scoreboard["scoreboard_self_check"].total === 1);
+});
+
 test("review-surfaces.EVAL_HARNESS.2 weakened test ranks in the top N", () => {
   const fixture = createEvalFixture("weakened-test");
   try {
