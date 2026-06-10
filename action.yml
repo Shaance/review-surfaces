@@ -76,8 +76,10 @@ runs:
       uses: actions/setup-node@v4
       with:
         node-version: 22
-        cache: pnpm
-        cache-dependency-path: ${{ github.action_path }}/pnpm-lock.yaml
+        # No pnpm cache here: github.action_path resolves to `<root>/.` for a
+        # `uses: ./` consumer, and setup-node rejects the resulting `/.//` cache
+        # pattern. The install below is `--frozen-lockfile`, so it is reliable
+        # uncached; consumers that want caching can prime it in their own workflow.
     - name: Build trusted tool
       shell: bash
       working-directory: ${{ github.action_path }}
