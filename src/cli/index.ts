@@ -1636,7 +1636,10 @@ function computeChangedImportEdgesForPacket(cwd: string, diff: StructuredDiff | 
 // resolution rules as the blast-radius graph). The base side reads the
 // merge-base; a worktree head reads the working tree.
 function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined, readers: FactReaders | undefined): ArchDriftResult | undefined {
-  if (!diff || diff.files.length === 0 || !readers) {
+  // No reliable base side (unresolvable base ref) -> NO drift signal at all:
+  // comparing head imports against an empty base would fabricate a "new edge"
+  // fact for every pre-existing cross-module import in the changed files.
+  if (!diff || diff.files.length === 0 || !readers || readers.baseReadRef === "") {
     return undefined;
   }
   const existsHead = readers.headIsWorktree
@@ -1724,8 +1727,12 @@ function treeModuleEdgeKeys(
 // review-surfaces.TREND.1: read the prior ledger from the previous packet's
 // sibling human_review.json. Absent/unreadable/malformed -> first review.
 function readPreviousRounds(cwd: string, packet: ReviewPacket): RoundsLedgerEntry[] | undefined {
-  const previousPath = (packet.dogfood as { previous_packet_path?: unknown } | undefined)?.previous_packet_path;
-  if (typeof previousPath !== "string" || previousPath.length === 0) {
+  const dogfood = packet.dogfood as { previous_packet_path?: unknown; comparison?: unknown } | undefined;
+  const previousPath = dogfood?.previous_packet_path;
+  // No computed comparison means the prior packet was absent/unreadable: the
+  // ledger must NOT be carried forward (a zero-count row would fake a valid
+  // next round). Documented missing-prior-packet case = first review.
+  if (typeof previousPath !== "string" || previousPath.length === 0 || !dogfood?.comparison) {
     return undefined;
   }
   const humanPath = path.join(path.dirname(path.resolve(cwd, previousPath)), "human_review.json");

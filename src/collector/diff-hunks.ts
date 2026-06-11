@@ -38,6 +38,7 @@ interface FileAccumulator {
   sawNewFile: boolean;
   sawDeletedFile: boolean;
   sawRename: boolean;
+  sawCopy?: boolean;
   hunks: StructuredDiffHunk[];
 }
 
@@ -137,12 +138,22 @@ export function parseStructuredDiff(diffText: string): StructuredDiff {
         continue;
       }
       if (line.startsWith("rename from ") || line.startsWith("copy from ")) {
-        acc.sawRename = true;
+        // Copies are NOT renames: the source still exists, so the copy is an
+        // additional file (status C) and old_path stays rename-only.
+        if (line.startsWith("copy from ")) {
+          acc.sawCopy = true;
+        } else {
+          acc.sawRename = true;
+        }
         acc.renameFrom = afterPrefix(line, "from ");
         continue;
       }
       if (line.startsWith("rename to ") || line.startsWith("copy to ")) {
-        acc.sawRename = true;
+        if (line.startsWith("copy to ")) {
+          acc.sawCopy = true;
+        } else {
+          acc.sawRename = true;
+        }
         acc.renameTo = afterPrefix(line, "to ");
         continue;
       }
@@ -233,9 +244,11 @@ function buildFile(acc: FileAccumulator): StructuredDiffFile | undefined {
   // A rename requires distinct, REAL (non-/dev/null) old and new paths. Without
   // the /dev/null guard a delete (new = /dev/null) or add (old = /dev/null)
   // would look like a rename because the two sides differ.
+  const isCopy = !isAdd && !isDelete && Boolean(acc.sawCopy);
   const isRename =
     !isAdd &&
     !isDelete &&
+    !isCopy &&
     (acc.sawRename ||
       (oldPath !== undefined &&
         newPath !== undefined &&
@@ -250,7 +263,7 @@ function buildFile(acc: FileAccumulator): StructuredDiffFile | undefined {
 
   const file: StructuredDiffFile = {
     path,
-    status: resolveStatus({ isAdd, isDelete, isRename }),
+    status: resolveStatus({ isAdd, isDelete, isRename, isCopy }),
     hunks: acc.hunks
   };
 
@@ -288,12 +301,15 @@ function pickPrimaryPath(
   return undefined;
 }
 
-function resolveStatus(flags: { isAdd: boolean; isDelete: boolean; isRename: boolean }): string {
+function resolveStatus(flags: { isAdd: boolean; isDelete: boolean; isRename: boolean; isCopy: boolean }): string {
   if (flags.isDelete) {
     return "D";
   }
   if (flags.isAdd) {
     return "A";
+  }
+  if (flags.isCopy) {
+    return "C";
   }
   if (flags.isRename) {
     return "R";
