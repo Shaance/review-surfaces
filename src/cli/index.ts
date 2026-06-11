@@ -1785,11 +1785,17 @@ function readEvalScoreboard(outDir: string): EvalScoreboardSummary | undefined {
     if (typeof parsed.top_n !== "number" || typeof parsed.classes !== "object" || parsed.classes === null) {
       return undefined;
     }
-    const classes = Object.entries(parsed.classes)
-      .filter(([, entry]) => typeof entry?.passed === "number" && typeof entry?.total === "number")
+    // ANY malformed class invalidates the whole scoreboard: silently dropping
+    // a class would let `scoreboard --check` pass while the README no longer
+    // shows that regression class — exactly the diff the block exists to surface.
+    const entries = Object.entries(parsed.classes);
+    if (entries.length === 0 || !entries.every(([, entry]) => typeof entry?.passed === "number" && typeof entry?.total === "number")) {
+      return undefined;
+    }
+    const classes = entries
       .map(([name, entry]) => ({ name, passed: entry.passed as number, total: entry.total as number }))
       .sort((a, b) => (a.name < b.name ? -1 : 1));
-    return classes.length > 0 ? { top_n: parsed.top_n, classes } : undefined;
+    return { top_n: parsed.top_n, classes };
   } catch {
     return undefined;
   }

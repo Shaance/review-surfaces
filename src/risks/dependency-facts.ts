@@ -59,12 +59,25 @@ export function computeDependencyFacts(input: ComputeDependencyFactsInput): Depe
   return facts;
 }
 
-// review-surfaces.DEP_FACTS.4: name-level dependency edges from the head
-// lockfile (pnpm packages[].dependencies / npm packages[].dependencies), walked
-// breadth-first from each direct dependency of the sibling head package.json
-// (alphabetical, so attribution is deterministic when several direct deps reach
-// the same transitive). A lockfile whose edges cannot be parsed leaves every
-// fact unattributed — the flat fallback, never a guess.
+// review-surfaces.DEP_FACTS.4: attribute each new transitive by walking the
+// head lockfile's dependency edges at INSTANCE level (versioned pnpm keys /
+// nested node_modules paths), so two versions of the same intermediate package
+// never collapse into one node and misattribute a transitive. Direct roots come
+// from the lockfile's importers/workspace manifests when present (monorepos),
+// falling back to the lockfile's sibling head package.json. Roots are walked in
+// alphabetical order, so attribution is deterministic when several direct deps
+// reach the same package. Anything unresolvable stays unattributed — the flat
+// fallback, never a guess.
+interface LockGraph {
+  // instance key -> dependency instance keys (ambiguous targets are dropped).
+  edges: Map<string, Set<string>>;
+  // package name -> instance keys.
+  instancesByName: Map<string, Set<string>>;
+  // direct dependency names from importers/workspace manifest entries.
+  directNames: Set<string>;
+  nameOf: (instanceKey: string) => string;
+}
+
 function attributeTransitives(facts: DependencyFact[], input: ComputeDependencyFactsInput): void {
   const targets = facts.filter((fact) => fact.kind === "transitive_added" && fact.via === undefined);
   if (targets.length === 0) {
@@ -78,28 +91,32 @@ function attributeTransitives(facts: DependencyFact[], input: ComputeDependencyF
   }
   for (const [sourcePath, sourceFacts] of bySource) {
     const headText = input.readHead(sourcePath);
-    const edges = sourcePath.endsWith("pnpm-lock.yaml") ? pnpmLockEdges(headText) : packageLockEdges(headText);
-    if (!edges) {
+    const graph = sourcePath.endsWith("pnpm-lock.yaml") ? pnpmLockGraph(headText) : packageLockGraph(headText);
+    if (!graph) {
       continue;
     }
-    // Direct dependencies come from the sibling head package.json.
+    // Direct roots: lockfile importers/workspace manifests first (monorepos),
+    // plus the lockfile's sibling head package.json.
     const manifestPath = sourcePath.replace(/[^/]+$/, "package.json");
     const manifest = parseJsonSafe(input.readHead(manifestPath));
-    const direct = [...depsByGroup(manifest).keys()].sort();
+    const direct = [...new Set([...graph.directNames, ...depsByGroup(manifest).keys()])].sort();
     if (direct.length === 0) {
       continue;
     }
-    // Reachability: first (alphabetical) direct dep that reaches the package.
+    // Reachability over instances: the first (alphabetical) direct dep that
+    // reaches ANY instance of a package attributes that package.
     const viaByPackage = new Map<string, string>();
     for (const root of direct) {
-      const queue = [root];
-      const seen = new Set<string>([root]);
+      const rootInstances = [...(graph.instancesByName.get(root) ?? [])].sort();
+      const queue = [...rootInstances];
+      const seen = new Set<string>(rootInstances);
       while (queue.length > 0) {
-        const name = queue.shift() as string;
+        const instance = queue.shift() as string;
+        const name = graph.nameOf(instance);
         if (!viaByPackage.has(name)) {
           viaByPackage.set(name, root);
         }
-        for (const next of [...(edges.get(name) ?? [])].sort()) {
+        for (const next of [...(graph.edges.get(instance) ?? [])].sort()) {
           if (!seen.has(next)) {
             seen.add(next);
             queue.push(next);
@@ -117,11 +134,13 @@ function attributeTransitives(facts: DependencyFact[], input: ComputeDependencyF
   }
 }
 
-// Name-level edges from pnpm-lock.yaml. pnpm v9 records dependency edges under
-// the `snapshots:` section (packages: holds resolution/metadata only); older
-// formats carry `dependencies` on packages: entries. Read BOTH so v6 and v9
-// lockfiles attribute — a lockfile with neither yields the flat fallback.
-function pnpmLockEdges(text: string | undefined): Map<string, Set<string>> | undefined {
+// pnpm-lock.yaml instance graph. pnpm v9 records dependency edges under
+// `snapshots:` (packages: holds resolution/metadata only); older formats carry
+// `dependencies` on packages: entries — read both. Dependency targets resolve
+// to the versioned key `name@version`; when that exact key is absent the edge
+// resolves only if the name is unambiguous (one instance), else it is dropped.
+// Direct roots come from the `importers:` section (workspace-aware).
+function pnpmLockGraph(text: string | undefined): LockGraph | undefined {
   if (!text) {
     return undefined;
   }
@@ -131,12 +150,38 @@ function pnpmLockEdges(text: string | undefined): Map<string, Set<string>> | und
   } catch {
     return undefined;
   }
-  const edges = new Map<string, Set<string>>();
-  const collect = (section: unknown): void => {
-    if (typeof section !== "object" || section === null) {
-      return;
+  const sections = [parsed?.packages, parsed?.snapshots].filter(
+    (section): section is Record<string, unknown> => typeof section === "object" && section !== null
+  );
+  if (sections.length === 0) {
+    return undefined;
+  }
+  const instancesByName = new Map<string, Set<string>>();
+  const allKeys = new Set<string>();
+  for (const section of sections) {
+    for (const key of Object.keys(section)) {
+      allKeys.add(key);
+      const name = pnpmPackageName(key);
+      const instances = instancesByName.get(name) ?? new Set<string>();
+      instances.add(key);
+      instancesByName.set(name, instances);
     }
-    for (const [key, entry] of Object.entries(section as Record<string, unknown>)) {
+  }
+  const resolveTarget = (depName: string, version: unknown): string | undefined => {
+    if (typeof version === "string") {
+      // Snapshot versions may carry a peer suffix: 1.2.3(peer@2.0.0).
+      for (const candidate of [`${depName}@${version}`, `/${depName}@${version}`]) {
+        if (allKeys.has(candidate)) {
+          return candidate;
+        }
+      }
+    }
+    const instances = instancesByName.get(depName);
+    return instances && instances.size === 1 ? [...instances][0] : undefined;
+  };
+  const edges = new Map<string, Set<string>>();
+  for (const section of sections) {
+    for (const [key, entry] of Object.entries(section)) {
       if (typeof entry !== "object" || entry === null) {
         continue;
       }
@@ -144,42 +189,112 @@ function pnpmLockEdges(text: string | undefined): Map<string, Set<string>> | und
       if (typeof deps !== "object" || deps === null) {
         continue;
       }
-      const from = pnpmPackageName(key);
-      const targets = edges.get(from) ?? new Set<string>();
-      for (const dep of Object.keys(deps as Record<string, unknown>)) {
-        targets.add(dep);
+      const targets = edges.get(key) ?? new Set<string>();
+      for (const [depName, version] of Object.entries(deps as Record<string, unknown>)) {
+        const target = resolveTarget(depName, version);
+        if (target) {
+          targets.add(target);
+        }
       }
-      edges.set(from, targets);
+      edges.set(key, targets);
     }
-  };
-  collect(parsed?.packages);
-  collect(parsed?.snapshots);
-  return edges.size > 0 ? edges : undefined;
+  }
+  if (edges.size === 0) {
+    return undefined;
+  }
+  const directNames = new Set<string>();
+  const importers = parsed?.importers;
+  if (typeof importers === "object" && importers !== null) {
+    for (const importer of Object.values(importers as Record<string, unknown>)) {
+      if (typeof importer !== "object" || importer === null) {
+        continue;
+      }
+      for (const group of DEP_GROUPS) {
+        const deps = (importer as Record<string, unknown>)[group];
+        if (typeof deps === "object" && deps !== null) {
+          for (const name of Object.keys(deps as Record<string, unknown>)) {
+            directNames.add(name);
+          }
+        }
+      }
+    }
+  }
+  return { edges, instancesByName, directNames, nameOf: pnpmPackageName };
 }
 
-// Name-level edges from package-lock.json v2/v3: packages["node_modules/x"].dependencies.
-function packageLockEdges(text: string | undefined): Map<string, Set<string>> | undefined {
+// package-lock.json v2/v3 instance graph: instance keys are the nested
+// node_modules paths, and a dependency resolves like Node does — the nearest
+// enclosing scope that contains node_modules/<name>. Workspace manifest
+// entries (keys NOT under node_modules, including the "" root) contribute the
+// direct root names.
+function packageLockGraph(text: string | undefined): LockGraph | undefined {
   const packages = parseJsonSafe(text)?.packages as Record<string, unknown> | undefined;
   if (!packages) {
     return undefined;
   }
+  const keys = new Set(Object.keys(packages));
+  const nameOf = (key: string): string => key.replace(/^.*node_modules\//, "");
+  const instancesByName = new Map<string, Set<string>>();
+  for (const key of keys) {
+    if (!key.includes("node_modules/")) {
+      continue;
+    }
+    const name = nameOf(key);
+    const instances = instancesByName.get(name) ?? new Set<string>();
+    instances.add(key);
+    instancesByName.set(name, instances);
+  }
+  const resolveFrom = (fromKey: string, depName: string): string | undefined => {
+    // Walk Node's resolution scopes: <scope>/node_modules/<dep>, where scope
+    // peels one node_modules level at a time down to the root.
+    let scope = fromKey;
+    for (;;) {
+      const candidate = scope === "" ? `node_modules/${depName}` : `${scope}/node_modules/${depName}`;
+      if (keys.has(candidate)) {
+        return candidate;
+      }
+      const cut = scope.lastIndexOf("/node_modules/");
+      if (cut < 0) {
+        return keys.has(`node_modules/${depName}`) ? `node_modules/${depName}` : undefined;
+      }
+      scope = scope.slice(0, cut);
+    }
+  };
   const edges = new Map<string, Set<string>>();
+  const directNames = new Set<string>();
   for (const [key, entry] of Object.entries(packages)) {
-    if (!key.startsWith("node_modules/") || typeof entry !== "object" || entry === null) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    if (!key.includes("node_modules/")) {
+      // Workspace manifest entry (incl. the "" root): direct dependency names.
+      for (const group of DEP_GROUPS) {
+        const deps = (entry as Record<string, unknown>)[group];
+        if (typeof deps === "object" && deps !== null) {
+          for (const name of Object.keys(deps as Record<string, unknown>)) {
+            directNames.add(name);
+          }
+        }
+      }
       continue;
     }
     const deps = (entry as Record<string, unknown>).dependencies;
     if (typeof deps !== "object" || deps === null) {
       continue;
     }
-    const from = key.replace(/^.*node_modules\//, "");
-    const targets = edges.get(from) ?? new Set<string>();
-    for (const dep of Object.keys(deps as Record<string, unknown>)) {
-      targets.add(dep);
+    const targets = edges.get(key) ?? new Set<string>();
+    for (const depName of Object.keys(deps as Record<string, unknown>)) {
+      const target = resolveFrom(key, depName);
+      if (target) {
+        targets.add(target);
+      }
     }
-    edges.set(from, targets);
+    edges.set(key, targets);
   }
-  return edges.size > 0 ? edges : undefined;
+  if (edges.size === 0) {
+    return undefined;
+  }
+  return { edges, instancesByName, directNames, nameOf };
 }
 
 // Deterministic severity ordering for rendering/queue language (DEP_FACTS.2):
