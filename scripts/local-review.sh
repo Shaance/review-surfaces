@@ -44,10 +44,15 @@ PREV_ARGS=()
 if [ -n "$PREVIOUS" ]; then
   PREV_ARGS=(--previous-packet "$PREVIOUS")
 elif [ -f "$OUT/review_packet.json" ]; then
-  PREV_SNAP="$(mktemp -d)/previous-packet.json"
+  # Snapshot to a STABLE path under the out directory: the CLI records the
+  # resolved previous-packet path in dogfood/manifest data and folds it into
+  # the cache signature, so a random mktemp path would make every run's
+  # artifacts differ and point the rounds ledger at a transient /tmp file.
+  PREV_SNAP="$OUT/previous/review_packet.json"
+  mkdir -p "$OUT/previous"
   cp "$OUT/review_packet.json" "$PREV_SNAP"
   PREV_ARGS=(--previous-packet "$PREV_SNAP")
-  echo "local-review: comparing against previous local packet ($OUT/review_packet.json)"
+  echo "local-review: comparing against previous local packet ($PREV_SNAP)"
 fi
 
 node bin/review-surfaces.js all \
