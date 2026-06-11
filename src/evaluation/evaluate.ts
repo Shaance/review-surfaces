@@ -18,6 +18,7 @@ import {
 import { NormalizedTestCase, TestResults } from "../tests-evidence/junit";
 import {
   ACID_PATTERN,
+  allPresenceTokensExist,
   groupFromAcid,
   isImplementationEvidencePath,
   isTestOnlyRequirement,
@@ -142,7 +143,11 @@ function evaluateRequirement(requirement: IntentRequirement, index: EvidenceInde
     status = "invalid_evidence";
     summary = "Requirement source reference is invalid.";
     confidence = "high";
-  } else if (directEvidence.length > 0 && isRepositoryPresenceRequirement(requirement)) {
+  } else if (
+    isRepositoryPresenceRequirement(requirement) &&
+    directEvidence.length > 0 &&
+    allPresenceTokensExist(requirement.requirement, index.allFiles)
+  ) {
     status = "satisfied";
     summary = "Referenced repository file evidence exists for this requirement.";
     confidence = "high";

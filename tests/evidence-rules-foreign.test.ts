@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  allPresenceTokensExist,
   DEFAULT_NON_IMPLEMENTATION_PREFIXES,
   isImplementationEvidencePath,
   pathLikeTokens
@@ -51,6 +52,16 @@ test("pathLikeTokens recognizes bare LICENSE and CONTRIBUTING.md presence tokens
     "LICENSE",
     "CONTRIBUTING.md"
   ]);
+});
+
+test("allPresenceTokensExist requires EVERY cited file, not any (DISTRIBUTION.1)", () => {
+  const text = "The repository must contain a LICENSE file and a minimal CONTRIBUTING.md covering pnpm setup.";
+  assert.equal(allPresenceTokensExist(text, new Set(["LICENSE", "CONTRIBUTING.md"])), true);
+  // One of two promised files must NOT satisfy the presence requirement.
+  assert.equal(allPresenceTokensExist(text, new Set(["LICENSE"])), false);
+  assert.equal(allPresenceTokensExist(text, new Set(["CONTRIBUTING.md"])), false);
+  // No cited files at all is never presence-satisfied.
+  assert.equal(allPresenceTokensExist("The repository must contain useful things.", new Set(["LICENSE"])), false);
 });
 
 test("isImplementationEvidencePath options seam unbiases a foreign repo's docs/*.py", () => {

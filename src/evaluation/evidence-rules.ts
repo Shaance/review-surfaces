@@ -43,6 +43,14 @@ export function pathLikeTokens(text: string): string[] {
   ];
 }
 
+// A repository-presence requirement ("the repository must contain X and Y") is
+// satisfied only when EVERY cited file exists — any-token satisfaction would
+// let a phase land with one of two promised files and silence the gate.
+export function allPresenceTokensExist(text: string, files: Set<string>): boolean {
+  const tokens = pathLikeTokens(text);
+  return tokens.length > 0 && tokens.every((token) => files.has(token));
+}
+
 export interface ImplementationPathOptions {
   nonImplementationPrefixes?: readonly string[];
   nonImplementationExact?: readonly string[];
