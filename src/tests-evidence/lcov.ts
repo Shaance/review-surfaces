@@ -92,6 +92,11 @@ export interface ChangedHunkCoverage {
   // never appear here.
   uncovered_lines: number[];
   uncovered_truncated?: boolean;
+  // The instrumented-and-executed counterpart, so per-line gutters can mark
+  // covered lines green WITHOUT guessing: a line in neither list is
+  // not-instrumented (neutral), never "covered".
+  covered_line_numbers: number[];
+  covered_truncated?: boolean;
 }
 
 export interface ChangedFileCoverage {
@@ -123,11 +128,13 @@ export function intersectCoverageWithDiff(diff: StructuredDiff, coverage: LcovCo
       let hunkChanged = 0;
       let hunkHit = 0;
       const uncovered: number[] = [];
+      const coveredLines: number[] = [];
       for (const line of hunk.lines) {
         if (line.kind === "add" && typeof line.new_line === "number" && instrumented.has(line.new_line)) {
           hunkChanged += 1;
           if (covered.has(line.new_line)) {
             hunkHit += 1;
+            coveredLines.push(line.new_line);
           } else {
             uncovered.push(line.new_line);
           }
@@ -139,14 +146,18 @@ export function intersectCoverageWithDiff(diff: StructuredDiff, coverage: LcovCo
       changed += hunkChanged;
       hit += hunkHit;
       uncovered.sort((a, b) => a - b);
+      coveredLines.sort((a, b) => a - b);
       const truncated = uncovered.length > MAX_UNCOVERED_LINES_PER_HUNK;
+      const coveredTruncated = coveredLines.length > MAX_UNCOVERED_LINES_PER_HUNK;
       hunks.push({
         hunk_header: `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@`,
         changed_lines: hunkChanged,
         covered_lines: hunkHit,
         classification: hunkHit === 0 ? "uncovered" : hunkHit === hunkChanged ? "covered" : "partial",
         uncovered_lines: truncated ? uncovered.slice(0, MAX_UNCOVERED_LINES_PER_HUNK) : uncovered,
-        ...(truncated ? { uncovered_truncated: true } : {})
+        ...(truncated ? { uncovered_truncated: true } : {}),
+        covered_line_numbers: coveredTruncated ? coveredLines.slice(0, MAX_UNCOVERED_LINES_PER_HUNK) : coveredLines,
+        ...(coveredTruncated ? { covered_truncated: true } : {})
       });
     }
     if (changed === 0) {

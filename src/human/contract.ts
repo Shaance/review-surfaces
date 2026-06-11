@@ -443,8 +443,14 @@ export interface CoverageEvidenceHunk {
   classification: "covered" | "uncovered" | "partial";
   // review-surfaces.COVERAGE.5: sorted new-side line numbers that are
   // instrumented but not executed, capped with an explicit truncated flag.
-  uncovered_lines: number[];
+  // OPTIONAL in the schema for v1 artifact compatibility (pre-COVERAGE.5
+  // sidecars stay valid; absent reads as "no per-line data", never as covered).
+  uncovered_lines?: number[];
   uncovered_truncated?: boolean;
+  // Executed counterpart so per-line gutters never guess: a line in neither
+  // list is not-instrumented (neutral).
+  covered_line_numbers?: number[];
+  covered_truncated?: boolean;
 }
 
 export interface CoverageEvidenceFile {

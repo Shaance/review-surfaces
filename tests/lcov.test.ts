@@ -59,7 +59,7 @@ test("review-surfaces.COVERAGE.3 intersection classifies changed lines covered/u
       changed_lines: 3,
       covered_lines: 2,
       classification: "partial",
-      hunks: [{ hunk_header: "@@ -1,0 +1,3 @@", changed_lines: 3, covered_lines: 2, classification: "partial", uncovered_lines: [2] }]
+      hunks: [{ hunk_header: "@@ -1,0 +1,3 @@", changed_lines: 3, covered_lines: 2, classification: "partial", uncovered_lines: [2], covered_line_numbers: [1, 3] }]
     }
   ]);
   const uncovered = intersectCoverageWithDiff(diffFor("src/foo.ts", [10, 11]), coverage);

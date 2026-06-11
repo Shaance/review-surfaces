@@ -19,10 +19,10 @@ export function coverageHunkForAnchor(model: HumanReviewModel, filePath: string,
     return undefined;
   }
   if (hunkHeader) {
-    const exact = file.hunks.find((hunk) => hunk.hunk_header === hunkHeader);
-    if (exact) {
-      return exact;
-    }
+    // A supplied header that does not match means the report never measured
+    // THIS hunk (e.g. it only added comments) — attaching another hunk's
+    // coverage would describe lines the report never saw. No fallback.
+    return file.hunks.find((hunk) => hunk.hunk_header === hunkHeader);
   }
   return file.hunks.length === 1 ? file.hunks[0] : undefined;
 }
@@ -56,7 +56,10 @@ export function coverageSummaryLine(hunk: CoverageEvidenceHunk): string {
   if (uncovered <= 0) {
     return `all ${hunk.changed_lines} instrumented changed line(s) executed by tests`;
   }
-  const ranges = formatUncoveredRanges(hunk.uncovered_lines);
+  // uncovered_lines is optional for pre-COVERAGE.5 v1 artifacts: counts still
+  // render, the per-line ranges are simply absent.
+  const lines = hunk.uncovered_lines ?? [];
+  const ranges = lines.length > 0 ? `: ${formatUncoveredRanges(lines)}` : "";
   const truncated = hunk.uncovered_truncated ? " (+ more; list truncated)" : "";
-  return `${uncovered} of ${hunk.changed_lines} changed line(s) uncovered: ${ranges}${truncated}`;
+  return `${uncovered} of ${hunk.changed_lines} changed line(s) uncovered${ranges}${truncated}`;
 }

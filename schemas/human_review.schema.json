@@ -262,14 +262,16 @@
                 "items": {
                   "type": "object",
                   "additionalProperties": true,
-                  "required": ["hunk_header", "changed_lines", "covered_lines", "classification", "uncovered_lines"],
+                  "required": ["hunk_header", "changed_lines", "covered_lines", "classification"],
                   "properties": {
                     "hunk_header": { "type": "string" },
                     "changed_lines": { "type": "integer", "minimum": 0 },
                     "covered_lines": { "type": "integer", "minimum": 0 },
                     "classification": { "enum": ["covered", "uncovered", "partial"] },
                     "uncovered_lines": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
-                    "uncovered_truncated": { "type": "boolean" }
+                    "uncovered_truncated": { "type": "boolean" },
+                    "covered_line_numbers": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+                    "covered_truncated": { "type": "boolean" }
                   }
                 }
               }

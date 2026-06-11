@@ -372,12 +372,11 @@ function renderTrust(model: HumanReviewModel): string {
 }
 
 // review-surfaces.COVERAGE.6: the cockpit's per-line coverage gutter. Each
-// excerpt line gets a glyph + tint keyed by its NEW-side line number: ✖ red for
-// an uncovered changed line, ✓ green when the hunk's instrumented lines are all
-// executed, neutral otherwise (covered or not instrumented — the model carries
-// only the uncovered list, so the neutral state is the honest default). Deleted
-// lines NEVER get a gutter — they have no coverage semantics. Without coverage
-// data the excerpt renders exactly as before.
+// excerpt line gets a glyph + tint keyed by its NEW-side line number: ✖ red
+// for an uncovered changed line, ✓ green ONLY for lines the report explicitly
+// lists as executed, neutral for not-instrumented lines (comments, type-only —
+// never implied-covered). Deleted lines NEVER get a gutter — they have no
+// coverage semantics. Without coverage data the excerpt renders exactly as before.
 function renderExcerptWithGutter(model: HumanReviewModel, item: ReviewQueueItem, context: HumanRenderContext): string {
   const excerpt = resolveStructuredExcerpt(context.diff, {
     path: item.path,
@@ -392,9 +391,10 @@ function renderExcerptWithGutter(model: HumanReviewModel, item: ReviewQueueItem,
   }
   const coverageHunk = coverageHunkForAnchor(model, item.path, item.hunk_header);
   const uncovered = new Set(coverageHunk?.uncovered_lines ?? []);
+  const covered = new Set(coverageHunk?.covered_line_numbers ?? []);
   const rows = excerpt.lines
     .map((line) => {
-      const gutter = gutterFor(line.kind, line.new_line, coverageHunk, uncovered);
+      const gutter = gutterFor(line.kind, line.new_line, coverageHunk, uncovered, covered);
       return `<span style="display:block${gutter.tint ? `;background:${gutter.tint}` : ""}"${gutter.label ? ` title="${esc(gutter.label)}"` : ""}>${esc(gutter.glyph)}${esc(line.text)}</span>`;
     })
     .join("");
@@ -406,7 +406,8 @@ function gutterFor(
   kind: string,
   newLine: number | undefined,
   coverageHunk: CoverageEvidenceHunk | undefined,
-  uncovered: Set<number>
+  uncovered: Set<number>,
+  covered: Set<number>
 ): { glyph: string; tint?: string; label?: string } {
   // Deleted lines and elision markers carry no coverage semantics.
   if (!coverageHunk || kind === "delete" || kind === "elision" || typeof newLine !== "number") {
@@ -415,8 +416,11 @@ function gutterFor(
   if (kind === "add" && uncovered.has(newLine)) {
     return { glyph: "✖ ", tint: "#fde2e2", label: `L${newLine} uncovered` };
   }
-  if (kind === "add" && coverageHunk.classification === "covered") {
+  if (kind === "add" && covered.has(newLine)) {
     return { glyph: "✓ ", tint: "#d9f2e3", label: `L${newLine} covered` };
   }
-  return { glyph: "· ", label: "covered or not instrumented" };
+  if (kind === "add") {
+    return { glyph: "· ", label: "not instrumented (no coverage data for this line)" };
+  }
+  return { glyph: "  " };
 }
