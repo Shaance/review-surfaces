@@ -278,11 +278,6 @@ quality_gate:
   # ACIDs it ships. The gate must be back to `allow_missing: []` when the final
   # phase lands.
   allow_missing:
-    # Phase 1 — local review loop (idea 13)
-    - review-surfaces.LOCAL_LOOP.1
-    - review-surfaces.LOCAL_LOOP.2
-    - review-surfaces.LOCAL_LOOP.3
-    - review-surfaces.LOCAL_LOOP.4
     # Phase 2 / M9 — change-impact map + guided tour (ideas 1, 2)
     - review-surfaces.CHANGE_MAP.1
     - review-surfaces.CHANGE_MAP.2
