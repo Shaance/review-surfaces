@@ -14,7 +14,7 @@ import { renderHunkExcerpt } from "../human/hunk-excerpt";
 import { decisionLabel, formatQueueLocation } from "../human/render";
 import type { HumanReviewModel, ReviewQueueItem, SinceLastReview, SinceLastReviewItem } from "../human/contract";
 import { STICKY_MARKER } from "./comment";
-import { changeMapMermaidEmbed } from "./change-map-embed";
+import { changeMapMermaidEmbed, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
 import { firstTourLegSnippet } from "./tour-snippet";
 
 const MAX_SUMMARY_CHARS = 600;
@@ -106,7 +106,16 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
     state.blocked = true;
   }
   if (mapEmbed.body) {
-    sections.push("", `<details><summary>Change map</summary>\n\n\`\`\`mermaid\n${mapEmbed.body}\n\`\`\`\n\n</details>`);
+    sections.push("", mermaidDetailsBlock("Change map", mapEmbed.body));
+  }
+  // review-surfaces.RENDER.13: attributed dependency chains as a collapsed
+  // mermaid tree — only when a chain exists (flat facts stay in the queue).
+  const depTree = dependencyTreeEmbed(model.dependency_chains);
+  if (depTree.blocked) {
+    state.blocked = true;
+  }
+  if (depTree.body) {
+    sections.push("", mermaidDetailsBlock("Dependency chains (supply chain)", depTree.body));
   }
   // review-surfaces.TREND.2: the rounds ledger as a compact table (last ~8
   // rounds; the full ledger lives in the artifact). Partial history renders

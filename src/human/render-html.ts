@@ -82,6 +82,9 @@ ${renderCoverage(model)}
 <h2 id="cards">Evidence cards</h2>
 ${renderCards(model)}
 
+<h2 id="dep-chains" ${model.dependency_chains?.length ? "" : "hidden"}>Dependency chains</h2>
+${renderDependencyChains(model)}
+
 <h2 id="rounds">Review rounds</h2>
 ${renderRounds(model)}
 
@@ -91,6 +94,7 @@ ${renderTrust(model)}
 <h2 id="questions">Questions for the author</h2>
 ${model.questions.length === 0 ? `<p class="muted">No reviewer questions generated.</p>` : `<ul>${model.questions.map((question) => `<li><span class="badge ${esc(question.severity)}">${esc(question.severity)}</span> ${esc(question.question)} <span class="muted">(${esc(question.id)})</span></li>`).join("")}</ul>`}
 
+${renderScoreboardFooter(model)}
 <script>
 (function () {
   "use strict";
@@ -485,4 +489,29 @@ function renderRounds(model: HumanReviewModel): string {
     )
     .join("");
   return `${note}<table><thead><tr><th>round</th><th>head</th><th>new</th><th>resolved</th><th>regressed</th><th>verdict</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+// review-surfaces.RENDER.13: attributed dependency chains as an indented tree
+// (supply-chain lens surface). Hidden when no chain resolved.
+function renderDependencyChains(model: HumanReviewModel): string {
+  const chains = model.dependency_chains ?? [];
+  if (chains.length === 0) {
+    return "";
+  }
+  return `<pre>${chains
+    .map((chain) =>
+      [`${esc(chain.via)} (direct, ${esc(chain.source_path)})`, ...chain.transitives.map((transitive) => `  └─ ${esc(transitive.package)}${transitive.install_scripts ? " ⚠ install scripts" : ""}`)].join("\n")
+    )
+    .join("\n")}</pre>`;
+}
+
+// review-surfaces.EVAL_HARNESS.6: one footer line citing the eval score.
+function renderScoreboardFooter(model: HumanReviewModel): string {
+  const scoreboard = model.eval_scoreboard;
+  if (!scoreboard || scoreboard.classes.length === 0) {
+    return "";
+  }
+  const passed = scoreboard.classes.reduce((sum, entry) => sum + entry.passed, 0);
+  const total = scoreboard.classes.reduce((sum, entry) => sum + entry.total, 0);
+  return `<p class="muted">Eval scoreboard: ${esc(passed)}/${esc(total)} seeded regression case(s) across ${esc(scoreboard.classes.length)} fact class(es) ranked in the top ${esc(scoreboard.top_n)} (review-surfaces eval harness).</p>`;
 }
