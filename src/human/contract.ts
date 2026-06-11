@@ -506,8 +506,8 @@ export interface ChangeGraphHaloNode {
 export type ChangeGraphEdgeKind = "existing" | "new" | "removed";
 
 export interface ChangeGraphEdge {
-  // Dependency first: `from` is the imported module, `to` the importer, so the
-  // map's left-to-right flow agrees with the reading-order tour's numbering.
+  // Importer -> imported, per CHANGE_MAP.1. Renderers that want dependencies
+  // flowing left-to-right (to agree with the tour) reverse at draw time.
   from: string;
   to: string;
   kind: ChangeGraphEdgeKind;

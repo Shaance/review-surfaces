@@ -167,13 +167,13 @@ Confidence: ${model.verdict.confidence}.
 Reasons:
 ${bullets(model.verdict.reasons.slice(0, MAX_BLOCKERS).map((reason) => `${reason.summary}${reason.required_action ? ` Required action: ${reason.required_action}` : ""} (${reason.id}; ${reason.severity})`), "No readiness reasons recorded.")}
 
-## Change map
-
-${renderChangeMapSection(model)}
-
 ## Reading order
 
 ${renderReadingOrderSection(model.reading_order)}
+
+## Change map
+
+${renderChangeMapSection(model)}
 
 ## Change narrative
 

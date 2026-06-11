@@ -153,8 +153,8 @@ function dedupeEdges(edges: ChangedImportEdge[], changed: Set<string>): ChangeGr
       continue;
     }
     seen.add(key);
-    // Dependency first: from = imported module, to = importer.
-    result.push({ from: edge.imported, to: edge.importer, kind: "existing" });
+    // Contract direction (CHANGE_MAP.1): from = importer, to = imported.
+    result.push({ from: edge.importer, to: edge.imported, kind: "existing" });
   }
   return result.sort((a, b) => compareStrings(a.from, b.from) || compareStrings(a.to, b.to));
 }
@@ -239,13 +239,15 @@ function buildReadingOrder(files: ChangedFileFacts[], edges: ChangeGraphEdge[], 
     }
   });
 
-  // Condensation edges: dependency component -> dependent component.
+  // Condensation edges: dependency component -> dependent component. Model
+  // edges are importer -> imported (CHANGE_MAP.1), so the dependency side of
+  // the topo edge is edge.to and the dependent side edge.from.
   const out = new Map<number, Set<number>>();
   const indegree = new Map<number, number>();
   components.forEach((_, index) => indegree.set(index, 0));
   for (const edge of edges) {
-    const from = componentOf.get(edge.from);
-    const to = componentOf.get(edge.to);
+    const from = componentOf.get(edge.to);
+    const to = componentOf.get(edge.from);
     if (from === undefined || to === undefined || from === to) {
       continue;
     }
@@ -283,8 +285,10 @@ function buildReadingOrder(files: ChangedFileFacts[], edges: ChangeGraphEdge[], 
   const importerCount = new Map<string, number>();
   const dependencyCount = new Map<string, number>();
   for (const edge of edges) {
-    importerCount.set(edge.from, (importerCount.get(edge.from) ?? 0) + 1);
-    dependencyCount.set(edge.to, (dependencyCount.get(edge.to) ?? 0) + 1);
+    // edge.to is the imported file (gains an importer); edge.from the importer
+    // (gains a dependency).
+    importerCount.set(edge.to, (importerCount.get(edge.to) ?? 0) + 1);
+    dependencyCount.set(edge.from, (dependencyCount.get(edge.from) ?? 0) + 1);
   }
   const queueRefs = new Map<string, string[]>();
   for (const item of [...queue].sort((a, b) => a.rank - b.rank)) {

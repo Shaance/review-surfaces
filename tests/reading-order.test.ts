@@ -156,8 +156,9 @@ test("review-surfaces.READING_ORDER.2 the tour renders after the verdict in huma
   const markdown = renderHumanReviewMarkdown(fixture);
   const verdictIndex = markdown.indexOf("## Verdict");
   const orderIndex = markdown.indexOf("## Reading order");
+  const mapIndex = markdown.indexOf("## Change map");
   const narrativeIndex = markdown.indexOf("## Change narrative");
-  assert.ok(verdictIndex >= 0 && orderIndex > verdictIndex && orderIndex < narrativeIndex, "reading order renders directly after the verdict block");
+  assert.ok(verdictIndex >= 0 && orderIndex > verdictIndex && orderIndex < mapIndex && mapIndex < narrativeIndex, "reading order is THE section after the verdict, before the change map");
   const html = renderHumanReviewHtml(fixture, {});
   assert.match(html, /<h2 id="reading-order">Reading order<\/h2>/);
   assert.ok(html.indexOf('id="reading-order"') < html.indexOf('id="queue"'));

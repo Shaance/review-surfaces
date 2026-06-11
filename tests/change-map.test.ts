@@ -114,10 +114,11 @@ test("review-surfaces.CHANGE_MAP.1 change_graph carries churn/lens/status nodes,
   assert.equal(a.churn_added, 20);
   assert.equal(a.lens, "security_privacy");
   assert.equal(a.cluster, "src/core");
-  // Edges: dependency -> dependent, kind slot present (existing in M9), deduped.
+  // Edges: importer -> imported per the contract (renderers reverse at draw
+  // time), kind slot present (existing in M9), deduped.
   assert.deepEqual(graph.edges, [
-    { from: "src/core/a.ts", to: "src/render/b.ts", kind: "existing" },
-    { from: "src/core/a.ts", to: "tests/a.test.ts", kind: "existing" }
+    { from: "src/render/b.ts", to: "src/core/a.ts", kind: "existing" },
+    { from: "tests/a.test.ts", to: "src/core/a.ts", kind: "existing" }
   ]);
   // Halo: at most TWO per high-blast node, alphabetical as the fact stores them.
   assert.deepEqual(graph.halo_nodes.map((node) => node.path), ["src/other/x.ts", "src/other/y.ts"]);

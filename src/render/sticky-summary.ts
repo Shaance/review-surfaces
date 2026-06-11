@@ -134,11 +134,23 @@ function renderFirstTourLeg(model: HumanReviewModel, state: RedactionState): str
   if (!leg || leg.steps.length === 0) {
     return undefined;
   }
-  const steps = leg.steps
+  // Cap the leg itself too: a broad PR can put dozens of files in one leg, and
+  // the sticky must stay short.
+  const MAX_STICKY_TOUR_STEPS = 5;
+  const shown = leg.steps.slice(0, MAX_STICKY_TOUR_STEPS);
+  const steps = shown
     .map((step, index) => `${index + 1}. \`${field(step.path, state)}\` — ${field(step.why, state)}`)
     .join("\n");
-  const remaining = model.reading_order.legs.length - 1;
-  const more = remaining > 0 ? `\n\n_${remaining} more leg(s) in the full reading order (human_review.md)._` : "";
+  const hiddenSteps = leg.steps.length - shown.length;
+  const remainingLegs = model.reading_order.legs.length - 1;
+  const pointers: string[] = [];
+  if (hiddenSteps > 0) {
+    pointers.push(`+ ${hiddenSteps} more step(s) in this leg`);
+  }
+  if (remainingLegs > 0) {
+    pointers.push(`${remainingLegs} more leg(s)`);
+  }
+  const more = pointers.length > 0 ? `\n\n_${pointers.join("; ")} in the full reading order (human_review.md)._` : "";
   return `### Start reading here (${field(leg.title, state)})\n\n${steps}${more}`;
 }
 

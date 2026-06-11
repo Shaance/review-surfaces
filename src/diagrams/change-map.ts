@@ -79,10 +79,11 @@ export function renderChangeMapMermaid(graph: ChangeGraph): string | undefined {
     lines.push("  end");
   }
 
-  // Edges: dependency -> dependent, so left-to-right agrees with the tour.
+  // Model edges are importer -> imported (CHANGE_MAP.1); draw them reversed
+  // (dependency -> dependent) so left-to-right agrees with the tour.
   for (const edge of graph.edges) {
-    const from = nodeIds.get(edge.from);
-    const to = nodeIds.get(edge.to);
+    const from = nodeIds.get(edge.to);
+    const to = nodeIds.get(edge.from);
     if (!from || !to) {
       continue;
     }
