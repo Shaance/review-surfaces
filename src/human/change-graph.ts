@@ -5,7 +5,7 @@
 // happens here: the import edges come from buildImportGraph() output.
 import { buildImportGraph } from "../collector/import-graph";
 import { compareStrings } from "../core/compare";
-import { moduleOf } from "../risks/arch-drift";
+import { clusterOfPath, DEFAULT_IMPLEMENTATION_ROOTS } from "../core/source-roots";
 import {
   ChangeGraph,
   ChangeGraphEdge,
@@ -75,9 +75,14 @@ interface BuildSectionsInput {
     added: ChangedImportEdge[];
     removed: ChangedImportEdge[];
   };
+  // review-surfaces.COLD_START.2: implementation roots detected from the target
+  // repo's own signals. One value feeds BOTH the clusters and the tour's file
+  // categorization so map and tour stay in agreement on any layout.
+  implementationRoots?: readonly string[];
 }
 
 export function buildChangeGraphSections(input: BuildSectionsInput): { change_graph: ChangeGraph; reading_order: ReadingOrder } {
+  const roots = input.implementationRoots ?? DEFAULT_IMPLEMENTATION_ROOTS;
   const files = [...input.files].sort((a, b) => compareStrings(a.path, b.path));
   const changedSet = new Set(files.map((file) => file.path));
   const edges = dedupeEdges(input.edges, changedSet);
@@ -102,7 +107,7 @@ export function buildChangeGraphSections(input: BuildSectionsInput): { change_gr
   }
   // The tour orders by HEAD dependencies only: a removed edge is not a current
   // dependency and must not influence the topological order.
-  const readingOrder = buildReadingOrder(files, edges.filter((edge) => edge.kind !== "removed"), input.reviewQueue);
+  const readingOrder = buildReadingOrder(files, edges.filter((edge) => edge.kind !== "removed"), input.reviewQueue, roots);
   const tourIndex = new Map<string, number>();
   for (const leg of readingOrder.legs) {
     for (const step of leg.steps) {
@@ -117,7 +122,7 @@ export function buildChangeGraphSections(input: BuildSectionsInput): { change_gr
     churn_added: file.added,
     churn_removed: file.removed,
     status: normalizeStatus(file.status),
-    cluster: clusterOf(file.path),
+    cluster: clusterOfPath(file.path, roots),
     ...(lensByPath.has(file.path) ? { lens: lensByPath.get(file.path) } : {})
   }));
 
@@ -201,10 +206,6 @@ function normalizeStatus(raw: string): ChangeGraphNodeStatus {
   return "modified";
 }
 
-// Cluster = module altitude: ONE definition shared with the drift detector so
-// the map's grouping and the drift facts can never disagree.
-const clusterOf = moduleOf;
-
 // Dominant lens per path: the lens whose metadata rank is lowest (most
 // important) among findings citing the path; ties broken by finding id.
 function dominantLensByPath(findings: RiskLensFinding[], changed: Set<string>): Map<string, RiskLens> {
@@ -239,7 +240,11 @@ const LEG_TITLES: Record<LegCategory, string> = {
   config: "Config and docs"
 };
 
-function categoryOf(filePath: string): LegCategory {
+// review-surfaces.COLD_START.2: implementation roots come from the target
+// repo's own signals (tsconfig/package.json/majority fallback), not a
+// hardcoded src|bin|lib list — got's source/core/index.ts must read as
+// implementation, not "config or docs — read last".
+function categoryOf(filePath: string, roots: readonly string[]): LegCategory {
   const top = filePath.split("/")[0];
   if (top === "schemas" || top === "features" || filePath.endsWith(".schema.json")) {
     return "contracts";
@@ -249,13 +254,13 @@ function categoryOf(filePath: string): LegCategory {
   if (top === "tests" || top === "test" || /\.(test|spec)\.[jt]sx?$/.test(filePath)) {
     return "tests";
   }
-  if (top === "src" || top === "bin" || top === "lib") {
+  if (roots.includes(top)) {
     return "implementation";
   }
   return "config";
 }
 
-function buildReadingOrder(files: ChangedFileFacts[], edges: ChangeGraphEdge[], queue: ReviewQueueItem[]): ReadingOrder {
+function buildReadingOrder(files: ChangedFileFacts[], edges: ChangeGraphEdge[], queue: ReviewQueueItem[], roots: readonly string[]): ReadingOrder {
   if (files.length === 0) {
     return { legs: [] };
   }
@@ -293,7 +298,7 @@ function buildReadingOrder(files: ChangedFileFacts[], edges: ChangeGraphEdge[], 
   // tests -> config/docs, the brainstorm's leg order), then alphabetical. The
   // result stays total, deterministic, and dependencies-first.
   const CATEGORY_PRIORITY: Record<LegCategory, number> = { contracts: 0, implementation: 1, tests: 2, config: 3 };
-  const frontierKey = (index: number): string => `${CATEGORY_PRIORITY[categoryOf(components[index][0])]} ${components[index][0]}`;
+  const frontierKey = (index: number): string => `${CATEGORY_PRIORITY[categoryOf(components[index][0], roots)]} ${components[index][0]}`;
   const frontier = components
     .map((_, index) => index)
     .filter((index) => (indegree.get(index) ?? 0) === 0);
@@ -358,7 +363,7 @@ function buildReadingOrder(files: ChangedFileFacts[], edges: ChangeGraphEdge[], 
       continue;
     }
     const member = members[0];
-    const category = categoryOf(member);
+    const category = categoryOf(member, roots);
     const why = deriveWhy(member, category, statusByPath.get(member) ?? "modified", importerCount.get(member) ?? 0, dependencyCount.get(member) ?? 0);
     const step = { path: member, why, queue_refs: queueRefs.get(member) ?? [] };
     const last = legs[legs.length - 1];

@@ -43,6 +43,11 @@ components:
   return value * 2;
 }
 `,
+  "src/options.ts": `export interface Options {
+  retries: number;
+  timeout?: number;
+}
+`,
   "schemas/thing.schema.json": `{
   "type": "object",
   "required": ["name"],

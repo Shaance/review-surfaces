@@ -63,9 +63,11 @@ import { postStickyComment } from "../render/post-comment";
 import { writeJson, writeText } from "../core/files";
 import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
+import { packagedSchemaPath } from "../schema/packaged-schemas";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
 import { ChangedImportEdge, computeChangedImportEdges } from "../human/change-graph";
 import { ArchDriftResult, computeArchDriftFacts, moduleOf } from "../risks/arch-drift";
+import { detectImplementationRoots, DEFAULT_IMPLEMENTATION_ROOTS } from "../core/source-roots";
 import { EvalScoreboardSummary, HUMAN_REVIEW_DECISIONS, RoundsLedgerEntry } from "../human/contract";
 import { buildChangeNarrative } from "../human/narrative";
 import { ChangeNarrative, HumanReviewModel, ReviewQueueItem } from "../human/contract";
@@ -449,7 +451,8 @@ async function readSchemaValidPacket(cwd: string, parsed: ParsedArgs, packetPath
   } catch {
     return undefined; // unparseable => cache miss
   }
-  const schemaPath = path.resolve(cwd, stringFlag(parsed, "schema") ?? "schemas/review_packet.schema.json");
+  const customSchemaFlag = stringFlag(parsed, "schema");
+  const schemaPath = customSchemaFlag !== undefined ? path.resolve(cwd, customSchemaFlag) : packagedSchemaPath("review_packet.schema.json");
   let schema: unknown;
   try {
     schema = JSON.parse(fs.readFileSync(schemaPath, "utf8"));
@@ -1494,6 +1497,10 @@ function buildHumanReviewForPacket(
         }
       }
     : config;
+  // review-surfaces.COLD_START.2: detect the repo's implementation roots ONCE
+  // from committed signals; the change map, tour, and drift facts all consume
+  // the same value so they cannot disagree on what counts as implementation.
+  const implementationRoots = detectRootsForPacket(cwd, factReaders);
   const humanReview = buildHumanReview({
     packet,
     prSurface,
@@ -1520,9 +1527,10 @@ function buildHumanReviewForPacket(
     // shared import-graph parser over head content — computed here (file access)
     // so the section is uniform on every build path.
     changedImportEdges: computeChangedImportEdgesForPacket(cwd, resolvedDiff, factReaders),
+    implementationRoots,
     // review-surfaces.ARCH_DRIFT.1-3: base-vs-head resolved import diffs at
     // module altitude, computed here (base/head file access).
-    archDrift: computeArchDriftForPacket(cwd, resolvedDiff, factReaders),
+    archDrift: computeArchDriftForPacket(cwd, resolvedDiff, factReaders, implementationRoots),
     // review-surfaces.TREND.1: carry the prior rounds ledger forward from the
     // previous packet's sibling human_review.json (any transport).
     previousRounds: readPreviousRounds(cwd, packet),
@@ -1609,6 +1617,29 @@ function buildFactReaders(cwd: string, packet: ReviewPacket, diff: StructuredDif
   };
 }
 
+// review-surfaces.COLD_START.2: list the committed head tree (ls-tree at the
+// committed head; the git index for a worktree head) and detect implementation
+// roots from the target repo's own signals. Failure degrades to the generic
+// conventional roots, never to a guess.
+function detectRootsForPacket(cwd: string, readers: FactReaders | undefined): string[] {
+  if (!readers) {
+    return [...DEFAULT_IMPLEMENTATION_ROOTS];
+  }
+  let files: string[];
+  try {
+    files = execFileSync(
+      "git",
+      readers.headIsWorktree ? ["ls-files", "--cached"] : ["ls-tree", "-r", "--name-only", readers.headSha],
+      { cwd, encoding: "utf8" }
+    )
+      .split("\n")
+      .filter(Boolean);
+  } catch {
+    return [...DEFAULT_IMPLEMENTATION_ROOTS];
+  }
+  return detectImplementationRoots({ files, read: readers.readHead });
+}
+
 // review-surfaces.CHANGE_MAP.1: importer->imported edges among the changed
 // files, parsed from the reviewed head's content with the same resolution
 // rules as the blast-radius graph. Deleted files carry no head content, so
@@ -1641,7 +1672,7 @@ function computeChangedImportEdgesForPacket(cwd: string, diff: StructuredDiff | 
 // changed files, with blob-only existence checks on committed refs (the same
 // resolution rules as the blast-radius graph). The base side reads the
 // merge-base; a worktree head reads the working tree.
-function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined, readers: FactReaders | undefined): ArchDriftResult | undefined {
+function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined, readers: FactReaders | undefined, implementationRoots: readonly string[]): ArchDriftResult | undefined {
   // No reliable base side (unresolvable base ref) -> NO drift signal at all:
   // comparing head imports against an empty base would fabricate a "new edge"
   // fact for every pre-existing cross-module import in the changed files.
@@ -1661,8 +1692,8 @@ function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined
   // import (the same module edge often already exists via another file), so
   // both trees are parsed once with the shared bounded import graph.
   const existsBase = (filePath: string): boolean => readers.baseReadRef !== "" && blobExistsAtRef(cwd, readers.baseReadRef, filePath);
-  const baseModuleEdgeKeys = treeModuleEdgeKeys(cwd, readers.baseReadRef || undefined, readers.readBase, existsBase);
-  const headModuleEdgeKeys = treeModuleEdgeKeys(cwd, readers.headIsWorktree ? "WORKTREE" : readers.headSha, readers.readHead, existsHead);
+  const baseModuleEdgeKeys = treeModuleEdgeKeys(cwd, readers.baseReadRef || undefined, readers.readBase, existsBase, implementationRoots);
+  const headModuleEdgeKeys = treeModuleEdgeKeys(cwd, readers.headIsWorktree ? "WORKTREE" : readers.headSha, readers.readHead, existsHead, implementationRoots);
   const result = computeArchDriftFacts({
     changedFiles: diff.files.map((file) => ({ path: file.path, ...(file.old_path ? { old_path: file.old_path } : {}), status: file.status })),
     readBase: readers.readBase,
@@ -1670,7 +1701,8 @@ function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined
     existsBase,
     existsHead,
     ...(baseModuleEdgeKeys instanceof Set ? { baseModuleEdgeKeys } : {}),
-    ...(headModuleEdgeKeys instanceof Set ? { headModuleEdgeKeys } : {})
+    ...(headModuleEdgeKeys instanceof Set ? { headModuleEdgeKeys } : {}),
+    implementationRoots
   });
   // A truncated tree graph makes module-edge novelty UNKNOWN: suppress the
   // facts ("no import existed at the base" cannot be asserted) but keep the
@@ -1690,7 +1722,8 @@ function treeModuleEdgeKeys(
   cwd: string,
   treeRef: string | undefined,
   read: (filePath: string) => string | undefined,
-  exists: (filePath: string) => boolean
+  exists: (filePath: string) => boolean,
+  implementationRoots: readonly string[]
 ): Set<string> | "truncated" | undefined {
   if (!treeRef) {
     return undefined;
@@ -1719,9 +1752,9 @@ function treeModuleEdgeKeys(
   }
   const keys = new Set<string>();
   for (const [imported, importers] of graph.importers.entries()) {
-    const toModule = moduleOf(imported);
+    const toModule = moduleOf(imported, implementationRoots);
     for (const importer of importers) {
-      const fromModule = moduleOf(importer);
+      const fromModule = moduleOf(importer, implementationRoots);
       if (fromModule !== toModule) {
         keys.add(JSON.stringify([fromModule, toModule]));
       }
@@ -2121,11 +2154,9 @@ function humanReviewIssues(cwd: string, humanReview: unknown): string[] {
 }
 
 function loadHumanReviewSchema(cwd: string): unknown | undefined {
-  const candidates = [
-    path.resolve(__dirname, "..", "..", "..", "schemas", "human_review.schema.json"),
-    path.resolve(__dirname, "..", "..", "schemas", "human_review.schema.json"),
-    path.resolve(cwd, "schemas/human_review.schema.json")
-  ];
+  // review-surfaces.COLD_START.1: package-root resolution only — a CWD fallback
+  // would make validation depend on where the user happens to run the command.
+  const candidates = [packagedSchemaPath("human_review.schema.json")];
   for (const candidate of candidates) {
     if (!fileExists(candidate)) {
       continue;
@@ -2347,7 +2378,9 @@ async function runValidatePacket(parsed: ParsedArgs): Promise<number> {
     return ExitCodes.schemaValidationFailed;
   }
 
-  const schemaPath = path.resolve(cwd, customSchema ?? "schemas/review_packet.schema.json");
+  // review-surfaces.COLD_START.1: the bundled schema resolves from the package
+  // root so `validate` works from any CWD; an explicit --schema stays caller-relative.
+  const schemaPath = customSchema !== undefined ? path.resolve(cwd, customSchema) : packagedSchemaPath("review_packet.schema.json");
   const result = await validateJsonFile(schemaPath, packetPath);
   if (!result.valid) {
     for (const issue of result.issues) {
@@ -2356,7 +2389,10 @@ async function runValidatePacket(parsed: ParsedArgs): Promise<number> {
     return ExitCodes.schemaValidationFailed;
   }
 
-  console.log(`Validated ${path.relative(cwd, packetPath)} against ${path.relative(cwd, schemaPath)}`);
+  // The default schema is the bundled one (package root, COLD_START.1) — a
+  // CWD-relative path to it is meaningless noise from a foreign repo.
+  const schemaLabel = customSchema !== undefined ? path.relative(cwd, schemaPath) : "the bundled schemas/review_packet.schema.json";
+  console.log(`Validated ${path.relative(cwd, packetPath)} against ${schemaLabel}`);
   return ExitCodes.success;
 }
 
@@ -2726,11 +2762,8 @@ function jsonSerializable<T>(value: T): T {
 }
 
 function loadPrSurfaceSchema(cwd: string): unknown | undefined {
-  const candidates = [
-    path.resolve(__dirname, "..", "..", "..", "schemas", "pr_review_surface.schema.json"),
-    path.resolve(__dirname, "..", "..", "schemas", "pr_review_surface.schema.json"),
-    path.resolve(cwd, "schemas/pr_review_surface.schema.json")
-  ];
+  // review-surfaces.COLD_START.1: package-root resolution only (see loadHumanReviewSchema).
+  const candidates = [packagedSchemaPath("pr_review_surface.schema.json")];
   for (const candidate of candidates) {
     if (!fileExists(candidate)) {
       continue;

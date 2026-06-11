@@ -5,6 +5,7 @@ import { fileExists, readText, relativePath, writeText } from "../core/files";
 import { stringifyYaml } from "../core/simple-yaml";
 import { VERSION } from "../core/version";
 import { DEFAULT_PRIVACY_IGNORE_PATTERNS } from "../privacy/ignore";
+import { packagedSchemaPath } from "../schema/packaged-schemas";
 import { parseAcaiSpec } from "../acai/acai";
 import { loadConfig } from "../config/config";
 import { expandPatterns } from "../core/glob";
@@ -227,28 +228,15 @@ function validateSchema(_cwd: string, absolutePath: string): void {
 
 /**
  * Resolve the packet schema THIS TOOL ships, so the scaffolded repo can run
- * `validate` offline. The compiled module lives at dist/src/bootstrap/init.js,
- * so the installed package root is three directories up, where `schemas/`
- * sits alongside `dist/`. Fall back to ./schemas relative to cwd of the
- * package when running from source layouts.
+ * `validate` offline. Delegates to the shared package-root resolver
+ * (review-surfaces.COLD_START.1) — never the user's CWD.
  */
 export function locatePackagedSchema(): string {
-  const candidates = [
-    // Installed package: <pkg>/dist/src/bootstrap/init.js -> <pkg>/schemas/...
-    path.resolve(__dirname, "..", "..", "..", "schemas", "review_packet.schema.json"),
-    // Running from source via ts-node-like layouts: <pkg>/src/bootstrap -> <pkg>/schemas
-    path.resolve(__dirname, "..", "..", "schemas", "review_packet.schema.json"),
-    // Last resort: process cwd (developer running inside the tool repo).
-    path.resolve(process.cwd(), "schemas", "review_packet.schema.json")
-  ];
-  for (const candidate of candidates) {
-    if (fileExists(candidate)) {
-      return candidate;
-    }
+  const candidate = packagedSchemaPath("review_packet.schema.json");
+  if (!fileExists(candidate)) {
+    throw new Error(`Could not locate the packaged review packet schema at ${candidate}.`);
   }
-  throw new Error(
-    `Could not locate the packaged review packet schema. Looked in:\n${candidates.map((candidate) => `  - ${candidate}`).join("\n")}`
-  );
+  return candidate;
 }
 
 async function readPackagedSchema(): Promise<string> {

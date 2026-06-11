@@ -280,6 +280,16 @@ test("review-surfaces signature: REVIEW_SURFACES_AI_MODEL does NOT change the mo
   }
 });
 
+// COLD_START.1 made the bundled packet schema reachable from EVERY cwd, so the
+// cache's schema-valid check now really runs in these fixture repos: an unknown
+// top-level key is a (correct) cache miss. Hit-expecting sentinels therefore
+// mutate a string VALUE, keeping the packet schema-valid.
+function sentinelPacket(raw: string): string {
+  const packet = JSON.parse(raw) as { intent: { summary: string } };
+  packet.intent.summary = `${packet.intent.summary} [cache-sentinel]`;
+  return JSON.stringify(packet, null, 2);
+}
+
 // FIX 2: --cache skips regeneration on a signature match and regenerates on a
 // mismatch. Sentinel: mutate the packet on a hit (it must be left untouched);
 // then mutate an input and confirm the next run rewrites the packet.
@@ -291,7 +301,7 @@ test("review-surfaces --cache: reuses on signature match, regenerates on mismatc
     const baselinePacket = read(tmp, "review_packet.json");
 
     // Write a sentinel into the on-disk packet. A cache HIT must NOT overwrite it.
-    const sentinel = baselinePacket.replace("\"schema_version\"", "\"_cache_sentinel\": true,\n  \"schema_version\"");
+    const sentinel = sentinelPacket(baselinePacket);
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "review_packet.json"), sentinel);
 
     const hit = runAll(tmp, ["--now", FROZEN, "--cache"]);
@@ -306,7 +316,7 @@ test("review-surfaces --cache: reuses on signature match, regenerates on mismatc
     assert.equal(miss.status, 0, miss.stderr);
     assert.doesNotMatch(miss.stdout, /inputs unchanged/);
     const regenerated = read(tmp, "review_packet.json");
-    assert.doesNotMatch(regenerated, /_cache_sentinel/, "cache miss must regenerate the packet");
+    assert.doesNotMatch(regenerated, /\[cache-sentinel\]/, "cache miss must regenerate the packet");
     assert.match(regenerated, /review-surfaces\.packet\.v1/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -600,10 +610,7 @@ test("review-surfaces --cache --strict: a clean hit reuses the packet and still 
     const prime = runAll(tmp, ["--now", FROZEN, "--cache", "--strict"]);
     assert.equal(prime.status, 10);
 
-    const sentinel = read(tmp, "review_packet.json").replace(
-      "\"schema_version\"",
-      "\"_clean_hit_sentinel\": true,\n  \"schema_version\""
-    );
+    const sentinel = sentinelPacket(read(tmp, "review_packet.json"));
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "review_packet.json"), sentinel);
 
     const run = runAll(tmp, ["--now", FROZEN, "--cache", "--strict"]);
@@ -622,7 +629,7 @@ test("review-surfaces --cache --strict: a clean hit reuses the packet and still 
     assert.match(run.stdout, /Suggested comments: \d+/);
     assert.match(run.stdout, /Missing evidence: \d+/);
     assert.doesNotMatch(run.stdout, /agent_handoff\.md/);
-    assert.match(read(tmp, "review_packet.json"), /_clean_hit_sentinel/, "a clean hit must leave the packet untouched");
+    assert.match(read(tmp, "review_packet.json"), /\[cache-sentinel\]/, "a clean hit must leave the packet untouched");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -696,9 +703,7 @@ test("review-surfaces --cache: a configured output_dir (no --out) is read for th
 
     // Sentinel the on-disk packet in the CONFIGURED dir. A cache HIT must not touch it.
     const packetPath = path.join(tmp, CUSTOM_OUTPUT_DIR, "review_packet.json");
-    const sentinel = fs
-      .readFileSync(packetPath, "utf8")
-      .replace("\"schema_version\"", "\"_custom_dir_sentinel\": true,\n  \"schema_version\"");
+    const sentinel = sentinelPacket(fs.readFileSync(packetPath, "utf8"));
     fs.writeFileSync(packetPath, sentinel);
 
     // Second run with unchanged inputs: must be a cache HIT reading the configured dir.
@@ -711,7 +716,7 @@ test("review-surfaces --cache: a configured output_dir (no --out) is read for th
     );
     assert.match(
       fs.readFileSync(packetPath, "utf8"),
-      /_custom_dir_sentinel/,
+      /\[cache-sentinel\]/,
       "the cache hit must leave the configured-dir packet untouched"
     );
   } finally {
