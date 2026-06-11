@@ -1316,7 +1316,11 @@ function field(value: string, max = MAX_FIELD_CHARS): string {
 function renderChangeMapSection(model: HumanReviewModel): string {
   const body = changeMapMermaidBody(model.change_graph);
   if (!body) {
-    return "No changed files to map.";
+    // Honest omission: a populated graph whose rendered body tripped the size
+    // cap or fence-close guard is OMITTED, never reported as "no changes".
+    return model.change_graph.nodes.length === 0
+      ? "No changed files to map."
+      : `Change map omitted (${model.change_graph.nodes.length} changed file(s); the rendered diagram exceeded the embed size cap or contained fence-closing content).`;
   }
   return `\`\`\`mermaid\n${body}\n\`\`\``;
 }

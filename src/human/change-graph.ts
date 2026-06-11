@@ -163,7 +163,8 @@ function dedupeEdges(edges: ChangedImportEdge[], changed: Set<string>): ChangeGr
 
 function normalizeStatus(raw: string): ChangeGraphNodeStatus {
   const letter = (raw || "M").toUpperCase()[0];
-  if (letter === "A") return "added";
+  // Porcelain "??" (untracked working-tree file) and copies are add-like.
+  if (letter === "A" || letter === "?" || letter === "C") return "added";
   if (letter === "D") return "deleted";
   if (letter === "R") return "renamed";
   return "modified";

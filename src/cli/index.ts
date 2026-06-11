@@ -1605,6 +1605,9 @@ function computeChangedImportEdgesForPacket(cwd: string, diff: StructuredDiff | 
   return computeChangedImportEdges({
     changedPaths,
     read: readers.readHead,
+    // Blob-only check for committed refs: `git show <ref>:<dir>` succeeds for
+    // directories, which would resolve `./foo` to the directory instead of
+    // foo/index.ts and silently drop the edge.
     exists: readers.headIsWorktree
       ? (filePath) => {
           try {
@@ -1613,7 +1616,7 @@ function computeChangedImportEdgesForPacket(cwd: string, diff: StructuredDiff | 
             return false;
           }
         }
-      : (filePath) => readers.readHead(filePath) !== undefined
+      : (filePath) => blobExistsAtRef(cwd, readers.headSha, filePath)
   });
 }
 
@@ -1656,7 +1659,7 @@ function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactR
             return false;
           }
         }
-      : (filePath) => readers.readHead(filePath) !== undefined
+      : (filePath) => blobExistsAtRef(cwd, readers.headSha, filePath)
   });
   for (const change of targets) {
     const symbols = [...change.exports_removed, ...change.signatures_changed.map((sig) => sig.name)];

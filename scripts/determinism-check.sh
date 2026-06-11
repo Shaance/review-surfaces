@@ -34,6 +34,12 @@ run() {
     --strict \
     --now "$FROZEN" \
     --out "$OUT" >/dev/null
+  # Materialize the comment surfaces too: `all` alone never writes the
+  # PR/sticky comment.md, so nondeterminism in renderHumanPrComment or the
+  # sticky embed would otherwise slip past this check (CHANGE_MAP.4).
+  node bin/review-surfaces.js comment --review-scope "$scope" --out "$OUT" >/dev/null 2>&1
+  mv "$OUT/comment.md" "$OUT/comment.$scope.md"
+  node bin/review-surfaces.js comment --format sticky --out "$OUT" >/dev/null 2>&1
 }
 
 for SCOPE in repo pr; do
