@@ -2308,13 +2308,18 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
   // (honoring --out / config output_dir), not a hardcoded .review-surfaces.
   const humanCommentModel = await loadCurrentHumanReviewForPrComment(cwd, path.dirname(surfacePath), surface, config);
   const relativeSurfacePath = path.relative(cwd, surfacePath) || surfacePath;
-  const markdown = humanCommentModel
+  const humanRendered = humanCommentModel
     ? renderHumanPrComment(humanCommentModel, {
         surfacePath: relativeSurfacePath,
         humanReviewPath: artifactPathForLog(cwd, path.dirname(surfacePath), "human_review.md"),
         humanReviewJsonPath: artifactPathForLog(cwd, path.dirname(surfacePath), "human_review.json")
       })
-    : renderPrComment(surface, { surfacePath: relativeSurfacePath });
+    : undefined;
+  const markdown = humanRendered ? humanRendered.markdown : renderPrComment(surface, { surfacePath: relativeSurfacePath });
+  // review-surfaces.CHANGE_MAP.4: a redaction BLOCK inside the embedded map or
+  // tour snippet must trip the privacy gate — the rendered body only carries
+  // the placeholder, so this flag is the surviving signal.
+  const renderBlocked = humanRendered?.blocked ?? false;
   const commentPath = path.join(path.dirname(surfacePath), "comment.md");
   await writeText(commentPath, markdown);
   process.stdout.write(markdown);
@@ -2335,6 +2340,10 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
   // deliverable and the command exits 0 after warning about postability.
   const posting = booleanFlag(parsed, "post");
   const strictPostability = booleanFlag(parsed, "strict-postability");
+  if (renderBlocked) {
+    console.error("PR comment render blocked a high-confidence secret; the comment must not be posted.");
+    return posting || strictPostability ? ExitCodes.privacyBlocked : ExitCodes.success;
+  }
   if (!hasRemoteNarrative) {
     const reason = surface.blocked_reason ?? `${surface.llm.status}/${surface.llm.provider}`;
     console.error(`PR review surface is not postable (${reason}); skipping sticky post.`);

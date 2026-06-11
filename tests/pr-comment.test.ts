@@ -255,7 +255,7 @@ test("renderHumanPrComment renders the compact PR comment from human_review.json
     humanReviewPath: "custom-out/human_review.md",
     humanReviewJsonPath: "custom-out/human_review.json",
     surfacePath: "custom-out/pr_review_surface.json"
-  });
+  }).markdown;
   assert.match(md, /review-surfaces:sticky/);
   assert.match(md, /## review-surfaces PR review/);
   assert.match(md, /\*\*Verdict:\*\* Needs author clarification\./);
@@ -276,7 +276,7 @@ test("renderHumanPrComment renders the compact PR comment from human_review.json
 
 test("renderHumanPrComment is byte-deterministic for the same model", () => {
   const model = humanModel();
-  assert.equal(renderHumanPrComment(model), renderHumanPrComment(model));
+  assert.deepEqual(renderHumanPrComment(model), renderHumanPrComment(model));
 });
 
 test("renderHumanPrComment caps suggested comments after filtering ready drafts", () => {
@@ -287,7 +287,7 @@ test("renderHumanPrComment caps suggested comments after filtering ready drafts"
     { ...model.suggested_comments[0], id: "SC-NOT-READY-003", body: "not ready 3", ready_to_post: false },
     { ...model.suggested_comments[0], id: "SC-READY-001", body: "ready after non-ready drafts", ready_to_post: true }
   ];
-  const md = renderHumanPrComment(model);
+  const md = renderHumanPrComment(model).markdown;
   assert.match(md, /ready after non-ready drafts/);
   assert.doesNotMatch(md, /No ready suggested comments generated/);
   assert.doesNotMatch(md, /not ready 1/);

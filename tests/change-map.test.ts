@@ -193,7 +193,7 @@ test("review-surfaces.CHANGE_MAP.3 the map embeds on renderHumanPrComment and th
     reviewQueue: []
   });
   const fixture = model(sections.change_graph, sections.reading_order.legs);
-  const prComment = renderHumanPrComment(fixture);
+  const prComment = renderHumanPrComment(fixture).markdown;
   assert.match(prComment, /<details><summary>Change map<\/summary>/);
   assert.match(prComment, /```mermaid/);
   const sticky = renderStickySummary(fixture);

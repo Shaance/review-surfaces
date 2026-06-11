@@ -15,6 +15,7 @@ import { decisionLabel, formatQueueLocation } from "../human/render";
 import type { HumanReviewModel, ReviewQueueItem, SinceLastReview, SinceLastReviewItem } from "../human/contract";
 import { STICKY_MARKER } from "./comment";
 import { changeMapMermaidEmbed } from "./change-map-embed";
+import { firstTourLegSnippet } from "./tour-snippet";
 
 const MAX_SUMMARY_CHARS = 600;
 const MAX_FIELD_CHARS = 300;
@@ -107,9 +108,12 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   if (mapEmbed.body) {
     sections.push("", `<details><summary>Change map</summary>\n\n\`\`\`mermaid\n${mapEmbed.body}\n\`\`\`\n\n</details>`);
   }
-  const firstLeg = renderFirstTourLeg(model, state);
-  if (firstLeg) {
-    sections.push("", firstLeg);
+  const firstLeg = firstTourLegSnippet(model);
+  if (firstLeg.blocked) {
+    state.blocked = true;
+  }
+  if (firstLeg.text) {
+    sections.push("", firstLeg.text);
   }
 
   if (options.artifactName) {
@@ -130,33 +134,6 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   // contributes to the block gate alongside the field-level signal.
   const redaction = redactSecrets(body);
   return { markdown: redaction.text, blocked: state.blocked || redaction.blocked };
-}
-
-// review-surfaces.READING_ORDER.2: the sticky carries ONLY the first leg of the
-// guided tour — it must stay short.
-function renderFirstTourLeg(model: HumanReviewModel, state: RedactionState): string | undefined {
-  const leg = model.reading_order.legs[0];
-  if (!leg || leg.steps.length === 0) {
-    return undefined;
-  }
-  // Cap the leg itself too: a broad PR can put dozens of files in one leg, and
-  // the sticky must stay short.
-  const MAX_STICKY_TOUR_STEPS = 5;
-  const shown = leg.steps.slice(0, MAX_STICKY_TOUR_STEPS);
-  const steps = shown
-    .map((step, index) => `${index + 1}. \`${field(step.path, state)}\` — ${field(step.why, state)}`)
-    .join("\n");
-  const hiddenSteps = leg.steps.length - shown.length;
-  const remainingLegs = model.reading_order.legs.length - 1;
-  const pointers: string[] = [];
-  if (hiddenSteps > 0) {
-    pointers.push(`+ ${hiddenSteps} more step(s) in this leg`);
-  }
-  if (remainingLegs > 0) {
-    pointers.push(`${remainingLegs} more leg(s)`);
-  }
-  const more = pointers.length > 0 ? `\n\n_${pointers.join("; ")} in the full reading order (human_review.md)._` : "";
-  return `### Start reading here (${field(leg.title, state)})\n\n${steps}${more}`;
 }
 
 function renderQueue(items: ReviewQueueItem[], diff: StructuredDiff | undefined, state: RedactionState): string {
