@@ -103,18 +103,19 @@ function attributeTransitives(facts: DependencyFact[], input: ComputeDependencyF
     if (direct.length === 0) {
       continue;
     }
-    // Reachability over instances: the first (alphabetical) direct dep that
-    // reaches ANY instance of a package attributes that package.
-    const viaByPackage = new Map<string, string>();
+    // Reachability over instances, first (alphabetical) root wins PER
+    // INSTANCE. A package-level via is assigned only when every reached
+    // instance of that package agrees on the root — instances pulled by
+    // different direct deps stay unattributed rather than guessed.
+    const viaByInstance = new Map<string, string>();
     for (const root of direct) {
       const rootInstances = [...(graph.instancesByName.get(root) ?? [])].sort();
       const queue = [...rootInstances];
       const seen = new Set<string>(rootInstances);
       while (queue.length > 0) {
         const instance = queue.shift() as string;
-        const name = graph.nameOf(instance);
-        if (!viaByPackage.has(name)) {
-          viaByPackage.set(name, root);
+        if (!viaByInstance.has(instance)) {
+          viaByInstance.set(instance, root);
         }
         for (const next of [...(graph.edges.get(instance) ?? [])].sort()) {
           if (!seen.has(next)) {
@@ -125,7 +126,14 @@ function attributeTransitives(facts: DependencyFact[], input: ComputeDependencyF
       }
     }
     for (const fact of sourceFacts) {
-      const via = viaByPackage.get(fact.package);
+      const roots = new Set<string>();
+      for (const instance of graph.instancesByName.get(fact.package) ?? []) {
+        const root = viaByInstance.get(instance);
+        if (root) {
+          roots.add(root);
+        }
+      }
+      const via = roots.size === 1 ? [...roots][0] : undefined;
       // Self-attribution is meaningless: a direct dep "pulled by itself" stays flat.
       if (via && via !== fact.package) {
         fact.via = via;
@@ -185,18 +193,24 @@ function pnpmLockGraph(text: string | undefined): LockGraph | undefined {
       if (typeof entry !== "object" || entry === null) {
         continue;
       }
-      const deps = (entry as Record<string, unknown>).dependencies;
-      if (typeof deps !== "object" || deps === null) {
-        continue;
-      }
       const targets = edges.get(key) ?? new Set<string>();
-      for (const [depName, version] of Object.entries(deps as Record<string, unknown>)) {
-        const target = resolveTarget(depName, version);
-        if (target) {
-          targets.add(target);
+      // Optional dependency edges count too: an optional package is still a
+      // real edge the lockfile records.
+      for (const group of ["dependencies", "optionalDependencies"] as const) {
+        const deps = (entry as Record<string, unknown>)[group];
+        if (typeof deps !== "object" || deps === null) {
+          continue;
+        }
+        for (const [depName, version] of Object.entries(deps as Record<string, unknown>)) {
+          const target = resolveTarget(depName, version);
+          if (target) {
+            targets.add(target);
+          }
         }
       }
-      edges.set(key, targets);
+      if (targets.size > 0) {
+        edges.set(key, targets);
+      }
     }
   }
   if (edges.size === 0) {

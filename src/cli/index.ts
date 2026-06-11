@@ -1835,6 +1835,12 @@ async function runScoreboard(parsed: ParsedArgs): Promise<number> {
   const scoreboard = readEvalScoreboard(outDir);
   const readmePath = path.resolve(cwd, stringFlag(parsed, "readme") ?? "README.md");
   if (!scoreboard) {
+    if (booleanFlag(parsed, "check")) {
+      // In the gate this runs right after pnpm run test: a missing/malformed
+      // scoreboard means the harness stopped emitting its evidence — fail.
+      console.error("No readable eval_scoreboard.json; the eval harness did not emit its scoreboard (run pnpm run test first).");
+      return ExitCodes.qualityGateFailed;
+    }
     console.error("No eval_scoreboard.json found; nothing to surface (run pnpm run test first).");
     return ExitCodes.success;
   }

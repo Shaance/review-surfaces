@@ -48,9 +48,11 @@ test("review-surfaces.EVAL_HARNESS.6 the README scoreboard block regenerates ide
     // Regeneration repairs it (idempotent upsert between the markers).
     assert.equal(runScoreboard(dir).status, 0);
     assert.equal(fs.readFileSync(path.join(dir, "README.md"), "utf8"), readme);
-    // No scoreboard file -> nothing to assert; exit 0.
+    // No scoreboard file: --check FAILS (the harness stopped emitting its
+    // evidence), while plain regeneration stays lenient.
     fs.rmSync(path.join(dir, ".review-surfaces", "eval_scoreboard.json"));
-    assert.equal(runScoreboard(dir, ["--check"]).status, 0);
+    assert.equal(runScoreboard(dir, ["--check"]).status, 10);
+    assert.equal(runScoreboard(dir).status, 0);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
