@@ -44,7 +44,8 @@ export function changeMapDetailsBlock(graph: ChangeGraph): string | undefined {
 
 // Shared collapsed-details mermaid wrapper (the blank line after <summary> is
 // required for GitHub to render the inner fence). Callers must pass an
-// already-redacted, fence-guarded body.
+// already-redacted, fence-guarded body AND a constant title (the title is not
+// HTML-escaped here; never interpolate untrusted text into it).
 export function mermaidDetailsBlock(title: string, body: string): string {
   return `<details><summary>${title}</summary>\n\n\`\`\`mermaid\n${body}\n\`\`\`\n\n</details>`;
 }
