@@ -94,4 +94,8 @@ test("review-surfaces.DISTRIBUTION.4 the local gate includes the pnpm pack smoke
   assert.ok(!gate.includes("npm publish") && !gate.includes("pnpm publish"), "the gate never publishes");
   const manifest = JSON.parse(read("package.json")) as { scripts?: Record<string, string> };
   assert.equal(manifest.scripts?.prepublishOnly, "pnpm run build", "publish remains prepared via prepublishOnly");
+  // prepack guarantees the tarball carries dist/ even from a clean checkout
+  // (pnpm pack / npm pack run prepack; prepublishOnly only runs on publish).
+  assert.equal(manifest.scripts?.prepack, "pnpm run build", "pack always builds first");
+  assert.match(gate, /rm -rf dist\n/, "the smoke packs from a clean dist");
 });

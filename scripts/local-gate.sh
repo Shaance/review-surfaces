@@ -29,6 +29,9 @@ node bin/review-surfaces.js scoreboard --check
 # required when the repo's own dependencies are already installed.
 PACK_TMP="$(mktemp -d)"
 trap 'rm -rf "$PACK_TMP"' EXIT
+# Pack from a CLEAN dist (prepack rebuilds it) so the smoke covers the real
+# cold-start tarball path, not whatever a prior test run left behind.
+rm -rf dist
 pnpm pack --pack-destination "$PACK_TMP" >/dev/null
 TARBALL="$(ls "$PACK_TMP"/review-surfaces-*.tgz)"
 printf '{"name":"pack-smoke","private":true}\n' > "$PACK_TMP/package.json"

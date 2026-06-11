@@ -11,8 +11,9 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const chrome = process.env.CHROME_BIN ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const artifacts = process.env.RS_ARTIFACTS ? path.resolve(process.env.RS_ARTIFACTS) : path.join(root, ".review-surfaces");
 const outDir = path.join(root, "docs", "images");
