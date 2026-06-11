@@ -327,6 +327,9 @@ const REVIEW_ROUTE_DEFINITIONS: Record<ReviewRoutePersona, ReviewRouteDefinition
 };
 export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel {
   const config = humanReviewBuildConfig(input);
+  // review-surfaces.COLD_START.4: the spec mode is MODEL state read from the
+  // packet intent (a legacy packet without the field reads as "acai").
+  const specMode: "acai" | "none" = (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none" ? "none" : "acai";
   // review-surfaces.SEMANTIC_DIFF.1-4: concrete change facts feed the queue and
   // suggested comments with field-level / signature-level / test-weakening
   // language instead of generic path-touch phrasing.
@@ -349,7 +352,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   const riskLensFindings = buildRiskLensFindings(input, config, semanticFacts);
   const blockers = buildBlockers(input, feedbackEffects);
   const reviewQueue = buildReviewQueue(input, feedbackEffects, config, semanticFacts);
-  const intentMismatch = buildIntentMismatch(input);
+  const intentMismatch = buildIntentMismatch(input, specMode);
   const questions = buildQuestions(input, blockers, feedbackEffects, riskLensFindings, intentMismatch, config);
   const suggestedComments = buildSuggestedComments(input, blockers, riskLensFindings, config, semanticFacts);
   const trustAudit = buildTrustAudit(input);
@@ -414,6 +417,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   return stripUndefined({
     schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
     mode: input.prSurface ? "pr" : "repo",
+    spec_mode: specMode,
     verdict,
     summary: summarizeHumanReview(input, verdict, reviewQueue.length, blockers.length),
     // review-surfaces.NARRATIVE.4: the narrative is stored read-only AFTER the
@@ -1202,8 +1206,25 @@ function routeText(...values: Array<string | undefined>): string {
   return values.filter((value): value is string => typeof value === "string").join(" ");
 }
 
-function buildIntentMismatch(input: BuildHumanReviewInput): IntentMismatch {
+export const SPEC_NONE_NOTE = "No requirement spec configured — intent checks are limited to docs and constraints.";
+
+function buildIntentMismatch(input: BuildHumanReviewInput, specMode: "acai" | "none"): IntentMismatch {
   const focus = buildIntentMismatchFocus(input);
+  // review-surfaces.COLD_START.5: a spec-less repo gets NO spec-shaped
+  // mismatch/overreach/missing-intent items — only the observed diff facts and
+  // the one-line honest note. Provider-claimed candidates still render: they are
+  // explicitly marked unconfirmed and exist precisely for sparse-intent repos.
+  if (specMode === "none") {
+    return {
+      spec_note: SPEC_NONE_NOTE,
+      expected_by_spec: [],
+      observed_in_diff: cappedIntentMismatchItems("INTENT-OBSERVED", observedDiffDrafts(input)),
+      possible_mismatches: [],
+      possible_overreach: [],
+      missing_intent: [],
+      claimed_candidates: cappedIntentMismatchItems("INTENT-CLAIMED", claimedCandidateDrafts(input))
+    };
+  }
   return {
     expected_by_spec: cappedIntentMismatchItems("INTENT-EXPECTED", expectedIntentDrafts(input, focus)),
     observed_in_diff: cappedIntentMismatchItems("INTENT-OBSERVED", observedDiffDrafts(input)),
@@ -4422,9 +4443,16 @@ function summarizeHumanReview(
   queueCount: number,
   blockerCount: number
 ): string {
+  // review-surfaces.COLD_START.5: a spec-less packet never advertises
+  // "0 requirement result(s)" — the spec-coupled counts are simply absent.
+  const specless = (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none";
   const scope = input.prSurface
-    ? `${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.scope.affected_requirements.length} affected requirement(s), ${input.prSurface.risks.candidates.length} PR risk candidate(s)`
-    : `${input.packet.evaluation.results.length} requirement result(s), ${input.packet.risks.items.length} packet risk(s)`;
+    ? specless
+      ? `${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.risks.candidates.length} PR risk candidate(s)`
+      : `${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.scope.affected_requirements.length} affected requirement(s), ${input.prSurface.risks.candidates.length} PR risk candidate(s)`
+    : specless
+      ? `${input.packet.risks.items.length} packet risk(s)`
+      : `${input.packet.evaluation.results.length} requirement result(s), ${input.packet.risks.items.length} packet risk(s)`;
   return `Human review surface generated from local evidence: ${scope}. Verdict is ${verdict.decision} with ${blockerCount} blocker(s) and ${queueCount} review queue item(s).`;
 }
 

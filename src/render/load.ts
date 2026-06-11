@@ -50,6 +50,8 @@ export function loadIntent(outputDir: string): IntentModel | null {
   }
   return {
     summary: asString(parsed.summary),
+    // review-surfaces.COLD_START.4: round-trip; a legacy artifact reads "acai".
+    spec_mode: parsed.spec_mode === "none" ? "none" : "acai",
     requirements: asArray(parsed.requirements).map(normalizeRequirement),
     constraints: asStringArray(parsed.constraints),
     non_goals: asStringArray(parsed.non_goals),

@@ -324,6 +324,24 @@ function renderDependencyChainsSection(model: HumanReviewModel): string {
 
 export function renderIntentMismatchMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
   const intent = intentMismatch(model);
+  // review-surfaces.COLD_START.5: in spec-less mode the standalone surface is
+  // the note plus the diff-derived observations — no empty spec sections.
+  if (intent.spec_note) {
+    return `# Intent Mismatch
+
+Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
+
+${field(intent.spec_note)}
+
+## Observed in diff
+
+${renderIntentMismatchItems(intent.observed_in_diff)}
+
+## Provider-claimed candidates (unverified)
+
+${renderIntentMismatchItems(intent.claimed_candidates ?? [])}
+`;
+  }
   return `# Intent Mismatch
 
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
@@ -512,6 +530,11 @@ function renderReviewRoutesSummary(routes: ReviewRoute[]): string {
 }
 
 function renderIntentMismatchSummary(intent: IntentMismatch): string {
+  // review-surfaces.COLD_START.5: spec-less mode replaces the spec-coupled
+  // counts and overreach items with the one-line honest note.
+  if (intent.spec_note) {
+    return bullets([intent.spec_note], "No intent mismatch summary generated.");
+  }
   const risky = [...intent.possible_mismatches, ...intent.possible_overreach, ...intent.missing_intent];
   const lines = [
     `${intent.expected_by_spec.length} expected intent item(s), ${intent.observed_in_diff.length} observed changed-file item(s).`,

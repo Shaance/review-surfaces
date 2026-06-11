@@ -263,7 +263,7 @@ function minimalPacketWithSecret(secret: string, field: "review_focus" | "risk" 
   const packet = {
     schema_version: "review-surfaces.packet.v1",
     manifest: { milestone: "M7" },
-    intent: { summary: "round7", requirements: [] },
+    intent: { summary: "round7", spec_mode: "acai", requirements: [] },
     evaluation: { summary: "round7", results: [], overreach: [] },
     architecture: { summary: "round7", diagrams: [], diagram_validation: [], subsystems: [] },
     methodology: { summary: "round7", missing_logs: false, decisions: [] },

@@ -49,6 +49,7 @@ export function minimalReviewPacket(): MutableReviewPacketFixture {
     },
     intent: {
       summary: "schema fixture",
+      spec_mode: "acai",
       requirements: []
     },
     evaluation: {
@@ -140,6 +141,7 @@ export function fullyPopulatedReviewPacket(): MutableReviewPacketFixture {
     },
     intent: {
       summary: "fully-populated intent",
+      spec_mode: "acai",
       requirements: [
         {
           id: "REQ-1",

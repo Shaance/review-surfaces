@@ -58,6 +58,7 @@ function packetFixture(): ReviewPacket {
   };
   packet.intent = {
     summary: "Human review fixture intent.",
+    spec_mode: "acai",
     requirements: [
       {
         id: "REQ-HUMAN-1",

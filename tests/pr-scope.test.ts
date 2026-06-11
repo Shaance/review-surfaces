@@ -47,6 +47,7 @@ function requirement(overrides: Partial<IntentRequirement> & Pick<IntentRequirem
 function intentModel(requirements: IntentRequirement[]): IntentModel {
   return {
     summary: "Inline intent fixture.",
+    spec_mode: "acai",
     requirements,
     constraints: [],
     non_goals: [],

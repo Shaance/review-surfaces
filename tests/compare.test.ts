@@ -418,7 +418,7 @@ function dogfoodPacketFixture(): {
       milestone: "M5",
       input_hashes: []
     },
-    intent: { summary: "fixture", requirements: [] },
+    intent: { summary: "fixture", spec_mode: "acai", requirements: [] },
     evaluation: { summary: "fixture", results: [], overreach: [], acai_coverage: {} },
     architecture: { summary: "fixture", diagrams: [], diagram_validation: [], subsystems: [], open_questions: [] },
     methodology: {

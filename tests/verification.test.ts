@@ -597,7 +597,7 @@ function packetWithEvaluationResults(results: unknown[]): Record<string, unknown
       run_mode: "local",
       input_hashes: []
     },
-    intent: { summary: "verification fixture", requirements: [] },
+    intent: { summary: "verification fixture", spec_mode: "acai", requirements: [] },
     evaluation: { summary: "verification fixture", results, overreach: [], acai_coverage: {} },
     architecture: {
       summary: "verification fixture",

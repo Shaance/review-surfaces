@@ -18,6 +18,7 @@ function collection(outputDir: string, signature: string): CollectionResult {
 
 const intent: IntentModel = {
   summary: "store fixture",
+  spec_mode: "acai",
   requirements: [],
   constraints: [],
   non_goals: [],

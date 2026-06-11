@@ -68,7 +68,13 @@ test("app.CORE.1 add sums two numbers", () => {
   "README.md": "# fixture app\n"
 };
 
-export function createEvalFixture(prefix: string): EvalFixture {
+export interface EvalFixtureOptions {
+  // review-surfaces.COLD_START.4: when false, the fixture repo has NO Acai spec
+  // and the pipeline runs without --spec — the spec-less cold-start case.
+  spec?: boolean;
+}
+
+export function createEvalFixture(prefix: string, options: EvalFixtureOptions = {}): EvalFixture {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `rs-eval-${prefix}-`));
   const git = (...args: string[]): string =>
     execFileSync("git", ["-c", "user.email=eval@test", "-c", "user.name=eval", ...args], {
@@ -82,7 +88,11 @@ export function createEvalFixture(prefix: string): EvalFixture {
     fs.writeFileSync(absolute, content);
   };
 
+  const withSpec = options.spec !== false;
   for (const [relativePath, content] of Object.entries(BASE_FILES)) {
+    if (!withSpec && relativePath === "features/app.feature.yaml") {
+      continue;
+    }
     write(relativePath, content);
   }
   git("init", "-b", "main");
@@ -118,8 +128,7 @@ export function createEvalFixture(prefix: string): EvalFixture {
           baseSha,
           "--head",
           "HEAD",
-          "--spec",
-          "features/app.feature.yaml",
+          ...(withSpec ? ["--spec", "features/app.feature.yaml"] : []),
           "--out",
           ".rs",
           ...extraArgs

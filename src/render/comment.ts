@@ -227,8 +227,12 @@ export function renderComment(
     "### Top risks",
     renderBullets(topRisks(packet, MAX_RISKS), "No risks recorded."),
     "",
+    // review-surfaces.COLD_START.5: a spec-less packet renders the honest note,
+    // never "0 requirement result(s)"-style zero counts.
     "### Requirement coverage",
-    renderBullets(coverageLines(packet, counts, overreachCount), "No requirements indexed."),
+    ...((packet.intent as { spec_mode?: unknown }).spec_mode === "none"
+      ? ["No requirement spec configured — intent checks are limited to docs and constraints."]
+      : [renderBullets(coverageLines(packet, counts, overreachCount), "No requirements indexed.")]),
     "",
     "### LLM/agent hypotheses (NOT proof; verify against deterministic evidence)",
     renderBullets(hypotheses(packet, MAX_HYPOTHESES), "None proposed."),

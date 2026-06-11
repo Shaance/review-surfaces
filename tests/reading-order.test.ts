@@ -31,6 +31,7 @@ function model(graph: ChangeGraph, order: ReadingOrder): HumanReviewModel {
   return {
     schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
     mode: "repo",
+    spec_mode: "acai",
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Reading order fixture.",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },

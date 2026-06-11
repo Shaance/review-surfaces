@@ -196,3 +196,82 @@ test("review-surfaces.COLD_START.3 seeded eval fixture: doc-comment-only edit ra
     fixture.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// review-surfaces.COLD_START.4/.5 — spec-less mode: when zero Acai spec
+// requirements are indexed the packet stops speaking Acai (the got cold-start:
+// OVERREACH-001..003 covered 100% of the diff and review actions said "map the
+// changed file to an Acai requirement").
+// ---------------------------------------------------------------------------
+
+test("review-surfaces.COLD_START.4 spec_mode derives deterministically from zero indexed spec requirements", () => {
+  const specless = createEvalFixture("cold-start-specless-flag", { spec: false });
+  try {
+    specless.write("src/calc.ts", "export function add(left: number, right: number): number {\n  return right + left;\n}\n");
+    specless.commit("reorder");
+    const human = specless.run();
+    assert.equal(human.spec_mode, "none", "zero indexed spec requirements => spec_mode none");
+    const packet = JSON.parse(fs.readFileSync(path.join(specless.dir, ".rs", "review_packet.json"), "utf8")) as {
+      intent: { spec_mode?: string };
+    };
+    assert.equal(packet.intent.spec_mode, "none", "the flag is schema-visible on the packet intent");
+  } finally {
+    specless.cleanup();
+  }
+
+  const withSpec = createEvalFixture("cold-start-acai-flag");
+  try {
+    withSpec.write("src/calc.ts", "export function add(left: number, right: number): number {\n  return right + left;\n}\n");
+    withSpec.commit("reorder");
+    assert.equal(withSpec.run().spec_mode, "acai", "indexed spec requirements => spec_mode acai");
+  } finally {
+    withSpec.cleanup();
+  }
+});
+
+test("review-surfaces.COLD_START.5 spec-less mode suppresses Acai-shaped noise but keeps the deterministic value", () => {
+  const fixture = createEvalFixture("cold-start-specless", { spec: false });
+  try {
+    // Several changed clusters — exactly the shape that drowned got in
+    // per-cluster overreach findings.
+    fixture.write("src/calc.ts", "export function add(left: number, right: number): number {\n  return right + left;\n}\n");
+    fixture.write("src/util.ts", "export function double(value: number): number {\n  return value + value;\n}\n");
+    fixture.write("docs/notes.md", "# notes\n");
+    fixture.commit("spec-less change");
+    const human = fixture.run();
+    const packet = JSON.parse(fs.readFileSync(path.join(fixture.dir, ".rs", "review_packet.json"), "utf8")) as {
+      evaluation: { overreach: unknown[] };
+    };
+
+    // Suppressed: overreach findings, spec-coupled mismatch items, spec-shaped
+    // queue actions and questions.
+    assert.deepEqual(packet.evaluation.overreach, [], "no per-cluster overreach findings in spec-less mode");
+    assert.deepEqual(human.intent_mismatch.possible_overreach, []);
+    assert.deepEqual(human.intent_mismatch.missing_intent, []);
+    assert.equal(
+      human.intent_mismatch.spec_note,
+      "No requirement spec configured — intent checks are limited to docs and constraints."
+    );
+    const allText = JSON.stringify([human.review_queue, human.questions, human.suggested_comments]);
+    assert.ok(!/map the changed file to an Acai requirement/i.test(allText), "no Acai-mapping actions");
+    assert.ok(!/resolve this intent gap/i.test(allText), "no per-file intent-gap questions");
+    assert.ok(!/requirement result\(s\)/.test(human.summary), "the summary never advertises 0 requirement result(s)");
+
+    // The single honest open question survives (src/intent/intent.ts).
+    const packetIntent = JSON.parse(fs.readFileSync(path.join(fixture.dir, ".rs", "review_packet.json"), "utf8")) as {
+      intent: { open_questions: string[] };
+    };
+    assert.ok(
+      packetIntent.intent.open_questions.some((question) => question.includes("No Acai requirements were indexed")),
+      "the honest single question remains the only spec-shaped output"
+    );
+
+    // NOT changed in none mode: the no-spec value proposition.
+    assert.ok(human.reading_order.legs.length > 0, "reading order still renders");
+    assert.ok(human.change_graph.nodes.length > 0, "change map still renders");
+    assert.ok(human.trust_audit, "trust audit still renders");
+    assert.ok(Array.isArray(human.semantic_facts.api_changes), "semantic facts still computed");
+  } finally {
+    fixture.cleanup();
+  }
+});

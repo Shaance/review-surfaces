@@ -239,14 +239,16 @@ ${packet.intent.summary}
 ${previewLines(packet.intent.requirements, (requirement) => `- ${requirement.id} (${requirement.acai_id ?? "no-acid"})${requirement.llm_derived ? " [LLM-proposed, non-authoritative]" : ""}: ${requirement.requirement}`)}
 
 ## 3. Requirement coverage
-- satisfied: ${statusCounts.satisfied}
+${(packet.intent as { spec_mode?: unknown }).spec_mode === "none"
+    ? "No requirement spec configured — intent checks are limited to docs and constraints."
+    : `- satisfied: ${statusCounts.satisfied}
 - partial: ${statusCounts.partial}
 - missing: ${statusCounts.missing}
 - unknown: ${statusCounts.unknown}
 - invalid_evidence: ${statusCounts.invalid_evidence}
 - overreach: ${packet.evaluation.overreach.length}
 
-${renderRequirementCoverage(packet.evaluation.results)}
+${renderRequirementCoverage(packet.evaluation.results)}`}
 
 ## 4. Architecture surfaces
 ${packet.architecture.summary}

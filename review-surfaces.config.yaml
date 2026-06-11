@@ -282,9 +282,6 @@ quality_gate:
   # not-yet-shipped ACIDs below; each phase PR removes the ACIDs it ships. The
   # gate must be back to `allow_missing: []` when the final phase lands.
   allow_missing:
-    # Phase 2 — spec-less mode (evidence-log failure 4)
-    - review-surfaces.COLD_START.4
-    - review-surfaces.COLD_START.5
     # Phase 3 — distribution and repo hygiene (evidence-log failure 5)
     - review-surfaces.DISTRIBUTION.1
     - review-surfaces.DISTRIBUTION.2
