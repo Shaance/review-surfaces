@@ -35,7 +35,9 @@ rm -rf dist
 pnpm pack --pack-destination "$PACK_TMP" >/dev/null
 TARBALL="$(ls "$PACK_TMP"/review-surfaces-*.tgz)"
 printf '{"name":"pack-smoke","private":true}\n' > "$PACK_TMP/package.json"
-(cd "$PACK_TMP" && pnpm add "./$(basename "$TARBALL")" --prefer-offline --silent)
+# --offline: the smoke must prove the no-registry path; the repo's own install
+# primes the pnpm store with every runtime dependency.
+(cd "$PACK_TMP" && pnpm add "./$(basename "$TARBALL")" --offline --silent)
 SMOKE_REPO="$PACK_TMP/smoke-repo"
 mkdir -p "$SMOKE_REPO"
 (

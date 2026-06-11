@@ -69,7 +69,7 @@ excerpts, and a since-last-review delta on every push:
 ![The sticky PR comment: verdict, review-first queue, inline diff excerpts](docs/images/sticky-comment.png)
 
 All three screenshots come from a real run of this tool on its own repository —
-the project reviews itself with itself (see [`docs/history/`](docs/history/) for
+the project reviews itself with itself (see [`docs/history/`](https://github.com/Shaance/review-surfaces/tree/main/docs/history) for
 that story).
 
 ## Scope: what the analysis actually covers
@@ -181,8 +181,8 @@ pnpm run build      # compiles the CLI to dist/, executable at bin/review-surfac
 pnpm run test       # full suite (includes the seeded-regression eval harness)
 ```
 
-See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the PR workflow and
-[`AGENTS.md`](./AGENTS.md) for the agent-facing working rules (this repository
+See [`CONTRIBUTING.md`](https://github.com/Shaance/review-surfaces/blob/main/CONTRIBUTING.md) for the PR workflow and
+[`AGENTS.md`](https://github.com/Shaance/review-surfaces/blob/main/AGENTS.md) for the agent-facing working rules (this repository
 is developed spec-first and dogfood-first).
 
 ## Project layout
