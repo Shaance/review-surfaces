@@ -1,5 +1,7 @@
 import { compareStrings } from "../core/compare";
-import { validateMermaidDiagramArtifact } from "./diagrams";
+// review-surfaces.CHANGE_MAP.4: the diagram-label sanitizer is shared — one
+// copy in diagrams.ts, imported by every mermaid emitter.
+import { diagramLabel, validateMermaidDiagramArtifact } from "./diagrams";
 import type {
   PrAffectedArea,
   PrAffectedRequirement,
@@ -34,14 +36,6 @@ const DEFAULT_MAX_FILES = 12;
 const DEFAULT_MAX_REQUIREMENTS = 12;
 const DEFAULT_MAX_RISKS = 8;
 
-// Replicates the (non-exported) diagramLabel escaping in src/diagrams/diagrams.ts:
-// strip the characters that would unbalance a Mermaid node label — quotes and the
-// bracket/brace/paren family — and collapse whitespace. Labels are wrapped in
-// double quotes inside [...] in the emitted diagram, so this keeps both the
-// label text and the surrounding bracket/quote balance intact.
-function diagramLabel(text: string): string {
-  return text.replace(/["[\]{}()]/g, " ").replace(/\s+/g, " ").trim();
-}
 
 // Node ids are emitted verbatim into Mermaid, so they must be identifier-safe.
 // Replace any non [A-Za-z0-9_] run with "_" so group keys like "CLUSTER:SRC/API"

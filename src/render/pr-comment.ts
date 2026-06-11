@@ -1,4 +1,5 @@
 import { redactSecrets } from "../privacy/secrets";
+import { changeMapDetailsBlock } from "./change-map-embed";
 import type {
   HumanReviewModel,
   ReviewBlocker,
@@ -70,17 +71,11 @@ function coverageLines(deltas: PrRequirementCoverageDelta[], baseAvailable: bool
   return lines;
 }
 
-function renderDiagram(diagram: PrChangeDiagramModel | undefined): string[] {
-  if (!diagram || diagram.status !== "valid") {
-    return [];
-  }
-  const body = redact(diagram.body);
-  // Omit (never embed) a body that would close the mermaid fence; keep it inside
-  // the code fence (verbatim) so arrows render.
-  if (/^\s*```/m.test(body) || body.length > 8000) {
-    return [];
-  }
-  return ["", "### Change impact", "<details><summary>Change impact diagram</summary>", "", "```mermaid", body, "```", "", "</details>"];
+// review-surfaces.CHANGE_MAP.3/.4: collapsed change-map block (redaction +
+// fence-close guard live in the shared embed helper).
+function changeMapCommentBlock(model: HumanReviewModel): string[] {
+  const block = changeMapDetailsBlock(model.change_graph);
+  return block ? [block, ""] : [];
 }
 
 const DEFAULT_SURFACE_PATH = ".review-surfaces/pr_review_surface.json";
@@ -181,7 +176,9 @@ export function renderPrComment(surface: PrReviewSurfaceModel, options: RenderPr
     "",
     "### PR risks",
     renderRisks(surface),
-    ...renderDiagram(surface.diagram),
+    // review-surfaces.CHANGE_MAP.3: the old requirements-hairball "Change
+    // impact" embed retired with the change map; pr-change-impact.mmd remains a
+    // standalone agent-facing artifact off the human surfaces.
     "",
     `Full PR surface: \`${surfacePath}\`.`
   );
@@ -219,6 +216,10 @@ export function renderHumanPrComment(model: HumanReviewModel, options: RenderHum
     "### Suggested comments",
     renderHumanSuggestedComments(model.suggested_comments),
     "",
+    // review-surfaces.CHANGE_MAP.3: the change map embeds where reviewers
+    // actually look — collapsed so the comment stays short. The blank line
+    // before the block is required for GitHub to render the inner mermaid.
+    ...changeMapCommentBlock(model),
     `Full human review: \`${field(humanReviewPath)}\`.`,
     `Human review JSON: \`${field(humanReviewJsonPath)}\`.`,
     `Lower-level PR facts: \`${field(surfacePath)}\`.`

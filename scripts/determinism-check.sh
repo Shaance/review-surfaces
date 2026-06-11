@@ -18,27 +18,33 @@ SNAP_A="$WORK/snapshot-a"
 SNAP_B="$WORK/snapshot-b"
 trap 'rm -rf "$WORK"' EXIT
 
+# review-surfaces.CHANGE_MAP.4: determinism is checked for BOTH scopes — the
+# repo-scope `all` and a PR-scope run, so the comment-embedded change map and
+# the PR sidecar are covered, not just the repo-scope artifacts.
 run() {
+  local scope="$1"
   rm -rf "$OUT"
   node bin/review-surfaces.js all \
     --provider mock \
     --base origin/main \
     --head HEAD \
     --spec features/review-surfaces.feature.yaml \
+    --review-scope "$scope" \
     --dogfood \
     --strict \
     --now "$FROZEN" \
     --out "$OUT" >/dev/null
 }
 
-run
-cp -R "$OUT" "$SNAP_A"
-run
-cp -R "$OUT" "$SNAP_B"
-
-if diff -r "$SNAP_A" "$SNAP_B"; then
-  echo "determinism-check: PASS (two runs byte-identical)"
-else
-  echo "determinism-check: FAIL (non-deterministic output detected)" >&2
-  exit 1
-fi
+for SCOPE in repo pr; do
+  rm -rf "$SNAP_A" "$SNAP_B"
+  run "$SCOPE"
+  cp -R "$OUT" "$SNAP_A"
+  run "$SCOPE"
+  cp -R "$OUT" "$SNAP_B"
+  if ! diff -r "$SNAP_A" "$SNAP_B"; then
+    echo "determinism-check: FAIL (non-deterministic output detected in $SCOPE scope)" >&2
+    exit 1
+  fi
+done
+echo "determinism-check: PASS (two runs byte-identical in repo and pr scope)"

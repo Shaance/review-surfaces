@@ -30,6 +30,8 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
     mode: "pr",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
+    change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [] },
+    reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Two files changed; one impl file lacks a focused test.",
     review_queue: [

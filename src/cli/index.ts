@@ -64,6 +64,7 @@ import { writeJson, writeText } from "../core/files";
 import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
+import { ChangedImportEdge, computeChangedImportEdges } from "../human/change-graph";
 import { buildChangeNarrative } from "../human/narrative";
 import { ChangeNarrative, HumanReviewModel, ReviewQueueItem } from "../human/contract";
 import { runWalkthrough, WalkthroughIO, WalkthroughOptions } from "../review/walkthrough";
@@ -1510,6 +1511,10 @@ function buildHumanReviewForPacket(
     // computed here so every build path carries them uniformly.
     dependencyFacts: factReaders ? computeDependencyFacts({ changedFiles: factReaders.changedFiles, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
     configFacts: factReaders && resolvedDiff ? computeConfigFacts({ diff: resolvedDiff, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
+    // review-surfaces.CHANGE_MAP.1: import edges among changed files, from the
+    // shared import-graph parser over head content — computed here (file access)
+    // so the section is uniform on every build path.
+    changedImportEdges: computeChangedImportEdgesForPacket(cwd, resolvedDiff, factReaders),
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
@@ -1585,6 +1590,31 @@ function buildFactReaders(cwd: string, packet: ReviewPacket, diff: StructuredDif
     headIsWorktree,
     headSha
   };
+}
+
+// review-surfaces.CHANGE_MAP.1: importer->imported edges among the changed
+// files, parsed from the reviewed head's content with the same resolution
+// rules as the blast-radius graph. Deleted files carry no head content, so
+// they have no outgoing edges (documented v1 bound, same altitude as the
+// import graph's alias bound).
+function computeChangedImportEdgesForPacket(cwd: string, diff: StructuredDiff | undefined, readers: FactReaders | undefined): ChangedImportEdge[] {
+  if (!diff || diff.files.length === 0 || !readers) {
+    return [];
+  }
+  const changedPaths = diff.files.map((file) => file.path);
+  return computeChangedImportEdges({
+    changedPaths,
+    read: readers.readHead,
+    exists: readers.headIsWorktree
+      ? (filePath) => {
+          try {
+            return fs.statSync(path.resolve(cwd, filePath)).isFile();
+          } catch {
+            return false;
+          }
+        }
+      : (filePath) => readers.readHead(filePath) !== undefined
+  });
 }
 
 // review-surfaces.BLAST_RADIUS.1/.2/.3: enrich changed/removed exports with

@@ -5,6 +5,7 @@ import { redactSecrets } from "../privacy/secrets";
 import { StructuredDiff } from "../pr/contract";
 import { formatEnumChanges, formatTypeChanges } from "../risks/semantic-diff";
 import { renderHunkExcerpt } from "./hunk-excerpt";
+import { changeMapMermaidBody } from "../render/change-map-embed";
 import { extractAcids, fillAcidTemplate, normalizeAcidTemplate, RollupGroup, rollupBy } from "./rollup";
 import { RISK_LENS_METADATA } from "./contract";
 import type {
@@ -16,6 +17,7 @@ import type {
   IntentMismatchItem,
   MissingEvidenceSummary,
   NarrativeClaim,
+  ReadingOrder,
   ReviewerQuestion,
   ReviewQueueItem,
   ReviewRoute,
@@ -164,6 +166,14 @@ Confidence: ${model.verdict.confidence}.
 
 Reasons:
 ${bullets(model.verdict.reasons.slice(0, MAX_BLOCKERS).map((reason) => `${reason.summary}${reason.required_action ? ` Required action: ${reason.required_action}` : ""} (${reason.id}; ${reason.severity})`), "No readiness reasons recorded.")}
+
+## Change map
+
+${renderChangeMapSection(model)}
+
+## Reading order
+
+${renderReadingOrderSection(model.reading_order)}
 
 ## Change narrative
 
@@ -1298,4 +1308,35 @@ function uniqueBy<T>(items: T[], keyFor: (item: T) => string): T[] {
 function field(value: string, max = MAX_FIELD_CHARS): string {
   const redacted = redactSecrets(value).text.replace(/\s+/g, " ").trim();
   return redacted.length <= max ? redacted : `${redacted.slice(0, max - 3)}...`;
+}
+
+// review-surfaces.CHANGE_MAP.3: the change map embeds on human_review.md (the
+// mermaid renders in editor previews and on GitHub; the cockpit's SVG is the
+// local answer). The shared embed helper runs redaction + the fence guard.
+function renderChangeMapSection(model: HumanReviewModel): string {
+  const body = changeMapMermaidBody(model.change_graph);
+  if (!body) {
+    return "No changed files to map.";
+  }
+  return `\`\`\`mermaid\n${body}\n\`\`\``;
+}
+
+// review-surfaces.READING_ORDER.2: the guided tour renders right after the
+// verdict — comprehension order, never including unchanged files.
+function renderReadingOrderSection(order: ReadingOrder): string {
+  if (order.legs.length === 0) {
+    return "No changed files to order.";
+  }
+  const lines: string[] = [];
+  let stepNumber = 0;
+  for (const leg of order.legs) {
+    lines.push(`**${field(leg.title)}**`);
+    for (const step of leg.steps) {
+      stepNumber += 1;
+      const refs = step.queue_refs.length > 0 ? ` (queue: ${step.queue_refs.map((ref) => field(ref)).join(", ")})` : "";
+      lines.push(`${stepNumber}. \`${field(step.path)}\` — ${field(step.why)}${refs}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
 }

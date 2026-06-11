@@ -14,6 +14,7 @@ import { renderHunkExcerpt } from "../human/hunk-excerpt";
 import { decisionLabel, formatQueueLocation } from "../human/render";
 import type { HumanReviewModel, ReviewQueueItem, SinceLastReview, SinceLastReviewItem } from "../human/contract";
 import { STICKY_MARKER } from "./comment";
+import { changeMapDetailsBlock } from "./change-map-embed";
 
 const MAX_SUMMARY_CHARS = 600;
 const MAX_FIELD_CHARS = 300;
@@ -95,6 +96,17 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
     sections.push("", "### Review first", "", queueBlock, "", "### Trust", "", trustBlock);
   }
 
+  // review-surfaces.CHANGE_MAP.3: the change map embeds as a collapsed details
+  // block so the sticky stays short; READING_ORDER.2: only the FIRST tour leg.
+  const mapBlock = changeMapDetailsBlock(model.change_graph);
+  if (mapBlock) {
+    sections.push("", mapBlock);
+  }
+  const firstLeg = renderFirstTourLeg(model, state);
+  if (firstLeg) {
+    sections.push("", firstLeg);
+  }
+
   if (options.artifactName) {
     sections.push(
       "",
@@ -113,6 +125,21 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   // contributes to the block gate alongside the field-level signal.
   const redaction = redactSecrets(body);
   return { markdown: redaction.text, blocked: state.blocked || redaction.blocked };
+}
+
+// review-surfaces.READING_ORDER.2: the sticky carries ONLY the first leg of the
+// guided tour — it must stay short.
+function renderFirstTourLeg(model: HumanReviewModel, state: RedactionState): string | undefined {
+  const leg = model.reading_order.legs[0];
+  if (!leg || leg.steps.length === 0) {
+    return undefined;
+  }
+  const steps = leg.steps
+    .map((step, index) => `${index + 1}. \`${field(step.path, state)}\` — ${field(step.why, state)}`)
+    .join("\n");
+  const remaining = model.reading_order.legs.length - 1;
+  const more = remaining > 0 ? `\n\n_${remaining} more leg(s) in the full reading order (human_review.md)._` : "";
+  return `### Start reading here (${field(leg.title, state)})\n\n${steps}${more}`;
 }
 
 function renderQueue(items: ReviewQueueItem[], diff: StructuredDiff | undefined, state: RedactionState): string {
