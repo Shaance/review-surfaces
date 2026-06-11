@@ -1693,6 +1693,11 @@ function treeModuleEdgeKeys(
   const ignore = loadPrivacyIgnoreSync(cwd);
   tracked = tracked.filter((filePath) => !ignore.isIgnored(filePath));
   const graph = buildImportGraph({ files: tracked, read, exists });
+  // A truncated graph is PARTIAL evidence: treating it as the whole tree would
+  // report pre-existing edges beyond the cap as new. Unknown -> fallback bound.
+  if (graph.truncated) {
+    return undefined;
+  }
   const keys = new Set<string>();
   for (const [imported, importers] of graph.importers.entries()) {
     const toModule = moduleOf(imported);
@@ -1719,11 +1724,24 @@ function readPreviousRounds(cwd: string, packet: ReviewPacket): RoundsLedgerEntr
     if (!Array.isArray(parsed.rounds)) {
       return undefined;
     }
-    const rounds = parsed.rounds.filter(
-      (entry): entry is RoundsLedgerEntry =>
-        typeof (entry as { round?: unknown }).round === "number" && typeof (entry as { head_sha?: unknown }).head_sha === "string"
-    );
-    return rounds.length > 0 ? rounds : undefined;
+    // Every row must be fully formed: carrying a partial row forward would
+    // fail the new model's schema validation (or render undefined counts).
+    // Any malformed row degrades the WHOLE ledger to the first-review case.
+    const isValidRow = (entry: unknown): entry is RoundsLedgerEntry => {
+      const row = entry as Partial<RoundsLedgerEntry>;
+      return (
+        typeof row.round === "number" &&
+        typeof row.head_sha === "string" &&
+        typeof row.new_count === "number" &&
+        typeof row.resolved_count === "number" &&
+        typeof row.regressed_count === "number" &&
+        typeof row.verdict === "string"
+      );
+    };
+    if (parsed.rounds.length === 0 || !parsed.rounds.every(isValidRow)) {
+      return undefined;
+    }
+    return parsed.rounds;
   } catch {
     return undefined;
   }

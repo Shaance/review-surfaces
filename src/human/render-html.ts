@@ -471,7 +471,13 @@ function renderRounds(model: HumanReviewModel): string {
     return `<p class="muted">First review round — nothing to trend yet.</p>`;
   }
   const shown = rounds.slice(-8);
-  const note = shown[0].round > 1 ? `<p class="muted">History begins at round ${esc(shown[0].round)}; full ledger in human_review.json.</p>` : "";
+  // Distinguish genuinely expired earlier rounds from a mere display cap.
+  const note =
+    rounds[0].round > 1
+      ? `<p class="muted">History begins at round ${esc(rounds[0].round)} (earlier rounds expired with their artifacts); full ledger in human_review.json.</p>`
+      : shown[0].round > 1
+        ? `<p class="muted">Showing the last ${esc(shown.length)} of ${esc(rounds.length)} rounds; full ledger in human_review.json.</p>`
+        : "";
   const rows = shown
     .map(
       (entry) =>

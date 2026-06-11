@@ -51,6 +51,11 @@ elif [ -f "$OUT/review_packet.json" ]; then
   PREV_SNAP="$OUT/previous/review_packet.json"
   mkdir -p "$OUT/previous"
   cp "$OUT/review_packet.json" "$PREV_SNAP"
+  # The rounds ledger (TREND.1) lives in the sibling human_review.json — carry
+  # it with the snapshot or every local round would restart at 1.
+  if [ -f "$OUT/human_review.json" ]; then
+    cp "$OUT/human_review.json" "$OUT/previous/human_review.json"
+  fi
   PREV_ARGS=(--previous-packet "$PREV_SNAP")
   echo "local-review: comparing against previous local packet ($PREV_SNAP)"
 fi

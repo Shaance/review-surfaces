@@ -157,7 +157,11 @@ function renderRoundsTable(model: HumanReviewModel): string | undefined {
   const lines = [
     "### Review rounds",
     "",
-    ...(shown[0].round > 1 ? [`_History begins at round ${shown[0].round}${rounds[0].round > 1 ? " (earlier rounds expired with their artifacts)" : ""}; full ledger in human_review.json._`, ""] : []),
+    ...(rounds[0].round > 1
+      ? [`_History begins at round ${rounds[0].round} (earlier rounds expired with their artifacts); full ledger in human_review.json._`, ""]
+      : shown[0].round > 1
+        ? [`_Showing the last ${shown.length} of ${rounds.length} rounds; full ledger in human_review.json._`, ""]
+        : []),
     "| round | head | new | resolved | regressed | verdict |",
     "| --- | --- | --- | --- | --- | --- |",
     ...shown.map(

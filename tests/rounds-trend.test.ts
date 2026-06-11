@@ -111,10 +111,16 @@ test("review-surfaces.TREND.2 the sticky and cockpit render a compact table capp
   // Capped at the last 8 rounds.
   assert.doesNotMatch(sticky, /\| 6 \|/);
   assert.match(sticky, /\| 14 \|/);
-  assert.match(sticky, /History begins at round 7/);
+  // Genuinely expired history (ledger starts at round 3) says so...
+  assert.match(sticky, /History begins at round 3 \(earlier rounds expired/);
+  // ...while a full ledger that is merely display-capped says "showing last N".
+  const fullLedger = Array.from({ length: 12 }, (_, index) => entry(index + 1));
+  const cappedSticky = renderStickySummary(model(fullLedger)).markdown;
+  assert.match(cappedSticky, /Showing the last 8 of 12 rounds/);
+  assert.doesNotMatch(cappedSticky, /expired/);
   const html = renderHumanReviewHtml(fixture, {});
   assert.match(html, /<h2 id="rounds">Review rounds<\/h2>/);
-  assert.match(html, /History begins at round 7/);
+  assert.match(html, /History begins at round 3/);
   // A single-row ledger is the first review — nothing to trend, never an error.
   const firstSticky = renderStickySummary(model([entry(1)])).markdown;
   assert.doesNotMatch(firstSticky, /### Review rounds/);

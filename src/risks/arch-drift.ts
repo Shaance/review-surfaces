@@ -10,9 +10,10 @@
 //   the shared resolver, so they count as UNKNOWN — never as added or removed.
 // - Rename detection is respected: a moved file re-creating its old edges from
 //   the new path is not drift (the base side is read at the rename SOURCE).
-// - Cycle detection sees only edges contributed by changed files (the base
-//   graph beyond changed files is not parsed), so it reports cycles the CHANGE
-//   creates among those modules; pre-existing cycles elsewhere are out of scope.
+// - Cycle detection searches the full HEAD module graph when the caller
+//   supplies whole-tree edge keys (the CLI does), so a new edge whose return
+//   path lives in unchanged code still reports; without them it falls back to
+//   changed-file edges only. Pre-existing cycles are out of scope either way.
 import { resolveRelativeImports } from "../collector/import-graph";
 
 export type ArchDriftKind = "module_edge_added" | "module_edge_removed" | "import_cycle_created";
@@ -167,11 +168,21 @@ export function computeArchDriftFacts(input: ComputeArchDriftInput): ArchDriftRe
     });
   }
 
-  // Cycle creation: among the head-side module edges contributed by changed
-  // files, does any ADDED module edge close a cycle? (Documented bound: only
-  // changed files contribute edges.)
+  // Cycle creation: does any ADDED module edge close a cycle in the HEAD
+  // module graph? The full-tree head edge set is used when available, so a new
+  // A -> B edge whose return path B -> A lives in UNCHANGED code still reports;
+  // without the full set the search falls back to changed-file edges (bound).
+  const cycleEdges = new Map<string, Set<string>>(headModuleEdges);
+  if (input.headModuleEdgeKeys) {
+    for (const key of input.headModuleEdgeKeys) {
+      const [from, to] = JSON.parse(key) as [string, string];
+      const targets = cycleEdges.get(from) ?? new Set<string>();
+      targets.add(to);
+      cycleEdges.set(from, targets);
+    }
+  }
   for (const fact of facts.filter((candidate) => candidate.kind === "module_edge_added")) {
-    const cycle = findCycle(fact.to_module, fact.from_module, headModuleEdges);
+    const cycle = findCycle(fact.to_module, fact.from_module, cycleEdges);
     if (cycle) {
       facts.push({
         kind: "import_cycle_created",

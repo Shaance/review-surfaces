@@ -368,7 +368,10 @@ test("review-surfaces.EVAL_HARNESS.5 a seeded cross-module import (architecture 
       `import { clamp } from "../core/util";\n\nexport function view(): string {\n  return String(clamp(1));\n}\n`
     );
     fixture.commit("benign change + cross-module import");
-    const model = fixture.run();
+    // Compare against the MODULE BASELINE (HEAD~1), not the fixture's initial
+    // commit — the gate must cover the shipped detector path: a new edge
+    // between two PRE-EXISTING modules.
+    const model = fixture.run(["--base", "HEAD~1"]);
     record("arch_drift", () => {
       assert.ok(
         inTopQueue(model, (item) => item.path === "src/render/view.ts" && /module dependency edge|dependency edge/i.test(item.title)),
@@ -378,8 +381,9 @@ test("review-surfaces.EVAL_HARNESS.5 a seeded cross-module import (architecture 
       );
       // The architecture lens carries the drift fact.
       assert.ok(model.risk_lens_findings.some((finding) => finding.lens === "architecture"));
-      // And the change map marks the new file-level edge as kind "new".
-      assert.ok(model.change_graph.edges.some((edge) => edge.from === "src/render/view.ts" && edge.to === "src/core/util.ts" && edge.kind === "new"));
+      // The change map only draws edges between CHANGED files; with --base
+      // HEAD~1 the imported module is unchanged, so the drift is carried by
+      // the queue item + architecture lens asserted above.
     });
   } finally {
     fixture.cleanup();
