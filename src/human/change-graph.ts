@@ -83,6 +83,7 @@ export function buildChangeGraphSections(input: BuildSectionsInput): { change_gr
 
   const nodes: ChangeGraphNode[] = files.map((file) => ({
     path: file.path,
+    ...(file.old_path ? { old_path: file.old_path } : {}),
     churn_added: file.added,
     churn_removed: file.removed,
     status: normalizeStatus(file.status),

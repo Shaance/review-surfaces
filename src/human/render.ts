@@ -5,6 +5,7 @@ import { redactSecrets } from "../privacy/secrets";
 import { StructuredDiff } from "../pr/contract";
 import { formatEnumChanges, formatTypeChanges } from "../risks/semantic-diff";
 import { renderHunkExcerpt } from "./hunk-excerpt";
+import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
 import { changeMapMermaidBody } from "../render/change-map-embed";
 import { extractAcids, fillAcidTemplate, normalizeAcidTemplate, RollupGroup, rollupBy } from "./rollup";
 import { RISK_LENS_METADATA } from "./contract";
@@ -185,7 +186,7 @@ ${renderSemanticFacts(model.semantic_facts)}
 
 ## Review first
 
-${renderReviewFirst(model.review_queue.slice(0, MAX_REVIEW_FIRST), context)}
+${renderReviewFirst(model, model.review_queue.slice(0, MAX_REVIEW_FIRST), context)}
 
 ## Review routes
 
@@ -266,7 +267,7 @@ export function renderReviewQueueMarkdown(model: HumanReviewModel, context: Huma
 
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
 
-${model.review_queue.length === 0 ? "- No path-backed review queue items generated." : model.review_queue.map((item) => renderQueueDetail(item, context)).join("\n\n---\n\n")}
+${model.review_queue.length === 0 ? "- No path-backed review queue items generated." : model.review_queue.map((item) => renderQueueDetail(model, item, context)).join("\n\n---\n\n")}
 `;
 }
 
@@ -767,7 +768,7 @@ function semanticApiSummary(change: HumanReviewModel["semantic_facts"]["api_chan
   return parts.join("; ");
 }
 
-function renderReviewFirst(items: ReviewQueueItem[], context: HumanRenderContext = {}): string {
+function renderReviewFirst(model: HumanReviewModel, items: ReviewQueueItem[], context: HumanRenderContext = {}): string {
   if (items.length === 0) {
     return "- No path-backed review queue items generated.";
   }
@@ -779,10 +780,14 @@ function renderReviewFirst(items: ReviewQueueItem[], context: HumanRenderContext
       // authoritatively, so suppress the separate (possibly stale) Hunk: metadata
       // line to avoid contradictory labels.
       const hunkLine = item.hunk_header && !excerpt ? `   - Hunk: \`${field(item.hunk_header)}\`\n` : "";
+      // review-surfaces.COVERAGE.6: one summary line per excerpt with the
+      // uncovered ranges — no per-line markup games on markdown surfaces.
+      const coverageHunk = excerpt ? coverageHunkForAnchor(model, item.path, item.hunk_header) : undefined;
+      const coverageLine = coverageHunk ? `\n   - Coverage: ${field(coverageSummaryLine(coverageHunk))}` : "";
       return `${item.rank}. \`${field(location)}\`
 ${hunkLine}   - Why it matters: ${field(item.reason)}
    - Why ranked here: ${rankingReasonsLine(item)}
-   - Action: ${field(item.reviewer_action)}${excerpt ? `\n${excerpt}` : ""}
+   - Action: ${field(item.reviewer_action)}${excerpt ? `\n${excerpt}` : ""}${coverageLine}
    - Risk: ${item.risk_ids.map((risk) => `\`${field(risk)}\``).join(", ") || "none"}
    - Evidence: ${evidenceList(item.evidence)}`;
     })
@@ -861,7 +866,11 @@ function inlineHunkExcerpt(item: ReviewQueueItem, context: HumanRenderContext): 
     .join("\n");
 }
 
-function renderQueueDetail(item: ReviewQueueItem, context: HumanRenderContext = {}): string {
+function renderQueueDetail(model: HumanReviewModel, item: ReviewQueueItem, context: HumanRenderContext = {}): string {
+  // review-surfaces.COVERAGE.6: the standalone queue artifact carries the same
+  // one-line coverage summary as the Review first section.
+  const coverageHunkDetail = coverageHunkForAnchor(model, item.path, item.hunk_header);
+  const coverageDetailLine = coverageHunkDetail ? `Coverage: ${field(coverageSummaryLine(coverageHunkDetail))}\n\n` : "";
   const location = formatQueueLocation(item);
   const requirements = item.requirement_ids.map((id) => `\`${field(id)}\``).join(", ") || "none";
   const risks = item.risk_ids.map((id) => `\`${field(id)}\``).join(", ") || "none";
@@ -892,8 +901,7 @@ ${rankingReasonsLine(item)}
 
 Reviewer action:
 ${field(item.reviewer_action, 1000)}
-${excerpt ? `\n${excerpt}\n` : ""}
-Evidence:
+${excerpt ? `\n${excerpt}\n` : ""}${coverageDetailLine}Evidence:
 ${evidenceBullets(item.evidence, MAX_STANDALONE_EVIDENCE)}
 
 Requirements: ${requirements}
