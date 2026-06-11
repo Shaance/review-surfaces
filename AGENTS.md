@@ -54,7 +54,16 @@ Use `--provider agent-file --agent-input <json-or-yaml>` when a coding agent suc
 
 Run the strongest available local validation and self-review subset. Early milestones may not support every command yet.
 
-Preferred shape once package scripts exist:
+Preferred: the scripted local loop (`review-surfaces.LOCAL_LOOP.*`) — it produces and gates every review surface with zero GitHub Actions involvement, which is also the merge gate while Actions remain unavailable:
+
+```bash
+pnpm run local-review   # pipeline (mock provider) + sticky preview + HTML cockpit + validate, with an artifact index
+pnpm run local-gate     # lint, typecheck, full test, determinism-check, strict empty-diff self-dogfood
+```
+
+`local-review --previous <dir>` (or the automatic last-local-run detection) feeds since-last-review deltas from local prior packets. Both scripts are orchestration only: they run the same CLI commands you would type by hand, so no behavior exists only in CI or only in a script.
+
+Equivalent manual shape:
 
 ```bash
 pnpm run --if-present lint

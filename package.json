@@ -16,6 +16,8 @@
     "test:watch": "pnpm run build:fast && node --test --watch dist/tests/*.test.js",
     "test:cov": "pnpm run build && node --experimental-test-coverage --test dist/tests/*.test.js",
     "determinism-check": "./scripts/determinism-check.sh",
+    "local-review": "./scripts/local-review.sh",
+    "local-gate": "./scripts/local-gate.sh",
     "review-surfaces": "pnpm run build && node bin/review-surfaces.js",
     "copy-env": "./scripts/copy-env.sh",
     "prepublishOnly": "pnpm run build"

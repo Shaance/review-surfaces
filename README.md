@@ -226,6 +226,29 @@ pnpm run typecheck  # tsc --noEmit
 pnpm run lint       # alias for typecheck
 ```
 
+## Local review loop (no CI required)
+
+Every review surface is producible entirely locally — GitHub Actions is a
+distribution channel for surfaces, never the only way to produce or verify
+them. Two scripts orchestrate the same CLI commands you would type by hand
+(`review-surfaces.LOCAL_LOOP.*`):
+
+```bash
+pnpm run local-review   # build, run the pipeline (mock provider) against
+                        # origin/main..HEAD, render the sticky-comment preview
+                        # and the HTML cockpit, validate all surfaces, and
+                        # print an index of artifacts to open
+pnpm run local-gate     # the full merge gate as one command: lint, typecheck,
+                        # full test suite, determinism-check, and the strict
+                        # empty-diff self-dogfood (all --base HEAD --head HEAD --strict)
+```
+
+`local-review` accepts `--base <ref>`, `--head <ref>`, `--out <dir>`,
+`--provider <name>`, and `--previous <dir>` (a prior packet to compare for
+since-last-review deltas). Without `--previous`, the last local run's packet in
+the out directory is compared against automatically — local prior packets are a
+first-class transport, not just CI artifacts. Network use: git only.
+
 ## Project layout
 
 - `src/` — the CLI and pipeline modules (collector, intent, evaluation,
