@@ -607,6 +607,49 @@ components:
       2:
         requirement: The sticky comment and the HTML cockpit must render the rounds ledger as a compact table capped at the last eight or so rounds with the full ledger preserved in the artifact, and partial history must render honestly (for example "history begins at round 3") and never as an error — a missing prior packet is the first-review case.
 
+  COLD_START:
+    name: Cold-start correctness and spec-less mode
+    description: >-
+      Open-source readiness uplift Phases 1-2 (OPEN_SOURCE_UPLIFT_GOAL.md).
+      Every requirement traces to an observed failure from the 2026-06-11
+      cold-start evidence log: a shallow clone of sindresorhus/got (no Acai
+      specs, no config) run with the mock provider. Heuristics that encode this
+      repository's layout must be derived from the target repository's own
+      signals or degrade to an honest generic answer.
+    requirements:
+      1:
+        requirement: validate (and every other schema consumer) must resolve schemas/ relative to the installed package root, for example via module-relative paths, never relative to the user's current working directory, and a regression test must run validate from a temporary working directory outside the repository.
+        note: "Closes cold-start failure 1: validate --surface all failed with ENOENT .../got/schemas/review_packet.schema.json because schema paths resolved against the CWD."
+      2:
+        requirement: Reading-order file categorization must derive implementation roots from the target repository's own signals — tsconfig.json rootDir/include, package.json main/exports/files, and as fallback the top-level directories containing a majority of non-test source files — instead of a hardcoded src|bin|lib list, with the same detection feeding change-map clusters so map and tour stay in agreement, and detection reading committed files only with sorted iteration for determinism.
+        note: "Closes cold-start failure 2: got's source/ directory fell through categoryOf() to 'config or docs - read last', telling the reviewer to read the heart of the change last."
+      3:
+        requirement: The exported-API differ must compare comment-stripped, whitespace-normalized signatures (for example printing nodes via the TS printer with comments removed, or comparing structural members) so trivia-only edits produce no signature-changed fact, with a seeded eval fixture asserting a doc-comment-only edit inside an exported type yields no signature-changed finding.
+        note: "Closes cold-start failure 3: two TSDoc lines added inside PaginationOptions were reported as an exported API signature change, became the top review-first item, and generated a blocking suggested comment."
+      4:
+        requirement: The intent model and strict human-review schema must carry an explicit spec_mode flag ("acai" or "none") derived deterministically from whether zero Acai spec requirements were indexed.
+        note: "Closes cold-start failure 4 (mechanism): the mode must be schema-visible model state, not renderer guesswork, so every renderer inherits it."
+      5:
+        requirement: In spec_mode none the packet must stop speaking Acai — per-cluster overreach findings and per-file requirement-mapping questions and actions are suppressed in favor of the single honest open question about unindexed requirements plus a one-line note that intent checks are limited to docs and constraints, and all renderers must hide empty spec-coupled sections rather than rendering zero-count requirement results — while test-weakening detection, trust audit, semantic facts, coverage, change map, reading order, and drift remain unchanged.
+        note: "Closes cold-start failure 4: with zero specs, OVERREACH-001..003 covered 100 percent of the got diff and review actions said 'map the changed file to an Acai requirement'. Presentation and derivation logic only, not a second pipeline."
+
+  DISTRIBUTION:
+    name: Distribution and repository hygiene
+    description: >-
+      Open-source readiness uplift Phase 3 (OPEN_SOURCE_UPLIFT_GOAL.md). Closes
+      cold-start failure 5: the package is publish-ready but unpublished, has no
+      LICENSE, and the README assumes Acai conventions and shows none of the
+      shipped visuals.
+    requirements:
+      1:
+        requirement: The repository must contain a LICENSE file (MIT unless the owner directs otherwise) and a minimal CONTRIBUTING.md covering pnpm setup, local-gate, local-review, and PR expectations.
+      2:
+        requirement: Internal process documents (goal files, brainstorm docs, README.bootstrap.md) must move to docs/history/ with a short framing README explaining the tool was built by agents and reviewed with itself, and inbound references must be updated.
+      3:
+        requirement: README.md must be written for a stranger's first five minutes — leading with the trust questions it answers and a quickstart that works on a spec-less repository, a what-you-get tour with screenshots of the cockpit, change map, and sticky comment from a real run, an explicit scope statement that analysis depth is TS/JS-first (import graph and API diff are TypeScript; coverage via lcov and test-weakening are language-agnostic), and Acai specs introduced as the optional power-user layer rather than the prerequisite.
+      4:
+        requirement: The local gate must include a packaging smoke test verifying the pnpm pack tarball installs and runs from a temporary directory outside the repository; actual npm publish remains the owner's manual step, prepared but never run.
+
 constraints:
   EVIDENCE:
     name: Evidence, determinism, and trust
