@@ -64,6 +64,7 @@ export const RISK_LENSES = [
   "reviewer_ux",
   "cache_provenance",
   "supply_chain",
+  "architecture",
   "custom"
 ] as const;
 export type RiskLens = (typeof RISK_LENSES)[number];
@@ -123,6 +124,7 @@ export const DEFAULT_HUMAN_REVIEW_BUILD_CONFIG: HumanReviewBuildConfig = {
     reviewer_ux: true,
     cache_provenance: true,
     supply_chain: true,
+    architecture: true,
     custom: true
   },
   required_manual_checks: [],
@@ -163,9 +165,13 @@ export const RISK_LENS_METADATA: Record<RiskLens, RiskLensMetadata> = {
     label: "Supply-chain lens",
     rank: 6
   },
+  architecture: {
+    label: "Architecture lens",
+    rank: 7
+  },
   custom: {
     label: "Custom lens",
-    rank: 7
+    rank: 8
   }
 };
 
@@ -558,6 +564,20 @@ export interface ReadingOrder {
   legs: ReadingOrderLeg[];
 }
 
+// review-surfaces.TREND.1: one row per review round, carried forward with the
+// prior packet (CI artifact or local prior-packet directory — the comparison
+// engine is transport-indifferent). Identity stays on stable finding keys via
+// the compare output; partial history is NORMAL (artifact expiry), never an
+// error. Optional in the schema for pre-TREND v1 artifacts; always emitted.
+export interface RoundsLedgerEntry {
+  round: number;
+  head_sha: string;
+  new_count: number;
+  resolved_count: number;
+  regressed_count: number;
+  verdict: HumanReviewDecision;
+}
+
 export interface HumanReviewModel {
   schema_version: typeof HUMAN_REVIEW_SCHEMA_VERSION;
   mode: "pr" | "repo";
@@ -587,6 +607,9 @@ export interface HumanReviewModel {
   // strictness) — empty graphs/tours render as empty sections, never absent.
   change_graph: ChangeGraph;
   reading_order: ReadingOrder;
+  // review-surfaces.TREND.1: the full rounds ledger (renderers cap the table;
+  // the artifact keeps every row). Optional for pre-TREND v1 artifacts.
+  rounds?: RoundsLedgerEntry[];
   evidence_cards: EvidenceCard[];
   test_plan: TestPlanItem[];
   skim_safe: SkimSafeItem[];

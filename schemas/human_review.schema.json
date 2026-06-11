@@ -162,6 +162,7 @@
                   "reviewer_ux",
                   "cache_provenance",
                   "supply_chain",
+                  "architecture",
                   "custom"
                 ]
               }
@@ -235,6 +236,30 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "rounds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["round", "head_sha", "new_count", "resolved_count", "regressed_count", "verdict"],
+        "properties": {
+          "round": { "type": "integer", "minimum": 1 },
+          "head_sha": { "type": "string" },
+          "new_count": { "type": "integer", "minimum": 0 },
+          "resolved_count": { "type": "integer", "minimum": 0 },
+          "regressed_count": { "type": "integer", "minimum": 0 },
+          "verdict": {
+            "enum": [
+              "probably_safe",
+              "reviewable_with_attention",
+              "needs_author_clarification",
+              "block_before_merge",
+              "no_signal"
+            ]
           }
         }
       }
@@ -769,6 +794,7 @@
             "reviewer_ux",
             "cache_provenance",
             "supply_chain",
+            "architecture",
             "custom"
           ]
         },

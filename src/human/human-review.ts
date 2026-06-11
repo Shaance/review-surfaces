@@ -9,6 +9,7 @@ import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTy
 import { emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { buildReviewPlan } from "./budget";
 import { buildChangeGraphSections, ChangedFileFacts, ChangedImportEdge } from "./change-graph";
+import { ArchDriftFact, ArchDriftResult } from "../risks/arch-drift";
 import { DependencyFact, dependencyFactSeverityRank } from "../risks/dependency-facts";
 import { ConfigFact } from "../risks/config-facts";
 import { expiredPolicySuppressions, matchPolicySeverityOverride, matchPolicySuppression, ReviewPolicy } from "../feedback/policy";
@@ -44,6 +45,7 @@ import {
   MissingEvidenceSummary,
   ReviewBlocker,
   ReviewQueueItem,
+  RoundsLedgerEntry,
   ReviewRoute,
   ReviewRoutePersona,
   ReviewRouteStep,
@@ -97,6 +99,14 @@ export interface BuildHumanReviewInput {
   // computed in the pipeline from buildImportGraph() over head content (it needs
   // file access). Absent -> a map with no edges (nodes still render).
   changedImportEdges?: ChangedImportEdge[];
+  // review-surfaces.ARCH_DRIFT.1-3: module-boundary drift facts + file-level
+  // edge deltas computed in the pipeline (base/head file access). Absent ->
+  // no drift signal and all change_graph edges stay kind "existing".
+  archDrift?: ArchDriftResult;
+  // review-surfaces.TREND.1: the prior rounds ledger recovered from the
+  // previous packet's human_review.json (either transport: CI artifact or the
+  // local prior-packet directory). Absent -> this run starts the ledger.
+  previousRounds?: RoundsLedgerEntry[];
 }
 
 interface BuildReviewRoutesInput {
@@ -358,9 +368,14 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
       .filter((change) => change.used_by && change.used_by.top.length > 0)
       .map((change) => ({ path: change.path, top: (change.used_by as { top: string[] }).top })),
     lensFindings: riskLensFindings,
-    reviewQueue
+    reviewQueue,
+    // review-surfaces.ARCH_DRIFT.2: drift edge deltas set kind new/removed so
+    // both map renderers pick the drift up with zero extra work.
+    driftEdges: input.archDrift?.file_edges
   });
   const generatedFrom = buildGeneratedFrom(input);
+  // review-surfaces.TREND.1: append THIS run's row to the carried-forward ledger.
+  const rounds = buildRoundsLedger(input, verdict, generatedFrom.head_sha);
   // review-surfaces.NARRATIVE.5: a provider-built narrative is passed in when
   // available; otherwise always render the deterministic fallback so the section
   // never fails and standalone/cache rebuilds still carry a narrative.
@@ -407,12 +422,64 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     review_plan: reviewPlan,
     change_graph: changeGraphSections.change_graph,
     reading_order: changeGraphSections.reading_order,
+    rounds,
     evidence_cards: evidenceCards,
     test_plan: testPlan,
     skim_safe: skimSafe,
     feedback_effects: feedbackEffects,
     generated_from: generatedFrom
   });
+}
+
+// review-surfaces.TREND.1: one row per run — round number continues the prior
+// ledger; counts come from the EXISTING compare output (stable finding keys,
+// never array positions). A missing prior packet/ledger is the first-review
+// case: a one-row ledger, never an error.
+function buildRoundsLedger(input: BuildHumanReviewInput, verdict: HumanReviewVerdict, headSha: string): RoundsLedgerEntry[] {
+  const prior = input.previousRounds ?? [];
+  const comparison = (input.packet.dogfood as { comparison?: { new_risks?: unknown[]; resolved_risks?: unknown[]; status_changes?: Array<{ direction?: string }> } } | undefined)?.comparison;
+  const entry: RoundsLedgerEntry = {
+    round: (prior[prior.length - 1]?.round ?? 0) + 1,
+    head_sha: headSha,
+    new_count: comparison?.new_risks?.length ?? 0,
+    resolved_count: comparison?.resolved_risks?.length ?? 0,
+    regressed_count: (comparison?.status_changes ?? []).filter((change) => change.direction === "regressed").length,
+    verdict: verdict.decision
+  };
+  return [...prior, entry];
+}
+
+// review-surfaces.ARCH_DRIFT.2: drift facts rank as concrete queue items via
+// the risk register plumbing — cycle creation outranks a plain new edge.
+function archDriftQueueDrafts(facts: ArchDriftFact[], diffIndex: DiffIndex | undefined): QueueDraft[] {
+  const ordered = [...facts].sort(
+    (a, b) =>
+      (a.kind === "import_cycle_created" ? 0 : 1) - (b.kind === "import_cycle_created" ? 0 : 1) ||
+      compareStrings(a.from_module, b.from_module) ||
+      compareStrings(a.to_module, b.to_module)
+  );
+  return ordered.slice(0, 6).map((fact, index) =>
+    semanticDraft(diffIndex, {
+      title: archDriftTitle(fact.kind),
+      path: fact.files[0] ?? fact.from_module,
+      reason: `${fact.detail}.`,
+      reviewer_action: "Confirm the module-boundary import change is an intentional architecture decision, not an agent shortcut across layers.",
+      priority: fact.kind === "import_cycle_created" ? "high" : "medium",
+      score: (fact.kind === "import_cycle_created" ? 200 : 160) - index,
+      sortKey: `arch_drift:${fact.kind}:${fact.from_module}:${fact.to_module}`
+    })
+  );
+}
+
+function archDriftTitle(kind: ArchDriftFact["kind"]): string {
+  switch (kind) {
+    case "module_edge_added":
+      return "New module dependency edge";
+    case "module_edge_removed":
+      return "Removed module dependency edge";
+    case "import_cycle_created":
+      return "Import cycle created";
+  }
 }
 
 // review-surfaces.CHANGE_MAP.1: per-changed-file churn/status facts for the
@@ -805,6 +872,8 @@ function evidenceCardWhyItMattersForLens(lens: RiskLens): string {
       return "Reviewer-facing output changes affect whether humans see blockers, evidence, and next actions clearly.";
     case "supply_chain":
       return "New or changed dependencies alter what third-party code runs at install or build time — exactly where supply-chain overreach hides.";
+    case "architecture":
+      return "A new dependency edge between modules that never depended on each other changes the system's shape — layering violations look locally reasonable in every single hunk.";
     case "cache_provenance":
       return "Cache and provenance changes affect whether generated artifacts remain reproducible and fresh.";
     case "custom":
@@ -1892,6 +1961,8 @@ function buildReviewQueue(
   // field/signature/test-weakening language, not generic path-touch phrasing.
   drafts.push(...semanticQueueDrafts(semanticFacts, diffIndex));
   drafts.push(...dependencyQueueDrafts(input.dependencyFacts ?? [], diffIndex));
+  // review-surfaces.ARCH_DRIFT.2: drift facts route into the risk register.
+  drafts.push(...archDriftQueueDrafts(input.archDrift?.facts ?? [], diffIndex));
   drafts.push(...configFactQueueDrafts(input.configFacts ?? [], diffIndex));
 
   for (const risk of input.prSurface?.risks.candidates ?? []) {
@@ -2607,6 +2678,11 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
     addSignal("security_privacy", isHighSeverityConfigFact(fact.kind) ? "high" : "medium", [fileEvidence(fact.path, fact.detail)], [], [], [fact.path]);
   }
 
+  // review-surfaces.ARCH_DRIFT.2: drift facts feed the architecture lens.
+  for (const fact of input.archDrift?.facts ?? []) {
+    addSignal("architecture", fact.kind === "import_cycle_created" ? "high" : "medium", [fileEvidence(fact.files[0] ?? fact.from_module, fact.detail)], [], [], fact.files);
+  }
+
   for (const signal of semanticFacts.test_weakening) {
     const severe = signal.kind === "deleted_test_file" || signal.kind === "removed_assertion";
     addSignal("test_evidence", severe ? "high" : "medium", [fileEvidence(signal.path, signal.detail)], [], [], [signal.path]);
@@ -2800,6 +2876,8 @@ function riskLensReviewerAction(
       return "Render the changed reviewer-facing Markdown or diagram from fixtures and inspect boundedness, evidence links, and blocked-state messaging.";
     case "supply_chain":
       return "Inspect the added or changed dependency: confirm it is intentional, pinned appropriately, and free of unexpected install scripts.";
+    case "architecture":
+      return "Confirm the new or removed module-boundary import edge is an intentional architecture change, not an agent shortcut across layers.";
     case "cache_provenance":
       return "Verify cache signatures, previous-packet comparison, and artifact provenance cannot reuse stale or mismatched review evidence.";
     case "custom":
@@ -2953,6 +3031,8 @@ function riskLensSuggestedCommentBody(finding: Pick<RiskLensFinding, "lens" | "p
       return "This fires the reviewer UX lens. Please include or inspect a rendered Markdown/diagram fixture so reviewers can verify the output directly.";
     case "supply_chain":
       return "Is this dependency change intentional, and has the package been vetted for install scripts and maintenance?";
+    case "architecture":
+      return "Is the new module-boundary dependency edge intentional, and should it be documented as an architecture decision?";
     case "cache_provenance":
       return "This fires the cache/provenance lens. Which fixture proves stale or mismatched artifacts cannot be reused for this change?";
     case "custom":
@@ -3761,6 +3841,8 @@ function riskLensQuestionText(finding: RiskLensFinding): string {
       return "Which cache/provenance fixture proves stale or mismatched review artifacts cannot be reused?";
     case "supply_chain":
       return "Is this dependency change intentional, and has the package been vetted for install scripts, pinning, and maintenance?";
+    case "architecture":
+      return "Is the new module-boundary dependency edge intentional, and should it be documented as an architecture decision?";
     case "custom":
       return "What reviewer action should close this custom risk lens finding?";
   }

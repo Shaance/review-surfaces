@@ -108,6 +108,14 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   if (mapEmbed.body) {
     sections.push("", `<details><summary>Change map</summary>\n\n\`\`\`mermaid\n${mapEmbed.body}\n\`\`\`\n\n</details>`);
   }
+  // review-surfaces.TREND.2: the rounds ledger as a compact table (last ~8
+  // rounds; the full ledger lives in the artifact). Partial history renders
+  // honestly — "history begins at round N" — never as an error.
+  const roundsBlock = renderRoundsTable(model);
+  if (roundsBlock) {
+    sections.push("", roundsBlock);
+  }
+
   const firstLeg = firstTourLegSnippet(model);
   if (firstLeg.blocked) {
     state.blocked = true;
@@ -134,6 +142,34 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   // contributes to the block gate alongside the field-level signal.
   const redaction = redactSecrets(body);
   return { markdown: redaction.text, blocked: state.blocked || redaction.blocked };
+}
+
+const MAX_ROUNDS_ROWS = 8;
+
+// review-surfaces.TREND.2: rendered only when there is actual history (a
+// one-row ledger is the first review — nothing to trend yet).
+function renderRoundsTable(model: HumanReviewModel): string | undefined {
+  const rounds = model.rounds ?? [];
+  if (rounds.length < 2) {
+    return undefined;
+  }
+  const shown = rounds.slice(-MAX_ROUNDS_ROWS);
+  const lines = [
+    "### Review rounds",
+    "",
+    ...(rounds[0].round > 1
+      ? [`_History begins at round ${rounds[0].round} (earlier rounds expired with their artifacts); full ledger in human_review.json._`, ""]
+      : shown[0].round > 1
+        ? [`_Showing the last ${shown.length} of ${rounds.length} rounds; full ledger in human_review.json._`, ""]
+        : []),
+    "| round | head | new | resolved | regressed | verdict |",
+    "| --- | --- | --- | --- | --- | --- |",
+    ...shown.map(
+      (entry) =>
+        `| ${entry.round} | \`${entry.head_sha.slice(0, 7)}\` | ${entry.new_count} | ${entry.resolved_count} | ${entry.regressed_count} | ${entry.verdict} |`
+    )
+  ];
+  return lines.join("\n");
 }
 
 function renderQueue(items: ReviewQueueItem[], diff: StructuredDiff | undefined, state: RedactionState): string {

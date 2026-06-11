@@ -234,7 +234,10 @@ export function commitTimeAtRef(cwd: string, ref: string): string | undefined {
 // True only when ref:path is a BLOB (a file). `git show ref:dir` succeeds with a
 // tree listing, so a show-based existence check would treat directories as files.
 export function blobExistsAtRef(cwd: string, ref: string, filePath: string): boolean {
-  return git(cwd, ["cat-file", "-e", `${ref}:${filePath}^{blob}`]) !== undefined;
+  // `-t` (not `-e` with a ^{blob} suffix — that suffix is parsed as part of
+  // the PATH and always fails) so a directory at the path reports its real
+  // type "tree" and is rejected: blob-only existence.
+  return git(cwd, ["cat-file", "-t", `${ref}:${filePath}`]) === "blob";
 }
 
 function git(cwd: string, args: string[]): string | undefined {

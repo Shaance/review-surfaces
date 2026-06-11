@@ -65,6 +65,8 @@ import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
 import { ChangedImportEdge, computeChangedImportEdges } from "../human/change-graph";
+import { ArchDriftResult, computeArchDriftFacts, moduleOf } from "../risks/arch-drift";
+import { HUMAN_REVIEW_DECISIONS, RoundsLedgerEntry } from "../human/contract";
 import { buildChangeNarrative } from "../human/narrative";
 import { ChangeNarrative, HumanReviewModel, ReviewQueueItem } from "../human/contract";
 import { runWalkthrough, WalkthroughIO, WalkthroughOptions } from "../review/walkthrough";
@@ -1515,6 +1517,12 @@ function buildHumanReviewForPacket(
     // shared import-graph parser over head content — computed here (file access)
     // so the section is uniform on every build path.
     changedImportEdges: computeChangedImportEdgesForPacket(cwd, resolvedDiff, factReaders),
+    // review-surfaces.ARCH_DRIFT.1-3: base-vs-head resolved import diffs at
+    // module altitude, computed here (base/head file access).
+    archDrift: computeArchDriftForPacket(cwd, resolvedDiff, factReaders),
+    // review-surfaces.TREND.1: carry the prior rounds ledger forward from the
+    // previous packet's sibling human_review.json (any transport).
+    previousRounds: readPreviousRounds(cwd, packet),
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
@@ -1563,6 +1571,8 @@ interface FactReaders {
   readHead: (filePath: string) => string | undefined;
   headIsWorktree: boolean;
   headSha: string;
+  // The resolved merge-base ref the base side reads at (empty when unknown).
+  baseReadRef: string;
 }
 
 function buildFactReaders(cwd: string, packet: ReviewPacket, diff: StructuredDiff | undefined): FactReaders | undefined {
@@ -1588,7 +1598,8 @@ function buildFactReaders(cwd: string, packet: ReviewPacket, diff: StructuredDif
     readBase: baseReadRef ? (filePath) => readFileAtRef(cwd, baseReadRef, filePath) : () => undefined,
     readHead: headIsWorktree ? readWorktree : (filePath) => readFileAtRef(cwd, headSha, filePath),
     headIsWorktree,
-    headSha
+    headSha,
+    baseReadRef
   };
 }
 
@@ -1618,6 +1629,141 @@ function computeChangedImportEdgesForPacket(cwd: string, diff: StructuredDiff | 
         }
       : (filePath) => blobExistsAtRef(cwd, readers.headSha, filePath)
   });
+}
+
+// review-surfaces.ARCH_DRIFT.1: diff base-vs-head resolved import sets for the
+// changed files, with blob-only existence checks on committed refs (the same
+// resolution rules as the blast-radius graph). The base side reads the
+// merge-base; a worktree head reads the working tree.
+function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined, readers: FactReaders | undefined): ArchDriftResult | undefined {
+  // No reliable base side (unresolvable base ref) -> NO drift signal at all:
+  // comparing head imports against an empty base would fabricate a "new edge"
+  // fact for every pre-existing cross-module import in the changed files.
+  if (!diff || diff.files.length === 0 || !readers || readers.baseReadRef === "") {
+    return undefined;
+  }
+  const existsHead = readers.headIsWorktree
+    ? (filePath: string): boolean => {
+        try {
+          return fs.statSync(path.resolve(cwd, filePath)).isFile();
+        } catch {
+          return false;
+        }
+      }
+    : (filePath: string) => blobExistsAtRef(cwd, readers.headSha, filePath);
+  // Full-tree module-edge sets: novelty must be judged against EVERY base
+  // import (the same module edge often already exists via another file), so
+  // both trees are parsed once with the shared bounded import graph.
+  const existsBase = (filePath: string): boolean => readers.baseReadRef !== "" && blobExistsAtRef(cwd, readers.baseReadRef, filePath);
+  const baseModuleEdgeKeys = treeModuleEdgeKeys(cwd, readers.baseReadRef || undefined, readers.readBase, existsBase);
+  const headModuleEdgeKeys = treeModuleEdgeKeys(cwd, readers.headIsWorktree ? "WORKTREE" : readers.headSha, readers.readHead, existsHead);
+  const result = computeArchDriftFacts({
+    changedFiles: diff.files.map((file) => ({ path: file.path, ...(file.old_path ? { old_path: file.old_path } : {}), status: file.status })),
+    readBase: readers.readBase,
+    readHead: readers.readHead,
+    existsBase,
+    existsHead,
+    ...(baseModuleEdgeKeys instanceof Set ? { baseModuleEdgeKeys } : {}),
+    ...(headModuleEdgeKeys instanceof Set ? { headModuleEdgeKeys } : {})
+  });
+  // A truncated tree graph makes module-edge novelty UNKNOWN: suppress the
+  // facts ("no import existed at the base" cannot be asserted) but keep the
+  // file-level edge deltas — they come from the changed files alone and stay
+  // exact for the map renderers.
+  if (baseModuleEdgeKeys === "truncated" || headModuleEdgeKeys === "truncated") {
+    return { facts: [], file_edges: result.file_edges };
+  }
+  return result;
+}
+
+// Module-edge keys over a whole tree, honoring the privacy/generated ignore
+// rules (the same enumeration as the blast-radius graph). Returns undefined
+// when the tree cannot be listed (the detector then falls back to its weaker
+// changed-files-only bound rather than guessing).
+function treeModuleEdgeKeys(
+  cwd: string,
+  treeRef: string | undefined,
+  read: (filePath: string) => string | undefined,
+  exists: (filePath: string) => boolean
+): Set<string> | "truncated" | undefined {
+  if (!treeRef) {
+    return undefined;
+  }
+  let tracked: string[];
+  try {
+    tracked = execFileSync(
+      "git",
+      treeRef === "WORKTREE" ? ["ls-files", "--cached", "--others", "--exclude-standard"] : ["ls-tree", "-r", "--name-only", treeRef],
+      { cwd, encoding: "utf8" }
+    )
+      .split("\n")
+      .filter(Boolean);
+  } catch {
+    return undefined;
+  }
+  const ignore = loadPrivacyIgnoreSync(cwd);
+  tracked = tracked.filter((filePath) => !ignore.isIgnored(filePath));
+  const graph = buildImportGraph({ files: tracked, read, exists });
+  // A truncated graph is PARTIAL evidence: treating it as the whole tree would
+  // report pre-existing edges beyond the cap as new — and the changed-files
+  // fallback bound would be just as misleading. Signal "truncated" so the
+  // caller suppresses module-edge facts entirely rather than guessing.
+  if (graph.truncated) {
+    return "truncated";
+  }
+  const keys = new Set<string>();
+  for (const [imported, importers] of graph.importers.entries()) {
+    const toModule = moduleOf(imported);
+    for (const importer of importers) {
+      const fromModule = moduleOf(importer);
+      if (fromModule !== toModule) {
+        keys.add(JSON.stringify([fromModule, toModule]));
+      }
+    }
+  }
+  return keys;
+}
+
+// review-surfaces.TREND.1: read the prior ledger from the previous packet's
+// sibling human_review.json. Absent/unreadable/malformed -> first review.
+function readPreviousRounds(cwd: string, packet: ReviewPacket): RoundsLedgerEntry[] | undefined {
+  const dogfood = packet.dogfood as { previous_packet_path?: unknown; comparison?: unknown } | undefined;
+  const previousPath = dogfood?.previous_packet_path;
+  // No computed comparison means the prior packet was absent/unreadable: the
+  // ledger must NOT be carried forward (a zero-count row would fake a valid
+  // next round). Documented missing-prior-packet case = first review.
+  if (typeof previousPath !== "string" || previousPath.length === 0 || !dogfood?.comparison) {
+    return undefined;
+  }
+  const humanPath = path.join(path.dirname(path.resolve(cwd, previousPath)), "human_review.json");
+  try {
+    const parsed = JSON.parse(fs.readFileSync(humanPath, "utf8")) as { rounds?: unknown };
+    if (!Array.isArray(parsed.rounds)) {
+      return undefined;
+    }
+    // Every row must be fully formed: carrying a partial row forward would
+    // fail the new model's schema validation (or render undefined counts).
+    // Any malformed row degrades the WHOLE ledger to the first-review case.
+    const isValidRow = (entry: unknown): entry is RoundsLedgerEntry => {
+      const row = entry as Partial<RoundsLedgerEntry>;
+      return (
+        typeof row.round === "number" &&
+        Number.isInteger(row.round) &&
+        typeof row.head_sha === "string" &&
+        Number.isInteger(row.new_count) &&
+        Number.isInteger(row.resolved_count) &&
+        Number.isInteger(row.regressed_count) &&
+        typeof row.verdict === "string" &&
+        (HUMAN_REVIEW_DECISIONS as readonly string[]).includes(row.verdict)
+      );
+    };
+    if (parsed.rounds.length === 0 || !parsed.rounds.every(isValidRow)) {
+      return undefined;
+    }
+    return parsed.rounds;
+  } catch {
+    return undefined;
+  }
 }
 
 // review-surfaces.BLAST_RADIUS.1/.2/.3: enrich changed/removed exports with
