@@ -5,6 +5,7 @@ import { redactSecrets } from "../privacy/secrets";
 import { StructuredDiff } from "../pr/contract";
 import { formatEnumChanges, formatTypeChanges } from "../risks/semantic-diff";
 import { renderHunkExcerpt } from "./hunk-excerpt";
+import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
 import { changeMapMermaidBody } from "../render/change-map-embed";
 import { extractAcids, fillAcidTemplate, normalizeAcidTemplate, RollupGroup, rollupBy } from "./rollup";
 import { RISK_LENS_METADATA } from "./contract";
@@ -185,7 +186,7 @@ ${renderSemanticFacts(model.semantic_facts)}
 
 ## Review first
 
-${renderReviewFirst(model.review_queue.slice(0, MAX_REVIEW_FIRST), context)}
+${renderReviewFirst(model, model.review_queue.slice(0, MAX_REVIEW_FIRST), context)}
 
 ## Review routes
 
@@ -767,7 +768,7 @@ function semanticApiSummary(change: HumanReviewModel["semantic_facts"]["api_chan
   return parts.join("; ");
 }
 
-function renderReviewFirst(items: ReviewQueueItem[], context: HumanRenderContext = {}): string {
+function renderReviewFirst(model: HumanReviewModel, items: ReviewQueueItem[], context: HumanRenderContext = {}): string {
   if (items.length === 0) {
     return "- No path-backed review queue items generated.";
   }
@@ -779,10 +780,14 @@ function renderReviewFirst(items: ReviewQueueItem[], context: HumanRenderContext
       // authoritatively, so suppress the separate (possibly stale) Hunk: metadata
       // line to avoid contradictory labels.
       const hunkLine = item.hunk_header && !excerpt ? `   - Hunk: \`${field(item.hunk_header)}\`\n` : "";
+      // review-surfaces.COVERAGE.6: one summary line per excerpt with the
+      // uncovered ranges — no per-line markup games on markdown surfaces.
+      const coverageHunk = excerpt ? coverageHunkForAnchor(model, item.path, item.hunk_header) : undefined;
+      const coverageLine = coverageHunk ? `\n   - Coverage: ${field(coverageSummaryLine(coverageHunk))}` : "";
       return `${item.rank}. \`${field(location)}\`
 ${hunkLine}   - Why it matters: ${field(item.reason)}
    - Why ranked here: ${rankingReasonsLine(item)}
-   - Action: ${field(item.reviewer_action)}${excerpt ? `\n${excerpt}` : ""}
+   - Action: ${field(item.reviewer_action)}${excerpt ? `\n${excerpt}` : ""}${coverageLine}
    - Risk: ${item.risk_ids.map((risk) => `\`${field(risk)}\``).join(", ") || "none"}
    - Evidence: ${evidenceList(item.evidence)}`;
     })

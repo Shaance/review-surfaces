@@ -324,7 +324,7 @@ test("review-surfaces.COVERAGE.3 a current report feeds ranking reasons and emit
           changed_lines: 4,
           covered_lines: 0,
           classification: "uncovered",
-          hunks: [{ hunk_header: "@@ -70,2 +70,3 @@", changed_lines: 4, covered_lines: 0, classification: "uncovered" }]
+          hunks: [{ hunk_header: "@@ -70,2 +70,3 @@", changed_lines: 4, covered_lines: 0, classification: "uncovered", uncovered_lines: []  }]
         }
       ]
     }
@@ -352,7 +352,7 @@ test("review-surfaces.COVERAGE.2 a stale report (predates head) is recorded but 
           changed_lines: 4,
           covered_lines: 0,
           classification: "uncovered",
-          hunks: [{ hunk_header: "@@ -220,2 +220,3 @@", changed_lines: 4, covered_lines: 0, classification: "uncovered" }]
+          hunks: [{ hunk_header: "@@ -220,2 +220,3 @@", changed_lines: 4, covered_lines: 0, classification: "uncovered", uncovered_lines: []  }]
         }
       ]
     }

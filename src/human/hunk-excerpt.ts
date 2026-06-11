@@ -174,14 +174,52 @@ function selectHunk(
 // change in the hunk — so an item anchored to a later cluster in the same hunk
 // still shows the line the reviewer must inspect. Falls back to the first
 // changed line when the anchor carries no usable range.
-function excerptLines(
+// review-surfaces.COVERAGE.6: a structured excerpt variant for renderers that
+// need per-line metadata — the HTML cockpit's coverage gutter keys off each
+// line's kind and new-side line number. The text is the SAME redacted,
+// prefix-formatted line the plain excerpt renders.
+export interface StructuredExcerptLine {
+  text: string;
+  kind: StructuredDiffLine["kind"] | "elision";
+  new_line?: number;
+}
+
+export interface StructuredExcerpt {
+  header: string;
+  lines: StructuredExcerptLine[];
+}
+
+export function resolveStructuredExcerpt(
+  diff: StructuredDiff | undefined,
+  anchor: HunkAnchor,
+  maxLines: number = DEFAULT_HUNK_EXCERPT_MAX_LINES
+): StructuredExcerpt | undefined {
+  if (!diff || diff.files.length === 0) {
+    return undefined;
+  }
+  for (const candidate of candidateFiles(diff, anchor)) {
+    const side = sideForAnchor(candidate, anchor);
+    const hunk = selectHunk(candidate, anchor, side);
+    if (hunk) {
+      const lines = structuredWindow(hunk, side, anchor, Math.max(4, maxLines));
+      return lines.length > 0 ? { header: formatHunkHeader(hunk), lines } : undefined;
+    }
+  }
+  return undefined;
+}
+
+function structuredWindow(
   hunk: StructuredDiffHunk,
   side: "old" | "new",
   anchor: HunkAnchor,
   maxLines: number,
   redactionState?: ExcerptRedactionState
-): string[] {
-  const formatted = hunk.lines.map((line) => formatDiffLine(line, redactionState));
+): StructuredExcerptLine[] {
+  const formatted: StructuredExcerptLine[] = hunk.lines.map((line) => ({
+    text: formatDiffLine(line, redactionState),
+    kind: line.kind,
+    ...(typeof line.new_line === "number" ? { new_line: line.new_line } : {})
+  }));
   if (formatted.length <= maxLines) {
     return formatted;
   }
@@ -194,12 +232,22 @@ function excerptLines(
   start = Math.max(0, end - budget);
   const window = formatted.slice(start, end);
   if (start > 0) {
-    window.unshift(`@@ … ${start} earlier line(s) elided @@`);
+    window.unshift({ text: `@@ … ${start} earlier line(s) elided @@`, kind: "elision" });
   }
   if (end < formatted.length) {
-    window.push(`@@ … ${formatted.length - end} more line(s) elided @@`);
+    window.push({ text: `@@ … ${formatted.length - end} more line(s) elided @@`, kind: "elision" });
   }
   return window;
+}
+
+function excerptLines(
+  hunk: StructuredDiffHunk,
+  side: "old" | "new",
+  anchor: HunkAnchor,
+  maxLines: number,
+  redactionState?: ExcerptRedactionState
+): string[] {
+  return structuredWindow(hunk, side, anchor, maxLines, redactionState).map((line) => line.text);
 }
 
 // Pick the line index to center the excerpt window on: the first line whose

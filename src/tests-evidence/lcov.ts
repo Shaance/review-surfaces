@@ -77,11 +77,21 @@ function normalizeCoveragePath(filePath: string, cwd?: string): string {
 
 export type ChangedLineClassification = "covered" | "uncovered" | "partial";
 
+// review-surfaces.COVERAGE.5: bound the per-hunk uncovered line list so a
+// pathological hunk cannot bloat the model; the cap is rendered, never silent.
+export const MAX_UNCOVERED_LINES_PER_HUNK = 50;
+
 export interface ChangedHunkCoverage {
   hunk_header: string;
   changed_lines: number;
   covered_lines: number;
   classification: ChangedLineClassification;
+  // review-surfaces.COVERAGE.5: the specific new-side line numbers that are
+  // instrumented but not executed, sorted ascending, capped with an explicit
+  // truncated flag. Only added lines have coverage semantics — deleted lines
+  // never appear here.
+  uncovered_lines: number[];
+  uncovered_truncated?: boolean;
 }
 
 export interface ChangedFileCoverage {
@@ -112,11 +122,14 @@ export function intersectCoverageWithDiff(diff: StructuredDiff, coverage: LcovCo
     for (const hunk of file.hunks) {
       let hunkChanged = 0;
       let hunkHit = 0;
+      const uncovered: number[] = [];
       for (const line of hunk.lines) {
         if (line.kind === "add" && typeof line.new_line === "number" && instrumented.has(line.new_line)) {
           hunkChanged += 1;
           if (covered.has(line.new_line)) {
             hunkHit += 1;
+          } else {
+            uncovered.push(line.new_line);
           }
         }
       }
@@ -125,11 +138,15 @@ export function intersectCoverageWithDiff(diff: StructuredDiff, coverage: LcovCo
       }
       changed += hunkChanged;
       hit += hunkHit;
+      uncovered.sort((a, b) => a - b);
+      const truncated = uncovered.length > MAX_UNCOVERED_LINES_PER_HUNK;
       hunks.push({
         hunk_header: `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@`,
         changed_lines: hunkChanged,
         covered_lines: hunkHit,
-        classification: hunkHit === 0 ? "uncovered" : hunkHit === hunkChanged ? "covered" : "partial"
+        classification: hunkHit === 0 ? "uncovered" : hunkHit === hunkChanged ? "covered" : "partial",
+        uncovered_lines: truncated ? uncovered.slice(0, MAX_UNCOVERED_LINES_PER_HUNK) : uncovered,
+        ...(truncated ? { uncovered_truncated: true } : {})
       });
     }
     if (changed === 0) {

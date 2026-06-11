@@ -441,6 +441,10 @@ export interface CoverageEvidenceHunk {
   changed_lines: number;
   covered_lines: number;
   classification: "covered" | "uncovered" | "partial";
+  // review-surfaces.COVERAGE.5: sorted new-side line numbers that are
+  // instrumented but not executed, capped with an explicit truncated flag.
+  uncovered_lines: number[];
+  uncovered_truncated?: boolean;
 }
 
 export interface CoverageEvidenceFile {

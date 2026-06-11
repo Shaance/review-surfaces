@@ -278,11 +278,6 @@ quality_gate:
   # ACIDs it ships. The gate must be back to `allow_missing: []` when the final
   # phase lands.
   allow_missing:
-    # Phase 3 / M10 — cockpit visual layer (ideas 3, 4, 6)
-    - review-surfaces.RENDER.11
-    - review-surfaces.RENDER.12
-    - review-surfaces.COVERAGE.5
-    - review-surfaces.COVERAGE.6
     # Phase 4 / M11 — drift and convergence (ideas 5, 7)
     - review-surfaces.ARCH_DRIFT.1
     - review-surfaces.ARCH_DRIFT.2
