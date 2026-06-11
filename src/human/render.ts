@@ -428,11 +428,11 @@ ${renderSinceLastReviewItems(since.resolved_overreach)}
 ## Still open
 
 ${renderSinceLastReviewItems(since.still_open)}
-
+${model.spec_mode === "none" ? "" : `
 ## Count deltas
 
 ${renderSinceLastReviewCountDeltas(since)}
-`;
+`}`;
 }
 
 export function renderTestPlanMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {

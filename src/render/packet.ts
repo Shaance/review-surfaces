@@ -301,7 +301,7 @@ ${packet.intent.open_questions.map((item) => `- ${item}`).join("\n") || "- None 
 
 ## 10. Evidence appendix
 ${(packet.intent as { spec_mode?: unknown }).spec_mode === "none" ? `- ${SPEC_NONE_NOTE}` : `- Requirements indexed: ${packet.intent.requirements.length}
-- Authoritative requirements: ${packet.intent.requirements.filter((requirement) => !requirement.llm_derived).length}`}${hasLlmContribution ? `
+- Authoritative requirements: ${packet.intent.requirements.filter((requirement) => !requirement.llm_derived).length}`}${hasLlmContribution && ((packet.intent as { spec_mode?: unknown }).spec_mode !== "none" || llmProposedRequirements > 0) ? `
 - LLM-proposed (non-authoritative) requirements: ${llmProposedRequirements}` : ""}
 - Changed files in subsystem cards: ${changedFiles.length}
 - Methodology logs missing: ${packet.methodology.missing_logs}

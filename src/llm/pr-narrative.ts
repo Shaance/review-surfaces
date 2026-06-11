@@ -427,9 +427,12 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
   }
 
   // review-surfaces.COLD_START.5: on a spec-less repo, provider prose that
-  // speaks in requirements is dropped item-by-item (anchor validation cannot
-  // catch wording like "0 affected requirements" — it only checks tokens).
-  const speclessOk = (text: string): boolean => input.specMode !== "none" || !/requirement/i.test(text);
+  // speaks in requirement COUNTS, coverage, or mapping asks is dropped
+  // item-by-item (anchor validation cannot catch wording like "0 affected
+  // requirements" — it only checks tokens). Deliberately narrower than
+  // /requirement/i so a changed requirements.txt can still be narrated.
+  const SPEC_SHAPED_WORDING = /(\b(\d+|no|zero)\s+(affected\s+)?requirements?\b)|requirement\s+(coverage|results?|groups?)|\bto\s+an?\s+(acai\s+)?requirement\b|acai\s+requirement/i;
+  const speclessOk = (text: string): boolean => input.specMode !== "none" || !SPEC_SHAPED_WORDING.test(text);
   const whatChanged = validateItems(data.what_changed, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_WHAT_CHANGED_ITEMS).filter((item) => speclessOk(item.text));
   const whyItMatters = validateItems(data.why_it_matters, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_WHY_IT_MATTERS_ITEMS).filter((item) => speclessOk(item.text));
   const reviewFirst = validateItems(data.review_first, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_REVIEW_FIRST_ITEMS).filter((item) => speclessOk(item.text));
@@ -460,7 +463,7 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
   // talks in requirement counts is replaced by the deterministic no-requirement
   // summary rather than rendered verbatim at the top of the PR comment.
   const summary =
-    boundedSummary !== undefined && !(input.specMode === "none" && /requirement/i.test(boundedSummary))
+    boundedSummary !== undefined && speclessOk(boundedSummary)
       ? boundedSummary
       : deterministicSummary(input.scope, input.specMode);
   const narrative: PrNarrativeModel = {
