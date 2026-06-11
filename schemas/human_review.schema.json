@@ -148,6 +148,7 @@
             "required": ["path", "churn_added", "churn_removed", "status", "cluster"],
             "properties": {
               "path": { "type": "string" },
+              "old_path": { "type": "string" },
               "churn_added": { "type": "integer", "minimum": 0 },
               "churn_removed": { "type": "integer", "minimum": 0 },
               "status": { "enum": ["added", "modified", "deleted", "renamed"] },
@@ -270,8 +271,7 @@
                     "classification": { "enum": ["covered", "uncovered", "partial"] },
                     "uncovered_lines": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
                     "uncovered_truncated": { "type": "boolean" },
-                    "covered_line_numbers": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
-                    "covered_truncated": { "type": "boolean" }
+                    "covered_line_numbers": { "type": "array", "items": { "type": "integer", "minimum": 1 } }
                   }
                 }
               }

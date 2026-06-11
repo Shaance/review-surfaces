@@ -450,7 +450,6 @@ export interface CoverageEvidenceHunk {
   // Executed counterpart so per-line gutters never guess: a line in neither
   // list is not-instrumented (neutral).
   covered_line_numbers?: number[];
-  covered_truncated?: boolean;
 }
 
 export interface CoverageEvidenceFile {
@@ -497,6 +496,8 @@ export type ChangeGraphNodeStatus = "added" | "modified" | "deleted" | "renamed"
 
 export interface ChangeGraphNode {
   path: string;
+  // Rename source path, so renderers can match old-side-anchored queue items.
+  old_path?: string;
   churn_added: number;
   churn_removed: number;
   status: ChangeGraphNodeStatus;

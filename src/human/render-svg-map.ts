@@ -103,7 +103,7 @@ export function renderChangeMapSvg(graph: ChangeGraph): RenderedSvgMap | undefin
       const marker = node.status === "deleted" ? "× " : node.status === "added" ? "+ " : node.status === "renamed" ? "→ " : "";
       const detail = `${node.path}\n+${node.churn_added}/-${node.churn_removed} ${node.status}${node.lens ? `\nlens: ${node.lens}` : ""}`;
       cells.push(
-        `<g data-map-file="${esc(node.path)}" style="cursor:pointer">` +
+        `<g data-map-file="${esc(node.path)}"${node.old_path ? ` data-map-file-old="${esc(node.old_path)}"` : ""} style="cursor:pointer">` +
           `<rect x="${x}" y="${y}" width="${NODE_WIDTH}" height="${NODE_HEIGHT}" rx="6" fill="${fill}" stroke="#6b7280"${node.status === "deleted" ? ` stroke-dasharray="2 2"` : ""}/>` +
           `<text x="${x + 8}" y="${y + 17}" font-size="12">${esc(marker)}${esc(truncateLabel(name))}</text>` +
           `<text x="${x + 8}" y="${y + 32}" font-size="10" fill="#666">+${esc(node.churn_added)}/-${esc(node.churn_removed)}${node.lens ? ` · ${esc(node.lens)}` : ""}</text>` +

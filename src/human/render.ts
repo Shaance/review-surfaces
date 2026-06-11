@@ -267,7 +267,7 @@ export function renderReviewQueueMarkdown(model: HumanReviewModel, context: Huma
 
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
 
-${model.review_queue.length === 0 ? "- No path-backed review queue items generated." : model.review_queue.map((item) => renderQueueDetail(item, context)).join("\n\n---\n\n")}
+${model.review_queue.length === 0 ? "- No path-backed review queue items generated." : model.review_queue.map((item) => renderQueueDetail(model, item, context)).join("\n\n---\n\n")}
 `;
 }
 
@@ -866,7 +866,11 @@ function inlineHunkExcerpt(item: ReviewQueueItem, context: HumanRenderContext): 
     .join("\n");
 }
 
-function renderQueueDetail(item: ReviewQueueItem, context: HumanRenderContext = {}): string {
+function renderQueueDetail(model: HumanReviewModel, item: ReviewQueueItem, context: HumanRenderContext = {}): string {
+  // review-surfaces.COVERAGE.6: the standalone queue artifact carries the same
+  // one-line coverage summary as the Review first section.
+  const coverageHunkDetail = coverageHunkForAnchor(model, item.path, item.hunk_header);
+  const coverageDetailLine = coverageHunkDetail ? `Coverage: ${field(coverageSummaryLine(coverageHunkDetail))}\n\n` : "";
   const location = formatQueueLocation(item);
   const requirements = item.requirement_ids.map((id) => `\`${field(id)}\``).join(", ") || "none";
   const risks = item.risk_ids.map((id) => `\`${field(id)}\``).join(", ") || "none";
@@ -897,8 +901,7 @@ ${rankingReasonsLine(item)}
 
 Reviewer action:
 ${field(item.reviewer_action, 1000)}
-${excerpt ? `\n${excerpt}\n` : ""}
-Evidence:
+${excerpt ? `\n${excerpt}\n` : ""}${coverageDetailLine}Evidence:
 ${evidenceBullets(item.evidence, MAX_STANDALONE_EVIDENCE)}
 
 Requirements: ${requirements}

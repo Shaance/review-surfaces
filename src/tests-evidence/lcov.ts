@@ -94,9 +94,10 @@ export interface ChangedHunkCoverage {
   uncovered_truncated?: boolean;
   // The instrumented-and-executed counterpart, so per-line gutters can mark
   // covered lines green WITHOUT guessing: a line in neither list is
-  // not-instrumented (neutral), never "covered".
+  // not-instrumented (neutral), never "covered". NOT capped: the gutter uses
+  // this set as its only green source, so truncating it would render executed
+  // lines as not-instrumented (real hunks are bounded by the diff itself).
   covered_line_numbers: number[];
-  covered_truncated?: boolean;
 }
 
 export interface ChangedFileCoverage {
@@ -148,7 +149,6 @@ export function intersectCoverageWithDiff(diff: StructuredDiff, coverage: LcovCo
       uncovered.sort((a, b) => a - b);
       coveredLines.sort((a, b) => a - b);
       const truncated = uncovered.length > MAX_UNCOVERED_LINES_PER_HUNK;
-      const coveredTruncated = coveredLines.length > MAX_UNCOVERED_LINES_PER_HUNK;
       hunks.push({
         hunk_header: `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@`,
         changed_lines: hunkChanged,
@@ -156,8 +156,7 @@ export function intersectCoverageWithDiff(diff: StructuredDiff, coverage: LcovCo
         classification: hunkHit === 0 ? "uncovered" : hunkHit === hunkChanged ? "covered" : "partial",
         uncovered_lines: truncated ? uncovered.slice(0, MAX_UNCOVERED_LINES_PER_HUNK) : uncovered,
         ...(truncated ? { uncovered_truncated: true } : {}),
-        covered_line_numbers: coveredTruncated ? coveredLines.slice(0, MAX_UNCOVERED_LINES_PER_HUNK) : coveredLines,
-        ...(coveredTruncated ? { covered_truncated: true } : {})
+        covered_line_numbers: coveredLines
       });
     }
     if (changed === 0) {

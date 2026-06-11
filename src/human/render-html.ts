@@ -104,16 +104,36 @@ ${model.questions.length === 0 ? `<p class="muted">No reviewer questions generat
       try { localStorage.setItem(KEY, JSON.stringify(checked)); } catch (e) { /* private mode */ }
     });
   });
+  // Lens and map-file filters COMPOSE: an item is visible only when it passes
+  // both active filters (intersection), so toggling one never un-hides items
+  // the other filtered out.
+  var activeLens = null;
+  var activeFile = null;
+  var activeFileOld = null;
+  var fileNote = document.getElementById("file-filter-note");
+  var filePathEl = document.getElementById("file-filter-path");
+  function applyFilters() {
+    Array.prototype.forEach.call(document.querySelectorAll("[data-lenses]"), function (item) {
+      var lensOk = !activeLens || activeLens === "all" || (" " + item.getAttribute("data-lenses") + " ").indexOf(" " + activeLens + " ") >= 0;
+      // Rename-aware: an old-side-anchored item (path = rename source) matches
+      // the map node of its renamed destination, and vice versa.
+      var itemPath = item.getAttribute("data-path");
+      var fileOk = !activeFile || itemPath === activeFile || item.getAttribute("data-path-old") === activeFile || (activeFileOld && itemPath === activeFileOld);
+      item.style.display = lensOk && fileOk ? "" : "none";
+    });
+    if (fileNote && filePathEl) {
+      fileNote.hidden = !activeFile;
+      filePathEl.textContent = activeFile || "";
+    }
+  }
   var buttons = document.querySelectorAll("[data-lens-filter]");
   Array.prototype.forEach.call(buttons, function (button) {
     button.addEventListener("click", function () {
       var lens = button.getAttribute("data-lens-filter");
       var active = button.classList.toggle("active");
       Array.prototype.forEach.call(buttons, function (other) { if (other !== button) { other.classList.remove("active"); } });
-      Array.prototype.forEach.call(document.querySelectorAll("[data-lenses]"), function (item) {
-        var show = !active || lens === "all" || (" " + item.getAttribute("data-lenses") + " ").indexOf(" " + lens + " ") >= 0;
-        item.style.display = show ? "" : "none";
-      });
+      activeLens = active ? lens : null;
+      applyFilters();
     });
   });
   // review-surfaces.RENDER.12: review-progress bar fed by the existing
@@ -134,29 +154,24 @@ ${model.questions.length === 0 ? `<p class="muted">No reviewer questions generat
   });
   updateProgress();
   // review-surfaces.RENDER.11: clicking a map node filters the queue to that
-  // file (same data- attribute pattern as the lens filters).
-  var fileNote = document.getElementById("file-filter-note");
-  var filePathEl = document.getElementById("file-filter-path");
-  var activeFile = null;
-  function applyFileFilter() {
-    Array.prototype.forEach.call(document.querySelectorAll("[data-path]"), function (item) {
-      item.style.display = !activeFile || item.getAttribute("data-path") === activeFile ? "" : "none";
-    });
-    if (fileNote && filePathEl) {
-      fileNote.hidden = !activeFile;
-      filePathEl.textContent = activeFile || "";
-    }
-  }
+  // file (same data- attribute pattern as the lens filters; composes with the
+  // lens filter via applyFilters above).
   Array.prototype.forEach.call(document.querySelectorAll("[data-map-file]"), function (node) {
     node.addEventListener("click", function () {
       var file = node.getAttribute("data-map-file");
-      activeFile = activeFile === file ? null : file;
-      applyFileFilter();
+      if (activeFile === file) {
+        activeFile = null;
+        activeFileOld = null;
+      } else {
+        activeFile = file;
+        activeFileOld = node.getAttribute("data-map-file-old");
+      }
+      applyFilters();
     });
   });
   var clearButton = document.querySelector("[data-clear-file-filter]");
   if (clearButton) {
-    clearButton.addEventListener("click", function () { activeFile = null; applyFileFilter(); });
+    clearButton.addEventListener("click", function () { activeFile = null; activeFileOld = null; applyFilters(); });
   }
 })();
 </script>
@@ -167,9 +182,13 @@ ${model.questions.length === 0 ? `<p class="muted">No reviewer questions generat
 }
 
 function lensesForItem(model: HumanReviewModel, item: ReviewQueueItem): string[] {
-  return model.risk_lens_findings
-    .filter((finding) => finding.risk_ids.some((id) => item.risk_ids.includes(id)) || finding.paths.includes(item.path))
-    .map((finding) => finding.lens);
+  // Deduped: several findings with the same lens on one item must count the
+  // item ONCE per lens chip.
+  return [...new Set(
+    model.risk_lens_findings
+      .filter((finding) => finding.risk_ids.some((id) => item.risk_ids.includes(id)) || finding.paths.includes(item.path))
+      .map((finding) => finding.lens)
+  )];
 }
 
 // review-surfaces.RENDER.12: the at-a-glance header strip, rendered purely from
@@ -242,7 +261,7 @@ function renderQueueItem(model: HumanReviewModel, item: ReviewQueueItem, context
     .map((card) => `<a href="#card-${esc(card.id)}">${esc(card.id)}</a>`)
     .join(" ");
   const lenses = lensesForItem(model, item);
-  return `<div class="item" data-lenses="${esc(lenses.join(" "))}" data-path="${esc(item.path)}" id="queue-${esc(item.id)}">
+  return `<div class="item" data-lenses="${esc(lenses.join(" "))}" data-path="${esc(item.path)}"${item.old_path ? ` data-path-old="${esc(item.old_path)}"` : ""} id="queue-${esc(item.id)}">
 <header><strong>${esc(item.rank)}. <code>${esc(formatQueueLocation(item))}</code></strong> <span class="badge ${esc(item.priority)}">${esc(item.priority)}</span><label><input type="checkbox" data-queue-check="${esc(item.id)}"> reviewed</label></header>
 <p>${esc(item.reason)}</p>
 <p class="muted">Why ranked here: ${esc(item.ranking_reasons.join("; "))}</p>
