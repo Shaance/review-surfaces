@@ -2,6 +2,19 @@
   "name": "review-surfaces",
   "version": "0.1.0",
   "description": "Local-first review packet compiler for agent-generated code changes.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shaance/review-surfaces.git"
+  },
+  "keywords": [
+    "code-review",
+    "ai-agents",
+    "trust",
+    "static-analysis",
+    "diff",
+    "local-first"
+  ],
   "bin": {
     "review-surfaces": "./bin/review-surfaces.js"
   },
