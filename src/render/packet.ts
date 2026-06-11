@@ -4,6 +4,7 @@ import { commandLooksLikeLocalValidationCommand } from "../commands/classify";
 import { ArchitectureModel } from "../diagrams/diagrams";
 import { DogfoodModel } from "../dogfood/dogfood";
 import { EvaluationModel, RequirementStatus } from "../evaluation/evaluate";
+import { SPEC_NONE_NOTE } from "../evaluation/status";
 import { EnrichmentResult } from "../llm/provider";
 import { IntentModel } from "../intent/intent";
 import { MethodologyModel } from "../methodology/methodology";
@@ -234,19 +235,21 @@ function renderPacketMarkdown(packet: ReviewPacket, packetDirRel: string = ".rev
 ${packet.risks.review_focus.map((item) => `- ${item}`).join("\n") || "- No review focus generated."}
 
 ## 2. Intent
-${packet.intent.summary}
+${(packet.intent as { spec_mode?: unknown }).spec_mode === "none" ? SPEC_NONE_NOTE : `${packet.intent.summary}
 
-${previewLines(packet.intent.requirements, (requirement) => `- ${requirement.id} (${requirement.acai_id ?? "no-acid"})${requirement.llm_derived ? " [LLM-proposed, non-authoritative]" : ""}: ${requirement.requirement}`)}
+${previewLines(packet.intent.requirements, (requirement) => `- ${requirement.id} (${requirement.acai_id ?? "no-acid"})${requirement.llm_derived ? " [LLM-proposed, non-authoritative]" : ""}: ${requirement.requirement}`)}`}
 
 ## 3. Requirement coverage
-- satisfied: ${statusCounts.satisfied}
+${(packet.intent as { spec_mode?: unknown }).spec_mode === "none"
+    ? SPEC_NONE_NOTE
+    : `- satisfied: ${statusCounts.satisfied}
 - partial: ${statusCounts.partial}
 - missing: ${statusCounts.missing}
 - unknown: ${statusCounts.unknown}
 - invalid_evidence: ${statusCounts.invalid_evidence}
 - overreach: ${packet.evaluation.overreach.length}
 
-${renderRequirementCoverage(packet.evaluation.results)}
+${renderRequirementCoverage(packet.evaluation.results)}`}
 
 ## 4. Architecture surfaces
 ${packet.architecture.summary}
@@ -297,8 +300,8 @@ ${packet.dogfood ? previewLines(packet.dogfood.findings, (finding) => `- ${findi
 ${packet.intent.open_questions.map((item) => `- ${item}`).join("\n") || "- None recorded."}
 
 ## 10. Evidence appendix
-- Requirements indexed: ${packet.intent.requirements.length}
-- Authoritative requirements: ${packet.intent.requirements.filter((requirement) => !requirement.llm_derived).length}${hasLlmContribution ? `
+${(packet.intent as { spec_mode?: unknown }).spec_mode === "none" ? `- ${SPEC_NONE_NOTE}` : `- Requirements indexed: ${packet.intent.requirements.length}
+- Authoritative requirements: ${packet.intent.requirements.filter((requirement) => !requirement.llm_derived).length}`}${hasLlmContribution && ((packet.intent as { spec_mode?: unknown }).spec_mode !== "none" || llmProposedRequirements > 0) ? `
 - LLM-proposed (non-authoritative) requirements: ${llmProposedRequirements}` : ""}
 - Changed files in subsystem cards: ${changedFiles.length}
 - Methodology logs missing: ${packet.methodology.missing_logs}

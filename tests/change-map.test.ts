@@ -53,6 +53,7 @@ function model(graph: ChangeGraph, legs: HumanReviewModel["reading_order"]["legs
   return {
     schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
     mode: "repo",
+    spec_mode: "acai",
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Change map fixture.",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },

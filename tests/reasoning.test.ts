@@ -82,6 +82,7 @@ function baseCollection(cwd: string, overrides: Partial<CollectionResult> = {}):
 function missingIntent(): IntentModel {
   return {
     summary: "Built deterministic intent.",
+    spec_mode: "acai",
     requirements: [
       {
         id: "REQ-001",
@@ -459,6 +460,7 @@ test("FINDING D: a DETERMINISTICALLY group-mapped path (strict area mapping) DOE
 function cliIntent(): IntentModel {
   return {
     summary: "Built deterministic intent.",
+    spec_mode: "acai",
     requirements: [
       {
         id: "REQ-001",
@@ -848,6 +850,7 @@ test("review-surfaces.EVIDENCE.4 Stage A #3: a GLOBAL cap bounds total LLM-propo
   const ids = Array.from({ length: reqCount }, (_, i) => `example.REQ.${i + 1}`);
   const intent: IntentModel = {
     summary: "Many missing requirements.",
+    spec_mode: "acai",
     requirements: ids.map((acai, i) => ({
       id: `REQ-${String(i + 1).padStart(3, "0")}`,
       acai_id: acai,
@@ -940,6 +943,7 @@ test("review-surfaces.EVIDENCE.4 Stage A #3: ranking spends the cap on the WEAKE
 
   const intent: IntentModel = {
     summary: "Mixed-strength requirements.",
+    spec_mode: "acai",
     requirements: specs.map((spec, i) => ({
       id: `REQ-${String(i + 1).padStart(3, "0")}`,
       acai_id: spec.acai,
@@ -1043,6 +1047,7 @@ test("agent-file noise control: one rationale broadcast to many requirements col
   const ids = Array.from({ length: 9 }, (_, i) => `example.REQ.${i + 1}`);
   const intent: IntentModel = {
     summary: "Many requirements.",
+    spec_mode: "acai",
     requirements: ids.map((acai, i) => ({
       id: `REQ-${String(i + 1).padStart(3, "0")}`,
       acai_id: acai,
@@ -1116,6 +1121,7 @@ test("distinct rationales remain distinct global review_focus lines", async () =
   });
   const intent: IntentModel = {
     summary: "Two requirements.",
+    spec_mode: "acai",
     requirements: ["example.A.1", "example.B.1"].map((acai, i) => ({
       id: `REQ-${String(i + 1).padStart(3, "0")}`,
       acai_id: acai,
@@ -1188,6 +1194,7 @@ test("review-surfaces.INTENT.6 schema-bound candidates with validated anchors la
   // Sparse intent: NO authoritative acai-backed requirement.
   const intent: IntentModel = {
     summary: "Sparse foreign repo.",
+    spec_mode: "acai",
     requirements: [],
     constraints: [],
     non_goals: [],
@@ -1342,6 +1349,7 @@ test("review-surfaces.EVIDENCE.6: renderer visibly distinguishes LLM hypotheses 
     },
     intent: {
       summary: "render fixture",
+      spec_mode: "acai",
       requirements: [
         {
           id: "REQ-001",
@@ -1485,6 +1493,7 @@ test("review-surfaces.PRIVACY.2 agent-file reasoning stages redact secrets befor
   // Sparse intent so candidate_requirements are actually built (foreign-repo path).
   const intent: IntentModel = {
     summary: "Sparse foreign repo.",
+    spec_mode: "acai",
     requirements: [],
     constraints: [],
     non_goals: [],

@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileExists } from "../core/files";
 import { redactSecrets } from "../privacy/secrets";
 import { isHypothesisOnly } from "../evidence/evidence";
-import { countRequirementStatuses, formatRequirementStatusSummary } from "../evaluation/status";
+import { countRequirementStatuses, formatRequirementStatusSummary, SPEC_NONE_NOTE } from "../evaluation/status";
 import { validateMermaidDiagramArtifact } from "../diagrams/diagrams";
 import type { ReviewPacket } from "./packet";
 
@@ -219,7 +219,9 @@ export function renderComment(
   const sections: string[] = [
     STICKY_MARKER,
     `## review-surfaces${milestone ? ` (${redact(milestone)})` : ""}`,
-    `Status: ${formatRequirementStatusSummary(counts, overreachCount)}.`,
+    // review-surfaces.COLD_START.5: spec-less packets get the honest note, not
+    // a zero-count status line.
+    `Status: ${(packet.intent as { spec_mode?: unknown }).spec_mode === "none" ? SPEC_NONE_NOTE : `${formatRequirementStatusSummary(counts, overreachCount)}.`}`,
     "",
     "### Top review focus",
     renderBullets(reviewFocus(packet, MAX_REVIEW_FOCUS), "No review focus generated."),
@@ -227,8 +229,12 @@ export function renderComment(
     "### Top risks",
     renderBullets(topRisks(packet, MAX_RISKS), "No risks recorded."),
     "",
+    // review-surfaces.COLD_START.5: a spec-less packet renders the honest note,
+    // never "0 requirement result(s)"-style zero counts.
     "### Requirement coverage",
-    renderBullets(coverageLines(packet, counts, overreachCount), "No requirements indexed."),
+    ...((packet.intent as { spec_mode?: unknown }).spec_mode === "none"
+      ? [SPEC_NONE_NOTE]
+      : [renderBullets(coverageLines(packet, counts, overreachCount), "No requirements indexed.")]),
     "",
     "### LLM/agent hypotheses (NOT proof; verify against deterministic evidence)",
     renderBullets(hypotheses(packet, MAX_HYPOTHESES), "None proposed."),

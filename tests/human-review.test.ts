@@ -58,6 +58,7 @@ function packetFixture(): ReviewPacket {
   };
   packet.intent = {
     summary: "Human review fixture intent.",
+    spec_mode: "acai",
     requirements: [
       {
         id: "REQ-HUMAN-1",
@@ -155,6 +156,7 @@ function prSurfaceFixture(): PrReviewSurfaceModel {
   return {
     schema_version: PR_SURFACE_SCHEMA_VERSION,
     mode: "pr",
+    spec_mode: "acai",
     status: "blocked",
     blocked_reason: "llm_unavailable",
     scope: {

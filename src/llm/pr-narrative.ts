@@ -39,6 +39,8 @@ const MAX_NARRATIVE_TEXT_CHARS = 1000;
 const MAX_SUGGESTED_CHECK_CHARS = 500;
 
 export interface BuildPrNarrativeInput {
+  // review-surfaces.COLD_START.5: spec-less narratives never count requirements.
+  specMode: "acai" | "none";
   provider: ReasoningProvider;
   providerName: ProviderName;
   model?: string;
@@ -128,6 +130,9 @@ function buildPromptFacts(input: BuildPrNarrativeInput): {
 
   const facts = {
     repo: input.repo,
+    // review-surfaces.COLD_START.5: tell the provider the repo has no
+    // requirement spec so its prose does not speak in requirement counts.
+    spec_mode: input.specMode,
     base_ref: input.scope.base_ref,
     head_ref: input.scope.head_ref,
     diff_source: input.scope.diff_source,
@@ -330,8 +335,10 @@ function textCitesOnlyAllowed(text: string, allowedPaths: Set<string>, allowedRe
   return true;
 }
 
-function deterministicSummary(scope: PrScopeModel): string {
-  return `${scope.changed_files.length} changed file(s) across ${scope.affected_areas.length} review area(s); ${scope.affected_requirements.length} affected requirement(s).`;
+function deterministicSummary(scope: PrScopeModel, specMode: "acai" | "none"): string {
+  return specMode === "none"
+    ? `${scope.changed_files.length} changed file(s) across ${scope.affected_areas.length} review area(s).`
+    : `${scope.changed_files.length} changed file(s) across ${scope.affected_areas.length} review area(s); ${scope.affected_requirements.length} affected requirement(s).`;
 }
 
 function validateRiskNarratives(
@@ -419,10 +426,21 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
     return { meta: { ...baseMeta, status: "failed", validation_errors: ["non_object_output"] }, blocked_reason: "invalid_llm_output" };
   }
 
-  const whatChanged = validateItems(data.what_changed, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_WHAT_CHANGED_ITEMS);
-  const whyItMatters = validateItems(data.why_it_matters, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_WHY_IT_MATTERS_ITEMS);
-  const reviewFirst = validateItems(data.review_first, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_REVIEW_FIRST_ITEMS);
-  const riskNarratives = validateRiskNarratives(data.risk_narratives, allowedRiskIds, allowedPaths, allowedRequirementIds, MAX_RISK_NARRATIVE_ITEMS);
+  // review-surfaces.COLD_START.5: on a spec-less repo, provider prose that
+  // speaks in requirement COUNTS, coverage, or mapping asks is dropped
+  // item-by-item (anchor validation cannot catch wording like "0 affected
+  // requirements" — it only checks tokens). Deliberately narrower than
+  // /requirement/i so a changed requirements.txt can still be narrated.
+  const SPEC_SHAPED_WORDING = /(\b(\d+|no|zero)\s+(affected\s+)?requirements?\b)|requirement\s+(coverage|results?|groups?)|\bto\s+an?\s+(acai\s+)?requirement\b|acai\s+requirement/i;
+  const speclessOk = (text: string): boolean => input.specMode !== "none" || !SPEC_SHAPED_WORDING.test(text);
+  const whatChanged = validateItems(data.what_changed, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_WHAT_CHANGED_ITEMS).filter((item) => speclessOk(item.text));
+  const whyItMatters = validateItems(data.why_it_matters, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_WHY_IT_MATTERS_ITEMS).filter((item) => speclessOk(item.text));
+  const reviewFirst = validateItems(data.review_first, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_REVIEW_FIRST_ITEMS).filter((item) => speclessOk(item.text));
+  const riskNarratives = validateRiskNarratives(data.risk_narratives, allowedRiskIds, allowedPaths, allowedRequirementIds, MAX_RISK_NARRATIVE_ITEMS)
+    .filter((item) => speclessOk(item.text))
+    .map((item) =>
+      item.suggested_checks ? { ...item, suggested_checks: item.suggested_checks.filter((check) => speclessOk(check)) } : item
+    );
 
   // Require the three core PR reviewer questions to survive validation. A risk
   // narrative alone is not enough for a PR review surface.
@@ -441,7 +459,13 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
     rawSummary !== "" && textCitesOnlyAllowed(rawSummary, allowedPaths, allowedRequirementIds)
       ? boundedRedactedText(rawSummary, MAX_NARRATIVE_TEXT_CHARS)
       : undefined;
-  const summary = boundedSummary ?? deterministicSummary(input.scope);
+  // review-surfaces.COLD_START.5: in spec-less mode a provider summary that
+  // talks in requirement counts is replaced by the deterministic no-requirement
+  // summary rather than rendered verbatim at the top of the PR comment.
+  const summary =
+    boundedSummary !== undefined && speclessOk(boundedSummary)
+      ? boundedSummary
+      : deterministicSummary(input.scope, input.specMode);
   const narrative: PrNarrativeModel = {
     summary,
     what_changed: whatChanged,

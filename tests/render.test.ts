@@ -12,6 +12,7 @@ test("review-surfaces.PRIVACY.2 redacts methodology claims when rendering packet
     manifest: {},
     intent: {
       summary: "render fixture",
+      spec_mode: "acai",
       requirements: [],
       constraints: [],
       non_goals: [],
@@ -70,6 +71,7 @@ test("review-surfaces.PRIVACY.2 redacts and prioritizes generated handoff valida
     },
     intent: {
       summary: "render fixture",
+      spec_mode: "acai",
       requirements: [],
       constraints: [],
       non_goals: [],
@@ -156,6 +158,7 @@ test("review-surfaces.CLI.7 handoff commands capture validation transcripts", ()
     },
     intent: {
       summary: "render fixture",
+      spec_mode: "acai",
       requirements: [],
       constraints: [],
       non_goals: [],
@@ -232,6 +235,7 @@ test("review-surfaces.DOGFOOD.5 marks truncated implemented changes in generated
     },
     intent: {
       summary: "render fixture",
+      spec_mode: "acai",
       requirements: [],
       constraints: [],
       non_goals: [],
@@ -406,6 +410,7 @@ function packetWithRequirementResults(count: number): ReviewPacket {
     manifest: {},
     intent: {
       summary: "rollup fixture",
+      spec_mode: "acai",
       requirements: [],
       constraints: [],
       non_goals: [],

@@ -4,13 +4,16 @@
   "title": "review-surfaces PR review surface",
   "type": "object",
   "additionalProperties": true,
-  "required": ["schema_version", "mode", "status", "scope", "coverage", "risks", "llm"],
+  "required": ["schema_version", "mode", "spec_mode", "status", "scope", "coverage", "risks", "llm"],
   "properties": {
     "schema_version": {
       "const": "review-surfaces.pr_surface.v1"
     },
     "mode": {
       "const": "pr"
+    },
+    "spec_mode": {
+      "enum": ["acai", "none"]
     },
     "status": {
       "enum": ["ready", "blocked"]

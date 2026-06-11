@@ -382,7 +382,10 @@ export async function runReasoningWithVerification(
   const evalReviewFocusDelta = (
     await runEvaluationReasoning(reasoningProvider, reasoningInputs, reasoningOptions, {
       appendReviewFocus: false,
-      initialReviewFocusCount: buildRiskReviewFocus(methodology).length
+      initialReviewFocusCount: buildRiskReviewFocus(
+        methodology,
+        collection.specIndex !== undefined && collection.specIndex.specs.flatMap((spec) => spec.requirements).length === 0
+      ).length
     })
   ).review_focus;
 

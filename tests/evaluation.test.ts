@@ -328,6 +328,7 @@ constraints:
 
   const evaluation = await evaluateIntent(tmp, collection, {
     summary: "Invalid evidence fixture.",
+    spec_mode: "acai",
     requirements: [
       {
         id: "REQ-001",
@@ -437,7 +438,7 @@ function packetWithEvaluationResults(results: unknown[]): Record<string, unknown
       run_mode: "local",
       input_hashes: []
     },
-    intent: { summary: "partial_reason fixture", requirements: [] },
+    intent: { summary: "partial_reason fixture", spec_mode: "acai", requirements: [] },
     evaluation: { summary: "partial_reason fixture", results, overreach: [], acai_coverage: {} },
     architecture: {
       summary: "partial_reason fixture",

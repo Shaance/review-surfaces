@@ -36,8 +36,14 @@ export interface ClaimedIntentCandidate {
   trust: "claimed";
 }
 
+// review-surfaces.COLD_START.4: the explicit spec mode — "none" when zero Acai
+// spec requirements were indexed, "acai" otherwise. Schema-visible model state
+// (not renderer guesswork) so every surface inherits the spec-less behavior.
+export type SpecMode = "acai" | "none";
+
 export interface IntentModel {
   summary: string;
+  spec_mode: SpecMode;
   requirements: IntentRequirement[];
   // review-surfaces.INTENT.7: provider candidates, excluded from evaluation.
   claimed_candidates?: ClaimedIntentCandidate[];
@@ -91,6 +97,9 @@ export async function buildIntent(cwd: string, collection: CollectionResult): Pr
 
   return {
     summary: `Built deterministic intent from ${collection.specIndex.specs.length} Acai spec(s), ${collection.docs.length} doc/agent input(s), and ${requirements.length} requirement(s).`,
+    // review-surfaces.COLD_START.4: derived deterministically from whether zero
+    // Acai spec requirements were indexed.
+    spec_mode: specRequirements.length === 0 ? "none" : "acai",
     requirements,
     constraints: uniqueTruthy(constraints),
     non_goals: uniqueTruthy(nonGoals),

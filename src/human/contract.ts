@@ -326,6 +326,9 @@ export interface IntentMismatchItem {
 }
 
 export interface IntentMismatch {
+  // review-surfaces.COLD_START.5: in spec_mode "none" the spec-coupled
+  // subsections are empty and this one-line honest note renders instead.
+  spec_note?: string;
   expected_by_spec: IntentMismatchItem[];
   observed_in_diff: IntentMismatchItem[];
   possible_mismatches: IntentMismatchItem[];
@@ -599,6 +602,10 @@ export interface EvalScoreboardSummary {
 export interface HumanReviewModel {
   schema_version: typeof HUMAN_REVIEW_SCHEMA_VERSION;
   mode: "pr" | "repo";
+  // review-surfaces.COLD_START.4: "none" when zero Acai spec requirements were
+  // indexed — derived from the packet intent, never from renderer guesswork, so
+  // every surface inherits the spec-less suppressions (COLD_START.5).
+  spec_mode: "acai" | "none";
   verdict: HumanReviewVerdict;
   summary: string;
   // review-surfaces.NARRATIVE.1: grounded narrative that opens the surface. Always

@@ -203,7 +203,7 @@ ${renderBlockers(model)}
 
 ## Since last review
 
-${renderSinceLastReviewSummary(sinceLastReview(model))}
+${renderSinceLastReviewSummary(sinceLastReview(model), model.spec_mode)}
 
 ## Coverage evidence
 
@@ -324,6 +324,24 @@ function renderDependencyChainsSection(model: HumanReviewModel): string {
 
 export function renderIntentMismatchMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
   const intent = intentMismatch(model);
+  // review-surfaces.COLD_START.5: in spec-less mode the standalone surface is
+  // the note plus the diff-derived observations — no empty spec sections.
+  if (intent.spec_note) {
+    return `# Intent Mismatch
+
+Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
+
+${field(intent.spec_note)}
+
+## Observed in diff
+
+${renderIntentMismatchItems(intent.observed_in_diff)}
+
+## Provider-claimed candidates (unverified)
+
+${renderIntentMismatchItems(intent.claimed_candidates ?? [])}
+`;
+  }
   return `# Intent Mismatch
 
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
@@ -382,7 +400,7 @@ Generated from \`${field(model.generated_from.packet_path)}\`.
 ${since.previous_packet_path ? `Compared against \`${field(since.previous_packet_path)}\`.` : "No previous packet path recorded."}
 
 ${since.unavailable_reason ? `${field(since.unavailable_reason)}\n` : ""}
-## Improved
+${model.spec_mode === "none" ? "" : `## Improved
 
 ${renderSinceLastReviewItems(since.improved)}
 
@@ -390,14 +408,14 @@ ${renderSinceLastReviewItems(since.improved)}
 
 ${renderSinceLastReviewItems(since.regressed)}
 
-## New risks
+`}## New risks
 
 ${renderSinceLastReviewItems(since.new_risks)}
 
 ## Resolved risks
 
 ${renderSinceLastReviewItems(since.resolved_risks)}
-
+${model.spec_mode === "none" ? "" : `
 ## New overreach
 
 ${renderSinceLastReviewItems(since.new_overreach)}
@@ -405,15 +423,16 @@ ${renderSinceLastReviewItems(since.new_overreach)}
 ## Resolved overreach
 
 ${renderSinceLastReviewItems(since.resolved_overreach)}
+`}
 
 ## Still open
 
 ${renderSinceLastReviewItems(since.still_open)}
-
+${model.spec_mode === "none" ? "" : `
 ## Count deltas
 
 ${renderSinceLastReviewCountDeltas(since)}
-`;
+`}`;
 }
 
 export function renderTestPlanMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
@@ -512,6 +531,11 @@ function renderReviewRoutesSummary(routes: ReviewRoute[]): string {
 }
 
 function renderIntentMismatchSummary(intent: IntentMismatch): string {
+  // review-surfaces.COLD_START.5: spec-less mode replaces the spec-coupled
+  // counts and overreach items with the one-line honest note.
+  if (intent.spec_note) {
+    return bullets([intent.spec_note], "No intent mismatch summary generated.");
+  }
   const risky = [...intent.possible_mismatches, ...intent.possible_overreach, ...intent.missing_intent];
   const lines = [
     `${intent.expected_by_spec.length} expected intent item(s), ${intent.observed_in_diff.length} observed changed-file item(s).`,
@@ -663,19 +687,24 @@ function sinceLastReview(model: HumanReviewModel): SinceLastReview {
   };
 }
 
-function renderSinceLastReviewSummary(since: SinceLastReview): string {
+function renderSinceLastReviewSummary(since: SinceLastReview, specMode: HumanReviewModel["spec_mode"] = "acai"): string {
   if (since.unavailable_reason) {
     return bullets([since.unavailable_reason], "No previous packet comparison available.");
   }
-  return bullets(
-    [
-      `${since.improved.length} improved requirement(s), ${since.regressed.length} regressed requirement(s).`,
-      `${since.new_risks.length} new risk(s), ${since.resolved_risks.length} resolved risk(s).`,
-      `${since.new_overreach.length} new overreach item(s), ${since.resolved_overreach.length} resolved overreach item(s).`,
-      `${since.still_open.length} still-open item(s) to keep in review focus.`
-    ],
-    "No previous packet comparison available."
-  );
+  // review-surfaces.COLD_START.5: spec-less comparisons report only the
+  // diff-derived risk deltas — no requirement or overreach counts.
+  const lines = specMode === "none"
+    ? [
+        `${since.new_risks.length} new risk(s), ${since.resolved_risks.length} resolved risk(s).`,
+        `${since.still_open.length} still-open item(s) to keep in review focus.`
+      ]
+    : [
+        `${since.improved.length} improved requirement(s), ${since.regressed.length} regressed requirement(s).`,
+        `${since.new_risks.length} new risk(s), ${since.resolved_risks.length} resolved risk(s).`,
+        `${since.new_overreach.length} new overreach item(s), ${since.resolved_overreach.length} resolved overreach item(s).`,
+        `${since.still_open.length} still-open item(s) to keep in review focus.`
+      ];
+  return bullets(lines, "No previous packet comparison available.");
 }
 
 function renderSinceLastReviewItems(items: SinceLastReviewItem[]): string {

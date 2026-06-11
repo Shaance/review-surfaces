@@ -27,7 +27,7 @@ import {
   unique,
   uniqueEvidence
 } from "./evidence-rules";
-import { countRequirementStatuses, formatRequirementStatusSummary } from "./status";
+import { countRequirementStatuses, formatRequirementStatusSummary, SPEC_NONE_NOTE } from "./status";
 import type { PacketConfidence, PacketPartialReason, PacketRequirementStatus } from "../schema/review-packet-contract";
 export { verifyRequirementsWithTests } from "./verification";
 
@@ -93,9 +93,14 @@ export async function evaluateIntent(
   const results = intent.requirements
     .map((requirement) => evaluateRequirement(requirement, index))
     .map((result) => validateRequirementResultEvidence(result, evidenceContext));
-  const overreach = detectOverreach(index, intent.requirements).map((result) =>
-    validateRequirementResultEvidence(result, evidenceContext)
-  );
+  // review-surfaces.COLD_START.5: with no requirement spec there is nothing to
+  // overreach AGAINST — per-cluster "does not map to any requirement" findings
+  // are pure noise on a spec-less repo. The single honest open question about
+  // unindexed requirements (intent.ts sparseSourceQuestions) is the only
+  // spec-shaped output in this mode.
+  const overreach = intent.spec_mode === "none"
+    ? []
+    : detectOverreach(index, intent.requirements).map((result) => validateRequirementResultEvidence(result, evidenceContext));
   const acai_coverage = Object.fromEntries(
     results.filter((result) => result.acai_id).map((result) => [result.acai_id as string, result.status])
   );
@@ -103,7 +108,11 @@ export async function evaluateIntent(
   const statusCounts = countRequirementStatuses(results);
 
   return {
-    summary: `${formatRequirementStatusSummary(statusCounts, overreach.length)}. Statuses are conservative and evidence-backed.`,
+    // review-surfaces.COLD_START.5: a spec-less evaluation never advertises
+    // zero-count requirement statuses.
+    summary: intent.spec_mode === "none"
+      ? SPEC_NONE_NOTE
+      : `${formatRequirementStatusSummary(statusCounts, overreach.length)}. Statuses are conservative and evidence-backed.`,
     results,
     overreach,
     acai_coverage

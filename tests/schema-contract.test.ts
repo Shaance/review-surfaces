@@ -233,6 +233,7 @@ test("review-surfaces.SCHEMA.3 human review schema rejects stale partial v1 arti
   const priorV1HumanReview = {
     schema_version: "review-surfaces.human_review.v1",
     mode: "pr",
+    spec_mode: "acai",
     verdict: {
       decision: "needs_author_clarification",
       confidence: "medium",
@@ -276,6 +277,7 @@ test("review-surfaces.SCHEMA.3 human review schema requires the narrative field"
   const withoutNarrative = withRequiredHumanFields({
     schema_version: "review-surfaces.human_review.v1",
     mode: "repo",
+    spec_mode: "acai",
     verdict: { decision: "no_signal", confidence: "low", reasons: [] },
     summary: "No narrative fixture.",
     review_queue: [],
@@ -297,6 +299,7 @@ test("human review schema validates since-last-review comparison slices", () => 
   const humanReview = {
     schema_version: "review-surfaces.human_review.v1",
     mode: "pr",
+    spec_mode: "acai",
     verdict: {
       decision: "reviewable_with_attention",
       confidence: "medium",
@@ -386,6 +389,7 @@ test("human review schema validates review route slices", () => {
   const humanReview = {
     schema_version: "review-surfaces.human_review.v1",
     mode: "pr",
+    spec_mode: "acai",
     verdict: {
       decision: "reviewable_with_attention",
       confidence: "medium",
@@ -471,6 +475,7 @@ test("human review schema validates inline evidence cards", () => {
   const humanReview = {
     schema_version: "review-surfaces.human_review.v1",
     mode: "pr",
+    spec_mode: "acai",
     verdict: {
       decision: "needs_author_clarification",
       confidence: "medium",
@@ -539,6 +544,7 @@ test("human review schema validates intent-mismatch slices", () => {
   const humanReview = {
     schema_version: "review-surfaces.human_review.v1",
     mode: "pr",
+    spec_mode: "acai",
     verdict: {
       decision: "needs_author_clarification",
       confidence: "medium",
@@ -610,6 +616,7 @@ test("human review schema rejects intent-mismatch items without evidence", () =>
   const humanReview = {
     schema_version: "review-surfaces.human_review.v1",
     mode: "pr",
+    spec_mode: "acai",
     verdict: {
       decision: "needs_author_clarification",
       confidence: "medium",

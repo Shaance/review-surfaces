@@ -379,11 +379,15 @@
       "additionalProperties": false,
       "required": [
         "summary",
+        "spec_mode",
         "requirements"
       ],
       "properties": {
         "summary": {
           "type": "string"
+        },
+        "spec_mode": {
+          "enum": ["acai", "none"]
         },
         "requirements": {
           "type": "array",

@@ -7,6 +7,7 @@
   "required": [
     "schema_version",
     "mode",
+    "spec_mode",
     "verdict",
     "summary",
     "narrative",
@@ -36,6 +37,9 @@
     },
     "mode": {
       "enum": ["pr", "repo"]
+    },
+    "spec_mode": {
+      "enum": ["acai", "none"]
     },
     "verdict": {
       "type": "object",
@@ -884,6 +888,9 @@
         "missing_intent"
       ],
       "properties": {
+        "spec_note": {
+          "type": "string"
+        },
         "expected_by_spec": {
           "type": "array",
           "items": { "$ref": "#/$defs/intentMismatchItem" }

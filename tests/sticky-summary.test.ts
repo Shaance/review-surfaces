@@ -28,6 +28,7 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
   return {
     schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
     mode: "pr",
+    spec_mode: "acai",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
     change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [] },

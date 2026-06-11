@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { SPEC_NONE_NOTE } from "../evaluation/status";
 import { commandLooksLikeLocalValidationCommand } from "../commands/classify";
 import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
@@ -327,6 +328,9 @@ const REVIEW_ROUTE_DEFINITIONS: Record<ReviewRoutePersona, ReviewRouteDefinition
 };
 export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel {
   const config = humanReviewBuildConfig(input);
+  // review-surfaces.COLD_START.4: the spec mode is MODEL state read from the
+  // packet intent (a legacy packet without the field reads as "acai").
+  const specMode: "acai" | "none" = (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none" ? "none" : "acai";
   // review-surfaces.SEMANTIC_DIFF.1-4: concrete change facts feed the queue and
   // suggested comments with field-level / signature-level / test-weakening
   // language instead of generic path-touch phrasing.
@@ -349,7 +353,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   const riskLensFindings = buildRiskLensFindings(input, config, semanticFacts);
   const blockers = buildBlockers(input, feedbackEffects);
   const reviewQueue = buildReviewQueue(input, feedbackEffects, config, semanticFacts);
-  const intentMismatch = buildIntentMismatch(input);
+  const intentMismatch = buildIntentMismatch(input, specMode);
   const questions = buildQuestions(input, blockers, feedbackEffects, riskLensFindings, intentMismatch, config);
   const suggestedComments = buildSuggestedComments(input, blockers, riskLensFindings, config, semanticFacts);
   const trustAudit = buildTrustAudit(input);
@@ -414,6 +418,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   return stripUndefined({
     schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
     mode: input.prSurface ? "pr" : "repo",
+    spec_mode: specMode,
     verdict,
     summary: summarizeHumanReview(input, verdict, reviewQueue.length, blockers.length),
     // review-surfaces.NARRATIVE.4: the narrative is stored read-only AFTER the
@@ -1202,8 +1207,23 @@ function routeText(...values: Array<string | undefined>): string {
   return values.filter((value): value is string => typeof value === "string").join(" ");
 }
 
-function buildIntentMismatch(input: BuildHumanReviewInput): IntentMismatch {
+function buildIntentMismatch(input: BuildHumanReviewInput, specMode: "acai" | "none"): IntentMismatch {
   const focus = buildIntentMismatchFocus(input);
+  // review-surfaces.COLD_START.5: a spec-less repo gets NO spec-shaped
+  // mismatch/overreach/missing-intent items — only the observed diff facts and
+  // the one-line honest note. Provider-claimed candidates still render: they are
+  // explicitly marked unconfirmed and exist precisely for sparse-intent repos.
+  if (specMode === "none") {
+    return {
+      spec_note: SPEC_NONE_NOTE,
+      expected_by_spec: [],
+      observed_in_diff: cappedIntentMismatchItems("INTENT-OBSERVED", observedDiffDrafts(input)),
+      possible_mismatches: [],
+      possible_overreach: [],
+      missing_intent: [],
+      claimed_candidates: cappedIntentMismatchItems("INTENT-CLAIMED", claimedCandidateDrafts(input))
+    };
+  }
   return {
     expected_by_spec: cappedIntentMismatchItems("INTENT-EXPECTED", expectedIntentDrafts(input, focus)),
     observed_in_diff: cappedIntentMismatchItems("INTENT-OBSERVED", observedDiffDrafts(input)),
@@ -1689,7 +1709,11 @@ function buildSinceLastReview(input: BuildHumanReviewInput): SinceLastReview {
     };
   }
 
-  const statusChanges = comparison.status_changes ?? [];
+  // review-surfaces.COLD_START.5: a spec-less comparison keeps the risk deltas
+  // (diff-derived value) but drops the requirement- and overreach-shaped slices
+  // a prior Acai-era packet may carry.
+  const specless = (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none";
+  const statusChanges = specless ? [] : comparison.status_changes ?? [];
   const improved = statusChanges
     .filter((change) => change.direction === "improved")
     .map((change, index) => statusChangeItem(input, "SLR-IMPROVED", index, change));
@@ -1704,10 +1728,10 @@ function buildSinceLastReview(input: BuildHumanReviewInput): SinceLastReview {
     regressed,
     new_risks: riskComparisonItems(input, "SLR-NEW-RISK", comparison.new_risks ?? [], "New risk since last review", currentRisksByKey),
     resolved_risks: riskComparisonItems(input, "SLR-RESOLVED-RISK", comparison.resolved_risks ?? [], "Resolved risk since last review"),
-    new_overreach: overreachComparisonItems(input, "SLR-NEW-OVERREACH", comparison.new_overreach ?? [], "New overreach since last review"),
-    resolved_overreach: overreachComparisonItems(input, "SLR-RESOLVED-OVERREACH", comparison.resolved_overreach ?? [], "Resolved overreach since last review"),
-    still_open: stillOpenSinceLastReviewItems(input, comparison),
-    count_deltas: comparison.count_deltas ?? emptyCountDeltas()
+    new_overreach: specless ? [] : overreachComparisonItems(input, "SLR-NEW-OVERREACH", comparison.new_overreach ?? [], "New overreach since last review"),
+    resolved_overreach: specless ? [] : overreachComparisonItems(input, "SLR-RESOLVED-OVERREACH", comparison.resolved_overreach ?? [], "Resolved overreach since last review"),
+    still_open: stillOpenSinceLastReviewItems(input, comparison, specless),
+    count_deltas: specless ? emptyCountDeltas() : comparison.count_deltas ?? emptyCountDeltas()
   };
 }
 
@@ -1784,7 +1808,8 @@ function overreachComparisonItems(input: BuildHumanReviewInput, prefix: string, 
 
 function stillOpenSinceLastReviewItems(
   input: BuildHumanReviewInput,
-  comparison: NonNullable<ReviewPacket["dogfood"]>["comparison"]
+  comparison: NonNullable<ReviewPacket["dogfood"]>["comparison"],
+  specless = false
 ): SinceLastReviewItem[] {
   if (!comparison) {
     return [];
@@ -1825,7 +1850,10 @@ function stillOpenSinceLastReviewItems(
       evidence: [comparisonEvidence(input, `Current packet still reports overreach for ${filePath}.`)]
     }));
 
-  return [...persistentRequirements, ...persistentRisks, ...persistentOverreach]
+  // review-surfaces.COLD_START.5: spec-less still-open items keep only the
+  // risk slice — requirement and overreach persistence is spec-shaped.
+  const stillOpen = specless ? persistentRisks : [...persistentRequirements, ...persistentRisks, ...persistentOverreach];
+  return stillOpen
     .sort((left, right) => compareStrings(`${left.category}:${left.summary}`, `${right.category}:${right.summary}`))
     .slice(0, 12)
     .map((item, index) => ({ id: `SLR-STILL-OPEN-${String(index + 1).padStart(3, "0")}`, ...item }));
@@ -4019,8 +4047,12 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
 
   const prFacts: TrustFactDraft[] = [];
   if (input.prSurface) {
+    // review-surfaces.COLD_START.5: no affected-requirement clause on spec-less PRs.
+    const speclessTrust = (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none";
     prFacts.push({
-      summary: `PR scope contains ${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.scope.affected_requirements.length} affected requirement(s), and ${input.prSurface.risks.candidates.length} deterministic PR risk candidate(s).`,
+      summary: speclessTrust
+        ? `PR scope contains ${input.prSurface.scope.changed_files.length} changed file(s) and ${input.prSurface.risks.candidates.length} deterministic PR risk candidate(s).`
+        : `PR scope contains ${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.scope.affected_requirements.length} affected requirement(s), and ${input.prSurface.risks.candidates.length} deterministic PR risk candidate(s).`,
       evidence: input.prSurface.scope.changed_files.slice(0, 5).map((file) => fileEvidence(file.path, "Changed file included in PR scope."))
     });
 
@@ -4228,12 +4260,21 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
         command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test"
       })];
     case "unmapped_change":
-      return [riskDraft({
-        kind: "manual",
-        priority: "recommended",
-        scenario: "Inspect the unmapped changed files and decide whether they need review-area or requirement mappings.",
-        expected_result: "Each unmapped file is either mapped to a review area/requirement or explicitly recorded as generated, ignored, or non-product behavior."
-      })];
+      // review-surfaces.COLD_START.5: spec-less repos are never asked to map
+      // files to requirements — review areas are the only mapping concept.
+      return (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none"
+        ? [riskDraft({
+            kind: "manual",
+            priority: "recommended",
+            scenario: "Inspect the unmapped changed files and decide whether they need review-area mappings.",
+            expected_result: "Each unmapped file is either mapped to a review area or explicitly recorded as generated, ignored, or non-product behavior."
+          })]
+        : [riskDraft({
+            kind: "manual",
+            priority: "recommended",
+            scenario: "Inspect the unmapped changed files and decide whether they need review-area or requirement mappings.",
+            expected_result: "Each unmapped file is either mapped to a review area/requirement or explicitly recorded as generated, ignored, or non-product behavior."
+          })];
     case "privacy_sensitive_change":
       return [riskDraft({
         kind: "automatic",
@@ -4422,9 +4463,16 @@ function summarizeHumanReview(
   queueCount: number,
   blockerCount: number
 ): string {
+  // review-surfaces.COLD_START.5: a spec-less packet never advertises
+  // "0 requirement result(s)" — the spec-coupled counts are simply absent.
+  const specless = (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none";
   const scope = input.prSurface
-    ? `${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.scope.affected_requirements.length} affected requirement(s), ${input.prSurface.risks.candidates.length} PR risk candidate(s)`
-    : `${input.packet.evaluation.results.length} requirement result(s), ${input.packet.risks.items.length} packet risk(s)`;
+    ? specless
+      ? `${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.risks.candidates.length} PR risk candidate(s)`
+      : `${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.scope.affected_requirements.length} affected requirement(s), ${input.prSurface.risks.candidates.length} PR risk candidate(s)`
+    : specless
+      ? `${input.packet.risks.items.length} packet risk(s)`
+      : `${input.packet.evaluation.results.length} requirement result(s), ${input.packet.risks.items.length} packet risk(s)`;
   return `Human review surface generated from local evidence: ${scope}. Verdict is ${verdict.decision} with ${blockerCount} blocker(s) and ${queueCount} review queue item(s).`;
 }
 
