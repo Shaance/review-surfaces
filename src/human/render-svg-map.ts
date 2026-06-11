@@ -24,7 +24,9 @@ const PADDING = 16;
 const HEADER_HEIGHT = 22;
 
 // Print-safe fills paired with the lens name in the node's <title> and the
-// legend the cockpit renders next to the map — color never carries meaning alone.
+// legend the cockpit renders next to the map — color never carries meaning
+// alone. ONE palette shared with the mermaid emitter (change-map.ts derives
+// its classDefs from it) so the two maps can never color a lens differently.
 export const SVG_LENS_FILLS: Record<RiskLens, string> = {
   api_contract: "#fde2e2",
   security_privacy: "#fee2b3",
@@ -34,6 +36,17 @@ export const SVG_LENS_FILLS: Record<RiskLens, string> = {
   cache_provenance: "#d1fae5",
   supply_chain: "#fce7f3",
   custom: "#e5e7eb"
+};
+
+export const LENS_STROKES: Record<RiskLens, string> = {
+  api_contract: "#b91c1c",
+  security_privacy: "#b45309",
+  llm_trust_boundary: "#a16207",
+  test_evidence: "#1d4ed8",
+  reviewer_ux: "#6d28d9",
+  cache_provenance: "#047857",
+  supply_chain: "#be185d",
+  custom: "#374151"
 };
 
 interface PlacedNode {

@@ -8,22 +8,18 @@
 // blast-radius fact).
 import { ChangeGraph, RiskLens } from "../human/contract";
 import { diagramLabel } from "./diagrams";
+import { LENS_STROKES, SVG_LENS_FILLS } from "../human/render-svg-map";
 
 const MAX_CHANGED_NODES = 25;
 const MAX_HALO_NODES = 10;
 
 // Print-safe, color-not-alone palette: each lens also carries its name in the
 // node label via the class name legend below the map on rendered surfaces.
-const LENS_CLASS_DEFS: Record<RiskLens, string> = {
-  api_contract: "fill:#fde2e2,stroke:#b91c1c",
-  security_privacy: "fill:#fee2b3,stroke:#b45309",
-  llm_trust_boundary: "fill:#fef9c3,stroke:#a16207",
-  test_evidence: "fill:#dbeafe,stroke:#1d4ed8",
-  reviewer_ux: "fill:#ede9fe,stroke:#6d28d9",
-  cache_provenance: "fill:#d1fae5,stroke:#047857",
-  supply_chain: "fill:#fce7f3,stroke:#be185d",
-  custom: "fill:#e5e7eb,stroke:#374151"
-};
+// Derived from the SAME palette the SVG cockpit map uses (RENDER.11), so the
+// two renderers can never color a lens differently.
+function lensClassDef(lens: RiskLens): string {
+  return `fill:${SVG_LENS_FILLS[lens]},stroke:${LENS_STROKES[lens]}`;
+}
 
 export function renderChangeMapMermaid(graph: ChangeGraph): string | undefined {
   if (graph.nodes.length === 0) {
@@ -100,7 +96,7 @@ export function renderChangeMapMermaid(graph: ChangeGraph): string | undefined {
   }
 
   for (const lens of [...usedLenses].sort()) {
-    lines.push(`  classDef lens_${lens} ${LENS_CLASS_DEFS[lens]}`);
+    lines.push(`  classDef lens_${lens} ${lensClassDef(lens)}`);
   }
   if (halo.length > 0) {
     const ids = halo.map((_, index) => `h${index}`).concat(haloOverflow > 0 ? ["halo_more"] : []);
