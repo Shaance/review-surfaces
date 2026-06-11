@@ -408,7 +408,11 @@ function renderExcerptWithGutter(model: HumanReviewModel, item: ReviewQueueItem,
   if (!excerpt) {
     return "";
   }
-  const coverageHunk = coverageHunkForAnchor(model, item.path, item.hunk_header);
+  const coverageSummaryHunk = coverageHunkForAnchor(model, item.path, item.hunk_header);
+  // Per-line gutters need per-line data: a legacy (pre-COVERAGE.5) hunk has
+  // counts but no line arrays — render NO gutter for it (the summary line
+  // still shows the counts) rather than mislabeling lines as not-instrumented.
+  const coverageHunk = coverageSummaryHunk?.uncovered_lines !== undefined ? coverageSummaryHunk : undefined;
   const uncovered = new Set(coverageHunk?.uncovered_lines ?? []);
   const covered = new Set(coverageHunk?.covered_line_numbers ?? []);
   const rows = excerpt.lines
@@ -417,7 +421,7 @@ function renderExcerptWithGutter(model: HumanReviewModel, item: ReviewQueueItem,
       return `<span style="display:block${gutter.tint ? `;background:${gutter.tint}` : ""}"${gutter.label ? ` title="${esc(gutter.label)}"` : ""}>${esc(gutter.glyph)}${esc(line.text)}</span>`;
     })
     .join("");
-  const summary = coverageHunk ? `<p class="muted">Coverage: ${esc(coverageSummaryLine(coverageHunk))}</p>` : "";
+  const summary = coverageSummaryHunk ? `<p class="muted">Coverage: ${esc(coverageSummaryLine(coverageSummaryHunk))}</p>` : "";
   return `<details><summary>diff excerpt${coverageHunk ? " (with coverage gutter)" : ""}</summary><pre>${esc(excerpt.header)}\n${rows}</pre>${summary}</details>`;
 }
 
@@ -444,6 +448,11 @@ function gutterFor(
     return coverageHunk.uncovered_truncated
       ? { glyph: "? ", label: "coverage state unknown (uncovered list truncated — see summary)" }
       : { glyph: "· ", label: "not instrumented (no coverage data for this line)" };
+  }
+  // Context (unchanged) lines: neutral no-data — visually distinct from the
+  // blank gutter that marks deletions/elisions (which have NO coverage semantics).
+  if (kind === "context") {
+    return { glyph: "· ", label: "context line (no coverage data)" };
   }
   return { glyph: "  " };
 }
