@@ -4039,8 +4039,12 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
 
   const prFacts: TrustFactDraft[] = [];
   if (input.prSurface) {
+    // review-surfaces.COLD_START.5: no affected-requirement clause on spec-less PRs.
+    const speclessTrust = (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none";
     prFacts.push({
-      summary: `PR scope contains ${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.scope.affected_requirements.length} affected requirement(s), and ${input.prSurface.risks.candidates.length} deterministic PR risk candidate(s).`,
+      summary: speclessTrust
+        ? `PR scope contains ${input.prSurface.scope.changed_files.length} changed file(s) and ${input.prSurface.risks.candidates.length} deterministic PR risk candidate(s).`
+        : `PR scope contains ${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.scope.affected_requirements.length} affected requirement(s), and ${input.prSurface.risks.candidates.length} deterministic PR risk candidate(s).`,
       evidence: input.prSurface.scope.changed_files.slice(0, 5).map((file) => fileEvidence(file.path, "Changed file included in PR scope."))
     });
 

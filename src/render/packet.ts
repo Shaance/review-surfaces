@@ -300,8 +300,8 @@ ${packet.dogfood ? previewLines(packet.dogfood.findings, (finding) => `- ${findi
 ${packet.intent.open_questions.map((item) => `- ${item}`).join("\n") || "- None recorded."}
 
 ## 10. Evidence appendix
-- Requirements indexed: ${packet.intent.requirements.length}
-- Authoritative requirements: ${packet.intent.requirements.filter((requirement) => !requirement.llm_derived).length}${hasLlmContribution ? `
+${(packet.intent as { spec_mode?: unknown }).spec_mode === "none" ? `- ${SPEC_NONE_NOTE}` : `- Requirements indexed: ${packet.intent.requirements.length}
+- Authoritative requirements: ${packet.intent.requirements.filter((requirement) => !requirement.llm_derived).length}`}${hasLlmContribution ? `
 - LLM-proposed (non-authoritative) requirements: ${llmProposedRequirements}` : ""}
 - Changed files in subsystem cards: ${changedFiles.length}
 - Methodology logs missing: ${packet.methodology.missing_logs}

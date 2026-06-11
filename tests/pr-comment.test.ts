@@ -22,6 +22,7 @@ function readySurface(): PrReviewSurfaceModel {
   return {
     schema_version: PR_SURFACE_SCHEMA_VERSION,
     mode: "pr",
+    spec_mode: "acai",
     status: "ready",
     scope: baseScope(),
     coverage: {

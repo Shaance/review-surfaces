@@ -79,6 +79,7 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     return {
       schema_version: PR_SURFACE_SCHEMA_VERSION,
       mode: "pr",
+      spec_mode: input.intent.spec_mode,
       status: "blocked",
       blocked_reason: "no_diff",
       scope,
@@ -108,6 +109,7 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
   return {
     schema_version: PR_SURFACE_SCHEMA_VERSION,
     mode: "pr",
+    spec_mode: input.intent.spec_mode,
     status: narrativeResult.narrative ? "ready" : "blocked",
     blocked_reason: blockedReason,
     scope,

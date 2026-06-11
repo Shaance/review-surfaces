@@ -1,3 +1,4 @@
+import { SPEC_NONE_NOTE } from "../evaluation/status";
 import { redactSecrets } from "../privacy/secrets";
 import { changeMapMermaidEmbed, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
 import { firstTourLegSnippet } from "./tour-snippet";
@@ -129,7 +130,10 @@ export function renderPrComment(surface: PrReviewSurfaceModel, options: RenderPr
         "",
         field(hint),
         "",
-        `Deterministic scope: ${surface.scope.changed_files.length} changed file(s), ${surface.scope.affected_requirements.length} affected requirement(s), ${surface.risks.candidates.length} PR risk(s). See \`${surfacePath}\`.`,
+        // review-surfaces.COLD_START.5: spec-less surfaces never count requirements.
+        surface.spec_mode === "none"
+          ? `Deterministic scope: ${surface.scope.changed_files.length} changed file(s), ${surface.risks.candidates.length} PR risk(s). See \`${surfacePath}\`.`
+          : `Deterministic scope: ${surface.scope.changed_files.length} changed file(s), ${surface.scope.affected_requirements.length} affected requirement(s), ${surface.risks.candidates.length} PR risk(s). See \`${surfacePath}\`.`,
         ""
       ].join("\n") + "\n",
       surfacePath
@@ -163,11 +167,17 @@ export function renderPrComment(surface: PrReviewSurfaceModel, options: RenderPr
     "### Review first",
     bullets(narrative.review_first.slice(0, MAX_REVIEW_FIRST), "No ordered review plan."),
     "",
-    "### Affected coverage",
-    surface.coverage.base_available
-      ? `${surface.coverage.in_scope_count} in scope — improved ${surface.coverage.counts.improved} | regressed ${surface.coverage.counts.regressed} | unchanged ${surface.coverage.counts.unchanged} | new ${surface.coverage.counts.new_requirement}`
-      : `${surface.coverage.in_scope_count} requirement(s) in scope (baseline unavailable; current status only)`,
-    bulletsFromLines(coverageLines(surface.coverage.deltas, surface.coverage.base_available), "No affected requirements."),
+    // review-surfaces.COLD_START.5: a spec-less PR comment renders the honest
+    // note instead of an empty affected-coverage section.
+    ...(surface.spec_mode === "none"
+      ? ["### Affected coverage", SPEC_NONE_NOTE]
+      : [
+          "### Affected coverage",
+          surface.coverage.base_available
+            ? `${surface.coverage.in_scope_count} in scope — improved ${surface.coverage.counts.improved} | regressed ${surface.coverage.counts.regressed} | unchanged ${surface.coverage.counts.unchanged} | new ${surface.coverage.counts.new_requirement}`
+            : `${surface.coverage.in_scope_count} requirement(s) in scope (baseline unavailable; current status only)`,
+          bulletsFromLines(coverageLines(surface.coverage.deltas, surface.coverage.base_available), "No affected requirements.")
+        ]),
     "",
     "### PR risks",
     renderRisks(surface),

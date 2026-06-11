@@ -60,6 +60,9 @@ export function buildDogfood(
   comparisonInput?: DogfoodComparisonInput
 ): DogfoodModel {
   const unsatisfied = evaluation.results.filter((result) => result.status !== "satisfied").length;
+  // review-surfaces.COLD_START.5: same derivation as the intent builder — zero
+  // indexed spec requirements means the dogfood surface stops counting them.
+  const specless = (collection.specIndex?.specs ?? []).flatMap((spec) => spec.requirements).length === 0;
   const feedbackFilesByRecency = sortFeedbackFilesByRecency(collection.feedback);
   const feedbackFindings = feedbackFilesByRecency.flatMap((feedbackFile) => feedbackFile.findings);
   const highlightedFeedbackFindings = selectFeedbackFindings(collection.feedback, 8);
@@ -74,7 +77,7 @@ export function buildDogfood(
   return {
     milestone: collection.manifest.milestone ?? "MVP",
     command: commands.find((command) => command.includes("review-surfaces")) ?? "review-surfaces dogfood",
-    summary: `Dogfood generated a packet with ${evaluation.results.length} requirement result(s), ${risks.items.length} risk(s), ${feedbackFindings.length} feedback finding(s), provider=${providerName}, noisy_sections=${noisySections.join(",") || "none"}.${comparisonInput ? ` ${summarizeComparison(comparisonInput)}` : ""}`,
+    summary: `Dogfood generated a packet with ${specless ? "" : `${evaluation.results.length} requirement result(s), `}${risks.items.length} risk(s), ${feedbackFindings.length} feedback finding(s), provider=${providerName}, noisy_sections=${noisySections.join(",") || "none"}.${comparisonInput ? ` ${summarizeComparison(comparisonInput)}` : ""}`,
     previous_packet_path: comparisonInput?.previous_packet_path,
     comparison: comparisonInput?.comparison,
     helped_agent: unsatisfied < evaluation.results.length ? "partially" : "unknown",

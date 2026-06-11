@@ -261,6 +261,9 @@ export interface PrNarrativeLlmMeta {
 export interface PrReviewSurfaceModel {
   schema_version: typeof PR_SURFACE_SCHEMA_VERSION;
   mode: "pr";
+  // review-surfaces.COLD_START.4: carried from the packet intent so the
+  // lower-level PR fallback renderer can suppress requirement language too.
+  spec_mode: "acai" | "none";
   status: PrSurfaceStatus;
   blocked_reason?: PrSurfaceBlockedReason;
   scope: PrScopeModel;
