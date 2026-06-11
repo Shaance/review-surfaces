@@ -101,6 +101,9 @@ export interface BuildHumanReviewInput {
   // computed in the pipeline from buildImportGraph() over head content (it needs
   // file access). Absent -> a map with no edges (nodes still render).
   changedImportEdges?: ChangedImportEdge[];
+  // review-surfaces.COLD_START.2: implementation roots detected from the target
+  // repo's signals; feeds the change-map clusters and the tour categorization.
+  implementationRoots?: readonly string[];
   // review-surfaces.ARCH_DRIFT.1-3: module-boundary drift facts + file-level
   // edge deltas computed in the pipeline (base/head file access). Absent ->
   // no drift signal and all change_graph edges stay kind "existing".
@@ -374,6 +377,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
       .map((change) => ({ path: change.path, top: (change.used_by as { top: string[] }).top })),
     lensFindings: riskLensFindings,
     reviewQueue,
+    implementationRoots: input.implementationRoots,
     // review-surfaces.ARCH_DRIFT.2: drift edge deltas set kind new/removed so
     // both map renderers pick the drift up with zero extra work.
     driftEdges: input.archDrift?.file_edges

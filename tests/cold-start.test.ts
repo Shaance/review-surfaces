@@ -1,0 +1,198 @@
+// review-surfaces.COLD_START.1-3 — cold-start correctness on a stranger's
+// repository. Every test reproduces a failure from the 2026-06-11 cold-start
+// evidence log (OPEN_SOURCE_UPLIFT_GOAL.md): a shallow clone of
+// sindresorhus/got with no Acai specs and no config.
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { parseStructuredDiff } from "../src/collector/diff-hunks";
+import { computeSemanticChangeFacts, SemanticDiffSources } from "../src/risks/semantic-diff";
+import { clusterOfPath, detectImplementationRoots } from "../src/core/source-roots";
+import { buildChangeGraphSections } from "../src/human/change-graph";
+import { createEvalFixture } from "./helpers/eval-fixture";
+
+const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
+
+// ---------------------------------------------------------------------------
+// review-surfaces.COLD_START.1 — `validate` resolves bundled schemas from the
+// package root, never the user's CWD (the cold-start ENOENT:
+// .../got/schemas/review_packet.schema.json).
+// ---------------------------------------------------------------------------
+
+test("review-surfaces.COLD_START.1 validate --surface all succeeds from a CWD outside the repo", () => {
+  const fixture = createEvalFixture("cold-start-validate");
+  const strangerCwd = fs.mkdtempSync(path.join(os.tmpdir(), "rs-stranger-cwd-"));
+  try {
+    fixture.write("src/calc.ts", "export function add(left: number, right: number): number {\n  return left + right + 0;\n}\n");
+    fixture.commit("touch calc");
+    fixture.run();
+    const artifacts = path.join(fixture.dir, ".rs");
+    // The regression: a temp CWD with NO schemas/ directory anywhere above it.
+    const result = spawnSync("node", [CLI, "validate", artifacts, "--surface", "all"], {
+      cwd: strangerCwd,
+      encoding: "utf8"
+    });
+    assert.equal(
+      result.status,
+      0,
+      `validate must pass from a foreign CWD; stdout=${result.stdout} stderr=${result.stderr}`
+    );
+    assert.match(result.stdout, /Validated/, "validate reports what it validated");
+  } finally {
+    fixture.cleanup();
+    fs.rmSync(strangerCwd, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// review-surfaces.COLD_START.2 — implementation roots derive from the target
+// repo's own signals; got's source/ must classify as implementation.
+// ---------------------------------------------------------------------------
+
+test("review-surfaces.COLD_START.2 detects implementation roots from tsconfig, package.json, and majority fallback", () => {
+  // got-reduced: tsconfig includes source/, package.json points at dist build
+  // output, and source/ holds the .ts files.
+  const files = [
+    "package.json",
+    "tsconfig.json",
+    "source/core/index.ts",
+    "source/core/options.ts",
+    "source/index.ts",
+    "test/http.ts",
+    "documentation/quick-start.md"
+  ];
+  const contents: Record<string, string> = {
+    "tsconfig.json": JSON.stringify({ compilerOptions: { outDir: "dist" }, include: ["source"] }),
+    "package.json": JSON.stringify({ main: "dist/source/index.js", files: ["dist/source"] })
+  };
+  const roots = detectImplementationRoots({ files, read: (filePath) => contents[filePath] });
+  assert.ok(roots.includes("source"), `source/ must be an implementation root; got ${JSON.stringify(roots)}`);
+  assert.ok(!roots.includes("dist"), "build output must never become an implementation root");
+  assert.ok(!roots.includes("test"), "test trees must never become an implementation root");
+  assert.ok(!roots.includes("documentation"), "docs dirs must not qualify via the majority fallback");
+
+  // Majority fallback alone (no tsconfig/package signals): a packages-style
+  // top-level dir of mostly .ts files qualifies; a docs dir does not.
+  const fallbackRoots = detectImplementationRoots({
+    files: ["core/a.ts", "core/b.ts", "core/README.md", "docs/x.md"],
+    read: () => undefined
+  });
+  assert.ok(fallbackRoots.includes("core"), "majority non-test source dir qualifies via fallback");
+  assert.ok(!fallbackRoots.includes("docs"));
+
+  // The shared cluster rule subclusters under a detected root.
+  assert.equal(clusterOfPath("source/core/index.ts", ["source"]), "source/core");
+  assert.equal(clusterOfPath("README.md", ["source"]), "(root)");
+});
+
+test("review-surfaces.COLD_START.2 reading order classifies a detected root as implementation, in agreement with the clusters", () => {
+  const sections = buildChangeGraphSections({
+    files: [
+      { path: "source/core/index.ts", status: "M", added: 10, removed: 2 },
+      { path: "README.md", status: "M", added: 1, removed: 0 }
+    ],
+    edges: [],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: [],
+    implementationRoots: ["source"]
+  });
+  const implementationLeg = sections.reading_order.legs.find((leg) => leg.steps.some((step) => step.path === "source/core/index.ts"));
+  assert.ok(implementationLeg, "source file appears in the tour");
+  assert.equal(implementationLeg?.title, "Implementation", "source/ classifies as implementation, not config/docs");
+  const node = sections.change_graph.nodes.find((candidate) => candidate.path === "source/core/index.ts");
+  assert.equal(node?.cluster, "source/core", "the change-map cluster uses the same detected root");
+});
+
+test("review-surfaces.COLD_START.2 end-to-end: a source/-rooted repo gets implementation reading order from committed signals", () => {
+  const fixture = createEvalFixture("cold-start-roots");
+  try {
+    fixture.write("tsconfig.json", JSON.stringify({ include: ["source"] }));
+    fixture.write("source/core/engine.ts", "export function run(): number {\n  return 1;\n}\n");
+    fixture.commit("add source tree");
+    const human = fixture.run();
+    const leg = human.reading_order.legs.find((candidate) => candidate.steps.some((step) => step.path === "source/core/engine.ts"));
+    assert.ok(leg, "the new source file is in the tour");
+    assert.equal(leg?.title, "Implementation", "detected source/ root classifies as implementation end-to-end");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// review-surfaces.COLD_START.3 — the exported-API differ ignores trivia. The
+// got case, reduced: two TSDoc lines added inside an exported type were
+// reported as a signature change and became the #1 review item.
+// ---------------------------------------------------------------------------
+
+function sources(diffText: string, base: Record<string, string>, head: Record<string, string>): SemanticDiffSources {
+  return {
+    diff: parseStructuredDiff(diffText),
+    readBase: (filePath) => base[filePath],
+    readHead: (filePath) => head[filePath]
+  };
+}
+
+function tsDiff(filePath: string): string {
+  return [`diff --git a/${filePath} b/${filePath}`, `--- a/${filePath}`, `+++ b/${filePath}`, "@@ -1,1 +1,1 @@", "-old", "+new", ""].join("\n");
+}
+
+test("review-surfaces.COLD_START.3 a doc-comment-only edit inside an exported type is NOT a signature change", () => {
+  const filePath = "source/core/options.ts";
+  const before = `export interface PaginationOptions {
+  transform?: (response: unknown) => unknown[];
+  countLimit?: number;
+}
+`;
+  const after = `export interface PaginationOptions {
+  /**
+  All errors will be collected.
+  */
+  transform?: (response: unknown) => unknown[];
+  // trailing-style note
+  countLimit?: number;
+}
+`;
+  const facts = computeSemanticChangeFacts(sources(tsDiff(filePath), { [filePath]: before }, { [filePath]: after }));
+  assert.equal(facts.api_changes.length, 0, `comment-only edit must produce no API fact; got ${JSON.stringify(facts.api_changes)}`);
+});
+
+test("review-surfaces.COLD_START.3 a real member change is still a signature change after comment stripping", () => {
+  const filePath = "src/options.ts";
+  const before = "export interface Options {\n  retries: number;\n}\n";
+  const after = "export interface Options {\n  /** now a string */\n  retries: string;\n}\n";
+  const facts = computeSemanticChangeFacts(sources(tsDiff(filePath), { [filePath]: before }, { [filePath]: after }));
+  assert.equal(facts.api_changes.length, 1, "a real type change must still be detected");
+  assert.equal(facts.api_changes[0].signatures_changed[0]?.name, "Options");
+  // The rendered from/to strings are comment-stripped so the human-facing fact
+  // never quotes trivia as the change.
+  assert.ok(!facts.api_changes[0].signatures_changed[0]?.to.includes("now a string"));
+});
+
+test("review-surfaces.COLD_START.3 seeded eval fixture: doc-comment-only edit ranks no API finding", () => {
+  const fixture = createEvalFixture("cold-start-trivia");
+  try {
+    fixture.write(
+      "src/options.ts",
+      `export interface Options {
+  /**
+  How many times to retry on failure.
+  */
+  retries: number;
+  timeout?: number;
+}
+`
+    );
+    fixture.commit("document the retries option");
+    const human = fixture.run();
+    const apiItems = human.review_queue.filter(
+      (item) => item.path === "src/options.ts" && /signature|exported api/i.test(`${item.title} ${item.reason}`)
+    );
+    assert.deepEqual(apiItems, [], "no exported-API queue item may cite the doc-comment-only file");
+  } finally {
+    fixture.cleanup();
+  }
+});

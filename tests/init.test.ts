@@ -216,7 +216,9 @@ test("review-surfaces.QUALITY.3 fresh-repo E2E: init then all then validate agai
   // 5. The CLI validate command also succeeds offline against the scaffold.
   const validate = runCli(repo, ["validate", ".review-surfaces"]);
   assert.equal(validate.status, 0, validate.stderr);
-  assert.match(validate.stdout, /Validated .* against schemas\/review_packet\.schema\.json/);
+  // review-surfaces.COLD_START.1: the default validate uses the BUNDLED schema
+  // (package root), never a CWD-relative lookup.
+  assert.match(validate.stdout, /Validated .* against the bundled schemas\/review_packet\.schema\.json/);
 
   fs.rmSync(repo, { recursive: true, force: true });
 });

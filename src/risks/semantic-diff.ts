@@ -372,7 +372,23 @@ function extractExports(source: string, path = "module.ts"): Map<string, string>
   const scriptKind = /\.tsx$/.test(path) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
   const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, scriptKind);
   const exports = new Map<string, string>();
-  const norm = (text: string): string => text.replace(/\s+/g, " ").trim();
+  // review-surfaces.COLD_START.3: signatures are compared comment-stripped and
+  // whitespace-normalized. Slices are raw source text, so without stripping, a
+  // doc-comment-only edit inside an exported type reads as a signature change
+  // (the got cold-start false positive: two TSDoc lines became the #1 review
+  // item). The TS scanner walks the fragment and drops comment trivia; both
+  // sides pass through the same rule, so a real change is still detected.
+  const stripComments = (text: string): string => {
+    const scanner = ts.createScanner(ts.ScriptTarget.Latest, /* skipTrivia */ false, ts.LanguageVariant.Standard, text);
+    let out = "";
+    let token = scanner.scan();
+    while (token !== ts.SyntaxKind.EndOfFileToken) {
+      out += token === ts.SyntaxKind.SingleLineCommentTrivia || token === ts.SyntaxKind.MultiLineCommentTrivia ? " " : scanner.getTokenText();
+      token = scanner.scan();
+    }
+    return out;
+  };
+  const norm = (text: string): string => stripComments(text).replace(/\s+/g, " ").trim();
   // The declaration text from its first token to a stop offset, excluding any
   // implementation body so only the contract is compared.
   const slice = (node: ts.Node, stop: number): string => norm(source.slice(node.getStart(sourceFile), stop));

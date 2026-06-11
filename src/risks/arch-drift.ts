@@ -15,6 +15,7 @@
 //   path lives in unchanged code still reports; without them it falls back to
 //   changed-file edges only. Pre-existing cycles are out of scope either way.
 import { resolveRelativeImports } from "../collector/import-graph";
+import { clusterOfPath, DEFAULT_IMPLEMENTATION_ROOTS } from "../core/source-roots";
 
 export type ArchDriftKind = "module_edge_added" | "module_edge_removed" | "import_cycle_created";
 
@@ -54,21 +55,20 @@ export interface ComputeArchDriftInput {
   // falls back to the changed files' base imports (a weaker, documented bound).
   baseModuleEdgeKeys?: Set<string>;
   headModuleEdgeKeys?: Set<string>;
+  // review-surfaces.COLD_START.2: detected implementation roots so module
+  // altitude agrees with the change-map clusters on any repository layout.
+  implementationRoots?: readonly string[];
 }
 
-export function moduleOf(filePath: string): string {
-  const segments = filePath.split("/");
-  if (segments.length === 1) {
-    return "(root)";
-  }
-  if (segments[0] === "src" && segments.length > 2) {
-    return `src/${segments[1]}`;
-  }
-  return segments[0];
+// Module altitude = the shared cluster rule (source-roots.ts) so drift facts
+// and the change map can never disagree on module names.
+export function moduleOf(filePath: string, roots: readonly string[] = DEFAULT_IMPLEMENTATION_ROOTS): string {
+  return clusterOfPath(filePath, roots);
 }
 
 export function computeArchDriftFacts(input: ComputeArchDriftInput): ArchDriftResult {
   const empty: ArchDriftResult = { facts: [], file_edges: { added: [], removed: [] } };
+  const modOf = (filePath: string): string => moduleOf(filePath, input.implementationRoots);
   const files = [...input.changedFiles].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   if (files.length === 0) {
     return empty;
@@ -101,9 +101,9 @@ export function computeArchDriftFacts(input: ComputeArchDriftInput): ArchDriftRe
       ? new Set(resolveRelativeImports(headPath, input.readHead(headPath) ?? "", input.existsHead))
       : new Set<string>();
 
-    const headModule = moduleOf(file.path);
+    const headModule = modOf(file.path);
     for (const imported of headImports) {
-      const target = moduleOf(imported);
+      const target = modOf(imported);
       if (target !== headModule) {
         const targets = headModuleEdges.get(headModule) ?? new Set<string>();
         targets.add(target);
@@ -112,9 +112,9 @@ export function computeArchDriftFacts(input: ComputeArchDriftInput): ArchDriftRe
     }
     // Base-side module edges from the changed files — the novelty fallback
     // when no full-tree set is supplied (computed here, not in a second pass).
-    const baseModuleForKeys = moduleOf(basePath ?? file.path);
+    const baseModuleForKeys = modOf(basePath ?? file.path);
     for (const imported of baseImports) {
-      const toModule = moduleOf(imported);
+      const toModule = modOf(imported);
       if (toModule !== baseModuleForKeys) {
         changedBaseKeys.add(JSON.stringify([baseModuleForKeys, toModule]));
       }
@@ -125,14 +125,14 @@ export function computeArchDriftFacts(input: ComputeArchDriftInput): ArchDriftRe
     for (const imported of headImports) {
       if (!baseImports.has(imported)) {
         addedFileEdges.push({ importer: file.path, imported });
-        recordModuleDelta(addedModuleEdges, headModule, moduleOf(imported), file.path);
+        recordModuleDelta(addedModuleEdges, headModule, modOf(imported), file.path);
       }
     }
-    const baseModule = moduleOf(basePath ?? file.path);
+    const baseModule = modOf(basePath ?? file.path);
     for (const imported of baseImports) {
       if (!headImports.has(imported)) {
         removedFileEdges.push({ importer: file.path, imported });
-        recordModuleDelta(removedModuleEdges, baseModule, moduleOf(imported), file.path);
+        recordModuleDelta(removedModuleEdges, baseModule, modOf(imported), file.path);
       }
     }
   }
