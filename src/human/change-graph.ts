@@ -66,13 +66,42 @@ interface BuildSectionsInput {
   usedBy: Array<{ path: string; top: string[] }>;
   lensFindings: RiskLensFinding[];
   reviewQueue: ReviewQueueItem[];
+  // review-surfaces.ARCH_DRIFT.2: file-level edge deltas from the drift
+  // detector. Added edges flip matching graph edges to kind "new"; removed
+  // edges (present at base only) are appended as kind "removed" when both
+  // endpoints are changed files.
+  driftEdges?: {
+    added: ChangedImportEdge[];
+    removed: ChangedImportEdge[];
+  };
 }
 
 export function buildChangeGraphSections(input: BuildSectionsInput): { change_graph: ChangeGraph; reading_order: ReadingOrder } {
   const files = [...input.files].sort((a, b) => compareStrings(a.path, b.path));
   const changedSet = new Set(files.map((file) => file.path));
   const edges = dedupeEdges(input.edges, changedSet);
-  const readingOrder = buildReadingOrder(files, edges, input.reviewQueue);
+  // ARCH_DRIFT.2: annotate kinds. The added set marks existing head edges as
+  // new; removed base-only edges are appended (deduped against head edges).
+  if (input.driftEdges) {
+    const addedKeys = new Set(input.driftEdges.added.map((edge) => JSON.stringify([edge.importer, edge.imported])));
+    for (const edge of edges) {
+      if (addedKeys.has(JSON.stringify([edge.from, edge.to]))) {
+        edge.kind = "new";
+      }
+    }
+    const headKeys = new Set(edges.map((edge) => JSON.stringify([edge.from, edge.to])));
+    for (const removed of [...input.driftEdges.removed].sort((a, b) => compareStrings(a.importer, b.importer) || compareStrings(a.imported, b.imported))) {
+      const key = JSON.stringify([removed.importer, removed.imported]);
+      if (changedSet.has(removed.importer) && changedSet.has(removed.imported) && removed.importer !== removed.imported && !headKeys.has(key)) {
+        headKeys.add(key);
+        edges.push({ from: removed.importer, to: removed.imported, kind: "removed" });
+      }
+    }
+    edges.sort((a, b) => compareStrings(a.from, b.from) || compareStrings(a.to, b.to));
+  }
+  // The tour orders by HEAD dependencies only: a removed edge is not a current
+  // dependency and must not influence the topological order.
+  const readingOrder = buildReadingOrder(files, edges.filter((edge) => edge.kind !== "removed"), input.reviewQueue);
   const tourIndex = new Map<string, number>();
   for (const leg of readingOrder.legs) {
     for (const step of leg.steps) {

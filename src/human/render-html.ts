@@ -82,6 +82,9 @@ ${renderCoverage(model)}
 <h2 id="cards">Evidence cards</h2>
 ${renderCards(model)}
 
+<h2 id="rounds">Review rounds</h2>
+${renderRounds(model)}
+
 <h2 id="trust">Trust audit</h2>
 ${renderTrust(model)}
 
@@ -455,4 +458,25 @@ function gutterFor(
     return { glyph: "· ", label: "context line (no coverage data)" };
   }
   return { glyph: "  " };
+}
+
+// review-surfaces.TREND.2: the rounds ledger as a compact table — last ~8
+// rounds, full ledger in the artifact; partial history renders honestly.
+function renderRounds(model: HumanReviewModel): string {
+  const rounds = model.rounds ?? [];
+  if (rounds.length === 0) {
+    return `<p class="muted">No rounds ledger (no prior packet was compared in).</p>`;
+  }
+  if (rounds.length === 1) {
+    return `<p class="muted">First review round — nothing to trend yet.</p>`;
+  }
+  const shown = rounds.slice(-8);
+  const note = shown[0].round > 1 ? `<p class="muted">History begins at round ${esc(shown[0].round)}; full ledger in human_review.json.</p>` : "";
+  const rows = shown
+    .map(
+      (entry) =>
+        `<tr><td>${esc(entry.round)}</td><td><code>${esc(entry.head_sha.slice(0, 7))}</code></td><td>${esc(entry.new_count)}</td><td>${esc(entry.resolved_count)}</td><td>${esc(entry.regressed_count)}</td><td>${esc(entry.verdict)}</td></tr>`
+    )
+    .join("");
+  return `${note}<table><thead><tr><th>round</th><th>head</th><th>new</th><th>resolved</th><th>regressed</th><th>verdict</th></tr></thead><tbody>${rows}</tbody></table>`;
 }

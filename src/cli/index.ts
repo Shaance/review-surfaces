@@ -65,6 +65,8 @@ import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
 import { ChangedImportEdge, computeChangedImportEdges } from "../human/change-graph";
+import { ArchDriftResult, computeArchDriftFacts } from "../risks/arch-drift";
+import { RoundsLedgerEntry } from "../human/contract";
 import { buildChangeNarrative } from "../human/narrative";
 import { ChangeNarrative, HumanReviewModel, ReviewQueueItem } from "../human/contract";
 import { runWalkthrough, WalkthroughIO, WalkthroughOptions } from "../review/walkthrough";
@@ -1515,6 +1517,12 @@ function buildHumanReviewForPacket(
     // shared import-graph parser over head content — computed here (file access)
     // so the section is uniform on every build path.
     changedImportEdges: computeChangedImportEdgesForPacket(cwd, resolvedDiff, factReaders),
+    // review-surfaces.ARCH_DRIFT.1-3: base-vs-head resolved import diffs at
+    // module altitude, computed here (base/head file access).
+    archDrift: computeArchDriftForPacket(cwd, resolvedDiff, factReaders),
+    // review-surfaces.TREND.1: carry the prior rounds ledger forward from the
+    // previous packet's sibling human_review.json (any transport).
+    previousRounds: readPreviousRounds(cwd, packet),
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
@@ -1563,6 +1571,8 @@ interface FactReaders {
   readHead: (filePath: string) => string | undefined;
   headIsWorktree: boolean;
   headSha: string;
+  // The resolved merge-base ref the base side reads at (empty when unknown).
+  baseReadRef: string;
 }
 
 function buildFactReaders(cwd: string, packet: ReviewPacket, diff: StructuredDiff | undefined): FactReaders | undefined {
@@ -1588,7 +1598,8 @@ function buildFactReaders(cwd: string, packet: ReviewPacket, diff: StructuredDif
     readBase: baseReadRef ? (filePath) => readFileAtRef(cwd, baseReadRef, filePath) : () => undefined,
     readHead: headIsWorktree ? readWorktree : (filePath) => readFileAtRef(cwd, headSha, filePath),
     headIsWorktree,
-    headSha
+    headSha,
+    baseReadRef
   };
 }
 
@@ -1618,6 +1629,55 @@ function computeChangedImportEdgesForPacket(cwd: string, diff: StructuredDiff | 
         }
       : (filePath) => blobExistsAtRef(cwd, readers.headSha, filePath)
   });
+}
+
+// review-surfaces.ARCH_DRIFT.1: diff base-vs-head resolved import sets for the
+// changed files, with blob-only existence checks on committed refs (the same
+// resolution rules as the blast-radius graph). The base side reads the
+// merge-base; a worktree head reads the working tree.
+function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined, readers: FactReaders | undefined): ArchDriftResult | undefined {
+  if (!diff || diff.files.length === 0 || !readers) {
+    return undefined;
+  }
+  const existsHead = readers.headIsWorktree
+    ? (filePath: string): boolean => {
+        try {
+          return fs.statSync(path.resolve(cwd, filePath)).isFile();
+        } catch {
+          return false;
+        }
+      }
+    : (filePath: string) => blobExistsAtRef(cwd, readers.headSha, filePath);
+  return computeArchDriftFacts({
+    changedFiles: diff.files.map((file) => ({ path: file.path, ...(file.old_path ? { old_path: file.old_path } : {}), status: file.status })),
+    readBase: readers.readBase,
+    readHead: readers.readHead,
+    existsBase: (filePath) => readers.baseReadRef !== "" && blobExistsAtRef(cwd, readers.baseReadRef, filePath),
+    existsHead
+  });
+}
+
+// review-surfaces.TREND.1: read the prior ledger from the previous packet's
+// sibling human_review.json. Absent/unreadable/malformed -> first review.
+function readPreviousRounds(cwd: string, packet: ReviewPacket): RoundsLedgerEntry[] | undefined {
+  const previousPath = (packet.dogfood as { previous_packet_path?: unknown } | undefined)?.previous_packet_path;
+  if (typeof previousPath !== "string" || previousPath.length === 0) {
+    return undefined;
+  }
+  const humanPath = path.join(path.dirname(path.resolve(cwd, previousPath)), "human_review.json");
+  try {
+    const parsed = JSON.parse(fs.readFileSync(humanPath, "utf8")) as { rounds?: unknown };
+    if (!Array.isArray(parsed.rounds)) {
+      return undefined;
+    }
+    const rounds = parsed.rounds.filter(
+      (entry): entry is RoundsLedgerEntry =>
+        typeof (entry as { round?: unknown }).round === "number" && typeof (entry as { head_sha?: unknown }).head_sha === "string"
+    );
+    return rounds.length > 0 ? rounds : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // review-surfaces.BLAST_RADIUS.1/.2/.3: enrich changed/removed exports with

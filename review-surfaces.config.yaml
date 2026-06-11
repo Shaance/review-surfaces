@@ -278,13 +278,6 @@ quality_gate:
   # ACIDs it ships. The gate must be back to `allow_missing: []` when the final
   # phase lands.
   allow_missing:
-    # Phase 4 / M11 — drift and convergence (ideas 5, 7)
-    - review-surfaces.ARCH_DRIFT.1
-    - review-surfaces.ARCH_DRIFT.2
-    - review-surfaces.ARCH_DRIFT.3
-    - review-surfaces.TREND.1
-    - review-surfaces.TREND.2
-    - review-surfaces.EVAL_HARNESS.5
     # Phase 5 — depth and trust story (ideas 8, 9)
     - review-surfaces.DEP_FACTS.4
     - review-surfaces.RENDER.13
@@ -303,4 +296,5 @@ human_review:
     reviewer_ux: true
     cache_provenance: true
     supply_chain: true
+    architecture: true
   required_manual_checks: []

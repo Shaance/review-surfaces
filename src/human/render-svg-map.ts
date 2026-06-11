@@ -35,6 +35,7 @@ export const SVG_LENS_FILLS: Record<RiskLens, string> = {
   reviewer_ux: "#ede9fe",
   cache_provenance: "#d1fae5",
   supply_chain: "#fce7f3",
+  architecture: "#ffe4d6",
   custom: "#e5e7eb"
 };
 
@@ -46,6 +47,7 @@ export const LENS_STROKES: Record<RiskLens, string> = {
   reviewer_ux: "#6d28d9",
   cache_provenance: "#047857",
   supply_chain: "#be185d",
+  architecture: "#c2410c",
   custom: "#374151"
 };
 
