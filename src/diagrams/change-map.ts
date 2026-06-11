@@ -32,13 +32,14 @@ export function renderChangeMapMermaid(graph: ChangeGraph): string | undefined {
   const lines: string[] = ["flowchart LR"];
   const nodeIds = new Map<string, string>();
   const usedLenses = new Set<RiskLens>();
+  const nodeByPath = new Map(graph.nodes.map((node) => [node.path, node]));
   let rendered = 0;
 
   for (const [clusterIndex, cluster] of graph.clusters.entries()) {
     lines.push(`  subgraph c${clusterIndex}["${diagramLabel(cluster.name)}"]`);
     let overflow = 0;
     for (const filePath of cluster.paths) {
-      const node = graph.nodes.find((candidate) => candidate.path === filePath);
+      const node = nodeByPath.get(filePath);
       if (!node) {
         continue;
       }

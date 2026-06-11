@@ -4,6 +4,7 @@
 // used_by facts, and the computed lens findings / review queue. No new parsing
 // happens here: the import edges come from buildImportGraph() output.
 import { buildImportGraph } from "../collector/import-graph";
+import { compareStrings } from "../core/compare";
 import {
   ChangeGraph,
   ChangeGraphEdge,
@@ -43,7 +44,7 @@ export function computeChangedImportEdges(options: {
   const changed = new Set(options.changedPaths);
   const graph = buildImportGraph({ files: options.changedPaths, read: options.read, exists: options.exists });
   const edges: ChangedImportEdge[] = [];
-  for (const [imported, importers] of [...graph.importers.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+  for (const [imported, importers] of [...graph.importers.entries()].sort((a, b) => compareStrings(a[0], b[0]))) {
     if (!changed.has(imported)) {
       continue;
     }
@@ -68,7 +69,7 @@ interface BuildSectionsInput {
 }
 
 export function buildChangeGraphSections(input: BuildSectionsInput): { change_graph: ChangeGraph; reading_order: ReadingOrder } {
-  const files = [...input.files].sort((a, b) => a.path.localeCompare(b.path));
+  const files = [...input.files].sort((a, b) => compareStrings(a.path, b.path));
   const changedSet = new Set(files.map((file) => file.path));
   const edges = dedupeEdges(input.edges, changedSet);
   const readingOrder = buildReadingOrder(files, edges, input.reviewQueue);
@@ -92,7 +93,7 @@ export function buildChangeGraphSections(input: BuildSectionsInput): { change_gr
   // Halo: unchanged importers from blast-radius facts, first K<=2 per
   // high-blast node, exactly as the fact's bounded used_by.top stores them.
   const haloByImporter = new Map<string, Set<string>>();
-  for (const fact of [...input.usedBy].sort((a, b) => a.path.localeCompare(b.path))) {
+  for (const fact of [...input.usedBy].sort((a, b) => compareStrings(a.path, b.path))) {
     if (!changedSet.has(fact.path)) {
       continue;
     }
@@ -111,8 +112,8 @@ export function buildChangeGraphSections(input: BuildSectionsInput): { change_gr
     }
   }
   const haloNodes: ChangeGraphHaloNode[] = [...haloByImporter.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([importer, imports]) => ({ path: importer, imports: [...imports].sort() }));
+    .sort((a, b) => compareStrings(a[0], b[0]))
+    .map(([importer, imports]) => ({ path: importer, imports: [...imports].sort(compareStrings) }));
 
   // Clusters in tour-first-appearance order (CHANGE_MAP.3: the map's
   // left-to-right flow agrees with the tour's numbering).
@@ -155,7 +156,7 @@ function dedupeEdges(edges: ChangedImportEdge[], changed: Set<string>): ChangeGr
     // Dependency first: from = imported module, to = importer.
     result.push({ from: edge.imported, to: edge.importer, kind: "existing" });
   }
-  return result.sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
+  return result.sort((a, b) => compareStrings(a.from, b.from) || compareStrings(a.to, b.to));
 }
 
 function normalizeStatus(raw: string): ChangeGraphNodeStatus {
@@ -166,7 +167,7 @@ function normalizeStatus(raw: string): ChangeGraphNodeStatus {
   return "modified";
 }
 
-export function clusterOf(filePath: string): string {
+function clusterOf(filePath: string): string {
   const segments = filePath.split("/");
   if (segments.length === 1) {
     return "(root)";
@@ -181,14 +182,14 @@ export function clusterOf(filePath: string): string {
 // important) among findings citing the path; ties broken by finding id.
 function dominantLensByPath(findings: RiskLensFinding[], changed: Set<string>): Map<string, RiskLens> {
   const best = new Map<string, { lens: RiskLens; rank: number; id: string }>();
-  for (const finding of [...findings].sort((a, b) => a.id.localeCompare(b.id))) {
+  for (const finding of [...findings].sort((a, b) => compareStrings(a.id, b.id))) {
     const rank = RISK_LENS_METADATA[finding.lens]?.rank ?? Number.MAX_SAFE_INTEGER;
     for (const filePath of finding.paths) {
       if (!changed.has(filePath)) {
         continue;
       }
       const current = best.get(filePath);
-      if (!current || rank < current.rank || (rank === current.rank && finding.id.localeCompare(current.id) < 0)) {
+      if (!current || rank < current.rank || (rank === current.rank && compareStrings(finding.id, current.id) < 0)) {
         best.set(filePath, { lens: finding.lens, rank, id: finding.id });
       }
     }
@@ -267,7 +268,7 @@ function buildReadingOrder(files: ChangedFileFacts[], edges: ChangeGraphEdge[], 
     .filter((index) => (indegree.get(index) ?? 0) === 0);
   const ordered: number[] = [];
   while (frontier.length > 0) {
-    frontier.sort((a, b) => frontierKey(a).localeCompare(frontierKey(b)));
+    frontier.sort((a, b) => compareStrings(frontierKey(a), frontierKey(b)));
     const next = frontier.shift() as number;
     ordered.push(next);
     for (const target of [...(out.get(next) ?? [])].sort((a, b) => a - b)) {
@@ -280,11 +281,9 @@ function buildReadingOrder(files: ChangedFileFacts[], edges: ChangeGraphEdge[], 
   }
 
   const importerCount = new Map<string, number>();
-  for (const edge of edges) {
-    importerCount.set(edge.from, (importerCount.get(edge.from) ?? 0) + 1);
-  }
   const dependencyCount = new Map<string, number>();
   for (const edge of edges) {
+    importerCount.set(edge.from, (importerCount.get(edge.from) ?? 0) + 1);
     dependencyCount.set(edge.to, (dependencyCount.get(edge.to) ?? 0) + 1);
   }
   const queueRefs = new Map<string, string[]>();
@@ -349,7 +348,7 @@ function deriveWhy(filePath: string, category: LegCategory, status: ChangeGraphN
 // members sorted alphabetically; component list order is irrelevant (the topo
 // pass orders them).
 function stronglyConnectedComponents(paths: string[], edges: ChangeGraphEdge[]): string[][] {
-  const sorted = [...paths].sort((a, b) => a.localeCompare(b));
+  const sorted = [...paths].sort((a, b) => compareStrings(a, b));
   const adjacency = new Map<string, string[]>();
   for (const node of sorted) {
     adjacency.set(node, []);
@@ -358,7 +357,7 @@ function stronglyConnectedComponents(paths: string[], edges: ChangeGraphEdge[]):
     adjacency.get(edge.from)?.push(edge.to);
   }
   for (const list of adjacency.values()) {
-    list.sort((a, b) => a.localeCompare(b));
+    list.sort((a, b) => compareStrings(a, b));
   }
 
   const index = new Map<string, number>();
@@ -410,7 +409,7 @@ function stronglyConnectedComponents(paths: string[], edges: ChangeGraphEdge[]):
             break;
           }
         }
-        components.push(members.sort((a, b) => a.localeCompare(b)));
+        components.push(members.sort((a, b) => compareStrings(a, b)));
       }
     }
   }
