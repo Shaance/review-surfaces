@@ -269,7 +269,7 @@
                     "changed_lines": { "type": "integer", "minimum": 0 },
                     "covered_lines": { "type": "integer", "minimum": 0 },
                     "classification": { "enum": ["covered", "uncovered", "partial"] },
-                    "uncovered_lines": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+                    "uncovered_lines": { "type": "array", "maxItems": 50, "items": { "type": "integer", "minimum": 1 } },
                     "uncovered_truncated": { "type": "boolean" },
                     "covered_line_numbers": { "type": "array", "items": { "type": "integer", "minimum": 1 } }
                   }

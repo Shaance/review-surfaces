@@ -49,7 +49,7 @@ ul { padding-left: 1.2rem; }
 .filters button { margin: 0 .35rem .35rem 0; border:1px solid var(--line); background:#fff; border-radius:14px; padding:.2rem .7rem; cursor:pointer; font-size:.8rem; }
 .filters button.active { border-color: var(--accent); color: var(--accent); }
 a { color: var(--accent); }
-@media print { .filters, .item header label { display:none; } details > * { display:block; } }
+@media print { #file-filter-note, .item header label { display:none; } details > * { display:block; } }
 </style>
 </head>
 <body>
@@ -439,7 +439,11 @@ function gutterFor(
     return { glyph: "✓ ", tint: "#d9f2e3", label: `L${newLine} covered` };
   }
   if (kind === "add") {
-    return { glyph: "· ", label: "not instrumented (no coverage data for this line)" };
+    // With a truncated uncovered list, an unlisted-and-not-covered line may be
+    // a capped-out uncovered entry — render UNKNOWN, never "not instrumented".
+    return coverageHunk.uncovered_truncated
+      ? { glyph: "? ", label: "coverage state unknown (uncovered list truncated — see summary)" }
+      : { glyph: "· ", label: "not instrumented (no coverage data for this line)" };
   }
   return { glyph: "  " };
 }
