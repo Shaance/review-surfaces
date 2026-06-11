@@ -65,7 +65,7 @@ import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
 import { ChangedImportEdge, computeChangedImportEdges } from "../human/change-graph";
-import { ArchDriftResult, computeArchDriftFacts } from "../risks/arch-drift";
+import { ArchDriftResult, computeArchDriftFacts, moduleOf } from "../risks/arch-drift";
 import { RoundsLedgerEntry } from "../human/contract";
 import { buildChangeNarrative } from "../human/narrative";
 import { ChangeNarrative, HumanReviewModel, ReviewQueueItem } from "../human/contract";
@@ -1648,13 +1648,62 @@ function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined
         }
       }
     : (filePath: string) => blobExistsAtRef(cwd, readers.headSha, filePath);
+  // Full-tree module-edge sets: novelty must be judged against EVERY base
+  // import (the same module edge often already exists via another file), so
+  // both trees are parsed once with the shared bounded import graph.
+  const existsBase = (filePath: string): boolean => readers.baseReadRef !== "" && blobExistsAtRef(cwd, readers.baseReadRef, filePath);
+  const baseModuleEdgeKeys = treeModuleEdgeKeys(cwd, readers.baseReadRef || undefined, readers.readBase, existsBase);
+  const headModuleEdgeKeys = treeModuleEdgeKeys(cwd, readers.headIsWorktree ? "WORKTREE" : readers.headSha, readers.readHead, existsHead);
   return computeArchDriftFacts({
     changedFiles: diff.files.map((file) => ({ path: file.path, ...(file.old_path ? { old_path: file.old_path } : {}), status: file.status })),
     readBase: readers.readBase,
     readHead: readers.readHead,
-    existsBase: (filePath) => readers.baseReadRef !== "" && blobExistsAtRef(cwd, readers.baseReadRef, filePath),
-    existsHead
+    existsBase,
+    existsHead,
+    ...(baseModuleEdgeKeys ? { baseModuleEdgeKeys } : {}),
+    ...(headModuleEdgeKeys ? { headModuleEdgeKeys } : {})
   });
+}
+
+// Module-edge keys over a whole tree, honoring the privacy/generated ignore
+// rules (the same enumeration as the blast-radius graph). Returns undefined
+// when the tree cannot be listed (the detector then falls back to its weaker
+// changed-files-only bound rather than guessing).
+function treeModuleEdgeKeys(
+  cwd: string,
+  treeRef: string | undefined,
+  read: (filePath: string) => string | undefined,
+  exists: (filePath: string) => boolean
+): Set<string> | undefined {
+  if (!treeRef) {
+    return undefined;
+  }
+  let tracked: string[];
+  try {
+    tracked = execFileSync(
+      "git",
+      treeRef === "WORKTREE" ? ["ls-files"] : ["ls-tree", "-r", "--name-only", treeRef],
+      { cwd, encoding: "utf8" }
+    )
+      .split("\n")
+      .filter(Boolean);
+  } catch {
+    return undefined;
+  }
+  const ignore = loadPrivacyIgnoreSync(cwd);
+  tracked = tracked.filter((filePath) => !ignore.isIgnored(filePath));
+  const graph = buildImportGraph({ files: tracked, read, exists });
+  const keys = new Set<string>();
+  for (const [imported, importers] of graph.importers.entries()) {
+    const toModule = moduleOf(imported);
+    for (const importer of importers) {
+      const fromModule = moduleOf(importer);
+      if (fromModule !== toModule) {
+        keys.add(JSON.stringify([fromModule, toModule]));
+      }
+    }
+  }
+  return keys;
 }
 
 // review-surfaces.TREND.1: read the prior ledger from the previous packet's

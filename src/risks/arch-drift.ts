@@ -46,6 +46,13 @@ export interface ComputeArchDriftInput {
   readHead: (filePath: string) => string | undefined;
   existsBase: (filePath: string) => boolean;
   existsHead: (filePath: string) => boolean;
+  // Module-edge sets over the WHOLE base/head trees (JSON.stringify([from, to])
+  // keys), so a "new" module edge is judged against EVERY base import — not
+  // just the changed files' own (the same file can already import the target
+  // module elsewhere, or an unchanged file can carry the edge). Absent, novelty
+  // falls back to the changed files' base imports (a weaker, documented bound).
+  baseModuleEdgeKeys?: Set<string>;
+  headModuleEdgeKeys?: Set<string>;
 }
 
 export function moduleOf(filePath: string): string {
@@ -115,8 +122,32 @@ export function computeArchDriftFacts(input: ComputeArchDriftInput): ArchDriftRe
     }
   }
 
+  // Module-edge NOVELTY: a fact fires only when the module edge is absent from
+  // the base tree's edges (full-tree set when provided, else the changed files'
+  // own base edges). Symmetrically, "removed" requires absence at head.
+  const changedBaseKeys = new Set<string>();
+  for (const file of files) {
+    const status = (file.status || "M").toUpperCase()[0];
+    const basePath = file.old_path ?? (status === "A" || status === "?" ? undefined : file.path);
+    if (!basePath) {
+      continue;
+    }
+    const fromModule = moduleOf(basePath);
+    for (const imported of resolveRelativeImports(basePath, input.readBase(basePath) ?? "", input.existsBase)) {
+      const toModule = moduleOf(imported);
+      if (toModule !== fromModule) {
+        changedBaseKeys.add(JSON.stringify([fromModule, toModule]));
+      }
+    }
+  }
+  const baseKeys = input.baseModuleEdgeKeys ?? changedBaseKeys;
+  const headKeys = input.headModuleEdgeKeys ?? new Set([...headModuleEdges.entries()].flatMap(([from, targets]) => [...targets].map((to) => JSON.stringify([from, to]))));
+
   const facts: ArchDriftFact[] = [];
   for (const [key, contributors] of [...addedModuleEdges.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    if (baseKeys.has(key)) {
+      continue;
+    }
     const [from, to] = JSON.parse(key) as [string, string];
     facts.push({
       kind: "module_edge_added",
@@ -127,6 +158,9 @@ export function computeArchDriftFacts(input: ComputeArchDriftInput): ArchDriftRe
     });
   }
   for (const [key, contributors] of [...removedModuleEdges.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    if (headKeys.has(key)) {
+      continue;
+    }
     const [from, to] = JSON.parse(key) as [string, string];
     facts.push({
       kind: "module_edge_removed",
