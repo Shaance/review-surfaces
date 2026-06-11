@@ -1,6 +1,7 @@
 import { CollectionResult } from "../collector/collect";
 import { EvidenceRef } from "../evidence/evidence";
 import { EvaluationModel } from "../evaluation/evaluate";
+import { SPEC_NONE_NOTE } from "../evaluation/status";
 import { FeedbackFile, FeedbackFinding } from "../feedback/feedback";
 import { MethodologyModel } from "../methodology/methodology";
 import { RisksModel } from "../risks/risks";
@@ -88,7 +89,11 @@ export function buildDogfood(
         category: unsatisfied > 0 ? "evidence_quality" : "review_value",
         severity: unsatisfied > 0 ? "medium" : "low",
         packet_section: "Requirement coverage",
-        finding: `${unsatisfied} requirement result(s) are not satisfied and need stronger evidence, implementation, tests, or explicit deferral.`,
+        // review-surfaces.COLD_START.5: a spec-less dogfood run renders the
+        // honest note, never a zero requirement-result count.
+        finding: specless
+          ? SPEC_NONE_NOTE
+          : `${unsatisfied} requirement result(s) are not satisfied and need stronger evidence, implementation, tests, or explicit deferral.`,
         impact: "The packet is useful for review focus but should not be read as complete coverage.",
         evidence: [
           {

@@ -49,6 +49,7 @@ function risks(): PrRiskModel {
 
 function inputWith(result: StructuredResult): BuildPrNarrativeInput {
   return {
+    specMode: "acai",
     provider: fakeProvider(result),
     providerName: "agent-file",
     repo: "acme/widgets",

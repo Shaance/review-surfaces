@@ -12,6 +12,9 @@
     "mode": {
       "const": "pr"
     },
+    "spec_mode": {
+      "enum": ["acai", "none"]
+    },
     "status": {
       "enum": ["ready", "blocked"]
     },

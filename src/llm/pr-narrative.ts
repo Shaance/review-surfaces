@@ -39,6 +39,8 @@ const MAX_NARRATIVE_TEXT_CHARS = 1000;
 const MAX_SUGGESTED_CHECK_CHARS = 500;
 
 export interface BuildPrNarrativeInput {
+  // review-surfaces.COLD_START.5: spec-less narratives never count requirements.
+  specMode: "acai" | "none";
   provider: ReasoningProvider;
   providerName: ProviderName;
   model?: string;
@@ -330,8 +332,10 @@ function textCitesOnlyAllowed(text: string, allowedPaths: Set<string>, allowedRe
   return true;
 }
 
-function deterministicSummary(scope: PrScopeModel): string {
-  return `${scope.changed_files.length} changed file(s) across ${scope.affected_areas.length} review area(s); ${scope.affected_requirements.length} affected requirement(s).`;
+function deterministicSummary(scope: PrScopeModel, specMode: "acai" | "none"): string {
+  return specMode === "none"
+    ? `${scope.changed_files.length} changed file(s) across ${scope.affected_areas.length} review area(s).`
+    : `${scope.changed_files.length} changed file(s) across ${scope.affected_areas.length} review area(s); ${scope.affected_requirements.length} affected requirement(s).`;
 }
 
 function validateRiskNarratives(
@@ -441,7 +445,7 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
     rawSummary !== "" && textCitesOnlyAllowed(rawSummary, allowedPaths, allowedRequirementIds)
       ? boundedRedactedText(rawSummary, MAX_NARRATIVE_TEXT_CHARS)
       : undefined;
-  const summary = boundedSummary ?? deterministicSummary(input.scope);
+  const summary = boundedSummary ?? deterministicSummary(input.scope, input.specMode);
   const narrative: PrNarrativeModel = {
     summary,
     what_changed: whatChanged,

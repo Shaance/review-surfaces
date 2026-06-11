@@ -91,6 +91,7 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
   }
 
   const narrativeResult = await buildPrNarrative({
+    specMode: input.intent.spec_mode,
     provider: input.provider,
     providerName: input.providerName,
     model: input.model,
