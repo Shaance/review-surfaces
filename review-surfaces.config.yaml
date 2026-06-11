@@ -4,10 +4,9 @@ specs:
   - features/**/*.feature.yaml
 docs:
   - README.md
-  - README.bootstrap.md
+  - CONTRIBUTING.md
   - AGENTS.md
   - CLAUDE.md
-  - OPEN_SOURCE_UPLIFT_GOAL.md
   - docs/**/*.md
   - .agents/skills/**/SKILL.md
 tests:
@@ -52,7 +51,9 @@ areas:
       - .agents/
       - features/
       - docs/review-surfaces-trd.md
-      - OPEN_SOURCE_UPLIFT_GOAL.md
+      - docs/history/OPEN_SOURCE_UPLIFT_GOAL.md
+      - LICENSE
+      - CONTRIBUTING.md
       - review-surfaces.config.yaml
       - src/config/
       - src/bootstrap/
@@ -262,7 +263,7 @@ quality_gate:
   # ACIDs were allowlisted here until that phase shipped. All five of those phases
   # landed, emptying the allowlist.
   #
-  # The next-value uplift (NEXT_VALUE_UPLIFT_GOAL.md, brainstorm ideas 1-12)
+  # The next-value uplift (docs/history/NEXT_VALUE_UPLIFT_GOAL.md, ideas 1-12)
   # promotes its spec entries the same way: Phase 0 stages every not-yet-shipped
   # ACID below, and each later phase removes its ACIDs from this allowlist in the
   # PR that ships them. The gate must be back to `allow_missing: []` when the
@@ -272,21 +273,16 @@ quality_gate:
   # an allowlisted ACID is excluded from the missing count, but an UNRELATED
   # requirement regressing to "missing" still trips the strict self-dogfood gate.
   max_missing: 0
-  # The next-value uplift (NEXT_VALUE_UPLIFT_GOAL.md) is fully shipped: all 33
+  # The next-value uplift (docs/history/NEXT_VALUE_UPLIFT_GOAL.md) is fully shipped: all 33
   # staged ACIDs landed phase by phase and were removed as they shipped.
   #
-  # The visual value uplift (VISUAL_VALUE_UPLIFT_GOAL.md) is fully shipped:
+  # The visual value uplift (docs/history/VISUAL_VALUE_UPLIFT_GOAL.md) is fully shipped:
   # all 24 staged ACIDs landed phase by phase and were removed as they shipped.
   #
-  # The open-source readiness uplift (OPEN_SOURCE_UPLIFT_GOAL.md) stages its
+  # The open-source readiness uplift (docs/history/OPEN_SOURCE_UPLIFT_GOAL.md) stages its
   # not-yet-shipped ACIDs below; each phase PR removes the ACIDs it ships. The
   # gate must be back to `allow_missing: []` when the final phase lands.
-  allow_missing:
-    # Phase 3 — distribution and repo hygiene (evidence-log failure 5)
-    - review-surfaces.DISTRIBUTION.1
-    - review-surfaces.DISTRIBUTION.2
-    - review-surfaces.DISTRIBUTION.3
-    - review-surfaces.DISTRIBUTION.4
+  allow_missing: []
 human_review:
   enabled: true
   default_entrypoint: true

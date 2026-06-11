@@ -2,12 +2,26 @@
   "name": "review-surfaces",
   "version": "0.1.0",
   "description": "Local-first review packet compiler for agent-generated code changes.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shaance/review-surfaces.git"
+  },
+  "keywords": [
+    "code-review",
+    "ai-agents",
+    "trust",
+    "static-analysis",
+    "diff",
+    "local-first"
+  ],
   "bin": {
     "review-surfaces": "./bin/review-surfaces.js"
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "pnpm run clean && tsc -p tsconfig.json",
+    "prepack": "pnpm run build",
     "build:fast": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "pnpm run typecheck",
@@ -25,7 +39,8 @@
   "files": [
     "bin",
     "dist",
-    "schemas"
+    "schemas",
+    "docs/images"
   ],
   "engines": {
     "node": ">=22"

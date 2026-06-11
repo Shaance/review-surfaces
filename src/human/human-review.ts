@@ -4786,7 +4786,7 @@ function isSourceOfTruthReviewDoc(filePath: string): boolean {
     /(^|\/)AGENTS\.md$/.test(normalizedPath) ||
     /(^|\/)CLAUDE\.md$/.test(normalizedPath) ||
     normalizedPath === "README.md" ||
-    normalizedPath === "README.bootstrap.md" ||
+    normalizedPath === "CONTRIBUTING.md" ||
     normalizedPath === "docs/review-surfaces-trd.md" ||
     normalizedPath === "docs/dogfooding.md" ||
     /^\.agents\/skills\/[^/]+\/SKILL\.md$/.test(normalizedPath)

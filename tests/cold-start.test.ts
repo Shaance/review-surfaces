@@ -1,6 +1,6 @@
 // review-surfaces.COLD_START.1-3 — cold-start correctness on a stranger's
 // repository. Every test reproduces a failure from the 2026-06-11 cold-start
-// evidence log (OPEN_SOURCE_UPLIFT_GOAL.md): a shallow clone of
+// evidence log (docs/history/OPEN_SOURCE_UPLIFT_GOAL.md): a shallow clone of
 // sindresorhus/got with no Acai specs and no config.
 import test from "node:test";
 import assert from "node:assert/strict";

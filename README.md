@@ -1,270 +1,206 @@
 # review-surfaces
 
 **The trust layer for agent-written code.** A local-first review cockpit that
-answers the three questions a human actually has when reviewing a change an agent
-produced:
+answers the three questions a human actually has when reviewing a change an
+agent produced:
 
-1. **Did the agent overreach its instructions?** — intent-vs-diff mismatch plus
-   semantic change facts (schema/API contract changes) make the scope concrete.
+1. **Did the agent overreach its instructions?** — a change-impact map, guided
+   reading order, and semantic change facts (schema/API contract diffs, new
+   dependencies, architecture drift) make the real scope of the diff concrete.
 2. **Did the agent weaken tests to make them pass?** — test-weakening detection
    flags deleted tests, newly skipped tests, removed assertions, and regenerated
-   snapshots.
-3. **Did the agent claim things it didn't do?** — a trust audit and per-sentence
-   narrative trust markers separate verified claims from unbacked prose. *"The
-   agent says the tests passed; no transcript backs it"* is a headline no generic
-   review bot produces.
+   snapshots as a first-class risk.
+3. **Did the agent claim things it didn't do?** — a trust audit and
+   per-sentence narrative trust markers separate verified claims from unbacked
+   prose. *"The agent says the tests passed; no transcript backs it"* is a
+   headline no generic review bot produces.
 
 Every answer is grounded in local evidence — files, diffs, command transcripts,
-feedback — never hidden chat context.
+coverage reports — never hidden chat context. Everything runs offline; the
+default provider is deterministic and needs no API key.
 
-`review-surfaces` reads a repository's Acai-style feature spec, docs, tests, and
-git diff, then turns the evidence into the shortest safe human review path:
-merge-readiness verdict, review-first queue, blockers, reviewer questions, trust
-audit, concrete test plan, suggested comments, and skim-safe hints. An
-interactive `review` walkthrough steps a human through the ranked queue and feeds
-their accept / flag / false-positive / comment decisions back into local feedback
-memory. The schema-validated review packet remains the evidence backbone
-underneath the human cockpit: intent, implementation-vs-intent evaluation,
-architecture surfaces, methodology audit, risks, test gaps, command transcripts,
-and feedback.
+## Quickstart
 
-Every claim is tied to local evidence (files, diffs, command transcripts,
-feedback) rather than hidden chat context, and the project dogfoods its own
-artifacts while it is being built. The output lives under `.review-surfaces/` as
-compact, human-readable JSON/YAML/Markdown artifacts. Hosted Acai sync, CI
-checks, and PR/MR integrations are optional renderers over the same local
-evidence; the local human review surface is the default product entrypoint.
-
-## Principles
-
-- **Local-first.** Everything runs offline against the working tree. The
-  default provider is `mock`, no network access is required, and artifacts are
-  written to `.review-surfaces/` for a human (or the next agent) to read.
-- **Evidence-first.** A claim is only as good as the local evidence behind it.
-  Requirement coverage, risks, and methodology claims carry explicit evidence
-  references with confidence and validation status. Unverifiable claims are
-  marked `unknown` instead of being filled with plausible prose.
-- **Deterministic shell.** The same inputs produce byte-stable artifacts:
-  insertion-order keys, no YAML anchors/aliases, no line-wrapping surprises,
-  and `undefined` fields are omitted rather than emitted. Humans and tests diff
-  these files line-by-line.
-
-## Requirements
-
-- Node.js `>= 22`
-- [pnpm](https://pnpm.io/) (`pnpm@10.8.0` is pinned via `packageManager`)
-- A git checkout with a base ref (defaults to `origin/main`) to diff against
-
-## Install
+Works on any git repository — no config, no spec files, no setup:
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm run build
+cd your-repo
+npx review-surfaces all --base origin/main --head HEAD
+open .review-surfaces/human_review.md     # or: npx review-surfaces human --format html
 ```
 
-CI and reproducible installs use `--frozen-lockfile` so `pnpm-lock.yaml` is treated
-as authoritative; drop the flag only when intentionally updating dependencies.
+> Not on npm yet? Run it from source:
+> `git clone https://github.com/Shaance/review-surfaces && cd review-surfaces && pnpm install --frozen-lockfile && pnpm run build`,
+> then `node /path/to/review-surfaces/bin/review-surfaces.js all --base origin/main --head HEAD` inside your repo.
 
-`pnpm run build` clears stale compiled output, then compiles the CommonJS CLI with
-`tsc`. The executable is
-`bin/review-surfaces.js` (also exposed as the `review-surfaces` bin and via the
-`pnpm run review-surfaces` script).
+That one command produces a merge-readiness verdict, a ranked review-first
+queue with inline diff excerpts and "why ranked here" lines, a guided reading
+order for the diff, a change-impact map, a trust audit, reviewer questions, a
+concrete test plan, and suggested review comments — all under
+`.review-surfaces/`, all validated against checked-in schemas
+(`npx review-surfaces validate .review-surfaces --surface all`).
 
-## Zero-to-packet quickstart
+## What you get
 
-Compile a full review packet for the current branch, offline, in dogfood mode:
+### The HTML cockpit
+
+`review-surfaces human --format html` renders a single self-contained
+`human_review.html` — verdict, lens filters, reading order, ranked queue with
+per-line coverage gutters, clickable SVG change map, and progress tracking.
+No server, no CDN, opens from disk:
+
+![The HTML cockpit: verdict, lens chips, and the guided reading order](docs/images/cockpit.png)
+
+### The change map
+
+Changed files grouped by module, import edges between them, churn and risk-lens
+tints, plus a halo of the unchanged files that depend most on what changed
+(rendered as deterministic inline SVG in the cockpit and as mermaid on comment
+surfaces):
+
+![The change-impact map: clusters, import edges, churn, and risk tints](docs/images/change-map.png)
+
+### The sticky PR comment
+
+A reusable GitHub Action (or `review-surfaces comment --format sticky` locally)
+posts one idempotent comment per PR: verdict, top queue items with diff
+excerpts, and a since-last-review delta on every push:
+
+![The sticky PR comment: verdict, review-first queue, inline diff excerpts](docs/images/sticky-comment.png)
+
+All three screenshots come from a real run of this tool on its own repository —
+the project reviews itself with itself (see [`docs/history/`](https://github.com/Shaance/review-surfaces/tree/main/docs/history) for
+that story).
+
+## Scope: what the analysis actually covers
+
+Honesty about depth, so you can calibrate trust:
+
+- **TypeScript/JavaScript-first deep analysis.** The import graph, exported-API
+  surface diff, blast radius ("this removed export is used by 14 files"), and
+  architecture-drift facts parse TS/JS sources (via the TypeScript compiler).
+  Implementation-root detection reads *your* repo's `tsconfig.json` and
+  `package.json` — a `source/` layout classifies just like `src/`.
+- **Language-agnostic everywhere else.** Test-weakening signals, secret
+  scanning, coverage deltas (any `lcov.info`), dependency/lockfile facts, CI
+  workflow and Dockerfile and SQL-migration checks, JSON-schema contract diffs,
+  the change map's clustering, the trust audit, and the review queue itself work
+  on any repository.
+- **Deterministic by contract.** Identical inputs produce byte-identical
+  artifacts. LLM output is optional enrichment and is never treated as proof —
+  see [Providers](#providers).
+- **Honest negatives.** No coverage report renders as "no coverage evidence",
+  never as red. An unresolvable lockfile yields "no lockfile facts", never a
+  guess. A truncated import graph suppresses drift facts rather than asserting
+  novelty it cannot prove.
+
+A seeded-regression eval harness gates review quality itself in CI — the
+[scoreboard](#eval-scoreboard) at the bottom of this README is regenerated from
+its results.
+
+## The local review loop (no CI required)
 
 ```bash
-node bin/review-surfaces.js all \
-  --base origin/main \
-  --head HEAD \
-  --spec features/review-surfaces.feature.yaml \
-  --dogfood \
-  --provider mock \
-  --out .review-surfaces
+pnpm run local-review   # produce every surface for your branch + validate them
+pnpm run local-gate     # the full merge gate: lint, typecheck, tests,
+                        # determinism-check, packaging smoke test, strict self-review
 ```
 
-Then validate the emitted packet against the schema:
-
-```bash
-node bin/review-surfaces.js validate .review-surfaces
-```
-
-You can also run the same flow through the package script (it builds first):
-
-```bash
-pnpm run review-surfaces -- all --base origin/main --head HEAD \
-  --spec features/review-surfaces.feature.yaml --dogfood --provider mock \
-  --out .review-surfaces
-```
-
-After a run, look under `.review-surfaces/`:
-
-`all` prints the human entrypoint first, with the deterministic verdict and
-counts for review-first items, blockers, suggested comments, and missing
-evidence so reviewers do not need to start in the packet JSON.
-
-- `human_review.md` / `human_review.json` — the default human reviewer
-  entrypoint: verdict, review-first queue, blockers/questions, trust audit,
-  review routes, evidence cards, suggested comments, test-plan items, skim-safe
-  hints, and evidence pointers.
-- `review_queue.md`, `suggested_comments.md`, `trust_audit.md`,
-  `risk_lenses.md`, `review_routes.md`, `evidence_cards.md`,
-  `since_last_review.md`, `test_plan.md` — standalone human cockpit sections
-  rendered from `human_review.json` for reviewers who want a focused queue,
-  comment drafts, trust audit, risk lenses, persona routes, compact evidence
-  cards, since-last-review deltas, or test plan.
-- `review_packet.json` — the schema-validated packet (validated against
-  `schemas/review_packet.schema.json`).
-- `review_packet.md` / `architecture.md` / `agent_handoff.md` — human-readable
-  surfaces.
-- `pr_review_surface.json` — when `all --surface-mode pr` is used, the
-  diff-scoped PR sidecar with changed files, affected requirements, coverage
-  deltas, deterministic PR risks, validated LLM narrative, and a change-impact
-  diagram.
-- `intent.yaml`, `evaluation.yaml`, `methodology.yaml`, `risks.yaml`,
-  `dogfood.yaml` — per-section YAML artifacts.
-- `inputs/` and `commands/` — collected input indexes and bounded command
-  transcripts.
+`local-review` accepts `--base <ref>`, `--head <ref>`, `--out <dir>`,
+`--provider <name>`, and `--previous <dir>` (a prior packet for
+since-last-review deltas; the last local run is auto-detected). Network use:
+git only. GitHub Actions is a distribution channel for these surfaces, never
+the only way to produce or verify them — `action.yml` in this repo is a thin
+renderer over the same local pipeline.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `collect` | Write the run manifest and input indexes under `.review-surfaces`. |
-| `all` | Run the whole local pipeline and write the full review packet. Add `--surface-mode pr` to also write the PR-scoped sidecar. |
-| `intent` / `evaluate` / `diagrams` / `methodology` / `risks` / `packet` / `handoff` | Run the available local pipeline and emit packet artifacts. (These currently run the same end-to-end pipeline as `all`.) |
-| `dogfood` | Run the pipeline in dogfood mode (adds the `dogfood` and `agent_handoff` sections). |
-| `validate [dir-or-json]` | Validate `review_packet.json` against `schemas/review_packet.schema.json`. Defaults to `.review-surfaces`. |
-| `run [--id <id>] [--command-transcripts <dir>] -- <cmd>...` | Execute a local command and record a bounded command transcript as direct evidence. |
-| `human` | Render `human_review.json`, `human_review.md`, and standalone human artifacts from existing local packet artifacts without recomputing the pipeline. |
-| `queue` / `comments` / `trust` / `risk-lenses` / `intent-mismatch` / `routes` / `evidence-cards` / `since-last-review` / `test-plan` | Render the focused standalone human artifacts from `human_review.json`. |
-| `review` | Interactive walkthrough of the ranked review queue. Steps through each item (inline hunk excerpt, reason, evidence) and captures accept / flag / false-positive / comment decisions into local feedback memory so later runs downgrade or promote matching findings; comment drafts land in `suggested_comments.md`. A non-TTY environment prints the next item and exits. |
-| `init [--force]` | Scaffold a repo for review-surfaces (create-or-validate): config, packet schema, `.review-surfacesignore`, a starter feature spec, the usage skill, and `AGENTS.md`. Existing files are never overwritten without `--force`; user-owned `AGENTS.md` and feature specs are preserved even with `--force`. |
-| `bootstrap [--strict]` | Validate-only: report whether the expected scaffolding exists and parses. Exits `10` under `--strict` when a required target is missing or invalid. |
-| `comment` | Render a local review surface. `--mode repo` reads `review_packet.json`; `--mode pr` prefers a current schema-valid `human_review.json` and keeps `pr_review_surface.json` as the lower-level PR fact/postability gate. `--format github` (default) writes the sticky comment, `--format sarif` a SARIF log, and `--format review` a GitHub **pending (draft) review** of the hunk-anchored suggested comments (`pending_review.json`) for the human to edit and submit — never auto-submitted. |
+| `all` | Run the whole local pipeline and write every surface. Add `--surface-mode pr` for the PR-scoped sidecar. |
+| `human` | Render `human_review.json` / `human_review.md` (and `--format html` for the cockpit) from existing artifacts without recomputing. |
+| `comment` | Render the PR comment. `--format sticky` for the idempotent sticky summary, `--format sarif` for SARIF, `--format review` for a GitHub pending (draft) review of the hunk-anchored suggested comments — never auto-submitted. |
+| `review` | Interactive walkthrough of the ranked queue; accept / flag / false-positive / comment decisions feed local feedback memory so later runs adapt. |
+| `validate [dir]` | Validate generated artifacts against the bundled schemas (`--surface packet\|human\|pr\|all`). Works from any directory. |
+| `run [--id <id>] -- <cmd>...` | Execute a command and record a bounded transcript as direct evidence (this is how "tests passed" becomes verifiable). |
+| `queue` / `comments` / `trust` / `risk-lenses` / `intent-mismatch` / `routes` / `evidence-cards` / `since-last-review` / `test-plan` | Focused standalone sections rendered from `human_review.json`. |
+| `init [--force]` / `bootstrap [--strict]` | Scaffold (create-or-validate) or validate-only a repo's review-surfaces setup. |
+| `scoreboard [--check]` | Regenerate (or verify) the README eval-scoreboard block from `eval_scoreboard.json`. |
 
-Run `node bin/review-surfaces.js --help` for the full option list.
-
-### Common options
-
-- `--base <ref>` / `--head <ref>` — diff range (defaults `origin/main` … `HEAD`).
-- `--spec <path>` — feature spec path (defaults to config).
-- `--out <dir>` — output directory (defaults `.review-surfaces`).
-- `--mode pr|repo|auto` — `comment` surface mode. `repo` keeps the whole-packet
-  comment; `pr` renders the human review model when available, backed by the PR
-  sidecar.
-- `--surface-mode pr|repo|auto` — `all` sidecar mode. `pr` writes
-  `pr_review_surface.json`.
-- `--dogfood` — mark the run as dogfood and include the dogfood/handoff sections.
-- `--config <path>` — config path (defaults `review-surfaces.config.yaml`).
-- `--provider <name>` — enrichment provider: `mock` (default, offline),
-  `agent-file` (bounded agent hypotheses via `--agent-input <json|yaml>`), or
-  `ai-sdk` (optional live enrichment).
-
-### Human review config
-
-`review-surfaces.config.yaml` can tune bounded human-review output without
-changing the evidence engine:
-
-```yaml
-human_review:
-  enabled: true
-  default_entrypoint: true
-  max_review_first: 20
-  max_suggested_comments: 10
-  max_questions: 10
-  risk_lenses:
-    api_contract: true
-    security_privacy: true
-    llm_trust_boundary: true
-    test_evidence: true
-    reviewer_ux: true
-    cache_provenance: true
-  required_manual_checks:
-    - id: ci_secret_boundary
-      path_patterns:
-        - .github/workflows/**
-      prompt: Confirm PR-controlled code cannot access secrets.
-```
-
-`human_review.md` still renders a compact top seven from the model; this cap
-controls the generated JSON and full `review_queue.md`. Required manual checks
-matched by changed paths become blockers, reviewer questions, and required
-manual test-plan items until current-head feedback or transcript evidence records
-the check.
+Run `npx review-surfaces --help` for the full option list. Common options:
+`--base` / `--head` (diff range), `--out` (artifact dir, default
+`.review-surfaces`), `--provider mock|agent-file|ai-sdk`, `--coverage
+<lcov path>` (auto-detects `coverage/lcov.info`), `--budget 15m` (read/skim/defer
+review plan), `--previous-packet <path>` (round-over-round deltas).
 
 ## Providers
 
-- **`mock`** (default): fully deterministic, offline. Use this for normal runs,
-  tests, and dogfooding.
-- **`agent-file`**: lets a coding agent contribute bounded, schema-checked
-  hypotheses via `--agent-input <json-or-yaml>` without network access.
-- **`ai-sdk`**: optional live enrichment. Privacy filtering runs first; provider
-  credentials belong in a local `.env.local`, never in committed files.
+- **`mock`** (default): fully deterministic, offline. Everything in the tour
+  above works in this mode.
+- **`agent-file`**: a coding agent contributes bounded, schema-checked
+  hypotheses via `--agent-input <json-or-yaml>` — no network.
+- **`ai-sdk`**: optional live LLM enrichment (narrative prose over the
+  deterministic facts). Privacy filtering and secret redaction run before any
+  remote call; credentials live in a local `.env.local`, never committed.
 
-LLM and agent output is never treated as proof until deterministic evidence
-validation accepts it.
+LLM and agent output is never treated as proof: every claim must survive
+deterministic anchor validation or it is demoted to a visibly-marked unverified
+claim. LLM output cannot create or clear blockers, change coverage status, or
+alter the verdict.
 
-For posted PR comments, use PR mode with a non-mock provider:
+## Optional power-ups
+
+The tool is fully useful with zero configuration. Each layer below is opt-in:
+
+- **`review-surfaces.config.yaml`** — review areas, risk-lens toggles, bounded
+  output caps, required manual checks per path pattern (e.g. "any
+  `.github/workflows/**` change must record a secret-boundary check before the
+  verdict can clear").
+- **Acai-style feature specs** (`features/*.feature.yaml`) — the requirements
+  ledger layer. With specs indexed, every requirement gets an
+  implementation-and-test coverage status (`satisfied` / `partial` / `missing` /
+  `overreach`), intent-vs-diff mismatch findings, and a strict quality gate
+  (`--strict`) suitable for CI. Without specs, the packet simply says so once
+  (`spec_mode: none`) and every diff-derived surface still works — spec-less
+  repos are a first-class path, not a degraded mode.
+- **`review-surfaces.policy.yaml`** — committed, schema-validated team policy:
+  suppressions with reasons and expiry dates, severity overrides, required
+  manual checks. Composes with (never replaces) local feedback memory.
+- **Coverage, test results, and transcripts** — point `--coverage` at an lcov
+  report, `--test-output` at JUnit XML, or wrap commands in `review-surfaces
+  run` to upgrade "the author claims tests pass" into verified evidence.
+
+## Install / develop
+
+- Node.js `>= 22`, [pnpm](https://pnpm.io/) (version pinned via
+  `packageManager`).
 
 ```bash
-node bin/review-surfaces.js all --surface-mode pr --provider ai-sdk \
-  --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml
-node bin/review-surfaces.js comment --mode pr --out .review-surfaces
+pnpm install --frozen-lockfile
+pnpm run build      # compiles the CLI to dist/, executable at bin/review-surfaces.js
+pnpm run test       # full suite (includes the seeded-regression eval harness)
 ```
 
-`agent-file` is useful for local deterministic PR-mode tests. `mock` may build a
-blocked PR surface for diagnostics, but it does not satisfy the required PR
-narrative.
-
-## Testing
-
-```bash
-pnpm run test       # cleans/builds, then runs node --test over dist/tests/*.test.js
-pnpm run typecheck  # tsc --noEmit
-pnpm run lint       # alias for typecheck
-```
-
-## Local review loop (no CI required)
-
-Every review surface is producible entirely locally — GitHub Actions is a
-distribution channel for surfaces, never the only way to produce or verify
-them. Two scripts orchestrate the same CLI commands you would type by hand
-(`review-surfaces.LOCAL_LOOP.*`):
-
-```bash
-pnpm run local-review   # build, run the pipeline (mock provider) against
-                        # origin/main..HEAD, render the sticky-comment preview
-                        # and the HTML cockpit, validate all surfaces, and
-                        # print an index of artifacts to open
-pnpm run local-gate     # the full merge gate as one command: lint, typecheck,
-                        # full test suite, determinism-check, and the strict
-                        # empty-diff self-dogfood (all --base HEAD --head HEAD --strict)
-```
-
-`local-review` accepts `--base <ref>`, `--head <ref>`, `--out <dir>`,
-`--provider <name>`, and `--previous <dir>` (a prior packet to compare for
-since-last-review deltas). Without `--previous`, the last local run's packet in
-the out directory is compared against automatically — local prior packets are a
-first-class transport, not just CI artifacts. Network use: git only.
+See [`CONTRIBUTING.md`](https://github.com/Shaance/review-surfaces/blob/main/CONTRIBUTING.md) for the PR workflow and
+[`AGENTS.md`](https://github.com/Shaance/review-surfaces/blob/main/AGENTS.md) for the agent-facing working rules (this repository
+is developed spec-first and dogfood-first).
 
 ## Project layout
 
-- `src/` — the CLI and pipeline modules (collector, intent, evaluation,
-  diagrams, methodology, risks, dogfood, render, schema, privacy, providers).
-- `tests/` — `node --test` suite compiled to `dist/tests`.
-- `schemas/review_packet.schema.json` — the draft 2020-12 packet contract.
-- `schemas/pr_review_surface.schema.json` — the draft 2020-12 PR sidecar
-  contract.
-- `features/review-surfaces.feature.yaml` — the authoritative requirements ledger.
+- `src/` — CLI and pipeline modules (collector, intent, evaluation, diagrams,
+  methodology, risks, human cockpit, render, schema, privacy, providers).
+- `schemas/` — draft 2020-12 contracts for the packet, the human review model,
+  the PR sidecar, and the policy file (bundled with the package; `validate`
+  works from any directory).
+- `features/review-surfaces.feature.yaml` — the authoritative requirements
+  ledger for this repo itself.
+- `docs/history/` — the goal files and brainstorms this tool was built from,
+  agent-first, reviewing itself at every phase.
 - `.review-surfaces/` — generated, local-first artifacts.
 
-## Learn more
+## License
 
-- [`AGENTS.md`](./AGENTS.md) — shared repository entrypoint and source-of-truth workflow.
-- [`docs/review-surfaces-trd.md`](./docs/review-surfaces-trd.md) — technical/design context.
-- [`features/review-surfaces.feature.yaml`](./features/review-surfaces.feature.yaml) — the Acai-style feature spec and requirements ledger.
+[MIT](./LICENSE).
 
 <!-- review-surfaces:eval-scoreboard -->
 ### Eval scoreboard

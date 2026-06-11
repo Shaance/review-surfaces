@@ -23,11 +23,39 @@ pnpm run determinism-check
 # scoreboard the test run just regenerated.
 node bin/review-surfaces.js scoreboard --check
 
+# review-surfaces.DISTRIBUTION.4: packaging smoke test — the pnpm pack tarball
+# must install and run from a directory outside this repository (the cold-start
+# path a stranger takes). Uses the local pnpm store, so no registry network is
+# required when the repo's own dependencies are already installed.
+PACK_TMP="$(mktemp -d)"
+trap 'rm -rf "$PACK_TMP"' EXIT
+# Pack from a CLEAN dist (prepack rebuilds it) so the smoke covers the real
+# cold-start tarball path, not whatever a prior test run left behind.
+rm -rf dist
+pnpm pack --pack-destination "$PACK_TMP" >/dev/null
+TARBALL="$(ls "$PACK_TMP"/review-surfaces-*.tgz)"
+printf '{"name":"pack-smoke","private":true}\n' > "$PACK_TMP/package.json"
+# --offline: the smoke must prove the no-registry path; the repo's own install
+# primes the pnpm store with every runtime dependency.
+(cd "$PACK_TMP" && pnpm add "./$(basename "$TARBALL")" --offline --silent)
+SMOKE_REPO="$PACK_TMP/smoke-repo"
+mkdir -p "$SMOKE_REPO"
+(
+  cd "$SMOKE_REPO"
+  git init -q -b main
+  printf 'export const answer = 42;\n' > index.ts
+  git -c user.email=gate@local -c user.name=gate add -A
+  git -c user.email=gate@local -c user.name=gate commit -qm smoke
+  "$PACK_TMP/node_modules/.bin/review-surfaces" all --provider mock --base HEAD --head HEAD --out .rs >/dev/null
+  "$PACK_TMP/node_modules/.bin/review-surfaces" validate .rs --surface all >/dev/null
+)
+echo "pack smoke: PASS (tarball installs and runs outside the repo)"
+
 # Strict empty-diff self-dogfood: every spec requirement must be satisfied (or
 # explicitly allowlisted) with no diff to excuse it. Writes to a temp dir so the
 # gate never clobbers the working tree's .review-surfaces artifacts.
 GATE_OUT="$(mktemp -d)/out"
-trap 'rm -rf "$(dirname "$GATE_OUT")"' EXIT
+trap 'rm -rf "$PACK_TMP" "$(dirname "$GATE_OUT")"' EXIT
 node bin/review-surfaces.js all \
   --provider mock \
   --base HEAD \
@@ -36,4 +64,4 @@ node bin/review-surfaces.js all \
   --strict \
   --out "$GATE_OUT"
 
-echo "local-gate: PASS (lint, typecheck, test, determinism-check, strict empty-diff self-dogfood)"
+echo "local-gate: PASS (lint, typecheck, test, determinism-check, pack smoke, strict empty-diff self-dogfood)"

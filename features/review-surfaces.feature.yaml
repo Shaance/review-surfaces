@@ -610,7 +610,7 @@ components:
   COLD_START:
     name: Cold-start correctness and spec-less mode
     description: >-
-      Open-source readiness uplift Phases 1-2 (OPEN_SOURCE_UPLIFT_GOAL.md).
+      Open-source readiness uplift Phases 1-2 (docs/history/OPEN_SOURCE_UPLIFT_GOAL.md).
       Every requirement traces to an observed failure from the 2026-06-11
       cold-start evidence log: a shallow clone of sindresorhus/got (no Acai
       specs, no config) run with the mock provider. Heuristics that encode this
@@ -636,7 +636,7 @@ components:
   DISTRIBUTION:
     name: Distribution and repository hygiene
     description: >-
-      Open-source readiness uplift Phase 3 (OPEN_SOURCE_UPLIFT_GOAL.md). Closes
+      Open-source readiness uplift Phase 3 (docs/history/OPEN_SOURCE_UPLIFT_GOAL.md). Closes
       cold-start failure 5: the package is publish-ready but unpublished, has no
       LICENSE, and the README assumes Acai conventions and shows none of the
       shipped visuals.
