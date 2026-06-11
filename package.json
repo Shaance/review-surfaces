@@ -39,7 +39,8 @@
   "files": [
     "bin",
     "dist",
-    "schemas"
+    "schemas",
+    "docs/images"
   ],
   "engines": {
     "node": ">=22"

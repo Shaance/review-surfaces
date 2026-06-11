@@ -25,6 +25,9 @@ test("review-surfaces.DISTRIBUTION.1 LICENSE (MIT) and CONTRIBUTING.md exist wit
   assert.equal(manifest.license, "MIT");
   assert.notEqual(manifest.private, true, "package must stay publishable");
   assert.ok(manifest.files?.includes("schemas"), "bundled schemas ship in the package");
+  // npm always bundles README.md; its relative screenshot links must resolve
+  // inside the tarball too.
+  assert.ok(manifest.files?.includes("docs/images"), "README screenshots ship in the package");
 });
 
 test("review-surfaces.DISTRIBUTION.2 internal process docs live under docs/history/ with a framing README", () => {
