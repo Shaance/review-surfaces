@@ -7,6 +7,7 @@ import { formatEnumChanges, formatTypeChanges } from "../risks/semantic-diff";
 import { renderHunkExcerpt } from "./hunk-excerpt";
 import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
 import { changeMapMermaidBody } from "../render/change-map-embed";
+import { renderDependencyTreeText } from "../diagrams/dep-tree";
 import { extractAcids, fillAcidTemplate, normalizeAcidTemplate, RollupGroup, rollupBy } from "./rollup";
 import { RISK_LENS_METADATA } from "./contract";
 import type {
@@ -304,7 +305,21 @@ export function renderRiskLensesMarkdown(model: HumanReviewModel, _context: Huma
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
 
 ${riskLensFindings(model).length === 0 ? "- No domain risk lenses fired." : riskLensFindings(model).map(renderRiskLensDetail).join("\n\n---\n\n")}
-`;
+${renderDependencyChainsSection(model)}`;
+}
+
+// review-surfaces.RENDER.13: the attributed dependency chains as an indented
+// tree on the supply-chain lens surface. Rendered only when chains exist —
+// otherwise the flat transitive facts in the queue remain the honest output.
+function renderDependencyChainsSection(model: HumanReviewModel): string {
+  const chains = model.dependency_chains ?? [];
+  if (chains.length === 0) {
+    return "";
+  }
+  const tree = renderDependencyTreeText(chains)
+    .map((line) => field(line, 400))
+    .join("\n");
+  return `\n## Dependency chains\n\nEach new transitive attributed to the direct dependency that pulled it (lockfile dependency edges):\n\n\`\`\`\n${tree}\n\`\`\`\n`;
 }
 
 export function renderIntentMismatchMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {

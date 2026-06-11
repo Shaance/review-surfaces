@@ -44,6 +44,8 @@ import {
   InvalidEvidenceSummary,
   MissingEvidenceSummary,
   ReviewBlocker,
+  DependencyChain,
+  EvalScoreboardSummary,
   ReviewQueueItem,
   RoundsLedgerEntry,
   ReviewRoute,
@@ -107,6 +109,9 @@ export interface BuildHumanReviewInput {
   // previous packet's human_review.json (either transport: CI artifact or the
   // local prior-packet directory). Absent -> this run starts the ledger.
   previousRounds?: RoundsLedgerEntry[];
+  // review-surfaces.EVAL_HARNESS.6: the eval scoreboard summary read from the
+  // output directory's eval_scoreboard.json (absent when no scoreboard exists).
+  evalScoreboard?: EvalScoreboardSummary;
 }
 
 interface BuildReviewRoutesInput {
@@ -376,6 +381,8 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   const generatedFrom = buildGeneratedFrom(input);
   // review-surfaces.TREND.1: append THIS run's row to the carried-forward ledger.
   const rounds = buildRoundsLedger(input, verdict, generatedFrom.head_sha);
+  // review-surfaces.DEP_FACTS.4 / RENDER.13: attributed dependency chains.
+  const dependencyChains = buildDependencyChains(input.dependencyFacts ?? []);
   // review-surfaces.NARRATIVE.5: a provider-built narrative is passed in when
   // available; otherwise always render the deterministic fallback so the section
   // never fails and standalone/cache rebuilds still carry a narrative.
@@ -423,12 +430,34 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     change_graph: changeGraphSections.change_graph,
     reading_order: changeGraphSections.reading_order,
     rounds,
+    ...(dependencyChains.length > 0 ? { dependency_chains: dependencyChains } : {}),
+    ...(input.evalScoreboard ? { eval_scoreboard: input.evalScoreboard } : {}),
     evidence_cards: evidenceCards,
     test_plan: testPlan,
     skim_safe: skimSafe,
     feedback_effects: feedbackEffects,
     generated_from: generatedFrom
   });
+}
+
+// review-surfaces.DEP_FACTS.4 / RENDER.13: group attributed transitive facts
+// by the direct dependency that pulled them; install-script flags ride along.
+// Unattributed facts stay OUT of the chains (flat fallback handles them).
+function buildDependencyChains(facts: DependencyFact[]): DependencyChain[] {
+  const withScripts = new Set(facts.filter((fact) => fact.kind === "install_scripts").map((fact) => `${fact.source_path}:${fact.package}`));
+  const chains = new Map<string, DependencyChain>();
+  for (const fact of facts) {
+    if (fact.kind !== "transitive_added" || !fact.via) {
+      continue;
+    }
+    const key = `${fact.source_path}:${fact.via}`;
+    const chain = chains.get(key) ?? { via: fact.via, source_path: fact.source_path, transitives: [] };
+    chain.transitives.push({ package: fact.package, install_scripts: withScripts.has(`${fact.source_path}:${fact.package}`) });
+    chains.set(key, chain);
+  }
+  return [...chains.values()]
+    .map((chain) => ({ ...chain, transitives: [...chain.transitives].sort((a, b) => compareStrings(a.package, b.package)) }))
+    .sort((a, b) => compareStrings(a.source_path, b.source_path) || compareStrings(a.via, b.via));
 }
 
 // review-surfaces.TREND.1: one row per run — round number continues the prior

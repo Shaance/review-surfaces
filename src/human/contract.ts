@@ -578,6 +578,24 @@ export interface RoundsLedgerEntry {
   verdict: HumanReviewDecision;
 }
 
+// review-surfaces.DEP_FACTS.4 / RENDER.13: an attributed dependency chain —
+// the direct dependency and the new transitives it pulled (install-script
+// flags marked). Only built when the lockfile's edges resolved; otherwise the
+// flat transitive facts remain the honest output.
+export interface DependencyChain {
+  via: string;
+  source_path: string;
+  transitives: Array<{ package: string; install_scripts: boolean }>;
+}
+
+// review-surfaces.EVAL_HARNESS.6: the eval scoreboard summary surfaced on the
+// cockpit footer (and the generated README block). Optional: absent when no
+// eval_scoreboard.json exists in the output directory.
+export interface EvalScoreboardSummary {
+  top_n: number;
+  classes: Array<{ name: string; passed: number; total: number }>;
+}
+
 export interface HumanReviewModel {
   schema_version: typeof HUMAN_REVIEW_SCHEMA_VERSION;
   mode: "pr" | "repo";
@@ -610,6 +628,11 @@ export interface HumanReviewModel {
   // review-surfaces.TREND.1: the full rounds ledger (renderers cap the table;
   // the artifact keeps every row). Optional for pre-TREND v1 artifacts.
   rounds?: RoundsLedgerEntry[];
+  // review-surfaces.DEP_FACTS.4 / RENDER.13: attributed dependency chains.
+  // Optional: present only when lockfile edges resolved and chains exist.
+  dependency_chains?: DependencyChain[];
+  // review-surfaces.EVAL_HARNESS.6: scoreboard summary for the cockpit footer.
+  eval_scoreboard?: EvalScoreboardSummary;
   evidence_cards: EvidenceCard[];
   test_plan: TestPlanItem[];
   skim_safe: SkimSafeItem[];

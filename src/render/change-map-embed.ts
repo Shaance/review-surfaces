@@ -6,7 +6,8 @@
 // rendered label still trips the sticky's postability gate (a downstream
 // whole-body pass only ever sees the already-redacted placeholder).
 import { renderChangeMapMermaid } from "../diagrams/change-map";
-import { ChangeGraph } from "../human/contract";
+import { renderDependencyTreeMermaid } from "../diagrams/dep-tree";
+import { ChangeGraph, DependencyChain } from "../human/contract";
 import { redactSecrets } from "../privacy/secrets";
 
 const MAX_EMBED_CHARS = 12_000;
@@ -38,5 +39,26 @@ export function changeMapDetailsBlock(graph: ChangeGraph): string | undefined {
   if (!body) {
     return undefined;
   }
-  return `<details><summary>Change map</summary>\n\n\`\`\`mermaid\n${body}\n\`\`\`\n\n</details>`;
+  return mermaidDetailsBlock("Change map", body);
+}
+
+// Shared collapsed-details mermaid wrapper (the blank line after <summary> is
+// required for GitHub to render the inner fence). Callers must pass an
+// already-redacted, fence-guarded body.
+export function mermaidDetailsBlock(title: string, body: string): string {
+  return `<details><summary>${title}</summary>\n\n\`\`\`mermaid\n${body}\n\`\`\`\n\n</details>`;
+}
+
+// review-surfaces.RENDER.13: the dependency-chain mermaid for GitHub comment
+// surfaces — same redaction + fence-close guard as the change map.
+export function dependencyTreeEmbed(chains: DependencyChain[] | undefined): { body?: string; blocked: boolean } {
+  const rendered = renderDependencyTreeMermaid(chains ?? []);
+  if (!rendered) {
+    return { blocked: false };
+  }
+  const redaction = redactSecrets(rendered);
+  if (redaction.text.length > MAX_EMBED_CHARS || /^\s*```/m.test(redaction.text)) {
+    return { blocked: redaction.blocked };
+  }
+  return { body: redaction.text, blocked: redaction.blocked };
 }

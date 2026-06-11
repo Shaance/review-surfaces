@@ -1,5 +1,5 @@
 import { redactSecrets } from "../privacy/secrets";
-import { changeMapMermaidEmbed } from "./change-map-embed";
+import { changeMapMermaidEmbed, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
 import { firstTourLegSnippet } from "./tour-snippet";
 import type {
   HumanReviewModel,
@@ -203,6 +203,7 @@ export function renderHumanPrComment(model: HumanReviewModel, options: RenderHum
   // review-surfaces.CHANGE_MAP.3 + READING_ORDER.2: the PR-mode sticky carries
   // the collapsed map AND the first tour leg, like the Action sticky.
   const mapEmbed = changeMapMermaidEmbed(model.change_graph);
+  const depTree = dependencyTreeEmbed(model.dependency_chains);
   const tourLeg = firstTourLegSnippet(model);
   const sections: string[] = [
     PR_STICKY_MARKER,
@@ -226,7 +227,8 @@ export function renderHumanPrComment(model: HumanReviewModel, options: RenderHum
     "",
     // The blank line before the details block is required for GitHub to render
     // the inner mermaid.
-    ...(mapEmbed.body ? [`<details><summary>Change map</summary>\n\n\`\`\`mermaid\n${mapEmbed.body}\n\`\`\`\n\n</details>`, ""] : []),
+    ...(mapEmbed.body ? [mermaidDetailsBlock("Change map", mapEmbed.body), ""] : []),
+    ...(depTree.body ? [mermaidDetailsBlock("Dependency chains (supply chain)", depTree.body), ""] : []),
     ...(tourLeg.text ? [tourLeg.text, ""] : []),
     `Full human review: \`${field(humanReviewPath)}\`.`,
     `Human review JSON: \`${field(humanReviewJsonPath)}\`.`,
@@ -234,7 +236,7 @@ export function renderHumanPrComment(model: HumanReviewModel, options: RenderHum
   ];
   return {
     markdown: clampTotal(`${sections.join("\n")}\n`, humanReviewPath),
-    blocked: mapEmbed.blocked || tourLeg.blocked
+    blocked: mapEmbed.blocked || depTree.blocked || tourLeg.blocked
   };
 }
 

@@ -19,6 +19,10 @@ pnpm run lint
 pnpm run test
 pnpm run determinism-check
 
+# review-surfaces.EVAL_HARNESS.6: the README scoreboard block must match the
+# scoreboard the test run just regenerated.
+node bin/review-surfaces.js scoreboard --check
+
 # Strict empty-diff self-dogfood: every spec requirement must be satisfied (or
 # explicitly allowlisted) with no diff to excuse it. Writes to a temp dir so the
 # gate never clobbers the working tree's .review-surfaces artifacts.

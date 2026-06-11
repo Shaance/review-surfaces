@@ -20,6 +20,12 @@ export interface DependencyFact {
   detail: string;
   // The manifest/lockfile path the fact came from.
   source_path: string;
+  // review-surfaces.DEP_FACTS.4: the DIRECT dependency that pulled this new
+  // transitive, attributed by walking the lockfile's dependency edges from the
+  // head manifest's direct dependencies. Absent when the edges could not be
+  // resolved — the render then falls back to the honest flat grouping, never a
+  // guessed attribution.
+  via?: string;
 }
 
 const DEP_GROUPS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] as const;
@@ -46,8 +52,119 @@ export function computeDependencyFacts(input: ComputeDependencyFactsInput): Depe
     facts.push(...diffPackageLock(file.path, input.readBase(file.old_path ?? file.path), input.readHead(file.path)));
   }
   // Unsupported lockfiles (yarn.lock, ...) yield NO lockfile facts — never guess.
+  // review-surfaces.DEP_FACTS.4: attribute each new transitive to the direct
+  // dependency that pulled it by walking the head lockfile's dependency edges.
+  attributeTransitives(facts, input);
   facts.sort((a, b) => (a.package < b.package ? -1 : a.package > b.package ? 1 : 0) || (a.kind < b.kind ? -1 : 1));
   return facts;
+}
+
+// review-surfaces.DEP_FACTS.4: name-level dependency edges from the head
+// lockfile (pnpm packages[].dependencies / npm packages[].dependencies), walked
+// breadth-first from each direct dependency of the sibling head package.json
+// (alphabetical, so attribution is deterministic when several direct deps reach
+// the same transitive). A lockfile whose edges cannot be parsed leaves every
+// fact unattributed — the flat fallback, never a guess.
+function attributeTransitives(facts: DependencyFact[], input: ComputeDependencyFactsInput): void {
+  const targets = facts.filter((fact) => fact.kind === "transitive_added" && fact.via === undefined);
+  if (targets.length === 0) {
+    return;
+  }
+  const bySource = new Map<string, DependencyFact[]>();
+  for (const fact of targets) {
+    const list = bySource.get(fact.source_path) ?? [];
+    list.push(fact);
+    bySource.set(fact.source_path, list);
+  }
+  for (const [sourcePath, sourceFacts] of bySource) {
+    const headText = input.readHead(sourcePath);
+    const edges = sourcePath.endsWith("pnpm-lock.yaml") ? pnpmLockEdges(headText) : packageLockEdges(headText);
+    if (!edges) {
+      continue;
+    }
+    // Direct dependencies come from the sibling head package.json.
+    const manifestPath = sourcePath.replace(/[^/]+$/, "package.json");
+    const manifest = parseJsonSafe(input.readHead(manifestPath));
+    const direct = [...depsByGroup(manifest).keys()].sort();
+    if (direct.length === 0) {
+      continue;
+    }
+    // Reachability: first (alphabetical) direct dep that reaches the package.
+    const viaByPackage = new Map<string, string>();
+    for (const root of direct) {
+      const queue = [root];
+      const seen = new Set<string>([root]);
+      while (queue.length > 0) {
+        const name = queue.shift() as string;
+        if (!viaByPackage.has(name)) {
+          viaByPackage.set(name, root);
+        }
+        for (const next of [...(edges.get(name) ?? [])].sort()) {
+          if (!seen.has(next)) {
+            seen.add(next);
+            queue.push(next);
+          }
+        }
+      }
+    }
+    for (const fact of sourceFacts) {
+      const via = viaByPackage.get(fact.package);
+      // Self-attribution is meaningless: a direct dep "pulled by itself" stays flat.
+      if (via && via !== fact.package) {
+        fact.via = via;
+      }
+    }
+  }
+}
+
+// Name-level edges from pnpm-lock.yaml: packages["/name@ver"].dependencies.
+function pnpmLockEdges(text: string | undefined): Map<string, Set<string>> | undefined {
+  const packages = pnpmPackages(text);
+  if (!packages || packages.size === 0) {
+    return undefined;
+  }
+  const edges = new Map<string, Set<string>>();
+  for (const [key, entry] of packages) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    const deps = (entry as Record<string, unknown>).dependencies;
+    if (typeof deps !== "object" || deps === null) {
+      continue;
+    }
+    const from = pnpmPackageName(key);
+    const targets = edges.get(from) ?? new Set<string>();
+    for (const dep of Object.keys(deps as Record<string, unknown>)) {
+      targets.add(dep);
+    }
+    edges.set(from, targets);
+  }
+  return edges.size > 0 ? edges : undefined;
+}
+
+// Name-level edges from package-lock.json v2/v3: packages["node_modules/x"].dependencies.
+function packageLockEdges(text: string | undefined): Map<string, Set<string>> | undefined {
+  const packages = parseJsonSafe(text)?.packages as Record<string, unknown> | undefined;
+  if (!packages) {
+    return undefined;
+  }
+  const edges = new Map<string, Set<string>>();
+  for (const [key, entry] of Object.entries(packages)) {
+    if (!key.startsWith("node_modules/") || typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    const deps = (entry as Record<string, unknown>).dependencies;
+    if (typeof deps !== "object" || deps === null) {
+      continue;
+    }
+    const from = key.replace(/^.*node_modules\//, "");
+    const targets = edges.get(from) ?? new Set<string>();
+    for (const dep of Object.keys(deps as Record<string, unknown>)) {
+      targets.add(dep);
+    }
+    edges.set(from, targets);
+  }
+  return edges.size > 0 ? edges : undefined;
 }
 
 // Deterministic severity ordering for rendering/queue language (DEP_FACTS.2):

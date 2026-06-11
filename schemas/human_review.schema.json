@@ -264,6 +264,51 @@
         }
       }
     },
+    "dependency_chains": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["via", "source_path", "transitives"],
+        "properties": {
+          "via": { "type": "string" },
+          "source_path": { "type": "string" },
+          "transitives": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": ["package", "install_scripts"],
+              "properties": {
+                "package": { "type": "string" },
+                "install_scripts": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "eval_scoreboard": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["top_n", "classes"],
+      "properties": {
+        "top_n": { "type": "integer", "minimum": 1 },
+        "classes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["name", "passed", "total"],
+            "properties": {
+              "name": { "type": "string" },
+              "passed": { "type": "integer", "minimum": 0 },
+              "total": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
     "coverage_evidence": {
       "type": "object",
       "additionalProperties": true,
