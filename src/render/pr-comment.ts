@@ -1,4 +1,6 @@
 import { redactSecrets } from "../privacy/secrets";
+import { changeMapMermaidEmbed } from "./change-map-embed";
+import { firstTourLegSnippet } from "./tour-snippet";
 import type {
   HumanReviewModel,
   ReviewBlocker,
@@ -70,18 +72,6 @@ function coverageLines(deltas: PrRequirementCoverageDelta[], baseAvailable: bool
   return lines;
 }
 
-function renderDiagram(diagram: PrChangeDiagramModel | undefined): string[] {
-  if (!diagram || diagram.status !== "valid") {
-    return [];
-  }
-  const body = redact(diagram.body);
-  // Omit (never embed) a body that would close the mermaid fence; keep it inside
-  // the code fence (verbatim) so arrows render.
-  if (/^\s*```/m.test(body) || body.length > 8000) {
-    return [];
-  }
-  return ["", "### Change impact", "<details><summary>Change impact diagram</summary>", "", "```mermaid", body, "```", "", "</details>"];
-}
 
 const DEFAULT_SURFACE_PATH = ".review-surfaces/pr_review_surface.json";
 const DEFAULT_HUMAN_REVIEW_PATH = ".review-surfaces/human_review.md";
@@ -181,7 +171,9 @@ export function renderPrComment(surface: PrReviewSurfaceModel, options: RenderPr
     "",
     "### PR risks",
     renderRisks(surface),
-    ...renderDiagram(surface.diagram),
+    // review-surfaces.CHANGE_MAP.3: the old requirements-hairball "Change
+    // impact" embed retired with the change map; pr-change-impact.mmd remains a
+    // standalone agent-facing artifact off the human surfaces.
     "",
     `Full PR surface: \`${surfacePath}\`.`
   );
@@ -195,10 +187,23 @@ export function renderPrComment(surface: PrReviewSurfaceModel, options: RenderPr
  * and postability gate, while the comment body uses the human decision model
  * when that JSON is available and current.
  */
-export function renderHumanPrComment(model: HumanReviewModel, options: RenderHumanPrCommentOptions = {}): string {
+export interface RenderedHumanPrComment {
+  markdown: string;
+  // True when redaction blocked a high-confidence secret in the embedded map
+  // or tour snippet. The posting gate must refuse to post a blocked body —
+  // the body itself only carries the redacted placeholder, so this flag is the
+  // only surviving signal (same contract as renderStickySummary).
+  blocked: boolean;
+}
+
+export function renderHumanPrComment(model: HumanReviewModel, options: RenderHumanPrCommentOptions = {}): RenderedHumanPrComment {
   const humanReviewPath = options.humanReviewPath ?? DEFAULT_HUMAN_REVIEW_PATH;
   const humanReviewJsonPath = options.humanReviewJsonPath ?? DEFAULT_HUMAN_REVIEW_JSON_PATH;
   const surfacePath = options.surfacePath ?? DEFAULT_SURFACE_PATH;
+  // review-surfaces.CHANGE_MAP.3 + READING_ORDER.2: the PR-mode sticky carries
+  // the collapsed map AND the first tour leg, like the Action sticky.
+  const mapEmbed = changeMapMermaidEmbed(model.change_graph);
+  const tourLeg = firstTourLegSnippet(model);
   const sections: string[] = [
     PR_STICKY_MARKER,
     "## review-surfaces PR review",
@@ -219,11 +224,18 @@ export function renderHumanPrComment(model: HumanReviewModel, options: RenderHum
     "### Suggested comments",
     renderHumanSuggestedComments(model.suggested_comments),
     "",
+    // The blank line before the details block is required for GitHub to render
+    // the inner mermaid.
+    ...(mapEmbed.body ? [`<details><summary>Change map</summary>\n\n\`\`\`mermaid\n${mapEmbed.body}\n\`\`\`\n\n</details>`, ""] : []),
+    ...(tourLeg.text ? [tourLeg.text, ""] : []),
     `Full human review: \`${field(humanReviewPath)}\`.`,
     `Human review JSON: \`${field(humanReviewJsonPath)}\`.`,
     `Lower-level PR facts: \`${field(surfacePath)}\`.`
   ];
-  return clampTotal(`${sections.join("\n")}\n`, humanReviewPath);
+  return {
+    markdown: clampTotal(`${sections.join("\n")}\n`, humanReviewPath),
+    blocked: mapEmbed.blocked || tourLeg.blocked
+  };
 }
 
 function decisionLabel(decision: HumanReviewModel["verdict"]["decision"]): string {

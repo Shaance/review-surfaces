@@ -67,6 +67,9 @@ a { color: var(--accent); }
 <h2 id="verdict">Verdict</h2>
 <p><span class="badge ${esc(model.verdict.decision)}">${esc(decisionLabel(model.verdict.decision))}</span> <span class="muted">confidence: ${esc(model.verdict.confidence)}</span></p>
 <p>${esc(model.summary)}</p>
+<h2 id="reading-order">Reading order</h2>
+${renderReadingOrder(model)}
+
 ${renderNarrative(model)}
 ${renderBlockers(model)}
 
@@ -198,6 +201,29 @@ function renderNarrative(model: HumanReviewModel): string {
     })
     .join("");
   return `<ul>${claims}</ul>`;
+}
+
+// review-surfaces.READING_ORDER.2: the guided tour renders as the section
+// after the verdict in the cockpit too (a blocker still leads — the tour
+// serves the comprehension pass once the verdict is absorbed).
+function renderReadingOrder(model: HumanReviewModel): string {
+  const legs = model.reading_order.legs;
+  if (legs.length === 0) {
+    return `<p class="muted">No changed files to order.</p>`;
+  }
+  let stepNumber = 0;
+  return legs
+    .map((leg) => {
+      const steps = leg.steps
+        .map((step) => {
+          stepNumber += 1;
+          const refs = step.queue_refs.length > 0 ? ` <span class="muted">(queue: ${step.queue_refs.map((ref) => esc(ref)).join(", ")})</span>` : "";
+          return `<li value="${stepNumber}"><code>${esc(step.path)}</code> — ${esc(step.why)}${refs}</li>`;
+        })
+        .join("");
+      return `<h3>${esc(leg.title)}</h3><ol>${steps}</ol>`;
+    })
+    .join("\n");
 }
 
 function renderBlockers(model: HumanReviewModel): string {

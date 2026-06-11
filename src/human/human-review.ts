@@ -8,6 +8,7 @@ import { buildFallbackNarrative } from "./narrative";
 import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTypeChanges, SchemaContractChange, SemanticChangeFacts, TestWeakeningSignal } from "../risks/semantic-diff";
 import { emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { buildReviewPlan } from "./budget";
+import { buildChangeGraphSections, ChangedFileFacts, ChangedImportEdge } from "./change-graph";
 import { DependencyFact, dependencyFactSeverityRank } from "../risks/dependency-facts";
 import { ConfigFact } from "../risks/config-facts";
 import { expiredPolicySuppressions, matchPolicySeverityOverride, matchPolicySuppression, ReviewPolicy } from "../feedback/policy";
@@ -92,6 +93,10 @@ export interface BuildHumanReviewInput {
   // loader) and the deterministic run clock for suppression expiry.
   policy?: ReviewPolicy;
   policyNowIso?: string;
+  // review-surfaces.CHANGE_MAP.1: importer->imported edges among changed files,
+  // computed in the pipeline from buildImportGraph() over head content (it needs
+  // file access). Absent -> a map with no edges (nodes still render).
+  changedImportEdges?: ChangedImportEdge[];
 }
 
 interface BuildReviewRoutesInput {
@@ -344,6 +349,17 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     coverage: coverageEvidence
   });
   const skimSafe = buildSkimSafe(input, feedbackEffects);
+  // review-surfaces.CHANGE_MAP.1 + READING_ORDER.1: one shared computation so
+  // the map's left-to-right flow and the tour's numbering can never disagree.
+  const changeGraphSections = buildChangeGraphSections({
+    files: changedFileFactsForGraph(input),
+    edges: input.changedImportEdges ?? [],
+    usedBy: semanticFacts.api_changes
+      .filter((change) => change.used_by && change.used_by.top.length > 0)
+      .map((change) => ({ path: change.path, top: (change.used_by as { top: string[] }).top })),
+    lensFindings: riskLensFindings,
+    reviewQueue
+  });
   const generatedFrom = buildGeneratedFrom(input);
   // review-surfaces.NARRATIVE.5: a provider-built narrative is passed in when
   // available; otherwise always render the deterministic fallback so the section
@@ -389,12 +405,49 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     since_last_review: sinceLastReview,
     coverage_evidence: coverageEvidence,
     review_plan: reviewPlan,
+    change_graph: changeGraphSections.change_graph,
+    reading_order: changeGraphSections.reading_order,
     evidence_cards: evidenceCards,
     test_plan: testPlan,
     skim_safe: skimSafe,
     feedback_effects: feedbackEffects,
     generated_from: generatedFrom
   });
+}
+
+// review-surfaces.CHANGE_MAP.1: per-changed-file churn/status facts for the
+// graph. PR-scope runs carry pre-computed added/deleted line counts; repo-scope
+// runs derive churn from the structured diff's hunk lines. Both deterministic.
+function changedFileFactsForGraph(input: BuildHumanReviewInput): ChangedFileFacts[] {
+  const fromDiff = new Map<string, { added: number; removed: number; status: string; old_path?: string }>();
+  for (const file of input.diff?.files ?? []) {
+    let added = 0;
+    let removed = 0;
+    for (const hunk of file.hunks) {
+      for (const line of hunk.lines) {
+        if (line.kind === "add") added += 1;
+        else if (line.kind === "delete") removed += 1;
+      }
+    }
+    fromDiff.set(file.path, { added, removed, status: file.status, ...(file.old_path ? { old_path: file.old_path } : {}) });
+  }
+  const scoped = input.prSurface?.scope.changed_files ?? [];
+  if (scoped.length > 0) {
+    return scoped.map((file) => ({
+      path: file.path,
+      ...(file.old_path ? { old_path: file.old_path } : {}),
+      status: file.status,
+      added: file.added_lines ?? fromDiff.get(file.path)?.added ?? 0,
+      removed: file.deleted_lines ?? fromDiff.get(file.path)?.removed ?? 0
+    }));
+  }
+  return [...fromDiff.entries()].map(([filePath, facts]) => ({
+    path: filePath,
+    ...(facts.old_path ? { old_path: facts.old_path } : {}),
+    status: facts.status,
+    added: facts.added,
+    removed: facts.removed
+  }));
 }
 
 function humanReviewBuildConfig(input: BuildHumanReviewInput): HumanReviewBuildConfig {

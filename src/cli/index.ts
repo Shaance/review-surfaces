@@ -64,6 +64,7 @@ import { writeJson, writeText } from "../core/files";
 import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
+import { ChangedImportEdge, computeChangedImportEdges } from "../human/change-graph";
 import { buildChangeNarrative } from "../human/narrative";
 import { ChangeNarrative, HumanReviewModel, ReviewQueueItem } from "../human/contract";
 import { runWalkthrough, WalkthroughIO, WalkthroughOptions } from "../review/walkthrough";
@@ -1510,6 +1511,10 @@ function buildHumanReviewForPacket(
     // computed here so every build path carries them uniformly.
     dependencyFacts: factReaders ? computeDependencyFacts({ changedFiles: factReaders.changedFiles, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
     configFacts: factReaders && resolvedDiff ? computeConfigFacts({ diff: resolvedDiff, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
+    // review-surfaces.CHANGE_MAP.1: import edges among changed files, from the
+    // shared import-graph parser over head content — computed here (file access)
+    // so the section is uniform on every build path.
+    changedImportEdges: computeChangedImportEdgesForPacket(cwd, resolvedDiff, factReaders),
     packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
     prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
   });
@@ -1587,6 +1592,34 @@ function buildFactReaders(cwd: string, packet: ReviewPacket, diff: StructuredDif
   };
 }
 
+// review-surfaces.CHANGE_MAP.1: importer->imported edges among the changed
+// files, parsed from the reviewed head's content with the same resolution
+// rules as the blast-radius graph. Deleted files carry no head content, so
+// they have no outgoing edges (documented v1 bound, same altitude as the
+// import graph's alias bound).
+function computeChangedImportEdgesForPacket(cwd: string, diff: StructuredDiff | undefined, readers: FactReaders | undefined): ChangedImportEdge[] {
+  if (!diff || diff.files.length === 0 || !readers) {
+    return [];
+  }
+  const changedPaths = diff.files.map((file) => file.path);
+  return computeChangedImportEdges({
+    changedPaths,
+    read: readers.readHead,
+    // Blob-only check for committed refs: `git show <ref>:<dir>` succeeds for
+    // directories, which would resolve `./foo` to the directory instead of
+    // foo/index.ts and silently drop the edge.
+    exists: readers.headIsWorktree
+      ? (filePath) => {
+          try {
+            return fs.statSync(path.resolve(cwd, filePath)).isFile();
+          } catch {
+            return false;
+          }
+        }
+      : (filePath) => blobExistsAtRef(cwd, readers.headSha, filePath)
+  });
+}
+
 // review-surfaces.BLAST_RADIUS.1/.2/.3: enrich changed/removed exports with
 // in-repo importer counts from a bounded reverse import graph over the
 // git-tracked source files. A truncated graph carries the note rather than
@@ -1626,7 +1659,7 @@ function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactR
             return false;
           }
         }
-      : (filePath) => readers.readHead(filePath) !== undefined
+      : (filePath) => blobExistsAtRef(cwd, readers.headSha, filePath)
   });
   for (const change of targets) {
     const symbols = [...change.exports_removed, ...change.signatures_changed.map((sig) => sig.name)];
@@ -2278,13 +2311,18 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
   // (honoring --out / config output_dir), not a hardcoded .review-surfaces.
   const humanCommentModel = await loadCurrentHumanReviewForPrComment(cwd, path.dirname(surfacePath), surface, config);
   const relativeSurfacePath = path.relative(cwd, surfacePath) || surfacePath;
-  const markdown = humanCommentModel
+  const humanRendered = humanCommentModel
     ? renderHumanPrComment(humanCommentModel, {
         surfacePath: relativeSurfacePath,
         humanReviewPath: artifactPathForLog(cwd, path.dirname(surfacePath), "human_review.md"),
         humanReviewJsonPath: artifactPathForLog(cwd, path.dirname(surfacePath), "human_review.json")
       })
-    : renderPrComment(surface, { surfacePath: relativeSurfacePath });
+    : undefined;
+  const markdown = humanRendered ? humanRendered.markdown : renderPrComment(surface, { surfacePath: relativeSurfacePath });
+  // review-surfaces.CHANGE_MAP.4: a redaction BLOCK inside the embedded map or
+  // tour snippet must trip the privacy gate — the rendered body only carries
+  // the placeholder, so this flag is the surviving signal.
+  const renderBlocked = humanRendered?.blocked ?? false;
   const commentPath = path.join(path.dirname(surfacePath), "comment.md");
   await writeText(commentPath, markdown);
   process.stdout.write(markdown);
@@ -2305,6 +2343,10 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
   // deliverable and the command exits 0 after warning about postability.
   const posting = booleanFlag(parsed, "post");
   const strictPostability = booleanFlag(parsed, "strict-postability");
+  if (renderBlocked) {
+    console.error("PR comment render blocked a high-confidence secret; the comment must not be posted.");
+    return posting || strictPostability ? ExitCodes.privacyBlocked : ExitCodes.success;
+  }
   if (!hasRemoteNarrative) {
     const reason = surface.blocked_reason ?? `${surface.llm.status}/${surface.llm.provider}`;
     console.error(`PR review surface is not postable (${reason}); skipping sticky post.`);

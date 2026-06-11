@@ -29,6 +29,8 @@ function baseModel(overrides: Partial<HumanReviewModel>): HumanReviewModel {
     mode: "repo",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
+    change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [] },
+    reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Density fixture.",
     review_queue: [],

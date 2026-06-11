@@ -278,13 +278,6 @@ quality_gate:
   # ACIDs it ships. The gate must be back to `allow_missing: []` when the final
   # phase lands.
   allow_missing:
-    # Phase 2 / M9 — change-impact map + guided tour (ideas 1, 2)
-    - review-surfaces.CHANGE_MAP.1
-    - review-surfaces.CHANGE_MAP.2
-    - review-surfaces.CHANGE_MAP.3
-    - review-surfaces.CHANGE_MAP.4
-    - review-surfaces.READING_ORDER.1
-    - review-surfaces.READING_ORDER.2
     # Phase 3 / M10 — cockpit visual layer (ideas 3, 4, 6)
     - review-surfaces.RENDER.11
     - review-surfaces.RENDER.12

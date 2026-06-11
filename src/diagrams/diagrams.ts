@@ -278,7 +278,10 @@ function nodeId(id: string, position: number): string {
 }
 
 // Keep diagram labels free of characters that would unbalance Mermaid syntax.
-function diagramLabel(text: string): string {
+// review-surfaces.CHANGE_MAP.4: the ONE shared diagram-label sanitizer — every
+// mermaid emitter (this module, pr-change-diagram, change-map) imports it
+// rather than keeping a private copy.
+export function diagramLabel(text: string): string {
   return text.replace(/["[\]{}()]/g, " ").replace(/\s+/g, " ").trim();
 }
 

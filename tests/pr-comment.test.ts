@@ -66,6 +66,8 @@ function humanModel(): HumanReviewModel {
     mode: "pr",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
+    change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [] },
+    reading_order: { legs: [] },
     verdict: {
       decision: "needs_author_clarification",
       confidence: "medium",
@@ -191,14 +193,13 @@ test("renderPrComment renders a PR-SPECIFIC surface (what changed / coverage del
   assert.match(md, /x\.RENDER\.3: partial -> satisfied \(improved\)/);
   assert.match(md, /### PR risks/);
   assert.match(md, /PR-RISK-001 \[medium\]/);
-  assert.match(md, /```mermaid\nflowchart LR/);
-  // The mermaid block only renders on GitHub when a BLANK LINE separates the
-  // <details> raw-HTML opener from the ```mermaid fence (otherwise the fence is
-  // absorbed as raw HTML). A prior `.filter(line => line !== "")` stripped it.
-  assert.match(md, /<details><summary>Change impact diagram<\/summary>\n\n```mermaid/);
+  // review-surfaces.CHANGE_MAP.3: the requirements-hairball "Change impact"
+  // embed is retired from the narrative path; pr-change-impact.mmd remains a
+  // standalone agent-facing artifact off the human surfaces.
+  assert.doesNotMatch(md, /### Change impact/);
+  assert.doesNotMatch(md, /```mermaid/);
   // Section headings keep their preceding blank line (valid Markdown spacing).
   assert.match(md, /\n\n### What changed/);
-  assert.match(md, /\n\n### Change impact/);
   // It must NOT contain the whole-spec coverage dump or the boilerplate focus.
   assert.doesNotMatch(md, /\d+ satisfied, \d+ partial, \d+ missing/);
   assert.doesNotMatch(md, /Start with missing and partial requirement results/);
@@ -254,7 +255,7 @@ test("renderHumanPrComment renders the compact PR comment from human_review.json
     humanReviewPath: "custom-out/human_review.md",
     humanReviewJsonPath: "custom-out/human_review.json",
     surfacePath: "custom-out/pr_review_surface.json"
-  });
+  }).markdown;
   assert.match(md, /review-surfaces:sticky/);
   assert.match(md, /## review-surfaces PR review/);
   assert.match(md, /\*\*Verdict:\*\* Needs author clarification\./);
@@ -275,7 +276,7 @@ test("renderHumanPrComment renders the compact PR comment from human_review.json
 
 test("renderHumanPrComment is byte-deterministic for the same model", () => {
   const model = humanModel();
-  assert.equal(renderHumanPrComment(model), renderHumanPrComment(model));
+  assert.deepEqual(renderHumanPrComment(model), renderHumanPrComment(model));
 });
 
 test("renderHumanPrComment caps suggested comments after filtering ready drafts", () => {
@@ -286,7 +287,7 @@ test("renderHumanPrComment caps suggested comments after filtering ready drafts"
     { ...model.suggested_comments[0], id: "SC-NOT-READY-003", body: "not ready 3", ready_to_post: false },
     { ...model.suggested_comments[0], id: "SC-READY-001", body: "ready after non-ready drafts", ready_to_post: true }
   ];
-  const md = renderHumanPrComment(model);
+  const md = renderHumanPrComment(model).markdown;
   assert.match(md, /ready after non-ready drafts/);
   assert.doesNotMatch(md, /No ready suggested comments generated/);
   assert.doesNotMatch(md, /not ready 1/);

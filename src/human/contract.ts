@@ -477,6 +477,76 @@ export interface ReviewPlan {
   defer: ReviewPlanItem[];
 }
 
+// review-surfaces.CHANGE_MAP.1: the change-graph model — changed files as
+// nodes (churn, dominant lens, status), a dashed halo of top unchanged
+// importers from blast-radius facts, import edges among changed files, and
+// top-level-directory clusters. Built from buildImportGraph() output restricted
+// to changed files; every list sorted so renders are byte-deterministic. The
+// edge `kind` slot ships existing-only; ARCH_DRIFT.2 fills new/removed later.
+export type ChangeGraphNodeStatus = "added" | "modified" | "deleted" | "renamed";
+
+export interface ChangeGraphNode {
+  path: string;
+  churn_added: number;
+  churn_removed: number;
+  status: ChangeGraphNodeStatus;
+  cluster: string;
+  // Dominant risk lens for the file (highest-ranked lens finding citing it).
+  lens?: RiskLens;
+}
+
+export interface ChangeGraphHaloNode {
+  // Unchanged importer taken from a blast-radius fact's bounded used_by.top
+  // list (at most two per high-blast node, alphabetical as the fact stores them).
+  path: string;
+  // The changed files this importer depends on — the citing facts.
+  imports: string[];
+}
+
+export type ChangeGraphEdgeKind = "existing" | "new" | "removed";
+
+export interface ChangeGraphEdge {
+  // Importer -> imported, per CHANGE_MAP.1. Renderers that want dependencies
+  // flowing left-to-right (to agree with the tour) reverse at draw time.
+  from: string;
+  to: string;
+  kind: ChangeGraphEdgeKind;
+}
+
+export interface ChangeGraphCluster {
+  name: string;
+  paths: string[];
+}
+
+export interface ChangeGraph {
+  nodes: ChangeGraphNode[];
+  halo_nodes: ChangeGraphHaloNode[];
+  edges: ChangeGraphEdge[];
+  // Cluster array order is the render order (first appearance in the tour).
+  clusters: ChangeGraphCluster[];
+}
+
+// review-surfaces.READING_ORDER.1: the guided diff tour — changed files
+// topologically sorted dependencies-first, strongly connected components
+// collapsed into one read-together leg (alphabetical inside), each step with a
+// derived why line and review-queue cross-links. Never includes unchanged files.
+export interface ReadingOrderStep {
+  path: string;
+  why: string;
+  queue_refs: string[];
+}
+
+export interface ReadingOrderLeg {
+  title: string;
+  // True for a collapsed import cycle: the leg's files should be read together.
+  read_together: boolean;
+  steps: ReadingOrderStep[];
+}
+
+export interface ReadingOrder {
+  legs: ReadingOrderLeg[];
+}
+
 export interface HumanReviewModel {
   schema_version: typeof HUMAN_REVIEW_SCHEMA_VERSION;
   mode: "pr" | "repo";
@@ -502,6 +572,10 @@ export interface HumanReviewModel {
   since_last_review: SinceLastReview;
   coverage_evidence: CoverageEvidence;
   review_plan: ReviewPlan;
+  // review-surfaces.CHANGE_MAP.1 / READING_ORDER.1: required (SCHEMA.3
+  // strictness) — empty graphs/tours render as empty sections, never absent.
+  change_graph: ChangeGraph;
+  reading_order: ReadingOrder;
   evidence_cards: EvidenceCard[];
   test_plan: TestPlanItem[];
   skim_safe: SkimSafeItem[];
