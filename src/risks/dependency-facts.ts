@@ -292,18 +292,23 @@ function packageLockGraph(text: string | undefined): LockGraph | undefined {
       }
       continue;
     }
-    const deps = (entry as Record<string, unknown>).dependencies;
-    if (typeof deps !== "object" || deps === null) {
-      continue;
-    }
     const targets = edges.get(key) ?? new Set<string>();
-    for (const depName of Object.keys(deps as Record<string, unknown>)) {
-      const target = resolveFrom(key, depName);
-      if (target) {
-        targets.add(target);
+    // Optional dependencies are still recorded install edges in npm lockfiles.
+    for (const group of ["dependencies", "optionalDependencies"] as const) {
+      const deps = (entry as Record<string, unknown>)[group];
+      if (typeof deps !== "object" || deps === null) {
+        continue;
+      }
+      for (const depName of Object.keys(deps as Record<string, unknown>)) {
+        const target = resolveFrom(key, depName);
+        if (target) {
+          targets.add(target);
+        }
       }
     }
-    edges.set(key, targets);
+    if (targets.size > 0) {
+      edges.set(key, targets);
+    }
   }
   if (edges.size === 0) {
     return undefined;
