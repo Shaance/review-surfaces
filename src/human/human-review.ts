@@ -1709,7 +1709,11 @@ function buildSinceLastReview(input: BuildHumanReviewInput): SinceLastReview {
     };
   }
 
-  const statusChanges = comparison.status_changes ?? [];
+  // review-surfaces.COLD_START.5: a spec-less comparison keeps the risk deltas
+  // (diff-derived value) but drops the requirement- and overreach-shaped slices
+  // a prior Acai-era packet may carry.
+  const specless = (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none";
+  const statusChanges = specless ? [] : comparison.status_changes ?? [];
   const improved = statusChanges
     .filter((change) => change.direction === "improved")
     .map((change, index) => statusChangeItem(input, "SLR-IMPROVED", index, change));
@@ -1724,10 +1728,10 @@ function buildSinceLastReview(input: BuildHumanReviewInput): SinceLastReview {
     regressed,
     new_risks: riskComparisonItems(input, "SLR-NEW-RISK", comparison.new_risks ?? [], "New risk since last review", currentRisksByKey),
     resolved_risks: riskComparisonItems(input, "SLR-RESOLVED-RISK", comparison.resolved_risks ?? [], "Resolved risk since last review"),
-    new_overreach: overreachComparisonItems(input, "SLR-NEW-OVERREACH", comparison.new_overreach ?? [], "New overreach since last review"),
-    resolved_overreach: overreachComparisonItems(input, "SLR-RESOLVED-OVERREACH", comparison.resolved_overreach ?? [], "Resolved overreach since last review"),
-    still_open: stillOpenSinceLastReviewItems(input, comparison),
-    count_deltas: comparison.count_deltas ?? emptyCountDeltas()
+    new_overreach: specless ? [] : overreachComparisonItems(input, "SLR-NEW-OVERREACH", comparison.new_overreach ?? [], "New overreach since last review"),
+    resolved_overreach: specless ? [] : overreachComparisonItems(input, "SLR-RESOLVED-OVERREACH", comparison.resolved_overreach ?? [], "Resolved overreach since last review"),
+    still_open: stillOpenSinceLastReviewItems(input, comparison, specless),
+    count_deltas: specless ? emptyCountDeltas() : comparison.count_deltas ?? emptyCountDeltas()
   };
 }
 
@@ -1804,7 +1808,8 @@ function overreachComparisonItems(input: BuildHumanReviewInput, prefix: string, 
 
 function stillOpenSinceLastReviewItems(
   input: BuildHumanReviewInput,
-  comparison: NonNullable<ReviewPacket["dogfood"]>["comparison"]
+  comparison: NonNullable<ReviewPacket["dogfood"]>["comparison"],
+  specless = false
 ): SinceLastReviewItem[] {
   if (!comparison) {
     return [];
@@ -1845,7 +1850,10 @@ function stillOpenSinceLastReviewItems(
       evidence: [comparisonEvidence(input, `Current packet still reports overreach for ${filePath}.`)]
     }));
 
-  return [...persistentRequirements, ...persistentRisks, ...persistentOverreach]
+  // review-surfaces.COLD_START.5: spec-less still-open items keep only the
+  // risk slice — requirement and overreach persistence is spec-shaped.
+  const stillOpen = specless ? persistentRisks : [...persistentRequirements, ...persistentRisks, ...persistentOverreach];
+  return stillOpen
     .sort((left, right) => compareStrings(`${left.category}:${left.summary}`, `${right.category}:${right.summary}`))
     .slice(0, 12)
     .map((item, index) => ({ id: `SLR-STILL-OPEN-${String(index + 1).padStart(3, "0")}`, ...item }));

@@ -130,6 +130,9 @@ function buildPromptFacts(input: BuildPrNarrativeInput): {
 
   const facts = {
     repo: input.repo,
+    // review-surfaces.COLD_START.5: tell the provider the repo has no
+    // requirement spec so its prose does not speak in requirement counts.
+    spec_mode: input.specMode,
     base_ref: input.scope.base_ref,
     head_ref: input.scope.head_ref,
     diff_source: input.scope.diff_source,
@@ -445,7 +448,13 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
     rawSummary !== "" && textCitesOnlyAllowed(rawSummary, allowedPaths, allowedRequirementIds)
       ? boundedRedactedText(rawSummary, MAX_NARRATIVE_TEXT_CHARS)
       : undefined;
-  const summary = boundedSummary ?? deterministicSummary(input.scope, input.specMode);
+  // review-surfaces.COLD_START.5: in spec-less mode a provider summary that
+  // talks in requirement counts is replaced by the deterministic no-requirement
+  // summary rather than rendered verbatim at the top of the PR comment.
+  const summary =
+    boundedSummary !== undefined && !(input.specMode === "none" && /requirement/i.test(boundedSummary))
+      ? boundedSummary
+      : deterministicSummary(input.scope, input.specMode);
   const narrative: PrNarrativeModel = {
     summary,
     what_changed: whatChanged,

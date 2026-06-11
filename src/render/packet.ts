@@ -235,9 +235,9 @@ function renderPacketMarkdown(packet: ReviewPacket, packetDirRel: string = ".rev
 ${packet.risks.review_focus.map((item) => `- ${item}`).join("\n") || "- No review focus generated."}
 
 ## 2. Intent
-${packet.intent.summary}
+${(packet.intent as { spec_mode?: unknown }).spec_mode === "none" ? SPEC_NONE_NOTE : `${packet.intent.summary}
 
-${previewLines(packet.intent.requirements, (requirement) => `- ${requirement.id} (${requirement.acai_id ?? "no-acid"})${requirement.llm_derived ? " [LLM-proposed, non-authoritative]" : ""}: ${requirement.requirement}`)}
+${previewLines(packet.intent.requirements, (requirement) => `- ${requirement.id} (${requirement.acai_id ?? "no-acid"})${requirement.llm_derived ? " [LLM-proposed, non-authoritative]" : ""}: ${requirement.requirement}`)}`}
 
 ## 3. Requirement coverage
 ${(packet.intent as { spec_mode?: unknown }).spec_mode === "none"

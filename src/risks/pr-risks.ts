@@ -30,6 +30,9 @@ import type { PacketRiskCategory, PacketSeverity } from "../schema/review-packet
 // ---------------------------------------------------------------------------
 
 export interface BuildPrRiskInput {
+  // review-surfaces.COLD_START.5: spec-less repos never get asked to map files
+  // to requirements; the unmapped-change rule speaks in review areas only.
+  specMode?: "acai" | "none";
   scope: PrScopeModel;
   // Collection-time per-file blocked-secret findings computed from the RAW
   // diff's ADDED lines (path + line + kinds, never the secret text). Computed
@@ -393,18 +396,23 @@ function pushUnmappedChange(drafts: DraftCandidate[], input: BuildPrRiskInput): 
     return;
   }
   const ordered = [...files].sort((left, right) => compareStrings(left.path, right.path));
+  const specless = input.specMode === "none";
   drafts.push({
     rule: "unmapped_change",
     category: "workflow",
     severity: "low",
-    summary: `${ordered.length} changed file(s) did not map to any review area or requirement.`,
+    summary: specless
+      ? `${ordered.length} changed file(s) did not map to any review area.`
+      : `${ordered.length} changed file(s) did not map to any review area or requirement.`,
     evidence: ordered
       .slice(0, MAX_RULE_EVIDENCE)
       .map((file) => fileEvidence(file.path, `Out-of-scope changed file (${file.reason}).`)),
-    suggested_checks: [
-      "Confirm the unmapped change is intended and not missing a review-area mapping.",
-      "Map the file to an area/requirement if it carries reviewable behavior."
-    ],
+    suggested_checks: specless
+      ? ["Confirm the unmapped change is intended and not missing a review-area mapping."]
+      : [
+          "Confirm the unmapped change is intended and not missing a review-area mapping.",
+          "Map the file to an area/requirement if it carries reviewable behavior."
+        ],
     sortPath: ordered[0]?.path ?? ""
   });
 }

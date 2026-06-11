@@ -63,7 +63,9 @@ export function buildDogfood(
   const unsatisfied = evaluation.results.filter((result) => result.status !== "satisfied").length;
   // review-surfaces.COLD_START.5: same derivation as the intent builder — zero
   // indexed spec requirements means the dogfood surface stops counting them.
-  const specless = (collection.specIndex?.specs ?? []).flatMap((spec) => spec.requirements).length === 0;
+  // Conservative: only a PRESENT spec index with zero indexed requirements is
+  // spec-less; a missing index (partial fixtures) keeps the Acai-mode output.
+  const specless = collection.specIndex !== undefined && collection.specIndex.specs.flatMap((spec) => spec.requirements).length === 0;
   const feedbackFilesByRecency = sortFeedbackFilesByRecency(collection.feedback);
   const feedbackFindings = feedbackFilesByRecency.flatMap((feedbackFile) => feedbackFile.findings);
   const highlightedFeedbackFindings = selectFeedbackFindings(collection.feedback, 8);
@@ -78,7 +80,7 @@ export function buildDogfood(
   return {
     milestone: collection.manifest.milestone ?? "MVP",
     command: commands.find((command) => command.includes("review-surfaces")) ?? "review-surfaces dogfood",
-    summary: `Dogfood generated a packet with ${specless ? "" : `${evaluation.results.length} requirement result(s), `}${risks.items.length} risk(s), ${feedbackFindings.length} feedback finding(s), provider=${providerName}, noisy_sections=${noisySections.join(",") || "none"}.${comparisonInput ? ` ${summarizeComparison(comparisonInput)}` : ""}`,
+    summary: `Dogfood generated a packet with ${specless ? "" : `${evaluation.results.length} requirement result(s), `}${risks.items.length} risk(s), ${feedbackFindings.length} feedback finding(s), provider=${providerName}, noisy_sections=${noisySections.join(",") || "none"}.${comparisonInput ? ` ${summarizeComparison(comparisonInput, specless)}` : ""}`,
     previous_packet_path: comparisonInput?.previous_packet_path,
     comparison: comparisonInput?.comparison,
     helped_agent: unsatisfied < evaluation.results.length ? "partially" : "unknown",
@@ -167,11 +169,16 @@ export function buildDogfood(
 // Compact one-line comparison summary for dogfood.yaml / the dogfood summary.
 // When the previous packet was absent/unreadable the comparison is undefined
 // and we say so without failing.
-function summarizeComparison(input: DogfoodComparisonInput): string {
+function summarizeComparison(input: DogfoodComparisonInput, specless = false): string {
   if (!input.comparison) {
     return `Comparison vs ${input.previous_packet_path}: previous packet absent or unreadable; no comparison computed.`;
   }
   const comparison = input.comparison;
+  // review-surfaces.COLD_START.5: spec-less comparisons keep only the risk
+  // deltas — requirement status changes and overreach are spec-shaped.
+  if (specless) {
+    return `Comparison vs ${input.previous_packet_path}: ${comparison.new_risks.length} new risk(s), ${comparison.resolved_risks.length} resolved risk(s).`;
+  }
   const improved = comparison.status_changes.filter((change) => change.direction === "improved").length;
   const regressed = comparison.status_changes.filter((change) => change.direction === "regressed").length;
   return `Comparison vs ${input.previous_packet_path}: ${improved} improved, ${regressed} regressed, ${comparison.new_risks.length} new risk(s), ${comparison.resolved_risks.length} resolved risk(s), ${comparison.new_overreach.length} new overreach, ${comparison.resolved_overreach.length} resolved overreach.`;

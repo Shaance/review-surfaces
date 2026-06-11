@@ -62,6 +62,7 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
   });
 
   const risks = buildPrRiskCandidates({
+    specMode: input.intent.spec_mode,
     scope,
     coverage,
     secretFindings: input.collection.privacy.secret_findings,

@@ -74,6 +74,7 @@ export function analyzeRisks(
   commands: string[],
   methodology?: MethodologyModel
 ): RisksModel {
+  const specless = collection.specIndex !== undefined && collection.specIndex.specs.flatMap((spec) => spec.requirements).length === 0;
   const weakResults = evaluation.results.filter((result) => result.status !== "satisfied");
   const partialResults = evaluation.results.filter((result) => result.status === "partial");
   const missingResults = evaluation.results.filter((result) => result.status === "missing");
@@ -226,14 +227,15 @@ export function analyzeRisks(
     test_gaps: testGaps,
     missing_automatic_tests: missingAutomaticTests,
     missing_manual_checks: missingManualChecks,
-    review_focus: buildRiskReviewFocus(methodology)
+    review_focus: buildRiskReviewFocus(methodology, specless)
   };
 }
 
-export function buildRiskReviewFocus(methodology: MethodologyModel | undefined): string[] {
+// review-surfaces.COLD_START.5: spec-less runs drop the requirement- and
+// overreach-shaped focus bullets; the rest of the guidance is diff-derived.
+export function buildRiskReviewFocus(methodology: MethodologyModel | undefined, specless = false): string[] {
   return [
-    "Start with missing and partial requirement results.",
-    "Check overreach files before reviewing implementation detail.",
+    ...(specless ? [] : ["Start with missing and partial requirement results.", "Check overreach files before reviewing implementation detail."]),
     "Treat AI-enriched summaries as review aids, not proof.",
     "Confirm validation command output for the current branch.",
     ...methodologyReviewFocus(methodology)
