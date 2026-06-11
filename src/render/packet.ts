@@ -4,6 +4,7 @@ import { commandLooksLikeLocalValidationCommand } from "../commands/classify";
 import { ArchitectureModel } from "../diagrams/diagrams";
 import { DogfoodModel } from "../dogfood/dogfood";
 import { EvaluationModel, RequirementStatus } from "../evaluation/evaluate";
+import { SPEC_NONE_NOTE } from "../evaluation/status";
 import { EnrichmentResult } from "../llm/provider";
 import { IntentModel } from "../intent/intent";
 import { MethodologyModel } from "../methodology/methodology";
@@ -240,7 +241,7 @@ ${previewLines(packet.intent.requirements, (requirement) => `- ${requirement.id}
 
 ## 3. Requirement coverage
 ${(packet.intent as { spec_mode?: unknown }).spec_mode === "none"
-    ? "No requirement spec configured — intent checks are limited to docs and constraints."
+    ? SPEC_NONE_NOTE
     : `- satisfied: ${statusCounts.satisfied}
 - partial: ${statusCounts.partial}
 - missing: ${statusCounts.missing}

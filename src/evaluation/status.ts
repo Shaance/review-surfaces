@@ -1,3 +1,7 @@
+// review-surfaces.COLD_START.5: the one-line honest note every surface renders
+// instead of zero-count requirement language when no spec is configured.
+export const SPEC_NONE_NOTE = "No requirement spec configured — intent checks are limited to docs and constraints.";
+
 import {
   PACKET_REQUIREMENT_STATUSES,
   type PacketRequirementStatus

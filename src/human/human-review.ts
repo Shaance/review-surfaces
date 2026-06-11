@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { SPEC_NONE_NOTE } from "../evaluation/status";
 import { commandLooksLikeLocalValidationCommand } from "../commands/classify";
 import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
@@ -1205,8 +1206,6 @@ function isMaintainerContractPath(filePath: string): boolean {
 function routeText(...values: Array<string | undefined>): string {
   return values.filter((value): value is string => typeof value === "string").join(" ");
 }
-
-export const SPEC_NONE_NOTE = "No requirement spec configured — intent checks are limited to docs and constraints.";
 
 function buildIntentMismatch(input: BuildHumanReviewInput, specMode: "acai" | "none"): IntentMismatch {
   const focus = buildIntentMismatchFocus(input);

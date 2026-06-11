@@ -27,7 +27,7 @@ import {
   unique,
   uniqueEvidence
 } from "./evidence-rules";
-import { countRequirementStatuses, formatRequirementStatusSummary } from "./status";
+import { countRequirementStatuses, formatRequirementStatusSummary, SPEC_NONE_NOTE } from "./status";
 import type { PacketConfidence, PacketPartialReason, PacketRequirementStatus } from "../schema/review-packet-contract";
 export { verifyRequirementsWithTests } from "./verification";
 
@@ -108,7 +108,11 @@ export async function evaluateIntent(
   const statusCounts = countRequirementStatuses(results);
 
   return {
-    summary: `${formatRequirementStatusSummary(statusCounts, overreach.length)}. Statuses are conservative and evidence-backed.`,
+    // review-surfaces.COLD_START.5: a spec-less evaluation never advertises
+    // zero-count requirement statuses.
+    summary: intent.spec_mode === "none"
+      ? SPEC_NONE_NOTE
+      : `${formatRequirementStatusSummary(statusCounts, overreach.length)}. Statuses are conservative and evidence-backed.`,
     results,
     overreach,
     acai_coverage

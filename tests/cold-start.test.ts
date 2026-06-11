@@ -240,12 +240,16 @@ test("review-surfaces.COLD_START.5 spec-less mode suppresses Acai-shaped noise b
     fixture.commit("spec-less change");
     const human = fixture.run();
     const packet = JSON.parse(fs.readFileSync(path.join(fixture.dir, ".rs", "review_packet.json"), "utf8")) as {
-      evaluation: { overreach: unknown[] };
+      evaluation: { overreach: unknown[]; summary: string };
     };
 
     // Suppressed: overreach findings, spec-coupled mismatch items, spec-shaped
     // queue actions and questions.
     assert.deepEqual(packet.evaluation.overreach, [], "no per-cluster overreach findings in spec-less mode");
+    assert.ok(
+      !/satisfied|overreach item/.test(packet.evaluation.summary),
+      "the evaluation summary never renders zero-count requirement statuses in spec-less mode"
+    );
     assert.deepEqual(human.intent_mismatch.possible_overreach, []);
     assert.deepEqual(human.intent_mismatch.missing_intent, []);
     assert.equal(
