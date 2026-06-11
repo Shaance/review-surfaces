@@ -73,9 +73,21 @@ interface LockGraph {
   edges: Map<string, Set<string>>;
   // package name -> instance keys.
   instancesByName: Map<string, Set<string>>;
-  // direct dependency names from importers/workspace manifest entries.
-  directNames: Set<string>;
+  // Direct dependency roots from importers/workspace manifest entries:
+  // name -> the INSTANCE keys those importers actually resolve to (so a
+  // version-skewed workspace never starts traversal from an instance no
+  // importer declared).
+  directRoots: Map<string, Set<string>>;
   nameOf: (instanceKey: string) => string;
+}
+
+function addRoot(map: Map<string, Set<string>>, name: string, instance: string | undefined): void {
+  if (!instance) {
+    return;
+  }
+  const instances = map.get(name) ?? new Set<string>();
+  instances.add(instance);
+  map.set(name, instances);
 }
 
 function attributeTransitives(facts: DependencyFact[], input: ComputeDependencyFactsInput): void {
@@ -96,10 +108,22 @@ function attributeTransitives(facts: DependencyFact[], input: ComputeDependencyF
       continue;
     }
     // Direct roots: lockfile importers/workspace manifests first (monorepos),
-    // plus the lockfile's sibling head package.json.
+    // plus the lockfile's sibling head package.json. Manifest-derived names
+    // resolve to an instance only when the name is unambiguous (one instance);
+    // importer-derived roots carry the exact instance the importer declared.
     const manifestPath = sourcePath.replace(/[^/]+$/, "package.json");
     const manifest = parseJsonSafe(input.readHead(manifestPath));
-    const direct = [...new Set([...graph.directNames, ...depsByGroup(manifest).keys()])].sort();
+    const directRoots = new Map<string, Set<string>>(graph.directRoots);
+    for (const name of depsByGroup(manifest).keys()) {
+      if (directRoots.has(name)) {
+        continue;
+      }
+      const instances = graph.instancesByName.get(name);
+      if (instances && instances.size === 1) {
+        addRoot(directRoots, name, [...instances][0]);
+      }
+    }
+    const direct = [...directRoots.keys()].sort();
     if (direct.length === 0) {
       continue;
     }
@@ -110,7 +134,7 @@ function attributeTransitives(facts: DependencyFact[], input: ComputeDependencyF
     // than guessed at.
     const rootsByInstance = new Map<string, Set<string>>();
     for (const root of direct) {
-      const rootInstances = [...(graph.instancesByName.get(root) ?? [])].sort();
+      const rootInstances = [...(directRoots.get(root) ?? [])].sort();
       const queue = [...rootInstances];
       const seen = new Set<string>(rootInstances);
       while (queue.length > 0) {
@@ -216,7 +240,7 @@ function pnpmLockGraph(text: string | undefined): LockGraph | undefined {
   if (edges.size === 0) {
     return undefined;
   }
-  const directNames = new Set<string>();
+  const directRoots = new Map<string, Set<string>>();
   const importers = parsed?.importers;
   if (typeof importers === "object" && importers !== null) {
     for (const importer of Object.values(importers as Record<string, unknown>)) {
@@ -225,15 +249,19 @@ function pnpmLockGraph(text: string | undefined): LockGraph | undefined {
       }
       for (const group of DEP_GROUPS) {
         const deps = (importer as Record<string, unknown>)[group];
-        if (typeof deps === "object" && deps !== null) {
-          for (const name of Object.keys(deps as Record<string, unknown>)) {
-            directNames.add(name);
-          }
+        if (typeof deps !== "object" || deps === null) {
+          continue;
+        }
+        for (const [name, value] of Object.entries(deps as Record<string, unknown>)) {
+          // v9 importer entries carry { specifier, version }; resolve to the
+          // DECLARED instance, falling back to a unique-instance match only.
+          const version = typeof value === "object" && value !== null ? (value as Record<string, unknown>).version : value;
+          addRoot(directRoots, name, resolveTarget(name, version));
         }
       }
     }
   }
-  return { edges, instancesByName, directNames, nameOf: pnpmPackageName };
+  return { edges, instancesByName, directRoots, nameOf: pnpmPackageName };
 }
 
 // package-lock.json v2/v3 instance graph: instance keys are the nested
@@ -275,18 +303,20 @@ function packageLockGraph(text: string | undefined): LockGraph | undefined {
     }
   };
   const edges = new Map<string, Set<string>>();
-  const directNames = new Set<string>();
+  const directRoots = new Map<string, Set<string>>();
   for (const [key, entry] of Object.entries(packages)) {
     if (typeof entry !== "object" || entry === null) {
       continue;
     }
     if (!key.includes("node_modules/")) {
-      // Workspace manifest entry (incl. the "" root): direct dependency names.
+      // Workspace manifest entry (incl. the "" root): resolve each direct
+      // dependency to the instance Node would load FROM THAT WORKSPACE, so a
+      // version-skewed sibling instance never becomes a traversal root.
       for (const group of DEP_GROUPS) {
         const deps = (entry as Record<string, unknown>)[group];
         if (typeof deps === "object" && deps !== null) {
           for (const name of Object.keys(deps as Record<string, unknown>)) {
-            directNames.add(name);
+            addRoot(directRoots, name, resolveFrom(key, name));
           }
         }
       }
@@ -313,7 +343,7 @@ function packageLockGraph(text: string | undefined): LockGraph | undefined {
   if (edges.size === 0) {
     return undefined;
   }
-  return { edges, instancesByName, directNames, nameOf };
+  return { edges, instancesByName, directRoots, nameOf };
 }
 
 // Deterministic severity ordering for rendering/queue language (DEP_FACTS.2):
