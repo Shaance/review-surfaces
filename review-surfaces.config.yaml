@@ -7,6 +7,7 @@ docs:
   - README.bootstrap.md
   - AGENTS.md
   - CLAUDE.md
+  - OPEN_SOURCE_UPLIFT_GOAL.md
   - docs/**/*.md
   - .agents/skills/**/SKILL.md
 tests:
@@ -51,6 +52,7 @@ areas:
       - .agents/
       - features/
       - docs/review-surfaces-trd.md
+      - OPEN_SOURCE_UPLIFT_GOAL.md
       - review-surfaces.config.yaml
       - src/config/
       - src/bootstrap/

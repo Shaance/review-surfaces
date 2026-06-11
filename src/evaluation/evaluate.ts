@@ -22,6 +22,7 @@ import {
   isImplementationEvidencePath,
   isTestOnlyRequirement,
   mentionsGroupToken,
+  pathLikeTokens,
   unique,
   uniqueEvidence
 } from "./evidence-rules";
@@ -382,10 +383,6 @@ function directFileEvidence(requirement: IntentRequirement, index: EvidenceIndex
     .filter((filePath) => index.allFiles.has(filePath))
     .slice(0, 5)
     .map((filePath) => fileEvidence(filePath, `Repository file referenced by ${requirement.acai_id ?? requirement.id} exists.`, "high"));
-}
-
-function pathLikeTokens(text: string): string[] {
-  return [...new Set(text.replace(/`/g, "").match(/(?:[\w.-]+\/)+[\w.-]+|AGENTS\.md|README(?:\.[\w.-]+)?|package\.json|review-surfaces\.config\.yaml/g) ?? [])];
 }
 
 function isRepositoryPresenceRequirement(requirement: IntentRequirement): boolean {
