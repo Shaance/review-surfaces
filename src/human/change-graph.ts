@@ -5,6 +5,7 @@
 // happens here: the import edges come from buildImportGraph() output.
 import { buildImportGraph } from "../collector/import-graph";
 import { compareStrings } from "../core/compare";
+import { moduleOf } from "../risks/arch-drift";
 import {
   ChangeGraph,
   ChangeGraphEdge,
@@ -200,16 +201,9 @@ function normalizeStatus(raw: string): ChangeGraphNodeStatus {
   return "modified";
 }
 
-function clusterOf(filePath: string): string {
-  const segments = filePath.split("/");
-  if (segments.length === 1) {
-    return "(root)";
-  }
-  if (segments[0] === "src" && segments.length > 2) {
-    return `src/${segments[1]}`;
-  }
-  return segments[0];
-}
+// Cluster = module altitude: ONE definition shared with the drift detector so
+// the map's grouping and the drift facts can never disagree.
+const clusterOf = moduleOf;
 
 // Dominant lens per path: the lens whose metadata rank is lowest (most
 // important) among findings citing the path; ties broken by finding id.

@@ -157,7 +157,6 @@ function renderRoundsTable(model: HumanReviewModel): string | undefined {
   const lines = [
     "### Review rounds",
     "",
-    ...(shown[0].round > 1 && shown[0].round !== rounds[0].round ? [] : []),
     ...(shown[0].round > 1 ? [`_History begins at round ${shown[0].round}${rounds[0].round > 1 ? " (earlier rounds expired with their artifacts)" : ""}; full ledger in human_review.json._`, ""] : []),
     "| round | head | new | resolved | regressed | verdict |",
     "| --- | --- | --- | --- | --- | --- |",

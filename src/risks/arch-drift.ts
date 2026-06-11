@@ -80,6 +80,8 @@ export function computeArchDriftFacts(input: ComputeArchDriftInput): ArchDriftRe
   const removedModuleEdges = new Map<string, Set<string>>();
   // Head-side module edges contributed by changed files (cycle detection input).
   const headModuleEdges = new Map<string, Set<string>>();
+  // Base-side module edges from the changed files (novelty fallback set).
+  const changedBaseKeys = new Set<string>();
 
   for (const file of files) {
     const status = (file.status || "M").toUpperCase()[0];
@@ -104,6 +106,15 @@ export function computeArchDriftFacts(input: ComputeArchDriftInput): ArchDriftRe
         headModuleEdges.set(headModule, targets);
       }
     }
+    // Base-side module edges from the changed files — the novelty fallback
+    // when no full-tree set is supplied (computed here, not in a second pass).
+    const baseModuleForKeys = moduleOf(basePath ?? file.path);
+    for (const imported of baseImports) {
+      const toModule = moduleOf(imported);
+      if (toModule !== baseModuleForKeys) {
+        changedBaseKeys.add(JSON.stringify([baseModuleForKeys, toModule]));
+      }
+    }
 
     // File-level set difference on resolved targets (rename-safe: both sides
     // are RESOLVED repo-relative module paths, so a pure move keeps them equal).
@@ -125,21 +136,6 @@ export function computeArchDriftFacts(input: ComputeArchDriftInput): ArchDriftRe
   // Module-edge NOVELTY: a fact fires only when the module edge is absent from
   // the base tree's edges (full-tree set when provided, else the changed files'
   // own base edges). Symmetrically, "removed" requires absence at head.
-  const changedBaseKeys = new Set<string>();
-  for (const file of files) {
-    const status = (file.status || "M").toUpperCase()[0];
-    const basePath = file.old_path ?? (status === "A" || status === "?" ? undefined : file.path);
-    if (!basePath) {
-      continue;
-    }
-    const fromModule = moduleOf(basePath);
-    for (const imported of resolveRelativeImports(basePath, input.readBase(basePath) ?? "", input.existsBase)) {
-      const toModule = moduleOf(imported);
-      if (toModule !== fromModule) {
-        changedBaseKeys.add(JSON.stringify([fromModule, toModule]));
-      }
-    }
-  }
   const baseKeys = input.baseModuleEdgeKeys ?? changedBaseKeys;
   const headKeys = input.headModuleEdgeKeys ?? new Set([...headModuleEdges.entries()].flatMap(([from, targets]) => [...targets].map((to) => JSON.stringify([from, to]))));
 
