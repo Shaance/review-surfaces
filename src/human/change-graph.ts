@@ -256,21 +256,25 @@ function buildReadingOrder(files: ChangedFileFacts[], edges: ChangeGraphEdge[], 
     }
   }
 
-  // Kahn with an alphabetical frontier (smallest first member) so the order is
-  // total and deterministic even when the graph imposes no constraint.
+  // Kahn with a deterministic frontier: where the import graph imposes no
+  // constraint, category priority breaks ties (contracts -> implementation ->
+  // tests -> config/docs, the brainstorm's leg order), then alphabetical. The
+  // result stays total, deterministic, and dependencies-first.
+  const CATEGORY_PRIORITY: Record<LegCategory, number> = { contracts: 0, implementation: 1, tests: 2, config: 3 };
+  const frontierKey = (index: number): string => `${CATEGORY_PRIORITY[categoryOf(components[index][0])]} ${components[index][0]}`;
   const frontier = components
-    .map((members, index) => ({ index, key: members[0] }))
-    .filter((entry) => (indegree.get(entry.index) ?? 0) === 0);
+    .map((_, index) => index)
+    .filter((index) => (indegree.get(index) ?? 0) === 0);
   const ordered: number[] = [];
   while (frontier.length > 0) {
-    frontier.sort((a, b) => a.key.localeCompare(b.key));
-    const next = frontier.shift() as { index: number; key: string };
-    ordered.push(next.index);
-    for (const target of [...(out.get(next.index) ?? [])].sort((a, b) => a - b)) {
+    frontier.sort((a, b) => frontierKey(a).localeCompare(frontierKey(b)));
+    const next = frontier.shift() as number;
+    ordered.push(next);
+    for (const target of [...(out.get(next) ?? [])].sort((a, b) => a - b)) {
       const remaining = (indegree.get(target) ?? 0) - 1;
       indegree.set(target, remaining);
       if (remaining === 0) {
-        frontier.push({ index: target, key: components[target][0] });
+        frontier.push(target);
       }
     }
   }
