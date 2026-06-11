@@ -45,7 +45,6 @@ if [ -n "$PREVIOUS" ]; then
   PREV_ARGS=(--previous-packet "$PREVIOUS")
 elif [ -f "$OUT/review_packet.json" ]; then
   PREV_SNAP="$(mktemp -d)/previous-packet.json"
-  mkdir -p "$(dirname "$PREV_SNAP")"
   cp "$OUT/review_packet.json" "$PREV_SNAP"
   PREV_ARGS=(--previous-packet "$PREV_SNAP")
   echo "local-review: comparing against previous local packet ($OUT/review_packet.json)"

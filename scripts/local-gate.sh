@@ -13,8 +13,9 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# lint is the repo's typecheck alias (package.json), so one run covers both
+# gate steps; test cleans, builds, and runs the full suite.
 pnpm run lint
-pnpm run typecheck
 pnpm run test
 pnpm run determinism-check
 
