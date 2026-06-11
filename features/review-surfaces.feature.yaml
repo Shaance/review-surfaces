@@ -218,6 +218,15 @@ components:
       10:
         requirement: The HTML cockpit must escape every interpolated value through one shared helper, re-run the redaction pass on render, and produce byte-deterministic output (no timestamps), laying out a verdict and narrative header, the review queue as the spine (each item with its excerpt, evidence, ranking reason, and links between queue, evidence, and narrative claims), and lens filters, with collapsible hunks and localStorage-persisted checkable queue items.
         note: Next-value Phase 5 (brainstorm idea 7). The file must open from disk offline, be safe to attach in chat, and stay printable.
+      11:
+        requirement: The HTML cockpit must render the change_graph model as deterministic inline SVG via a dedicated src/human/render-svg-map.ts module — a hand-rolled layered layout (column per cluster ordered by the reading-order leg order, stable row sort within a column, fixed viewBox, system font stack) with no chart or diagram library and no inlined mermaid.js — where every coordinate derives from sorted input so identical models produce byte-identical SVG, every interpolated label passes through the shared redact-then-escape helper, node click filters the queue to that file via the existing data-attribute filter pattern, and hover details are carried by SVG title elements so the map degrades gracefully in print.
+        note: Visual uplift M10 (brainstorm idea 3). Pure renderer over the CHANGE_MAP.1 model — if the SVG needs data the model lacks, the model and strict schema grow first. The esc() helper is module-private in render-html.ts today and must be exported or lifted to a shared module.
+      12:
+        requirement: The HTML cockpit must open with an at-a-glance header strip rendered purely from existing model fields — lens chips with counts that are the existing lens-filter toggle buttons, the review_plan read/skim/defer cut as a stacked CSS bar with estimated minutes, trust-audit counts, and a review-progress bar recomputed from the existing persisted checkbox state — with no charts library or canvas, and every chip and bar carrying a text label so color never carries meaning alone and the strip stays printable.
+        note: Visual uplift M10 (brainstorm idea 6). Zero new data; pure render work over verdict, queue lens tags, review_plan, and trust-audit fields the model already carries.
+      13:
+        requirement: When dependency facts include attributed transitive additions, supply-chain lens surfaces must render the chain as an indented tree (direct dependency to the new transitives it pulled, install-script flags marked), using a mermaid rendering on GitHub comment surfaces where a chain exists, and must fall back to the honest flat grouping (direct-dependency section plus unattributed new-transitives list) whenever lockfile dependency edges could not be resolved.
+        note: Visual uplift P2 tail (brainstorm idea 8). The render is a grouping pass over DEP_FACTS.4 attribution data; registry metadata stays deferred behind the provider boundary.
 
   HUMAN_REVIEW:
     name: Human reviewer cockpit
@@ -406,6 +415,12 @@ components:
         requirement: The tool must intersect coverage with the changed lines of each hunk to classify it covered, uncovered, or partial, emit per-hunk coverage evidence cards, and feed the per-path evidence score in the ranking pass.
       4:
         requirement: The absence of a coverage report must render as "no coverage evidence", which is distinct from "changed lines uncovered"; a repository must never be penalized for not providing coverage, and coverage is used only when a report exists.
+      5:
+        requirement: Per-hunk coverage evidence must expose the specific uncovered line numbers — CoverageEvidenceHunk grows a sorted uncovered_lines list, capped with an explicit truncated flag for pathological hunks — with the strict schema growing first.
+        note: Visual uplift M10 (brainstorm idea 4). The lcov ingestion already holds per-file line sets internally; only the model exposure is new.
+      6:
+        requirement: The HTML cockpit must render a per-line coverage gutter on hunk excerpts (glyph plus background tint per line, keyed by line number from the existing hunk fields, print-safe with color never carrying meaning alone), markdown surfaces must render one summary line per excerpt with the uncovered ranges instead of per-line markup, deleted lines must never receive coverage gutters, and the honest-negative rules carry over verbatim — no report renders as "no coverage evidence" (never as red) and a stale report renders with its staleness note.
+        note: Visual uplift M10 (brainstorm idea 4). Gutter only the added/context lines on the new side, or the display implies tested-ness for code that no longer exists.
 
   BUDGET:
     name: Time-budgeted review mode
@@ -439,6 +454,12 @@ components:
         requirement: Each assertion must take the shape "the finding with key K appears in the top N (N generous, around ten) of the queue" for seeded cases and "no finding above severity S" for benign cases, and the suite must run inside pnpm run test so CI gates review quality automatically.
       4:
         requirement: The harness must emit a compact eval_scoreboard.json recording cases passed over total per fact class, and no ranking tuning beyond Phase 2 may land without this gate in place.
+      5:
+        requirement: The eval harness must include a seeded architecture-drift fixture — a benign change plus a new cross-module import — asserted to rank in the top N of the queue, landing in the same phase that ships the drift detector.
+        note: Visual uplift M11 (brainstorm idea 5), following the established one-seeded-case-per-fact-class discipline.
+      6:
+        requirement: The eval scoreboard must be surfaced twice — a generated, marker-delimited README block (idempotently regenerated from eval_scoreboard.json like the sticky comment's marker upsert, never hand-edited inside the markers) citing cases passed over total per fact class, and one HTML cockpit footer line citing the score — with the local gate asserting the README block is current.
+        note: "Visual uplift P2 tail (brainstorm idea 9). The adoption argument: a fact class that loses its seed shows up in the README diff."
 
   DEP_FACTS:
     name: Dependency and supply-chain facts
@@ -455,6 +476,9 @@ components:
         requirement: Dependency facts must emit into the existing risk plumbing under a new supply_chain lens id, which requires extending the fixed lens enum across the human-review contract, the strict schema, risk metadata, and the risk_lenses config so a human_review.json carrying the new lens still passes strict validation; once extended, rendering in the risk lenses, queue, and suggested comments follows the existing path, with deterministic severity (a new dependency with install scripts outranks a plain new dependency, which outranks a major bump, which outranks a range loosening) and fact language naming the package and the concrete change.
       3:
         requirement: Registry metadata such as package age and weekly downloads must be deferred behind the existing provider boundary as optional enrichment that adorns deterministic facts; it must never create or remove a fact and the verdict must never depend on it.
+      4:
+        requirement: The dependency-fact detector must attribute each newly added transitive dependency to the direct dependency that pulled it by parsing the lockfile's dependency edges, recording the attribution as a deterministic fact field, and a lockfile whose edges cannot be resolved must yield unattributed transitive facts (the existing flat output), never a guessed attribution.
+        note: Visual uplift P2 tail (brainstorm idea 8). Today's transitive_added facts are flat and unattributed; RENDER.13 renders the attributed chain as a tree.
 
   BLAST_RADIUS:
     name: Blast-radius facts
@@ -502,6 +526,86 @@ components:
       2:
         requirement: Policy precedence must be committed policy over local feedback files over defaults; policy suppressions must demote (downgrade and annotate the finding as suppressed by policy with the stated reason) rather than delete, must match on stable finding keys (rule id plus path glob) rather than free text, and an expired suppression must render as its own finding rather than being silently dropped.
         note: The policy composes with, and does not replace, the walkthrough feedback engine, and is the home for the previously deferred decision_policy question.
+
+  LOCAL_LOOP:
+    name: Local review loop
+    description: >-
+      Visual uplift Phase 1 (brainstorm idea 13). Scripted, GitHub-Actions-free
+      production and gating of every review surface, for users without CI minutes
+      and for this repo's own per-phase dogfood loop. Orchestration only — the
+      scripts call the same CLI commands a user types by hand, so local and CI
+      surfaces cannot drift.
+    requirements:
+      1:
+        requirement: The repository must provide scripts/local-review.sh, exposed as pnpm run local-review, that builds the tool, runs all --provider mock against a configurable <base>..<head> range (default origin/main..HEAD), renders the sticky-comment preview to a local file via comment --format sticky, renders human --format html, runs validate --surface all, and prints an index of the produced artifacts to open, using the network for git only.
+      2:
+        requirement: The repository must provide scripts/local-gate.sh, exposed as pnpm run local-gate, that runs the full merge gate as one command — lint, typecheck, the full test suite, determinism-check, and the strict empty-diff self-dogfood (all --base HEAD --head HEAD --strict) — and fails if any step fails.
+        note: The strict empty-diff run is the documented red-main footgun when a phase drops allowlist entries; the gate exists so it can never be skipped by accident.
+      3:
+        requirement: local-review must accept a previous-round input (--previous <dir>, or auto-detection of the last local run's packet) so since-last-review deltas and the rounds ledger work from local prior packets as well as CI artifacts, with the comparison engine indifferent to the transport.
+      4:
+        requirement: Both scripts must be documented in README.md and AGENTS.md as the way to produce and gate review surfaces without CI, and must contain orchestration only — no flag, behavior, or analysis may exist solely inside a script rather than in the CLI commands it calls.
+
+  CHANGE_MAP:
+    name: Change-impact map v2
+    description: >-
+      Visual uplift Phase 2 / milestone M9 (brainstorm idea 1). A shared,
+      schema-validated change-graph model built from the existing import graph and
+      blast-radius facts, plus a focused mermaid emitter that replaces the
+      requirements-hairball diagram on the human comment surfaces. Every node and
+      edge cites a deterministic fact; caps are rendered, never silent.
+    requirements:
+      1:
+        requirement: The human review model and strict schema must grow a change_graph section with nodes (changed files with churn added/removed counts, dominant risk lens, and status added/modified/deleted/renamed), halo_nodes (top unchanged importers taken from blast-radius facts, at most two per high-blast node, alphabetical exactly as the fact's bounded used_by top list stores them), edges (importer to imported restricted to those nodes, each carrying a kind of existing, new, or removed), and clusters (top-level directory grouping), with every list sorted and the graph built from the existing buildImportGraph output restricted to changed files — no new parsing.
+        note: Visual uplift M9 (brainstorm idea 1). The edge kind slot ships here as existing-only; ARCH_DRIFT.2 fills new/removed later.
+      2:
+        requirement: A focused mermaid emitter (src/diagrams/change-map.ts) must render the change_graph as a flowchart LR with one subgraph per cluster and a classDef per lens, enforcing hard caps (around 25 changed-file nodes and around 10 halo nodes) where overflow renders as one explicit "+ N more files" node per cluster, never as silent truncation.
+      3:
+        requirement: The change map must embed as a collapsed details block in renderHumanPrComment and the sticky summary, and as a new diagram embed in human_review.md; the old provider-narrative-path "Change impact" embed must retire with the requirements hairball, while the spec/requirement-mapping diagram (pr-change-impact.mmd) remains a standalone agent-facing artifact off the human surfaces; the map must carry no spec or requirement anchors.
+        note: One diagram answers one question. The map's left-to-right flow must agree with the reading-order tour's numbering — same underlying order.
+      4:
+        requirement: Every change-map label must pass through the shared diagram-label sanitizer (unifying the private copy in pr-change-diagram.ts rather than adding another), every embed point must keep the body-level fence-close guard, redaction must run before render, and scripts/determinism-check.sh must gain a PR-scope run so the comment-embedded map is determinism-checked.
+
+  READING_ORDER:
+    name: Guided diff tour
+    description: >-
+      Visual uplift Phase 2 / milestone M9 (brainstorm idea 2). A deterministic,
+      dependency-ordered reading plan over changed files — comprehension order,
+      not risk order — cross-linked with the review queue rather than merged
+      into it.
+    requirements:
+      1:
+        requirement: The human review model and strict schema must grow a reading_order section computed by restricting the import graph to changed files and topologically sorting with dependencies first, where strongly connected components collapse into one read-together leg with alphabetical order inside so the output is total and deterministic, and each step carries a path, a derived (never freeform) why line, and queue item references.
+      2:
+        requirement: The reading order must render in human_review.md and the HTML cockpit as the section after the verdict, while the sticky comment carries only the first leg; the tour must never include unchanged files.
+        note: Halo files belong to the map, not the reading plan; a blocker still leads the cockpit — the tour serves the comprehension pass after the verdict.
+
+  ARCH_DRIFT:
+    name: Architecture-drift facts
+    description: >-
+      Visual uplift Phase 4 / milestone M11 (brainstorm idea 5). Deterministic
+      facts for module-boundary import edges added or removed and import cycles
+      created by a change, computed by diffing base-side and head-side resolved
+      import sets for changed files only.
+    requirements:
+      1:
+        requirement: For each changed or deleted file the tool must parse the base content (read via readFileAtRef) with the same import extraction the import graph already uses, diff the resolved import sets per file, aggregate to module altitude (top-level directory under src/), and emit module_edge_added, module_edge_removed, and import_cycle_created facts following the existing semantic-diff detector shape.
+      2:
+        requirement: Architecture-drift facts must route into the existing risk register as queue items, carry an architecture lens tag, and set kind new or removed on the matching change_graph edges so both the mermaid and SVG map renderers pick the drift up without extra work.
+      3:
+        requirement: Drift detection must respect rename detection (a moved file re-creating its old edges from a new path is not drift), and imports the resolver cannot resolve (such as tsconfig path aliases) must count as unknown, never as removed, with resolver bounds documented like the import graph's existing bounds.
+
+  TREND:
+    name: Review-round convergence trend
+    description: >-
+      Visual uplift Phase 4 / milestone M11 (brainstorm idea 7). A compact
+      per-round ledger carried forward with the prior packet so reviewers of
+      agent-written PRs can see whether successive rounds are converging.
+    requirements:
+      1:
+        requirement: The tool must carry forward a rounds ledger with the prior packet — each entry recording round number, head SHA, new/resolved/regressed counts from the existing compare output, and verdict — appending one row per run, with item identity on stable finding keys, never array positions, and the ledger must work from both transports, CI artifacts and the local prior-packet directory.
+      2:
+        requirement: The sticky comment and the HTML cockpit must render the rounds ledger as a compact table capped at the last eight or so rounds with the full ledger preserved in the artifact, and partial history must render honestly (for example "history begins at round 3") and never as an error — a missing prior packet is the first-review case.
 
 constraints:
   EVIDENCE:

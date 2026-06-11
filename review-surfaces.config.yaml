@@ -271,11 +271,41 @@ quality_gate:
   # requirement regressing to "missing" still trips the strict self-dogfood gate.
   max_missing: 0
   # The next-value uplift (NEXT_VALUE_UPLIFT_GOAL.md) is fully shipped: all 33
-  # staged ACIDs landed phase by phase and were removed as they shipped, so the
-  # allowlist is EMPTY again — any missing requirement fails the strict
-  # self-dogfood gate. Re-add an ACID here only to stage a new not-yet-shipped
-  # requirement, and remove it as that work lands.
-  allow_missing: []
+  # staged ACIDs landed phase by phase and were removed as they shipped.
+  #
+  # The visual value uplift (VISUAL_VALUE_UPLIFT_GOAL.md, brainstorm ideas 1-9
+  # and 13) stages its not-yet-shipped ACIDs below; each phase PR removes the
+  # ACIDs it ships. The gate must be back to `allow_missing: []` when the final
+  # phase lands.
+  allow_missing:
+    # Phase 1 — local review loop (idea 13)
+    - review-surfaces.LOCAL_LOOP.1
+    - review-surfaces.LOCAL_LOOP.2
+    - review-surfaces.LOCAL_LOOP.3
+    - review-surfaces.LOCAL_LOOP.4
+    # Phase 2 / M9 — change-impact map + guided tour (ideas 1, 2)
+    - review-surfaces.CHANGE_MAP.1
+    - review-surfaces.CHANGE_MAP.2
+    - review-surfaces.CHANGE_MAP.3
+    - review-surfaces.CHANGE_MAP.4
+    - review-surfaces.READING_ORDER.1
+    - review-surfaces.READING_ORDER.2
+    # Phase 3 / M10 — cockpit visual layer (ideas 3, 4, 6)
+    - review-surfaces.RENDER.11
+    - review-surfaces.RENDER.12
+    - review-surfaces.COVERAGE.5
+    - review-surfaces.COVERAGE.6
+    # Phase 4 / M11 — drift and convergence (ideas 5, 7)
+    - review-surfaces.ARCH_DRIFT.1
+    - review-surfaces.ARCH_DRIFT.2
+    - review-surfaces.ARCH_DRIFT.3
+    - review-surfaces.TREND.1
+    - review-surfaces.TREND.2
+    - review-surfaces.EVAL_HARNESS.5
+    # Phase 5 — depth and trust story (ideas 8, 9)
+    - review-surfaces.DEP_FACTS.4
+    - review-surfaces.RENDER.13
+    - review-surfaces.EVAL_HARNESS.6
 human_review:
   enabled: true
   default_entrypoint: true
