@@ -67,11 +67,11 @@ a { color: var(--accent); }
 <h2 id="verdict">Verdict</h2>
 <p><span class="badge ${esc(model.verdict.decision)}">${esc(decisionLabel(model.verdict.decision))}</span> <span class="muted">confidence: ${esc(model.verdict.confidence)}</span></p>
 <p>${esc(model.summary)}</p>
-${renderNarrative(model)}
-${renderBlockers(model)}
-
 <h2 id="reading-order">Reading order</h2>
 ${renderReadingOrder(model)}
+
+${renderNarrative(model)}
+${renderBlockers(model)}
 
 <h2 id="queue">Review queue</h2>
 ${renderLensFilters(lenses)}

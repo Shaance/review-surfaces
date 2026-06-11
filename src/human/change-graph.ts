@@ -148,7 +148,9 @@ function dedupeEdges(edges: ChangedImportEdge[], changed: Set<string>): ChangeGr
     if (!changed.has(edge.importer) || !changed.has(edge.imported) || edge.importer === edge.imported) {
       continue;
     }
-    const key = `${edge.imported} ${edge.importer}`;
+    // Unambiguous tuple key: a single-space join collides for paths containing
+    // spaces ("a b"+"c" vs "a"+"b c") and would silently drop a real edge.
+    const key = JSON.stringify([edge.imported, edge.importer]);
     if (seen.has(key)) {
       continue;
     }
@@ -217,11 +219,13 @@ function categoryOf(filePath: string): LegCategory {
   if (top === "schemas" || top === "features" || filePath.endsWith(".schema.json")) {
     return "contracts";
   }
-  if (top === "src" || top === "bin" || top === "lib") {
-    return "implementation";
-  }
+  // Test classification first: a co-located src/foo.test.ts is a test, not
+  // implementation — otherwise the tour breaks "tests after code".
   if (top === "tests" || top === "test" || /\.(test|spec)\.[jt]sx?$/.test(filePath)) {
     return "tests";
+  }
+  if (top === "src" || top === "bin" || top === "lib") {
+    return "implementation";
   }
   return "config";
 }
@@ -290,11 +294,25 @@ function buildReadingOrder(files: ChangedFileFacts[], edges: ChangeGraphEdge[], 
     importerCount.set(edge.to, (importerCount.get(edge.to) ?? 0) + 1);
     dependencyCount.set(edge.from, (dependencyCount.get(edge.from) ?? 0) + 1);
   }
+  // Queue cross-links: a rename-source-anchored item carries the OLD path, but
+  // the tour step is emitted for the current path — map old_path back so the
+  // cross-link survives renames.
+  const currentPathByAlias = new Map<string, string>();
+  for (const file of files) {
+    if (file.old_path) {
+      currentPathByAlias.set(file.old_path, file.path);
+    }
+  }
+  // A current path that collides with another file's old_path wins.
+  for (const file of files) {
+    currentPathByAlias.set(file.path, file.path);
+  }
   const queueRefs = new Map<string, string[]>();
   for (const item of [...queue].sort((a, b) => a.rank - b.rank)) {
-    const refs = queueRefs.get(item.path) ?? [];
+    const target = currentPathByAlias.get(item.path) ?? item.path;
+    const refs = queueRefs.get(target) ?? [];
     refs.push(item.id);
-    queueRefs.set(item.path, refs);
+    queueRefs.set(target, refs);
   }
   const statusByPath = new Map(files.map((file) => [file.path, normalizeStatus(file.status)]));
 

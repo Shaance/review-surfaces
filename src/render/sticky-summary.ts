@@ -14,7 +14,7 @@ import { renderHunkExcerpt } from "../human/hunk-excerpt";
 import { decisionLabel, formatQueueLocation } from "../human/render";
 import type { HumanReviewModel, ReviewQueueItem, SinceLastReview, SinceLastReviewItem } from "../human/contract";
 import { STICKY_MARKER } from "./comment";
-import { changeMapDetailsBlock } from "./change-map-embed";
+import { changeMapMermaidEmbed } from "./change-map-embed";
 
 const MAX_SUMMARY_CHARS = 600;
 const MAX_FIELD_CHARS = 300;
@@ -98,9 +98,14 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
 
   // review-surfaces.CHANGE_MAP.3: the change map embeds as a collapsed details
   // block so the sticky stays short; READING_ORDER.2: only the FIRST tour leg.
-  const mapBlock = changeMapDetailsBlock(model.change_graph);
-  if (mapBlock) {
-    sections.push("", mapBlock);
+  // The embed's redaction block signal feeds the postability gate — the final
+  // whole-body pass only sees already-redacted text.
+  const mapEmbed = changeMapMermaidEmbed(model.change_graph);
+  if (mapEmbed.blocked) {
+    state.blocked = true;
+  }
+  if (mapEmbed.body) {
+    sections.push("", `<details><summary>Change map</summary>\n\n\`\`\`mermaid\n${mapEmbed.body}\n\`\`\`\n\n</details>`);
   }
   const firstLeg = renderFirstTourLeg(model, state);
   if (firstLeg) {
