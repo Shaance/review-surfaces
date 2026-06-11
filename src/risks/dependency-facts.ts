@@ -103,20 +103,21 @@ function attributeTransitives(facts: DependencyFact[], input: ComputeDependencyF
     if (direct.length === 0) {
       continue;
     }
-    // Reachability over instances, first (alphabetical) root wins PER
-    // INSTANCE. A package-level via is assigned only when every reached
-    // instance of that package agrees on the root — instances pulled by
-    // different direct deps stay unattributed rather than guessed.
-    const viaByInstance = new Map<string, string>();
+    // Reachability over instances, recording EVERY direct root that reaches
+    // each instance. A package-level via is assigned only when exactly one
+    // root reaches it — a transitive shared by several direct deps (or split
+    // across instances pulled by different roots) stays unattributed rather
+    // than guessed at.
+    const rootsByInstance = new Map<string, Set<string>>();
     for (const root of direct) {
       const rootInstances = [...(graph.instancesByName.get(root) ?? [])].sort();
       const queue = [...rootInstances];
       const seen = new Set<string>(rootInstances);
       while (queue.length > 0) {
         const instance = queue.shift() as string;
-        if (!viaByInstance.has(instance)) {
-          viaByInstance.set(instance, root);
-        }
+        const roots = rootsByInstance.get(instance) ?? new Set<string>();
+        roots.add(root);
+        rootsByInstance.set(instance, roots);
         for (const next of [...(graph.edges.get(instance) ?? [])].sort()) {
           if (!seen.has(next)) {
             seen.add(next);
@@ -128,8 +129,7 @@ function attributeTransitives(facts: DependencyFact[], input: ComputeDependencyF
     for (const fact of sourceFacts) {
       const roots = new Set<string>();
       for (const instance of graph.instancesByName.get(fact.package) ?? []) {
-        const root = viaByInstance.get(instance);
-        if (root) {
+        for (const root of rootsByInstance.get(instance) ?? []) {
           roots.add(root);
         }
       }
