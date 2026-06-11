@@ -47,7 +47,8 @@ test("review-surfaces.DEP_FACTS.4 new transitives are attributed to the direct d
 
 test("review-surfaces.DEP_FACTS.4 pnpm lockfile dependency edges attribute transitives too", () => {
   const basePnpm = `lockfileVersion: '9.0'\npackages:\n  left-pad@1.0.0: {}\n`;
-  const headPnpm = `lockfileVersion: '9.0'\npackages:\n  left-pad@1.1.0:\n    dependencies:\n      minimist: 1.2.8\n  minimist@1.2.8:\n    requiresBuild: true\n`;
+  // v9 shape: edges live under snapshots:, packages: holds metadata only.
+  const headPnpm = `lockfileVersion: '9.0'\npackages:\n  left-pad@1.1.0: {}\n  minimist@1.2.8:\n    requiresBuild: true\nsnapshots:\n  left-pad@1.1.0:\n    dependencies:\n      minimist: 1.2.8\n  minimist@1.2.8: {}\n`;
   const facts = computeDependencyFacts({
     changedFiles: [{ path: "pnpm-lock.yaml" }],
     readBase: (filePath) => (filePath === "pnpm-lock.yaml" ? basePnpm : undefined),

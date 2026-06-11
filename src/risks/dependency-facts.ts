@@ -117,28 +117,43 @@ function attributeTransitives(facts: DependencyFact[], input: ComputeDependencyF
   }
 }
 
-// Name-level edges from pnpm-lock.yaml: packages["/name@ver"].dependencies.
+// Name-level edges from pnpm-lock.yaml. pnpm v9 records dependency edges under
+// the `snapshots:` section (packages: holds resolution/metadata only); older
+// formats carry `dependencies` on packages: entries. Read BOTH so v6 and v9
+// lockfiles attribute — a lockfile with neither yields the flat fallback.
 function pnpmLockEdges(text: string | undefined): Map<string, Set<string>> | undefined {
-  const packages = pnpmPackages(text);
-  if (!packages || packages.size === 0) {
+  if (!text) {
+    return undefined;
+  }
+  let parsed: Record<string, unknown> | null;
+  try {
+    parsed = parseYaml(text) as Record<string, unknown> | null;
+  } catch {
     return undefined;
   }
   const edges = new Map<string, Set<string>>();
-  for (const [key, entry] of packages) {
-    if (typeof entry !== "object" || entry === null) {
-      continue;
+  const collect = (section: unknown): void => {
+    if (typeof section !== "object" || section === null) {
+      return;
     }
-    const deps = (entry as Record<string, unknown>).dependencies;
-    if (typeof deps !== "object" || deps === null) {
-      continue;
+    for (const [key, entry] of Object.entries(section as Record<string, unknown>)) {
+      if (typeof entry !== "object" || entry === null) {
+        continue;
+      }
+      const deps = (entry as Record<string, unknown>).dependencies;
+      if (typeof deps !== "object" || deps === null) {
+        continue;
+      }
+      const from = pnpmPackageName(key);
+      const targets = edges.get(from) ?? new Set<string>();
+      for (const dep of Object.keys(deps as Record<string, unknown>)) {
+        targets.add(dep);
+      }
+      edges.set(from, targets);
     }
-    const from = pnpmPackageName(key);
-    const targets = edges.get(from) ?? new Set<string>();
-    for (const dep of Object.keys(deps as Record<string, unknown>)) {
-      targets.add(dep);
-    }
-    edges.set(from, targets);
-  }
+  };
+  collect(parsed?.packages);
+  collect(parsed?.snapshots);
   return edges.size > 0 ? edges : undefined;
 }
 
