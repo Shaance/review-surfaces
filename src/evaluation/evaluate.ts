@@ -18,10 +18,12 @@ import {
 import { NormalizedTestCase, TestResults } from "../tests-evidence/junit";
 import {
   ACID_PATTERN,
+  allPresenceTokensExist,
   groupFromAcid,
   isImplementationEvidencePath,
   isTestOnlyRequirement,
   mentionsGroupToken,
+  pathLikeTokens,
   unique,
   uniqueEvidence
 } from "./evidence-rules";
@@ -141,7 +143,11 @@ function evaluateRequirement(requirement: IntentRequirement, index: EvidenceInde
     status = "invalid_evidence";
     summary = "Requirement source reference is invalid.";
     confidence = "high";
-  } else if (directEvidence.length > 0 && isRepositoryPresenceRequirement(requirement)) {
+  } else if (
+    isRepositoryPresenceRequirement(requirement) &&
+    directEvidence.length > 0 &&
+    allPresenceTokensExist(requirement.requirement, index.allFiles)
+  ) {
     status = "satisfied";
     summary = "Referenced repository file evidence exists for this requirement.";
     confidence = "high";
@@ -382,10 +388,6 @@ function directFileEvidence(requirement: IntentRequirement, index: EvidenceIndex
     .filter((filePath) => index.allFiles.has(filePath))
     .slice(0, 5)
     .map((filePath) => fileEvidence(filePath, `Repository file referenced by ${requirement.acai_id ?? requirement.id} exists.`, "high"));
-}
-
-function pathLikeTokens(text: string): string[] {
-  return [...new Set(text.replace(/`/g, "").match(/(?:[\w.-]+\/)+[\w.-]+|AGENTS\.md|README(?:\.[\w.-]+)?|package\.json|review-surfaces\.config\.yaml/g) ?? [])];
 }
 
 function isRepositoryPresenceRequirement(requirement: IntentRequirement): boolean {

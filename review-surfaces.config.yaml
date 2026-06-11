@@ -7,6 +7,7 @@ docs:
   - README.bootstrap.md
   - AGENTS.md
   - CLAUDE.md
+  - OPEN_SOURCE_UPLIFT_GOAL.md
   - docs/**/*.md
   - .agents/skills/**/SKILL.md
 tests:
@@ -51,6 +52,7 @@ areas:
       - .agents/
       - features/
       - docs/review-surfaces-trd.md
+      - OPEN_SOURCE_UPLIFT_GOAL.md
       - review-surfaces.config.yaml
       - src/config/
       - src/bootstrap/
@@ -274,11 +276,24 @@ quality_gate:
   # staged ACIDs landed phase by phase and were removed as they shipped.
   #
   # The visual value uplift (VISUAL_VALUE_UPLIFT_GOAL.md) is fully shipped:
-  # all 24 staged ACIDs landed phase by phase and were removed as they shipped,
-  # so the allowlist is EMPTY again — any missing requirement fails the strict
-  # self-dogfood gate. Re-add an ACID here only to stage a new not-yet-shipped
-  # requirement, and remove it as that work lands.
-  allow_missing: []
+  # all 24 staged ACIDs landed phase by phase and were removed as they shipped.
+  #
+  # The open-source readiness uplift (OPEN_SOURCE_UPLIFT_GOAL.md) stages its
+  # not-yet-shipped ACIDs below; each phase PR removes the ACIDs it ships. The
+  # gate must be back to `allow_missing: []` when the final phase lands.
+  allow_missing:
+    # Phase 1 — cold-start correctness (evidence-log failures 1-3)
+    - review-surfaces.COLD_START.1
+    - review-surfaces.COLD_START.2
+    - review-surfaces.COLD_START.3
+    # Phase 2 — spec-less mode (evidence-log failure 4)
+    - review-surfaces.COLD_START.4
+    - review-surfaces.COLD_START.5
+    # Phase 3 — distribution and repo hygiene (evidence-log failure 5)
+    - review-surfaces.DISTRIBUTION.1
+    - review-surfaces.DISTRIBUTION.2
+    - review-surfaces.DISTRIBUTION.3
+    - review-surfaces.DISTRIBUTION.4
 human_review:
   enabled: true
   default_entrypoint: true

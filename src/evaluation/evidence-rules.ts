@@ -21,10 +21,35 @@ export const DEFAULT_NON_IMPLEMENTATION_PREFIXES = [
   ".agents/",
   ".review-surfaces/"
 ] as const;
-export const DEFAULT_NON_IMPLEMENTATION_EXACT = ["AGENTS.md", "CLAUDE.md"] as const;
+// review-surfaces.config.yaml carries staged ACIDs in quality_gate.allow_missing;
+// treating it as implementation would let allowlisting a requirement count as
+// shipping it, hiding "missing" from the strict self-dogfood gate.
+export const DEFAULT_NON_IMPLEMENTATION_EXACT = ["AGENTS.md", "CLAUDE.md", "review-surfaces.config.yaml"] as const;
 // README* matched by the prefix "README" (no slash) — preserves the existing
 // startsWith semantics (README.md, README, README.rst all match).
 export const DEFAULT_NON_IMPLEMENTATION_STARTS_WITH = ["README"] as const;
+
+// Path-shaped tokens a requirement sentence can cite as repository-presence
+// evidence. Bare well-known filenames (no slash) are listed explicitly so
+// presence requirements like DISTRIBUTION.1 are satisfiable by the files
+// existing rather than by artificial ACID mentions.
+export function pathLikeTokens(text: string): string[] {
+  return [
+    ...new Set(
+      text
+        .replace(/`/g, "")
+        .match(/(?:[\w.-]+\/)+[\w.-]+|AGENTS\.md|CONTRIBUTING\.md|LICENSE|README(?:\.[\w.-]+)?|package\.json|review-surfaces\.config\.yaml/g) ?? []
+    )
+  ];
+}
+
+// A repository-presence requirement ("the repository must contain X and Y") is
+// satisfied only when EVERY cited file exists — any-token satisfaction would
+// let a phase land with one of two promised files and silence the gate.
+export function allPresenceTokensExist(text: string, files: Set<string>): boolean {
+  const tokens = pathLikeTokens(text);
+  return tokens.length > 0 && tokens.every((token) => files.has(token));
+}
 
 export interface ImplementationPathOptions {
   nonImplementationPrefixes?: readonly string[];
