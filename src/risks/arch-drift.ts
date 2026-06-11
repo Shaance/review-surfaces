@@ -86,9 +86,12 @@ export function computeArchDriftFacts(input: ComputeArchDriftInput): ArchDriftRe
 
   for (const file of files) {
     const status = (file.status || "M").toUpperCase()[0];
-    // Base identity: the rename source when the file moved (a moved file
-    // re-creating its old edges is NOT drift — same resolved targets).
-    const basePath = file.old_path ?? (status === "A" || status === "?" ? undefined : file.path);
+    // Base identity: the rename source ONLY for true renames (a moved file
+    // re-creating its old edges is NOT drift — same resolved targets). A COPY
+    // is an additional importer: comparing it against its source would
+    // suppress the genuinely new edges it introduces, so copies (like
+    // additions and untracked files) get an empty base side.
+    const basePath = status === "R" ? file.old_path ?? file.path : status === "A" || status === "?" || status === "C" ? undefined : file.path;
     const headPath = status === "D" ? undefined : file.path;
 
     const baseImports = basePath

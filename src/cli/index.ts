@@ -66,7 +66,7 @@ import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
 import { ChangedImportEdge, computeChangedImportEdges } from "../human/change-graph";
 import { ArchDriftResult, computeArchDriftFacts, moduleOf } from "../risks/arch-drift";
-import { RoundsLedgerEntry } from "../human/contract";
+import { HUMAN_REVIEW_DECISIONS, RoundsLedgerEntry } from "../human/contract";
 import { buildChangeNarrative } from "../human/narrative";
 import { ChangeNarrative, HumanReviewModel, ReviewQueueItem } from "../human/contract";
 import { runWalkthrough, WalkthroughIO, WalkthroughOptions } from "../review/walkthrough";
@@ -1654,15 +1654,23 @@ function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined
   const existsBase = (filePath: string): boolean => readers.baseReadRef !== "" && blobExistsAtRef(cwd, readers.baseReadRef, filePath);
   const baseModuleEdgeKeys = treeModuleEdgeKeys(cwd, readers.baseReadRef || undefined, readers.readBase, existsBase);
   const headModuleEdgeKeys = treeModuleEdgeKeys(cwd, readers.headIsWorktree ? "WORKTREE" : readers.headSha, readers.readHead, existsHead);
-  return computeArchDriftFacts({
+  const result = computeArchDriftFacts({
     changedFiles: diff.files.map((file) => ({ path: file.path, ...(file.old_path ? { old_path: file.old_path } : {}), status: file.status })),
     readBase: readers.readBase,
     readHead: readers.readHead,
     existsBase,
     existsHead,
-    ...(baseModuleEdgeKeys ? { baseModuleEdgeKeys } : {}),
-    ...(headModuleEdgeKeys ? { headModuleEdgeKeys } : {})
+    ...(baseModuleEdgeKeys instanceof Set ? { baseModuleEdgeKeys } : {}),
+    ...(headModuleEdgeKeys instanceof Set ? { headModuleEdgeKeys } : {})
   });
+  // A truncated tree graph makes module-edge novelty UNKNOWN: suppress the
+  // facts ("no import existed at the base" cannot be asserted) but keep the
+  // file-level edge deltas — they come from the changed files alone and stay
+  // exact for the map renderers.
+  if (baseModuleEdgeKeys === "truncated" || headModuleEdgeKeys === "truncated") {
+    return { facts: [], file_edges: result.file_edges };
+  }
+  return result;
 }
 
 // Module-edge keys over a whole tree, honoring the privacy/generated ignore
@@ -1674,7 +1682,7 @@ function treeModuleEdgeKeys(
   treeRef: string | undefined,
   read: (filePath: string) => string | undefined,
   exists: (filePath: string) => boolean
-): Set<string> | undefined {
+): Set<string> | "truncated" | undefined {
   if (!treeRef) {
     return undefined;
   }
@@ -1682,7 +1690,7 @@ function treeModuleEdgeKeys(
   try {
     tracked = execFileSync(
       "git",
-      treeRef === "WORKTREE" ? ["ls-files"] : ["ls-tree", "-r", "--name-only", treeRef],
+      treeRef === "WORKTREE" ? ["ls-files", "--cached", "--others", "--exclude-standard"] : ["ls-tree", "-r", "--name-only", treeRef],
       { cwd, encoding: "utf8" }
     )
       .split("\n")
@@ -1694,9 +1702,11 @@ function treeModuleEdgeKeys(
   tracked = tracked.filter((filePath) => !ignore.isIgnored(filePath));
   const graph = buildImportGraph({ files: tracked, read, exists });
   // A truncated graph is PARTIAL evidence: treating it as the whole tree would
-  // report pre-existing edges beyond the cap as new. Unknown -> fallback bound.
+  // report pre-existing edges beyond the cap as new — and the changed-files
+  // fallback bound would be just as misleading. Signal "truncated" so the
+  // caller suppresses module-edge facts entirely rather than guessing.
   if (graph.truncated) {
-    return undefined;
+    return "truncated";
   }
   const keys = new Set<string>();
   for (const [imported, importers] of graph.importers.entries()) {
@@ -1731,11 +1741,13 @@ function readPreviousRounds(cwd: string, packet: ReviewPacket): RoundsLedgerEntr
       const row = entry as Partial<RoundsLedgerEntry>;
       return (
         typeof row.round === "number" &&
+        Number.isInteger(row.round) &&
         typeof row.head_sha === "string" &&
-        typeof row.new_count === "number" &&
-        typeof row.resolved_count === "number" &&
-        typeof row.regressed_count === "number" &&
-        typeof row.verdict === "string"
+        Number.isInteger(row.new_count) &&
+        Number.isInteger(row.resolved_count) &&
+        Number.isInteger(row.regressed_count) &&
+        typeof row.verdict === "string" &&
+        (HUMAN_REVIEW_DECISIONS as readonly string[]).includes(row.verdict)
       );
     };
     if (parsed.rounds.length === 0 || !parsed.rounds.every(isValidRow)) {
