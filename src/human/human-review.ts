@@ -4260,12 +4260,21 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
         command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test"
       })];
     case "unmapped_change":
-      return [riskDraft({
-        kind: "manual",
-        priority: "recommended",
-        scenario: "Inspect the unmapped changed files and decide whether they need review-area or requirement mappings.",
-        expected_result: "Each unmapped file is either mapped to a review area/requirement or explicitly recorded as generated, ignored, or non-product behavior."
-      })];
+      // review-surfaces.COLD_START.5: spec-less repos are never asked to map
+      // files to requirements — review areas are the only mapping concept.
+      return (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none"
+        ? [riskDraft({
+            kind: "manual",
+            priority: "recommended",
+            scenario: "Inspect the unmapped changed files and decide whether they need review-area mappings.",
+            expected_result: "Each unmapped file is either mapped to a review area or explicitly recorded as generated, ignored, or non-product behavior."
+          })]
+        : [riskDraft({
+            kind: "manual",
+            priority: "recommended",
+            scenario: "Inspect the unmapped changed files and decide whether they need review-area or requirement mappings.",
+            expected_result: "Each unmapped file is either mapped to a review area/requirement or explicitly recorded as generated, ignored, or non-product behavior."
+          })];
     case "privacy_sensitive_change":
       return [riskDraft({
         kind: "automatic",

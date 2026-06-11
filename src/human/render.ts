@@ -400,7 +400,7 @@ Generated from \`${field(model.generated_from.packet_path)}\`.
 ${since.previous_packet_path ? `Compared against \`${field(since.previous_packet_path)}\`.` : "No previous packet path recorded."}
 
 ${since.unavailable_reason ? `${field(since.unavailable_reason)}\n` : ""}
-## Improved
+${model.spec_mode === "none" ? "" : `## Improved
 
 ${renderSinceLastReviewItems(since.improved)}
 
@@ -408,14 +408,14 @@ ${renderSinceLastReviewItems(since.improved)}
 
 ${renderSinceLastReviewItems(since.regressed)}
 
-## New risks
+`}## New risks
 
 ${renderSinceLastReviewItems(since.new_risks)}
 
 ## Resolved risks
 
 ${renderSinceLastReviewItems(since.resolved_risks)}
-
+${model.spec_mode === "none" ? "" : `
 ## New overreach
 
 ${renderSinceLastReviewItems(since.new_overreach)}
@@ -423,6 +423,7 @@ ${renderSinceLastReviewItems(since.new_overreach)}
 ## Resolved overreach
 
 ${renderSinceLastReviewItems(since.resolved_overreach)}
+`}
 
 ## Still open
 

@@ -426,10 +426,18 @@ export async function buildPrNarrative(input: BuildPrNarrativeInput): Promise<Pr
     return { meta: { ...baseMeta, status: "failed", validation_errors: ["non_object_output"] }, blocked_reason: "invalid_llm_output" };
   }
 
-  const whatChanged = validateItems(data.what_changed, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_WHAT_CHANGED_ITEMS);
-  const whyItMatters = validateItems(data.why_it_matters, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_WHY_IT_MATTERS_ITEMS);
-  const reviewFirst = validateItems(data.review_first, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_REVIEW_FIRST_ITEMS);
-  const riskNarratives = validateRiskNarratives(data.risk_narratives, allowedRiskIds, allowedPaths, allowedRequirementIds, MAX_RISK_NARRATIVE_ITEMS);
+  // review-surfaces.COLD_START.5: on a spec-less repo, provider prose that
+  // speaks in requirements is dropped item-by-item (anchor validation cannot
+  // catch wording like "0 affected requirements" — it only checks tokens).
+  const speclessOk = (text: string): boolean => input.specMode !== "none" || !/requirement/i.test(text);
+  const whatChanged = validateItems(data.what_changed, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_WHAT_CHANGED_ITEMS).filter((item) => speclessOk(item.text));
+  const whyItMatters = validateItems(data.why_it_matters, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_WHY_IT_MATTERS_ITEMS).filter((item) => speclessOk(item.text));
+  const reviewFirst = validateItems(data.review_first, allowedPaths, allowedRequirementIds, allowedRiskIds, MAX_REVIEW_FIRST_ITEMS).filter((item) => speclessOk(item.text));
+  const riskNarratives = validateRiskNarratives(data.risk_narratives, allowedRiskIds, allowedPaths, allowedRequirementIds, MAX_RISK_NARRATIVE_ITEMS)
+    .filter((item) => speclessOk(item.text))
+    .map((item) =>
+      item.suggested_checks ? { ...item, suggested_checks: item.suggested_checks.filter((check) => speclessOk(check)) } : item
+    );
 
   // Require the three core PR reviewer questions to survive validation. A risk
   // narrative alone is not enough for a PR review surface.
