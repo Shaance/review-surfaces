@@ -20,7 +20,7 @@ function model(over: Partial<HumanReviewModel> = {}): HumanReviewModel {
       ]
     },
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
-    change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [] },
+    change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
     reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "One renderer file changed.",

@@ -11,7 +11,8 @@
 import { resolveStructuredExcerpt } from "./hunk-excerpt";
 import { decisionLabel, formatQueueLocation, HumanRenderContext } from "./render";
 import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
-import { renderChangeMapSvg, SVG_LENS_FILLS } from "./render-svg-map";
+import { renderChangeMapOverviewSvg, renderChangeMapSvg, SVG_LENS_FILLS } from "./render-svg-map";
+import { changeMapLeadLevel } from "./legibility-budget";
 // Redact-then-escape: EVERY interpolated value goes through this shared helper
 // (lifted to esc.ts so the SVG emitter uses the same one — RENDER.11).
 import { esc } from "./esc";
@@ -247,8 +248,12 @@ function renderHeaderStrip(model: HumanReviewModel, lenses: string[]): string {
 
 // review-surfaces.RENDER.11: the inline SVG map with its text legend; the same
 // change_graph model the mermaid emitter draws — never a second graph model.
+// review-surfaces.MAP_SCALE.2: the legibility budget decides which level leads
+// — the overview SVG summarizes when the file-level map cannot render at full
+// size (summarize, never shrink).
 function renderSvgMapSection(model: HumanReviewModel): string {
-  const rendered = renderChangeMapSvg(model.change_graph);
+  const level = changeMapLeadLevel(model.change_graph);
+  const rendered = level === "overview" ? renderChangeMapOverviewSvg(model.change_graph.overview) : renderChangeMapSvg(model.change_graph);
   if (!rendered) {
     return `<p class="muted">No changed files to map.</p>`;
   }
@@ -258,6 +263,10 @@ function renderSvgMapSection(model: HumanReviewModel): string {
           .map((lens) => `<span style="border-left:10px solid ${SVG_LENS_FILLS[lens]};padding-left:.3rem;margin-right:.6rem">${esc(RISK_LENS_METADATA[lens]?.label ?? lens)}</span>`)
           .join("")}</p>`
       : "";
+  if (level === "overview") {
+    const overview = model.change_graph.overview;
+    return `<p class="muted">Overview — ${esc(model.change_graph.nodes.length)} changed file(s) across ${esc(overview.groups.length)} group(s); the file-level map exceeds the legibility budget, so groups lead. Hover a group for details.</p>\n${rendered.svg}\n${legend}`;
+  }
   return `${rendered.svg}\n${legend}<p class="muted">Click a node to filter the review queue to that file; hover for details.</p>`;
 }
 

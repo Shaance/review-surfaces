@@ -5,9 +5,10 @@
 // The redaction BLOCK signal is preserved so a high-confidence secret inside a
 // rendered label still trips the sticky's postability gate (a downstream
 // whole-body pass only ever sees the already-redacted placeholder).
-import { renderChangeMapMermaid } from "../diagrams/change-map";
+import { renderChangeMapMermaid, renderChangeMapOverviewMermaid } from "../diagrams/change-map";
 import { renderDependencyTreeMermaid } from "../diagrams/dep-tree";
 import { ChangeGraph, DependencyChain } from "../human/contract";
+import { changeMapLeadLevel } from "../human/legibility-budget";
 import { redactSecrets } from "../privacy/secrets";
 
 const MAX_EMBED_CHARS = 12_000;
@@ -15,31 +16,38 @@ const MAX_EMBED_CHARS = 12_000;
 export interface ChangeMapEmbed {
   body?: string;
   blocked: boolean;
+  // review-surfaces.MAP_SCALE.2: which level the legibility budget chose —
+  // surfaces title the block honestly ("Change map" vs "Change map (overview)").
+  level: "file" | "overview";
 }
 
 export function changeMapMermaidEmbed(graph: ChangeGraph): ChangeMapEmbed {
-  const rendered = renderChangeMapMermaid(graph);
+  // review-surfaces.MAP_SCALE.2: the legibility budget decides which level
+  // leads — the SAME decision on every mermaid surface (md, sticky, PR
+  // comment); this helper carries no threshold of its own.
+  const level = changeMapLeadLevel(graph);
+  const rendered = level === "overview" ? renderChangeMapOverviewMermaid(graph.overview) : renderChangeMapMermaid(graph);
   if (!rendered) {
-    return { blocked: false };
+    return { blocked: false, level };
   }
   const redaction = redactSecrets(rendered);
   if (redaction.text.length > MAX_EMBED_CHARS || /^\s*```/m.test(redaction.text)) {
-    return { blocked: redaction.blocked };
+    return { blocked: redaction.blocked, level };
   }
-  return { body: redaction.text, blocked: redaction.blocked };
+  return { body: redaction.text, blocked: redaction.blocked, level };
 }
 
-export function changeMapMermaidBody(graph: ChangeGraph): string | undefined {
-  return changeMapMermaidEmbed(graph).body;
+export function changeMapTitle(level: "file" | "overview"): string {
+  return level === "overview" ? "Change map (overview)" : "Change map";
 }
 
 // Collapsed <details> form for the comment surfaces (sticky + PR comment).
 export function changeMapDetailsBlock(graph: ChangeGraph): string | undefined {
-  const body = changeMapMermaidBody(graph);
-  if (!body) {
+  const embed = changeMapMermaidEmbed(graph);
+  if (!embed.body) {
     return undefined;
   }
-  return mermaidDetailsBlock("Change map", body);
+  return mermaidDetailsBlock(changeMapTitle(embed.level), embed.body);
 }
 
 // Shared collapsed-details mermaid wrapper (the blank line after <summary> is

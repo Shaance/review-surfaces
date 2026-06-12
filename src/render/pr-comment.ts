@@ -1,6 +1,6 @@
 import { SPEC_NONE_NOTE } from "../evaluation/status";
 import { redactSecrets } from "../privacy/secrets";
-import { changeMapMermaidEmbed, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
+import { changeMapMermaidEmbed, changeMapTitle, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
 import { firstTourLegSnippet } from "./tour-snippet";
 import type {
   HumanReviewModel,
@@ -237,7 +237,7 @@ export function renderHumanPrComment(model: HumanReviewModel, options: RenderHum
     "",
     // The blank line before the details block is required for GitHub to render
     // the inner mermaid.
-    ...(mapEmbed.body ? [mermaidDetailsBlock("Change map", mapEmbed.body), ""] : []),
+    ...(mapEmbed.body ? [mermaidDetailsBlock(changeMapTitle(mapEmbed.level), mapEmbed.body), ""] : []),
     ...(depTree.body ? [mermaidDetailsBlock("Dependency chains (supply chain)", depTree.body), ""] : []),
     ...(tourLeg.text ? [tourLeg.text, ""] : []),
     `Full human review: \`${field(humanReviewPath)}\`.`,

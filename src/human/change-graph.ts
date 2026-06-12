@@ -8,10 +8,14 @@ import { compareStrings } from "../core/compare";
 import { clusterOfPath, DEFAULT_IMPLEMENTATION_ROOTS } from "../core/source-roots";
 import {
   ChangeGraph,
+  ChangeGraphCluster,
   ChangeGraphEdge,
   ChangeGraphHaloNode,
   ChangeGraphNode,
   ChangeGraphNodeStatus,
+  ChangeGraphOverview,
+  ChangeGraphOverviewEdge,
+  ChangeGraphOverviewGroup,
   ReadingOrder,
   ReadingOrderLeg,
   ReviewQueueItem,
@@ -166,15 +170,140 @@ export function buildChangeGraphSections(input: BuildSectionsInput): { change_gr
     clusterPaths.get(node.cluster)?.push(node.path);
   }
 
+  const clusters: ChangeGraphCluster[] = clusterOrder.map((name) => ({ name, paths: clusterPaths.get(name) ?? [] }));
   return {
     change_graph: {
       nodes,
       halo_nodes: haloNodes,
       edges,
-      clusters: clusterOrder.map((name) => ({ name, paths: clusterPaths.get(name) ?? [] }))
+      clusters,
+      overview: buildOverview(nodes, clusters, edges, haloNodes, input.reviewQueue, currentPathByAliasOf(files))
     },
     reading_order: readingOrder
   };
+}
+
+// review-surfaces.MAP_SCALE.1: merge model clusters into overview groups by
+// first path segment ("(root)" stays itself) — derived here, in the model,
+// from the SAME clusters/nodes/edges/queue every other surface uses; renderers
+// never re-cluster. Honest by construction (MAP_SCALE.3): group file counts
+// sum to nodes.length and edge weights account for every inter-group model edge.
+function overviewGroupOf(cluster: string): string {
+  return cluster.split("/")[0];
+}
+
+function buildOverview(
+  nodes: ChangeGraphNode[],
+  clusters: ChangeGraphCluster[],
+  edges: ChangeGraphEdge[],
+  haloNodes: ChangeGraphHaloNode[],
+  queue: ReviewQueueItem[],
+  currentPathByAlias: Map<string, string>
+): ChangeGraphOverview {
+  const groupOrder: string[] = [];
+  const clusterCounts = new Map<string, number>();
+  for (const cluster of clusters) {
+    const group = overviewGroupOf(cluster.name);
+    if (!clusterCounts.has(group)) {
+      groupOrder.push(group);
+      clusterCounts.set(group, 0);
+    }
+    clusterCounts.set(group, (clusterCounts.get(group) ?? 0) + 1);
+  }
+
+  const groupByPath = new Map<string, string>();
+  const stats = new Map<string, { files: number; added: number; removed: number; lensCounts: Map<RiskLens, number>; queue: number }>();
+  for (const group of groupOrder) {
+    stats.set(group, { files: 0, added: 0, removed: 0, lensCounts: new Map(), queue: 0 });
+  }
+  for (const node of nodes) {
+    const group = overviewGroupOf(node.cluster);
+    groupByPath.set(node.path, group);
+    const entry = stats.get(group);
+    if (!entry) {
+      continue;
+    }
+    entry.files += 1;
+    entry.added += node.churn_added;
+    entry.removed += node.churn_removed;
+    if (node.lens) {
+      entry.lensCounts.set(node.lens, (entry.lensCounts.get(node.lens) ?? 0) + 1);
+    }
+  }
+  // Queue counts: items resolve through the rename alias map (an old-path
+  // anchored item counts toward its current file's group); items that map to
+  // no changed file (repo-level findings) belong to no group.
+  for (const item of queue) {
+    const target = currentPathByAlias.get(item.path) ?? item.path;
+    const group = groupByPath.get(target);
+    const entry = group ? stats.get(group) : undefined;
+    if (entry) {
+      entry.queue += 1;
+    }
+  }
+
+  const groups: ChangeGraphOverviewGroup[] = groupOrder.map((name) => {
+    const entry = stats.get(name) as { files: number; added: number; removed: number; lensCounts: Map<RiskLens, number>; queue: number };
+    const lens = dominantGroupLens(entry.lensCounts);
+    return {
+      name,
+      file_count: entry.files,
+      cluster_count: clusterCounts.get(name) ?? 0,
+      churn_added: entry.added,
+      churn_removed: entry.removed,
+      queue_count: entry.queue,
+      ...(lens ? { lens } : {})
+    };
+  });
+
+  // Aggregate inter-group edges: weight = underlying model edge count, flags
+  // for any new/removed member. Intra-group edges are the zoom level's job
+  // (MAP_SCALE.4); the honesty split is asserted in tests.
+  const aggregated = new Map<string, ChangeGraphOverviewEdge>();
+  for (const edge of edges) {
+    const from = groupByPath.get(edge.from);
+    const to = groupByPath.get(edge.to);
+    if (!from || !to || from === to) {
+      continue;
+    }
+    const key = JSON.stringify([from, to]);
+    const existing = aggregated.get(key) ?? { from, to, weight: 0, has_new: false, has_removed: false };
+    existing.weight += 1;
+    existing.has_new = existing.has_new || edge.kind === "new";
+    existing.has_removed = existing.has_removed || edge.kind === "removed";
+    aggregated.set(key, existing);
+  }
+  const overviewEdges = [...aggregated.values()].sort((a, b) => compareStrings(a.from, b.from) || compareStrings(a.to, b.to));
+
+  return { groups, halo_count: haloNodes.length, edges: overviewEdges };
+}
+
+// Most frequent node lens in the group; ties broken by lens rank, then name.
+function dominantGroupLens(counts: Map<RiskLens, number>): RiskLens | undefined {
+  let best: { lens: RiskLens; count: number; rank: number } | undefined;
+  for (const [lens, count] of [...counts.entries()].sort((a, b) => compareStrings(a[0], b[0]))) {
+    const rank = RISK_LENS_METADATA[lens]?.rank ?? Number.MAX_SAFE_INTEGER;
+    if (!best || count > best.count || (count === best.count && rank < best.rank)) {
+      best = { lens, count, rank };
+    }
+  }
+  return best?.lens;
+}
+
+// Rename alias map (old path -> current path); a current path that collides
+// with another file's old_path wins. Shared shape with the tour's queue
+// cross-link resolution so overview queue counts agree with queue_refs.
+function currentPathByAliasOf(files: ChangedFileFacts[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const file of files) {
+    if (file.old_path) {
+      map.set(file.old_path, file.path);
+    }
+  }
+  for (const file of files) {
+    map.set(file.path, file.path);
+  }
+  return map;
 }
 
 function dedupeEdges(edges: ChangedImportEdge[], changed: Set<string>): ChangeGraphEdge[] {
@@ -327,16 +456,7 @@ function buildReadingOrder(files: ChangedFileFacts[], edges: ChangeGraphEdge[], 
   // Queue cross-links: a rename-source-anchored item carries the OLD path, but
   // the tour step is emitted for the current path — map old_path back so the
   // cross-link survives renames.
-  const currentPathByAlias = new Map<string, string>();
-  for (const file of files) {
-    if (file.old_path) {
-      currentPathByAlias.set(file.old_path, file.path);
-    }
-  }
-  // A current path that collides with another file's old_path wins.
-  for (const file of files) {
-    currentPathByAlias.set(file.path, file.path);
-  }
+  const currentPathByAlias = currentPathByAliasOf(files);
   const queueRefs = new Map<string, string[]>();
   for (const item of [...queue].sort((a, b) => a.rank - b.rank)) {
     const target = currentPathByAlias.get(item.path) ?? item.path;

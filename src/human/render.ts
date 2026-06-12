@@ -6,7 +6,7 @@ import { StructuredDiff } from "../pr/contract";
 import { formatEnumChanges, formatTypeChanges } from "../risks/semantic-diff";
 import { renderHunkExcerpt } from "./hunk-excerpt";
 import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
-import { changeMapMermaidBody } from "../render/change-map-embed";
+import { changeMapMermaidEmbed } from "../render/change-map-embed";
 import { renderDependencyTreeText } from "../diagrams/dep-tree";
 import { extractAcids, fillAcidTemplate, normalizeAcidTemplate, RollupGroup, rollupBy } from "./rollup";
 import { RISK_LENS_METADATA } from "./contract";
@@ -1365,8 +1365,11 @@ function field(value: string, max = MAX_FIELD_CHARS): string {
 // review-surfaces.CHANGE_MAP.3: the change map embeds on human_review.md (the
 // mermaid renders in editor previews and on GitHub; the cockpit's SVG is the
 // local answer). The shared embed helper runs redaction + the fence guard.
+// review-surfaces.MAP_SCALE.2: the embed helper consults the legibility budget
+// — when the overview leads, an honest lead-in line says so.
 function renderChangeMapSection(model: HumanReviewModel): string {
-  const body = changeMapMermaidBody(model.change_graph);
+  const embed = changeMapMermaidEmbed(model.change_graph);
+  const body = embed.body;
   if (!body) {
     // Honest omission: a populated graph whose rendered body tripped the size
     // cap or fence-close guard is OMITTED, never reported as "no changes".
@@ -1374,7 +1377,11 @@ function renderChangeMapSection(model: HumanReviewModel): string {
       ? "No changed files to map."
       : `Change map omitted (${model.change_graph.nodes.length} changed file(s); the rendered diagram exceeded the embed size cap or contained fence-closing content).`;
   }
-  return `\`\`\`mermaid\n${body}\n\`\`\``;
+  const lead =
+    embed.level === "overview"
+      ? `Overview — ${model.change_graph.nodes.length} changed file(s) across ${model.change_graph.overview.groups.length} group(s); the file-level map exceeds the legibility budget, so groups lead.\n\n`
+      : "";
+  return `${lead}\`\`\`mermaid\n${body}\n\`\`\``;
 }
 
 // review-surfaces.READING_ORDER.2: the guided tour renders right after the

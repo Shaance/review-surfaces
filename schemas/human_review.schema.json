@@ -142,7 +142,7 @@
     "change_graph": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["nodes", "halo_nodes", "edges", "clusters"],
+      "required": ["nodes", "halo_nodes", "edges", "clusters", "overview"],
       "properties": {
         "nodes": {
           "type": "array",
@@ -207,6 +207,58 @@
             "properties": {
               "name": { "type": "string" },
               "paths": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "overview": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["groups", "halo_count", "edges"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true,
+                "required": ["name", "file_count", "cluster_count", "churn_added", "churn_removed", "queue_count"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "file_count": { "type": "integer", "minimum": 0 },
+                  "cluster_count": { "type": "integer", "minimum": 0 },
+                  "churn_added": { "type": "integer", "minimum": 0 },
+                  "churn_removed": { "type": "integer", "minimum": 0 },
+                  "queue_count": { "type": "integer", "minimum": 0 },
+                  "lens": {
+                    "enum": [
+                      "api_contract",
+                      "security_privacy",
+                      "llm_trust_boundary",
+                      "test_evidence",
+                      "reviewer_ux",
+                      "cache_provenance",
+                      "supply_chain",
+                      "architecture",
+                      "custom"
+                    ]
+                  }
+                }
+              }
+            },
+            "halo_count": { "type": "integer", "minimum": 0 },
+            "edges": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true,
+                "required": ["from", "to", "weight", "has_new", "has_removed"],
+                "properties": {
+                  "from": { "type": "string" },
+                  "to": { "type": "string" },
+                  "weight": { "type": "integer", "minimum": 1 },
+                  "has_new": { "type": "boolean" },
+                  "has_removed": { "type": "boolean" }
+                }
+              }
             }
           }
         }

@@ -68,7 +68,7 @@ function humanModel(): HumanReviewModel {
     spec_mode: "acai",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
-    change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [] },
+    change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
     reading_order: { legs: [] },
     verdict: {
       decision: "needs_author_clarification",
