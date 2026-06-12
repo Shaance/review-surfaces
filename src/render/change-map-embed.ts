@@ -8,7 +8,7 @@
 import { renderChangeMapMermaid, renderChangeMapOverviewMermaid } from "../diagrams/change-map";
 import { renderDependencyTreeMermaid } from "../diagrams/dep-tree";
 import { ChangeGraph, DependencyChain } from "../human/contract";
-import { changeMapLeadLevel } from "../human/legibility-budget";
+import { changeMapLeadLevel, ChangeMapLevel } from "../human/legibility-budget";
 import { redactSecrets } from "../privacy/secrets";
 
 const MAX_EMBED_CHARS = 12_000;
@@ -18,7 +18,7 @@ export interface ChangeMapEmbed {
   blocked: boolean;
   // review-surfaces.MAP_SCALE.2: which level the legibility budget chose —
   // surfaces title the block honestly ("Change map" vs "Change map (overview)").
-  level: "file" | "overview";
+  level: ChangeMapLevel;
 }
 
 export function changeMapMermaidEmbed(graph: ChangeGraph): ChangeMapEmbed {
@@ -37,7 +37,7 @@ export function changeMapMermaidEmbed(graph: ChangeGraph): ChangeMapEmbed {
   return { body: redaction.text, blocked: redaction.blocked, level };
 }
 
-export function changeMapTitle(level: "file" | "overview"): string {
+export function changeMapTitle(level: ChangeMapLevel): string {
   return level === "overview" ? "Change map (overview)" : "Change map";
 }
 
