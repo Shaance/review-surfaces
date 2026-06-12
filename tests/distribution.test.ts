@@ -158,25 +158,26 @@ test("review-surfaces.DISTRIBUTION.6 the README change-map screenshot shows the 
 });
 
 test("review-surfaces.DISTRIBUTION.7 the all terminal summary ends with the HTML cockpit pointer", () => {
-  // The pointer lives in the shared human-review terminal summary, which the
-  // all command prints on the default entrypoint path.
+  // The pointer is its own helper so every summary path can end on it.
   const cli = read("src/cli/index.ts");
-  const summary = cli.split("function printHumanReviewTerminalSummary")[1].split("\n}")[0];
-  assert.match(summary, /HTML cockpit/);
-  assert.match(summary, /human --format html/);
-  assert.match(summary, /human_review\.html/);
-  // And it is the LAST line of the summary, so the quickstart run ends on it.
-  const logLines = [...summary.matchAll(/console\.log\(/g)];
-  const lastLog = summary.slice(summary.lastIndexOf("console.log("));
-  assert.ok(logLines.length >= 2);
-  assert.match(lastLog, /HTML cockpit/);
-  // In the all command the generic artifacts line prints BEFORE the summary,
-  // so the run genuinely ends on the pointer.
+  const pointer = cli.split("function printCockpitPointer")[1].split("\n}")[0];
+  assert.match(pointer, /HTML cockpit/);
+  // Runnable after the documented `npx review-surfaces all` quickstart (the
+  // bare binary is not on PATH once the one-shot npx process exits), and a
+  // non-default --out is preserved in the suggestion.
+  assert.match(pointer, /npx review-surfaces human --format html/);
+  assert.match(pointer, /outFlag/);
+  assert.match(pointer, /human_review\.html/);
+  // In the all command the ordering is: human-review summary leads
+  // (HUMAN_REVIEW.15), then the artifacts line, then the cockpit pointer LAST
+  // — the quickstart run genuinely ends on it.
   const runAll = cli.split("async function runAll")[1].split("\nasync function ")[0];
-  const artifactsLogIndex = runAll.indexOf("Wrote review-surfaces artifacts to");
   const summaryCallIndex = runAll.indexOf("printHumanReviewTerminalSummary(");
-  assert.ok(artifactsLogIndex >= 0 && summaryCallIndex >= 0);
-  assert.ok(artifactsLogIndex < summaryCallIndex, "the artifacts line prints before the cockpit-pointer summary");
+  const artifactsLogIndex = runAll.indexOf("Wrote review-surfaces artifacts to");
+  const pointerCallIndex = runAll.indexOf("printCockpitPointer(");
+  assert.ok(summaryCallIndex >= 0 && artifactsLogIndex >= 0 && pointerCallIndex >= 0);
+  assert.ok(summaryCallIndex < artifactsLogIndex, "the human-review summary leads the artifact-status line");
+  assert.ok(artifactsLogIndex < pointerCallIndex, "the run ends on the cockpit pointer");
 });
 
 test("review-surfaces.DISTRIBUTION.8 CHANGELOG.md exists and the remaining internal proposals moved to docs/history/", () => {

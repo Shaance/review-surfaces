@@ -718,12 +718,15 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
-  // review-surfaces.DISTRIBUTION.7: the generic artifacts line prints BEFORE
-  // the human-review summary, so a first run genuinely ENDS on the cockpit
-  // pointer the summary closes with.
-  console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
+  // review-surfaces.HUMAN_REVIEW.15: the human-review summary leads over the
+  // secondary artifact-status line; review-surfaces.DISTRIBUTION.7: the run
+  // then genuinely ENDS on the HTML cockpit pointer.
   if (humanReview && config.human_review.default_entrypoint) {
     printHumanReviewTerminalSummary(cwd, collection.outputDir, humanReview);
+  }
+  console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
+  if (humanReview && config.human_review.default_entrypoint) {
+    printCockpitPointer(cwd, collection.outputDir);
   }
   debug(parsed, `completed in ${Date.now() - startedAt}ms`);
   // Gate on the REQUESTED provider, not wholeRepoProvider: in pr mode the narrative
@@ -1344,6 +1347,7 @@ async function writeAndMaybeSummarizeHumanReviewFromArtifacts(
   const humanReview = await writeHumanReviewFromArtifacts(cwd, outDir, scope, config, inputs);
   if (config.human_review.default_entrypoint) {
     printHumanReviewTerminalSummary(cwd, outDir, humanReview);
+    printCockpitPointer(cwd, outDir);
   }
 }
 
@@ -1374,9 +1378,18 @@ function printHumanReviewTerminalSummary(cwd: string, outDir: string, humanRevie
   console.log(`Blockers: ${humanReview.blockers.length}`);
   console.log(`Suggested comments: ${humanReview.suggested_comments.length}`);
   console.log(`Missing evidence: ${humanReview.trust_audit.missing_evidence.length}`);
-  // review-surfaces.DISTRIBUTION.7: the flagship surface must be discoverable
-  // from a stranger's first run — the summary ends with the cockpit pointer.
-  console.log(`HTML cockpit: run \`review-surfaces human --format html\` and open ${artifactPathForLog(cwd, outDir, "human_review.html")} in a browser`);
+}
+
+// review-surfaces.DISTRIBUTION.7: the flagship surface must be discoverable
+// from a stranger's first run — every summary path ends on this pointer. The
+// suggested command must survive the documented quickstart (`npx
+// review-surfaces all ...`), where the bare binary is NOT on PATH after the
+// one-shot process exits, and must preserve a non-default --out.
+function printCockpitPointer(cwd: string, outDir: string): void {
+  const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
+  const relativeOut = path.relative(cwd, outputDir) || ".";
+  const outFlag = relativeOut === ".review-surfaces" ? "" : ` --out ${relativeOut}`;
+  console.log(`HTML cockpit: run \`npx review-surfaces human --format html${outFlag}\` and open ${artifactPathForLog(cwd, outDir, "human_review.html")} in a browser`);
 }
 
 async function loadOrBuildHumanReviewJson(
