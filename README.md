@@ -31,7 +31,7 @@ Works on any git repository — no config, no spec files, no setup:
 ```bash
 cd your-repo
 npx review-surfaces all --base origin/main --head HEAD
-open .review-surfaces/human_review.md     # or: npx review-surfaces human --format html
+open .review-surfaces/human_review.html   # the cockpit; human_review.md is the text surface
 ```
 
 > Not on npm yet? Run it from source:
@@ -49,10 +49,11 @@ concrete test plan, and suggested review comments — all under
 
 ### The HTML cockpit
 
-`review-surfaces human --format html` renders a single self-contained
-`human_review.html` — verdict, lens filters, reading order, ranked queue with
-per-line coverage gutters, clickable SVG change map, and progress tracking.
-No server, no CDN, opens from disk:
+Every `review-surfaces all` run writes a single self-contained
+`human_review.html` (also available standalone via `review-surfaces human
+--format html`) — verdict, lens filters, reading order, ranked queue with
+per-line coverage gutters, clickable SVG change map with overview ↔ zoom, and
+progress tracking. No server, no CDN, opens from disk:
 
 ![The HTML cockpit: verdict, lens chips, and the guided reading order](docs/images/cockpit.png)
 

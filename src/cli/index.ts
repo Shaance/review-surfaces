@@ -543,14 +543,14 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
         // review-surfaces.DISTRIBUTION.7: the cache-hit run also ends on the
         // cockpit pointer, after any gate message.
         if (config.human_review.enabled && config.human_review.default_entrypoint) {
-          printCockpitPointer(cwd, collection.outputDir, cockpitPointerOptions(parsed));
+          printCockpitPointer(cwd, collection.outputDir);
         }
         return cachedGateExit;
       }
       await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
       console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
       if (config.human_review.enabled && config.human_review.default_entrypoint) {
-        printCockpitPointer(cwd, collection.outputDir, cockpitPointerOptions(parsed));
+        printCockpitPointer(cwd, collection.outputDir);
       }
       return ExitCodes.success;
     }
@@ -724,6 +724,16 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   if (!config.human_review.enabled) {
     removeHumanReviewArtifacts(collection.outputDir);
   }
+  // review-surfaces.DISTRIBUTION.7: `all` writes the cockpit DIRECTLY from the
+  // exact model it just built (provider narrative, scope, budget, and config
+  // intact), so the final pointer never asks the user to re-run a command that
+  // could rebuild a different cockpit.
+  if (humanReview) {
+    await writeText(
+      path.join(collection.outputDir, "human_review.html"),
+      renderHumanReviewHtml(humanReview, { diff: readHumanReviewDiff(collection.outputDir) })
+    );
+  }
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
@@ -742,7 +752,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // review-surfaces.DISTRIBUTION.7: printed AFTER any gate message so the run
   // genuinely ends on the cockpit pointer.
   if (humanReview && config.human_review.default_entrypoint) {
-    printCockpitPointer(cwd, collection.outputDir, cockpitPointerOptions(parsed));
+    printCockpitPointer(cwd, collection.outputDir);
   }
   return gateExit;
 }
@@ -1356,6 +1366,10 @@ async function writeAndMaybeSummarizeHumanReviewFromArtifacts(
     return;
   }
   const humanReview = await writeHumanReviewFromArtifacts(cwd, outDir, scope, config, inputs);
+  // review-surfaces.DISTRIBUTION.7: the cache-hit path writes the cockpit from
+  // the same freshly-rebuilt model, like the main `all` path.
+  const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
+  await writeText(path.join(outputDir, "human_review.html"), renderHumanReviewHtml(humanReview, { diff: readHumanReviewDiff(outputDir) }));
   if (config.human_review.default_entrypoint) {
     printHumanReviewTerminalSummary(cwd, outDir, humanReview);
   }
@@ -1392,42 +1406,12 @@ function printHumanReviewTerminalSummary(cwd: string, outDir: string, humanRevie
 
 // review-surfaces.DISTRIBUTION.7: the flagship surface must be discoverable
 // from a stranger's first run — the all command ENDS on this pointer (after
-// any gate message). The suggested command must survive the documented
-// quickstart (`npx review-surfaces all ...`), where the bare binary is NOT on
-// PATH after the one-shot process exits, and must preserve the run's context
-// — a non-default --out, a custom --config, and a pr review scope — so
-// following it re-renders the cockpit the user just generated rather than a
-// default-config repo-scope one.
-interface CockpitPointerOptions {
-  scope?: ReviewScope;
-  configPath?: string;
-  budget?: string;
-}
-
-function cockpitPointerOptions(parsed: ParsedArgs): CockpitPointerOptions {
-  const rawBudget = parsed.flags["budget"];
-  return {
-    scope: reviewScope(parsed),
-    configPath: stringFlag(parsed, "config"),
-    ...(typeof rawBudget === "string" ? { budget: rawBudget } : {})
-  };
-}
-
-// Shell-quote a flag value so the suggested command stays copy-pasteable when
-// a path carries spaces or shell metacharacters.
-function shellQuote(value: string): string {
-  return /^[A-Za-z0-9._/:=-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function printCockpitPointer(cwd: string, outDir: string, options: CockpitPointerOptions = {}): void {
-  const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
-  const relativeOut = path.relative(cwd, outputDir) || ".";
-  const flags =
-    (relativeOut === ".review-surfaces" ? "" : ` --out ${shellQuote(relativeOut)}`) +
-    (options.scope === "pr" ? " --review-scope pr" : "") +
-    (options.configPath ? ` --config ${shellQuote(options.configPath)}` : "") +
-    (options.budget ? ` --budget ${shellQuote(options.budget)}` : "");
-  console.log(`HTML cockpit: run \`npx review-surfaces human --format html${flags}\` and open ${artifactPathForLog(cwd, outDir, "human_review.html")} in a browser`);
+// any gate message). `all` writes human_review.html itself, so the pointer
+// only says where to look: there is no follow-up command whose flags could
+// drift from the run that produced the cockpit (provider narrative, scope,
+// budget, config, and out dir all stay exactly as generated).
+function printCockpitPointer(cwd: string, outDir: string): void {
+  console.log(`HTML cockpit: open ${artifactPathForLog(cwd, outDir, "human_review.html")} in a browser`);
 }
 
 async function loadOrBuildHumanReviewJson(

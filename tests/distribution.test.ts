@@ -158,29 +158,25 @@ test("review-surfaces.DISTRIBUTION.6 the README change-map screenshot shows the 
 });
 
 test("review-surfaces.DISTRIBUTION.7 the all terminal summary ends with the HTML cockpit pointer", () => {
-  // The pointer is its own helper so every summary path can end on it.
+  // The pointer is its own helper so every summary path can end on it. `all`
+  // writes human_review.html DIRECTLY from the model it just built, so the
+  // pointer carries no follow-up command whose flags (provider, scope,
+  // budget, config, out) could rebuild a different cockpit — it only says
+  // where to look.
   const cli = read("src/cli/index.ts");
   const pointer = cli.split("function printCockpitPointer")[1].split("\n}")[0];
-  assert.match(pointer, /HTML cockpit/);
-  // Runnable after the documented `npx review-surfaces all` quickstart (the
-  // bare binary is not on PATH once the one-shot npx process exits), and a
-  // non-default --out is preserved in the suggestion.
-  assert.match(pointer, /npx review-surfaces human --format html/);
-  assert.match(pointer, /--out /);
+  assert.match(pointer, /HTML cockpit: open/);
   assert.match(pointer, /human_review\.html/);
-  // The pointer preserves the run's context so following it re-renders the
-  // SAME cockpit: pr review scope and a custom --config carry through.
-  assert.match(pointer, /--review-scope pr/);
-  assert.match(pointer, /--config/);
-  assert.match(pointer, /--budget/);
-  // Values are shell-quoted so the suggestion stays copy-pasteable for paths
-  // with spaces or metacharacters.
-  assert.match(pointer, /shellQuote\(/);
+  assert.doesNotMatch(pointer, /npx|--out|--config/);
   // In the all command the ordering is: human-review summary leads
   // (HUMAN_REVIEW.15), then the artifacts line, then gate messages, then the
   // cockpit pointer LAST — the run genuinely ends on it even when a gate
   // warning or strict failure prints.
   const runAll = cli.split("async function runAll")[1].split("\nasync function ")[0];
+  // `all` renders the cockpit itself on the main path; the cache-hit helper
+  // does the same.
+  assert.ok(runAll.includes("renderHumanReviewHtml("), "all writes human_review.html directly");
+  assert.ok(cli.split("async function writeAndMaybeSummarizeHumanReviewFromArtifacts")[1].split("\nasync function ")[0].includes("renderHumanReviewHtml("), "the cache-hit path writes the cockpit too");
   const summaryCallIndex = runAll.indexOf("printHumanReviewTerminalSummary(");
   const artifactsLogIndex = runAll.indexOf("Wrote review-surfaces artifacts to");
   const lastGateIndex = runAll.lastIndexOf("applyGate(");
