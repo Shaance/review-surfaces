@@ -5,4 +5,4 @@
 // and the source layout. Consumers: collect.ts (TOOL_VERSION ->
 // manifest.tool_version + signature), cli/index.ts help banner, and
 // bootstrap/init.ts feature-spec template default version.
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
