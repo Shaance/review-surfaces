@@ -278,6 +278,125 @@ function buildOverview(
   return { groups, halo_count: haloNodes.length, edges: overviewEdges };
 }
 
+// ---------------------------------------------------------------------------
+// review-surfaces.MAP_SCALE.4: per-group detail views — the zoom level. Each
+// overview group expands to its model clusters and files VERBATIM (the same
+// clusters the queue and tour reference, so map/tour agreement holds), its
+// intra-group edges, its cross-group edges aggregated into explicit stub
+// ports, and its share of the halo. Derived HERE in the model layer from the
+// same change_graph both emitters consume — never renderer-local. Every
+// changed file appears in exactly one detail view because clusters partition
+// nodes and groups partition clusters.
+
+export interface DetailStub {
+  // The other group on this edge bundle.
+  other: string;
+  // "out": this group's files are the dependency (the arrow leaves this group
+  // toward the dependent group). "in": this group's files import the other
+  // group's files (the arrow enters this group).
+  direction: "out" | "in";
+  weight: number;
+  has_new: boolean;
+  has_removed: boolean;
+}
+
+export interface GroupDetailView {
+  group: string;
+  clusters: ChangeGraphCluster[];
+  edges: ChangeGraphEdge[];
+  stubs: DetailStub[];
+  halo_nodes: ChangeGraphHaloNode[];
+}
+
+export function buildGroupDetailViews(graph: ChangeGraph): GroupDetailView[] {
+  const groupByPath = new Map(graph.nodes.map((node) => [node.path, overviewGroupOf(node.cluster)]));
+  const views = new Map<string, GroupDetailView>();
+  for (const group of graph.overview.groups) {
+    views.set(group.name, { group: group.name, clusters: [], edges: [], stubs: [], halo_nodes: [] });
+  }
+  for (const cluster of graph.clusters) {
+    views.get(overviewGroupOf(cluster.name))?.clusters.push(cluster);
+  }
+  const stubKeys = new Map<string, Map<string, DetailStub>>();
+  for (const edge of graph.edges) {
+    const fromGroup = groupByPath.get(edge.from);
+    const toGroup = groupByPath.get(edge.to);
+    if (!fromGroup || !toGroup) {
+      continue;
+    }
+    if (fromGroup === toGroup) {
+      views.get(fromGroup)?.edges.push(edge);
+      continue;
+    }
+    // Cross-group: one stub on each side. The imported side (the dependency)
+    // sends the arrow out toward the dependent importer group.
+    addStub(stubKeys, toGroup, fromGroup, "out", edge.kind);
+    addStub(stubKeys, fromGroup, toGroup, "in", edge.kind);
+  }
+  for (const [group, stubs] of stubKeys) {
+    const view = views.get(group);
+    if (view) {
+      view.stubs = [...stubs.values()].sort((a, b) => compareStrings(a.other, b.other) || compareStrings(a.direction, b.direction));
+    }
+  }
+  // Halo share: an unchanged importer appears in every group view that owns at
+  // least one of the changed files it imports, with imports restricted to that
+  // group's files (its citing facts inside the view).
+  for (const halo of graph.halo_nodes) {
+    const importsByGroup = new Map<string, string[]>();
+    for (const imported of halo.imports) {
+      const group = groupByPath.get(imported);
+      if (!group) {
+        continue;
+      }
+      const list = importsByGroup.get(group) ?? [];
+      list.push(imported);
+      importsByGroup.set(group, list);
+    }
+    for (const [group, imports] of importsByGroup) {
+      views.get(group)?.halo_nodes.push({ path: halo.path, imports });
+    }
+  }
+  return graph.overview.groups.map((group) => views.get(group.name) as GroupDetailView);
+}
+
+// A detail view rendered AS a change graph: the group's nodes, clusters,
+// intra-group edges, and halo share, so both emitters reuse the file-level
+// renderer (per-view node cap and explicit overflow included) with the stub
+// ports passed alongside. The empty overview is renderer input only.
+export function detailViewSubGraph(graph: ChangeGraph, view: GroupDetailView): ChangeGraph {
+  const paths = new Set<string>();
+  for (const cluster of view.clusters) {
+    for (const clusterPath of cluster.paths) {
+      paths.add(clusterPath);
+    }
+  }
+  return {
+    nodes: graph.nodes.filter((node) => paths.has(node.path)),
+    halo_nodes: view.halo_nodes,
+    edges: view.edges,
+    clusters: view.clusters,
+    overview: { groups: [], halo_count: 0, edges: [] }
+  };
+}
+
+function addStub(
+  stubKeys: Map<string, Map<string, DetailStub>>,
+  group: string,
+  other: string,
+  direction: "out" | "in",
+  kind: ChangeGraphEdge["kind"]
+): void {
+  const byKey = stubKeys.get(group) ?? new Map<string, DetailStub>();
+  stubKeys.set(group, byKey);
+  const key = `${direction} ${other}`;
+  const stub = byKey.get(key) ?? { other, direction, weight: 0, has_new: false, has_removed: false };
+  stub.weight += 1;
+  stub.has_new = stub.has_new || kind === "new";
+  stub.has_removed = stub.has_removed || kind === "removed";
+  byKey.set(key, stub);
+}
+
 // Most frequent node lens in the group; ties broken by lens rank, then name.
 function dominantGroupLens(counts: Map<RiskLens, number>): RiskLens | undefined {
   let best: { lens: RiskLens; count: number; rank: number } | undefined;

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { buildChangeGraphSections, computeChangedImportEdges } from "../src/human/change-graph";
+import { buildChangeGraphSections, buildGroupDetailViews, computeChangedImportEdges, detailViewSubGraph } from "../src/human/change-graph";
 import { renderChangeMapMermaid, renderChangeMapOverviewMermaid } from "../src/diagrams/change-map";
 import { changeMapLeadLevel, COCKPIT_WIDTH_PX } from "../src/human/legibility-budget";
 import { renderChangeMapOverviewSvg } from "../src/human/render-svg-map";
@@ -356,13 +356,18 @@ test("review-surfaces.MAP_SCALE.1 change_graph grows a schema-visible overview: 
 
 test("review-surfaces.MAP_SCALE.2 the legibility budget decides per surface: the overview leads everywhere on the wide fixture and the small-diff file-level map is unchanged", () => {
   const wide = wideFixtureSections();
-  assert.equal(changeMapLeadLevel(wide.change_graph), "overview");
+  assert.equal(changeMapLeadLevel(wide.change_graph, "mermaid"), "overview");
+  assert.equal(changeMapLeadLevel(wide.change_graph, "svg"), "overview");
   const fixture = model(wide.change_graph, wide.reading_order.legs);
   // human_review.md: honest lead-in plus the overview mermaid, not 99 file nodes.
   const markdown = renderHumanReviewMarkdown(fixture);
   assert.match(markdown, /Overview — 99 changed file\(s\) across 10 group\(s\)/);
   assert.match(markdown, /70 file\(s\) · 14 cluster\(s\)/);
-  assert.doesNotMatch(markdown, /subgraph c0/);
+  // The LEAD diagram is the overview (no per-file subgraphs); the per-group
+  // detail blocks below it carry the file-level subgraphs (MAP_SCALE.6).
+  const leadFence = markdown.split("## Change map")[1].split("```mermaid\n")[1].split("\n```")[0];
+  assert.doesNotMatch(leadFence, /subgraph c0/);
+  assert.match(leadFence, /^flowchart LR/);
   // Sticky comment: the details block is titled honestly and stays compact.
   const sticky = renderStickySummary(fixture);
   assert.match(sticky.markdown, /<details><summary>Change map \(overview\)<\/summary>/);
@@ -386,7 +391,8 @@ test("review-surfaces.MAP_SCALE.2 the legibility budget decides per surface: the
     lensFindings: [],
     reviewQueue: []
   });
-  assert.equal(changeMapLeadLevel(small.change_graph), "file");
+  assert.equal(changeMapLeadLevel(small.change_graph, "mermaid"), "file");
+  assert.equal(changeMapLeadLevel(small.change_graph, "svg"), "file");
   const smallSticky = renderStickySummary(model(small.change_graph, small.reading_order.legs));
   assert.match(smallSticky.markdown, /<details><summary>Change map<\/summary>/);
   const smallBody = renderChangeMapMermaid(small.change_graph) as string;
@@ -425,4 +431,83 @@ test("review-surfaces.MAP_SCALE.3 the overview is honest by construction: group 
   // Empty overview renders nothing rather than an empty diagram.
   assert.equal(renderChangeMapOverviewSvg({ groups: [], halo_count: 0, edges: [] }), undefined);
   assert.equal(renderChangeMapOverviewMermaid({ groups: [], halo_count: 0, edges: [] }), undefined);
+});
+
+// ---------------------------------------------------------------------------
+// review-surfaces.MAP_SCALE.4-6: the zoom level.
+
+test("review-surfaces.MAP_SCALE.4 every overview group expands to a detail view of its model clusters verbatim, intra-group edges, explicit cross-group stubs, and its halo share — every changed file in exactly one view", () => {
+  const sections = wideFixtureSections();
+  const graph = sections.change_graph;
+  const views = buildGroupDetailViews(graph);
+  // One view per overview group, in model group order.
+  assert.deepEqual(views.map((view) => view.group), graph.overview.groups.map((group) => group.name));
+  // Clusters are the MODEL clusters verbatim (map/tour agreement): each view
+  // carries exactly the model cluster objects of its group.
+  const allViewClusters = views.flatMap((view) => view.clusters);
+  assert.equal(allViewClusters.length, graph.clusters.length);
+  const modelClusterByName = new Map(graph.clusters.map((cluster) => [cluster.name, cluster]));
+  for (const cluster of allViewClusters) {
+    assert.equal(cluster, modelClusterByName.get(cluster.name));
+  }
+  // Every changed file appears in EXACTLY one detail view (asserted on the
+  // 99-file fixture).
+  const seen = new Map<string, number>();
+  for (const view of views) {
+    for (const cluster of view.clusters) {
+      for (const filePath of cluster.paths) {
+        seen.set(filePath, (seen.get(filePath) ?? 0) + 1);
+      }
+    }
+  }
+  assert.equal(seen.size, graph.nodes.length);
+  assert.ok([...seen.values()].every((count) => count === 1));
+  // Intra-group edges stay inside the view; cross-group edges become explicit
+  // stub ports on BOTH sides with aggregated weight and kind flags.
+  const src = views.find((view) => view.group === "src");
+  assert.ok(src);
+  assert.equal(src.edges.length, 2);
+  assert.deepEqual(src.stubs, [
+    { other: "bin", direction: "out", weight: 1, has_new: true, has_removed: false },
+    { other: "tests", direction: "out", weight: 3, has_new: false, has_removed: true }
+  ]);
+  const tests = views.find((view) => view.group === "tests");
+  assert.ok(tests);
+  assert.deepEqual(tests.stubs, [{ other: "src", direction: "in", weight: 3, has_new: false, has_removed: true }]);
+  // Halo share: the two unchanged importers of src/core/f0.ts appear only in
+  // the src view, imports restricted to that group's files.
+  assert.deepEqual(src.halo_nodes.map((node) => node.path), ["src/unchanged/u0.ts", "src/unchanged/u1.ts"]);
+  assert.deepEqual(src.halo_nodes[0].imports, ["src/core/f0.ts"]);
+  assert.ok(views.filter((view) => view.group !== "src").every((view) => view.halo_nodes.length === 0));
+  // The detail sub-graph renders with the file-level emitter: per-view cap,
+  // cluster subgraphs, and the stub subgraph.
+  const body = renderChangeMapMermaid(detailViewSubGraph(graph, src), { stubs: src.stubs }) as string;
+  assert.match(body, /subgraph c0\["src\/cli"\]/);
+  assert.match(body, /subgraph stubs\["cross-group"\]/);
+  assert.match(body, /→ tests ×3/);
+  assert.match(body, /\+ \d+ more files/); // 70 files, per-view cap 25 -> explicit overflow
+  assert.match(body, /classDef stub stroke-dasharray: 3 3/);
+});
+
+test("review-surfaces.MAP_SCALE.6 human_review.md renders one collapsed detail block per group in model order, the sticky stays overview-only, and the PR comment stays overview-only", () => {
+  const sections = wideFixtureSections();
+  const fixture = model(sections.change_graph, sections.reading_order.legs);
+  const markdown = renderHumanReviewMarkdown(fixture);
+  // One <details> block per group with an honest summary, in group order.
+  const summaries = [...markdown.matchAll(/<details><summary>([^<]+) — (\d+) file\(s\) · (\d+) cluster\(s\)<\/summary>/g)].map((match) => match[1]);
+  assert.deepEqual(summaries, sections.change_graph.overview.groups.map((group) => group.name));
+  assert.match(markdown, /<details><summary>src — 70 file\(s\) · 14 cluster\(s\)<\/summary>/);
+  // Each block carries its own mermaid fence (per-block embed guard).
+  const detailFences = markdown.split("## Change map")[1].split("\n## ")[0].match(/```mermaid/g) ?? [];
+  assert.equal(detailFences.length, 1 + sections.change_graph.overview.groups.length);
+  // The sticky comment stays overview-only: one map block, no group details.
+  const sticky = renderStickySummary(fixture);
+  assert.match(sticky.markdown, /<details><summary>Change map \(overview\)<\/summary>/);
+  assert.doesNotMatch(sticky.markdown, /file\(s\) · \d+ cluster\(s\)<\/summary>/);
+  const stickyFences = sticky.markdown.match(/```mermaid/g) ?? [];
+  assert.equal(stickyFences.length, 1);
+  // The PR comment surface stays overview-only too.
+  const prComment = renderHumanPrComment(fixture).markdown;
+  const prFences = prComment.match(/```mermaid/g) ?? [];
+  assert.equal(prFences.length, 1);
 });

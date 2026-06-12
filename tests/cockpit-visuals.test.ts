@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { renderChangeMapSvg } from "../src/human/render-svg-map";
+import { changeMapLeadLevel, COCKPIT_WIDTH_PX } from "../src/human/legibility-budget";
 import { renderHumanReviewHtml } from "../src/human/render-html";
 import { buildChangeGraphSections } from "../src/human/change-graph";
 import { HumanReviewModel, HUMAN_REVIEW_SCHEMA_VERSION, ReviewQueueItem } from "../src/human/contract";
@@ -186,4 +187,80 @@ test("review-surfaces.RENDER.12 the header strip renders lens-chip filter button
   assert.ok(html.indexOf('id="strip"') < html.indexOf('id="reading-order"'));
   // No chart/canvas library.
   assert.doesNotMatch(html, /<canvas/);
+});
+
+// ---------------------------------------------------------------------------
+// review-surfaces.MAP_SCALE.5/.6: wrapped layout and the cockpit zoom.
+
+test("review-surfaces.MAP_SCALE.5 the file-level SVG wraps columns into bands and long stacks into continuation slots — width never exceeds the budget, height grows", () => {
+  // The typical-PR shape (evidence-log failure 1, aefc63c~1: 7 clusters,
+  // previously 1792px natural width rendered at ~55%).
+  const files = [];
+  for (const dir of ["cli", "core", "diagrams", "human", "render", "risks"]) {
+    for (let i = 0; i < 3; i++) files.push(file(`src/${dir}/f${i}.ts`));
+  }
+  for (let i = 0; i < 5; i++) files.push(file(`tests/t${i}.test.ts`));
+  const sections = buildChangeGraphSections({
+    files,
+    edges: [{ importer: "src/render/f0.ts", imported: "src/core/f0.ts" }],
+    usedBy: [{ path: "src/core/f0.ts", top: ["src/halo/h0.ts"] }],
+    lensFindings: [],
+    reviewQueue: []
+  });
+  // 23 nodes <= cap, so the file level leads on the cockpit despite 8 columns.
+  assert.equal(changeMapLeadLevel(sections.change_graph, "svg"), "file");
+  const rendered = renderChangeMapSvg(sections.change_graph) as { svg: string };
+  const viewBox = rendered.svg.match(/viewBox="0 0 (\d+) (\d+)"/) as RegExpMatchArray;
+  assert.ok(Number(viewBox[1]) <= COCKPIT_WIDTH_PX, `wrapped width ${viewBox[1]} must fit the ${COCKPIT_WIDTH_PX}px budget`);
+  // 8 columns at 3 per band -> 3 bands: the same column x repeats across bands.
+  const headerXs = [...rendered.svg.matchAll(/<text x="(\d+)" y="(\d+)" font-size="11" font-weight="600"/g)];
+  assert.equal(headerXs.length, 8);
+  const distinctY = new Set(headerXs.map((match) => match[2]));
+  assert.equal(distinctY.size, 3);
+  // A long stack wraps into a continuation slot with an attributable header.
+  const tall = buildChangeGraphSections({
+    files: Array.from({ length: 12 }, (_, i) => file(`src/core/long${String(i).padStart(2, "0")}.ts`)),
+    edges: [],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: []
+  });
+  const tallSvg = (renderChangeMapSvg(tall.change_graph) as { svg: string }).svg;
+  assert.match(tallSvg, /src\/core \(cont\.\)/);
+});
+
+test("review-surfaces.MAP_SCALE.6 the cockpit pre-renders hidden per-group detail SVGs toggled by overview-group clicks, and file clicks inside details keep filtering the queue", () => {
+  // A wide model (>25 nodes) so the overview leads on the cockpit.
+  const files = [];
+  for (const dir of ["cli", "core", "human", "render"]) {
+    for (let i = 0; i < 8; i++) files.push(file(`src/${dir}/w${i}.ts`));
+  }
+  for (let i = 0; i < 4; i++) files.push(file(`tests/w${i}.test.ts`));
+  const sections = buildChangeGraphSections({
+    files,
+    edges: [{ importer: "tests/w0.test.ts", imported: "src/core/w0.ts" }],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: []
+  });
+  assert.equal(changeMapLeadLevel(sections.change_graph, "svg"), "overview");
+  const html = renderHumanReviewHtml(model({ change_graph: sections.change_graph, reading_order: sections.reading_order }));
+  // Overview cards carry data-map-group; each group gets a HIDDEN pre-rendered
+  // detail panel; detail file nodes carry data-map-file so the existing
+  // click-to-filter binding picks them up.
+  assert.match(html, /data-map-group="src"/);
+  assert.match(html, /<div class="map-detail" data-map-detail="src" hidden>/);
+  assert.match(html, /<div class="map-detail" data-map-detail="tests" hidden>/);
+  assert.match(html, /aria-label="Change map detail: src"/);
+  const srcPanel = html.split('data-map-detail="src"')[1].split("</div>")[0];
+  assert.match(srcPanel, /data-map-file="src\/core\/w0\.ts"/);
+  // The stub port renders inside the detail panel, never silently dropped.
+  assert.match(srcPanel, /→ tests ×1/);
+  // The vanilla JS toggle handler ships with the cockpit.
+  assert.match(html, /\[data-map-group\]/);
+  assert.match(html, /panel\.hidden = !panel\.hidden/);
+  // Every rendered SVG in the cockpit (overview + details) fits the budget.
+  for (const match of html.matchAll(/viewBox="0 0 (\d+) \d+"/g)) {
+    assert.ok(Number(match[1]) <= COCKPIT_WIDTH_PX, `SVG width ${match[1]} exceeds the budget`);
+  }
 });

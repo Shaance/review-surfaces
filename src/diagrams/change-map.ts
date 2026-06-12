@@ -7,6 +7,7 @@
 // underlying facts (every edge cites the import graph, every halo node a
 // blast-radius fact).
 import { ChangeGraph, ChangeGraphOverview, RiskLens } from "../human/contract";
+import { DetailStub } from "../human/change-graph";
 import { diagramLabel } from "./diagrams";
 import { LENS_STROKES, SVG_LENS_FILLS } from "../human/render-svg-map";
 // review-surfaces.MAP_SCALE.2: caps come from the ONE legibility-budget module
@@ -21,7 +22,13 @@ function lensClassDef(lens: RiskLens): string {
   return `fill:${SVG_LENS_FILLS[lens]},stroke:${LENS_STROKES[lens]}`;
 }
 
-export function renderChangeMapMermaid(graph: ChangeGraph): string | undefined {
+export interface RenderChangeMapMermaidOptions {
+  // review-surfaces.MAP_SCALE.4: cross-group edges of a detail view rendered
+  // as an explicit dashed stub subgraph ("→ src/render ×3").
+  stubs?: DetailStub[];
+}
+
+export function renderChangeMapMermaid(graph: ChangeGraph, options: RenderChangeMapMermaidOptions = {}): string | undefined {
   if (graph.nodes.length === 0) {
     return undefined;
   }
@@ -95,6 +102,17 @@ export function renderChangeMapMermaid(graph: ChangeGraph): string | undefined {
     }
   }
 
+  // review-surfaces.MAP_SCALE.4: stub ports — the detail view's cross-group
+  // edges, aggregated and explicit, never silently dropped.
+  if (options.stubs && options.stubs.length > 0) {
+    lines.push(`  subgraph stubs["cross-group"]`);
+    for (const [index, stub] of options.stubs.entries()) {
+      const label = stub.direction === "out" ? `→ ${stub.other} ×${stub.weight}` : `${stub.other} → ×${stub.weight}`;
+      const flags = `${stub.has_new ? " · new" : ""}${stub.has_removed ? " · removed" : ""}`;
+      lines.push(`    st${index}["${diagramLabel(label)}${flags ? `<br/>${diagramLabel(flags.trim())}` : ""}"]`);
+    }
+    lines.push("  end");
+  }
   for (const lens of [...usedLenses].sort()) {
     lines.push(`  classDef lens_${lens} ${lensClassDef(lens)}`);
   }
@@ -102,6 +120,10 @@ export function renderChangeMapMermaid(graph: ChangeGraph): string | undefined {
     const ids = halo.map((_, index) => `h${index}`).concat(haloOverflow > 0 ? ["halo_more"] : []);
     lines.push(`  classDef halo stroke-dasharray: 5 5,fill:#f9fafb,stroke:#6b7280`);
     lines.push(`  class ${ids.join(",")} halo`);
+  }
+  if (options.stubs && options.stubs.length > 0) {
+    lines.push(`  classDef stub stroke-dasharray: 3 3,fill:#ffffff,stroke:#6b7280`);
+    lines.push(`  class ${options.stubs.map((_, index) => `st${index}`).join(",")} stub`);
   }
   return lines.join("\n");
 }

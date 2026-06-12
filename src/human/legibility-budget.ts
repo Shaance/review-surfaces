@@ -40,20 +40,24 @@ export function fileLevelColumnCount(graph: ChangeGraph): number {
 }
 
 export type ChangeMapLevel = "file" | "overview";
+export type ChangeMapSurface = "svg" | "mermaid";
 
-// The single per-model decision every surface inherits: the overview leads
-// when the file-level map cannot render legibly at full size — either its
-// natural width would force scaling below MIN_FULL_SIZE_SCALE, or the node
-// cap would hide changed files behind "+ N more" texts (an over-capped map is
-// neither an overview nor a detail view — evidence-log failure 2).
-export function changeMapLeadLevel(graph: ChangeGraph): ChangeMapLevel {
+// The single per-surface decision (MAP_SCALE.2): the overview leads when the
+// file-level map cannot render legibly at full size on that surface. The node
+// cap hiding changed files behind "+ N more" texts forces the overview
+// everywhere (an over-capped map is neither an overview nor a detail view —
+// evidence-log failure 2). Width forces it only on mermaid surfaces: the
+// cockpit SVG wraps columns into bands (MAP_SCALE.5) so its width never
+// exceeds the budget, while a mermaid flowchart cannot wrap and GitHub
+// scales it down linearly.
+export function changeMapLeadLevel(graph: ChangeGraph, surface: ChangeMapSurface): ChangeMapLevel {
   if (graph.nodes.length === 0) {
     return "file";
   }
   if (graph.nodes.length > MAX_CHANGED_NODES) {
     return "overview";
   }
-  if (svgNaturalWidth(fileLevelColumnCount(graph)) > COCKPIT_WIDTH_PX / MIN_FULL_SIZE_SCALE) {
+  if (surface === "mermaid" && svgNaturalWidth(fileLevelColumnCount(graph)) > COCKPIT_WIDTH_PX / MIN_FULL_SIZE_SCALE) {
     return "overview";
   }
   return "file";

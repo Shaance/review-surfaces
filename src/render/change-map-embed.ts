@@ -7,6 +7,7 @@
 // whole-body pass only ever sees the already-redacted placeholder).
 import { renderChangeMapMermaid, renderChangeMapOverviewMermaid } from "../diagrams/change-map";
 import { renderDependencyTreeMermaid } from "../diagrams/dep-tree";
+import { buildGroupDetailViews, detailViewSubGraph } from "../human/change-graph";
 import { ChangeGraph, DependencyChain } from "../human/contract";
 import { changeMapLeadLevel, ChangeMapLevel } from "../human/legibility-budget";
 import { redactSecrets } from "../privacy/secrets";
@@ -25,7 +26,7 @@ export function changeMapMermaidEmbed(graph: ChangeGraph): ChangeMapEmbed {
   // review-surfaces.MAP_SCALE.2: the legibility budget decides which level
   // leads — the SAME decision on every mermaid surface (md, sticky, PR
   // comment); this helper carries no threshold of its own.
-  const level = changeMapLeadLevel(graph);
+  const level = changeMapLeadLevel(graph, "mermaid");
   const rendered = level === "overview" ? renderChangeMapOverviewMermaid(graph.overview) : renderChangeMapMermaid(graph);
   if (!rendered) {
     return { blocked: false, level };
@@ -39,6 +40,39 @@ export function changeMapMermaidEmbed(graph: ChangeGraph): ChangeMapEmbed {
 
 export function changeMapTitle(level: ChangeMapLevel): string {
   return level === "overview" ? "Change map (overview)" : "Change map";
+}
+
+// review-surfaces.MAP_SCALE.4/.6: per-group detail mermaid bodies for
+// human_review.md — one embed-guarded block per overview group, in the
+// model's deterministic group order. A body that trips the size cap or the
+// fence-close guard comes back undefined so the caller can say so honestly;
+// the redaction block signal is preserved per block.
+export interface ChangeMapDetailEmbed {
+  group: string;
+  file_count: number;
+  cluster_count: number;
+  body?: string;
+  blocked: boolean;
+}
+
+export function changeMapDetailEmbeds(graph: ChangeGraph): ChangeMapDetailEmbed[] {
+  return buildGroupDetailViews(graph).map((view) => {
+    const group = graph.overview.groups.find((candidate) => candidate.name === view.group);
+    const base = {
+      group: view.group,
+      file_count: group?.file_count ?? 0,
+      cluster_count: group?.cluster_count ?? 0
+    };
+    const rendered = renderChangeMapMermaid(detailViewSubGraph(graph, view), { stubs: view.stubs });
+    if (!rendered) {
+      return { ...base, blocked: false };
+    }
+    const redaction = redactSecrets(rendered);
+    if (redaction.text.length > MAX_EMBED_CHARS || /^\s*```/m.test(redaction.text)) {
+      return { ...base, blocked: redaction.blocked };
+    }
+    return { ...base, body: redaction.text, blocked: redaction.blocked };
+  });
 }
 
 // Collapsed <details> form for the comment surfaces (sticky + PR comment).
