@@ -1398,17 +1398,35 @@ function printHumanReviewTerminalSummary(cwd: string, outDir: string, humanRevie
 // — a non-default --out, a custom --config, and a pr review scope — so
 // following it re-renders the cockpit the user just generated rather than a
 // default-config repo-scope one.
-function cockpitPointerOptions(parsed: ParsedArgs): { scope: ReviewScope; configPath?: string } {
-  return { scope: reviewScope(parsed), configPath: stringFlag(parsed, "config") };
+interface CockpitPointerOptions {
+  scope?: ReviewScope;
+  configPath?: string;
+  budget?: string;
 }
 
-function printCockpitPointer(cwd: string, outDir: string, options: { scope?: ReviewScope; configPath?: string } = {}): void {
+function cockpitPointerOptions(parsed: ParsedArgs): CockpitPointerOptions {
+  const rawBudget = parsed.flags["budget"];
+  return {
+    scope: reviewScope(parsed),
+    configPath: stringFlag(parsed, "config"),
+    ...(typeof rawBudget === "string" ? { budget: rawBudget } : {})
+  };
+}
+
+// Shell-quote a flag value so the suggested command stays copy-pasteable when
+// a path carries spaces or shell metacharacters.
+function shellQuote(value: string): string {
+  return /^[A-Za-z0-9._/:=-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function printCockpitPointer(cwd: string, outDir: string, options: CockpitPointerOptions = {}): void {
   const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
   const relativeOut = path.relative(cwd, outputDir) || ".";
   const flags =
-    (relativeOut === ".review-surfaces" ? "" : ` --out ${relativeOut}`) +
+    (relativeOut === ".review-surfaces" ? "" : ` --out ${shellQuote(relativeOut)}`) +
     (options.scope === "pr" ? " --review-scope pr" : "") +
-    (options.configPath ? ` --config ${options.configPath}` : "");
+    (options.configPath ? ` --config ${shellQuote(options.configPath)}` : "") +
+    (options.budget ? ` --budget ${shellQuote(options.budget)}` : "");
   console.log(`HTML cockpit: run \`npx review-surfaces human --format html${flags}\` and open ${artifactPathForLog(cwd, outDir, "human_review.html")} in a browser`);
 }
 

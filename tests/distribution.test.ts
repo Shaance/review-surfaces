@@ -172,6 +172,10 @@ test("review-surfaces.DISTRIBUTION.7 the all terminal summary ends with the HTML
   // SAME cockpit: pr review scope and a custom --config carry through.
   assert.match(pointer, /--review-scope pr/);
   assert.match(pointer, /--config/);
+  assert.match(pointer, /--budget/);
+  // Values are shell-quoted so the suggestion stays copy-pasteable for paths
+  // with spaces or metacharacters.
+  assert.match(pointer, /shellQuote\(/);
   // In the all command the ordering is: human-review summary leads
   // (HUMAN_REVIEW.15), then the artifacts line, then gate messages, then the
   // cockpit pointer LAST — the run genuinely ends on it even when a gate
