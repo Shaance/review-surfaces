@@ -538,12 +538,55 @@ export interface ChangeGraphCluster {
   paths: string[];
 }
 
+// review-surfaces.MAP_SCALE.1: the overview level — model clusters merged by
+// first path segment ("(root)" stays itself), derived from the SAME model the
+// tour and queue use, never renderer-local clustering. Honest by construction
+// (MAP_SCALE.3): group file counts sum to the full changed-file count and
+// aggregated edge weights account for every model edge between groups.
+export interface ChangeGraphOverviewGroup {
+  name: string;
+  file_count: number;
+  cluster_count: number;
+  churn_added: number;
+  churn_removed: number;
+  // Review-queue items whose path resolves to a file in this group.
+  queue_count: number;
+  // Dominant risk lens among the group's files: most frequent node lens,
+  // ties broken by lens rank then lens name — deterministic.
+  lens?: RiskLens;
+}
+
+export interface ChangeGraphOverviewEdge {
+  // Group names, importer-group -> imported-group (same contract direction as
+  // file-level edges; renderers reverse at draw time).
+  from: string;
+  to: string;
+  // Number of underlying model edges aggregated into this group edge.
+  weight: number;
+  has_new: boolean;
+  has_removed: boolean;
+}
+
+export interface ChangeGraphOverview {
+  // Group array order is the render order (first appearance among clusters,
+  // which is itself tour order).
+  groups: ChangeGraphOverviewGroup[];
+  // The single aggregate dashed halo entry: how many unchanged importers the
+  // file-level halo carries.
+  halo_count: number;
+  edges: ChangeGraphOverviewEdge[];
+}
+
 export interface ChangeGraph {
   nodes: ChangeGraphNode[];
   halo_nodes: ChangeGraphHaloNode[];
   edges: ChangeGraphEdge[];
   // Cluster array order is the render order (first appearance in the tour).
   clusters: ChangeGraphCluster[];
+  // review-surfaces.MAP_SCALE.1: always emitted (empty groups for an empty
+  // graph) and required by the strict schema, so a stale pre-overview artifact
+  // fails validation and is rebuilt (the NARRATIVE.1/SCHEMA.3 precedent).
+  overview: ChangeGraphOverview;
 }
 
 // review-surfaces.READING_ORDER.1: the guided diff tour — changed files

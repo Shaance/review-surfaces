@@ -6,12 +6,12 @@
 // carries NO spec/requirement anchors (CHANGE_MAP.3) — trust lives in the
 // underlying facts (every edge cites the import graph, every halo node a
 // blast-radius fact).
-import { ChangeGraph, RiskLens } from "../human/contract";
+import { ChangeGraph, ChangeGraphOverview, RiskLens } from "../human/contract";
 import { diagramLabel } from "./diagrams";
 import { LENS_STROKES, SVG_LENS_FILLS } from "../human/render-svg-map";
-
-const MAX_CHANGED_NODES = 25;
-const MAX_HALO_NODES = 10;
+// review-surfaces.MAP_SCALE.2: caps come from the ONE legibility-budget module
+// — the same constants the SVG emitter and the budget decision use.
+import { MAX_CHANGED_NODES, MAX_HALO_NODES } from "../human/legibility-budget";
 
 // Print-safe, color-not-alone palette: each lens also carries its name in the
 // node label via the class name legend below the map on rendered surfaces.
@@ -102,6 +102,55 @@ export function renderChangeMapMermaid(graph: ChangeGraph): string | undefined {
     const ids = halo.map((_, index) => `h${index}`).concat(haloOverflow > 0 ? ["halo_more"] : []);
     lines.push(`  classDef halo stroke-dasharray: 5 5,fill:#f9fafb,stroke:#6b7280`);
     lines.push(`  class ${ids.join(",")} halo`);
+  }
+  return lines.join("\n");
+}
+
+// review-surfaces.MAP_SCALE.2: the overview-level mermaid — one node per group
+// (file/cluster/churn counts in the label, dominant-lens classDef), the single
+// dashed halo node, and weighted inter-group edges (label carries ×weight plus
+// new/removed flags). Same model the SVG overview draws; no renderer-local
+// clustering or thresholds.
+export function renderChangeMapOverviewMermaid(overview: ChangeGraphOverview): string | undefined {
+  if (overview.groups.length === 0) {
+    return undefined;
+  }
+  const lines: string[] = ["flowchart LR"];
+  const idByGroup = new Map<string, string>();
+  const usedLenses = new Set<RiskLens>();
+  for (const [index, group] of overview.groups.entries()) {
+    const id = `g${index}`;
+    idByGroup.set(group.name, id);
+    const queue = group.queue_count > 0 ? ` · queue ${group.queue_count}` : "";
+    lines.push(
+      `  ${id}["${diagramLabel(group.name)}<br/>${group.file_count} file(s) · ${group.cluster_count} cluster(s)<br/>+${group.churn_added}/-${group.churn_removed}${queue}"]`
+    );
+    if (group.lens) {
+      usedLenses.add(group.lens);
+      lines.push(`  class ${id} lens_${group.lens}`);
+    }
+  }
+  if (overview.halo_count > 0) {
+    lines.push(`  halo["blast radius<br/>${overview.halo_count} unchanged importer(s)"]`);
+  }
+  // Model edges are importer-group -> imported-group; draw reversed
+  // (dependency -> dependent) to agree with the tour, like the file level.
+  for (const edge of overview.edges) {
+    const from = idByGroup.get(edge.to);
+    const to = idByGroup.get(edge.from);
+    if (!from || !to) {
+      continue;
+    }
+    const flags = `${edge.has_new ? " · new" : ""}${edge.has_removed ? " · removed" : ""}`;
+    const arrow = edge.has_new ? "==>" : edge.has_removed ? "-.->" : "-->";
+    lines.push(`  ${from} ${arrow}|"×${edge.weight}${flags}"| ${to}`);
+  }
+  for (const lens of [...usedLenses].sort()) {
+    lines.push(`  classDef lens_${lens} ${lensClassDef(lens)}`);
+  }
+  if (overview.halo_count > 0) {
+    lines.push(`  classDef halo stroke-dasharray: 5 5,fill:#f9fafb,stroke:#6b7280`);
+    lines.push(`  class halo halo`);
   }
   return lines.join("\n");
 }

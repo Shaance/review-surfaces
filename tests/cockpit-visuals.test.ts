@@ -141,7 +141,7 @@ test("review-surfaces.RENDER.11 the cockpit renders the change_graph as determin
   // Byte-deterministic: identical model -> identical output.
   assert.equal(svg, renderChangeMapSvg(fixture.change_graph)!.svg);
   // Empty graph renders no SVG.
-  assert.equal(renderChangeMapSvg({ nodes: [], halo_nodes: [], edges: [], clusters: [] }), undefined);
+  assert.equal(renderChangeMapSvg({ nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } }), undefined);
   // Lens color never alone: the lens name appears as text alongside the fill.
   assert.match(svg, /security_privacy/);
   // The cockpit embeds the SVG with a text legend and the filter note.

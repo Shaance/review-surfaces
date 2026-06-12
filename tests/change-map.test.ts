@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { buildChangeGraphSections, computeChangedImportEdges } from "../src/human/change-graph";
-import { renderChangeMapMermaid } from "../src/diagrams/change-map";
+import { renderChangeMapMermaid, renderChangeMapOverviewMermaid } from "../src/diagrams/change-map";
+import { changeMapLeadLevel, COCKPIT_WIDTH_PX } from "../src/human/legibility-budget";
+import { renderChangeMapOverviewSvg } from "../src/human/render-svg-map";
 import { changeMapDetailsBlock } from "../src/render/change-map-embed";
 import { renderHumanPrComment } from "../src/render/pr-comment";
 import { renderStickySummary } from "../src/render/sticky-summary";
@@ -164,7 +166,7 @@ test("review-surfaces.CHANGE_MAP.2 the mermaid emitter renders flowchart LR with
   // No spec/requirement anchors on the map (CHANGE_MAP.3): no ACID-shaped labels.
   assert.doesNotMatch(body, /review-surfaces\.[A-Z_]+\.\d/);
   // Empty graph renders nothing rather than an empty diagram.
-  assert.equal(renderChangeMapMermaid({ nodes: [], halo_nodes: [], edges: [], clusters: [] }), undefined);
+  assert.equal(renderChangeMapMermaid({ nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } }), undefined);
 });
 
 test("review-surfaces.CHANGE_MAP.2 halo nodes render dashed with a cap and explicit overflow", () => {
@@ -229,7 +231,8 @@ test("review-surfaces.CHANGE_MAP.4 labels pass the shared sanitizer, the fence-c
     nodes: [{ path: "```\nplain.ts", churn_added: 1, churn_removed: 0, status: "modified", cluster: "(root)" }],
     halo_nodes: [],
     edges: [],
-    clusters: [{ name: "```", paths: ["```\nplain.ts"] }]
+    clusters: [{ name: "```", paths: ["```\nplain.ts"] }],
+    overview: { groups: [{ name: "```", file_count: 1, cluster_count: 1, churn_added: 1, churn_removed: 0, queue_count: 0 }], halo_count: 0, edges: [] }
   };
   // diagramLabel collapses newlines, so a hostile label can never reach a line
   // start; the fence guard is the body-level backstop. Either the block is
@@ -243,4 +246,183 @@ test("review-surfaces.CHANGE_MAP.4 labels pass the shared sanitizer, the fence-c
   const script = fs.readFileSync(path.join(process.cwd(), "scripts", "determinism-check.sh"), "utf8");
   assert.match(script, /for SCOPE in repo pr/);
   assert.match(script, /--review-scope/);
+});
+
+// ---------------------------------------------------------------------------
+// review-surfaces.MAP_SCALE.1-3: the overview level. The fixture reproduces
+// the 2026-06-12 legibility evidence-log failure 1 shape — the aefc63c~8
+// range: 99 changed files across 23 clusters, whose file-level map rendered
+// at ~16% of natural size while hiding 74 files and dropping edges silently.
+
+function wideFixtureSections() {
+  const files = [];
+  const srcDirs = ["cli", "collector", "core", "diagrams", "dogfood", "evaluation", "feedback", "human", "intent", "llm", "pipeline", "privacy", "render", "risks"];
+  for (const dir of srcDirs) {
+    for (let i = 0; i < 5; i++) {
+      files.push(file(`src/${dir}/f${i}.ts`, "M", 7, 3));
+    }
+  }
+  for (let i = 0; i < 8; i++) files.push(file(`tests/t${i}.test.ts`));
+  for (let i = 0; i < 3; i++) files.push(file(`schemas/s${i}.schema.json`));
+  for (let i = 0; i < 4; i++) files.push(file(`scripts/sc${i}.sh`));
+  for (let i = 0; i < 5; i++) files.push(file(`docs/d${i}.md`));
+  for (let i = 0; i < 2; i++) files.push(file(`features/f${i}.feature.yaml`));
+  for (let i = 0; i < 2; i++) files.push(file(`bin/b${i}.js`));
+  for (let i = 0; i < 2; i++) files.push(file(`.github/workflows/w${i}.yml`));
+  files.push(file("README.md"), file("package.json"), file("types/global.d.ts"));
+  assert.equal(files.length, 99);
+  return buildChangeGraphSections({
+    files,
+    edges: [
+      // Intra-group (src -> src across clusters): the zoom level's job, must
+      // NOT appear as overview edges but must be accounted for in the honesty
+      // assertion below.
+      { importer: "src/render/f0.ts", imported: "src/core/f0.ts" },
+      { importer: "src/human/f0.ts", imported: "src/core/f1.ts" },
+      // Cross-group: tests -> src (x2) and bin -> src.
+      { importer: "tests/t0.test.ts", imported: "src/core/f0.ts" },
+      { importer: "tests/t1.test.ts", imported: "src/core/f0.ts" },
+      { importer: "bin/b0.js", imported: "src/cli/f0.ts" }
+    ],
+    driftEdges: {
+      // bin -> src is newly added (has_new); a removed tests -> src edge
+      // appends with kind removed (has_removed merges onto the same group edge
+      // as the two existing tests -> src edges).
+      added: [{ importer: "bin/b0.js", imported: "src/cli/f0.ts" }],
+      removed: [{ importer: "tests/t2.test.ts", imported: "src/core/f3.ts" }]
+    },
+    usedBy: [{ path: "src/core/f0.ts", top: ["src/unchanged/u0.ts", "src/unchanged/u1.ts"] }],
+    lensFindings: [
+      lensFinding("security_privacy", ["src/core/f0.ts", "src/core/f1.ts"], "LENS-001"),
+      lensFinding("api_contract", ["src/cli/f0.ts"], "LENS-002"),
+      // tests group: one reviewer_ux + one test_evidence finding — a count tie
+      // the lens rank must break deterministically (test_evidence rank 3 beats
+      // reviewer_ux rank 4).
+      lensFinding("reviewer_ux", ["tests/t0.test.ts"], "LENS-003"),
+      lensFinding("test_evidence", ["tests/t1.test.ts"], "LENS-004")
+    ],
+    reviewQueue: [
+      queueItem("Q-1", "src/core/f0.ts", 1),
+      queueItem("Q-2", "tests/t0.test.ts", 2),
+      queueItem("Q-3", "README.md", 3),
+      // A repo-level item that maps to no changed file belongs to no group.
+      queueItem("Q-4", "(repo)", 4)
+    ]
+  });
+}
+
+test("review-surfaces.MAP_SCALE.1 change_graph grows a schema-visible overview: clusters merged by first path segment, (root) stays itself, counts/churn/lens/queue per group, one aggregate halo entry, weighted inter-group edges", () => {
+  const sections = wideFixtureSections();
+  const graph = sections.change_graph;
+  assert.equal(graph.nodes.length, 99);
+  assert.equal(graph.clusters.length, 23);
+  const overview = graph.overview;
+  // Groups: 14 src/* clusters merge into one "src"; "(root)" stays itself.
+  const names = overview.groups.map((group) => group.name);
+  assert.deepEqual([...names].sort(), ["(root)", ".github", "bin", "docs", "features", "schemas", "scripts", "src", "tests", "types"]);
+  const src = overview.groups.find((group) => group.name === "src");
+  assert.ok(src);
+  assert.equal(src.file_count, 70);
+  assert.equal(src.cluster_count, 14);
+  assert.equal(src.churn_added, 70 * 7);
+  assert.equal(src.churn_removed, 70 * 3);
+  assert.equal(src.queue_count, 1);
+  // Dominant lens: security_privacy cites 2 src files vs api_contract's 1.
+  assert.equal(src.lens, "security_privacy");
+  // Count tie in tests group breaks by lens rank (test_evidence rank 3 < reviewer_ux rank 4).
+  const tests = overview.groups.find((group) => group.name === "tests");
+  assert.ok(tests);
+  assert.equal(tests.lens, "test_evidence");
+  assert.equal(tests.queue_count, 1);
+  const root = overview.groups.find((group) => group.name === "(root)");
+  assert.ok(root);
+  assert.equal(root.file_count, 2);
+  assert.equal(root.queue_count, 1);
+  // One aggregate halo entry: the count of file-level halo nodes.
+  assert.equal(overview.halo_count, 2);
+  assert.equal(graph.halo_nodes.length, 2);
+  // Aggregated inter-group edges: tests->src carries weight 3 (two existing +
+  // one removed) with has_removed; bin->src weight 1 with has_new. Intra-src
+  // edges do NOT surface here.
+  assert.deepEqual(overview.edges, [
+    { from: "bin", to: "src", weight: 1, has_new: true, has_removed: false },
+    { from: "tests", to: "src", weight: 3, has_new: false, has_removed: true }
+  ]);
+  // The full model with the overview validates against the strict schema.
+  const schema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "human_review.schema.json"), "utf8"));
+  const result = validateJsonSchema(schema, model(graph, sections.reading_order.legs));
+  assert.ok(result.valid, JSON.stringify(result));
+});
+
+test("review-surfaces.MAP_SCALE.2 the legibility budget decides per surface: the overview leads everywhere on the wide fixture and the small-diff file-level map is unchanged", () => {
+  const wide = wideFixtureSections();
+  assert.equal(changeMapLeadLevel(wide.change_graph), "overview");
+  const fixture = model(wide.change_graph, wide.reading_order.legs);
+  // human_review.md: honest lead-in plus the overview mermaid, not 99 file nodes.
+  const markdown = renderHumanReviewMarkdown(fixture);
+  assert.match(markdown, /Overview — 99 changed file\(s\) across 10 group\(s\)/);
+  assert.match(markdown, /70 file\(s\) · 14 cluster\(s\)/);
+  assert.doesNotMatch(markdown, /subgraph c0/);
+  // Sticky comment: the details block is titled honestly and stays compact.
+  const sticky = renderStickySummary(fixture);
+  assert.match(sticky.markdown, /<details><summary>Change map \(overview\)<\/summary>/);
+  assert.doesNotMatch(sticky.markdown, /\+ \d+ more files/);
+  // PR comment surface: same decision, same title.
+  const prComment = renderHumanPrComment(fixture).markdown;
+  assert.match(prComment, /<details><summary>Change map \(overview\)<\/summary>/);
+  // The overview mermaid carries weighted edges with flags, dashed halo, and
+  // dominant-lens classes.
+  const body = renderChangeMapOverviewMermaid(wide.change_graph.overview) as string;
+  assert.match(body, /×3 · removed/);
+  assert.match(body, /×1 · new/);
+  assert.match(body, /blast radius<br\/>2 unchanged importer\(s\)/);
+  assert.match(body, /classDef lens_security_privacy/);
+  // Small diff (4 columns incl. halo): the file-level map still leads with
+  // today's structure on every surface.
+  const small = buildChangeGraphSections({
+    files: [file("src/core/a.ts"), file("src/render/b.ts"), file("tests/a.test.ts")],
+    edges: [{ importer: "src/render/b.ts", imported: "src/core/a.ts" }],
+    usedBy: [{ path: "src/core/a.ts", top: ["src/other/halo.ts"] }],
+    lensFindings: [],
+    reviewQueue: []
+  });
+  assert.equal(changeMapLeadLevel(small.change_graph), "file");
+  const smallSticky = renderStickySummary(model(small.change_graph, small.reading_order.legs));
+  assert.match(smallSticky.markdown, /<details><summary>Change map<\/summary>/);
+  const smallBody = renderChangeMapMermaid(small.change_graph) as string;
+  assert.match(smallBody, /subgraph c0\["src\/core"\]/);
+});
+
+test("review-surfaces.MAP_SCALE.3 the overview is honest by construction: group file counts sum to every changed file, edge weights account for every inter-group model edge, and the overview SVG fits the width budget at full size", () => {
+  const sections = wideFixtureSections();
+  const graph = sections.change_graph;
+  const overview = graph.overview;
+  // File counts sum to the FULL changed-file count — nothing hidden behind
+  // "+ N more" (the 74-hidden-files half of evidence-log failure 2).
+  assert.equal(overview.groups.reduce((sum, group) => sum + group.file_count, 0), graph.nodes.length);
+  // Cluster counts sum to every model cluster.
+  assert.equal(overview.groups.reduce((sum, group) => sum + group.cluster_count, 0), graph.clusters.length);
+  // Churn totals sum to the full model churn.
+  assert.equal(overview.groups.reduce((sum, group) => sum + group.churn_added, 0), graph.nodes.reduce((sum, node) => sum + node.churn_added, 0));
+  // Every model edge is accounted for: inter-group edges aggregate into
+  // weights; the remainder are intra-group (the zoom level's job) — none
+  // silently dropped (the silent-edge half of failure 2).
+  const groupOfCluster = new Map(graph.nodes.map((node) => [node.path, node.cluster.split("/")[0]]));
+  const intraGroup = graph.edges.filter((edge) => groupOfCluster.get(edge.from) === groupOfCluster.get(edge.to)).length;
+  const aggregatedWeight = overview.edges.reduce((sum, edge) => sum + edge.weight, 0);
+  assert.equal(aggregatedWeight + intraGroup, graph.edges.length);
+  // The overview SVG wraps and never exceeds the width budget — full-size
+  // rendering by construction, summarize-never-shrink.
+  const rendered = renderChangeMapOverviewSvg(overview);
+  assert.ok(rendered);
+  const viewBox = rendered.svg.match(/viewBox="0 0 (\d+) (\d+)"/);
+  assert.ok(viewBox);
+  assert.ok(Number(viewBox[1]) <= COCKPIT_WIDTH_PX, `overview width ${viewBox[1]} must fit the ${COCKPIT_WIDTH_PX}px budget`);
+  // Groups carry the zoom hook and an explicit aggregate halo card.
+  assert.match(rendered.svg, /data-map-group="src"/);
+  assert.match(rendered.svg, /blast radius/);
+  assert.match(rendered.svg, /2 unchanged importer\(s\)/);
+  // Empty overview renders nothing rather than an empty diagram.
+  assert.equal(renderChangeMapOverviewSvg({ groups: [], halo_count: 0, edges: [] }), undefined);
+  assert.equal(renderChangeMapOverviewMermaid({ groups: [], halo_count: 0, edges: [] }), undefined);
 });

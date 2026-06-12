@@ -14,7 +14,7 @@ import { renderHunkExcerpt } from "../human/hunk-excerpt";
 import { decisionLabel, formatQueueLocation } from "../human/render";
 import type { HumanReviewModel, ReviewQueueItem, SinceLastReview, SinceLastReviewItem } from "../human/contract";
 import { STICKY_MARKER } from "./comment";
-import { changeMapMermaidEmbed, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
+import { changeMapMermaidEmbed, changeMapTitle, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
 import { firstTourLegSnippet } from "./tour-snippet";
 
 const MAX_SUMMARY_CHARS = 600;
@@ -106,7 +106,7 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
     state.blocked = true;
   }
   if (mapEmbed.body) {
-    sections.push("", mermaidDetailsBlock("Change map", mapEmbed.body));
+    sections.push("", mermaidDetailsBlock(changeMapTitle(mapEmbed.level), mapEmbed.body));
   }
   // review-surfaces.RENDER.13: attributed dependency chains as a collapsed
   // mermaid tree — only when a chain exists (flat facts stay in the queue).
