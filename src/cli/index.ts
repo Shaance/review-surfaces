@@ -539,10 +539,19 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       if (evaluation) {
         await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
         console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
-        return applyGate(parsed, evaluation, collection, provider, config);
+        const cachedGateExit = applyGate(parsed, evaluation, collection, provider, config);
+        // review-surfaces.DISTRIBUTION.7: the cache-hit run also ends on the
+        // cockpit pointer, after any gate message.
+        if (config.human_review.enabled && config.human_review.default_entrypoint) {
+          printCockpitPointer(cwd, collection.outputDir);
+        }
+        return cachedGateExit;
       }
       await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
       console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
+      if (config.human_review.enabled && config.human_review.default_entrypoint) {
+        printCockpitPointer(cwd, collection.outputDir);
+      }
       return ExitCodes.success;
     }
     console.warn("Cached output is incomplete (evaluation.yaml missing/unreadable); regenerating to apply the --strict gate.");
@@ -715,9 +724,21 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   if (!config.human_review.enabled) {
     removeHumanReviewArtifacts(collection.outputDir);
   }
+  // review-surfaces.DISTRIBUTION.7: `all` writes the cockpit DIRECTLY from the
+  // exact model it just built (provider narrative, scope, budget, and config
+  // intact), so the final pointer never asks the user to re-run a command that
+  // could rebuild a different cockpit.
+  if (humanReview) {
+    await writeText(
+      path.join(collection.outputDir, "human_review.html"),
+      renderHumanReviewHtml(humanReview, { diff: readHumanReviewDiff(collection.outputDir) })
+    );
+  }
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
+  // review-surfaces.HUMAN_REVIEW.15: the human-review summary leads over the
+  // secondary artifact-status line.
   if (humanReview && config.human_review.default_entrypoint) {
     printHumanReviewTerminalSummary(cwd, collection.outputDir, humanReview);
   }
@@ -727,7 +748,13 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // IS a remote call with the live provider, so a privacy-blocked diff must still
   // trip the strict privacy gate (exit 5). The mock whole-repo evaluation has no
   // invalid_evidence, so the evidence gate cannot false-positive from this.
-  return applyGate(parsed, evaluation, collection, provider, config);
+  const gateExit = applyGate(parsed, evaluation, collection, provider, config);
+  // review-surfaces.DISTRIBUTION.7: printed AFTER any gate message so the run
+  // genuinely ends on the cockpit pointer.
+  if (humanReview && config.human_review.default_entrypoint) {
+    printCockpitPointer(cwd, collection.outputDir);
+  }
+  return gateExit;
 }
 
 // --review-scope pr|repo. PR mode emits/reads the diff-scoped pr_review_surface;
@@ -1339,6 +1366,10 @@ async function writeAndMaybeSummarizeHumanReviewFromArtifacts(
     return;
   }
   const humanReview = await writeHumanReviewFromArtifacts(cwd, outDir, scope, config, inputs);
+  // review-surfaces.DISTRIBUTION.7: the cache-hit path writes the cockpit from
+  // the same freshly-rebuilt model, like the main `all` path.
+  const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
+  await writeText(path.join(outputDir, "human_review.html"), renderHumanReviewHtml(humanReview, { diff: readHumanReviewDiff(outputDir) }));
   if (config.human_review.default_entrypoint) {
     printHumanReviewTerminalSummary(cwd, outDir, humanReview);
   }
@@ -1371,6 +1402,16 @@ function printHumanReviewTerminalSummary(cwd: string, outDir: string, humanRevie
   console.log(`Blockers: ${humanReview.blockers.length}`);
   console.log(`Suggested comments: ${humanReview.suggested_comments.length}`);
   console.log(`Missing evidence: ${humanReview.trust_audit.missing_evidence.length}`);
+}
+
+// review-surfaces.DISTRIBUTION.7: the flagship surface must be discoverable
+// from a stranger's first run — the all command ENDS on this pointer (after
+// any gate message). `all` writes human_review.html itself, so the pointer
+// only says where to look: there is no follow-up command whose flags could
+// drift from the run that produced the cockpit (provider narrative, scope,
+// budget, config, and out dir all stay exactly as generated).
+function printCockpitPointer(cwd: string, outDir: string): void {
+  console.log(`HTML cockpit: open ${artifactPathForLog(cwd, outDir, "human_review.html")} in a browser`);
 }
 
 async function loadOrBuildHumanReviewJson(

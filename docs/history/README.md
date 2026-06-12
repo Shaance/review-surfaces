@@ -21,7 +21,15 @@ Reading order, if you are curious how the product evolved:
    trend.
 5. `OPEN_SOURCE_UPLIFT_GOAL.md` — the cold-start correctness, spec-less mode,
    and distribution work that made the tool usable on a stranger's repository.
-6. `README.bootstrap.md` — the original spec-first bootstrap README.
+6. `POLISH_UPLIFT_GOAL.md` — the pre-publish legibility-at-scale uplift: the
+   change-map overview and zoom levels, the wrapped layouts, the committed
+   example packet, and the publish trim.
+7. `README.bootstrap.md` — the original spec-first bootstrap README.
+
+The two product proposals the cockpit uplifts executed against also live here:
+`human-first-review-surfaces-comprehensive-feature-proposal.md` (the original
+human-review cockpit design) and `human-review-value-uplift-proposal.md` (the
+per-line review-value diagnosis behind `HUMAN_REVIEW_UPLIFT_GOAL.md`).
 
 None of these documents are needed to use or contribute to the tool today —
 `README.md` and `CONTRIBUTING.md` at the repository root are the current

@@ -2,11 +2,11 @@
 
 > **STATUS: COMPLETE (2026-06-10).** All 5 phases (plus a 3.5 follow-up) merged to `main` via PRs #47–#52; the quality gate is back to `max_missing: 0, allow_missing: []`. Kept for reference. The active goal contract is `NEXT_VALUE_UPLIFT_GOAL.md`.
 
-Goal: implement all 5 phases of `docs/human-review-value-uplift-proposal.md`, sequentially, with each phase delivered as its own PR that is simplified, reviewed, and landed on `main` before the next phase begins.
+Goal: implement all 5 phases of `docs/history/human-review-value-uplift-proposal.md`, sequentially, with each phase delivered as its own PR that is simplified, reviewed, and landed on `main` before the next phase begins.
 
 Use these as the contract:
 
-- `docs/human-review-value-uplift-proposal.md` — the proposal: diagnosis, per-phase design sketches, and acceptance criteria.
+- `docs/history/human-review-value-uplift-proposal.md` — the proposal: diagnosis, per-phase design sketches, and acceptance criteria.
 - `features/review-surfaces.feature.yaml` — the source-of-truth requirements ledger. The spec entries for this work are already landed; preserve Acai IDs in tests, notes, and artifacts.
 - `AGENTS.md` and `.agents/skills/composed-review-loop/SKILL.md` — working rules and the review/landing workflow for this repo.
 

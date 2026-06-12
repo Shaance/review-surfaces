@@ -446,7 +446,7 @@ test("review-surfaces.CLI.1 supports top-level --help output", () => {
   const result = spawnSync("node", [cli, "--help"], { encoding: "utf8" });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /review-surfaces 0\.1\.0/);
+  assert.match(result.stdout, /review-surfaces 0\.2\.0/);
   assert.match(result.stdout, /Local-first human review decision cockpit/);
   assert.doesNotMatch(result.stdout, /Local-first review packet compiler/);
   assert.match(result.stdout, /run\s+Execute a local command/);

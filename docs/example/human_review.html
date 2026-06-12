@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>review-surfaces — human review</title>
+<style>
+:root { --fg:#1c1c1c; --muted:#666; --line:#ddd; --accent:#0b5fff; --bad:#b00020; --warn:#9a6700; --ok:#1a7f37; }
+* { box-sizing: border-box; }
+body { margin:0 auto; max-width: 980px; padding: 2rem 1.25rem 4rem; color: var(--fg); font: 15px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif; }
+h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+h2 { font-size: 1.1rem; margin: 2rem 0 .5rem; border-bottom: 1px solid var(--line); padding-bottom: .3rem; }
+code, pre { font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+pre { background:#f6f8fa; border:1px solid var(--line); border-radius:6px; padding:.6rem .8rem; overflow-x:auto; }
+.muted { color: var(--muted); }
+.badge { display:inline-block; border-radius: 10px; padding: .05rem .55rem; font-size: .78rem; border:1px solid var(--line); }
+.badge.blocker, .badge.high, .badge.block_before_merge { color:var(--bad); border-color:var(--bad); }
+.badge.medium, .badge.needs_author_clarification, .badge.reviewable_with_attention { color:var(--warn); border-color:var(--warn); }
+.badge.low, .badge.probably_safe, .badge.covered { color:var(--ok); border-color:var(--ok); }
+.item { border:1px solid var(--line); border-radius:8px; padding: .7rem .9rem; margin: .6rem 0; }
+.item.done { opacity:.55; }
+.item header { display:flex; gap:.6rem; align-items:baseline; }
+.item header label { margin-left:auto; font-size:.8rem; color:var(--muted); white-space:nowrap; }
+details > summary { cursor:pointer; color:var(--accent); font-size:.85rem; }
+ul { padding-left: 1.2rem; }
+.filters button { margin: 0 .35rem .35rem 0; border:1px solid var(--line); background:#fff; border-radius:14px; padding:.2rem .7rem; cursor:pointer; font-size:.8rem; }
+.filters button.active { border-color: var(--accent); color: var(--accent); }
+a { color: var(--accent); }
+@media print { #file-filter-note, .item header label { display:none; } details > * { display:block; } }
+</style>
+</head>
+<body>
+<h1>Human review</h1>
+<p class="muted">Generated from <code>.review-surfaces/review_packet.json</code> · <code>HEAD~3</code> → <code>HEAD</code> @ <code>a5b76bffb33d5fa8b0d1393cce410b88e7c2b848</code></p>
+
+<h2 id="verdict">Verdict</h2>
+<p><span class="badge needs_author_clarification">Needs author clarification</span> <span class="muted">confidence: medium</span></p>
+<p>Human review surface generated from local evidence: 0 packet risk(s). Verdict is needs_author_clarification with 0 blocker(s) and 0 review queue item(s).</p>
+<div id="strip"><p class="muted">✓ 0 verified · ~ 0 claimed · 1 missing evidence · 0 invalid</p></div>
+<h2 id="reading-order">Reading order</h2>
+<h3>Implementation</h3><ol><li value="1"><code>source/core/options.ts</code> — imported by 1 changed file(s)</li><li value="2"><code>source/core/index.ts</code> — imported by 1 changed file(s)</li></ol>
+<h3>Tests</h3><ol><li value="3"><code>test/abort.ts</code> — test — read after the 1 changed file(s) it imports</li><li value="4"><code>test/pagination.ts</code> — test — read after the code it covers</li></ol>
+<h3>Config and docs</h3><ol><li value="5"><code>documentation/4-pagination.md</code> — config or docs — read last</li><li value="6"><code>package.json</code> — config or docs — read last</li></ol>
+
+<h2 id="map">Change map</h2>
+<svg viewBox="0 0 752 264" width="100%" role="img" aria-label="Change map" style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;max-width:752px"><defs><marker id="map-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/></marker></defs><path d="M 216 112 C 116 112, 116 58, 16 58" fill="none" stroke="#9ca3af" stroke-width="1.2" marker-end="url(#map-arrow)"/><path d="M 216 58 C 246 58, 246 58, 276 58" fill="none" stroke="#9ca3af" stroke-width="1.2" marker-end="url(#map-arrow)"/><text x="16" y="28" font-size="11" font-weight="600" fill="#444">source/core</text><g data-map-file="source/core/index.ts" style="cursor:pointer"><rect x="16" y="38" width="200" height="40" rx="6" fill="#ffffff" stroke="#6b7280"/><text x="24" y="55" font-size="12">index.ts</text><text x="24" y="70" font-size="10" fill="#666">+33/-20</text><title>source/core/index.ts
++33/-20 modified</title></g><g data-map-file="source/core/options.ts" style="cursor:pointer"><rect x="16" y="92" width="200" height="40" rx="6" fill="#ffffff" stroke="#6b7280"/><text x="24" y="109" font-size="12">options.ts</text><text x="24" y="124" font-size="10" fill="#666">+2/-0</text><title>source/core/options.ts
++2/-0 modified</title></g><text x="276" y="28" font-size="11" font-weight="600" fill="#444">test</text><g data-map-file="test/abort.ts" style="cursor:pointer"><rect x="276" y="38" width="200" height="40" rx="6" fill="#ffffff" stroke="#6b7280"/><text x="284" y="55" font-size="12">abort.ts</text><text x="284" y="70" font-size="10" fill="#666">+113/-8</text><title>test/abort.ts
++113/-8 modified</title></g><g data-map-file="test/pagination.ts" style="cursor:pointer"><rect x="276" y="92" width="200" height="40" rx="6" fill="#ffffff" stroke="#6b7280"/><text x="284" y="109" font-size="12">pagination.ts</text><text x="284" y="124" font-size="10" fill="#666">+69/-0</text><title>test/pagination.ts
++69/-0 modified</title></g><text x="536" y="28" font-size="11" font-weight="600" fill="#444">documentation</text><g data-map-file="documentation/4-pagination.md" style="cursor:pointer"><rect x="536" y="38" width="200" height="40" rx="6" fill="#ffffff" stroke="#6b7280"/><text x="544" y="55" font-size="12">4-pagination.md</text><text x="544" y="70" font-size="10" fill="#666">+1/-0</text><title>documentation/4-pagination.md
++1/-0 modified</title></g><text x="16" y="184" font-size="11" font-weight="600" fill="#444">(root)</text><g data-map-file="package.json" style="cursor:pointer"><rect x="16" y="194" width="200" height="40" rx="6" fill="#ffffff" stroke="#6b7280"/><text x="24" y="211" font-size="12">package.json</text><text x="24" y="226" font-size="10" fill="#666">+1/-1</text><title>package.json
++1/-1 modified</title></g></svg>
+<p class="muted">Click a node to filter the review queue to that file; hover for details.</p>
+
+<ul><li>✓ The change touches 6 file(s). <span class="muted">(anchors: <code>documentation/4-pagination.md</code>, <code>package.json</code>, <code>source/core/index.ts</code>, <code>source/core/options.ts</code>)</span></li></ul>
+
+
+<h2 id="queue">Review queue</h2>
+<p class="filters" id="file-filter-note" hidden>Filtered to <code id="file-filter-path"></code> <button data-clear-file-filter>show all</button></p>
+<p class="muted">No path-backed review queue items.</p>
+
+<h2 id="plan">Review plan</h2>
+<p class="muted">No time budget configured (pass <code>--budget 15m</code> or set <code>human_review.review_budget</code>).</p>
+
+<h2 id="coverage">Coverage evidence</h2>
+<p class="muted">No coverage evidence: no coverage report was provided. This is different from changed lines being uncovered.</p>
+
+<h2 id="cards">Evidence cards</h2>
+<div class="item" id="card-CARD-001">
+<header><strong>No command transcript or validation feedback was supplied to prove test execution.</strong> <span class="badge medium">missing_evidence</span></header>
+<p>No command transcript or validation feedback was supplied to prove test execution.</p>
+<p class="muted">Why it matters: Missing evidence keeps the reviewer from verifying a claim, check, or readiness condition.</p>
+<p>Action: Ask the author to provide the missing evidence or record an explicit deferral. <span class="muted">(CARD-001)</span></p>
+</div>
+
+<h2 id="dep-chains" hidden>Dependency chains</h2>
+
+
+<h2 id="rounds">Review rounds</h2>
+<p class="muted">First review round — nothing to trend yet.</p>
+
+<h2 id="trust">Trust audit</h2>
+<p class="muted">Medium confidence: 0 verified fact(s), 1 missing evidence item(s), and 0 unverified claim(s).</p><h3>Missing evidence</h3><ul><li>No command transcript or validation feedback was supplied to prove test execution.</li></ul>
+
+<h2 id="questions">Questions for the author</h2>
+<ul><li><span class="badge clarifying">clarifying</span> Which validation command or parsed test artifact should reviewers trust for this change? <span class="muted">(QUESTION-001)</span></li><li><span class="badge clarifying">clarifying</span> What evidence closes this review gap: No command transcript or validation feedback was supplied to prove test execution.? <span class="muted">(QUESTION-002)</span></li></ul>
+
+
+<script>
+(function () {
+  "use strict";
+  var KEY = "review-surfaces:checked:a5b76bffb33d5fa8b0d1393cce410b88e7c2b848";
+  var checked = {};
+  try { checked = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { checked = {}; }
+  Array.prototype.forEach.call(document.querySelectorAll("[data-queue-check]"), function (box) {
+    var id = box.getAttribute("data-queue-check");
+    box.checked = Boolean(checked[id]);
+    box.closest(".item").classList.toggle("done", box.checked);
+    box.addEventListener("change", function () {
+      checked[id] = box.checked;
+      box.closest(".item").classList.toggle("done", box.checked);
+      try { localStorage.setItem(KEY, JSON.stringify(checked)); } catch (e) { /* private mode */ }
+    });
+  });
+  // Lens and map-file filters COMPOSE: an item is visible only when it passes
+  // both active filters (intersection), so toggling one never un-hides items
+  // the other filtered out.
+  var activeLens = null;
+  var activeFile = null;
+  var activeFileOld = null;
+  var fileNote = document.getElementById("file-filter-note");
+  var filePathEl = document.getElementById("file-filter-path");
+  function applyFilters() {
+    Array.prototype.forEach.call(document.querySelectorAll("[data-lenses]"), function (item) {
+      var lensOk = !activeLens || activeLens === "all" || (" " + item.getAttribute("data-lenses") + " ").indexOf(" " + activeLens + " ") >= 0;
+      // Rename-aware: an old-side-anchored item (path = rename source) matches
+      // the map node of its renamed destination, and vice versa.
+      var itemPath = item.getAttribute("data-path");
+      var fileOk = !activeFile || itemPath === activeFile || item.getAttribute("data-path-old") === activeFile || (activeFileOld && itemPath === activeFileOld);
+      item.style.display = lensOk && fileOk ? "" : "none";
+    });
+    if (fileNote && filePathEl) {
+      fileNote.hidden = !activeFile;
+      filePathEl.textContent = activeFile || "";
+    }
+  }
+  var buttons = document.querySelectorAll("[data-lens-filter]");
+  Array.prototype.forEach.call(buttons, function (button) {
+    button.addEventListener("click", function () {
+      var lens = button.getAttribute("data-lens-filter");
+      var active = button.classList.toggle("active");
+      Array.prototype.forEach.call(buttons, function (other) { if (other !== button) { other.classList.remove("active"); } });
+      activeLens = active ? lens : null;
+      applyFilters();
+    });
+  });
+  // review-surfaces.RENDER.12: review-progress bar fed by the existing
+  // checkbox state — recomputed on every change.
+  function updateProgress() {
+    var boxes = document.querySelectorAll("[data-queue-check]");
+    var done = 0;
+    Array.prototype.forEach.call(boxes, function (box) { if (box.checked) { done += 1; } });
+    var bar = document.getElementById("progress-bar");
+    var label = document.getElementById("progress-label");
+    if (bar && label && boxes.length > 0) {
+      bar.style.width = Math.round((done / boxes.length) * 100) + "%";
+      label.textContent = done + " of " + boxes.length + " reviewed";
+    }
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("[data-queue-check]"), function (box) {
+    box.addEventListener("change", updateProgress);
+  });
+  updateProgress();
+  // review-surfaces.RENDER.11: clicking a map node filters the queue to that
+  // file (same data- attribute pattern as the lens filters; composes with the
+  // lens filter via applyFilters above).
+  Array.prototype.forEach.call(document.querySelectorAll("[data-map-file]"), function (node) {
+    node.addEventListener("click", function () {
+      var file = node.getAttribute("data-map-file");
+      if (activeFile === file) {
+        activeFile = null;
+        activeFileOld = null;
+      } else {
+        activeFile = file;
+        activeFileOld = node.getAttribute("data-map-file-old");
+      }
+      applyFilters();
+    });
+  });
+  var clearButton = document.querySelector("[data-clear-file-filter]");
+  if (clearButton) {
+    clearButton.addEventListener("click", function () { activeFile = null; activeFileOld = null; applyFilters(); });
+  }
+  // review-surfaces.MAP_SCALE.6: clicking an overview group toggles its
+  // pre-rendered hidden detail SVG (one open at a time; clicking the same
+  // group again closes it). Same data- attribute pattern as the filters.
+  Array.prototype.forEach.call(document.querySelectorAll("[data-map-group]"), function (card) {
+    card.addEventListener("click", function () {
+      var group = card.getAttribute("data-map-group");
+      Array.prototype.forEach.call(document.querySelectorAll("[data-map-detail]"), function (panel) {
+        if (panel.getAttribute("data-map-detail") === group) {
+          panel.hidden = !panel.hidden;
+        } else {
+          panel.hidden = true;
+        }
+      });
+    });
+  });
+})();
+</script>
+</body>
+</html>

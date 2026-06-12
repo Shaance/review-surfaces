@@ -640,7 +640,7 @@ components:
       cold-start failure 5: the package is publish-ready but unpublished, has no
       LICENSE, and the README assumes Acai conventions and shows none of the
       shipped visuals. Requirements 5-8 extend this family for the pre-publish
-      polish uplift Phase 3 (POLISH_UPLIFT_GOAL.md, 2026-06-12 legibility
+      polish uplift Phase 3 (docs/history/POLISH_UPLIFT_GOAL.md, 2026-06-12 legibility
       evidence-log failures 5-6): showcase artifacts, README truth, quickstart
       cockpit surfacing, and publish trim.
     requirements:
@@ -654,21 +654,21 @@ components:
         requirement: The local gate must include a packaging smoke test verifying the pnpm pack tarball installs and runs from a temporary directory outside the repository; actual npm publish remains the owner's manual step, prepared but never run.
       5:
         requirement: The repository must contain docs/example/ with committed sample artifacts (human_review.md, human_review.html, comment.md) generated from the pinned got cold-start range (a5b76bffb, HEAD~3) with a frozen --now timestamp and verified redaction, plus a short framing README stating the exact commands that generated them, linked from the main README so a stranger can read a packet before installing.
-        note: "Pre-publish polish uplift Phase 3 (POLISH_UPLIFT_GOAL.md). Closes legibility evidence-log failure 5: no committed sample artifacts exist, so the three README PNGs are the only pre-install preview. This is the open-source uplift's deliberately skipped Phase 4, unblocked now that the artifacts are worth showing."
+        note: "Pre-publish polish uplift Phase 3 (docs/history/POLISH_UPLIFT_GOAL.md). Closes legibility evidence-log failure 5: no committed sample artifacts exist, so the three README PNGs are the only pre-install preview. This is the open-source uplift's deliberately skipped Phase 4, unblocked now that the artifacts are worth showing."
       6:
         requirement: docs/images/change-map.png must be regenerated from a real run so it shows the overview level at legible width, cockpit.png must be refreshed if the above-the-fold cockpit changed, and the README's change-map copy must describe the overview and zoom levels.
-        note: "Pre-publish polish uplift Phase 3 (POLISH_UPLIFT_GOAL.md). Closes the README half of failures 1 and 5: the committed change-map.png is a 4680x768 ribbon — the screenshot that sells the feature demonstrates the scaling bug."
+        note: "Pre-publish polish uplift Phase 3 (docs/history/POLISH_UPLIFT_GOAL.md). Closes the README half of failures 1 and 5: the committed change-map.png is a 4680x768 ribbon — the screenshot that sells the feature demonstrates the scaling bug."
       7:
         requirement: The review-surfaces all terminal summary must end with a pointer to the HTML cockpit (review-surfaces human --format html), or all must write human_review.html directly, so the flagship surface is discoverable from a stranger's first quickstart run.
-        note: "Pre-publish polish uplift Phase 3 (POLISH_UPLIFT_GOAL.md). Closes the quickstart half of failure 6: the all summary never mentions the cockpit."
+        note: "Pre-publish polish uplift Phase 3 (docs/history/POLISH_UPLIFT_GOAL.md). Closes the quickstart half of failure 6: the all summary never mentions the cockpit."
       8:
         requirement: The repository must contain CHANGELOG.md with a condensed 0.1.0 history covering the five uplifts plus an Unreleased section, and the remaining internal proposal docs under docs/ must move to docs/history/ with inbound references updated and POLISH_UPLIFT_GOAL.md moved there and indexed in the history README; npm publish itself remains the owner's manual step.
-        note: "Pre-publish polish uplift Phase 3 (POLISH_UPLIFT_GOAL.md). Closes the publish-trim half of failure 6: no CHANGELOG for the npm listing, and docs/ still mixes internal proposals with user-facing docs."
+        note: "Pre-publish polish uplift Phase 3 (docs/history/POLISH_UPLIFT_GOAL.md). Closes the publish-trim half of failure 6: no CHANGELOG for the npm listing, and docs/ still mixes internal proposals with user-facing docs."
 
   MAP_SCALE:
     name: Change-map legibility at scale
     description: >-
-      Pre-publish polish uplift Phases 1-2 (POLISH_UPLIFT_GOAL.md). Every
+      Pre-publish polish uplift Phases 1-2 (docs/history/POLISH_UPLIFT_GOAL.md). Every
       requirement traces to the 2026-06-12 legibility evidence log: on wide
       ranges (this repo's last 8 PRs, 99 files; got HEAD~40, 87 files) the
       change map renders at 16-55 percent of natural size, hides 74 of 99

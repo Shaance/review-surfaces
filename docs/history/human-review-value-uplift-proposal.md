@@ -4,7 +4,7 @@
 **Date:** 2026-06-09
 **Status:** Product/design proposal with spec entries already landed in `features/review-surfaces.feature.yaml`
 **Intended readers:** maintainers, implementation agents, human reviewers
-**Primary goal:** Raise the per-line value of the human review cockpit for human readers. The cockpit architecture from `docs/human-first-review-surfaces-comprehensive-feature-proposal.md` is substantially implemented; this proposal addresses why the rendered result still reads agent-oriented, and what would make it stand out.
+**Primary goal:** Raise the per-line value of the human review cockpit for human readers. The cockpit architecture from `docs/history/human-first-review-surfaces-comprehensive-feature-proposal.md` is substantially implemented; this proposal addresses why the rendered result still reads agent-oriented, and what would make it stand out.
 
 Spec anchors introduced for this proposal (all in `features/review-surfaces.feature.yaml`):
 
