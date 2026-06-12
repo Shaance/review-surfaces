@@ -1,9 +1,12 @@
 // review-surfaces.RENDER.11: deterministic inline-SVG change map for the HTML
 // cockpit, rendered from the SAME change_graph model as the mermaid emitter —
-// no chart or diagram library and no inlined mermaid.js. Hand-rolled layered
-// layout: one column per cluster (in the model's tour-agreeing order), stable
-// row order within a column, fixed viewBox, system font stack. Every coordinate
-// derives from sorted input, so identical models produce byte-identical SVG.
+// no chart or diagram library and no inlined mermaid.js. Hand-rolled layout:
+// one column per cluster (in the model's tour-agreeing order), stable row
+// order within a column, fixed viewBox, system font stack. Columns wrap into
+// bands and long stacks split into continuation slots (MAP_SCALE.5) so no
+// rendered map ever exceeds the cockpit width budget — height grows, width
+// never. Every coordinate derives from sorted input, so identical models
+// produce byte-identical SVG.
 // Every interpolated label passes through the shared redact-then-escape esc()
 // helper; hover details ride on <title> elements so the map degrades gracefully
 // in print. Node click filters the queue via the existing data- attribute
@@ -22,9 +25,9 @@ import {
   SVG_NODE_HEIGHT as NODE_HEIGHT,
   SVG_NODE_WIDTH as NODE_WIDTH,
   SVG_PADDING as PADDING,
-  SVG_ROW_GAP as ROW_GAP,
-  svgNaturalWidth
+  SVG_ROW_GAP as ROW_GAP
 } from "./legibility-budget";
+import { DetailStub } from "./change-graph";
 
 // Print-safe fills paired with the lens name in the node's <title> and the
 // legend the cockpit renders next to the map — color never carries meaning
@@ -66,27 +69,51 @@ export interface RenderedSvgMap {
   lenses: RiskLens[];
 }
 
-export function renderChangeMapSvg(graph: ChangeGraph): RenderedSvgMap | undefined {
+// One column slot in the wrapped layout: a header plus stacked cells. Long
+// file stacks split into continuation slots (MAP_SCALE.5) so height stays
+// usable while WIDTH never exceeds the budget.
+interface ColumnSlot {
+  header: string;
+  dashedHeader: boolean;
+  cells: ColumnCell[];
+}
+
+type ColumnCell =
+  | { kind: "node"; node: ChangeGraph["nodes"][number] }
+  | { kind: "halo"; node: ChangeGraph["halo_nodes"][number] }
+  | { kind: "overflow"; count: number }
+  | { kind: "stub"; stub: DetailStub };
+
+// Stacks taller than this wrap into a continuation column slot.
+const MAX_STACK_ROWS = 8;
+// Vertical gap between wrapped bands of columns.
+const BAND_GAP = 26;
+// Columns per band: as many as the width budget allows, never fewer than one.
+const COLUMNS_PER_BAND = Math.max(1, Math.floor((COCKPIT_WIDTH_PX - 2 * PADDING + COLUMN_GAP) / (NODE_WIDTH + COLUMN_GAP)));
+
+export interface RenderChangeMapSvgOptions {
+  // review-surfaces.MAP_SCALE.4: cross-group edges of a detail view, rendered
+  // as an explicit dashed stub-port column ("→ src/render ×3").
+  stubs?: DetailStub[];
+  ariaLabel?: string;
+}
+
+export function renderChangeMapSvg(graph: ChangeGraph, options: RenderChangeMapSvgOptions = {}): RenderedSvgMap | undefined {
   if (graph.nodes.length === 0) {
     return undefined;
   }
   const nodeByPath = new Map(graph.nodes.map((node) => [node.path, node]));
   const usedLenses = new Set<RiskLens>();
-  const placed = new Map<string, PlacedNode>();
-  const parts: string[] = [];
 
-  // Columns: one per cluster in model order; a trailing dashed column for the
-  // halo. Each column renders a header and stacked node rects.
-  const halo = graph.halo_nodes.slice(0, MAX_HALO_NODES);
-  const haloOverflow = graph.halo_nodes.length - halo.length;
-  const columnCount = graph.clusters.length + (halo.length > 0 ? 1 : 0);
+  // Build column slots first (cluster columns in model order with the global
+  // node cap counted in that order, then the dashed halo column, then the
+  // stub-port column), splitting long stacks into continuation slots; only
+  // then place slots into wrapped bands (MAP_SCALE.5: height may grow, width
+  // never exceeds the budget).
+  const slots: ColumnSlot[] = [];
   let rendered = 0;
-  let maxRows = 0;
-
-  for (const [columnIndex, cluster] of graph.clusters.entries()) {
-    const x = PADDING + columnIndex * (NODE_WIDTH + COLUMN_GAP);
-    let row = 0;
-    const cells: string[] = [];
+  for (const cluster of graph.clusters) {
+    const cells: ColumnCell[] = [];
     let overflow = 0;
     for (const filePath of cluster.paths) {
       const node = nodeByPath.get(filePath);
@@ -98,59 +125,50 @@ export function renderChangeMapSvg(graph: ChangeGraph): RenderedSvgMap | undefin
         continue;
       }
       rendered += 1;
-      const y = PADDING + HEADER_HEIGHT + row * (NODE_HEIGHT + ROW_GAP);
-      placed.set(node.path, { x, y, path: node.path });
       if (node.lens) {
         usedLenses.add(node.lens);
       }
-      const fill = node.lens ? SVG_LENS_FILLS[node.lens] : "#ffffff";
-      const name = node.path.split("/").pop() ?? node.path;
-      const marker = node.status === "deleted" ? "× " : node.status === "added" ? "+ " : node.status === "renamed" ? "→ " : "";
-      const detail = `${node.path}\n+${node.churn_added}/-${node.churn_removed} ${node.status}${node.lens ? `\nlens: ${node.lens}` : ""}`;
-      cells.push(
-        `<g data-map-file="${esc(node.path)}"${node.old_path ? ` data-map-file-old="${esc(node.old_path)}"` : ""} style="cursor:pointer">` +
-          `<rect x="${x}" y="${y}" width="${NODE_WIDTH}" height="${NODE_HEIGHT}" rx="6" fill="${fill}" stroke="#6b7280"${node.status === "deleted" ? ` stroke-dasharray="2 2"` : ""}/>` +
-          `<text x="${x + 8}" y="${y + 17}" font-size="12">${esc(marker)}${esc(truncateLabel(name))}</text>` +
-          `<text x="${x + 8}" y="${y + 32}" font-size="10" fill="#666">+${esc(node.churn_added)}/-${esc(node.churn_removed)}${node.lens ? ` · ${esc(node.lens)}` : ""}</text>` +
-          `<title>${esc(detail)}</title>` +
-          `</g>`
-      );
-      row += 1;
+      cells.push({ kind: "node", node });
     }
     if (overflow > 0) {
-      const y = PADDING + HEADER_HEIGHT + row * (NODE_HEIGHT + ROW_GAP);
-      cells.push(
-        `<text x="${x + 8}" y="${y + 16}" font-size="11" fill="#666">+ ${esc(overflow)} more files</text>`
-      );
-      row += 1;
+      cells.push({ kind: "overflow", count: overflow });
     }
-    maxRows = Math.max(maxRows, row);
-    parts.push(`<text x="${x}" y="${PADDING + 12}" font-size="11" font-weight="600" fill="#444">${esc(cluster.name)}</text>`);
-    parts.push(...cells);
+    pushSlots(slots, cluster.name, false, cells);
+  }
+  const halo = graph.halo_nodes.slice(0, MAX_HALO_NODES);
+  const haloOverflow = graph.halo_nodes.length - halo.length;
+  if (halo.length > 0) {
+    const cells: ColumnCell[] = halo.map((node) => ({ kind: "halo", node }));
+    if (haloOverflow > 0) {
+      cells.push({ kind: "overflow", count: haloOverflow });
+    }
+    pushSlots(slots, "blast radius (unchanged)", true, cells);
+  }
+  if (options.stubs && options.stubs.length > 0) {
+    pushSlots(slots, "cross-group", true, options.stubs.map((stub) => ({ kind: "stub", stub })));
   }
 
-  if (halo.length > 0) {
-    const x = PADDING + graph.clusters.length * (NODE_WIDTH + COLUMN_GAP);
-    parts.push(`<text x="${x}" y="${PADDING + 12}" font-size="11" font-weight="600" fill="#444">blast radius (unchanged)</text>`);
-    let row = 0;
-    for (const node of halo) {
-      const y = PADDING + HEADER_HEIGHT + row * (NODE_HEIGHT + ROW_GAP);
-      placed.set(`halo:${node.path}`, { x, y, path: node.path });
+  // Place slots into bands.
+  const placed = new Map<string, PlacedNode>();
+  const parts: string[] = [];
+  const bandCount = Math.ceil(slots.length / COLUMNS_PER_BAND);
+  let bandTop = PADDING;
+  let maxRight = 0;
+  for (let band = 0; band < bandCount; band += 1) {
+    const bandSlots = slots.slice(band * COLUMNS_PER_BAND, (band + 1) * COLUMNS_PER_BAND);
+    const bandRows = Math.max(1, ...bandSlots.map((slot) => slot.cells.length));
+    for (const [slotIndex, slot] of bandSlots.entries()) {
+      const x = PADDING + slotIndex * (NODE_WIDTH + COLUMN_GAP);
+      maxRight = Math.max(maxRight, x + NODE_WIDTH);
       parts.push(
-        `<g>` +
-          `<rect x="${x}" y="${y}" width="${NODE_WIDTH}" height="${NODE_HEIGHT}" rx="6" fill="#f9fafb" stroke="#6b7280" stroke-dasharray="5 5"/>` +
-          `<text x="${x + 8}" y="${y + 24}" font-size="11" fill="#444">${esc(truncateLabel(node.path.split("/").pop() ?? node.path))}</text>` +
-          `<title>${esc(`${node.path}\nunchanged importer of: ${node.imports.join(", ")}`)}</title>` +
-          `</g>`
+        `<text x="${x}" y="${bandTop + 12}" font-size="11" font-weight="600" fill="${slot.dashedHeader ? "#666" : "#444"}">${esc(slot.header)}</text>`
       );
-      row += 1;
+      for (const [row, cell] of slot.cells.entries()) {
+        const y = bandTop + HEADER_HEIGHT + row * (NODE_HEIGHT + ROW_GAP);
+        parts.push(renderCell(cell, x, y, placed));
+      }
     }
-    if (haloOverflow > 0) {
-      const y = PADDING + HEADER_HEIGHT + row * (NODE_HEIGHT + ROW_GAP);
-      parts.push(`<text x="${x + 8}" y="${y + 16}" font-size="11" fill="#666">+ ${esc(haloOverflow)} more files</text>`);
-      row += 1;
-    }
-    maxRows = Math.max(maxRows, row);
+    bandTop += HEADER_HEIGHT + bandRows * (NODE_HEIGHT + ROW_GAP) + (band < bandCount - 1 ? BAND_GAP : 0);
   }
 
   // Edges: model edges are importer -> imported; draw dependency -> dependent
@@ -178,16 +196,80 @@ export function renderChangeMapSvg(graph: ChangeGraph): RenderedSvgMap | undefin
     }
   }
 
-  const width = svgNaturalWidth(columnCount);
-  const height = 2 * PADDING + HEADER_HEIGHT + Math.max(1, maxRows) * (NODE_HEIGHT + ROW_GAP);
+  const width = maxRight + PADDING;
+  const height = bandTop + PADDING;
   const svg =
-    `<svg viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="Change map" ` +
+    `<svg viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="${esc(options.ariaLabel ?? "Change map")}" ` +
     `style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;max-width:${width}px">` +
     `<defs><marker id="map-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/></marker></defs>` +
     edgeParts.join("") +
     parts.join("") +
     `</svg>`;
   return { svg, lenses: [...usedLenses].sort() };
+}
+
+// Split a column's cells into MAX_STACK_ROWS-tall slots; continuations carry a
+// "(cont.)" header so a wrapped stack stays attributable.
+function pushSlots(slots: ColumnSlot[], header: string, dashedHeader: boolean, cells: ColumnCell[]): void {
+  if (cells.length === 0) {
+    slots.push({ header, dashedHeader, cells: [] });
+    return;
+  }
+  for (let start = 0; start < cells.length; start += MAX_STACK_ROWS) {
+    slots.push({
+      header: start === 0 ? header : `${header} (cont.)`,
+      dashedHeader,
+      cells: cells.slice(start, start + MAX_STACK_ROWS)
+    });
+  }
+}
+
+function renderCell(cell: ColumnCell, x: number, y: number, placed: Map<string, PlacedNode>): string {
+  if (cell.kind === "overflow") {
+    return `<text x="${x + 8}" y="${y + 16}" font-size="11" fill="#666">+ ${esc(cell.count)} more files</text>`;
+  }
+  if (cell.kind === "halo") {
+    const node = cell.node;
+    placed.set(`halo:${node.path}`, { x, y, path: node.path });
+    return (
+      `<g>` +
+      `<rect x="${x}" y="${y}" width="${NODE_WIDTH}" height="${NODE_HEIGHT}" rx="6" fill="#f9fafb" stroke="#6b7280" stroke-dasharray="5 5"/>` +
+      `<text x="${x + 8}" y="${y + 24}" font-size="11" fill="#444">${esc(truncateLabel(node.path.split("/").pop() ?? node.path))}</text>` +
+      `<title>${esc(`${node.path}\nunchanged importer of: ${node.imports.join(", ")}`)}</title>` +
+      `</g>`
+    );
+  }
+  if (cell.kind === "stub") {
+    const stub = cell.stub;
+    const label = stub.direction === "out" ? `→ ${stub.other} ×${stub.weight}` : `${stub.other} → ×${stub.weight}`;
+    const flags = `${stub.has_new ? " new" : ""}${stub.has_removed ? " removed" : ""}`;
+    const detail =
+      stub.direction === "out"
+        ? `${stub.weight} import edge(s) from ${stub.other} depend on files in this group${flags}`
+        : `files in this group import ${stub.other} across ${stub.weight} edge(s)${flags}`;
+    return (
+      `<g>` +
+      `<rect x="${x}" y="${y}" width="${NODE_WIDTH}" height="${NODE_HEIGHT}" rx="6" fill="#ffffff" stroke="${stub.has_new || stub.has_removed ? "#b00020" : "#6b7280"}" stroke-dasharray="3 3"/>` +
+      `<text x="${x + 8}" y="${y + 17}" font-size="11" fill="#444">${esc(truncateLabel(label))}</text>` +
+      `<text x="${x + 8}" y="${y + 32}" font-size="9" fill="#666">${esc(`cross-group${flags}`)}</text>` +
+      `<title>${esc(detail)}</title>` +
+      `</g>`
+    );
+  }
+  const node = cell.node;
+  placed.set(node.path, { x, y, path: node.path });
+  const fill = node.lens ? SVG_LENS_FILLS[node.lens] : "#ffffff";
+  const name = node.path.split("/").pop() ?? node.path;
+  const marker = node.status === "deleted" ? "× " : node.status === "added" ? "+ " : node.status === "renamed" ? "→ " : "";
+  const detail = `${node.path}\n+${node.churn_added}/-${node.churn_removed} ${node.status}${node.lens ? `\nlens: ${node.lens}` : ""}`;
+  return (
+    `<g data-map-file="${esc(node.path)}"${node.old_path ? ` data-map-file-old="${esc(node.old_path)}"` : ""} style="cursor:pointer">` +
+    `<rect x="${x}" y="${y}" width="${NODE_WIDTH}" height="${NODE_HEIGHT}" rx="6" fill="${fill}" stroke="#6b7280"${node.status === "deleted" ? ` stroke-dasharray="2 2"` : ""}/>` +
+    `<text x="${x + 8}" y="${y + 17}" font-size="12">${esc(marker)}${esc(truncateLabel(name))}</text>` +
+    `<text x="${x + 8}" y="${y + 32}" font-size="10" fill="#666">+${esc(node.churn_added)}/-${esc(node.churn_removed)}${node.lens ? ` · ${esc(node.lens)}` : ""}</text>` +
+    `<title>${esc(detail)}</title>` +
+    `</g>`
+  );
 }
 
 function truncateLabel(name: string): string {
@@ -242,7 +324,7 @@ export function renderChangeMapOverviewSvg(overview: ChangeGraphOverview): Rende
       `+${group.churn_added}/-${group.churn_removed} · ${group.queue_count} review queue item(s)` +
       (lensLabel ? `\ndominant lens: ${lensLabel}` : "");
     parts.push(
-      `<g data-map-group="${esc(group.name)}">` +
+      `<g data-map-group="${esc(group.name)}" style="cursor:pointer">` +
         `<rect x="${x}" y="${y}" width="${GROUP_WIDTH}" height="${GROUP_HEIGHT}" rx="8" fill="${fill}" stroke="#6b7280"/>` +
         `<text x="${x + 10}" y="${y + 18}" font-size="12" font-weight="600">${esc(truncateLabel(group.name))}</text>` +
         `<text x="${x + 10}" y="${y + 36}" font-size="10" fill="#444">${esc(group.file_count)} file(s) · ${esc(group.cluster_count)} cluster(s)</text>` +

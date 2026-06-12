@@ -13,6 +13,7 @@ import { decisionLabel, formatQueueLocation, HumanRenderContext } from "./render
 import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
 import { renderChangeMapOverviewSvg, renderChangeMapSvg, SVG_LENS_FILLS } from "./render-svg-map";
 import { changeMapLeadLevel } from "./legibility-budget";
+import { buildGroupDetailViews, detailViewSubGraph } from "./change-graph";
 // Redact-then-escape: EVERY interpolated value goes through this shared helper
 // (lifted to esc.ts so the SVG emitter uses the same one — RENDER.11).
 import { esc } from "./esc";
@@ -181,6 +182,21 @@ ${renderScoreboardFooter(model)}
   if (clearButton) {
     clearButton.addEventListener("click", function () { activeFile = null; activeFileOld = null; applyFilters(); });
   }
+  // review-surfaces.MAP_SCALE.6: clicking an overview group toggles its
+  // pre-rendered hidden detail SVG (one open at a time; clicking the same
+  // group again closes it). Same data- attribute pattern as the filters.
+  Array.prototype.forEach.call(document.querySelectorAll("[data-map-group]"), function (card) {
+    card.addEventListener("click", function () {
+      var group = card.getAttribute("data-map-group");
+      Array.prototype.forEach.call(document.querySelectorAll("[data-map-detail]"), function (panel) {
+        if (panel.getAttribute("data-map-detail") === group) {
+          panel.hidden = !panel.hidden;
+        } else {
+          panel.hidden = true;
+        }
+      });
+    });
+  });
 })();
 </script>
 </body>
@@ -252,7 +268,7 @@ function renderHeaderStrip(model: HumanReviewModel, lenses: string[]): string {
 // — the overview SVG summarizes when the file-level map cannot render at full
 // size (summarize, never shrink).
 function renderSvgMapSection(model: HumanReviewModel): string {
-  const level = changeMapLeadLevel(model.change_graph);
+  const level = changeMapLeadLevel(model.change_graph, "svg");
   const rendered = level === "overview" ? renderChangeMapOverviewSvg(model.change_graph.overview) : renderChangeMapSvg(model.change_graph);
   if (!rendered) {
     return `<p class="muted">No changed files to map.</p>`;
@@ -265,7 +281,39 @@ function renderSvgMapSection(model: HumanReviewModel): string {
       : "";
   if (level === "overview") {
     const overview = model.change_graph.overview;
-    return `<p class="muted">Overview — ${esc(model.change_graph.nodes.length)} changed file(s) across ${esc(overview.groups.length)} group(s); the file-level map exceeds the legibility budget, so groups lead. Hover a group for details.</p>\n${rendered.svg}\n${legend}`;
+    // review-surfaces.MAP_SCALE.6: every group's detail SVG is pre-rendered
+    // and hidden; clicking the overview card toggles it (vanilla JS, same
+    // data- pattern as the existing filters). File nodes inside detail views
+    // carry data-map-file, so the existing click-to-filter binding picks them
+    // up unchanged.
+    const detailLenses = new Set(rendered.lenses);
+    const panels: string[] = [];
+    for (const view of buildGroupDetailViews(model.change_graph)) {
+      const detail = renderChangeMapSvg(detailViewSubGraph(model.change_graph, view), {
+        stubs: view.stubs,
+        ariaLabel: `Change map detail: ${view.group}`
+      });
+      if (!detail) {
+        continue;
+      }
+      for (const lens of detail.lenses) {
+        detailLenses.add(lens);
+      }
+      panels.push(
+        `<div class="map-detail" data-map-detail="${esc(view.group)}" hidden>` +
+          `<p class="muted">Detail — <code>${esc(view.group)}</code>. Click a file to filter the review queue; click the group card again to close.</p>` +
+          detail.svg +
+          `</div>`
+      );
+    }
+    const combinedLegend =
+      detailLenses.size > 0
+        ? `<p class="muted">Lenses: ${[...detailLenses]
+            .sort()
+            .map((lens) => `<span style="border-left:10px solid ${SVG_LENS_FILLS[lens]};padding-left:.3rem;margin-right:.6rem">${esc(RISK_LENS_METADATA[lens]?.label ?? lens)}</span>`)
+            .join("")}</p>`
+        : "";
+    return `<p class="muted">Overview — ${esc(model.change_graph.nodes.length)} changed file(s) across ${esc(overview.groups.length)} group(s); the file-level map exceeds the legibility budget, so groups lead. Click a group to zoom; hover for details.</p>\n${rendered.svg}\n${panels.join("\n")}\n${combinedLegend}`;
   }
   return `${rendered.svg}\n${legend}<p class="muted">Click a node to filter the review queue to that file; hover for details.</p>`;
 }

@@ -6,7 +6,8 @@ import { StructuredDiff } from "../pr/contract";
 import { formatEnumChanges, formatTypeChanges } from "../risks/semantic-diff";
 import { renderHunkExcerpt } from "./hunk-excerpt";
 import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
-import { changeMapMermaidEmbed } from "../render/change-map-embed";
+import { changeMapDetailEmbeds, changeMapMermaidEmbed } from "../render/change-map-embed";
+import { esc } from "./esc";
 import { renderDependencyTreeText } from "../diagrams/dep-tree";
 import { extractAcids, fillAcidTemplate, normalizeAcidTemplate, RollupGroup, rollupBy } from "./rollup";
 import { RISK_LENS_METADATA } from "./contract";
@@ -1381,7 +1382,22 @@ function renderChangeMapSection(model: HumanReviewModel): string {
     embed.level === "overview"
       ? `Overview — ${model.change_graph.nodes.length} changed file(s) across ${model.change_graph.overview.groups.length} group(s); the file-level map exceeds the legibility budget, so groups lead.\n\n`
       : "";
-  return `${lead}\`\`\`mermaid\n${body}\n\`\`\``;
+  const sections = [`${lead}\`\`\`mermaid\n${body}\n\`\`\``];
+  // review-surfaces.MAP_SCALE.6: when the overview leads, every group expands
+  // to its own collapsed detail view (deterministic model order; per-block
+  // embed guard). The group name is redacted-then-escaped — the summary is not
+  // a constant title.
+  if (embed.level === "overview") {
+    for (const detail of changeMapDetailEmbeds(model.change_graph)) {
+      const summary = `${esc(detail.group)} — ${detail.file_count} file(s) · ${detail.cluster_count} cluster(s)`;
+      sections.push(
+        detail.body
+          ? `<details><summary>${summary}</summary>\n\n\`\`\`mermaid\n${detail.body}\n\`\`\`\n\n</details>`
+          : `Detail view for ${esc(detail.group)} omitted (the rendered diagram exceeded the embed size cap or contained fence-closing content).`
+      );
+    }
+  }
+  return sections.join("\n\n");
 }
 
 // review-surfaces.READING_ORDER.2: the guided tour renders right after the
