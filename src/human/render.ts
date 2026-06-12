@@ -1301,7 +1301,12 @@ function evidencePointers(model: HumanReviewModel): string[] {
     model.generated_from.pr_surface_path ? `PR surface: \`${field(model.generated_from.pr_surface_path)}\`` : undefined,
     ...HUMAN_STANDALONE_ARTIFACTS.map((artifact) => `${artifact.label}: \`${field(siblingArtifactPath(model.generated_from.packet_path, artifact.artifact))}\``),
     `Base/head: \`${field(model.generated_from.base_ref)}\` -> \`${field(model.generated_from.head_ref)}\``,
-    `Head SHA: \`${field(model.generated_from.head_sha)}\``
+    `Head SHA: \`${field(model.generated_from.head_sha)}\``,
+    // COLD_START.7: a literal-HEAD review that absorbed working-tree files says
+    // so on every human surface; a clean or pinned-head run renders nothing.
+    model.generated_from.uncommitted_files > 0
+      ? `Working tree: includes ${model.generated_from.uncommitted_files} uncommitted file(s) (working tree)`
+      : undefined
   ].filter((item): item is string => typeof item === "string");
 }
 

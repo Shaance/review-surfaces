@@ -68,7 +68,7 @@ function model(graph: ChangeGraph, order: ReadingOrder): HumanReviewModel {
     test_plan: [],
     skim_safe: [],
     feedback_effects: [],
-    generated_from: { packet_path: "review_packet.json", base_ref: "origin/main", head_ref: "HEAD", head_sha: "abc" }
+    generated_from: { packet_path: "review_packet.json", base_ref: "origin/main", head_ref: "HEAD", head_sha: "abc", uncommitted_files: 0 }
   };
 }
 

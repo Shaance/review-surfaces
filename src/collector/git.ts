@@ -44,6 +44,59 @@ export function collectGitInfo(cwd: string, baseRef: string, headRef: string): G
   };
 }
 
+// COLD_START.6: the deterministic default-base chain. origin/HEAD (the remote
+// default branch) wins when it exists; the rest cover main/master conventions
+// with remote-tracking refs preferred over local branches.
+export const BASE_AUTO_CHAIN = ["origin/HEAD", "origin/main", "origin/master", "main", "master"] as const;
+
+export interface BaseResolution {
+  ref: string;
+  sha: string;
+  source: "explicit" | "auto";
+}
+
+export type BaseResolutionResult =
+  | { ok: true; base: BaseResolution }
+  | { ok: false; message: string };
+
+// COLD_START.6: resolve the review base BEFORE any collection or artifact
+// write. An explicit base that does not resolve — and an exhausted auto chain —
+// are hard errors for the caller to raise (closes quick-wins evidence item 1:
+// the silent working-tree fallback reviewed the wrong range on master-default
+// repos and CI shallow clones). Callers keep the R6 graceful degradation for
+// not-a-repo / unborn-HEAD states by not calling this when HEAD is unresolvable.
+export function resolveBaseRef(cwd: string, explicitBase: string | undefined): BaseResolutionResult {
+  if (explicitBase !== undefined) {
+    const sha = resolveGitRefSha(cwd, explicitBase);
+    if (sha === undefined) {
+      return {
+        ok: false,
+        message:
+          `base ref "${explicitBase}" does not resolve. If this is a shallow clone, fetch the base first ` +
+          `(GitHub Actions: actions/checkout with fetch-depth: 0; locally: git fetch --unshallow origin). ` +
+          `Otherwise pass --base <ref> naming an existing ref.`
+      };
+    }
+    return { ok: true, base: { ref: explicitBase, sha, source: "explicit" } };
+  }
+  for (const candidate of BASE_AUTO_CHAIN) {
+    const sha = resolveGitRefSha(cwd, candidate);
+    if (sha === undefined) {
+      continue;
+    }
+    // Record origin/HEAD as the branch it points at (e.g. origin/master): the
+    // symref name is opaque in rendered headers and manifests.
+    const ref = candidate === "origin/HEAD" ? git(cwd, ["rev-parse", "--abbrev-ref", candidate]) ?? candidate : candidate;
+    return { ok: true, base: { ref, sha, source: "auto" } };
+  }
+  return {
+    ok: false,
+    message:
+      `no default base ref resolves (tried ${BASE_AUTO_CHAIN.join(", ")}). ` +
+      `Pass --base <ref> naming the ref to review against (for example the branch you merge into).`
+  };
+}
+
 // R6: diagnostics for the GitInfo resolution step. Separated from collectGitInfo
 // so its GitInfo return (embedded in the byte-stable manifest) is unchanged.
 // Warns when the directory is not a git repo and when the base ref does not
@@ -60,24 +113,41 @@ export function gitInfoDiagnostics(cwd: string, baseRef: string): string[] {
   return diagnostics;
 }
 
-function isGitRepo(cwd: string): boolean {
+export function isGitRepo(cwd: string): boolean {
   return git(cwd, ["rev-parse", "--is-inside-work-tree"]) === "true";
 }
 
-export function collectChangedFiles(cwd: string, baseRef: string, headRef: string): ChangedFilesResult {
+// COLD_START.7: working-tree/untracked files belong in the review only when the
+// head was requested as the literal checked-out state ("HEAD"). An explicitly
+// pinned head — a sha, branch, or tag, even one equal to the current checkout —
+// asks for exactly that commit, and merging the working tree in silently
+// reviewed files outside the requested range (quick-wins evidence item 2).
+export function isLiteralHeadRequest(headRef: string): boolean {
+  return headRef === "HEAD" || headRef === "@";
+}
+
+export function collectChangedFiles(
+  cwd: string,
+  baseRef: string,
+  headRef: string,
+  includeWorkingTree: boolean = isLiteralHeadRequest(headRef)
+): ChangedFilesResult {
   const diagnostics: string[] = [];
   const byPath = new Map<string, ChangedFile>();
   // Behavior-preserving: the original used `range ?? bare`, which only fell
   // through on undefined (a git error), NOT on an empty-but-successful range
   // diff ("" is not nullish). We replicate that: fall back to the bare
-  // working-tree diff only when the range command errors.
+  // working-tree diff only when the range command errors — and only for a
+  // literal-HEAD review, where working-tree content is in scope at all.
   const rangeOutput = git(cwd, ["diff", "--name-status", "-z", `${baseRef}...${headRef}`]);
   let diffSource: DiffSource = "range";
   let diffOutput = rangeOutput;
   if (rangeOutput === undefined) {
-    diffSource = "working_tree_fallback";
-    diffOutput = git(cwd, ["diff", "--name-status", "-z"]);
-    diagnostics.push(`could not diff ${baseRef}...${headRef}; fell back to working-tree changes`);
+    diagnostics.push(`could not diff ${baseRef}...${headRef}${includeWorkingTree ? "; fell back to working-tree changes" : ""}`);
+    if (includeWorkingTree) {
+      diffSource = "working_tree_fallback";
+      diffOutput = git(cwd, ["diff", "--name-status", "-z"]);
+    }
   }
   if (diffOutput) {
     for (const changedFile of parseDiffNameStatusOutput(diffOutput)) {
@@ -85,7 +155,7 @@ export function collectChangedFiles(cwd: string, baseRef: string, headRef: strin
     }
   }
 
-  const statusOutput = git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  const statusOutput = includeWorkingTree ? git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]) : undefined;
   if (statusOutput) {
     for (const { status, filePath } of parsePorcelainStatusOutput(statusOutput)) {
       if (!filePath || filePath.endsWith("/") || filePath === ".DS_Store") {
@@ -163,20 +233,26 @@ function splitNullOutput(output: string): string[] {
   return output.split("\0").filter((field) => field !== "");
 }
 
-export function collectDiff(cwd: string, baseRef: string, headRef: string): DiffResult {
+export function collectDiff(
+  cwd: string,
+  baseRef: string,
+  headRef: string,
+  includeWorkingTree: boolean = isLiteralHeadRequest(headRef)
+): DiffResult {
   const diagnostics: string[] = [];
   const rangeDiff = git(cwd, ["diff", `${baseRef}...${headRef}`]);
   let diffSource: DiffSource = "range";
   if (rangeDiff === undefined) {
-    diffSource = "working_tree_fallback";
-    diagnostics.push(`could not produce a ${baseRef}...${headRef} diff; using working-tree diff only`);
+    diffSource = includeWorkingTree ? "working_tree_fallback" : "range";
+    diagnostics.push(`could not produce a ${baseRef}...${headRef} diff${includeWorkingTree ? "; using working-tree diff only" : ""}`);
   }
-  // text is computed identically to before (same parts, same Boolean filter,
-  // same join) so .review-surfaces/inputs/diff.patch bytes are unchanged.
+  // COLD_START.7: the staged/working-tree parts join the diff text only for a
+  // literal-HEAD review; a pinned head gets the pure range diff. For the
+  // literal-HEAD case, text is computed identically to before (same parts, same
+  // Boolean filter, same join) so inputs/diff.patch bytes are unchanged.
   const parts = [
     rangeDiff,
-    git(cwd, ["diff", "--cached"]),
-    git(cwd, ["diff"])
+    ...(includeWorkingTree ? [git(cwd, ["diff", "--cached"]), git(cwd, ["diff"])] : [])
   ].filter((part): part is string => Boolean(part));
   return { text: parts.join("\n"), diffSource, diagnostics };
 }

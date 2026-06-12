@@ -74,9 +74,14 @@ function coverageLines(deltas: PrRequirementCoverageDelta[], baseAvailable: bool
 }
 
 
-const DEFAULT_SURFACE_PATH = ".review-surfaces/pr_review_surface.json";
-const DEFAULT_HUMAN_REVIEW_PATH = ".review-surfaces/human_review.md";
-const DEFAULT_HUMAN_REVIEW_JSON_PATH = ".review-surfaces/human_review.json";
+// COLD_START.8: artifact pointers are sibling file names (the comment and the
+// artifacts it cites live in the same output dir), never cwd-relative paths
+// that embed `../` chains when --out points outside the repo. Inside the
+// uploaded CI artifact zip the out dir is the root, so this is also the form
+// that resolves there.
+const DEFAULT_SURFACE_PATH = "pr_review_surface.json";
+const DEFAULT_HUMAN_REVIEW_PATH = "human_review.md";
+const DEFAULT_HUMAN_REVIEW_JSON_PATH = "human_review.json";
 
 export interface RenderPrCommentOptions {
   // Relative path to the pr_review_surface.json the comment was rendered from, so
@@ -221,6 +226,10 @@ export function renderHumanPrComment(model: HumanReviewModel, options: RenderHum
     "",
     `**Verdict:** ${decisionLabel(model.verdict.decision)}.`,
     "",
+    // COLD_START.7: announce absorbed working-tree files; clean runs add nothing.
+    ...(model.generated_from.uncommitted_files > 0
+      ? [`_includes ${model.generated_from.uncommitted_files} uncommitted file(s) (working tree)_`, ""]
+      : []),
     field(model.summary),
     "",
     "### Review first",

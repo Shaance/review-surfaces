@@ -6,7 +6,7 @@ import { recordCommandTranscript } from "../commands/runner";
 import { commandTranscriptInputDir } from "../commands/transcripts";
 import { collectInputs, CollectionResult } from "../collector/collect";
 import { parseStructuredDiff } from "../collector/diff-hunks";
-import { blobExistsAtRef, readFileAtRef, resolveGitRefSha, resolveMergeBaseSha } from "../collector/git";
+import { blobExistsAtRef, isGitRepo, readFileAtRef, resolveBaseRef, resolveGitRefSha, resolveMergeBaseSha } from "../collector/git";
 import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { computeRankingEvidence, emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { isTestPath } from "../scope/pr-scope";
@@ -287,11 +287,12 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
   // and a later `all --review-scope repo --provider ai-sdk --cache` with the same
   // inputs would reuse the un-enriched mock packet instead of running the LLM.
   const signatureProvider = reviewScope(parsed) === "pr" ? "mock" : provider;
+  const headRef = stringFlag(parsed, "head") ?? "HEAD";
   const collection = await collectInputs({
     cwd,
     config: runConfig,
-    baseRef: stringFlag(parsed, "base") ?? "origin/main",
-    headRef: stringFlag(parsed, "head") ?? "HEAD",
+    baseRef: resolveBaseRefForRun(cwd, stringFlag(parsed, "base"), headRef),
+    headRef,
     outputDir: stringFlag(parsed, "out"),
     commandTranscriptDir: stringFlag(parsed, "command-transcripts"),
     testOutputPaths: splitTestOutputPaths(stringFlag(parsed, "test-output")),
@@ -306,7 +307,34 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
     previousPacketPath: resolvePreviousPacketInput(cwd, parsed)
   });
   printCollectionDiagnostics(parsed, cwd, collection);
+  // COLD_START.7: a literal-HEAD review that absorbed working-tree files says so
+  // once in the run summary (the same line every human surface carries).
+  if (collection.manifest.uncommitted_files > 0) {
+    console.log(`includes ${collection.manifest.uncommitted_files} uncommitted file(s) (working tree)`);
+  }
   return { collection, config: runConfig };
+}
+
+// COLD_START.6: resolve the review base BEFORE collection so a non-resolving
+// base is a hard error with no artifacts written, never a silent working-tree
+// fallback (quick-wins evidence item 1). The R6 degraded modes — not a git
+// repo, or an unborn HEAD (init with no commits) — keep their graceful path:
+// there is no claimable range there, the artifacts visibly carry empty/unknown
+// sentinels, and gitInfoDiagnostics already warns on stderr.
+function resolveBaseRefForRun(cwd: string, explicitBase: string | undefined, headRef: string): string {
+  const headSha = resolveGitRefSha(cwd, "HEAD");
+  if (!isGitRepo(cwd) || headSha === undefined) {
+    return explicitBase ?? "origin/main";
+  }
+  const resolution = resolveBaseRef(cwd, explicitBase);
+  if (!resolution.ok) {
+    throw new CliError(resolution.message, ExitCodes.usageError);
+  }
+  const requestedHeadSha = resolveGitRefSha(cwd, headRef) ?? headSha;
+  console.log(
+    `Reviewing range: ${resolution.base.ref} (${resolution.base.sha.slice(0, 7)}) -> ${headRef} (${requestedHeadSha.slice(0, 7)})`
+  );
+  return resolution.base.ref;
 }
 
 // The model value folded into the cache signature. For ai-sdk we resolve the
@@ -669,7 +697,9 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     // (best-effort: degrades to current-status when the base can't be evaluated).
     const baseEvaluation = await evaluateBaseline({
       cwd,
-      baseRef: stringFlag(parsed, "base") ?? "origin/main",
+      // COLD_START.6: reuse the base the run already resolved (auto chain or
+      // explicit flag) so the baseline evaluates the same range the packet did.
+      baseRef: collection.manifest.base_ref,
       config,
       specFlag: stringFlag(parsed, "spec")
     });
@@ -1578,8 +1608,12 @@ function buildHumanReviewForPacket(
     // review-surfaces.EVAL_HARNESS.6: surface the eval scoreboard on the
     // cockpit footer when the output directory carries one.
     evalScoreboard: readEvalScoreboard(outDir),
-    packetPath: artifactPathForLog(cwd, outDir, "review_packet.json"),
-    prSurfacePath: prSurface ? artifactPathForLog(cwd, outDir, "pr_review_surface.json") : undefined
+    // COLD_START.8: model-embedded artifact pointers are sibling file names
+    // (everything lives in the same output dir), never cwd-relative paths that
+    // can escape the repo when --out points elsewhere. Console logs still use
+    // artifactPathForLog — the terminal is ephemeral, the model is not.
+    packetPath: "review_packet.json",
+    prSurfacePath: prSurface ? "pr_review_surface.json" : undefined
   });
   assertValidHumanReview(cwd, humanReview);
   return humanReview;
@@ -2633,18 +2667,16 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
     );
   }
   const surface = readPrSurfaceArtifact(cwd, surfacePath);
-  // Point the comment's "Full PR surface" pointer at the ACTUAL artifact path
-  // (honoring --out / config output_dir), not a hardcoded .review-surfaces.
+  // COLD_START.8: the comment's artifact pointers are sibling file names — the
+  // comment and the artifacts it cites live in the same output dir, and a
+  // cwd-relative path embeds `../` chains whenever --out points outside the
+  // repo. The renderer defaults already use the sibling form.
   const humanCommentModel = await loadCurrentHumanReviewForPrComment(cwd, path.dirname(surfacePath), surface, config);
-  const relativeSurfacePath = path.relative(cwd, surfacePath) || surfacePath;
+  const siblingSurfacePath = path.basename(surfacePath);
   const humanRendered = humanCommentModel
-    ? renderHumanPrComment(humanCommentModel, {
-        surfacePath: relativeSurfacePath,
-        humanReviewPath: artifactPathForLog(cwd, path.dirname(surfacePath), "human_review.md"),
-        humanReviewJsonPath: artifactPathForLog(cwd, path.dirname(surfacePath), "human_review.json")
-      })
+    ? renderHumanPrComment(humanCommentModel, { surfacePath: siblingSurfacePath })
     : undefined;
-  const markdown = humanRendered ? humanRendered.markdown : renderPrComment(surface, { surfacePath: relativeSurfacePath });
+  const markdown = humanRendered ? humanRendered.markdown : renderPrComment(surface, { surfacePath: siblingSurfacePath });
   // review-surfaces.CHANGE_MAP.4: a redaction BLOCK inside the embedded map or
   // tour snippet must trip the privacy gate — the rendered body only carries
   // the placeholder, so this flag is the surviving signal.
@@ -2760,19 +2792,22 @@ function humanReviewMatchesPrSurface(
     baseShaMatches &&
     generatedFrom.head_ref === surface.scope.head_ref &&
     generatedFrom.head_sha === surface.scope.head_sha &&
-    artifactPathMatches(cwd, generatedFrom.pr_surface_path, artifactPathForLog(cwd, outputDir, "pr_review_surface.json"))
+    artifactPathMatches(cwd, outputDir, generatedFrom.pr_surface_path, "pr_review_surface.json")
   );
 }
 
-function artifactPathMatches(cwd: string, actual: unknown, expected: string): boolean {
+// COLD_START.8: generated_from pointers are sibling file names relative to the
+// artifact dir; artifacts written before that change carried cwd-relative
+// paths. Resolve each form against its anchor and accept either when it lands
+// on the expected artifact in THIS output dir.
+function artifactPathMatches(cwd: string, outputDir: string, actual: unknown, artifact: string): boolean {
   if (typeof actual !== "string") {
     return false;
   }
-  return normalizeArtifactPath(cwd, actual) === normalizeArtifactPath(cwd, expected);
-}
-
-function normalizeArtifactPath(cwd: string, value: string): string {
-  return path.relative(cwd, path.resolve(cwd, value));
+  const expected = path.resolve(cwd, outputDir, artifact);
+  const siblingForm = path.resolve(cwd, outputDir, actual);
+  const legacyCwdForm = path.resolve(cwd, actual);
+  return siblingForm === expected || legacyCwdForm === expected;
 }
 
 function readPrSurfaceArtifact(cwd: string, surfacePath: string): PrReviewSurfaceModel {
@@ -3090,7 +3125,8 @@ ${humanStandaloneCommandHelp()}
                 --interactive forces the loop over piped stdin; --author <name> labels feedback.
 
 Options:
-  --base <ref>      Base ref for diff collection, default origin/main
+  --base <ref>      Base ref for diff collection; default: auto (first of
+                    origin/HEAD, origin/main, origin/master, main, master)
   --head <ref>      Head ref for diff collection, default HEAD
   --spec <path>     Feature spec path, default from config
   --out <dir>       Output directory, default .review-surfaces

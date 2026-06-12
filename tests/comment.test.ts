@@ -126,7 +126,7 @@ test("review-surfaces.PROVIDERS.1 comment renders a compact sticky comment with 
     assert.match(result.stdout, /### Top review focus/);
     assert.match(result.stdout, /### Top risks/);
     assert.match(result.stdout, /### Requirement coverage/);
-    assert.match(result.stdout, /Full local packet: `\.review-surfaces\/review_packet\.md`/);
+    assert.match(result.stdout, /Full local packet: `review_packet\.md`/);
 
     // The artifact is written under --out and equals stdout.
     const commentPath = path.join(tmp, ".review-surfaces", "comment.md");
@@ -378,12 +378,11 @@ test("review-surfaces.PROVIDERS.1/.2 comment without --out reads the configured 
   }
 });
 
-// FINDING A (round 3): the published comment's "Full local packet" pointer must
-// reference the EFFECTIVE output dir the renderer actually read, not a hardcoded
-// .review-surfaces path. In a repo with a custom output_dir the hardcoded link
-// would point at a non-existent/stale packet. The pointer (markdown + json) must
-// reflect the custom dir and must NOT mention .review-surfaces.
-test("review-surfaces.PROVIDERS.1 comment pointer reflects a custom output_dir (not a hardcoded .review-surfaces link)", () => {
+// review-surfaces.COLD_START.8: the published comment's "Full local packet"
+// pointer is the SIBLING file name (location-independent) — the comment lives
+// next to the packet artifacts it points at, so the pointer is always
+// `review_packet.md` / `review_packet.json` regardless of --out / output_dir.
+test("review-surfaces.PROVIDERS.1 comment pointer is the sibling file name for any output_dir", () => {
   const tmp = setupFixture("review-surfaces-comment-pointer-");
   try {
     fs.writeFileSync(
@@ -396,22 +395,27 @@ test("review-surfaces.PROVIDERS.1 comment pointer reflects a custom output_dir (
     const github = runCommentNoOut(tmp);
     assert.equal(github.status, 0, github.stderr);
 
-    // The pointer must name the configured dir's packet artifacts...
+    // The pointer is the bare sibling file name, even with a custom output_dir...
     assert.match(
       github.stdout,
-      new RegExp(`Full local packet: \`${CUSTOM_OUTPUT_DIR}/review_packet\\.md\``),
-      "the markdown pointer must reference the configured output_dir"
+      /Full local packet: `review_packet\.md`/,
+      "the markdown pointer must be the sibling file name"
     );
     assert.match(
       github.stdout,
-      new RegExp(`machine-readable: \`${CUSTOM_OUTPUT_DIR}/review_packet\\.json\``),
-      "the json pointer must reference the configured output_dir"
+      /machine-readable: `review_packet\.json`/,
+      "the json pointer must be the sibling file name"
     );
-    // ...and must NOT carry the stale hardcoded .review-surfaces link.
+    // ...with no directory prefix (neither the custom dir nor .review-surfaces).
+    assert.doesNotMatch(
+      github.stdout,
+      new RegExp(`${CUSTOM_OUTPUT_DIR}/review_packet`),
+      "the comment must not embed the custom output_dir in the pointer"
+    );
     assert.doesNotMatch(
       github.stdout,
       /\.review-surfaces\/review_packet/,
-      "the comment must not point reviewers at a non-existent .review-surfaces packet"
+      "the comment must not point reviewers at a .review-surfaces-prefixed packet"
     );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

@@ -9,7 +9,7 @@ import { EnrichmentResult } from "../llm/provider";
 import { IntentModel } from "../intent/intent";
 import { MethodologyModel } from "../methodology/methodology";
 import { RisksModel } from "../risks/risks";
-import { relativePath, writeJson, writeText } from "../core/files";
+import { writeJson, writeText } from "../core/files";
 import { stringifyYaml } from "../core/simple-yaml";
 import { compareStrings } from "../core/compare";
 import { stripUndefined, unique } from "../core/guards";
@@ -78,7 +78,7 @@ export async function writeReviewPacket(inputs: PacketInputs): Promise<ReviewPac
   // the SAME cwd-relative effective output dir the handoff/comment paths use so the
   // footer references the REAL artifact location. The default `.review-surfaces`
   // output stays byte-identical.
-  await writeArtifacts(inputs.collection.outputDir, packet, effectiveOutputDirRelative(inputs.collection));
+  await writeArtifacts(inputs.collection.outputDir, packet);
   return packet;
 }
 
@@ -125,10 +125,7 @@ export async function writeHandoffArtifact(outputDir: string, inputs: PacketInpu
 
 async function writeArtifacts(
   outputDir: string,
-  packet: ReviewPacket,
-  // cwd-relative effective output dir for the packet markdown footer. Defaults to
-  // `.review-surfaces` so the in-place re-render path stays byte-identical.
-  packetDirRel: string = ".review-surfaces"
+  packet: ReviewPacket
 ): Promise<void> {
   await writeJson(path.join(outputDir, "review_packet.json"), packet);
   await writeText(path.join(outputDir, "intent.yaml"), stringifyYaml(packet.intent));
@@ -136,7 +133,7 @@ async function writeArtifacts(
   await writeText(path.join(outputDir, "methodology.yaml"), stringifyYaml(packet.methodology));
   await writeText(path.join(outputDir, "risks.yaml"), stringifyYaml(packet.risks));
   await writeText(path.join(outputDir, "architecture.md"), renderArchitectureMarkdown(packet.architecture));
-  await writeText(path.join(outputDir, "review_packet.md"), renderPacketMarkdown(packet, packetDirRel));
+  await writeText(path.join(outputDir, "review_packet.md"), renderPacketMarkdown(packet));
   if (packet.dogfood) {
     await writeText(path.join(outputDir, "dogfood.yaml"), stringifyYaml(packet.dogfood));
   }
@@ -169,24 +166,21 @@ function buildHandoff(inputs: PacketInputs): ReviewPacket["agent_handoff"] {
     methodology_flags: handoffMethodologyFlags(inputs.methodology),
     next_tasks: [
       ...inputs.risks.test_gaps.slice(0, 5).map((gap) => `${gap.acai_id ?? gap.requirement_id ?? gap.id}: ${gap.suggested_test ?? gap.summary}`),
-      "Inspect .review-surfaces/review_packet.md before trusting generated summaries."
+      "Inspect review_packet.md (next to this handoff) before trusting generated summaries."
     ],
     open_risks: inputs.risks.items.slice(0, 6).map((risk) => `${risk.id}: ${risk.summary}`),
     deferrals: inputs.dogfood?.deferrals ?? [],
     changes_since_last_packet: changesSinceLastPacket(inputs.dogfood),
-    artifact_paths: handoffArtifactPaths(inputs.collection)
+    artifact_paths: handoffArtifactPaths()
   };
 }
 
-// Round 6: the handoff must point reviewers at the REAL artifact location. The
-// packet/comment paths already honor the effective output dir; the handoff used
-// to hardcode `.review-surfaces/`, so a run using `--out`/`output_dir` pointed at
-// files that were written elsewhere. Thread the cwd-relative effective output dir
-// (collection.outputDir is absolute) so artifact_paths reference where the files
-// actually live. The default `.review-surfaces` output is unchanged. Falls back
-// to `.review-surfaces` when cwd/outputDir are absent (minimal test fixtures).
-function handoffArtifactPaths(collection: PacketInputs["collection"]): string[] {
-  const baseDir = effectiveOutputDirRelative(collection);
+// COLD_START.8: the handoff and every artifact it lists live in the SAME
+// output directory, so sibling file names always point at the real location —
+// for any --out — and the packet bytes stay independent of where that
+// directory sits. (The Round 6 cwd-relative form embedded `../` chains or
+// absolute paths whenever --out left the repo.)
+function handoffArtifactPaths(): string[] {
   return [
     "review_packet.md",
     "review_packet.json",
@@ -196,30 +190,15 @@ function handoffArtifactPaths(collection: PacketInputs["collection"]): string[] 
     "risks.yaml",
     "methodology.yaml",
     "dogfood.yaml"
-  ].map((file) => path.posix.join(baseDir, file));
+  ];
 }
 
-function effectiveOutputDirRelative(collection: PacketInputs["collection"]): string {
-  const { cwd, outputDir } = collection;
-  if (!cwd || !outputDir) {
-    return ".review-surfaces";
-  }
-  const rel = relativePath(cwd, outputDir);
-  // An empty relative path means outputDir === cwd; treat the repo root as ".".
-  // A path that escapes cwd (shouldn't happen) keeps the absolute form rather
-  // than emitting a misleading relative path.
-  if (rel === "" || rel.startsWith("..")) {
-    return rel === "" ? "." : outputDir;
-  }
-  return rel;
-}
-
-function renderPacketMarkdown(packet: ReviewPacket, packetDirRel: string = ".review-surfaces"): string {
+function renderPacketMarkdown(packet: ReviewPacket): string {
   const statusCounts = countRequirementStatuses(packet.evaluation.results);
-  // The footer points reviewers at the machine-readable packet at its EFFECTIVE
-  // location. `path.posix.join` keeps the link forward-slashed on every platform,
-  // matching the handoff artifact_paths.
-  const packetJsonRel = path.posix.join(packetDirRel, "review_packet.json");
+  // COLD_START.8: the footer points at the markdown's own sibling file, which
+  // is the packet's real location for any --out and keeps the bytes
+  // independent of where the output directory sits.
+  const packetJsonRel = "review_packet.json";
   const changedFiles = (packet.architecture.subsystems ?? []).flatMap((subsystem) => subsystem.files);
   const llmProposedRequirements = packet.intent.requirements.filter((requirement) => requirement.llm_derived).length;
   const hypotheses = llmProposedEvidenceLines(packet);
@@ -549,7 +528,7 @@ function handoffCommandsToRun(): string[] {
     "node bin/review-surfaces.js run --id CMD-PNPM-BUILD --command-transcripts .review-surfaces/commands -- pnpm run build",
     "node bin/review-surfaces.js run --id CMD-PNPM-LINT --command-transcripts .review-surfaces/commands -- pnpm run lint",
     "node bin/review-surfaces.js run --id CMD-PNPM-TEST --command-transcripts .review-surfaces/commands -- pnpm run test",
-    "node bin/review-surfaces.js all --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --provider mock --out .review-surfaces",
+    "node bin/review-surfaces.js all --spec features/review-surfaces.feature.yaml --dogfood --provider mock --out .review-surfaces",
     "node bin/review-surfaces.js validate .review-surfaces"
   ];
 }

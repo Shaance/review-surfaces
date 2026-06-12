@@ -17,8 +17,8 @@ test("review-surfaces.ARCH.6 validates generated Mermaid artifacts", async () =>
   assert.equal(architecture.diagram_validation.length, 3);
   assert.ok(architecture.diagram_validation.every((result) => result.status === "valid"));
   assert.ok(fs.existsSync(path.join(outputDir, "diagrams", "pipeline.mmd")));
-  assert.equal(pipelineValidation?.evidence[0]?.path, ".review-surfaces/diagrams/pipeline.mmd");
-  assert.ok(fs.existsSync(path.join(tmp, pipelineValidation?.evidence[0]?.path ?? "")));
+  assert.equal(pipelineValidation?.evidence[0]?.path, "diagrams/pipeline.mmd");
+  assert.ok(fs.existsSync(path.join(outputDir, pipelineValidation?.evidence[0]?.path ?? "")));
   assert.equal(
     architecture.diagram_validation.find((result) => result.path === "diagrams/dogfood-flow.mmd")?.diagram_type,
     "sequenceDiagram"
@@ -132,6 +132,7 @@ function collectionFixture(cwd: string, outputDir: string): CollectionResult {
       created_at: "2026-05-28T00:00:00.000Z",
       repo: "review-surfaces",
       base_ref: "origin/main",
+      uncommitted_files: 0,
       head_ref: "HEAD",
       head_sha: "HEAD",
       run_mode: "dogfood",

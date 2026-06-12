@@ -379,7 +379,7 @@ Use this skill when applying \`review-surfaces\` to a repository, including repo
 
 ## Workflow
 
-1. Identify the review range, usually \`--base origin/main --head HEAD\`.
+1. Identify the review range. The default base auto-resolves (origin/HEAD, origin/main, origin/master, main, master); pass \`--base <ref>\` to override.
 2. Identify source contracts: \`features/**/*.feature.yaml\`, docs, tickets, AGENTS files, and local skills.
 3. Capture important checks with \`review-surfaces run -- <command>\` so test claims have bounded command transcript evidence.
 4. Run \`review-surfaces all --out .review-surfaces\` with \`--dogfood\` only when reviewing the \`review-surfaces\` repository itself.
@@ -464,7 +464,7 @@ This repository is reviewed with \`review-surfaces\`, a local-first human review
 1. Install and build the tool, then run the offline pipeline:
 
 \`\`\`bash
-review-surfaces all --base origin/main --head HEAD --provider mock --out .review-surfaces
+review-surfaces all --provider mock --out .review-surfaces
 review-surfaces validate .review-surfaces
 \`\`\`
 

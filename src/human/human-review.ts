@@ -598,16 +598,21 @@ export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): str
 }
 
 function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["generated_from"] {
-  const manifest = input.packet.manifest as { base_ref?: unknown; base_sha?: unknown; head_ref?: unknown; head_sha?: unknown };
+  const manifest = input.packet.manifest as { base_ref?: unknown; base_sha?: unknown; head_ref?: unknown; head_sha?: unknown; uncommitted_files?: unknown };
   const prScope = input.prSurface?.scope;
   const baseSha = prScope?.base_sha ?? stringOr(manifest.base_sha, "");
   return {
-    packet_path: input.packetPath ?? ".review-surfaces/review_packet.json",
-    pr_surface_path: input.prSurface ? input.prSurfacePath ?? ".review-surfaces/pr_review_surface.json" : undefined,
+    // COLD_START.8: sibling file names, never cwd-relative paths (see the CLI
+    // call site) — the defaults match for inputs that predate the field.
+    packet_path: input.packetPath ?? "review_packet.json",
+    pr_surface_path: input.prSurface ? input.prSurfacePath ?? "pr_review_surface.json" : undefined,
     base_ref: prScope?.base_ref ?? stringOr(manifest.base_ref, "origin/main"),
     ...(baseSha ? { base_sha: baseSha } : {}),
     head_ref: prScope?.head_ref ?? stringOr(manifest.head_ref, "HEAD"),
     head_sha: prScope?.head_sha ?? stringOr(manifest.head_sha, "unknown"),
+    // COLD_START.7: working-tree files absorbed into this review (0 on clean or
+    // pinned-head runs); every human surface announces a nonzero count.
+    uncommitted_files: typeof manifest.uncommitted_files === "number" ? manifest.uncommitted_files : 0,
     human_review_config_signature: humanReviewConfigSignature(input.config)
   };
 }

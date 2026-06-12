@@ -75,6 +75,12 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
 
   const sections: string[] = [STICKY_MARKER, "## review-surfaces", "", verdict];
 
+  // COLD_START.7: a literal-HEAD review that absorbed working-tree files says
+  // so right under the verdict; clean and pinned-head runs add nothing.
+  if (model.generated_from.uncommitted_files > 0) {
+    sections.push("", `_includes ${model.generated_from.uncommitted_files} uncommitted file(s) (working tree)_`);
+  }
+
   if (hasPriorReview) {
     // review-surfaces.PR_SURFACE.5: on a re-review, LEAD with the delta and
     // collapse the unchanged full review under a <details> block.

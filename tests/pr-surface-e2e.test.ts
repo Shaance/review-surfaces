@@ -255,7 +255,7 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     assert.equal(humanPrComment.status, 0, "local PR comment render without --post succeeds (RENDER.8)");
     assert.match(humanPrComment.stdout, /JSON sentinel PR comment queue/);
     assert.match(humanPrComment.stdout, /JSON sentinel PR comment draft/);
-    assert.match(humanPrComment.stdout, /Full human review: `\.review-surfaces\/human_review\.md`/);
+    assert.match(humanPrComment.stdout, /Full human review: `human_review\.md`/);
     assert.match(humanPrComment.stderr, /not postable/);
     assert.doesNotMatch(humanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
     // review-surfaces.RENDER.8: --strict-postability re-arms the gate to a
@@ -565,9 +565,9 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     assert.equal(blockedComment.status, 0, "blocked PR surfaces render a local comment without --post (RENDER.8)");
     assert.match(blockedComment.stdout, /## review-surfaces PR review/);
     assert.match(blockedComment.stdout, /\*\*Verdict:\*\*/);
-    assert.match(blockedComment.stdout, /Full human review: `\.review-surfaces\/human_review\.md`/);
-    assert.match(blockedComment.stdout, /Human review JSON: `\.review-surfaces\/human_review\.json`/);
-    assert.match(blockedComment.stdout, /Lower-level PR facts: `\.review-surfaces\/pr_review_surface\.json`/);
+    assert.match(blockedComment.stdout, /Full human review: `human_review\.md`/);
+    assert.match(blockedComment.stdout, /Human review JSON: `human_review\.json`/);
+    assert.match(blockedComment.stdout, /Lower-level PR facts: `pr_review_surface\.json`/);
     assert.match(blockedComment.stderr, /not postable/);
     assert.doesNotMatch(blockedComment.stdout, /\d+ satisfied, \d+ partial, \d+ missing/);
     // The diagram artifact the surface advertises is actually materialized on disk.
@@ -773,7 +773,7 @@ test("review-surfaces.HUMAN_REVIEW.16 PR comments rebuild human artifacts when t
     const comment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
     assert.equal(comment.status, 0, "local PR comment render without --post succeeds after refreshing stale human JSON (RENDER.8)");
     assert.match(comment.stderr, /Refreshing stale human_review\.json/);
-    assert.match(comment.stdout, /Full human review: `\.review-surfaces\/human_review\.md`/);
+    assert.match(comment.stdout, /Full human review: `human_review\.md`/);
     assert.doesNotMatch(comment.stdout, /PR COMMENT STALE SENTINEL/);
     const rebuiltHuman = JSON.parse(fs.readFileSync(humanPath, "utf8"));
     assert.ok(rebuiltHuman.review_queue.length <= 1);
@@ -840,9 +840,9 @@ test("comment --review-scope pr renders agent-file narratives locally but does n
     assert.match(comment.stdout, /## review-surfaces PR review/);
     assert.match(comment.stdout, /\*\*Verdict:\*\*/);
     assert.match(comment.stdout, /### Review first/);
-    assert.match(comment.stdout, /Full human review: `\.review-surfaces\/human_review\.md`/);
-    assert.match(comment.stdout, /Human review JSON: `\.review-surfaces\/human_review\.json`/);
-    assert.match(comment.stdout, /Lower-level PR facts: `\.review-surfaces\/pr_review_surface\.json`/);
+    assert.match(comment.stdout, /Full human review: `human_review\.md`/);
+    assert.match(comment.stdout, /Human review JSON: `human_review\.json`/);
+    assert.match(comment.stdout, /Lower-level PR facts: `pr_review_surface\.json`/);
     assert.match(comment.stderr, /not postable \(applied\/agent-file\)/);
     // Not the whole-spec dump or boilerplate.
     assert.doesNotMatch(comment.stdout, /\d+ satisfied, \d+ partial, \d+ missing/);
@@ -877,7 +877,7 @@ test("all --review-scope pr --cache reuses a ready PR surface while keeping huma
 
     const human = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
     assert.equal(human.mode, "pr");
-    assert.equal(human.generated_from.pr_surface_path, ".review-surfaces/pr_review_surface.json");
+    assert.equal(human.generated_from.pr_surface_path, "pr_review_surface.json");
     assert.equal(human.generated_from.base_sha, surface.scope.base_sha);
     assert.equal(human.generated_from.head_sha, surface.scope.head_sha);
     const changedQueueItem = human.review_queue.find((item: { path: string }) => item.path === CHANGED);

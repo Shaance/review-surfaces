@@ -27,7 +27,11 @@ inputs:
     required: false
     default: ""
   base-ref:
-    description: Base ref to diff against.
+    description: >-
+      Base ref to diff against. The ref must be fetched in the subject checkout
+      (actions/checkout with fetch-depth: 0, or an explicit fetch of the base
+      branch); an unfetched base is a hard, actionable error — never a silently
+      wrong review (review-surfaces.COLD_START.6).
     required: false
     default: origin/main
   head-ref:

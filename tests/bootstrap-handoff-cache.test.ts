@@ -10,13 +10,22 @@ const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
 const FROZEN = "2026-01-02T03:04:05.000Z";
 
 // ---------------------------------------------------------------------------
-// FINDING A: the agent handoff used to hardcode artifact_paths under
-// `.review-surfaces/`. For runs that use --out (or a config output_dir) other
-// than .review-surfaces the artifacts are written elsewhere, so the handoff
-// pointed reviewers at non-existent paths. The packet/comment paths already
-// honor the effective output dir; the handoff must too. The default
-// `.review-surfaces` output must stay unchanged.
+// review-surfaces.COLD_START.8: the agent handoff artifact_paths are sibling
+// FILE NAMES (location-independent), not cwd-relative paths. The handoff lives
+// next to the artifacts it points at, so the pointers are the same bare file
+// names regardless of --out / config output_dir.
 // ---------------------------------------------------------------------------
+
+const SIBLING_ARTIFACT_PATHS = [
+  "review_packet.md",
+  "review_packet.json",
+  "intent.yaml",
+  "evaluation.yaml",
+  "architecture.md",
+  "risks.yaml",
+  "methodology.yaml",
+  "dogfood.yaml"
+];
 
 function handoffInputs(cwd: string, outputDir: string): PacketInputs {
   return {
@@ -81,43 +90,26 @@ function handoffInputs(cwd: string, outputDir: string): PacketInputs {
   } as unknown as PacketInputs;
 }
 
-test("FINDING A: a custom output_dir is reflected in the handoff artifact paths", () => {
+test("review-surfaces.COLD_START.8: handoff artifact paths are sibling file names for any output dir", () => {
   const cwd = "/repo/example";
   const packet = createReviewPacket(handoffInputs(cwd, path.join(cwd, "build", "review")));
   const paths = packet.agent_handoff?.artifact_paths ?? [];
 
-  // Every artifact path must reference the EFFECTIVE (custom) output dir, not the
-  // hardcoded .review-surfaces.
-  assert.ok(paths.length > 0, "handoff must list artifact paths");
+  // The handoff lives next to the artifacts: pointers are bare sibling file
+  // names, never prefixed with the (custom) output dir or .review-surfaces.
+  assert.deepEqual(paths, SIBLING_ARTIFACT_PATHS);
   assert.ok(
-    paths.every((entry) => entry.startsWith("build/review/")),
-    `artifact_paths must reference the custom output dir: ${JSON.stringify(paths)}`
-  );
-  assert.ok(paths.includes("build/review/review_packet.md"));
-  assert.ok(paths.includes("build/review/review_packet.json"));
-  assert.ok(paths.includes("build/review/dogfood.yaml"));
-  // No leftover hardcoded .review-surfaces path.
-  assert.ok(
-    !paths.some((entry) => entry.startsWith(".review-surfaces/")),
-    `no artifact path should still point at .review-surfaces: ${JSON.stringify(paths)}`
+    !paths.some((entry) => entry.includes("/")),
+    `no artifact path should contain a directory prefix: ${JSON.stringify(paths)}`
   );
 });
 
-test("FINDING A: the default .review-surfaces output dir is unchanged in the handoff", () => {
+test("review-surfaces.COLD_START.8: the default .review-surfaces output dir also yields sibling file names", () => {
   const cwd = "/repo/example";
   const packet = createReviewPacket(handoffInputs(cwd, path.join(cwd, ".review-surfaces")));
   const paths = packet.agent_handoff?.artifact_paths ?? [];
 
-  assert.deepEqual(paths, [
-    ".review-surfaces/review_packet.md",
-    ".review-surfaces/review_packet.json",
-    ".review-surfaces/intent.yaml",
-    ".review-surfaces/evaluation.yaml",
-    ".review-surfaces/architecture.md",
-    ".review-surfaces/risks.yaml",
-    ".review-surfaces/methodology.yaml",
-    ".review-surfaces/dogfood.yaml"
-  ]);
+  assert.deepEqual(paths, SIBLING_ARTIFACT_PATHS);
 });
 
 // ---------------------------------------------------------------------------

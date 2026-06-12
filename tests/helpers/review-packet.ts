@@ -44,6 +44,7 @@ export function minimalReviewPacket(): MutableReviewPacketFixture {
       base_ref: "origin/main",
       head_ref: "HEAD",
       head_sha: "abc",
+      uncommitted_files: 0,
       run_mode: "local",
       input_hashes: []
     },
@@ -129,6 +130,7 @@ export function fullyPopulatedReviewPacket(): MutableReviewPacketFixture {
       head_ref: "HEAD",
       base_sha: "1111111111111111111111111111111111111111",
       head_sha: "2222222222222222222222222222222222222222",
+      uncommitted_files: 0,
       run_mode: PACKET_RUN_MODES[1],
       milestone: "M6",
       iteration_id: "iter-1",

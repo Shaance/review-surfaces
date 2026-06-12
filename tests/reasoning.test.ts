@@ -54,6 +54,7 @@ function baseCollection(cwd: string, overrides: Partial<CollectionResult> = {}):
       base_ref: "HEAD",
       head_ref: "HEAD",
       head_sha: "abc",
+      uncommitted_files: 0,
       run_mode: "local",
       input_hashes: []
     },
@@ -1345,6 +1346,7 @@ test("review-surfaces.EVIDENCE.6: renderer visibly distinguishes LLM hypotheses 
       base_ref: "HEAD",
       head_ref: "HEAD",
       head_sha: "abc",
+      uncommitted_files: 0,
       run_mode: "local"
     },
     intent: {

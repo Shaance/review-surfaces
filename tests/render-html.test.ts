@@ -62,7 +62,7 @@ function model(over: Partial<HumanReviewModel> = {}): HumanReviewModel {
     test_plan: [],
     skim_safe: [],
     feedback_effects: [],
-    generated_from: { packet_path: ".review-surfaces/review_packet.json", base_ref: "origin/main", head_ref: "HEAD", head_sha: "deadbeef" },
+    generated_from: { packet_path: ".review-surfaces/review_packet.json", base_ref: "origin/main", head_ref: "HEAD", head_sha: "deadbeef", uncommitted_files: 0 },
     ...over
   };
 }

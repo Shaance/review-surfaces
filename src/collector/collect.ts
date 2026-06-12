@@ -21,7 +21,7 @@ import {
   TEST_RESULTS_SCHEMA_VERSION,
   TestResults
 } from "../tests-evidence/junit";
-import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, commitTimeAtRef, gitInfoDiagnostics, GitInfo } from "./git";
+import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, commitTimeAtRef, gitInfoDiagnostics, GitInfo, isLiteralHeadRequest } from "./git";
 import { LcovCoverage, looksLikeLcov, parseLcov } from "../tests-evidence/lcov";
 import { parseStructuredDiff } from "./diff-hunks";
 
@@ -71,6 +71,11 @@ export interface RunManifest {
   head_ref: string;
   base_sha?: string;
   head_sha: string;
+  // COLD_START.7: how many files in the changed set came from the working tree
+  // (uncommitted edits / untracked files) rather than the base...head range.
+  // Always present (0 on a clean or pinned-head run) so renderers can announce
+  // a dirty literal-HEAD review on every human surface.
+  uncommitted_files: number;
   run_mode: PacketRunMode;
   milestone?: string;
   input_hashes: ManifestInputHash[];
@@ -230,12 +235,30 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const diagnostics: string[] = [];
   const git = collectGitInfo(options.cwd, options.baseRef, options.headRef);
   diagnostics.push(...gitInfoDiagnostics(options.cwd, options.baseRef));
-  const changedFilesResult = collectChangedFiles(options.cwd, options.baseRef, options.headRef);
+  // COLD_START.7: working-tree/untracked files merge into the changed set only
+  // for a literal-HEAD review; an explicitly pinned head gets the pure range.
+  const includeWorkingTree = isLiteralHeadRequest(options.headRef);
+  const changedFilesResult = collectChangedFiles(options.cwd, options.baseRef, options.headRef, includeWorkingTree);
   diagnostics.push(...changedFilesResult.diagnostics);
-  const allChangedFiles = changedFilesResult.files;
+  // COLD_START.7: the tool's own artifacts are never part of the reviewed
+  // change set. Without this, a second run in a repo that has not gitignored
+  // the output dir absorbed the FIRST run's untracked artifacts as
+  // working-tree changes (and would now announce them as uncommitted files).
+  // Both the CURRENT effective out dir and the CONFIGURED output_dir are
+  // excluded: a run with --out elsewhere still sees a prior default-located
+  // run's artifacts in the working tree.
+  const configOutputDirRelative = normalizeRelativeDir(
+    path.relative(realpathOrSelf(options.cwd), realpathOrSelf(path.resolve(options.cwd, options.config.output_dir)))
+  );
+  const artifactDirPrefixes = [...new Set([outputDirRelative, configOutputDirRelative])]
+    .filter((dir): dir is string => Boolean(dir))
+    .map((dir) => `${dir}/`);
+  const allChangedFiles = changedFilesResult.files.filter(
+    (file) => !artifactDirPrefixes.some((prefix) => file.path.startsWith(prefix))
+  );
   const changedFiles = allChangedFiles.filter((file) => !ignore.isIgnored(file.path));
   const ignoredChangedFiles = allChangedFiles.filter((file) => ignore.isIgnored(file.path)).map((file) => file.path);
-  const diffResult = collectDiff(options.cwd, options.baseRef, options.headRef);
+  const diffResult = collectDiff(options.cwd, options.baseRef, options.headRef, includeWorkingTree);
   diagnostics.push(...diffResult.diagnostics);
   const rawDiff = diffResult.text;
   const diffSource = diffResult.diffSource;
@@ -348,6 +371,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     head_ref: options.headRef,
     base_sha: git.base_sha,
     head_sha: git.head_sha,
+    uncommitted_files: changedFiles.filter((file) => file.source === "working_tree").length,
     run_mode: runMode,
     milestone,
     input_hashes: inputHashes,
