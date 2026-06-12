@@ -117,20 +117,29 @@ export function isGitRepo(cwd: string): boolean {
   return git(cwd, ["rev-parse", "--is-inside-work-tree"]) === "true";
 }
 
-// COLD_START.7: working-tree/untracked files belong in the review only when the
-// head was requested as the literal checked-out state ("HEAD"). An explicitly
-// pinned head — a sha, branch, or tag, even one equal to the current checkout —
-// asks for exactly that commit, and merging the working tree in silently
-// reviewed files outside the requested range (quick-wins evidence item 2).
-export function isLiteralHeadRequest(headRef: string): boolean {
-  return headRef === "HEAD" || headRef === "@";
+// COLD_START.7: working-tree/untracked files belong in the review only when
+// the requested head IS the checked-out state — the literal "HEAD"/"@", or the
+// name of the branch currently checked out ("--head main" while on main is a
+// current-state review per the requirement text). A raw sha, a tag, a
+// different branch, or any ref on a detached checkout is pinned — even one
+// equal to the current commit, which is exactly the shape that silently
+// absorbed working-tree files in the 104-vs-99 incident (evidence item 2).
+export function isCurrentStateHeadRequest(cwd: string, headRef: string): boolean {
+  if (headRef === "HEAD" || headRef === "@") {
+    return true;
+  }
+  const currentBranch = git(cwd, ["symbolic-ref", "--short", "-q", "HEAD"]);
+  if (!currentBranch) {
+    return false;
+  }
+  return headRef === currentBranch || headRef === `refs/heads/${currentBranch}` || headRef === `heads/${currentBranch}`;
 }
 
 export function collectChangedFiles(
   cwd: string,
   baseRef: string,
   headRef: string,
-  includeWorkingTree: boolean = isLiteralHeadRequest(headRef),
+  includeWorkingTree: boolean = isCurrentStateHeadRequest(cwd, headRef),
   // COLD_START.7: pure working-tree entries matching this predicate (the
   // tool's own artifact locations) are not reviewed changes. Range entries are
   // never filtered — a committed change to a tracked artifact stays reviewable.
@@ -244,7 +253,7 @@ export function collectDiff(
   cwd: string,
   baseRef: string,
   headRef: string,
-  includeWorkingTree: boolean = isLiteralHeadRequest(headRef)
+  includeWorkingTree: boolean = isCurrentStateHeadRequest(cwd, headRef)
 ): DiffResult {
   const diagnostics: string[] = [];
   const rangeDiff = git(cwd, ["diff", `${baseRef}...${headRef}`]);
@@ -306,6 +315,17 @@ export function resolveMergeBaseSha(cwd: string, baseRef: string, headRef: strin
 // does not resolve (e.g. an added file has no base version), never throwing.
 export function readFileAtRef(cwd: string, ref: string, filePath: string): string | undefined {
   return git(cwd, ["show", `${ref}:${filePath}`]);
+}
+
+// COLD_START.7: byte-exact blob read at a ref, for hashing pinned-head content.
+// Bypasses git() deliberately — its utf8 decode + trimEnd would corrupt binary
+// blobs and strip meaningful trailing newlines from the hash input.
+export function readFileBytesAtRef(cwd: string, ref: string, filePath: string): Buffer | undefined {
+  try {
+    return execFileSync("git", ["show", `${ref}:${filePath}`], { cwd, stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    return undefined;
+  }
 }
 
 // Committer time of a ref as ISO-8601, for coverage-report staleness checks

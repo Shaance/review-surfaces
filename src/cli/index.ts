@@ -6,7 +6,7 @@ import { recordCommandTranscript } from "../commands/runner";
 import { commandTranscriptInputDir } from "../commands/transcripts";
 import { collectInputs, CollectionResult } from "../collector/collect";
 import { parseStructuredDiff } from "../collector/diff-hunks";
-import { blobExistsAtRef, isGitRepo, isLiteralHeadRequest, readFileAtRef, resolveBaseRef, resolveGitRefSha, resolveMergeBaseSha } from "../collector/git";
+import { blobExistsAtRef, isGitRepo, isCurrentStateHeadRequest, readFileAtRef, resolveBaseRef, resolveGitRefSha, resolveMergeBaseSha } from "../collector/git";
 import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { computeRankingEvidence, emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { isTestPath } from "../scope/pr-scope";
@@ -1704,7 +1704,7 @@ function buildFactReaders(cwd: string, packet: ReviewPacket, diff: StructuredDif
   // blob even when it equals the checked-out commit — otherwise a dirty
   // checkout leaks worktree content into semantic facts for a pinned range.
   const headIsWorktree =
-    isLiteralHeadRequest(str(manifest.head_ref) || "HEAD") && (!headSha || !worktreeHead || headSha === worktreeHead);
+    isCurrentStateHeadRequest(cwd, str(manifest.head_ref) || "HEAD") && (!headSha || !worktreeHead || headSha === worktreeHead);
   const readWorktree = (filePath: string): string | undefined => {
     try {
       return fs.readFileSync(path.resolve(cwd, filePath), "utf8");

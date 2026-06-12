@@ -192,6 +192,10 @@ test("review-surfaces.COLD_START.6 two refs without a common history are a hard 
 const PINNED_RANGE_ARTIFACTS = [
   "inputs/changed_files.json",
   "inputs/diff.patch",
+  // review_packet.json embeds the manifest (including the cache signature),
+  // which must hash committed blobs — not dirty worktree bytes — for a pinned
+  // head (PR #79 round 3).
+  "review_packet.json",
   "human_review.md",
   "human_review.html"
 ];
@@ -230,6 +234,28 @@ test("review-surfaces.COLD_START.7 a pinned head excludes working-tree changes (
         `${rel} must be byte-identical between clean-tree and dirty-tree pinned-range runs`
       );
     });
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.COLD_START.7 requesting the checked-out BRANCH by name is a current-state review (working tree included)", () => {
+  const tmp = makeRepo("main");
+  try {
+    const shaA = commitFile(tmp, "a.txt", "alpha\n", "A");
+    commitFile(tmp, "b.txt", "beta\n", "B");
+    fs.writeFileSync(path.join(tmp, "c.txt"), "untracked\n");
+
+    // --head main while main is checked out resolves to the checked-out HEAD:
+    // per COLD_START.7 this is a current-state review, not a pinned one.
+    const result = runCli(tmp, ["all", "--provider", "mock", "--base", shaA, "--head", "main", "--now", FROZEN_NOW]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+      result.stdout,
+      /includes 1 uncommitted file\(s\) \(working tree\)/,
+      `a checked-out-branch head must include and announce working-tree files:\n${result.stdout}`
+    );
+    assert.ok(changedFilePaths(tmp).includes("c.txt"), "the untracked file must be part of the current-state review");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -299,7 +325,10 @@ test("review-surfaces.COLD_START.7 a ROOT output dir (--out .) never counts its 
     // The first run left untracked artifacts at the REPO ROOT (manifest.json,
     // review_packet.*, inputs/, ...). The second literal-HEAD run must not
     // absorb any of them — this test pins the root-artifact exclusion list, so
-    // a new artifact writer that is not excluded turns it red.
+    // a new artifact writer that is not excluded turns it red. The draft-review
+    // renderer's output is simulated too (PR #79 round 3: pending_review.json
+    // was missing from the list).
+    fs.writeFileSync(path.join(tmp, "pending_review.json"), "{}\n");
     const second = runCliRaw(tmp, args);
     assert.equal(second.status, 0, second.stderr);
     const secondManifest = JSON.parse(fs.readFileSync(path.join(tmp, "manifest.json"), "utf8")) as Record<string, unknown>;

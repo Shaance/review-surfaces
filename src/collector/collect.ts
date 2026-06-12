@@ -21,7 +21,7 @@ import {
   TEST_RESULTS_SCHEMA_VERSION,
   TestResults
 } from "../tests-evidence/junit";
-import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, commitTimeAtRef, gitInfoDiagnostics, GitInfo, isLiteralHeadRequest } from "./git";
+import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, commitTimeAtRef, gitInfoDiagnostics, GitInfo, isCurrentStateHeadRequest, readFileBytesAtRef } from "./git";
 import { LcovCoverage, looksLikeLcov, parseLcov } from "../tests-evidence/lcov";
 import { parseStructuredDiff } from "./diff-hunks";
 
@@ -218,6 +218,7 @@ const ROOT_ARTIFACT_FILES = new Set([
   "test_plan.md",
   "comment.md",
   "review.sarif",
+  "pending_review.json",
   "pr_review_surface.json",
   "eval_scoreboard.json"
 ]);
@@ -296,7 +297,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   diagnostics.push(...gitInfoDiagnostics(options.cwd, options.baseRef));
   // COLD_START.7: working-tree/untracked files merge into the changed set only
   // for a literal-HEAD review; an explicitly pinned head gets the pure range.
-  const includeWorkingTree = isLiteralHeadRequest(options.headRef);
+  const includeWorkingTree = isCurrentStateHeadRequest(options.cwd, options.headRef);
   const changedFilesResult = collectChangedFiles(options.cwd, options.baseRef, options.headRef, includeWorkingTree, isArtifactPath);
   diagnostics.push(...changedFilesResult.diagnostics);
   const allChangedFiles = changedFilesResult.files;
@@ -369,7 +370,14 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // edit perturbs the signature (a cache key that ignored changed source would
   // be stale). Missing/unreadable files hash to a sentinel so deletions still
   // register as a change.
-  const changedFileHashes = await hashChangedFiles(options.cwd, changedFiles);
+  // COLD_START.7: a pinned-head review hashes the COMMITTED blobs at the head,
+  // not the working tree — otherwise a dirty checkout perturbs the cache
+  // signature (and the manifest embedded in review_packet.json) while
+  // changed_files.json and diff.patch stay pure.
+  const changedFileHashes = await hashChangedFiles(options.cwd, changedFiles, {
+    useWorktree: includeWorkingTree,
+    headSha: git.head_sha
+  });
 
   // Content-hash every flag-supplied input file that materially shapes the
   // packet but is NOT discovered through the repo walk (so it never lands in
@@ -571,16 +579,31 @@ function readPriorArtifactSignatures(manifestPath: string): Record<string, strin
   }
 }
 
-async function hashChangedFiles(cwd: string, changedFiles: ChangedFile[]): Promise<ChangedFileHash[]> {
+async function hashChangedFiles(
+  cwd: string,
+  changedFiles: ChangedFile[],
+  // COLD_START.7: current-state reviews hash working-tree bytes (the content
+  // under review); pinned-head reviews hash the committed blobs at the head so
+  // a dirty checkout cannot perturb the signature. A path with no blob at the
+  // head (a range deletion) hashes to the "missing" sentinel either way.
+  head: { useWorktree: boolean; headSha: string }
+): Promise<ChangedFileHash[]> {
   const hashes: ChangedFileHash[] = [];
   for (const file of changedFiles) {
     let hash = "missing";
-    const absolute = path.resolve(cwd, file.path);
-    if (isRegularFile(absolute)) {
-      try {
-        hash = await hashFile(absolute);
-      } catch {
-        hash = "unreadable";
+    if (head.useWorktree) {
+      const absolute = path.resolve(cwd, file.path);
+      if (isRegularFile(absolute)) {
+        try {
+          hash = await hashFile(absolute);
+        } catch {
+          hash = "unreadable";
+        }
+      }
+    } else {
+      const blob = readFileBytesAtRef(cwd, head.headSha, file.path);
+      if (blob !== undefined) {
+        hash = crypto.createHash("sha256").update(blob).digest("hex");
       }
     }
     hashes.push({ path: file.path, status: file.status, source: file.source, algorithm: "sha256", hash });
