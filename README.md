@@ -19,6 +19,11 @@ Every answer is grounded in local evidence — files, diffs, command transcripts
 coverage reports — never hidden chat context. Everything runs offline; the
 default provider is deterministic and needs no API key.
 
+**Read a packet before installing:** [`docs/example/`](docs/example/README.md)
+holds the unedited output of a real run on a repository this tool had never
+seen (`sindresorhus/got`, no spec, no config) — the markdown review, the HTML
+cockpit, and the sticky comment, with the exact commands that produced them.
+
 ## Quickstart
 
 Works on any git repository — no config, no spec files, no setup:
@@ -53,12 +58,19 @@ No server, no CDN, opens from disk:
 
 ### The change map
 
-Changed files grouped by module, import edges between them, churn and risk-lens
-tints, plus a halo of the unchanged files that depend most on what changed
-(rendered as deterministic inline SVG in the cockpit and as mermaid on comment
-surfaces):
+Two zoom levels, chosen by a legibility budget so the map is readable at any
+diff size. Small diffs get the file-level map: changed files grouped by
+module, import edges between them, churn and risk-lens tints, plus a halo of
+the unchanged files that depend most on what changed. When a diff is too wide
+to render legibly file by file, an **overview** leads instead — one card per
+top-level area with file/cluster counts, churn, and weighted edges that
+account for every import edge in the model — and clicking a card in the
+cockpit zooms into that area's detail view (its files, internal edges, and
+explicit "→ other-area ×N" stub ports). Rendered as deterministic inline SVG
+in the cockpit and as mermaid on comment surfaces; layouts wrap instead of
+shrinking, so nothing ever renders below full size:
 
-![The change-impact map: clusters, import edges, churn, and risk tints](docs/images/change-map.png)
+![The change map overview: one card per area, weighted edges, and the blast-radius halo](docs/images/change-map.png)
 
 ### The sticky PR comment
 

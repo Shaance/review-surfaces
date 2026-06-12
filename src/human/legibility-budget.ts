@@ -1,7 +1,7 @@
 // review-surfaces.MAP_SCALE.2: the ONE legibility-budget module. Every map
 // surface (cockpit SVG, markdown mermaid, sticky comment) asks this module
 // which level of the change map leads; renderers must not carry private size
-// thresholds. The standing rule (POLISH_UPLIFT_GOAL.md): a visual that cannot
+// thresholds. The standing rule (docs/history/POLISH_UPLIFT_GOAL.md): a visual that cannot
 // render legibly must SUMMARIZE, never shrink — scale-to-fit below ~90% of
 // natural size is a rendering bug, and overflow stays explicit.
 import { ChangeGraph } from "./contract";

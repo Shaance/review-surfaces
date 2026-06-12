@@ -1371,6 +1371,9 @@ function printHumanReviewTerminalSummary(cwd: string, outDir: string, humanRevie
   console.log(`Blockers: ${humanReview.blockers.length}`);
   console.log(`Suggested comments: ${humanReview.suggested_comments.length}`);
   console.log(`Missing evidence: ${humanReview.trust_audit.missing_evidence.length}`);
+  // review-surfaces.DISTRIBUTION.7: the flagship surface must be discoverable
+  // from a stranger's first run — the summary ends with the cockpit pointer.
+  console.log(`HTML cockpit: run \`review-surfaces human --format html\` and open ${artifactPathForLog(cwd, outDir, "human_review.html")} in a browser`);
 }
 
 async function loadOrBuildHumanReviewJson(

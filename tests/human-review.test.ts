@@ -106,7 +106,7 @@ function packetFixture(): ReviewPacket {
   packet.methodology = {
     ...packet.methodology,
     claims_without_evidence: ["All human review edge cases are covered."],
-    evidence: [fileEvidence("docs/human-first-review-surfaces-comprehensive-feature-proposal.md", "Proposal is present.")]
+    evidence: [fileEvidence("docs/history/human-first-review-surfaces-comprehensive-feature-proposal.md", "Proposal is present.")]
   };
   packet.risks = {
     summary: "fixture risks",

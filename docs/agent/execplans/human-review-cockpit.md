@@ -2,7 +2,7 @@
 
 ## Context
 
-The product proposal in `docs/human-first-review-surfaces-comprehensive-feature-proposal.md` reframes `review-surfaces` from a packet compiler into a human review decision cockpit. The existing PR surface already provides deterministic diff-scoped facts: changed files, affected requirements, scoped coverage, PR risks, and a gated narrative. The first implementation slice should turn those facts plus `review_packet.json` into a human-first artifact without changing the core packet contract.
+The product proposal in `docs/history/human-first-review-surfaces-comprehensive-feature-proposal.md` reframes `review-surfaces` from a packet compiler into a human review decision cockpit. The existing PR surface already provides deterministic diff-scoped facts: changed files, affected requirements, scoped coverage, PR risks, and a gated narrative. The first implementation slice should turn those facts plus `review_packet.json` into a human-first artifact without changing the core packet contract.
 
 Light prior-art scan: current AI review products tend to emphasize PR summaries, inline comments, risk scores, and suggested fixes. The differentiator to preserve here is deterministic, local, evidence-backed review routing: verdict, review-first queue, trust audit, questions, and concrete checks.
 

@@ -7,7 +7,6 @@ docs:
   - CONTRIBUTING.md
   - AGENTS.md
   - CLAUDE.md
-  - POLISH_UPLIFT_GOAL.md
   - docs/**/*.md
   - .agents/skills/**/SKILL.md
 tests:
@@ -53,7 +52,7 @@ areas:
       - features/
       - docs/review-surfaces-trd.md
       - docs/history/OPEN_SOURCE_UPLIFT_GOAL.md
-      - POLISH_UPLIFT_GOAL.md
+      - docs/history/POLISH_UPLIFT_GOAL.md
       - LICENSE
       - CONTRIBUTING.md
       - review-surfaces.config.yaml
@@ -206,7 +205,7 @@ areas:
       - src/pr/risk-metadata.ts
       - schemas/human_review.schema.json
       - tests/human-review.test.ts
-      - docs/human-first-review-surfaces-comprehensive-feature-proposal.md
+      - docs/history/human-first-review-surfaces-comprehensive-feature-proposal.md
     purpose: Turn packet and PR-surface evidence into human-first review decisions, queues, questions, comments, and checks.
     pattern: decision surface renderer
     test_keywords:
@@ -219,7 +218,7 @@ areas:
       - src/human/
       - schemas/human_review.schema.json
       - tests/human-review.test.ts
-      - docs/human-first-review-surfaces-comprehensive-feature-proposal.md
+      - docs/history/human-first-review-surfaces-comprehensive-feature-proposal.md
     purpose: Keep human review actions bounded, evidence-backed, conservative, and separate from untrusted LLM prose.
     pattern: trust-bounded decision surface
     test_keywords:
@@ -260,7 +259,7 @@ dogfood:
   enabled: true
   milestone: M5
 quality_gate:
-  # The human review value uplift (docs/human-review-value-uplift-proposal.md)
+  # The human review value uplift (docs/history/human-review-value-uplift-proposal.md)
   # landed its spec entries ahead of their phased implementation, so each phase's
   # ACIDs were allowlisted here until that phase shipped. All five of those phases
   # landed, emptying the allowlist.
@@ -284,15 +283,12 @@ quality_gate:
   # The open-source readiness uplift (docs/history/OPEN_SOURCE_UPLIFT_GOAL.md) is fully
   # shipped: all nine staged ACIDs landed phase by phase and were removed as they shipped.
   #
-  # The pre-publish polish uplift (POLISH_UPLIFT_GOAL.md) stages its
-  # not-yet-shipped ACIDs below; each phase PR removes the ACIDs it ships. The
-  # gate must be back to `allow_missing: []` when the final phase lands.
-  allow_missing:
-    # Phase 3 — showcase, README truth, publish trim (failures 5-6)
-    - review-surfaces.DISTRIBUTION.5
-    - review-surfaces.DISTRIBUTION.6
-    - review-surfaces.DISTRIBUTION.7
-    - review-surfaces.DISTRIBUTION.8
+  # The pre-publish polish uplift (docs/history/POLISH_UPLIFT_GOAL.md) is fully
+  # shipped: all ten staged ACIDs landed phase by phase and were removed as
+  # they shipped, so the allowlist is EMPTY again — any missing requirement
+  # fails the strict self-dogfood gate. Re-add an ACID here only to stage a
+  # new not-yet-shipped requirement, and remove it as that work lands.
+  allow_missing: []
 human_review:
   enabled: true
   default_entrypoint: true
