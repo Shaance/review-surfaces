@@ -24,7 +24,11 @@ Reading order, if you are curious how the product evolved:
 6. `POLISH_UPLIFT_GOAL.md` — the pre-publish legibility-at-scale uplift: the
    change-map overview and zoom levels, the wrapped layouts, the committed
    example packet, and the publish trim.
-7. `README.bootstrap.md` — the original spec-first bootstrap README.
+7. `QUICK_WINS_UPLIFT_GOAL.md` — the release quick-wins uplift: range truth
+   (base auto-resolution, working-tree honesty, portable artifacts) and the
+   package first touch (`--version`, the Node floor guard, npm-page rendering,
+   the publish gate, the artifact-dir hint).
+8. `README.bootstrap.md` — the original spec-first bootstrap README.
 
 The two product proposals the cockpit uplifts executed against also live here:
 `human-first-review-surfaces-comprehensive-feature-proposal.md` (the original

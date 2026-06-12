@@ -139,6 +139,14 @@ async function main(): Promise<number> {
     return ExitCodes.success;
   }
 
+  // DISTRIBUTION.9: `--version` is the canonical first command after install;
+  // it prints exactly the help header line (the shared VERSION constant the
+  // version-sync tests pin to package.json) and exits 0.
+  if (parsed.flags.version || parsed.command === "version") {
+    console.log(`review-surfaces ${VERSION}`);
+    return ExitCodes.success;
+  }
+
   if (!COMMANDS.includes(parsed.command)) {
     throw new CliError(`Unknown command: ${parsed.command}`, ExitCodes.usageError);
   }
@@ -312,7 +320,37 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
   if (collection.manifest.uncommitted_files > 0) {
     console.log(`includes ${collection.manifest.uncommitted_files} uncommitted file(s) (working tree)`);
   }
+  printArtifactIgnoreHint(cwd, collection.outputDir);
   return { collection, config: runConfig };
+}
+
+// DISTRIBUTION.13: one stderr hint when the artifact dir is inside the repo
+// and neither git-ignored nor tracked — without it, a stranger's next
+// `git add -A` commits a ~100 KB cockpit HTML. Stderr only: the stdout
+// ordering contracts (HUMAN_REVIEW.15, pointer-last) must not move. Repos
+// that ignore the dir, or deliberately track artifacts (like this one), stay
+// hint-free.
+function printArtifactIgnoreHint(cwd: string, outputDir: string): void {
+  const rel = path.relative(cwd, outputDir);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel) || !isGitRepo(cwd)) {
+    return;
+  }
+  try {
+    execFileSync("git", ["check-ignore", "-q", rel], { cwd, stdio: "ignore" });
+    return; // ignored — nothing to suggest
+  } catch {
+    // not ignored; fall through to the tracked check
+  }
+  try {
+    if (execFileSync("git", ["ls-files", "--", rel], { cwd, encoding: "utf8" }).trim() !== "") {
+      return; // tracked on purpose — the user reviews artifacts as content
+    }
+  } catch {
+    return;
+  }
+  process.stderr.write(
+    `[review-surfaces] hint: add ${rel.split(path.sep).join("/")}/ to .gitignore — artifacts are local-first and need not be committed.\n`
+  );
 }
 
 // COLD_START.6: resolve the review base BEFORE collection so a non-resolving
@@ -2933,7 +2971,8 @@ function parseArgs(args: string[]): ParsedArgs {
     args = args.slice(1);
   }
 
-  const command = args.length === 0 || args[0] === "--help" ? "help" : args[0];
+  // DISTRIBUTION.9: `--version` in command position resolves like `--help`.
+  const command = args.length === 0 || args[0] === "--help" ? "help" : args[0] === "--version" ? "version" : args[0];
   const rest = command === "help" ? args : args.slice(1);
   const flags: Record<string, string | boolean> = {};
   const positionals: string[] = [];
@@ -3237,6 +3276,7 @@ Options:
                    review_packet.json exists; reuses the existing packet and still applies
                    the --strict gate. Any input/provider/model/tool change is a cache miss
                    and regenerates. Absent: always regenerate (unchanged default).
+  --version         Print the version and exit
   --help            Show this help
 
 Gate semantics (only enforced as exit codes with --strict):

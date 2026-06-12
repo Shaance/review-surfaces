@@ -7,7 +7,6 @@ docs:
   - CONTRIBUTING.md
   - AGENTS.md
   - CLAUDE.md
-  - QUICK_WINS_UPLIFT_GOAL.md
   - docs/**/*.md
   - .agents/skills/**/SKILL.md
 tests:
@@ -54,7 +53,7 @@ areas:
       - docs/review-surfaces-trd.md
       - docs/history/OPEN_SOURCE_UPLIFT_GOAL.md
       - docs/history/POLISH_UPLIFT_GOAL.md
-      - QUICK_WINS_UPLIFT_GOAL.md
+      - docs/history/QUICK_WINS_UPLIFT_GOAL.md
       - LICENSE
       - CONTRIBUTING.md
       - review-surfaces.config.yaml
@@ -289,17 +288,13 @@ quality_gate:
   # shipped: all ten staged ACIDs landed phase by phase and were removed as
   # they shipped.
   #
-  # The release quick-wins uplift (QUICK_WINS_UPLIFT_GOAL.md) stages its
-  # not-yet-shipped ACIDs below; each phase PR removes the ACIDs it ships. The
-  # gate must be back to `allow_missing: []` when the final phase lands.
-  allow_missing:
-    # Phase 2 — package first touch (quick-wins evidence items 4-8: --version,
-    # Node floor guard, npm-page README/metadata, publish gate, ignore hint)
-    - review-surfaces.DISTRIBUTION.9
-    - review-surfaces.DISTRIBUTION.10
-    - review-surfaces.DISTRIBUTION.11
-    - review-surfaces.DISTRIBUTION.12
-    - review-surfaces.DISTRIBUTION.13
+  # The release quick-wins uplift (docs/history/QUICK_WINS_UPLIFT_GOAL.md) is
+  # fully shipped: all eight staged ACIDs landed phase by phase and were
+  # removed as they shipped, so the allowlist is EMPTY again — any missing
+  # requirement fails the strict self-dogfood gate. Re-add an ACID here only
+  # to stage a new not-yet-shipped requirement, and remove it as that work
+  # lands.
+  allow_missing: []
 human_review:
   enabled: true
   default_entrypoint: true

@@ -7,6 +7,10 @@
     "type": "git",
     "url": "git+https://github.com/Shaance/review-surfaces.git"
   },
+  "homepage": "https://github.com/Shaance/review-surfaces#readme",
+  "bugs": {
+    "url": "https://github.com/Shaance/review-surfaces/issues"
+  },
   "keywords": [
     "code-review",
     "ai-agents",
@@ -34,13 +38,12 @@
     "local-gate": "./scripts/local-gate.sh",
     "review-surfaces": "pnpm run build && node bin/review-surfaces.js",
     "copy-env": "./scripts/copy-env.sh",
-    "prepublishOnly": "pnpm run build"
+    "prepublishOnly": "pnpm run local-gate"
   },
   "files": [
     "bin",
     "dist",
     "schemas",
-    "docs/images",
     "docs/example",
     "CHANGELOG.md"
   ],

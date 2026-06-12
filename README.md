@@ -19,7 +19,7 @@ Every answer is grounded in local evidence — files, diffs, command transcripts
 coverage reports — never hidden chat context. Everything runs offline; the
 default provider is deterministic and needs no API key.
 
-**Read a packet before installing:** [`docs/example/`](docs/example/README.md)
+**Read a packet before installing:** [`docs/example/`](https://github.com/Shaance/review-surfaces/blob/main/docs/example/README.md)
 holds the unedited output of a real run on a repository this tool had never
 seen (`sindresorhus/got`, no spec, no config) — the markdown review, the HTML
 cockpit, and the sticky comment, with the exact commands that produced them.
@@ -60,7 +60,7 @@ Every `review-surfaces all` run writes a single self-contained
 per-line coverage gutters, clickable SVG change map with overview ↔ zoom, and
 progress tracking. No server, no CDN, opens from disk:
 
-![The HTML cockpit: verdict, lens chips, and the guided reading order](docs/images/cockpit.png)
+![The HTML cockpit: verdict, lens chips, and the guided reading order](https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/cockpit.png)
 
 ### The change map
 
@@ -76,7 +76,7 @@ explicit "→ other-area ×N" stub ports). Rendered as deterministic inline SVG
 in the cockpit and as mermaid on comment surfaces; layouts wrap instead of
 shrinking, so nothing ever renders below full size:
 
-![The change map overview: one card per area, weighted edges, and the blast-radius halo](docs/images/change-map.png)
+![The change map overview: one card per area, weighted edges, and the blast-radius halo](https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/change-map.png)
 
 ### The sticky PR comment
 
@@ -84,7 +84,7 @@ A reusable GitHub Action (or `review-surfaces comment --format sticky` locally)
 posts one idempotent comment per PR: verdict, top queue items with diff
 excerpts, and a since-last-review delta on every push:
 
-![The sticky PR comment: verdict, review-first queue, inline diff excerpts](docs/images/sticky-comment.png)
+![The sticky PR comment: verdict, review-first queue, inline diff excerpts](https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/sticky-comment.png)
 
 All three screenshots come from a real run of this tool on its own repository —
 the project reviews itself with itself (see [`docs/history/`](https://github.com/Shaance/review-surfaces/tree/main/docs/history) for
@@ -219,7 +219,7 @@ is developed spec-first and dogfood-first).
 
 ## License
 
-[MIT](./LICENSE).
+[MIT](https://github.com/Shaance/review-surfaces/blob/main/LICENSE).
 
 <!-- review-surfaces:eval-scoreboard -->
 ### Eval scoreboard
