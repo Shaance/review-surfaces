@@ -615,7 +615,11 @@ components:
       cold-start evidence log: a shallow clone of sindresorhus/got (no Acai
       specs, no config) run with the mock provider. Heuristics that encode this
       repository's layout must be derived from the target repository's own
-      signals or degrade to an honest generic answer.
+      signals or degrade to an honest generic answer. Requirements 6-8 extend
+      this family for the release quick-wins uplift Phase 1
+      (QUICK_WINS_UPLIFT_GOAL.md, 2026-06-12 quick-wins evidence-log items
+      1-3): the first command must review exactly the range it claims — base
+      auto-resolution, working-tree honesty, and portable artifacts.
     requirements:
       1:
         requirement: validate (and every other schema consumer) must resolve schemas/ relative to the installed package root, for example via module-relative paths, never relative to the user's current working directory, and a regression test must run validate from a temporary working directory outside the repository.
@@ -632,6 +636,15 @@ components:
       5:
         requirement: In spec_mode none the packet must stop speaking Acai — per-cluster overreach findings and per-file requirement-mapping questions and actions are suppressed in favor of the single honest open question about unindexed requirements plus a one-line note that intent checks are limited to docs and constraints, and all renderers must hide empty spec-coupled sections rather than rendering zero-count requirement results — while test-weakening detection, trust audit, semantic facts, coverage, change map, reading order, and drift remain unchanged.
         note: "Closes cold-start failure 4: with zero specs, OVERREACH-001..003 covered 100 percent of the got diff and review actions said 'map the changed file to an Acai requirement'. Presentation and derivation logic only, not a second pipeline."
+      6:
+        requirement: The default --base must resolve through an explicit deterministic chain — origin/HEAD, origin/main, origin/master, main, master, first ref that resolves, merge-base semantics unchanged — and a base that does not resolve (explicitly passed, or the chain exhausted) must be a hard error with non-zero exit and no artifacts written, naming the ref or refs tried and giving the shallow-clone fixes (fetch-depth 0 for Actions, git fetch --unshallow locally), never a silent working-tree fallback; the resolved range (both refs with short SHAs) must be printed in the all summary and persisted as model state, and the README quickstart, help text, and init templates must drop the hard-coded origin/main in favor of the auto default.
+        note: "Release quick-wins uplift Phase 1 (QUICK_WINS_UPLIFT_GOAL.md). Closes quick-wins evidence item 1: --base defaults to a hard-coded origin/main and a non-resolving base silently falls back to a bare working-tree diff with a stderr-only diagnostic that is by design never persisted, so a master-default repo gets a confidently wrong (usually empty) verdict from the README quickstart, and CI shallow clones hit the same path."
+      7:
+        requirement: Working-tree and untracked files must be merged into the changed-file set only when the requested head resolves to the checked-out HEAD; an explicitly pinned head must produce a pure range diff, asserted by a test reproducing the dirty-tree-plus-pinned-range incident with byte-identical artifacts to a clean-tree run; and when the merge does contribute files, every human surface — the all summary, the human_review.md header, the cockpit header, and the sticky comment when nonzero — must carry one deterministic includes-N-uncommitted-files line.
+        note: "Release quick-wins uplift Phase 1 (QUICK_WINS_UPLIFT_GOAL.md). Closes quick-wins evidence item 2: collectChangedFiles unions git status --untracked-files=all into every run, even pinned historical ranges — the 2026-06-12 pinned 8-PR dogfood counted 104 files instead of 99 because five uncommitted files leaked in — and although the model already tags source working_tree, no rendered surface ever says uncommitted changes are included."
+      8:
+        requirement: No rendered artifact may contain a parent-directory ("../") path chain or an absolute filesystem path regardless of where --out points; artifact-embedded pointers must be computed repo-root-relative with a stable fallback when the artifact directory lies outside the repository, asserted by a test that runs with --out in a temporary directory outside the repo, scans every rendered artifact for ../ and absolute-path patterns, and compares artifact bytes against an in-repo --out run.
+        note: "Release quick-wins uplift Phase 1 (QUICK_WINS_UPLIFT_GOAL.md). Closes quick-wins evidence item 3: pointersForPacketPath embeds path.relative(cwd, packetPath) into rendered output, which produced ../../tmp/... chains twice on 2026-06-12 (the example packet and a cockpit screenshot header); both were worked around by re-running from a clean clone instead of fixing the renderer."
 
   DISTRIBUTION:
     name: Distribution and repository hygiene
@@ -642,7 +655,11 @@ components:
       shipped visuals. Requirements 5-8 extend this family for the pre-publish
       polish uplift Phase 3 (docs/history/POLISH_UPLIFT_GOAL.md, 2026-06-12 legibility
       evidence-log failures 5-6): showcase artifacts, README truth, quickstart
-      cockpit surfacing, and publish trim.
+      cockpit surfacing, and publish trim. Requirements 9-13 extend it again
+      for the release quick-wins uplift Phase 2 (QUICK_WINS_UPLIFT_GOAL.md,
+      2026-06-12 quick-wins evidence-log items 4-8): the package's first touch
+      — version flag, Node floor guard, npm-page rendering, publish safety,
+      and artifact-directory hygiene.
     requirements:
       1:
         requirement: The repository must contain a LICENSE file (MIT unless the owner directs otherwise) and a minimal CONTRIBUTING.md covering pnpm setup, local-gate, local-review, and PR expectations.
@@ -664,6 +681,21 @@ components:
       8:
         requirement: The repository must contain CHANGELOG.md with a condensed 0.1.0 history covering the five uplifts plus an Unreleased section, and the remaining internal proposal docs under docs/ must move to docs/history/ with inbound references updated and POLISH_UPLIFT_GOAL.md moved there and indexed in the history README; npm publish itself remains the owner's manual step.
         note: "Pre-publish polish uplift Phase 3 (docs/history/POLISH_UPLIFT_GOAL.md). Closes the publish-trim half of failure 6: no CHANGELOG for the npm listing, and docs/ still mixes internal proposals with user-facing docs."
+      9:
+        requirement: review-surfaces --version (and the bare version command) must print exactly the help header line — the package name and the shared VERSION constant — and exit 0, covered by the version-sync test family so the flag, the help header, src/core/version.ts, and package.json can never disagree.
+        note: "Release quick-wins uplift Phase 2 (QUICK_WINS_UPLIFT_GOAL.md). Closes quick-wins evidence item 4: verified live on v0.2.0, review-surfaces --version fails with 'Unknown command: --version' although it is the canonical first command after install."
+      10:
+        requirement: bin/review-surfaces.js must check process.versions.node before spawning the compiled CLI and exit 1 with one actionable stderr line when the major version is below the declared engines floor (naming the floor and the running version), while remaining parseable by older Node (plain CJS, no modern syntax) and keeping the no-dist run fallback working, asserted by a source-assertion test.
+        note: "Release quick-wins uplift Phase 2 (QUICK_WINS_UPLIFT_GOAL.md). Closes quick-wins evidence item 5: engines >=22 is declared but npx does not enforce it and dist targets ES2022, so Node 18/20 parses the CLI and dies mid-run with a bare TypeError on a newer API instead of one clear line."
+      11:
+        requirement: README.md must render correctly on the npm package page — image and example-packet links absolute (raw.githubusercontent.com for images, GitHub blob URLs for docs), with no relative ](docs/ or ](./ links — and package.json must carry homepage and bugs fields, with a test asserting both; whether docs/images then leaves the files allowlist is decided at implementation by the pack smoke test's size evidence.
+        note: "Release quick-wins uplift Phase 2 (QUICK_WINS_UPLIFT_GOAL.md). Closes quick-wins evidence item 6: all three screenshots and the example-packet link are repo-relative, which renders unreliably on npmjs.com and on mirrors, and the npm sidebar loses its two highest-click links because homepage and bugs are absent."
+      12:
+        requirement: The package.json prepublishOnly script must run the full local gate (pnpm run local-gate) so the owner's single manual npm publish step cannot ship a red gate, with a test asserting the script wiring and a CHANGELOG line saying publish runs the gate; npm publish itself remains the owner's manual step.
+        note: "Release quick-wins uplift Phase 2 (QUICK_WINS_UPLIFT_GOAL.md). Closes quick-wins evidence item 7: prepublishOnly only builds; the failure class is proven — a red gate shipped as 64e6d95 during the polish uplift because the gate's exit code was masked by a pipe."
+      13:
+        requirement: After writing artifacts, the CLI must print exactly one stderr hint suggesting the artifact directory be gitignored when that directory is inside the repository and is neither git-ignored nor already tracked, leaving stdout untouched so the asserted output-ordering contracts do not move, and the hint must not fire in this repository (ignored with tracked exceptions), asserted by tests.
+        note: "Release quick-wins uplift Phase 2 (QUICK_WINS_UPLIFT_GOAL.md). Closes quick-wins evidence item 8: review-surfaces all writes an un-ignored .review-surfaces/ (including a ~100 KB cockpit HTML) into a stranger's repo with no hint, so the next git add -A commits it."
 
   MAP_SCALE:
     name: Change-map legibility at scale
