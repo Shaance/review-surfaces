@@ -11,9 +11,24 @@ not carry that directory).
 ## 0.2.0 — unreleased (intended first npm publish)
 
 The package manifest already carries `0.2.0`, so the owner's single manual
-step (`npm publish` after `pnpm run local-gate`) ships exactly this version.
-The package name `review-surfaces` was verified unclaimed on 2026-06-12.
+step (`npm publish`) ships exactly this version — and `prepublishOnly` runs
+the full local gate, so a publish physically cannot ship a red gate. The
+package name `review-surfaces` was verified unclaimed on 2026-06-12.
 
+- Range truth (`COLD_START.6-8`): the default base auto-resolves
+  (origin/HEAD, origin/main, origin/master, main, master) and a base or head
+  that cannot be resolved — or two refs with no common history — is a hard,
+  actionable error instead of a silent working-tree fallback; working-tree
+  files merge only into current-state reviews (literal `HEAD` or the
+  checked-out branch) and every surface announces an absorbed uncommitted
+  count; artifact-embedded pointers are sibling file names, so artifacts are
+  byte-identical for any `--out` location and never contain `../` chains.
+- Package first touch (`DISTRIBUTION.9-13`): `--version` works; the bin shim
+  guards the Node >= 22 floor with one clear line on old runtimes; the README
+  renders on the npm page (absolute image/doc links, `homepage`/`bugs`
+  sidebar metadata, ~550 KB of screenshots no longer ship in the tarball);
+  and a first run in a repo that has not gitignored the artifact dir prints
+  one stderr hint.
 - Change-map legibility at scale (`MAP_SCALE.1-6`): a schema-visible overview
   level that leads on every surface when the file-level map cannot render
   legibly (groups merged from model clusters, honest counts that sum to 100%

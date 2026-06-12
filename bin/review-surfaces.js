@@ -10,7 +10,23 @@ const COMMAND_TRANSCRIPT_EXCERPT_LIMIT = 1200;
 const COMMAND_TRANSCRIPT_SCHEMA_VERSION = "review-surfaces.command_transcripts.v1";
 const DEFAULT_COMMAND_TRANSCRIPT_DIR = ".review-surfaces/commands";
 
+// review-surfaces.DISTRIBUTION.10: npm/npx does not enforce `engines`, and the
+// compiled CLI targets modern Node — on an old runtime it parses fine and then
+// dies mid-run with a bare TypeError. Guard here, in the shim that old Node CAN
+// parse, with one actionable line. Keep in sync with package.json engines.node
+// (pinned by a distribution test).
+const REQUIRED_NODE_MAJOR = 22;
+
 async function main() {
+  const nodeMajor = Number(process.versions.node.split(".")[0]);
+  if (!Number.isNaN(nodeMajor) && nodeMajor < REQUIRED_NODE_MAJOR) {
+    console.error(
+      "review-surfaces requires Node >= " + REQUIRED_NODE_MAJOR + "; you are running v" + process.versions.node + ". " +
+      "(package.json declares this under engines, but npm/npx does not enforce it.)"
+    );
+    return 1;
+  }
+
   const cliArgs = process.argv.slice(2);
   if (!existsSync(compiledEntry)) {
     if (cliArgs[0] === "run") {

@@ -5,7 +5,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
+import { initGitRepo, runCli } from "./helpers/cli-repo";
 
 const root = process.cwd();
 const read = (relativePath: string): string => fs.readFileSync(path.join(root, relativePath), "utf8");
@@ -25,9 +28,11 @@ test("review-surfaces.DISTRIBUTION.1 LICENSE (MIT) and CONTRIBUTING.md exist wit
   assert.equal(manifest.license, "MIT");
   assert.notEqual(manifest.private, true, "package must stay publishable");
   assert.ok(manifest.files?.includes("schemas"), "bundled schemas ship in the package");
-  // npm always bundles README.md; its relative screenshot links must resolve
-  // inside the tarball too.
-  assert.ok(manifest.files?.includes("docs/images"), "README screenshots ship in the package");
+  // DISTRIBUTION.11 made the README's screenshot links absolute (npm renders
+  // them from GitHub), so the ~550 KB of PNGs no longer pad the tarball; the
+  // 32 KB read-before-install example packet still ships.
+  assert.ok(!manifest.files?.includes("docs/images"), "screenshots are linked absolutely, not shipped");
+  assert.ok(manifest.files?.includes("docs/example"), "the example packet ships in the package");
 });
 
 test("review-surfaces.DISTRIBUTION.2 internal process docs live under docs/history/ with a framing README", () => {
@@ -96,7 +101,8 @@ test("review-surfaces.DISTRIBUTION.4 the local gate includes the pnpm pack smoke
   // npm publish is the owner's manual step — prepared, never run by the gate.
   assert.ok(!gate.includes("npm publish") && !gate.includes("pnpm publish"), "the gate never publishes");
   const manifest = JSON.parse(read("package.json")) as { scripts?: Record<string, string> };
-  assert.equal(manifest.scripts?.prepublishOnly, "pnpm run build", "publish remains prepared via prepublishOnly");
+  // DISTRIBUTION.12 upgraded prepublishOnly from a bare build to the full gate.
+  assert.equal(manifest.scripts?.prepublishOnly, "pnpm run local-gate", "publish remains prepared via prepublishOnly");
   // prepack guarantees the tarball carries dist/ even from a clean checkout
   // (pnpm pack / npm pack run prepack; prepublishOnly only runs on publish).
   assert.equal(manifest.scripts?.prepack, "pnpm run build", "pack always builds first");
@@ -223,4 +229,106 @@ test("review-surfaces.DISTRIBUTION.8 CHANGELOG.md exists and the remaining inter
   assert.ok(read("review-surfaces.config.yaml").includes("docs/history/POLISH_UPLIFT_GOAL.md"));
   assert.ok(!read("review-surfaces.config.yaml").includes("docs/human-first-review-surfaces"), "config points at docs/history for the cockpit proposal");
   assert.ok(read("features/review-surfaces.feature.yaml").includes("docs/history/POLISH_UPLIFT_GOAL.md"));
+});
+
+// review-surfaces.DISTRIBUTION.9-13 — release quick-wins uplift Phase 2
+// (docs/history/QUICK_WINS_UPLIFT_GOAL.md, 2026-06-12 quick-wins evidence-log
+// items 4-8): the package's first touch — version flag, Node floor guard,
+// npm-page rendering, publish safety, artifact-dir hygiene.
+
+test("review-surfaces.DISTRIBUTION.9 --version and the version command print the help header line and exit 0", () => {
+  const cli = path.join(root, "dist", "src", "cli", "index.js");
+  const manifest = JSON.parse(read("package.json")) as { version?: string };
+  for (const args of [["--version"], ["version"]]) {
+    const result = spawnSync("node", [cli, ...args], { encoding: "utf8" });
+    assert.equal(result.status, 0, `${args.join(" ")} must exit 0:\n${result.stderr}`);
+    assert.equal(
+      result.stdout.trim(),
+      `review-surfaces ${manifest.version}`,
+      `${args.join(" ")} must print exactly the help header line`
+    );
+  }
+  // The same VERSION constant feeds the help header, so the existing
+  // version-sync tests keep the flag, help, src/core/version.ts, and
+  // package.json from ever disagreeing.
+  const help = spawnSync("node", [cli, "--help"], { encoding: "utf8" });
+  assert.ok(help.stdout.startsWith(`review-surfaces ${manifest.version}`), "help header carries the same version");
+});
+
+test("review-surfaces.DISTRIBUTION.10 the bin shim guards the Node floor with one actionable line", () => {
+  const shim = read("bin/review-surfaces.js");
+  const manifest = JSON.parse(read("package.json")) as { engines?: { node?: string } };
+  const floorMatch = /([0-9]+)/.exec(manifest.engines?.node ?? "");
+  assert.ok(floorMatch, "package.json declares a Node engines floor");
+  const floor = floorMatch![1];
+  // The guard checks the runtime version before spawning dist, names the SAME
+  // floor as engines (a bump must touch both or this fails), and exits 1.
+  assert.ok(shim.includes("process.versions.node"), "the shim reads the runtime Node version");
+  assert.match(shim, new RegExp(`REQUIRED_NODE_MAJOR = ${floor}\\b`), "the shim's floor matches package.json engines");
+  assert.match(shim, /requires Node(\.js)? >= /, "the guard message is actionable");
+  // The shim must stay parseable by OLD Node to deliver that message: plain
+  // CJS, no optional chaining or nullish coalescing at the top level of the
+  // guard path before main() can bail out.
+  const guardSection = shim.slice(0, shim.indexOf("async function main"));
+  assert.ok(!guardSection.includes("?."), "no optional chaining before the guard");
+});
+
+test("review-surfaces.DISTRIBUTION.11 the README renders on the npm page: absolute links and sidebar metadata", () => {
+  const readme = read("README.md");
+  // No repo-relative links: npmjs.com (and registry mirrors) do not reliably
+  // rewrite them, so images and doc links must be absolute.
+  assert.doesNotMatch(readme, /\]\(docs\//, "no relative ](docs/... links");
+  assert.doesNotMatch(readme, /\]\(\.\//, "no relative ](./... links");
+  assert.match(readme, /!\[[^\]]*\]\(https:\/\/raw\.githubusercontent\.com\/Shaance\/review-surfaces\/main\/docs\/images\//, "images use absolute raw URLs");
+  const manifest = JSON.parse(read("package.json")) as { homepage?: string; bugs?: { url?: string } };
+  assert.match(manifest.homepage ?? "", /^https:\/\/github\.com\/Shaance\/review-surfaces/, "homepage set for the npm sidebar");
+  assert.match(manifest.bugs?.url ?? "", /\/issues$/, "bugs URL set for the npm sidebar");
+});
+
+test("review-surfaces.DISTRIBUTION.12 prepublishOnly runs the full local gate; publish itself stays manual", () => {
+  const manifest = JSON.parse(read("package.json")) as { scripts?: Record<string, string> };
+  assert.equal(
+    manifest.scripts?.prepublishOnly,
+    "pnpm run local-gate",
+    "the owner's single manual npm publish must be unable to ship a red gate"
+  );
+  // No script automates the publish itself.
+  for (const [name, body] of Object.entries(manifest.scripts ?? {})) {
+    assert.ok(!/npm publish|pnpm publish/.test(body), `script "${name}" must not automate npm publish`);
+  }
+  const changelog = read("CHANGELOG.md");
+  assert.match(changelog, /prepublishOnly|publish runs the (full )?(local )?gate/i, "CHANGELOG notes that publish runs the gate");
+});
+
+test("review-surfaces.DISTRIBUTION.13 a first run hints once (stderr) to gitignore the artifact dir; ignored or tracked dirs stay silent", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ignore-hint-"));
+  try {
+    fs.writeFileSync(path.join(tmp, "README.md"), "# repo\n");
+    initGitRepo(tmp);
+    // Case 1: not ignored, not tracked -> exactly one stderr hint; stdout clean.
+    const first = runCli(tmp, ["all", "--provider", "mock"]);
+    assert.equal(first.status, 0, first.stderr);
+    const hints = first.stderr.split("\n").filter((line) => line.includes("add .review-surfaces/ to .gitignore"));
+    assert.equal(hints.length, 1, `exactly one hint on stderr:\n${first.stderr}`);
+    assert.ok(!first.stdout.includes(".gitignore"), "the hint stays off stdout (ordering contracts)");
+
+    // Case 2: ignored -> silent.
+    fs.writeFileSync(path.join(tmp, ".gitignore"), ".review-surfaces/\n");
+    const ignored = runCli(tmp, ["all", "--provider", "mock"]);
+    assert.equal(ignored.status, 0, ignored.stderr);
+    assert.ok(!ignored.stderr.includes(".gitignore"), `no hint when the dir is ignored:\n${ignored.stderr}`);
+
+    // Case 3: tracked (a repo that commits artifacts on purpose, like this
+    // one) -> silent.
+    fs.rmSync(path.join(tmp, ".gitignore"));
+    fs.mkdirSync(path.join(tmp, ".review-surfaces"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "agent_handoff.md"), "kept\n");
+    execFileSync("git", ["add", ".review-surfaces/agent_handoff.md", "."], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "track artifacts"], { cwd: tmp, stdio: "ignore" });
+    const tracked = runCli(tmp, ["all", "--provider", "mock"]);
+    assert.equal(tracked.status, 0, tracked.stderr);
+    assert.ok(!tracked.stderr.includes(".gitignore"), `no hint when artifacts are tracked:\n${tracked.stderr}`);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
