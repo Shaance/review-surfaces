@@ -639,7 +639,10 @@ components:
       Open-source readiness uplift Phase 3 (docs/history/OPEN_SOURCE_UPLIFT_GOAL.md). Closes
       cold-start failure 5: the package is publish-ready but unpublished, has no
       LICENSE, and the README assumes Acai conventions and shows none of the
-      shipped visuals.
+      shipped visuals. Requirements 5-8 extend this family for the pre-publish
+      polish uplift Phase 3 (POLISH_UPLIFT_GOAL.md, 2026-06-12 legibility
+      evidence-log failures 5-6): showcase artifacts, README truth, quickstart
+      cockpit surfacing, and publish trim.
     requirements:
       1:
         requirement: The repository must contain a LICENSE file (MIT unless the owner directs otherwise) and a minimal CONTRIBUTING.md covering pnpm setup, local-gate, local-review, and PR expectations.
@@ -649,6 +652,51 @@ components:
         requirement: README.md must be written for a stranger's first five minutes — leading with the trust questions it answers and a quickstart that works on a spec-less repository, a what-you-get tour with screenshots of the cockpit, change map, and sticky comment from a real run, an explicit scope statement that analysis depth is TS/JS-first (import graph and API diff are TypeScript; coverage via lcov and test-weakening are language-agnostic), and Acai specs introduced as the optional power-user layer rather than the prerequisite.
       4:
         requirement: The local gate must include a packaging smoke test verifying the pnpm pack tarball installs and runs from a temporary directory outside the repository; actual npm publish remains the owner's manual step, prepared but never run.
+      5:
+        requirement: The repository must contain docs/example/ with committed sample artifacts (human_review.md, human_review.html, comment.md) generated from the pinned got cold-start range (a5b76bffb, HEAD~3) with a frozen --now timestamp and verified redaction, plus a short framing README stating the exact commands that generated them, linked from the main README so a stranger can read a packet before installing.
+        note: "Pre-publish polish uplift Phase 3 (POLISH_UPLIFT_GOAL.md). Closes legibility evidence-log failure 5: no committed sample artifacts exist, so the three README PNGs are the only pre-install preview. This is the open-source uplift's deliberately skipped Phase 4, unblocked now that the artifacts are worth showing."
+      6:
+        requirement: docs/images/change-map.png must be regenerated from a real run so it shows the overview level at legible width, cockpit.png must be refreshed if the above-the-fold cockpit changed, and the README's change-map copy must describe the overview and zoom levels.
+        note: "Pre-publish polish uplift Phase 3 (POLISH_UPLIFT_GOAL.md). Closes the README half of failures 1 and 5: the committed change-map.png is a 4680x768 ribbon — the screenshot that sells the feature demonstrates the scaling bug."
+      7:
+        requirement: The review-surfaces all terminal summary must end with a pointer to the HTML cockpit (review-surfaces human --format html), or all must write human_review.html directly, so the flagship surface is discoverable from a stranger's first quickstart run.
+        note: "Pre-publish polish uplift Phase 3 (POLISH_UPLIFT_GOAL.md). Closes the quickstart half of failure 6: the all summary never mentions the cockpit."
+      8:
+        requirement: The repository must contain CHANGELOG.md with a condensed 0.1.0 history covering the five uplifts plus an Unreleased section, and the remaining internal proposal docs under docs/ must move to docs/history/ with inbound references updated and POLISH_UPLIFT_GOAL.md moved there and indexed in the history README; npm publish itself remains the owner's manual step.
+        note: "Pre-publish polish uplift Phase 3 (POLISH_UPLIFT_GOAL.md). Closes the publish-trim half of failure 6: no CHANGELOG for the npm listing, and docs/ still mixes internal proposals with user-facing docs."
+
+  MAP_SCALE:
+    name: Change-map legibility at scale
+    description: >-
+      Pre-publish polish uplift Phases 1-2 (POLISH_UPLIFT_GOAL.md). Every
+      requirement traces to the 2026-06-12 legibility evidence log: on wide
+      ranges (this repo's last 8 PRs, 99 files; got HEAD~40, 87 files) the
+      change map renders at 16-55 percent of natural size, hides 74 of 99
+      files behind "+ N more", and silently drops edges touching capped
+      files. Standing rule: a visual that cannot render legibly must
+      summarize, never shrink — scale-to-fit below ~90 percent of natural
+      size is a rendering bug, and overflow stays explicit, including edges.
+      This family extends the surfaces CHANGE_MAP.2-4 own; their caps,
+      sanitizer, embed guards, and determinism checks remain in force.
+    requirements:
+      1:
+        requirement: The change_graph model and strict human-review schema must grow an overview section whose groups are the model clusters merged by first path segment (the "(root)" cluster stays itself), each group carrying its file count, cluster count, churn added/removed totals, dominant risk lens with a deterministic tie-break, and review-queue item count, plus one aggregate dashed halo entry and aggregated inter-group edges each carrying weight equal to the number of underlying model edges and has_new/has_removed flags; the overview must be derived from the same change_graph model the tour and queue use — no renderer-local clustering — and ship additively, model-and-strict-schema-first.
+        note: "Phase 1. Closes the model half of failure 4: clusterOfPath already emits two-level cluster keys, but no schema-visible high-level grouping exists for any renderer to lead with."
+      2:
+        requirement: One legibility-budget helper (a single module with shared constants) must decide per surface whether the file-level map or the overview leads; renderers must not carry private size thresholds, and when the file-level map exceeds the budget the overview must lead on every surface — cockpit SVG, markdown mermaid, and sticky comment — via same-model dual emitters, while small diffs (the pinned got a5b76bffb HEAD~3 range) keep the file-level map leading with today's structure.
+        note: "Phase 1. Closes failure 1 (8-PR cockpit map rendered at ~16 percent, labels ~2px) and failure 3 (the 8-PR sticky embeds a 151-line mermaid flowchart whose only size control deletes the map entirely)."
+      3:
+        requirement: The overview must be honest by construction — group file counts must sum to the full changed-file count and aggregated edge weights must account for every model edge between groups — with ACID-named tests reproducing the 8-PR fixture (23 clusters, 99 files) and asserting the overview leads, fits the budget, and that both sums add up.
+        note: "Phase 1. Closes failure 2: MAX_CHANGED_NODES leaves 74 of 99 files represented only as '+ N more' texts and edges touching capped files vanish with no note, violating the never-silent rule."
+      4:
+        requirement: Each overview group must expand to a detail view containing its model clusters and files, intra-group edges, cross-group edges rendered as explicit stub ports (for example "-> src/render x3"), and its share of the halo, with a per-view node cap rendering an explicit "+ N more"; detail views must use the model clusters the queue and tour reference verbatim so map/tour agreement holds, and every changed file must appear in exactly one detail view, asserted on the 99-file fixture.
+        note: "Phase 2. Closes failure 4 (no zoom level exists although the model is already two-level) and keeps the never-silent rule inside each zoomed view."
+      5:
+        requirement: All SVG map layouts must wrap — columns wrap into rows and long file stacks wrap — so that no rendered SVG (overview, detail, or small-diff file-level) exceeds the width budget; height may grow but width never, and the typical-PR file-level map (the pinned aefc63c~1..aefc63c range, previously 1792px natural width rendered at ~55 percent) must render at or above ~94 percent of natural size as a single wrapped file-level map.
+        note: "Phase 2. Closes failure 1's typical-PR case and enforces the summarize-never-shrink standing rule: scale-to-fit below ~90 percent of natural size is a rendering bug."
+      6:
+        requirement: In the cockpit, clicking an overview group must toggle that group's pre-rendered hidden detail SVG using vanilla JS with deterministic markup and the same data- attribute pattern as existing filters, while file clicks inside a detail view keep filtering the review queue exactly as today; human_review.md must render one collapsed details block per group containing its detail mermaid in deterministic order with the embed guard applied per block; the sticky comment stays overview-only.
+        note: "Phase 2. Closes the interaction half of failures 3 and 4: the cockpit's only interaction is node-click-filters-queue, and a reviewer cannot ask 'show me just src' anywhere."
 
 constraints:
   EVIDENCE:
