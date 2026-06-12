@@ -79,13 +79,17 @@ export function resolveBaseRef(cwd: string, explicitBase: string | undefined, he
     }
     return { ok: true, base: { ref: explicitBase, sha, source: "explicit" } };
   }
-  // COLD_START.6 (PR #79 round 4, P1): a single-branch or PR checkout can
-  // leave origin/HEAD pointing at the checked-out feature branch itself, so an
-  // early candidate can equal the requested head and yield an empty review for
-  // a real diff. Prefer the first resolving candidate whose commit DIFFERS
-  // from the head; when every resolving candidate equals the head (the honest
-  // shape of reviewing a clean default branch against itself), the first one
-  // wins and the CLI prints a base-equals-head note.
+  // COLD_START.6 (PR #79 rounds 4-5, P1s): two failure shapes pull in opposite
+  // directions. A LIMITED fetch (single-branch clone, actions/checkout's
+  // single-ref fetch) can leave origin/HEAD pointing at the checked-out
+  // feature branch itself — there, prefer the first candidate whose commit
+  // DIFFERS from the head, or an empty review hides a real diff. A FULL
+  // wildcard fetch is the opposite: origin/HEAD is trustworthy and a stale
+  // leftover master ref must NOT outrank an up-to-date default branch just
+  // because it differs — there, chain order wins even when the candidate
+  // equals the head (a clean default-branch checkout is honestly empty). The
+  // remote's fetch refspec tells the shapes apart; either way a base that
+  // lands on the head commit triggers the CLI's base-equals-head note.
   const headSha = resolveGitRefSha(cwd, headRef) ?? resolveGitRefSha(cwd, "HEAD");
   const resolvedCandidates: BaseResolution[] = [];
   for (const candidate of BASE_AUTO_CHAIN) {
@@ -98,7 +102,9 @@ export function resolveBaseRef(cwd: string, explicitBase: string | undefined, he
     const ref = candidate === "origin/HEAD" ? git(cwd, ["rev-parse", "--abbrev-ref", candidate]) ?? candidate : candidate;
     resolvedCandidates.push({ ref, sha, source: "auto" });
   }
-  const preferred = resolvedCandidates.find((candidate) => candidate.sha !== headSha) ?? resolvedCandidates[0];
+  const preferred = hasLimitedOriginFetch(cwd)
+    ? resolvedCandidates.find((candidate) => candidate.sha !== headSha) ?? resolvedCandidates[0]
+    : resolvedCandidates[0];
   if (preferred) {
     return { ok: true, base: preferred };
   }
@@ -108,6 +114,19 @@ export function resolveBaseRef(cwd: string, explicitBase: string | undefined, he
       `no default base ref resolves (tried ${BASE_AUTO_CHAIN.join(", ")}). ` +
       `Pass --base <ref> naming the ref to review against (for example the branch you merge into).`
   };
+}
+
+// COLD_START.6: true when an origin remote exists but its fetch refspec does
+// NOT cover all branches (single-branch clones, actions/checkout's single-ref
+// fetch). In that shape origin/HEAD is not a trustworthy default-branch
+// signal. A repo with no origin remote is NOT limited — its local candidates
+// follow plain chain order.
+function hasLimitedOriginFetch(cwd: string): boolean {
+  const refspecs = git(cwd, ["config", "--get-all", "remote.origin.fetch"]);
+  if (refspecs === undefined || refspecs === "") {
+    return false;
+  }
+  return !refspecs.split("\n").some((refspec) => refspec.trim().endsWith(":refs/remotes/origin/*"));
 }
 
 // R6: diagnostics for the GitInfo resolution step. Separated from collectGitInfo

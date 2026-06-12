@@ -127,14 +127,23 @@ test("review-surfaces.COLD_START.6 the auto chain prefers origin/HEAD and record
   }
 });
 
-test("review-surfaces.COLD_START.6 the auto chain prefers a base that differs from the head (single-branch origin/HEAD shape)", () => {
+// Configure a remote whose fetch refspec covers only one branch — the shape a
+// single-branch clone or actions/checkout's single-ref fetch leaves behind.
+function configureSingleBranchOrigin(tmp: string, branch: string): void {
+  git(tmp, ["remote", "add", "origin", "https://example.invalid/repo.git"]);
+  git(tmp, ["config", "remote.origin.fetch", `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+}
+
+test("review-surfaces.COLD_START.6 a LIMITED fetch prefers a base that differs from the head (single-branch origin/HEAD shape)", () => {
   const tmp = makeRepo("feature");
   try {
     const older = commitFile(tmp, "README.md", "# repo\n", "init");
     const tip = commitFile(tmp, "feature.txt", "feature work\n", "feature commit");
-    // A single-branch checkout's remote state: origin/HEAD points at the
-    // checked-out feature branch (== head). origin/main exists at the older
-    // commit and must win, despite origin/HEAD being first in the chain.
+    // A single-branch checkout's remote state: a narrow fetch refspec, with
+    // origin/HEAD pointing at the checked-out feature branch (== head).
+    // origin/main exists at the older commit (a CI fetch added it) and must
+    // win, despite origin/HEAD being first in the chain.
+    configureSingleBranchOrigin(tmp, "feature");
     git(tmp, ["update-ref", "refs/remotes/origin/feature", tip]);
     git(tmp, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/feature"]);
     git(tmp, ["update-ref", "refs/remotes/origin/main", older]);
@@ -148,12 +157,38 @@ test("review-surfaces.COLD_START.6 the auto chain prefers a base that differs fr
   }
 });
 
+test("review-surfaces.COLD_START.6 a FULL fetch keeps chain order so a stale master ref cannot outrank the default branch", () => {
+  const tmp = makeRepo("main");
+  try {
+    const older = commitFile(tmp, "README.md", "# repo\n", "init");
+    const tip = commitFile(tmp, "feature.txt", "more work\n", "tip");
+    // A normal clone on the REAL default branch: full wildcard refspec,
+    // origin/HEAD -> origin/main == head, plus a stale leftover master ref at
+    // an older commit (the branch-rename shape). The stale ref must NOT win
+    // just because it differs from the head; the honest result is the empty
+    // default-branch review.
+    git(tmp, ["remote", "add", "origin", "https://example.invalid/repo.git"]);
+    git(tmp, ["update-ref", "refs/remotes/origin/main", tip]);
+    git(tmp, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    git(tmp, ["update-ref", "refs/remotes/origin/master", older]);
+
+    const result = runCli(tmp, ["all", "--provider", "mock"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readManifest(tmp).base_ref, "origin/main", "chain order must hold on a full fetch");
+    assert.deepEqual(changedFilePaths(tmp), [], "the clean default-branch review is honestly empty");
+    assert.match(result.stderr, /same commit as the head/, "the base-equals-head note still fires");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.COLD_START.6 an auto base equal to the head is announced, never a silent empty review", () => {
   const tmp = makeRepo("feature");
   try {
     const tip = commitFile(tmp, "README.md", "# repo\n", "init");
     // The irreducible shape: the ONLY auto candidate is origin/HEAD pointing
     // at the checked-out branch itself (a pure single-branch clone).
+    configureSingleBranchOrigin(tmp, "feature");
     git(tmp, ["update-ref", "refs/remotes/origin/feature", tip]);
     git(tmp, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/feature"]);
 
@@ -337,6 +372,12 @@ test("review-surfaces.COLD_START.7 a HEAD review with a dirty tree announces the
     assert.equal(sticky.status, 0, sticky.stderr);
     const comment = fs.readFileSync(path.join(tmp, ".review-surfaces", "comment.md"), "utf8");
     assert.match(comment, /includes 2 uncommitted file\(s\) \(working tree\)/, "the sticky must carry the line");
+
+    // PR #79 round 5: the legacy default `comment` format carries it too.
+    const legacy = runCli(tmp, ["comment"]);
+    assert.equal(legacy.status, 0, legacy.stderr);
+    const legacyComment = fs.readFileSync(path.join(tmp, ".review-surfaces", "comment.md"), "utf8");
+    assert.match(legacyComment, /includes 2 uncommitted file\(s\) \(working tree\)/, "the default comment must carry the line");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

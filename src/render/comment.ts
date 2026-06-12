@@ -220,9 +220,15 @@ export function renderComment(
   const overreachCount = packet.evaluation.overreach?.length ?? 0;
   const milestone = readMilestone(packet);
 
+  const uncommittedFiles = (packet.manifest as { uncommitted_files?: unknown }).uncommitted_files;
   const sections: string[] = [
     STICKY_MARKER,
     `## review-surfaces${milestone ? ` (${redact(milestone)})` : ""}`,
+    // COLD_START.7: the legacy default comment carries the same dirty-tree
+    // line as every other human surface when working-tree files were absorbed.
+    ...(typeof uncommittedFiles === "number" && uncommittedFiles > 0
+      ? [`_includes ${uncommittedFiles} uncommitted file(s) (working tree)_`]
+      : []),
     // review-surfaces.COLD_START.5: spec-less packets get the honest note, not
     // a zero-count status line.
     `Status: ${(packet.intent as { spec_mode?: unknown }).spec_mode === "none" ? SPEC_NONE_NOTE : `${formatRequirementStatusSummary(counts, overreachCount)}.`}`,

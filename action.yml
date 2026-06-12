@@ -160,8 +160,23 @@ runs:
         # base-ref, so the default run uses the CLI's auto-resolution chain
         # (origin/HEAD, origin/main, origin/master, main, master) instead of a
         # hard-coded origin/main that fails on master-default repositories.
+        # A default actions/checkout fetches a single ref at depth 1, leaving
+        # NO base candidate and no merge-base history, so the default path
+        # fetches the remote default branch (and unshallows) first —
+        # best-effort: if it still cannot resolve, the CLI's hard preflight
+        # error names the fix instead of producing a silently wrong review.
         base_flag=()
-        if [ -n "$RS_BASE" ]; then base_flag=(--base "$RS_BASE"); fi
+        if [ -n "$RS_BASE" ]; then
+          base_flag=(--base "$RS_BASE")
+        else
+          default_branch="$(git ls-remote --symref origin HEAD 2>/dev/null | awk '/^ref:/ {sub("refs/heads/","",$2); print $2; exit}')"
+          if [ -n "$default_branch" ]; then
+            git fetch --no-tags origin "+refs/heads/$default_branch:refs/remotes/origin/$default_branch" 2>/dev/null || true
+          fi
+          if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+            git fetch --unshallow --no-tags origin 2>/dev/null || true
+          fi
+        fi
         node "$RS_BIN" all \
           --provider "$RS_PROVIDER" \
           "${model_flag[@]}" \
