@@ -130,7 +130,11 @@ export function collectChangedFiles(
   cwd: string,
   baseRef: string,
   headRef: string,
-  includeWorkingTree: boolean = isLiteralHeadRequest(headRef)
+  includeWorkingTree: boolean = isLiteralHeadRequest(headRef),
+  // COLD_START.7: pure working-tree entries matching this predicate (the
+  // tool's own artifact locations) are not reviewed changes. Range entries are
+  // never filtered — a committed change to a tracked artifact stays reviewable.
+  isExcludedWorkingTreePath?: (filePath: string) => boolean
 ): ChangedFilesResult {
   const diagnostics: string[] = [];
   const byPath = new Map<string, ChangedFile>();
@@ -165,6 +169,9 @@ export function collectChangedFiles(
       if (existing) {
         const mergedStatus = shouldPreserveRangeStatus(existing.status, status) ? existing.status : status;
         byPath.set(filePath, { ...existing, status: mergedStatus, source: "working_tree" });
+        continue;
+      }
+      if (isExcludedWorkingTreePath?.(filePath)) {
         continue;
       }
       if (status.includes("D") || isRegularFile(path.resolve(cwd, filePath))) {

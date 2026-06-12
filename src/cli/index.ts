@@ -6,7 +6,7 @@ import { recordCommandTranscript } from "../commands/runner";
 import { commandTranscriptInputDir } from "../commands/transcripts";
 import { collectInputs, CollectionResult } from "../collector/collect";
 import { parseStructuredDiff } from "../collector/diff-hunks";
-import { blobExistsAtRef, isGitRepo, readFileAtRef, resolveBaseRef, resolveGitRefSha, resolveMergeBaseSha } from "../collector/git";
+import { blobExistsAtRef, isGitRepo, isLiteralHeadRequest, readFileAtRef, resolveBaseRef, resolveGitRefSha, resolveMergeBaseSha } from "../collector/git";
 import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { computeRankingEvidence, emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { isTestPath } from "../scope/pr-scope";
@@ -341,6 +341,18 @@ function resolveBaseRefForRun(cwd: string, explicitBase: string | undefined, hea
       `head ref "${headRef}" does not resolve. If this is a shallow or partial clone, fetch it first ` +
         `(GitHub Actions: actions/checkout with fetch-depth: 0; locally: git fetch origin "${headRef}"). ` +
         `Otherwise pass --head <ref> naming an existing ref.`,
+      ExitCodes.usageError
+    );
+  }
+  // COLD_START.6 (PR #79 round 2, P1): both refs resolving is not enough — a
+  // shallow fetch can hold both tips without their common history, and the
+  // three-dot range diff then fails (previously falling back to the working
+  // tree). No merge base is a hard error, not a silently empty review.
+  if (resolveMergeBaseSha(cwd, resolution.base.ref, headRef) === undefined) {
+    throw new CliError(
+      `no merge base exists between "${resolution.base.ref}" and "${headRef}" in this checkout. ` +
+        `Fetch more history first (GitHub Actions: actions/checkout with fetch-depth: 0; locally: ` +
+        `git fetch --unshallow origin), or pass a --base that shares history with the head.`,
       ExitCodes.usageError
     );
   }
@@ -1687,7 +1699,12 @@ function buildFactReaders(cwd: string, packet: ReviewPacket, diff: StructuredDif
   const headSha = str(manifest.head_sha);
   const baseReadRef = baseRef ? resolveMergeBaseSha(cwd, baseRef, headSha || str(manifest.head_ref) || "HEAD") ?? baseRef : "";
   const worktreeHead = resolveGitRefSha(cwd, "HEAD");
-  const headIsWorktree = !headSha || !worktreeHead || headSha === worktreeHead;
+  // COLD_START.7 (PR #79 round 2): the NEW side reads the working tree only
+  // for a literal-HEAD review. An explicitly pinned head reads the committed
+  // blob even when it equals the checked-out commit — otherwise a dirty
+  // checkout leaks worktree content into semantic facts for a pinned range.
+  const headIsWorktree =
+    isLiteralHeadRequest(str(manifest.head_ref) || "HEAD") && (!headSha || !worktreeHead || headSha === worktreeHead);
   const readWorktree = (filePath: string): string | undefined => {
     try {
       return fs.readFileSync(path.resolve(cwd, filePath), "utf8");

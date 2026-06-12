@@ -162,6 +162,25 @@ test("review-surfaces.COLD_START.6 an explicit --head that does not resolve is a
   }
 });
 
+test("review-surfaces.COLD_START.6 two refs without a common history are a hard error, not an empty review", () => {
+  const tmp = makeRepo("main");
+  try {
+    commitFile(tmp, "README.md", "# repo\n", "init");
+    // An orphan branch shares no history with main — the same shape as a
+    // shallow fetch holding both tips but not their merge base.
+    git(tmp, ["checkout", "--orphan", "island"]);
+    commitFile(tmp, "island.txt", "isolated\n", "island commit");
+
+    const result = runCli(tmp, ["all", "--provider", "mock", "--base", "main"]);
+    assert.notEqual(result.status, 0, `a missing merge base must be a hard error:\n${result.stdout}`);
+    assert.match(result.stderr, /merge base/i, `the error must name the missing merge base:\n${result.stderr}`);
+    assert.match(result.stderr, /fetch-depth|unshallow/, `the error must give the shallow-history fixes:\n${result.stderr}`);
+    assert.equal(fs.existsSync(path.join(tmp, ".review-surfaces")), false, "no artifacts on a hard error");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // COLD_START.7 — working-tree honesty
 // ---------------------------------------------------------------------------
@@ -299,6 +318,39 @@ test("review-surfaces.COLD_START.7 a ROOT output dir (--out .) never counts its 
     );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.COLD_START.7 committed artifact changes stay reviewable; working-tree artifact churn does not", () => {
+  const tmp = makeRepo("master");
+  try {
+    fs.mkdirSync(path.join(tmp, ".review-surfaces"));
+    commitFile(tmp, path.join(".review-surfaces", "agent_handoff.md"), "handoff v1\n", "track handoff");
+    git(tmp, ["checkout", "-b", "feature"]);
+    commitFile(tmp, path.join(".review-surfaces", "agent_handoff.md"), "handoff v2\n", "update handoff");
+    // Plus pure working-tree artifact churn that must NOT be reviewed.
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "manifest.json"), "{}\n");
+
+    const result = runCliRaw(tmp, ["all", "--provider", "mock", "--now", FROZEN_NOW, "--out", "/tmp/rs-tracked-artifact-out"]);
+    assert.equal(result.status, 0, result.stderr);
+    const changed = JSON.parse(
+      fs.readFileSync("/tmp/rs-tracked-artifact-out/inputs/changed_files.json", "utf8")
+    ) as { files: Array<{ path: string }> };
+    const paths = changed.files.map((file) => file.path);
+    assert.ok(
+      paths.includes(".review-surfaces/agent_handoff.md"),
+      `a COMMITTED change to a tracked artifact must stay reviewable: ${JSON.stringify(paths)}`
+    );
+    assert.ok(
+      !paths.includes(".review-surfaces/manifest.json"),
+      `pure working-tree artifact churn must be excluded: ${JSON.stringify(paths)}`
+    );
+    const diffPatch = fs.readFileSync("/tmp/rs-tracked-artifact-out/inputs/diff.patch", "utf8");
+    assert.ok(diffPatch.includes("agent_handoff.md"), "the committed artifact change must appear in diff.patch");
+    assert.ok(!diffPatch.includes("manifest.json"), "working-tree artifact churn must not leak into diff.patch");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync("/tmp/rs-tracked-artifact-out", { recursive: true, force: true });
   }
 });
 

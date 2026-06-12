@@ -250,6 +250,29 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // An output dir AT the repo root (`--out .`) relativizes to "", so glob the
   // bare `feedback/*.yaml` rather than a leading-slash `/feedback/*.yaml`.
   const feedbackGlob = outputDirRelative ? `${outputDirRelative}/feedback/*.yaml` : "feedback/*.yaml";
+  // COLD_START.7: the tool's own artifacts are never part of the reviewed
+  // change set. Both the CURRENT effective out dir and the CONFIGURED
+  // output_dir count as artifact locations (a run with --out elsewhere still
+  // sees a prior default-located run's artifacts in the working tree). A ROOT
+  // output dir ("--out ." / output_dir ".") relativizes to "", where prefix
+  // matching cannot tell artifacts from repository files, so the canonical
+  // artifact names are excluded there instead — pinned by the COLD_START.7
+  // double-run test. Applied only to pure working-tree entries (see
+  // collectChangedFiles): a COMMITTED change to a tracked artifact such as
+  // this repo's .review-surfaces/agent_handoff.md stays reviewable.
+  const configOutputDirRelative = normalizeRelativeDir(
+    path.relative(realpathOrSelf(options.cwd), realpathOrSelf(path.resolve(options.cwd, options.config.output_dir)))
+  );
+  const artifactDirs = [...new Set([outputDirRelative, configOutputDirRelative])];
+  const artifactDirPrefixes = artifactDirs
+    .filter((dir): dir is string => Boolean(dir))
+    .map((dir) => `${dir}/`);
+  const rootOutputDir = artifactDirs.some((dir) => dir === "");
+  const isArtifactPath = (filePath: string): boolean =>
+    artifactDirPrefixes.some((prefix) => filePath.startsWith(prefix)) ||
+    (rootOutputDir &&
+      (ROOT_ARTIFACT_DIR_PREFIXES.some((prefix) => filePath.startsWith(prefix)) ||
+        ROOT_ARTIFACT_FILES.has(filePath)));
   const feedbackPaths = filterPathsByPatterns(repositoryFiles, [feedbackGlob]);
   const commandTranscriptDir = normalizeRelativeDir(options.commandTranscriptDir ?? commandTranscriptInputDir(options.cwd, outputDir));
   const commandTranscriptPaths = filterPathsByPatterns(repositoryFiles, [`${commandTranscriptDir}/*.json`]);
@@ -274,40 +297,23 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // COLD_START.7: working-tree/untracked files merge into the changed set only
   // for a literal-HEAD review; an explicitly pinned head gets the pure range.
   const includeWorkingTree = isLiteralHeadRequest(options.headRef);
-  const changedFilesResult = collectChangedFiles(options.cwd, options.baseRef, options.headRef, includeWorkingTree);
+  const changedFilesResult = collectChangedFiles(options.cwd, options.baseRef, options.headRef, includeWorkingTree, isArtifactPath);
   diagnostics.push(...changedFilesResult.diagnostics);
-  // COLD_START.7: the tool's own artifacts are never part of the reviewed
-  // change set. Without this, a second run in a repo that has not gitignored
-  // the output dir absorbed the FIRST run's untracked artifacts as
-  // working-tree changes (and would now announce them as uncommitted files).
-  // Both the CURRENT effective out dir and the CONFIGURED output_dir are
-  // excluded: a run with --out elsewhere still sees a prior default-located
-  // run's artifacts in the working tree.
-  const configOutputDirRelative = normalizeRelativeDir(
-    path.relative(realpathOrSelf(options.cwd), realpathOrSelf(path.resolve(options.cwd, options.config.output_dir)))
-  );
-  const artifactDirs = [...new Set([outputDirRelative, configOutputDirRelative])];
-  const artifactDirPrefixes = artifactDirs
-    .filter((dir): dir is string => Boolean(dir))
-    .map((dir) => `${dir}/`);
-  // A ROOT output dir ("--out ." / output_dir ".") relativizes to "", so the
-  // prefix rule above matches nothing there; exclude the canonical artifact
-  // names instead. feedback/ is deliberately NOT excluded — reviewer feedback
-  // is an ingested product surface users may commit. The COLD_START.7
-  // double-run test pins this list: an artifact writer added without
-  // extending it turns that test red.
-  const rootOutputDir = artifactDirs.some((dir) => dir === "");
-  const isArtifactPath = (filePath: string): boolean =>
-    artifactDirPrefixes.some((prefix) => filePath.startsWith(prefix)) ||
-    (rootOutputDir &&
-      (ROOT_ARTIFACT_DIR_PREFIXES.some((prefix) => filePath.startsWith(prefix)) ||
-        ROOT_ARTIFACT_FILES.has(filePath)));
-  const allChangedFiles = changedFilesResult.files.filter((file) => !isArtifactPath(file.path));
+  const allChangedFiles = changedFilesResult.files;
   const changedFiles = allChangedFiles.filter((file) => !ignore.isIgnored(file.path));
   const ignoredChangedFiles = allChangedFiles.filter((file) => ignore.isIgnored(file.path)).map((file) => file.path);
   const diffResult = collectDiff(options.cwd, options.baseRef, options.headRef, includeWorkingTree);
   diagnostics.push(...diffResult.diagnostics);
-  const rawDiff = diffResult.text;
+  // COLD_START.7: keep diff.patch consistent with the changed-file set — drop
+  // hunks for artifact paths that are not reviewed changes (pure working-tree
+  // artifact churn; range hunks for such paths cannot exist, so range content
+  // is untouched). Without this, structured-diff consumers parsed artifact
+  // churn the changed-file set had already excluded.
+  const reviewedPaths = new Set(allChangedFiles.map((file) => file.path));
+  const rawDiff = filterIgnoredDiff(
+    diffResult.text,
+    (filePath) => isArtifactPath(filePath) && !reviewedPaths.has(filePath)
+  );
   const diffSource = diffResult.diffSource;
   const filteredDiff = filterIgnoredDiff(rawDiff, ignore.isIgnored);
   // R4.6 (mirror of provider.ts split): ALWAYS compute the secret-block signal
