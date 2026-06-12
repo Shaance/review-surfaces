@@ -166,18 +166,29 @@ test("review-surfaces.DISTRIBUTION.7 the all terminal summary ends with the HTML
   // bare binary is not on PATH once the one-shot npx process exits), and a
   // non-default --out is preserved in the suggestion.
   assert.match(pointer, /npx review-surfaces human --format html/);
-  assert.match(pointer, /outFlag/);
+  assert.match(pointer, /--out /);
   assert.match(pointer, /human_review\.html/);
+  // The pointer preserves the run's context so following it re-renders the
+  // SAME cockpit: pr review scope and a custom --config carry through.
+  assert.match(pointer, /--review-scope pr/);
+  assert.match(pointer, /--config/);
   // In the all command the ordering is: human-review summary leads
-  // (HUMAN_REVIEW.15), then the artifacts line, then the cockpit pointer LAST
-  // — the quickstart run genuinely ends on it.
+  // (HUMAN_REVIEW.15), then the artifacts line, then gate messages, then the
+  // cockpit pointer LAST — the run genuinely ends on it even when a gate
+  // warning or strict failure prints.
   const runAll = cli.split("async function runAll")[1].split("\nasync function ")[0];
   const summaryCallIndex = runAll.indexOf("printHumanReviewTerminalSummary(");
   const artifactsLogIndex = runAll.indexOf("Wrote review-surfaces artifacts to");
-  const pointerCallIndex = runAll.indexOf("printCockpitPointer(");
-  assert.ok(summaryCallIndex >= 0 && artifactsLogIndex >= 0 && pointerCallIndex >= 0);
+  const lastGateIndex = runAll.lastIndexOf("applyGate(");
+  const lastPointerIndex = runAll.lastIndexOf("printCockpitPointer(");
+  assert.ok(summaryCallIndex >= 0 && artifactsLogIndex >= 0 && lastGateIndex >= 0 && lastPointerIndex >= 0);
   assert.ok(summaryCallIndex < artifactsLogIndex, "the human-review summary leads the artifact-status line");
-  assert.ok(artifactsLogIndex < pointerCallIndex, "the run ends on the cockpit pointer");
+  assert.ok(lastGateIndex < lastPointerIndex, "the cockpit pointer prints after gate messages");
+  // Every applyGate in runAll is followed by a pointer print (cache-hit paths
+  // end on the pointer too).
+  const gateCount = [...runAll.matchAll(/applyGate\(/g)].length;
+  const pointerCount = [...runAll.matchAll(/printCockpitPointer\(/g)].length;
+  assert.ok(pointerCount >= gateCount, "each gated exit path ends on the cockpit pointer");
 });
 
 test("review-surfaces.DISTRIBUTION.8 CHANGELOG.md exists and the remaining internal proposals moved to docs/history/", () => {

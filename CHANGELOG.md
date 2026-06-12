@@ -3,7 +3,10 @@
 All notable changes to `review-surfaces` are documented here. The project was
 built agent-first in five development uplifts, each landed phase by phase
 behind the same local merge gate the tool itself enforces; the full working
-contracts live in [`docs/history/`](docs/history/README.md).
+contracts live in
+[`docs/history/`](https://github.com/Shaance/review-surfaces/tree/main/docs/history)
+(an absolute link because this changelog ships in the npm tarball, which does
+not carry that directory).
 
 ## Unreleased
 

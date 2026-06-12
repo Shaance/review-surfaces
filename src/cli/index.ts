@@ -539,10 +539,19 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       if (evaluation) {
         await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
         console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
-        return applyGate(parsed, evaluation, collection, provider, config);
+        const cachedGateExit = applyGate(parsed, evaluation, collection, provider, config);
+        // review-surfaces.DISTRIBUTION.7: the cache-hit run also ends on the
+        // cockpit pointer, after any gate message.
+        if (config.human_review.enabled && config.human_review.default_entrypoint) {
+          printCockpitPointer(cwd, collection.outputDir, cockpitPointerOptions(parsed));
+        }
+        return cachedGateExit;
       }
       await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
       console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
+      if (config.human_review.enabled && config.human_review.default_entrypoint) {
+        printCockpitPointer(cwd, collection.outputDir, cockpitPointerOptions(parsed));
+      }
       return ExitCodes.success;
     }
     console.warn("Cached output is incomplete (evaluation.yaml missing/unreadable); regenerating to apply the --strict gate.");
@@ -719,21 +728,23 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     console.warn(enrichment.summary);
   }
   // review-surfaces.HUMAN_REVIEW.15: the human-review summary leads over the
-  // secondary artifact-status line; review-surfaces.DISTRIBUTION.7: the run
-  // then genuinely ENDS on the HTML cockpit pointer.
+  // secondary artifact-status line.
   if (humanReview && config.human_review.default_entrypoint) {
     printHumanReviewTerminalSummary(cwd, collection.outputDir, humanReview);
   }
   console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
-  if (humanReview && config.human_review.default_entrypoint) {
-    printCockpitPointer(cwd, collection.outputDir);
-  }
   debug(parsed, `completed in ${Date.now() - startedAt}ms`);
   // Gate on the REQUESTED provider, not wholeRepoProvider: in pr mode the narrative
   // IS a remote call with the live provider, so a privacy-blocked diff must still
   // trip the strict privacy gate (exit 5). The mock whole-repo evaluation has no
   // invalid_evidence, so the evidence gate cannot false-positive from this.
-  return applyGate(parsed, evaluation, collection, provider, config);
+  const gateExit = applyGate(parsed, evaluation, collection, provider, config);
+  // review-surfaces.DISTRIBUTION.7: printed AFTER any gate message so the run
+  // genuinely ends on the cockpit pointer.
+  if (humanReview && config.human_review.default_entrypoint) {
+    printCockpitPointer(cwd, collection.outputDir, cockpitPointerOptions(parsed));
+  }
+  return gateExit;
 }
 
 // --review-scope pr|repo. PR mode emits/reads the diff-scoped pr_review_surface;
@@ -1347,7 +1358,6 @@ async function writeAndMaybeSummarizeHumanReviewFromArtifacts(
   const humanReview = await writeHumanReviewFromArtifacts(cwd, outDir, scope, config, inputs);
   if (config.human_review.default_entrypoint) {
     printHumanReviewTerminalSummary(cwd, outDir, humanReview);
-    printCockpitPointer(cwd, outDir);
   }
 }
 
@@ -1381,15 +1391,25 @@ function printHumanReviewTerminalSummary(cwd: string, outDir: string, humanRevie
 }
 
 // review-surfaces.DISTRIBUTION.7: the flagship surface must be discoverable
-// from a stranger's first run — every summary path ends on this pointer. The
-// suggested command must survive the documented quickstart (`npx
-// review-surfaces all ...`), where the bare binary is NOT on PATH after the
-// one-shot process exits, and must preserve a non-default --out.
-function printCockpitPointer(cwd: string, outDir: string): void {
+// from a stranger's first run — the all command ENDS on this pointer (after
+// any gate message). The suggested command must survive the documented
+// quickstart (`npx review-surfaces all ...`), where the bare binary is NOT on
+// PATH after the one-shot process exits, and must preserve the run's context
+// — a non-default --out, a custom --config, and a pr review scope — so
+// following it re-renders the cockpit the user just generated rather than a
+// default-config repo-scope one.
+function cockpitPointerOptions(parsed: ParsedArgs): { scope: ReviewScope; configPath?: string } {
+  return { scope: reviewScope(parsed), configPath: stringFlag(parsed, "config") };
+}
+
+function printCockpitPointer(cwd: string, outDir: string, options: { scope?: ReviewScope; configPath?: string } = {}): void {
   const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
   const relativeOut = path.relative(cwd, outputDir) || ".";
-  const outFlag = relativeOut === ".review-surfaces" ? "" : ` --out ${relativeOut}`;
-  console.log(`HTML cockpit: run \`npx review-surfaces human --format html${outFlag}\` and open ${artifactPathForLog(cwd, outDir, "human_review.html")} in a browser`);
+  const flags =
+    (relativeOut === ".review-surfaces" ? "" : ` --out ${relativeOut}`) +
+    (options.scope === "pr" ? " --review-scope pr" : "") +
+    (options.configPath ? ` --config ${options.configPath}` : "");
+  console.log(`HTML cockpit: run \`npx review-surfaces human --format html${flags}\` and open ${artifactPathForLog(cwd, outDir, "human_review.html")} in a browser`);
 }
 
 async function loadOrBuildHumanReviewJson(
