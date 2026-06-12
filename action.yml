@@ -28,12 +28,14 @@ inputs:
     default: ""
   base-ref:
     description: >-
-      Base ref to diff against. The ref must be fetched in the subject checkout
-      (actions/checkout with fetch-depth: 0, or an explicit fetch of the base
-      branch); an unfetched base is a hard, actionable error — never a silently
-      wrong review (review-surfaces.COLD_START.6).
+      Base ref to diff against. Empty (the default) lets the CLI auto-resolve
+      the default branch (origin/HEAD, origin/main, origin/master, main,
+      master — review-surfaces.COLD_START.6). When set, the ref must be
+      fetched in the subject checkout (actions/checkout with fetch-depth: 0,
+      or an explicit fetch of the base branch); an unfetched base is a hard,
+      actionable error — never a silently wrong review.
     required: false
-    default: origin/main
+    default: ""
   head-ref:
     description: Head ref to review.
     required: false
@@ -154,12 +156,18 @@ runs:
         if [ -n "$PREVIOUS_PACKET" ]; then prev_flag=(--previous-packet "$PREVIOUS_PACKET"); fi
         model_flag=()
         if [ -n "$RS_MODEL" ]; then model_flag=(--model "$RS_MODEL"); fi
+        # review-surfaces.COLD_START.6: pass --base only when the caller set
+        # base-ref, so the default run uses the CLI's auto-resolution chain
+        # (origin/HEAD, origin/main, origin/master, main, master) instead of a
+        # hard-coded origin/main that fails on master-default repositories.
+        base_flag=()
+        if [ -n "$RS_BASE" ]; then base_flag=(--base "$RS_BASE"); fi
         node "$RS_BIN" all \
           --provider "$RS_PROVIDER" \
           "${model_flag[@]}" \
           --config "$RS_CONFIG" \
           --redact-secrets true \
-          --base "$RS_BASE" \
+          "${base_flag[@]}" \
           --head "$RS_HEAD" \
           --spec "$RS_SPEC" \
           --dogfood \

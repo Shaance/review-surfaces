@@ -186,6 +186,42 @@ export interface CollectOptions {
   previousPacketPath?: string;
 }
 
+// COLD_START.7: canonical artifact names for the ROOT-output-dir exclusion
+// ("--out ." / output_dir "."), where artifacts sit next to repository files
+// and prefix matching cannot tell them apart. Everything `all`, `human`, and
+// `comment` write at the output-dir top level belongs here (feedback/ stays
+// reviewable on purpose). Pinned by the COLD_START.7 double-run test in
+// tests/range-truth.test.ts.
+const ROOT_ARTIFACT_DIR_PREFIXES = ["inputs/", "diagrams/", "commands/", "prompts/"];
+const ROOT_ARTIFACT_FILES = new Set([
+  "manifest.json",
+  "review_packet.json",
+  "review_packet.md",
+  "intent.yaml",
+  "evaluation.yaml",
+  "methodology.yaml",
+  "risks.yaml",
+  "architecture.md",
+  "dogfood.yaml",
+  "agent_handoff.md",
+  "human_review.json",
+  "human_review.md",
+  "human_review.html",
+  "review_queue.md",
+  "suggested_comments.md",
+  "trust_audit.md",
+  "risk_lenses.md",
+  "intent_mismatch.md",
+  "review_routes.md",
+  "evidence_cards.md",
+  "since_last_review.md",
+  "test_plan.md",
+  "comment.md",
+  "review.sarif",
+  "pr_review_surface.json",
+  "eval_scoreboard.json"
+]);
+
 export async function collectInputs(options: CollectOptions): Promise<CollectionResult> {
   const outputDir = path.resolve(options.cwd, options.outputDir ?? options.config.output_dir);
   const inputsDir = path.join(outputDir, "inputs");
@@ -250,12 +286,23 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const configOutputDirRelative = normalizeRelativeDir(
     path.relative(realpathOrSelf(options.cwd), realpathOrSelf(path.resolve(options.cwd, options.config.output_dir)))
   );
-  const artifactDirPrefixes = [...new Set([outputDirRelative, configOutputDirRelative])]
+  const artifactDirs = [...new Set([outputDirRelative, configOutputDirRelative])];
+  const artifactDirPrefixes = artifactDirs
     .filter((dir): dir is string => Boolean(dir))
     .map((dir) => `${dir}/`);
-  const allChangedFiles = changedFilesResult.files.filter(
-    (file) => !artifactDirPrefixes.some((prefix) => file.path.startsWith(prefix))
-  );
+  // A ROOT output dir ("--out ." / output_dir ".") relativizes to "", so the
+  // prefix rule above matches nothing there; exclude the canonical artifact
+  // names instead. feedback/ is deliberately NOT excluded — reviewer feedback
+  // is an ingested product surface users may commit. The COLD_START.7
+  // double-run test pins this list: an artifact writer added without
+  // extending it turns that test red.
+  const rootOutputDir = artifactDirs.some((dir) => dir === "");
+  const isArtifactPath = (filePath: string): boolean =>
+    artifactDirPrefixes.some((prefix) => filePath.startsWith(prefix)) ||
+    (rootOutputDir &&
+      (ROOT_ARTIFACT_DIR_PREFIXES.some((prefix) => filePath.startsWith(prefix)) ||
+        ROOT_ARTIFACT_FILES.has(filePath)));
+  const allChangedFiles = changedFilesResult.files.filter((file) => !isArtifactPath(file.path));
   const changedFiles = allChangedFiles.filter((file) => !ignore.isIgnored(file.path));
   const ignoredChangedFiles = allChangedFiles.filter((file) => ignore.isIgnored(file.path)).map((file) => file.path);
   const diffResult = collectDiff(options.cwd, options.baseRef, options.headRef, includeWorkingTree);

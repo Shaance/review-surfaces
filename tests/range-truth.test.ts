@@ -145,6 +145,23 @@ test("review-surfaces.COLD_START.6 an exhausted auto chain is a hard error namin
   }
 });
 
+test("review-surfaces.COLD_START.6 an explicit --head that does not resolve is a hard error and writes no artifacts", () => {
+  const tmp = makeRepo("main");
+  try {
+    commitFile(tmp, "README.md", "# repo\n", "init");
+    const result = runCli(tmp, ["all", "--provider", "mock", "--base", "main", "--head", "no-such-head"]);
+    assert.notEqual(result.status, 0, `a non-resolving explicit head must be a hard error:\n${result.stdout}`);
+    assert.match(result.stderr, /no-such-head/, `the error must name the unresolved head ref:\n${result.stderr}`);
+    assert.equal(
+      fs.existsSync(path.join(tmp, ".review-surfaces")),
+      false,
+      "a hard head-resolution error must write no artifacts"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // COLD_START.7 — working-tree honesty
 // ---------------------------------------------------------------------------
@@ -242,6 +259,44 @@ test("review-surfaces.COLD_START.7 a clean-tree HEAD review carries no uncommitt
     assert.equal(readManifest(tmp).uncommitted_files, 0);
     const md = fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.md"), "utf8");
     assert.doesNotMatch(md, /uncommitted file/, "a clean run must not render an uncommitted line");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.COLD_START.7 a ROOT output dir (--out .) never counts its own artifacts as working-tree changes", () => {
+  const tmp = makeRepo("master");
+  try {
+    commitFile(tmp, "README.md", "# repo\n", "init");
+    git(tmp, ["checkout", "-b", "feature"]);
+    commitFile(tmp, "feature.txt", "feature work\n", "add feature");
+    const args = ["all", "--provider", "mock", "--now", FROZEN_NOW, "--out", "."];
+
+    const first = runCliRaw(tmp, args);
+    assert.equal(first.status, 0, first.stderr);
+    const firstManifest = JSON.parse(fs.readFileSync(path.join(tmp, "manifest.json"), "utf8")) as Record<string, unknown>;
+    assert.equal(firstManifest.uncommitted_files, 0);
+
+    // The first run left untracked artifacts at the REPO ROOT (manifest.json,
+    // review_packet.*, inputs/, ...). The second literal-HEAD run must not
+    // absorb any of them — this test pins the root-artifact exclusion list, so
+    // a new artifact writer that is not excluded turns it red.
+    const second = runCliRaw(tmp, args);
+    assert.equal(second.status, 0, second.stderr);
+    const secondManifest = JSON.parse(fs.readFileSync(path.join(tmp, "manifest.json"), "utf8")) as Record<string, unknown>;
+    assert.equal(
+      secondManifest.uncommitted_files,
+      0,
+      "the second run must not count the first run's artifacts as uncommitted files"
+    );
+    const changed = JSON.parse(fs.readFileSync(path.join(tmp, "inputs", "changed_files.json"), "utf8")) as {
+      files: Array<{ path: string }>;
+    };
+    assert.deepEqual(
+      changed.files.map((file) => file.path),
+      ["feature.txt"],
+      "the second run's changed set must still be exactly the range diff"
+    );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

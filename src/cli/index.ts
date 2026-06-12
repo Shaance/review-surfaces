@@ -330,7 +330,20 @@ function resolveBaseRefForRun(cwd: string, explicitBase: string | undefined, hea
   if (!resolution.ok) {
     throw new CliError(resolution.message, ExitCodes.usageError);
   }
-  const requestedHeadSha = resolveGitRefSha(cwd, headRef) ?? headSha;
+  // COLD_START.6 (PR #79 review): an explicitly pinned head that does not
+  // resolve gets the same hard error as the base — without this, the summary
+  // and manifest would silently substitute the checked-out HEAD while the
+  // range diff comes back empty, a confidently wrong review of the requested
+  // head. A literal HEAD request is already guaranteed resolvable above.
+  const requestedHeadSha = resolveGitRefSha(cwd, headRef);
+  if (requestedHeadSha === undefined) {
+    throw new CliError(
+      `head ref "${headRef}" does not resolve. If this is a shallow or partial clone, fetch it first ` +
+        `(GitHub Actions: actions/checkout with fetch-depth: 0; locally: git fetch origin "${headRef}"). ` +
+        `Otherwise pass --head <ref> naming an existing ref.`,
+      ExitCodes.usageError
+    );
+  }
   console.log(
     `Reviewing range: ${resolution.base.ref} (${resolution.base.sha.slice(0, 7)}) -> ${headRef} (${requestedHeadSha.slice(0, 7)})`
   );
