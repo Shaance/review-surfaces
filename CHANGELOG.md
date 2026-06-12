@@ -8,11 +8,11 @@ contracts live in
 (an absolute link because this changelog ships in the npm tarball, which does
 not carry that directory).
 
-## Unreleased
+## 0.2.0 — unreleased (intended first npm publish)
 
-Suggested first publish: `0.2.0`. Publishing to npm remains the owner's
-manual step (`npm publish` after `pnpm run local-gate`); the package name
-`review-surfaces` was verified unclaimed on 2026-06-12.
+The package manifest already carries `0.2.0`, so the owner's single manual
+step (`npm publish` after `pnpm run local-gate`) ships exactly this version.
+The package name `review-surfaces` was verified unclaimed on 2026-06-12.
 
 - Change-map legibility at scale (`MAP_SCALE.1-6`): a schema-visible overview
   level that leads on every surface when the file-level map cannot render
@@ -28,7 +28,7 @@ manual step (`npm publish` after `pnpm run local-gate`); the package name
   `review-surfaces all` run, this changelog, and the remaining internal
   proposals moved to `docs/history/`.
 
-## 0.1.0 — 2026-05-30 through 2026-06-12 (unpublished development history)
+## 0.1.0 — 2026-05-30 through 2026-06-12 (unpublished development history; never on npm)
 
 The MVP and four uplifts, condensed. Every phase shipped with ACID-named
 tests against `features/review-surfaces.feature.yaml`, byte-deterministic

@@ -193,13 +193,17 @@ test("review-surfaces.DISTRIBUTION.7 the all terminal summary ends with the HTML
 
 test("review-surfaces.DISTRIBUTION.8 CHANGELOG.md exists and the remaining internal proposals moved to docs/history/", () => {
   const changelog = read("CHANGELOG.md");
-  assert.match(changelog, /## Unreleased/);
+  assert.match(changelog, /## 0\.2\.0/);
+  // The manifest version matches the changelog's intended first publish, so
+  // the owner's manual `npm publish` ships the documented version.
+  const versionManifest = JSON.parse(read("package.json")) as { version?: string };
+  assert.ok(changelog.includes(`## ${versionManifest.version} `), "package.json version heads the changelog's unreleased section");
   assert.match(changelog, /## 0\.1\.0/);
   // The condensed history names all five uplifts.
   for (const marker of ["MVP", "Human review uplift", "Next-value uplift", "Visual value uplift", "Open-source readiness uplift"]) {
     assert.ok(changelog.includes(marker), `CHANGELOG covers "${marker}"`);
   }
-  assert.match(changelog, /owner('|’)s\s+manual\s+step/i);
+  assert.match(changelog, /owner('|’)s\s+(single\s+)?manual\s+step/i);
   // The changelog ships in the npm tarball (npm does not auto-include it).
   const changelogManifest = JSON.parse(read("package.json")) as { files?: string[] };
   assert.ok(changelogManifest.files?.includes("CHANGELOG.md"), "CHANGELOG.md ships in the package");
