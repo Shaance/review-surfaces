@@ -66,7 +66,7 @@ test("review-surfaces.DISTRIBUTION.3 README is written for a stranger's first fi
 
   // An npx quickstart that works on a spec-less repo (no --spec flag in it).
   const quickstart = readme.slice(readme.indexOf("## Quickstart"), readme.indexOf("## What you get"));
-  assert.match(quickstart, /npx review-surfaces all --base origin\/main --head HEAD/);
+  assert.match(quickstart, /npx review-surfaces all/);
   assert.ok(!quickstart.includes("--spec"), "the quickstart must not require a spec");
 
   // A what-you-get tour with screenshots from a real run, and the images exist.

@@ -178,7 +178,8 @@ function humanModel(): HumanReviewModel {
       pr_surface_path: ".review-surfaces/pr_review_surface.json",
       base_ref: "origin/main",
       head_ref: "HEAD",
-      head_sha: "head"
+      head_sha: "head",
+      uncommitted_files: 0
     }
   };
 }

@@ -62,7 +62,14 @@ test("git-failure-mode: running OUTSIDE a git repo exits cleanly with a diagnost
   }
 });
 
-test("git-failure-mode: an unknown --base ref exits cleanly, warns, and still emits a valid packet", async () => {
+// review-surfaces.COLD_START.6 changed this contract: in a repository WITH
+// commits, an unresolvable explicit --base is a hard error with no artifacts —
+// the prior behavior (degrade to a bare working-tree diff with a stderr-only
+// diagnostic) reviewed the wrong range while looking healthy. The two cases
+// below (no repo at all, unborn HEAD) keep the graceful R6 degradation: there
+// is no claimable range there and the artifacts visibly carry empty/unknown
+// sentinels.
+test("git-failure-mode: an unknown --base ref in a real repo is a hard error and writes no packet (COLD_START.6)", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-gitfail-base-"));
   try {
     fs.writeFileSync(path.join(tmp, "README.md"), "# repo\n");
@@ -71,22 +78,14 @@ test("git-failure-mode: an unknown --base ref exits cleanly, warns, and still em
     initGitRepo(tmp);
 
     const result = runCli(tmp, ["dogfood", "--provider", "mock", "--base", "does-not-exist", "--head", "HEAD"]);
-    assertCleanExit(result, "unknown --base");
-
-    // A diagnostic names the unresolved base ref and the working-tree fallback.
-    assert.match(result.stderr, /does-not-exist/, `the diagnostic must name the unresolved base ref:\n${result.stderr}`);
-    assert.match(
-      result.stderr,
-      /did not resolve|working[- ]tree/,
-      `the diagnostic must describe the unresolved base / working-tree fallback:\n${result.stderr}`
+    assert.notEqual(result.status, 0, `an unresolvable explicit base must be a hard error:\n${result.stdout}`);
+    assert.match(result.stderr, /does-not-exist/, `the error must name the unresolved base ref:\n${result.stderr}`);
+    assert.match(result.stderr, /fetch-depth|unshallow/, `the error must include the shallow-clone fixes:\n${result.stderr}`);
+    assert.equal(
+      fs.existsSync(path.join(tmp, ".review-surfaces", "review_packet.json")),
+      false,
+      "a hard base-resolution error must not write a packet"
     );
-
-    // The emitted packet is still schema-valid (the run degrades, it does not fail).
-    const validation = await validateJsonFile(
-      path.join(tmp, "schemas", "review_packet.schema.json"),
-      path.join(tmp, ".review-surfaces", "review_packet.json")
-    );
-    assert.equal(validation.valid, true, JSON.stringify(validation.issues));
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

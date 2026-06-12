@@ -30,13 +30,18 @@ Works on any git repository — no config, no spec files, no setup:
 
 ```bash
 cd your-repo
-npx review-surfaces all --base origin/main --head HEAD
+npx review-surfaces all
 open .review-surfaces/human_review.html   # the cockpit; human_review.md is the text surface
 ```
 
+The base auto-resolves to your default branch (origin/HEAD, origin/main,
+origin/master, main, master — first that exists); pass `--base <ref>` /
+`--head <ref>` to review a different range. A base that cannot be resolved is
+a hard error with the fix in the message — never a silently wrong review.
+
 > Not on npm yet? Run it from source:
 > `git clone https://github.com/Shaance/review-surfaces && cd review-surfaces && pnpm install --frozen-lockfile && pnpm run build`,
-> then `node /path/to/review-surfaces/bin/review-surfaces.js all --base origin/main --head HEAD` inside your repo.
+> then `node /path/to/review-surfaces/bin/review-surfaces.js all` inside your repo.
 
 That one command produces a merge-readiness verdict, a ranked review-first
 queue with inline diff excerpts and "why ranked here" lines, a guided reading
@@ -141,7 +146,8 @@ renderer over the same local pipeline.
 | `scoreboard [--check]` | Regenerate (or verify) the README eval-scoreboard block from `eval_scoreboard.json`. |
 
 Run `npx review-surfaces --help` for the full option list. Common options:
-`--base` / `--head` (diff range), `--out` (artifact dir, default
+`--base` / `--head` (diff range; the base auto-resolves to the default
+branch), `--out` (artifact dir, default
 `.review-surfaces`), `--provider mock|agent-file|ai-sdk`, `--coverage
 <lcov path>` (auto-detects `coverage/lcov.info`), `--budget 15m` (read/skim/defer
 review plan), `--previous-packet <path>` (round-over-round deltas).

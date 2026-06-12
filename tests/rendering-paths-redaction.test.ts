@@ -12,13 +12,11 @@ function readArtifact(cwd: string, file: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// FINDING A: the review_packet.md footer ("Full machine-readable details: ...")
-// hardcoded `.review-surfaces/review_packet.json`. For a run using
-// `--out`/`output_dir` other than .review-surfaces the markdown is written into
-// that dir but the footer still pointed at a stale/non-existent
-// .review-surfaces path. The footer must use the EFFECTIVE (cwd-relative) output
-// dir, the same helper the handoff/comment paths use. The default
-// `.review-surfaces` output stays byte-identical.
+// review-surfaces.COLD_START.8: the review_packet.md footer ("Full
+// machine-readable details: ...") points at the SIBLING file name
+// `review_packet.json` (location-independent), regardless of --out /
+// output_dir. The markdown lives next to the JSON it points at, so the footer
+// never carries a directory prefix.
 // ---------------------------------------------------------------------------
 
 function packetInputs(cwd: string, outputDir: string): PacketInputs {
@@ -79,30 +77,28 @@ function packetInputs(cwd: string, outputDir: string): PacketInputs {
   } as unknown as PacketInputs;
 }
 
-test("FINDING A: a custom output_dir is reflected in the review_packet.md footer", async () => {
+test("review-surfaces.COLD_START.8: the review_packet.md footer is the sibling file name for a custom output_dir", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-round7-footer-"));
   try {
     // The artifacts are written into a custom output dir nested under cwd; the
-    // markdown footer must reference THAT dir, not .review-surfaces.
+    // markdown footer must reference the SIBLING review_packet.json, with no
+    // directory prefix at all.
     const outputDir = path.join(tmp, "build", "review");
     fs.mkdirSync(outputDir, { recursive: true });
     const inputs = packetInputs(tmp, outputDir);
 
-    // writeReviewPacket is the `all`/`packet` writer path: it threads the
-    // effective output dir into the footer. (rewriteReviewPacket has no
-    // collection context and keeps the default .review-surfaces footer.)
     const packet = await writeReviewPacket(inputs);
     const markdown = fs.readFileSync(path.join(outputDir, "review_packet.md"), "utf8");
 
     assert.match(
       markdown,
-      /Full machine-readable details: build\/review\/review_packet\.json/,
-      `footer must point at the custom output dir, got:\n${markdown.split("\n").find((line) => line.includes("Full machine-readable")) ?? "(no footer line)"}`
+      /Full machine-readable details: review_packet\.json/,
+      `footer must point at the sibling review_packet.json, got:\n${markdown.split("\n").find((line) => line.includes("Full machine-readable")) ?? "(no footer line)"}`
     );
     assert.doesNotMatch(
       markdown,
-      /Full machine-readable details: \.review-surfaces\/review_packet\.json/,
-      "footer must not still hardcode .review-surfaces"
+      /Full machine-readable details: \S*\/review_packet\.json/,
+      "footer must not carry a directory prefix"
     );
     // The packet object itself is unchanged shape-wise (sanity).
     assert.equal(packet.schema_version, "review-surfaces.packet.v1");
@@ -111,28 +107,28 @@ test("FINDING A: a custom output_dir is reflected in the review_packet.md footer
   }
 });
 
-test("FINDING A: the default .review-surfaces output keeps a byte-identical footer", async () => {
+test("review-surfaces.COLD_START.8: the default .review-surfaces output uses the same sibling footer", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-round7-footer-default-"));
   try {
     const outputDir = path.join(tmp, ".review-surfaces");
     fs.mkdirSync(outputDir, { recursive: true });
     await writeReviewPacket(packetInputs(tmp, outputDir));
     const markdown = fs.readFileSync(path.join(outputDir, "review_packet.md"), "utf8");
-    assert.match(markdown, /Full machine-readable details: \.review-surfaces\/review_packet\.json/);
+    assert.match(markdown, /Full machine-readable details: review_packet\.json/);
+    assert.doesNotMatch(markdown, /Full machine-readable details: \S*\/review_packet\.json/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-test("FINDING A: rewriteReviewPacket (no collection context) keeps the default footer", async () => {
+test("review-surfaces.COLD_START.8: rewriteReviewPacket (no collection context) uses the sibling footer", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-round7-footer-rewrite-"));
   try {
     const packet = createReviewPacket(packetInputs(tmp, path.join(tmp, "build", "review")));
-    // rewriteReviewPacket has no collection, so it intentionally keeps the
-    // default .review-surfaces footer (byte-identical to prior behavior).
     await rewriteReviewPacket(tmp, packet);
     const markdown = fs.readFileSync(path.join(tmp, "review_packet.md"), "utf8");
-    assert.match(markdown, /Full machine-readable details: \.review-surfaces\/review_packet\.json/);
+    assert.match(markdown, /Full machine-readable details: review_packet\.json/);
+    assert.doesNotMatch(markdown, /Full machine-readable details: \S*\/review_packet\.json/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

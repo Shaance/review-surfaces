@@ -64,8 +64,14 @@ export interface DiagramEmbed {
 // Default artifact-dir relative paths used when renderComment is called without
 // a resolved packet location (the pure in-memory path). The CLI path threads the
 // EFFECTIVE output dir so a custom output_dir is reflected in the pointer.
-const DEFAULT_PACKET_JSON_REL = ".review-surfaces/review_packet.json";
-const DEFAULT_PACKET_MD_REL = ".review-surfaces/review_packet.md";
+// COLD_START.8: pointers are relative to the artifact's OWN directory (the
+// comment, the packet json, and the packet md are siblings under the output
+// dir), never to the cwd. A cwd-relative pointer embedded `../`-chains into
+// rendered artifacts whenever --out pointed outside the repo, and inside the
+// uploaded CI artifact zip the out dir IS the root, so the sibling form is
+// also the honest one there.
+const DEFAULT_PACKET_JSON_REL = "review_packet.json";
+const DEFAULT_PACKET_MD_REL = "review_packet.md";
 
 // Where the full local packet lives, expressed relative to cwd. Both pointers
 // are derived from the SAME effective packet path the renderer read, so a custom
@@ -112,10 +118,10 @@ export function renderCommentFromPacketFile(cwd: string, outDir?: string): Rende
   const diagrams = loadEmbeddedDiagrams(path.dirname(packetPath), packet);
   return {
     // Derive the "full packet" pointers from the EFFECTIVE packet path the
-    // renderer actually read, expressed relative to cwd, so a repo with a custom
-    // output_dir gets a link to the REAL artifact location rather than a
-    // hardcoded .review-surfaces/review_packet.* that does not exist there.
-    markdown: renderComment(packet, pointersForPacketPath(cwd, packetPath), diagrams),
+    // renderer actually read, expressed relative to the artifact directory
+    // itself (COLD_START.8) so the comment names real sibling files for any
+    // --out location instead of a cwd-relative path that can escape the repo.
+    markdown: renderComment(packet, pointersForPacketPath(packetPath), diagrams),
     packetPath
   };
 }
@@ -192,14 +198,12 @@ function diagramTitle(rel: string): string {
   return base === "" ? "Diagram" : base.charAt(0).toUpperCase() + base.slice(1);
 }
 
-// review_packet.json -> {json, markdown} pointers, relative to cwd. The json
-// path is the packet the renderer read; the markdown path is its .md sibling in
-// the same directory (the human-readable surface `all` also writes there).
-function pointersForPacketPath(cwd: string, packetPath: string): PacketPointers {
-  const dir = path.dirname(packetPath);
-  const jsonRel = path.relative(cwd, packetPath) || packetPath;
-  const mdRel = path.relative(cwd, path.join(dir, "review_packet.md")) || path.join(dir, "review_packet.md");
-  return { json: jsonRel, markdown: mdRel };
+// review_packet.json -> {json, markdown} pointers, relative to the artifact's
+// own directory (COLD_START.8): the json path is the packet file the renderer
+// read; the markdown path is its .md sibling. Location-independent, so the
+// rendered bytes are identical for any --out and never contain `../` chains.
+function pointersForPacketPath(packetPath: string): PacketPointers {
+  return { json: path.basename(packetPath), markdown: DEFAULT_PACKET_MD_REL };
 }
 
 /**
@@ -216,9 +220,15 @@ export function renderComment(
   const overreachCount = packet.evaluation.overreach?.length ?? 0;
   const milestone = readMilestone(packet);
 
+  const uncommittedFiles = (packet.manifest as { uncommitted_files?: unknown }).uncommitted_files;
   const sections: string[] = [
     STICKY_MARKER,
     `## review-surfaces${milestone ? ` (${redact(milestone)})` : ""}`,
+    // COLD_START.7: the legacy default comment carries the same dirty-tree
+    // line as every other human surface when working-tree files were absorbed.
+    ...(typeof uncommittedFiles === "number" && uncommittedFiles > 0
+      ? [`_includes ${uncommittedFiles} uncommitted file(s) (working tree)_`]
+      : []),
     // review-surfaces.COLD_START.5: spec-less packets get the honest note, not
     // a zero-count status line.
     `Status: ${(packet.intent as { spec_mode?: unknown }).spec_mode === "none" ? SPEC_NONE_NOTE : `${formatRequirementStatusSummary(counts, overreachCount)}.`}`,

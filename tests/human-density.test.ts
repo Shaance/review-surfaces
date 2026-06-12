@@ -81,7 +81,8 @@ function baseModel(overrides: Partial<HumanReviewModel>): HumanReviewModel {
       packet_path: ".review-surfaces/review_packet.json",
       base_ref: "origin/main",
       head_ref: "HEAD",
-      head_sha: "abc123"
+      head_sha: "abc123",
+      uncommitted_files: 0
     },
     ...overrides
   };

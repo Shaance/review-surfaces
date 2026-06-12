@@ -1,6 +1,6 @@
 # Human Review
 
-Generated from `.review-surfaces/review_packet.json`.
+Generated from `review_packet.json`.
 
 ## Verdict
 
@@ -143,15 +143,15 @@ Ready to post: yes.
 
 ## Evidence pointers
 
-- Packet: `.review-surfaces/review_packet.json`
-- Review queue: `.review-surfaces/review_queue.md`
-- Suggested comments: `.review-surfaces/suggested_comments.md`
-- Trust audit: `.review-surfaces/trust_audit.md`
-- Risk lenses: `.review-surfaces/risk_lenses.md`
-- Intent mismatch: `.review-surfaces/intent_mismatch.md`
-- Review routes: `.review-surfaces/review_routes.md`
-- Evidence cards: `.review-surfaces/evidence_cards.md`
-- Since last review: `.review-surfaces/since_last_review.md`
-- Test plan: `.review-surfaces/test_plan.md`
+- Packet: `review_packet.json`
+- Review queue: `review_queue.md`
+- Suggested comments: `suggested_comments.md`
+- Trust audit: `trust_audit.md`
+- Risk lenses: `risk_lenses.md`
+- Intent mismatch: `intent_mismatch.md`
+- Review routes: `review_routes.md`
+- Evidence cards: `evidence_cards.md`
+- Since last review: `since_last_review.md`
+- Test plan: `test_plan.md`
 - Base/head: `HEAD~3` -> `HEAD`
 - Head SHA: `a5b76bffb33d5fa8b0d1393cce410b88e7c2b848`

@@ -56,7 +56,7 @@ a { color: var(--accent); }
 </head>
 <body>
 <h1>Human review</h1>
-<p class="muted">Generated from <code>${esc(model.generated_from.packet_path)}</code> · <code>${esc(model.generated_from.base_ref)}</code> → <code>${esc(model.generated_from.head_ref)}</code> @ <code>${esc(model.generated_from.head_sha)}</code></p>
+<p class="muted">Generated from <code>${esc(model.generated_from.packet_path)}</code> · <code>${esc(model.generated_from.base_ref)}</code> → <code>${esc(model.generated_from.head_ref)}</code> @ <code>${esc(model.generated_from.head_sha)}</code>${model.generated_from.uncommitted_files > 0 ? ` · includes ${model.generated_from.uncommitted_files} uncommitted file(s) (working tree)` : ""}</p>
 
 <h2 id="verdict">Verdict</h2>
 <p><span class="badge ${esc(model.verdict.decision)}">${esc(decisionLabel(model.verdict.decision))}</span> <span class="muted">confidence: ${esc(model.verdict.confidence)}</span></p>

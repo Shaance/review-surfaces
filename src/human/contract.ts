@@ -694,6 +694,9 @@ export interface HumanReviewModel {
     base_sha?: string;
     head_ref: string;
     head_sha: string;
+    // COLD_START.7: working-tree files absorbed into this review. 0 on a clean
+    // or pinned-head run; a nonzero count renders on every human surface.
+    uncommitted_files: number;
     human_review_config_signature?: string;
   };
 }

@@ -427,7 +427,7 @@
     "generated_from": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["packet_path", "base_ref", "head_ref", "head_sha"],
+      "required": ["packet_path", "base_ref", "head_ref", "head_sha", "uncommitted_files"],
       "properties": {
         "packet_path": { "type": "string" },
         "pr_surface_path": { "type": "string" },
@@ -435,6 +435,7 @@
         "base_sha": { "type": "string" },
         "head_ref": { "type": "string" },
         "head_sha": { "type": "string" },
+        "uncommitted_files": { "type": "integer", "minimum": 0 },
         "human_review_config_signature": { "type": "string" }
       }
     }

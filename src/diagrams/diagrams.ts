@@ -106,7 +106,7 @@ function buildArchitectureModelFromDiagrams(
   const diagramValidation = diagramArtifacts.map((diagram) =>
     validateMermaidDiagramArtifact({
       ...diagram,
-      evidencePath: diagramEvidencePath(collection, diagram.path)
+      evidencePath: diagramEvidencePath(diagram.path)
     })
   );
   const subsystems = areas.map((subsystem) => subsystemCard(subsystem, collection, evaluation)).filter((card) => card.files.length > 0);
@@ -192,12 +192,13 @@ export function validateMermaidDiagramArtifact(diagram: DiagramArtifact): Diagra
   };
 }
 
-function diagramEvidencePath(collection: CollectionResult, artifactPath: string): string {
-  const cwd = collection.cwd ?? process.cwd();
-  const outputDir = path.isAbsolute(collection.outputDir)
-    ? collection.outputDir
-    : path.resolve(cwd, collection.outputDir);
-  return normalizeEvidencePath(path.relative(cwd, path.join(outputDir, artifactPath)));
+// COLD_START.8: a diagram is a run-generated artifact, so its evidence path is
+// the artifact-dir-relative path ("diagrams/<name>.mmd") — the same form
+// diagram.path already uses and the comment embedder requires. The previous
+// cwd-relative form embedded `../` chains into the packet whenever --out
+// pointed outside the repo, and made artifact bytes vary by --out location.
+function diagramEvidencePath(artifactPath: string): string {
+  return normalizeEvidencePath(artifactPath);
 }
 
 function normalizeEvidencePath(filePath: string): string {

@@ -414,6 +414,7 @@ function dogfoodPacketFixture(): {
       base_ref: "origin/main",
       head_ref: "HEAD",
       head_sha: "abc",
+      uncommitted_files: 0,
       run_mode: "dogfood",
       milestone: "M5",
       input_hashes: []

@@ -91,7 +91,8 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
       pr_surface_path: ".review-surfaces/pr_review_surface.json",
       base_ref: "origin/main",
       head_ref: "HEAD",
-      head_sha: "deadbeef"
+      head_sha: "deadbeef",
+      uncommitted_files: 0
     },
     ...overrides
   };

@@ -258,7 +258,8 @@ test("review-surfaces.SCHEMA.3 human review schema rejects stale partial v1 arti
       pr_surface_path: ".review-surfaces/pr_review_surface.json",
       base_ref: "origin/main",
       head_ref: "HEAD",
-      head_sha: "abc123"
+      head_sha: "abc123",
+      uncommitted_files: 0
     }
   };
 
@@ -287,7 +288,7 @@ test("review-surfaces.SCHEMA.3 human review schema requires the narrative field"
     trust_audit: { verified_facts: [], claimed_not_verified: [], missing_evidence: [], invalid_evidence: [], confidence_summary: "x" },
     test_plan: [],
     skim_safe: [],
-    generated_from: { packet_path: "p", base_ref: "origin/main", head_ref: "HEAD", head_sha: "abc" }
+    generated_from: { packet_path: "p", base_ref: "origin/main", head_ref: "HEAD", head_sha: "abc", uncommitted_files: 0 }
   }) as Record<string, unknown>;
   delete withoutNarrative.narrative;
   const result = validateJsonSchema(humanReviewSchema, withoutNarrative);
@@ -377,7 +378,8 @@ test("human review schema validates since-last-review comparison slices", () => 
       base_ref: "origin/main",
       base_sha: "base123",
       head_ref: "HEAD",
-      head_sha: "abc123"
+      head_sha: "abc123",
+      uncommitted_files: 0
     }
   };
 
@@ -463,7 +465,8 @@ test("human review schema validates review route slices", () => {
       pr_surface_path: ".review-surfaces/pr_review_surface.json",
       base_ref: "origin/main",
       head_ref: "HEAD",
-      head_sha: "abc123"
+      head_sha: "abc123",
+      uncommitted_files: 0
     }
   };
 
@@ -532,7 +535,8 @@ test("human review schema validates inline evidence cards", () => {
       pr_surface_path: ".review-surfaces/pr_review_surface.json",
       base_ref: "origin/main",
       head_ref: "HEAD",
-      head_sha: "abc123"
+      head_sha: "abc123",
+      uncommitted_files: 0
     }
   };
 
@@ -604,7 +608,8 @@ test("human review schema validates intent-mismatch slices", () => {
       pr_surface_path: ".review-surfaces/pr_review_surface.json",
       base_ref: "origin/main",
       head_ref: "HEAD",
-      head_sha: "abc123"
+      head_sha: "abc123",
+      uncommitted_files: 0
     }
   };
 
@@ -657,7 +662,8 @@ test("human review schema rejects intent-mismatch items without evidence", () =>
       pr_surface_path: ".review-surfaces/pr_review_surface.json",
       base_ref: "origin/main",
       head_ref: "HEAD",
-      head_sha: "abc123"
+      head_sha: "abc123",
+      uncommitted_files: 0
     }
   };
 

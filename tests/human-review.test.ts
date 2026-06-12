@@ -1454,7 +1454,7 @@ test("human review Markdown renders a compact cockpit surface", () => {
   assert.match(markdown, /Security \/ privacy lens/);
   assert.match(markdown, /## Suggested comments/);
   for (const artifact of HUMAN_STANDALONE_ARTIFACTS) {
-    assert.match(markdown, new RegExp(`${artifact.label}: \`\\.review-surfaces/${artifact.artifact}\``));
+    assert.match(markdown, new RegExp(`${artifact.label}: \`${artifact.artifact}\``));
   }
   assert.doesNotMatch(markdown, /Start with missing and partial requirement results/);
 });

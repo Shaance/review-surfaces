@@ -21,7 +21,7 @@ import {
   TEST_RESULTS_SCHEMA_VERSION,
   TestResults
 } from "../tests-evidence/junit";
-import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, commitTimeAtRef, gitInfoDiagnostics, GitInfo } from "./git";
+import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, commitTimeAtRef, gitInfoDiagnostics, GitInfo, isCurrentStateHeadRequest, readFileBytesAtRef } from "./git";
 import { LcovCoverage, looksLikeLcov, parseLcov } from "../tests-evidence/lcov";
 import { parseStructuredDiff } from "./diff-hunks";
 
@@ -71,6 +71,11 @@ export interface RunManifest {
   head_ref: string;
   base_sha?: string;
   head_sha: string;
+  // COLD_START.7: how many files in the changed set came from the working tree
+  // (uncommitted edits / untracked files) rather than the base...head range.
+  // Always present (0 on a clean or pinned-head run) so renderers can announce
+  // a dirty literal-HEAD review on every human surface.
+  uncommitted_files: number;
   run_mode: PacketRunMode;
   milestone?: string;
   input_hashes: ManifestInputHash[];
@@ -181,6 +186,51 @@ export interface CollectOptions {
   previousPacketPath?: string;
 }
 
+// COLD_START.7: canonical artifact names for the ROOT-output-dir exclusion
+// ("--out ." / output_dir "."), where artifacts sit next to repository files
+// and prefix matching cannot tell them apart. Everything `all`, `human`, and
+// `comment` write at the output-dir top level belongs here (feedback/ stays
+// reviewable on purpose). The directory patterns name the EXACT files the
+// tool writes (PR #79 round 4: a blanket inputs/ or diagrams/ prefix dropped
+// a user's REAL working-tree files in directories of the same name). Pinned
+// by the COLD_START.7 double-run test in tests/range-truth.test.ts.
+const ROOT_ARTIFACT_PATH_PATTERNS = [
+  /^inputs\/(specs\.index|changed_files|commits|docs\.index|tests\.index|repo\.index|feedback\.index|commands|coverage|privacy)\.json$/,
+  /^inputs\/diff\.patch$/,
+  /^diagrams\/[^/]+\.mmd$/,
+  /^commands\/[^/]+\.json$/,
+  /^prompts\/agent-enrichment\.(md|schema\.json)$/
+];
+const ROOT_ARTIFACT_FILES = new Set([
+  "manifest.json",
+  "review_packet.json",
+  "review_packet.md",
+  "intent.yaml",
+  "evaluation.yaml",
+  "methodology.yaml",
+  "risks.yaml",
+  "architecture.md",
+  "dogfood.yaml",
+  "agent_handoff.md",
+  "human_review.json",
+  "human_review.md",
+  "human_review.html",
+  "review_queue.md",
+  "suggested_comments.md",
+  "trust_audit.md",
+  "risk_lenses.md",
+  "intent_mismatch.md",
+  "review_routes.md",
+  "evidence_cards.md",
+  "since_last_review.md",
+  "test_plan.md",
+  "comment.md",
+  "review.sarif",
+  "pending_review.json",
+  "pr_review_surface.json",
+  "eval_scoreboard.json"
+]);
+
 export async function collectInputs(options: CollectOptions): Promise<CollectionResult> {
   const outputDir = path.resolve(options.cwd, options.outputDir ?? options.config.output_dir);
   const inputsDir = path.join(outputDir, "inputs");
@@ -209,6 +259,29 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // An output dir AT the repo root (`--out .`) relativizes to "", so glob the
   // bare `feedback/*.yaml` rather than a leading-slash `/feedback/*.yaml`.
   const feedbackGlob = outputDirRelative ? `${outputDirRelative}/feedback/*.yaml` : "feedback/*.yaml";
+  // COLD_START.7: the tool's own artifacts are never part of the reviewed
+  // change set. Both the CURRENT effective out dir and the CONFIGURED
+  // output_dir count as artifact locations (a run with --out elsewhere still
+  // sees a prior default-located run's artifacts in the working tree). A ROOT
+  // output dir ("--out ." / output_dir ".") relativizes to "", where prefix
+  // matching cannot tell artifacts from repository files, so the canonical
+  // artifact names are excluded there instead — pinned by the COLD_START.7
+  // double-run test. Applied only to pure working-tree entries (see
+  // collectChangedFiles): a COMMITTED change to a tracked artifact such as
+  // this repo's .review-surfaces/agent_handoff.md stays reviewable.
+  const configOutputDirRelative = normalizeRelativeDir(
+    path.relative(realpathOrSelf(options.cwd), realpathOrSelf(path.resolve(options.cwd, options.config.output_dir)))
+  );
+  const artifactDirs = [...new Set([outputDirRelative, configOutputDirRelative])];
+  const artifactDirPrefixes = artifactDirs
+    .filter((dir): dir is string => Boolean(dir))
+    .map((dir) => `${dir}/`);
+  const rootOutputDir = artifactDirs.some((dir) => dir === "");
+  const isArtifactPath = (filePath: string): boolean =>
+    artifactDirPrefixes.some((prefix) => filePath.startsWith(prefix)) ||
+    (rootOutputDir &&
+      (ROOT_ARTIFACT_PATH_PATTERNS.some((pattern) => pattern.test(filePath)) ||
+        ROOT_ARTIFACT_FILES.has(filePath)));
   const feedbackPaths = filterPathsByPatterns(repositoryFiles, [feedbackGlob]);
   const commandTranscriptDir = normalizeRelativeDir(options.commandTranscriptDir ?? commandTranscriptInputDir(options.cwd, outputDir));
   const commandTranscriptPaths = filterPathsByPatterns(repositoryFiles, [`${commandTranscriptDir}/*.json`]);
@@ -230,14 +303,26 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const diagnostics: string[] = [];
   const git = collectGitInfo(options.cwd, options.baseRef, options.headRef);
   diagnostics.push(...gitInfoDiagnostics(options.cwd, options.baseRef));
-  const changedFilesResult = collectChangedFiles(options.cwd, options.baseRef, options.headRef);
+  // COLD_START.7: working-tree/untracked files merge into the changed set only
+  // for a literal-HEAD review; an explicitly pinned head gets the pure range.
+  const includeWorkingTree = isCurrentStateHeadRequest(options.cwd, options.headRef);
+  const changedFilesResult = collectChangedFiles(options.cwd, options.baseRef, options.headRef, includeWorkingTree, isArtifactPath);
   diagnostics.push(...changedFilesResult.diagnostics);
   const allChangedFiles = changedFilesResult.files;
   const changedFiles = allChangedFiles.filter((file) => !ignore.isIgnored(file.path));
   const ignoredChangedFiles = allChangedFiles.filter((file) => ignore.isIgnored(file.path)).map((file) => file.path);
-  const diffResult = collectDiff(options.cwd, options.baseRef, options.headRef);
+  const diffResult = collectDiff(options.cwd, options.baseRef, options.headRef, includeWorkingTree);
   diagnostics.push(...diffResult.diagnostics);
-  const rawDiff = diffResult.text;
+  // COLD_START.7: keep diff.patch consistent with the changed-file set — drop
+  // hunks for artifact paths that are not reviewed changes (pure working-tree
+  // artifact churn; range hunks for such paths cannot exist, so range content
+  // is untouched). Without this, structured-diff consumers parsed artifact
+  // churn the changed-file set had already excluded.
+  const reviewedPaths = new Set(allChangedFiles.map((file) => file.path));
+  const rawDiff = filterIgnoredDiff(
+    diffResult.text,
+    (filePath) => isArtifactPath(filePath) && !reviewedPaths.has(filePath)
+  );
   const diffSource = diffResult.diffSource;
   const filteredDiff = filterIgnoredDiff(rawDiff, ignore.isIgnored);
   // R4.6 (mirror of provider.ts split): ALWAYS compute the secret-block signal
@@ -293,7 +378,14 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // edit perturbs the signature (a cache key that ignored changed source would
   // be stale). Missing/unreadable files hash to a sentinel so deletions still
   // register as a change.
-  const changedFileHashes = await hashChangedFiles(options.cwd, changedFiles);
+  // COLD_START.7: a pinned-head review hashes the COMMITTED blobs at the head,
+  // not the working tree — otherwise a dirty checkout perturbs the cache
+  // signature (and the manifest embedded in review_packet.json) while
+  // changed_files.json and diff.patch stay pure.
+  const changedFileHashes = await hashChangedFiles(options.cwd, changedFiles, {
+    useWorktree: includeWorkingTree,
+    headSha: git.head_sha
+  });
 
   // Content-hash every flag-supplied input file that materially shapes the
   // packet but is NOT discovered through the repo walk (so it never lands in
@@ -348,6 +440,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     head_ref: options.headRef,
     base_sha: git.base_sha,
     head_sha: git.head_sha,
+    uncommitted_files: changedFiles.filter((file) => file.source === "working_tree").length,
     run_mode: runMode,
     milestone,
     input_hashes: inputHashes,
@@ -494,16 +587,31 @@ function readPriorArtifactSignatures(manifestPath: string): Record<string, strin
   }
 }
 
-async function hashChangedFiles(cwd: string, changedFiles: ChangedFile[]): Promise<ChangedFileHash[]> {
+async function hashChangedFiles(
+  cwd: string,
+  changedFiles: ChangedFile[],
+  // COLD_START.7: current-state reviews hash working-tree bytes (the content
+  // under review); pinned-head reviews hash the committed blobs at the head so
+  // a dirty checkout cannot perturb the signature. A path with no blob at the
+  // head (a range deletion) hashes to the "missing" sentinel either way.
+  head: { useWorktree: boolean; headSha: string }
+): Promise<ChangedFileHash[]> {
   const hashes: ChangedFileHash[] = [];
   for (const file of changedFiles) {
     let hash = "missing";
-    const absolute = path.resolve(cwd, file.path);
-    if (isRegularFile(absolute)) {
-      try {
-        hash = await hashFile(absolute);
-      } catch {
-        hash = "unreadable";
+    if (head.useWorktree) {
+      const absolute = path.resolve(cwd, file.path);
+      if (isRegularFile(absolute)) {
+        try {
+          hash = await hashFile(absolute);
+        } catch {
+          hash = "unreadable";
+        }
+      }
+    } else {
+      const blob = readFileBytesAtRef(cwd, head.headSha, file.path);
+      if (blob !== undefined) {
+        hash = crypto.createHash("sha256").update(blob).digest("hex");
       }
     }
     hashes.push({ path: file.path, status: file.status, source: file.source, algorithm: "sha256", hash });
