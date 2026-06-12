@@ -158,7 +158,7 @@ export function renderHumanReviewMarkdown(model: HumanReviewModel, context: Huma
   return `# Human Review
 
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
-
+${model.generated_from.uncommitted_files > 0 ? `\n**includes ${model.generated_from.uncommitted_files} uncommitted file(s) (working tree)**\n` : ""}
 ## Verdict
 
 **${decisionLabel(model.verdict.decision)}.**

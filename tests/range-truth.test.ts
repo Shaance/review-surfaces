@@ -127,6 +127,48 @@ test("review-surfaces.COLD_START.6 the auto chain prefers origin/HEAD and record
   }
 });
 
+test("review-surfaces.COLD_START.6 the auto chain prefers a base that differs from the head (single-branch origin/HEAD shape)", () => {
+  const tmp = makeRepo("feature");
+  try {
+    const older = commitFile(tmp, "README.md", "# repo\n", "init");
+    const tip = commitFile(tmp, "feature.txt", "feature work\n", "feature commit");
+    // A single-branch checkout's remote state: origin/HEAD points at the
+    // checked-out feature branch (== head). origin/main exists at the older
+    // commit and must win, despite origin/HEAD being first in the chain.
+    git(tmp, ["update-ref", "refs/remotes/origin/feature", tip]);
+    git(tmp, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/feature"]);
+    git(tmp, ["update-ref", "refs/remotes/origin/main", older]);
+
+    const result = runCli(tmp, ["all", "--provider", "mock"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readManifest(tmp).base_ref, "origin/main", "the differing candidate must be preferred over origin/HEAD");
+    assert.deepEqual(changedFilePaths(tmp), ["feature.txt"]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.COLD_START.6 an auto base equal to the head is announced, never a silent empty review", () => {
+  const tmp = makeRepo("feature");
+  try {
+    const tip = commitFile(tmp, "README.md", "# repo\n", "init");
+    // The irreducible shape: the ONLY auto candidate is origin/HEAD pointing
+    // at the checked-out branch itself (a pure single-branch clone).
+    git(tmp, ["update-ref", "refs/remotes/origin/feature", tip]);
+    git(tmp, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/feature"]);
+
+    const result = runCli(tmp, ["all", "--provider", "mock"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+      result.stderr,
+      /auto-resolved base .* same commit as the head/,
+      `a base-equals-head auto resolution must be announced on stderr:\n${result.stderr}`
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.COLD_START.6 an exhausted auto chain is a hard error naming the candidates tried", () => {
   const tmp = makeRepo("trunk");
   try {
@@ -282,6 +324,12 @@ test("review-surfaces.COLD_START.7 a HEAD review with a dirty tree announces the
 
     const md = fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.md"), "utf8");
     assert.match(md, /includes 2 uncommitted file\(s\) \(working tree\)/, "human_review.md must carry the line");
+    // PR #79 round 4: the warning belongs in the HEADER — a reviewer must see
+    // it before the verdict, not buried in the evidence pointers.
+    assert.ok(
+      md.indexOf("includes 2 uncommitted file(s)") < md.indexOf("## Verdict"),
+      "the uncommitted line must appear in the header before the verdict"
+    );
     const html = fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.html"), "utf8");
     assert.match(html, /includes 2 uncommitted file\(s\) \(working tree\)/, "the cockpit must carry the line");
 
@@ -329,21 +377,27 @@ test("review-surfaces.COLD_START.7 a ROOT output dir (--out .) never counts its 
     // renderer's output is simulated too (PR #79 round 3: pending_review.json
     // was missing from the list).
     fs.writeFileSync(path.join(tmp, "pending_review.json"), "{}\n");
+    // REAL user files in same-named directories must NOT be treated as
+    // artifact churn (PR #79 round 4): only the exact files the tool writes
+    // are excluded at the root.
+    fs.writeFileSync(path.join(tmp, "inputs", "app-config.yaml"), "real: true\n");
+    fs.mkdirSync(path.join(tmp, "commands"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, "commands", "README.md"), "real docs\n");
     const second = runCliRaw(tmp, args);
     assert.equal(second.status, 0, second.stderr);
     const secondManifest = JSON.parse(fs.readFileSync(path.join(tmp, "manifest.json"), "utf8")) as Record<string, unknown>;
     assert.equal(
       secondManifest.uncommitted_files,
-      0,
-      "the second run must not count the first run's artifacts as uncommitted files"
+      2,
+      "the second run must count the REAL user files and nothing the tool wrote"
     );
     const changed = JSON.parse(fs.readFileSync(path.join(tmp, "inputs", "changed_files.json"), "utf8")) as {
       files: Array<{ path: string }>;
     };
     assert.deepEqual(
       changed.files.map((file) => file.path),
-      ["feature.txt"],
-      "the second run's changed set must still be exactly the range diff"
+      ["commands/README.md", "feature.txt", "inputs/app-config.yaml"],
+      "the second run's changed set must be the range diff plus the real user files only"
     );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

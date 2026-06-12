@@ -326,7 +326,7 @@ function resolveBaseRefForRun(cwd: string, explicitBase: string | undefined, hea
   if (!isGitRepo(cwd) || headSha === undefined) {
     return explicitBase ?? "origin/main";
   }
-  const resolution = resolveBaseRef(cwd, explicitBase);
+  const resolution = resolveBaseRef(cwd, explicitBase, headRef);
   if (!resolution.ok) {
     throw new CliError(resolution.message, ExitCodes.usageError);
   }
@@ -354,6 +354,16 @@ function resolveBaseRefForRun(cwd: string, explicitBase: string | undefined, hea
         `Fetch more history first (GitHub Actions: actions/checkout with fetch-depth: 0; locally: ` +
         `git fetch --unshallow origin), or pass a --base that shares history with the head.`,
       ExitCodes.usageError
+    );
+  }
+  // COLD_START.6 (PR #79 round 4): when the AUTO base lands on the same commit
+  // as the head (single-branch checkouts can leave origin/HEAD on the feature
+  // branch itself; a clean default-branch checkout is the legitimate shape),
+  // say so on stderr — an empty review must never be a silent surprise.
+  if (resolution.base.source === "auto" && resolution.base.sha === requestedHeadSha) {
+    process.stderr.write(
+      `[review-surfaces] auto-resolved base ${resolution.base.ref} is the same commit as the head; ` +
+        `if you expected changes, fetch the default branch (fetch-depth: 0) or pass --base <ref>.\n`
     );
   }
   console.log(

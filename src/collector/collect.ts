@@ -190,9 +190,17 @@ export interface CollectOptions {
 // ("--out ." / output_dir "."), where artifacts sit next to repository files
 // and prefix matching cannot tell them apart. Everything `all`, `human`, and
 // `comment` write at the output-dir top level belongs here (feedback/ stays
-// reviewable on purpose). Pinned by the COLD_START.7 double-run test in
-// tests/range-truth.test.ts.
-const ROOT_ARTIFACT_DIR_PREFIXES = ["inputs/", "diagrams/", "commands/", "prompts/"];
+// reviewable on purpose). The directory patterns name the EXACT files the
+// tool writes (PR #79 round 4: a blanket inputs/ or diagrams/ prefix dropped
+// a user's REAL working-tree files in directories of the same name). Pinned
+// by the COLD_START.7 double-run test in tests/range-truth.test.ts.
+const ROOT_ARTIFACT_PATH_PATTERNS = [
+  /^inputs\/(specs\.index|changed_files|commits|docs\.index|tests\.index|repo\.index|feedback\.index|commands|coverage|privacy)\.json$/,
+  /^inputs\/diff\.patch$/,
+  /^diagrams\/[^/]+\.mmd$/,
+  /^commands\/[^/]+\.json$/,
+  /^prompts\/agent-enrichment\.(md|schema\.json)$/
+];
 const ROOT_ARTIFACT_FILES = new Set([
   "manifest.json",
   "review_packet.json",
@@ -272,7 +280,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const isArtifactPath = (filePath: string): boolean =>
     artifactDirPrefixes.some((prefix) => filePath.startsWith(prefix)) ||
     (rootOutputDir &&
-      (ROOT_ARTIFACT_DIR_PREFIXES.some((prefix) => filePath.startsWith(prefix)) ||
+      (ROOT_ARTIFACT_PATH_PATTERNS.some((pattern) => pattern.test(filePath)) ||
         ROOT_ARTIFACT_FILES.has(filePath)));
   const feedbackPaths = filterPathsByPatterns(repositoryFiles, [feedbackGlob]);
   const commandTranscriptDir = normalizeRelativeDir(options.commandTranscriptDir ?? commandTranscriptInputDir(options.cwd, outputDir));

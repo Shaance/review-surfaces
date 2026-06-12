@@ -65,7 +65,7 @@ export type BaseResolutionResult =
 // the silent working-tree fallback reviewed the wrong range on master-default
 // repos and CI shallow clones). Callers keep the R6 graceful degradation for
 // not-a-repo / unborn-HEAD states by not calling this when HEAD is unresolvable.
-export function resolveBaseRef(cwd: string, explicitBase: string | undefined): BaseResolutionResult {
+export function resolveBaseRef(cwd: string, explicitBase: string | undefined, headRef = "HEAD"): BaseResolutionResult {
   if (explicitBase !== undefined) {
     const sha = resolveGitRefSha(cwd, explicitBase);
     if (sha === undefined) {
@@ -79,6 +79,15 @@ export function resolveBaseRef(cwd: string, explicitBase: string | undefined): B
     }
     return { ok: true, base: { ref: explicitBase, sha, source: "explicit" } };
   }
+  // COLD_START.6 (PR #79 round 4, P1): a single-branch or PR checkout can
+  // leave origin/HEAD pointing at the checked-out feature branch itself, so an
+  // early candidate can equal the requested head and yield an empty review for
+  // a real diff. Prefer the first resolving candidate whose commit DIFFERS
+  // from the head; when every resolving candidate equals the head (the honest
+  // shape of reviewing a clean default branch against itself), the first one
+  // wins and the CLI prints a base-equals-head note.
+  const headSha = resolveGitRefSha(cwd, headRef) ?? resolveGitRefSha(cwd, "HEAD");
+  const resolvedCandidates: BaseResolution[] = [];
   for (const candidate of BASE_AUTO_CHAIN) {
     const sha = resolveGitRefSha(cwd, candidate);
     if (sha === undefined) {
@@ -87,7 +96,11 @@ export function resolveBaseRef(cwd: string, explicitBase: string | undefined): B
     // Record origin/HEAD as the branch it points at (e.g. origin/master): the
     // symref name is opaque in rendered headers and manifests.
     const ref = candidate === "origin/HEAD" ? git(cwd, ["rev-parse", "--abbrev-ref", candidate]) ?? candidate : candidate;
-    return { ok: true, base: { ref, sha, source: "auto" } };
+    resolvedCandidates.push({ ref, sha, source: "auto" });
+  }
+  const preferred = resolvedCandidates.find((candidate) => candidate.sha !== headSha) ?? resolvedCandidates[0];
+  if (preferred) {
+    return { ok: true, base: preferred };
   }
   return {
     ok: false,
