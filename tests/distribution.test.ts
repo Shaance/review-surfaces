@@ -131,8 +131,12 @@ test("review-surfaces.DISTRIBUTION.5 docs/example/ holds the committed sample pa
     const reviewOutput = content.replace(/<script>[\s\S]*?<\/script>/g, "");
     assert.doesNotMatch(reviewOutput, /review-surfaces\.[A-Z_]+\.\d/, `${artifact} is spec-less (no Acai-shaped output)`);
   }
-  // The main README invites the stranger to read a packet before installing.
+  // The main README invites the stranger to read a packet before installing,
+  // and the linked example ships INSIDE the npm tarball so the link resolves
+  // for installed users too.
   assert.match(read("README.md"), /docs\/example\/README\.md/);
+  const exampleManifest = JSON.parse(read("package.json")) as { files?: string[] };
+  assert.ok(exampleManifest.files?.includes("docs/example"), "docs/example ships in the package");
 });
 
 test("review-surfaces.DISTRIBUTION.6 the README change-map screenshot shows the overview and the copy describes overview and zoom", () => {
@@ -166,6 +170,13 @@ test("review-surfaces.DISTRIBUTION.7 the all terminal summary ends with the HTML
   const lastLog = summary.slice(summary.lastIndexOf("console.log("));
   assert.ok(logLines.length >= 2);
   assert.match(lastLog, /HTML cockpit/);
+  // In the all command the generic artifacts line prints BEFORE the summary,
+  // so the run genuinely ends on the pointer.
+  const runAll = cli.split("async function runAll")[1].split("\nasync function ")[0];
+  const artifactsLogIndex = runAll.indexOf("Wrote review-surfaces artifacts to");
+  const summaryCallIndex = runAll.indexOf("printHumanReviewTerminalSummary(");
+  assert.ok(artifactsLogIndex >= 0 && summaryCallIndex >= 0);
+  assert.ok(artifactsLogIndex < summaryCallIndex, "the artifacts line prints before the cockpit-pointer summary");
 });
 
 test("review-surfaces.DISTRIBUTION.8 CHANGELOG.md exists and the remaining internal proposals moved to docs/history/", () => {
@@ -177,6 +188,9 @@ test("review-surfaces.DISTRIBUTION.8 CHANGELOG.md exists and the remaining inter
     assert.ok(changelog.includes(marker), `CHANGELOG covers "${marker}"`);
   }
   assert.match(changelog, /owner('|’)s\s+manual\s+step/i);
+  // The changelog ships in the npm tarball (npm does not auto-include it).
+  const changelogManifest = JSON.parse(read("package.json")) as { files?: string[] };
+  assert.ok(changelogManifest.files?.includes("CHANGELOG.md"), "CHANGELOG.md ships in the package");
   // docs/ no longer mixes internal proposals with user-facing docs.
   const docsEntries = fs.readdirSync(path.join(root, "docs"));
   assert.ok(!docsEntries.some((entry) => entry.includes("proposal")), "no proposal docs left at docs/ top level");

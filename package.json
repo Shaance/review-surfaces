@@ -40,7 +40,9 @@
     "bin",
     "dist",
     "schemas",
-    "docs/images"
+    "docs/images",
+    "docs/example",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=22"

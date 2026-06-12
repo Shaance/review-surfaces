@@ -718,10 +718,13 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
+  // review-surfaces.DISTRIBUTION.7: the generic artifacts line prints BEFORE
+  // the human-review summary, so a first run genuinely ENDS on the cockpit
+  // pointer the summary closes with.
+  console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
   if (humanReview && config.human_review.default_entrypoint) {
     printHumanReviewTerminalSummary(cwd, collection.outputDir, humanReview);
   }
-  console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
   debug(parsed, `completed in ${Date.now() - startedAt}ms`);
   // Gate on the REQUESTED provider, not wholeRepoProvider: in pr mode the narrative
   // IS a remote call with the live provider, so a privacy-blocked diff must still
