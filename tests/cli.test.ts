@@ -6,6 +6,7 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { validateJsonSchema } from "../src/schema/json-schema";
 import { ExitCodes } from "../src/core/exit-codes";
+import { COMMANDS } from "../src/cli/index";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
 const PACKET_SCHEMA = JSON.parse(
@@ -893,6 +894,197 @@ test("review-surfaces.PROVIDERS.7 comment --format review --review-scope pr fail
     const result = spawnSync("node", [CLI, "comment", "--format", "review", "--review-scope", "pr", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
     assert.equal(result.status, ExitCodes.usageError, result.stdout + result.stderr);
     assert.match(result.stderr + result.stdout, /PR-scope draft review requires a current pr_review_surface\.json/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ci-trust uplift Phase 4 (CLI honesty): CLI.9 (reject unknown commands and
+// misspelled flags with a nearest-name suggestion), CLI.10 (honest, complete
+// --help + clean artifact path lines), and CLI.3 (non-write commands leave the
+// working tree untouched).
+// ---------------------------------------------------------------------------
+
+// Minimal committed git repo, mirroring the --verbose test's fixture, for the
+// no-write and outside-cwd-path assertions below.
+function setupMinimalRepo(prefix: string): string {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  fs.writeFileSync(path.join(tmp, "README.md"), "# repo\n");
+  fs.writeFileSync(path.join(tmp, ".gitignore"), ".review-surfaces/\n");
+  fs.writeFileSync(path.join(tmp, "index.ts"), "export const answer = 42;\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
+  return tmp;
+}
+
+test("review-surfaces.CLI.9 an unknown command exits usageError and suggests the nearest valid command", () => {
+  const result = spawnSync("node", [CLI, "collct", "--base", "HEAD"], { encoding: "utf8" });
+  assert.equal(result.status, ExitCodes.usageError, result.stderr);
+  assert.match(result.stderr, /Unknown command: collct/);
+  assert.match(result.stderr, /did you mean 'collect'\?/, "the nearest valid command is suggested");
+  assert.match(result.stderr, /review-surfaces --help/, "the error points at the full command list");
+});
+
+test("review-surfaces.CLI.9 a misspelled flag exits usageError with an Unknown flag suggestion", () => {
+  // The Phase 4 dogfood footgun: `all --proivder mock` ran SILENTLY with the
+  // default provider because the typo'd flag was ignored. It must now be a loud
+  // usage error that suggests --provider.
+  const tmp = setupMinimalRepo("review-surfaces-cli9-flag-");
+  try {
+    const result = spawnSync(
+      "node",
+      [CLI, "all", "--proivder", "mock", "--base", "HEAD", "--head", "HEAD", "--out", ".review-surfaces"],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(result.status, ExitCodes.usageError, result.stdout + result.stderr);
+    assert.match(result.stderr, /Unknown flag: --proivder/);
+    assert.match(result.stderr, /did you mean --provider\?/, "the nearest valid flag is suggested");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI.9 every legitimate flag the strict self-dogfood uses is accepted", () => {
+  // Guards the KNOWN_FLAGS union completeness: a flag-heavy `all` must NOT be
+  // rejected by the new allow-list (an incomplete union would redden the gate).
+  const tmp = setupMinimalRepo("review-surfaces-cli9-union-");
+  try {
+    const result = spawnSync(
+      "node",
+      [
+        CLI, "all",
+        "--provider", "mock",
+        "--base", "HEAD", "--head", "HEAD",
+        "--dogfood", "--strict",
+        "--cache", "--now", "2026-06-13T00:00:00Z",
+        "--max-missing", "1", "--budget", "15m",
+        "--out", ".review-surfaces"
+      ],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(result.status, ExitCodes.success, result.stdout + result.stderr);
+    assert.doesNotMatch(result.stderr, /Unknown flag/, "no legitimate flag is rejected by the allow-list");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI.10 --help documents every command in the dispatch table", () => {
+  const result = spawnSync("node", [CLI, "--help"], { encoding: "utf8" });
+  assert.equal(result.status, ExitCodes.success, result.stderr);
+  for (const command of COMMANDS) {
+    assert.ok(
+      result.stdout.includes(command),
+      `--help must document the '${command}' command from the dispatch table`
+    );
+  }
+});
+
+test("review-surfaces.CLI.10 --help documents the previously-omitted flags and all comment --format values", () => {
+  const result = spawnSync("node", [CLI, "--help"], { encoding: "utf8" });
+  assert.equal(result.status, ExitCodes.success, result.stderr);
+  // A representative set of the flags the CLI reads but --help used to omit.
+  for (const flag of ["--budget", "--verbose", "--check", "--no-redact-secrets", "--readme", "--run-id", "--artifact-name", "--comment-top-n"]) {
+    assert.ok(result.stdout.includes(flag), `--help must document ${flag}`);
+  }
+  // comment --format must list all four values, and --coverage must mention the
+  // lcov.info auto-detect.
+  for (const value of ["github", "sticky", "sarif", "review"]) {
+    assert.ok(result.stdout.includes(value), `--help --format must list the '${value}' value`);
+  }
+  assert.match(result.stdout, /lcov\.info/, "--coverage help must mention the lcov.info auto-detect");
+});
+
+test("review-surfaces.CLI.10 an --out resolving OUTSIDE cwd prints a clean absolute path, not a ../ parent-escape", () => {
+  const tmp = setupMinimalRepo("review-surfaces-cli10-path-");
+  const outsideOut = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-cli10-out-"));
+  try {
+    const result = spawnSync(
+      "node",
+      [CLI, "all", "--provider", "mock", "--base", "HEAD", "--head", "HEAD", "--out", outsideOut],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(result.status, ExitCodes.success, result.stderr);
+    // The user-facing path lines must not carry a ../ parent-escape sequence and
+    // must show the clean absolute path of the outside-cwd target.
+    const wrote = result.stdout.split("\n").filter((line) => line.includes("Wrote review-surfaces artifacts to"));
+    assert.ok(wrote.length > 0, "the artifact path line is printed");
+    for (const line of wrote) {
+      assert.doesNotMatch(line, /\.\.[\\/]/, `the path line must not escape cwd with ../: ${line}`);
+      assert.ok(line.includes(outsideOut), `the path line shows the clean absolute outside-cwd path: ${line}`);
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(outsideOut, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI.3 non-write commands leave the working tree untouched", () => {
+  const tmp = setupMinimalRepo("review-surfaces-cli3-nowrite-");
+  // The .review-surfaces output dir is the explicitly-configured write target;
+  // every OTHER tracked/untracked repo file must be unchanged by a read-only
+  // stage. git status --short (with .review-surfaces gitignored) is the witness.
+  const status = () =>
+    execFileSync("git", ["status", "--short"], { cwd: tmp, encoding: "utf8" })
+      .split("\n")
+      .filter((line) => line.trim().length > 0 && !line.includes(".review-surfaces"))
+      .sort()
+      .join("\n");
+  try {
+    const before = status();
+    for (const command of ["collect", "intent", "evaluate", "risks"]) {
+      const result = spawnSync(
+        "node",
+        [CLI, command, "--provider", "mock", "--base", "HEAD", "--head", "HEAD", "--out", ".review-surfaces"],
+        { cwd: tmp, encoding: "utf8" }
+      );
+      assert.equal(result.status, ExitCodes.success, `${command}: ${result.stderr}`);
+      assert.equal(
+        status(),
+        before,
+        `${command} must not modify any repo file outside the --out artifact directory`
+      );
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI.10 a blocked draft-review payload is neither written nor printed", () => {
+  const tmp = setupReviewFixture("rs-draft-blocked-");
+  try {
+    // Inject a high-confidence secret into the human_review.json summary AND a
+    // suggested-comment body (both plain strings, so the file stays schema-valid).
+    // buildDraftReview then raises `blocked`, and the CLI must refuse to write or
+    // print pending_review.json (that payload is exactly what a reviewer pastes
+    // to GitHub).
+    const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
+    const human = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    const secret = "AIzaSyA1234567890abcdefghijklmnopqrstuv";
+    human.summary = `${human.summary} Leaked key ${secret} was committed.`;
+    if (Array.isArray(human.suggested_comments) && human.suggested_comments.length > 0) {
+      human.suggested_comments[0].body = `General note: SECRET=${secret} leaks in logs.`;
+    }
+    fs.writeFileSync(humanPath, JSON.stringify(human, null, 2));
+
+    const reviewPath = path.join(tmp, ".review-surfaces", "pending_review.json");
+    fs.rmSync(reviewPath, { force: true });
+
+    const result = spawnSync("node", [CLI, "comment", "--format", "review", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    // Without --post/--strict-postability the block is an exit-0 suppression, but
+    // the payload must NOT be written or dumped to stdout.
+    assert.equal(result.status, ExitCodes.success, result.stderr);
+    assert.equal(fs.existsSync(reviewPath), false, "a blocked draft must NOT write pending_review.json");
+    assert.equal(result.stdout.trim(), "", "a blocked draft must NOT dump the payload to stdout");
+    assert.match(result.stderr, /Draft review blocked/, "the block is announced on stderr");
+    assert.doesNotMatch(result.stdout + result.stderr, new RegExp(secret), "the secret must never leak in any output");
+
+    // With --strict-postability the same block is a non-zero (privacy) exit.
+    const strict = spawnSync("node", [CLI, "comment", "--format", "review", "--strict-postability", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    assert.equal(strict.status, ExitCodes.privacyBlocked, strict.stderr);
+    assert.equal(fs.existsSync(reviewPath), false, "the blocked draft still writes nothing under --strict-postability");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

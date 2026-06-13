@@ -13,13 +13,13 @@ import { isTestPath } from "../scope/pr-scope";
 import { intersectCoverageWithDiff } from "../tests-evidence/lcov";
 import { parseBudgetDuration } from "../human/budget";
 import { computeDependencyFacts } from "../risks/dependency-facts";
-import { loadReviewPolicy, POLICY_FILE, POLICY_SCHEMA_PATH, ReviewPolicy } from "../feedback/policy";
+import { loadReviewPolicy, POLICY_FILE, ReviewPolicy } from "../feedback/policy";
 import { computeConfigFacts } from "../risks/config-facts";
 import { buildImportGraph, findSymbolImporters } from "../collector/import-graph";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { loadPrivacyIgnoreSync } from "../privacy/ignore";
-import { stripUndefined } from "../core/guards";
+import { errorMessage, stripUndefined } from "../core/guards";
 import type { CoverageEvidence } from "../human/contract";
 import { PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
 import { loadConfig, ReviewSurfacesConfig } from "../config/config";
@@ -104,7 +104,10 @@ import {
   createPipelineArtifactStoreForCollection
 } from "../pipeline/artifact-store";
 
-const COMMANDS = [
+// review-surfaces.CLI.10: the canonical dispatch table. Exported so the CLI.10
+// help-honesty test can assert every command here also appears in `--help`, and
+// so the CLI.9 unknown-command path can suggest the nearest valid name.
+export const COMMANDS = [
   "init",
   "bootstrap",
   "collect",
@@ -125,6 +128,48 @@ const COMMANDS = [
   "comment",
   "review"
 ];
+
+// review-surfaces.CLI.9: a cheap Levenshtein distance used to suggest the
+// nearest valid command/flag for an unknown one. Bounded inputs (short command
+// and flag names), so the naive O(m*n) table is plenty.
+function levenshtein(a: string, b: string): number {
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const dist: number[][] = Array.from({ length: rows }, () => new Array<number>(cols).fill(0));
+  for (let i = 0; i < rows; i += 1) {
+    dist[i][0] = i;
+  }
+  for (let j = 0; j < cols; j += 1) {
+    dist[0][j] = j;
+  }
+  for (let i = 1; i < rows; i += 1) {
+    for (let j = 1; j < cols; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dist[i][j] = Math.min(dist[i - 1][j] + 1, dist[i][j - 1] + 1, dist[i - 1][j - 1] + cost);
+    }
+  }
+  return dist[a.length][b.length];
+}
+
+// review-surfaces.CLI.9: the nearest candidate by edit distance, or undefined
+// when nothing is close enough (distance > half the longer string's length) so
+// a wholly unrelated token does not get a misleading "did you mean".
+function nearestMatch(value: string, candidates: readonly string[]): string | undefined {
+  let best: string | undefined;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of candidates) {
+    const distance = levenshtein(value, candidate);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = candidate;
+    }
+  }
+  if (best === undefined) {
+    return undefined;
+  }
+  const threshold = Math.max(2, Math.floor(Math.max(value.length, best.length) / 2));
+  return bestDistance <= threshold ? best : undefined;
+}
 
 interface ParsedArgs {
   command: string;
@@ -148,7 +193,15 @@ async function main(): Promise<number> {
   }
 
   if (!COMMANDS.includes(parsed.command)) {
-    throw new CliError(`Unknown command: ${parsed.command}`, ExitCodes.usageError);
+    // review-surfaces.CLI.9: an unknown command is a usage error that suggests
+    // the nearest valid name and points at the full command list, rather than
+    // failing with a bare "Unknown command".
+    const suggestion = nearestMatch(parsed.command, COMMANDS);
+    const hint = suggestion ? ` (did you mean '${suggestion}'?)` : "";
+    throw new CliError(
+      `Unknown command: ${parsed.command}${hint}. Run 'review-surfaces --help' for the full command list.`,
+      ExitCodes.usageError
+    );
   }
 
   if (humanStandaloneArtifactForCommand(parsed.command)) {
@@ -243,7 +296,7 @@ async function runBootstrapCommand(parsed: ParsedArgs): Promise<number> {
 
 async function runCollect(parsed: ParsedArgs): Promise<void> {
   const { collection } = await collect(parsed);
-  console.log(`Wrote review-surfaces artifacts to ${path.relative(process.cwd(), collection.outputDir) || "."}`);
+  console.log(`Wrote review-surfaces artifacts to ${displayPath(process.cwd(), collection.outputDir)}`);
 }
 
 // Resolve --previous-packet to the concrete review_packet.json path the dogfood
@@ -639,7 +692,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // prior reuse-and-succeed behavior rather than forcing a regenerate.
       if (evaluation) {
         await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
-        console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
+        console.log(`inputs unchanged (signature match); reusing existing packet at ${displayPath(cwd, cacheSnapshot.packetPath)}`);
         const cachedGateExit = applyGate(parsed, evaluation, collection, provider, config);
         // review-surfaces.DISTRIBUTION.7: the cache-hit run also ends on the
         // cockpit pointer, after any gate message.
@@ -649,7 +702,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
         return cachedGateExit;
       }
       await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
-      console.log(`inputs unchanged (signature match); reusing existing packet at ${path.relative(cwd, cacheSnapshot.packetPath) || "."}`);
+      console.log(`inputs unchanged (signature match); reusing existing packet at ${displayPath(cwd, cacheSnapshot.packetPath)}`);
       if (config.human_review.enabled && config.human_review.default_entrypoint) {
         printCockpitPointer(cwd, collection.outputDir);
       }
@@ -845,7 +898,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   if (humanReview && config.human_review.default_entrypoint) {
     printHumanReviewTerminalSummary(cwd, collection.outputDir, humanReview);
   }
-  console.log(`Wrote review-surfaces artifacts to ${path.relative(cwd, collection.outputDir) || "."}`);
+  console.log(`Wrote review-surfaces artifacts to ${displayPath(cwd, collection.outputDir)}`);
   debug(parsed, `completed in ${Date.now() - startedAt}ms`);
   // Gate on the REQUESTED provider, not wholeRepoProvider: in pr mode the narrative
   // IS a remote call with the live provider, so a privacy-blocked diff must still
@@ -1014,7 +1067,7 @@ async function buildStageContext(parsed: ParsedArgs): Promise<PipelineStageConte
 }
 
 function logWrote(context: PipelineStageContext): void {
-  console.log(`Wrote review-surfaces artifacts to ${path.relative(context.cwd, context.collection.outputDir) || "."}`);
+  console.log(`Wrote review-surfaces artifacts to ${displayPath(context.cwd, context.collection.outputDir)}`);
 }
 
 async function runIntentStage(parsed: ParsedArgs): Promise<void> {
@@ -1249,7 +1302,7 @@ async function runHumanStage(parsed: ParsedArgs): Promise<void> {
   applyBudgetFlag(parsed, config);
   if (!config.human_review.enabled) {
     removeHumanReviewArtifacts(outDir);
-    console.log(`Human review disabled by config; removed generated human review artifacts from ${path.relative(cwd, outDir) || "."}`);
+    console.log(`Human review disabled by config; removed generated human review artifacts from ${displayPath(cwd, outDir)}`);
     return;
   }
   await writeHumanReviewFromArtifacts(cwd, outDir, reviewScope(parsed), config);
@@ -1263,7 +1316,7 @@ async function runHumanStage(parsed: ParsedArgs): Promise<void> {
     const html = renderHumanReviewHtml(model, { diff: readHumanReviewDiff(outputDir) });
     const htmlPath = path.join(outputDir, "human_review.html");
     await writeText(htmlPath, html);
-    console.log(`Human review (HTML): ${path.relative(cwd, htmlPath) || htmlPath}`);
+    console.log(`Human review (HTML): ${displayPath(cwd, htmlPath)}`);
   } else if (humanFormat !== "markdown") {
     throw new CliError(`Unknown --format: ${humanFormat}. Use markdown (default) or html.`, ExitCodes.usageError);
   }
@@ -1318,7 +1371,7 @@ async function runReviewWalkthrough(parsed: ParsedArgs): Promise<number> {
       // walkthrough never overwrites a prior session's captured decisions.
       const feedbackPath = nextAvailablePath(feedbackDir, `walkthrough-${sessionId}`, ".yaml");
       await writeText(feedbackPath, stringifyYaml(result.feedback));
-      io.write(`Wrote reviewer feedback: ${path.relative(cwd, feedbackPath) || feedbackPath}`);
+      io.write(`Wrote reviewer feedback: ${displayPath(cwd, feedbackPath)}`);
     }
     if (result.commentDrafts.length > 0) {
       // Merge the drafts into the model and re-render only the suggested-comments
@@ -1623,7 +1676,7 @@ function buildHumanReviewForPacket(
   try {
     policy = loadReviewPolicy(cwd);
   } catch (error) {
-    throw new CliError(error instanceof Error ? error.message : String(error), ExitCodes.schemaValidationFailed);
+    throw new CliError(errorMessage(error), ExitCodes.schemaValidationFailed);
   }
   // Policy-required manual checks merge ahead of config (committed policy >
   // local config/feedback), and the policy content hash joins the config
@@ -2229,7 +2282,7 @@ function readHumanReviewFeedback(outDir: string): FeedbackFile[] | undefined {
     console.warn(`Warning: ignored malformed feedback memory index at ${feedbackIndexPath}; expected a feedback array.`);
     return undefined;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.warn(`Warning: ignored malformed feedback memory index at ${feedbackIndexPath}: ${message}`);
     return undefined;
   }
@@ -2317,7 +2370,7 @@ function loadHumanReviewSchema(cwd: string): unknown | undefined {
     try {
       return JSON.parse(fs.readFileSync(candidate, "utf8"));
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
+      const reason = errorMessage(error);
       throw new CliError(
         `Unable to read human review schema at ${path.relative(cwd, candidate)}: ${reason}`,
         ExitCodes.schemaValidationFailed
@@ -2327,9 +2380,24 @@ function loadHumanReviewSchema(cwd: string): unknown | undefined {
   return undefined;
 }
 
+// review-surfaces.CLI.10: a clean, clickable artifact path for log lines. When
+// the target resolves OUTSIDE cwd (the relative form would escape upward with a
+// `../` chain), print the ABSOLUTE path instead of a long `../../../../tmp/...`
+// parent-escape sequence; otherwise keep the compact relative form. An identical
+// in/out path collapses to "." (the cwd itself), matching the prior `|| "."`.
+function displayPath(cwd: string, target: string): string {
+  const rel = path.relative(cwd, target);
+  if (rel === "") {
+    return ".";
+  }
+  if (rel === ".." || rel.startsWith(`..${path.sep}`)) {
+    return path.resolve(cwd, target);
+  }
+  return rel;
+}
+
 function artifactPathForLog(cwd: string, outDir: string, fileName: string): string {
-  const rel = path.relative(cwd, path.join(outDir, fileName));
-  return rel || path.join(outDir, fileName);
+  return displayPath(cwd, path.join(outDir, fileName));
 }
 
 function prSurfaceMatchesPacketManifest(packet: ReviewPacket, surface: PrReviewSurfaceModel): boolean {
@@ -2379,7 +2447,7 @@ async function runValidate(parsed: ParsedArgs): Promise<number> {
     try {
       loaded = loadReviewPolicy(process.cwd());
     } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
+      console.error(errorMessage(error));
       return ExitCodes.schemaValidationFailed;
     }
     if (surface === "policy") {
@@ -2387,7 +2455,10 @@ async function runValidate(parsed: ParsedArgs): Promise<number> {
         console.error(`No ${POLICY_FILE} found to validate.`);
         return ExitCodes.usageError;
       }
-      console.log(`Validated ${POLICY_FILE} against ${POLICY_SCHEMA_PATH}`);
+      // The authority is the INLINE POLICY_SCHEMA bundled with the tool, not the
+      // POLICY_SCHEMA_PATH file (which a consumer repo may not even have on
+      // disk), so the message names the bundled schema rather than a path.
+      console.log(`Validated ${POLICY_FILE} against the bundled review policy schema`);
       return ExitCodes.success;
     }
   }
@@ -2474,7 +2545,7 @@ async function runValidateSidecar(
   try {
     surface = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
   } catch (error) {
-    console.error(`${path.relative(cwd, surfacePath)}: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`${path.relative(cwd, surfacePath)}: ${errorMessage(error)}`);
     return ExitCodes.schemaValidationFailed;
   }
   const issues = issuesFor(cwd, surface);
@@ -2484,7 +2555,7 @@ async function runValidateSidecar(
     }
     return ExitCodes.schemaValidationFailed;
   }
-  console.log(`Validated ${path.relative(cwd, surfacePath)} against the ${label} schema`);
+  console.log(`Validated ${displayPath(cwd, surfacePath)} against the ${label} schema`);
   return ExitCodes.success;
 }
 
@@ -2544,8 +2615,8 @@ async function runValidatePacket(parsed: ParsedArgs): Promise<number> {
 
   // The default schema is the bundled one (package root, COLD_START.1) — a
   // CWD-relative path to it is meaningless noise from a foreign repo.
-  const schemaLabel = customSchema !== undefined ? path.relative(cwd, schemaPath) : "the bundled schemas/review_packet.schema.json";
-  console.log(`Validated ${path.relative(cwd, packetPath)} against ${schemaLabel}`);
+  const schemaLabel = customSchema !== undefined ? displayPath(cwd, schemaPath) : "the bundled schemas/review_packet.schema.json";
+  console.log(`Validated ${displayPath(cwd, packetPath)} against ${schemaLabel}`);
   return ExitCodes.success;
 }
 
@@ -2646,10 +2717,27 @@ async function runCommentDraftReview(parsed: ParsedArgs): Promise<number> {
   const diff = fileExists(diffPath) ? parseStructuredDiff(fs.readFileSync(diffPath, "utf8")) : undefined;
   const draft = buildDraftReview(model, diff);
   const reviewPath = path.join(outputDir, "pending_review.json");
+
+  // review-surfaces.PR_SURFACE.4 (mirrors the sticky strict-postability gate):
+  // a blocked draft (redaction flagged a high-confidence secret that survived
+  // into a comment body or the summary) is NEVER written to pending_review.json
+  // nor dumped to stdout — that payload is exactly what a reviewer would paste
+  // to GitHub, so leaking it is the whole risk. The block is a non-zero
+  // (privacy) exit when posting or strict postability was opted into, and an
+  // exit-0 suppression otherwise (no flag was passed, so nothing was promised).
+  const posting = booleanFlag(parsed, "post");
+  const strictPostability = booleanFlag(parsed, "strict-postability");
+  if (draft.blocked) {
+    console.error(
+      "Draft review blocked: redaction flagged a high-confidence secret; refusing to write or print pending_review.json."
+    );
+    return posting || strictPostability ? ExitCodes.privacyBlocked : ExitCodes.success;
+  }
+
   await writeJson(reviewPath, draft.payload);
   process.stdout.write(`${JSON.stringify(draft.payload, null, 2)}\n`);
   console.error(
-    `Wrote ${path.relative(cwd, reviewPath) || reviewPath} — ${draft.payload.comments.length} inline comment(s), ${draft.unanchored} general. ` +
+    `Wrote ${displayPath(cwd, reviewPath)} — ${draft.payload.comments.length} inline comment(s), ${draft.unanchored} general. ` +
     "This is a PENDING (draft) review with no event; create and submit it yourself on GitHub — nothing is auto-submitted."
   );
   return ExitCodes.success;
@@ -2677,7 +2765,7 @@ async function runCommentSticky(parsed: ParsedArgs): Promise<number> {
   const commentPath = path.join(outputDir, "comment.md");
   await writeText(commentPath, sticky.markdown);
   process.stdout.write(sticky.markdown);
-  console.error(`Wrote ${path.relative(cwd, commentPath) || commentPath}`);
+  console.error(`Wrote ${displayPath(cwd, commentPath)}`);
 
   // review-surfaces.PR_SURFACE.4: redaction and the strict postability gate run
   // before anything is posted. A blocked body (a high-confidence secret survived
@@ -2724,7 +2812,7 @@ async function runCommentGithub(parsed: ParsedArgs): Promise<number> {
   const commentPath = path.join(path.dirname(rendered.packetPath), "comment.md");
   await writeText(commentPath, rendered.markdown);
   process.stdout.write(rendered.markdown);
-  console.error(`Wrote ${path.relative(cwd, commentPath)}`);
+  console.error(`Wrote ${displayPath(cwd, commentPath)}`);
 
   if (booleanFlag(parsed, "post")) {
     const result = postStickyComment(cwd, rendered.markdown);
@@ -2762,7 +2850,7 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
   const commentPath = path.join(path.dirname(surfacePath), "comment.md");
   await writeText(commentPath, markdown);
   process.stdout.write(markdown);
-  console.error(`Wrote ${path.relative(cwd, commentPath)}`);
+  console.error(`Wrote ${displayPath(cwd, commentPath)}`);
   // review-surfaces.PROVIDERS.5: posted PR comments require a validated remote
   // LLM narrative. Local agent-file narratives are useful for dogfooding, but
   // must remain local artifacts and never satisfy the sticky-post gate.
@@ -2813,7 +2901,7 @@ async function loadCurrentHumanReviewForPrComment(
   try {
     model = await readJson(humanReviewPath);
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    const reason = errorMessage(error);
     console.warn(
       `Ignoring unreadable human_review.json (${reason}); falling back to pr_review_surface.json for the PR comment.`
     );
@@ -2925,7 +3013,7 @@ function loadPrSurfaceSchema(cwd: string): unknown | undefined {
     try {
       return JSON.parse(fs.readFileSync(candidate, "utf8"));
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
+      const reason = errorMessage(error);
       throw new CliError(
         `Unable to read PR review surface schema at ${path.relative(cwd, candidate)}: ${reason}`,
         ExitCodes.schemaValidationFailed
@@ -2954,7 +3042,7 @@ async function runCommentSarif(parsed: ParsedArgs): Promise<number> {
     : path.join(path.dirname(rendered.packetPath), "review.sarif");
   await writeText(sarifPath, rendered.json);
   process.stdout.write(rendered.json);
-  console.error(`Wrote ${path.relative(cwd, sarifPath)}`);
+  console.error(`Wrote ${displayPath(cwd, sarifPath)}`);
   return ExitCodes.success;
 }
 
@@ -3007,12 +3095,72 @@ function parseArgs(args: string[]): ParsedArgs {
     }
   }
 
+  // review-surfaces.CLI.9: reject any flag outside the union allow-list with a
+  // usage error and a nearest-name suggestion, rather than silently ignoring a
+  // typo'd flag (e.g. `--proivder mock` running with the default provider). The
+  // bare `help`/`version` pseudo-commands take any flags (they only print), so
+  // the check is skipped there.
+  if (command !== "help" && command !== "version") {
+    for (const key of Object.keys(flags)) {
+      if (!KNOWN_FLAGS.has(key)) {
+        const suggestion = nearestMatch(key, [...KNOWN_FLAGS]);
+        const hint = suggestion ? ` (did you mean --${suggestion}?)` : "";
+        throw new CliError(`Unknown flag: --${key}${hint}`, ExitCodes.usageError);
+      }
+    }
+  }
+
   return { command, flags, positionals };
 }
 
 // Flags that are always boolean switches (no value argument). Listed so the
 // permissive parser does not consume a following positional as their "value".
-const BOOLEAN_FLAGS = new Set(["cache", "dogfood", "force", "no-redact-secrets", "post", "strict", "strict-postability", "verbose", "help", "interactive"]);
+const BOOLEAN_FLAGS = new Set(["cache", "check", "dogfood", "force", "no-redact-secrets", "post", "strict", "strict-postability", "verbose", "help", "interactive", "version"]);
+
+// review-surfaces.CLI.9: the COMPLETE allow-list of every flag the CLI reads on
+// ANY command path (the union of all stringFlag/booleanFlag/optionalBooleanFlag/
+// numberFlag keys, the directly-read flags.budget / flags.help / flags.version,
+// and every BOOLEAN_FLAGS switch). parseArgs rejects any `--key` outside this
+// set with a usage error and a nearest-name suggestion, instead of silently
+// ignoring a typo'd flag. This is the union across commands (not per-command),
+// so a legitimate flag is never rejected merely because it belongs to a
+// different subcommand; the per-command read still decides whether it has an
+// effect. Keep in sync when a new flag is read anywhere in this file.
+const KNOWN_FLAGS = new Set<string>([
+  // value (string) flags
+  "agent-input",
+  "artifact-name",
+  "author",
+  "base",
+  "budget",
+  "command-transcripts",
+  "comment-top-n",
+  "config",
+  "conversation",
+  "coverage",
+  "format",
+  "head",
+  "id",
+  "max-missing",
+  "mode",
+  "model",
+  "now",
+  "out",
+  "previous-packet",
+  "provider",
+  "readme",
+  "redact-secrets",
+  "review-scope",
+  "run-id",
+  "sarif-out",
+  "schema",
+  "spec",
+  "surface",
+  "surface-mode",
+  "test-output",
+  // boolean switches (union with BOOLEAN_FLAGS)
+  ...BOOLEAN_FLAGS
+]);
 
 function stringFlag(parsed: ParsedArgs, key: string): string | undefined {
   const value = parsed.flags[key];
@@ -3149,7 +3297,7 @@ function providerFlag(parsed: ParsedArgs, config: ReviewSurfacesConfig): Provide
   try {
     return parseProviderName(provider);
   } catch (error) {
-    throw new CliError(error instanceof Error ? error.message : String(error), ExitCodes.usageError);
+    throw new CliError(errorMessage(error), ExitCodes.usageError);
   }
 }
 
@@ -3220,9 +3368,12 @@ Options:
                    provider for the narrative; under mock it renders a blocked comment with
                    the deterministic scope counts (never a whole-repo fallback). repo is the
                    legacy whole-repo evaluation/risks/architecture comment (unchanged).
-  --format <fmt>    comment: output format, github (default) or sarif. github writes
-                   .review-surfaces/comment.md; sarif writes .review-surfaces/review.sarif
-                   (SARIF 2.1.0). Both honor --out and read the local packet only.
+  --format <fmt>    comment: output format, one of github (default) | sticky | sarif | review.
+                   github writes .review-surfaces/comment.md (the provider-narrative comment);
+                   sticky writes the deterministic human-rollup .review-surfaces/comment.md;
+                   sarif writes .review-surfaces/review.sarif (SARIF 2.1.0); review writes
+                   .review-surfaces/pending_review.json (a GitHub PENDING draft review). All
+                   honor --out and read the local packet/human_review.json only.
   --sarif-out <path>
                    comment --format sarif: write the SARIF log to this exact file instead
                    of <out>/review.sarif
@@ -3243,7 +3394,9 @@ Options:
                    Optional JUnit XML test report(s) (comma-separated) parsed into
                    per-test names + pass/fail evidence. Writes .review-surfaces/inputs/tests.results.json
   --coverage <path>
-                   Optional istanbul coverage-summary.json with per-file pct, ingested alongside --test-output
+                   Optional istanbul coverage-summary.json with per-file pct, ingested alongside
+                   --test-output. When the path is an lcov report (or omitted), the collector also
+                   auto-detects coverage/lcov.info and intersects it with the diff.
   --id <id>       Optional transcript ID for run
   --provider <name> Optional enrichment provider: mock, ai-sdk, agent-file. Default mock
   --model <model>   Optional AI SDK model as <provider>:<model>, e.g. google:gemini-2.5-flash,
@@ -3276,6 +3429,23 @@ Options:
                    review_packet.json exists; reuses the existing packet and still applies
                    the --strict gate. Any input/provider/model/tool change is a cache miss
                    and regenerates. Absent: always regenerate (unchanged default).
+  --budget <dur>    Override the human-review time budget for this run (forms like 15m, 1h,
+                   1h30m). A bare --budget with no value is a usage error, not a silent off.
+  --no-redact-secrets
+                   Disable secret redaction for this run (overrides config privacy.redact_secrets;
+                   equivalent to --redact-secrets false). Off by default — redaction stays on.
+  --readme <path>   scoreboard: README to update/check, default README.md
+  --run-id <id>     comment --format sticky: CI run id stamped into the sticky comment;
+                   defaults to $GITHUB_RUN_ID when unset.
+  --artifact-name <name>
+                   comment --format sticky: artifact name referenced by the sticky comment.
+  --comment-top-n <n>
+                   comment --format sticky: cap the sticky comment to the top N items.
+  --author <name>   review: label captured reviewer feedback with this author name.
+  --verbose         Print resolved refs / diff source / output dir (and stack traces on an
+                   unexpected failure) to stderr. Off by default (byte-silent stderr).
+  --check           scoreboard: exit non-zero when the committed README block is stale,
+                   instead of rewriting it (CI-friendly verify mode).
   --version         Print the version and exit
   --help            Show this help
 
@@ -3294,7 +3464,12 @@ function humanStandaloneCommandHelp(): string {
     .join("\n");
 }
 
-main()
+// review-surfaces.CLI.10: run the CLI only when this module is the process
+// entrypoint (the bin shim spawns this compiled file directly). Importing it as
+// a module — e.g. a test asserting `--help` lists every exported COMMAND — must
+// be side-effect free and never trigger a stray pipeline run.
+function runCliEntrypoint(): void {
+  main()
   .then((code) => {
     process.exitCode = code;
   })
@@ -3304,7 +3479,7 @@ main()
       process.exitCode = error.exitCode;
       return;
     }
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(errorMessage(error));
     // R6: under --verbose / REVIEW_SURFACES_DEBUG, also print the stack for an
     // unexpected (non-CliError) failure so the cause is debuggable. This catch is
     // outside main() and has no ParsedArgs, so read verbosity from argv/env (same
@@ -3315,3 +3490,8 @@ main()
     }
     process.exitCode = ExitCodes.runtimeError;
   });
+}
+
+if (require.main === module) {
+  runCliEntrypoint();
+}

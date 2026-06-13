@@ -52,7 +52,7 @@ async function withEnv(key: string, value: string | undefined, callback: () => P
 // Provider abstraction
 // ---------------------------------------------------------------------------
 
-test("mock provider is deterministic and contributes nothing by default", async () => {
+test("review-surfaces.EVIDENCE.5 mock provider is deterministic and contributes nothing by default", async () => {
   const a = await mockProvider.generateStructured("enrichment", "prompt", SCHEMA);
   const b = await mockProvider.generateStructured("reasoning", "another prompt", SCHEMA);
   assert.deepEqual(a, { ok: false, reason: "mock_no_enrichment" });

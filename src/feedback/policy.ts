@@ -16,6 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { globToRegExp } from "../core/glob";
+import { errorMessage } from "../core/guards";
 import { validateJsonSchema } from "../schema/json-schema";
 import type { HumanReviewPriority, HumanReviewRequiredManualCheckConfig } from "../human/contract";
 
@@ -120,7 +121,7 @@ export function loadReviewPolicy(cwd: string, policyFile = POLICY_FILE): ReviewP
   try {
     parsed = parseYaml(text);
   } catch (error) {
-    throw new PolicyValidationError(`${policyFile} is not valid YAML: ${error instanceof Error ? error.message : String(error)}`);
+    throw new PolicyValidationError(`${policyFile} is not valid YAML: ${errorMessage(error)}`);
   }
   // The schema is INLINE so policy works in init'd external repos that only
   // ship the packet schema; schemas/review_policy.schema.json mirrors it for
