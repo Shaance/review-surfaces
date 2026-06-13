@@ -57,6 +57,12 @@ components:
         note: The helper must keep local/offline operation, redact secrets, and avoid storing unbounded raw stdout or stderr.
       8:
         requirement: validate must support validating human_review.json and pr_review_surface.json in addition to review_packet.json, for example via a --surface packet|human|pr|all option.
+      9:
+        requirement: The CLI must reject unknown commands and unknown or misspelled flags with a usage error (the usage exit code) that suggests the nearest valid name, rather than silently ignoring them; a per-command known-flag allow-list derived from the flags each command reads backs the flag check.
+        note: "ci-trust uplift Phase 4 (docs/history/CI_TRUST_UPLIFT_GOAL.md). Dogfood: `all --proivder mock` ran silently with the default provider and unknown commands gave no suggestion. Extends CLI.4's predictable-exit-code contract."
+      10:
+        requirement: CLI help and informational output must stay honest and complete — `--help` documents every command in the dispatch table and every flag the CLI reads (asserted by a test iterating the command and flag sets, including --budget, --verbose, --check and all comment --format values), and artifact path lines print a clean clickable path (absolute when the --out target resolves outside the working directory) instead of long parent-escape (../../) sequences.
+        note: "ci-trust uplift Phase 4. Dogfood: --help omitted eight real flags and under-documented comment --format; an outside-cwd --out printed ../../../../../tmp/... paths."
 
   COLLECTOR:
     name: Input collection and indexing
@@ -290,6 +296,12 @@ components:
       21:
         requirement: Reviewer-facing prose must lead with the changed file, the observable behavior, and the concrete reviewer action; internal identifiers such as ACIDs, risk IDs, and card IDs must appear as trailing metadata rather than as the subject of the sentence.
         note: Self-referential bookkeeping phrasing (for example "ranked from whole-packet medium testing risk RISK-001") must be replaced by the underlying reason the item matters.
+      22:
+        requirement: Rollup rendering must lead with the distinguishing detail, not a shared generic summary — test-plan items that differ only by suggested file must either merge into one heading listing the files or lead each heading with its distinguishing field, so the rendered Test plan never repeats visually identical headings (extends HUMAN_REVIEW.19/.21).
+        note: "ci-trust uplift Phase 5 (docs/history/CI_TRUST_UPLIFT_GOAL.md). A live run rendered five identical '### API / schema contract lens fired ...' headings because the rollup led with the generic gap rather than the suggested_file."
+      23:
+        requirement: "Generated reviewer-facing prose must be punctuation- and label-clean — a templated question or sentence embedding a summary that already ends in sentence punctuation must not produce doubled terminal punctuation (for example \".?\"), and the empty linked-risk-id case must not render a label that reads as a risk-severity claim (\"Risk: none\") next to a high-severity ranking line."
+        note: "ci-trust uplift Phase 5. Live runs showed '.?' in reviewer questions and 'Risk: none' rendered directly under 'ranked by high risk severity'."
 
   NARRATIVE:
     name: Grounded change narrative
@@ -479,6 +491,9 @@ components:
       4:
         requirement: The dependency-fact detector must attribute each newly added transitive dependency to the direct dependency that pulled it by parsing the lockfile's dependency edges, recording the attribution as a deterministic fact field, and a lockfile whose edges cannot be resolved must yield unattributed transitive facts (the existing flat output), never a guessed attribution.
         note: Visual uplift P2 tail (brainstorm idea 8). Today's transitive_added facts are flat and unattributed; RENDER.13 renders the attributed chain as a tree.
+      5:
+        requirement: The dependency-fact detector must emit a deterministic fact for a major-version change in either direction, so a major-version downgrade (a likely-breaking supply-chain change) is surfaced, not only an upward bump.
+        note: "ci-trust uplift Phase 3 (docs/history/CI_TRUST_UPLIFT_GOAL.md). dependency-facts only fired major_version_bump when headMajor > baseMajor; a ^3 -> ^2 downgrade produced no fact. A variant of the existing sneaky_dependency fact class, not a new eval-harness class."
 
   BLAST_RADIUS:
     name: Blast-radius facts
@@ -696,6 +711,12 @@ components:
       13:
         requirement: After writing artifacts, the CLI must print exactly one stderr hint suggesting the artifact directory be gitignored when that directory is inside the repository and is neither git-ignored nor already tracked, leaving stdout untouched so the asserted output-ordering contracts do not move, and the hint must not fire in this repository (ignored with tracked exceptions), asserted by tests.
         note: "Release quick-wins uplift Phase 2 (docs/history/QUICK_WINS_UPLIFT_GOAL.md). Closes quick-wins evidence item 8: review-surfaces all writes an un-ignored .review-surfaces/ (including a ~100 KB cockpit HTML) into a stranger's repo with no hint, so the next git add -A commits it."
+      14:
+        requirement: The published npm tarball must not ship compiled test files — the package file allowlist (or build/ignore configuration) must exclude dist/tests so only runtime code, schemas, and docs/example reach consumers, asserted by a test that inspects the resolved pack manifest and finds no dist/tests entry.
+        note: "ci-trust uplift Phase 7 (docs/history/CI_TRUST_UPLIFT_GOAL.md). npm pack shipped 1.6 MB / 87 compiled test files (over half the unpacked tarball); the bin shim only loads dist/src."
+      15:
+        requirement: README must document consuming the tool in CI — a copy-pasteable GitHub Action `uses:` snippet (linking the worked example workflow) and an exit-code table sourced from src/core/exit-codes.ts mapping each code to its meaning — so a CI author can wire the action and branch on exit codes without reading action.yml.
+        note: "ci-trust uplift Phase 7. The README references the reusable Action three times with no usage snippet and sells --strict 'for CI' without documenting the exit codes CI gates on."
 
   MAP_SCALE:
     name: Change-map legibility at scale
@@ -729,6 +750,49 @@ components:
       6:
         requirement: In the cockpit, clicking an overview group must toggle that group's pre-rendered hidden detail SVG using vanilla JS with deterministic markup and the same data- attribute pattern as existing filters, while file clicks inside a detail view keep filtering the review queue exactly as today; human_review.md must render one collapsed details block per group containing its detail mermaid in deterministic order with the embed guard applied per block; the sticky comment stays overview-only.
         note: "Phase 2. Closes the interaction half of failures 3 and 4: the cockpit's only interaction is node-click-filters-queue, and a reviewer cannot ask 'show me just src' anywhere."
+
+  QUALITY_GATE:
+    name: CI quality gate and machine-readable summaries
+    description: >-
+      ci-trust uplift (docs/history/CI_TRUST_UPLIFT_GOAL.md). Turn the deterministic packet
+      into CI-gating and machine-consumable surfaces without recomputing the
+      pipeline: a risk-severity gate flag and JSON summary projections a workflow
+      can branch on.
+    requirements:
+      1:
+        requirement: The quality gate must support failing on deterministic risk severity — a --fail-on <severity> flag (and a config quality_gate.fail_on default) makes the gate decision return the quality-gate-failed code when any non-hypothesis risk item at or above the threshold exists, composing with the existing --strict process-exit behavior.
+        note: "gateDecision never inspected packet.risks; only evaluation results and the provider/privacy boundary gated."
+      2:
+        requirement: A deterministic `comment --format json` renderer must read the local review_packet.json and emit a compact, byte-stable JSON summary (gate code, per-status requirement counts, risk-severity histogram, top-N queue ids) for CI consumers, recomputing nothing — mirroring the SARIF renderer.
+      3:
+        requirement: The `all` and `packet` commands must accept an opt-in --json flag that prints the same structured run summary to stdout while keeping default prose output byte-stable, so a CI step can read one structured line instead of re-parsing artifacts.
+
+  ACTION_IO:
+    name: GitHub Action inputs, outputs, and run surfaces
+    description: >-
+      ci-trust uplift. Make the reusable composite action consumable and visible
+      from a workflow — declared outputs, a run-UI step summary, and Marketplace
+      branding — all reusing the already-rendered local artifacts.
+    requirements:
+      1:
+        requirement: action.yml must declare an outputs block (gate code, missing/invalid/risk counts, artifact name, comment path) populated from the generation step via $GITHUB_OUTPUT, so a consuming workflow can branch on the result.
+      2:
+        requirement: The action must append the rendered review summary (comment.md, or a trimmed top-N) to $GITHUB_STEP_SUMMARY in a best-effort step so the verdict appears in the Actions run UI even on fork PRs where the comment is not posted.
+      3:
+        requirement: action.yml must carry a top-level branding block (icon and color) so the advertised reusable action is GitHub Marketplace-publishable.
+
+  PERF:
+    name: Deterministic performance and spawn economy
+    description: >-
+      ci-trust uplift. Cut redundant work on large repositories with pure,
+      output-identical optimizations — no behavior or artifact change, guarded by
+      tests asserting the reduced work.
+    requirements:
+      1:
+        requirement: buildImportGraph must memoize the injected existence probe so each distinct repo-relative path triggers at most one underlying lookup per build, asserted by a test that the injected exists fake is called at most once per distinct path.
+        note: "Measured 6322 git cat-file spawns on a 256-file repo (21.7x redundancy; one blob probed 106 times)."
+      2:
+        requirement: Hot deterministic loops must avoid redundant rescans — the PR-scope affected-areas accumulation precomputes area ids by group key instead of rescanning all review areas per file, and the transitive-attribution BFS pre-sorts edge sets once rather than per visit — output-identical, asserted by existing-shape tests.
 
 constraints:
   EVIDENCE:
@@ -779,6 +843,9 @@ constraints:
         requirement: The tool must not infer private context that is absent from files or logs.
       5:
         requirement: PR-mode remote prompts must be secret-scanned, redacted, and blocked on high-risk material before any LLM call.
+      6:
+        requirement: Every postable or persisted surface that can carry diff-derived or model text must run secret redaction and expose the high-risk block signal — specifically the privacy ignore-diff filter must fail closed (drop a diff section whose `diff --git` header cannot be parsed into both paths, including git-quoted or space-containing paths), the GitHub draft-review export (pending_review.json and its stdout copy) must redact secrets and return a block signal so a strict-postability gate can later refuse a blocked payload, and provider-credential secret patterns (including google_api_key) must set the remote-block signal consistently. Redaction (not a refusal gate) is what closes each leak, so the requirement is satisfied once every surface redacts and the block signal is exposed.
+        note: "ci-trust uplift Phase 1 (docs/history/CI_TRUST_UPLIFT_GOAL.md). Closes three confirmed leaks: filterIgnoredDiff kept ignored sections when its greedy regex failed on quoted paths; pending_review.json was the only postable surface with zero redactSecrets; google_api_key was blocked:false against the in-file 'all provider tokens blocked' invariant. Also anchors the existing PRIVACY.5 block-before-LLM behavior with an exact-ACID test."
 
   QUALITY:
     name: Testing and release quality
@@ -811,3 +878,12 @@ constraints:
         requirement: schemas/review_packet.schema.json must validate methodology claim evidence metadata and agent handoff validation/deferral metadata.
       3:
         requirement: schemas/human_review.schema.json must require every field present in the current HumanReviewModel, or expose a versioned strict validation mode, so stale partial human_review.json artifacts fail validation instead of degrading quietly.
+      4:
+        requirement: The human review strict schema must reject unknown properties — the top-level object and the high-churn nested objects (verdict, evidence refs, risk-lens findings, change-graph nodes) set additionalProperties:false — so a misspelled or stale field fails `validate --surface human` instead of validating clean and rendering empty, asserted by tests that an artifact carrying an unknown property is rejected.
+        note: "ci-trust uplift Phase 2 (docs/history/CI_TRUST_UPLIFT_GOAL.md). human_review.schema.json was additionalProperties:true in 55 places; a bogus field and a typo'd risk_lens_finding validated clean."
+      5:
+        requirement: The review packet schema must bound agent-influenceable arrays and free-text with maxItems/maxLength caps (mirroring the existing uncovered_lines maxItems-plus-truncated pattern), so a provider cannot bloat review_packet.json unbounded while still passing validation, asserted by a test that the caps exist.
+        note: "ci-trust uplift Phase 2. review_packet.schema.json declared zero maxItems/maxLength; a mock run wrote a ~700 KB packet that still validated."
+      6:
+        requirement: Schema-version and enum drift must be test-guarded across all artifact schemas — pr_review_surface.schema.json schema_version const asserted equal to PR_SURFACE_SCHEMA_VERSION (as packet and human already are), and the risk-lens and evidence-kind enums duplicated in human_review.schema.json hoisted to a single definition (or otherwise tied by test) to the runtime RISK_LENSES and PACKET_EVIDENCE_KINDS source of truth.
+        note: "ci-trust uplift Phase 2. The PR-surface const had no guard test; the lens enum was inline-duplicated three times with only the $defs copy guarded."
