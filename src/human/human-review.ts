@@ -3427,12 +3427,14 @@ function manualCheckQuestionText(action: string): string {
 }
 
 // review-surfaces.HUMAN_REVIEW.23: a reviewer question template appends `?` to
-// an embedded summary/action. When that embedded value already ends in a
-// sentence-ending period it produces doubled terminal punctuation (`.?`). Strip
-// a single trailing period (and any trailing whitespace) from the embedded value
-// before the template appends its `?`, so the rendered question reads cleanly.
+// an embedded summary/action. When that embedded value already ends in ANY
+// sentence-ending punctuation (`.`, `?`, or `!`) the template would produce
+// doubled terminal punctuation (`.?`, `??`, or `!?`). Strip a single trailing
+// sentence-ending mark — and any trailing whitespace before AND after it — from
+// the embedded value before the template appends its `?`, so the rendered
+// question reads cleanly regardless of how the embedded summary was punctuated.
 function forQuestionTail(value: string): string {
-  return value.replace(/\s+$/, "").replace(/\.$/, "");
+  return value.replace(/\s+$/, "").replace(/[.?!]$/, "").replace(/\s+$/, "");
 }
 
 function feedbackQueueTitle(effect: FeedbackPolicyEffect): string {
