@@ -3,7 +3,7 @@
   "$id": "https://review-surfaces.local/schemas/human_review.schema.v1.json",
   "title": "review-surfaces human review cockpit",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "required": [
     "schema_version",
     "mode",
@@ -43,7 +43,7 @@
     },
     "verdict": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": ["decision", "confidence", "reasons"],
       "properties": {
         "decision": {
@@ -148,7 +148,7 @@
           "type": "array",
           "items": {
             "type": "object",
-            "additionalProperties": true,
+            "additionalProperties": false,
             "required": ["path", "churn_added", "churn_removed", "status", "cluster"],
             "properties": {
               "path": { "type": "string" },
@@ -157,19 +157,7 @@
               "churn_removed": { "type": "integer", "minimum": 0 },
               "status": { "enum": ["added", "modified", "deleted", "renamed"] },
               "cluster": { "type": "string" },
-              "lens": {
-                "enum": [
-                  "api_contract",
-                  "security_privacy",
-                  "llm_trust_boundary",
-                  "test_evidence",
-                  "reviewer_ux",
-                  "cache_provenance",
-                  "supply_chain",
-                  "architecture",
-                  "custom"
-                ]
-              }
+              "lens": { "$ref": "#/$defs/riskLens" }
             }
           }
         },
@@ -228,19 +216,7 @@
                   "churn_added": { "type": "integer", "minimum": 0 },
                   "churn_removed": { "type": "integer", "minimum": 0 },
                   "queue_count": { "type": "integer", "minimum": 0 },
-                  "lens": {
-                    "enum": [
-                      "api_contract",
-                      "security_privacy",
-                      "llm_trust_boundary",
-                      "test_evidence",
-                      "reviewer_ux",
-                      "cache_provenance",
-                      "supply_chain",
-                      "architecture",
-                      "custom"
-                    ]
-                  }
+                  "lens": { "$ref": "#/$defs/riskLens" }
                 }
               }
             },
@@ -444,6 +420,19 @@
     "confidence": {
       "enum": ["high", "medium", "low", "unknown"]
     },
+    "riskLens": {
+      "enum": [
+        "api_contract",
+        "security_privacy",
+        "llm_trust_boundary",
+        "test_evidence",
+        "reviewer_ux",
+        "cache_provenance",
+        "supply_chain",
+        "architecture",
+        "custom"
+      ]
+    },
     "semanticChangeFacts": {
       "type": "object",
       "additionalProperties": true,
@@ -567,7 +556,7 @@
     },
     "evidenceRef": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": ["kind", "confidence"],
       "properties": {
         "kind": {
@@ -870,7 +859,7 @@
     },
     "riskLensFinding": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "id",
         "lens",

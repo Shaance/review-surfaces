@@ -132,6 +132,7 @@
         },
         "input_hashes": {
           "type": "array",
+          "maxItems": 100000,
           "items": {
             "$ref": "#/$defs/InputHash"
           }
@@ -226,7 +227,8 @@
           ]
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "line_start": {
           "type": "integer",
@@ -237,29 +239,36 @@
           "minimum": 1
         },
         "sha": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 128
         },
         "url": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "acai_id": {
           "type": "string",
           "pattern": "^[a-z0-9_-]+\\.[A-Z0-9_]+\\.[0-9]+(-[0-9]+)?$"
         },
         "event_id": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "test_name": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "command": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "excerpt_hash": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 128
         },
         "note": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "confidence": {
           "type": "string",
@@ -310,10 +319,12 @@
           "type": "string"
         },
         "title": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -336,33 +347,42 @@
           "type": "string"
         },
         "title": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "requirement": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "source_refs": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/SourceRef"
           }
         },
         "constraints": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "assumptions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "open_questions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "confidence": {
@@ -389,51 +409,66 @@
       ],
       "properties": {
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "spec_mode": {
           "enum": ["acai", "none"]
         },
         "requirements": {
           "type": "array",
+          "maxItems": 5000,
           "items": {
             "$ref": "#/$defs/Requirement"
           }
         },
         "constraints": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "non_goals": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "assumptions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "open_questions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "claimed_candidates": {
           "type": "array",
+          "maxItems": 5000,
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": ["id", "statement", "anchors", "confidence", "trust"],
             "properties": {
               "id": { "type": "string" },
-              "statement": { "type": "string" },
-              "anchors": { "type": "array", "items": { "type": "string" } },
+              "statement": { "type": "string", "maxLength": 20000 },
+              "anchors": {
+                "type": "array",
+                "maxItems": 1000,
+                "items": { "type": "string", "maxLength": 20000 }
+              },
               "confidence": { "enum": ["medium", "low"] },
               "trust": { "const": "claimed" }
             }
@@ -441,6 +476,7 @@
         },
         "sources": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/SourceRef"
           }
@@ -474,7 +510,8 @@
           ]
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "partial_reason": {
           "type": "string",
@@ -489,18 +526,21 @@
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
         },
         "missing_evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
         },
         "review_focus": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "confidence": {
           "type": "string",
@@ -522,16 +562,19 @@
       ],
       "properties": {
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "results": {
           "type": "array",
+          "maxItems": 5000,
           "items": {
             "$ref": "#/$defs/RequirementResult"
           }
         },
         "overreach": {
           "type": "array",
+          "maxItems": 5000,
           "items": {
             "$ref": "#/$defs/RequirementResult"
           }
@@ -558,43 +601,56 @@
           "type": "string"
         },
         "name": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "files": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "responsibilities": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "interactions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "tests": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "risks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -610,30 +666,37 @@
       ],
       "properties": {
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "diagrams": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "diagram_validation": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/DiagramValidation"
           }
         },
         "subsystems": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/SubsystemCard"
           }
         },
         "open_questions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         }
       }
@@ -670,18 +733,23 @@
         },
         "errors": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "warnings": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -700,61 +768,79 @@
       ],
       "properties": {
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "missing_logs": {
           "type": "boolean"
         },
         "considered": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "research": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "decisions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "unchallenged_assumptions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "skipped_checks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "claims_without_evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "verified_claims": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "quality_flags": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -818,21 +904,26 @@
           ]
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "impact": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
         },
         "suggested_checks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "manual_review": {
@@ -863,16 +954,20 @@
           ]
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "requirement_ids": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -897,16 +992,20 @@
           "type": "string"
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "suggested_test": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "manual_check": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -924,42 +1023,50 @@
       ],
       "properties": {
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "items": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/RiskItem"
           }
         },
         "test_evidence": {
           "type": "array",
+          "maxItems": 100000,
           "items": {
             "$ref": "#/$defs/TestEvidence"
           }
         },
         "test_gaps": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/TestGap"
           }
         },
         "missing_automatic_tests": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/MissingAutomaticTest"
           }
         },
         "missing_manual_checks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/MissingManualCheck"
           }
         },
         "review_focus": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         }
       }
@@ -983,13 +1090,16 @@
           "type": "string"
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "suggested_test": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -1015,13 +1125,16 @@
           "type": "string"
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "manual_check": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -1050,7 +1163,8 @@
           ]
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "acai_id": {
           "type": "string"
@@ -1098,16 +1212,20 @@
           ]
         },
         "packet_section": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "finding": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "impact": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -1180,32 +1298,41 @@
       "properties": {
         "status_changes": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/StatusChange"
           }
         },
         "new_overreach": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "resolved_overreach": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "new_risks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "resolved_risks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "count_deltas": {
@@ -1251,10 +1378,12 @@
           "type": "string"
         },
         "command": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "helped_agent": {
           "type": "string",
@@ -1282,20 +1411,24 @@
         },
         "findings": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/DogfoodFinding"
           }
         },
         "remediation_tasks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/RemediationTask"
           }
         },
         "deferrals": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         }
       }
@@ -1313,75 +1446,98 @@
       ],
       "properties": {
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "current_milestone": {
           "type": "string"
         },
         "relevant_acids": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "implemented_changes": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "commands_to_run": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "validation_evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "failed_validation": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "methodology_flags": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "next_tasks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "open_risks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "deferrals": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "artifact_paths": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "changes_since_last_packet": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         }
       }
