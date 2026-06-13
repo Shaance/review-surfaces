@@ -54,6 +54,7 @@ areas:
       - docs/history/OPEN_SOURCE_UPLIFT_GOAL.md
       - docs/history/POLISH_UPLIFT_GOAL.md
       - docs/history/QUICK_WINS_UPLIFT_GOAL.md
+      - docs/history/CI_TRUST_UPLIFT_GOAL.md
       - LICENSE
       - CONTRIBUTING.md
       - review-surfaces.config.yaml
@@ -290,11 +291,33 @@ quality_gate:
   #
   # The release quick-wins uplift (docs/history/QUICK_WINS_UPLIFT_GOAL.md) is
   # fully shipped: all eight staged ACIDs landed phase by phase and were
-  # removed as they shipped, so the allowlist is EMPTY again — any missing
-  # requirement fails the strict self-dogfood gate. Re-add an ACID here only
-  # to stage a new not-yet-shipped requirement, and remove it as that work
-  # lands.
-  allow_missing: []
+  # removed as they shipped.
+  #
+  # The ci-trust uplift (docs/history/CI_TRUST_UPLIFT_GOAL.md) follows the same convention:
+  # Phase 0 stages every not-yet-shipped ACID below, and each later phase
+  # removes its own ACIDs from this allowlist in the PR that ships them. The
+  # gate must be back to `allow_missing: []` when the final phase (Phase 6)
+  # lands. Grouped by phase:
+  allow_missing:
+    - review-surfaces.PRIVACY.6        # Phase 1 privacy-leak-hardening
+    - review-surfaces.SCHEMA.4         # Phase 2 schema-strictness
+    - review-surfaces.SCHEMA.5         # Phase 2
+    - review-surfaces.SCHEMA.6         # Phase 2
+    - review-surfaces.CLI.9            # Phase 4 cli-honesty
+    - review-surfaces.CLI.10           # Phase 4
+    - review-surfaces.QUALITY_GATE.1   # Phase 3 quality-gate + CI surfaces
+    - review-surfaces.QUALITY_GATE.2   # Phase 3
+    - review-surfaces.QUALITY_GATE.3   # Phase 3
+    - review-surfaces.ACTION_IO.1      # Phase 3
+    - review-surfaces.ACTION_IO.2      # Phase 3
+    - review-surfaces.ACTION_IO.3      # Phase 3
+    - review-surfaces.DEP_FACTS.5      # Phase 3
+    - review-surfaces.HUMAN_REVIEW.22  # Phase 5 human-render-polish
+    - review-surfaces.HUMAN_REVIEW.23  # Phase 5
+    - review-surfaces.PERF.1           # Phase 6 head-tree-perf
+    - review-surfaces.PERF.2           # Phase 6
+    - review-surfaces.DISTRIBUTION.14  # Phase 7 distribution-trim + docs
+    - review-surfaces.DISTRIBUTION.15  # Phase 7
 human_review:
   enabled: true
   default_entrypoint: true
