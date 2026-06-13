@@ -152,9 +152,10 @@ invokes the action looks like:
 ```yaml
 # the one step that runs the tool — see pr-review-comment.yml for the
 # surrounding pull_request_target job, split checkouts, and permissions
-- uses: Shaance/review-surfaces@v0.2.0 # pin the secret-bearing action to an immutable ref
+- uses: Shaance/review-surfaces@8ba7c46d73f429c71060040463899333fdd92c9d # v0.2.0
   with:
     provider: mock # mock posts the deterministic sticky; switch to ai-sdk for the LLM narrative
+    spec: features/**/*.feature.yaml # YOUR spec(s); the action defaults to this repo's own spec
     base-ref: origin/${{ github.base_ref }}
     head-ref: HEAD
     subject-directory: subject # PR head, checked out credentialless
@@ -163,18 +164,29 @@ invokes the action looks like:
     post: "true"
 ```
 
-Pin the secret-bearing `uses:` to an immutable ref — a release tag like
-`@v0.2.0` (or a full commit SHA), never a mutable branch like `@main` — so a
-later push to that ref cannot redirect your write token or LLM key elsewhere.
+Pin the secret-bearing `uses:` to a **full 40-char commit SHA** — that is the
+only immutable ref. A release tag like `@v0.2.0` can be moved or deleted, and
+`@main` is mutable, so either could later redirect your write token or LLM key
+to attacker-controlled code. Pin the SHA and keep the human-readable tag in a
+trailing comment (the pattern GitHub's hardening guidance recommends), exactly
+as the snippet above does.
 
 The job's `permissions:` block (in the worked file) grants `contents: read`,
 `pull-requests: write`, and `actions: read` — the last is required, or the
 prior-packet artifact lookup is denied (swallowed as a first-review fallback)
-and the since-last-review delta never appears. Fork PRs get a read-only
-`GITHUB_TOKEN`, so `post: "true"` would silently no-op there — serve them from a
-separate plain `pull_request` job that runs `provider: mock` with
-`post: "false"` and uploads the artifact instead (the upload-only
-`pr-surface-smoke` pattern in this repo's `ci.yml`).
+and the since-last-review delta never appears.
+
+This is why the same-repo `if:` guard is load-bearing. `pull_request_target`
+runs in the **base** repo's context, so the `GITHUB_TOKEN` is read/**write**
+and the repo's secrets are exposed — even for a PR from a public fork. The
+guard (`head.repo.full_name == github.repository`) is what keeps an untrusted
+fork from ever reaching the secret-bearing post path; without it a fork PR
+would run with your write token and LLM key in scope. Fork PRs are instead
+served by a separate plain `pull_request` job (`provider: mock`, no secrets,
+`post: "false"`) that uploads the artifact rather than posting — the
+upload-only `pr-surface-smoke` pattern in this repo's `ci.yml`. Do not assume
+forks get a read-only token under `pull_request_target`; they do not, which is
+precisely why the guard plus the credentialless head checkout matter.
 
 ### Exit codes
 

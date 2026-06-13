@@ -380,20 +380,34 @@ test("review-surfaces.DISTRIBUTION.15 the README documents CI consumption: an ac
     /github\.com\/Shaance\/review-surfaces\/blob\/main\/\.github\/workflows\/pr-review-comment\.yml/,
     "links the worked example workflow (absolute GitHub blob URL)"
   );
-  // (a.1) Supply-chain hardening: the secret-bearing action must be pinned to an
-  // immutable ref (a release tag `@v<semver>` or a 40-char commit SHA), never a
-  // mutable branch like `@main` — a later push to a mutable ref could redirect
-  // the write token / LLM key. Assert at least one `uses: Shaance/...@` is pinned
-  // immutably and that none point at `@main`.
+  // (a.1) Supply-chain hardening: the secret-bearing action must be pinned to a
+  // FULL 40-char commit SHA — the only immutable ref. A release tag (`@v<semver>`)
+  // can be moved or deleted and `@main` is mutable; a later push to either could
+  // redirect the write token / LLM key. Assert the `uses: Shaance/...@` ref is a
+  // 40-hex SHA, and that it points at neither a `@v` tag nor the `@main` branch.
   assert.match(
     readme,
-    /uses:\s*Shaance\/review-surfaces@(v\d|[0-9a-f]{40})/,
-    "the secret-bearing action is pinned to an immutable ref (release tag or commit SHA)"
+    /uses:\s*Shaance\/review-surfaces@[0-9a-f]{40}\b/,
+    "the secret-bearing action is pinned to a full 40-char commit SHA (the only immutable ref)"
+  );
+  assert.doesNotMatch(
+    readme,
+    /uses:\s*Shaance\/review-surfaces@v\d/,
+    "the action is not pinned to a movable @v<semver> tag"
   );
   assert.doesNotMatch(
     readme,
     /uses:\s*Shaance\/review-surfaces@main\b/,
     "the action is not pinned to the mutable @main branch"
+  );
+  // (a.1.1) The composite action defaults `spec` to THIS repo's own spec, so a
+  // consumer copying the snippet must point it at their own spec. The snippet
+  // must therefore show the feature-spec glob (or a spec note) so a consumer's
+  // `features/<x>.feature.yaml` is actually indexed.
+  assert.match(
+    readme,
+    /spec:\s*features\/\*\*\/\*\.feature\.yaml/,
+    "the snippet shows the `features/**` spec glob so the consumer's own spec is indexed"
   );
   // (a.2) The README must keep the `actions: read` permission documented (the
   // worked workflow grants it): the prior-sticky artifact lookup that drives the
