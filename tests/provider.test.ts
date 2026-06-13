@@ -77,7 +77,7 @@ test("resolveModel defaults to google (Gemini first-class) and preserves provide
   });
 });
 
-test("ai-sdk provider honors remotePrivacyBlocked without a network call", async () => {
+test("review-surfaces.PRIVACY.5 ai-sdk provider honors remotePrivacyBlocked without a network call", async () => {
   await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
     const provider = aiSdkProvider({ remotePrivacyBlocked: true });
     const result = await provider.generateStructured("enrichment", "prompt", SCHEMA);
@@ -108,7 +108,7 @@ test("ai-sdk provider resolves the right key per provider prefix", async () => {
   });
 });
 
-test("ai-sdk provider blocks on secret material in the prompt before any call", async () => {
+test("review-surfaces.PRIVACY.5 ai-sdk provider blocks on secret material in the prompt before any call", async () => {
   await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
     const pemLabel = "PRIVATE KEY";
     const prompt = `-----BEGIN ${pemLabel}-----\nabc\n-----END ${pemLabel}-----`;

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { fileEvidence, missingEvidence } from "../src/evidence/evidence";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
-import { renderHunkExcerpt, DEFAULT_HUNK_EXCERPT_MAX_LINES } from "../src/human/hunk-excerpt";
+import { renderHunkExcerpt, resolveStructuredExcerpt, DEFAULT_HUNK_EXCERPT_MAX_LINES } from "../src/human/hunk-excerpt";
 import {
   extractAcids,
   fillAcidTemplate,
@@ -793,4 +793,28 @@ test("leadsWithInternalId flags id-subject lines but not reviewer prose", () => 
   assert.ok(!leadsWithInternalId("- Missing manual review check for the listed requirements."));
   assert.ok(!leadsWithInternalId("1. What evidence closes the requirement?"));
   assert.ok(!leadsWithInternalId("Changed implementation file in src/cli."));
+});
+
+// review-surfaces.PRIVACY.6 — resolveStructuredExcerpt (the cockpit/gutter path)
+// redacts each line AND can now propagate the high-confidence block signal, at
+// API parity with renderHunkExcerpt. Before, it dropped the signal on the floor.
+test("review-surfaces.PRIVACY.6 resolveStructuredExcerpt redacts excerpt lines and raises the block signal", () => {
+  const token = `ghp_${"D".repeat(36)}`;
+  const diff = parseStructuredDiff([
+    "diff --git a/src/cfg.ts b/src/cfg.ts",
+    "--- a/src/cfg.ts",
+    "+++ b/src/cfg.ts",
+    "@@ -1,2 +1,2 @@",
+    " const a = 1;",
+    '-const token = "old";',
+    `+const token = "${token}";`,
+    ""
+  ].join("\n"));
+  const state = { blocked: false };
+  const excerpt = resolveStructuredExcerpt(diff, { path: "src/cfg.ts", line_start: 2, line_end: 2 }, DEFAULT_HUNK_EXCERPT_MAX_LINES, state);
+  assert.ok(excerpt, "an excerpt resolves for the anchored hunk");
+  const body = excerpt!.lines.map((line) => line.text).join("\n");
+  assert.ok(!body.includes(token), "the raw github token must not survive into the excerpt");
+  assert.match(body, /\[REDACTED:github_token\]/, "the excerpt line keeps its redaction marker");
+  assert.equal(state.blocked, true, "the secret raises the block signal through resolveStructuredExcerpt");
 });

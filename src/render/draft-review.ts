@@ -7,6 +7,16 @@
 
 import { HumanReviewModel, SuggestedReviewComment } from "../human/contract";
 import { StructuredDiff } from "../pr/contract";
+import { redactSecrets } from "../privacy/secrets";
+
+// review-surfaces.PRIVACY.6: the draft-review export was the ONLY postable
+// surface that interpolated suggested-comment bodies and the model summary with
+// no secret redaction (every other postable surface redacts). Sink for the
+// block signal so a high-confidence secret can refuse the write/print
+// (the CLI gate that honors `blocked` lives in runCommentDraftReview).
+interface DraftRedactionState {
+  blocked: boolean;
+}
 
 // A single hunk-anchored comment in the GitHub "Create a review" payload.
 export interface DraftReviewComment {
@@ -36,6 +46,10 @@ export interface DraftReviewExport {
   // Suggested comments that are not hunk-anchored (no path + line) and so cannot
   // be inline review comments; surfaced in the review body instead of dropped.
   unanchored: number;
+  // review-surfaces.PRIVACY.6: true when redaction hit a high-confidence
+  // (blocked) secret in any comment body or the summary, so the caller can
+  // refuse to write/print pending_review.json under a strict-postability gate.
+  blocked: boolean;
 }
 
 // Build the pending-review export. The `diff` (the reviewed base...head patch)
@@ -46,22 +60,24 @@ export interface DraftReviewExport {
 // GitHub never rejects (422) the review. When no diff is available the export
 // falls back to a best-effort inline using the comment's own `side` hint.
 export function buildDraftReview(model: HumanReviewModel, diff?: StructuredDiff): DraftReviewExport {
+  const redaction: DraftRedactionState = { blocked: false };
   const comments: DraftReviewComment[] = [];
   const unanchored: string[] = [];
   for (const suggested of model.suggested_comments) {
+    const body = commentBody(suggested, redaction);
     const anchored = suggested.path && suggested.line_start !== undefined ? resolveAnchor(suggested, diff) : undefined;
     if (anchored) {
-      const comment: DraftReviewComment = { path: suggested.path!, line: anchored.line, side: anchored.side, body: commentBody(suggested) };
+      const comment: DraftReviewComment = { path: suggested.path!, line: anchored.line, side: anchored.side, body };
       if (anchored.start_line !== undefined) {
         comment.start_line = anchored.start_line;
         comment.start_side = anchored.side;
       }
       comments.push(comment);
     } else {
-      unanchored.push(`- ${commentBody(suggested)}`);
+      unanchored.push(`- ${body}`);
     }
   }
-  const payload: DraftReviewPayload = { body: reviewBody(model, unanchored), comments };
+  const payload: DraftReviewPayload = { body: reviewBody(model, unanchored, redaction), comments };
   const headSha = model.generated_from?.head_sha;
   // Pin only to a full, resolvable 40-hex SHA. The schema only requires head_sha
   // to be a string, so placeholders ("unknown", "HEAD") or abbreviated values can
@@ -69,7 +85,7 @@ export function buildDraftReview(model: HumanReviewModel, diff?: StructuredDiff)
   if (headSha && /^[0-9a-f]{40}$/.test(headSha)) {
     payload.commit_id = headSha;
   }
-  return { payload, unanchored: unanchored.length };
+  return { payload, unanchored: unanchored.length, blocked: redaction.blocked };
 }
 
 // Resolve a comment's anchor against the diff: returns the GitHub side and line(s)
@@ -115,19 +131,34 @@ function resolveAnchor(comment: SuggestedReviewComment, diff: StructuredDiff | u
 
 // A not-yet-ready draft is prefixed so the reviewer can tell which comments they
 // already approved in-session (REVIEW_LOOP.3) from machine suggestions to confirm.
-function commentBody(comment: SuggestedReviewComment): string {
+// The body is redacted (PRIVACY.6) so no secret reaches pending_review.json or
+// its stdout copy; a blocked redaction raises the shared block signal.
+function commentBody(comment: SuggestedReviewComment, redaction: DraftRedactionState): string {
   const prefix = comment.ready_to_post ? "" : "Draft (confirm before submitting): ";
-  return `${prefix}${comment.body}`;
+  return redact(`${prefix}${comment.body}`, redaction);
 }
 
-function reviewBody(model: HumanReviewModel, unanchored: string[]): string {
+function reviewBody(model: HumanReviewModel, unanchored: string[], redaction: DraftRedactionState): string {
   const lines = [
     "Pending review drafted by review-surfaces from local evidence. Edit and submit it yourself — nothing is auto-submitted.",
     "",
-    `Verdict: ${model.verdict.decision}. ${model.summary}`
+    // unanchored items are already redacted via commentBody; only the summary
+    // needs redacting here.
+    `Verdict: ${model.verdict.decision}. ${redact(model.summary, redaction)}`
   ];
   if (unanchored.length > 0) {
     lines.push("", "General comments (not anchored to a line):", ...unanchored);
   }
   return lines.join("\n");
+}
+
+// Redact secrets from a free-text field and OR its block signal into the shared
+// state, so a high-confidence secret anywhere in the payload is both substituted
+// and flagged.
+function redact(value: string, redaction: DraftRedactionState): string {
+  const result = redactSecrets(value);
+  if (result.blocked) {
+    redaction.blocked = true;
+  }
+  return result.text;
 }

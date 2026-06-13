@@ -164,3 +164,34 @@ test("review-surfaces.PROVIDERS.7 produces a stable payload for an empty comment
   assert.equal(draft.unanchored, 0);
   assert.match(draft.payload.body, /never auto-submit|nothing is auto-submitted/i);
 });
+
+// review-surfaces.PRIVACY.6 — the draft-review export was the only postable
+// surface with no secret redaction; a secret in a suggested comment body or the
+// model summary leaked into pending_review.json (and its stdout copy).
+test("review-surfaces.PRIVACY.6 redacts secrets out of the draft-review payload and flags blocked", () => {
+  const ghToken = `ghp_${"C".repeat(36)}`;
+  const m = {
+    verdict: { decision: "needs_author_clarification" },
+    summary: "Audit done; key AIzaSyA1234567890abcdefghijklmnopqrstuv was committed.",
+    generated_from: {},
+    suggested_comments: [
+      comment({ id: "SC-1", path: "src/a.ts", line_start: 3, body: `Token ${ghToken} is hardcoded here.` }),
+      comment({ id: "SC-2", body: "General note: SECRET=topsecretvalue9999 leaks in logs." }) // unanchored -> body
+    ]
+  } as unknown as HumanReviewModel;
+
+  const draft = buildDraftReview(m);
+  const serialized = JSON.stringify(draft.payload);
+
+  assert.ok(!serialized.includes(ghToken), "the github token must be redacted from the inline comment body");
+  assert.ok(!serialized.includes("AIzaSyA1234567890"), "the google key must be redacted from the summary");
+  assert.ok(!serialized.includes("topsecretvalue9999"), "the secret in the un-anchored comment must be redacted from the body");
+  assert.match(serialized, /\[REDACTED:github_token\]/, "the inline comment body keeps its redaction marker");
+  assert.match(serialized, /\[REDACTED:google_api_key\]/, "the summary keeps its redaction marker");
+  assert.equal(draft.blocked, true, "a high-confidence secret raises the blocked signal for the postability gate");
+});
+
+test("review-surfaces.PRIVACY.6 leaves a clean payload unblocked", () => {
+  const draft = buildDraftReview(model([comment({ path: "src/a.ts", line_start: 1, body: "Add a test for the new branch." })]));
+  assert.equal(draft.blocked, false, "no secret => not blocked, so the payload posts normally");
+});

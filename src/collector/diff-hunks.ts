@@ -340,7 +340,7 @@ function resolveOldPath(acc: FileAccumulator): string | undefined {
   return acc.headerOldPath;
 }
 
-interface DiffGitHeader {
+export interface DiffGitHeader {
   oldPath?: string;
   newPath?: string;
 }
@@ -348,8 +348,10 @@ interface DiffGitHeader {
 // Parse the `diff --git a/X b/Y` header. X and Y may contain spaces, which makes
 // this ambiguous in the general case; we use the conventional `a/`...` b/` split
 // and fall back to a midpoint split for equal-length names. Returns whatever
-// could be recovered (best-effort, never throws).
-function parseDiffGitHeader(line: string): DiffGitHeader | undefined {
+// could be recovered (best-effort, never throws). Exported so the privacy
+// ignore-diff filter (src/privacy/diff.ts) reuses the SAME quote-aware parser
+// and the two cannot drift (review-surfaces.PRIVACY.6).
+export function parseDiffGitHeader(line: string): DiffGitHeader | undefined {
   const rest = line.slice("diff --git ".length).trim();
   if (rest.length === 0) {
     return undefined;

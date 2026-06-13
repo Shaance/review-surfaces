@@ -299,7 +299,6 @@ quality_gate:
   # gate must be back to `allow_missing: []` when the final phase (Phase 6)
   # lands. Grouped by phase:
   allow_missing:
-    - review-surfaces.PRIVACY.6        # Phase 1 privacy-leak-hardening
     - review-surfaces.SCHEMA.4         # Phase 2 schema-strictness
     - review-surfaces.SCHEMA.5         # Phase 2
     - review-surfaces.SCHEMA.6         # Phase 2
