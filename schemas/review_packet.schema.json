@@ -337,33 +337,42 @@
           "type": "string"
         },
         "title": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "requirement": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "source_refs": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/SourceRef"
           }
         },
         "constraints": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "assumptions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "open_questions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "confidence": {

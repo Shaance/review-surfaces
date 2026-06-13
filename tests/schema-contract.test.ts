@@ -882,6 +882,24 @@ test("review-surfaces.SCHEMA.5 provider-claimed candidate statement/anchors carr
   assert.equal(typeof anchorItemLen, "number", "expected numeric maxLength on claimed_candidates[].anchors[]");
 });
 
+test("review-surfaces.SCHEMA.5 requirement free-text fields carry maxLength and maxItems caps", () => {
+  // The intent.requirements count cap bounds how MANY requirements exist, but
+  // each $defs.Requirement still carried unbounded free-text. Cap the body too:
+  // requirement/title strings carry maxLength; constraints/assumptions/
+  // open_questions arrays carry maxItems + per-item maxLength.
+  const base = ["$defs", "Requirement", "properties"];
+  for (const field of ["requirement", "title"]) {
+    const cap = schemaAt(schema, [...base, field, "maxLength"]);
+    assert.equal(typeof cap, "number", `expected numeric maxLength on requirement.${field}`);
+  }
+  for (const field of ["constraints", "assumptions", "open_questions"]) {
+    const cap = schemaAt(schema, [...base, field, "maxItems"]);
+    assert.equal(typeof cap, "number", `expected numeric maxItems on requirement.${field}`);
+    const itemLen = schemaAt(schema, [...base, field, "items", "maxLength"]);
+    assert.equal(typeof itemLen, "number", `expected numeric maxLength on requirement.${field}[]`);
+  }
+});
+
 test("review-surfaces.SCHEMA.5 free-text string fields carry a maxLength cap", () => {
   const stringFields: string[][] = [
     ["$defs", "RequirementResult", "properties", "summary", "maxLength"],
