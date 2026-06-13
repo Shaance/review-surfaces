@@ -227,7 +227,8 @@
           ]
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "line_start": {
           "type": "integer",
@@ -241,17 +242,20 @@
           "type": "string"
         },
         "url": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "acai_id": {
           "type": "string",
           "pattern": "^[a-z0-9_-]+\\.[A-Z0-9_]+\\.[0-9]+(-[0-9]+)?$"
         },
         "event_id": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "test_name": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "command": {
           "type": "string",
