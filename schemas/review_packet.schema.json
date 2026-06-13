@@ -259,7 +259,8 @@
           "type": "string"
         },
         "note": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "confidence": {
           "type": "string",
@@ -389,39 +390,49 @@
       ],
       "properties": {
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "spec_mode": {
           "enum": ["acai", "none"]
         },
         "requirements": {
           "type": "array",
+          "maxItems": 5000,
           "items": {
             "$ref": "#/$defs/Requirement"
           }
         },
         "constraints": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "non_goals": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "assumptions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "open_questions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "claimed_candidates": {
@@ -474,7 +485,8 @@
           ]
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "partial_reason": {
           "type": "string",
@@ -489,18 +501,21 @@
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
         },
         "missing_evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
         },
         "review_focus": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "confidence": {
           "type": "string",
@@ -522,16 +537,19 @@
       ],
       "properties": {
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "results": {
           "type": "array",
+          "maxItems": 5000,
           "items": {
             "$ref": "#/$defs/RequirementResult"
           }
         },
         "overreach": {
           "type": "array",
+          "maxItems": 5000,
           "items": {
             "$ref": "#/$defs/RequirementResult"
           }
@@ -818,21 +836,26 @@
           ]
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "impact": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
         },
         "suggested_checks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "manual_review": {
@@ -924,42 +947,50 @@
       ],
       "properties": {
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "items": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/RiskItem"
           }
         },
         "test_evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/TestEvidence"
           }
         },
         "test_gaps": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/TestGap"
           }
         },
         "missing_automatic_tests": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/MissingAutomaticTest"
           }
         },
         "missing_manual_checks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/MissingManualCheck"
           }
         },
         "review_focus": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         }
       }
@@ -1101,13 +1132,16 @@
           "type": "string"
         },
         "finding": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "impact": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -1254,7 +1288,8 @@
           "type": "string"
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "helped_agent": {
           "type": "string",
@@ -1282,12 +1317,14 @@
         },
         "findings": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/DogfoodFinding"
           }
         },
         "remediation_tasks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/RemediationTask"
           }

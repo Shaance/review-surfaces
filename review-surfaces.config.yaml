@@ -300,9 +300,6 @@ quality_gate:
   # lands. Grouped by phase:
   allow_missing:
     - review-surfaces.PRIVACY.6        # Phase 1 privacy-leak-hardening
-    - review-surfaces.SCHEMA.4         # Phase 2 schema-strictness
-    - review-surfaces.SCHEMA.5         # Phase 2
-    - review-surfaces.SCHEMA.6         # Phase 2
     - review-surfaces.CLI.9            # Phase 4 cli-honesty
     - review-surfaces.CLI.10           # Phase 4
     - review-surfaces.QUALITY_GATE.1   # Phase 3 quality-gate + CI surfaces
