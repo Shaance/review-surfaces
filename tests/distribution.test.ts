@@ -380,6 +380,13 @@ test("review-surfaces.DISTRIBUTION.15 the README documents CI consumption: an ac
     /github\.com\/Shaance\/review-surfaces\/blob\/main\/\.github\/workflows\/pr-review-comment\.yml/,
     "links the worked example workflow (absolute GitHub blob URL)"
   );
+  // (a.1) The posting snippet must mirror the real workflow's permissions: the
+  // prior-sticky artifact lookup that drives the since-last-review delta needs
+  // `actions: read`, or the API call is denied and the delta silently vanishes.
+  assert.match(readme, /actions:\s*read/, "the action snippet grants `actions: read` for the prior-sticky lookup");
+  // (a.2) `--fail-on` ships in a later phase, not this commit. The README must
+  // not promise a flag the CLI does not yet expose.
+  assert.doesNotMatch(readme, /--fail-on/, "the README does not reference the not-yet-shipped --fail-on flag");
   // (b) An exit-code table sourced from src/core/exit-codes.ts mapping each
   // code to its meaning. The table must carry the non-trivial codes with copy
   // a CI author can branch on.
