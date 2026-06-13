@@ -833,7 +833,7 @@ function renderReviewFirst(model: HumanReviewModel, items: ReviewQueueItem[], co
 ${hunkLine}   - Why it matters: ${field(item.reason)}
    - Why ranked here: ${rankingReasonsLine(item)}
    - Action: ${field(item.reviewer_action)}${excerpt ? `\n${excerpt}` : ""}${coverageLine}
-   - Risk: ${item.risk_ids.map((risk) => `\`${field(risk)}\``).join(", ") || "none"}
+   - ${item.risk_ids.length ? `Risk: ${item.risk_ids.map((risk) => `\`${field(risk)}\``).join(", ")}` : "Linked risk IDs: none"}
    - Evidence: ${evidenceList(item.evidence)}`;
     })
     .join("\n\n");
@@ -1031,6 +1031,13 @@ function renderTestPlanRollups(items: TestPlanItem[], maxGroups: number): string
   // Roll up the FULL list first, then cap the number of rendered groups, so a
   // distinct item beyond the raw item cap is not hidden behind earlier
   // duplicates (review-surfaces.HUMAN_REVIEW.19).
+  // review-surfaces.HUMAN_REVIEW.22: the rollup KEY deliberately omits
+  // suggested_file. Items that are identical except for which file they touch
+  // (the common api_contract / schema-lens fan-out) must merge into ONE heading
+  // that lists the affected files, rather than emitting a duplicate visually
+  // identical heading per file. The per-item suggested_file stays in the JSON
+  // model and the standalone test_plan.md; only this rolled-up heading lists the
+  // files together (extends HUMAN_REVIEW.19/.21).
   const groups = rollupBy(
     items,
     (item) =>
@@ -1039,7 +1046,6 @@ function renderTestPlanRollups(items: TestPlanItem[], maxGroups: number): string
         item.priority,
         normalizeAcidTemplate(item.scenario),
         normalizeAcidTemplate(item.expected_result),
-        item.suggested_file ?? "",
         normalizeAcidTemplate(item.command ?? ""),
         normalizeAcidTemplate(item.evidence_gap)
       ].join("|"),
@@ -1058,7 +1064,18 @@ function renderTestPlanRollup(group: RollupGroup<TestPlanItem>): string {
   // so near-identical scenarios do not render as repeated headings; the generic
   // scenario action moves to a bullet. review-surfaces.HUMAN_REVIEW.19/.21.
   const gap = fillAcidTemplate(normalizeAcidTemplate(rep.evidence_gap), group.acids);
-  const file = rep.suggested_file ? `\n- Suggested file: \`${field(rep.suggested_file)}\`` : "";
+  // review-surfaces.HUMAN_REVIEW.22: the rollup KEY no longer includes
+  // suggested_file, so a group may merge items that touch different files. List
+  // every distinct suggested file under one heading (singular/plural label) so
+  // the reviewer sees the full affected-file set without a duplicate heading per
+  // file. Per-item files are still preserved in the JSON model / test_plan.md.
+  const distinctFiles = [...new Set(group.items.map((item) => item.suggested_file).filter((f): f is string => Boolean(f)))];
+  const file =
+    distinctFiles.length === 0
+      ? ""
+      : distinctFiles.length === 1
+        ? `\n- Suggested file: \`${field(distinctFiles[0])}\``
+        : `\n- Suggested files (${distinctFiles.length}): ${distinctFiles.map((f) => `\`${field(f)}\``).join(", ")}`;
   // Fill the command through the same ACID template as the other fields, so a
   // rollup that merged items differing only by an ACID in the command does not
   // show a command naming just the first requirement (the exact per-item command

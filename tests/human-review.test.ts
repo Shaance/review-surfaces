@@ -4004,6 +4004,124 @@ test("trust audit reserves capped invalid-evidence slots for PR risk refs", () =
   assert.match(invalidSummaries, /review-surfaces.INVALID.1/);
 });
 
+// Slice the "## Test plan" section out of the rendered human surface so heading
+// assertions do not bleed into adjacent sections.
+function testPlanSection(markdown: string): string {
+  const start = markdown.indexOf("## Test plan");
+  assert.notEqual(start, -1, "rendered surface should contain a Test plan section");
+  const after = markdown.indexOf("\n## ", start + 1);
+  return after === -1 ? markdown.slice(start) : markdown.slice(start, after);
+}
+
+test("review-surfaces.HUMAN_REVIEW.22 a multi-file api_contract rollup renders one Test plan heading, not a duplicate per file", () => {
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
+  // Several test-plan items that share kind/priority/scenario/expected/gap and
+  // differ ONLY by suggested_file — the api/schema-contract-lens fan-out that
+  // produced five visually identical "### ..." headings in the live run.
+  const files = [
+    "tests/cli.test.ts",
+    "tests/config.test.ts",
+    "tests/schema-contract.test.ts",
+    "tests/distribution.test.ts",
+    "tests/comment.test.ts"
+  ];
+  model.test_plan = files.map((file, index) => ({
+    id: `TP-API-${String(index + 1).padStart(3, "0")}`,
+    kind: "automatic" as const,
+    priority: "recommended" as const,
+    suggested_file: file,
+    scenario: "Add a focused compatibility test for the public API/schema contract change.",
+    expected_result: "The contract change keeps downstream consumers compatible.",
+    maps_to_requirements: ["review-surfaces.HUMAN_REVIEW.1"],
+    maps_to_risks: [],
+    evidence_gap: "API / schema contract lens fired without a compatibility test."
+  }));
+
+  const markdown = renderHumanReviewMarkdown(model);
+  const section = testPlanSection(markdown);
+  const headings = section.split("\n").filter((line) => line.startsWith("### "));
+
+  // Items differing only by suggested_file must collapse to ONE heading.
+  assert.equal(headings.length, 1, `expected a single rolled-up heading, got:\n${headings.join("\n")}`);
+  assert.equal(new Set(headings).size, headings.length, "no duplicate Test plan headings may render");
+  // The one heading must list every affected file (merge, not drop detail).
+  assert.match(section, /Suggested files \(5\):/);
+  for (const file of files) {
+    assert.ok(section.includes(`\`${file}\``), `rolled-up heading should list ${file}`);
+  }
+  // Per-item detail is preserved in the JSON model.
+  assert.deepEqual(model.test_plan.map((item) => item.suggested_file), files);
+});
+
+test("review-surfaces.HUMAN_REVIEW.23 reviewer questions strip a trailing period before the appended '?', so no question renders '.?'", () => {
+  const packet = packetFixture();
+  // An overreach summary that ends in a sentence period flows into the
+  // "How should reviewers resolve this intent gap: <summary>?" template; before
+  // the fix this rendered "... intent.?".
+  packet.evaluation.overreach = [
+    {
+      requirement_id: "OVER-001",
+      status: "overreach",
+      summary: "Release helper changed outside stated human-review intent.",
+      evidence: [fileEvidence("scripts/release.sh", "Release helper is not mapped to the stated intent.")],
+      missing_evidence: [],
+      review_focus: "Confirm whether the release helper belongs in this PR.",
+      confidence: "medium"
+    }
+  ];
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files.push({
+    path: "scripts/release.sh",
+    status: "M",
+    areas: [],
+    role: "implementation",
+    added_lines: 3,
+    deleted_lines: 1
+  });
+  prSurface.scope.out_of_scope_changed_files.push({ path: "scripts/release.sh", status: "M", reason: "unmapped" });
+
+  const model = buildHumanReview({ packet, prSurface, diff: structuredDiffFixture() });
+
+  const overreachQuestion = model.questions.find((question) => /human-review intent/.test(question.question));
+  assert.ok(overreachQuestion, "the overreach intent-gap reviewer question should be generated");
+  // The embedded summary ends in a period; the fix strips it before the
+  // appended '?', so the question ends "...human-review intent?" (not ".?").
+  assert.match(overreachQuestion.question, /human-review intent\?$/);
+
+  // No generated reviewer question (in the model or the rendered surface) may
+  // carry doubled terminal punctuation.
+  for (const question of model.questions) {
+    assert.equal(question.question.includes(".?"), false, `question must not contain '.?': ${question.question}`);
+  }
+  assert.equal(renderHumanReviewMarkdown(model).includes(".?"), false, "rendered surface must not contain '.?'");
+});
+
+test("review-surfaces.HUMAN_REVIEW.23 an empty-risk-id queue item ranked by high risk severity renders 'Linked risk IDs: none', never a bare 'Risk: none'", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  // A changed implementation file with no PR risk candidate produces a queue
+  // item with empty risk_ids; raising the packet risk to high gives the surface
+  // a high-severity ranking line that the bare "Risk: none" sat next to.
+  surface.scope.changed_files.push({
+    path: "src/human/human-review.ts",
+    status: "M",
+    areas: ["HUMAN_REVIEW"],
+    role: "implementation",
+    added_lines: 12,
+    deleted_lines: 2
+  });
+  const packet = packetFixture();
+  packet.risks.items[0].severity = "high";
+
+  const model = buildHumanReview({ packet, prSurface: surface, diff: structuredDiffFixture() });
+  assert.ok(model.review_queue.some((item) => item.risk_ids.length === 0), "an empty-risk-id queue item must exist");
+
+  const markdown = renderHumanReviewMarkdown(model);
+  // The empty case must not read as a risk-severity claim.
+  assert.equal(/- Risk: none\b/.test(markdown), false, "the singular 'Risk: none' label must not render");
+  assert.match(markdown, /- Linked risk IDs: none/);
+});
+
 function prRiskFixture(rule: PrRiskRule): PrReviewSurfaceModel["risks"]["candidates"][number] {
   const fixtures = {
     coverage_regression: {
