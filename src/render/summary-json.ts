@@ -95,8 +95,17 @@ export function projectRunSummary(
   gateContext: GateContext = rendererGateContext()
 ): RunSummaryProjection {
   const results = packet.evaluation?.results ?? [];
-  const counts = countRequirementStatuses(results);
-  const overreach = packet.evaluation?.overreach?.length ?? 0;
+  const overreachResults = packet.evaluation?.overreach ?? [];
+  // Codex finding 4: count each requirement status across BOTH evaluation.results
+  // AND evaluation.overreach, exactly as gateDecision does (it counts
+  // invalid_evidence over [...results, ...overreach]). An overreach entry whose
+  // status is "invalid_evidence" trips the evidence gate (code 4), so it MUST also
+  // land in requirement_counts.invalid_evidence — otherwise the JSON counts would
+  // disagree with the gate_code. Entries whose status is "overreach" are not in the
+  // counted-status set, so they don't double-count; the separate `overreach` bucket
+  // below stays the evaluation.overreach total.
+  const counts = countRequirementStatuses([...results, ...overreachResults]);
+  const overreach = overreachResults.length;
   const riskItems = packet.risks?.items ?? [];
 
   // gate_code mirrors the CLI's deterministic decision over the SAME inputs AND
@@ -145,23 +154,44 @@ function topQueueIds(packet: ReviewPacket, queueIds: string[]): string[] {
   if (queueIds.length > 0) {
     return queueIds.slice(0, TOP_QUEUE_LIMIT);
   }
-  return (packet.risks?.items ?? []).map((item) => item.id).slice(0, TOP_QUEUE_LIMIT);
+  // Codex finding 5: the no-human_review fallback must list only the DETERMINISTIC
+  // risk ids — an LLM-hypothesis-only risk is never proof, so excluding it here
+  // matches the gate (which drops hypotheses via isHypothesisOnly) and the
+  // risk-severity histogram above. Without this filter the machine fallback queue
+  // would surface unverified hypotheses the deterministic queue never would.
+  return (packet.risks?.items ?? [])
+    .filter((item) => !isHypothesisOnly(item.evidence))
+    .map((item) => item.id)
+    .slice(0, TOP_QUEUE_LIMIT);
 }
 
-// review-surfaces.QUALITY_GATE.2: the stable key that ties a human_review.json to
-// the packet it was generated from. A STALE human_review.json (from an older run
-// over a different head) must NOT supply the ranked queue for THIS packet, so the
-// caller compares the packet manifest's head_sha against the queue file's
-// generated_from.head_sha and only trusts a match. "unknown" is the contract's
-// not-resolved sentinel and never counts as a match (it would pair any two
-// unresolved runs).
-function packetHeadSha(packet: ReviewPacket): string | undefined {
+// review-surfaces.QUALITY_GATE.2: the key that ties a human_review.json to the
+// packet it was generated from — the packet manifest's head_sha, compared against
+// the queue file's generated_from.head_sha, so a STALE queue (from an older run
+// over a different head) never supplies the ranked ids for THIS packet.
+//
+// This returns the RAW manifest head_sha string (or undefined when the manifest is
+// missing / non-string). Codex finding 2: it is passed VERBATIM to readQueueIds so
+// a sentinel value ("unknown") reaches the real-sha guard THERE and is rejected,
+// rather than being pre-filtered to undefined (which would skip the freshness
+// check and silently trust the queue). readQueueIds — not this reader — owns the
+// validity decision, so both call paths share one rule.
+function rawPacketHeadSha(packet: ReviewPacket): string | undefined {
   const manifest = packet.manifest;
   if (!isRecord(manifest)) {
     return undefined;
   }
   const headSha = manifest.head_sha;
-  return typeof headSha === "string" && headSha.length > 0 ? headSha : undefined;
+  return typeof headSha === "string" ? headSha : undefined;
+}
+
+// A real commit sha is a non-empty hex string (git short/full SHA-1 or SHA-256).
+// The "unknown"/"HEAD" sentinels, an empty string, and any non-hex value are never
+// a real sha, so they can never key freshness — outside a git repo BOTH the packet
+// AND a stale queue carry "unknown", so two unresolved runs must NOT be treated as
+// the same head.
+function isRealHeadSha(headSha: string): boolean {
+  return /^[0-9a-f]+$/i.test(headSha);
 }
 
 /**
@@ -173,8 +203,16 @@ function packetHeadSha(packet: ReviewPacket): string | undefined {
  * so the caller falls back to the deterministic risk ids — a renderer-only read
  * that recomputes nothing and NEVER throws.
  *
- * `packetHeadSha` is the current packet's manifest head_sha; when present it must
- * equal the queue file's generated_from.head_sha or the (stale) queue is ignored.
+ * `expectedHeadSha` is the current packet's manifest head_sha; when supplied it
+ * must equal the queue file's generated_from.head_sha or the (stale) queue is
+ * ignored.
+ *
+ * Codex finding 2: a sentinel/non-real head_sha ("unknown", "HEAD", empty, or any
+ * non-hex value) is NEVER a valid freshness key — outside a git repo both the
+ * packet AND a stale queue carry "unknown", so matching them would pair two
+ * unrelated runs. When the supplied key is not a real sha we do NOT trust the
+ * queue (return [] so the caller falls back to deterministic risk ids), rather
+ * than skipping the check and trusting a possibly-stale queue.
  */
 export function readQueueIds(cwd: string, outDir?: string, expectedHeadSha?: string): string[] {
   const packetPath = resolvePacketPath(cwd, outDir);
@@ -193,10 +231,14 @@ export function readQueueIds(cwd: string, outDir?: string, expectedHeadSha?: str
   if (!isRecord(model)) {
     return [];
   }
-  // FINDING 4: only trust a queue that was generated FROM this packet. When the
-  // caller knows the packet head_sha, the queue file's generated_from.head_sha
-  // must match; a mismatch (or an unresolvable key) means a stale file -> [].
+  // FINDING 4 + Codex finding 2: only trust a queue that was generated FROM this
+  // packet. When the caller supplies a head_sha it must be a REAL sha AND must
+  // equal the queue file's generated_from.head_sha; a sentinel key, a missing key,
+  // or a mismatch all mean the queue cannot be proven current -> [].
   if (expectedHeadSha !== undefined) {
+    if (!isRealHeadSha(expectedHeadSha)) {
+      return [];
+    }
     const generatedFrom = model.generated_from;
     const queueHeadSha = isRecord(generatedFrom) ? generatedFrom.head_sha : undefined;
     if (typeof queueHeadSha !== "string" || queueHeadSha !== expectedHeadSha) {
@@ -240,9 +282,11 @@ export function renderRunSummaryFromPacketFile(
     return null;
   }
   const packet = JSON.parse(fs.readFileSync(packetPath, "utf8")) as ReviewPacket;
-  // FINDING 4: bind the queue read to THIS packet's head_sha so a stale
-  // human_review.json from an older run cannot supply the ranked ids.
-  const queueIds = readQueueIds(cwd, outDir, packetHeadSha(packet));
+  // FINDING 4 + Codex finding 2: bind the queue read to THIS packet's RAW manifest
+  // head_sha so a stale human_review.json from an older run cannot supply the
+  // ranked ids — and so a sentinel head_sha ("unknown") reaches readQueueIds' real-
+  // sha guard and is rejected (it never silently trusts the queue).
+  const queueIds = readQueueIds(cwd, outDir, rawPacketHeadSha(packet));
   const summary = projectRunSummary(packet, gateOptions, queueIds, gateContext);
   return { summary, json: serializeRunSummary(summary), packetPath };
 }

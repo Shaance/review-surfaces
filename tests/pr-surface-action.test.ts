@@ -83,7 +83,11 @@ test("review-surfaces.PR_SURFACE.5 recovery pins to the last POSTED sticky's run
 
 // review-surfaces.ACTION_IO.1: the action declares an outputs block a consuming
 // workflow can branch on, populated from the deterministic run-summary via
-// $GITHUB_OUTPUT in a renderer-only step (no recompute, no network).
+// $GITHUB_OUTPUT. The privacy-INDEPENDENT counts come from a renderer-only step
+// (no recompute, no network); gate-code is the exception (Codex finding 1) — it
+// comes from the GENERATION step that ran the real gate over the live provider +
+// collection, because a renderer cannot observe a privacy block (the packet
+// records neither the block nor the run's provider).
 test("review-surfaces.ACTION_IO.1 the action declares outputs populated from the packet via $GITHUB_OUTPUT", () => {
   const action = readYaml("action.yml");
   assert.ok(action.outputs, "action.yml must declare a top-level outputs block");
@@ -96,11 +100,24 @@ test("review-surfaces.ACTION_IO.1 the action declares outputs populated from the
   const summaryStep = steps.find((s) => s.id === "summary");
   assert.ok(summaryStep, "the summary step (id: summary) exists");
   assert.match(String(summaryStep.run), /GITHUB_OUTPUT/, "the summary step writes to $GITHUB_OUTPUT");
-  // It derives the machine values from the deterministic JSON projection — a
-  // RENDERER over the local packet, never a recompute or a network call.
+  // It derives the privacy-independent machine values from the deterministic JSON
+  // projection — a RENDERER over the local packet, never a recompute or a network call.
   assert.match(String(summaryStep.run), /comment --format json/);
-  assert.match(String(summaryStep.run), /gate-code=/);
   assert.match(String(summaryStep.run), /missing-count=/);
+  // Codex finding 1: gate-code is NOT re-projected by the renderer (it would report
+  // a clean local-mock context and miss a privacy block). It is sourced from the
+  // GENERATION step, which ran the real gate over the live provider + collection.
+  assert.equal(
+    String(action.outputs["gate-code"].value).includes("steps.generate."),
+    true,
+    "outputs.gate-code must read the generation step's real gate code, not the renderer-only summary step"
+  );
+  const generateStep = steps.find((s) => s.id === "generate");
+  assert.ok(generateStep, "the generation step (id: generate) exists");
+  // The generation step runs `all --json` and writes the real gate_code to $GITHUB_OUTPUT.
+  assert.match(String(generateStep.run), /node "\$RS_BIN" all[\s\S]*--json/, "the generation step passes --json so the run summary carries the real gate_code");
+  assert.match(String(generateStep.run), /gate-code=/, "the generation step writes gate-code to $GITHUB_OUTPUT");
+  assert.match(String(generateStep.run), /GITHUB_OUTPUT/);
 });
 
 // review-surfaces.ACTION_IO.2: the action appends the rendered review summary to

@@ -259,3 +259,61 @@ test("review-surfaces.QUALITY_GATE.2 requirement_counts includes every contract 
   );
   assert.equal((summary.requirement_counts as Record<string, number>).invalid, undefined, "must not use the renamed 'invalid' bucket");
 });
+
+// review-surfaces.QUALITY_GATE.2 (Codex finding 4): gateDecision counts
+// invalid_evidence across BOTH evaluation.results AND evaluation.overreach (an
+// overreach finding can itself fail evidence validation), so the projection's
+// requirement_counts.invalid_evidence MUST do the same — otherwise gate_code (4)
+// and the JSON counts (0 invalid) would disagree.
+test("review-surfaces.QUALITY_GATE.2 invalid_evidence in an overreach entry is counted in requirement_counts AND trips gate_code 4", () => {
+  const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  // Clean results; the ONLY invalid_evidence lives in an OVERREACH entry.
+  packet.evaluation.results = [result("satisfied")];
+  packet.evaluation.overreach = [result("invalid_evidence", "OVERREACH-001")];
+
+  const summary = projectRunSummary(packet);
+  assert.equal(
+    summary.requirement_counts.invalid_evidence,
+    1,
+    "an overreach entry with status invalid_evidence must be counted in requirement_counts.invalid_evidence (matching gateDecision)"
+  );
+  // The `overreach` bucket stays the count of evaluation.overreach entries.
+  assert.equal(summary.requirement_counts.overreach, 1, "the overreach bucket is the evaluation.overreach total");
+  // And the gate_code agrees: the evidence gate (4) trips on the overreach invalid.
+  assert.equal(
+    summary.gate_code,
+    ExitCodes.evidenceValidationFailed,
+    "the same overreach invalid_evidence that the count reflects must trip gate_code 4"
+  );
+  // Cross-check against gateDecision directly over the same evaluation.
+  assert.equal(
+    gateExitCode(packet.evaluation as unknown as EvaluationModel, collection(false), "mock", DEFAULT_OPTIONS),
+    ExitCodes.evidenceValidationFailed,
+    "gateDecision counts the overreach invalid_evidence too, so the count and the code share one source of truth"
+  );
+});
+
+// review-surfaces.QUALITY_GATE.2 (Codex finding 5): the no-human_review fallback
+// for top_queue_ids must list only DETERMINISTIC risk ids — an LLM-hypothesis-only
+// risk is never proof, so it is excluded here exactly as the gate and the
+// risk-severity histogram exclude it. Passing an EMPTY queueIds forces the fallback.
+test("review-surfaces.QUALITY_GATE.2 fallback top_queue_ids excludes LLM-hypothesis-only risks", () => {
+  const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  packet.risks.items = [
+    riskItem("high"),            // deterministic -> id "RISK-high"
+    riskItem("medium", true),    // hypothesis-only -> id "RISK-medium" (must be dropped)
+    riskItem("low")              // deterministic -> id "RISK-low"
+  ] as unknown as ReviewPacket["risks"]["items"];
+
+  // Empty queueIds -> the projection uses the deterministic risk-id fallback.
+  const summary = projectRunSummary(packet, { maxMissing: 0 }, []);
+  assert.deepEqual(
+    summary.top_queue_ids,
+    ["RISK-high", "RISK-low"],
+    "the fallback queue must keep deterministic risk ids in order and drop the hypothesis-only risk"
+  );
+  assert.ok(
+    !summary.top_queue_ids.includes("RISK-medium"),
+    "an LLM-hypothesis-only risk must never appear in the fallback queue"
+  );
+});

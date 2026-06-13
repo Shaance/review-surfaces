@@ -2667,6 +2667,18 @@ async function runComment(parsed: ParsedArgs): Promise<number> {
       ExitCodes.usageError
     );
   }
+  // Codex finding 3: the JSON run-summary is a WHOLE-REPO packet projection — it
+  // reads review_packet.json and never the diff-scoped pr_review_surface.json. In
+  // pr scope it would silently emit repo-wide counts/queue ids while the caller
+  // believes they are PR-scoped, so reject it (mirrors the --format sarif fail-fast
+  // above) rather than producing a silently-wrong PR summary. PR-sidecar JSON is
+  // out of scope; --review-scope repo is the supported path for the JSON summary.
+  if (reviewScope(parsed) === "pr" && format === "json") {
+    throw new CliError(
+      "--format json is not supported with --review-scope pr (the JSON run summary is a repo-scope packet projection, not the PR surface). Use --review-scope repo for the JSON summary.",
+      ExitCodes.usageError
+    );
+  }
   if (format === "sarif") {
     return runCommentSarif(parsed);
   }

@@ -6,6 +6,7 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { renderComment, type DiagramEmbed } from "../src/render/comment";
 import type { ReviewPacket } from "../src/render/packet";
+import { readQueueIds, renderRunSummaryFromPacketFile } from "../src/render/summary-json";
 import { minimalReviewPacket } from "./helpers/review-packet";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
@@ -647,10 +648,22 @@ test("review-surfaces.QUALITY_GATE.2 comment --format json emits a deterministic
 test("review-surfaces.QUALITY_GATE.2 top_queue_ids comes from the ranked review queue, not the risk ids", () => {
   const cwd = setupFixture("rs-queue-ids-");
   try {
+    // Codex finding 2: the queue is trusted only when the packet's head_sha is a
+    // REAL resolved commit sha (a sentinel "unknown" can never key freshness). A
+    // committed fixture resolves HEAD to a real sha, so the packet head_sha and the
+    // queue's generated_from.head_sha agree on a stable identity and the queue is
+    // (correctly) used — the realistic in-repo scenario this test asserts.
+    execFileSync("git", ["add", "-A"], { cwd, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd, stdio: "ignore" });
     runAll(cwd);
     const queueModel = JSON.parse(fs.readFileSync(path.join(cwd, ".review-surfaces", "human_review.json"), "utf8"));
     const queueIds = (queueModel.review_queue as Array<{ id: string }>).map((item) => item.id);
     assert.ok(queueIds.length > 0, "fixture run must produce a non-empty ranked queue");
+    assert.match(
+      String(queueModel.generated_from?.head_sha ?? ""),
+      /^[0-9a-f]+$/i,
+      "the committed fixture must resolve HEAD to a real hex sha so the queue can be trusted"
+    );
 
     const summary = JSON.parse(runComment(cwd, ["--format", "json"]).stdout);
     assert.deepEqual(
@@ -820,5 +833,108 @@ test("review-surfaces.QUALITY_GATE.2 comment --format json never throws on a sca
     assert.deepEqual(summary.top_queue_ids, riskIds, "a scalar human_review.json must fall back to the risk ids");
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces.QUALITY_GATE.2 (Codex finding 2): the "unknown" head_sha
+// sentinel (no git repo / unresolved HEAD) is NEVER a valid freshness key. Outside
+// a git repo BOTH the packet AND a stale human_review.json carry head_sha
+// "unknown", so a naive string match would trust the STALE queue. readQueueIds must
+// reject a sentinel expectedHeadSha and return [] so the caller falls back to risk
+// ids — even though the queue file's generated_from.head_sha equals the sentinel.
+test("review-surfaces.QUALITY_GATE.2 readQueueIds rejects the 'unknown' head_sha sentinel even when the queue's key matches it", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rs-sentinel-queue-"));
+  try {
+    const outDir = path.join(tmp, ".review-surfaces");
+    fs.mkdirSync(outDir, { recursive: true });
+    // A queue file whose generated_from.head_sha is the SAME "unknown" sentinel.
+    fs.writeFileSync(
+      path.join(outDir, "human_review.json"),
+      JSON.stringify({
+        generated_from: { head_sha: "unknown" },
+        review_queue: [{ id: "STALE-1" }, { id: "STALE-2" }]
+      })
+    );
+
+    // A REAL sha still binds normally (control): a matching real sha trusts the queue.
+    const real = readQueueIds(tmp, ".review-surfaces", "unknown");
+    assert.deepEqual(real, [], "a sentinel 'unknown' head_sha must never trust the queue, even when the queue's key is also 'unknown'");
+
+    // Control: with a real hex sha that matches, the queue IS trusted.
+    fs.writeFileSync(
+      path.join(outDir, "human_review.json"),
+      JSON.stringify({
+        generated_from: { head_sha: "deadbeef" },
+        review_queue: [{ id: "Q-1" }]
+      })
+    );
+    assert.deepEqual(
+      readQueueIds(tmp, ".review-surfaces", "deadbeef"),
+      ["Q-1"],
+      "a REAL hex head_sha that matches the queue's generated_from.head_sha is trusted"
+    );
+    // Other non-hex sentinels ("HEAD", empty) are rejected too.
+    assert.deepEqual(readQueueIds(tmp, ".review-surfaces", "HEAD"), [], "the 'HEAD' sentinel is not a real sha");
+    assert.deepEqual(readQueueIds(tmp, ".review-surfaces", ""), [], "an empty head_sha is not a real sha");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces.QUALITY_GATE.2 (Codex finding 2), end-to-end: a packet whose
+// manifest head_sha is the "unknown" sentinel must NOT inherit a stale, string-
+// matching queue. renderRunSummaryFromPacketFile reads the packet head_sha
+// verbatim, so the sentinel reaches the guard and the projection falls back to the
+// deterministic risk ids instead of the stale queue's ids.
+test("review-surfaces.QUALITY_GATE.2 renderRunSummaryFromPacketFile with a sentinel head_sha falls back to risk ids over a string-matching stale queue", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rs-sentinel-e2e-"));
+  try {
+    const outDir = path.join(tmp, ".review-surfaces");
+    fs.mkdirSync(outDir, { recursive: true });
+    const packet = minimalReviewPacket() as unknown as ReviewPacket;
+    packet.manifest.head_sha = "unknown"; // the not-resolved sentinel
+    packet.risks.items = [
+      { id: "RISK-DET-1", category: "correctness", severity: "high", summary: "deterministic", evidence: [] }
+    ] as unknown as ReviewPacket["risks"]["items"];
+    fs.writeFileSync(path.join(outDir, "review_packet.json"), JSON.stringify(packet));
+    // A stale queue whose generated_from.head_sha ALSO equals the "unknown" sentinel.
+    fs.writeFileSync(
+      path.join(outDir, "human_review.json"),
+      JSON.stringify({
+        generated_from: { head_sha: "unknown" },
+        review_queue: [{ id: "STALE-Q-1" }]
+      })
+    );
+
+    const rendered = renderRunSummaryFromPacketFile(tmp, ".review-surfaces");
+    assert.ok(rendered, "the packet exists, so a summary must render");
+    assert.deepEqual(
+      rendered!.summary.top_queue_ids,
+      ["RISK-DET-1"],
+      "a sentinel head_sha must fall back to the deterministic risk ids, never the stale string-matching queue"
+    );
+    assert.ok(!rendered!.summary.top_queue_ids.includes("STALE-Q-1"), "the stale queue id must not leak in");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces.QUALITY_GATE.2 / ACTION_IO (Codex finding 3): the JSON run
+// summary is a WHOLE-REPO packet projection and never reads the PR sidecar
+// (pr_review_surface.json). Combining --format json with --review-scope pr would
+// silently emit repo-wide counts/queue ids under a PR flag, so it must FAIL FAST
+// (mirroring the --format sarif fail-fast), not produce a silently-wrong summary.
+test("review-surfaces.ACTION_IO comment --review-scope pr --format json is a usage error (JSON summary is repo-scope only)", () => {
+  const tmp = setupFixture("rs-pr-json-reject-");
+  try {
+    const result = runComment(tmp, ["--review-scope", "pr", "--format", "json"]);
+    assert.notEqual(result.status, 0, "json must not silently emit a whole-repo summary in pr scope");
+    assert.match(result.stderr, /json is not supported with --review-scope pr/);
+    // The same rejection applies via the --mode pr alias for review scope.
+    const aliased = runComment(tmp, ["--mode", "pr", "--format", "json"]);
+    assert.notEqual(aliased.status, 0, "the --mode pr alias must reject --format json too");
+    assert.match(aliased.stderr, /json is not supported with --review-scope pr/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
