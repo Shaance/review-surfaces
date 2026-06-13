@@ -82,6 +82,16 @@ export function buildPrScope(input: BuildPrScopeInput): PrScopeModel {
   changedFiles.sort((left, right) => compareStrings(left.path, right.path));
 
   // --- affected_areas ------------------------------------------------------
+  // review-surfaces.PERF.2: precompute the area_ids for each group_key ONCE from
+  // reviewAreas instead of re-scanning ALL review areas inside the per-file,
+  // per-group loop (which repeated the full scan even for group keys already
+  // seen). Output-identical: the same area ids land in each accumulator entry.
+  const areaIdsByGroupKey = new Map<string, Set<string>>();
+  for (const area of reviewAreas) {
+    const ids = areaIdsByGroupKey.get(area.groupKey) ?? new Set<string>();
+    ids.add(area.id);
+    areaIdsByGroupKey.set(area.groupKey, ids);
+  }
   const areaAccumulator = new Map<
     string,
     { group_key: string; name: string; area_ids: Set<string>; changed_files: Set<string> }
@@ -91,14 +101,9 @@ export function buildPrScope(input: BuildPrScopeInput): PrScopeModel {
       const entry = areaAccumulator.get(groupKey) ?? {
         group_key: groupKey,
         name: areaName(reviewAreas, groupKey),
-        area_ids: new Set<string>(),
+        area_ids: new Set<string>(areaIdsByGroupKey.get(groupKey) ?? []),
         changed_files: new Set<string>()
       };
-      for (const area of reviewAreas) {
-        if (area.groupKey === groupKey) {
-          entry.area_ids.add(area.id);
-        }
-      }
       entry.changed_files.add(changedFile.path);
       areaAccumulator.set(groupKey, entry);
     }

@@ -77,6 +77,62 @@ test("review-surfaces.DEP_FACTS.5 a major-version DOWNGRADE (^3 -> ^2) produces 
   );
 });
 
+test("review-surfaces.PERF.2 transitive attribution is output-identical with edge sets pre-sorted once (per-visit sort removed from the BFS)", () => {
+  // A wide lockfile: one direct root (root-pkg) fanning out to MANY transitives
+  // whose lockfile dependency edges are recorded in NON-alphabetical key order.
+  // The attribution BFS used to `[...edges].sort()` on EVERY visit to keep the
+  // traversal deterministic; the LockGraph now pre-sorts each node's edge list
+  // ONCE at build time, so that per-visit sort is gone from the hot loop. This
+  // fixture proves the optimization preserved behaviour: every transitive is
+  // still attributed to the one direct root that pulls it, regardless of the
+  // unsorted edge order in the lockfile.
+  const headManifest = JSON.stringify({ dependencies: { "root-pkg": "^1.0.0" } });
+  const baseLock = JSON.stringify({
+    lockfileVersion: 3,
+    packages: { "node_modules/root-pkg": { version: "1.0.0" } }
+  });
+  // Edges deliberately listed out of order (zeta before alpha before mid) so a
+  // missing/incorrect ordering would surface as non-deterministic attribution.
+  const headLock = JSON.stringify({
+    lockfileVersion: 3,
+    packages: {
+      "node_modules/root-pkg": {
+        version: "1.1.0",
+        dependencies: { "zeta-dep": "^1.0.0", "alpha-dep": "^1.0.0", "mid-dep": "^1.0.0" }
+      },
+      "node_modules/zeta-dep": { version: "1.0.0", dependencies: { "deep-dep": "^1.0.0" } },
+      "node_modules/alpha-dep": { version: "1.0.0" },
+      "node_modules/mid-dep": { version: "1.0.0" },
+      "node_modules/deep-dep": { version: "1.0.0" }
+    }
+  });
+  const compute = () =>
+    computeDependencyFacts({
+      changedFiles: [{ path: "package-lock.json" }],
+      readBase: (filePath) => (filePath === "package-lock.json" ? baseLock : undefined),
+      readHead: (filePath) =>
+        filePath === "package-lock.json" ? headLock : filePath === "package.json" ? headManifest : undefined
+    });
+
+  const facts = compute();
+  const attributed = facts
+    .filter((fact) => fact.kind === "transitive_added")
+    .map((fact) => ({ package: fact.package, via: fact.via }));
+
+  // Expected attribution is UNCHANGED by the pre-sort: every transitive (direct
+  // edges AND the deep one reached through zeta-dep) attributes to root-pkg.
+  assert.deepEqual(attributed, [
+    { package: "alpha-dep", via: "root-pkg" },
+    { package: "deep-dep", via: "root-pkg" },
+    { package: "mid-dep", via: "root-pkg" },
+    { package: "zeta-dep", via: "root-pkg" }
+  ]);
+
+  // Determinism preserved: identical inputs -> identical attributed output, so
+  // pre-sorting once (not per visit) did not perturb the traversal order.
+  assert.deepEqual(compute(), facts);
+});
+
 test("review-surfaces.DEP_FACTS.3 facts are deterministic, offline, and carry no registry metadata", () => {
   const head = JSON.stringify({ dependencies: { fresh: "^1.0.0" } });
   const args = { changedFiles: [{ path: "package.json" }], readBase: () => "{}", readHead: () => head };

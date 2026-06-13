@@ -626,27 +626,32 @@ async function hashChangedFiles(
   // head (a range deletion) hashes to the "missing" sentinel either way.
   head: { useWorktree: boolean; headSha: string }
 ): Promise<ChangedFileHash[]> {
-  const hashes: ChangedFileHash[] = [];
-  for (const file of changedFiles) {
-    let hash = "missing";
-    if (head.useWorktree) {
-      const absolute = path.resolve(cwd, file.path);
-      if (isRegularFile(absolute)) {
-        try {
-          hash = await hashFile(absolute);
-        } catch {
-          hash = "unreadable";
+  // review-surfaces.PERF.2 (output-identical): map each file to its hash and
+  // await the batch, instead of awaiting one async worktree hash at a time.
+  // Order is preserved by mapping (not pushing), so the result is byte-identical
+  // and deterministic regardless of which hash resolves first. The committed-blob
+  // branch stays synchronous; only the worktree-disk reads run concurrently.
+  return Promise.all(
+    changedFiles.map(async (file) => {
+      let hash = "missing";
+      if (head.useWorktree) {
+        const absolute = path.resolve(cwd, file.path);
+        if (isRegularFile(absolute)) {
+          try {
+            hash = await hashFile(absolute);
+          } catch {
+            hash = "unreadable";
+          }
+        }
+      } else {
+        const blob = readFileBytesAtRef(cwd, head.headSha, file.path);
+        if (blob !== undefined) {
+          hash = crypto.createHash("sha256").update(blob).digest("hex");
         }
       }
-    } else {
-      const blob = readFileBytesAtRef(cwd, head.headSha, file.path);
-      if (blob !== undefined) {
-        hash = crypto.createHash("sha256").update(blob).digest("hex");
-      }
-    }
-    hashes.push({ path: file.path, status: file.status, source: file.source, algorithm: "sha256", hash });
-  }
-  return hashes;
+      return { path: file.path, status: file.status, source: file.source, algorithm: "sha256" as const, hash };
+    })
+  );
 }
 
 // A flag-supplied input file plus a content hash of its current bytes. Kind +

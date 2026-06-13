@@ -90,6 +90,26 @@ export interface ImportGraph {
 
 export const DEFAULT_IMPORT_GRAPH_FILE_CAP = 4000;
 
+// review-surfaces.PERF.1: wrap an existence probe in a per-build memo so each
+// distinct repo-relative path triggers at most ONE underlying lookup for the
+// life of the build. resolveSpecifier probes up to ~7 candidate paths PER
+// specifier and the same paths recur across every importing file, while in real
+// runs `exists` is wired to a per-call `git cat-file` spawn — without this the
+// graph spawned 6322 cat-files (21.7x redundancy) on a 256-file repo. Pure and
+// output-identical: the memo returns the exact boolean the probe would have.
+function memoizeExists(exists: (repoRelativePath: string) => boolean): (repoRelativePath: string) => boolean {
+  const cache = new Map<string, boolean>();
+  return (repoRelativePath: string): boolean => {
+    const cached = cache.get(repoRelativePath);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const result = exists(repoRelativePath);
+    cache.set(repoRelativePath, result);
+    return result;
+  };
+}
+
 // Build a one-pass reverse import graph over the given source files. `read`
 // returns a file's content (worktree or committed blob); contents are cached on
 // the graph so symbol lookups never re-read importers.
@@ -100,6 +120,9 @@ export function buildImportGraph(options: {
   fileCap?: number;
 }): ImportGraph {
   const cap = options.fileCap ?? DEFAULT_IMPORT_GRAPH_FILE_CAP;
+  // review-surfaces.PERF.1: one memo shared by every resolveRelativeImports call
+  // in this build, so a path probed across many files hits the cache once.
+  const exists = memoizeExists(options.exists);
   const sources = options.files.filter((file) => /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(file)).sort();
   const truncated = sources.length > cap;
   const importersByModule = new Map<string, Set<string>>();
@@ -110,7 +133,7 @@ export function buildImportGraph(options: {
       continue;
     }
     contents.set(file, content);
-    for (const target of resolveRelativeImports(file, content, options.exists)) {
+    for (const target of resolveRelativeImports(file, content, exists)) {
       let bucket = importersByModule.get(target);
       if (!bucket) {
         bucket = new Set();
@@ -146,7 +169,10 @@ export function findSymbolImporters(options: {
   if (importerPaths.length === 0 || options.symbols.length === 0) {
     return [];
   }
-  const exists = options.exists ?? ((filePath: string) => options.graph.contents.has(filePath));
+  // review-surfaces.PERF.1: memoize the existence probe here too — resolveSpecifier
+  // re-probes the same candidate paths across every importer, and the default
+  // probe is a contents-map lookup while an injected one may spawn per call.
+  const exists = memoizeExists(options.exists ?? ((filePath: string) => options.graph.contents.has(filePath)));
   const readCached = (filePath: string): string | undefined =>
     options.graph.contents.get(filePath) ?? options.read(filePath);
   const symbolSet = new Set(options.symbols);

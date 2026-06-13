@@ -298,9 +298,7 @@ quality_gate:
   # removes its own ACIDs from this allowlist in the PR that ships them. The
   # gate must be back to `allow_missing: []` when the final phase (Phase 6)
   # lands. Grouped by phase:
-  allow_missing:
-    - review-surfaces.PERF.1           # Phase 6 head-tree-perf
-    - review-surfaces.PERF.2           # Phase 6
+  allow_missing: []
 human_review:
   enabled: true
   default_entrypoint: true
