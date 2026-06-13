@@ -1022,6 +1022,69 @@ test("review-surfaces.CLI.9 a flag valid for ANOTHER command but not for `all` i
   }
 });
 
+test("review-surfaces.CLI.9 a pipeline flag passed to a command that does not read it is rejected (allow-list precision)", () => {
+  // The allow-list must be PRECISE in BOTH directions. A collector flag like
+  // --provider / --base is meaningful on the pipeline commands, but runScoreboard
+  // and runValidate never invoke the collector and never read it. Before the
+  // precision fix a too-broad UNIVERSAL_FLAGS set accepted them silently, so
+  // `scoreboard --provider ai-sdk` ran as a normal scoreboard with the flag a
+  // no-op (and a user could believe live enrichment was requested). Each must now
+  // be a loud usage error on the command that does not read it.
+  const tmp = setupMinimalRepo("review-surfaces-cli9-noop-");
+  try {
+    for (const [command, flag, value] of [
+      ["scoreboard", "--provider", "ai-sdk"],
+      ["scoreboard", "--base", "main"],
+      ["validate", "--base", "main"],
+      ["validate", "--provider", "mock"]
+    ] as const) {
+      const result = spawnSync("node", [CLI, command, flag, value], { cwd: tmp, encoding: "utf8" });
+      assert.equal(
+        result.status,
+        ExitCodes.usageError,
+        `\`${command} ${flag} ${value}\` must be a usage error (a no-op flag the command never reads): ${result.stdout + result.stderr}`
+      );
+      assert.match(
+        result.stderr,
+        new RegExp(`Unknown flag: \\${flag}`),
+        `${flag} is rejected on \`${command}\` because that command never reads it`
+      );
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI.9 `all --cache --schema` is accepted (a flag read through a non-obvious path)", () => {
+  // The allow-list must not be too TIGHT either. runAll reads --schema through the
+  // --cache path (readCacheSnapshot -> readSchemaValidPacket validates the on-disk
+  // packet against a custom --schema before reuse), so `all --cache --schema
+  // <path>` genuinely reads --schema even though no `all`-specific handler line
+  // mentions it. It must be ACCEPTED, not rejected as an unknown flag.
+  const tmp = setupMinimalRepo("review-surfaces-cli9-schema-");
+  try {
+    const schemaPath = path.join(process.cwd(), "schemas", "review_packet.schema.json");
+    const result = spawnSync(
+      "node",
+      [
+        CLI, "all",
+        "--cache", "--schema", schemaPath,
+        "--base", "HEAD", "--head", "HEAD",
+        "--provider", "mock", "--out", ".review-surfaces"
+      ],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(result.status, ExitCodes.success, result.stdout + result.stderr);
+    assert.doesNotMatch(
+      result.stderr,
+      /Unknown flag: --schema/,
+      "`all --cache --schema` must be accepted: runAll reads --schema via the cache path"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.CLI.10 --help documents every command in the dispatch table", () => {
   const result = spawnSync("node", [CLI, "--help"], { encoding: "utf8" });
   assert.equal(result.status, ExitCodes.success, result.stderr);

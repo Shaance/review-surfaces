@@ -3121,8 +3121,19 @@ function parseArgs(args: string[]): ParsedArgs {
     const allowed = flagsForCommand(command);
     for (const key of Object.keys(flags)) {
       if (!allowed.has(key)) {
-        const suggestion = nearestMatch(key, [...KNOWN_FLAGS]);
-        const hint = suggestion ? ` (did you mean --${suggestion}?)` : "";
+        // A flag that is real but not read by THIS command (e.g. `scoreboard
+        // --provider`) shouldn't suggest itself; say it's not accepted here.
+        // Only a true typo (not a flag of any command) gets a nearest-match
+        // suggestion, preferring this command's own flags.
+        const knownElsewhere = KNOWN_FLAGS.has(key);
+        const suggestion = knownElsewhere
+          ? undefined
+          : nearestMatch(key, [...allowed]) ?? nearestMatch(key, [...KNOWN_FLAGS]);
+        const hint = knownElsewhere
+          ? ` (not a flag '${command}' accepts)`
+          : suggestion
+            ? ` (did you mean --${suggestion}?)`
+            : "";
         throw new CliError(`Unknown flag: --${key}${hint}`, ExitCodes.usageError);
       }
     }
@@ -3135,43 +3146,56 @@ function parseArgs(args: string[]): ParsedArgs {
 // permissive parser does not consume a following positional as their "value".
 const BOOLEAN_FLAGS = new Set(["cache", "check", "dogfood", "force", "no-redact-secrets", "post", "strict", "strict-postability", "verbose", "help", "interactive", "version"]);
 
-// review-surfaces.CLI.9: flags EVERY command accepts. These flow through the
-// shared collection/output/config/verbosity wiring (resolveOutputDir reads
-// --out/--config; collectInputs reads --base/--head/--spec/--provider/--model
-// plus the redaction flags; isVerbose reads --verbose; nowFlag reads --now;
-// isDogfoodRun/--cache gate the run), or are universally meaningful (--help /
-// --version print on any command). They are deliberately permissive: a command
-// that does not read one of these treats it as a harmless no-op, exactly as the
-// prior global allow-list did, so the per-command tightening never rejects a
-// flag a user could reasonably pass on the shared surface.
+// review-surfaces.CLI.9: the TRULY-UNIVERSAL minimum — flags EVERY command
+// honors through shared wiring, so they are accepted on every command. --out and
+// --config flow through resolveOutputDir/loadConfig (every command resolves an
+// output dir and/or loads config); --verbose drives the shared isVerbose stderr
+// diagnostics; --help/--version are intercepted before any handler. The
+// COLLECTOR / pipeline / surface flags below are NOT here: a command that does
+// not run the collector (scoreboard, validate, init, bootstrap, run, the human
+// sub-artifact renderers) never reads --base/--head/--provider/--cache/etc., so
+// passing one is a no-op the CLI.9 allow-list must REJECT, not silently ignore.
 const UNIVERSAL_FLAGS = [
   "out",
   "config",
   "verbose",
-  "now",
-  "provider",
-  "model",
-  "base",
-  "head",
-  "spec",
-  "dogfood",
-  "cache",
-  "redact-secrets",
-  "no-redact-secrets",
   "help",
   "version"
 ] as const;
 
+// review-surfaces.CLI.9: the input flags the COLLECTOR reads. collect()
+// (and buildStageContext, which calls collect()) reads --base/--head/--spec to
+// resolve the diff range, --provider/--model to pick the reasoning provider,
+// --now to freeze the clock, --dogfood to switch on the dogfood artifact, and the
+// redaction toggles (--redact-secrets/--no-redact-secrets) for enrichment/
+// narrative redaction. Every command that runs the collector (the pipeline
+// commands + all/dogfood) gets these; commands that only render local artifacts
+// (scoreboard, validate, comment, human, review, the human sub-artifacts) do NOT,
+// because they never invoke the collector and so never read them.
+const COLLECTOR_FLAGS = [
+  "base",
+  "head",
+  "spec",
+  "provider",
+  "model",
+  "now",
+  "dogfood",
+  "redact-secrets",
+  "no-redact-secrets"
+] as const;
+
 // review-surfaces.CLI.9: the flags the pipeline-generating commands read on top
-// of the universal set. These are the commands that run collect()/buildStageContext
-// (collect, intent, evaluate, diagrams, methodology, risks, dogfood, handoff,
-// packet, all): collect() reads the input flags (--command-transcripts,
-// --test-output, --coverage, --conversation, --agent-input, --previous-packet)
-// and applies --budget; reviewScope() reads --review-scope/--mode/--surface-mode;
-// and the gate (applyGate) reads --max-missing/--strict on the commands that gate.
-// Included on every pipeline command (even the ones that do not gate) so a
-// legitimate gate/scope flag is never rejected for belonging to a sibling stage.
+// of the universal + collector sets. These are the commands that run
+// collect()/buildStageContext (collect, intent, evaluate, diagrams, methodology,
+// risks, dogfood, handoff, packet, all): collect() reads the input flags
+// (--command-transcripts, --test-output, --coverage, --conversation,
+// --agent-input, --previous-packet) and applies --budget; reviewScope() reads
+// --review-scope/--mode/--surface-mode; and the gate (applyGate, on evaluate/
+// packet/all) reads --max-missing/--strict. Included on every pipeline command
+// (even the ones that do not gate) so a legitimate gate/scope flag is never
+// rejected for belonging to a sibling stage.
 const PIPELINE_EXTRA_FLAGS = [
+  ...COLLECTOR_FLAGS,
   "command-transcripts",
   "test-output",
   "coverage",
@@ -3214,10 +3238,14 @@ const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
   diagrams: flagSet(PIPELINE_EXTRA_FLAGS),
   methodology: flagSet(PIPELINE_EXTRA_FLAGS),
   risks: flagSet(PIPELINE_EXTRA_FLAGS),
-  dogfood: flagSet(PIPELINE_EXTRA_FLAGS),
   handoff: flagSet(PIPELINE_EXTRA_FLAGS),
   packet: flagSet(PIPELINE_EXTRA_FLAGS),
-  all: flagSet(PIPELINE_EXTRA_FLAGS),
+  // all/dogfood are the pipeline commands that read the --cache snapshot. The
+  // --cache path (readCacheSnapshot -> readSchemaValidPacket) validates the
+  // on-disk packet against a custom --schema before reuse, so --cache AND --schema
+  // are read here even though the other pipeline stages do not read them.
+  all: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema"]),
+  dogfood: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema"]),
   // init only reads --force (overwrite scaffolding).
   init: flagSet(["force"]),
   // bootstrap only reads --strict (turn missing scaffolding into a gate exit).
@@ -3246,8 +3274,9 @@ const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
     "sarif-out"
   ]),
   // review: resolveOutputDir + applyBudgetFlag + reviewScope + the walkthrough
-  // flags --interactive and --author (createdAt reads the universal --now).
-  review: flagSet(SCOPE_FLAGS, ["budget", "interactive", "author"])
+  // flags --interactive and --author, plus --now (runWalkthrough's createdAt reads
+  // nowFlag). --now is NOT universal, so review must list it explicitly.
+  review: flagSet(SCOPE_FLAGS, ["budget", "interactive", "author", "now"])
 };
 
 // The standalone human sub-artifact commands (HUMAN_STANDALONE_ARTIFACTS) all
