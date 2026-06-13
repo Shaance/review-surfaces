@@ -971,6 +971,45 @@ test("review-surfaces.CLI.9 every legitimate flag the strict self-dogfood uses i
   }
 });
 
+test("review-surfaces.CLI.9 a flag valid for ANOTHER command but not for `all` is rejected (command-specific allow-list)", () => {
+  // The allow-list is COMMAND-SPECIFIC, not a single global union: `--format` is a
+  // real flag (comment/human read it) and `--surface` is a real flag (validate
+  // reads it), but `runAll` reads NEITHER. Before this fix a global union accepted
+  // both on `all`, so `all --format review` ran as a normal `all` with a silently
+  // ignored no-op flag. Each must now be a loud usage error on `all`.
+  const tmp = setupMinimalRepo("review-surfaces-cli9-percmd-");
+  try {
+    for (const [flag, value] of [["--format", "review"], ["--surface", "human"]] as const) {
+      const result = spawnSync(
+        "node",
+        [CLI, "all", flag, value, "--provider", "mock", "--base", "HEAD", "--head", "HEAD", "--out", ".review-surfaces"],
+        { cwd: tmp, encoding: "utf8" }
+      );
+      assert.equal(
+        result.status,
+        ExitCodes.usageError,
+        `\`all ${flag} ${value}\` must be a usage error (not a silently-ignored no-op): ${result.stdout + result.stderr}`
+      );
+      assert.match(result.stderr, new RegExp(`Unknown flag: \\${flag}`), `${flag} is rejected on \`all\``);
+    }
+
+    // The same flags ARE accepted on the commands that actually read them, so the
+    // tightening rejects the wrong-command use without breaking the right one.
+    const human = spawnSync(
+      "node",
+      [CLI, "all", "--provider", "mock", "--base", "HEAD", "--head", "HEAD", "--out", ".review-surfaces"],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(human.status, ExitCodes.success, human.stdout + human.stderr);
+    const validate = spawnSync("node", [CLI, "validate", "--surface", "packet", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    assert.doesNotMatch(validate.stderr, /Unknown flag: --surface/, "`validate --surface` is still accepted");
+    const comment = spawnSync("node", [CLI, "comment", "--format", "sticky", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    assert.doesNotMatch(comment.stderr, /Unknown flag: --format/, "`comment --format` is still accepted");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.CLI.10 --help documents every command in the dispatch table", () => {
   const result = spawnSync("node", [CLI, "--help"], { encoding: "utf8" });
   assert.equal(result.status, ExitCodes.success, result.stderr);
@@ -994,6 +1033,11 @@ test("review-surfaces.CLI.10 --help documents the previously-omitted flags and a
   for (const value of ["github", "sticky", "sarif", "review"]) {
     assert.ok(result.stdout.includes(value), `--help --format must list the '${value}' value`);
   }
+  // human --format is also a first-class format (runHumanStage reads --format and
+  // supports markdown|html for the offline HTML cockpit). The rewritten --format
+  // help previously presented the flag as comment-only and hid `html`; it must
+  // document the human cockpit format too.
+  assert.ok(result.stdout.includes("html"), "--help --format must list the 'html' human cockpit format");
   assert.match(result.stdout, /lcov\.info/, "--coverage help must mention the lcov.info auto-detect");
 });
 
@@ -1085,6 +1129,42 @@ test("review-surfaces.CLI.10 a blocked draft-review payload is neither written n
     const strict = spawnSync("node", [CLI, "comment", "--format", "review", "--strict-postability", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
     assert.equal(strict.status, ExitCodes.privacyBlocked, strict.stderr);
     assert.equal(fs.existsSync(reviewPath), false, "the blocked draft still writes nothing under --strict-postability");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.PR_SURFACE.4 a blocked draft-review DELETES a stale pending_review.json (no stale draft survives)", () => {
+  const tmp = setupReviewFixture("rs-draft-stale-");
+  try {
+    const reviewPath = path.join(tmp, ".review-surfaces", "pending_review.json");
+    // A clean `comment --format review` first, leaving a real pending_review.json
+    // on disk (the artifact a consumer would read).
+    const clean = spawnSync("node", [CLI, "comment", "--format", "review", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    assert.equal(clean.status, ExitCodes.success, clean.stderr);
+    assert.equal(fs.existsSync(reviewPath), true, "the clean run writes pending_review.json");
+
+    // Now inject a high-confidence secret so the NEXT run blocks. The blocked path
+    // returns without writing — but it must also DELETE the stale draft above, so a
+    // consumer reading the artifact after the (exit 0) block does not pick up the
+    // earlier, non-blocked draft and believe it is current.
+    const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
+    const human = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    const secret = "AIzaSyA1234567890abcdefghijklmnopqrstuv";
+    human.summary = `${human.summary} Leaked key ${secret} was committed.`;
+    if (Array.isArray(human.suggested_comments) && human.suggested_comments.length > 0) {
+      human.suggested_comments[0].body = `General note: SECRET=${secret} leaks in logs.`;
+    }
+    fs.writeFileSync(humanPath, JSON.stringify(human, null, 2));
+
+    const blocked = spawnSync("node", [CLI, "comment", "--format", "review", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    assert.equal(blocked.status, ExitCodes.success, blocked.stderr);
+    assert.match(blocked.stderr, /Draft review blocked/, "the block is announced on stderr");
+    assert.equal(
+      fs.existsSync(reviewPath),
+      false,
+      "the stale pending_review.json from the earlier clean run must be DELETED, not left in place"
+    );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

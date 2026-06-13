@@ -2731,6 +2731,14 @@ async function runCommentDraftReview(parsed: ParsedArgs): Promise<number> {
     console.error(
       "Draft review blocked: redaction flagged a high-confidence secret; refusing to write or print pending_review.json."
     );
+    // review-surfaces.PR_SURFACE.4: the blocked path writes NOTHING, but a STALE
+    // pending_review.json from an earlier `comment --format review` run would
+    // otherwise survive at the target path — a consumer reading the artifact after
+    // this (default non-strict, exit 0) command would pick up the stale draft and
+    // believe it was the current, non-blocked review. Delete any existing file
+    // (best-effort) so a block leaves no secret-bearing draft on disk; `force`
+    // makes an already-absent path a clean no-op.
+    fs.rmSync(reviewPath, { force: true });
     return posting || strictPostability ? ExitCodes.privacyBlocked : ExitCodes.success;
   }
 
@@ -3095,14 +3103,21 @@ function parseArgs(args: string[]): ParsedArgs {
     }
   }
 
-  // review-surfaces.CLI.9: reject any flag outside the union allow-list with a
-  // usage error and a nearest-name suggestion, rather than silently ignoring a
-  // typo'd flag (e.g. `--proivder mock` running with the default provider). The
-  // bare `help`/`version` pseudo-commands take any flags (they only print), so
-  // the check is skipped there.
+  // review-surfaces.CLI.9: reject any flag the CURRENT command does not read,
+  // with a usage error and a nearest-name suggestion, rather than silently
+  // ignoring it. The allow-list is COMMAND-SPECIFIC (FLAGS_BY_COMMAND): a flag
+  // that is valid for SOME OTHER command (e.g. `all --format review`, where
+  // `format` belongs to comment/human but `runAll` never reads it) is rejected
+  // here instead of running as a normal `all` with a silently-ignored no-op
+  // flag. The nearest-match suggestion still draws from the GLOBAL union so a
+  // typo of a real-but-wrong-command flag (`--surfce`) still suggests `surface`.
+  // The bare `help`/`version` pseudo-commands take any flags (they only print),
+  // so the check is skipped there; an unknown COMMAND is rejected earlier in
+  // main(), so here `command` is always a real command with a known flag set.
   if (command !== "help" && command !== "version") {
+    const allowed = flagsForCommand(command);
     for (const key of Object.keys(flags)) {
-      if (!KNOWN_FLAGS.has(key)) {
+      if (!allowed.has(key)) {
         const suggestion = nearestMatch(key, [...KNOWN_FLAGS]);
         const hint = suggestion ? ` (did you mean --${suggestion}?)` : "";
         throw new CliError(`Unknown flag: --${key}${hint}`, ExitCodes.usageError);
@@ -3117,50 +3132,143 @@ function parseArgs(args: string[]): ParsedArgs {
 // permissive parser does not consume a following positional as their "value".
 const BOOLEAN_FLAGS = new Set(["cache", "check", "dogfood", "force", "no-redact-secrets", "post", "strict", "strict-postability", "verbose", "help", "interactive", "version"]);
 
-// review-surfaces.CLI.9: the COMPLETE allow-list of every flag the CLI reads on
-// ANY command path (the union of all stringFlag/booleanFlag/optionalBooleanFlag/
-// numberFlag keys, the directly-read flags.budget / flags.help / flags.version,
-// and every BOOLEAN_FLAGS switch). parseArgs rejects any `--key` outside this
-// set with a usage error and a nearest-name suggestion, instead of silently
-// ignoring a typo'd flag. This is the union across commands (not per-command),
-// so a legitimate flag is never rejected merely because it belongs to a
-// different subcommand; the per-command read still decides whether it has an
-// effect. Keep in sync when a new flag is read anywhere in this file.
-const KNOWN_FLAGS = new Set<string>([
-  // value (string) flags
-  "agent-input",
-  "artifact-name",
-  "author",
-  "base",
-  "budget",
-  "command-transcripts",
-  "comment-top-n",
-  "config",
-  "conversation",
-  "coverage",
-  "format",
-  "head",
-  "id",
-  "max-missing",
-  "mode",
-  "model",
-  "now",
+// review-surfaces.CLI.9: flags EVERY command accepts. These flow through the
+// shared collection/output/config/verbosity wiring (resolveOutputDir reads
+// --out/--config; collectInputs reads --base/--head/--spec/--provider/--model
+// plus the redaction flags; isVerbose reads --verbose; nowFlag reads --now;
+// isDogfoodRun/--cache gate the run), or are universally meaningful (--help /
+// --version print on any command). They are deliberately permissive: a command
+// that does not read one of these treats it as a harmless no-op, exactly as the
+// prior global allow-list did, so the per-command tightening never rejects a
+// flag a user could reasonably pass on the shared surface.
+const UNIVERSAL_FLAGS = [
   "out",
-  "previous-packet",
+  "config",
+  "verbose",
+  "now",
   "provider",
-  "readme",
-  "redact-secrets",
-  "review-scope",
-  "run-id",
-  "sarif-out",
-  "schema",
+  "model",
+  "base",
+  "head",
   "spec",
-  "surface",
-  "surface-mode",
+  "dogfood",
+  "cache",
+  "redact-secrets",
+  "no-redact-secrets",
+  "help",
+  "version"
+] as const;
+
+// review-surfaces.CLI.9: the flags the pipeline-generating commands read on top
+// of the universal set. These are the commands that run collect()/buildStageContext
+// (collect, intent, evaluate, diagrams, methodology, risks, dogfood, handoff,
+// packet, all): collect() reads the input flags (--command-transcripts,
+// --test-output, --coverage, --conversation, --agent-input, --previous-packet)
+// and applies --budget; reviewScope() reads --review-scope/--mode/--surface-mode;
+// and the gate (applyGate) reads --max-missing/--strict on the commands that gate.
+// Included on every pipeline command (even the ones that do not gate) so a
+// legitimate gate/scope flag is never rejected for belonging to a sibling stage.
+const PIPELINE_EXTRA_FLAGS = [
+  "command-transcripts",
   "test-output",
-  // boolean switches (union with BOOLEAN_FLAGS)
-  ...BOOLEAN_FLAGS
-]);
+  "coverage",
+  "conversation",
+  "agent-input",
+  "previous-packet",
+  "budget",
+  "max-missing",
+  "strict",
+  "review-scope",
+  "mode",
+  "surface-mode"
+] as const;
+
+// The flags selecting the comment/human review surface (reviewScope reads all
+// three; --mode/--surface-mode are aliases of --review-scope).
+const SCOPE_FLAGS = ["review-scope", "mode", "surface-mode"] as const;
+
+function flagSet(...groups: readonly (readonly string[])[]): Set<string> {
+  const set = new Set<string>(UNIVERSAL_FLAGS);
+  for (const group of groups) {
+    for (const flag of group) {
+      set.add(flag);
+    }
+  }
+  return set;
+}
+
+// review-surfaces.CLI.9: the per-command allow-list. Each entry is the universal
+// set PLUS the flags THAT command actually reads (audited from the
+// stringFlag/booleanFlag/numberFlag reads inside its handler/runner and the
+// shared helpers it calls). A flag valid for another command but absent here is
+// rejected on this command, so e.g. `all --format review` (format is a
+// comment/human flag) is a usage error rather than a silently-ignored no-op.
+const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
+  // collect()/buildStageContext pipeline commands share PIPELINE_EXTRA_FLAGS.
+  collect: flagSet(PIPELINE_EXTRA_FLAGS),
+  intent: flagSet(PIPELINE_EXTRA_FLAGS),
+  evaluate: flagSet(PIPELINE_EXTRA_FLAGS),
+  diagrams: flagSet(PIPELINE_EXTRA_FLAGS),
+  methodology: flagSet(PIPELINE_EXTRA_FLAGS),
+  risks: flagSet(PIPELINE_EXTRA_FLAGS),
+  dogfood: flagSet(PIPELINE_EXTRA_FLAGS),
+  handoff: flagSet(PIPELINE_EXTRA_FLAGS),
+  packet: flagSet(PIPELINE_EXTRA_FLAGS),
+  all: flagSet(PIPELINE_EXTRA_FLAGS),
+  // init only reads --force (overwrite scaffolding).
+  init: flagSet(["force"]),
+  // bootstrap only reads --strict (turn missing scaffolding into a gate exit).
+  bootstrap: flagSet(["strict"]),
+  // human: resolveOutputDir + applyBudgetFlag + reviewScope, and --format
+  // markdown|html (the HTML cockpit, runHumanStage). NOT a pipeline command.
+  human: flagSet(SCOPE_FLAGS, ["budget", "format"]),
+  // validate reads --surface and --schema (and the output dir via resolveOutputDir).
+  validate: flagSet(["surface", "schema"]),
+  // scoreboard reads --readme and --check.
+  scoreboard: flagSet(["readme", "check"]),
+  // run records a command transcript: --id and --command-transcripts.
+  run: flagSet(["id", "command-transcripts"]),
+  // comment dispatches across ALL --format renderers (github/sticky/sarif/review),
+  // so it reads every flag any of them read: --format, the scope flags, --budget,
+  // --post/--strict-postability (github/sticky/review), the sticky flags
+  // (--comment-top-n/--artifact-name/--run-id), and --sarif-out (sarif).
+  comment: flagSet(SCOPE_FLAGS, [
+    "format",
+    "budget",
+    "post",
+    "strict-postability",
+    "comment-top-n",
+    "artifact-name",
+    "run-id",
+    "sarif-out"
+  ]),
+  // review: resolveOutputDir + applyBudgetFlag + reviewScope + the walkthrough
+  // flags --interactive and --author (createdAt reads the universal --now).
+  review: flagSet(SCOPE_FLAGS, ["budget", "interactive", "author"])
+};
+
+// The standalone human sub-artifact commands (HUMAN_STANDALONE_ARTIFACTS) all
+// run runHumanSubartifactStage: resolveOutputDir + reviewScope, no extra flags.
+for (const artifact of HUMAN_STANDALONE_ARTIFACTS) {
+  FLAGS_BY_COMMAND[artifact.command] = flagSet(SCOPE_FLAGS);
+}
+
+// review-surfaces.CLI.9: the GLOBAL union of every flag any command reads — the
+// candidate pool for the nearest-name suggestion (so a typo of a real flag that
+// belongs to a DIFFERENT command still suggests it) and the completeness backstop
+// the union-acceptance test guards. The per-command sets above decide acceptance;
+// this set only powers the "did you mean" hint.
+const KNOWN_FLAGS = new Set<string>(
+  Object.values(FLAGS_BY_COMMAND).flatMap((set) => [...set])
+);
+
+// review-surfaces.CLI.9: the allow-list for `command`. Every dispatchable command
+// has an explicit entry; the fallback (defensive — every COMMANDS entry is mapped
+// above) is the universal set, so a newly-added command without a mapping still
+// accepts the shared flags rather than rejecting everything.
+function flagsForCommand(command: string): Set<string> {
+  return FLAGS_BY_COMMAND[command] ?? flagSet();
+}
 
 function stringFlag(parsed: ParsedArgs, key: string): string | undefined {
   const value = parsed.flags[key];
@@ -3374,6 +3482,9 @@ Options:
                    sarif writes .review-surfaces/review.sarif (SARIF 2.1.0); review writes
                    .review-surfaces/pending_review.json (a GitHub PENDING draft review). All
                    honor --out and read the local packet/human_review.json only.
+                   human: output format, markdown (default) | html. markdown writes
+                   .review-surfaces/human_review.md; html ALSO writes
+                   .review-surfaces/human_review.html (the single-file offline review cockpit).
   --sarif-out <path>
                    comment --format sarif: write the SARIF log to this exact file instead
                    of <out>/review.sarif
