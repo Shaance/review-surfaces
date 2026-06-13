@@ -58,7 +58,7 @@ import { assemblePrReviewSurface } from "../pipeline/pr-surface";
 import { evaluateBaseline } from "../evaluation/baseline";
 import { PrReviewSurfaceModel, ReviewScope, StructuredDiff } from "../pr/contract";
 import { renderSarifFromPacketFile } from "../render/sarif";
-import { projectRunSummary, renderRunSummaryFromPacketFile, serializeRunSummary } from "../render/summary-json";
+import { projectRunSummary, readQueueIds, renderRunSummaryFromPacketFile, serializeRunSummary } from "../render/summary-json";
 import { buildDraftReview } from "../render/draft-review";
 import { postStickyComment } from "../render/post-comment";
 import { writeJson, writeText } from "../core/files";
@@ -695,6 +695,13 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
         await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
         console.log(`inputs unchanged (signature match); reusing existing packet at ${displayPath(cwd, cacheSnapshot.packetPath)}`);
         const cachedGateExit = applyGate(parsed, evaluation, collection, provider, config, cacheSnapshot.packet?.risks);
+        // review-surfaces.QUALITY_GATE.3: the cache hit is the FASTEST reuse path,
+        // and it accepts --json too, so it must emit the SAME structured run
+        // summary the non-cache path does (after the gate, before the cockpit
+        // pointer) — otherwise `all --cache --json` prints no structured line.
+        if (cacheSnapshot.packet) {
+          maybePrintRunSummaryJson(parsed, config, cacheSnapshot.packet, collection.outputDir);
+        }
         // review-surfaces.DISTRIBUTION.7: the cache-hit run also ends on the
         // cockpit pointer, after any gate message.
         if (config.human_review.enabled && config.human_review.default_entrypoint) {
@@ -704,6 +711,11 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       }
       await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
       console.log(`inputs unchanged (signature match); reusing existing packet at ${displayPath(cwd, cacheSnapshot.packetPath)}`);
+      // review-surfaces.QUALITY_GATE.3: emit the --json summary on this reuse path
+      // too (no --strict, no evaluation gate ran, but --json is still honored).
+      if (cacheSnapshot.packet) {
+        maybePrintRunSummaryJson(parsed, config, cacheSnapshot.packet, collection.outputDir);
+      }
       if (config.human_review.enabled && config.human_review.default_entrypoint) {
         printCockpitPointer(cwd, collection.outputDir);
       }
@@ -909,7 +921,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // review-surfaces.QUALITY_GATE.3: opt-in structured run summary to stdout. Emitted
   // from the in-memory packet (writtenPacket carries the on-disk shape) so a CI step
   // reads one structured line. No-op without --json -> default output byte-stable.
-  maybePrintRunSummaryJson(parsed, config, writtenPacket);
+  maybePrintRunSummaryJson(parsed, config, writtenPacket, collection.outputDir);
   // review-surfaces.DISTRIBUTION.7: printed AFTER any gate message so the run
   // genuinely ends on the cockpit pointer.
   if (humanReview && config.human_review.default_entrypoint) {
@@ -1247,7 +1259,7 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
   }
   logWrote(context);
   // review-surfaces.QUALITY_GATE.3: opt-in structured run summary to stdout.
-  maybePrintRunSummaryJson(parsed, context.config, packet);
+  maybePrintRunSummaryJson(parsed, context.config, packet, context.collection.outputDir);
   return applyGate(parsed, evaluation, context.collection, context.provider, context.config, packet.risks);
 }
 
@@ -3073,10 +3085,12 @@ async function runCommentJson(parsed: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
   const outDir = await resolveOutputDir(cwd, parsed);
   const config = await loadConfig(cwd, stringFlag(parsed, "config") ?? "review-surfaces.config.yaml");
-  // Honor --fail-on / quality_gate.fail_on so the projected gate_code matches the
-  // gate the run was/would be evaluated under.
-  const failOnSeverity = failOnSeverityFlag(parsed) ?? failOnSeverityFromConfig(config);
-  const rendered = renderRunSummaryFromPacketFile(cwd, outDir, failOnSeverity);
+  // Project the gate_code over the SAME GateOptions the real gate uses: --fail-on /
+  // quality_gate.fail_on (the risk threshold) AND quality_gate.max_missing /
+  // quality_gate.allow_missing (the missing-requirement tolerances). Passing only
+  // fail_on would gate at maxMissing 0 with no allowlist and report a spurious
+  // failing gate for a repo that relies on those tolerances.
+  const rendered = renderRunSummaryFromPacketFile(cwd, outDir, gateOptionsFor(parsed, config));
   if (!rendered) {
     throw missingPacketError(cwd, outDir);
   }
@@ -3255,10 +3269,17 @@ const PIPELINE_EXTRA_FLAGS = [
   "surface-mode"
 ] as const;
 
-// review-surfaces.CLI.9: --strict/--max-missing/--fail-on are read ONLY by the
-// stages that call applyGate (evaluate/packet/all/dogfood), so they are granted
-// only there. review-surfaces.QUALITY_GATE.1 adds --fail-on (risk-severity gate).
-const GATE_FLAGS = ["strict", "max-missing", "fail-on"] as const;
+// review-surfaces.CLI.9: --strict/--max-missing are the MISSING-requirement gate
+// flags, read by every stage that calls applyGate (evaluate/packet/all/dogfood),
+// so they are granted to all four.
+const GATE_FLAGS = ["strict", "max-missing"] as const;
+
+// review-surfaces.QUALITY_GATE.1: --fail-on is the RISK-severity gate, which only
+// fires when applyGate is given a risks model. evaluate's applyGate is called
+// WITHOUT a risks model (the evaluate stage computes no risks), so --fail-on can
+// never trip there — it would be a silent no-op. Grant it ONLY to the stages whose
+// applyGate threads packet.risks: packet, all, dogfood.
+const FAIL_ON_FLAG = ["fail-on"] as const;
 
 // The flags selecting the comment/human review surface (reviewScope reads all
 // three; --mode/--surface-mode are aliases of --review-scope).
@@ -3291,14 +3312,17 @@ const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
   handoff: flagSet(PIPELINE_EXTRA_FLAGS),
   // review-surfaces.QUALITY_GATE.3: `packet --json` prints the structured run
   // summary to stdout (opt-in; default prose output stays byte-stable).
-  packet: flagSet(PIPELINE_EXTRA_FLAGS, GATE_FLAGS, ["json"]),
+  // QUALITY_GATE.1: packet's applyGate threads packet.risks, so --fail-on works here.
+  packet: flagSet(PIPELINE_EXTRA_FLAGS, GATE_FLAGS, FAIL_ON_FLAG, ["json"]),
   // all/dogfood are the pipeline commands that read the --cache snapshot. The
   // --cache path (readCacheSnapshot -> readSchemaValidPacket) validates the
   // on-disk packet against a custom --schema before reuse, so --cache AND --schema
   // are read here even though the other pipeline stages do not read them.
   // review-surfaces.QUALITY_GATE.3: --json prints the structured run summary.
-  all: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema", "json"], GATE_FLAGS),
-  dogfood: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema"], GATE_FLAGS),
+  // QUALITY_GATE.1: all/dogfood route through runAll, whose applyGate threads
+  // packet.risks, so --fail-on works here (unlike evaluate).
+  all: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema", "json"], GATE_FLAGS, FAIL_ON_FLAG),
+  dogfood: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema"], GATE_FLAGS, FAIL_ON_FLAG),
   // init only reads --force (overwrite scaffolding). runInit scaffolds into
   // process.cwd() and never calls resolveOutputDir()/loadConfig(), so it reads
   // NEITHER --out NOR --config; passing them must be rejected as a no-op.
@@ -3479,19 +3503,29 @@ function gateOptionsFor(parsed: ParsedArgs, config: ReviewSurfacesConfig): GateO
 }
 
 // review-surfaces.QUALITY_GATE.1: parse --fail-on <severity>. An unrecognized
-// value is a usage error (a typo must fail fast, not silently disarm the gate).
+// value is a usage error (a typo must fail fast, not silently disarm the gate),
+// and so is a BARE/valueless --fail-on: it REQUIRES a severity, so `--fail-on`
+// with no argument (parsed as boolean true) must be a usage error too rather than
+// silently treated as absent (falling back to config), which would disarm the
+// flag the operator clearly meant to arm.
 function failOnSeverityFlag(parsed: ParsedArgs): FailOnSeverity | undefined {
-  const raw = stringFlag(parsed, "fail-on");
-  if (raw === undefined) {
+  const value = parsed.flags["fail-on"];
+  if (value === undefined) {
     return undefined;
   }
-  if (!(PACKET_SEVERITIES as readonly string[]).includes(raw)) {
+  if (typeof value !== "string" || value.length === 0) {
     throw new CliError(
-      `--fail-on must be one of ${PACKET_SEVERITIES.join(", ")} (got "${raw}")`,
+      `--fail-on requires a severity value, one of ${PACKET_SEVERITIES.join(", ")}`,
       ExitCodes.usageError
     );
   }
-  return raw as FailOnSeverity;
+  if (!(PACKET_SEVERITIES as readonly string[]).includes(value)) {
+    throw new CliError(
+      `--fail-on must be one of ${PACKET_SEVERITIES.join(", ")} (got "${value}")`,
+      ExitCodes.usageError
+    );
+  }
+  return value as FailOnSeverity;
 }
 
 function failOnSeverityFromConfig(config: ReviewSurfacesConfig): FailOnSeverity | undefined {
@@ -3531,12 +3565,22 @@ function applyGate(
 // review-surfaces.QUALITY_GATE.3: when --json is set, print the SAME structured
 // run summary (the QUALITY_GATE.2 projection) to stdout from the in-memory packet.
 // A no-op when --json is absent, so the default prose output stays byte-stable.
-function maybePrintRunSummaryJson(parsed: ParsedArgs, config: ReviewSurfacesConfig, packet: ReviewPacket): void {
+// The gate_code is projected over the SAME GateOptions the run's gate uses
+// (max_missing/allow_missing/fail_on), and top_queue_ids come from the ranked
+// human-review queue just written under outDir (sibling human_review.json), so
+// the --json line matches comment --format json for the same artifacts.
+function maybePrintRunSummaryJson(
+  parsed: ParsedArgs,
+  config: ReviewSurfacesConfig,
+  packet: ReviewPacket,
+  outDir: string
+): void {
   if (!booleanFlag(parsed, "json")) {
     return;
   }
-  const failOnSeverity = failOnSeverityFlag(parsed) ?? failOnSeverityFromConfig(config);
-  process.stdout.write(serializeRunSummary(projectRunSummary(packet, failOnSeverity)));
+  const cwd = process.cwd();
+  const summary = projectRunSummary(packet, gateOptionsFor(parsed, config), readQueueIds(cwd, outDir));
+  process.stdout.write(serializeRunSummary(summary));
 }
 
 function providerFlag(parsed: ParsedArgs, config: ReviewSurfacesConfig): ProviderName {
@@ -3672,11 +3716,13 @@ Options:
                    warnings and still exits 0 (default normal/dogfood behavior).
   --max-missing <n> Quality-gate tolerance: allow up to N "missing" requirements
                    before tripping. Default from config quality_gate.max_missing (0).
-  --fail-on <sev>   all/evaluate/packet/dogfood: trip the quality gate (exit 10) when any
+  --fail-on <sev>   all/packet/dogfood: trip the quality gate (exit 10) when any
                    DETERMINISTIC risk item is at or above this severity
                    (critical|high|medium|low|unknown). LLM-only hypotheses are excluded.
-                   Composes with --strict exactly like --max-missing. Default from config
+                   Composes with --strict exactly like --max-missing. Requires a severity
+                   value (a bare --fail-on is a usage error). Default from config
                    quality_gate.fail_on (off). comment --format json reads it for gate_code.
+                   (Not on evaluate: that stage computes no risks model to gate against.)
   --json            all/packet: also print a compact, byte-stable run-summary object (gate
                    code, per-status requirement counts, risk-severity histogram, top-N queue
                    ids) to stdout. Opt-in; the default prose output is unchanged without it.

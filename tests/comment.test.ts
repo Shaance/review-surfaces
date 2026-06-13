@@ -615,3 +615,104 @@ test("review-surfaces.QUALITY_GATE.2 comment --format json emits a deterministic
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+// review-surfaces.QUALITY_GATE.2 (Codex finding 5): top_queue_ids is the ACTUAL
+// ranked review queue (sibling human_review.json review_queue ids), not an empty
+// list that silently falls back to risk ids. A normal `all` run writes the queue,
+// so the projection must surface those ranked ids.
+test("review-surfaces.QUALITY_GATE.2 top_queue_ids comes from the ranked review queue, not the risk ids", () => {
+  const cwd = setupFixture("rs-queue-ids-");
+  try {
+    runAll(cwd);
+    const queueModel = JSON.parse(fs.readFileSync(path.join(cwd, ".review-surfaces", "human_review.json"), "utf8"));
+    const queueIds = (queueModel.review_queue as Array<{ id: string }>).map((item) => item.id);
+    assert.ok(queueIds.length > 0, "fixture run must produce a non-empty ranked queue");
+
+    const summary = JSON.parse(runComment(cwd, ["--format", "json"]).stdout);
+    assert.deepEqual(
+      summary.top_queue_ids,
+      queueIds.slice(0, 10),
+      "top_queue_ids must mirror the ranked review_queue ids (top-10), in order"
+    );
+
+    // And it must NOT be the risk-id fallback: the deterministic risk ids differ
+    // from the queue ids, so the projection is genuinely reading the queue.
+    const packet = JSON.parse(fs.readFileSync(path.join(cwd, ".review-surfaces", "review_packet.json"), "utf8"));
+    const riskIds = (packet.risks?.items ?? []).map((item: { id: string }) => item.id);
+    assert.notDeepEqual(summary.top_queue_ids, riskIds.slice(0, 10), "queue ids must differ from the risk-id fallback for this fixture");
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces.QUALITY_GATE.2 (Codex finding 1): the projected gate_code must
+// honor quality_gate.max_missing / allow_missing, not gate at a hardcoded
+// maxMissing 0 with no allowlist. A repo that tolerates N missing requirements
+// must NOT see a spurious failing gate in `comment --format json`.
+test("review-surfaces.QUALITY_GATE.2 comment --format json honors quality_gate.max_missing/allow_missing in gate_code", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "rs-json-gate-config-"));
+  try {
+    fs.mkdirSync(path.join(cwd, "features"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, "features", "example.feature.yaml"),
+      `feature:\n  name: example\ncomponents:\n  ZZZ:\n    requirements:\n      1: This requirement has no implementation or tests anywhere.\n`
+    );
+    fs.writeFileSync(path.join(cwd, "README.md"), "# example\n");
+    execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
+    execFileSync("git", ["add", "-A"], { cwd, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd, stdio: "ignore" });
+
+    const all = (extra: string[] = []) =>
+      execFileSync("node", [CLI, "all", "--base", "HEAD", "--head", "HEAD", "--spec", "features/example.feature.yaml", "--provider", "mock", "--out", ".review-surfaces", ...extra], { cwd, stdio: "ignore" });
+    const gateCode = () => JSON.parse(runComment(cwd, ["--format", "json"]).stdout).gate_code;
+
+    // max_missing 0 (default): the lone missing requirement trips the quality gate (10).
+    fs.writeFileSync(path.join(cwd, "review-surfaces.config.yaml"), "quality_gate:\n  max_missing: 0\n");
+    all();
+    const strictSummary = JSON.parse(runComment(cwd, ["--format", "json"]).stdout);
+    assert.equal(strictSummary.requirement_counts.missing, 1, "fixture must produce exactly one missing requirement");
+    assert.equal(gateCode(), 10, "at max_missing 0 the missing requirement must trip gate_code 10");
+
+    // Raise the tolerance: the SAME missing requirement is now within budget, so
+    // the projected gate_code must be 0 — proving the projection reads the config.
+    fs.writeFileSync(path.join(cwd, "review-surfaces.config.yaml"), "quality_gate:\n  max_missing: 5\n");
+    assert.equal(gateCode(), 0, "quality_gate.max_missing must suppress the gate in the projected gate_code");
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces.QUALITY_GATE.3 (Codex finding 3): the `all --cache` HIT (the
+// fastest reuse path) must still emit the --json run summary, not silently accept
+// --json and print nothing.
+test("review-surfaces.QUALITY_GATE.3 all --cache --json prints the run summary on the cache-hit fast path", () => {
+  const cwd = setupFixture("rs-cache-json-");
+  try {
+    const baseArgs = ["all", "--cache", "--base", "HEAD", "--head", "HEAD", "--spec", "features/review-surfaces.feature.yaml", "--provider", "mock", "--now", "2026-01-01T00:00:00Z", "--out", ".review-surfaces"];
+
+    // Prime the cache.
+    const first = spawnSync("node", [CLI, ...baseArgs], { cwd, encoding: "utf8" });
+    assert.equal(first.status, 0, first.stderr);
+
+    // Second run is a cache hit AND requests --json: the structured summary must
+    // appear, exactly like the non-cache path.
+    const hit = spawnSync("node", [CLI, ...baseArgs, "--json"], { cwd, encoding: "utf8" });
+    assert.equal(hit.status, 0, hit.stderr);
+    assert.match(hit.stdout + hit.stderr, /inputs unchanged/, "second run must be a cache hit");
+    const start = hit.stdout.indexOf("{");
+    assert.ok(start >= 0, "all --cache --json must print a JSON object on the cache hit");
+    const summary = JSON.parse(hit.stdout.slice(start, hit.stdout.lastIndexOf("}") + 1));
+    assert.equal(summary.schema, "review-surfaces.run-summary.v1");
+
+    // The cache-hit summary equals comment --format json for the same artifacts.
+    const commentJson = runComment(cwd, ["--format", "json"]);
+    assert.equal(commentJson.status, 0, commentJson.stderr);
+    assert.equal(
+      JSON.stringify(JSON.parse(commentJson.stdout)),
+      JSON.stringify(summary),
+      "cache-hit --json and comment --format json must project the same summary"
+    );
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
