@@ -4004,6 +4004,185 @@ test("trust audit reserves capped invalid-evidence slots for PR risk refs", () =
   assert.match(invalidSummaries, /review-surfaces.INVALID.1/);
 });
 
+// Slice the "## Test plan" section out of the rendered human surface so heading
+// assertions do not bleed into adjacent sections.
+function testPlanSection(markdown: string): string {
+  const start = markdown.indexOf("## Test plan");
+  assert.notEqual(start, -1, "rendered surface should contain a Test plan section");
+  const after = markdown.indexOf("\n## ", start + 1);
+  return after === -1 ? markdown.slice(start) : markdown.slice(start, after);
+}
+
+test("review-surfaces.HUMAN_REVIEW.22 a multi-file api_contract rollup renders one Test plan heading, not a duplicate per file", () => {
+  const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
+  // Several test-plan items that share kind/priority/scenario/expected/gap and
+  // differ ONLY by suggested_file — the api/schema-contract-lens fan-out that
+  // produced five visually identical "### ..." headings in the live run.
+  const files = [
+    "tests/cli.test.ts",
+    "tests/config.test.ts",
+    "tests/schema-contract.test.ts",
+    "tests/distribution.test.ts",
+    "tests/comment.test.ts"
+  ];
+  // review-surfaces.HUMAN_REVIEW.22: each item ALSO carries the file-specific
+  // command the api-contract fan-out derives from its suggested_file
+  // (`pnpm run test -- ${suggestedFile}`). Because these commands differ per
+  // item, a rollup key that still keyed on `command` would NOT merge them and
+  // the surface would render a duplicate "### ..." heading per file again — so
+  // the test items must carry DISTINCT commands to exercise the fix.
+  model.test_plan = files.map((file, index) => ({
+    id: `TP-API-${String(index + 1).padStart(3, "0")}`,
+    kind: "automatic" as const,
+    priority: "recommended" as const,
+    suggested_file: file,
+    scenario: "Add a focused compatibility test for the public API/schema contract change.",
+    expected_result: "The contract change keeps downstream consumers compatible.",
+    command: `pnpm run test -- ${file}`,
+    maps_to_requirements: ["review-surfaces.HUMAN_REVIEW.1"],
+    maps_to_risks: [],
+    evidence_gap: "API / schema contract lens fired without a compatibility test."
+  }));
+  // Guard the test's own premise: the per-item commands are genuinely distinct.
+  assert.equal(new Set(model.test_plan.map((item) => item.command)).size, files.length, "the fixture commands must differ per file");
+
+  const markdown = renderHumanReviewMarkdown(model);
+  const section = testPlanSection(markdown);
+  const headings = section.split("\n").filter((line) => line.startsWith("### "));
+
+  // Items differing only by suggested_file AND its derived per-file command must
+  // collapse to ONE heading.
+  assert.equal(headings.length, 1, `expected a single rolled-up heading, got:\n${headings.join("\n")}`);
+  assert.equal(new Set(headings).size, headings.length, "no duplicate Test plan headings may render");
+  // The one heading must list every affected file (merge, not drop detail).
+  assert.match(section, /Suggested files \(5\):/);
+  for (const file of files) {
+    assert.ok(section.includes(`\`${file}\``), `rolled-up heading should list ${file}`);
+  }
+  // The merged command line must not claim a single file (it named only the
+  // representative's file before the multi-file render fix).
+  for (const file of files) {
+    assert.equal(section.includes(`- Command: \`pnpm run test -- ${file}\``), false, `merged command must not name a single file (${file})`);
+  }
+  // review-surfaces.HUMAN_REVIEW.22: the merged multi-file group must NOT render
+  // a file-less, non-runnable stem command (`pnpm run test --`). An earlier round
+  // stripped the suggested_file out of the rep's command, producing a stem that
+  // runs NOTHING and can mislead a reviewer into running an empty check. The fix
+  // omits the `- Command:` line for the merged multi-file case entirely; the
+  // affected files are listed above and the exact per-file commands stay in the
+  // JSON model / test_plan.md.
+  assert.equal(section.includes("- Command: `pnpm run test --`"), false, "merged multi-file rollup must not render a file-less stem command");
+  assert.equal(/- Command: `pnpm run test -- *`/.test(section), false, "merged multi-file rollup must not render a runnable-looking command with no file");
+  assert.equal(section.includes("- Command:"), false, "merged multi-file rollup must omit the Command line (per-file commands stay in the JSON model)");
+  // Per-item detail is preserved in the JSON model.
+  assert.deepEqual(model.test_plan.map((item) => item.suggested_file), files);
+  assert.deepEqual(model.test_plan.map((item) => item.command), files.map((file) => `pnpm run test -- ${file}`));
+});
+
+test("review-surfaces.HUMAN_REVIEW.23 reviewer questions strip ANY trailing sentence punctuation before the appended '?', so no question renders '.?', '??', or '!?'", () => {
+  // Overreach summaries flow into the "How should reviewers resolve this intent
+  // gap: <summary>?" template. forQuestionTail must strip the ENTIRE trailing
+  // run of sentence-ending marks before the appended '?' — not just one — so a
+  // summary ending in a punctuation RUN does not leave a residual mark. Run each
+  // ending through its own build so the summary lands in possible_overreach[0]
+  // and reliably produces an intent-gap question:
+  //   - a summary ending in '.' must not render "...intent.?"
+  //   - a summary ending in '?' must not render "...intent??"
+  //   - a summary ending in '!' must not render "...intent!?"
+  //   - a summary ending in the run '?!' must not render "...intent!?" / "...intent?"+residual
+  //   - a summary ending in the run '...' must not render "...intent..?"
+  //   - a summary ending in the run '!!!' must not render "...intent!!?"
+  const endings: Array<{ requirement_id: string; summary: string; doubled: string }> = [
+    { requirement_id: "OVER-001", summary: "Release helper changed outside stated human-review intent.", doubled: ".?" },
+    { requirement_id: "OVER-002", summary: "Why did the workflow file change outside stated human-review intent?", doubled: "??" },
+    { requirement_id: "OVER-003", summary: "Unexpected dependency bump landed outside stated human-review intent!", doubled: "!?" },
+    { requirement_id: "OVER-004", summary: "Did this really land outside stated human-review intent?!", doubled: "??" },
+    { requirement_id: "OVER-005", summary: "Config drifted outside stated human-review intent...", doubled: ".?" },
+    { requirement_id: "OVER-006", summary: "Generated output changed outside stated human-review intent!!!", doubled: "!?" }
+  ];
+
+  for (const ending of endings) {
+    const packet = packetFixture();
+    packet.evaluation.overreach = [
+      {
+        requirement_id: ending.requirement_id,
+        status: "overreach",
+        summary: ending.summary,
+        evidence: [fileEvidence("scripts/release.sh", "Change is not mapped to the stated intent.")],
+        missing_evidence: [],
+        review_focus: "Confirm whether this change belongs in this PR.",
+        confidence: "medium"
+      }
+    ];
+    const prSurface = prSurfaceFixture();
+    prSurface.scope.changed_files.push({
+      path: "scripts/release.sh",
+      status: "M",
+      areas: [],
+      role: "implementation",
+      added_lines: 3,
+      deleted_lines: 1
+    });
+    prSurface.scope.out_of_scope_changed_files.push({ path: "scripts/release.sh", status: "M", reason: "unmapped" });
+
+    const model = buildHumanReview({ packet, prSurface, diff: structuredDiffFixture() });
+
+    const overreachQuestion = model.questions.find((question) => /human-review intent\b/.test(question.question));
+    assert.ok(overreachQuestion, `the overreach intent-gap reviewer question should be generated for ${ending.requirement_id}`);
+    // The embedded summary ended in a sentence mark (or a RUN of them); the fix
+    // strips the whole run before the appended '?', so the question ends in
+    // exactly one "...human-review intent?" — never a residual mark before it.
+    assert.match(overreachQuestion.question, /human-review intent\?$/, `question must end in a single '?': ${overreachQuestion.question}`);
+    // Exactly one trailing '?' — no preceding sentence mark survived the strip.
+    assert.match(overreachQuestion.question, /[^.?!]\?$/, `question must end in exactly one '?' with no preceding mark: ${overreachQuestion.question}`);
+
+    // No generated reviewer question (in the model or the rendered surface) may
+    // carry doubled terminal punctuation — neither this ending's flavor nor any
+    // residual two-mark sequence a punctuation RUN could have left behind.
+    const rendered = renderHumanReviewMarkdown(model);
+    for (const doubled of [".?", "??", "!?", "..?", "!!?"]) {
+      for (const question of model.questions) {
+        assert.equal(question.question.includes(doubled), false, `question must not contain '${doubled}': ${question.question}`);
+      }
+      assert.equal(rendered.includes(doubled), false, `rendered surface must not contain '${doubled}'`);
+    }
+  }
+});
+
+test("review-surfaces.HUMAN_REVIEW.23 an empty-risk-id queue item ranked by high risk severity renders 'Linked risk IDs: none', never a bare 'Risk: none'", () => {
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [];
+  // A changed implementation file with no PR risk candidate produces a queue
+  // item with empty risk_ids; raising the packet risk to high gives the surface
+  // a high-severity ranking line that the bare "Risk: none" sat next to.
+  surface.scope.changed_files.push({
+    path: "src/human/human-review.ts",
+    status: "M",
+    areas: ["HUMAN_REVIEW"],
+    role: "implementation",
+    added_lines: 12,
+    deleted_lines: 2
+  });
+  const packet = packetFixture();
+  packet.risks.items[0].severity = "high";
+
+  const model = buildHumanReview({ packet, prSurface: surface, diff: structuredDiffFixture() });
+  const emptyRiskItem = model.review_queue.find((item) => item.risk_ids.length === 0);
+  assert.ok(emptyRiskItem, "an empty-risk-id queue item must exist");
+
+  const markdown = renderHumanReviewMarkdown(model);
+  // The compact Review-first surface must not read as a risk-severity claim.
+  assert.equal(/- Risk: none\b/.test(markdown), false, "the singular 'Risk: none' label must not render");
+  assert.match(markdown, /- Linked risk IDs: none/);
+
+  // review-surfaces.HUMAN_REVIEW.23: the label-clean guarantee must also hold for
+  // the STANDALONE review_queue.md artifact (renderQueueDetail), which previously
+  // still rendered a bare "Risks: none" for the same empty-risk-id item.
+  const queueArtifact = renderReviewQueueMarkdown(model);
+  assert.equal(/^Risks: none$/m.test(queueArtifact), false, "the standalone queue artifact must not render a bare 'Risks: none'");
+  assert.match(queueArtifact, /^Linked risk IDs: none$/m);
+});
+
 function prRiskFixture(rule: PrRiskRule): PrReviewSurfaceModel["risks"]["candidates"][number] {
   const fixtures = {
     coverage_regression: {

@@ -332,3 +332,166 @@ test("review-surfaces.DISTRIBUTION.13 a first run hints once (stderr) to gitigno
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// review-surfaces.DISTRIBUTION.14-15 — ci-trust uplift Phase 7
+// (docs/history/CI_TRUST_UPLIFT_GOAL.md): the tarball shipped 1.6 MB / 87
+// compiled test files the runtime never loads, and the README sells the action
+// and --strict for CI without a usage snippet or an exit-code table.
+
+test("review-surfaces.DISTRIBUTION.14 the pack allowlist ships dist/src only, never compiled tests", () => {
+  // The load-bearing check runs the REAL pack manifest — npm's packlist applies
+  // rules beyond package.json `files`, so inspecting `files` alone can miss what
+  // actually ships. `--ignore-scripts` is required: it skips the `prepack` build
+  // so this test does NOT rebuild/clobber `dist` while sibling tests read it (the
+  // repo hit exactly that race before). `npm pack --json` returns an array whose
+  // first entry has a `files[].path` list of every tarball member.
+  const raw = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+    cwd: root,
+    encoding: "utf8"
+  });
+  let packed: Array<{ files?: Array<{ path?: string }> }>;
+  try {
+    packed = JSON.parse(raw) as Array<{ files?: Array<{ path?: string }> }>;
+  } catch (error) {
+    assert.fail(`npm pack did not emit parseable JSON: ${(error as Error).message}\n${raw.slice(0, 400)}`);
+  }
+  const packedPaths = (packed[0]?.files ?? [])
+    .map((entry) => entry.path ?? "")
+    .filter((p) => p.length > 0);
+  assert.ok(packedPaths.length > 0, "the pack manifest lists tarball members");
+  assert.ok(
+    !packedPaths.some((p) => p.startsWith("dist/tests")),
+    `the tarball must not ship compiled tests; found ${JSON.stringify(packedPaths.filter((p) => p.startsWith("dist/tests")))}`
+  );
+  assert.ok(
+    packedPaths.some((p) => p.startsWith("dist/src/")),
+    "the tarball ships the compiled runtime under dist/src"
+  );
+
+  // Belt and suspenders: the structural allowlist matches the manifest — no bare
+  // `dist` entry (which would carry dist/tests), and dist is scoped to dist/src.
+  const manifest = JSON.parse(read("package.json")) as { files?: string[]; bin?: Record<string, string> };
+  const files = manifest.files ?? [];
+  assert.ok(!files.includes("dist"), "the bare `dist` entry (which would carry dist/tests) is gone");
+  assert.ok(files.includes("dist/src"), "the package ships the compiled runtime under dist/src");
+  assert.ok(
+    files.every((entry) => !entry.startsWith("dist") || entry.startsWith("dist/src")),
+    `no files entry may include dist/tests; got ${JSON.stringify(files)}`
+  );
+  // The bin's runtime path is covered by a files glob, so an install can run it.
+  const binPath = manifest.bin?.["review-surfaces"] ?? "";
+  assert.match(binPath, /bin\/review-surfaces\.js$/, "bin points at the shim under bin/");
+  const shim = read("bin/review-surfaces.js");
+  assert.match(shim, /dist\/src\/cli\/index\.js/, "the shim spawns the compiled entry under dist/src");
+  assert.ok(
+    files.some((entry) => entry === "bin" || entry === "bin/review-surfaces.js"),
+    "the bin shim ships in the package"
+  );
+  assert.ok(
+    files.some((entry) => entry === "dist/src" || entry === "dist/src/cli/index.js"),
+    "the bin's runtime entry (dist/src/cli/index.js) is covered by a files glob"
+  );
+});
+
+test("review-surfaces.DISTRIBUTION.15 the README documents CI consumption: an action snippet and an exit-code table", () => {
+  const readme = read("README.md");
+  // (a) A copy-pasteable GitHub Action `uses:` snippet pinning this repo's
+  // action, with the required pr-number input, plus a link to the worked
+  // example workflow.
+  assert.match(readme, /uses:\s*Shaance\/review-surfaces@/, "a `uses:` snippet pins the reusable action");
+  assert.match(readme, /pr-number:/, "the snippet wires the required pr-number input");
+  assert.match(
+    readme,
+    /github\.com\/Shaance\/review-surfaces\/blob\/main\/\.github\/workflows\/pr-review-comment\.yml/,
+    "links the worked example workflow (absolute GitHub blob URL)"
+  );
+  // (a.0) pr-review-comment.yml is THIS repo's own dogfood workflow: it runs the
+  // in-repo composite action via `uses: ./tool`, so an external consumer copying
+  // it verbatim would run their own checkout, not the published action. The
+  // README must frame that file as a wiring REFERENCE (not a copy-as-is) and
+  // tell consumers to use the published `Shaance/review-surfaces@<sha>` ref —
+  // e.g. by noting the `./tool` swap. Match on stable substrings.
+  assert.match(readme, /\.\/tool/, "the README names the in-repo `./tool` ref the consumer must swap out");
+  assert.match(
+    readme,
+    /swap\s+`?uses:\s*\.\/tool`?\s+for\s+`?uses:\s*Shaance\/review-surfaces@/i,
+    "the README tells consumers to swap `./tool` for the published `Shaance/review-surfaces@<sha>` ref"
+  );
+  assert.doesNotMatch(
+    readme,
+    /\*\*Copy\s*\n?\[`?\.github\/workflows\/pr-review-comment\.yml/,
+    "the README does not instruct copying pr-review-comment.yml verbatim (it uses ./tool)"
+  );
+  // (a.1) Supply-chain hardening: the secret-bearing action must be pinned to a
+  // FULL 40-char commit SHA — the only immutable ref. A release tag (`@v<semver>`)
+  // can be moved or deleted and `@main` is mutable; a later push to either could
+  // redirect the write token / LLM key. Assert the `uses: Shaance/...@` ref is a
+  // 40-hex SHA, and that it points at neither a `@v` tag nor the `@main` branch.
+  assert.match(
+    readme,
+    /uses:\s*Shaance\/review-surfaces@[0-9a-f]{40}\b/,
+    "the secret-bearing action is pinned to a full 40-char commit SHA (the only immutable ref)"
+  );
+  assert.doesNotMatch(
+    readme,
+    /uses:\s*Shaance\/review-surfaces@v\d/,
+    "the action is not pinned to a movable @v<semver> tag"
+  );
+  assert.doesNotMatch(
+    readme,
+    /uses:\s*Shaance\/review-surfaces@main\b/,
+    "the action is not pinned to the mutable @main branch"
+  );
+  // (a.1.1) The composite action defaults `spec` to THIS repo's own spec, so a
+  // consumer copying the snippet must point it at their own spec. The snippet
+  // must therefore show the feature-spec glob (or a spec note) so a consumer's
+  // `features/<x>.feature.yaml` is actually indexed.
+  assert.match(
+    readme,
+    /spec:\s*features\/\*\*\/\*\.feature\.yaml/,
+    "the snippet shows the `features/**` spec glob so the consumer's own spec is indexed"
+  );
+  // (a.2) The README must keep the `actions: read` permission documented (the
+  // worked workflow grants it): the prior-sticky artifact lookup that drives the
+  // since-last-review delta needs it, or the API call is denied and the delta
+  // silently vanishes.
+  assert.match(readme, /actions:\s*read/, "the README documents the `actions: read` permission for the prior-sticky lookup");
+  // (a.3) `--fail-on` ships in a later phase, not this commit. The README must
+  // not promise a flag the CLI does not yet expose.
+  assert.doesNotMatch(readme, /--fail-on/, "the README does not reference the not-yet-shipped --fail-on flag");
+  // (b) An exit-code table sourced from src/core/exit-codes.ts mapping each
+  // code to its meaning. The table must carry the non-trivial codes with copy
+  // a CI author can branch on, and the meanings must match the source: code 4 is
+  // the evidence-validation failure, code 10 is the quality-gate (missing
+  // requirements) failure — these must not be conflated.
+  const exitTable = readme.slice(readme.indexOf("### Exit codes"));
+  assert.ok(exitTable.length > 0, "the README has an Exit codes section");
+  for (const [code, keyword] of [
+    ["3", /[Ss]chema/],
+    ["4", /[Ee]vidence/],
+    ["5", /[Pp]rivacy/],
+    ["10", /[Gg]ate/]
+  ] as const) {
+    assert.match(exitTable, new RegExp(`\\|\\s*\`?${code}\`?\\s*\\|`), `the table lists exit code ${code}`);
+    assert.match(exitTable, keyword, `exit code ${code}'s meaning is documented`);
+  }
+  assert.match(exitTable, /\|\s*`?2`?\s*\|/, "the table lists the usage-error code 2");
+  assert.match(exitTable, /\|\s*`?0`?\s*\|/, "the table lists the success code 0");
+  // (b.1) Code 4's row is evidence validation, code 10's row is the quality gate
+  // over missing requirements. The quality-gate row must NOT attribute itself to
+  // schema/evidence/risk-threshold concerns (the risk `--fail-on` threshold is
+  // not shipped), so the doc cannot mislead a CI author about which code fires.
+  const rowFor = (code: string) =>
+    (exitTable.match(new RegExp(`\\|\\s*\`?${code}\`?\\s*\\|([^\\n]*)\\|`)) ?? [, ""])[1] ?? "";
+  assert.match(rowFor("4"), /[Ee]vidence/, "code 4's row is the evidence-validation failure");
+  assert.match(rowFor("10"), /[Gg]ate/, "code 10's row is the quality-gate failure");
+  assert.match(rowFor("10"), /missing/i, "code 10's row attributes the failure to missing requirements");
+  assert.doesNotMatch(rowFor("10"), /risk/i, "code 10's row does not attribute itself to a risk threshold");
+  assert.doesNotMatch(rowFor("10"), /[Ee]vidence/, "code 10's row does not conflate itself with evidence validation");
+  // The table mirrors src/core/exit-codes.ts — every named non-runtime code is
+  // documented, so the doc cannot silently drift from the source.
+  const exitSource = read("src/core/exit-codes.ts");
+  for (const code of [0, 2, 3, 4, 5, 10]) {
+    assert.match(exitSource, new RegExp(`:\\s*${code}\\b`), `exit-codes.ts defines code ${code}`);
+  }
+});
