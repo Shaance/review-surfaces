@@ -723,61 +723,79 @@
       ],
       "properties": {
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "missing_logs": {
           "type": "boolean"
         },
         "considered": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "research": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "decisions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "unchallenged_assumptions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "skipped_checks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "claims_without_evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "verified_claims": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "quality_flags": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }

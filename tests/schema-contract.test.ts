@@ -899,6 +899,29 @@ test("review-surfaces.SCHEMA.5 free-text string fields carry a maxLength cap", (
   }
 });
 
+test("review-surfaces.SCHEMA.5 methodology narrative summary and arrays carry maxLength and maxItems caps", () => {
+  const summaryLen = schemaAt(schema, ["$defs", "Methodology", "properties", "summary", "maxLength"]);
+  assert.equal(typeof summaryLen, "number", "expected numeric maxLength on methodology.summary");
+  const stringArrays = [
+    "considered",
+    "research",
+    "decisions",
+    "unchallenged_assumptions",
+    "skipped_checks",
+    "claims_without_evidence",
+    "verified_claims",
+    "quality_flags"
+  ];
+  for (const field of stringArrays) {
+    const cap = schemaAt(schema, ["$defs", "Methodology", "properties", field, "maxItems"]);
+    assert.equal(typeof cap, "number", `expected numeric maxItems on methodology.${field}`);
+    const itemLen = schemaAt(schema, ["$defs", "Methodology", "properties", field, "items", "maxLength"]);
+    assert.equal(typeof itemLen, "number", `expected numeric maxLength on methodology.${field}[]`);
+  }
+  const evidenceCap = schemaAt(schema, ["$defs", "Methodology", "properties", "evidence", "maxItems"]);
+  assert.equal(typeof evidenceCap, "number", "expected numeric maxItems on methodology.evidence");
+});
+
 // review-surfaces.SCHEMA.6: schema-version and enum drift is test-guarded across
 // every artifact schema. The packet and human consts were already guarded; these
 // add the pr_surface const, hoist + tie the risk-lens enum, and tie the human
