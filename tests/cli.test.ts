@@ -6,6 +6,7 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { validateJsonSchema } from "../src/schema/json-schema";
 import { ExitCodes } from "../src/core/exit-codes";
+import { COMMANDS } from "../src/cli/index";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
 const PACKET_SCHEMA = JSON.parse(
@@ -893,6 +894,435 @@ test("review-surfaces.PROVIDERS.7 comment --format review --review-scope pr fail
     const result = spawnSync("node", [CLI, "comment", "--format", "review", "--review-scope", "pr", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
     assert.equal(result.status, ExitCodes.usageError, result.stdout + result.stderr);
     assert.match(result.stderr + result.stdout, /PR-scope draft review requires a current pr_review_surface\.json/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ci-trust uplift Phase 4 (CLI honesty): CLI.9 (reject unknown commands and
+// misspelled flags with a nearest-name suggestion), CLI.10 (honest, complete
+// --help + clean artifact path lines), and CLI.3 (non-write commands leave the
+// working tree untouched).
+// ---------------------------------------------------------------------------
+
+// Minimal committed git repo, mirroring the --verbose test's fixture, for the
+// no-write and outside-cwd-path assertions below.
+function setupMinimalRepo(prefix: string): string {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  fs.writeFileSync(path.join(tmp, "README.md"), "# repo\n");
+  fs.writeFileSync(path.join(tmp, ".gitignore"), ".review-surfaces/\n");
+  fs.writeFileSync(path.join(tmp, "index.ts"), "export const answer = 42;\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
+  return tmp;
+}
+
+test("review-surfaces.CLI.9 an unknown command exits usageError and suggests the nearest valid command", () => {
+  const result = spawnSync("node", [CLI, "collct", "--base", "HEAD"], { encoding: "utf8" });
+  assert.equal(result.status, ExitCodes.usageError, result.stderr);
+  assert.match(result.stderr, /Unknown command: collct/);
+  assert.match(result.stderr, /did you mean 'collect'\?/, "the nearest valid command is suggested");
+  assert.match(result.stderr, /review-surfaces --help/, "the error points at the full command list");
+});
+
+test("review-surfaces.CLI.9 a misspelled command with a real flag reports the command typo, not the flag", () => {
+  // parseArgs validates flags before main()'s unknown-command check, so the
+  // per-command flag check is gated on COMMANDS.includes(command): `coment
+  // --format github` (format is a real comment flag) must report the COMMAND
+  // typo, not "Unknown flag: --format".
+  const result = spawnSync("node", [CLI, "coment", "--format", "github"], { encoding: "utf8" });
+  assert.equal(result.status, ExitCodes.usageError, result.stderr);
+  assert.match(result.stderr, /Unknown command: coment/);
+  assert.match(result.stderr, /did you mean 'comment'\?/, "the command typo is suggested");
+  assert.doesNotMatch(result.stderr, /Unknown flag/, "the command-typo error wins over the flag check");
+});
+
+test("review-surfaces.CLI.9 a misspelled flag exits usageError with an Unknown flag suggestion", () => {
+  // The Phase 4 dogfood footgun: `all --proivder mock` ran SILENTLY with the
+  // default provider because the typo'd flag was ignored. It must now be a loud
+  // usage error that suggests --provider.
+  const tmp = setupMinimalRepo("review-surfaces-cli9-flag-");
+  try {
+    const result = spawnSync(
+      "node",
+      [CLI, "all", "--proivder", "mock", "--base", "HEAD", "--head", "HEAD", "--out", ".review-surfaces"],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(result.status, ExitCodes.usageError, result.stdout + result.stderr);
+    assert.match(result.stderr, /Unknown flag: --proivder/);
+    assert.match(result.stderr, /did you mean --provider\?/, "the nearest valid flag is suggested");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI.9 every legitimate flag the strict self-dogfood uses is accepted", () => {
+  // Guards the KNOWN_FLAGS union completeness: a flag-heavy `all` must NOT be
+  // rejected by the new allow-list (an incomplete union would redden the gate).
+  const tmp = setupMinimalRepo("review-surfaces-cli9-union-");
+  try {
+    const result = spawnSync(
+      "node",
+      [
+        CLI, "all",
+        "--provider", "mock",
+        "--base", "HEAD", "--head", "HEAD",
+        "--dogfood", "--strict",
+        "--cache", "--now", "2026-06-13T00:00:00Z",
+        "--max-missing", "1", "--budget", "15m",
+        "--out", ".review-surfaces"
+      ],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(result.status, ExitCodes.success, result.stdout + result.stderr);
+    assert.doesNotMatch(result.stderr, /Unknown flag/, "no legitimate flag is rejected by the allow-list");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI.9 a flag valid for ANOTHER command but not for `all` is rejected (command-specific allow-list)", () => {
+  // The allow-list is COMMAND-SPECIFIC, not a single global union: `--format` is a
+  // real flag (comment/human read it) and `--surface` is a real flag (validate
+  // reads it), but `runAll` reads NEITHER. Before this fix a global union accepted
+  // both on `all`, so `all --format review` ran as a normal `all` with a silently
+  // ignored no-op flag. Each must now be a loud usage error on `all`.
+  const tmp = setupMinimalRepo("review-surfaces-cli9-percmd-");
+  try {
+    for (const [flag, value] of [["--format", "review"], ["--surface", "human"]] as const) {
+      const result = spawnSync(
+        "node",
+        [CLI, "all", flag, value, "--provider", "mock", "--base", "HEAD", "--head", "HEAD", "--out", ".review-surfaces"],
+        { cwd: tmp, encoding: "utf8" }
+      );
+      assert.equal(
+        result.status,
+        ExitCodes.usageError,
+        `\`all ${flag} ${value}\` must be a usage error (not a silently-ignored no-op): ${result.stdout + result.stderr}`
+      );
+      assert.match(result.stderr, new RegExp(`Unknown flag: \\${flag}`), `${flag} is rejected on \`all\``);
+    }
+
+    // The same flags ARE accepted on the commands that actually read them, so the
+    // tightening rejects the wrong-command use without breaking the right one.
+    const human = spawnSync(
+      "node",
+      [CLI, "all", "--provider", "mock", "--base", "HEAD", "--head", "HEAD", "--out", ".review-surfaces"],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(human.status, ExitCodes.success, human.stdout + human.stderr);
+    const validate = spawnSync("node", [CLI, "validate", "--surface", "packet", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    assert.doesNotMatch(validate.stderr, /Unknown flag: --surface/, "`validate --surface` is still accepted");
+    const comment = spawnSync("node", [CLI, "comment", "--format", "sticky", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    assert.doesNotMatch(comment.stderr, /Unknown flag: --format/, "`comment --format` is still accepted");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI.9 a pipeline flag passed to a command that does not read it is rejected (allow-list precision)", () => {
+  // The allow-list must be PRECISE in BOTH directions. A collector flag like
+  // --provider / --base is meaningful on the pipeline commands, but runScoreboard
+  // and runValidate never invoke the collector and never read it. Before the
+  // precision fix a too-broad UNIVERSAL_FLAGS set accepted them silently, so
+  // `scoreboard --provider ai-sdk` ran as a normal scoreboard with the flag a
+  // no-op (and a user could believe live enrichment was requested). Each must now
+  // be a loud usage error on the command that does not read it.
+  const tmp = setupMinimalRepo("review-surfaces-cli9-noop-");
+  try {
+    for (const [command, flag, value] of [
+      ["scoreboard", "--provider", "ai-sdk"],
+      ["scoreboard", "--base", "main"],
+      ["validate", "--base", "main"],
+      ["validate", "--provider", "mock"]
+    ] as const) {
+      const result = spawnSync("node", [CLI, command, flag, value], { cwd: tmp, encoding: "utf8" });
+      assert.equal(
+        result.status,
+        ExitCodes.usageError,
+        `\`${command} ${flag} ${value}\` must be a usage error (a no-op flag the command never reads): ${result.stdout + result.stderr}`
+      );
+      assert.match(
+        result.stderr,
+        new RegExp(`Unknown flag: \\${flag}`),
+        `${flag} is rejected on \`${command}\` because that command never reads it`
+      );
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI.9 `all --cache --schema` is accepted (a flag read through a non-obvious path)", () => {
+  // The allow-list must not be too TIGHT either. runAll reads --schema through the
+  // --cache path (readCacheSnapshot -> readSchemaValidPacket validates the on-disk
+  // packet against a custom --schema before reuse), so `all --cache --schema
+  // <path>` genuinely reads --schema even though no `all`-specific handler line
+  // mentions it. It must be ACCEPTED, not rejected as an unknown flag.
+  const tmp = setupMinimalRepo("review-surfaces-cli9-schema-");
+  try {
+    const schemaPath = path.join(process.cwd(), "schemas", "review_packet.schema.json");
+    const result = spawnSync(
+      "node",
+      [
+        CLI, "all",
+        "--cache", "--schema", schemaPath,
+        "--base", "HEAD", "--head", "HEAD",
+        "--provider", "mock", "--out", ".review-surfaces"
+      ],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(result.status, ExitCodes.success, result.stdout + result.stderr);
+    assert.doesNotMatch(
+      result.stderr,
+      /Unknown flag: --schema/,
+      "`all --cache --schema` must be accepted: runAll reads --schema via the cache path"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI.9 --out/--config on commands that never read them are rejected (no silent no-op)", () => {
+  // The precision must hold for --out and --config too, not just the obviously
+  // command-specific flags. `init` (runInit) and `bootstrap` (runBootstrap)
+  // scaffold/validate in process.cwd() and never call resolveOutputDir()/
+  // loadConfig(), so `init --out X` and `bootstrap --config Y` are silent no-ops —
+  // the directory/config is ignored. A blanket "universal" --out/--config seed
+  // accepted them; CLI.9 must REJECT them with the usage error. `run` reads --out
+  // (transcript dir) but never loads config, so `run --config Y` is a no-op too.
+  const tmp = setupMinimalRepo("review-surfaces-cli9-outcfg-");
+  try {
+    for (const [command, flag, value] of [
+      ["init", "--out", "/tmp/review-surfaces-scaffold"],
+      ["init", "--config", "other.yml"],
+      ["bootstrap", "--config", "other.yml"],
+      ["bootstrap", "--out", "/tmp/review-surfaces-scaffold"],
+      ["run", "--config", "other.yml"]
+    ] as const) {
+      const result = spawnSync("node", [CLI, command, flag, value], { cwd: tmp, encoding: "utf8" });
+      assert.equal(
+        result.status,
+        ExitCodes.usageError,
+        `\`${command} ${flag} ${value}\` must be a usage error (a no-op flag the command never reads): ${result.stdout + result.stderr}`
+      );
+      assert.match(
+        result.stderr,
+        new RegExp(`Unknown flag: \\${flag} \\(not a flag '${command}' accepts\\)`),
+        `${flag} is rejected on \`${command}\` because that command never reads it`
+      );
+    }
+
+    // The same flags are STILL accepted on the commands that genuinely read them:
+    // `all` reads both --out and --config (collect()/resolveOutputDir), and
+    // `validate` resolves its output dir via resolveOutputDir (--out/--config).
+    const all = spawnSync(
+      "node",
+      [CLI, "all", "--provider", "mock", "--base", "HEAD", "--head", "HEAD", "--out", ".review-surfaces"],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(all.status, ExitCodes.success, `\`all --out\` must still be accepted: ${all.stdout + all.stderr}`);
+    assert.doesNotMatch(all.stderr, /Unknown flag: --out/, "`all --out` must be accepted");
+
+    const validate = spawnSync(
+      "node",
+      [CLI, "validate", "--surface", "packet", "--config", "review-surfaces.config.yaml", "--out", ".review-surfaces"],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.doesNotMatch(validate.stderr, /Unknown flag: --config/, "`validate --config` must be accepted (resolveOutputDir reads it)");
+    assert.doesNotMatch(validate.stderr, /Unknown flag: --out/, "`validate --out` must be accepted");
+
+    // `run` still accepts --out (transcriptDirFromOut reads it) even though it
+    // rejects --config above.
+    const run = spawnSync("node", [CLI, "run", "--out", ".review-surfaces", "--", "node", "-e", "0"], { cwd: tmp, encoding: "utf8" });
+    assert.doesNotMatch(run.stderr, /Unknown flag: --out/, "`run --out` must be accepted (transcript dir)");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI.9 --strict/--max-missing are rejected on non-gating stages", () => {
+  // Only the stages that call applyGate (evaluate/packet/all/dogfood) read
+  // --strict/--max-missing. collect/intent/diagrams/methodology/risks/handoff
+  // never gate, so passing them there is a silent no-op CLI.9 must reject.
+  const tmp = setupMinimalRepo("review-surfaces-cli9-gate-");
+  try {
+    for (const command of ["collect", "intent", "risks"] as const) {
+      const result = spawnSync("node", [CLI, command, "--strict", "--max-missing", "0"], { cwd: tmp, encoding: "utf8" });
+      assert.equal(result.status, ExitCodes.usageError, `\`${command} --strict\` must be a usage error: ${result.stdout + result.stderr}`);
+      assert.match(result.stderr, /Unknown flag: --(strict|max-missing) \(not a flag '/, `${command} never gates, so --strict/--max-missing are no-ops`);
+    }
+    // The gating stages still accept them.
+    for (const command of ["evaluate", "all"] as const) {
+      const result = spawnSync(
+        "node",
+        [CLI, command, "--strict", "--max-missing", "0", "--provider", "mock", "--base", "HEAD", "--head", "HEAD", "--out", ".review-surfaces"],
+        { cwd: tmp, encoding: "utf8" }
+      );
+      assert.doesNotMatch(result.stderr, /Unknown flag: --strict|Unknown flag: --max-missing/, `\`${command} --strict --max-missing\` must be accepted (it gates)`);
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI.10 --help documents every command in the dispatch table", () => {
+  const result = spawnSync("node", [CLI, "--help"], { encoding: "utf8" });
+  assert.equal(result.status, ExitCodes.success, result.stderr);
+  for (const command of COMMANDS) {
+    assert.ok(
+      result.stdout.includes(command),
+      `--help must document the '${command}' command from the dispatch table`
+    );
+  }
+});
+
+test("review-surfaces.CLI.10 --help documents the previously-omitted flags and all comment --format values", () => {
+  const result = spawnSync("node", [CLI, "--help"], { encoding: "utf8" });
+  assert.equal(result.status, ExitCodes.success, result.stderr);
+  // A representative set of the flags the CLI reads but --help used to omit.
+  for (const flag of ["--budget", "--verbose", "--check", "--no-redact-secrets", "--readme", "--run-id", "--artifact-name", "--comment-top-n"]) {
+    assert.ok(result.stdout.includes(flag), `--help must document ${flag}`);
+  }
+  // comment --format must list all four values, and --coverage must mention the
+  // lcov.info auto-detect.
+  for (const value of ["github", "sticky", "sarif", "review"]) {
+    assert.ok(result.stdout.includes(value), `--help --format must list the '${value}' value`);
+  }
+  // human --format is also a first-class format (runHumanStage reads --format and
+  // supports markdown|html for the offline HTML cockpit). The rewritten --format
+  // help previously presented the flag as comment-only and hid `html`; it must
+  // document the human cockpit format too.
+  assert.ok(result.stdout.includes("html"), "--help --format must list the 'html' human cockpit format");
+  assert.match(result.stdout, /lcov\.info/, "--coverage help must mention the lcov.info auto-detect");
+});
+
+test("review-surfaces.CLI.10 an --out resolving OUTSIDE cwd prints a clean absolute path, not a ../ parent-escape", () => {
+  const tmp = setupMinimalRepo("review-surfaces-cli10-path-");
+  const outsideOut = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-cli10-out-"));
+  try {
+    const result = spawnSync(
+      "node",
+      [CLI, "all", "--provider", "mock", "--base", "HEAD", "--head", "HEAD", "--out", outsideOut],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(result.status, ExitCodes.success, result.stderr);
+    // The user-facing path lines must not carry a ../ parent-escape sequence and
+    // must show the clean absolute path of the outside-cwd target.
+    const wrote = result.stdout.split("\n").filter((line) => line.includes("Wrote review-surfaces artifacts to"));
+    assert.ok(wrote.length > 0, "the artifact path line is printed");
+    for (const line of wrote) {
+      assert.doesNotMatch(line, /\.\.[\\/]/, `the path line must not escape cwd with ../: ${line}`);
+      assert.ok(line.includes(outsideOut), `the path line shows the clean absolute outside-cwd path: ${line}`);
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(outsideOut, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI.3 non-write commands leave the working tree untouched", () => {
+  const tmp = setupMinimalRepo("review-surfaces-cli3-nowrite-");
+  // The .review-surfaces output dir is the explicitly-configured write target;
+  // every OTHER tracked/untracked repo file must be unchanged by a read-only
+  // stage. git status --short (with .review-surfaces gitignored) is the witness.
+  const status = () =>
+    execFileSync("git", ["status", "--short"], { cwd: tmp, encoding: "utf8" })
+      .split("\n")
+      .filter((line) => line.trim().length > 0 && !line.includes(".review-surfaces"))
+      .sort()
+      .join("\n");
+  try {
+    const before = status();
+    for (const command of ["collect", "intent", "evaluate", "risks"]) {
+      const result = spawnSync(
+        "node",
+        [CLI, command, "--provider", "mock", "--base", "HEAD", "--head", "HEAD", "--out", ".review-surfaces"],
+        { cwd: tmp, encoding: "utf8" }
+      );
+      assert.equal(result.status, ExitCodes.success, `${command}: ${result.stderr}`);
+      assert.equal(
+        status(),
+        before,
+        `${command} must not modify any repo file outside the --out artifact directory`
+      );
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CLI.10 a blocked draft-review payload is neither written nor printed", () => {
+  const tmp = setupReviewFixture("rs-draft-blocked-");
+  try {
+    // Inject a high-confidence secret into the human_review.json summary AND a
+    // suggested-comment body (both plain strings, so the file stays schema-valid).
+    // buildDraftReview then raises `blocked`, and the CLI must refuse to write or
+    // print pending_review.json (that payload is exactly what a reviewer pastes
+    // to GitHub).
+    const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
+    const human = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    const secret = "AIzaSyA1234567890abcdefghijklmnopqrstuv";
+    human.summary = `${human.summary} Leaked key ${secret} was committed.`;
+    if (Array.isArray(human.suggested_comments) && human.suggested_comments.length > 0) {
+      human.suggested_comments[0].body = `General note: SECRET=${secret} leaks in logs.`;
+    }
+    fs.writeFileSync(humanPath, JSON.stringify(human, null, 2));
+
+    const reviewPath = path.join(tmp, ".review-surfaces", "pending_review.json");
+    fs.rmSync(reviewPath, { force: true });
+
+    const result = spawnSync("node", [CLI, "comment", "--format", "review", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    // Without --post/--strict-postability the block is an exit-0 suppression, but
+    // the payload must NOT be written or dumped to stdout.
+    assert.equal(result.status, ExitCodes.success, result.stderr);
+    assert.equal(fs.existsSync(reviewPath), false, "a blocked draft must NOT write pending_review.json");
+    assert.equal(result.stdout.trim(), "", "a blocked draft must NOT dump the payload to stdout");
+    assert.match(result.stderr, /Draft review blocked/, "the block is announced on stderr");
+    assert.doesNotMatch(result.stdout + result.stderr, new RegExp(secret), "the secret must never leak in any output");
+
+    // With --strict-postability the same block is a non-zero (privacy) exit.
+    const strict = spawnSync("node", [CLI, "comment", "--format", "review", "--strict-postability", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    assert.equal(strict.status, ExitCodes.privacyBlocked, strict.stderr);
+    assert.equal(fs.existsSync(reviewPath), false, "the blocked draft still writes nothing under --strict-postability");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.PR_SURFACE.4 a blocked draft-review DELETES a stale pending_review.json (no stale draft survives)", () => {
+  const tmp = setupReviewFixture("rs-draft-stale-");
+  try {
+    const reviewPath = path.join(tmp, ".review-surfaces", "pending_review.json");
+    // A clean `comment --format review` first, leaving a real pending_review.json
+    // on disk (the artifact a consumer would read).
+    const clean = spawnSync("node", [CLI, "comment", "--format", "review", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    assert.equal(clean.status, ExitCodes.success, clean.stderr);
+    assert.equal(fs.existsSync(reviewPath), true, "the clean run writes pending_review.json");
+
+    // Now inject a high-confidence secret so the NEXT run blocks. The blocked path
+    // returns without writing — but it must also DELETE the stale draft above, so a
+    // consumer reading the artifact after the (exit 0) block does not pick up the
+    // earlier, non-blocked draft and believe it is current.
+    const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
+    const human = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    const secret = "AIzaSyA1234567890abcdefghijklmnopqrstuv";
+    human.summary = `${human.summary} Leaked key ${secret} was committed.`;
+    if (Array.isArray(human.suggested_comments) && human.suggested_comments.length > 0) {
+      human.suggested_comments[0].body = `General note: SECRET=${secret} leaks in logs.`;
+    }
+    fs.writeFileSync(humanPath, JSON.stringify(human, null, 2));
+
+    const blocked = spawnSync("node", [CLI, "comment", "--format", "review", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    assert.equal(blocked.status, ExitCodes.success, blocked.stderr);
+    assert.match(blocked.stderr, /Draft review blocked/, "the block is announced on stderr");
+    assert.equal(
+      fs.existsSync(reviewPath),
+      false,
+      "the stale pending_review.json from the earlier clean run must be DELETED, not left in place"
+    );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

@@ -9,6 +9,7 @@ import { packagedSchemaPath } from "../schema/packaged-schemas";
 import { parseAcaiSpec } from "../acai/acai";
 import { loadConfig } from "../config/config";
 import { expandPatterns } from "../core/glob";
+import { errorMessage } from "../core/guards";
 
 /**
  * Phase 2 bootstrap scaffolding.
@@ -152,7 +153,7 @@ async function tryValidate(validate: Validator, cwd: string, absolutePath: strin
     await validate(cwd, absolutePath);
     return undefined;
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return errorMessage(error);
   }
 }
 

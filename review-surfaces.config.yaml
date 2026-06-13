@@ -299,8 +299,6 @@ quality_gate:
   # gate must be back to `allow_missing: []` when the final phase (Phase 6)
   # lands. Grouped by phase:
   allow_missing:
-    - review-surfaces.CLI.9            # Phase 4 cli-honesty
-    - review-surfaces.CLI.10           # Phase 4
     - review-surfaces.QUALITY_GATE.1   # Phase 3 quality-gate + CI surfaces
     - review-surfaces.QUALITY_GATE.2   # Phase 3
     - review-surfaces.QUALITY_GATE.3   # Phase 3

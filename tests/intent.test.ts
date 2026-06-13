@@ -46,6 +46,40 @@ function collection(overrides: Partial<CollectionResult> = {}): CollectionResult
   } as CollectionResult;
 }
 
+test("review-surfaces.INTENT.3 Acai requirement IDs round-trip into intent.yaml", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-intent-acai-"));
+  const acaiId = "review-surfaces.INTENT.3";
+  const intent = await buildIntent(
+    tmp,
+    collection({
+      specIndex: {
+        schema_version: "review-surfaces.specs.index.v1",
+        specs: [
+          {
+            path: "features/review-surfaces.feature.yaml",
+            feature_name: "review-surfaces",
+            requirements: [
+              {
+                acai_id: acaiId,
+                group_kind: "component",
+                group_key: "INTENT",
+                group_name: "Intent synthesis",
+                requirement_id: "3",
+                requirement: "Acai requirement IDs must round-trip into intent.yaml.",
+                source_path: "features/review-surfaces.feature.yaml"
+              }
+            ]
+          }
+        ]
+      }
+    })
+  );
+
+  const matched = intent.requirements.find((requirement) => requirement.acai_id === acaiId);
+  assert.ok(matched, "the indexed Acai requirement survives into intent.requirements with its acai_id intact");
+  assert.equal(intent.spec_mode, "acai", "an indexed Acai requirement puts intent in acai spec_mode");
+});
+
 test("review-surfaces.INTENT.4 records sparse source questions instead of inventing goals", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-intent-sparse-"));
 

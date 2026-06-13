@@ -6,7 +6,7 @@ import path from "node:path";
 import { buildMethodology } from "../src/methodology/methodology";
 import { CollectionResult } from "../src/collector/collect";
 
-test("methodology marks missing conversation as not_provided", async () => {
+test("review-surfaces.COLLECTOR.5 marks missing conversation as not_provided", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
   const methodology = await buildMethodology(tmp, collectionFixture(tmp), undefined, []);
 
@@ -14,7 +14,7 @@ test("methodology marks missing conversation as not_provided", async () => {
   assert.match(methodology.summary, /not_provided/);
 });
 
-test("methodology normalizes markdown conversation logs", async () => {
+test("review-surfaces.COLLECTOR.4 writes conversation.normalized.jsonl from a markdown conversation log", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
   const logPath = path.join(tmp, "conversation.md");
   fs.writeFileSync(logPath, "Considered agent-file enrichment\nDecision: keep deterministic core\nSkipped AI smoke test\n");
