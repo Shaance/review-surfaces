@@ -133,54 +133,48 @@ renderer over the same local pipeline.
 
 ### Use as a GitHub Action
 
-The same pipeline runs as a reusable composite action. Posting a sticky PR
-comment is **same-repo only**: it needs the write token and (for live
-enrichment) the LLM key, so it must run on `pull_request_target` — evaluated
-from the base branch — guarded by an `if:` that excludes fork heads. The PR
-comment path only posts an *applied ai-sdk narrative*, so the posting workflow
-uses `provider: ai-sdk` with an API-key secret (a `mock` run produces no PR
-narrative and exits on evidence validation before it can post).
+The same pipeline runs as a reusable composite action. Posting to a PR is
+**same-repo only**: it needs the write token, so it must run on
+`pull_request_target` — evaluated from the base branch — guarded by an `if:`
+that excludes fork heads. The default `provider: mock` posts the deterministic
+sticky summary just fine (this repo's own `ci.yml` smoke renders it that way);
+add `provider: ai-sdk` with an API-key secret only when you want the LLM
+narrative on the comment surface.
+
+Don't hand-roll the checkout inline. A `pull_request_target` job must check out
+the PR head into a *credentialless subject* directory so PR-controlled code
+never sees the secret, while running the trusted tool from the base ref — the
+worked example does exactly this. **Copy
+[`.github/workflows/pr-review-comment.yml`](https://github.com/Shaance/review-surfaces/blob/main/.github/workflows/pr-review-comment.yml)**
+as your starting point for the full secret-safe setup. The single step that
+invokes the action looks like:
 
 ```yaml
-# .github/workflows/review-surfaces.yml
-name: review-surfaces
-on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
-jobs:
-  review-comment:
-    # SAME-REPO ONLY: fork heads never reach the secret-bearing post path.
-    if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      actions: read   # prior-sticky artifact lookup for the since-last-review delta
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # full history so the base ref resolves
-      - uses: Shaance/review-surfaces@main   # or pin a release tag
-        with:
-          provider: ai-sdk
-          llm-api-key: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
-          base-ref: origin/${{ github.base_ref }}
-          head-ref: HEAD
-          pr-number: ${{ github.event.pull_request.number }}
-          github-token: ${{ github.token }}
-          post: "true"
+# the one step that runs the tool — see pr-review-comment.yml for the
+# surrounding pull_request_target job, split checkouts, and permissions
+- uses: Shaance/review-surfaces@v0.2.0 # pin the secret-bearing action to an immutable ref
+  with:
+    provider: mock # mock posts the deterministic sticky; switch to ai-sdk for the LLM narrative
+    base-ref: origin/${{ github.base_ref }}
+    head-ref: HEAD
+    subject-directory: subject # PR head, checked out credentialless
+    pr-number: ${{ github.event.pull_request.number }}
+    github-token: ${{ github.token }}
+    post: "true"
 ```
 
-`actions: read` is required: without it the prior-packet artifact lookup is
-denied (swallowed as a first-review fallback) and the since-last-review delta
-never appears. Fork PRs get a read-only `GITHUB_TOKEN`, so `post: "true"` would
-silently no-op there — serve them from a separate plain `pull_request` job that
-runs `provider: mock` with `post: "false"` and uploads the artifact instead
-(the upload-only `pr-surface-smoke` pattern in this repo's `ci.yml`).
+Pin the secret-bearing `uses:` to an immutable ref — a release tag like
+`@v0.2.0` (or a full commit SHA), never a mutable branch like `@main` — so a
+later push to that ref cannot redirect your write token or LLM key elsewhere.
 
-See the worked, security-hardened example — split trusted-tool /
-credentialless-subject checkouts for safe `pull_request_target` handling — at
-[`.github/workflows/pr-review-comment.yml`](https://github.com/Shaance/review-surfaces/blob/main/.github/workflows/pr-review-comment.yml).
+The job's `permissions:` block (in the worked file) grants `contents: read`,
+`pull-requests: write`, and `actions: read` — the last is required, or the
+prior-packet artifact lookup is denied (swallowed as a first-review fallback)
+and the since-last-review delta never appears. Fork PRs get a read-only
+`GITHUB_TOKEN`, so `post: "true"` would silently no-op there — serve them from a
+separate plain `pull_request` job that runs `provider: mock` with
+`post: "false"` and uploads the artifact instead (the upload-only
+`pr-surface-smoke` pattern in this repo's `ci.yml`).
 
 ### Exit codes
 
@@ -193,9 +187,9 @@ class, so a CI step can branch without parsing artifacts:
 | `1` | Runtime error — an unexpected failure while running. |
 | `2` | Usage error — bad flags or arguments. |
 | `3` | Schema validation failed — a generated artifact did not match its schema. |
-| `4` | Evidence validation failed — a claim could not be anchored to local evidence. |
+| `4` | Evidence validation failed — a claim's evidence was invalid (could not be anchored to local evidence). |
 | `5` | Privacy blocked — a privacy/secret-boundary check refused to proceed. |
-| `10` | Quality gate failed — `--strict` found missing/invalid requirements or risk at/above the threshold. |
+| `10` | Quality gate failed — `--strict` found missing requirements over the configured max-missing. |
 
 ## Commands
 

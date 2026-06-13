@@ -380,16 +380,34 @@ test("review-surfaces.DISTRIBUTION.15 the README documents CI consumption: an ac
     /github\.com\/Shaance\/review-surfaces\/blob\/main\/\.github\/workflows\/pr-review-comment\.yml/,
     "links the worked example workflow (absolute GitHub blob URL)"
   );
-  // (a.1) The posting snippet must mirror the real workflow's permissions: the
-  // prior-sticky artifact lookup that drives the since-last-review delta needs
-  // `actions: read`, or the API call is denied and the delta silently vanishes.
-  assert.match(readme, /actions:\s*read/, "the action snippet grants `actions: read` for the prior-sticky lookup");
-  // (a.2) `--fail-on` ships in a later phase, not this commit. The README must
+  // (a.1) Supply-chain hardening: the secret-bearing action must be pinned to an
+  // immutable ref (a release tag `@v<semver>` or a 40-char commit SHA), never a
+  // mutable branch like `@main` — a later push to a mutable ref could redirect
+  // the write token / LLM key. Assert at least one `uses: Shaance/...@` is pinned
+  // immutably and that none point at `@main`.
+  assert.match(
+    readme,
+    /uses:\s*Shaance\/review-surfaces@(v\d|[0-9a-f]{40})/,
+    "the secret-bearing action is pinned to an immutable ref (release tag or commit SHA)"
+  );
+  assert.doesNotMatch(
+    readme,
+    /uses:\s*Shaance\/review-surfaces@main\b/,
+    "the action is not pinned to the mutable @main branch"
+  );
+  // (a.2) The README must keep the `actions: read` permission documented (the
+  // worked workflow grants it): the prior-sticky artifact lookup that drives the
+  // since-last-review delta needs it, or the API call is denied and the delta
+  // silently vanishes.
+  assert.match(readme, /actions:\s*read/, "the README documents the `actions: read` permission for the prior-sticky lookup");
+  // (a.3) `--fail-on` ships in a later phase, not this commit. The README must
   // not promise a flag the CLI does not yet expose.
   assert.doesNotMatch(readme, /--fail-on/, "the README does not reference the not-yet-shipped --fail-on flag");
   // (b) An exit-code table sourced from src/core/exit-codes.ts mapping each
   // code to its meaning. The table must carry the non-trivial codes with copy
-  // a CI author can branch on.
+  // a CI author can branch on, and the meanings must match the source: code 4 is
+  // the evidence-validation failure, code 10 is the quality-gate (missing
+  // requirements) failure — these must not be conflated.
   const exitTable = readme.slice(readme.indexOf("### Exit codes"));
   assert.ok(exitTable.length > 0, "the README has an Exit codes section");
   for (const [code, keyword] of [
@@ -403,6 +421,17 @@ test("review-surfaces.DISTRIBUTION.15 the README documents CI consumption: an ac
   }
   assert.match(exitTable, /\|\s*`?2`?\s*\|/, "the table lists the usage-error code 2");
   assert.match(exitTable, /\|\s*`?0`?\s*\|/, "the table lists the success code 0");
+  // (b.1) Code 4's row is evidence validation, code 10's row is the quality gate
+  // over missing requirements. The quality-gate row must NOT attribute itself to
+  // schema/evidence/risk-threshold concerns (the risk `--fail-on` threshold is
+  // not shipped), so the doc cannot mislead a CI author about which code fires.
+  const rowFor = (code: string) =>
+    (exitTable.match(new RegExp(`\\|\\s*\`?${code}\`?\\s*\\|([^\\n]*)\\|`)) ?? [, ""])[1] ?? "";
+  assert.match(rowFor("4"), /[Ee]vidence/, "code 4's row is the evidence-validation failure");
+  assert.match(rowFor("10"), /[Gg]ate/, "code 10's row is the quality-gate failure");
+  assert.match(rowFor("10"), /missing/i, "code 10's row attributes the failure to missing requirements");
+  assert.doesNotMatch(rowFor("10"), /risk/i, "code 10's row does not attribute itself to a risk threshold");
+  assert.doesNotMatch(rowFor("10"), /[Ee]vidence/, "code 10's row does not conflate itself with evidence validation");
   // The table mirrors src/core/exit-codes.ts — every named non-runtime code is
   // documented, so the doc cannot silently drift from the source.
   const exitSource = read("src/core/exit-codes.ts");
