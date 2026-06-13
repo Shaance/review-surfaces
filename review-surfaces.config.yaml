@@ -299,7 +299,6 @@ quality_gate:
   # gate must be back to `allow_missing: []` when the final phase (Phase 6)
   # lands. Grouped by phase:
   allow_missing:
-    - review-surfaces.PRIVACY.6        # Phase 1 privacy-leak-hardening
     - review-surfaces.CLI.9            # Phase 4 cli-honesty
     - review-surfaces.CLI.10           # Phase 4
     - review-surfaces.QUALITY_GATE.1   # Phase 3 quality-gate + CI surfaces
@@ -309,12 +308,8 @@ quality_gate:
     - review-surfaces.ACTION_IO.2      # Phase 3
     - review-surfaces.ACTION_IO.3      # Phase 3
     - review-surfaces.DEP_FACTS.5      # Phase 3
-    - review-surfaces.HUMAN_REVIEW.22  # Phase 5 human-render-polish
-    - review-surfaces.HUMAN_REVIEW.23  # Phase 5
     - review-surfaces.PERF.1           # Phase 6 head-tree-perf
     - review-surfaces.PERF.2           # Phase 6
-    - review-surfaces.DISTRIBUTION.14  # Phase 7 distribution-trim + docs
-    - review-surfaces.DISTRIBUTION.15  # Phase 7
 human_review:
   enabled: true
   default_entrypoint: true

@@ -833,7 +833,7 @@ function renderReviewFirst(model: HumanReviewModel, items: ReviewQueueItem[], co
 ${hunkLine}   - Why it matters: ${field(item.reason)}
    - Why ranked here: ${rankingReasonsLine(item)}
    - Action: ${field(item.reviewer_action)}${excerpt ? `\n${excerpt}` : ""}${coverageLine}
-   - Risk: ${item.risk_ids.map((risk) => `\`${field(risk)}\``).join(", ") || "none"}
+   - ${item.risk_ids.length ? `Risk: ${item.risk_ids.map((risk) => `\`${field(risk)}\``).join(", ")}` : "Linked risk IDs: none"}
    - Evidence: ${evidenceList(item.evidence)}`;
     })
     .join("\n\n");
@@ -918,7 +918,12 @@ function renderQueueDetail(model: HumanReviewModel, item: ReviewQueueItem, conte
   const coverageDetailLine = coverageHunkDetail ? `Coverage: ${field(coverageSummaryLine(coverageHunkDetail))}\n\n` : "";
   const location = formatQueueLocation(item);
   const requirements = item.requirement_ids.map((id) => `\`${field(id)}\``).join(", ") || "none";
-  const risks = item.risk_ids.map((id) => `\`${field(id)}\``).join(", ") || "none";
+  // review-surfaces.HUMAN_REVIEW.23: when a high-severity item has NO linked risk
+  // IDs, a bare `Risks: none` next to a high-risk ranking line reads as a
+  // risk-severity claim ("no risk"). Use the same neutral "Linked risk IDs: none"
+  // label as the compact Review-first item, so the standalone review_queue.md
+  // artifact carries the identical label-clean guarantee.
+  const risks = item.risk_ids.length ? item.risk_ids.map((id) => `\`${field(id)}\``).join(", ") : null;
   const excerpt = renderHunkExcerpt(context.diff, {
     path: item.path,
     old_path: item.old_path,
@@ -950,7 +955,7 @@ ${excerpt ? `\n${excerpt}\n` : ""}${coverageDetailLine}Evidence:
 ${evidenceBullets(item.evidence, MAX_STANDALONE_EVIDENCE)}
 
 Requirements: ${requirements}
-Risks: ${risks}`;
+${risks ? `Risks: ${risks}` : "Linked risk IDs: none"}`;
 }
 
 function renderBlockers(model: HumanReviewModel): string {
@@ -1024,6 +1029,24 @@ Ready to post: ${item.ready_to_post ? "yes" : "no"}.`;
 // templated sentence per requirement.
 // ---------------------------------------------------------------------------
 
+// review-surfaces.HUMAN_REVIEW.22: build the rollup-key contribution for a
+// test-plan item's command with its FILE-SPECIFIC part removed, so two items
+// that differ only by which suggested file they touch (and therefore by the
+// `pnpm run test -- ${suggestedFile}` command derived from it) merge into one
+// heading. The suggested_file substring is removed from the command before
+// ACID-normalizing the remainder, so `pnpm run test -- tests/a.test.ts` and
+// `pnpm run test -- tests/b.test.ts` produce the same key contribution (the
+// shared `pnpm run test --` stem). The verbatim per-item command stays in the
+// JSON model and standalone test_plan.md.
+function normalizeCommandTemplate(command: string, suggestedFile: string | undefined): string {
+  if (!command) {
+    return "";
+  }
+  const fileStripped =
+    suggestedFile && suggestedFile.length > 0 ? command.split(suggestedFile).join("") : command;
+  return normalizeAcidTemplate(fileStripped);
+}
+
 function renderTestPlanRollups(items: TestPlanItem[], maxGroups: number): string {
   if (items.length === 0) {
     return "- No concrete test-plan items generated.";
@@ -1031,6 +1054,19 @@ function renderTestPlanRollups(items: TestPlanItem[], maxGroups: number): string
   // Roll up the FULL list first, then cap the number of rendered groups, so a
   // distinct item beyond the raw item cap is not hidden behind earlier
   // duplicates (review-surfaces.HUMAN_REVIEW.19).
+  // review-surfaces.HUMAN_REVIEW.22: the rollup KEY deliberately omits BOTH
+  // suggested_file AND the per-file command derived from it. Items that are
+  // identical except for which file they touch (the common api_contract /
+  // schema-lens fan-out) carry a FILE-SPECIFIC command too — e.g.
+  // apiContractTestPlanDrafts builds `pnpm run test -- ${suggestedFile}`. If the
+  // key still keyed on command, those items would NOT merge after suggested_file
+  // was dropped, and the surface would STILL emit a duplicate visually identical
+  // `### <evidence_gap>` heading per file. So normalize the file-specific part
+  // out of the command before keying (and drop it entirely if the command is
+  // nothing but that per-file suffix): items that differ only by suggested_file
+  // and its derived command merge into ONE heading that lists the affected files.
+  // The per-item suggested_file/command stays in the JSON model and the
+  // standalone test_plan.md (extends HUMAN_REVIEW.19/.21).
   const groups = rollupBy(
     items,
     (item) =>
@@ -1039,8 +1075,7 @@ function renderTestPlanRollups(items: TestPlanItem[], maxGroups: number): string
         item.priority,
         normalizeAcidTemplate(item.scenario),
         normalizeAcidTemplate(item.expected_result),
-        item.suggested_file ?? "",
-        normalizeAcidTemplate(item.command ?? ""),
+        normalizeCommandTemplate(item.command ?? "", item.suggested_file),
         normalizeAcidTemplate(item.evidence_gap)
       ].join("|"),
     // Extract ACIDs from every field the rollup key normalizes, so two items
@@ -1058,13 +1093,37 @@ function renderTestPlanRollup(group: RollupGroup<TestPlanItem>): string {
   // so near-identical scenarios do not render as repeated headings; the generic
   // scenario action moves to a bullet. review-surfaces.HUMAN_REVIEW.19/.21.
   const gap = fillAcidTemplate(normalizeAcidTemplate(rep.evidence_gap), group.acids);
-  const file = rep.suggested_file ? `\n- Suggested file: \`${field(rep.suggested_file)}\`` : "";
+  // review-surfaces.HUMAN_REVIEW.22: the rollup KEY no longer includes
+  // suggested_file, so a group may merge items that touch different files. List
+  // every distinct suggested file under one heading (singular/plural label) so
+  // the reviewer sees the full affected-file set without a duplicate heading per
+  // file. Per-item files are still preserved in the JSON model / test_plan.md.
+  const distinctFiles = [...new Set(group.items.map((item) => item.suggested_file).filter((f): f is string => Boolean(f)))];
+  const file =
+    distinctFiles.length === 0
+      ? ""
+      : distinctFiles.length === 1
+        ? `\n- Suggested file: \`${field(distinctFiles[0])}\``
+        : `\n- Suggested files (${distinctFiles.length}): ${distinctFiles.map((f) => `\`${field(f)}\``).join(", ")}`;
   // Fill the command through the same ACID template as the other fields, so a
   // rollup that merged items differing only by an ACID in the command does not
   // show a command naming just the first requirement (the exact per-item command
-  // stays in the standalone test_plan.md). A single-item group restores the
-  // verbatim command.
-  const command = rep.command ? `\n- Command: \`${field(fillAcidTemplate(normalizeAcidTemplate(rep.command), group.acids))}\`` : "";
+  // stays in the standalone test_plan.md). A single-item / single-file group
+  // restores the verbatim command. review-surfaces.HUMAN_REVIEW.22: when the
+  // group merged items touching MORE THAN ONE distinct file (the api-contract
+  // fan-out), the per-file commands genuinely differ and the rep's command names
+  // only its own file. Rendering the rep's command would misrepresent the merged
+  // set; stripping the file from it (as an earlier round did) yields a
+  // file-less, NON-RUNNABLE stem like `pnpm run test --` that can mislead a
+  // reviewer into running an empty/unrelated check. So OMIT the `- Command:`
+  // line entirely for the merged multi-file case — the listed files above carry
+  // the affected set, and the exact per-file commands stay in the JSON model /
+  // test_plan.md. Single-file (or single-item) groups still render their real,
+  // runnable command.
+  const command =
+    rep.command && distinctFiles.length <= 1
+      ? `\n- Command: \`${field(fillAcidTemplate(normalizeAcidTemplate(rep.command), group.acids))}\``
+      : "";
   const requirements = group.acids.length
     ? `\n- Requirements (${group.acids.length}): ${group.acids.map((acid) => `\`${field(acid)}\``).join(", ")}`
     : "";

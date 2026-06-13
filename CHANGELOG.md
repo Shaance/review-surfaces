@@ -1,9 +1,9 @@
 # Changelog
 
 All notable changes to `review-surfaces` are documented here. The project was
-built agent-first in five development uplifts, each landed phase by phase
-behind the same local merge gate the tool itself enforces; the full working
-contracts live in
+built agent-first — an MVP followed by several named uplifts — each landed
+phase by phase behind the same local merge gate the tool itself enforces; the
+full working contracts live in
 [`docs/history/`](https://github.com/Shaance/review-surfaces/tree/main/docs/history)
 (an absolute link because this changelog ships in the npm tarball, which does
 not carry that directory).
@@ -42,6 +42,12 @@ package name `review-surfaces` was verified unclaimed on 2026-06-12.
   regenerated from real runs, a cockpit pointer at the end of every
   `review-surfaces all` run, this changelog, and the remaining internal
   proposals moved to `docs/history/`.
+- Distribution trim and CI docs (`DISTRIBUTION.14-15`): the npm tarball no
+  longer ships compiled tests — the `files` allowlist is narrowed from `dist`
+  to `dist/src`, dropping ~1.6 MB / 87 `dist/tests` files that nothing at
+  runtime needs; and the README documents CI consumption with a copy-pasteable
+  GitHub Action `uses:` snippet (linking the worked example workflow) and an
+  exit-code table so a CI author can wire the action and branch on exit codes.
 
 ## 0.1.0 — 2026-05-30 through 2026-06-12 (unpublished development history; never on npm)
 

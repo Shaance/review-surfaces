@@ -314,7 +314,12 @@ export function collectCommits(cwd: string, baseRef: string, headRef: string): A
     .split("\n")
     .filter(Boolean)
     .map((line) => {
-      const [sha, subject = ""] = line.split("\t");
+      // Split on the FIRST tab only: the `%x09` separator is a single tab, but a
+      // commit subject may itself contain a tab, so a naive `split("\t")[1]`
+      // would truncate the subject at its first embedded tab.
+      const tab = line.indexOf("\t");
+      const sha = tab === -1 ? line : line.slice(0, tab);
+      const subject = tab === -1 ? "" : line.slice(tab + 1);
       return { sha, subject };
     });
 }

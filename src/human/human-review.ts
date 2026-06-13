@@ -988,7 +988,7 @@ function maintainerRouteSteps(ctx: BuildReviewRoutesInput): ReviewRouteStepDraft
     routeStep(ctx, {
       title: "Schema, CLI, and artifact contracts",
       action: "Review schema, CLI, config, feature-ledger, and persisted artifact contract changes for compatibility or versioning.",
-      priority: contractLenses.some((finding) => finding.severity === "high" || finding.severity === "critical") ? "blocker" : "high",
+      priority: contractLenses.some((finding) => isElevatedSeverity(finding.severity)) ? "blocker" : "high",
       artifact: "risk_lenses.md",
       risk_lens_ids: contractLenses.map((finding) => finding.id),
       evidence: contractLenses.flatMap((finding) => finding.evidence)
@@ -1024,7 +1024,7 @@ function securityRouteSteps(ctx: BuildReviewRoutesInput): ReviewRouteStepDraft[]
       action: securityLenses.length > 0
         ? "Review security/privacy and LLM trust-boundary lens findings before lower-risk implementation changes."
         : "No security/privacy or LLM trust-boundary lens fired; skim unless the changed files manually imply that boundary.",
-      priority: securityLenses.length === 0 ? "low" : securityLenses.some((finding) => finding.severity === "high" || finding.severity === "critical") ? "blocker" : "high",
+      priority: securityLenses.length === 0 ? "low" : securityLenses.some((finding) => isElevatedSeverity(finding.severity)) ? "blocker" : "high",
       artifact: "risk_lenses.md",
       risk_lens_ids: securityLenses.map((finding) => finding.id),
       evidence: securityLenses.flatMap((finding) => finding.evidence)
@@ -1075,7 +1075,7 @@ function productRouteSteps(ctx: BuildReviewRoutesInput): ReviewRouteStepDraft[] 
       action: intentItems.length > 0
         ? "Start with the intent-mismatch surface and resolve possible mismatch, overreach, or missing-intent items before relying on lower-risk UX review."
         : "Check whether the changed surface still gives reviewers the fastest safe path through the PR.",
-      priority: intentItems.some((item) => item.severity === "high" || item.severity === "critical") || routeQuestions.some((question) => question.severity === "blocking") ? "high" : "medium",
+      priority: intentItems.some((item) => isElevatedSeverity(item.severity)) || routeQuestions.some((question) => question.severity === "blocking") ? "high" : "medium",
       artifact: "intent_mismatch.md",
       question_ids: routeQuestions.slice(0, 5).map((question) => question.id),
       evidence: [...intentItems.slice(0, 5).flatMap((item) => item.evidence), ...routeQuestions.slice(0, 5).flatMap((question) => question.evidence)]
@@ -1083,7 +1083,7 @@ function productRouteSteps(ctx: BuildReviewRoutesInput): ReviewRouteStepDraft[] 
     routeStep(ctx, {
       title: "Reviewer UX lens",
       action: "Review renderer, Markdown, comment, queue, and diagram changes for human readability and bounded output.",
-      priority: uxLenses.some((finding) => finding.severity === "high" || finding.severity === "critical") ? "high" : "medium",
+      priority: uxLenses.some((finding) => isElevatedSeverity(finding.severity)) ? "high" : "medium",
       artifact: "risk_lenses.md",
       risk_lens_ids: uxLenses.map((finding) => finding.id),
       evidence: uxLenses.flatMap((finding) => finding.evidence)
@@ -2956,7 +2956,7 @@ function buildRiskLensSuggestedTests(
   finding: Omit<RiskLensFinding, "suggested_tests" | "suggested_comments">
 ): TestPlanItem[] {
   const drafts: TestPlanDraft[] = [];
-  const required = finding.severity === "high" || finding.severity === "critical" ? "required" as const : "recommended" as const;
+  const required = isElevatedSeverity(finding.severity) ? "required" as const : "recommended" as const;
   switch (finding.lens) {
     case "api_contract":
       drafts.push(...apiContractTestPlanDrafts(finding));
@@ -3106,13 +3106,20 @@ function riskLensSuggestedCommentBody(finding: Pick<RiskLensFinding, "lens" | "p
   }
 }
 
-function riskLensSuggestedCommentSeverity(finding: Pick<RiskLensFinding, "lens" | "severity" | "paths">): SuggestedReviewComment["severity"] {
-  if (
-    finding.severity === "critical" ||
-    finding.severity === "high" ||
+// A risk-lens finding is blocking when its own severity is elevated, when it is
+// a versioned-artifact API/schema contract change, or when it crosses the
+// LLM trust boundary. Shared by the suggested-comment and reviewer-question
+// severity mappers so the blocking band is defined once.
+function isBlockingRiskLensFinding(finding: Pick<RiskLensFinding, "lens" | "severity" | "paths">): boolean {
+  return (
+    isElevatedSeverity(finding.severity) ||
     (finding.lens === "api_contract" && hasVersionedArtifactContractPath(finding.paths)) ||
     finding.lens === "llm_trust_boundary"
-  ) {
+  );
+}
+
+function riskLensSuggestedCommentSeverity(finding: Pick<RiskLensFinding, "lens" | "severity" | "paths">): SuggestedReviewComment["severity"] {
+  if (isBlockingRiskLensFinding(finding)) {
     return "blocking";
   }
   if (finding.lens === "reviewer_ux" || finding.lens === "cache_provenance") {
@@ -3419,6 +3426,19 @@ function manualCheckQuestionText(action: string): string {
   return action.replace(new RegExp(`^${escapeRegExp(RECORD_MANUAL_CHECK_PREFIX)}\\s*`), "");
 }
 
+// review-surfaces.HUMAN_REVIEW.23: a reviewer question template appends `?` to
+// an embedded summary/action. When that embedded value already ends in ANY
+// sentence-ending punctuation (`.`, `?`, or `!`) the template would produce
+// doubled terminal punctuation (`.?`, `??`, or `!?`). Strip the ENTIRE trailing
+// run of sentence-ending marks — not just one — so a value ending in a
+// punctuation run (`?!`, `...`, `!!!`) does not leave a residual mark before the
+// appended `?` (e.g. `Really??`, `Waiting..?`). Also trim trailing whitespace
+// before AND after the stripped run so the rendered question reads cleanly
+// regardless of how the embedded summary was punctuated.
+function forQuestionTail(value: string): string {
+  return value.replace(/\s+$/, "").replace(/[.?!]+$/, "").replace(/\s+$/, "");
+}
+
 function feedbackQueueTitle(effect: FeedbackPolicyEffect): string {
   switch (effect.kind) {
     case "false_negative":
@@ -3681,7 +3701,7 @@ function buildQuestions(
     questions.push({
       id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
       severity: "blocking",
-      question: `What current-head evidence records this team-policy manual check: ${manualCheckQuestionText(effect.action)}?`,
+      question: `What current-head evidence records this team-policy manual check: ${forQuestionTail(manualCheckQuestionText(effect.action))}?`,
       reason: effect.summary,
       evidence: feedbackEffectEvidence(effect),
       maps_to_risks: effect.risk_ids,
@@ -3753,7 +3773,7 @@ function buildQuestions(
     questions.push({
       id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
       severity: questionSeverityForRisk(item.severity ?? "unknown"),
-      question: `How should reviewers resolve this intent gap: ${item.summary}?`,
+      question: `How should reviewers resolve this intent gap: ${forQuestionTail(item.summary)}?`,
       reason: INTENT_MISMATCH_QUESTION_REASON,
       evidence: item.evidence,
       maps_to_risks: [],
@@ -3766,7 +3786,7 @@ function buildQuestions(
       questions.push({
         id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
         severity: "clarifying",
-        question: `What evidence closes this review gap: ${item.summary}?`,
+        question: `What evidence closes this review gap: ${forQuestionTail(item.summary)}?`,
         reason: "The trust audit marks this evidence as missing.",
         evidence: item.evidence,
         maps_to_risks: [],
@@ -3874,15 +3894,7 @@ function intentMismatchQuestionItems(intentMismatch: IntentMismatch, limit: numb
 }
 
 function riskLensQuestionSeverity(finding: RiskLensFinding): ReviewerQuestion["severity"] {
-  if (
-    finding.severity === "critical" ||
-    finding.severity === "high" ||
-    (finding.lens === "api_contract" && hasVersionedArtifactContractPath(finding.paths)) ||
-    finding.lens === "llm_trust_boundary"
-  ) {
-    return "blocking";
-  }
-  return "clarifying";
+  return isBlockingRiskLensFinding(finding) ? "blocking" : "clarifying";
 }
 
 function isPathOnlyRiskLensFinding(finding: RiskLensFinding): boolean {
@@ -4433,7 +4445,7 @@ function withSuggestedCommentId(index: number, draft: SuggestedCommentDraft): Su
 function buildSkimSafe(input: BuildHumanReviewInput, feedbackEffects: FeedbackPolicyEffect[]): HumanReviewModel["skim_safe"] {
   const highRiskPaths = new Set<string>();
   for (const item of [...(input.prSurface?.risks.candidates ?? []), ...input.packet.risks.items]) {
-    if (item.severity === "high" || item.severity === "critical") {
+    if (isElevatedSeverity(item.severity)) {
       for (const ref of item.evidence ?? []) {
         if (ref.path) {
           highRiskPaths.add(ref.path);
@@ -4837,8 +4849,15 @@ function priorityForSeverity(severity: PacketSeverity): HumanReviewPriority {
   return "low";
 }
 
+// The "elevated" severity band (critical/high) that drives blocker priority,
+// required-vs-recommended tests, blocking question/comment severity, and
+// high-risk skim-safe exclusion. Centralized so the band is defined once.
+function isElevatedSeverity(severity: PacketSeverity | undefined): boolean {
+  return severity === "critical" || severity === "high";
+}
+
 function effortForSeverity(severity: PacketSeverity): "quick" | "moderate" | "deep" {
-  if (severity === "critical" || severity === "high") {
+  if (isElevatedSeverity(severity)) {
     return "deep";
   }
   if (severity === "medium") {
@@ -5113,7 +5132,7 @@ function riskIdsFromBlocker(blocker: ReviewBlocker): string[] {
 }
 
 function questionSeverityForRisk(severity: PacketSeverity): ReviewerQuestion["severity"] {
-  return severity === "critical" || severity === "high" ? "blocking" : "clarifying";
+  return isElevatedSeverity(severity) ? "blocking" : "clarifying";
 }
 
 function hasRecordedCiSecretBoundaryManualCheck(input: BuildHumanReviewInput): boolean {

@@ -42,7 +42,7 @@
   },
   "files": [
     "bin",
-    "dist",
+    "dist/src",
     "schemas",
     "docs/example",
     "CHANGELOG.md"
