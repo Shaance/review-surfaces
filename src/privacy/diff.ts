@@ -66,6 +66,12 @@ function candidatePaths(section: string[]): SectionPaths {
 
   let sawBodyPath = false;
   for (const line of section) {
+    // Path metadata (---/+++, rename/copy) only appears in the section HEADER,
+    // before the first @@ hunk. Stop there so hunk CONTENT — an added line whose
+    // text begins with "++ b/…" renders in the unified diff as "+++ b/…", and a
+    // removed "-- a/…" as "--- a/…" — is never mis-read as a path and made to
+    // drop a real, non-ignored file.
+    if (line.startsWith("@@")) break;
     const bodyPath = bodyPathFromLine(line);
     if (bodyPath !== undefined) {
       paths.push(bodyPath);
@@ -106,8 +112,15 @@ function bodyPathFromLine(line: string): string | undefined {
   }
   for (const prefix of ["rename from ", "rename to ", "copy from ", "copy to "]) {
     if (line.startsWith(prefix)) {
-      const value = line.slice(prefix.length).trim();
-      return value.length > 0 ? value : undefined;
+      const value = stripTrailingTab(line.slice(prefix.length)).trim();
+      if (value.length === 0) return undefined;
+      // Rename/copy operands are bare paths (no a//b/ prefix) but ARE quoted when
+      // the name has special chars; decode so an ignored quoted-name rename
+      // (which has no ---/+++ lines) is still recognized and dropped.
+      if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
+        return decodeGitQuotedPath(value.slice(1, -1));
+      }
+      return value;
     }
   }
   return undefined;

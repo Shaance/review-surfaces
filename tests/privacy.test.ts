@@ -285,3 +285,36 @@ test("review-surfaces.PRIVACY.6 filterIgnoredDiff fails closed on a quoted heade
   const filtered = filterIgnoredDiff(diff, () => false);
   assert.equal(filtered, "", "an unreadable quoted-binary section fails closed");
 });
+
+test("review-surfaces.PRIVACY.6 filterIgnoredDiff does not drop a real file whose hunk content looks like a path line", () => {
+  // Only the section HEADER (before the first @@) carries path metadata. A
+  // non-ignored file that ADDS a line of text reading "++ b/.env.local" renders
+  // as "+++ b/.env.local" in the body; that must NOT be parsed as a path and drop
+  // the real file (the round-1 fix walked every line and over-dropped).
+  const diff = [
+    "diff --git a/keep.md b/keep.md",
+    "--- a/keep.md",
+    "+++ b/keep.md",
+    "@@ -1,2 +1,4 @@",
+    " # docs",
+    "+example diff line: +++ b/.env.local",
+    "+another example: --- a/.env.local",
+    " end"
+  ].join("\n");
+  const filtered = filterIgnoredDiff(diff, (p) => p === ".env.local");
+  assert.match(filtered, /keep\.md/, "the real non-ignored file must NOT be dropped by path-like hunk content");
+  assert.match(filtered, /example diff line/, "the hunk body survives");
+});
+
+test("review-surfaces.PRIVACY.6 filterIgnoredDiff drops an ignored quoted-name pure rename", () => {
+  // A pure rename of a quoted-name ignored file has `rename from`/`rename to`
+  // lines and no ---/+++ paths; the quoted operands must be decoded to match.
+  const diff = [
+    'diff --git "a/old\\"name.env" "b/new\\"name.env"',
+    "similarity index 100%",
+    'rename from "old\\"name.env"',
+    'rename to "new\\"name.env"'
+  ].join("\n");
+  const filtered = filterIgnoredDiff(diff, (p) => p === 'new"name.env' || p === 'old"name.env');
+  assert.equal(filtered, "", "the ignored quoted-name rename section must be dropped");
+});
