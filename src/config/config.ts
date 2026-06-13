@@ -10,6 +10,7 @@ import {
   RISK_LENSES,
   RiskLens
 } from "../human/contract";
+import { PACKET_SEVERITIES } from "../schema/review-packet-contract";
 
 export interface ReviewAreaConfig {
   id: string;
@@ -51,6 +52,11 @@ export interface ReviewSurfacesConfig {
   quality_gate: {
     max_missing: number;
     allow_missing: string[];
+    // review-surfaces.QUALITY_GATE.1: optional default risk-severity threshold for
+    // the --fail-on gate. null (the default) leaves the risk gate OFF; a severity
+    // ("critical"|"high"|"medium"|"low"|"unknown") trips the quality gate when any
+    // non-hypothesis risk item is at or above it. --fail-on overrides this default.
+    fail_on: string | null;
   };
   human_review: HumanReviewBuildConfig & {
     enabled: boolean;
@@ -94,7 +100,9 @@ export const defaultConfig: ReviewSurfacesConfig = {
     // Acai IDs allowed to be missing (a planned, not-yet-implemented backlog).
     // Allowlisted misses are excluded from the gate so an unrelated regression
     // still trips it. Empty by default.
-    allow_missing: []
+    allow_missing: [],
+    // The risk-severity gate is OFF by default; opt in via config or --fail-on.
+    fail_on: null
   },
   human_review: {
     enabled: true,
@@ -151,7 +159,11 @@ export function normalizeConfig(raw: Record<string, unknown>): ReviewSurfacesCon
     },
     quality_gate: {
       max_missing: nonNegativeIntValue(readRecord(raw.quality_gate).max_missing, defaultConfig.quality_gate.max_missing),
-      allow_missing: stringArray(readRecord(raw.quality_gate).allow_missing, defaultConfig.quality_gate.allow_missing)
+      allow_missing: stringArray(readRecord(raw.quality_gate).allow_missing, defaultConfig.quality_gate.allow_missing),
+      // review-surfaces.QUALITY_GATE.1: only accept a recognized severity; any
+      // other value (including an empty string) falls back to off (null) rather
+      // than failing the load, so a typo never silently arms a wrong threshold.
+      fail_on: failOnSeverityValue(readRecord(raw.quality_gate).fail_on, defaultConfig.quality_gate.fail_on)
     },
     human_review: {
       enabled: booleanValue(readRecord(raw.human_review).enabled, defaultConfig.human_review.enabled),
@@ -187,6 +199,12 @@ function positiveIntValue(value: unknown, fallback: number): number {
 
 function nonNegativeIntValue(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : fallback;
+}
+
+// review-surfaces.QUALITY_GATE.1: accept only a known PacketSeverity for the
+// risk gate threshold; anything else (typo, empty string, non-string) is off.
+function failOnSeverityValue(value: unknown, fallback: string | null): string | null {
+  return typeof value === "string" && (PACKET_SEVERITIES as readonly string[]).includes(value) ? value : fallback;
 }
 
 function riskLensConfig(value: unknown, fallback: Record<RiskLens, boolean>): Record<RiskLens, boolean> {

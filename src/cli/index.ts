@@ -27,7 +27,7 @@ import { CliError, ExitCodes } from "../core/exit-codes";
 import { VERSION } from "../core/version";
 import { fileExists, readJson } from "../core/files";
 import { isRecord } from "../core/guards";
-import { gateDecision, GateOptions } from "../core/gate";
+import { FailOnSeverity, gateDecision, GateOptions } from "../core/gate";
 import { buildArchitecture } from "../diagrams/diagrams";
 import { buildDogfood, DogfoodComparisonInput } from "../dogfood/dogfood";
 import { comparePackets, loadPreviousPacket, resolvePreviousPacketPath } from "../dogfood/compare";
@@ -58,10 +58,11 @@ import { assemblePrReviewSurface } from "../pipeline/pr-surface";
 import { evaluateBaseline } from "../evaluation/baseline";
 import { PrReviewSurfaceModel, ReviewScope, StructuredDiff } from "../pr/contract";
 import { renderSarifFromPacketFile } from "../render/sarif";
+import { projectRunSummary, renderRunSummaryFromPacketFile, serializeRunSummary } from "../render/summary-json";
 import { buildDraftReview } from "../render/draft-review";
 import { postStickyComment } from "../render/post-comment";
 import { writeJson, writeText } from "../core/files";
-import { PACKET_SCHEMA_VERSION } from "../schema/review-packet-contract";
+import { PACKET_SCHEMA_VERSION, PACKET_SEVERITIES } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { packagedSchemaPath } from "../schema/packaged-schemas";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
@@ -693,7 +694,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       if (evaluation) {
         await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
         console.log(`inputs unchanged (signature match); reusing existing packet at ${displayPath(cwd, cacheSnapshot.packetPath)}`);
-        const cachedGateExit = applyGate(parsed, evaluation, collection, provider, config);
+        const cachedGateExit = applyGate(parsed, evaluation, collection, provider, config, cacheSnapshot.packet?.risks);
         // review-surfaces.DISTRIBUTION.7: the cache-hit run also ends on the
         // cockpit pointer, after any gate message.
         if (config.human_review.enabled && config.human_review.default_entrypoint) {
@@ -904,7 +905,11 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // IS a remote call with the live provider, so a privacy-blocked diff must still
   // trip the strict privacy gate (exit 5). The mock whole-repo evaluation has no
   // invalid_evidence, so the evidence gate cannot false-positive from this.
-  const gateExit = applyGate(parsed, evaluation, collection, provider, config);
+  const gateExit = applyGate(parsed, evaluation, collection, provider, config, packet.risks);
+  // review-surfaces.QUALITY_GATE.3: opt-in structured run summary to stdout. Emitted
+  // from the in-memory packet (writtenPacket carries the on-disk shape) so a CI step
+  // reads one structured line. No-op without --json -> default output byte-stable.
+  maybePrintRunSummaryJson(parsed, config, writtenPacket);
   // review-surfaces.DISTRIBUTION.7: printed AFTER any gate message so the run
   // genuinely ends on the cockpit pointer.
   if (humanReview && config.human_review.default_entrypoint) {
@@ -1241,7 +1246,9 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
     console.warn(enrichment.summary);
   }
   logWrote(context);
-  return applyGate(parsed, evaluation, context.collection, context.provider, context.config);
+  // review-surfaces.QUALITY_GATE.3: opt-in structured run summary to stdout.
+  maybePrintRunSummaryJson(parsed, context.config, packet);
+  return applyGate(parsed, evaluation, context.collection, context.provider, context.config, packet.risks);
 }
 
 async function runHandoffStage(parsed: ParsedArgs): Promise<void> {
@@ -2644,6 +2651,11 @@ async function runComment(parsed: ParsedArgs): Promise<number> {
   if (format === "sarif") {
     return runCommentSarif(parsed);
   }
+  // review-surfaces.QUALITY_GATE.2: a deterministic JSON run-summary projection
+  // for CI consumers. Like sarif it READS the local packet and recomputes nothing.
+  if (format === "json") {
+    return runCommentJson(parsed);
+  }
   if (format === "review") {
     return runCommentDraftReview(parsed);
   }
@@ -2651,7 +2663,7 @@ async function runComment(parsed: ParsedArgs): Promise<number> {
     return runCommentSticky(parsed);
   }
   if (format !== "github") {
-    throw new CliError(`Unknown --format: ${format}. Use github, sticky, sarif, or review.`, ExitCodes.usageError);
+    throw new CliError(`Unknown --format: ${format}. Use github, sticky, sarif, json, or review.`, ExitCodes.usageError);
   }
   return runCommentGithub(parsed);
 }
@@ -3054,6 +3066,24 @@ async function runCommentSarif(parsed: ParsedArgs): Promise<number> {
   return ExitCodes.success;
 }
 
+// review-surfaces.QUALITY_GATE.2: render the deterministic JSON run summary from
+// the local packet to stdout. Renderer-only, fully offline. An absent packet is
+// the same clean usage error the github/sarif paths emit.
+async function runCommentJson(parsed: ParsedArgs): Promise<number> {
+  const cwd = process.cwd();
+  const outDir = await resolveOutputDir(cwd, parsed);
+  const config = await loadConfig(cwd, stringFlag(parsed, "config") ?? "review-surfaces.config.yaml");
+  // Honor --fail-on / quality_gate.fail_on so the projected gate_code matches the
+  // gate the run was/would be evaluated under.
+  const failOnSeverity = failOnSeverityFlag(parsed) ?? failOnSeverityFromConfig(config);
+  const rendered = renderRunSummaryFromPacketFile(cwd, outDir, failOnSeverity);
+  if (!rendered) {
+    throw missingPacketError(cwd, outDir);
+  }
+  process.stdout.write(rendered.json);
+  return ExitCodes.success;
+}
+
 function missingPacketError(cwd: string, outDir: string | undefined): CliError {
   const packetPath = resolvePacketPath(cwd, outDir);
   return new CliError(
@@ -3144,7 +3174,7 @@ function parseArgs(args: string[]): ParsedArgs {
 
 // Flags that are always boolean switches (no value argument). Listed so the
 // permissive parser does not consume a following positional as their "value".
-const BOOLEAN_FLAGS = new Set(["cache", "check", "dogfood", "force", "no-redact-secrets", "post", "strict", "strict-postability", "verbose", "help", "interactive", "version"]);
+const BOOLEAN_FLAGS = new Set(["cache", "check", "dogfood", "force", "json", "no-redact-secrets", "post", "strict", "strict-postability", "verbose", "help", "interactive", "version"]);
 
 // review-surfaces.CLI.9: the TRULY-UNIVERSAL minimum — only the flags EVERY
 // command honors on every code path. --verbose drives the shared isVerbose stderr
@@ -3225,9 +3255,10 @@ const PIPELINE_EXTRA_FLAGS = [
   "surface-mode"
 ] as const;
 
-// review-surfaces.CLI.9: --strict/--max-missing are read ONLY by the stages that
-// call applyGate (evaluate/packet/all/dogfood), so they are granted only there.
-const GATE_FLAGS = ["strict", "max-missing"] as const;
+// review-surfaces.CLI.9: --strict/--max-missing/--fail-on are read ONLY by the
+// stages that call applyGate (evaluate/packet/all/dogfood), so they are granted
+// only there. review-surfaces.QUALITY_GATE.1 adds --fail-on (risk-severity gate).
+const GATE_FLAGS = ["strict", "max-missing", "fail-on"] as const;
 
 // The flags selecting the comment/human review surface (reviewScope reads all
 // three; --mode/--surface-mode are aliases of --review-scope).
@@ -3258,12 +3289,15 @@ const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
   methodology: flagSet(PIPELINE_EXTRA_FLAGS),
   risks: flagSet(PIPELINE_EXTRA_FLAGS),
   handoff: flagSet(PIPELINE_EXTRA_FLAGS),
-  packet: flagSet(PIPELINE_EXTRA_FLAGS, GATE_FLAGS),
+  // review-surfaces.QUALITY_GATE.3: `packet --json` prints the structured run
+  // summary to stdout (opt-in; default prose output stays byte-stable).
+  packet: flagSet(PIPELINE_EXTRA_FLAGS, GATE_FLAGS, ["json"]),
   // all/dogfood are the pipeline commands that read the --cache snapshot. The
   // --cache path (readCacheSnapshot -> readSchemaValidPacket) validates the
   // on-disk packet against a custom --schema before reuse, so --cache AND --schema
   // are read here even though the other pipeline stages do not read them.
-  all: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema"], GATE_FLAGS),
+  // review-surfaces.QUALITY_GATE.3: --json prints the structured run summary.
+  all: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema", "json"], GATE_FLAGS),
   dogfood: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema"], GATE_FLAGS),
   // init only reads --force (overwrite scaffolding). runInit scaffolds into
   // process.cwd() and never calls resolveOutputDir()/loadConfig(), so it reads
@@ -3299,7 +3333,10 @@ const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
     "comment-top-n",
     "artifact-name",
     "run-id",
-    "sarif-out"
+    "sarif-out",
+    // review-surfaces.QUALITY_GATE.2: `comment --format json` reads --fail-on so
+    // the projected gate_code matches the run's risk-severity threshold.
+    "fail-on"
   ]),
   // review: resolveOutputDir (--out/--config) + loadConfig + applyBudgetFlag +
   // reviewScope + the walkthrough flags --interactive and --author, plus --now
@@ -3433,8 +3470,33 @@ function numberFlag(parsed: ParsedArgs, key: string): number | undefined {
 function gateOptionsFor(parsed: ParsedArgs, config: ReviewSurfacesConfig): GateOptions {
   return {
     maxMissing: numberFlag(parsed, "max-missing") ?? config.quality_gate.max_missing,
-    allowMissing: config.quality_gate.allow_missing
+    allowMissing: config.quality_gate.allow_missing,
+    // review-surfaces.QUALITY_GATE.1: --fail-on overrides the config default; an
+    // absent flag falls back to quality_gate.fail_on (null => off). The value is
+    // validated against the severity ladder here (config already validated its).
+    failOnSeverity: failOnSeverityFlag(parsed) ?? failOnSeverityFromConfig(config)
   };
+}
+
+// review-surfaces.QUALITY_GATE.1: parse --fail-on <severity>. An unrecognized
+// value is a usage error (a typo must fail fast, not silently disarm the gate).
+function failOnSeverityFlag(parsed: ParsedArgs): FailOnSeverity | undefined {
+  const raw = stringFlag(parsed, "fail-on");
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (!(PACKET_SEVERITIES as readonly string[]).includes(raw)) {
+    throw new CliError(
+      `--fail-on must be one of ${PACKET_SEVERITIES.join(", ")} (got "${raw}")`,
+      ExitCodes.usageError
+    );
+  }
+  return raw as FailOnSeverity;
+}
+
+function failOnSeverityFromConfig(config: ReviewSurfacesConfig): FailOnSeverity | undefined {
+  const value = config.quality_gate.fail_on;
+  return value === null ? undefined : (value as FailOnSeverity);
 }
 
 // Apply the privacy/evidence/quality gate. The pure decision is computed
@@ -3448,9 +3510,13 @@ function applyGate(
   evaluation: EvaluationModel,
   collection: CollectionResult,
   provider: ProviderName,
-  config: ReviewSurfacesConfig
+  config: ReviewSurfacesConfig,
+  // review-surfaces.QUALITY_GATE.1: the risks model the --fail-on threshold
+  // inspects. Optional so the evaluate stage (no risks computed) still gates on
+  // missing/evidence/privacy exactly as before.
+  risks?: RisksModel
 ): number {
-  const decision = gateDecision(evaluation, collection, provider, gateOptionsFor(parsed, config));
+  const decision = gateDecision(evaluation, collection, provider, gateOptionsFor(parsed, config), risks?.items);
   if (decision.code === ExitCodes.success) {
     return ExitCodes.success;
   }
@@ -3460,6 +3526,17 @@ function applyGate(
   }
   console.warn(`Gate warning (would exit ${decision.code} under --strict): ${decision.reason}`);
   return ExitCodes.success;
+}
+
+// review-surfaces.QUALITY_GATE.3: when --json is set, print the SAME structured
+// run summary (the QUALITY_GATE.2 projection) to stdout from the in-memory packet.
+// A no-op when --json is absent, so the default prose output stays byte-stable.
+function maybePrintRunSummaryJson(parsed: ParsedArgs, config: ReviewSurfacesConfig, packet: ReviewPacket): void {
+  if (!booleanFlag(parsed, "json")) {
+    return;
+  }
+  const failOnSeverity = failOnSeverityFlag(parsed) ?? failOnSeverityFromConfig(config);
+  process.stdout.write(serializeRunSummary(projectRunSummary(packet, failOnSeverity)));
 }
 
 function providerFlag(parsed: ParsedArgs, config: ReviewSurfacesConfig): ProviderName {
@@ -3538,12 +3615,14 @@ Options:
                    provider for the narrative; under mock it renders a blocked comment with
                    the deterministic scope counts (never a whole-repo fallback). repo is the
                    legacy whole-repo evaluation/risks/architecture comment (unchanged).
-  --format <fmt>    comment: output format, one of github (default) | sticky | sarif | review.
+  --format <fmt>    comment: output format, one of github (default) | sticky | sarif | json | review.
                    github writes .review-surfaces/comment.md (the provider-narrative comment);
                    sticky writes the deterministic human-rollup .review-surfaces/comment.md;
-                   sarif writes .review-surfaces/review.sarif (SARIF 2.1.0); review writes
-                   .review-surfaces/pending_review.json (a GitHub PENDING draft review). All
-                   honor --out and read the local packet/human_review.json only.
+                   sarif writes .review-surfaces/review.sarif (SARIF 2.1.0); json prints a
+                   compact, byte-stable run-summary object (gate code, per-status requirement
+                   counts, risk-severity histogram, top-N queue/risk ids) to stdout for CI;
+                   review writes .review-surfaces/pending_review.json (a GitHub PENDING draft
+                   review). All honor --out and read the local packet/human_review.json only.
                    human: output format, markdown (default) | html. markdown writes
                    .review-surfaces/human_review.md; html ALSO writes
                    .review-surfaces/human_review.html (the single-file offline review cockpit).
@@ -3593,6 +3672,14 @@ Options:
                    warnings and still exits 0 (default normal/dogfood behavior).
   --max-missing <n> Quality-gate tolerance: allow up to N "missing" requirements
                    before tripping. Default from config quality_gate.max_missing (0).
+  --fail-on <sev>   all/evaluate/packet/dogfood: trip the quality gate (exit 10) when any
+                   DETERMINISTIC risk item is at or above this severity
+                   (critical|high|medium|low|unknown). LLM-only hypotheses are excluded.
+                   Composes with --strict exactly like --max-missing. Default from config
+                   quality_gate.fail_on (off). comment --format json reads it for gate_code.
+  --json            all/packet: also print a compact, byte-stable run-summary object (gate
+                   code, per-status requirement counts, risk-severity histogram, top-N queue
+                   ids) to stdout. Opt-in; the default prose output is unchanged without it.
   --now <ISO8601>   Freeze the clock: write this fixed instant as manifest.created_at
                    (and any other wall-clock value) so two runs with the same --now and
                    inputs produce byte-identical artifacts. Must be a parseable ISO 8601
@@ -3625,7 +3712,9 @@ Options:
 Gate semantics (only enforced as exit codes with --strict):
   5  privacy block   provider is not "mock" AND the redacted diff blocked remote enrichment
   4  evidence failed any requirement result/overreach has status "invalid_evidence"
-  10 quality gate    missing requirements exceed --max-missing / quality_gate.max_missing
+  10 quality gate    missing requirements exceed --max-missing / quality_gate.max_missing,
+                     OR (with --fail-on / quality_gate.fail_on) a deterministic risk item is
+                     at or above the threshold severity
   The first applicable gate wins, in the order 5 -> 4 -> 10. validate is unaffected
   and keeps returning 3 on schema-validation failure.
 `);

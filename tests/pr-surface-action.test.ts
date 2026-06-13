@@ -81,6 +81,56 @@ test("review-surfaces.PR_SURFACE.5 recovery pins to the last POSTED sticky's run
   assert.match(String(runStep.run), /--run-id "\$GITHUB_RUN_ID"/);
 });
 
+// review-surfaces.ACTION_IO.1: the action declares an outputs block a consuming
+// workflow can branch on, populated from the deterministic run-summary via
+// $GITHUB_OUTPUT in a renderer-only step (no recompute, no network).
+test("review-surfaces.ACTION_IO.1 the action declares outputs populated from the packet via $GITHUB_OUTPUT", () => {
+  const action = readYaml("action.yml");
+  assert.ok(action.outputs, "action.yml must declare a top-level outputs block");
+  for (const output of ["gate-code", "missing-count", "invalid-count", "risk-count", "artifact-name", "comment-path"]) {
+    assert.ok(action.outputs[output], `outputs.${output} must be declared`);
+    // Each output is wired to a step's output (composite outputs use ${{ steps... }}).
+    assert.match(String(action.outputs[output].value), /\$\{\{\s*steps\./, `outputs.${output} must read a step output`);
+  }
+  const steps: any[] = action.runs.steps;
+  const summaryStep = steps.find((s) => s.id === "summary");
+  assert.ok(summaryStep, "the summary step (id: summary) exists");
+  assert.match(String(summaryStep.run), /GITHUB_OUTPUT/, "the summary step writes to $GITHUB_OUTPUT");
+  // It derives the machine values from the deterministic JSON projection — a
+  // RENDERER over the local packet, never a recompute or a network call.
+  assert.match(String(summaryStep.run), /comment --format json/);
+  assert.match(String(summaryStep.run), /gate-code=/);
+  assert.match(String(summaryStep.run), /missing-count=/);
+});
+
+// review-surfaces.ACTION_IO.2: the action appends the rendered review summary to
+// $GITHUB_STEP_SUMMARY (best-effort) so the verdict shows in the run UI even on
+// fork PRs where the comment is never posted.
+test("review-surfaces.ACTION_IO.2 the action appends the verdict to $GITHUB_STEP_SUMMARY best-effort", () => {
+  const action = readYaml("action.yml");
+  const steps: any[] = action.runs.steps;
+  const summaryStep = steps.find((s) => s.id === "summary" && typeof s.run === "string" && s.run.includes("GITHUB_STEP_SUMMARY"));
+  assert.ok(summaryStep, "the summary step appends to $GITHUB_STEP_SUMMARY");
+  // It writes the rendered comment.md (trimmed) into the run summary.
+  assert.match(String(summaryStep.run), /comment\.md|comment_path/);
+  assert.match(String(summaryStep.run), />> "\$GITHUB_STEP_SUMMARY"/);
+  // Best-effort: the step never fails the action (set +e / exit 0).
+  assert.match(String(summaryStep.run), /set \+e/);
+  assert.match(String(summaryStep.run), /exit 0/);
+});
+
+// review-surfaces.ACTION_IO.3: a top-level branding block makes the reusable
+// action Marketplace-publishable.
+test("review-surfaces.ACTION_IO.3 the action carries a Marketplace branding block", () => {
+  const action = readYaml("action.yml");
+  assert.ok(action.branding, "action.yml must carry a top-level branding block");
+  assert.ok(typeof action.branding.icon === "string" && action.branding.icon.length > 0, "branding.icon must be set");
+  assert.ok(typeof action.branding.color === "string" && action.branding.color.length > 0, "branding.color must be set");
+  // GitHub restricts branding.color to a fixed palette.
+  const allowedColors = ["white", "yellow", "blue", "green", "orange", "red", "purple", "gray-dark"];
+  assert.ok(allowedColors.includes(action.branding.color), `branding.color "${action.branding.color}" must be a valid Marketplace color`);
+});
+
 test("review-surfaces.PR_SURFACE.1 the repo workflow is a same-repo-only thin consumer that preserves the PROVIDERS.6 secret boundary", () => {
   const workflow = readYaml(".github/workflows/pr-review-comment.yml");
   const job = workflow.jobs["review-comment"];

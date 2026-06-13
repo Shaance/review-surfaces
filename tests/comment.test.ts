@@ -538,3 +538,80 @@ test("review-surfaces.PR_SURFACE.2 unknown --format is rejected with guidance li
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Unknown --format.*sticky/);
 });
+
+// review-surfaces.QUALITY_GATE.3: `all --json` prints the SAME structured run
+// summary to stdout, while the DEFAULT `all` output stays byte-stable (no JSON
+// line) so a CI step can opt into one structured line without changing the prose.
+test("review-surfaces.QUALITY_GATE.3 all --json prints the structured summary; default all output is unchanged", () => {
+  const cwd = setupFixture("rs-all-json-");
+  try {
+    const baseArgs = ["all", "--base", "HEAD", "--head", "HEAD", "--spec", "features/review-surfaces.feature.yaml", "--provider", "mock", "--out", ".review-surfaces"];
+
+    // Default run: no JSON object anywhere in stdout.
+    const plain = spawnSync("node", [CLI, ...baseArgs], { cwd, encoding: "utf8" });
+    assert.equal(plain.status, 0, plain.stderr);
+    assert.ok(
+      !/"schema":\s*"review-surfaces\.run-summary\.v1"/.test(plain.stdout),
+      "default `all` must NOT print the run-summary JSON line"
+    );
+
+    // --json run: the structured object is present and parseable on stdout.
+    const withJson = spawnSync("node", [CLI, ...baseArgs, "--json"], { cwd, encoding: "utf8" });
+    assert.equal(withJson.status, 0, withJson.stderr);
+    // The summary is multi-line pretty JSON; extract it from the first `{` to the
+    // last `}` so the surrounding prose lines do not break the parse.
+    const start = withJson.stdout.indexOf("{");
+    assert.ok(start >= 0, "all --json must print a JSON object");
+    const summary = JSON.parse(withJson.stdout.slice(start, withJson.stdout.lastIndexOf("}") + 1));
+    assert.equal(summary.schema, "review-surfaces.run-summary.v1");
+    assert.equal(typeof summary.gate_code, "number");
+    assert.equal(typeof summary.requirement_counts.missing, "number");
+
+    // The --json projection equals the QUALITY_GATE.2 comment --format json bytes
+    // (same packet -> same projection), proving they share one projection.
+    const commentJson = runComment(cwd, ["--format", "json"]);
+    assert.equal(commentJson.status, 0, commentJson.stderr);
+    assert.equal(
+      JSON.stringify(JSON.parse(commentJson.stdout)),
+      JSON.stringify(summary),
+      "all --json and comment --format json must project the same summary"
+    );
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces.QUALITY_GATE.2: `comment --format json` reads the local packet
+// and emits a compact, byte-stable run-summary object (gate code, per-status
+// requirement counts, risk-severity histogram, top-N queue/risk ids) for CI
+// consumers, recomputing nothing — and the SAME packet yields the SAME bytes.
+test("review-surfaces.QUALITY_GATE.2 comment --format json emits a deterministic, byte-stable run summary", () => {
+  const cwd = setupFixture("rs-json-summary-");
+  try {
+    runAll(cwd);
+    const first = runComment(cwd, ["--format", "json"]);
+    assert.equal(first.status, 0, first.stderr);
+
+    const summary = JSON.parse(first.stdout);
+    // Schema + the documented shape.
+    assert.equal(summary.schema, "review-surfaces.run-summary.v1");
+    assert.equal(typeof summary.gate_code, "number");
+    for (const key of ["satisfied", "partial", "missing", "invalid", "overreach"]) {
+      assert.equal(typeof summary.requirement_counts[key], "number", `requirement_counts.${key} must be a number`);
+    }
+    // Histogram carries every severity bucket (fixed key set).
+    for (const severity of ["critical", "high", "medium", "low", "unknown"]) {
+      assert.equal(typeof summary.risk_severity_histogram[severity], "number", `histogram.${severity} must be a number`);
+    }
+    assert.ok(Array.isArray(summary.top_queue_ids), "top_queue_ids must be an array");
+
+    // Byte-determinism: a second render of the SAME packet is byte-identical.
+    const second = runComment(cwd, ["--format", "json"]);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(second.stdout, first.stdout, "same packet must render byte-identical JSON");
+    // Trailing newline, POSIX-friendly (mirrors the SARIF renderer).
+    assert.ok(first.stdout.endsWith("}\n"), "JSON must end with a single trailing newline");
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});

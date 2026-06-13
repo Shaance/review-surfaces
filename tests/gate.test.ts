@@ -5,6 +5,8 @@ import { EvaluationModel, RequirementResult, RequirementStatus } from "../src/ev
 import { ExitCodes } from "../src/core/exit-codes";
 import { gateDecision, gateExitCode } from "../src/core/gate";
 import { ProviderName } from "../src/llm/provider";
+import type { RiskItem } from "../src/risks/risks";
+import { fileEvidence, llmProposedEvidence } from "../src/evidence/evidence";
 
 // gateExitCode only reads evaluation.results/overreach statuses and
 // collection.privacy.remote_provider_blocked, so the test fixtures are minimal.
@@ -144,6 +146,63 @@ test("review-surfaces.QUALITY allow_missing excludes the planned backlog but not
     result("missing", "REQ-REGRESSION")
   ]);
   assert.equal(gateExitCode(swapped, collection(false), "mock", allowed), ExitCodes.qualityGateFailed);
+});
+
+// review-surfaces.QUALITY_GATE.1: the --fail-on risk-severity gate. A
+// deterministic risk item at or above the threshold trips the quality gate (10);
+// a risk below the threshold does not; and an LLM-hypothesis-only risk NEVER
+// trips it (an unverified hypothesis is not proof).
+function riskItem(severity: RiskItem["severity"], hypothesisOnly = false): RiskItem {
+  return {
+    id: `RISK-${severity}`,
+    category: "correctness",
+    severity,
+    summary: `a ${severity} risk`,
+    // A hypothesis-only item has ONLY llm_proposed evidence; a deterministic item
+    // has a plain (non-LLM) evidence ref.
+    evidence: hypothesisOnly
+      ? [llmProposedEvidence("file", { path: "src/a.ts", note: "guessed risk" })]
+      : [fileEvidence("src/a.ts", "deterministic risk")]
+  };
+}
+
+test("review-surfaces.QUALITY_GATE.1 --fail-on trips on a deterministic risk at/above the threshold, not below, and never on a hypothesis", () => {
+  const clean = evaluation([result("satisfied")]);
+
+  // A HIGH risk with --fail-on high trips the quality gate (10).
+  const highRisk = [riskItem("high")];
+  assert.equal(
+    gateExitCode(clean, collection(false), "mock", { maxMissing: 0, failOnSeverity: "high" }, highRisk),
+    ExitCodes.qualityGateFailed,
+    "a high risk at --fail-on high must trip the gate"
+  );
+
+  // A MEDIUM risk is BELOW the high threshold -> does not trip.
+  const mediumRisk = [riskItem("medium")];
+  assert.equal(
+    gateExitCode(clean, collection(false), "mock", { maxMissing: 0, failOnSeverity: "high" }, mediumRisk),
+    ExitCodes.success,
+    "a risk below the threshold must not trip the gate"
+  );
+
+  // An LLM-HYPOTHESIS-ONLY high risk does NOT trip the gate (excluded as not proof).
+  const hypothesisHigh = [riskItem("high", true)];
+  assert.equal(
+    gateExitCode(clean, collection(false), "mock", { maxMissing: 0, failOnSeverity: "high" }, hypothesisHigh),
+    ExitCodes.success,
+    "a hypothesis-only risk must never trip the deterministic risk gate"
+  );
+
+  // Without a threshold, even a critical risk is ignored (legacy behavior).
+  assert.equal(
+    gateExitCode(clean, collection(false), "mock", { maxMissing: 0 }, [riskItem("critical")]),
+    ExitCodes.success,
+    "no --fail-on threshold means packet.risks are not inspected"
+  );
+
+  // The reason names the --fail-on gate.
+  const decision = gateDecision(clean, collection(false), "mock", { maxMissing: 0, failOnSeverity: "high" }, highRisk);
+  assert.match(decision.reason, /--fail-on/);
 });
 
 // review-surfaces.QUALITY: a blank allow_missing entry must not match a result

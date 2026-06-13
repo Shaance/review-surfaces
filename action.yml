@@ -13,6 +13,11 @@
 # secrets), and provider=ai-sdk + the key + post=true for same-repo PRs.
 name: review-surfaces PR surface
 description: Run review-surfaces on a PR, post a sticky human-review summary, and upload the artifact.
+# review-surfaces.ACTION_IO.3: a Marketplace-publishable branding block (a valid
+# Feather icon + color) so the reusable action can be listed.
+branding:
+  icon: shield
+  color: purple
 inputs:
   provider:
     description: review-surfaces provider (mock | ai-sdk | agent-file). Default mock — zero secrets.
@@ -71,6 +76,29 @@ inputs:
     description: Token with pull-requests:write and actions:read, for posting and prior-artifact lookup.
     required: false
     default: ""
+# review-surfaces.ACTION_IO.1: declared outputs a consuming workflow can branch
+# on, populated from the deterministic packet/gate values by the summary step
+# below via $GITHUB_OUTPUT. No recomputation: the values come from the run-summary
+# JSON the trusted CLI already produced (comment --format json) and the manifest.
+outputs:
+  gate-code:
+    description: The review-surfaces gate exit code (0 pass; 4 evidence; 5 privacy; 10 quality/risk).
+    value: ${{ steps.summary.outputs.gate-code }}
+  missing-count:
+    description: Number of requirements with status "missing".
+    value: ${{ steps.summary.outputs.missing-count }}
+  invalid-count:
+    description: Number of requirement results with status "invalid_evidence".
+    value: ${{ steps.summary.outputs.invalid-count }}
+  risk-count:
+    description: Number of deterministic (non-hypothesis) risk items in the packet.
+    value: ${{ steps.summary.outputs.risk-count }}
+  artifact-name:
+    description: The uploaded artifact name (review-surfaces-pr-<pr-number>).
+    value: ${{ steps.summary.outputs.artifact-name }}
+  comment-path:
+    description: Path to the rendered sticky comment.md.
+    value: ${{ steps.summary.outputs.comment-path }}
 runs:
   using: composite
   steps:
@@ -204,6 +232,54 @@ runs:
           --artifact-name "$RS_ARTIFACT" \
           --run-id "$GITHUB_RUN_ID" \
           --out "$RS_OUT"
+    - name: Emit outputs and run-UI summary (best-effort, renderer-only)
+      id: summary
+      shell: bash
+      working-directory: ${{ inputs.subject-directory }}
+      # review-surfaces.ACTION_IO.1: populate the declared outputs from the
+      # deterministic run-summary JSON (comment --format json) — a RENDERER over
+      # the local packet, no network and no recomputation.
+      # review-surfaces.ACTION_IO.2: append the rendered comment.md (trimmed) to
+      # $GITHUB_STEP_SUMMARY so the verdict shows in the Actions run UI even on
+      # fork PRs where the comment is never posted. Best-effort: a missing packet
+      # or summary never fails the action.
+      env:
+        RS_BIN: ${{ github.action_path }}/bin/review-surfaces.js
+        RS_OUT: ${{ inputs.output-dir }}
+        RS_ARTIFACT: review-surfaces-pr-${{ inputs.pr-number }}
+        RS_TOP_N: ${{ inputs.comment-top-n }}
+      run: |
+        set +e
+        comment_path="$RS_OUT/comment.md"
+        echo "artifact-name=$RS_ARTIFACT" >> "$GITHUB_OUTPUT"
+        echo "comment-path=$comment_path" >> "$GITHUB_OUTPUT"
+        # Deterministic machine summary from the local packet (no recompute).
+        summary_json="$(node "$RS_BIN" comment --format json --out "$RS_OUT" 2>/dev/null)"
+        if [ -n "$summary_json" ]; then
+          gate="$(printf '%s' "$summary_json" | jq -r '.gate_code // ""')"
+          missing="$(printf '%s' "$summary_json" | jq -r '.requirement_counts.missing // ""')"
+          invalid="$(printf '%s' "$summary_json" | jq -r '.requirement_counts.invalid // ""')"
+          # risk-count = sum of the deterministic risk-severity histogram.
+          risk="$(printf '%s' "$summary_json" | jq -r '[.risk_severity_histogram[]] | add // 0')"
+          echo "gate-code=$gate" >> "$GITHUB_OUTPUT"
+          echo "missing-count=$missing" >> "$GITHUB_OUTPUT"
+          echo "invalid-count=$invalid" >> "$GITHUB_OUTPUT"
+          echo "risk-count=$risk" >> "$GITHUB_OUTPUT"
+        else
+          echo "No packet summary available (best-effort); leaving counts blank."
+        fi
+        # Append the rendered sticky (trimmed to the top N lines) to the run UI.
+        if [ -n "$GITHUB_STEP_SUMMARY" ] && [ -f "$comment_path" ] && [ ! -L "$comment_path" ]; then
+          # Strip the sticky HTML marker line, keep a bounded slice so a long
+          # comment never floods the run summary.
+          lines=$(( ${RS_TOP_N:-5} * 8 + 40 ))
+          grep -v '^<!-- review-surfaces:' "$comment_path" 2>/dev/null | head -n "$lines" >> "$GITHUB_STEP_SUMMARY" \
+            && echo "Wrote review-surfaces verdict to the run summary." \
+            || echo "Could not write run summary (best-effort)."
+        else
+          echo "No comment.md to summarize (best-effort)."
+        fi
+        exit 0
     - name: Upload review-surfaces artifact
       uses: actions/upload-artifact@v4
       with:
