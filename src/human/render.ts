@@ -1108,18 +1108,22 @@ function renderTestPlanRollup(group: RollupGroup<TestPlanItem>): string {
   // Fill the command through the same ACID template as the other fields, so a
   // rollup that merged items differing only by an ACID in the command does not
   // show a command naming just the first requirement (the exact per-item command
-  // stays in the standalone test_plan.md). A single-item group restores the
-  // verbatim command. review-surfaces.HUMAN_REVIEW.22: when the group merged
-  // items touching MORE THAN ONE file (the api-contract fan-out), the rep's
-  // command names only its own file — which would misrepresent the merged set —
-  // so render the file-agnostic stem (the per-file command suffix removed) and
-  // point the reviewer at the listed files above. The exact per-file commands
-  // stay in the JSON model / test_plan.md.
-  const commandText =
-    rep.command && distinctFiles.length > 1 && rep.suggested_file
-      ? rep.command.split(rep.suggested_file).join("").replace(/\s+/g, " ").trim()
-      : rep.command;
-  const command = commandText ? `\n- Command: \`${field(fillAcidTemplate(normalizeAcidTemplate(commandText), group.acids))}\`` : "";
+  // stays in the standalone test_plan.md). A single-item / single-file group
+  // restores the verbatim command. review-surfaces.HUMAN_REVIEW.22: when the
+  // group merged items touching MORE THAN ONE distinct file (the api-contract
+  // fan-out), the per-file commands genuinely differ and the rep's command names
+  // only its own file. Rendering the rep's command would misrepresent the merged
+  // set; stripping the file from it (as an earlier round did) yields a
+  // file-less, NON-RUNNABLE stem like `pnpm run test --` that can mislead a
+  // reviewer into running an empty/unrelated check. So OMIT the `- Command:`
+  // line entirely for the merged multi-file case — the listed files above carry
+  // the affected set, and the exact per-file commands stay in the JSON model /
+  // test_plan.md. Single-file (or single-item) groups still render their real,
+  // runnable command.
+  const command =
+    rep.command && distinctFiles.length <= 1
+      ? `\n- Command: \`${field(fillAcidTemplate(normalizeAcidTemplate(rep.command), group.acids))}\``
+      : "";
   const requirements = group.acids.length
     ? `\n- Requirements (${group.acids.length}): ${group.acids.map((acid) => `\`${field(acid)}\``).join(", ")}`
     : "";

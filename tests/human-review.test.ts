@@ -4064,6 +4064,16 @@ test("review-surfaces.HUMAN_REVIEW.22 a multi-file api_contract rollup renders o
   for (const file of files) {
     assert.equal(section.includes(`- Command: \`pnpm run test -- ${file}\``), false, `merged command must not name a single file (${file})`);
   }
+  // review-surfaces.HUMAN_REVIEW.22: the merged multi-file group must NOT render
+  // a file-less, non-runnable stem command (`pnpm run test --`). An earlier round
+  // stripped the suggested_file out of the rep's command, producing a stem that
+  // runs NOTHING and can mislead a reviewer into running an empty check. The fix
+  // omits the `- Command:` line for the merged multi-file case entirely; the
+  // affected files are listed above and the exact per-file commands stay in the
+  // JSON model / test_plan.md.
+  assert.equal(section.includes("- Command: `pnpm run test --`"), false, "merged multi-file rollup must not render a file-less stem command");
+  assert.equal(/- Command: `pnpm run test -- *`/.test(section), false, "merged multi-file rollup must not render a runnable-looking command with no file");
+  assert.equal(section.includes("- Command:"), false, "merged multi-file rollup must omit the Command line (per-file commands stay in the JSON model)");
   // Per-item detail is preserved in the JSON model.
   assert.deepEqual(model.test_plan.map((item) => item.suggested_file), files);
   assert.deepEqual(model.test_plan.map((item) => item.command), files.map((file) => `pnpm run test -- ${file}`));
@@ -4071,17 +4081,24 @@ test("review-surfaces.HUMAN_REVIEW.22 a multi-file api_contract rollup renders o
 
 test("review-surfaces.HUMAN_REVIEW.23 reviewer questions strip ANY trailing sentence punctuation before the appended '?', so no question renders '.?', '??', or '!?'", () => {
   // Overreach summaries flow into the "How should reviewers resolve this intent
-  // gap: <summary>?" template. forQuestionTail must strip ANY trailing
-  // sentence-ending mark before the appended '?'. Run each ending through its
-  // own build so the summary lands in possible_overreach[0] and reliably
-  // produces an intent-gap question:
+  // gap: <summary>?" template. forQuestionTail must strip the ENTIRE trailing
+  // run of sentence-ending marks before the appended '?' — not just one — so a
+  // summary ending in a punctuation RUN does not leave a residual mark. Run each
+  // ending through its own build so the summary lands in possible_overreach[0]
+  // and reliably produces an intent-gap question:
   //   - a summary ending in '.' must not render "...intent.?"
   //   - a summary ending in '?' must not render "...intent??"
   //   - a summary ending in '!' must not render "...intent!?"
+  //   - a summary ending in the run '?!' must not render "...intent!?" / "...intent?"+residual
+  //   - a summary ending in the run '...' must not render "...intent..?"
+  //   - a summary ending in the run '!!!' must not render "...intent!!?"
   const endings: Array<{ requirement_id: string; summary: string; doubled: string }> = [
     { requirement_id: "OVER-001", summary: "Release helper changed outside stated human-review intent.", doubled: ".?" },
     { requirement_id: "OVER-002", summary: "Why did the workflow file change outside stated human-review intent?", doubled: "??" },
-    { requirement_id: "OVER-003", summary: "Unexpected dependency bump landed outside stated human-review intent!", doubled: "!?" }
+    { requirement_id: "OVER-003", summary: "Unexpected dependency bump landed outside stated human-review intent!", doubled: "!?" },
+    { requirement_id: "OVER-004", summary: "Did this really land outside stated human-review intent?!", doubled: "??" },
+    { requirement_id: "OVER-005", summary: "Config drifted outside stated human-review intent...", doubled: ".?" },
+    { requirement_id: "OVER-006", summary: "Generated output changed outside stated human-review intent!!!", doubled: "!?" }
   ];
 
   for (const ending of endings) {
@@ -4112,15 +4129,18 @@ test("review-surfaces.HUMAN_REVIEW.23 reviewer questions strip ANY trailing sent
 
     const overreachQuestion = model.questions.find((question) => /human-review intent\b/.test(question.question));
     assert.ok(overreachQuestion, `the overreach intent-gap reviewer question should be generated for ${ending.requirement_id}`);
-    // The embedded summary ended in a sentence mark; the fix strips it before
-    // the appended '?', so the question ends in a single "...human-review intent?".
+    // The embedded summary ended in a sentence mark (or a RUN of them); the fix
+    // strips the whole run before the appended '?', so the question ends in
+    // exactly one "...human-review intent?" — never a residual mark before it.
     assert.match(overreachQuestion.question, /human-review intent\?$/, `question must end in a single '?': ${overreachQuestion.question}`);
+    // Exactly one trailing '?' — no preceding sentence mark survived the strip.
+    assert.match(overreachQuestion.question, /[^.?!]\?$/, `question must end in exactly one '?' with no preceding mark: ${overreachQuestion.question}`);
 
     // No generated reviewer question (in the model or the rendered surface) may
     // carry doubled terminal punctuation — neither this ending's flavor nor any
-    // other doubled mark.
+    // residual two-mark sequence a punctuation RUN could have left behind.
     const rendered = renderHumanReviewMarkdown(model);
-    for (const doubled of [".?", "??", "!?"]) {
+    for (const doubled of [".?", "??", "!?", "..?", "!!?"]) {
       for (const question of model.questions) {
         assert.equal(question.question.includes(doubled), false, `question must not contain '${doubled}': ${question.question}`);
       }
