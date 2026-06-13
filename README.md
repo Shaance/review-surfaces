@@ -131,6 +131,88 @@ git only. GitHub Actions is a distribution channel for these surfaces, never
 the only way to produce or verify them — `action.yml` in this repo is a thin
 renderer over the same local pipeline.
 
+### Use as a GitHub Action
+
+The same pipeline runs as a reusable composite action. Posting to a PR is
+**same-repo only**: it needs the write token, so it must run on
+`pull_request_target` — evaluated from the base branch — guarded by an `if:`
+that excludes fork heads. The default `provider: mock` posts the deterministic
+sticky summary just fine (this repo's own `ci.yml` smoke renders it that way);
+add `provider: ai-sdk` with an API-key secret only when you want the LLM
+narrative on the comment surface.
+
+In **your** repo, the one step that runs the tool is the snippet below:
+
+```yaml
+# the one step that runs the tool, in YOUR pull_request_target job — see the
+# worked example below for the surrounding job, split checkouts, and permissions
+- uses: Shaance/review-surfaces@8ba7c46d73f429c71060040463899333fdd92c9d # pin a full SHA you trust
+  with:
+    provider: mock # mock posts the deterministic sticky; switch to ai-sdk for the LLM narrative
+    spec: features/**/*.feature.yaml # YOUR spec(s); the action defaults to this repo's own spec
+    base-ref: origin/${{ github.base_ref }}
+    head-ref: HEAD
+    subject-directory: subject # PR head, checked out credentialless
+    pr-number: ${{ github.event.pull_request.number }}
+    github-token: ${{ github.token }}
+    post: "true"
+```
+
+`Shaance/review-surfaces` is a **composite action that builds from source at the
+pinned commit** — the consuming runner checks out the action repo at that SHA and
+runs `pnpm install --frozen-lockfile && pnpm run build`. So any real commit on the
+default branch is a valid pin (the SHA above is illustrative); pin one you trust.
+Because it builds from source, your job needs the same setup the worked example
+shows (checkout + the credentialless split — pnpm/Node are provided by the action).
+
+Pin to a **full 40-char commit SHA**, not a tag or branch: a tag like `@v0.2.0`
+can be moved or deleted and `@main` is mutable, so either could later redirect
+your write token or LLM key to attacker-controlled code.
+
+This repo's own
+[`.github/workflows/pr-review-comment.yml`](https://github.com/Shaance/review-surfaces/blob/main/.github/workflows/pr-review-comment.yml)
+is the worked **reference** for the wiring — the `pull_request_target` trigger,
+the same-repo `if:` guard, the `permissions:` block (incl. `actions: read`), and
+the credentialless split checkout. Don't copy it verbatim: because the action's
+source lives in *this* repo, that file checks out the base ref into `tool/` and
+runs `uses: ./tool` (the in-repo action). Take the same job structure but **swap
+`uses: ./tool` for `uses: Shaance/review-surfaces@<full-sha>`** (the snippet
+above) so your job runs the pinned action.
+
+The job's `permissions:` block grants `contents: read`, `pull-requests: write`,
+and `actions: read` — the last is required, or the prior-packet artifact lookup
+is denied (swallowed as a first-review fallback) and the since-last-review delta
+never appears.
+
+The same-repo `if:` guard is load-bearing. `pull_request_target` runs in the
+**base** repo's context, so the `GITHUB_TOKEN` is read/**write** and the repo's
+secrets are exposed — even for a PR from a public fork (forks do **not** get a
+read-only token here). The guard (`head.repo.full_name == github.repository`)
+keeps an untrusted fork from reaching the secret-bearing post path. Fork PRs are
+instead served by a separate plain `pull_request` job (`provider: mock`, no
+secrets, `post: "false"`) that uploads the artifact rather than posting — the
+upload-only `pr-surface-smoke` pattern in this repo's `ci.yml`.
+
+### Exit codes
+
+`review-surfaces` (and `--strict`) returns a distinct exit code per failure
+class, so a CI step can branch without parsing artifacts:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Success — the run completed (and, under `--strict`, the gate passed). |
+| `1` | Runtime error — an unexpected failure while running. |
+| `2` | Usage error — bad flags or arguments. |
+| `3` | Schema validation failed — a generated artifact did not match its schema. |
+| `4` | Evidence validation failed — a claim's evidence was invalid (could not be anchored to local evidence). |
+| `5` | Privacy blocked — a privacy/secret-boundary check refused to proceed. |
+| `10` | Quality gate failed — `--strict` found missing requirements over the configured max-missing. |
+
+The table covers the review-surfaces commands' own gate and usage codes.
+`review-surfaces run -- <cmd>` instead **forwards the wrapped command's own exit
+code**, so codes outside this table (e.g. `7`, `127`) can occur when you use
+`run` to record a wrapped test command.
+
 ## Commands
 
 | Command | What it does |
