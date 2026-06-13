@@ -927,6 +927,18 @@ test("review-surfaces.CLI.9 an unknown command exits usageError and suggests the
   assert.match(result.stderr, /review-surfaces --help/, "the error points at the full command list");
 });
 
+test("review-surfaces.CLI.9 a misspelled command with a real flag reports the command typo, not the flag", () => {
+  // parseArgs validates flags before main()'s unknown-command check, so the
+  // per-command flag check is gated on COMMANDS.includes(command): `coment
+  // --format github` (format is a real comment flag) must report the COMMAND
+  // typo, not "Unknown flag: --format".
+  const result = spawnSync("node", [CLI, "coment", "--format", "github"], { encoding: "utf8" });
+  assert.equal(result.status, ExitCodes.usageError, result.stderr);
+  assert.match(result.stderr, /Unknown command: coment/);
+  assert.match(result.stderr, /did you mean 'comment'\?/, "the command typo is suggested");
+  assert.doesNotMatch(result.stderr, /Unknown flag/, "the command-typo error wins over the flag check");
+});
+
 test("review-surfaces.CLI.9 a misspelled flag exits usageError with an Unknown flag suggestion", () => {
   // The Phase 4 dogfood footgun: `all --proivder mock` ran SILENTLY with the
   // default provider because the typo'd flag was ignored. It must now be a loud

@@ -3111,10 +3111,13 @@ function parseArgs(args: string[]): ParsedArgs {
   // here instead of running as a normal `all` with a silently-ignored no-op
   // flag. The nearest-match suggestion still draws from the GLOBAL union so a
   // typo of a real-but-wrong-command flag (`--surfce`) still suggests `surface`.
-  // The bare `help`/`version` pseudo-commands take any flags (they only print),
-  // so the check is skipped there; an unknown COMMAND is rejected earlier in
-  // main(), so here `command` is always a real command with a known flag set.
-  if (command !== "help" && command !== "version") {
+  // Only validate flags for a KNOWN command. parseArgs runs BEFORE main()'s
+  // unknown-command check, so gating on COMMANDS.includes(command) (which is
+  // false for an unknown/misspelled command AND for the bare help/version
+  // pseudo-commands) lets `coment --format github` report the command typo
+  // ("Unknown command: coment (did you mean 'comment'?)") rather than a
+  // misleading "Unknown flag: --format" for a flag the intended command reads.
+  if (COMMANDS.includes(command)) {
     const allowed = flagsForCommand(command);
     for (const key of Object.keys(flags)) {
       if (!allowed.has(key)) {
