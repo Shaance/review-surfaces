@@ -258,3 +258,30 @@ test("review-surfaces.PRIVACY.6 filterIgnoredDiff keeps a normal non-ignored fil
   assert.match(filtered, /keep\.ts/);
   assert.doesNotMatch(filtered, /keepmesecret999/);
 });
+
+test("review-surfaces.PRIVACY.6 filterIgnoredDiff fails closed on a quoted header with an embedded quote", () => {
+  // Git quotes a name containing a double quote as `"a/foo\"bar.env"`; the header
+  // parser can stop at the escaped quote, but the decoded `+++ b/` body line
+  // recovers the real path, so the ignored file is still dropped (not leaked).
+  const diff = [
+    'diff --git "a/foo\\"bar.env" "b/foo\\"bar.env"',
+    "new file mode 100644",
+    "--- /dev/null",
+    '+++ "b/foo\\"bar.env"',
+    "@@ -0,0 +1 @@",
+    "+API_TOKEN=quoteinpathleak456"
+  ].join("\n");
+  const filtered = filterIgnoredDiff(diff, (p) => p === 'foo"bar.env');
+  assert.doesNotMatch(filtered, /quoteinpathleak456/, "an ignored file whose name contains a quote must be dropped");
+});
+
+test("review-surfaces.PRIVACY.6 filterIgnoredDiff fails closed on a quoted header with no body path", () => {
+  // A quoted-name binary section has no `---`/`+++` paths to decode, so the
+  // header alone cannot be trusted — drop it rather than risk a leak.
+  const diff = [
+    'diff --git "a/sec\\303\\251t.env" "b/sec\\303\\251t.env"',
+    'Binary files "a/sec\\303\\251t.env" and "b/sec\\303\\251t.env" differ'
+  ].join("\n");
+  const filtered = filterIgnoredDiff(diff, () => false);
+  assert.equal(filtered, "", "an unreadable quoted-binary section fails closed");
+});

@@ -67,7 +67,10 @@ export function buildDraftReview(model: HumanReviewModel, diff?: StructuredDiff)
     const body = commentBody(suggested, redaction);
     const anchored = suggested.path && suggested.line_start !== undefined ? resolveAnchor(suggested, diff) : undefined;
     if (anchored) {
-      const comment: DraftReviewComment = { path: suggested.path!, line: anchored.line, side: anchored.side, body };
+      // PRIVACY.6: scan/redact the path too — a suggested-comment path can carry
+      // a token (e.g. a fixture named sk-proj-…ts) and was serialized verbatim
+      // into pending_review.json while `blocked` stayed false on a clean body.
+      const comment: DraftReviewComment = { path: redact(suggested.path!, redaction), line: anchored.line, side: anchored.side, body };
       if (anchored.start_line !== undefined) {
         comment.start_line = anchored.start_line;
         comment.start_side = anchored.side;

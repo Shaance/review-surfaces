@@ -1,4 +1,4 @@
-import { parseDiffGitHeader } from "../collector/diff-hunks";
+import { parseDiffGitHeader, decodeGitQuotedPath } from "../collector/diff-hunks";
 
 export function filterIgnoredDiff(diff: string, isIgnored: (filePath: string) => boolean): string {
   const lines = diff.split(/\r?\n/);
@@ -28,7 +28,8 @@ export function filterIgnoredDiff(diff: string, isIgnored: (filePath: string) =>
 // header forms, and a non-match KEPT the section — leaking an ignored file's
 // contents into diff.patch. We now gather EVERY path the section can reveal and
 // drop the section if any is ignored, if no path can be recovered, or if the
-// `diff --git` header is ambiguous and nothing disambiguates it.
+// `diff --git` header is ambiguous/quoted and no unambiguous body path
+// disambiguates it.
 function appendIfAllowed(section: string[], isIgnored: (filePath: string) => boolean, output: string[]): void {
   const candidates = candidatePaths(section);
   // Drop when we cannot positively read a path (fail closed) or any candidate is ignored.
@@ -43,17 +44,18 @@ function appendIfAllowed(section: string[], isIgnored: (filePath: string) => boo
 
 interface SectionPaths {
   paths: string[];
-  // True when the `diff --git` header alone is ambiguous (an unquoted path can
-  // itself contain " b/") AND no unambiguous body path line disambiguates it.
+  // True when the `diff --git` header cannot be trusted on its own (an unquoted
+  // path can contain " b/"; a quoted header's escapes can defeat the parser) AND
+  // no unambiguous body path line disambiguates it.
   ambiguous: boolean;
 }
 
 // Collect candidate file paths for a diff section from the most reliable sources:
 //   1. The quote-aware `diff --git` header parser (handles quoted non-ASCII paths).
-//   2. The `--- a/`, `+++ b/`, and rename/copy body lines — UNAMBIGUOUS, because
-//      everything after the a/ or b/ prefix is the full path, so a path that
-//      itself contains " b/" (which makes the header ambiguous) is recovered
-//      correctly here.
+//   2. The `--- a/`, `+++ b/` (quoted or unquoted), and rename/copy body lines —
+//      UNAMBIGUOUS, because each carries exactly one path with no second operand
+//      to split on, so a path containing " b/" or a quoted/escaped path is
+//      recovered correctly here.
 function candidatePaths(section: string[]): SectionPaths {
   const paths: string[] = [];
   const header = section[0] ?? "";
@@ -71,26 +73,36 @@ function candidatePaths(section: string[]): SectionPaths {
     }
   }
 
-  // An unquoted header with more than one " b/" is ambiguous (the path may
-  // contain " b/"); only the body path lines can resolve it. If none exist, we
-  // cannot trust the header split, so treat the section as un-readable -> drop.
-  const unquotedRest = header.startsWith("diff --git ") && !header.includes('"')
-    ? header.slice("diff --git ".length)
-    : "";
+  // The header alone cannot be trusted when it is unquoted with more than one
+  // " b/" (the path may contain " b/") OR quoted (escaped quotes can make the
+  // parser stop early). Only the body path lines resolve those; if none exist,
+  // treat the section as un-readable -> drop (fail closed).
+  const isGitHeader = header.startsWith("diff --git ");
+  const unquotedRest = isGitHeader && !header.includes('"') ? header.slice("diff --git ".length) : "";
   const ambiguousHeader = occurrences(unquotedRest, " b/") > 1;
+  const quotedHeader = isGitHeader && header.includes('"');
 
-  return { paths, ambiguous: ambiguousHeader && !sawBodyPath };
+  return { paths, ambiguous: (ambiguousHeader || quotedHeader) && !sawBodyPath };
 }
 
 // Recover the full path from an unambiguous body line. `--- a/<path>` /
-// `+++ b/<path>` and `rename|copy from|to <path>` carry exactly one path with no
-// second operand to split on, so a path containing " b/" is returned intact.
-// /dev/null and quoted forms (handled by the header parser) are skipped here.
+// `+++ b/<path>` (or their quoted `--- "a/<path>"` forms) and `rename|copy
+// from|to <path>` carry exactly one path, so a path containing " b/", a quote,
+// or non-ASCII bytes is returned intact. /dev/null is skipped.
 function bodyPathFromLine(line: string): string | undefined {
-  for (const prefix of ["--- a/", "+++ b/"]) {
-    if (line.startsWith(prefix)) {
-      return stripTrailingTab(line.slice(prefix.length));
+  for (const marker of ["--- ", "+++ "]) {
+    if (!line.startsWith(marker)) continue;
+    const operand = stripTrailingTab(line.slice(marker.length));
+    if (operand === "/dev/null") return undefined;
+    // Quoted: `"a/<escaped>"` — git quotes the whole a//b/ path when it has
+    // special chars; decode the escapes then strip the a//b/ prefix.
+    if (operand.startsWith('"') && operand.endsWith('"') && operand.length >= 2) {
+      return stripAbPrefix(decodeGitQuotedPath(operand.slice(1, -1)));
     }
+    if (operand.startsWith("a/") || operand.startsWith("b/")) {
+      return operand.slice(2);
+    }
+    return undefined;
   }
   for (const prefix of ["rename from ", "rename to ", "copy from ", "copy to "]) {
     if (line.startsWith(prefix)) {
@@ -99,6 +111,10 @@ function bodyPathFromLine(line: string): string | undefined {
     }
   }
   return undefined;
+}
+
+function stripAbPrefix(value: string): string {
+  return value.startsWith("a/") || value.startsWith("b/") ? value.slice(2) : value;
 }
 
 // Some diff tools append a tab + timestamp to a `---`/`+++` operand.

@@ -116,3 +116,27 @@ export const SECRET_PATTERN_SOURCES: string[] = [
   /AIza[0-9A-Za-z_-]{20,}/g.source,
   /\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)[A-Za-z0-9_]*\s*[:=]\s*["']?)(?!\[REDACTED:)([^\s"',;]{8,})/gi.source
 ];
+
+// review-surfaces.PRIVACY.6: the high-confidence (blocked:true) redaction kinds —
+// every provider/credential pattern. The only non-blocked kind is the generic
+// token_assignment catch-all ([REDACTED:secret]). Used to detect that a persisted
+// surface held BLOCKED material from its [REDACTED:<kind>] markers alone, even
+// when redaction happened via esc() with no explicit block signal.
+export const BLOCKED_REDACTION_KINDS: SecretRedaction["kind"][] = [
+  "private_key",
+  "aws_access_key_id",
+  "aws_secret",
+  "github_token",
+  "slack_token",
+  "openai_key",
+  "stripe_key",
+  "google_oauth_token",
+  "jwt",
+  "google_api_key"
+];
+
+// True when `text` contains a [REDACTED:<kind>] marker for any high-confidence
+// (blocked) secret kind.
+export function containsBlockedRedaction(text: string): boolean {
+  return BLOCKED_REDACTION_KINDS.some((kind) => text.includes(`[REDACTED:${kind}]`));
+}

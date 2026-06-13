@@ -195,3 +195,14 @@ test("review-surfaces.PRIVACY.6 leaves a clean payload unblocked", () => {
   const draft = buildDraftReview(model([comment({ path: "src/a.ts", line_start: 1, body: "Add a test for the new branch." })]));
   assert.equal(draft.blocked, false, "no secret => not blocked, so the payload posts normally");
 });
+
+test("review-surfaces.PRIVACY.6 redacts a secret in a suggested-comment path and flags blocked", () => {
+  // The inline-comment `path` field was serialized verbatim, so a token in the
+  // path (e.g. a fixture named like an OpenAI key) leaked while the body was clean.
+  const secretPath = `src/sk-proj-${"a".repeat(24)}.ts`;
+  const draft = buildDraftReview(model([comment({ id: "SC-1", path: secretPath, line_start: 1, body: "Clean body." })]));
+  const serialized = JSON.stringify(draft.payload);
+  assert.ok(!serialized.includes("sk-proj-aaaa"), "the secret in the path must be redacted out of the payload");
+  assert.match(serialized, /\[REDACTED:openai_key\]/, "the path keeps its redaction marker");
+  assert.equal(draft.blocked, true, "a secret in the path raises the block signal even with a clean body");
+});

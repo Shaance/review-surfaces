@@ -860,3 +860,14 @@ test("review-surfaces.PRIVACY.6 the HTML cockpit surfaces the excerpt redaction-
   const cleanHtml = renderHumanReviewHtml(baseModel({ review_queue: [queueItem] }), { diff: cleanDiff });
   assert.doesNotMatch(cleanHtml, /data-excerpt-redaction="blocked"/, "no secret => no redaction notice (byte-stable)");
 });
+
+// review-surfaces.PRIVACY.6 — the cockpit block signal must also cover blocked
+// secrets that reach esc()'d MODEL fields (summary, narrative, reasons, cards),
+// not only diff excerpts.
+test("review-surfaces.PRIVACY.6 the HTML cockpit surfaces a blocked secret in a model field too", () => {
+  const token = `ghp_${"F".repeat(36)}`;
+  const html = renderHumanReviewHtml(baseModel({ summary: `Audit: key ${token} was committed.` }), {});
+  assert.ok(!html.includes(token), "the model-summary secret must be redacted out of the cockpit");
+  assert.match(html, /\[REDACTED:github_token\]/, "the summary keeps its redaction marker");
+  assert.match(html, /data-excerpt-redaction="blocked"/, "the block signal is surfaced for a model-field secret, not just excerpts");
+});

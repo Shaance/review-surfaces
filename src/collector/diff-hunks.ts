@@ -444,8 +444,10 @@ function parsePathLine(operand: string): string | undefined {
 
 // Decode the inner text of a git-quoted path: C escapes (\t \n \r \" \\ \a \b
 // \f \v) and octal \NNN byte runs (git escapes each UTF-8 byte of a non-ASCII
-// name), reassembled as UTF-8. Pure and never throws.
-function decodeGitQuotedPath(input: string): string {
+// name), reassembled as UTF-8. Pure and never throws. Exported so the privacy
+// ignore filter (src/privacy/diff.ts) decodes quoted `---`/`+++` body paths too
+// (review-surfaces.PRIVACY.6).
+export function decodeGitQuotedPath(input: string): string {
   const bytes: number[] = [];
   let i = 0;
   const simple: Record<string, number> = { t: 9, n: 10, r: 13, a: 7, b: 8, f: 12, v: 11, '"': 0x22, "\\": 0x5c };
