@@ -239,7 +239,8 @@
           "minimum": 1
         },
         "sha": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 128
         },
         "url": {
           "type": "string",
@@ -262,7 +263,8 @@
           "maxLength": 20000
         },
         "excerpt_hash": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 128
         },
         "note": {
           "type": "string",

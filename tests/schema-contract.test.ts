@@ -1057,11 +1057,11 @@ test("review-surfaces.SCHEMA.5 provider-controlled EvidenceRef identifier fields
   // provider-assisted runs: src/evaluation/candidate-evidence.ts copies a
   // candidate's entry.path / entry.test_name (including out-of-pool citations)
   // into an EvidenceRef that flows into the packet before validation, and
-  // src/render/load.ts normalizes path/url/event_id/test_name straight off a
-  // loaded artifact record. So they must be bounded, not identifier-allowlisted.
-  // sha/excerpt_hash stay allowlisted (bounded hash formats); kind/confidence/
-  // validation_status are enums; acai_id is pattern-bounded.
-  for (const field of ["path", "url", "event_id", "test_name"]) {
+  // src/render/load.ts normalizes path/url/event_id/test_name (and sha/
+  // excerpt_hash) straight off a loaded artifact record. So they must be bounded,
+  // not identifier-allowlisted. sha/excerpt_hash carry a short hash-length cap;
+  // kind/confidence/validation_status are enums; acai_id is pattern-bounded.
+  for (const field of ["path", "url", "event_id", "test_name", "sha", "excerpt_hash"]) {
     const cap = schemaAt(schema, ["$defs", "EvidenceRef", "properties", field, "maxLength"]);
     assert.equal(typeof cap, "number", `expected numeric maxLength on EvidenceRef.${field}`);
   }
@@ -1130,8 +1130,6 @@ test("review-surfaces.SCHEMA.5 every agent-influenceable string/array in the pac
     "$defs.InputHash.properties.algorithm",
     "$defs.InputHash.properties.hash",
     "$defs.InputHash.properties.kind",
-    "$defs.EvidenceRef.properties.sha",
-    "$defs.EvidenceRef.properties.excerpt_hash",
     "$defs.SourceRef.properties.ref",
     "$defs.Requirement.properties.id",
     "$defs.Requirement.properties.acai_id",
