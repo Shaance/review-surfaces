@@ -8,7 +8,8 @@
 // lens filter, localStorage-persisted checkboxes), every interpolation passes
 // through esc() after secret redaction, byte-deterministic output (no
 // timestamps), opens from disk offline, printable.
-import { resolveStructuredExcerpt } from "./hunk-excerpt";
+import { resolveStructuredExcerpt, ExcerptRedactionState } from "./hunk-excerpt";
+import { containsBlockedRedaction } from "../privacy/secrets";
 import { decisionLabel, formatQueueLocation, HumanRenderContext } from "./render";
 import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
 import { renderChangeMapOverviewSvg, renderChangeMapSvg, SVG_LENS_FILLS } from "./render-svg-map";
@@ -23,6 +24,12 @@ import type { EvidenceRef } from "../evidence/evidence";
 
 export function renderHumanReviewHtml(model: HumanReviewModel, context: HumanRenderContext = {}): string {
   const lenses = [...new Set(model.review_queue.flatMap((item) => lensesForItem(model, item)))].sort();
+  // review-surfaces.PRIVACY.6: render the queue first with a redaction sink so a
+  // high-confidence secret in any diff excerpt is observed, not silently dropped.
+  const excerptRedaction: ExcerptRedactionState = { blocked: false };
+  const queueHtml = model.review_queue.length === 0
+    ? `<p class="muted">No path-backed review queue items.</p>`
+    : model.review_queue.map((item) => renderQueueItem(model, item, context, excerptRedaction)).join("\n");
   const body = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -73,7 +80,7 @@ ${renderBlockers(model)}
 
 <h2 id="queue">Review queue</h2>
 <p class="filters" id="file-filter-note" hidden>Filtered to <code id="file-filter-path"></code> <button data-clear-file-filter>show all</button></p>
-${model.review_queue.length === 0 ? `<p class="muted">No path-backed review queue items.</p>` : model.review_queue.map((item) => renderQueueItem(model, item, context)).join("\n")}
+${queueHtml}
 
 <h2 id="plan">Review plan</h2>
 ${renderPlan(model)}
@@ -202,7 +209,16 @@ ${renderScoreboardFooter(model)}
 </body>
 </html>
 `;
-  return body;
+  // review-surfaces.PRIVACY.6: the persisted cockpit held BLOCKED material if any
+  // diff excerpt raised the block signal, OR any esc()'d model field (summary,
+  // narrative, reasons, cards, SVG labels) was redacted to a high-confidence
+  // marker. Surface one deterministic, greppable notice in either case.
+  const blocked = excerptRedaction.blocked || containsBlockedRedaction(body);
+  if (!blocked) {
+    return body;
+  }
+  const notice = `<p class="muted" data-excerpt-redaction="blocked">⚠ A high-confidence secret was redacted from this review.</p>`;
+  return body.replace("<h1>Human review</h1>", `<h1>Human review</h1>\n${notice}`);
 }
 
 function lensesForItem(model: HumanReviewModel, item: ReviewQueueItem): string[] {
@@ -318,8 +334,8 @@ function renderSvgMapSection(model: HumanReviewModel): string {
   return `${rendered.svg}\n${legend}<p class="muted">Click a node to filter the review queue to that file; hover for details.</p>`;
 }
 
-function renderQueueItem(model: HumanReviewModel, item: ReviewQueueItem, context: HumanRenderContext): string {
-  const excerptHtml = renderExcerptWithGutter(model, item, context);
+function renderQueueItem(model: HumanReviewModel, item: ReviewQueueItem, context: HumanRenderContext, redaction?: ExcerptRedactionState): string {
+  const excerptHtml = renderExcerptWithGutter(model, item, context, redaction);
   const cardLinks = model.evidence_cards
     .filter((card) => card.risk_ids.some((id) => item.risk_ids.includes(id)))
     .map((card) => `<a href="#card-${esc(card.id)}">${esc(card.id)}</a>`)
@@ -460,7 +476,7 @@ function renderTrust(model: HumanReviewModel): string {
 // lists as executed, neutral for not-instrumented lines (comments, type-only —
 // never implied-covered). Deleted lines NEVER get a gutter — they have no
 // coverage semantics. Without coverage data the excerpt renders exactly as before.
-function renderExcerptWithGutter(model: HumanReviewModel, item: ReviewQueueItem, context: HumanRenderContext): string {
+function renderExcerptWithGutter(model: HumanReviewModel, item: ReviewQueueItem, context: HumanRenderContext, redaction?: ExcerptRedactionState): string {
   const excerpt = resolveStructuredExcerpt(context.diff, {
     path: item.path,
     old_path: item.old_path,
@@ -468,7 +484,7 @@ function renderExcerptWithGutter(model: HumanReviewModel, item: ReviewQueueItem,
     line_start: item.line_start,
     line_end: item.line_end,
     side: item.anchor_side
-  });
+  }, undefined, redaction);
   if (!excerpt) {
     return "";
   }

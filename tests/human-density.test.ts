@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { fileEvidence, missingEvidence } from "../src/evidence/evidence";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
-import { renderHunkExcerpt, DEFAULT_HUNK_EXCERPT_MAX_LINES } from "../src/human/hunk-excerpt";
+import { renderHunkExcerpt, resolveStructuredExcerpt, DEFAULT_HUNK_EXCERPT_MAX_LINES } from "../src/human/hunk-excerpt";
 import {
   extractAcids,
   fillAcidTemplate,
@@ -11,6 +11,7 @@ import {
   rollupBy
 } from "../src/human/rollup";
 import { renderHumanReviewMarkdown, renderReviewQueueMarkdown } from "../src/human/render";
+import { renderHumanReviewHtml } from "../src/human/render-html";
 import type {
   HumanReviewModel,
   ReviewQueueItem,
@@ -793,4 +794,80 @@ test("leadsWithInternalId flags id-subject lines but not reviewer prose", () => 
   assert.ok(!leadsWithInternalId("- Missing manual review check for the listed requirements."));
   assert.ok(!leadsWithInternalId("1. What evidence closes the requirement?"));
   assert.ok(!leadsWithInternalId("Changed implementation file in src/cli."));
+});
+
+// review-surfaces.PRIVACY.6 — resolveStructuredExcerpt (the cockpit/gutter path)
+// redacts each line AND can now propagate the high-confidence block signal, at
+// API parity with renderHunkExcerpt. Before, it dropped the signal on the floor.
+test("review-surfaces.PRIVACY.6 resolveStructuredExcerpt redacts excerpt lines and raises the block signal", () => {
+  const token = `ghp_${"D".repeat(36)}`;
+  const diff = parseStructuredDiff([
+    "diff --git a/src/cfg.ts b/src/cfg.ts",
+    "--- a/src/cfg.ts",
+    "+++ b/src/cfg.ts",
+    "@@ -1,2 +1,2 @@",
+    " const a = 1;",
+    '-const token = "old";',
+    `+const token = "${token}";`,
+    ""
+  ].join("\n"));
+  const state = { blocked: false };
+  const excerpt = resolveStructuredExcerpt(diff, { path: "src/cfg.ts", line_start: 2, line_end: 2 }, DEFAULT_HUNK_EXCERPT_MAX_LINES, state);
+  assert.ok(excerpt, "an excerpt resolves for the anchored hunk");
+  const body = excerpt!.lines.map((line) => line.text).join("\n");
+  assert.ok(!body.includes(token), "the raw github token must not survive into the excerpt");
+  assert.match(body, /\[REDACTED:github_token\]/, "the excerpt line keeps its redaction marker");
+  assert.equal(state.blocked, true, "the secret raises the block signal through resolveStructuredExcerpt");
+});
+
+// review-surfaces.PRIVACY.6 — the persisted HTML cockpit wires the excerpt
+// redaction-block signal through to a visible, greppable notice, so the signal
+// is no longer dropped for human_review.html.
+test("review-surfaces.PRIVACY.6 the HTML cockpit surfaces the excerpt redaction-block signal", () => {
+  const token = `ghp_${"E".repeat(36)}`;
+  const secretDiff = parseStructuredDiff([
+    "diff --git a/src/cfg.ts b/src/cfg.ts",
+    "--- a/src/cfg.ts",
+    "+++ b/src/cfg.ts",
+    "@@ -1,2 +1,2 @@",
+    " const a = 1;",
+    '-const token = "old";',
+    `+const token = "${token}";`,
+    ""
+  ].join("\n"));
+  const queueItem: ReviewQueueItem = {
+    id: "REVIEW-001", rank: 1, title: "Changed config", path: "src/cfg.ts",
+    hunk_header: "@@ -1,2 +1,2 @@", line_start: 2, line_end: 2,
+    reviewer_action: "Inspect.", reason: "Changes a token.",
+    evidence: [fileEvidence("src/cfg.ts")], requirement_ids: [], risk_ids: [],
+    ranking_reasons: [], confidence: "high", priority: "high"
+  };
+  const html = renderHumanReviewHtml(baseModel({ review_queue: [queueItem] }), { diff: secretDiff });
+  assert.ok(!html.includes(token), "the raw token must not survive into the persisted cockpit");
+  assert.match(html, /\[REDACTED:github_token\]/, "the cockpit excerpt is redacted");
+  assert.match(html, /data-excerpt-redaction="blocked"/, "the cockpit surfaces the redaction-block signal");
+
+  const cleanDiff = parseStructuredDiff([
+    "diff --git a/src/cfg.ts b/src/cfg.ts",
+    "--- a/src/cfg.ts",
+    "+++ b/src/cfg.ts",
+    "@@ -1,2 +1,2 @@",
+    " const a = 1;",
+    "-const x = 2;",
+    "+const x = 3;",
+    ""
+  ].join("\n"));
+  const cleanHtml = renderHumanReviewHtml(baseModel({ review_queue: [queueItem] }), { diff: cleanDiff });
+  assert.doesNotMatch(cleanHtml, /data-excerpt-redaction="blocked"/, "no secret => no redaction notice (byte-stable)");
+});
+
+// review-surfaces.PRIVACY.6 — the cockpit block signal must also cover blocked
+// secrets that reach esc()'d MODEL fields (summary, narrative, reasons, cards),
+// not only diff excerpts.
+test("review-surfaces.PRIVACY.6 the HTML cockpit surfaces a blocked secret in a model field too", () => {
+  const token = `ghp_${"F".repeat(36)}`;
+  const html = renderHumanReviewHtml(baseModel({ summary: `Audit: key ${token} was committed.` }), {});
+  assert.ok(!html.includes(token), "the model-summary secret must be redacted out of the cockpit");
+  assert.match(html, /\[REDACTED:github_token\]/, "the summary keeps its redaction marker");
+  assert.match(html, /data-excerpt-redaction="blocked"/, "the block signal is surfaced for a model-field secret, not just excerpts");
 });

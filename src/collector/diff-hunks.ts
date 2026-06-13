@@ -340,7 +340,7 @@ function resolveOldPath(acc: FileAccumulator): string | undefined {
   return acc.headerOldPath;
 }
 
-interface DiffGitHeader {
+export interface DiffGitHeader {
   oldPath?: string;
   newPath?: string;
 }
@@ -348,8 +348,10 @@ interface DiffGitHeader {
 // Parse the `diff --git a/X b/Y` header. X and Y may contain spaces, which makes
 // this ambiguous in the general case; we use the conventional `a/`...` b/` split
 // and fall back to a midpoint split for equal-length names. Returns whatever
-// could be recovered (best-effort, never throws).
-function parseDiffGitHeader(line: string): DiffGitHeader | undefined {
+// could be recovered (best-effort, never throws). Exported so the privacy
+// ignore-diff filter (src/privacy/diff.ts) reuses the SAME quote-aware parser
+// and the two cannot drift (review-surfaces.PRIVACY.6).
+export function parseDiffGitHeader(line: string): DiffGitHeader | undefined {
   const rest = line.slice("diff --git ".length).trim();
   if (rest.length === 0) {
     return undefined;
@@ -442,8 +444,10 @@ function parsePathLine(operand: string): string | undefined {
 
 // Decode the inner text of a git-quoted path: C escapes (\t \n \r \" \\ \a \b
 // \f \v) and octal \NNN byte runs (git escapes each UTF-8 byte of a non-ASCII
-// name), reassembled as UTF-8. Pure and never throws.
-function decodeGitQuotedPath(input: string): string {
+// name), reassembled as UTF-8. Pure and never throws. Exported so the privacy
+// ignore filter (src/privacy/diff.ts) decodes quoted `---`/`+++` body paths too
+// (review-surfaces.PRIVACY.6).
+export function decodeGitQuotedPath(input: string): string {
   const bytes: number[] = [];
   let i = 0;
   const simple: Record<string, number> = { t: 9, n: 10, r: 13, a: 7, b: 8, f: 12, v: 11, '"': 0x22, "\\": 0x5c };

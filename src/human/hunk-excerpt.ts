@@ -189,10 +189,16 @@ export interface StructuredExcerpt {
   lines: StructuredExcerptLine[];
 }
 
+// review-surfaces.PRIVACY.6: accepts an optional redaction-state sink, at API
+// parity with renderHunkExcerpt. structuredWindow already redacts each line and
+// can record a high-confidence secret hit; before, resolveStructuredExcerpt
+// dropped that signal on the floor, so the cockpit excerpt path (render-html)
+// could not detect a blocked excerpt the way the plain path can.
 export function resolveStructuredExcerpt(
   diff: StructuredDiff | undefined,
   anchor: HunkAnchor,
-  maxLines: number = DEFAULT_HUNK_EXCERPT_MAX_LINES
+  maxLines: number = DEFAULT_HUNK_EXCERPT_MAX_LINES,
+  redactionState?: ExcerptRedactionState
 ): StructuredExcerpt | undefined {
   if (!diff || diff.files.length === 0) {
     return undefined;
@@ -201,7 +207,7 @@ export function resolveStructuredExcerpt(
     const side = sideForAnchor(candidate, anchor);
     const hunk = selectHunk(candidate, anchor, side);
     if (hunk) {
-      const lines = structuredWindow(hunk, side, anchor, Math.max(4, maxLines));
+      const lines = structuredWindow(hunk, side, anchor, Math.max(4, maxLines), redactionState);
       return lines.length > 0 ? { header: formatHunkHeader(hunk), lines } : undefined;
     }
   }

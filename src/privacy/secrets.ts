@@ -72,7 +72,11 @@ export function redactSecrets(input: string): SecretRedactionResult {
   apply("stripe_key", /\b(?:sk|rk)_live_[A-Za-z0-9]{20,}\b/g, "[REDACTED:stripe_key]", true);
   apply("google_oauth_token", /\bya29\.[A-Za-z0-9_-]{20,}\b/g, "[REDACTED:google_oauth_token]", true);
   apply("jwt", /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED:jwt]", true);
-  apply("google_api_key", /AIza[0-9A-Za-z_-]{20,}/g, "[REDACTED:google_api_key]", false);
+  // review-surfaces.PRIVACY.6: a live Google API key (the default provider's own
+  // key shape) must hard-block a remote call like every other provider token, so
+  // it sets blocked:true — previously the lone blocked:false provider pattern,
+  // contradicting the invariant above and the remote-block signal in collect.ts.
+  apply("google_api_key", /AIza[0-9A-Za-z_-]{20,}/g, "[REDACTED:google_api_key]", true);
   // The `(?!\[REDACTED:)` lookahead stops this generic catch-all from re-claiming
   // a placeholder a provider-specific pass already inserted (e.g.
   // `KEY=[REDACTED:aws_secret]`): without it the value group `[^\s"',;]{8,}`
@@ -112,3 +116,27 @@ export const SECRET_PATTERN_SOURCES: string[] = [
   /AIza[0-9A-Za-z_-]{20,}/g.source,
   /\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)[A-Za-z0-9_]*\s*[:=]\s*["']?)(?!\[REDACTED:)([^\s"',;]{8,})/gi.source
 ];
+
+// review-surfaces.PRIVACY.6: the high-confidence (blocked:true) redaction kinds —
+// every provider/credential pattern. The only non-blocked kind is the generic
+// token_assignment catch-all ([REDACTED:secret]). Used to detect that a persisted
+// surface held BLOCKED material from its [REDACTED:<kind>] markers alone, even
+// when redaction happened via esc() with no explicit block signal.
+export const BLOCKED_REDACTION_KINDS: SecretRedaction["kind"][] = [
+  "private_key",
+  "aws_access_key_id",
+  "aws_secret",
+  "github_token",
+  "slack_token",
+  "openai_key",
+  "stripe_key",
+  "google_oauth_token",
+  "jwt",
+  "google_api_key"
+];
+
+// True when `text` contains a [REDACTED:<kind>] marker for any high-confidence
+// (blocked) secret kind.
+export function containsBlockedRedaction(text: string): boolean {
+  return BLOCKED_REDACTION_KINDS.some((kind) => text.includes(`[REDACTED:${kind}]`));
+}

@@ -8,6 +8,7 @@ import { collectInputs } from "../src/collector/collect";
 import { defaultConfig } from "../src/config/config";
 import { loadPrivacyIgnore } from "../src/privacy/ignore";
 import { redactSecrets } from "../src/privacy/secrets";
+import { filterIgnoredDiff } from "../src/privacy/diff";
 
 test("review-surfaces.COLLECTOR.6 applies .review-surfacesignore before indexing changed files", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ignore-"));
@@ -127,7 +128,10 @@ const PROVIDER_TOKEN_CASES: Array<{ name: string; secret: string; kind: string }
   { name: "OpenAI sk key", secret: `sk-${"a".repeat(24)}`, kind: "openai_key" },
   { name: "Stripe live key", secret: `sk_live_${"a".repeat(24)}`, kind: "stripe_key" },
   { name: "Google OAuth token", secret: `ya29.${"a".repeat(30)}`, kind: "google_oauth_token" },
-  { name: "JWT", secret: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", kind: "jwt" }
+  { name: "JWT", secret: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", kind: "jwt" },
+  // review-surfaces.PRIVACY.6: google_api_key was the lone blocked:false provider
+  // pattern; it now joins the blocked set like every other provider token.
+  { name: "Google API key", secret: `AIzaSy${"a".repeat(30)}`, kind: "google_api_key" }
 ];
 
 for (const testCase of PROVIDER_TOKEN_CASES) {
@@ -169,4 +173,148 @@ test("review-surfaces.PRIVACY.2 does not over-redact benign text without a token
   assert.equal(result.blocked, false);
   assert.equal(result.text, benign);
   assert.equal(result.redactions.length, 0);
+});
+
+test("review-surfaces.PRIVACY.6 a Google API key now hard-blocks a remote call", () => {
+  // Was the only provider-credential pattern with blocked:false, so an AIza key
+  // in a diff/prompt was text-redacted but did NOT raise the remote-block signal
+  // (and it is the default provider's own key shape).
+  const result = redactSecrets("GOOGLE_GENERATIVE_AI_API_KEY=AIzaSyA1234567890abcdefghijklmnopqrstuv");
+  assert.equal(result.blocked, true, "an AIza key must set the remote-block signal");
+  assert.ok(
+    result.redactions.some((r) => r.kind === "google_api_key" && r.blocked),
+    "the google_api_key redaction is recorded as blocking"
+  );
+  assert.doesNotMatch(result.text, /AIzaSyA1234567890/);
+});
+
+test("review-surfaces.PRIVACY.6 filterIgnoredDiff fails closed on a git-quoted ignored path", () => {
+  // The previous greedy regex did not match git's QUOTED header form for a
+  // non-ASCII path, and a non-match KEPT the section — leaking the ignored
+  // file's added secret line into diff.patch. Git emits `secret café.env` as the
+  // octal-escaped, quoted `"a/secret caf\303\251.env"`.
+  const diff = [
+    'diff --git "a/secret caf\\303\\251.env" "b/secret caf\\303\\251.env"',
+    "new file mode 100644",
+    "--- /dev/null",
+    '+++ "b/secret caf\\303\\251.env"',
+    "@@ -0,0 +1 @@",
+    "+API_TOKEN=supersecretvalue123",
+    "diff --git a/public.txt b/public.txt",
+    "index e69de29..0cfbf08 100644",
+    "--- a/public.txt",
+    "+++ b/public.txt",
+    "@@ -1 +1 @@",
+    "-old",
+    "+new"
+  ].join("\n");
+  // isIgnored matches the DECODED real path, exactly as the privacy ignore list does.
+  const filtered = filterIgnoredDiff(diff, (p) => p === "secret café.env");
+
+  assert.doesNotMatch(filtered, /supersecretvalue123/, "the ignored file's secret must be dropped, not leaked");
+  assert.doesNotMatch(filtered, /secret caf/, "the ignored file's section is dropped entirely");
+  assert.match(filtered, /public\.txt/, "the non-ignored file is still kept");
+  assert.match(filtered, /\+new/, "the non-ignored file's diff body survives");
+});
+
+test("review-surfaces.PRIVACY.6 filterIgnoredDiff fails closed on an ignored path containing ' b/'", () => {
+  // A real path can itself contain the substring " b/", e.g. "logs b/app.env".
+  // Git's unquoted header `diff --git a/logs b/app.env b/logs b/app.env` is then
+  // ambiguous to a first/last separator split; the UNAMBIGUOUS `--- a/`/`+++ b/`
+  // body lines carry the full path, so the ignored file is still dropped.
+  const diff = [
+    "diff --git a/logs b/app.env b/logs b/app.env",
+    "--- a/logs b/app.env",
+    "+++ b/logs b/app.env",
+    "@@ -0,0 +1 @@",
+    "+API_TOKEN=leakythroughspacepath123",
+    "diff --git a/keep.ts b/keep.ts",
+    "--- a/keep.ts",
+    "+++ b/keep.ts",
+    "@@ -1 +1 @@",
+    "-a",
+    "+b"
+  ].join("\n");
+  const filtered = filterIgnoredDiff(diff, (p) => p === "logs b/app.env");
+  assert.doesNotMatch(filtered, /leakythroughspacepath123/, "the ignored ' b/'-containing file must be dropped, not leaked");
+  assert.match(filtered, /keep\.ts/, "the non-ignored file is still kept");
+});
+
+test("review-surfaces.PRIVACY.6 filterIgnoredDiff keeps a normal non-ignored file and drops an ignored one", () => {
+  const diff = [
+    "diff --git a/keep.ts b/keep.ts",
+    "--- a/keep.ts",
+    "+++ b/keep.ts",
+    "@@ -1 +1 @@",
+    "-a",
+    "+b",
+    "diff --git a/.env.local b/.env.local",
+    "--- a/.env.local",
+    "+++ b/.env.local",
+    "@@ -0,0 +1 @@",
+    "+TOKEN=keepmesecret999"
+  ].join("\n");
+  const filtered = filterIgnoredDiff(diff, (p) => p === ".env.local");
+  assert.match(filtered, /keep\.ts/);
+  assert.doesNotMatch(filtered, /keepmesecret999/);
+});
+
+test("review-surfaces.PRIVACY.6 filterIgnoredDiff fails closed on a quoted header with an embedded quote", () => {
+  // Git quotes a name containing a double quote as `"a/foo\"bar.env"`; the header
+  // parser can stop at the escaped quote, but the decoded `+++ b/` body line
+  // recovers the real path, so the ignored file is still dropped (not leaked).
+  const diff = [
+    'diff --git "a/foo\\"bar.env" "b/foo\\"bar.env"',
+    "new file mode 100644",
+    "--- /dev/null",
+    '+++ "b/foo\\"bar.env"',
+    "@@ -0,0 +1 @@",
+    "+API_TOKEN=quoteinpathleak456"
+  ].join("\n");
+  const filtered = filterIgnoredDiff(diff, (p) => p === 'foo"bar.env');
+  assert.doesNotMatch(filtered, /quoteinpathleak456/, "an ignored file whose name contains a quote must be dropped");
+});
+
+test("review-surfaces.PRIVACY.6 filterIgnoredDiff fails closed on a quoted header with no body path", () => {
+  // A quoted-name binary section has no `---`/`+++` paths to decode, so the
+  // header alone cannot be trusted — drop it rather than risk a leak.
+  const diff = [
+    'diff --git "a/sec\\303\\251t.env" "b/sec\\303\\251t.env"',
+    'Binary files "a/sec\\303\\251t.env" and "b/sec\\303\\251t.env" differ'
+  ].join("\n");
+  const filtered = filterIgnoredDiff(diff, () => false);
+  assert.equal(filtered, "", "an unreadable quoted-binary section fails closed");
+});
+
+test("review-surfaces.PRIVACY.6 filterIgnoredDiff does not drop a real file whose hunk content looks like a path line", () => {
+  // Only the section HEADER (before the first @@) carries path metadata. A
+  // non-ignored file that ADDS a line of text reading "++ b/.env.local" renders
+  // as "+++ b/.env.local" in the body; that must NOT be parsed as a path and drop
+  // the real file (the round-1 fix walked every line and over-dropped).
+  const diff = [
+    "diff --git a/keep.md b/keep.md",
+    "--- a/keep.md",
+    "+++ b/keep.md",
+    "@@ -1,2 +1,4 @@",
+    " # docs",
+    "+example diff line: +++ b/.env.local",
+    "+another example: --- a/.env.local",
+    " end"
+  ].join("\n");
+  const filtered = filterIgnoredDiff(diff, (p) => p === ".env.local");
+  assert.match(filtered, /keep\.md/, "the real non-ignored file must NOT be dropped by path-like hunk content");
+  assert.match(filtered, /example diff line/, "the hunk body survives");
+});
+
+test("review-surfaces.PRIVACY.6 filterIgnoredDiff drops an ignored quoted-name pure rename", () => {
+  // A pure rename of a quoted-name ignored file has `rename from`/`rename to`
+  // lines and no ---/+++ paths; the quoted operands must be decoded to match.
+  const diff = [
+    'diff --git "a/old\\"name.env" "b/new\\"name.env"',
+    "similarity index 100%",
+    'rename from "old\\"name.env"',
+    'rename to "new\\"name.env"'
+  ].join("\n");
+  const filtered = filterIgnoredDiff(diff, (p) => p === 'new"name.env' || p === 'old"name.env');
+  assert.equal(filtered, "", "the ignored quoted-name rename section must be dropped");
 });
