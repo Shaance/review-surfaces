@@ -132,7 +132,7 @@
         },
         "input_hashes": {
           "type": "array",
-          "maxItems": 1000,
+          "maxItems": 100000,
           "items": {
             "$ref": "#/$defs/InputHash"
           }
@@ -254,7 +254,8 @@
           "type": "string"
         },
         "command": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "excerpt_hash": {
           "type": "string"
@@ -1028,7 +1029,7 @@
         },
         "test_evidence": {
           "type": "array",
-          "maxItems": 1000,
+          "maxItems": 100000,
           "items": {
             "$ref": "#/$defs/TestEvidence"
           }
@@ -1371,7 +1372,8 @@
           "type": "string"
         },
         "command": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "summary": {
           "type": "string",

@@ -1015,6 +1015,43 @@ test("review-surfaces.SCHEMA.5 test-evidence and source-ref/intent-sources narra
   assert.equal(typeof schemaAt(schema, ["$defs", "Intent", "properties", "sources", "maxItems"]), "number");
 });
 
+// review-surfaces.SCHEMA.5: tight caps (1000/5000/20000) bound PROVIDER/agent/
+// loaded-FEEDBACK narrative. But two arrays are COLLECTOR-DETERMINISTIC, bounded
+// by real repo/transcript size rather than provider narrative, so they get a HIGH
+// ceiling (>=100000) that caps-for-safety without rejecting a legitimate large run:
+//   - manifest.input_hashes: collect.ts hashes EVERY matched spec/doc/feedback/
+//     command-transcript input; a big foreign repo can exceed the 1000 tier.
+//   - risks.test_evidence: validationEvidenceFromCommandTranscripts emits one item
+//     per ingested command transcript (plus parsed-JUnit/feedback/claimed sources),
+//     so a large .review-surfaces/commands/*.json ingest can exceed the 1000 tier.
+// And the command transcript's raw `command` string copies through unbounded (only
+// stdout/stderr are length-capped), so EvidenceRef.command / Dogfood.command are
+// free-text and must carry a maxLength (they are no longer identifier-allowlisted).
+test("review-surfaces.SCHEMA.5 collector-deterministic arrays carry a HIGH maxItems ceiling", () => {
+  const inputHashesCap = schemaAt(schema, ["$defs", "RunManifest", "properties", "input_hashes", "maxItems"]);
+  assert.equal(typeof inputHashesCap, "number", "expected numeric maxItems on manifest.input_hashes");
+  assert.ok(
+    (inputHashesCap as number) >= 100000,
+    `manifest.input_hashes cap ${inputHashesCap} must be a high ceiling (>=100000), not the 1000 narrative tier`
+  );
+  const testEvidenceCap = schemaAt(schema, ["$defs", "Risks", "properties", "test_evidence", "maxItems"]);
+  assert.equal(typeof testEvidenceCap, "number", "expected numeric maxItems on risks.test_evidence");
+  assert.ok(
+    (testEvidenceCap as number) >= 100000,
+    `risks.test_evidence cap ${testEvidenceCap} must be a high ceiling (>=100000), not the 1000 narrative tier`
+  );
+});
+
+test("review-surfaces.SCHEMA.5 free-text command fields carry a maxLength cap", () => {
+  // The command-transcript `command` string is copied through normalizeTranscript
+  // with no length cap (only stdout/stderr excerpts are bounded), so it is
+  // unbounded free-text — not an identifier — and must carry maxLength.
+  const evidenceCommandLen = schemaAt(schema, ["$defs", "EvidenceRef", "properties", "command", "maxLength"]);
+  assert.equal(typeof evidenceCommandLen, "number", "expected numeric maxLength on EvidenceRef.command");
+  const dogfoodCommandLen = schemaAt(schema, ["$defs", "Dogfood", "properties", "command", "maxLength"]);
+  assert.equal(typeof dogfoodCommandLen, "number", "expected numeric maxLength on Dogfood.command");
+});
+
 test("review-surfaces.SCHEMA.5 dogfood comparison string arrays carry caps", () => {
   assert.equal(typeof schemaAt(schema, ["$defs", "PacketComparison", "properties", "status_changes", "maxItems"]), "number");
   for (const field of ["new_overreach", "resolved_overreach", "new_risks", "resolved_risks"]) {
@@ -1083,7 +1120,6 @@ test("review-surfaces.SCHEMA.5 every agent-influenceable string/array in the pac
     "$defs.EvidenceRef.properties.url",
     "$defs.EvidenceRef.properties.event_id",
     "$defs.EvidenceRef.properties.test_name",
-    "$defs.EvidenceRef.properties.command",
     "$defs.EvidenceRef.properties.excerpt_hash",
     "$defs.SourceRef.properties.ref",
     "$defs.Requirement.properties.id",
@@ -1112,7 +1148,6 @@ test("review-surfaces.SCHEMA.5 every agent-influenceable string/array in the pac
     "$defs.StatusChange.properties.previous_status",
     "$defs.StatusChange.properties.current_status",
     "$defs.Dogfood.properties.milestone",
-    "$defs.Dogfood.properties.command",
     "$defs.Dogfood.properties.previous_packet_path",
     "$defs.AgentHandoff.properties.current_milestone"
   ]);
