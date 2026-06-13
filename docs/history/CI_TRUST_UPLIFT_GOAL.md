@@ -87,9 +87,12 @@ HUMAN_REVIEW .21, DISTRIBUTION .13):
   paths). Redact `draft-review.ts` `commentBody`/`reviewBody`/summary and
   return a `blocked` flag; `google_api_key` → `blocked:true`; thread the
   excerpt block-signal through `resolveStructuredExcerpt`. Anchor `PRIVACY.5`
-  (block-before-LLM) with an exact-ACID test. The one
-  `runCommentDraftReview` stdout-suppression line lives in `cli/index.ts` and
-  is therefore landed by Phase 4 (which owns that file).
+  (block-before-LLM) with an exact-ACID test. **Redaction is what closes each
+  leak**, so PRIVACY.6 is fully satisfied in Phase 1 once every surface redacts
+  and exposes the block signal; Phase 1's allowlist removal is therefore honest.
+  The `runCommentDraftReview` stdout-suppression that *consumes* that flag
+  (refusing to print a blocked — already-redacted — payload) lives in
+  `cli/index.ts` and is a Phase 4 follow-up beyond PRIVACY.6's gated scope.
   Files: `src/privacy/diff.ts`, `secrets.ts`, `src/render/draft-review.ts`,
   `src/human/hunk-excerpt.ts`, `render-html.ts` + tests.
 
