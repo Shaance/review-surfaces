@@ -245,6 +245,12 @@ runs:
       # or summary never fails the action.
       env:
         RS_BIN: ${{ github.action_path }}/bin/review-surfaces.js
+        # review-surfaces.ACTION_IO.1: the run-summary projection is config-derived
+        # (gate_code reads quality_gate.max_missing/fail_on), so the outputs step
+        # MUST use the SAME config the generate step used (the action's bundled
+        # config). Without it a consumer repo whose own review-surfaces.config.yaml
+        # differs would project gate_code/missing-count over the WRONG config.
+        RS_CONFIG: ${{ github.action_path }}/review-surfaces.config.yaml
         RS_OUT: ${{ inputs.output-dir }}
         RS_ARTIFACT: review-surfaces-pr-${{ inputs.pr-number }}
         RS_TOP_N: ${{ inputs.comment-top-n }}
@@ -254,11 +260,13 @@ runs:
         echo "artifact-name=$RS_ARTIFACT" >> "$GITHUB_OUTPUT"
         echo "comment-path=$comment_path" >> "$GITHUB_OUTPUT"
         # Deterministic machine summary from the local packet (no recompute).
-        summary_json="$(node "$RS_BIN" comment --format json --out "$RS_OUT" 2>/dev/null)"
+        # Pass the SAME --config and --out the generate step used so the summary is
+        # projected over the matching config/artifacts (not the consumer repo's).
+        summary_json="$(node "$RS_BIN" comment --format json --config "$RS_CONFIG" --out "$RS_OUT" 2>/dev/null)"
         if [ -n "$summary_json" ]; then
           gate="$(printf '%s' "$summary_json" | jq -r '.gate_code // ""')"
           missing="$(printf '%s' "$summary_json" | jq -r '.requirement_counts.missing // ""')"
-          invalid="$(printf '%s' "$summary_json" | jq -r '.requirement_counts.invalid // ""')"
+          invalid="$(printf '%s' "$summary_json" | jq -r '.requirement_counts.invalid_evidence // ""')"
           # risk-count = sum of the deterministic risk-severity histogram.
           risk="$(printf '%s' "$summary_json" | jq -r '[.risk_severity_histogram[]] | add // 0')"
           echo "gate-code=$gate" >> "$GITHUB_OUTPUT"

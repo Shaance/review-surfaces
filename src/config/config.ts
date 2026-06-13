@@ -160,9 +160,11 @@ export function normalizeConfig(raw: Record<string, unknown>): ReviewSurfacesCon
     quality_gate: {
       max_missing: nonNegativeIntValue(readRecord(raw.quality_gate).max_missing, defaultConfig.quality_gate.max_missing),
       allow_missing: stringArray(readRecord(raw.quality_gate).allow_missing, defaultConfig.quality_gate.allow_missing),
-      // review-surfaces.QUALITY_GATE.1: only accept a recognized severity; any
-      // other value (including an empty string) falls back to off (null) rather
-      // than failing the load, so a typo never silently arms a wrong threshold.
+      // review-surfaces.QUALITY_GATE.1: an UNSET (null/absent) fail_on leaves the
+      // risk gate off; a SET value must be a recognized severity. An invalid
+      // non-null value (a typo like "hihg") FAILS the load loudly — like a bad
+      // --fail-on — instead of being silently nulled, which would disarm the gate
+      // for every default run without the operator noticing.
       fail_on: failOnSeverityValue(readRecord(raw.quality_gate).fail_on, defaultConfig.quality_gate.fail_on)
     },
     human_review: {
@@ -201,10 +203,22 @@ function nonNegativeIntValue(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : fallback;
 }
 
-// review-surfaces.QUALITY_GATE.1: accept only a known PacketSeverity for the
-// risk gate threshold; anything else (typo, empty string, non-string) is off.
+// review-surfaces.QUALITY_GATE.1: resolve the risk-gate threshold from config.
+// An UNSET value (null/undefined/absent) leaves the gate OFF (the fallback). A
+// SET value MUST be a recognized PacketSeverity; an invalid non-null value (a
+// typo like "hihg", an empty string, or a non-string) FAILS the load loudly —
+// the same fail-fast contract as a bad --fail-on — rather than being silently
+// nulled, which would disarm the risk gate for every default run.
 function failOnSeverityValue(value: unknown, fallback: string | null): string | null {
-  return typeof value === "string" && (PACKET_SEVERITIES as readonly string[]).includes(value) ? value : fallback;
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+  if (typeof value === "string" && (PACKET_SEVERITIES as readonly string[]).includes(value)) {
+    return value;
+  }
+  throw new Error(
+    `Invalid quality_gate.fail_on: ${JSON.stringify(value)}. Must be null (off) or one of ${PACKET_SEVERITIES.join(", ")}.`
+  );
 }
 
 function riskLensConfig(value: unknown, fallback: Record<RiskLens, boolean>): Record<RiskLens, boolean> {

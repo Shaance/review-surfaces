@@ -58,7 +58,7 @@ import { assemblePrReviewSurface } from "../pipeline/pr-surface";
 import { evaluateBaseline } from "../evaluation/baseline";
 import { PrReviewSurfaceModel, ReviewScope, StructuredDiff } from "../pr/contract";
 import { renderSarifFromPacketFile } from "../render/sarif";
-import { projectRunSummary, readQueueIds, renderRunSummaryFromPacketFile, serializeRunSummary } from "../render/summary-json";
+import { GateContext, projectRunSummary, readQueueIds, renderRunSummaryFromPacketFile, serializeRunSummary } from "../render/summary-json";
 import { buildDraftReview } from "../render/draft-review";
 import { postStickyComment } from "../render/post-comment";
 import { writeJson, writeText } from "../core/files";
@@ -700,7 +700,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
         // summary the non-cache path does (after the gate, before the cockpit
         // pointer) — otherwise `all --cache --json` prints no structured line.
         if (cacheSnapshot.packet) {
-          maybePrintRunSummaryJson(parsed, config, cacheSnapshot.packet, collection.outputDir);
+          maybePrintRunSummaryJson(parsed, config, cacheSnapshot.packet, collection.outputDir, { collection, provider });
         }
         // review-surfaces.DISTRIBUTION.7: the cache-hit run also ends on the
         // cockpit pointer, after any gate message.
@@ -714,7 +714,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // review-surfaces.QUALITY_GATE.3: emit the --json summary on this reuse path
       // too (no --strict, no evaluation gate ran, but --json is still honored).
       if (cacheSnapshot.packet) {
-        maybePrintRunSummaryJson(parsed, config, cacheSnapshot.packet, collection.outputDir);
+        maybePrintRunSummaryJson(parsed, config, cacheSnapshot.packet, collection.outputDir, { collection, provider });
       }
       if (config.human_review.enabled && config.human_review.default_entrypoint) {
         printCockpitPointer(cwd, collection.outputDir);
@@ -921,7 +921,9 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // review-surfaces.QUALITY_GATE.3: opt-in structured run summary to stdout. Emitted
   // from the in-memory packet (writtenPacket carries the on-disk shape) so a CI step
   // reads one structured line. No-op without --json -> default output byte-stable.
-  maybePrintRunSummaryJson(parsed, config, writtenPacket, collection.outputDir);
+  // Gate over the SAME context applyGate just used (this collection + the REQUESTED
+  // provider) so a privacy-blocked remote run prints gate_code 5, matching gateExit.
+  maybePrintRunSummaryJson(parsed, config, writtenPacket, collection.outputDir, { collection, provider });
   // review-surfaces.DISTRIBUTION.7: printed AFTER any gate message so the run
   // genuinely ends on the cockpit pointer.
   if (humanReview && config.human_review.default_entrypoint) {
@@ -1258,8 +1260,13 @@ async function runPacketStage(parsed: ParsedArgs): Promise<number> {
     console.warn(enrichment.summary);
   }
   logWrote(context);
-  // review-surfaces.QUALITY_GATE.3: opt-in structured run summary to stdout.
-  maybePrintRunSummaryJson(parsed, context.config, packet, context.collection.outputDir);
+  // review-surfaces.QUALITY_GATE.3: opt-in structured run summary to stdout, gated
+  // over the SAME collection + provider applyGate uses below, so the printed
+  // gate_code matches this command's real gate outcome (incl. a privacy block).
+  maybePrintRunSummaryJson(parsed, context.config, packet, context.collection.outputDir, {
+    collection: context.collection,
+    provider: context.provider
+  });
   return applyGate(parsed, evaluation, context.collection, context.provider, context.config, packet.risks);
 }
 
@@ -3358,9 +3365,14 @@ const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
     "artifact-name",
     "run-id",
     "sarif-out",
-    // review-surfaces.QUALITY_GATE.2: `comment --format json` reads --fail-on so
-    // the projected gate_code matches the run's risk-severity threshold.
-    "fail-on"
+    // review-surfaces.QUALITY_GATE.2: `comment --format json` projects gate_code
+    // over the SAME GateOptions the real gate uses, read via gateOptionsFor — both
+    // the risk threshold (--fail-on) AND the missing-requirement tolerance
+    // (--max-missing). Both must be accepted here or `comment --format json
+    // --max-missing N` is wrongly rejected as an unknown flag even though the
+    // renderer honors it.
+    "fail-on",
+    "max-missing"
   ]),
   // review: resolveOutputDir (--out/--config) + loadConfig + applyBudgetFlag +
   // reviewScope + the walkthrough flags --interactive and --author, plus --now
@@ -3563,23 +3575,28 @@ function applyGate(
 }
 
 // review-surfaces.QUALITY_GATE.3: when --json is set, print the SAME structured
-// run summary (the QUALITY_GATE.2 projection) to stdout from the in-memory packet.
-// A no-op when --json is absent, so the default prose output stays byte-stable.
-// The gate_code is projected over the SAME GateOptions the run's gate uses
-// (max_missing/allow_missing/fail_on), and top_queue_ids come from the ranked
-// human-review queue just written under outDir (sibling human_review.json), so
-// the --json line matches comment --format json for the same artifacts.
+// run summary (the QUALITY_GATE.2 projection) to stdout from the in-memory packet,
+// as a SINGLE compact JSON line (serializeRunSummary). A no-op when --json is
+// absent, so the default prose output stays byte-stable. The gate_code is
+// projected over the SAME GateOptions the run's gate uses (max_missing/
+// allow_missing/fail_on) AND the SAME gate context (the run's collection +
+// requested provider), so a privacy-blocked remote run prints the SAME gate_code
+// (5) the strict gate exited — not a spurious 0 from a mock recompute. top_queue_ids
+// come from the ranked human-review queue just written under outDir (sibling
+// human_review.json), trusted only when it matches this packet's head_sha.
 function maybePrintRunSummaryJson(
   parsed: ParsedArgs,
   config: ReviewSurfacesConfig,
   packet: ReviewPacket,
-  outDir: string
+  outDir: string,
+  gateContext: GateContext
 ): void {
   if (!booleanFlag(parsed, "json")) {
     return;
   }
   const cwd = process.cwd();
-  const summary = projectRunSummary(packet, gateOptionsFor(parsed, config), readQueueIds(cwd, outDir));
+  const headSha = typeof packet.manifest.head_sha === "string" ? packet.manifest.head_sha : undefined;
+  const summary = projectRunSummary(packet, gateOptionsFor(parsed, config), readQueueIds(cwd, outDir, headSha), gateContext);
   process.stdout.write(serializeRunSummary(summary));
 }
 

@@ -558,11 +558,13 @@ test("review-surfaces.QUALITY_GATE.3 all --json prints the structured summary; d
     // --json run: the structured object is present and parseable on stdout.
     const withJson = spawnSync("node", [CLI, ...baseArgs, "--json"], { cwd, encoding: "utf8" });
     assert.equal(withJson.status, 0, withJson.stderr);
-    // The summary is multi-line pretty JSON; extract it from the first `{` to the
-    // last `}` so the surrounding prose lines do not break the parse.
-    const start = withJson.stdout.indexOf("{");
-    assert.ok(start >= 0, "all --json must print a JSON object");
-    const summary = JSON.parse(withJson.stdout.slice(start, withJson.stdout.lastIndexOf("}") + 1));
+    // review-surfaces.QUALITY_GATE.3 (Codex finding 5): the summary is emitted as a
+    // SINGLE compact line amid the prose, so a CI step can grep one parseable line.
+    // Find the exact line that is the run-summary object (not first-`{`-to-last-`}`,
+    // which would span prose if any other braces appeared).
+    const summaryLine = withJson.stdout.split("\n").find((line) => line.includes('"review-surfaces.run-summary.v1"'));
+    assert.ok(summaryLine, "all --json must print the run-summary as one line");
+    const summary = JSON.parse(summaryLine!);
     assert.equal(summary.schema, "review-surfaces.run-summary.v1");
     assert.equal(typeof summary.gate_code, "number");
     assert.equal(typeof summary.requirement_counts.missing, "number");
@@ -596,9 +598,23 @@ test("review-surfaces.QUALITY_GATE.2 comment --format json emits a deterministic
     // Schema + the documented shape.
     assert.equal(summary.schema, "review-surfaces.run-summary.v1");
     assert.equal(typeof summary.gate_code, "number");
-    for (const key of ["satisfied", "partial", "missing", "invalid", "overreach"]) {
+    // review-surfaces.QUALITY_GATE.2 (Codex finding 7): EVERY contract requirement
+    // status is present with its CANONICAL name — no bucket dropped or renamed.
+    // "unknown" must be present and "invalid_evidence" must keep its canonical name
+    // (not the old "invalid").
+    for (const key of ["satisfied", "partial", "missing", "unknown", "overreach", "invalid_evidence"]) {
       assert.equal(typeof summary.requirement_counts[key], "number", `requirement_counts.${key} must be a number`);
     }
+    assert.equal(
+      summary.requirement_counts.invalid,
+      undefined,
+      "requirement_counts must use the canonical 'invalid_evidence', not the renamed 'invalid'"
+    );
+    assert.deepEqual(
+      Object.keys(summary.requirement_counts).sort(),
+      ["invalid_evidence", "missing", "overreach", "partial", "satisfied", "unknown"],
+      "requirement_counts must carry EXACTLY the six contract statuses (canonical names)"
+    );
     // Histogram carries every severity bucket (fixed key set).
     for (const severity of ["critical", "high", "medium", "low", "unknown"]) {
       assert.equal(typeof summary.risk_severity_histogram[severity], "number", `histogram.${severity} must be a number`);
@@ -611,6 +627,14 @@ test("review-surfaces.QUALITY_GATE.2 comment --format json emits a deterministic
     assert.equal(second.stdout, first.stdout, "same packet must render byte-identical JSON");
     // Trailing newline, POSIX-friendly (mirrors the SARIF renderer).
     assert.ok(first.stdout.endsWith("}\n"), "JSON must end with a single trailing newline");
+    // review-surfaces.QUALITY_GATE.3 (Codex finding 5): the summary is emitted as a
+    // SINGLE compact JSON line (no internal newlines) so a CI step parses one line.
+    assert.equal(
+      first.stdout.trimEnd().split("\n").length,
+      1,
+      "the run summary must be a single compact JSON line (no pretty-printed multi-line output)"
+    );
+    assert.ok(!/\n\s/.test(first.stdout.trimEnd()), "the JSON line must not contain indentation/newlines");
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }
@@ -699,9 +723,9 @@ test("review-surfaces.QUALITY_GATE.3 all --cache --json prints the run summary o
     const hit = spawnSync("node", [CLI, ...baseArgs, "--json"], { cwd, encoding: "utf8" });
     assert.equal(hit.status, 0, hit.stderr);
     assert.match(hit.stdout + hit.stderr, /inputs unchanged/, "second run must be a cache hit");
-    const start = hit.stdout.indexOf("{");
-    assert.ok(start >= 0, "all --cache --json must print a JSON object on the cache hit");
-    const summary = JSON.parse(hit.stdout.slice(start, hit.stdout.lastIndexOf("}") + 1));
+    const summaryLine = hit.stdout.split("\n").find((line) => line.includes('"review-surfaces.run-summary.v1"'));
+    assert.ok(summaryLine, "all --cache --json must print the run-summary as one line on the cache hit");
+    const summary = JSON.parse(summaryLine!);
     assert.equal(summary.schema, "review-surfaces.run-summary.v1");
 
     // The cache-hit summary equals comment --format json for the same artifacts.
@@ -712,6 +736,88 @@ test("review-surfaces.QUALITY_GATE.3 all --cache --json prints the run summary o
       JSON.stringify(summary),
       "cache-hit --json and comment --format json must project the same summary"
     );
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces.QUALITY_GATE.2 (Codex finding 2): runCommentJson reads
+// --max-missing via gateOptionsFor, so the comment command's CLI.9 allow-list must
+// ACCEPT --max-missing — not reject it as an unknown flag. And the flag must move
+// the projected gate_code, proving the renderer genuinely honors it.
+test("review-surfaces.QUALITY_GATE.2 comment --format json accepts --max-missing and honors it in gate_code", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "rs-comment-max-missing-"));
+  try {
+    fs.mkdirSync(path.join(cwd, "features"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, "features", "example.feature.yaml"),
+      `feature:\n  name: example\ncomponents:\n  ZZZ:\n    requirements:\n      1: This requirement has no implementation or tests anywhere.\n`
+    );
+    fs.writeFileSync(path.join(cwd, "README.md"), "# example\n");
+    execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
+    execFileSync("git", ["add", "-A"], { cwd, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd, stdio: "ignore" });
+    execFileSync("node", [CLI, "all", "--base", "HEAD", "--head", "HEAD", "--spec", "features/example.feature.yaml", "--provider", "mock", "--out", ".review-surfaces"], { cwd, stdio: "ignore" });
+
+    // Without the flag (config default max_missing 0): the lone missing requirement trips gate 10.
+    const baseline = runComment(cwd, ["--format", "json"]);
+    assert.equal(baseline.status, 0, baseline.stderr);
+    assert.equal(JSON.parse(baseline.stdout).gate_code, 10, "default max_missing 0 must trip gate_code 10");
+
+    // `comment --format json --max-missing 5` must be ACCEPTED (not an Unknown flag
+    // usage error) AND raise the tolerance so the same miss no longer trips the gate.
+    const tolerant = runComment(cwd, ["--format", "json", "--max-missing", "5"]);
+    assert.equal(tolerant.status, 0, `--max-missing must be accepted on comment, got: ${tolerant.stderr}`);
+    assert.doesNotMatch(tolerant.stderr, /Unknown flag/, "--max-missing must not be rejected as an unknown flag");
+    assert.equal(JSON.parse(tolerant.stdout).gate_code, 0, "--max-missing must suppress the gate in the projected gate_code");
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces.QUALITY_GATE.2 (Codex finding 4): a STALE human_review.json
+// (from an older run over a DIFFERENT head_sha) must NOT supply the ranked queue
+// for the current packet. The projection compares the packet manifest head_sha
+// against the queue file's generated_from.head_sha and falls back to the
+// deterministic risk ids on a mismatch.
+test("review-surfaces.QUALITY_GATE.2 comment --format json ignores a stale human_review.json (head_sha mismatch) and falls back to risk ids", () => {
+  const cwd = setupFixture("rs-stale-queue-");
+  try {
+    runAll(cwd);
+    const humanReviewPath = path.join(cwd, ".review-surfaces", "human_review.json");
+    const queueModel = JSON.parse(fs.readFileSync(humanReviewPath, "utf8"));
+    // Rewrite the sibling queue as if it were generated from a DIFFERENT head — its
+    // queue ids stay, but its generated_from.head_sha no longer matches the packet.
+    queueModel.generated_from = { ...(queueModel.generated_from ?? {}), head_sha: "stale-deadbeef-sha" };
+    fs.writeFileSync(humanReviewPath, JSON.stringify(queueModel));
+
+    const summary = JSON.parse(runComment(cwd, ["--format", "json"]).stdout);
+    const packet = JSON.parse(fs.readFileSync(path.join(cwd, ".review-surfaces", "review_packet.json"), "utf8"));
+    const riskIds = (packet.risks?.items ?? []).map((item: { id: string }) => item.id).slice(0, 10);
+    // Stale queue ignored -> deterministic risk ids drive top_queue_ids.
+    assert.deepEqual(summary.top_queue_ids, riskIds, "a stale human_review.json must be ignored; top_queue_ids must fall back to the risk ids");
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces.QUALITY_GATE.2 (Codex finding 8): a human_review.json that
+// parses to a SCALAR (e.g. `null`) — not an object — must NEVER throw on property
+// access; the renderer falls back to the deterministic risk ids and exits 0.
+test("review-surfaces.QUALITY_GATE.2 comment --format json never throws on a scalar human_review.json; falls back to risk ids", () => {
+  const cwd = setupFixture("rs-scalar-queue-");
+  try {
+    runAll(cwd);
+    const humanReviewPath = path.join(cwd, ".review-surfaces", "human_review.json");
+    // A scalar JSON value where an object is expected.
+    fs.writeFileSync(humanReviewPath, "null\n");
+
+    const result = runComment(cwd, ["--format", "json"]);
+    assert.equal(result.status, 0, `a scalar human_review.json must not crash the renderer, got: ${result.stderr}`);
+    const summary = JSON.parse(result.stdout);
+    const packet = JSON.parse(fs.readFileSync(path.join(cwd, ".review-surfaces", "review_packet.json"), "utf8"));
+    const riskIds = (packet.risks?.items ?? []).map((item: { id: string }) => item.id).slice(0, 10);
+    assert.deepEqual(summary.top_queue_ids, riskIds, "a scalar human_review.json must fall back to the risk ids");
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }

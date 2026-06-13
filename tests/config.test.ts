@@ -58,6 +58,44 @@ test("review-surfaces.QUALITY.7 quality_gate.max_missing rejects invalid values 
   }
 });
 
+// review-surfaces.QUALITY_GATE.1: an UNSET fail_on (default null / absent) leaves
+// the risk gate off, and a recognized severity is accepted.
+test("review-surfaces.QUALITY_GATE.1 quality_gate.fail_on defaults to off and parses a valid severity", async () => {
+  assert.equal(defaultConfig.quality_gate.fail_on, null);
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-config-failon-"));
+  try {
+    fs.writeFileSync(path.join(tmp, "review-surfaces.config.yaml"), "quality_gate:\n  fail_on: high\n");
+    const config = await loadConfig(tmp);
+    assert.equal(config.quality_gate.fail_on, "high");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces.QUALITY_GATE.1 (Codex finding 6): an INVALID non-null fail_on
+// (a typo like "hihg") must FAIL the load loudly — naming the valid severities —
+// instead of being silently normalized to null, which would disarm the risk gate
+// for every default run. This mirrors a bad --fail-on's fail-fast contract.
+test("review-surfaces.QUALITY_GATE.1 quality_gate.fail_on rejects an invalid severity loudly (does not silently disarm)", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-config-failon-bad-"));
+  try {
+    fs.writeFileSync(path.join(tmp, "review-surfaces.config.yaml"), "quality_gate:\n  fail_on: hihg\n");
+    await assert.rejects(
+      () => loadConfig(tmp),
+      (error: Error) => {
+        assert.match(error.message, /quality_gate\.fail_on/, "the error must name the offending field");
+        assert.match(error.message, /hihg/, "the error must echo the invalid value");
+        assert.match(error.message, /critical|high|medium|low|unknown/, "the error must list the valid severities");
+        return true;
+      },
+      "an invalid fail_on must throw a config error, not silently null the gate"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.HUMAN_REVIEW.16 parses human_review caps and risk lens toggles", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-config-human-"));
   try {

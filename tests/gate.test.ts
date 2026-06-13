@@ -7,6 +7,9 @@ import { gateDecision, gateExitCode } from "../src/core/gate";
 import { ProviderName } from "../src/llm/provider";
 import type { RiskItem } from "../src/risks/risks";
 import { fileEvidence, llmProposedEvidence } from "../src/evidence/evidence";
+import { projectRunSummary } from "../src/render/summary-json";
+import type { ReviewPacket } from "../src/render/packet";
+import { minimalReviewPacket } from "./helpers/review-packet";
 
 // gateExitCode only reads evaluation.results/overreach statuses and
 // collection.privacy.remote_provider_blocked, so the test fixtures are minimal.
@@ -215,4 +218,44 @@ test("review-surfaces.QUALITY blank allow_missing entries are ignored", () => {
     ExitCodes.qualityGateFailed,
     "a blank allowlist entry must not exclude a non-Acai missing requirement"
   );
+});
+
+// review-surfaces.QUALITY_GATE.1 (Codex finding 1): the --json run-summary's
+// gate_code must reflect the SAME gate context the command applied — including the
+// collection + provider. On an ai-sdk run whose redacted diff is
+// remote_provider_blocked, applyGate returns privacy code 5; the projection MUST
+// report 5 too (not a spurious 0 from a mock-context recompute). Without the
+// context (renderer-only), it gates as a local mock run and never trips privacy.
+test("review-surfaces.QUALITY_GATE.1 projectRunSummary gate_code reflects the real gate context (privacy block 5)", () => {
+  const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  // A clean evaluation: the ONLY thing that can trip is the privacy short-circuit,
+  // and only when the provider makes a remote call AND the diff is remote-blocked.
+  const remoteBlocked = collection(true);
+
+  // The command's real gate context: ai-sdk over a remote_provider_blocked diff -> 5.
+  const blocked = projectRunSummary(packet, { maxMissing: 0 }, [], { collection: remoteBlocked, provider: "ai-sdk" });
+  assert.equal(blocked.gate_code, ExitCodes.privacyBlocked, "ai-sdk over a remote-blocked diff must project gate_code 5, matching the strict gate exit");
+
+  // Same packet, same options, but the renderer-only default context: a local mock
+  // run can never privacy-block, so the projection reports a clean 0.
+  const rendererDefault = projectRunSummary(packet, { maxMissing: 0 }, []);
+  assert.equal(rendererDefault.gate_code, ExitCodes.success, "the renderer-only default context gates as a local mock run (no privacy block)");
+
+  // And a mock provider is offline even over a remote-blocked diff, so it never trips 5.
+  const mockBlocked = projectRunSummary(packet, { maxMissing: 0 }, [], { collection: remoteBlocked, provider: "mock" });
+  assert.equal(mockBlocked.gate_code, ExitCodes.success, "an offline mock run never privacy-blocks");
+});
+
+// review-surfaces.QUALITY_GATE.2 (Codex finding 7): requirement_counts must carry
+// EVERY contract status with its canonical name — no dropped "unknown", no
+// renamed "invalid_evidence". This is the pure-projection guard for the shape.
+test("review-surfaces.QUALITY_GATE.2 requirement_counts includes every contract status with canonical names", () => {
+  const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  const summary = projectRunSummary(packet);
+  assert.deepEqual(
+    Object.keys(summary.requirement_counts).sort(),
+    ["invalid_evidence", "missing", "overreach", "partial", "satisfied", "unknown"],
+    "requirement_counts must include all six contract statuses with canonical names"
+  );
+  assert.equal((summary.requirement_counts as Record<string, number>).invalid, undefined, "must not use the renamed 'invalid' bucket");
 });
