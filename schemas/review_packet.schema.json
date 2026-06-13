@@ -132,6 +132,7 @@
         },
         "input_hashes": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/InputHash"
           }
@@ -311,10 +312,12 @@
           "type": "string"
         },
         "title": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -466,6 +469,7 @@
         },
         "sources": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/SourceRef"
           }
@@ -590,43 +594,56 @@
           "type": "string"
         },
         "name": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "files": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "responsibilities": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "interactions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "tests": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "risks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -642,30 +659,37 @@
       ],
       "properties": {
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "diagrams": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "diagram_validation": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/DiagramValidation"
           }
         },
         "subsystems": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/SubsystemCard"
           }
         },
         "open_questions": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         }
       }
@@ -702,18 +726,23 @@
         },
         "errors": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "warnings": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -918,16 +947,20 @@
           ]
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "requirement_ids": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -952,16 +985,20 @@
           "type": "string"
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "suggested_test": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "manual_check": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -1046,13 +1083,16 @@
           "type": "string"
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "suggested_test": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -1078,13 +1118,16 @@
           "type": "string"
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "manual_check": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
@@ -1113,7 +1156,8 @@
           ]
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "acai_id": {
           "type": "string"
@@ -1161,7 +1205,8 @@
           ]
         },
         "packet_section": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "finding": {
           "type": "string",
@@ -1246,32 +1291,41 @@
       "properties": {
         "status_changes": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
             "$ref": "#/$defs/StatusChange"
           }
         },
         "new_overreach": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "resolved_overreach": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "new_risks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "resolved_risks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "count_deltas": {
@@ -1363,8 +1417,10 @@
         },
         "deferrals": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         }
       }
@@ -1382,75 +1438,98 @@
       ],
       "properties": {
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "current_milestone": {
           "type": "string"
         },
         "relevant_acids": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "implemented_changes": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "commands_to_run": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "validation_evidence": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "failed_validation": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "methodology_flags": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "next_tasks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "open_risks": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "deferrals": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "artifact_paths": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         },
         "changes_since_last_packet": {
           "type": "array",
+          "maxItems": 1000,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           }
         }
       }

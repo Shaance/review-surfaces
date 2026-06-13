@@ -940,6 +940,217 @@ test("review-surfaces.SCHEMA.5 methodology narrative summary and arrays carry ma
   assert.equal(typeof evidenceCap, "number", "expected numeric maxItems on methodology.evidence");
 });
 
+// review-surfaces.SCHEMA.5: converge the remaining agent-influenceable / loaded-
+// artifact narrative fields under one cap pass. Codex flagged uncapped fields one
+// at a time across rounds (test-gap strings, dogfood.deferrals, remediation
+// description, …); this pins the named fields AND structurally asserts that EVERY
+// free-text string and array under the agent-influenceable $defs is bounded, so a
+// provider/loaded artifact can't bloat the packet unbounded and no later round can
+// find a still-uncapped narrative field.
+test("review-surfaces.SCHEMA.5 test-gap narrative strings carry maxLength caps", () => {
+  for (const field of ["summary", "suggested_test", "manual_check"]) {
+    const cap = schemaAt(schema, ["$defs", "TestGap", "properties", field, "maxLength"]);
+    assert.equal(typeof cap, "number", `expected numeric maxLength on TestGap.${field}`);
+  }
+  const evidenceCap = schemaAt(schema, ["$defs", "TestGap", "properties", "evidence", "maxItems"]);
+  assert.equal(typeof evidenceCap, "number", "expected numeric maxItems on TestGap.evidence");
+});
+
+test("review-surfaces.SCHEMA.5 missing automatic/manual test narrative strings carry maxLength caps", () => {
+  for (const field of ["summary", "suggested_test"]) {
+    const cap = schemaAt(schema, ["$defs", "MissingAutomaticTest", "properties", field, "maxLength"]);
+    assert.equal(typeof cap, "number", `expected numeric maxLength on MissingAutomaticTest.${field}`);
+  }
+  for (const field of ["summary", "manual_check"]) {
+    const cap = schemaAt(schema, ["$defs", "MissingManualCheck", "properties", field, "maxLength"]);
+    assert.equal(typeof cap, "number", `expected numeric maxLength on MissingManualCheck.${field}`);
+  }
+});
+
+test("review-surfaces.SCHEMA.5 dogfood.deferrals array carries maxItems and per-item maxLength caps", () => {
+  const cap = schemaAt(schema, ["$defs", "Dogfood", "properties", "deferrals", "maxItems"]);
+  assert.equal(typeof cap, "number", "expected numeric maxItems on dogfood.deferrals");
+  const itemLen = schemaAt(schema, ["$defs", "Dogfood", "properties", "deferrals", "items", "maxLength"]);
+  assert.equal(typeof itemLen, "number", "expected numeric maxLength on dogfood.deferrals[]");
+});
+
+test("review-surfaces.SCHEMA.5 remediation-task description carries a maxLength cap", () => {
+  const cap = schemaAt(schema, ["$defs", "RemediationTask", "properties", "description", "maxLength"]);
+  assert.equal(typeof cap, "number", "expected numeric maxLength on RemediationTask.description");
+});
+
+test("review-surfaces.SCHEMA.5 subsystem-card narrative strings and arrays carry caps", () => {
+  for (const field of ["name", "summary"]) {
+    const cap = schemaAt(schema, ["$defs", "SubsystemCard", "properties", field, "maxLength"]);
+    assert.equal(typeof cap, "number", `expected numeric maxLength on SubsystemCard.${field}`);
+  }
+  for (const field of ["files", "responsibilities", "interactions", "tests", "risks"]) {
+    const cap = schemaAt(schema, ["$defs", "SubsystemCard", "properties", field, "maxItems"]);
+    assert.equal(typeof cap, "number", `expected numeric maxItems on SubsystemCard.${field}`);
+    const itemLen = schemaAt(schema, ["$defs", "SubsystemCard", "properties", field, "items", "maxLength"]);
+    assert.equal(typeof itemLen, "number", `expected numeric maxLength on SubsystemCard.${field}[]`);
+  }
+});
+
+test("review-surfaces.SCHEMA.5 architecture summary and arrays carry caps", () => {
+  assert.equal(typeof schemaAt(schema, ["$defs", "Architecture", "properties", "summary", "maxLength"]), "number");
+  for (const field of ["diagrams", "diagram_validation", "subsystems", "open_questions"]) {
+    const cap = schemaAt(schema, ["$defs", "Architecture", "properties", field, "maxItems"]);
+    assert.equal(typeof cap, "number", `expected numeric maxItems on architecture.${field}`);
+  }
+  for (const field of ["errors", "warnings"]) {
+    const cap = schemaAt(schema, ["$defs", "DiagramValidation", "properties", field, "maxItems"]);
+    assert.equal(typeof cap, "number", `expected numeric maxItems on DiagramValidation.${field}`);
+    const itemLen = schemaAt(schema, ["$defs", "DiagramValidation", "properties", field, "items", "maxLength"]);
+    assert.equal(typeof itemLen, "number", `expected numeric maxLength on DiagramValidation.${field}[]`);
+  }
+});
+
+test("review-surfaces.SCHEMA.5 test-evidence and source-ref/intent-sources narrative fields carry caps", () => {
+  assert.equal(typeof schemaAt(schema, ["$defs", "TestEvidence", "properties", "summary", "maxLength"]), "number");
+  assert.equal(typeof schemaAt(schema, ["$defs", "TestEvidence", "properties", "requirement_ids", "maxItems"]), "number");
+  assert.equal(typeof schemaAt(schema, ["$defs", "TestEvidence", "properties", "evidence", "maxItems"]), "number");
+  assert.equal(typeof schemaAt(schema, ["$defs", "SourceRef", "properties", "title", "maxLength"]), "number");
+  assert.equal(typeof schemaAt(schema, ["$defs", "SourceRef", "properties", "evidence", "maxItems"]), "number");
+  assert.equal(typeof schemaAt(schema, ["$defs", "Intent", "properties", "sources", "maxItems"]), "number");
+});
+
+test("review-surfaces.SCHEMA.5 dogfood comparison string arrays carry caps", () => {
+  assert.equal(typeof schemaAt(schema, ["$defs", "PacketComparison", "properties", "status_changes", "maxItems"]), "number");
+  for (const field of ["new_overreach", "resolved_overreach", "new_risks", "resolved_risks"]) {
+    const cap = schemaAt(schema, ["$defs", "PacketComparison", "properties", field, "maxItems"]);
+    assert.equal(typeof cap, "number", `expected numeric maxItems on PacketComparison.${field}`);
+    const itemLen = schemaAt(schema, ["$defs", "PacketComparison", "properties", field, "items", "maxLength"]);
+    assert.equal(typeof itemLen, "number", `expected numeric maxLength on PacketComparison.${field}[]`);
+  }
+});
+
+test("review-surfaces.SCHEMA.5 dogfood finding packet_section and agent_handoff narrative fields carry caps", () => {
+  assert.equal(typeof schemaAt(schema, ["$defs", "DogfoodFinding", "properties", "packet_section", "maxLength"]), "number");
+  assert.equal(typeof schemaAt(schema, ["$defs", "AgentHandoff", "properties", "summary", "maxLength"]), "number");
+  for (const field of [
+    "relevant_acids",
+    "implemented_changes",
+    "commands_to_run",
+    "validation_evidence",
+    "failed_validation",
+    "methodology_flags",
+    "next_tasks",
+    "open_risks",
+    "deferrals",
+    "artifact_paths",
+    "changes_since_last_packet"
+  ]) {
+    const cap = schemaAt(schema, ["$defs", "AgentHandoff", "properties", field, "maxItems"]);
+    assert.equal(typeof cap, "number", `expected numeric maxItems on agent_handoff.${field}`);
+    const itemLen = schemaAt(schema, ["$defs", "AgentHandoff", "properties", field, "items", "maxLength"]);
+    assert.equal(typeof itemLen, "number", `expected numeric maxLength on agent_handoff.${field}[]`);
+  }
+});
+
+// Structural convergence guard: walk the WHOLE packet schema and assert that
+// EVERY free-text string and EVERY array is bounded, EXCEPT a small, explicit
+// allowlist of pure identifiers / SHAs / paths / status+milestone labels / map
+// values (the fields review-surfaces.SCHEMA.5 deliberately leaves uncapped per
+// its design). A new uncapped narrative string or array fails this test the
+// moment it is added — so Codex cannot find an uncapped agent field one round
+// at a time; the cap is enforced structurally, not field-by-field.
+test("review-surfaces.SCHEMA.5 every agent-influenceable string/array in the packet schema is bounded", () => {
+  // Pure identifier / structural / status-label / map-value string fields that
+  // are intentionally NOT free-text and are excluded from the maxLength cap.
+  const stringAllowlist = new Set<string>([
+    "$defs.RunManifest.properties.tool_version",
+    "$defs.RunManifest.properties.repo",
+    "$defs.RunManifest.properties.base_ref",
+    "$defs.RunManifest.properties.head_ref",
+    "$defs.RunManifest.properties.base_sha",
+    "$defs.RunManifest.properties.head_sha",
+    "$defs.RunManifest.properties.milestone",
+    "$defs.RunManifest.properties.iteration_id",
+    "$defs.RunManifest.properties.previous_packet_path",
+    "$defs.RunManifest.properties.signature",
+    "$defs.RunManifest.properties.artifact_signatures.additionalProperties",
+    "$defs.RunManifest.properties.coverage.properties.source_path",
+    "$defs.RunManifest.properties.coverage.properties.hash",
+    "$defs.RunManifest.properties.coverage.properties.head_committed_at",
+    "$defs.RunManifest.properties.coverage.properties.report_modified_at",
+    "$defs.InputHash.properties.path",
+    "$defs.InputHash.properties.algorithm",
+    "$defs.InputHash.properties.hash",
+    "$defs.InputHash.properties.kind",
+    "$defs.EvidenceRef.properties.path",
+    "$defs.EvidenceRef.properties.sha",
+    "$defs.EvidenceRef.properties.url",
+    "$defs.EvidenceRef.properties.event_id",
+    "$defs.EvidenceRef.properties.test_name",
+    "$defs.EvidenceRef.properties.command",
+    "$defs.EvidenceRef.properties.excerpt_hash",
+    "$defs.SourceRef.properties.ref",
+    "$defs.Requirement.properties.id",
+    "$defs.Requirement.properties.acai_id",
+    "$defs.Intent.properties.claimed_candidates.items.properties.id",
+    "$defs.RequirementResult.properties.requirement_id",
+    "$defs.RequirementResult.properties.acai_id",
+    "$defs.Evaluation.properties.acai_coverage.additionalProperties",
+    "$defs.SubsystemCard.properties.id",
+    "$defs.DiagramValidation.properties.path",
+    "$defs.RiskItem.properties.id",
+    "$defs.TestEvidence.properties.id",
+    "$defs.TestGap.properties.id",
+    "$defs.TestGap.properties.requirement_id",
+    "$defs.TestGap.properties.acai_id",
+    "$defs.MissingAutomaticTest.properties.id",
+    "$defs.MissingAutomaticTest.properties.requirement_id",
+    "$defs.MissingAutomaticTest.properties.acai_id",
+    "$defs.MissingManualCheck.properties.id",
+    "$defs.MissingManualCheck.properties.requirement_id",
+    "$defs.MissingManualCheck.properties.acai_id",
+    "$defs.RemediationTask.properties.acai_id",
+    "$defs.RemediationTask.properties.target_milestone",
+    "$defs.DogfoodFinding.properties.id",
+    "$defs.StatusChange.properties.acai_id",
+    "$defs.StatusChange.properties.previous_status",
+    "$defs.StatusChange.properties.current_status",
+    "$defs.Dogfood.properties.milestone",
+    "$defs.Dogfood.properties.command",
+    "$defs.Dogfood.properties.previous_packet_path",
+    "$defs.AgentHandoff.properties.current_milestone"
+  ]);
+
+  const arraysWithoutCap: string[] = [];
+  const stringsWithoutCap: string[] = [];
+  const walk = (node: unknown, segments: string[]): void => {
+    if (!isRecord(node)) {
+      return;
+    }
+    if (node.type === "array" && node.maxItems === undefined) {
+      arraysWithoutCap.push(segments.join("."));
+    }
+    if (
+      node.type === "string" &&
+      node.maxLength === undefined &&
+      node.enum === undefined &&
+      node.const === undefined &&
+      node.format === undefined &&
+      node.pattern === undefined &&
+      !stringAllowlist.has(segments.join("."))
+    ) {
+      stringsWithoutCap.push(segments.join("."));
+    }
+    for (const key of Object.keys(node)) {
+      walk((node as Record<string, unknown>)[key], [...segments, key]);
+    }
+  };
+  walk(schema, []);
+
+  assert.deepEqual(arraysWithoutCap, [], `every array must carry maxItems; uncapped: ${arraysWithoutCap.join(", ")}`);
+  assert.deepEqual(
+    stringsWithoutCap,
+    [],
+    `every free-text string must carry maxLength (or be allowlisted as an identifier); uncapped: ${stringsWithoutCap.join(", ")}`
+  );
+});
+
 // review-surfaces.SCHEMA.6: schema-version and enum drift is test-guarded across
 // every artifact schema. The packet and human consts were already guarded; these
 // add the pr_surface const, hoist + tie the risk-lens enum, and tie the human
