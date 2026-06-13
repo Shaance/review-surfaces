@@ -316,8 +316,6 @@ quality_gate:
     - review-surfaces.HUMAN_REVIEW.23  # Phase 5
     - review-surfaces.PERF.1           # Phase 6 head-tree-perf
     - review-surfaces.PERF.2           # Phase 6
-    - review-surfaces.DISTRIBUTION.14  # Phase 7 distribution-trim + docs
-    - review-surfaces.DISTRIBUTION.15  # Phase 7
 human_review:
   enabled: true
   default_entrypoint: true

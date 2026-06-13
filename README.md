@@ -131,6 +131,58 @@ git only. GitHub Actions is a distribution channel for these surfaces, never
 the only way to produce or verify them — `action.yml` in this repo is a thin
 renderer over the same local pipeline.
 
+### Use as a GitHub Action
+
+The same pipeline runs as a reusable composite action. The minimal workflow
+posts a sticky review comment on every push to a PR (`pr-number` is the only
+required input; `mock` is the default provider and needs no key):
+
+```yaml
+# .github/workflows/review-surfaces.yml
+name: review-surfaces
+on:
+  pull_request:
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so the base ref resolves
+      - uses: Shaance/review-surfaces@main   # or pin a release tag
+        with:
+          provider: mock
+          base-ref: origin/${{ github.base_ref }}
+          head-ref: HEAD
+          pr-number: ${{ github.event.pull_request.number }}
+          github-token: ${{ github.token }}
+          post: "true"
+```
+
+For optional live LLM enrichment, set `provider: ai-sdk`, `model:`, and
+`llm-api-key:` (from a repository secret). See the worked, security-hardened
+example — split trusted-tool / credentialless-subject checkouts for safe
+`pull_request_target` handling — at
+[`.github/workflows/pr-review-comment.yml`](https://github.com/Shaance/review-surfaces/blob/main/.github/workflows/pr-review-comment.yml).
+
+### Exit codes
+
+`review-surfaces` (and `--strict`) returns a distinct exit code per failure
+class, so a CI step can branch without parsing artifacts:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Success — the run completed (and, under `--strict`, the gate passed). |
+| `1` | Runtime error — an unexpected failure while running. |
+| `2` | Usage error — bad flags or arguments. |
+| `3` | Schema validation failed — a generated artifact did not match its schema. |
+| `4` | Evidence validation failed — a claim could not be anchored to local evidence. |
+| `5` | Privacy blocked — a privacy/secret-boundary check refused to proceed. |
+| `10` | Quality gate failed — `--strict` (or `--fail-on`) found missing/invalid requirements or risk at/above the threshold. |
+
 ## Commands
 
 | Command | What it does |

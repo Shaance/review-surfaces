@@ -332,3 +332,74 @@ test("review-surfaces.DISTRIBUTION.13 a first run hints once (stderr) to gitigno
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// review-surfaces.DISTRIBUTION.14-15 — ci-trust uplift Phase 7
+// (docs/history/CI_TRUST_UPLIFT_GOAL.md): the tarball shipped 1.6 MB / 87
+// compiled test files the runtime never loads, and the README sells the action
+// and --strict for CI without a usage snippet or an exit-code table.
+
+test("review-surfaces.DISTRIBUTION.14 the pack allowlist ships dist/src only, never compiled tests", () => {
+  // Structural assertion against the manifest — NOT `npm pack`, which would run
+  // prepack and rebuild dist while sibling tests read it. The bin shim spawns
+  // dist/src/cli/index.js and the schema resolver reads the top-level schemas/
+  // dir, so nothing under dist/tests is needed at runtime.
+  const manifest = JSON.parse(read("package.json")) as { files?: string[]; bin?: Record<string, string> };
+  const files = manifest.files ?? [];
+  assert.ok(!files.includes("dist"), "the bare `dist` entry (which would carry dist/tests) is gone");
+  assert.ok(files.includes("dist/src"), "the package ships the compiled runtime under dist/src");
+  // The load-bearing assertion: no files entry can pull in dist/tests. Any
+  // entry under dist must be scoped to dist/src.
+  assert.ok(
+    files.every((entry) => !entry.startsWith("dist") || entry.startsWith("dist/src")),
+    `no files entry may include dist/tests; got ${JSON.stringify(files)}`
+  );
+  // The bin's runtime path is covered by a files glob, so an install can run it.
+  const binPath = manifest.bin?.["review-surfaces"] ?? "";
+  assert.match(binPath, /bin\/review-surfaces\.js$/, "bin points at the shim under bin/");
+  const shim = read("bin/review-surfaces.js");
+  assert.match(shim, /dist\/src\/cli\/index\.js/, "the shim spawns the compiled entry under dist/src");
+  assert.ok(
+    files.some((entry) => entry === "bin" || entry === "bin/review-surfaces.js"),
+    "the bin shim ships in the package"
+  );
+  assert.ok(
+    files.some((entry) => entry === "dist/src" || entry === "dist/src/cli/index.js"),
+    "the bin's runtime entry (dist/src/cli/index.js) is covered by a files glob"
+  );
+});
+
+test("review-surfaces.DISTRIBUTION.15 the README documents CI consumption: an action snippet and an exit-code table", () => {
+  const readme = read("README.md");
+  // (a) A copy-pasteable GitHub Action `uses:` snippet pinning this repo's
+  // action, with the required pr-number input, plus a link to the worked
+  // example workflow.
+  assert.match(readme, /uses:\s*Shaance\/review-surfaces@/, "a `uses:` snippet pins the reusable action");
+  assert.match(readme, /pr-number:/, "the snippet wires the required pr-number input");
+  assert.match(
+    readme,
+    /github\.com\/Shaance\/review-surfaces\/blob\/main\/\.github\/workflows\/pr-review-comment\.yml/,
+    "links the worked example workflow (absolute GitHub blob URL)"
+  );
+  // (b) An exit-code table sourced from src/core/exit-codes.ts mapping each
+  // code to its meaning. The table must carry the non-trivial codes with copy
+  // a CI author can branch on.
+  const exitTable = readme.slice(readme.indexOf("### Exit codes"));
+  assert.ok(exitTable.length > 0, "the README has an Exit codes section");
+  for (const [code, keyword] of [
+    ["3", /[Ss]chema/],
+    ["4", /[Ee]vidence/],
+    ["5", /[Pp]rivacy/],
+    ["10", /[Gg]ate/]
+  ] as const) {
+    assert.match(exitTable, new RegExp(`\\|\\s*\`?${code}\`?\\s*\\|`), `the table lists exit code ${code}`);
+    assert.match(exitTable, keyword, `exit code ${code}'s meaning is documented`);
+  }
+  assert.match(exitTable, /\|\s*`?2`?\s*\|/, "the table lists the usage-error code 2");
+  assert.match(exitTable, /\|\s*`?0`?\s*\|/, "the table lists the success code 0");
+  // The table mirrors src/core/exit-codes.ts — every named non-runtime code is
+  // documented, so the doc cannot silently drift from the source.
+  const exitSource = read("src/core/exit-codes.ts");
+  for (const code of [0, 2, 3, 4, 5, 10]) {
+    assert.match(exitSource, new RegExp(`:\\s*${code}\\b`), `exit-codes.ts defines code ${code}`);
+  }
+});
