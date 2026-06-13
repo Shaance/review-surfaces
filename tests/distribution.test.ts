@@ -380,6 +380,23 @@ test("review-surfaces.DISTRIBUTION.15 the README documents CI consumption: an ac
     /github\.com\/Shaance\/review-surfaces\/blob\/main\/\.github\/workflows\/pr-review-comment\.yml/,
     "links the worked example workflow (absolute GitHub blob URL)"
   );
+  // (a.0) pr-review-comment.yml is THIS repo's own dogfood workflow: it runs the
+  // in-repo composite action via `uses: ./tool`, so an external consumer copying
+  // it verbatim would run their own checkout, not the published action. The
+  // README must frame that file as a wiring REFERENCE (not a copy-as-is) and
+  // tell consumers to use the published `Shaance/review-surfaces@<sha>` ref —
+  // e.g. by noting the `./tool` swap. Match on stable substrings.
+  assert.match(readme, /\.\/tool/, "the README names the in-repo `./tool` ref the consumer must swap out");
+  assert.match(
+    readme,
+    /swap\s+`?uses:\s*\.\/tool`?\s+for\s+`?uses:\s*Shaance\/review-surfaces@/i,
+    "the README tells consumers to swap `./tool` for the published `Shaance/review-surfaces@<sha>` ref"
+  );
+  assert.doesNotMatch(
+    readme,
+    /\*\*Copy\s*\n?\[`?\.github\/workflows\/pr-review-comment\.yml/,
+    "the README does not instruct copying pr-review-comment.yml verbatim (it uses ./tool)"
+  );
   // (a.1) Supply-chain hardening: the secret-bearing action must be pinned to a
   // FULL 40-char commit SHA — the only immutable ref. A release tag (`@v<semver>`)
   // can be moved or deleted and `@main` is mutable; a later push to either could

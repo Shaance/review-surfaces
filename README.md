@@ -143,15 +143,13 @@ narrative on the comment surface.
 
 Don't hand-roll the checkout inline. A `pull_request_target` job must check out
 the PR head into a *credentialless subject* directory so PR-controlled code
-never sees the secret, while running the trusted tool from the base ref — the
-worked example does exactly this. **Copy
-[`.github/workflows/pr-review-comment.yml`](https://github.com/Shaance/review-surfaces/blob/main/.github/workflows/pr-review-comment.yml)**
-as your starting point for the full secret-safe setup. The single step that
-invokes the action looks like:
+never sees the secret, while running the trusted tool from the base ref. In
+**your** repo, the one step that runs the tool is the snippet below — it calls
+the published `Shaance/review-surfaces` action:
 
 ```yaml
-# the one step that runs the tool — see pr-review-comment.yml for the
-# surrounding pull_request_target job, split checkouts, and permissions
+# the one step that runs the tool, in YOUR workflow — see the wiring note below
+# for the surrounding pull_request_target job, split checkouts, and permissions
 - uses: Shaance/review-surfaces@8ba7c46d73f429c71060040463899333fdd92c9d # v0.2.0
   with:
     provider: mock # mock posts the deterministic sticky; switch to ai-sdk for the LLM narrative
@@ -163,6 +161,17 @@ invokes the action looks like:
     github-token: ${{ github.token }}
     post: "true"
 ```
+
+For the surrounding job, this repo's own
+[`.github/workflows/pr-review-comment.yml`](https://github.com/Shaance/review-surfaces/blob/main/.github/workflows/pr-review-comment.yml)
+is the worked **reference** for the wiring: it shows the same
+`pull_request_target` trigger, the same-repo `if:` guard, the `permissions:`
+block (incl. `actions: read`), and the credentialless split checkout. Don't copy
+it verbatim, though — because the action's source lives in *this* repo, that file
+checks out the base ref into `tool/` and runs `uses: ./tool` (the in-repo action),
+which in your repo would run your own checkout, not the published tool. Take the
+same job structure but **swap `uses: ./tool` for `uses: Shaance/review-surfaces@<full-sha>`**
+(the snippet above) so your job runs the published action.
 
 Pin the secret-bearing `uses:` to a **full 40-char commit SHA** — that is the
 only immutable ref. A release tag like `@v0.2.0` can be moved or deleted, and
