@@ -217,6 +217,29 @@ test("review-surfaces.PRIVACY.6 filterIgnoredDiff fails closed on a git-quoted i
   assert.match(filtered, /\+new/, "the non-ignored file's diff body survives");
 });
 
+test("review-surfaces.PRIVACY.6 filterIgnoredDiff fails closed on an ignored path containing ' b/'", () => {
+  // A real path can itself contain the substring " b/", e.g. "logs b/app.env".
+  // Git's unquoted header `diff --git a/logs b/app.env b/logs b/app.env` is then
+  // ambiguous to a first/last separator split; the UNAMBIGUOUS `--- a/`/`+++ b/`
+  // body lines carry the full path, so the ignored file is still dropped.
+  const diff = [
+    "diff --git a/logs b/app.env b/logs b/app.env",
+    "--- a/logs b/app.env",
+    "+++ b/logs b/app.env",
+    "@@ -0,0 +1 @@",
+    "+API_TOKEN=leakythroughspacepath123",
+    "diff --git a/keep.ts b/keep.ts",
+    "--- a/keep.ts",
+    "+++ b/keep.ts",
+    "@@ -1 +1 @@",
+    "-a",
+    "+b"
+  ].join("\n");
+  const filtered = filterIgnoredDiff(diff, (p) => p === "logs b/app.env");
+  assert.doesNotMatch(filtered, /leakythroughspacepath123/, "the ignored ' b/'-containing file must be dropped, not leaked");
+  assert.match(filtered, /keep\.ts/, "the non-ignored file is still kept");
+});
+
 test("review-surfaces.PRIVACY.6 filterIgnoredDiff keeps a normal non-ignored file and drops an ignored one", () => {
   const diff = [
     "diff --git a/keep.ts b/keep.ts",
