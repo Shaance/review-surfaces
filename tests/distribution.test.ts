@@ -339,16 +339,41 @@ test("review-surfaces.DISTRIBUTION.13 a first run hints once (stderr) to gitigno
 // and --strict for CI without a usage snippet or an exit-code table.
 
 test("review-surfaces.DISTRIBUTION.14 the pack allowlist ships dist/src only, never compiled tests", () => {
-  // Structural assertion against the manifest — NOT `npm pack`, which would run
-  // prepack and rebuild dist while sibling tests read it. The bin shim spawns
-  // dist/src/cli/index.js and the schema resolver reads the top-level schemas/
-  // dir, so nothing under dist/tests is needed at runtime.
+  // The load-bearing check runs the REAL pack manifest — npm's packlist applies
+  // rules beyond package.json `files`, so inspecting `files` alone can miss what
+  // actually ships. `--ignore-scripts` is required: it skips the `prepack` build
+  // so this test does NOT rebuild/clobber `dist` while sibling tests read it (the
+  // repo hit exactly that race before). `npm pack --json` returns an array whose
+  // first entry has a `files[].path` list of every tarball member.
+  const raw = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+    cwd: root,
+    encoding: "utf8"
+  });
+  let packed: Array<{ files?: Array<{ path?: string }> }>;
+  try {
+    packed = JSON.parse(raw) as Array<{ files?: Array<{ path?: string }> }>;
+  } catch (error) {
+    assert.fail(`npm pack did not emit parseable JSON: ${(error as Error).message}\n${raw.slice(0, 400)}`);
+  }
+  const packedPaths = (packed[0]?.files ?? [])
+    .map((entry) => entry.path ?? "")
+    .filter((p) => p.length > 0);
+  assert.ok(packedPaths.length > 0, "the pack manifest lists tarball members");
+  assert.ok(
+    !packedPaths.some((p) => p.startsWith("dist/tests")),
+    `the tarball must not ship compiled tests; found ${JSON.stringify(packedPaths.filter((p) => p.startsWith("dist/tests")))}`
+  );
+  assert.ok(
+    packedPaths.some((p) => p.startsWith("dist/src/")),
+    "the tarball ships the compiled runtime under dist/src"
+  );
+
+  // Belt and suspenders: the structural allowlist matches the manifest — no bare
+  // `dist` entry (which would carry dist/tests), and dist is scoped to dist/src.
   const manifest = JSON.parse(read("package.json")) as { files?: string[]; bin?: Record<string, string> };
   const files = manifest.files ?? [];
   assert.ok(!files.includes("dist"), "the bare `dist` entry (which would carry dist/tests) is gone");
   assert.ok(files.includes("dist/src"), "the package ships the compiled runtime under dist/src");
-  // The load-bearing assertion: no files entry can pull in dist/tests. Any
-  // entry under dist must be scoped to dist/src.
   assert.ok(
     files.every((entry) => !entry.startsWith("dist") || entry.startsWith("dist/src")),
     `no files entry may include dist/tests; got ${JSON.stringify(files)}`

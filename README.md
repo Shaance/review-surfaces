@@ -141,16 +141,12 @@ sticky summary just fine (this repo's own `ci.yml` smoke renders it that way);
 add `provider: ai-sdk` with an API-key secret only when you want the LLM
 narrative on the comment surface.
 
-Don't hand-roll the checkout inline. A `pull_request_target` job must check out
-the PR head into a *credentialless subject* directory so PR-controlled code
-never sees the secret, while running the trusted tool from the base ref. In
-**your** repo, the one step that runs the tool is the snippet below — it calls
-the published `Shaance/review-surfaces` action:
+In **your** repo, the one step that runs the tool is the snippet below:
 
 ```yaml
-# the one step that runs the tool, in YOUR workflow — see the wiring note below
-# for the surrounding pull_request_target job, split checkouts, and permissions
-- uses: Shaance/review-surfaces@8ba7c46d73f429c71060040463899333fdd92c9d # v0.2.0
+# the one step that runs the tool, in YOUR pull_request_target job — see the
+# worked example below for the surrounding job, split checkouts, and permissions
+- uses: Shaance/review-surfaces@8ba7c46d73f429c71060040463899333fdd92c9d # pin a full SHA you trust
   with:
     provider: mock # mock posts the deterministic sticky; switch to ai-sdk for the LLM narrative
     spec: features/**/*.feature.yaml # YOUR spec(s); the action defaults to this repo's own spec
@@ -162,40 +158,40 @@ the published `Shaance/review-surfaces` action:
     post: "true"
 ```
 
-For the surrounding job, this repo's own
+`Shaance/review-surfaces` is a **composite action that builds from source at the
+pinned commit** — the consuming runner checks out the action repo at that SHA and
+runs `pnpm install --frozen-lockfile && pnpm run build`. So any real commit on the
+default branch is a valid pin (the SHA above is illustrative); pin one you trust.
+Because it builds from source, your job needs the same setup the worked example
+shows (checkout + the credentialless split — pnpm/Node are provided by the action).
+
+Pin to a **full 40-char commit SHA**, not a tag or branch: a tag like `@v0.2.0`
+can be moved or deleted and `@main` is mutable, so either could later redirect
+your write token or LLM key to attacker-controlled code.
+
+This repo's own
 [`.github/workflows/pr-review-comment.yml`](https://github.com/Shaance/review-surfaces/blob/main/.github/workflows/pr-review-comment.yml)
-is the worked **reference** for the wiring: it shows the same
-`pull_request_target` trigger, the same-repo `if:` guard, the `permissions:`
-block (incl. `actions: read`), and the credentialless split checkout. Don't copy
-it verbatim, though — because the action's source lives in *this* repo, that file
-checks out the base ref into `tool/` and runs `uses: ./tool` (the in-repo action),
-which in your repo would run your own checkout, not the published tool. Take the
-same job structure but **swap `uses: ./tool` for `uses: Shaance/review-surfaces@<full-sha>`**
-(the snippet above) so your job runs the published action.
+is the worked **reference** for the wiring — the `pull_request_target` trigger,
+the same-repo `if:` guard, the `permissions:` block (incl. `actions: read`), and
+the credentialless split checkout. Don't copy it verbatim: because the action's
+source lives in *this* repo, that file checks out the base ref into `tool/` and
+runs `uses: ./tool` (the in-repo action). Take the same job structure but **swap
+`uses: ./tool` for `uses: Shaance/review-surfaces@<full-sha>`** (the snippet
+above) so your job runs the pinned action.
 
-Pin the secret-bearing `uses:` to a **full 40-char commit SHA** — that is the
-only immutable ref. A release tag like `@v0.2.0` can be moved or deleted, and
-`@main` is mutable, so either could later redirect your write token or LLM key
-to attacker-controlled code. Pin the SHA and keep the human-readable tag in a
-trailing comment (the pattern GitHub's hardening guidance recommends), exactly
-as the snippet above does.
+The job's `permissions:` block grants `contents: read`, `pull-requests: write`,
+and `actions: read` — the last is required, or the prior-packet artifact lookup
+is denied (swallowed as a first-review fallback) and the since-last-review delta
+never appears.
 
-The job's `permissions:` block (in the worked file) grants `contents: read`,
-`pull-requests: write`, and `actions: read` — the last is required, or the
-prior-packet artifact lookup is denied (swallowed as a first-review fallback)
-and the since-last-review delta never appears.
-
-This is why the same-repo `if:` guard is load-bearing. `pull_request_target`
-runs in the **base** repo's context, so the `GITHUB_TOKEN` is read/**write**
-and the repo's secrets are exposed — even for a PR from a public fork. The
-guard (`head.repo.full_name == github.repository`) is what keeps an untrusted
-fork from ever reaching the secret-bearing post path; without it a fork PR
-would run with your write token and LLM key in scope. Fork PRs are instead
-served by a separate plain `pull_request` job (`provider: mock`, no secrets,
-`post: "false"`) that uploads the artifact rather than posting — the
-upload-only `pr-surface-smoke` pattern in this repo's `ci.yml`. Do not assume
-forks get a read-only token under `pull_request_target`; they do not, which is
-precisely why the guard plus the credentialless head checkout matter.
+The same-repo `if:` guard is load-bearing. `pull_request_target` runs in the
+**base** repo's context, so the `GITHUB_TOKEN` is read/**write** and the repo's
+secrets are exposed — even for a PR from a public fork (forks do **not** get a
+read-only token here). The guard (`head.repo.full_name == github.repository`)
+keeps an untrusted fork from reaching the secret-bearing post path. Fork PRs are
+instead served by a separate plain `pull_request` job (`provider: mock`, no
+secrets, `post: "false"`) that uploads the artifact rather than posting — the
+upload-only `pr-surface-smoke` pattern in this repo's `ci.yml`.
 
 ### Exit codes
 
@@ -211,6 +207,11 @@ class, so a CI step can branch without parsing artifacts:
 | `4` | Evidence validation failed — a claim's evidence was invalid (could not be anchored to local evidence). |
 | `5` | Privacy blocked — a privacy/secret-boundary check refused to proceed. |
 | `10` | Quality gate failed — `--strict` found missing requirements over the configured max-missing. |
+
+The table covers the review-surfaces commands' own gate and usage codes.
+`review-surfaces run -- <cmd>` instead **forwards the wrapped command's own exit
+code**, so codes outside this table (e.g. `7`, `127`) can occur when you use
+`run` to record a wrapped test command.
 
 ## Commands
 
