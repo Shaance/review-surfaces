@@ -3206,10 +3206,10 @@ const COLLECTOR_FLAGS = [
 // risks, dogfood, handoff, packet, all): collect() reads --out (its outputDir) and
 // --config (loadConfig) directly, plus the input flags (--command-transcripts,
 // --test-output, --coverage, --conversation, --agent-input, --previous-packet) and
-// applies --budget; reviewScope() reads --review-scope/--mode/--surface-mode; and
-// the gate (applyGate, on evaluate/packet/all) reads --max-missing/--strict.
-// Included on every pipeline command (even the ones that do not gate) so a
-// legitimate gate/scope flag is never rejected for belonging to a sibling stage.
+// applies --budget; reviewScope() reads --review-scope/--mode/--surface-mode.
+// The gate flags (--strict/--max-missing) are NOT here: only the gating stages
+// (evaluate/packet/all/dogfood) call applyGate, so they get GATE_FLAGS below and
+// a non-gating stage (e.g. `collect --strict`) rejects them as a no-op.
 const PIPELINE_EXTRA_FLAGS = [
   ...OUTPUT_CONFIG_FLAGS,
   ...COLLECTOR_FLAGS,
@@ -3220,12 +3220,14 @@ const PIPELINE_EXTRA_FLAGS = [
   "agent-input",
   "previous-packet",
   "budget",
-  "max-missing",
-  "strict",
   "review-scope",
   "mode",
   "surface-mode"
 ] as const;
+
+// review-surfaces.CLI.9: --strict/--max-missing are read ONLY by the stages that
+// call applyGate (evaluate/packet/all/dogfood), so they are granted only there.
+const GATE_FLAGS = ["strict", "max-missing"] as const;
 
 // The flags selecting the comment/human review surface (reviewScope reads all
 // three; --mode/--surface-mode are aliases of --review-scope).
@@ -3251,18 +3253,18 @@ const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
   // collect()/buildStageContext pipeline commands share PIPELINE_EXTRA_FLAGS.
   collect: flagSet(PIPELINE_EXTRA_FLAGS),
   intent: flagSet(PIPELINE_EXTRA_FLAGS),
-  evaluate: flagSet(PIPELINE_EXTRA_FLAGS),
+  evaluate: flagSet(PIPELINE_EXTRA_FLAGS, GATE_FLAGS),
   diagrams: flagSet(PIPELINE_EXTRA_FLAGS),
   methodology: flagSet(PIPELINE_EXTRA_FLAGS),
   risks: flagSet(PIPELINE_EXTRA_FLAGS),
   handoff: flagSet(PIPELINE_EXTRA_FLAGS),
-  packet: flagSet(PIPELINE_EXTRA_FLAGS),
+  packet: flagSet(PIPELINE_EXTRA_FLAGS, GATE_FLAGS),
   // all/dogfood are the pipeline commands that read the --cache snapshot. The
   // --cache path (readCacheSnapshot -> readSchemaValidPacket) validates the
   // on-disk packet against a custom --schema before reuse, so --cache AND --schema
   // are read here even though the other pipeline stages do not read them.
-  all: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema"]),
-  dogfood: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema"]),
+  all: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema"], GATE_FLAGS),
+  dogfood: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema"], GATE_FLAGS),
   // init only reads --force (overwrite scaffolding). runInit scaffolds into
   // process.cwd() and never calls resolveOutputDir()/loadConfig(), so it reads
   // NEITHER --out NOR --config; passing them must be rejected as a no-op.

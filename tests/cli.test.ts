@@ -1143,6 +1143,31 @@ test("review-surfaces.CLI.9 --out/--config on commands that never read them are 
   }
 });
 
+test("review-surfaces.CLI.9 --strict/--max-missing are rejected on non-gating stages", () => {
+  // Only the stages that call applyGate (evaluate/packet/all/dogfood) read
+  // --strict/--max-missing. collect/intent/diagrams/methodology/risks/handoff
+  // never gate, so passing them there is a silent no-op CLI.9 must reject.
+  const tmp = setupMinimalRepo("review-surfaces-cli9-gate-");
+  try {
+    for (const command of ["collect", "intent", "risks"] as const) {
+      const result = spawnSync("node", [CLI, command, "--strict", "--max-missing", "0"], { cwd: tmp, encoding: "utf8" });
+      assert.equal(result.status, ExitCodes.usageError, `\`${command} --strict\` must be a usage error: ${result.stdout + result.stderr}`);
+      assert.match(result.stderr, /Unknown flag: --(strict|max-missing) \(not a flag '/, `${command} never gates, so --strict/--max-missing are no-ops`);
+    }
+    // The gating stages still accept them.
+    for (const command of ["evaluate", "all"] as const) {
+      const result = spawnSync(
+        "node",
+        [CLI, command, "--strict", "--max-missing", "0", "--provider", "mock", "--base", "HEAD", "--head", "HEAD", "--out", ".review-surfaces"],
+        { cwd: tmp, encoding: "utf8" }
+      );
+      assert.doesNotMatch(result.stderr, /Unknown flag: --strict|Unknown flag: --max-missing/, `\`${command} --strict --max-missing\` must be accepted (it gates)`);
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.CLI.10 --help documents every command in the dispatch table", () => {
   const result = spawnSync("node", [CLI, "--help"], { encoding: "utf8" });
   assert.equal(result.status, ExitCodes.success, result.stderr);
