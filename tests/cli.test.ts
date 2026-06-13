@@ -1085,6 +1085,64 @@ test("review-surfaces.CLI.9 `all --cache --schema` is accepted (a flag read thro
   }
 });
 
+test("review-surfaces.CLI.9 --out/--config on commands that never read them are rejected (no silent no-op)", () => {
+  // The precision must hold for --out and --config too, not just the obviously
+  // command-specific flags. `init` (runInit) and `bootstrap` (runBootstrap)
+  // scaffold/validate in process.cwd() and never call resolveOutputDir()/
+  // loadConfig(), so `init --out X` and `bootstrap --config Y` are silent no-ops —
+  // the directory/config is ignored. A blanket "universal" --out/--config seed
+  // accepted them; CLI.9 must REJECT them with the usage error. `run` reads --out
+  // (transcript dir) but never loads config, so `run --config Y` is a no-op too.
+  const tmp = setupMinimalRepo("review-surfaces-cli9-outcfg-");
+  try {
+    for (const [command, flag, value] of [
+      ["init", "--out", "/tmp/review-surfaces-scaffold"],
+      ["init", "--config", "other.yml"],
+      ["bootstrap", "--config", "other.yml"],
+      ["bootstrap", "--out", "/tmp/review-surfaces-scaffold"],
+      ["run", "--config", "other.yml"]
+    ] as const) {
+      const result = spawnSync("node", [CLI, command, flag, value], { cwd: tmp, encoding: "utf8" });
+      assert.equal(
+        result.status,
+        ExitCodes.usageError,
+        `\`${command} ${flag} ${value}\` must be a usage error (a no-op flag the command never reads): ${result.stdout + result.stderr}`
+      );
+      assert.match(
+        result.stderr,
+        new RegExp(`Unknown flag: \\${flag} \\(not a flag '${command}' accepts\\)`),
+        `${flag} is rejected on \`${command}\` because that command never reads it`
+      );
+    }
+
+    // The same flags are STILL accepted on the commands that genuinely read them:
+    // `all` reads both --out and --config (collect()/resolveOutputDir), and
+    // `validate` resolves its output dir via resolveOutputDir (--out/--config).
+    const all = spawnSync(
+      "node",
+      [CLI, "all", "--provider", "mock", "--base", "HEAD", "--head", "HEAD", "--out", ".review-surfaces"],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(all.status, ExitCodes.success, `\`all --out\` must still be accepted: ${all.stdout + all.stderr}`);
+    assert.doesNotMatch(all.stderr, /Unknown flag: --out/, "`all --out` must be accepted");
+
+    const validate = spawnSync(
+      "node",
+      [CLI, "validate", "--surface", "packet", "--config", "review-surfaces.config.yaml", "--out", ".review-surfaces"],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.doesNotMatch(validate.stderr, /Unknown flag: --config/, "`validate --config` must be accepted (resolveOutputDir reads it)");
+    assert.doesNotMatch(validate.stderr, /Unknown flag: --out/, "`validate --out` must be accepted");
+
+    // `run` still accepts --out (transcriptDirFromOut reads it) even though it
+    // rejects --config above.
+    const run = spawnSync("node", [CLI, "run", "--out", ".review-surfaces", "--", "node", "-e", "0"], { cwd: tmp, encoding: "utf8" });
+    assert.doesNotMatch(run.stderr, /Unknown flag: --out/, "`run --out` must be accepted (transcript dir)");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.CLI.10 --help documents every command in the dispatch table", () => {
   const result = spawnSync("node", [CLI, "--help"], { encoding: "utf8" });
   assert.equal(result.status, ExitCodes.success, result.stderr);

@@ -3146,22 +3146,38 @@ function parseArgs(args: string[]): ParsedArgs {
 // permissive parser does not consume a following positional as their "value".
 const BOOLEAN_FLAGS = new Set(["cache", "check", "dogfood", "force", "no-redact-secrets", "post", "strict", "strict-postability", "verbose", "help", "interactive", "version"]);
 
-// review-surfaces.CLI.9: the TRULY-UNIVERSAL minimum — flags EVERY command
-// honors through shared wiring, so they are accepted on every command. --out and
-// --config flow through resolveOutputDir/loadConfig (every command resolves an
-// output dir and/or loads config); --verbose drives the shared isVerbose stderr
-// diagnostics; --help/--version are intercepted before any handler. The
-// COLLECTOR / pipeline / surface flags below are NOT here: a command that does
-// not run the collector (scoreboard, validate, init, bootstrap, run, the human
+// review-surfaces.CLI.9: the TRULY-UNIVERSAL minimum — only the flags EVERY
+// command honors on every code path. --verbose drives the shared isVerbose stderr
+// diagnostics AND the top-level catch's stack-trace toggle (runCliEntrypoint reads
+// it from argv for ANY command, including init/bootstrap), so every command honors
+// it. --help/--version are intercepted before any handler. --out/--config are
+// DELIBERATELY NOT universal: `init` (runInit) and `bootstrap` (runBootstrap)
+// scaffold/validate in process.cwd() and never call resolveOutputDir()/loadConfig(),
+// so `init --out X` or `bootstrap --config Y` would be silent no-ops; CLI.9 must
+// REJECT those. --out/--config are granted per-command (OUTPUT_CONFIG_FLAGS /
+// OUTPUT_FLAGS below) only to commands whose code path actually reads them. The
+// COLLECTOR / pipeline / surface flags below are likewise NOT here: a command that
+// does not run the collector (scoreboard, validate, init, bootstrap, run, the human
 // sub-artifact renderers) never reads --base/--head/--provider/--cache/etc., so
 // passing one is a no-op the CLI.9 allow-list must REJECT, not silently ignore.
 const UNIVERSAL_FLAGS = [
-  "out",
-  "config",
   "verbose",
   "help",
   "version"
 ] as const;
+
+// review-surfaces.CLI.9: --out and --config both flow through resolveOutputDir()
+// (which reads --out, and falls back to loadConfig(--config) to resolve the output
+// dir) and through collect()/loadConfig() in the pipeline commands. Granted to
+// every command that resolves an output dir or loads config — i.e. all commands
+// EXCEPT init/bootstrap (which scaffold in cwd, reading neither) and run (which
+// reads --out for the transcript dir but never loads config — see OUTPUT_FLAGS).
+const OUTPUT_CONFIG_FLAGS = ["out", "config"] as const;
+
+// review-surfaces.CLI.9: --out alone. `run` (runRecordedCommand) reads --out via
+// transcriptDirFromOut() to place the recorded transcript, but never calls
+// loadConfig()/resolveOutputDir(), so it does NOT read --config.
+const OUTPUT_FLAGS = ["out"] as const;
 
 // review-surfaces.CLI.9: the input flags the COLLECTOR reads. collect()
 // (and buildStageContext, which calls collect()) reads --base/--head/--spec to
@@ -3187,14 +3203,15 @@ const COLLECTOR_FLAGS = [
 // review-surfaces.CLI.9: the flags the pipeline-generating commands read on top
 // of the universal + collector sets. These are the commands that run
 // collect()/buildStageContext (collect, intent, evaluate, diagrams, methodology,
-// risks, dogfood, handoff, packet, all): collect() reads the input flags
-// (--command-transcripts, --test-output, --coverage, --conversation,
-// --agent-input, --previous-packet) and applies --budget; reviewScope() reads
-// --review-scope/--mode/--surface-mode; and the gate (applyGate, on evaluate/
-// packet/all) reads --max-missing/--strict. Included on every pipeline command
-// (even the ones that do not gate) so a legitimate gate/scope flag is never
-// rejected for belonging to a sibling stage.
+// risks, dogfood, handoff, packet, all): collect() reads --out (its outputDir) and
+// --config (loadConfig) directly, plus the input flags (--command-transcripts,
+// --test-output, --coverage, --conversation, --agent-input, --previous-packet) and
+// applies --budget; reviewScope() reads --review-scope/--mode/--surface-mode; and
+// the gate (applyGate, on evaluate/packet/all) reads --max-missing/--strict.
+// Included on every pipeline command (even the ones that do not gate) so a
+// legitimate gate/scope flag is never rejected for belonging to a sibling stage.
 const PIPELINE_EXTRA_FLAGS = [
+  ...OUTPUT_CONFIG_FLAGS,
   ...COLLECTOR_FLAGS,
   "command-transcripts",
   "test-output",
@@ -3246,24 +3263,33 @@ const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
   // are read here even though the other pipeline stages do not read them.
   all: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema"]),
   dogfood: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema"]),
-  // init only reads --force (overwrite scaffolding).
+  // init only reads --force (overwrite scaffolding). runInit scaffolds into
+  // process.cwd() and never calls resolveOutputDir()/loadConfig(), so it reads
+  // NEITHER --out NOR --config; passing them must be rejected as a no-op.
   init: flagSet(["force"]),
   // bootstrap only reads --strict (turn missing scaffolding into a gate exit).
+  // runBootstrap validates scaffolding in process.cwd() and never calls
+  // resolveOutputDir()/loadConfig(), so it reads NEITHER --out NOR --config.
   bootstrap: flagSet(["strict"]),
-  // human: resolveOutputDir + applyBudgetFlag + reviewScope, and --format
-  // markdown|html (the HTML cockpit, runHumanStage). NOT a pipeline command.
-  human: flagSet(SCOPE_FLAGS, ["budget", "format"]),
-  // validate reads --surface and --schema (and the output dir via resolveOutputDir).
-  validate: flagSet(["surface", "schema"]),
-  // scoreboard reads --readme and --check.
-  scoreboard: flagSet(["readme", "check"]),
-  // run records a command transcript: --id and --command-transcripts.
-  run: flagSet(["id", "command-transcripts"]),
+  // human: resolveOutputDir (--out/--config) + applyBudgetFlag + reviewScope, and
+  // --format markdown|html (the HTML cockpit, runHumanStage). NOT a pipeline command.
+  human: flagSet(OUTPUT_CONFIG_FLAGS, SCOPE_FLAGS, ["budget", "format"]),
+  // validate reads --surface and --schema (and the output dir via resolveOutputDir,
+  // which reads --out/--config).
+  validate: flagSet(OUTPUT_CONFIG_FLAGS, ["surface", "schema"]),
+  // scoreboard reads --readme and --check (and the output dir via resolveOutputDir,
+  // which reads --out/--config).
+  scoreboard: flagSet(OUTPUT_CONFIG_FLAGS, ["readme", "check"]),
+  // run records a command transcript: --id and --command-transcripts. It reads --out
+  // via transcriptDirFromOut() to place the transcript, but never loads config, so it
+  // gets OUTPUT_FLAGS (--out) only — NOT --config.
+  run: flagSet(OUTPUT_FLAGS, ["id", "command-transcripts"]),
   // comment dispatches across ALL --format renderers (github/sticky/sarif/review),
-  // so it reads every flag any of them read: --format, the scope flags, --budget,
-  // --post/--strict-postability (github/sticky/review), the sticky flags
-  // (--comment-top-n/--artifact-name/--run-id), and --sarif-out (sarif).
-  comment: flagSet(SCOPE_FLAGS, [
+  // so it reads every flag any of them read: --out/--config (resolveOutputDir +
+  // loadConfig), --format, the scope flags, --budget, --post/--strict-postability
+  // (github/sticky/review), the sticky flags (--comment-top-n/--artifact-name/
+  // --run-id), and --sarif-out (sarif).
+  comment: flagSet(OUTPUT_CONFIG_FLAGS, SCOPE_FLAGS, [
     "format",
     "budget",
     "post",
@@ -3273,16 +3299,18 @@ const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
     "run-id",
     "sarif-out"
   ]),
-  // review: resolveOutputDir + applyBudgetFlag + reviewScope + the walkthrough
-  // flags --interactive and --author, plus --now (runWalkthrough's createdAt reads
-  // nowFlag). --now is NOT universal, so review must list it explicitly.
-  review: flagSet(SCOPE_FLAGS, ["budget", "interactive", "author", "now"])
+  // review: resolveOutputDir (--out/--config) + loadConfig + applyBudgetFlag +
+  // reviewScope + the walkthrough flags --interactive and --author, plus --now
+  // (runWalkthrough's createdAt reads nowFlag). --now is NOT universal, so review
+  // must list it explicitly.
+  review: flagSet(OUTPUT_CONFIG_FLAGS, SCOPE_FLAGS, ["budget", "interactive", "author", "now"])
 };
 
-// The standalone human sub-artifact commands (HUMAN_STANDALONE_ARTIFACTS) all
-// run runHumanSubartifactStage: resolveOutputDir + reviewScope, no extra flags.
+// The standalone human sub-artifact commands (HUMAN_STANDALONE_ARTIFACTS) all run
+// runHumanSubartifactStage: resolveOutputDir (--out/--config) + loadConfig +
+// reviewScope, no other extra flags.
 for (const artifact of HUMAN_STANDALONE_ARTIFACTS) {
-  FLAGS_BY_COMMAND[artifact.command] = flagSet(SCOPE_FLAGS);
+  FLAGS_BY_COMMAND[artifact.command] = flagSet(OUTPUT_CONFIG_FLAGS, SCOPE_FLAGS);
 }
 
 // review-surfaces.CLI.9: the GLOBAL union of every flag any command reads — the
