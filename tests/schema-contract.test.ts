@@ -851,6 +851,7 @@ test("review-surfaces.SCHEMA.5 the big agent arrays carry maxItems caps", () => 
     [["$defs", "Evaluation", "properties", "results", "maxItems"], 217],
     [["$defs", "Evaluation", "properties", "overreach", "maxItems"], 4],
     [["$defs", "Intent", "properties", "requirements", "maxItems"], 217],
+    [["$defs", "Intent", "properties", "claimed_candidates", "maxItems"], 217],
     [["$defs", "Risks", "properties", "items", "maxItems"], 3],
     [["$defs", "Dogfood", "properties", "findings", "maxItems"], 1]
   ];
@@ -869,6 +870,16 @@ test("review-surfaces.SCHEMA.5 intent free-text arrays carry maxItems caps and s
     assert.equal(typeof itemLen, "number", `expected numeric maxLength on intent.${field}[]`);
   }
   assert.equal(typeof schemaAt(schema, ["$defs", "Intent", "properties", "summary", "maxLength"]), "number");
+});
+
+test("review-surfaces.SCHEMA.5 provider-claimed candidate statement/anchors carry maxLength and maxItems caps", () => {
+  const base = ["$defs", "Intent", "properties", "claimed_candidates", "items", "properties"];
+  const statementLen = schemaAt(schema, [...base, "statement", "maxLength"]);
+  assert.equal(typeof statementLen, "number", "expected numeric maxLength on claimed_candidates[].statement");
+  const anchorsCap = schemaAt(schema, [...base, "anchors", "maxItems"]);
+  assert.equal(typeof anchorsCap, "number", "expected numeric maxItems on claimed_candidates[].anchors");
+  const anchorItemLen = schemaAt(schema, [...base, "anchors", "items", "maxLength"]);
+  assert.equal(typeof anchorItemLen, "number", "expected numeric maxLength on claimed_candidates[].anchors[]");
 });
 
 test("review-surfaces.SCHEMA.5 free-text string fields carry a maxLength cap", () => {

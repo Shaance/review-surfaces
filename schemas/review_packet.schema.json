@@ -437,14 +437,19 @@
         },
         "claimed_candidates": {
           "type": "array",
+          "maxItems": 5000,
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": ["id", "statement", "anchors", "confidence", "trust"],
             "properties": {
               "id": { "type": "string" },
-              "statement": { "type": "string" },
-              "anchors": { "type": "array", "items": { "type": "string" } },
+              "statement": { "type": "string", "maxLength": 20000 },
+              "anchors": {
+                "type": "array",
+                "maxItems": 1000,
+                "items": { "type": "string", "maxLength": 20000 }
+              },
               "confidence": { "enum": ["medium", "low"] },
               "trust": { "const": "claimed" }
             }
