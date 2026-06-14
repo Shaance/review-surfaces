@@ -1940,11 +1940,14 @@ function buildVerdict(input: BuildHumanReviewInput, blockers: ReviewBlocker[], t
     }
   } else if (hasRiskAtLeast(input, "medium")) {
     decision = "reviewable_with_attention";
+    // review-surfaces.HUMAN_TRUST.6: name the concrete medium+ risk and cite the
+    // risk that crossed the threshold here too, not just in the missing-evidence
+    // branch — otherwise a low-then-medium risk surface still gets a generic reason.
     reasons.push({
       id: "READY-RISKS-PRESENT",
       severity: "medium",
-      summary: "Reviewable risks remain and should guide the review path.",
-      evidence: firstRiskEvidence(input),
+      summary: reviewableRiskReasonSummary(input, "medium"),
+      evidence: firstRiskEvidenceAtLeast(input, "medium"),
       required_action: "Review the ranked queue before approving."
     });
   } else if (hasPositiveValidationEvidence(input.packet.risks)) {
@@ -4192,6 +4195,13 @@ function isClaimedValidationEvidence(item: RisksModel["test_evidence"][number]):
   if (item.kind !== "claimed") {
     return false;
   }
+  // review-surfaces.EVIDENCE.8: a feedback-recorded passed command is always a
+  // claim that must surface under "Claimed but not verified" — it must never
+  // silently vanish from both sections — even when its command is a project-
+  // specific validator (e.g. `make verify`) we do not recognize as local validation.
+  if ((item.evidence ?? []).some((ref) => ref.kind === "feedback")) {
+    return true;
+  }
   const commands = (item.evidence ?? [])
     .map((ref) => ref.command)
     .filter((command): command is string => typeof command === "string" && command.length > 0);
@@ -4593,12 +4603,15 @@ function summarizeHumanReview(
   // review-surfaces.COLD_START.5: a spec-less packet never advertises
   // "0 requirement result(s)" — the spec-coupled counts are simply absent.
   const specless = (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none";
-  const changedFileCount = input.diff?.files.length ?? 0;
+  // Only assert a changed-file count when the diff is actually present. A review
+  // rebuilt from an existing packet (no inputs/diff.patch) must not claim
+  // "0 changed file(s)" — it falls back to the packet-risk denominator instead.
+  const changedFilePart = input.diff ? `${input.diff.files.length} changed file(s), ` : "";
   const scope = input.prSurface
     ? specless
       ? `${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.risks.candidates.length} PR risk candidate(s)`
       : `${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.scope.affected_requirements.length} affected requirement(s), ${input.prSurface.risks.candidates.length} PR risk candidate(s)`
-    : `${changedFileCount} changed file(s), ${input.packet.risks.items.length} packet risk(s)`;
+    : `${changedFilePart}${input.packet.risks.items.length} packet risk(s)`;
   return `${blockerCount} blocker(s) and ${queueCount} review queue item(s) across ${scope}.`;
 }
 
