@@ -626,33 +626,51 @@ async function hashChangedFiles(
   // head (a range deletion) hashes to the "missing" sentinel either way.
   head: { useWorktree: boolean; headSha: string }
 ): Promise<ChangedFileHash[]> {
-  // review-surfaces.PERF.2 (output-identical): map each file to its hash and
-  // await the batch, instead of awaiting one async worktree hash at a time.
-  // Order is preserved by mapping (not pushing), so the result is byte-identical
-  // and deterministic regardless of which hash resolves first. The committed-blob
-  // branch stays synchronous; only the worktree-disk reads run concurrently.
-  return Promise.all(
-    changedFiles.map(async (file) => {
-      let hash = "missing";
-      if (head.useWorktree) {
-        const absolute = path.resolve(cwd, file.path);
-        if (isRegularFile(absolute)) {
-          try {
-            hash = await hashFile(absolute);
-          } catch {
-            hash = "unreadable";
-          }
-        }
-      } else {
-        const blob = readFileBytesAtRef(cwd, head.headSha, file.path);
-        if (blob !== undefined) {
-          hash = crypto.createHash("sha256").update(blob).digest("hex");
+  // review-surfaces.PERF.2 (output-identical): hash files concurrently instead of
+  // awaiting one async worktree read at a time. Concurrency is BOUNDED by a small
+  // worker pool: an unbounded Promise.all over every changed file opens one fd per
+  // file at once, which on fd-limited CI/dev machines makes otherwise-readable
+  // files fail with EMFILE — the catch below would then mislabel them "unreadable"
+  // and the manifest signature would no longer reflect their contents (stale or
+  // spuriously-invalid cache reuse). Results are written by index, so the output
+  // is byte-identical and deterministic regardless of completion order. The
+  // committed-blob branch stays synchronous; only worktree-disk reads await.
+  const hashOne = async (file: ChangedFile): Promise<ChangedFileHash> => {
+    let hash = "missing";
+    if (head.useWorktree) {
+      const absolute = path.resolve(cwd, file.path);
+      if (isRegularFile(absolute)) {
+        try {
+          hash = await hashFile(absolute);
+        } catch {
+          hash = "unreadable";
         }
       }
-      return { path: file.path, status: file.status, source: file.source, algorithm: "sha256" as const, hash };
-    })
-  );
+    } else {
+      const blob = readFileBytesAtRef(cwd, head.headSha, file.path);
+      if (blob !== undefined) {
+        hash = crypto.createHash("sha256").update(blob).digest("hex");
+      }
+    }
+    return { path: file.path, status: file.status, source: file.source, algorithm: "sha256" as const, hash };
+  };
+
+  const results = new Array<ChangedFileHash>(changedFiles.length);
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    for (let index = cursor++; index < changedFiles.length; index = cursor++) {
+      results[index] = await hashOne(changedFiles[index]);
+    }
+  };
+  const poolSize = Math.min(CHANGED_FILE_HASH_CONCURRENCY, changedFiles.length);
+  await Promise.all(Array.from({ length: poolSize }, () => worker()));
+  return results;
 }
+
+// Cap on simultaneous worktree-file reads in hashChangedFiles. Small enough to
+// stay well under default per-process fd limits (so a large changed-file set
+// never triggers EMFILE), large enough to keep disk reads overlapped.
+const CHANGED_FILE_HASH_CONCURRENCY = 16;
 
 // A flag-supplied input file plus a content hash of its current bytes. Kind +
 // resolved path + hash fold into the signature so editing the file (or toggling
