@@ -330,7 +330,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   const config = humanReviewBuildConfig(input);
   // review-surfaces.COLD_START.4: the spec mode is MODEL state read from the
   // packet intent (a legacy packet without the field reads as "acai").
-  const specMode: "acai" | "none" = (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none" ? "none" : "acai";
+  const specMode: "acai" | "none" = isSpeclessIntent(input.packet.intent) ? "none" : "acai";
   // review-surfaces.SEMANTIC_DIFF.1-4: concrete change facts feed the queue and
   // suggested comments with field-level / signature-level / test-weakening
   // language instead of generic path-touch phrasing.
@@ -866,11 +866,29 @@ function evidenceCardDraft(input: {
   };
 }
 
+// review-surfaces.COLD_START.4/.5: single source of truth for "is this a
+// spec-less run". intent is a typed IntentModel with a non-optional spec_mode, so
+// no defensive cast is needed.
+function isSpeclessIntent(intent: ReviewPacket["intent"]): boolean {
+  return intent.spec_mode === "none";
+}
+
 function splitEvidenceCardRefs(evidence: EvidenceRef[]): { direct: EvidenceRef[]; missing: EvidenceRef[]; invalid: EvidenceRef[] } {
-  const refs = dedupeEvidenceRefs(evidence);
-  const invalid = refs.filter(isInvalidTrustEvidence);
-  const missing = refs.filter((ref) => !isInvalidTrustEvidence(ref) && isMissingEvidenceCardRef(ref));
-  const direct = refs.filter((ref) => !isInvalidTrustEvidence(ref) && !isMissingEvidenceCardRef(ref) && isVerifiedTrustEvidence(ref));
+  const direct: EvidenceRef[] = [];
+  const missing: EvidenceRef[] = [];
+  const invalid: EvidenceRef[] = [];
+  // Single ordered partition: each ref lands in exactly one bucket (or is dropped
+  // when it matches none), in input order — equivalent to the prior three filter
+  // passes but without the repeated negated predicates.
+  for (const ref of dedupeEvidenceRefs(evidence)) {
+    if (isInvalidTrustEvidence(ref)) {
+      invalid.push(ref);
+    } else if (isMissingEvidenceCardRef(ref)) {
+      missing.push(ref);
+    } else if (isVerifiedTrustEvidence(ref)) {
+      direct.push(ref);
+    }
+  }
   return { direct, missing, invalid };
 }
 
@@ -879,19 +897,21 @@ function isMissingEvidenceCardRef(ref: EvidenceRef): boolean {
 }
 
 function evidenceCardStatus(split: { direct: EvidenceRef[]; missing: EvidenceRef[]; invalid: EvidenceRef[] }): EvidenceCard["status"] {
-  if (split.invalid.length > 0 && (split.direct.length > 0 || split.missing.length > 0)) {
+  const hasInvalid = split.invalid.length > 0;
+  const hasMissing = split.missing.length > 0;
+  const hasDirect = split.direct.length > 0;
+  // More than one non-empty bucket is "mixed"; otherwise the single populated
+  // bucket decides (direct splits into verified vs unchecked); none is "unknown".
+  if ([hasInvalid, hasMissing, hasDirect].filter(Boolean).length > 1) {
     return "mixed";
   }
-  if (split.invalid.length > 0) {
+  if (hasInvalid) {
     return "invalid_evidence";
   }
-  if (split.missing.length > 0 && split.direct.length > 0) {
-    return "mixed";
-  }
-  if (split.missing.length > 0) {
+  if (hasMissing) {
     return "missing_evidence";
   }
-  if (split.direct.length > 0) {
+  if (hasDirect) {
     return split.direct.every(isVerifiedEvidenceCardRef) ? "verified" : "unchecked";
   }
   return "unknown";
@@ -1717,7 +1737,7 @@ function buildSinceLastReview(input: BuildHumanReviewInput): SinceLastReview {
   // review-surfaces.COLD_START.5: a spec-less comparison keeps the risk deltas
   // (diff-derived value) but drops the requirement- and overreach-shaped slices
   // a prior Acai-era packet may carry.
-  const specless = (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none";
+  const specless = isSpeclessIntent(input.packet.intent);
   const statusChanges = specless ? [] : comparison.status_changes ?? [];
   const improved = statusChanges
     .filter((change) => change.direction === "improved")
@@ -4132,7 +4152,7 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
   const prFacts: TrustFactDraft[] = [];
   if (input.prSurface) {
     // review-surfaces.COLD_START.5: no affected-requirement clause on spec-less PRs.
-    const speclessTrust = (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none";
+    const speclessTrust = isSpeclessIntent(input.packet.intent);
     prFacts.push({
       summary: speclessTrust
         ? `PR scope contains ${input.prSurface.scope.changed_files.length} changed file(s) and ${input.prSurface.risks.candidates.length} deterministic PR risk candidate(s).`
@@ -4394,7 +4414,7 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
     case "unmapped_change":
       // review-surfaces.COLD_START.5: spec-less repos are never asked to map
       // files to requirements — review areas are the only mapping concept.
-      return (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none"
+      return isSpeclessIntent(input.packet.intent)
         ? [riskDraft({
             kind: "manual",
             priority: "recommended",
@@ -4601,7 +4621,7 @@ function summarizeHumanReview(
   // never "217 requirement result(s)".
   // review-surfaces.COLD_START.5: a spec-less packet never advertises
   // "0 requirement result(s)" — the spec-coupled counts are simply absent.
-  const specless = (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none";
+  const specless = isSpeclessIntent(input.packet.intent);
   // Only assert a changed-file count when the diff is actually present. A review
   // rebuilt from an existing packet (no inputs/diff.patch) must not claim
   // "0 changed file(s)" — it falls back to the packet-risk denominator instead.

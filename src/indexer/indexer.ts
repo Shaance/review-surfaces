@@ -194,7 +194,7 @@ function detectEcosystems(repositoryFiles: string[]): Ecosystem[] {
 
   const findManifest = (candidates: string[]): string | undefined => {
     const matches = [...present].filter((file) => candidates.includes(baseName(file)));
-    matches.sort((left, right) => compareStrings(left, right));
+    matches.sort(compareStrings);
     return matches[0];
   };
 
@@ -247,7 +247,7 @@ function buildClusters(cwd: string, files: IndexedFile[]): RepoCluster[] {
   }
 
   // Union-find over directory seeds so import adjacency can merge them.
-  const dirs = [...dirToFiles.keys()].sort((left, right) => compareStrings(left, right));
+  const dirs = [...dirToFiles.keys()].sort(compareStrings);
   const parent = new Map<string, string>();
   for (const dir of dirs) {
     parent.set(dir, dir);
@@ -327,8 +327,8 @@ function buildClusters(cwd: string, files: IndexedFile[]): RepoCluster[] {
   }
 
   const clusters: RepoCluster[] = [...merged.entries()].map(([root, cluster]) => {
-    const sortedDirs = [...cluster.dirs].sort((left, right) => compareStrings(left, right));
-    const sortedFiles = [...cluster.files].sort((left, right) => compareStrings(left, right));
+    const sortedDirs = [...cluster.dirs].sort(compareStrings);
+    const sortedFiles = [...cluster.files].sort(compareStrings);
     return {
       id: `cluster:${root}`,
       label: clusterLabel(sortedDirs),
@@ -399,7 +399,7 @@ function extractRelativeImports(cwd: string, relativePath: string): string[] {
       }
     }
   }
-  return [...specifiers].sort((left, right) => compareStrings(left, right));
+  return [...specifiers].sort(compareStrings);
 }
 
 function resolveRelativeImport(

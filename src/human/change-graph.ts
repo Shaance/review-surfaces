@@ -639,7 +639,7 @@ function deriveWhy(filePath: string, category: LegCategory, status: ChangeGraphN
 // members sorted alphabetically; component list order is irrelevant (the topo
 // pass orders them).
 function stronglyConnectedComponents(paths: string[], edges: ChangeGraphEdge[]): string[][] {
-  const sorted = [...paths].sort((a, b) => compareStrings(a, b));
+  const sorted = [...paths].sort(compareStrings);
   const adjacency = new Map<string, string[]>();
   for (const node of sorted) {
     adjacency.set(node, []);
@@ -648,7 +648,7 @@ function stronglyConnectedComponents(paths: string[], edges: ChangeGraphEdge[]):
     adjacency.get(edge.from)?.push(edge.to);
   }
   for (const list of adjacency.values()) {
-    list.sort((a, b) => compareStrings(a, b));
+    list.sort(compareStrings);
   }
 
   const index = new Map<string, number>();
@@ -700,7 +700,7 @@ function stronglyConnectedComponents(paths: string[], edges: ChangeGraphEdge[]):
             break;
           }
         }
-        components.push(members.sort((a, b) => compareStrings(a, b)));
+        components.push(members.sort(compareStrings));
       }
     }
   }
