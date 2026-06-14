@@ -9,6 +9,7 @@
 // a high-confidence secret, the result is marked blocked and the caller must not
 // post it.
 import { redactSecrets } from "../privacy/secrets";
+import { compareStrings } from "../core/compare";
 import { StructuredDiff } from "../pr/contract";
 import { renderHunkExcerpt } from "../human/hunk-excerpt";
 import { decisionLabel, formatQueueLocation } from "../human/render";
@@ -232,10 +233,17 @@ function renderTrustCounts(model: HumanReviewModel): string {
 }
 
 function renderSinceSection(since: SinceLastReview, state: RedactionState): string {
+  // review-surfaces.TREND.5: a single aggregate risk whose only change is its
+  // count appears as BOTH resolved (old count) and new (new count) because the
+  // count is baked into the comparison identity. Collapse the count-moved pair at
+  // render time into one "still open (count N -> M)" note rather than reporting it
+  // as both resolved and new.
+  const { resolved, news, moved } = dedupeCountMovedRisks(since.resolved_risks, since.new_risks);
   const lines = [
-    formatSinceGroup("✅ Resolved risks", since.resolved_risks, state),
+    formatSinceGroup("✅ Resolved risks", resolved, state),
     formatSinceGroup("⚠️ Regressed", since.regressed, state),
-    formatSinceGroup("🆕 New risks", since.new_risks, state),
+    formatSinceGroup("🆕 New risks", news, state),
+    moved.length ? `- ↔ Still open (count changed): ${moved.map((note) => field(note, state)).join("; ")}` : undefined,
     formatSinceGroup("📈 Improved", since.improved, state),
     formatSinceGroup("➕ New overreach", since.new_overreach, state),
     formatSinceGroup("✅ Resolved overreach", since.resolved_overreach, state)
@@ -247,16 +255,91 @@ ${lines.length ? lines.join("\n") : "- No requirement or risk changes since the 
 _Compared against the previous review packet._`;
 }
 
+const SINCE_COUNT_RE = /\b\d+ (?:requirement\(s\)|changed file\(s\))/;
+const SINCE_COLLAPSE_THRESHOLD = 10;
+
+// The count-led aggregate summary with its number removed, so "...139
+// requirement(s)..." and "...182 requirement(s)..." normalize to the same stem.
+function sinceCountStem(summary: string): string {
+  return summary.replace(/\b\d+ (requirement\(s\)|changed file\(s\))/g, "$1");
+}
+
+function sinceLeadingCount(summary: string): string | undefined {
+  return summary.match(/\b(\d+) (?:requirement\(s\)|changed file\(s\))/)?.[1];
+}
+
+// review-surfaces.TREND.5: detect a risk that is "resolved" at its old count and
+// "new" at its new count (the same aggregate, count moved) and report it once.
+function dedupeCountMovedRisks(
+  resolved: SinceLastReviewItem[],
+  news: SinceLastReviewItem[]
+): { resolved: SinceLastReviewItem[]; news: SinceLastReviewItem[]; moved: string[] } {
+  const newByStem = new Map<string, SinceLastReviewItem>();
+  for (const item of news) {
+    const stem = sinceCountStem(item.summary);
+    if (!newByStem.has(stem)) {
+      newByStem.set(stem, item);
+    }
+  }
+  const movedStems = new Set<string>();
+  const moved: string[] = [];
+  const resolvedFiltered: SinceLastReviewItem[] = [];
+  for (const item of resolved) {
+    const stem = sinceCountStem(item.summary);
+    const match = newByStem.get(stem);
+    if (match && SINCE_COUNT_RE.test(item.summary) && !movedStems.has(stem)) {
+      movedStems.add(stem);
+      const oldCount = sinceLeadingCount(item.summary);
+      const newCount = sinceLeadingCount(match.summary);
+      moved.push(item.summary.replace(/\b\d+ (requirement\(s\)|changed file\(s\))/, `${oldCount} -> ${newCount} $1`));
+    } else {
+      resolvedFiltered.push(item);
+    }
+  }
+  const newsFiltered = news.filter((item) => !movedStems.has(sinceCountStem(item.summary)));
+  return { resolved: resolvedFiltered, news: newsFiltered, moved };
+}
+
 function formatSinceGroup(label: string, items: SinceLastReviewItem[], state: RedactionState): string | undefined {
   if (items.length === 0) {
     return undefined;
+  }
+  return `- ${label}: ${sinceGroupBody(items, state)}`;
+}
+
+function sinceGroupBody(items: SinceLastReviewItem[], state: RedactionState): string {
+  // review-surfaces.TREND.4: when a bucket is dominated by one homogeneous status
+  // transition (the test-evidence flap that regresses dozens of requirements
+  // satisfied->partial at once), collapse it to a count + a couple of sample ids
+  // so the loudest line is not the lowest-signal one. Single-item / small buckets
+  // render verbatim.
+  if (items.every((item) => item.previous_status && item.current_status)) {
+    const byTransition = new Map<string, SinceLastReviewItem[]>();
+    for (const item of items) {
+      const key = `${item.previous_status} -> ${item.current_status}`;
+      const group = byTransition.get(key);
+      if (group) {
+        group.push(item);
+      } else {
+        byTransition.set(key, [item]);
+      }
+    }
+    if ([...byTransition.values()].some((group) => group.length >= SINCE_COLLAPSE_THRESHOLD)) {
+      return [...byTransition.entries()]
+        .sort(([left], [right]) => compareStrings(left, right))
+        .map(([transition, group]) => {
+          const samples = group.slice(0, 2).map((item) => field(item.acai_id ?? item.summary, state)).join(", ");
+          return `${group.length} requirement(s) ${transition} (e.g. ${samples})`;
+        })
+        .join("; ");
+    }
   }
   const shown = items
     .slice(0, MAX_SINCE_ITEMS)
     .map((item) => field(item.summary, state))
     .join("; ");
   const more = items.length > MAX_SINCE_ITEMS ? ` (+${items.length - MAX_SINCE_ITEMS} more)` : "";
-  return `- ${label}: ${shown}${more}`;
+  return `${shown}${more}`;
 }
 
 function renderFingerprint(model: HumanReviewModel, runId: string | undefined): string {

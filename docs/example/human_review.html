@@ -35,12 +35,20 @@ a { color: var(--accent); }
 
 <h2 id="verdict">Verdict</h2>
 <p><span class="badge needs_author_clarification">Needs author clarification</span> <span class="muted">confidence: medium</span></p>
-<p>Human review surface generated from local evidence: 0 packet risk(s). Verdict is needs_author_clarification with 0 blocker(s) and 0 review queue item(s).</p>
+<p>0 blocker(s) and 0 review queue item(s) across 6 changed file(s), 0 packet risk(s).</p>
 <div id="strip"><p class="muted">✓ 0 verified · ~ 0 claimed · 1 missing evidence · 0 invalid</p></div>
+<div class="three-questions" style="border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.6rem 0">
+<strong>What a human reviewer needs to know</strong>
+<ul style="margin:.3rem 0">
+<li><a href="#queue">Did the agent overreach its instructions?</a> — not assessed — no spec indexed</li>
+<li><a href="#queue">Did it weaken tests to make them pass?</a> — none detected — no deleted/skipped tests or removed assertions</li>
+<li><a href="#trust">Did it claim things it didn't do?</a> — none — no claim lacks backing evidence</li>
+</ul>
+</div>
 <h2 id="reading-order">Reading order</h2>
-<h3>Implementation</h3><ol><li value="1"><code>source/core/options.ts</code> — imported by 1 changed file(s)</li><li value="2"><code>source/core/index.ts</code> — imported by 1 changed file(s)</li></ol>
-<h3>Tests</h3><ol><li value="3"><code>test/abort.ts</code> — test — read after the 1 changed file(s) it imports</li><li value="4"><code>test/pagination.ts</code> — test — read after the code it covers</li></ol>
-<h3>Config and docs</h3><ol><li value="5"><code>documentation/4-pagination.md</code> — config or docs — read last</li><li value="6"><code>package.json</code> — config or docs — read last</li></ol>
+<h3>Implementation</h3><ol><li value="1"><code>source/core/options.ts</code> — imported by 1 changed file(s)</li></ol><details><summary>+1 supporting file(s) in dependency order</summary><ol><li value="2"><code>source/core/index.ts</code> — imported by 1 changed file(s)</li></ol></details>
+<h3>Tests</h3><ol><li value="3"><code>test/abort.ts</code> — read after the 1 changed file(s) it imports</li></ol><details><summary>+1 supporting file(s) in dependency order</summary><ol><li value="4"><code>test/pagination.ts</code></li></ol></details>
+<h3>Config and docs</h3><ol><li value="5"><code>documentation/4-pagination.md</code></li></ol><details><summary>+1 supporting file(s) in dependency order</summary><ol><li value="6"><code>package.json</code></li></ol></details>
 
 <h2 id="map">Change map</h2>
 <svg viewBox="0 0 752 264" width="100%" role="img" aria-label="Change map" style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;max-width:752px"><defs><marker id="map-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/></marker></defs><path d="M 216 112 C 116 112, 116 58, 16 58" fill="none" stroke="#9ca3af" stroke-width="1.2" marker-end="url(#map-arrow)"/><path d="M 216 58 C 246 58, 246 58, 276 58" fill="none" stroke="#9ca3af" stroke-width="1.2" marker-end="url(#map-arrow)"/><text x="16" y="28" font-size="11" font-weight="600" fill="#444">source/core</text><g data-map-file="source/core/index.ts" style="cursor:pointer"><rect x="16" y="38" width="200" height="40" rx="6" fill="#ffffff" stroke="#6b7280"/><text x="24" y="55" font-size="12">index.ts</text><text x="24" y="70" font-size="10" fill="#666">+33/-20</text><title>source/core/index.ts
@@ -83,7 +91,7 @@ a { color: var(--accent); }
 <p class="muted">Medium confidence: 0 verified fact(s), 1 missing evidence item(s), and 0 unverified claim(s).</p><h3>Missing evidence</h3><ul><li>No command transcript or validation feedback was supplied to prove test execution.</li></ul>
 
 <h2 id="questions">Questions for the author</h2>
-<ul><li><span class="badge clarifying">clarifying</span> Which validation command or parsed test artifact should reviewers trust for this change? <span class="muted">(QUESTION-001)</span></li><li><span class="badge clarifying">clarifying</span> What evidence closes this review gap: No command transcript or validation feedback was supplied to prove test execution.? <span class="muted">(QUESTION-002)</span></li></ul>
+<ul><li><span class="badge clarifying">clarifying</span> Which validation command or parsed test artifact should reviewers trust for this change? <span class="muted">(QUESTION-001)</span></li><li><span class="badge clarifying">clarifying</span> What evidence closes this review gap: No command transcript or validation feedback was supplied to prove test execution? <span class="muted">(QUESTION-002)</span></li></ul>
 
 
 <script>

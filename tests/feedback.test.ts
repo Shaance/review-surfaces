@@ -91,7 +91,7 @@ reviewer_preferences:
   assert.equal(feedback[0].reviewer_preferences[1]?.key, "max_top_review_items");
 });
 
-test("risk analysis maps feedback validation to claimed, indirect, and missing test evidence", () => {
+test("risk analysis maps feedback validation passed commands to claimed and failed to missing test evidence", () => {
   const collection = {
     changedFiles: [],
     feedback: [
@@ -119,8 +119,12 @@ test("risk analysis maps feedback validation to claimed, indirect, and missing t
   const risks = analyzeRisks(collection, evaluation, []);
 
   assert.equal(risks.test_evidence.length, 3);
+  // review-surfaces.EVIDENCE.8: a feedback-recorded passed command is a CLAIM
+  // (its output is not captured), so both passed commands classify as "claimed",
+  // never "indirect" (which would promote them into Verified facts). The failed
+  // command stays "missing". Manual-check notes remain "indirect" (separate test).
   assert.equal(risks.test_evidence[0].kind, "claimed");
-  assert.equal(risks.test_evidence[1].kind, "indirect");
+  assert.equal(risks.test_evidence[1].kind, "claimed");
   assert.equal(risks.test_evidence[2].kind, "missing");
   assert.equal(risks.test_evidence[0].evidence?.[0].path, ".review-surfaces/feedback/manual.yaml");
 });

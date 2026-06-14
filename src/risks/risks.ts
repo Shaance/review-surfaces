@@ -272,7 +272,13 @@ function validationEvidenceFromFeedback(collection: CollectionResult, transcript
       }
       entries.push({
         id: `TEST-FB-${String(entries.length + 1).padStart(3, "0")}`,
-        kind: commandLooksLikeTestCommand(command) ? "claimed" : "indirect",
+        // review-surfaces.EVIDENCE.8: a feedback-recorded "passed" command is a
+        // CLAIM — its output is not captured in the artifact — so it belongs in
+        // "Claimed but not verified", never under "Verified facts" (where the row
+        // would contradict its own "output is not captured" note). The manual-check
+        // notes loop below is a separate, evidence-bearing channel and stays
+        // indirect/verified so it can still clear blockers.
+        kind: "claimed",
         summary: `Feedback records a passing validation command: ${command}`,
         requirement_ids: [],
         evidence: [

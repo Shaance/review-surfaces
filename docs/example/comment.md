@@ -1,7 +1,7 @@
 <!-- review-surfaces:sticky -->
 ## review-surfaces
 
-**Needs author clarification.** Human review surface generated from local evidence: 0 packet risk(s). Verdict is needs_author_clarification with 0 blocker(s) and 0 review queue item(s).
+**Needs author clarification.** 0 blocker(s) and 0 review queue item(s) across 6 changed file(s), 0 packet risk(s).
 
 ### Review first
 

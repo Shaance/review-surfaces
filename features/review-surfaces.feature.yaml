@@ -300,8 +300,20 @@ components:
         requirement: Rollup rendering must lead with the distinguishing detail, not a shared generic summary — test-plan items that differ only by suggested file must either merge into one heading listing the files or lead each heading with its distinguishing field, so the rendered Test plan never repeats visually identical headings (extends HUMAN_REVIEW.19/.21).
         note: "ci-trust uplift Phase 5 (docs/history/CI_TRUST_UPLIFT_GOAL.md). A live run rendered five identical '### API / schema contract lens fired ...' headings because the rollup led with the generic gap rather than the suggested_file."
       23:
-        requirement: "Generated reviewer-facing prose must be punctuation- and label-clean — a templated question or sentence embedding a summary that already ends in sentence punctuation must not produce doubled terminal punctuation (for example \".?\"), and the empty linked-risk-id case must not render a label that reads as a risk-severity claim (\"Risk: none\") next to a high-severity ranking line."
-        note: "ci-trust uplift Phase 5. Live runs showed '.?' in reviewer questions and 'Risk: none' rendered directly under 'ranked by high risk severity'."
+        requirement: "Generated reviewer-facing prose must be punctuation- and label-clean — a templated question or sentence embedding a summary that already ends in sentence punctuation must not produce doubled terminal punctuation (for example \".?\"), and the empty linked-risk-id case must not render a label that reads as a risk-severity claim (\"Risk: none\") next to a high-severity ranking line; an empty linked-risk-id or requirement trailer is OMITTED entirely rather than rendered as a placeholder, so a present trailer line means real linked IDs."
+        note: "ci-trust uplift Phase 5. Live runs showed '.?' in reviewer questions and 'Risk: none' rendered directly under 'ranked by high risk severity'. The human-value polish uplift extended this to omit the empty trailer rather than print 'Linked risk IDs: none'."
+      24:
+        requirement: The human-review summary sentence must lead with what a reviewer acts on — the blocker and review-queue counts — over a changed-file denominator, and must not restate the verdict decision (the badge already prints it) or carry a "generated from local evidence" provenance preamble; the spec-less branch still never advertises "requirement result(s)".
+        note: "human-value polish uplift (docs/history/HUMAN_VALUE_POLISH_GOAL.md). The live summary opened 'Human review surface generated from local evidence: 217 requirement result(s) ... Verdict is needs_author_clarification ...', restating the badge and leading with an engine-internal count."
+      25:
+        requirement: A suggested reviewer comment that already names its path in the heading must omit an "Evidence:" line that only echoes that same path; the Evidence line renders only when it adds a distinct source (a different file, a line range, or a non-file evidence kind), so a present Evidence line means a second source.
+        note: "human-value polish uplift. 7 of 9 live suggested comments carried an 'Evidence: <the file already named twice>' line."
+      26:
+        requirement: A non-default review route whose every step is a low-priority negation (no signal fired for it, for example the security route on a change with no security/CI/redaction/privacy signal) must be flagged skippable once in its route header, rather than presenting four "nothing detected" steps as if they were review work; the model steps are preserved.
+        note: "human-value polish uplift. The live security route rendered four negation steps with 'Default: no / Secondary: no' and no skip hint."
+      27:
+        requirement: The HTML cockpit's first screen must answer the three questions the tool promises about agent-written code — did the agent overreach, weaken tests, or claim things it didn't do — each as a count linking to its section above the reading order (overreach degrades to "not assessed" when no spec is indexed); and evidence anchors must reuse the Markdown label fallback order so a command/test/note-only anchor shows its id rather than the bare word "command".
+        note: "human-value polish uplift. The live cockpit never named the three questions on the first screen, and command-transcript evidence anchors rendered as the literal word 'command'."
 
   NARRATIVE:
     name: Grounded change narrative
@@ -409,6 +421,12 @@ components:
       3:
         requirement: Ranking must be fully deterministic — identical inputs must produce byte-identical ordering with a stable tie-break on file path — and the evidence score must never hide an item entirely; a well-evidenced item moves down the queue, it never disappears.
         note: pnpm run determinism-check must stay green; ranking weights must not be tuned beyond the obvious before the effectiveness eval harness exists.
+      4:
+        requirement: A queue item whose risk is an aggregate rollup — a packet risk that summarizes requirement results and carries no real line anchor on its chosen evidence, for example "N requirement(s) have weak test evidence", whether its evidence spans many files OR a single spec file OR a capped first-five sample — must render at file level with file-level confidence and a short fixed heading; it must never borrow an unrelated changed hunk to advertise a "precise diff anchor" at high confidence, nor truncate a count sentence mid-word into the heading.
+        note: "human-value polish uplift (docs/history/HUMAN_VALUE_POLISH_GOAL.md). A live self-review ranked two project-wide aggregate statistics as #1 'Review first' items, each borrowing an unrelated changed hunk and advertising a 'precise diff anchor' at high confidence."
+      5:
+        requirement: The "why ranked here" block must be suppressed on the rendered Markdown and HTML surfaces when its sole content is the default severity echo (for example "ranked by high risk severity with a precise diff anchor") that only restates the priority line; the JSON ranking_reasons field stays populated so the contract and strict-schema minItems still hold.
+        note: "human-value polish uplift. 6 of 8 live queue items rendered a 'Why ranked here' line that merely echoed the Priority line."
 
   COVERAGE:
     name: Coverage-delta evidence
@@ -594,6 +612,9 @@ components:
       2:
         requirement: The reading order must render in human_review.md and the HTML cockpit as the section after the verdict, while the sticky comment carries only the first leg; the tour must never include unchanged files.
         note: Halo files belong to the map, not the reading plan; a blocker still leads the cockpit — the tour serves the comprehension pass after the verdict.
+      3:
+        requirement: The reading order must not repeat its leg header on every line — the Tests and Config/docs legs drop the per-step "test — ..." / "config or docs — read last" why that merely echoes the bold leg header (render-only; the JSON why is unchanged) — and the HTML cockpit must cap the reading-order wall by rendering the queue-linked and per-leg-lead steps visibly and collapsing the remaining mechanical rows behind a details element, with the full ordered list preserved in human_review.md and the JSON.
+        note: "human-value polish uplift (docs/history/HUMAN_VALUE_POLISH_GOAL.md). A live 51-step reading order restated 'config or docs — read last' on 9 lines and 'test — ...' on 25, and the full wall preceded the ranked queue in the cockpit."
 
   ARCH_DRIFT:
     name: Architecture-drift facts
@@ -621,6 +642,15 @@ components:
         requirement: The tool must carry forward a rounds ledger with the prior packet — each entry recording round number, head SHA, new/resolved/regressed counts from the existing compare output, and verdict — appending one row per run, with item identity on stable finding keys, never array positions, and the ledger must work from both transports, CI artifacts and the local prior-packet directory.
       2:
         requirement: The sticky comment and the HTML cockpit must render the rounds ledger as a compact table capped at the last eight or so rounds with the full ledger preserved in the artifact, and partial history must render honestly (for example "history begins at round 3") and never as an error — a missing prior packet is the first-review case.
+      3:
+        requirement: Since-last-review deltas must not triple-encode direction — a status-change summary renders arrow-only (no trailing "(improved/regressed)" parenthetical) and a resolved/new/overreach bullet drops the "<direction> since last review:" prefix its section header already states — while the structured direction field is preserved.
+        note: "human-value polish uplift (docs/history/HUMAN_VALUE_POLISH_GOAL.md). Live bullets read 'Resolved risk since last review: testing: ...' under a 'Resolved risks' header, and status changes ended in 'satisfied -> partial (regressed)'."
+      4:
+        requirement: When a since-last-review bucket is dominated by one homogeneous status transition (the test-evidence aggregate that regresses dozens of requirements satisfied->partial at once), the sticky comment must collapse it to a count plus a couple of sample ids rather than a fixed sample list and a "(+N more)" remainder, so the loudest delta line is not the lowest-signal one.
+        note: "human-value polish uplift. A live sticky showed '⚠️ Regressed: ... (+34 more)' as the loudest line while the real queue was 2 items and 0 blockers."
+      5:
+        requirement: A single aggregate risk whose only change is its count must not be reported as both resolved (at its old count) and new (at its new count); the sticky comment must detect the count-moved pair from the render-time delta model and report it once as "still open (count N -> M)".
+        note: "human-value polish uplift. The count is baked into the comparison identity, so one test-evidence aggregate appeared in both the Resolved and New buckets of the same comment."
 
   COLD_START:
     name: Cold-start correctness and spec-less mode
@@ -813,6 +843,9 @@ constraints:
         requirement: The packet must clearly distinguish verified evidence from agent claims.
       7:
         requirement: PR narrative output must answer what changed, why it matters, and where to look first, and each core section must survive evidence validation before the surface is postable.
+      8:
+        requirement: A feedback-recorded passed validation command is a CLAIM — its output is not captured in the artifact — so it must classify as claimed and render under "Claimed but not verified", never as indirect evidence promoted into "Verified facts" where the row would contradict its own "output is not captured" note; manual-check notes (CI secret-boundary, security review) remain a separate evidence-bearing channel and are unaffected.
+        note: "human-value polish uplift (docs/history/HUMAN_VALUE_POLISH_GOAL.md). Live trust audits listed five 'Validation command recorded in local feedback; command output is not captured' rows under Verified facts."
 
   HUMAN_TRUST:
     name: Human reviewer trust
@@ -828,6 +861,9 @@ constraints:
         requirement: Human-review Markdown must fit on one readable screen for the top summary and link to deeper artifacts for details.
       5:
         requirement: Human surfaces must avoid generic AI review boilerplate.
+      6:
+        requirement: When the verdict is driven by a soft, off-diff missing-evidence reason but a deterministic in-diff risk at or above medium also fired (a schema/API-contract break, a weakened test), the verdict reasons must also name that concrete risk co-equally, without changing the decision precedence — the headline must not cry wolf on bookkeeping while the real in-diff risk goes unmentioned.
+        note: "human-value polish uplift (docs/history/HUMAN_VALUE_POLISH_GOAL.md). A live verdict's only headline reason was 'Required review evidence is missing' while a schema-contract break and a weakened test went unmentioned in the verdict block."
 
   PRIVACY:
     name: Security and privacy

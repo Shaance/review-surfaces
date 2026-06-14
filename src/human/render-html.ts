@@ -10,7 +10,7 @@
 // timestamps), opens from disk offline, printable.
 import { resolveStructuredExcerpt, ExcerptRedactionState } from "./hunk-excerpt";
 import { containsBlockedRedaction } from "../privacy/secrets";
-import { decisionLabel, formatQueueLocation, HumanRenderContext } from "./render";
+import { decisionLabel, formatQueueLocation, HumanRenderContext, rankingReasonsAreDefaultOnly, collapseReadingOrderWhy } from "./render";
 import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
 import { renderChangeMapOverviewSvg, renderChangeMapSvg, SVG_LENS_FILLS } from "./render-svg-map";
 import { changeMapLeadLevel } from "./legibility-budget";
@@ -69,6 +69,7 @@ a { color: var(--accent); }
 <p><span class="badge ${esc(model.verdict.decision)}">${esc(decisionLabel(model.verdict.decision))}</span> <span class="muted">confidence: ${esc(model.verdict.confidence)}</span></p>
 <p>${esc(model.summary)}</p>
 ${renderHeaderStrip(model, lenses)}
+${renderThreeQuestions(model)}
 <h2 id="reading-order">Reading order</h2>
 ${renderReadingOrder(model)}
 
@@ -341,14 +342,47 @@ function renderQueueItem(model: HumanReviewModel, item: ReviewQueueItem, context
     .map((card) => `<a href="#card-${esc(card.id)}">${esc(card.id)}</a>`)
     .join(" ");
   const lenses = lensesForItem(model, item);
+  // review-surfaces.RANKING.5: drop the "Why ranked here" line when it is only the
+  // default severity echo (it restates the priority badge above).
+  const rankingLine = rankingReasonsAreDefaultOnly(item) ? "" : `\n<p class="muted">Why ranked here: ${esc(item.ranking_reasons.join("; "))}</p>`;
   return `<div class="item" data-lenses="${esc(lenses.join(" "))}" data-path="${esc(item.path)}"${item.old_path ? ` data-path-old="${esc(item.old_path)}"` : ""} id="queue-${esc(item.id)}">
 <header><strong>${esc(item.rank)}. <code>${esc(formatQueueLocation(item))}</code></strong> <span class="badge ${esc(item.priority)}">${esc(item.priority)}</span><label><input type="checkbox" data-queue-check="${esc(item.id)}"> reviewed</label></header>
-<p>${esc(item.reason)}</p>
-<p class="muted">Why ranked here: ${esc(item.ranking_reasons.join("; "))}</p>
+<p>${esc(item.reason)}</p>${rankingLine}
 <p>Action: ${esc(item.reviewer_action)}</p>
 ${excerptHtml}
 <p class="muted">Evidence: ${evidenceRefsHtml(item.evidence)}</p>
 <p class="muted">${esc(item.id)}${item.risk_ids.length ? ` · risks: ${esc(item.risk_ids.join(", "))}` : ""}${cardLinks ? ` · cards: ` : ""}${cardLinks}</p>
+</div>`;
+}
+
+// review-surfaces.HUMAN_REVIEW.27: the cockpit's first screen answers the three
+// questions the README promises about agent-written code — overreach, weakened
+// tests, unbacked claims — each as a count linking to its section, so a reviewer
+// sees the trust posture at a glance instead of inferring it from the queue.
+function renderThreeQuestions(model: HumanReviewModel): string {
+  const specless = model.spec_mode === "none";
+  const overreach = model.intent_mismatch?.possible_overreach ?? [];
+  const weakening = model.semantic_facts?.test_weakening ?? [];
+  const unbacked = model.trust_audit?.claimed_not_verified ?? [];
+  const overreachAnswer = specless
+    ? "not assessed — no spec indexed"
+    : overreach.length === 0
+      ? "none — every changed file maps to a stated requirement"
+      : `${overreach.length} changed file(s) outside any stated requirement`;
+  const weakeningFile = weakening.length > 0 ? ` (${esc(weakening[0].path)}${weakening.length > 1 ? `, +${weakening.length - 1} more` : ""})` : "";
+  const weakeningAnswer = weakening.length === 0
+    ? "none detected — no deleted/skipped tests or removed assertions"
+    : `${weakening.length} test-weakening signal(s)${weakeningFile}`;
+  const unbackedAnswer = unbacked.length === 0
+    ? "none — no claim lacks backing evidence"
+    : `${unbacked.length} claim(s) recorded without proof`;
+  return `<div class="three-questions" style="border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.6rem 0">
+<strong>What a human reviewer needs to know</strong>
+<ul style="margin:.3rem 0">
+<li><a href="#queue">Did the agent overreach its instructions?</a> — ${esc(overreachAnswer)}</li>
+<li><a href="#queue">Did it weaken tests to make them pass?</a> — ${weakening.length === 0 ? esc(weakeningAnswer) : weakeningAnswer}</li>
+<li><a href="#trust">Did it claim things it didn't do?</a> — ${esc(unbackedAnswer)}</li>
+</ul>
 </div>`;
 }
 
@@ -361,7 +395,10 @@ function evidenceRefsHtml(evidence: EvidenceRef[]): string {
   }
   return evidence
     .slice(0, 4)
-    .map((ref) => `<code>${esc(ref.path ?? ref.acai_id ?? ref.kind)}</code>`)
+    // review-surfaces.HUMAN_REVIEW.27: match the markdown evidence-label fallback
+    // order (formatEvidenceRef) so a command/test/note-only anchor shows its id
+    // instead of rendering as the bare word "command".
+    .map((ref) => `<code>${esc(ref.path ?? ref.acai_id ?? ref.test_name ?? ref.command ?? ref.note ?? ref.kind)}</code>`)
     .join(", ");
 }
 
@@ -392,16 +429,28 @@ function renderReadingOrder(model: HumanReviewModel): string {
     return `<p class="muted">No changed files to order.</p>`;
   }
   let stepNumber = 0;
+  const renderStep = (entry: { step: HumanReviewModel["reading_order"]["legs"][number]["steps"][number]; n: number }): string => {
+    const { step, n } = entry;
+    const refs = step.queue_refs.length > 0 ? ` <span class="muted">(queue: ${step.queue_refs.map((ref) => esc(ref)).join(", ")})</span>` : "";
+    const why = collapseReadingOrderWhy(step.why);
+    return `<li value="${n}"><code>${esc(step.path)}</code>${why ? ` — ${esc(why)}` : ""}${refs}</li>`;
+  };
   return legs
     .map((leg) => {
-      const steps = leg.steps
-        .map((step) => {
-          stepNumber += 1;
-          const refs = step.queue_refs.length > 0 ? ` <span class="muted">(queue: ${step.queue_refs.map((ref) => esc(ref)).join(", ")})</span>` : "";
-          return `<li value="${stepNumber}"><code>${esc(step.path)}</code> — ${esc(step.why)}${refs}</li>`;
-        })
-        .join("");
-      return `<h3>${esc(leg.title)}</h3><ol>${steps}</ol>`;
+      // review-surfaces.READING_ORDER.3: a 50-row reading-order wall buries the
+      // ranked queue below it. Show the steps that carry a queue link plus the
+      // first step of each leg; collapse the remaining mechanical "imported
+      // by N" / "read last" rows behind a <details>. Numbering reflects the true
+      // reading position, and the FULL ordered list stays in human_review.md and
+      // human_review.json — no data is lost.
+      const numbered = leg.steps.map((step) => ({ step, n: (stepNumber += 1) }));
+      const visible = numbered.filter((entry, index) => index === 0 || entry.step.queue_refs.length > 0);
+      const collapsed = numbered.filter((entry, index) => !(index === 0 || entry.step.queue_refs.length > 0));
+      const visibleHtml = visible.map(renderStep).join("");
+      const collapsedHtml = collapsed.length > 0
+        ? `<details><summary>+${collapsed.length} supporting file(s) in dependency order</summary><ol>${collapsed.map(renderStep).join("")}</ol></details>`
+        : "";
+      return `<h3>${esc(leg.title)}</h3><ol>${visibleHtml}</ol>${collapsedHtml}`;
     })
     .join("\n");
 }

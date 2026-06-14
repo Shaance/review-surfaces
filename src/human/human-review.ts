@@ -1777,7 +1777,10 @@ function statusChangeItem(
     previous_status: change.previous_status,
     current_status: change.current_status,
     direction: change.direction,
-    summary: `${change.acai_id}: ${change.previous_status} -> ${change.current_status} (${change.direction}).`,
+    // review-surfaces.TREND.3: the bucket emoji + arrow already encode direction;
+    // the trailing "(improved/regressed)" parenthetical is a third copy. `direction`
+    // stays a structured field for machine consumers.
+    summary: `${change.acai_id}: ${change.previous_status} -> ${change.current_status}.`,
     evidence: [comparisonEvidence(input, `Previous-packet comparison reported ${change.direction} status movement for ${change.acai_id}.`, change.acai_id)]
   };
 }
@@ -1795,7 +1798,10 @@ function riskComparisonItems(
       id: `${prefix}-${String(index + 1).padStart(3, "0")}`,
       category: "risk",
       severity: currentRisk?.severity ?? "unknown",
-      summary: `${label}: ${trimSentenceEnd(key)}.`,
+      // review-surfaces.TREND.3: the section header ("Resolved risks" / "New
+      // risks") already names the direction; drop the per-bullet "<label>:"
+      // echo. The label is preserved in the evidence prose below.
+      summary: `${trimSentenceEnd(key)}.`,
       evidence: [comparisonEvidence(input, `${label} from previous-packet comparison: ${key}.`)]
     };
   });
@@ -1806,7 +1812,8 @@ function overreachComparisonItems(input: BuildHumanReviewInput, prefix: string, 
     id: `${prefix}-${String(index + 1).padStart(3, "0")}`,
     category: "overreach",
     path: filePath,
-    summary: `${label}: ${filePath}.`,
+    // review-surfaces.TREND.3: the section header already names the direction.
+    summary: `${filePath}.`,
     evidence: [comparisonEvidence(input, `${label} from previous-packet comparison for ${filePath}.`)]
   }));
 }
@@ -1917,6 +1924,20 @@ function buildVerdict(input: BuildHumanReviewInput, blockers: ReviewBlocker[], t
       evidence: trustAudit.missing_evidence[0]?.evidence ?? [missingEvidence("Missing evidence lowers readiness confidence.")],
       required_action: "Record validation evidence or answer the generated reviewer questions."
     });
+    // review-surfaces.HUMAN_TRUST.6: a soft, off-diff "missing manual check" must
+    // not be the SOLE headline reason while in-diff high-severity lenses (a
+    // schema/API-contract break, a weakened test) sit unmentioned in the verdict
+    // block. Surface the top such risk co-equally so the headline names the
+    // concrete in-diff risk too — without changing the decision precedence.
+    if (hasRiskAtLeast(input, "medium")) {
+      reasons.push({
+        id: "READY-RISKS-PRESENT",
+        severity: "medium",
+        summary: reviewableRiskReasonSummary(input, "medium"),
+        evidence: firstRiskEvidenceAtLeast(input, "medium"),
+        required_action: "Review the ranked queue before approving."
+      });
+    }
   } else if (hasRiskAtLeast(input, "medium")) {
     decision = "reviewable_with_attention";
     reasons.push({
@@ -2036,7 +2057,8 @@ function buildReviewQueue(
     if (!first) {
       continue;
     }
-    const anchor = queueAnchorForEvidence(first, diffIndex);
+    const aggregate = !normalizedEvidenceRange(first) && evidenceSpansMultiplePaths(risk.evidence);
+    const anchor = queueAnchorForEvidence(first, diffIndex, aggregate);
     const feedbackDowngrade = feedbackFalsePositiveEffectForRisk(risk, feedbackEffects, first.path);
     // review-surfaces.POLICY.2: committed policy outranks local feedback. A
     // current (non-expired) suppression matching the STABLE key (rule + path
@@ -2089,9 +2111,15 @@ function buildReviewQueue(
     if (!first) {
       continue;
     }
-    const anchor = queueAnchorForEvidence(first, diffIndex);
+    // review-surfaces.RANKING.4: every packet risk (from analyzeRisks) is an
+    // aggregate statistic over requirement results — none is a concrete single-file
+    // fact — so any one without a real line anchor must render at file level. A
+    // path-diversity test would miss an aggregate whose evidence (or capped sample)
+    // all points at one file (e.g. several requirements in one spec file).
+    const aggregate = !normalizedEvidenceRange(first);
+    const anchor = queueAnchorForEvidence(first, diffIndex, aggregate);
     drafts.push({
-      title: titleFromSummary(risk.summary),
+      title: aggregate ? aggregateRiskTitle(risk) : titleFromSummary(risk.summary),
       path: anchor.path,
       old_path: anchor.old_path,
       hunk_header: anchor.hunk_header,
@@ -2175,7 +2203,12 @@ function applyRankingEvidence(drafts: QueueDraft[], input: BuildHumanReviewInput
     const tests = changedTestsByImpl[draft.path];
     if (tests && tests.length > 0) {
       draft.evidenceTier = 1;
-      reasons.push(`a focused test changed alongside this file (${tests.map((t) => `\`${t}\``).join(", ")}), so it ranks lower among equal-severity items`);
+      // review-surfaces.RANKING.2: cap the inline co-changed test list (it can run
+      // to ~10 backtick paths) to a readable sample + "(+N more)", mirroring the
+      // blast-radius "(top: ...)" idiom. The full set stays in the JSON model.
+      const shownTests = tests.slice(0, 3).map((t) => `\`${t}\``).join(", ");
+      const moreTests = tests.length > 3 ? ` (+${tests.length - 3} more)` : "";
+      reasons.push(`a focused test changed alongside this file (${shownTests}${moreTests}), so it ranks lower among equal-severity items`);
     } else if (untestedImplPaths.has(draft.path)) {
       draft.evidenceTier = -1;
       reasons.push("no changed test or current-head transcript covers this file, so it ranks higher among equal-severity items");
@@ -3939,7 +3972,17 @@ function buildSuggestedComments(
 
   // review-surfaces.SEMANTIC_DIFF.1/.4: suggested comments naming the concrete
   // contract change (e.g. the field that became required), ranked first.
-  candidates.push(...semanticCommentCandidates(semanticFacts));
+  const semanticCandidates = semanticCommentCandidates(semanticFacts);
+  candidates.push(...semanticCandidates);
+  // review-surfaces.SEMANTIC_DIFF.4: a concrete semantic-fact comment supersedes a
+  // generic risk-lens comment of the same severity on the same path — the lens
+  // prose ("this fires the API/schema contract lens...") would be a near-duplicate
+  // ask a reviewer would post twice on one file.
+  const semanticCommentCoverage = new Set(
+    semanticCandidates
+      .filter((candidate) => candidate.draft.path)
+      .map((candidate) => `${candidate.draft.severity}:${candidate.draft.path}`)
+  );
 
   for (const blocker of blockers) {
     const first = firstPathEvidence(blocker.evidence);
@@ -3973,7 +4016,16 @@ function buildSuggestedComments(
   }
 
   for (const finding of riskLensFindings.filter(isPathOnlyRiskLensFinding)) {
+    // review-surfaces.SEMANTIC_DIFF.5: only the lenses a semantic-fact comment
+    // actually duplicates may be deduped against it — the api/schema-contract lens
+    // (schema_changes/api_changes) and the test-evidence lens (test_weakening). A
+    // distinct blocking lens on the same path (e.g. the LLM trust-boundary lens on
+    // a schema change under src/llm/) is a different concern and must survive.
+    const lensDuplicatesSemantic = finding.lens === "api_contract" || finding.lens === "test_evidence";
     for (const comment of finding.suggested_comments) {
+      if (lensDuplicatesSemantic && comment.path && semanticCommentCoverage.has(`${comment.severity}:${comment.path}`)) {
+        continue;
+      }
       candidates.push({ draft: commentDraftWithoutId(comment), sourceRank: 2, sortKey: finding.id });
     }
   }
@@ -4046,9 +4098,21 @@ function semanticCommentCandidates(facts: SemanticChangeFacts): SuggestedComment
     add("blocking", change.path, `${schemaChangeReason(change)} Please version the contract or migrate existing artifacts.`, `semantic-schema:${change.path}`);
   }
   for (const change of facts.api_changes) {
-    add("clarifying", change.path, `${apiChangeReason(change)} Please confirm callers are updated.`, `semantic-api:${change.path}`);
+    add("clarifying", change.path, `${apiChangeReason(change)}${apiCallerCallToAction(change)}`, `semantic-api:${change.path}`);
   }
   return candidates;
+}
+
+// review-surfaces.SEMANTIC_DIFF.4: the call-to-action must agree with the blast
+// radius apiChangeReason just stated. When no in-repo importer references the
+// changed exports, "Please confirm callers are updated." contradicts the prose;
+// ask about external/runtime consumers instead.
+function apiCallerCallToAction(change: ApiSurfaceChange): string {
+  const usedBy = change.used_by;
+  if (usedBy && usedBy.count === 0 && !usedBy.truncated) {
+    return " Confirm there are no external or runtime consumers (downstream packages, the CLI, persisted callers) before treating this as safe.";
+  }
+  return " Please confirm callers are updated.";
 }
 
 function commentDraftWithoutId(comment: SuggestedReviewComment): SuggestedCommentDraft {
@@ -4137,6 +4201,47 @@ function isClaimedValidationEvidence(item: RisksModel["test_evidence"][number]):
   return commands.some(commandLooksLikeLocalValidationCommand);
 }
 
+// review-surfaces.HUMAN_REVIEW.21: each focused-requirement test item's "Expected"
+// must describe what passing looks like for THIS gap, derived from its
+// deterministic partial_reason/status — not restate the project-wide determinism
+// invariant identically across every TEST-### item.
+function expectedResultForGap(gap: RequirementGap): string {
+  switch (gap.partial_reason) {
+    case "impl_no_test":
+      return "A direct test exercises this requirement's behavior, so a regression would fail a check.";
+    case "impl_broad_no_exact_test":
+      // Exact TEST evidence already exists; the gap is exact IMPLEMENTATION proof.
+      return "The implementation is tied to this requirement by an exact ACID reference in the code, not just broad-area code.";
+    case "exact_impl_broad_test":
+      return "A focused test pins the exact changed behavior rather than the broad area.";
+    case "broad_area_only":
+      return "A test ties directly to this requirement instead of only its general area.";
+    case "test_no_impl":
+      return "The implementation backing this requirement is present and exercised by the test.";
+    default:
+      return gap.status === "missing" || gap.status === "invalid_evidence"
+        ? "Direct implementation and a test prove this requirement's behavior exists."
+        : "A focused test gives this requirement direct, evidence-backed coverage.";
+  }
+}
+
+// review-surfaces.HUMAN_REVIEW.21: a broad-evidence gap's "Evidence gap" is
+// matcher-confidence prose with nothing to act on; append the file the test
+// should land in so the reviewer has a concrete next step.
+function evidenceGapForGap(gap: RequirementGap, suggestedFile: string | undefined): string {
+  // impl_broad_no_exact_test means an exact TEST already exists and the gap is
+  // exact IMPLEMENTATION proof, so point at the code, not another test file.
+  if (gap.partial_reason === "impl_broad_no_exact_test") {
+    return `${trimSentenceEnd(gap.summary)} — tie the implementation to this requirement with an exact ACID reference in the code.`;
+  }
+  // These two genuinely need a requirement-specific test, so name where it lands.
+  const needsTest = gap.partial_reason === "broad_area_only" || gap.partial_reason === "exact_impl_broad_test";
+  if (needsTest && suggestedFile) {
+    return `${trimSentenceEnd(gap.summary)} — add a direct assertion in \`${suggestedFile}\`.`;
+  }
+  return gap.summary;
+}
+
 function buildTestPlan(
   input: BuildHumanReviewInput,
   feedbackEffects: FeedbackPolicyEffect[],
@@ -4173,11 +4278,11 @@ function buildTestPlan(
         priority: gap.status === "missing" || gap.status === "invalid_evidence" ? "required" : "recommended",
         suggested_file: suggestedFile,
         scenario: `Add a focused unit or fixture test tied to ${requirementId}.`,
-        expected_result: "The generated human review JSON and Markdown retain deterministic, evidence-backed behavior for this requirement.",
+        expected_result: expectedResultForGap(gap),
         command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test",
         maps_to_requirements: compactStrings([gap.acai_id, gap.requirement_id]),
         maps_to_risks: [],
-        evidence_gap: gap.summary
+        evidence_gap: evidenceGapForGap(gap, suggestedFile)
       }
     });
   }
@@ -4480,17 +4585,21 @@ function summarizeHumanReview(
   queueCount: number,
   blockerCount: number
 ): string {
+  // review-surfaces.HUMAN_REVIEW.24: lead with what a reviewer acts on (blockers
+  // and queue items), not a restatement of the verdict badge or a "generated from
+  // local evidence" preamble the section header already establishes. The
+  // denominator is the changed-file count — the scope a reviewer actually feels —
+  // never "217 requirement result(s)".
   // review-surfaces.COLD_START.5: a spec-less packet never advertises
   // "0 requirement result(s)" — the spec-coupled counts are simply absent.
   const specless = (input.packet.intent as { spec_mode?: unknown }).spec_mode === "none";
+  const changedFileCount = input.diff?.files.length ?? 0;
   const scope = input.prSurface
     ? specless
       ? `${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.risks.candidates.length} PR risk candidate(s)`
       : `${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.scope.affected_requirements.length} affected requirement(s), ${input.prSurface.risks.candidates.length} PR risk candidate(s)`
-    : specless
-      ? `${input.packet.risks.items.length} packet risk(s)`
-      : `${input.packet.evaluation.results.length} requirement result(s), ${input.packet.risks.items.length} packet risk(s)`;
-  return `Human review surface generated from local evidence: ${scope}. Verdict is ${verdict.decision} with ${blockerCount} blocker(s) and ${queueCount} review queue item(s).`;
+    : `${changedFileCount} changed file(s), ${input.packet.risks.items.length} packet risk(s)`;
+  return `${blockerCount} blocker(s) and ${queueCount} review queue item(s) across ${scope}.`;
 }
 
 function missingEvidenceSummaries(input: BuildHumanReviewInput): MissingEvidenceSummary[] {
@@ -4597,6 +4706,39 @@ function allCriticalRisks(input: BuildHumanReviewInput): Array<{
       .filter((risk) => risk.severity === "critical")
       .map((risk) => ({ id: risk.id, summary: risk.summary, evidence: risk.evidence, suggested_checks: risk.suggested_checks }))
   ];
+}
+
+// review-surfaces.HUMAN_TRUST.6: cite the evidence of the first risk AT OR ABOVE
+// the threshold that made hasRiskAtLeast fire, so the verdict reason names the
+// concrete medium/high in-diff risk rather than an earlier low-severity candidate.
+function firstRiskEvidenceAtLeast(input: BuildHumanReviewInput, severity: PacketSeverity): EvidenceRef[] {
+  const threshold = severityWeight(severity);
+  const prRisk = input.prSurface?.risks.candidates.find((risk) => severityWeight(risk.severity) >= threshold);
+  if (prRisk) {
+    return evidenceOrMissing(prRisk.evidence, prRisk.summary).slice(0, 3);
+  }
+  const packetRisk = input.packet.risks.items.find((risk) => severityWeight(risk.severity) >= threshold);
+  if (packetRisk) {
+    return evidenceOrMissing(packetRisk.evidence ?? [], packetRisk.summary).slice(0, 3);
+  }
+  return firstRiskEvidence(input);
+}
+
+// review-surfaces.HUMAN_TRUST.6: the verdict block renders only reason.summary, so
+// the summary itself must name the concrete in-diff risk (a schema/API break, a
+// weakened test) rather than a generic "reviewable risks remain".
+function firstRiskSummaryAtLeast(input: BuildHumanReviewInput, severity: PacketSeverity): string | undefined {
+  const threshold = severityWeight(severity);
+  const prRisk = input.prSurface?.risks.candidates.find((risk) => severityWeight(risk.severity) >= threshold);
+  if (prRisk) {
+    return prRisk.summary;
+  }
+  return input.packet.risks.items.find((risk) => severityWeight(risk.severity) >= threshold)?.summary;
+}
+
+function reviewableRiskReasonSummary(input: BuildHumanReviewInput, severity: PacketSeverity): string {
+  const summary = firstRiskSummaryAtLeast(input, severity);
+  return summary ? `Reviewable risk remains: ${trimSentenceEnd(summary)}.` : "Reviewable risks remain and should guide the review path.";
 }
 
 function firstRiskEvidence(input: BuildHumanReviewInput): EvidenceRef[] {
@@ -4737,6 +4879,28 @@ function titleFromSummary(summary: string): string {
     return "Packet risk";
   }
   return first.length <= 80 ? first : `${first.slice(0, 77)}...`;
+}
+
+// review-surfaces.RANKING.4: aggregate-rollup risks carry a count-led summary
+// ("143 requirement(s) have implementation evidence but weak or missing test
+// evidence.") that titleFromSummary would truncate mid-word into the heading.
+// Give them a short, stable heading instead and let the full count live only in
+// the "Why this matters" line below it.
+function aggregateRiskTitle(risk: ReviewPacket["risks"]["items"][number]): string {
+  switch (risk.category) {
+    case "testing":
+      return "Weak test evidence across requirements";
+    case "correctness":
+      return "Requirements missing implementation or test evidence";
+    case "release":
+      return "Requirements left unknown by weak evidence";
+    case "workflow":
+      return /did not map|requirement group/.test(risk.summary)
+        ? "Changed files outside any requirement group"
+        : "Validation claims without command-transcript evidence";
+    default:
+      return titleFromSummary(risk.summary);
+  }
 }
 
 function titleForChangedFile(file: PrChangedFile): string {
@@ -4964,6 +5128,25 @@ function firstPathEvidence(evidence: EvidenceRef[]): EvidenceRef | undefined {
   return evidence.find((ref) => typeof ref.path === "string" && ref.path.length > 0);
 }
 
+// review-surfaces.RANKING.4: an aggregate-rollup risk ("143 requirement(s) have
+// weak test evidence", "4 changed file(s) did not map") has no single changed
+// line to point at — its evidence spans many distinct files. When the chosen
+// evidence also carries no line anchor, the queue must render it honestly at
+// file level instead of borrowing an unrelated firstChangedHunk and advertising
+// it as a "precise diff anchor" with high confidence.
+function evidenceSpansMultiplePaths(evidence: EvidenceRef[]): boolean {
+  const paths = new Set<string>();
+  for (const ref of evidence) {
+    if (typeof ref.path === "string" && ref.path.length > 0) {
+      paths.add(normalizeEvidencePath(ref.path));
+      if (paths.size > 1) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function firstPathEvidenceInScope(evidence: EvidenceRef[], changedPaths: Set<string>): EvidenceRef | undefined {
   for (const ref of evidence) {
     if (typeof ref.path !== "string") {
@@ -5012,7 +5195,12 @@ function buildDiffIndex(diff: StructuredDiff | undefined): DiffIndex | undefined
   return { byPath };
 }
 
-function queueAnchorForEvidence(evidence: EvidenceRef, diffIndex: DiffIndex | undefined): QueueAnchor {
+// review-surfaces.RANKING.4: `suppressHunkBorrow` is set for aggregate-rollup
+// risks whose evidence spans many files. It keeps a genuine evidence line anchor
+// (hunkForEvidence) but skips the firstChangedHunk fallback, so the item never
+// claims a borrowed, unrelated hunk as its own — it renders at file level
+// (confidence medium, "ranked ... at file level") instead.
+function queueAnchorForEvidence(evidence: EvidenceRef, diffIndex: DiffIndex | undefined, suppressHunkBorrow = false): QueueAnchor {
   const path = normalizeEvidencePath(String(evidence.path));
   const fallbackRange = normalizedEvidenceRange(evidence);
   const fallback = stripUndefined({
@@ -5029,7 +5217,7 @@ function queueAnchorForEvidence(evidence: EvidenceRef, diffIndex: DiffIndex | un
   }
   const { file: diffFile, side } = entry;
   const anchorPath = anchorPathForSide(diffFile, side);
-  const hunk = hunkForEvidence(diffFile, evidence, side) ?? (fallbackRange ? undefined : firstChangedHunk(diffFile));
+  const hunk = hunkForEvidence(diffFile, evidence, side) ?? (fallbackRange || suppressHunkBorrow ? undefined : firstChangedHunk(diffFile));
   if (!hunk) {
     return stripUndefined({
       path: anchorPath,

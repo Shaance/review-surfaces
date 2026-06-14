@@ -1,6 +1,9 @@
-// review-surfaces.PROVIDERS.7: export the human review's hunk-anchored suggested
-// comments as a GitHub PENDING (draft) pull-request review for the reviewer to
-// edit and submit. The payload deliberately OMITS the `event` field, so creating
+// review-surfaces.PROVIDERS.7: export the human review's suggested comments as a
+// GitHub PENDING (draft) pull-request review for the reviewer to edit and submit.
+// A comment is inlined as a review comment only when it carries a path AND a line
+// that resolves to the reviewed diff; the deterministic generators emit path-only
+// comments, so most fold into the review body (each prefixed with its path) rather
+// than being dropped. The payload deliberately OMITS the `event` field, so creating
 // it on GitHub yields a PENDING review (a draft the human submits manually) — this
 // export never auto-submits a review or comment. Reading is local-only and the
 // payload is deterministic (built in the model's comment order, no timestamps).
@@ -77,7 +80,10 @@ export function buildDraftReview(model: HumanReviewModel, diff?: StructuredDiff)
       }
       comments.push(comment);
     } else {
-      unanchored.push(`- ${body}`);
+      // PRIVACY.6 + self-describing: a body folded into the review prose loses its
+      // inline file context, so prefix the (redacted) path when the suggestion has
+      // one — most deterministic comments are path-only and land here.
+      unanchored.push(suggested.path ? `- \`${redact(suggested.path, redaction)}\`: ${body}` : `- ${body}`);
     }
   }
   const payload: DraftReviewPayload = { body: reviewBody(model, unanchored, redaction), comments };

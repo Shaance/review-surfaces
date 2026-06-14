@@ -556,7 +556,9 @@ function changesSinceLastPacket(dogfood: DogfoodModel | undefined): string[] | u
   }
   const lines: string[] = [`Compared against ${dogfood.previous_packet_path}.`];
   for (const change of comparison.status_changes) {
-    lines.push(`${change.acai_id}: ${change.previous_status} -> ${change.current_status} (${change.direction})`);
+    // review-surfaces.TREND.3: the arrow already encodes the direction; the
+    // trailing "(improved/regressed)" parenthetical is redundant.
+    lines.push(`${change.acai_id}: ${change.previous_status} -> ${change.current_status}`);
   }
   for (const risk of comparison.new_risks) {
     lines.push(`New risk: ${risk}`);

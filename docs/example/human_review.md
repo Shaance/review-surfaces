@@ -6,7 +6,7 @@ Generated from `review_packet.json`.
 
 **Needs author clarification.**
 
-Human review surface generated from local evidence: 0 packet risk(s). Verdict is needs_author_clarification with 0 blocker(s) and 0 review queue item(s).
+0 blocker(s) and 0 review queue item(s) across 6 changed file(s), 0 packet risk(s).
 
 Confidence: medium.
 
@@ -20,12 +20,12 @@ Reasons:
 2. `source/core/index.ts` — imported by 1 changed file(s)
 
 **Tests**
-3. `test/abort.ts` — test — read after the 1 changed file(s) it imports
-4. `test/pagination.ts` — test — read after the code it covers
+3. `test/abort.ts` — read after the 1 changed file(s) it imports
+4. `test/pagination.ts`
 
 **Config and docs**
-5. `documentation/4-pagination.md` — config or docs — read last
-6. `package.json` — config or docs — read last
+5. `documentation/4-pagination.md`
+6. `package.json`
 
 ## Change map
 
@@ -97,7 +97,7 @@ _Source: fallback (mock); validated at `a5b76bffb33d5fa8b0d1393cce410b88e7c2b848
 ## Questions for author
 
 1. Which validation command or parsed test artifact should reviewers trust for this change? (clarifying; evidence: `No direct or indirect validation evidence found in risks.test_evidence.`)
-2. What evidence closes this review gap: No command transcript or validation feedback was supplied to prove test execution.? (clarifying; evidence: `Run validation commands and preserve output externally or in a future command transcript artifact.`)
+2. What evidence closes this review gap: No command transcript or validation feedback was supplied to prove test execution? (clarifying; evidence: `Run validation commands and preserve output externally or in a future command transcript artifact.`)
 
 ## Trust audit
 
