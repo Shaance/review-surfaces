@@ -385,80 +385,49 @@ ${routes.length === 0 ? "- This human review JSON was generated before review-ro
 
 export function renderEvidenceCardsMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
   const cards = evidenceCards(model);
-  // review-surfaces.HUMAN_REVIEW.19: collapse cards that are identical modulo ACID
-  // (the BOOTSTRAP/CLI missing-evidence fan-out) into one card listing every
-  // source id and requirement — the same key the human_review.md summary uses.
-  // Unique LENS/TEST/TRUST cards each form a singleton and render unchanged.
-  const groups = rollupBy(
-    cards,
-    (card) => `${card.status}|${card.priority}|${normalizeAcidTemplate(card.summary)}|${normalizeAcidTemplate(card.reviewer_action)}`,
-    (card) => rollupAcids(card.requirement_ids, card.summary, card.reviewer_action)
-  );
+  // review-surfaces.HUMAN_REVIEW.19: the STANDALONE evidence_cards.md keeps full
+  // per-card detail. The combined human_review.md is where near-identical cards
+  // roll up.
   return `# Evidence Cards
 
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
 
-${cards.length === 0 ? "- This human review JSON was generated before evidence-card support." : groups.map(renderEvidenceCardRollupDetail).join("\n\n---\n\n")}
+${cards.length === 0 ? "- This human review JSON was generated before evidence-card support." : cards.map(renderEvidenceCardDetail).join("\n\n---\n\n")}
 `;
 }
 
-function dedupeEvidenceRefs(refs: EvidenceRef[]): EvidenceRef[] {
-  const seen = new Set<string>();
-  const out: EvidenceRef[] = [];
-  for (const ref of refs) {
-    const key = `${ref.kind ?? ""}|${ref.path ?? ""}|${ref.line_start ?? ""}|${ref.line_end ?? ""}|${ref.acai_id ?? ""}|${ref.command ?? ""}|${ref.test_name ?? ""}|${ref.note ?? ""}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    out.push(ref);
-  }
-  return out;
-}
+function renderEvidenceCardDetail(card: EvidenceCard): string {
+  const sources = idList(card.source_ids);
+  const risks = idList(card.risk_ids);
+  const requirements = idList(card.requirement_ids);
+  return `## Evidence Card: ${field(card.title)}
 
-// review-surfaces.HUMAN_REVIEW.19: render one evidence card per rollup group. A
-// singleton group renders identically to the old per-card detail; a merged group
-// unions the source ids, requirement ids, and direct/missing/invalid evidence and
-// lists every collapsed card id, so no per-item detail is lost.
-function renderEvidenceCardRollupDetail(group: RollupGroup<EvidenceCard>): string {
-  const rep = group.representative;
-  const merged = group.items.length > 1;
-  const sources = idList([...new Set(group.items.flatMap((card) => card.source_ids))]);
-  const risks = idList([...new Set(group.items.flatMap((card) => card.risk_ids))]);
-  const requirements = idList(group.acids.length ? group.acids : [...new Set(group.items.flatMap((card) => card.requirement_ids))]);
-  const summary = fillAcidTemplate(normalizeAcidTemplate(rep.summary), group.acids);
-  const action = fillAcidTemplate(normalizeAcidTemplate(rep.reviewer_action), group.acids);
-  const whyItMatters = fillAcidTemplate(normalizeAcidTemplate(rep.why_it_matters), group.acids);
-  const title = merged ? `${fillAcidTemplate(normalizeAcidTemplate(rep.title), group.acids)} (${group.items.length} requirements)` : rep.title;
-  const cardsLine = merged ? `\nCards: ${group.items.map((card) => `\`${field(card.id)}\``).join(", ")}` : "";
-  return `## Evidence Card: ${field(title)}
-
-Status: ${evidenceCardStatusLabel(rep.status)}.
-Priority: ${rep.priority}
-Confidence: ${rep.confidence}
+Status: ${evidenceCardStatusLabel(card.status)}.
+Priority: ${card.priority}
+Confidence: ${card.confidence}
 Sources: ${sources}
 Risks: ${risks}
-Requirements: ${requirements}${cardsLine}
+Requirements: ${requirements}
 
 Summary:
-${field(summary, 800)}
+${field(card.summary, 800)}
 
 Evidence:
 
 Direct:
-${evidenceBullets(dedupeEvidenceRefs(group.items.flatMap((card) => card.direct_evidence)), MAX_STANDALONE_EVIDENCE)}
+${evidenceBullets(card.direct_evidence, MAX_STANDALONE_EVIDENCE)}
 
 Missing:
-${evidenceBullets(dedupeEvidenceRefs(group.items.flatMap((card) => card.missing_evidence)), MAX_STANDALONE_EVIDENCE)}
+${evidenceBullets(card.missing_evidence, MAX_STANDALONE_EVIDENCE)}
 
 Invalid:
-${evidenceBullets(dedupeEvidenceRefs(group.items.flatMap((card) => card.invalid_evidence)), MAX_STANDALONE_EVIDENCE)}
+${evidenceBullets(card.invalid_evidence, MAX_STANDALONE_EVIDENCE)}
 
 Why it matters:
-- ${field(whyItMatters, 500)}
+- ${field(card.why_it_matters, 500)}
 
 Reviewer action:
-- ${field(action, 500)}`;
+- ${field(card.reviewer_action, 500)}`;
 }
 
 export function renderSinceLastReviewMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
@@ -504,27 +473,43 @@ ${renderSinceLastReviewCountDeltas(since)}
 `}`;
 }
 
+// review-surfaces.HUMAN_REVIEW.19: the per-item renderer for the standalone
+// deep-dive surfaces (test_plan.md and the risk-lens detail). The standalone
+// artifacts keep full per-item detail — every item's runnable command, no cap, no
+// merge — so this is the surface a reviewer opens to actually run the
+// required/recommended checks. The combined human_review.md keeps the rollup.
+function renderTestPlan(items: TestPlanItem[]): string {
+  if (items.length === 0) {
+    return "- No concrete test-plan items generated.";
+  }
+  return items
+    .map((item) => {
+      const file = item.suggested_file ? `\n- Suggested file: \`${field(item.suggested_file)}\`` : "";
+      const command = item.command ? `\n- Command: \`${field(item.command)}\`` : "";
+      // review-surfaces.HUMAN_REVIEW.21: lead with the scenario; kind/priority/id trail.
+      return `### ${field(item.scenario)} — ${item.kind} (${item.priority}; ${field(item.id)})
+
+- Expected: ${field(item.expected_result)}${file}${command}
+- Evidence gap: ${field(item.evidence_gap)}`;
+    })
+    .join("\n\n");
+}
+
 export function renderTestPlanMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
   const groups: Array<[string, TestPlanItem["priority"]]> = [
     ["Required", "required"],
     ["Recommended", "recommended"],
     ["Optional", "optional"]
   ];
-  // review-surfaces.HUMAN_REVIEW.19: the standalone surface reuses the same rollup
-  // the combined human_review.md uses, so the near-identical focused-requirement
-  // blocks (identical modulo ACID — e.g. the six TEST-### items whose "Expected"
-  // line is byte-identical) collapse into one group that still lists every
-  // TEST-### id and every distinct suggested file. Empty priority buckets are
-  // omitted rather than rendered with a dead "No items" placeholder (mirrors the
-  // empty-section omission used elsewhere in this file).
-  // The standalone deep-dive surface is where a reviewer goes for the COMPLETE
-  // plan, so it must never drop a group: pass a cap >= the group count (groups
-  // <= items.length) rather than the summary cap MAX_TEST_PLAN. The combined
-  // human_review.md keeps the bounded summary.
+  // review-surfaces.HUMAN_REVIEW.19: the standalone deep-dive surface keeps full
+  // per-item detail — every item with its runnable command, no cap, no merge (the
+  // combined human_review.md is where near-identical items roll up). Empty priority
+  // buckets are still omitted rather than rendered with a dead "No items"
+  // placeholder, mirroring the empty-section omission used elsewhere in this file.
   const sections = groups
     .map(([heading, priority]) => [heading, model.test_plan.filter((item) => item.priority === priority)] as const)
     .filter(([, items]) => items.length > 0)
-    .map(([heading, items]) => `## ${heading}\n\n${renderTestPlanRollups(items, items.length)}`);
+    .map(([heading, items]) => `## ${heading}\n\n${renderTestPlan(items)}`);
   const body = sections.length ? sections.join("\n\n") : "- No concrete test-plan items generated.";
   return `# Test Plan
 
@@ -568,7 +553,7 @@ Evidence:
 ${evidenceBullets(finding.evidence, MAX_STANDALONE_EVIDENCE)}
 
 Suggested tests:
-${renderTestPlanRollups(finding.suggested_tests, MAX_TEST_PLAN)}
+${renderTestPlan(finding.suggested_tests)}
 
 Suggested comments:
 ${renderSuggestedComments(finding.suggested_comments)}`;
@@ -782,8 +767,10 @@ function renderSinceLastReviewItems(items: SinceLastReviewItem[]): string {
 }
 
 function formatSinceLastReviewStatus(item: SinceLastReviewItem): string {
+  // review-surfaces.TREND.3: a status-change summary already encodes
+  // "prev -> cur", so a separate "Status: prev -> cur." line just duplicates it.
   if (item.previous_status && item.current_status) {
-    return ` Status: ${item.previous_status} -> ${item.current_status}.`;
+    return "";
   }
   if (item.current_status) {
     return ` Status: ${item.current_status}.`;
@@ -1322,8 +1309,13 @@ function suggestedCommentSeverityLabel(severity: SuggestedCommentSeverity): stri
 }
 
 function renderTrustAuditSections(audit: TrustAudit, limit: number): string {
+  // review-surfaces.HUMAN_REVIEW.19: the STANDALONE trust_audit.md keeps full
+  // per-item detail (one line per requirement). The combined human_review.md is
+  // where near-identical items roll up — a reviewer who wants the collapsed view
+  // reads the summary surface.
   const verified = verifiedTrustFacts(audit).slice(0, limit);
   const claimed = unverifiedTrustClaims(audit).slice(0, limit);
+  const missing = missingTrustEvidence(audit).slice(0, limit);
   const invalid = invalidTrustEvidence(audit).slice(0, limit);
 
   return `## Verified facts
@@ -1336,7 +1328,7 @@ ${bullets(claimed.map((claim) => `${claim.claim} Missing: ${claim.missing_eviden
 
 ## Missing evidence
 
-${renderTrustMissingRollups(missingTrustEvidence(audit), limit)}
+${bullets(missing.map((item) => `${item.summary} Evidence: ${evidenceList(item.evidence)}`), "No missing evidence recorded.")}
 
 ## Invalid evidence
 

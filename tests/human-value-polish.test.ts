@@ -198,6 +198,11 @@ test("review-surfaces.HUMAN_TRUST.6 the verdict surfaces the top in-diff risk co
     riskReason.evidence.some((ref) => ref.path === "schemas/human_review.schema.json"),
     "the cited evidence names the medium risk that fired, not the earlier low one"
   );
+  // The verdict block renders only reason.summary, so the summary itself must name
+  // the concrete medium risk (not a generic "reviewable risks remain") — and never
+  // the earlier low-severity candidate.
+  assert.match(riskReason.summary, /A medium in-diff risk/);
+  assert.doesNotMatch(riskReason.summary, /low unrelated risk/);
   assert.equal(built.verdict.decision, "needs_author_clarification", "the decision precedence is unchanged");
 });
 

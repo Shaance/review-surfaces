@@ -1933,7 +1933,7 @@ function buildVerdict(input: BuildHumanReviewInput, blockers: ReviewBlocker[], t
       reasons.push({
         id: "READY-RISKS-PRESENT",
         severity: "medium",
-        summary: "Reviewable risks remain and should guide the review path.",
+        summary: reviewableRiskReasonSummary(input, "medium"),
         evidence: firstRiskEvidenceAtLeast(input, "medium"),
         required_action: "Review the ranked queue before approving."
       });
@@ -4210,7 +4210,8 @@ function expectedResultForGap(gap: RequirementGap): string {
     case "impl_no_test":
       return "A direct test exercises this requirement's behavior, so a regression would fail a check.";
     case "impl_broad_no_exact_test":
-      return "A test asserts this requirement specifically, not only the broad area around it.";
+      // Exact TEST evidence already exists; the gap is exact IMPLEMENTATION proof.
+      return "The implementation is tied to this requirement by an exact ACID reference in the code, not just broad-area code.";
     case "exact_impl_broad_test":
       return "A focused test pins the exact changed behavior rather than the broad area.";
     case "broad_area_only":
@@ -4228,11 +4229,14 @@ function expectedResultForGap(gap: RequirementGap): string {
 // matcher-confidence prose with nothing to act on; append the file the test
 // should land in so the reviewer has a concrete next step.
 function evidenceGapForGap(gap: RequirementGap, suggestedFile: string | undefined): string {
-  const broad =
-    gap.partial_reason === "impl_broad_no_exact_test" ||
-    gap.partial_reason === "broad_area_only" ||
-    gap.partial_reason === "exact_impl_broad_test";
-  if (broad && suggestedFile) {
+  // impl_broad_no_exact_test means an exact TEST already exists and the gap is
+  // exact IMPLEMENTATION proof, so point at the code, not another test file.
+  if (gap.partial_reason === "impl_broad_no_exact_test") {
+    return `${trimSentenceEnd(gap.summary)} — tie the implementation to this requirement with an exact ACID reference in the code.`;
+  }
+  // These two genuinely need a requirement-specific test, so name where it lands.
+  const needsTest = gap.partial_reason === "broad_area_only" || gap.partial_reason === "exact_impl_broad_test";
+  if (needsTest && suggestedFile) {
     return `${trimSentenceEnd(gap.summary)} — add a direct assertion in \`${suggestedFile}\`.`;
   }
   return gap.summary;
@@ -4718,6 +4722,23 @@ function firstRiskEvidenceAtLeast(input: BuildHumanReviewInput, severity: Packet
     return evidenceOrMissing(packetRisk.evidence ?? [], packetRisk.summary).slice(0, 3);
   }
   return firstRiskEvidence(input);
+}
+
+// review-surfaces.HUMAN_TRUST.6: the verdict block renders only reason.summary, so
+// the summary itself must name the concrete in-diff risk (a schema/API break, a
+// weakened test) rather than a generic "reviewable risks remain".
+function firstRiskSummaryAtLeast(input: BuildHumanReviewInput, severity: PacketSeverity): string | undefined {
+  const threshold = severityWeight(severity);
+  const prRisk = input.prSurface?.risks.candidates.find((risk) => severityWeight(risk.severity) >= threshold);
+  if (prRisk) {
+    return prRisk.summary;
+  }
+  return input.packet.risks.items.find((risk) => severityWeight(risk.severity) >= threshold)?.summary;
+}
+
+function reviewableRiskReasonSummary(input: BuildHumanReviewInput, severity: PacketSeverity): string {
+  const summary = firstRiskSummaryAtLeast(input, severity);
+  return summary ? `Reviewable risk remains: ${trimSentenceEnd(summary)}.` : "Reviewable risks remain and should guide the review path.";
 }
 
 function firstRiskEvidence(input: BuildHumanReviewInput): EvidenceRef[] {
