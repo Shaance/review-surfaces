@@ -111,6 +111,9 @@
           "type": "integer",
           "minimum": 0
         },
+        "gate_remote_blocked": {
+          "type": "boolean"
+        },
         "run_mode": {
           "type": "string",
           "enum": [

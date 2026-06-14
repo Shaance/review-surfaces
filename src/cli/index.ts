@@ -362,6 +362,12 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
     dogfood: isDogfoodRun(parsed),
     now: nowFlag(parsed),
     provider: signatureProvider,
+    // review-surfaces.QUALITY_GATE.2 (Codex round-4 finding 2): the REQUESTED
+    // provider drives the gate's privacy decision (and the persisted
+    // gate_remote_blocked boolean), NOT the mock-forced signature provider —
+    // even in --review-scope pr, applyGate / the JSON summary gate over the
+    // requested provider, so the packet must record the privacy condition for it.
+    gateProvider: provider,
     model: signatureModel(parsed, runConfig, signatureProvider),
     conversationPath: stringFlag(parsed, "conversation"),
     agentInputPath: stringFlag(parsed, "agent-input"),

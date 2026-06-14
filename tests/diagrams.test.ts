@@ -133,6 +133,7 @@ function collectionFixture(cwd: string, outputDir: string): CollectionResult {
       repo: "review-surfaces",
       base_ref: "origin/main",
       uncommitted_files: 0,
+      gate_remote_blocked: false,
       head_ref: "HEAD",
       head_sha: "HEAD",
       run_mode: "dogfood",

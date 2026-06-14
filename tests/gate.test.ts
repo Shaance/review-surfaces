@@ -246,6 +246,46 @@ test("review-surfaces.QUALITY_GATE.1 projectRunSummary gate_code reflects the re
   assert.equal(mockBlocked.gate_code, ExitCodes.success, "an offline mock run never privacy-blocks");
 });
 
+// review-surfaces.QUALITY_GATE.2 (Codex round-4 finding 2): a renderer-only call
+// (comment --format json) has NO live collection/provider — it reconstructs the
+// gate's privacy inputs from the packet's persisted manifest.gate_remote_blocked
+// boolean. A packet produced by `all --provider ai-sdk` over a
+// remote_provider_blocked diff recorded gate_remote_blocked: true, so the
+// projection MUST reproduce the SAME privacy code (5) the strict gate exited from
+// the packet ALONE — not the spurious 0 a hardcoded mock context would give.
+test("review-surfaces.QUALITY_GATE.2 projectRunSummary reproduces the privacy block (5) from the packet's persisted gate_remote_blocked, no live context", () => {
+  const blockedPacket = minimalReviewPacket() as unknown as ReviewPacket;
+  // Clean evaluation; the only trip is the privacy short-circuit. The packet
+  // records the EXACT provider-adjusted privacy condition collect.ts persisted.
+  (blockedPacket.manifest as Record<string, unknown>).gate_remote_blocked = true;
+
+  // No gateContext argument: the renderer reconstructs it from the packet field.
+  const reproduced = projectRunSummary(blockedPacket, { maxMissing: 0 }, []);
+  assert.equal(
+    reproduced.gate_code,
+    ExitCodes.privacyBlocked,
+    "a packet with gate_remote_blocked: true must reproduce privacy code 5 from the packet alone (no live ai-sdk context)"
+  );
+
+  // A packet whose persisted condition is false (any offline run) never trips 5.
+  const offlinePacket = minimalReviewPacket() as unknown as ReviewPacket;
+  (offlinePacket.manifest as Record<string, unknown>).gate_remote_blocked = false;
+  assert.equal(
+    projectRunSummary(offlinePacket, { maxMissing: 0 }, []).gate_code,
+    ExitCodes.success,
+    "gate_remote_blocked: false reproduces a clean gate (no privacy block)"
+  );
+
+  // A pre-finding packet missing the field reads as false (never a spurious 5).
+  const legacyPacket = minimalReviewPacket() as unknown as ReviewPacket;
+  delete (legacyPacket.manifest as Record<string, unknown>).gate_remote_blocked;
+  assert.equal(
+    projectRunSummary(legacyPacket, { maxMissing: 0 }, []).gate_code,
+    ExitCodes.success,
+    "a packet lacking the field defaults to a clean gate, never a spurious privacy block"
+  );
+});
+
 // review-surfaces.QUALITY_GATE.2 (Codex finding 7): requirement_counts must carry
 // EVERY contract status with its canonical name — no dropped "unknown", no
 // renamed "invalid_evidence". This is the pure-projection guard for the shape.

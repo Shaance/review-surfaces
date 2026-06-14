@@ -1,5 +1,6 @@
 import path from "node:path";
 import { parseBudgetDuration } from "../human/budget";
+import { CliError, ExitCodes } from "../core/exit-codes";
 import { fileExists, readText } from "../core/files";
 import { isRecord } from "../core/guards";
 import { parseYaml } from "../core/simple-yaml";
@@ -216,8 +217,13 @@ function failOnSeverityValue(value: unknown, fallback: string | null): string | 
   if (typeof value === "string" && (PACKET_SEVERITIES as readonly string[]).includes(value)) {
     return value;
   }
-  throw new Error(
-    `Invalid quality_gate.fail_on: ${JSON.stringify(value)}. Must be null (off) or one of ${PACKET_SEVERITIES.join(", ")}.`
+  // Throw a CliError carrying the usage exit code (2) so an invalid config
+  // fail_on exits like a bad `--fail-on` flag, NOT a runtime failure (exit 1):
+  // the CLI top-level catch maps a plain Error to runtimeError but honors a
+  // CliError's exitCode. exit-codes.ts imports nothing, so there is no cycle.
+  throw new CliError(
+    `Invalid quality_gate.fail_on: ${JSON.stringify(value)}. Must be null (off) or one of ${PACKET_SEVERITIES.join(", ")}.`,
+    ExitCodes.usageError
   );
 }
 

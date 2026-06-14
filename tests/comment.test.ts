@@ -860,10 +860,11 @@ test("review-surfaces.QUALITY_GATE.2 readQueueIds rejects the 'unknown' head_sha
     const real = readQueueIds(tmp, ".review-surfaces", "unknown");
     assert.deepEqual(real, [], "a sentinel 'unknown' head_sha must never trust the queue, even when the queue's key is also 'unknown'");
 
-    // Control: with a real hex sha that matches, the queue IS trusted.
+    // Control: with a real hex sha that matches AND a repo-mode queue, it IS trusted.
     fs.writeFileSync(
       path.join(outDir, "human_review.json"),
       JSON.stringify({
+        mode: "repo",
         generated_from: { head_sha: "deadbeef" },
         review_queue: [{ id: "Q-1" }]
       })
@@ -871,7 +872,7 @@ test("review-surfaces.QUALITY_GATE.2 readQueueIds rejects the 'unknown' head_sha
     assert.deepEqual(
       readQueueIds(tmp, ".review-surfaces", "deadbeef"),
       ["Q-1"],
-      "a REAL hex head_sha that matches the queue's generated_from.head_sha is trusted"
+      "a REAL hex head_sha that matches the queue's generated_from.head_sha (repo mode) is trusted"
     );
     // Other non-hex sentinels ("HEAD", empty) are rejected too.
     assert.deepEqual(readQueueIds(tmp, ".review-surfaces", "HEAD"), [], "the 'HEAD' sentinel is not a real sha");
@@ -936,5 +937,109 @@ test("review-surfaces.ACTION_IO comment --review-scope pr --format json is a usa
     assert.match(aliased.stderr, /json is not supported with --review-scope pr/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces.QUALITY_GATE.2 (Codex round-4 finding 1): the REPO-scope JSON
+// summary must NOT borrow a PR-scoped queue. When the sibling human_review.json
+// was produced by `all --review-scope pr`, its mode is "pr" and its review_queue
+// is built from the PR sidecar — a PR-scoped queue, not the whole-repo one this
+// summary describes. readQueueIds must trust the queue ONLY when its mode is
+// "repo"; a "pr" (or absent) mode falls back to the deterministic risk ids.
+test("review-surfaces.QUALITY_GATE.2 readQueueIds ignores a PR-mode human_review.json queue (falls back to risk ids)", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rs-pr-mode-queue-"));
+  try {
+    const outDir = path.join(tmp, ".review-surfaces");
+    fs.mkdirSync(outDir, { recursive: true });
+
+    // A PR-mode queue whose head_sha MATCHES (so only the mode gate can reject it):
+    // its ids are PR-scoped and must NOT drive the repo summary.
+    fs.writeFileSync(
+      path.join(outDir, "human_review.json"),
+      JSON.stringify({
+        mode: "pr",
+        generated_from: { head_sha: "deadbeef" },
+        review_queue: [{ id: "PR-SCOPED-1" }, { id: "PR-SCOPED-2" }]
+      })
+    );
+    assert.deepEqual(
+      readQueueIds(tmp, ".review-surfaces", "deadbeef"),
+      [],
+      "a PR-mode queue must be ignored even when its head_sha matches; the caller falls back to risk ids"
+    );
+
+    // The SAME queue in repo mode (head_sha still matching) IS trusted — proving
+    // the mode is the only thing that changed the decision.
+    fs.writeFileSync(
+      path.join(outDir, "human_review.json"),
+      JSON.stringify({
+        mode: "repo",
+        generated_from: { head_sha: "deadbeef" },
+        review_queue: [{ id: "REPO-SCOPED-1" }, { id: "REPO-SCOPED-2" }]
+      })
+    );
+    assert.deepEqual(
+      readQueueIds(tmp, ".review-surfaces", "deadbeef"),
+      ["REPO-SCOPED-1", "REPO-SCOPED-2"],
+      "a repo-mode queue with a matching head_sha is trusted"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces.QUALITY_GATE.2 (Codex round-4 finding 2), end-to-end: a packet
+// produced by `all --provider ai-sdk` over a remote_provider_blocked diff records
+// the persisted manifest.gate_remote_blocked: true. `comment --format json` is a
+// RENDERER with no live collection/provider, yet it must reproduce the SAME
+// privacy gate code (5) the strict gate exited — from the packet ALONE — instead
+// of a spurious 0 from a hardcoded mock context. The run is fully offline: the
+// ai-sdk enrichment skips (no key), but the collection still flags the block.
+test("review-surfaces.QUALITY_GATE.2 comment --format json reproduces the privacy block (5) from an ai-sdk packet over a blocked diff", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "rs-json-privacy-block-"));
+  try {
+    fs.mkdirSync(path.join(cwd, "features"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, "features", "example.feature.yaml"),
+      `feature:\n  name: example\ncomponents:\n  ZZZ:\n    requirements:\n      1: A requirement.\n`
+    );
+    fs.writeFileSync(path.join(cwd, "README.md"), "# example\n");
+    execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
+    execFileSync("git", ["add", "-A"], { cwd, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd, stdio: "ignore" });
+    // A high-severity blocked secret (an AWS access key id) STAGED in the working
+    // tree (added, uncommitted). A literal `--head HEAD` review folds the staged
+    // diff (`git diff --cached`) into the reviewed diff, so the secret's added
+    // line is scanned, the redacted diff is flagged remote_provider_blocked, and
+    // an ai-sdk run (remote-capable) privacy-blocks (gate code 5).
+    fs.writeFileSync(path.join(cwd, "deploy.txt"), "aws_key=AKIAIOSFODNN7EXAMPLE\n");
+    execFileSync("git", ["add", "deploy.txt"], { cwd, stdio: "ignore" });
+
+    // Run `all --provider ai-sdk` fully offline (no API key): enrichment skips, but
+    // the collection flags the block and the manifest records gate_remote_blocked.
+    execFileSync(
+      "node",
+      [CLI, "all", "--base", "HEAD", "--head", "HEAD", "--spec", "features/example.feature.yaml", "--provider", "ai-sdk", "--out", ".review-surfaces"],
+      { cwd, stdio: "ignore", env: { ...process.env, ANTHROPIC_API_KEY: "", GOOGLE_GENERATIVE_AI_API_KEY: "", OPENAI_API_KEY: "" } }
+    );
+
+    // The packet persisted the EXACT provider-adjusted privacy condition.
+    const packet = JSON.parse(fs.readFileSync(path.join(cwd, ".review-surfaces", "review_packet.json"), "utf8"));
+    assert.equal(
+      packet.manifest.gate_remote_blocked,
+      true,
+      "an ai-sdk run over a remote_provider_blocked diff must persist manifest.gate_remote_blocked: true"
+    );
+
+    // The renderer reproduces privacy code 5 from the packet alone.
+    const json = runComment(cwd, ["--format", "json"]);
+    assert.equal(json.status, 0, json.stderr);
+    assert.equal(
+      JSON.parse(json.stdout).gate_code,
+      5,
+      "comment --format json must reproduce the privacy gate code (5) from the persisted packet field, not a spurious 0"
+    );
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
   }
 });

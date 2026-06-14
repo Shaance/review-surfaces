@@ -63,10 +63,22 @@ export interface GateContext {
   provider: ProviderName;
 }
 
-function rendererGateContext(): GateContext {
+// review-surfaces.QUALITY_GATE.2 (Codex round-4 finding 2): a renderer-only call
+// (comment --format json) has no LIVE collection/provider, so it reconstructs the
+// gate's privacy inputs from the PACKET's persisted manifest.gate_remote_blocked
+// boolean — which collect.ts already set to the EXACT provider-adjusted privacy
+// condition (providerMakesRemoteCall(provider) && remote_provider_blocked). When
+// true, we hand gateDecision a remote-capable provider (ai-sdk) over a
+// remote-blocked collection so its privacy branch fires (code 5), reproducing the
+// SAME gate code an `all --provider ai-sdk` over a blocked diff exited. When false
+// (any offline run), the local mock context can never trip privacy on an
+// already-produced packet. A pre-finding packet lacking the field reads as false.
+function rendererGateContext(packet: ReviewPacket): GateContext {
+  const manifest = packet.manifest;
+  const remoteBlocked = isRecord(manifest) && manifest.gate_remote_blocked === true;
   return {
-    collection: { privacy: { remote_provider_blocked: false } } as unknown as CollectionResult,
-    provider: "mock"
+    collection: { privacy: { remote_provider_blocked: remoteBlocked } } as unknown as CollectionResult,
+    provider: remoteBlocked ? "ai-sdk" : "mock"
   };
 }
 
@@ -85,14 +97,18 @@ function rendererGateContext(): GateContext {
  *
  * `gateContext` is the SAME collection + provider the command's real gate used,
  * so a privacy-blocked remote run reports the SAME gate_code (5) the strict gate
- * exited (review-surfaces.QUALITY_GATE.1). Absent, the projection gates as a
- * local mock run (privacy can never trip an already-produced LOCAL packet).
+ * exited (review-surfaces.QUALITY_GATE.1). Absent (a renderer-only call such as
+ * `comment --format json`), the context is RECONSTRUCTED from the packet's
+ * persisted manifest.gate_remote_blocked boolean (Codex round-4 finding 2): a
+ * packet produced by `all --provider ai-sdk` over a remote_provider_blocked diff
+ * recorded that condition, so the renderer reproduces the SAME privacy code (5)
+ * from the packet ALONE — not a spurious 0 from a hardcoded mock context.
  */
 export function projectRunSummary(
   packet: ReviewPacket,
   gateOptions: GateOptions = { maxMissing: 0 },
   queueIds: string[] = [],
-  gateContext: GateContext = rendererGateContext()
+  gateContext: GateContext = rendererGateContext(packet)
 ): RunSummaryProjection {
   const results = packet.evaluation?.results ?? [];
   const overreachResults = packet.evaluation?.overreach ?? [];
@@ -229,6 +245,16 @@ export function readQueueIds(cwd: string, outDir?: string, expectedHeadSha?: str
   // FINDING 8: a human_review.json that parses to a SCALAR (e.g. `null`) or array
   // must never throw on property access — guard with isRecord before reading.
   if (!isRecord(model)) {
+    return [];
+  }
+  // Codex round-4 finding 1: the JSON run summary is a REPO-scope projection, but
+  // the sibling human_review.json may be a PR-mode artifact (from `all
+  // --review-scope pr`), whose review_queue is built from the PR sidecar — a
+  // PR-scoped queue, NOT the whole-repo one this summary describes. Trust the
+  // queue ONLY when its mode is "repo"; a "pr" (or absent/other) mode falls back
+  // to the deterministic risk ids rather than borrowing a PR-scoped queue. This
+  // composes with the head_sha freshness check below.
+  if (model.mode !== "repo") {
     return [];
   }
   // FINDING 4 + Codex finding 2: only trust a queue that was generated FROM this
