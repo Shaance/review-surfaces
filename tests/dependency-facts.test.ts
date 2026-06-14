@@ -56,6 +56,27 @@ test("review-surfaces.DEP_FACTS.2 severity ordering puts install scripts above n
   assert.ok(dependencyFactSeverityRank("major_version_bump") < dependencyFactSeverityRank("version_range_loosened"));
 });
 
+test("review-surfaces.DEP_FACTS.5 a major-version DOWNGRADE (^3 -> ^2) produces a fact, not only an upward bump", () => {
+  const base = JSON.stringify({ dependencies: { lib: "^3.0.0", up: "^1.0.0" } });
+  const head = JSON.stringify({ dependencies: { lib: "^2.1.0", up: "^2.0.0" } });
+  const facts = computeDependencyFacts({
+    changedFiles: [{ path: "package.json" }],
+    readBase: () => base,
+    readHead: () => head
+  });
+  const downgrade = facts.find((fact) => fact.kind === "major_version_downgrade");
+  assert.ok(downgrade, "a ^3 -> ^2 change must produce a major_version_downgrade fact");
+  assert.equal(downgrade?.package, "lib");
+  assert.match(downgrade!.detail, /downgrades `lib` \^3\.0\.0 -> \^2\.1\.0 \(major\)/);
+  // The upward change still fires as a bump (both directions are surfaced).
+  assert.ok(facts.some((fact) => fact.kind === "major_version_bump" && fact.package === "up"));
+  // The downgrade ranks at the same supply-chain severity as a bump.
+  assert.equal(
+    dependencyFactSeverityRank("major_version_downgrade"),
+    dependencyFactSeverityRank("major_version_bump")
+  );
+});
+
 test("review-surfaces.DEP_FACTS.3 facts are deterministic, offline, and carry no registry metadata", () => {
   const head = JSON.stringify({ dependencies: { fresh: "^1.0.0" } });
   const args = { changedFiles: [{ path: "package.json" }], readBase: () => "{}", readHead: () => head };

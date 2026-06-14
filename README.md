@@ -206,7 +206,13 @@ class, so a CI step can branch without parsing artifacts:
 | `3` | Schema validation failed — a generated artifact did not match its schema. |
 | `4` | Evidence validation failed — a claim's evidence was invalid (could not be anchored to local evidence). |
 | `5` | Privacy blocked — a privacy/secret-boundary check refused to proceed. |
-| `10` | Quality gate failed — `--strict` found missing requirements over the configured max-missing. |
+| `10` | Quality gate failed — `--strict` found missing requirements over the configured max-missing, OR a deterministic risk at or above the `--fail-on` severity threshold. |
+
+The quality gate (code `10`) has two arms: the missing-requirement budget
+(`--max-missing` / `quality_gate.max_missing`) and the risk-severity gate
+(`--fail-on <critical|high|medium|low|unknown>` / `quality_gate.fail_on`). Set
+`--fail-on high`, for example, to also fail when any deterministic (non-hypothesis)
+risk is at or above `high`. Both arms compose with `--strict`.
 
 The table covers the review-surfaces commands' own gate and usage codes.
 `review-surfaces run -- <cmd>` instead **forwards the wrapped command's own exit

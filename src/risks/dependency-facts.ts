@@ -10,6 +10,11 @@ export type DependencyFactKind =
   | "dependency_removed"
   | "dependency_group_moved"
   | "major_version_bump"
+  // review-surfaces.DEP_FACTS.5: a major-version DOWNGRADE (e.g. ^3 -> ^2) is a
+  // likely-breaking supply-chain change and must be surfaced, not only an upward
+  // bump. A variant of the same sneaky_dependency fact class — NOT a new
+  // eval-harness scoreboard class.
+  | "major_version_downgrade"
   | "version_range_loosened"
   | "transitive_added"
   | "install_scripts";
@@ -356,6 +361,9 @@ export function dependencyFactSeverityRank(kind: DependencyFactKind): number {
     case "transitive_added":
       return 1;
     case "major_version_bump":
+    // review-surfaces.DEP_FACTS.5: a downgrade ranks alongside a bump (same
+    // breaking-change severity), so it surfaces at the same priority.
+    case "major_version_downgrade":
       return 2;
     case "version_range_loosened":
       return 3;
@@ -432,6 +440,16 @@ function diffPackageJson(sourcePath: string, baseText: string | undefined, headT
         kind: "major_version_bump",
         package: name,
         detail: `bumps \`${name}\` ${baseEntry.range} -> ${headEntry.range} (major)`,
+        source_path: sourcePath
+      });
+    }
+    // review-surfaces.DEP_FACTS.5: a major-version DOWNGRADE in the OTHER
+    // direction (^3 -> ^2) is just as likely-breaking and must produce a fact.
+    if (baseMajor !== undefined && headMajor !== undefined && headMajor < baseMajor) {
+      facts.push({
+        kind: "major_version_downgrade",
+        package: name,
+        detail: `downgrades \`${name}\` ${baseEntry.range} -> ${headEntry.range} (major)`,
         source_path: sourcePath
       });
     }

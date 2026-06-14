@@ -1,7 +1,24 @@
 import { CollectionResult } from "../collector/collect";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
+import { isHypothesisOnly } from "../evidence/evidence";
 import { ProviderName, providerMakesRemoteCall } from "../llm/provider";
+import type { RiskItem } from "../risks/risks";
 import { ExitCodes } from "./exit-codes";
+
+// review-surfaces.QUALITY_GATE.1: the deterministic severity ladder the
+// --fail-on risk gate compares against. Higher index == more severe, so a
+// threshold trips on every risk item at or above its rank. "unknown" sits at the
+// BOTTOM so it never trips a high/medium/low threshold; a `--fail-on unknown`
+// (the floor) trips on any deterministic risk.
+const FAIL_ON_SEVERITY_RANK: Record<RiskItem["severity"], number> = {
+  unknown: 0,
+  low: 1,
+  medium: 2,
+  high: 3,
+  critical: 4
+};
+
+export type FailOnSeverity = RiskItem["severity"];
 
 export interface GateOptions {
   // Maximum number of "missing" requirement results tolerated before the
@@ -12,6 +29,11 @@ export interface GateOptions {
   // from the gate count, so an UNRELATED requirement regressing to missing still
   // trips the gate even when the total miss count is unchanged.
   allowMissing?: string[];
+  // review-surfaces.QUALITY_GATE.1: an optional risk-severity threshold. When set,
+  // the quality gate also trips when any NON-HYPOTHESIS risk item is at or above
+  // this severity (LLM-only hypotheses are excluded — they are never proof). Unset
+  // means the legacy behavior (the gate ignores packet.risks).
+  failOnSeverity?: FailOnSeverity;
 }
 
 export interface GateDecision {
@@ -32,7 +54,11 @@ export function gateDecision(
   evaluation: EvaluationModel,
   collection: CollectionResult,
   provider: ProviderName,
-  options: GateOptions
+  options: GateOptions,
+  // review-surfaces.QUALITY_GATE.1: the deterministic risk items the --fail-on
+  // threshold inspects. Optional so a stage with no risks model (e.g. `evaluate`)
+  // still gates on missing/evidence/privacy exactly as before.
+  risks?: RiskItem[]
 ): GateDecision {
   // 5: a provider that makes a REMOTE call was requested but privacy blocked
   // remote enrichment. Only ai-sdk leaves the machine; mock and agent-file are
@@ -67,6 +93,23 @@ export function gateDecision(
     };
   }
 
+  // 10 (risk-severity gate): review-surfaces.QUALITY_GATE.1. When a --fail-on
+  // threshold is set, count DETERMINISTIC risk items at or above it. LLM-only
+  // hypotheses are excluded (isHypothesisOnly) so an unverified hypothesis can
+  // never trip the gate. Composes with --strict exactly like the missing gate.
+  if (options.failOnSeverity !== undefined) {
+    const threshold = FAIL_ON_SEVERITY_RANK[options.failOnSeverity];
+    const tripping = (risks ?? []).filter(
+      (item) => !isHypothesisOnly(item.evidence) && FAIL_ON_SEVERITY_RANK[item.severity] >= threshold
+    );
+    if (tripping.length > 0) {
+      return {
+        code: ExitCodes.qualityGateFailed,
+        reason: `Quality gate failed: ${tripping.length} deterministic risk item(s) at or above severity "${options.failOnSeverity}" (--fail-on).`
+      };
+    }
+  }
+
   return { code: ExitCodes.success, reason: "All gates passed." };
 }
 
@@ -75,9 +118,10 @@ export function gateExitCode(
   evaluation: EvaluationModel,
   collection: CollectionResult,
   provider: ProviderName,
-  options: GateOptions
+  options: GateOptions,
+  risks?: RiskItem[]
 ): number {
-  return gateDecision(evaluation, collection, provider, options).code;
+  return gateDecision(evaluation, collection, provider, options, risks).code;
 }
 
 function countMissing(results: RequirementResult[], allowMissing?: string[]): number {

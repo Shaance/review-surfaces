@@ -13,6 +13,7 @@ import { filterIgnoredDiff } from "../privacy/diff";
 import { loadPrivacyIgnore } from "../privacy/ignore";
 import { SecretRedaction, redactSecrets } from "../privacy/secrets";
 import { buildRepoIndex, RepoIndex } from "../indexer/indexer";
+import { providerMakesRemoteCall, type ProviderName } from "../llm/provider";
 import type { PacketRunMode } from "../schema/review-packet-contract";
 import {
   emptyTestResults,
@@ -76,6 +77,17 @@ export interface RunManifest {
   // Always present (0 on a clean or pinned-head run) so renderers can announce
   // a dirty literal-HEAD review on every human surface.
   uncommitted_files: number;
+  // review-surfaces.QUALITY_GATE.2 (Codex round-4 finding 2): the PRECOMPUTED
+  // privacy condition gateDecision uses (provider-adjusted): true iff the run's
+  // EFFECTIVE provider makes a remote call AND the redacted diff was flagged
+  // remote_provider_blocked — i.e. providerMakesRemoteCall(provider) &&
+  // privacy.remote_provider_blocked. Persisted so a renderer (comment --format
+  // json) can reproduce gateDecision's privacy code (5) from the packet ALONE,
+  // without the live collection/provider context the strict gate had. A packet
+  // already on disk records the run's REAL gate inputs; the renderer applies this
+  // boolean instead of re-deriving from a mock context. Always present (false on
+  // any offline run) so the manifest stays byte-stable.
+  gate_remote_blocked: boolean;
   run_mode: PacketRunMode;
   milestone?: string;
   input_hashes: ManifestInputHash[];
@@ -164,6 +176,14 @@ export interface CollectOptions {
   // provider/model swap is a cache miss. Absent => omitted from the fingerprint.
   provider?: string;
   model?: string;
+  // review-surfaces.QUALITY_GATE.2 (Codex round-4 finding 2): the run's EFFECTIVE
+  // gate provider — the one the privacy/quality gate is applied with. Distinct
+  // from `provider` above (the SIGNATURE provider), which is forced to "mock" in
+  // --review-scope pr so the whole-repo side packet's cache key stays mock-stable.
+  // The persisted gate_remote_blocked boolean is derived from THIS provider so a
+  // renderer reproduces the SAME privacy code the strict gate exited. Absent =>
+  // no remote-capable provider was requested, so the boolean is false.
+  gateProvider?: ProviderName;
   // Resolved --conversation file path (text/markdown/jsonl/yaml log) consumed by
   // buildMethodology. Folded into the signature so a conversation edit is a cache
   // miss. Absent => no conversation flag was supplied.
@@ -432,6 +452,15 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     flagInputHashes
   });
 
+  // review-surfaces.QUALITY_GATE.2 (Codex round-4 finding 2): precompute the EXACT
+  // gateDecision privacy condition (provider-adjusted) so a packet-only renderer
+  // reproduces the privacy gate code. mock/agent-file are offline, so only an
+  // ai-sdk (remote-capable) run over a remote_provider_blocked diff is true.
+  const gateRemoteBlocked =
+    options.gateProvider !== undefined &&
+    providerMakesRemoteCall(options.gateProvider) &&
+    privacy.remote_provider_blocked;
+
   const manifest: RunManifest = {
     tool_version: TOOL_VERSION,
     created_at: resolveNow(options.now),
@@ -441,6 +470,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     base_sha: git.base_sha,
     head_sha: git.head_sha,
     uncommitted_files: changedFiles.filter((file) => file.source === "working_tree").length,
+    gate_remote_blocked: gateRemoteBlocked,
     run_mode: runMode,
     milestone,
     input_hashes: inputHashes,

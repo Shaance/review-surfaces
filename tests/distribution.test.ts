@@ -456,9 +456,11 @@ test("review-surfaces.DISTRIBUTION.15 the README documents CI consumption: an ac
   // since-last-review delta needs it, or the API call is denied and the delta
   // silently vanishes.
   assert.match(readme, /actions:\s*read/, "the README documents the `actions: read` permission for the prior-sticky lookup");
-  // (a.3) `--fail-on` ships in a later phase, not this commit. The README must
-  // not promise a flag the CLI does not yet expose.
-  assert.doesNotMatch(readme, /--fail-on/, "the README does not reference the not-yet-shipped --fail-on flag");
+  // (a.3) `--fail-on` now ships (Phase 3): the README must document the risk-
+  // severity gate so a CI author knows code 10 can fire on a high/critical risk,
+  // not only on missing requirements. Assert the flag and the risk gate are
+  // documented in the exit-code section.
+  assert.match(readme, /--fail-on/, "the README documents the --fail-on risk-severity gate");
   // (b) An exit-code table sourced from src/core/exit-codes.ts mapping each
   // code to its meaning. The table must carry the non-trivial codes with copy
   // a CI author can branch on, and the meanings must match the source: code 4 is
@@ -477,17 +479,20 @@ test("review-surfaces.DISTRIBUTION.15 the README documents CI consumption: an ac
   }
   assert.match(exitTable, /\|\s*`?2`?\s*\|/, "the table lists the usage-error code 2");
   assert.match(exitTable, /\|\s*`?0`?\s*\|/, "the table lists the success code 0");
-  // (b.1) Code 4's row is evidence validation, code 10's row is the quality gate
-  // over missing requirements. The quality-gate row must NOT attribute itself to
-  // schema/evidence/risk-threshold concerns (the risk `--fail-on` threshold is
-  // not shipped), so the doc cannot mislead a CI author about which code fires.
+  // (b.1) Code 4's row is evidence validation; code 10's row is the quality gate.
+  // Phase 3 ships `--fail-on`, so code 10 now documents BOTH arms: the
+  // missing-requirement budget AND the risk-severity (`--fail-on`) threshold. The
+  // row must still NOT conflate itself with evidence validation (a separate code).
   const rowFor = (code: string) =>
     (exitTable.match(new RegExp(`\\|\\s*\`?${code}\`?\\s*\\|([^\\n]*)\\|`)) ?? [, ""])[1] ?? "";
   assert.match(rowFor("4"), /[Ee]vidence/, "code 4's row is the evidence-validation failure");
   assert.match(rowFor("10"), /[Gg]ate/, "code 10's row is the quality-gate failure");
-  assert.match(rowFor("10"), /missing/i, "code 10's row attributes the failure to missing requirements");
-  assert.doesNotMatch(rowFor("10"), /risk/i, "code 10's row does not attribute itself to a risk threshold");
+  assert.match(rowFor("10"), /missing/i, "code 10's row documents the missing-requirements arm");
+  assert.match(rowFor("10"), /--fail-on|risk/i, "code 10's row also documents the --fail-on risk-severity threshold");
   assert.doesNotMatch(rowFor("10"), /[Ee]vidence/, "code 10's row does not conflate itself with evidence validation");
+  // The risk gate must be documented in the exit-code section's prose too, so a CI
+  // author sees BOTH arms of the quality gate (the missing budget and --fail-on).
+  assert.match(exitTable, /--fail-on/, "the exit-code section documents the --fail-on risk-severity gate");
   // The table mirrors src/core/exit-codes.ts — every named non-runtime code is
   // documented, so the doc cannot silently drift from the source.
   const exitSource = read("src/core/exit-codes.ts");

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { parseBudgetDuration } from "../human/budget";
+import { CliError, ExitCodes } from "../core/exit-codes";
 import { fileExists, readText } from "../core/files";
 import { isRecord } from "../core/guards";
 import { parseYaml } from "../core/simple-yaml";
@@ -10,6 +11,7 @@ import {
   RISK_LENSES,
   RiskLens
 } from "../human/contract";
+import { PACKET_SEVERITIES } from "../schema/review-packet-contract";
 
 export interface ReviewAreaConfig {
   id: string;
@@ -51,6 +53,11 @@ export interface ReviewSurfacesConfig {
   quality_gate: {
     max_missing: number;
     allow_missing: string[];
+    // review-surfaces.QUALITY_GATE.1: optional default risk-severity threshold for
+    // the --fail-on gate. null (the default) leaves the risk gate OFF; a severity
+    // ("critical"|"high"|"medium"|"low"|"unknown") trips the quality gate when any
+    // non-hypothesis risk item is at or above it. --fail-on overrides this default.
+    fail_on: string | null;
   };
   human_review: HumanReviewBuildConfig & {
     enabled: boolean;
@@ -94,7 +101,9 @@ export const defaultConfig: ReviewSurfacesConfig = {
     // Acai IDs allowed to be missing (a planned, not-yet-implemented backlog).
     // Allowlisted misses are excluded from the gate so an unrelated regression
     // still trips it. Empty by default.
-    allow_missing: []
+    allow_missing: [],
+    // The risk-severity gate is OFF by default; opt in via config or --fail-on.
+    fail_on: null
   },
   human_review: {
     enabled: true,
@@ -151,7 +160,13 @@ export function normalizeConfig(raw: Record<string, unknown>): ReviewSurfacesCon
     },
     quality_gate: {
       max_missing: nonNegativeIntValue(readRecord(raw.quality_gate).max_missing, defaultConfig.quality_gate.max_missing),
-      allow_missing: stringArray(readRecord(raw.quality_gate).allow_missing, defaultConfig.quality_gate.allow_missing)
+      allow_missing: stringArray(readRecord(raw.quality_gate).allow_missing, defaultConfig.quality_gate.allow_missing),
+      // review-surfaces.QUALITY_GATE.1: an UNSET (null/absent) fail_on leaves the
+      // risk gate off; a SET value must be a recognized severity. An invalid
+      // non-null value (a typo like "hihg") FAILS the load loudly — like a bad
+      // --fail-on — instead of being silently nulled, which would disarm the gate
+      // for every default run without the operator noticing.
+      fail_on: failOnSeverityValue(readRecord(raw.quality_gate).fail_on, defaultConfig.quality_gate.fail_on)
     },
     human_review: {
       enabled: booleanValue(readRecord(raw.human_review).enabled, defaultConfig.human_review.enabled),
@@ -187,6 +202,29 @@ function positiveIntValue(value: unknown, fallback: number): number {
 
 function nonNegativeIntValue(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : fallback;
+}
+
+// review-surfaces.QUALITY_GATE.1: resolve the risk-gate threshold from config.
+// An UNSET value (null/undefined/absent) leaves the gate OFF (the fallback). A
+// SET value MUST be a recognized PacketSeverity; an invalid non-null value (a
+// typo like "hihg", an empty string, or a non-string) FAILS the load loudly —
+// the same fail-fast contract as a bad --fail-on — rather than being silently
+// nulled, which would disarm the risk gate for every default run.
+function failOnSeverityValue(value: unknown, fallback: string | null): string | null {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+  if (typeof value === "string" && (PACKET_SEVERITIES as readonly string[]).includes(value)) {
+    return value;
+  }
+  // Throw a CliError carrying the usage exit code (2) so an invalid config
+  // fail_on exits like a bad `--fail-on` flag, NOT a runtime failure (exit 1):
+  // the CLI top-level catch maps a plain Error to runtimeError but honors a
+  // CliError's exitCode. exit-codes.ts imports nothing, so there is no cycle.
+  throw new CliError(
+    `Invalid quality_gate.fail_on: ${JSON.stringify(value)}. Must be null (off) or one of ${PACKET_SEVERITIES.join(", ")}.`,
+    ExitCodes.usageError
+  );
 }
 
 function riskLensConfig(value: unknown, fallback: Record<RiskLens, boolean>): Record<RiskLens, boolean> {

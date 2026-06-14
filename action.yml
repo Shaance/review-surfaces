@@ -13,6 +13,11 @@
 # secrets), and provider=ai-sdk + the key + post=true for same-repo PRs.
 name: review-surfaces PR surface
 description: Run review-surfaces on a PR, post a sticky human-review summary, and upload the artifact.
+# review-surfaces.ACTION_IO.3: a Marketplace-publishable branding block (a valid
+# Feather icon + color) so the reusable action can be listed.
+branding:
+  icon: shield
+  color: purple
 inputs:
   provider:
     description: review-surfaces provider (mock | ai-sdk | agent-file). Default mock — zero secrets.
@@ -71,6 +76,36 @@ inputs:
     description: Token with pull-requests:write and actions:read, for posting and prior-artifact lookup.
     required: false
     default: ""
+# review-surfaces.ACTION_IO.1: declared outputs a consuming workflow can branch
+# on, populated from the deterministic packet/gate values via $GITHUB_OUTPUT. No
+# recomputation. The privacy-INDEPENDENT counts (missing/invalid/risk) come from the
+# renderer-only run-summary JSON the summary step produces (comment --format json).
+# gate-code is the EXCEPTION (Codex finding 1): it is the REAL gate the generation
+# step ran over the live provider + collection — the only place a privacy block is
+# observable — so it is sourced from that step, not re-projected by the renderer.
+outputs:
+  gate-code:
+    description: The review-surfaces gate exit code (0 pass; 4 evidence; 5 privacy; 10 quality/risk).
+    # Codex finding 1: sourced from the GENERATION step, which runs the real gate
+    # over the live provider + collection. The renderer-only summary step cannot
+    # reconstruct a privacy block (the packet records neither the block nor the
+    # provider), so a blocked ai-sdk run would otherwise report 0 here.
+    value: ${{ steps.generate.outputs.gate-code }}
+  missing-count:
+    description: Number of requirements with status "missing".
+    value: ${{ steps.summary.outputs.missing-count }}
+  invalid-count:
+    description: Number of requirement results with status "invalid_evidence".
+    value: ${{ steps.summary.outputs.invalid-count }}
+  risk-count:
+    description: Number of deterministic (non-hypothesis) risk items in the packet.
+    value: ${{ steps.summary.outputs.risk-count }}
+  artifact-name:
+    description: The uploaded artifact name (review-surfaces-pr-<pr-number>).
+    value: ${{ steps.summary.outputs.artifact-name }}
+  comment-path:
+    description: Path to the rendered sticky comment.md.
+    value: ${{ steps.summary.outputs.comment-path }}
 runs:
   using: composite
   steps:
@@ -132,6 +167,7 @@ runs:
           echo "Prior artifact present but unreadable; first-review fallback."
         fi
     - name: Generate PR review surface (trusted tool)
+      id: generate
       shell: bash
       working-directory: ${{ inputs.subject-directory }}
       # All caller-supplied inputs flow through env, never interpolated into the
@@ -177,7 +213,17 @@ runs:
             git fetch --unshallow --no-tags origin 2>/dev/null || true
           fi
         fi
-        node "$RS_BIN" all \
+        # review-surfaces.ACTION_IO.1 (Codex finding 1): capture the REAL gate code
+        # HERE, in the generation step that actually runs the gate over the live
+        # provider + collection. The packet's manifest does NOT record the privacy
+        # block or the run's provider, so the renderer-only `comment --format json`
+        # in the summary step below cannot reconstruct a privacy gate: a
+        # `provider=ai-sdk` run over a remote_provider_blocked diff gates as privacy
+        # code 5 here, but the summary step would re-project a clean local mock
+        # context and report 0. So `--json` is passed to `all` and the run-summary
+        # line it prints (gated over the live context) is the authoritative gate
+        # code, written to this step's $GITHUB_OUTPUT for the action's gate-code.
+        all_out="$(node "$RS_BIN" all \
           --provider "$RS_PROVIDER" \
           "${model_flag[@]}" \
           --config "$RS_CONFIG" \
@@ -187,8 +233,20 @@ runs:
           --spec "$RS_SPEC" \
           --dogfood \
           --review-scope pr \
+          --json \
           "${prev_flag[@]}" \
-          --out "$RS_OUT"
+          --out "$RS_OUT")"
+        printf '%s\n' "$all_out"
+        # The run summary is a SINGLE compact JSON line amid the prose; pick exactly
+        # that line and read its gate_code (the real gate, incl. a privacy block 5).
+        # `|| true` keeps a no-match from aborting under `set -eo pipefail` — a
+        # missing summary line is the best-effort blank-gate-code case, never fatal.
+        gate_line="$(printf '%s\n' "$all_out" | grep -F '"review-surfaces.run-summary.v1"' | tail -n1 || true)"
+        gate_code="$(printf '%s' "$gate_line" | jq -r '.gate_code // ""' 2>/dev/null || true)"
+        case "$gate_code" in
+          ''|*[!0-9]*) echo "Could not read a numeric gate_code from the run summary (best-effort); leaving gate-code blank." ;;
+          *) echo "gate-code=$gate_code" >> "$GITHUB_OUTPUT" ;;
+        esac
         node "$RS_BIN" validate "$RS_OUT"
         # review-surfaces.PR_SURFACE.2/.4: render the deterministic sticky from
         # human_review.json. Redaction and the secret-block postability gate run
@@ -204,6 +262,66 @@ runs:
           --artifact-name "$RS_ARTIFACT" \
           --run-id "$GITHUB_RUN_ID" \
           --out "$RS_OUT"
+    - name: Emit outputs and run-UI summary (best-effort, renderer-only)
+      id: summary
+      shell: bash
+      working-directory: ${{ inputs.subject-directory }}
+      # review-surfaces.ACTION_IO.1: populate the privacy-INDEPENDENT declared
+      # outputs (missing/invalid/risk counts) from the deterministic run-summary
+      # JSON (comment --format json) — a RENDERER over the local packet, no network
+      # and no recomputation. gate-code is NOT emitted here: a renderer cannot see a
+      # privacy block (the packet records neither the block nor the run's provider),
+      # so the generation step that ran the real gate owns gate-code (Codex finding 1).
+      # review-surfaces.ACTION_IO.2: append the rendered comment.md (trimmed) to
+      # $GITHUB_STEP_SUMMARY so the verdict shows in the Actions run UI even on
+      # fork PRs where the comment is never posted. Best-effort: a missing packet
+      # or summary never fails the action.
+      env:
+        RS_BIN: ${{ github.action_path }}/bin/review-surfaces.js
+        # review-surfaces.ACTION_IO.1: the run-summary projection is config-derived
+        # (the counts read quality_gate.max_missing/fail_on), so the outputs step
+        # MUST use the SAME config the generate step used (the action's bundled
+        # config). Without it a consumer repo whose own review-surfaces.config.yaml
+        # differs would project missing-count over the WRONG config.
+        RS_CONFIG: ${{ github.action_path }}/review-surfaces.config.yaml
+        RS_OUT: ${{ inputs.output-dir }}
+        RS_ARTIFACT: review-surfaces-pr-${{ inputs.pr-number }}
+        RS_TOP_N: ${{ inputs.comment-top-n }}
+      run: |
+        set +e
+        comment_path="$RS_OUT/comment.md"
+        echo "artifact-name=$RS_ARTIFACT" >> "$GITHUB_OUTPUT"
+        echo "comment-path=$comment_path" >> "$GITHUB_OUTPUT"
+        # Deterministic machine summary from the local packet (no recompute).
+        # Pass the SAME --config and --out the generate step used so the summary is
+        # projected over the matching config/artifacts (not the consumer repo's).
+        summary_json="$(node "$RS_BIN" comment --format json --config "$RS_CONFIG" --out "$RS_OUT" 2>/dev/null)"
+        if [ -n "$summary_json" ]; then
+          # gate-code is intentionally NOT read here: the renderer projects a clean
+          # local-mock context and cannot reproduce a privacy block. The generation
+          # step already wrote the REAL gate-code to $GITHUB_OUTPUT (Codex finding 1).
+          missing="$(printf '%s' "$summary_json" | jq -r '.requirement_counts.missing // ""')"
+          invalid="$(printf '%s' "$summary_json" | jq -r '.requirement_counts.invalid_evidence // ""')"
+          # risk-count = sum of the deterministic risk-severity histogram.
+          risk="$(printf '%s' "$summary_json" | jq -r '[.risk_severity_histogram[]] | add // 0')"
+          echo "missing-count=$missing" >> "$GITHUB_OUTPUT"
+          echo "invalid-count=$invalid" >> "$GITHUB_OUTPUT"
+          echo "risk-count=$risk" >> "$GITHUB_OUTPUT"
+        else
+          echo "No packet summary available (best-effort); leaving counts blank."
+        fi
+        # Append the rendered sticky (trimmed to the top N lines) to the run UI.
+        if [ -n "$GITHUB_STEP_SUMMARY" ] && [ -f "$comment_path" ] && [ ! -L "$comment_path" ]; then
+          # Strip the sticky HTML marker line, keep a bounded slice so a long
+          # comment never floods the run summary.
+          lines=$(( ${RS_TOP_N:-5} * 8 + 40 ))
+          grep -v '^<!-- review-surfaces:' "$comment_path" 2>/dev/null | head -n "$lines" >> "$GITHUB_STEP_SUMMARY" \
+            && echo "Wrote review-surfaces verdict to the run summary." \
+            || echo "Could not write run summary (best-effort)."
+        else
+          echo "No comment.md to summarize (best-effort)."
+        fi
+        exit 0
     - name: Upload review-surfaces artifact
       uses: actions/upload-artifact@v4
       with:

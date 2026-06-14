@@ -442,6 +442,48 @@ test("review-surfaces.QUALITY.7 --strict --max-missing tolerates the missing req
   }
 });
 
+// review-surfaces.QUALITY_GATE.1 (Codex finding 2): a bare/valueless --fail-on
+// REQUIRES a severity, so it must be a usage error (exit 2) naming the valid
+// values — NOT silently parsed as boolean true and treated as absent (which would
+// disarm the gate the operator clearly meant to arm).
+test("review-surfaces.QUALITY_GATE.1 a bare --fail-on (no severity) is a usage error", () => {
+  const tmp = setupMissingRequirementFixture();
+  try {
+    // `--fail-on` immediately followed by another flag -> no value consumed.
+    const result = runAllForGate(tmp, ["--fail-on", "--strict"]);
+    assert.equal(result.status, ExitCodes.usageError, `bare --fail-on must be a usage error (2): ${result.stderr}`);
+    assert.match(result.stderr, /--fail-on requires a severity value/);
+    assert.match(result.stderr, /low.*medium.*high.*critical.*unknown/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces.QUALITY_GATE.1 (Codex finding 4): --fail-on only fires when
+// applyGate is given a risks model. evaluate's applyGate runs WITHOUT one, so
+// --fail-on can never trip there and must be REJECTED on evaluate (not a silent
+// no-op) — while still being ACCEPTED on all/packet/dogfood whose applyGate
+// threads packet.risks.
+test("review-surfaces.QUALITY_GATE.1 --fail-on is rejected on evaluate but accepted on all", () => {
+  const tmp = setupMissingRequirementFixture();
+  try {
+    const evaluate = spawnSync(
+      "node",
+      [CLI, "evaluate", "--base", "HEAD", "--head", "HEAD", "--spec", "features/example.feature.yaml", "--provider", "mock", "--out", ".review-surfaces", "--fail-on", "high"],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(evaluate.status, ExitCodes.usageError, `evaluate --fail-on must be a usage error (2): ${evaluate.stderr}`);
+    assert.match(evaluate.stderr, /Unknown flag: --fail-on/);
+
+    // all reads --fail-on (its applyGate has the risks model): a VALID severity is
+    // accepted (this fixture has no deterministic risks, so the gate passes, exit 0).
+    const all = runAllForGate(tmp, ["--fail-on", "high"]);
+    assert.equal(all.status, 0, `all --fail-on high must be accepted: ${all.stderr}`);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.CLI.1 supports top-level --help output", () => {
   const cli = path.join(process.cwd(), "dist", "src", "cli", "index.js");
   const result = spawnSync("node", [cli, "--help"], { encoding: "utf8" });
