@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { redactSecrets } from "../privacy/secrets";
@@ -468,10 +467,4 @@ function asArray(value: unknown): unknown[] {
     return [];
   }
   return Array.isArray(value) ? value : [value];
-}
-
-// Coverage hash helper kept for callers that want a stable digest of the
-// normalized results (e.g. manifest input hashes).
-export function hashTestResults(results: TestResults): string {
-  return crypto.createHash("sha256").update(JSON.stringify(results)).digest("hex");
 }

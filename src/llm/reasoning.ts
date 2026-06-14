@@ -1,5 +1,5 @@
 import { CollectionResult } from "../collector/collect";
-import { isRecord, numericField, uniqueTruthy } from "../core/guards";
+import { isRecord, uniqueTruthy } from "../core/guards";
 import { llmProposedEvidence } from "../evidence/evidence";
 import { EvidenceValidationContext, validateEvidenceRef } from "../evidence/validate";
 import {
@@ -14,7 +14,7 @@ import type {
 } from "../evaluation/candidate-evidence";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 import { markHypothesis, redactHypothesisText } from "../evidence/hypothesis";
-import { ClaimedIntentCandidate, IntentModel, IntentRequirement } from "../intent/intent";
+import { ClaimedIntentCandidate, IntentModel } from "../intent/intent";
 import { MethodologyModel } from "../methodology/methodology";
 import { RisksModel } from "../risks/risks";
 import { buildReviewAreas, createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";

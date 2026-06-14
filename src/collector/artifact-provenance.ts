@@ -76,14 +76,6 @@ export function readArtifactSignatures(outputDir: string): ArtifactSignatures {
 }
 
 /**
- * The producing signature recorded for a single artifact, or undefined when the
- * artifact has no recorded provenance (treated as stale / recompute).
- */
-export function artifactProducingSignature(outputDir: string, artifactFile: string): string | undefined {
-  return readArtifactSignatures(outputDir)[artifactFile];
-}
-
-/**
  * Stamp the given artifact file names with `signature` in manifest.json's
  * `artifact_signatures` map, preserving every other entry and writing the keys
  * in sorted order so the manifest is byte-stable across identical-input runs.

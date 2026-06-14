@@ -70,7 +70,7 @@ export async function runInit(options: InitOptions): Promise<ScaffoldResult> {
   reports.push(await scaffoldTextTarget(cwd, IGNORE_FILE, force, validateOnly, true, renderIgnore, validateIgnore));
   reports.push(await scaffoldFeatureSpec(cwd, force, validateOnly));
   reports.push(await scaffoldTextTarget(cwd, USAGE_SKILL_FILE, force, validateOnly, true, renderUsageSkill, validateNonEmpty));
-  reports.push(await scaffoldAgents(cwd, force, validateOnly));
+  reports.push(await scaffoldAgents(cwd, validateOnly));
 
   return { reports };
 }
@@ -409,7 +409,7 @@ async function validateNonEmpty(_cwd: string, absolutePath: string): Promise<voi
 // AGENTS.md
 // ---------------------------------------------------------------------------
 
-async function scaffoldAgents(cwd: string, force: boolean, validateOnly: boolean): Promise<TargetReport> {
+async function scaffoldAgents(cwd: string, validateOnly: boolean): Promise<TargetReport> {
   const absolutePath = resolveInside(cwd, AGENTS_FILE);
   const exists = fileExists(absolutePath);
 

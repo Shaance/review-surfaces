@@ -1,4 +1,3 @@
-import { compareStrings } from "../core/compare";
 // review-surfaces.CHANGE_MAP.4: the diagram-label sanitizer is shared — one
 // copy in diagrams.ts, imported by every mermaid emitter.
 import { diagramLabel, validateMermaidDiagramArtifact } from "./diagrams";
