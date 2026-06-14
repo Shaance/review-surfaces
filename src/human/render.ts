@@ -517,10 +517,14 @@ export function renderTestPlanMarkdown(model: HumanReviewModel, _context: HumanR
   // TEST-### id and every distinct suggested file. Empty priority buckets are
   // omitted rather than rendered with a dead "No items" placeholder (mirrors the
   // empty-section omission used elsewhere in this file).
+  // The standalone deep-dive surface is where a reviewer goes for the COMPLETE
+  // plan, so it must never drop a group: pass a cap >= the group count (groups
+  // <= items.length) rather than the summary cap MAX_TEST_PLAN. The combined
+  // human_review.md keeps the bounded summary.
   const sections = groups
     .map(([heading, priority]) => [heading, model.test_plan.filter((item) => item.priority === priority)] as const)
     .filter(([, items]) => items.length > 0)
-    .map(([heading, items]) => `## ${heading}\n\n${renderTestPlanRollups(items, MAX_TEST_PLAN)}`);
+    .map(([heading, items]) => `## ${heading}\n\n${renderTestPlanRollups(items, items.length)}`);
   const body = sections.length ? sections.join("\n\n") : "- No concrete test-plan items generated.";
   return `# Test Plan
 

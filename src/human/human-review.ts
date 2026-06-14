@@ -1934,7 +1934,7 @@ function buildVerdict(input: BuildHumanReviewInput, blockers: ReviewBlocker[], t
         id: "READY-RISKS-PRESENT",
         severity: "medium",
         summary: "Reviewable risks remain and should guide the review path.",
-        evidence: firstRiskEvidence(input),
+        evidence: firstRiskEvidenceAtLeast(input, "medium"),
         required_action: "Review the ranked queue before approving."
       });
     }
@@ -2111,7 +2111,12 @@ function buildReviewQueue(
     if (!first) {
       continue;
     }
-    const aggregate = !normalizedEvidenceRange(first) && evidenceSpansMultiplePaths(risk.evidence ?? []);
+    // review-surfaces.RANKING.4: every packet risk (from analyzeRisks) is an
+    // aggregate statistic over requirement results — none is a concrete single-file
+    // fact — so any one without a real line anchor must render at file level. A
+    // path-diversity test would miss an aggregate whose evidence (or capped sample)
+    // all points at one file (e.g. several requirements in one spec file).
+    const aggregate = !normalizedEvidenceRange(first);
     const anchor = queueAnchorForEvidence(first, diffIndex, aggregate);
     drafts.push({
       title: aggregate ? aggregateRiskTitle(risk) : titleFromSummary(risk.summary),
@@ -4011,8 +4016,14 @@ function buildSuggestedComments(
   }
 
   for (const finding of riskLensFindings.filter(isPathOnlyRiskLensFinding)) {
+    // review-surfaces.SEMANTIC_DIFF.5: only the lenses a semantic-fact comment
+    // actually duplicates may be deduped against it — the api/schema-contract lens
+    // (schema_changes/api_changes) and the test-evidence lens (test_weakening). A
+    // distinct blocking lens on the same path (e.g. the LLM trust-boundary lens on
+    // a schema change under src/llm/) is a different concern and must survive.
+    const lensDuplicatesSemantic = finding.lens === "api_contract" || finding.lens === "test_evidence";
     for (const comment of finding.suggested_comments) {
-      if (comment.path && semanticCommentCoverage.has(`${comment.severity}:${comment.path}`)) {
+      if (lensDuplicatesSemantic && comment.path && semanticCommentCoverage.has(`${comment.severity}:${comment.path}`)) {
         continue;
       }
       candidates.push({ draft: commentDraftWithoutId(comment), sourceRank: 2, sortKey: finding.id });
@@ -4691,6 +4702,22 @@ function allCriticalRisks(input: BuildHumanReviewInput): Array<{
       .filter((risk) => risk.severity === "critical")
       .map((risk) => ({ id: risk.id, summary: risk.summary, evidence: risk.evidence, suggested_checks: risk.suggested_checks }))
   ];
+}
+
+// review-surfaces.HUMAN_TRUST.6: cite the evidence of the first risk AT OR ABOVE
+// the threshold that made hasRiskAtLeast fire, so the verdict reason names the
+// concrete medium/high in-diff risk rather than an earlier low-severity candidate.
+function firstRiskEvidenceAtLeast(input: BuildHumanReviewInput, severity: PacketSeverity): EvidenceRef[] {
+  const threshold = severityWeight(severity);
+  const prRisk = input.prSurface?.risks.candidates.find((risk) => severityWeight(risk.severity) >= threshold);
+  if (prRisk) {
+    return evidenceOrMissing(prRisk.evidence, prRisk.summary).slice(0, 3);
+  }
+  const packetRisk = input.packet.risks.items.find((risk) => severityWeight(risk.severity) >= threshold);
+  if (packetRisk) {
+    return evidenceOrMissing(packetRisk.evidence ?? [], packetRisk.summary).slice(0, 3);
+  }
+  return firstRiskEvidence(input);
 }
 
 function firstRiskEvidence(input: BuildHumanReviewInput): EvidenceRef[] {

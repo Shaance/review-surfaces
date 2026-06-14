@@ -102,9 +102,11 @@ test("review-surfaces.RANKING.4 an aggregate-rollup packet risk renders at file 
       category: "testing",
       severity: "medium",
       summary: "182 requirement(s) have implementation evidence but weak or missing test evidence.",
+      // A single-file aggregate (all evidence in one spec file): the fix must still
+      // detect it without requiring path diversity.
       evidence: [
         { kind: "file", path: "features/review-surfaces.feature.yaml", confidence: "medium" },
-        { kind: "file", path: "CHANGELOG.md", confidence: "medium" }
+        { kind: "file", path: "features/review-surfaces.feature.yaml", line_start: undefined, confidence: "medium" }
       ],
       suggested_checks: ["Add unit or fixture tests tied to affected requirement groups."]
     }
@@ -159,9 +161,19 @@ test("review-surfaces.HUMAN_REVIEW.24 the summary leads with blockers and queue 
 
 test("review-surfaces.HUMAN_TRUST.6 the verdict surfaces the top in-diff risk co-equally with a soft missing-evidence reason", () => {
   const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  // An earlier LOW-severity risk precedes the medium one: the cited evidence must
+  // name the medium risk that fired hasRiskAtLeast, not the first (low) candidate.
   packet.risks.items = [
     {
-      id: "RISK-001",
+      id: "RISK-LOW",
+      category: "release",
+      severity: "low",
+      summary: "A low unrelated risk.",
+      evidence: [{ kind: "file", path: "docs/unrelated.md", confidence: "low" }],
+      suggested_checks: ["Skim it."]
+    },
+    {
+      id: "RISK-MED",
       category: "testing",
       severity: "medium",
       summary: "A medium in-diff risk.",
@@ -180,7 +192,12 @@ test("review-surfaces.HUMAN_TRUST.6 the verdict surfaces the top in-diff risk co
   const built = buildHumanReview({ packet });
   const reasonIds = built.verdict.reasons.map((reason) => reason.id);
   assert.ok(reasonIds.includes("READY-MISSING-EVIDENCE"), "the soft missing-evidence reason is present");
-  assert.ok(reasonIds.includes("READY-RISKS-PRESENT"), "the concrete in-diff risk is also surfaced");
+  const riskReason = built.verdict.reasons.find((reason) => reason.id === "READY-RISKS-PRESENT");
+  assert.ok(riskReason, "the concrete in-diff risk is also surfaced");
+  assert.ok(
+    riskReason.evidence.some((ref) => ref.path === "schemas/human_review.schema.json"),
+    "the cited evidence names the medium risk that fired, not the earlier low one"
+  );
   assert.equal(built.verdict.decision, "needs_author_clarification", "the decision precedence is unchanged");
 });
 
