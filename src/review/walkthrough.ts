@@ -177,7 +177,7 @@ export async function runWalkthrough(
   return {
     decisions,
     feedback: buildFeedbackRecord(decisions, options),
-    commentDrafts: buildCommentDrafts(decisions, options)
+    commentDrafts: buildCommentDrafts(decisions)
   };
 }
 
@@ -251,7 +251,7 @@ export function buildFeedbackRecord(decisions: ReviewDecision[], options: Walkth
 // REVIEW_LOOP.3: a needs-comment decision becomes a suggested-comment draft,
 // hunk-anchored to the item, marked draft (ready_to_post: false) unless the
 // reviewer confirmed it ready in-session.
-export function buildCommentDrafts(decisions: ReviewDecision[], options: WalkthroughOptions): SuggestedReviewComment[] {
+export function buildCommentDrafts(decisions: ReviewDecision[]): SuggestedReviewComment[] {
   return decisions
     .filter((decision) => decision.choice === "needs_comment")
     .map((decision, index) => ({

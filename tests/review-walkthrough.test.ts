@@ -167,7 +167,7 @@ test("review-surfaces.REVIEW_LOOP.1 parses decision keys and words", () => {
 // The builders return nothing actionable when there is nothing to persist.
 test("review-surfaces.REVIEW_LOOP.2 produces no feedback record for skip-only sessions", () => {
   assert.equal(buildFeedbackRecord([], OPTIONS), undefined);
-  assert.equal(buildCommentDrafts([], OPTIONS).length, 0);
+  assert.equal(buildCommentDrafts([]).length, 0);
 });
 
 // REVIEW_LOOP.2: a false positive is scoped to the reviewed finding's rule when it

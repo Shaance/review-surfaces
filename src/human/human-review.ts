@@ -24,7 +24,7 @@ import { PrRiskCandidate, PrReviewSurfaceModel, StructuredDiff, StructuredDiffFi
 import { PR_RISK_RULE_METADATA } from "../pr/risk-metadata";
 import { ReviewPacket } from "../render/packet";
 import { looksLikeRecordedCiSecretBoundaryManualCheck } from "../risks/manual-checks";
-import { RiskItem, RisksModel } from "../risks/risks";
+import { RisksModel } from "../risks/risks";
 import { classifyRole } from "../scope/pr-scope";
 import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-contract";
 import {
@@ -420,7 +420,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     mode: input.prSurface ? "pr" : "repo",
     spec_mode: specMode,
     verdict,
-    summary: summarizeHumanReview(input, verdict, reviewQueue.length, blockers.length),
+    summary: summarizeHumanReview(input, reviewQueue.length, blockers.length),
     // review-surfaces.NARRATIVE.4: the narrative is stored read-only AFTER the
     // verdict/blockers/coverage are computed, so it can never influence them.
     narrative,
@@ -4591,7 +4591,6 @@ function buildSkimSafe(input: BuildHumanReviewInput, feedbackEffects: FeedbackPo
 
 function summarizeHumanReview(
   input: BuildHumanReviewInput,
-  verdict: HumanReviewVerdict,
   queueCount: number,
   blockerCount: number
 ): string {
@@ -5625,32 +5624,8 @@ function dedupeQuestions(items: ReviewerQuestion[]): ReviewerQuestion[] {
   });
 }
 
-function dedupeComments(items: SuggestedReviewComment[]): SuggestedReviewComment[] {
-  const seen = new Set<string>();
-  return items.filter((item) => {
-    const key = suggestedCommentDedupeKey(item);
-    if (seen.has(key)) {
-      return false;
-    }
-    seen.add(key);
-    return true;
-  });
-}
-
 function suggestedCommentDedupeKey(item: SuggestedReviewComment): string {
   return `${item.severity}:${item.path ?? ""}:${item.body}`;
-}
-
-function dedupeTests(items: TestPlanItem[]): TestPlanItem[] {
-  const seen = new Set<string>();
-  return items.filter((item) => {
-    const key = testPlanDedupeKey(item);
-    if (seen.has(key)) {
-      return false;
-    }
-    seen.add(key);
-    return true;
-  });
 }
 
 function testPlanDedupeKey(item: TestPlanItem): string {

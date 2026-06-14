@@ -1,4 +1,4 @@
-import { ReviewAreaConfig, ReviewSurfacesConfig, loadConfig } from "../config/config";
+import { ReviewAreaConfig, ReviewSurfacesConfig } from "../config/config";
 import { RepoIndex } from "../indexer/indexer";
 
 export interface ReviewArea {
@@ -67,15 +67,6 @@ export function buildReviewAreas(options: BuildReviewAreasOptions = {}): ReviewA
     return { areas: configured.map(fromConfig), mode: "config" };
   }
   return { areas: fallbackAreasFromIndex(options.repoIndex), mode: "fallback" };
-}
-
-/**
- * Load the review areas declared in a repository's config (used by tests and
- * tooling that need this repo's own default areas without a full collection).
- */
-export async function loadReviewAreas(cwd: string, configPath?: string): Promise<ReviewAreasResult> {
-  const config = await loadConfig(cwd, configPath);
-  return buildReviewAreas({ config });
 }
 
 export function createReviewAreaMatcher(areas: ReviewArea[]): ReviewAreaMatcher {
@@ -171,7 +162,7 @@ function explainPathForAreas(
 ): ReviewAreaPathDiagnostic {
   const matches: ReviewAreaPathMatch[] = [];
   const groups: string[] = [];
-  const context = createMatchContext(filePath, options);
+  const context = createMatchContext(filePath);
   for (const area of areas) {
     for (const prefix of area.prefixes) {
       if (matchesPrefixForPurpose(filePath, prefix, options.purpose)) {
@@ -198,7 +189,7 @@ function explainPathForAreas(
 
 function collectGroupsForPath(filePath: string, areas: ReviewArea[], options: ReviewAreaMatchOptions): string[] {
   const groups: string[] = [];
-  const context = createMatchContext(filePath, options);
+  const context = createMatchContext(filePath);
   for (const area of areas) {
     if (areaMatchesPathForPurpose(filePath, area, options, context)) {
       addUnique(groups, area.groupKey);
@@ -222,7 +213,7 @@ function areaMatchesPathForPurpose(
   );
 }
 
-function createMatchContext(filePath: string, options: ReviewAreaMatchOptions): ReviewAreaMatchContext {
+function createMatchContext(filePath: string): ReviewAreaMatchContext {
   const testPath = filePath.startsWith("tests/");
   return {
     testPath,
