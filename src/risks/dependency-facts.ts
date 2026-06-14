@@ -74,8 +74,11 @@ export function computeDependencyFacts(input: ComputeDependencyFactsInput): Depe
 // reach the same package. Anything unresolvable stays unattributed — the flat
 // fallback, never a guess.
 interface LockGraph {
-  // instance key -> dependency instance keys (ambiguous targets are dropped).
-  edges: Map<string, Set<string>>;
+  // review-surfaces.PERF.2: instance key -> dependency instance keys, PRE-SORTED
+  // alphabetically once when the graph is built (ambiguous targets are dropped).
+  // The transitive-attribution BFS reads these in order without re-sorting on
+  // every visit — the order is identical, so attribution is unchanged.
+  edges: Map<string, string[]>;
   // package name -> instance keys.
   instancesByName: Map<string, Set<string>>;
   // Direct dependency roots from importers/workspace manifest entries:
@@ -147,7 +150,9 @@ function attributeTransitives(facts: DependencyFact[], input: ComputeDependencyF
         const roots = rootsByInstance.get(instance) ?? new Set<string>();
         roots.add(root);
         rootsByInstance.set(instance, roots);
-        for (const next of [...(graph.edges.get(instance) ?? [])].sort()) {
+        // review-surfaces.PERF.2: edges are pre-sorted at build time, so the
+        // per-visit `.sort()` is gone from this hot loop. Same order, same output.
+        for (const next of graph.edges.get(instance) ?? []) {
           if (!seen.has(next)) {
             seen.add(next);
             queue.push(next);
@@ -216,13 +221,13 @@ function pnpmLockGraph(text: string | undefined): LockGraph | undefined {
     const instances = instancesByName.get(depName);
     return instances && instances.size === 1 ? [...instances][0] : undefined;
   };
-  const edges = new Map<string, Set<string>>();
+  const edgeSets = new Map<string, Set<string>>();
   for (const section of sections) {
     for (const [key, entry] of Object.entries(section)) {
       if (typeof entry !== "object" || entry === null) {
         continue;
       }
-      const targets = edges.get(key) ?? new Set<string>();
+      const targets = edgeSets.get(key) ?? new Set<string>();
       // Optional dependency edges count too: an optional package is still a
       // real edge the lockfile records.
       for (const group of ["dependencies", "optionalDependencies"] as const) {
@@ -238,13 +243,16 @@ function pnpmLockGraph(text: string | undefined): LockGraph | undefined {
         }
       }
       if (targets.size > 0) {
-        edges.set(key, targets);
+        edgeSets.set(key, targets);
       }
     }
   }
-  if (edges.size === 0) {
+  if (edgeSets.size === 0) {
     return undefined;
   }
+  // review-surfaces.PERF.2: freeze each edge set into a sorted array ONCE so the
+  // attribution BFS never re-sorts per visit.
+  const edges = sortedEdges(edgeSets);
   const directRoots = new Map<string, Set<string>>();
   const importers = parsed?.importers;
   if (typeof importers === "object" && importers !== null) {
@@ -307,7 +315,7 @@ function packageLockGraph(text: string | undefined): LockGraph | undefined {
       scope = scope.slice(0, cut);
     }
   };
-  const edges = new Map<string, Set<string>>();
+  const edgeSets = new Map<string, Set<string>>();
   const directRoots = new Map<string, Set<string>>();
   for (const [key, entry] of Object.entries(packages)) {
     if (typeof entry !== "object" || entry === null) {
@@ -327,7 +335,7 @@ function packageLockGraph(text: string | undefined): LockGraph | undefined {
       }
       continue;
     }
-    const targets = edges.get(key) ?? new Set<string>();
+    const targets = edgeSets.get(key) ?? new Set<string>();
     // Optional dependencies are still recorded install edges in npm lockfiles.
     for (const group of ["dependencies", "optionalDependencies"] as const) {
       const deps = (entry as Record<string, unknown>)[group];
@@ -342,13 +350,25 @@ function packageLockGraph(text: string | undefined): LockGraph | undefined {
       }
     }
     if (targets.size > 0) {
-      edges.set(key, targets);
+      edgeSets.set(key, targets);
     }
   }
-  if (edges.size === 0) {
+  if (edgeSets.size === 0) {
     return undefined;
   }
-  return { edges, instancesByName, directRoots, nameOf };
+  // review-surfaces.PERF.2: pre-sort each edge set once at build time.
+  return { edges: sortedEdges(edgeSets), instancesByName, directRoots, nameOf };
+}
+
+// review-surfaces.PERF.2: collapse a map of edge SETS into a map of sorted
+// edge ARRAYS, alphabetically ordered exactly as the BFS used to sort per visit.
+// Done ONCE when the LockGraph is built so the hot loop never re-sorts.
+function sortedEdges(edgeSets: Map<string, Set<string>>): Map<string, string[]> {
+  const edges = new Map<string, string[]>();
+  for (const [key, targets] of edgeSets) {
+    edges.set(key, [...targets].sort());
+  }
+  return edges;
 }
 
 // Deterministic severity ordering for rendering/queue language (DEP_FACTS.2):

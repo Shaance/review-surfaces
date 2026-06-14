@@ -158,6 +158,78 @@ test("a privacy file change scopes to PRIVACY-group requirements and not unrelat
   assert.deepEqual(model.affected_areas[0].changed_files, ["src/privacy/secrets.ts"]);
 });
 
+test("review-surfaces.PERF.2 affected_areas precomputes area_ids by group_key once (multi-area group, multi-file) — output identical", () => {
+  // Two review areas sharing ONE group_key (PRIVACY) plus a second group, and
+  // TWO changed files mapping to the PRIVACY group. The accumulation used to
+  // re-scan ALL review areas for every (file, group) pair — repeated even for a
+  // group_key already seen on the first file. The precomputed areaIdsByGroupKey
+  // map is now built once before the loop; this fixture proves the emitted
+  // area_ids are exactly the full set for the group regardless of file count.
+  const multiAreaSet: ReviewArea[] = [
+    {
+      id: "SUB-PRIVACY-A",
+      name: "Privacy controls",
+      groupKey: "PRIVACY",
+      prefixes: ["src/privacy/"],
+      purpose: "Privacy redaction.",
+      pattern: "privacy",
+      testKeywords: ["privacy"]
+    },
+    {
+      id: "SUB-PRIVACY-B",
+      name: "Privacy controls",
+      groupKey: "PRIVACY",
+      prefixes: ["src/redact/"],
+      purpose: "Redaction helpers.",
+      pattern: "redact",
+      testKeywords: ["redact"]
+    },
+    {
+      id: "SUB-INTENT",
+      name: "Intent builder",
+      groupKey: "INTENT",
+      prefixes: ["src/intent/"],
+      purpose: "Intent construction.",
+      pattern: "intent",
+      testKeywords: ["intent"]
+    }
+  ];
+  const diff: StructuredDiff = {
+    files: [
+      diffFile("src/privacy/secrets.ts", ["export const redact = true;"]),
+      diffFile("src/redact/util.ts", ["export const helper = 1;"]),
+      diffFile("src/intent/build.ts", ["export const intent = 1;"])
+    ]
+  };
+  const model = buildPrScope(
+    input({
+      collection: collectionStub([
+        { path: "src/privacy/secrets.ts", status: "M" },
+        { path: "src/redact/util.ts", status: "M" },
+        { path: "src/intent/build.ts", status: "M" }
+      ]),
+      intent: intentModel([]),
+      reviewAreas: multiAreaSet,
+      diff
+    })
+  );
+
+  // Two affected areas, sorted by group_key.
+  assert.deepEqual(
+    model.affected_areas.map((area) => area.group_key),
+    ["INTENT", "PRIVACY"]
+  );
+  // PRIVACY carries BOTH of its area ids exactly once each (the multi-visit
+  // group key did not drop or duplicate ids under the precompute), and lists
+  // both changed files that mapped to it.
+  const privacy = model.affected_areas.find((area) => area.group_key === "PRIVACY");
+  assert.deepEqual(privacy?.area_ids, ["SUB-PRIVACY-A", "SUB-PRIVACY-B"]);
+  assert.deepEqual(privacy?.changed_files, ["src/privacy/secrets.ts", "src/redact/util.ts"]);
+  const intent = model.affected_areas.find((area) => area.group_key === "INTENT");
+  assert.deepEqual(intent?.area_ids, ["SUB-INTENT"]);
+  assert.deepEqual(intent?.changed_files, ["src/intent/build.ts"]);
+});
+
 test("exact_acid_in_diff fires when a diff line contains the requirement acai_id", () => {
   const requirements = [
     requirement({
