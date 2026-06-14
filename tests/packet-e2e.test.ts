@@ -124,7 +124,10 @@ validation:
   assert.ok(packet.risks.review_focus.some((focus: string) => focus.includes("methodology claims without command evidence")));
   assert.ok(packet.agent_handoff.validation_evidence.some((evidence: string) => evidence.includes("CMD-E2E-001")));
   assert.ok(packet.agent_handoff.failed_validation.some((evidence: string) => evidence.includes("[claimed]") && evidence.includes("pnpm run test:coverage")));
-  assert.ok(packet.agent_handoff.failed_validation.some((evidence: string) => evidence.includes("[indirect]") && evidence.includes("pnpm run lint")));
+  // review-surfaces.EVIDENCE.8: a feedback-recorded passed command (here `pnpm run
+  // lint`) is a CLAIM — its output is not captured — so it surfaces as [claimed],
+  // not [indirect] (which would promote it into Verified facts).
+  assert.ok(packet.agent_handoff.failed_validation.some((evidence: string) => evidence.includes("[claimed]") && evidence.includes("pnpm run lint")));
   assert.ok(packet.agent_handoff.failed_validation.some((evidence: string) => evidence.includes("[unknown]") && evidence.includes("CMD-E2E-UNKNOWN")));
   assert.ok(!packet.agent_handoff.validation_evidence.some((evidence: string) => evidence.includes("pnpm run lint")));
   assert.ok(!packet.agent_handoff.failed_validation.some((evidence: string) => evidence.includes("review-surfaces dogfood") || evidence.includes("review-surfaces all")));

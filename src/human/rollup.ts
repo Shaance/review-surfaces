@@ -1,11 +1,13 @@
 // review-surfaces.HUMAN_REVIEW.19 (rollup deduplication) and
 // review-surfaces.HUMAN_REVIEW.21 (reviewer-language lint) renderer helpers.
 //
-// These operate at the RENDER layer only. The human_review.json model and the
-// standalone artifacts (test_plan.md, evidence_cards.md, ...) keep full per-item
-// detail; only the default human_review.md surface aggregates near-identical
-// templated findings into a single rollup so a reviewer is not shown the same
-// sentence once per requirement ID.
+// These operate at the RENDER layer only. The human_review.json model keeps full
+// per-item detail. The default human_review.md surface AND the standalone
+// deep-dive surfaces (test_plan.md, evidence_cards.md, trust_audit.md) aggregate
+// near-identical templated findings into a single rollup that still enumerates
+// every item id and distinct file, so a reviewer is never shown the same sentence
+// once per requirement ID — the deep-dive surface is never noisier than the
+// summary it expands.
 
 // An Acai ID: an optional lowercase dotted prefix (e.g. `review-surfaces.`)
 // followed by an UPPER_SNAKE group and a numeric index, e.g.

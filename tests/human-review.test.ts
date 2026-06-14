@@ -1284,9 +1284,9 @@ test("since-last-review model turns packet comparison into reviewer-focused delt
   assert.equal(since.previous_packet_path, ".review-surfaces-prev/review_packet.json");
   assert.equal(since.improved[0].acai_id, "review-surfaces.PROVIDERS.6");
   assert.equal(since.regressed[0].acai_id, "review-surfaces.SCHEMA.1");
-  assert.equal(since.new_risks[0].summary, "New risk since last review: security: Brand new risk.");
+  assert.equal(since.new_risks[0].summary, "security: Brand new risk.");
   assert.equal(since.new_risks[0].severity, "high");
-  assert.equal(since.resolved_risks[0].summary, "Resolved risk since last review: testing: Gone risk.");
+  assert.equal(since.resolved_risks[0].summary, "testing: Gone risk.");
   assert.equal(since.new_overreach[0].path, "src/new-overreach.ts");
   assert.equal(since.resolved_overreach[0].path, "src/old-overreach.ts");
   assert.ok(since.still_open.some((item) => item.summary.includes("review-surfaces.HUMAN_REVIEW.1 remains partial")));
@@ -4149,7 +4149,7 @@ test("review-surfaces.HUMAN_REVIEW.23 reviewer questions strip ANY trailing sent
   }
 });
 
-test("review-surfaces.HUMAN_REVIEW.23 an empty-risk-id queue item ranked by high risk severity renders 'Linked risk IDs: none', never a bare 'Risk: none'", () => {
+test("review-surfaces.HUMAN_REVIEW.23 an empty-risk-id queue item omits the risk trailer entirely, never a bare 'Risk: none' / 'Risks: none'", () => {
   const surface = prSurfaceFixture();
   surface.risks.candidates = [];
   // A changed implementation file with no PR risk candidate produces a queue
@@ -4171,16 +4171,17 @@ test("review-surfaces.HUMAN_REVIEW.23 an empty-risk-id queue item ranked by high
   assert.ok(emptyRiskItem, "an empty-risk-id queue item must exist");
 
   const markdown = renderHumanReviewMarkdown(model);
-  // The compact Review-first surface must not read as a risk-severity claim.
+  // review-surfaces.HUMAN_REVIEW.23: an empty risk trailer is OMITTED, not rendered
+  // as filler. Neither the bare "Risk: none" (which reads as a false risk-severity
+  // claim) nor the neutral "Linked risk IDs: none" placeholder appears.
   assert.equal(/- Risk: none\b/.test(markdown), false, "the singular 'Risk: none' label must not render");
-  assert.match(markdown, /- Linked risk IDs: none/);
+  assert.equal(/Linked risk IDs: none/.test(markdown), false, "an empty risk trailer is omitted, not rendered as a placeholder");
 
-  // review-surfaces.HUMAN_REVIEW.23: the label-clean guarantee must also hold for
-  // the STANDALONE review_queue.md artifact (renderQueueDetail), which previously
-  // still rendered a bare "Risks: none" for the same empty-risk-id item.
+  // The same omission must hold for the STANDALONE review_queue.md artifact
+  // (renderQueueDetail), which previously rendered a bare "Risks: none".
   const queueArtifact = renderReviewQueueMarkdown(model);
   assert.equal(/^Risks: none$/m.test(queueArtifact), false, "the standalone queue artifact must not render a bare 'Risks: none'");
-  assert.match(queueArtifact, /^Linked risk IDs: none$/m);
+  assert.equal(/Linked risk IDs: none/.test(queueArtifact), false, "the standalone queue artifact omits an empty risk trailer");
 });
 
 function prRiskFixture(rule: PrRiskRule): PrReviewSurfaceModel["risks"]["candidates"][number] {
