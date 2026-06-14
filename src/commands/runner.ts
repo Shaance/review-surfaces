@@ -97,8 +97,8 @@ function runChildCommand(
     });
     let settled = false;
 
-    child.stdout?.on("data", (chunk: any) => teeChunk(chunk, stdoutCapture, options.stdout ?? process.stdout, child.stdout, options.streamOutput !== false));
-    child.stderr?.on("data", (chunk: any) => teeChunk(chunk, stderrCapture, options.stderr ?? process.stderr, child.stderr, options.streamOutput !== false));
+    child.stdout?.on("data", (chunk: Buffer) => teeChunk(chunk, stdoutCapture, options.stdout ?? process.stdout, child.stdout, options.streamOutput !== false));
+    child.stderr?.on("data", (chunk: Buffer) => teeChunk(chunk, stderrCapture, options.stderr ?? process.stderr, child.stderr, options.streamOutput !== false));
     child.on("error", (error) => {
       if (settled) {
         return;
@@ -155,7 +155,7 @@ class BoundedStreamCapture {
   private sawContent = false;
   truncated = false;
 
-  write(chunk: any): void {
+  write(chunk: Buffer): void {
     this.sawContent = true;
     this.digest.update(chunk);
     if (this.rawLength >= RAW_EXCERPT_CAP) {
@@ -219,7 +219,7 @@ function safeFilename(value: string): string {
 }
 
 function teeChunk(
-  chunk: any,
+  chunk: Buffer,
   capture: BoundedStreamCapture,
   destination: { write(chunk: unknown): unknown; once?(event: string, callback: () => void): unknown },
   source: { pause?(): unknown; resume?(): unknown } | undefined,

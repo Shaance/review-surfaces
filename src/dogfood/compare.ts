@@ -245,8 +245,8 @@ function computeOverreachChanges(
 ): Pick<PacketComparison, "new_overreach" | "resolved_overreach"> {
   const previousPaths = overreachPaths(previous);
   const currentPaths = overreachPaths(current);
-  const newOverreach = [...currentPaths].filter((filePath) => !previousPaths.has(filePath)).sort((a, b) => compareStrings(a, b));
-  const resolvedOverreach = [...previousPaths].filter((filePath) => !currentPaths.has(filePath)).sort((a, b) => compareStrings(a, b));
+  const newOverreach = [...currentPaths].filter((filePath) => !previousPaths.has(filePath)).sort(compareStrings);
+  const resolvedOverreach = [...previousPaths].filter((filePath) => !currentPaths.has(filePath)).sort(compareStrings);
   return { new_overreach: newOverreach, resolved_overreach: resolvedOverreach };
 }
 
@@ -271,8 +271,8 @@ function computeRiskChanges(
 ): Pick<PacketComparison, "new_risks" | "resolved_risks"> {
   const previousRisks = riskKeys(previous.items ?? []);
   const currentRisks = riskKeys(current.items ?? []);
-  const newRisks = [...currentRisks].filter((key) => !previousRisks.has(key)).sort((a, b) => compareStrings(a, b));
-  const resolvedRisks = [...previousRisks].filter((key) => !currentRisks.has(key)).sort((a, b) => compareStrings(a, b));
+  const newRisks = [...currentRisks].filter((key) => !previousRisks.has(key)).sort(compareStrings);
+  const resolvedRisks = [...previousRisks].filter((key) => !currentRisks.has(key)).sort(compareStrings);
   return { new_risks: newRisks, resolved_risks: resolvedRisks };
 }
 

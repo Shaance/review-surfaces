@@ -371,10 +371,10 @@ function overreachClusters(index: EvidenceIndex, unmapped: string[]): Requiremen
     for (const filePath of files) {
       accountedFor.add(filePath);
     }
-    buckets.push({ label: cluster.label, files: files.sort((left, right) => compareStrings(left, right)) });
+    buckets.push({ label: cluster.label, files: files.sort(compareStrings) });
   }
 
-  const leftover = unmapped.filter((filePath) => !accountedFor.has(filePath)).sort((left, right) => compareStrings(left, right));
+  const leftover = unmapped.filter((filePath) => !accountedFor.has(filePath)).sort(compareStrings);
   if (leftover.length > 0) {
     buckets.push({ label: "unclustered changes", files: leftover });
   }

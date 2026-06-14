@@ -49,7 +49,7 @@ export interface SourceRootSignals {
 
 export function detectImplementationRoots(signals: SourceRootSignals): string[] {
   const roots = new Set<string>(DEFAULT_IMPLEMENTATION_ROOTS);
-  const files = [...signals.files].sort((a, b) => compareStrings(a, b));
+  const files = [...signals.files].sort(compareStrings);
   const topDirs = new Set<string>();
   for (const filePath of files) {
     const slash = filePath.indexOf("/");
@@ -139,7 +139,7 @@ export function detectImplementationRoots(signals: SourceRootSignals): string[] 
     }
   }
 
-  return [...roots].sort((a, b) => compareStrings(a, b));
+  return [...roots].sort(compareStrings);
 }
 
 // The first path segment of an entry-point or include pattern, stopping at the
@@ -171,7 +171,7 @@ function collectStrings(value: unknown): string[] {
   }
   if (value && typeof value === "object") {
     return Object.keys(value)
-      .sort((a, b) => compareStrings(a, b))
+      .sort(compareStrings)
       .flatMap((key) => collectStrings((value as Record<string, unknown>)[key]));
   }
   return [];

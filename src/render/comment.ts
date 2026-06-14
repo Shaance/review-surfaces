@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileExists } from "../core/files";
 import { redactSecrets } from "../privacy/secrets";
+import { esc } from "../human/esc";
 import { isHypothesisOnly } from "../evidence/evidence";
 import { countRequirementStatuses, formatRequirementStatusSummary, SPEC_NONE_NOTE } from "../evaluation/status";
 import { validateMermaidDiagramArtifact } from "../diagrams/diagrams";
@@ -413,7 +414,7 @@ function renderDiagramSection(diagrams: DiagramEmbed[]): string[] {
     }
     // The TITLE lands in an HTML <summary>, so it MUST be html-escaped (a caller
     // could supply a title containing </summary>...<img onerror=...>).
-    const title = htmlEscape(truncateField(redact(diagram.title)));
+    const title = esc(truncateField(redact(diagram.title)));
     const block = `<details><summary>${title}</summary>\n\n\`\`\`mermaid\n${body}\n\`\`\`\n\n</details>`;
     if (used + block.length > MAX_DIAGRAM_SECTION_CHARS) {
       omitted += 1;
@@ -441,15 +442,4 @@ function renderBullets(items: string[], emptyText: string): string {
 
 function redact(value: string): string {
   return redactSecrets(value).text;
-}
-
-// Neutralize HTML so an interpolated value (e.g. a diagram title) cannot inject
-// markup into the <summary>/<details> wrapper of the posted comment.
-function htmlEscape(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
