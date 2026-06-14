@@ -13,7 +13,8 @@ import { minimalReviewPacket } from "./helpers/review-packet";
 import {
   renderHumanReviewMarkdown,
   renderSuggestedCommentsMarkdown,
-  renderReviewRoutesMarkdown
+  renderReviewRoutesMarkdown,
+  renderRiskLensesMarkdown
 } from "../src/human/render";
 import { renderHumanReviewHtml } from "../src/human/render-html";
 import { renderStickySummary } from "../src/render/sticky-summary";
@@ -269,6 +270,72 @@ test("review-surfaces.READING_ORDER.3 the Tests and Config legs do not repeat th
   assert.doesNotMatch(markdown, /test — read after the code it covers/, "a pure header echo is dropped");
   const html = renderHumanReviewHtml(model({ reading_order }));
   assert.match(html, /supporting file\(s\) in dependency order/, "the cockpit collapses non-lead supporting files behind a details element");
+});
+
+test("review-surfaces.HUMAN_TRUST.6 the reviewable_with_attention verdict (no missing evidence) also names and cites the medium+ risk", () => {
+  const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  packet.risks.items = [
+    { id: "RISK-LOW", category: "release", severity: "low", summary: "A low unrelated risk.", evidence: [{ kind: "file", path: "docs/unrelated.md", confidence: "low" }], suggested_checks: ["Skim it."] },
+    { id: "RISK-MED", category: "testing", severity: "medium", summary: "A medium schema-contract risk.", evidence: [{ kind: "file", path: "schemas/x.json", confidence: "high" }], suggested_checks: ["Version it."] }
+  ] as unknown as ReviewPacket["risks"]["items"];
+  const built = buildHumanReview({ packet });
+  assert.equal(built.verdict.decision, "reviewable_with_attention", "no missing evidence + a medium risk => reviewable_with_attention");
+  const riskReason = built.verdict.reasons.find((reason) => reason.id === "READY-RISKS-PRESENT");
+  assert.ok(riskReason, "the risk reason is present");
+  assert.match(riskReason.summary, /A medium schema-contract risk/);
+  assert.ok(riskReason.evidence.some((ref) => ref.path === "schemas/x.json"), "cites the medium risk, not the earlier low one");
+});
+
+test("review-surfaces.EVIDENCE.8 a feedback-recorded passed command surfaces as a claim even when it is an unrecognized validator", () => {
+  const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  packet.risks.test_evidence = [
+    {
+      id: "TEST-FB-001",
+      kind: "claimed",
+      summary: "Feedback records a passing validation command: make verify",
+      requirement_ids: [],
+      evidence: [{ kind: "feedback", path: ".review-surfaces/feedback/manual.yaml", command: "make verify", confidence: "medium" }]
+    }
+  ] as unknown as ReviewPacket["risks"]["test_evidence"];
+  const built = buildHumanReview({ packet });
+  assert.ok(
+    built.trust_audit.claimed_not_verified.some((claim) => /make verify/.test(claim.claim)),
+    "an unrecognized feedback validator must still appear under Claimed but not verified, never vanish"
+  );
+  assert.ok(
+    !built.trust_audit.verified_facts.some((fact) => /make verify/.test(fact.summary)),
+    "and it must not appear under Verified facts"
+  );
+});
+
+test("review-surfaces.HUMAN_REVIEW.24 a review rebuilt from a packet with no diff does not claim 0 changed file(s)", () => {
+  const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  const built = buildHumanReview({ packet });
+  assert.doesNotMatch(built.summary, /0 changed file\(s\)/);
+  assert.doesNotMatch(built.summary, /changed file\(s\)/, "with no diff the summary falls back to the packet-risk denominator");
+  assert.match(built.summary, /packet risk\(s\)/);
+});
+
+test("review-surfaces.HUMAN_REVIEW.23 a path-only risk lens omits the empty 'Linked risk IDs' line in risk_lenses.md", () => {
+  const lensModel = model({
+    risk_lens_findings: [
+      {
+        id: "LENS-001",
+        lens: "api_contract",
+        severity: "high",
+        confidence: "high",
+        paths: ["schemas/x.json"],
+        risk_ids: [],
+        requirement_ids: [],
+        summary: "A schema/API contract change fired this lens.",
+        reviewer_action: "Version the contract.",
+        evidence: [{ kind: "file", path: "schemas/x.json", confidence: "high" }],
+        suggested_tests: [],
+        suggested_comments: []
+      }
+    ]
+  });
+  assert.doesNotMatch(renderRiskLensesMarkdown(lensModel), /Linked risk IDs: none/);
 });
 
 test("review-surfaces.TREND.3 a status-change delta renders arrow-only, without a redundant (direction) parenthetical", () => {

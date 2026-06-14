@@ -533,14 +533,16 @@ function renderRiskLenses(findings: RiskLensFinding[]): string {
 
 function renderRiskLensDetail(finding: RiskLensFinding): string {
   const paths = finding.paths.length ? finding.paths.map((filePath) => `\`${field(filePath)}\``).join(", ") : "none";
-  const risks = finding.risk_ids.length ? finding.risk_ids.map((id) => `\`${field(id)}\``).join(", ") : "none";
   const requirements = finding.requirement_ids.length ? finding.requirement_ids.map((id) => `\`${field(id)}\``).join(", ") : "none";
+  // review-surfaces.HUMAN_REVIEW.23: omit the empty linked-risk-id line entirely
+  // (path-only lenses carry no risk ids) rather than render a "Linked risk IDs:
+  // none" placeholder next to the severity line, matching the queue renderer.
+  const riskLine = finding.risk_ids.length ? `\nLinked risk IDs: ${finding.risk_ids.map((id) => `\`${field(id)}\``).join(", ")}` : "";
   return `## ${field(RISK_LENS_METADATA[finding.lens].label)} (${field(finding.id)})
 
 Severity: ${finding.severity}
 Confidence: ${finding.confidence}
-Paths: ${paths}
-Linked risk IDs: ${risks}
+Paths: ${paths}${riskLine}
 Requirements: ${requirements}
 
 Why this matters:
