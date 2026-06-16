@@ -1030,3 +1030,48 @@ test("review-surfaces.METHODOLOGY.7 (D3) a real b/ directory path outside a diff
   assert.ok(impl);
   assert.ok(!/test execution was observed/.test(impl.summary), "b/src/uploader.ts outside a diff header is a different file");
 });
+
+test("review-surfaces.METHODOLOGY.7 (D3) a heredoc piped to an interpreter WITH a script arg is stdin, not commands (#96)", async () => {
+  // `bash run.sh <<EOF ... pnpm test ... EOF` feeds the body as stdin to run.sh.
+  const events: ConversationEvent[] = [
+    { id: "e", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(run script)", tool: "Bash", command: "bash run.sh <<EOF\npnpm test\nEOF", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "a heredoc fed to `bash run.sh` is stdin, not executed commands");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a patch editing a DIFFERENT file whose body mentions the changed file does not reset its clock (#96)", async () => {
+  // Edit uploader (0), test (1), then apply_patch to docs/notes.md (2) whose body
+  // mentions uploader. Targets come from patch HEADERS, so uploader's clock stays at 0.
+  const events: ConversationEvent[] = [
+    { id: "e", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 },
+    { id: "p", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: "*** Update File: docs/notes.md\n+ see src/uploader.ts for the retry", raw_index: 2 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.match(impl.summary, /test execution was observed elsewhere/, "a patch to docs/notes.md must not reset uploader's edit clock");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) an apply_patch header naming a real b/ path is not the changed file (#96)", async () => {
+  // `*** Update File: b/src/uploader.ts` is a real path under a `b/` dir, not a diff
+  // operand — it must not be stripped to src/uploader.ts.
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: "*** Update File: b/src/uploader.ts\n+ retry()", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "an apply_patch `*** Update File: b/src/...` keeps b/ (a real path)");
+});

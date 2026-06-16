@@ -1273,24 +1273,12 @@ function textNamesChangedFile(text: string, changedFiles: Set<string>): boolean 
       const after = haystack[idx + changed.length] ?? "";
       if (!/[A-Za-z0-9._-]/.test(after)) {
         // Walk back to the start of the surrounding path token, then apply the
-        // structured-path rule to it (absolute-only suffix; `./` allowed). Also try
-        // the token with a leading unified-diff prefix (`a/`, `b/`) stripped, so a
-        // patch body path like `b/src/uploader.ts` matches `src/uploader.ts` (Codex P2).
+        // structured-path rule to it (absolute-only suffix; `./` allowed).
         let start = idx;
         while (start > 0 && /[A-Za-z0-9._/-]/.test(haystack[start - 1])) {
           start -= 1;
         }
-        const token = haystack.slice(start, idx + changed.length);
-        const single = new Set([changed]);
-        if (touchesChangedFile(token, single)) {
-          return true;
-        }
-        // Strip a unified-diff `a/`/`b/` prefix ONLY on an actual diff-header line
-        // (`diff --git ...`, `--- a/...`, `+++ b/...`), so a real top-level `b/` dir
-        // path is not mis-stripped into the changed file (Codex P2).
-        const lineStart = haystack.lastIndexOf("\n", idx) + 1;
-        const line = haystack.slice(lineStart, idx + changed.length);
-        if (/^\s*(?:diff\s|[-+*]{3}\s)/.test(line) && touchesChangedFile(token.replace(/^[ab]\//, ""), single)) {
+        if (touchesChangedFile(haystack.slice(start, idx + changed.length), new Set([changed]))) {
           return true;
         }
       }
@@ -1326,19 +1314,43 @@ function isEditCall(event: ConversationEvent): boolean {
   return event.kind === "tool_call" && event.tool !== undefined && EDIT_TOOL_PATTERN.test(event.tool);
 }
 
-// True when an EDIT/WRITE tool call targets `changed`. When the event has a
-// STRUCTURED target (`event.file`), that is authoritative — a `Write docs/notes.md`
-// whose body merely mentions `src/x.ts` must NOT count as editing `src/x.ts` and
-// reset its edit clock. Only patch-style tools that carry the path in the body
-// (no structured `event.file`, e.g. `apply_patch ... *** Update File: src/x.ts`)
-// fall back to scanning the command/summary. The path match is boundary-aligned, so
-// a longer `packages/api/src/x.ts` is not it (Codex P2).
+// The paths a patch-style tool edits, taken from PATCH HEADER lines ONLY (never
+// arbitrary body text, which may merely mention another path): apply_patch
+// `*** Update/Add/Delete/Move/Rename File: <path>`, and unified-diff
+// `diff --git a/<p> b/<p>` / `--- a/<p>` / `+++ b/<p>`. The `a/`/`b/` prefix is
+// stripped only on the real diff operands — an apply_patch `*** Update File:
+// b/src/x.ts` keeps `b/` (it is a real path, not a diff prefix) — Codex P2.
+function patchHeaderTargets(text: string): string[] {
+  const targets: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const apply = line.match(/^\s*\*\*\*\s+(?:Update|Add|Delete|Move|Rename)\s+File:\s+(\S+)/i);
+    if (apply) {
+      targets.push(apply[1]);
+      continue;
+    }
+    const gitDiff = line.match(/^\s*diff --git\s+a\/(\S+)\s+b\/(\S+)/);
+    if (gitDiff) {
+      targets.push(gitDiff[1], gitDiff[2]);
+      continue;
+    }
+    const unified = line.match(/^\s*(?:---|\+\+\+)\s+[ab]\/(\S+)/);
+    if (unified) {
+      targets.push(unified[1]);
+    }
+  }
+  return targets;
+}
+
+// True when an EDIT/WRITE tool call targets `changed`. A STRUCTURED target
+// (`event.file`) is authoritative — a `Write docs/notes.md` whose body merely
+// mentions `src/x.ts` must NOT count as editing `src/x.ts`. Only patch-style tools
+// with no `event.file` fall back to their PATCH HEADERS (never free body text).
 function editTargetsChangedFile(event: ConversationEvent, changed: string): boolean {
   const single = new Set([changed]);
   if (event.file !== undefined) {
     return touchesChangedFile(event.file, single);
   }
-  return (event.command !== undefined && textNamesChangedFile(event.command, single)) || textNamesChangedFile(event.summary, single);
+  return patchHeaderTargets(`${event.command ?? ""}\n${event.summary}`).some((target) => touchesChangedFile(target, single));
 }
 
 // The LATEST raw_index at which EACH changed file is actually EDITED. Tracking
@@ -1450,11 +1462,15 @@ function commandRunsTest(command: string): boolean {
 // `cat`/`tee` is INPUT, not a test run. BUT a heredoc fed to a shell INTERPRETER
 // (`bash <<EOF ... pnpm test ... EOF`) really executes its body, so that body is
 // preserved for segmentation (Codex P2).
-// Anchored at the START of the receiving command (after leading `sudo`/env
-// assignments) so it matches the INVOKED interpreter, not an interpreter-looking
-// filename/redirect target — `cat > run-tests.sh <<EOF` writes a file (not executed)
-// while `bash <<EOF` runs the body (Codex P2).
-const HEREDOC_INTERPRETER = /^\s*(?:sudo\s+)?(?:[A-Za-z_]\w*=\S*\s+)*(?:bash|sh|zsh|ksh|dash|python[0-9.]*|node|ruby|perl)\b/i;
+// Matches a receiver that is a bare shell interpreter invocation — the interpreter
+// (after `sudo`/env assignments) followed by FLAGS ONLY, with no positional script
+// argument, up to the `<<`. Only then does the heredoc body become commands the
+// shell executes (`bash <<EOF`, `bash -e <<EOF`). A redirect/filename receiver
+// (`cat > run-tests.sh <<EOF`) or an interpreter given a SCRIPT argument
+// (`bash run.sh <<EOF`, `python tools/gen.py <<EOF`) feeds the body as inert input,
+// not executed commands (Codex P2).
+const HEREDOC_INTERPRETER =
+  /^\s*(?:sudo\s+)?(?:[A-Za-z_]\w*=\S*\s+)*(?:bash|sh|zsh|ksh|dash|python[0-9.]*|node|ruby|perl)(?:\s+-{1,2}[\w-]+)*\s*$/i;
 function stripHeredocBodies(command: string): string {
   return command.replace(
     /<<-?\s*(['"]?)([A-Za-z_]\w*)\1([\s\S]*?)(\n[ \t]*\2[ \t]*)(?=\n|$)/g,
