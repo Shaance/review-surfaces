@@ -1,11 +1,21 @@
-import fs from "node:fs";
-import path from "node:path";
 import { CollectionResult } from "../collector/collect";
-import { ensureDir, readText, writeText } from "../core/files";
-import { isRecord } from "../core/guards";
-import { parseYaml } from "../core/simple-yaml";
+import { ConversationEvent, ConversationFormat } from "../conversation/events";
+import { loadConversationEvents, writeNormalizedConversation } from "../conversation/ingest";
 import { commandEvidence, EvidenceRef, missingEvidence } from "../evidence/evidence";
-import { redactSecrets } from "../privacy/secrets";
+import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
+
+// review-surfaces.METHODOLOGY.7/.8: a validated item-4 workflow finding produced
+// by the methodology leaf (unchallenged assumption, skipped step, workflow
+// soundness, or one of the LLM cross-reference signals). Advisory by default
+// (D5) — it never moves the deterministic verdict on its own.
+export interface WorkflowFinding {
+  id: string;
+  signal_kind: PacketWorkflowSignalKind;
+  summary: string;
+  severity: PacketSeverity;
+  advisory: boolean;
+  evidence: EvidenceRef[];
+}
 
 export interface MethodologyModel {
   summary: string;
@@ -19,13 +29,13 @@ export interface MethodologyModel {
   verified_claims: string[];
   quality_flags: string[];
   evidence: EvidenceRef[];
-}
-
-interface ConversationEvent {
-  id: string;
-  actor: string;
-  kind: string;
-  summary: string;
+  // House tighter-than-schema pattern: REQUIRED []-defaulted array (optional in
+  // the JSON schema). EVERY code path — including the degraded keyword fallback —
+  // populates it (at least []). The leaf fills it; the fallback leaves it empty.
+  workflow_findings: WorkflowFinding[];
+  // The harness adapter label (claude-code|codex|cursor|normalized) when a
+  // conversation was ingested; omitted otherwise / on the degraded path.
+  conversation_source?: string;
 }
 
 interface TranscriptCommandEvidence {
@@ -37,38 +47,77 @@ export async function buildMethodology(
   cwd: string,
   collection: CollectionResult,
   conversationPath: string | undefined,
-  commands: string[]
+  commands: string[],
+  conversationFormat?: ConversationFormat
 ): Promise<MethodologyModel> {
-  if (!conversationPath) {
+  // Phase 1.5: the SINGLE producer runs inside collect.ts and attaches the
+  // redacted stream to CollectionResult, so both buildMethodology call sites READ
+  // collection.conversationEvents rather than re-parsing. The direct-load
+  // fallback below only serves unit-test callers (and any path that did not run
+  // the collector seam); production never re-parses here.
+  let events = collection.conversationEvents;
+  let source = collection.conversationSource;
+  if (!events && conversationPath) {
+    const loaded = await loadConversationEvents(cwd, conversationPath, conversationFormat);
+    if (loaded) {
+      events = loaded.events;
+      source = loaded.adapter;
+      await writeNormalizedConversation(collection.outputDir, loaded.events);
+    }
+  }
+
+  // review-surfaces.METHODOLOGY.4: a missing --conversation, an unreadable file,
+  // an unmatched shape, OR an adapter that matched but produced ZERO events (e.g.
+  // an empty `{ "messages": [] }` export) all degrade to a non-fatal finding —
+  // never "extracted 0 events" reported as a real audit. When a path WAS supplied
+  // but failed, say so (so the adapter/format problem is visible) rather than
+  // reusing the not-provided message (Codex P2).
+  if (!events || events.length === 0) {
+    const supplied = conversationPath !== undefined;
+    const reason = supplied
+      ? `Conversation log at ${conversationPath} could not be parsed into events (unreadable, an unrecognized format, or empty).`
+      : "Conversation log not_provided; methodology is derived only from local files and command context.";
     return {
-      summary: "Conversation log not_provided; methodology is derived only from local files and command context.",
+      summary: reason,
       missing_logs: true,
       considered: [],
       research: [],
       decisions: ["Use local deterministic evidence first; optional enrichment cannot prove behavior."],
       unchallenged_assumptions: ["No conversation log was supplied, so options considered outside files are unknown."],
-      skipped_checks: ["Conversation methodology audit skipped: --conversation not provided."],
+      skipped_checks: [
+        supplied
+          ? `Conversation methodology audit skipped: ${conversationPath} produced no events (check --conversation-format).`
+          : "Conversation methodology audit skipped: --conversation not provided."
+      ],
       claims_without_evidence: [],
       verified_claims: [],
-      quality_flags: ["conversation_log_missing"],
-      evidence: [missingEvidence("No conversation log was provided.")]
+      // Also flag the deep audit as not-run so renderers that key off
+      // methodology_analysis_degraded show the SAME "audit not run" signal a
+      // mock/no-provider run shows for a parsed log (Codex P2).
+      quality_flags: ["conversation_log_missing", "methodology_analysis_degraded"],
+      evidence: [missingEvidence(supplied ? `Conversation log ${conversationPath} produced no usable events.` : "No conversation log was provided.")],
+      workflow_findings: []
     };
   }
 
-  const absolutePath = path.resolve(cwd, conversationPath);
-  const events = await parseConversationFile(absolutePath);
-  await writeNormalizedConversation(collection.outputDir, events);
   const transcriptCommandEvidence = buildTranscriptCommandEvidence(collection);
   const validationClaims = pickValidationClaims(events);
   const verifiedClaims = validationClaims.filter((claim) => claimHasCommandEvidence(claim, transcriptCommandEvidence));
   const claimsWithoutEvidence = validationClaims.filter((claim) => !claimHasCommandEvidence(claim, transcriptCommandEvidence));
   const qualityFlags = [
     ...(claimsWithoutEvidence.length > 0 ? ["test_claims_without_command_evidence"] : []),
-    ...(verifiedClaims.length > 0 ? ["test_claims_verified_by_command_transcripts"] : [])
+    ...(verifiedClaims.length > 0 ? ["test_claims_verified_by_command_transcripts"] : []),
+    // review-surfaces.METHODOLOGY.7 (D2): the deterministic builder is the
+    // FALLBACK. Mark the deep audit as not-run by default; a successful provider
+    // leaf (runMethodologyReasoning) clears this flag and fills workflow_findings.
+    // Under the mock default (the de-facto shipped OUTPUT) the leaf never runs, so
+    // this flag stays — the cockpit must never mistake the fallback for the audit.
+    "methodology_analysis_degraded"
   ];
 
+  const sourceLabel = conversationPath ?? source ?? "the discovered conversation";
   return {
-    summary: `Methodology extracted ${events.length} event(s) from ${conversationPath}.`,
+    summary: `Methodology extracted ${events.length} event(s) from ${sourceLabel}.`,
     missing_logs: false,
     considered: pick(events, ["option", "considered", "alternative"]),
     research: pick(events, ["research", "inspect", "read", "context", "reference"]),
@@ -85,6 +134,10 @@ export async function buildMethodology(
       {
         kind: "conversation",
         path: conversationPath,
+        // Carry a real normalized event id so this conversation-kind ref stays
+        // VALID under the new validateEvidenceRef rule (a conversation ref now
+        // requires a known event_id; path membership alone is insufficient).
+        event_id: events[0].id,
         confidence: "medium",
         validation_status: "valid",
         note: "Conversation was normalized into inputs/conversation.normalized.jsonl."
@@ -103,56 +156,10 @@ export async function buildMethodology(
         )
       ),
       ...commands.map((command) => commandEvidence(command, "Command associated with this review run.", "medium"))
-    ]
+    ],
+    workflow_findings: [],
+    ...(source !== undefined ? { conversation_source: source } : {})
   };
-}
-
-async function parseConversationFile(filePath: string): Promise<ConversationEvent[]> {
-  const text = await readText(filePath);
-  if (filePath.endsWith(".jsonl")) {
-    return text
-      .split("\n")
-      .filter((line) => line.trim() !== "")
-      .map((line, index) => {
-        const parsed = JSON.parse(line);
-        return {
-          id: String(parsed.id ?? `evt_${String(index + 1).padStart(4, "0")}`),
-          actor: String(parsed.actor ?? "unknown"),
-          kind: String(parsed.kind ?? "message"),
-          summary: redactConversationSummary(parsed.summary ?? parsed.text ?? "")
-        };
-      });
-  }
-
-  if (filePath.endsWith(".yaml") || filePath.endsWith(".yml")) {
-    const parsed = parseYaml(text);
-    if (isRecord(parsed) && Array.isArray(parsed.events)) {
-      return parsed.events.map((event, index) => ({
-        id: String(isRecord(event) ? event.id ?? `evt_${String(index + 1).padStart(4, "0")}` : `evt_${String(index + 1).padStart(4, "0")}`),
-        actor: String(isRecord(event) ? event.actor ?? "unknown" : "unknown"),
-        kind: String(isRecord(event) ? event.kind ?? "message" : "message"),
-        summary: redactConversationSummary(isRecord(event) ? event.summary ?? event.text ?? "" : event)
-      }));
-    }
-  }
-
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line !== "")
-    .map((line, index) => ({
-      id: `evt_${String(index + 1).padStart(4, "0")}`,
-      actor: line.startsWith("user:") ? "user" : line.startsWith("assistant:") ? "assistant" : "unknown",
-      kind: line.startsWith("#") ? "heading" : "message",
-      summary: redactConversationSummary(line.replace(/^(user|assistant):\s*/i, ""))
-    }));
-}
-
-async function writeNormalizedConversation(outputDir: string, events: ConversationEvent[]): Promise<void> {
-  const inputsDir = path.join(outputDir, "inputs");
-  await ensureDir(inputsDir);
-  const lines = events.map((event) => JSON.stringify(event)).join("\n");
-  await writeText(path.join(inputsDir, "conversation.normalized.jsonl"), `${lines}\n`);
 }
 
 function pick(events: ConversationEvent[], keywords: string[]): string[] {
@@ -259,8 +266,4 @@ function cleanClaimedCommand(value: string): string {
 
 function commandLooksSupported(command: string): boolean {
   return /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+[\w:.-]+|exec\s+[\w:.-]+|test(?::[\w.-]+)?|lint|typecheck|build)(?:\s+[^\s,;]+)*|node\s+--test(?:\s+[^\s,;]+)*|tsc(?:\s+[^\s,;]+)*)$/.test(command);
-}
-
-function redactConversationSummary(value: unknown): string {
-  return redactSecrets(String(value)).text;
 }

@@ -4,6 +4,8 @@ import path from "node:path";
 import { AcaiSpecIndex, indexAcaiSpecs } from "../acai/acai";
 import { CommandTranscript, commandTranscriptInputDir, commandTranscriptOutputPath, indexCommandTranscriptFiles } from "../commands/transcripts";
 import { ReviewSurfacesConfig } from "../config/config";
+import { ConversationEvent, ConversationFormat } from "../conversation/events";
+import { loadConversationEvents, writeNormalizedConversation } from "../conversation/ingest";
 import { filterPathsByPatterns, walkFiles } from "../core/glob";
 import { ensureDir, fileExists, hashFile, isRegularFile, writeJson, writeText } from "../core/files";
 import { VERSION } from "../core/version";
@@ -11,7 +13,7 @@ import { compareStrings } from "../core/compare";
 import { FeedbackFile, indexFeedbackFiles } from "../feedback/feedback";
 import { filterIgnoredDiff } from "../privacy/diff";
 import { loadPrivacyIgnore } from "../privacy/ignore";
-import { SecretRedaction, redactSecrets } from "../privacy/secrets";
+import { BLOCKED_REDACTION_KINDS, SecretRedaction, redactSecrets } from "../privacy/secrets";
 import { buildRepoIndex, RepoIndex } from "../indexer/indexer";
 import { providerMakesRemoteCall, type ProviderName } from "../llm/provider";
 import type { PacketRunMode } from "../schema/review-packet-contract";
@@ -147,6 +149,13 @@ export interface CollectionResult {
     // secret_in_diff risk consumes — a literal [REDACTED:...] placeholder in the
     // raw text matches no secret pattern, so it can never appear here.
     secret_findings: SecretFinding[];
+    // review-surfaces.PRIVACY.7(b): blocked-secret findings from the CONVERSATION
+    // transcript, kept SEPARATE from diff secret_findings so the secret_in_diff
+    // risk (pushSecretInDiff) never reports a transcript secret as a committed diff
+    // secret. Exposes the block on the persisted surface (PRIVACY.6); the gate uses
+    // remote_provider_blocked. Optional so existing in-memory CollectionResult
+    // fixtures need not set it; the collector always populates it.
+    conversation_secret_findings?: SecretFinding[];
   };
   git: GitInfo;
   // R6: human-readable collection warnings (unresolved base ref, working-tree
@@ -157,6 +166,17 @@ export interface CollectionResult {
   // R6: whether the diff/changed-file set came from the base...head range or
   // fell back to a bare working-tree diff (e.g. base ref did not resolve).
   diff_source: "range" | "working_tree_fallback";
+  // Phase 1.5: the redacted, harness-normalized conversation event stream
+  // (incl. tool_use/tool_result evidence). Produced ONCE here, BEFORE privacy is
+  // assembled, so both buildMethodology call sites READ it instead of re-parsing,
+  // and so the Phase 2 conversation-secret block fold can run before the provider
+  // reads remote_provider_blocked. In-memory only — never serialized into a
+  // public artifact (the manifest/privacy writes list their fields explicitly).
+  // Absent when no --conversation was supplied or the file was unreadable.
+  conversationEvents?: ConversationEvent[];
+  // The adapter that matched the conversation file (harness label), e.g.
+  // "claude-code". Absent when no conversation was ingested.
+  conversationSource?: string;
 }
 
 export interface CollectOptions {
@@ -188,6 +208,10 @@ export interface CollectOptions {
   // buildMethodology. Folded into the signature so a conversation edit is a cache
   // miss. Absent => no conversation flag was supplied.
   conversationPath?: string;
+  // Resolved --conversation-format override (claude-code|codex|cursor|normalized).
+  // Absent => auto-detect by content shape. The RESOLVED adapter label is folded
+  // into the cache signature so a format change over the same bytes is a miss.
+  conversationFormat?: ConversationFormat;
   // Resolved --agent-input file path consumed by the agent-file provider. Folded
   // into the signature so a changed hypothesis set is a cache miss. Absent => no
   // agent-input flag was supplied.
@@ -217,6 +241,10 @@ export interface CollectOptions {
 const ROOT_ARTIFACT_PATH_PATTERNS = [
   /^inputs\/(specs\.index|changed_files|commits|docs\.index|tests\.index|repo\.index|feedback\.index|commands|coverage|privacy)\.json$/,
   /^inputs\/diff\.patch$/,
+  // The normalized/raw conversation logs written under a root output dir (--out .)
+  // must be excluded so a later literal-HEAD run does not collect the untracked
+  // transcript as a working-tree change (and possibly send it to a provider).
+  /^inputs\/conversation\.(normalized|raw)\.[A-Za-z0-9.]+$/,
   /^diagrams\/[^/]+\.mmd$/,
   /^commands\/[^/]+\.json$/,
   /^prompts\/agent-enrichment\.(md|schema\.json)$/
@@ -358,13 +386,52 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const docs = docPaths.map((docPath) => ({ path: docPath, kind: classifyDoc(docPath) }));
   const tests = testPaths.map((testPath) => ({ path: testPath, kind: "test" }));
   const repoIndex = buildRepoIndex({ cwd: options.cwd, changedFiles, repositoryFiles });
+
+  // Phase 1.5: the SINGLE conversation-event producer. Runs BEFORE `privacy` is
+  // assembled so the Phase 2 conversation-secret block fold lands on the same
+  // privacy object the reasoning provider later reads (the ordering invariant).
+  // Reading is non-fatal: a missing/unreadable/unmatched conversation yields no
+  // events and the methodology surface degrades to conversation_log_missing.
+  let conversationEvents: ConversationEvent[] | undefined;
+  let conversationSource: string | undefined;
+  if (options.conversationPath !== undefined) {
+    const loaded = await loadConversationEvents(options.cwd, options.conversationPath, options.conversationFormat);
+    if (loaded) {
+      conversationEvents = loaded.events;
+      conversationSource = loaded.adapter;
+      await writeNormalizedConversation(outputDir, loaded.events);
+      // Announce the chosen adapter on stderr (via diagnostics), mirroring the
+      // collection-diagnostics pattern — stdout ordering contracts must not move.
+      diagnostics.push(`Conversation adapter: ${loaded.adapter} (${options.conversationPath})`);
+    } else {
+      diagnostics.push(`Conversation log unmatched or unreadable: ${options.conversationPath}`);
+    }
+  }
+
+  // review-surfaces.PRIVACY.7(b): fold a conversation block signal into BOTH the
+  // gate signal (remote_provider_blocked) AND the persisted privacy surface
+  // (secret_findings), computed HERE before `privacy` is assembled so the
+  // reasoning provider reads the up-to-date block — not the stale diff-only one.
+  // The events are already redacted; a [REDACTED:<blocked-kind>] marker tells us a
+  // field HELD a blocked secret (in a tool_call/tool_result/code-edit) without
+  // exposing it. The locus is the gitignored repo-relative normalized-log path —
+  // NEVER an absolute discovered-session path.
+  const conversationBlockedKinds = collectConversationBlockedKinds(conversationEvents);
+  const conversationSecretFindings: SecretFinding[] =
+    conversationBlockedKinds.length > 0
+      ? [{ path: normalizedConversationLogPath(outputDirRelative), kinds: conversationBlockedKinds }]
+      : [];
+
   const privacy = {
     ignore_file: ignore.ignoreFile,
     ignore_patterns: ignore.patterns,
     ignored_changed_files: ignoredChangedFiles,
     diff_redactions: redactedDiff.redactions,
-    remote_provider_blocked: redactedDiff.blocked,
-    secret_findings: collectSecretFindings(filteredDiff)
+    remote_provider_blocked: redactedDiff.blocked || conversationBlockedKinds.length > 0,
+    // Diff secrets ONLY here (the secret_in_diff risk consumes this); transcript
+    // secrets are exposed separately so they are not flagged as committed secrets.
+    secret_findings: collectSecretFindings(filteredDiff),
+    conversation_secret_findings: conversationSecretFindings
   };
 
   const inputHashes: ManifestInputHash[] = [];
@@ -431,6 +498,16 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     { kind: "previous-packet", path: options.previousPacketPath },
     ...testOutputPaths.map((testPath) => ({ kind: "test-output", path: testPath }))
   ]);
+
+  // Phase 1.5: fold the RESOLVED adapter label into the signature so the same
+  // conversation bytes parsed under a different adapter (a forced
+  // --conversation-format, or a shape that now detects differently) is a cache
+  // miss. The conversation file content is already hashed above via the
+  // { kind: "conversation" } flag-input; this adds only the label. Appended only
+  // when a conversation was ingested, so no-conversation runs stay byte-identical.
+  if (conversationSource !== undefined) {
+    flagInputHashes.push({ kind: "conversation-format", path: conversationSource, algorithm: "sha256", hash: conversationSource });
+  }
 
   // Resolve run_mode/milestone ONCE so the same values feed both the signature
   // and the manifest. They are part of the fingerprint so a dogfood --cache run
@@ -586,7 +663,9 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     // of duplicate warnings (the same base-ref failure can surface from both the
     // git-info step and the changed-files/diff fallbacks).
     diagnostics: [...new Set(diagnostics)],
-    diff_source: diffSource
+    diff_source: diffSource,
+    conversationEvents,
+    conversationSource
   };
 }
 
@@ -698,6 +777,41 @@ export interface SecretFinding {
 // keys) without synthesizing a "key" from BEGIN/END markers that live in
 // different hunks (e.g. documentation examples). One finding per (file, kind),
 // each anchored to its own matching line.
+// review-surfaces.PRIVACY.7(b): which BLOCKED secret kinds the redacted
+// conversation stream HELD, detected from the [REDACTED:<kind>] markers the
+// adapters already inserted (never the secret text). Deduped, sorted for a
+// deterministic finding.
+function collectConversationBlockedKinds(events: ConversationEvent[] | undefined): string[] {
+  if (!events) {
+    return [];
+  }
+  const kinds = new Set<string>();
+  for (const event of events) {
+    for (const field of [event.summary, event.command, event.file, event.id, event.tool]) {
+      if (field === undefined) {
+        continue;
+      }
+      for (const kind of BLOCKED_REDACTION_KINDS) {
+        if (field.includes(`[REDACTED:${kind}]`)) {
+          kinds.add(kind);
+        }
+      }
+    }
+  }
+  return [...kinds].sort(compareStrings);
+}
+
+// The gitignored normalized-log path used as the conversation secret_finding
+// locus. MUST stay repo-relative and non-escaping — never an absolute path nor a
+// `../`-escaping path that leaks the home dir when --out points outside the repo
+// (PRIVACY.7 / isSafeRepositoryPath). When the output dir is inside the repo we
+// prefix it; when it escapes (custom --out outside the repo) we fall back to the
+// bare relative log path rather than leak the absolute location.
+function normalizedConversationLogPath(outputDirRelative: string): string {
+  const safePrefix = outputDirRelative && !outputDirRelative.split("/").includes("..");
+  return safePrefix ? `${outputDirRelative}/inputs/conversation.normalized.jsonl` : "inputs/conversation.normalized.jsonl";
+}
+
 function collectSecretFindings(rawDiff: string): SecretFinding[] {
   const findings: SecretFinding[] = [];
   for (const file of parseStructuredDiff(rawDiff).files) {

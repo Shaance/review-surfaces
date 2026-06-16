@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { collectInputs } from "../src/collector/collect";
 import { collectChangedFiles } from "../src/collector/git";
 import { defaultConfig } from "../src/config/config";
+import { buildMethodology } from "../src/methodology/methodology";
 
 test("collects specs and writes first local artifacts", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-test-"));
@@ -286,4 +287,93 @@ test("review-surfaces.CLI.7 collection defaults command transcripts to the outpu
 
   assert.equal(result.commandTranscriptOutputPath, "custom-surfaces/inputs/commands.json");
   assert.equal(result.commandTranscripts[0].id, "CMD-CUSTOM-OUT");
+});
+
+test("review-surfaces.METHODOLOGY.6 collect.ts produces conversationEvents that buildMethodology reads without re-parsing", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-conv-seam-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.copyFileSync(
+    path.join(process.cwd(), "tests", "fixtures", "minimal-repo", "features", "example.feature.yaml"),
+    path.join(tmp, "features", "example.feature.yaml")
+  );
+  fs.copyFileSync(
+    path.join(process.cwd(), "tests", "fixtures", "conversations", "claude-code.jsonl"),
+    path.join(tmp, "session.jsonl")
+  );
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const result = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false,
+    conversationPath: "session.jsonl"
+  });
+
+  // The single producer ran inside collect.ts: the redacted stream + harness
+  // label are on the CollectionResult, and the normalized log was persisted.
+  assert.ok(result.conversationEvents && result.conversationEvents.length > 0);
+  assert.equal(result.conversationSource, "claude-code");
+  assert.ok(result.diagnostics.some((line) => line.startsWith("Conversation adapter: claude-code")));
+  assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "inputs", "conversation.normalized.jsonl")));
+  // A redacted tool_result secret never reaches the in-memory stream verbatim.
+  assert.ok(!result.conversationEvents.some((event) => event.summary.includes("ghp_")));
+
+  // Both call sites READ collection.conversationEvents rather than re-parsing:
+  // buildMethodology consumes the stream even though the path is never re-read.
+  const methodology = await buildMethodology(tmp, result, "session.jsonl", []);
+  assert.equal(methodology.missing_logs, false);
+  assert.match(methodology.summary, new RegExp(`extracted ${result.conversationEvents.length} event`));
+});
+
+test("review-surfaces.PRIVACY.7 a conversation tool_result secret folds into remote_provider_blocked AND secret_findings", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-conv-priv-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.copyFileSync(
+    path.join(process.cwd(), "tests", "fixtures", "minimal-repo", "features", "example.feature.yaml"),
+    path.join(tmp, "features", "example.feature.yaml")
+  );
+  // claude-code.jsonl carries a github_token inside a tool_result.
+  fs.copyFileSync(
+    path.join(process.cwd(), "tests", "fixtures", "conversations", "claude-code.jsonl"),
+    path.join(tmp, "session.jsonl")
+  );
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const result = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false,
+    conversationPath: "session.jsonl"
+  });
+
+  // The gate signal is folded BEFORE privacy is assembled, so an ai-sdk run would
+  // privacy-block at the gate, not just the per-call short-circuit.
+  assert.equal(result.privacy.remote_provider_blocked, true);
+  // The persisted surface ALSO exposes the block (not a clean secret_findings next
+  // to a blocked run), with a repo-relative locus, never the conversation text.
+  const conversationFinding = (result.privacy.conversation_secret_findings ?? []).find((finding) => finding.path.includes("conversation.normalized"));
+  assert.ok(conversationFinding, "secret_findings exposes the conversation block");
+  assert.ok(conversationFinding.kinds.includes("github_token"));
+  assert.ok(!conversationFinding.path.startsWith("/"));
+
+  // The locus must stay repo-relative and NON-ESCAPING even when --out points
+  // OUTSIDE the repo (else path.relative yields a ../../.. that leaks the absolute
+  // home dir). Caught by live-testing; pinned here.
+  const outsideOut = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rs-out-")), "out");
+  const escaped = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false,
+    outputDir: outsideOut,
+    conversationPath: "session.jsonl"
+  });
+  const escapedFinding = (escaped.privacy.conversation_secret_findings ?? []).find((finding) => finding.path.includes("conversation.normalized"));
+  assert.ok(escapedFinding);
+  assert.ok(!escapedFinding.path.startsWith("/") && !escapedFinding.path.includes(".."), `locus must not escape: ${escapedFinding.path}`);
 });

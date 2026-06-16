@@ -4278,3 +4278,33 @@ function prRiskFixture(rule: PrRiskRule): PrReviewSurfaceModel["risks"]["candida
 
   return { rule, ...fixtures[rule] };
 }
+
+test("review-surfaces.METHODOLOGY.7 a validated methodology workflow finding surfaces as an advisory clarifying question", () => {
+  const packet = packetFixture();
+  packet.methodology.workflow_findings = [
+    {
+      id: "WF-001",
+      signal_kind: "impl_no_test",
+      summary: "uploader changed without a test",
+      severity: "medium",
+      advisory: true,
+      evidence: [{ kind: "conversation", event_id: "a1", confidence: "low", validation_status: "valid", llm_proposed: true }]
+    },
+    {
+      // Unanchored finding (no validated evidence) must NOT add a question.
+      id: "WF-002",
+      signal_kind: "unchallenged_assumption",
+      summary: "assumed something unverifiable",
+      severity: "low",
+      advisory: true,
+      evidence: [{ kind: "unknown", note: "LLM-proposed", confidence: "low", validation_status: "not_checked", llm_proposed: true }]
+    }
+  ];
+
+  const model = buildHumanReview({ packet });
+  const methodologyQuestion = model.questions.find((q) => /impl no test/.test(q.question));
+  assert.ok(methodologyQuestion, "validated workflow finding becomes a question");
+  assert.equal(methodologyQuestion.severity, "clarifying");
+  // The unanchored finding stays out of the queue (no noise).
+  assert.ok(!model.questions.some((q) => /assumed something unverifiable/.test(q.question)));
+});

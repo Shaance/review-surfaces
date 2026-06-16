@@ -1,10 +1,11 @@
 import { CollectionResult } from "../collector/collect";
 import { ReviewSurfacesConfig } from "../config/config";
+import { ConversationFormat } from "../conversation/events";
 import { ArchitectureModel, buildArchitecture, buildArchitectureModel } from "../diagrams/diagrams";
 import { EvaluationModel, evaluateIntent, verifyRequirementsWithTests } from "../evaluation/evaluate";
 import { buildIntent, IntentModel } from "../intent/intent";
 import { EnrichmentResult, ProviderName, enrichPacket, providerFor } from "../llm/provider";
-import { ReasoningOptions, runEvaluationReasoning, runIntentReasoning, runNarrativeReasoning } from "../llm/reasoning";
+import { ReasoningOptions, runEvaluationReasoning, runIntentReasoning, runMethodologyReasoning, runNarrativeReasoning } from "../llm/reasoning";
 import { buildMethodology, MethodologyModel } from "../methodology/methodology";
 import { buildReviewAreas, ReviewArea } from "../review-areas/areas";
 import { analyzeRisks, buildRiskReviewFocus, RisksModel } from "../risks/risks";
@@ -25,6 +26,7 @@ export interface PipelineStageContext {
   areasOption: { areas?: ReviewArea[] };
   agentInput?: string;
   conversationPath?: string;
+  conversationFormat?: ConversationFormat;
 }
 
 export interface BuildPipelineStageContextOptions {
@@ -37,6 +39,7 @@ export interface BuildPipelineStageContextOptions {
   requestedModel?: string;
   agentInput?: string;
   conversationPath?: string;
+  conversationFormat?: ConversationFormat;
 }
 
 export function buildPipelineStageContext(options: BuildPipelineStageContextOptions): PipelineStageContext {
@@ -54,7 +57,8 @@ export function buildPipelineStageContext(options: BuildPipelineStageContextOpti
     requestedModel: options.requestedModel,
     areasOption,
     agentInput: options.agentInput,
-    conversationPath: options.conversationPath
+    conversationPath: options.conversationPath,
+    conversationFormat: options.conversationFormat
   };
 }
 
@@ -218,7 +222,13 @@ export async function loadOrComputeEvaluation(
 }
 
 export async function computeMethodology(context: PipelineStageContext): Promise<MethodologyModel> {
-  return buildMethodology(context.cwd, context.collection, context.conversationPath, context.commands);
+  return buildMethodology(
+    context.cwd,
+    context.collection,
+    context.conversationPath,
+    context.commands,
+    context.conversationFormat
+  );
 }
 
 export async function loadOrComputeMethodology(context: PipelineStageContext): Promise<MethodologyModel> {
@@ -391,8 +401,16 @@ export async function runReasoningWithVerification(
 
   verifyRequirementsWithTests(collection, intent, evaluation, areasOption);
 
-  // Recompute risks against the POST-promotion evaluation, then re-apply the
-  // candidate-evidence review_focus delta so that enrichment is not lost.
+  // review-surfaces.METHODOLOGY.5/.7: run the methodology audit leaf BEFORE risk
+  // analysis so its workflow_findings + cleared/degraded flags actually FEED
+  // analyzeRisks and the review focus (Codex P2). It reads the redacted
+  // conversation stream + methodology model; it does not consume risks. Mock is a
+  // no-op so the deterministic fallback + degraded flag survive byte-stable.
+  await runMethodologyReasoning(reasoningProvider, reasoningInputs, reasoningOptions);
+
+  // Recompute risks against the POST-promotion evaluation + the POST-audit
+  // methodology, then re-apply the candidate-evidence review_focus delta so that
+  // enrichment is not lost.
   const risks = analyzeRisks(collection, evaluation, commands, methodology);
   risks.review_focus.push(...evalReviewFocusDelta);
   reasoningInputs.risks = risks;
@@ -419,7 +437,8 @@ export function emptyMethodology(): MethodologyModel {
     claims_without_evidence: [],
     verified_claims: [],
     quality_flags: [],
-    evidence: []
+    evidence: [],
+    workflow_findings: []
   };
 }
 

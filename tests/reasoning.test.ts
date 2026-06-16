@@ -135,6 +135,7 @@ function emptyMethodology(): MethodologyModel {
     skipped_checks: [],
     claims_without_evidence: [],
     verified_claims: [],
+    workflow_findings: [],
     quality_flags: [],
     evidence: []
   };
@@ -1417,6 +1418,7 @@ test("review-surfaces.EVIDENCE.6: renderer visibly distinguishes LLM hypotheses 
       skipped_checks: [],
       claims_without_evidence: [],
       verified_claims: [],
+      workflow_findings: [],
       quality_flags: [],
       evidence: []
     },

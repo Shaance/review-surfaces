@@ -24,7 +24,8 @@ import {
   PACKET_SCHEMA_VERSION,
   PACKET_SOURCE_KINDS,
   PACKET_TEST_EVIDENCE_KINDS,
-  PACKET_VALIDATION_STATUSES
+  PACKET_VALIDATION_STATUSES,
+  PACKET_WORKFLOW_SIGNAL_KINDS
 } from "../src/schema/review-packet-contract";
 import { RISK_LENSES } from "../src/human/contract";
 import { PR_SURFACE_SCHEMA_VERSION } from "../src/pr/contract";
@@ -195,6 +196,11 @@ const enumContracts: Array<{
     name: "dogfood helped_reviewer",
     path: ["$defs", "Dogfood", "properties", "helped_reviewer", "enum"],
     values: PACKET_HELPFULNESS_VALUES
+  },
+  {
+    name: "workflow finding signal_kind",
+    path: ["$defs", "WorkflowFinding", "properties", "signal_kind", "enum"],
+    values: PACKET_WORKFLOW_SIGNAL_KINDS
   }
 ];
 

@@ -12,3 +12,7 @@
 .review-surfaces/agent_handoff.md
 .review-surfaces/feedback/raw/**
 .review-surfaces/inputs/conversation.raw.*
+# review-surfaces.PRIVACY.7 / D9: the normalized conversation log is a persisted
+# surface; exclude it independent of --output-dir (the .gitignore .review-surfaces/*
+# coverage is conditional on the default output dir).
+.review-surfaces/inputs/conversation.normalized.*

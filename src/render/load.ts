@@ -8,7 +8,8 @@ import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 import { DogfoodModel } from "../dogfood/dogfood";
 import { CountDelta, PacketComparison } from "../dogfood/compare";
 import { IntentModel, IntentRequirement } from "../intent/intent";
-import { MethodologyModel } from "../methodology/methodology";
+import { MethodologyModel, WorkflowFinding } from "../methodology/methodology";
+import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
 import { RiskItem, RisksModel } from "../risks/risks";
 import {
   PACKET_COMPARISON_DIRECTIONS,
@@ -107,7 +108,21 @@ export function loadMethodology(outputDir: string): MethodologyModel | null {
     claims_without_evidence: asStringArray(parsed.claims_without_evidence),
     verified_claims: asStringArray(parsed.verified_claims),
     quality_flags: asStringArray(parsed.quality_flags),
-    evidence: asArray(parsed.evidence).map(normalizeEvidenceRef)
+    evidence: asArray(parsed.evidence).map(normalizeEvidenceRef),
+    workflow_findings: asArray(parsed.workflow_findings).map(normalizeWorkflowFinding),
+    ...(typeof parsed.conversation_source === "string" ? { conversation_source: parsed.conversation_source } : {})
+  };
+}
+
+function normalizeWorkflowFinding(value: unknown): WorkflowFinding {
+  const record = isRecord(value) ? value : {};
+  return {
+    id: asString(record.id),
+    signal_kind: asString(record.signal_kind) as PacketWorkflowSignalKind,
+    summary: asString(record.summary),
+    severity: asString(record.severity) as PacketSeverity,
+    advisory: record.advisory === true,
+    evidence: asArray(record.evidence).map(normalizeEvidenceRef)
   };
 }
 

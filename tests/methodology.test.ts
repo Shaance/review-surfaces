@@ -32,6 +32,18 @@ test("review-surfaces.COLLECTOR.4 writes conversation.normalized.jsonl from a ma
   assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "inputs", "conversation.normalized.jsonl")));
 });
 
+test("review-surfaces.METHODOLOGY.7 the deterministic fallback marks the deep audit degraded and seeds an empty workflow_findings", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  fs.writeFileSync(path.join(tmp, "conversation.md"), "Considered backoff\nDecision: keep deterministic core\n");
+
+  const methodology = await buildMethodology(tmp, collectionFixture(tmp), "conversation.md", []);
+
+  // The deterministic builder is the FALLBACK: it flags the deep audit as not-run
+  // and seeds workflow_findings: [] so the house tighter-than-schema array holds.
+  assert.ok(methodology.quality_flags.includes("methodology_analysis_degraded"));
+  assert.deepEqual(methodology.workflow_findings, []);
+});
+
 test("review-surfaces.METHODOLOGY.2 separates transcript-backed claims from unverified test claims", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
   const logPath = path.join(tmp, "conversation.md");
@@ -307,3 +319,27 @@ function collectionFixture(tmp: string, overrides: Partial<CollectionResult> = {
     ...overrides
   } as CollectionResult;
 }
+
+test("review-surfaces.METHODOLOGY.4 an adapter that matched but produced zero events degrades as a missing log", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  fs.writeFileSync(path.join(tmp, "empty.json"), JSON.stringify({ messages: [] }));
+  const methodology = await buildMethodology(tmp, collectionFixture(tmp), "empty.json", []);
+  assert.equal(methodology.missing_logs, true);
+  assert.ok(methodology.quality_flags.includes("conversation_log_missing"));
+});
+
+test("review-surfaces.METHODOLOGY.7 the generated conversation evidence carries a real event_id (valid under the new rule)", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  fs.writeFileSync(path.join(tmp, "conversation.md"), "user: add a retry\nassistant: done\n");
+  const methodology = await buildMethodology(tmp, collectionFixture(tmp), "conversation.md", []);
+  const conv = methodology.evidence.find((e) => e.kind === "conversation");
+  assert.ok(conv);
+  assert.ok(typeof conv.event_id === "string" && conv.event_id.length > 0);
+});
+
+test("review-surfaces.METHODOLOGY.7 a missing/unusable conversation also flags methodology_analysis_degraded", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  const methodology = await buildMethodology(tmp, collectionFixture(tmp), undefined, []);
+  assert.ok(methodology.quality_flags.includes("conversation_log_missing"));
+  assert.ok(methodology.quality_flags.includes("methodology_analysis_degraded"));
+});

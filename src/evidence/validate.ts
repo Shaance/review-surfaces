@@ -8,6 +8,10 @@ export interface EvidenceValidationContext {
   knownAcids?: Set<string>;
   knownPaths?: Set<string>;
   knownCommands?: Set<string>;
+  // review-surfaces.METHODOLOGY.7 (D5): the deterministic event-id allowlist —
+  // conversation event ids + command transcript ids + feedback finding ids. A
+  // cited event_id must be a member, exactly like knownAcids gates acai_id.
+  knownEventIds?: Set<string>;
   pathExistsCache?: Map<string, boolean>;
   lineCountCache?: Map<string, number>;
 }
@@ -53,6 +57,23 @@ export function validateEvidenceRef(ref: EvidenceRef, context: EvidenceValidatio
 
   if (ref.command && context.knownCommands && !context.knownCommands.has(ref.command)) {
     invalidReasons.push("command was not recorded in this run");
+  }
+
+  // review-surfaces.METHODOLOGY.7 (D5): an event_id must be a real collected
+  // event (conversation/command/feedback), paralleling the knownAcids check.
+  // Without this, a hallucinated event_id was stamped valid (it was wholly
+  // unvalidated before this uplift).
+  if (ref.event_id && context.knownEventIds && !context.knownEventIds.has(ref.event_id)) {
+    invalidReasons.push("event_id is not present in the collected conversation/command/feedback events");
+  }
+
+  // review-surfaces.METHODOLOGY.7: a conversation-kind ref must bind to a real
+  // event id — path membership ALONE must not validate it. Require an event_id
+  // (and, when the allowlist is supplied, that it is known). Closes the
+  // path-fall-through where a conversation ref with a valid-looking repo path but
+  // no/unknown event_id was stamped valid.
+  if (ref.kind === "conversation" && !ref.event_id) {
+    invalidReasons.push("conversation evidence must cite an event_id (path membership alone is insufficient)");
   }
 
   if (ref.url) {

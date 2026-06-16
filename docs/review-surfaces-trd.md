@@ -418,6 +418,19 @@ Support a normalized JSONL format first:
 
 Missing logs must not be fatal. They should produce methodology findings and unknowns.
 
+The conversation-audit uplift (docs/history/CONVERSATION_AUDIT_UPLIFT_GOAL.md) makes the
+normalized JSONL above the *output* of a pluggable raw-transcript adapter registry
+(`src/conversation/`). A `ConversationAdapter` `detect()`/`normalize()` pair converts a
+RAW harness transcript — Claude Code session JSONL, Codex CLI rollout items, OR Cursor
+chat/composer exports, including `tool_use`/`tool_result`/`function_call` evidence — into
+the shared `ConversationEvent` stream, auto-detecting by content shape with a
+`--conversation-format claude-code|codex|cursor|normalized` override. The three
+pre-normalized forms (jsonl/yaml/plain text) stay supported via the `normalized` adapter.
+Adapters are tolerant of unknown fields and never fatal; an unmatched/rotted shape
+degrades to no-match (`conversation_log_missing`), never a wrong-adapter mis-normalization.
+Every extracted field is redacted at normalization, and the persisted normalized log is
+redact-before-bound + hash-on-blocked (PRIVACY.7).
+
 ### 8.4 Test and execution evidence
 
 Support these incrementally:
@@ -1229,7 +1242,7 @@ These can be decided during implementation:
 2. Whether artifact YAML schemas should be separate files or derived from TypeScript types.
 3. Exact TypeScript schema library: Zod, TypeBox, Valibot, or JSON Schema first.
 4. Whether Mermaid validation uses a dependency or text-level validation first.
-5. Which conversation log adapters to support first.
+5. ~~Which conversation log adapters to support first.~~ RESOLVED (conversation-audit uplift, docs/history/CONVERSATION_AUDIT_UPLIFT_GOAL.md): all three harnesses are first-class — Claude Code (reference/dogfood-validated), Codex, and Cursor — via a pluggable adapter registry (`src/conversation/`), none deferred. Claude Code is the reference adapter; Codex and Cursor are explicitly best-effort (version-variable on-disk shapes) and degrade to no-match rather than mis-normalize. See §8.3.
 6. Whether Acai CLI sync belongs in M6 or a separate M7.
 7. Whether `review_packet.json` should embed all sections or reference per-file artifacts.
 

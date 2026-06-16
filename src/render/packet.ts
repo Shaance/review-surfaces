@@ -243,7 +243,16 @@ Changed areas:
 ${previewLines(packet.architecture.subsystems, (subsystem) => `- ${subsystem.name}: ${subsystem.files.length} file(s), ${subsystem.tests.length} test(s)`, 10)}
 
 ## 5. Methodology audit
-${packet.methodology.summary}
+${packet.methodology.summary}${packet.methodology.quality_flags?.includes("methodology_analysis_degraded") ? "\n_Deep audit not run (no LLM provider); deterministic keyword fallback shown._" : ""}
+
+Considered alternatives:
+${previewLines(packet.methodology.considered ?? [], (item) => `- ${redactRenderedText(item)}`, 5)}
+
+Research / context gathered:
+${previewLines(packet.methodology.research ?? [], (item) => `- ${redactRenderedText(item)}`, 5)}
+
+Workflow concerns / unchallenged assumptions:
+${previewLines(packet.methodology.workflow_findings ?? [], (finding) => `- ${finding.id} [${finding.signal_kind}/${finding.severity}]: ${redactRenderedText(finding.summary)}`, 8)}
 
 Verified claims:
 ${previewLines(packet.methodology.verified_claims ?? [], (claim) => `- ${redactRenderedText(claim)}`, 5)}
