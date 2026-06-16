@@ -4,6 +4,8 @@ import path from "node:path";
 import { AcaiSpecIndex, indexAcaiSpecs } from "../acai/acai";
 import { CommandTranscript, commandTranscriptInputDir, commandTranscriptOutputPath, indexCommandTranscriptFiles } from "../commands/transcripts";
 import { ReviewSurfacesConfig } from "../config/config";
+import { ConversationEvent, ConversationFormat } from "../conversation/events";
+import { loadConversationEvents, writeNormalizedConversation } from "../conversation/ingest";
 import { filterPathsByPatterns, walkFiles } from "../core/glob";
 import { ensureDir, fileExists, hashFile, isRegularFile, writeJson, writeText } from "../core/files";
 import { VERSION } from "../core/version";
@@ -157,6 +159,17 @@ export interface CollectionResult {
   // R6: whether the diff/changed-file set came from the base...head range or
   // fell back to a bare working-tree diff (e.g. base ref did not resolve).
   diff_source: "range" | "working_tree_fallback";
+  // Phase 1.5: the redacted, harness-normalized conversation event stream
+  // (incl. tool_use/tool_result evidence). Produced ONCE here, BEFORE privacy is
+  // assembled, so both buildMethodology call sites READ it instead of re-parsing,
+  // and so the Phase 2 conversation-secret block fold can run before the provider
+  // reads remote_provider_blocked. In-memory only — never serialized into a
+  // public artifact (the manifest/privacy writes list their fields explicitly).
+  // Absent when no --conversation was supplied or the file was unreadable.
+  conversationEvents?: ConversationEvent[];
+  // The adapter that matched the conversation file (harness label), e.g.
+  // "claude-code". Absent when no conversation was ingested.
+  conversationSource?: string;
 }
 
 export interface CollectOptions {
@@ -188,6 +201,10 @@ export interface CollectOptions {
   // buildMethodology. Folded into the signature so a conversation edit is a cache
   // miss. Absent => no conversation flag was supplied.
   conversationPath?: string;
+  // Resolved --conversation-format override (claude-code|codex|cursor|normalized).
+  // Absent => auto-detect by content shape. The RESOLVED adapter label is folded
+  // into the cache signature so a format change over the same bytes is a miss.
+  conversationFormat?: ConversationFormat;
   // Resolved --agent-input file path consumed by the agent-file provider. Folded
   // into the signature so a changed hypothesis set is a cache miss. Absent => no
   // agent-input flag was supplied.
@@ -358,6 +375,28 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const docs = docPaths.map((docPath) => ({ path: docPath, kind: classifyDoc(docPath) }));
   const tests = testPaths.map((testPath) => ({ path: testPath, kind: "test" }));
   const repoIndex = buildRepoIndex({ cwd: options.cwd, changedFiles, repositoryFiles });
+
+  // Phase 1.5: the SINGLE conversation-event producer. Runs BEFORE `privacy` is
+  // assembled so the Phase 2 conversation-secret block fold lands on the same
+  // privacy object the reasoning provider later reads (the ordering invariant).
+  // Reading is non-fatal: a missing/unreadable/unmatched conversation yields no
+  // events and the methodology surface degrades to conversation_log_missing.
+  let conversationEvents: ConversationEvent[] | undefined;
+  let conversationSource: string | undefined;
+  if (options.conversationPath !== undefined) {
+    const loaded = await loadConversationEvents(options.cwd, options.conversationPath, options.conversationFormat);
+    if (loaded) {
+      conversationEvents = loaded.events;
+      conversationSource = loaded.adapter;
+      await writeNormalizedConversation(outputDir, loaded.events);
+      // Announce the chosen adapter on stderr (via diagnostics), mirroring the
+      // collection-diagnostics pattern — stdout ordering contracts must not move.
+      diagnostics.push(`Conversation adapter: ${loaded.adapter} (${options.conversationPath})`);
+    } else {
+      diagnostics.push(`Conversation log unmatched or unreadable: ${options.conversationPath}`);
+    }
+  }
+
   const privacy = {
     ignore_file: ignore.ignoreFile,
     ignore_patterns: ignore.patterns,
@@ -431,6 +470,16 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     { kind: "previous-packet", path: options.previousPacketPath },
     ...testOutputPaths.map((testPath) => ({ kind: "test-output", path: testPath }))
   ]);
+
+  // Phase 1.5: fold the RESOLVED adapter label into the signature so the same
+  // conversation bytes parsed under a different adapter (a forced
+  // --conversation-format, or a shape that now detects differently) is a cache
+  // miss. The conversation file content is already hashed above via the
+  // { kind: "conversation" } flag-input; this adds only the label. Appended only
+  // when a conversation was ingested, so no-conversation runs stay byte-identical.
+  if (conversationSource !== undefined) {
+    flagInputHashes.push({ kind: "conversation-format", path: conversationSource, algorithm: "sha256", hash: conversationSource });
+  }
 
   // Resolve run_mode/milestone ONCE so the same values feed both the signature
   // and the manifest. They are part of the fingerprint so a dogfood --cache run
@@ -586,7 +635,9 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     // of duplicate warnings (the same base-ref failure can surface from both the
     // git-info step and the changed-files/diff fallbacks).
     diagnostics: [...new Set(diagnostics)],
-    diff_source: diffSource
+    diff_source: diffSource,
+    conversationEvents,
+    conversationSource
   };
 }
 

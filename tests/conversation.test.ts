@@ -1,0 +1,141 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { ConversationEvent } from "../src/conversation/events";
+import { writeNormalizedConversation } from "../src/conversation/ingest";
+import { buildAdapterInput, normalizeConversation, selectAdapter } from "../src/conversation/registry";
+
+const FIXTURES = path.join(process.cwd(), "tests", "fixtures", "conversations");
+
+function fixtureInput(name: string) {
+  const filePath = path.join(FIXTURES, name);
+  return buildAdapterInput(filePath, fs.readFileSync(filePath, "utf8"));
+}
+
+function textInput(name: string, text: string) {
+  return buildAdapterInput(name, text);
+}
+
+function hasToolCallReferencing(events: ConversationEvent[], needle: string): boolean {
+  return events.some(
+    (event) => event.kind === "tool_call" && (event.summary.includes(needle) || (event.command ?? "").includes(needle))
+  );
+}
+
+function eachEventWellFormed(events: ConversationEvent[]): boolean {
+  return events.every(
+    (event, index) =>
+      typeof event.id === "string" &&
+      typeof event.actor === "string" &&
+      typeof event.kind === "string" &&
+      typeof event.summary === "string" &&
+      event.raw_index === index
+  );
+}
+
+test("review-surfaces.METHODOLOGY.6 each adapter normalizes its harness shape and converges on one event stream", () => {
+  const claude = normalizeConversation(fixtureInput("claude-code.jsonl"));
+  const codex = normalizeConversation(fixtureInput("codex.jsonl"));
+  const cursor = normalizeConversation(fixtureInput("cursor.json"));
+
+  assert.equal(claude?.adapter, "claude-code");
+  assert.equal(codex?.adapter, "codex");
+  assert.equal(cursor?.adapter, "cursor");
+
+  for (const result of [claude, codex, cursor]) {
+    assert.ok(result);
+    assert.ok(result.events.length > 0);
+    // Convergence: every adapter emits the SAME shape with sequential raw_index.
+    assert.ok(eachEventWellFormed(result.events));
+    assert.ok(result.events.some((event) => event.actor === "user" && event.kind === "message"));
+  }
+
+  // Tool calls (D8) are captured from each harness's own tool channel.
+  assert.ok(hasToolCallReferencing(claude!.events, "pnpm run test"));
+  assert.ok(hasToolCallReferencing(codex!.events, "pnpm run test"));
+  assert.ok(cursor!.events.some((event) => event.kind === "tool_call" && event.file === "src/uploader.ts"));
+  // A tool_result / function_call_output is captured as a tool event.
+  assert.ok(claude!.events.some((event) => event.kind === "tool_result"));
+  assert.ok(codex!.events.some((event) => event.kind === "tool_result"));
+});
+
+test("review-surfaces.METHODOLOGY.6 auto-detects by content shape and honors a --conversation-format override", () => {
+  // Auto-detect by shape (not extension): all three could be .jsonl/.json.
+  assert.equal(normalizeConversation(fixtureInput("claude-code.jsonl"))?.adapter, "claude-code");
+  assert.equal(normalizeConversation(fixtureInput("codex.jsonl"))?.adapter, "codex");
+
+  // A forced format bypasses detection.
+  assert.equal(selectAdapter(fixtureInput("cursor.json"), "normalized")?.name, "normalized");
+  assert.equal(normalizeConversation(fixtureInput("claude-code.jsonl"), "codex")?.adapter, "codex");
+});
+
+test("review-surfaces.METHODOLOGY.6 the normalized adapter still reads all three pre-normalized forms", () => {
+  const jsonl = normalizeConversation(
+    textInput("conv.jsonl", '{"id":"e1","actor":"assistant","kind":"decision","summary":"chose backoff"}')
+  );
+  assert.equal(jsonl?.adapter, "normalized");
+  assert.equal(jsonl?.events[0].summary, "chose backoff");
+  assert.equal(jsonl?.events[0].actor, "assistant");
+
+  const yaml = normalizeConversation(textInput("conv.yaml", "events:\n  - actor: user\n    summary: hello there\n"));
+  assert.equal(yaml?.adapter, "normalized");
+  assert.equal(yaml?.events[0].actor, "user");
+  assert.match(yaml!.events[0].summary, /hello there/);
+
+  const plain = normalizeConversation(textInput("conv.md", "user: hi\nassistant: yo"));
+  assert.equal(plain?.adapter, "normalized");
+  assert.equal(plain?.events.length, 2);
+  assert.equal(plain?.events[0].actor, "user");
+  assert.equal(plain?.events[1].actor, "assistant");
+});
+
+test("review-surfaces.METHODOLOGY.6 tolerates malformed lines and unknown blocks without throwing", () => {
+  const text = [
+    '{"type":"assistant","uuid":"a1","message":{"role":"assistant","content":[{"type":"weird_block","data":1},{"type":"text","text":"ok"}]}}',
+    "this line is not json at all",
+    '{"broken": '
+  ].join("\n");
+  const result = normalizeConversation(textInput("rotted.jsonl", text), "claude-code");
+  assert.ok(result);
+  // Unknown block degrades to a message summary; nothing throws.
+  assert.ok(result.events.some((event) => event.kind === "message"));
+});
+
+test("review-surfaces.METHODOLOGY.6 a rotted or unrecognized shape degrades to no-match, never a wrong adapter", () => {
+  assert.equal(normalizeConversation(textInput("x.jsonl", '{"foo":"bar"}')), undefined);
+  assert.equal(normalizeConversation(textInput("x.json", '{"random":1,"nested":{"a":2}}')), undefined);
+});
+
+test("review-surfaces.PRIVACY.7 redacts a Codex function_call_output and a Cursor code-edit secret at normalization", () => {
+  const codex = normalizeConversation(fixtureInput("codex.jsonl"));
+  const codexResult = codex?.events.find((event) => event.kind === "tool_result");
+  assert.ok(codexResult);
+  assert.match(codexResult.summary, /\[REDACTED:aws_secret\]/);
+  assert.ok(!codexResult.summary.includes("0123456789ABCD"));
+
+  const cursor = normalizeConversation(fixtureInput("cursor-secret-edit.json"));
+  const edit = cursor?.events.find((event) => event.kind === "tool_call");
+  assert.ok(edit);
+  assert.match(edit.summary, /\[REDACTED:stripe_key\]/);
+  assert.ok(!edit.summary.includes("sk_live_abcdefghijklmnopqrstuvwx"));
+});
+
+test("review-surfaces.PRIVACY.7 the persisted normalized log stores a blocked field as a hash, never its secret context", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-conv-"));
+  const result = normalizeConversation(fixtureInput("claude-code.jsonl"));
+  assert.ok(result);
+  await writeNormalizedConversation(tmp, result.events);
+  const persisted = fs.readFileSync(path.join(tmp, "inputs", "conversation.normalized.jsonl"), "utf8");
+
+  // No raw secret, and no surrounding CONTEXT of the blocked field (the field is
+  // replaced by a marker, not kept as masked-but-contextual text).
+  assert.ok(!persisted.includes("ghp_"));
+  assert.ok(!persisted.includes("All tests pass"));
+  assert.ok(persisted.includes("[redacted-blocked]"));
+  assert.ok(persisted.includes("blocked_redactions"));
+  assert.match(persisted, /"blocked_field_hashes":\{"summary":"[0-9a-f]{64}"\}/);
+  // Non-blocked fields are still readable (bounded redacted text, not hashed).
+  assert.ok(persisted.includes("Add a retry to the uploader"));
+});

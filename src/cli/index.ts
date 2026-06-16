@@ -34,6 +34,7 @@ import { comparePackets, loadPreviousPacket, resolvePreviousPacketPath } from ".
 import { EvaluationModel } from "../evaluation/evaluate";
 import { buildIntent, IntentModel } from "../intent/intent";
 import { effectiveModelId, enrichPacket, parseProviderName, providerFor, ProviderName } from "../llm/provider";
+import { CONVERSATION_FORMATS, ConversationFormat } from "../conversation/events";
 import { buildMethodology } from "../methodology/methodology";
 import { buildReviewAreas } from "../review-areas/areas";
 import { RisksModel } from "../risks/risks";
@@ -370,6 +371,7 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
     gateProvider: provider,
     model: signatureModel(parsed, runConfig, signatureProvider),
     conversationPath: stringFlag(parsed, "conversation"),
+    conversationFormat: conversationFormatFlag(parsed),
     agentInputPath: stringFlag(parsed, "agent-input"),
     configPath,
     previousPacketPath: resolvePreviousPacketInput(cwd, parsed)
@@ -745,7 +747,13 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   const reviewAreas = buildReviewAreas({ config, repoIndex: collection.repoIndex });
   const areasOption = reviewAreas.mode === "config" ? { areas: reviewAreas.areas } : {};
   const intent = await buildIntent(cwd, collection);
-  const methodology = await buildMethodology(cwd, collection, stringFlag(parsed, "conversation"), commands);
+  const methodology = await buildMethodology(
+    cwd,
+    collection,
+    stringFlag(parsed, "conversation"),
+    commands,
+    conversationFormatFlag(parsed)
+  );
 
   // Phase 3-2: schema-bound, evidence-gated reasoning stages run with the
   // resolved provider. The default mock provider returns not-ok, so every stage
@@ -1087,7 +1095,8 @@ async function buildStageContext(parsed: ParsedArgs): Promise<PipelineStageConte
     provider,
     requestedModel,
     agentInput: stringFlag(parsed, "agent-input"),
-    conversationPath: stringFlag(parsed, "conversation")
+    conversationPath: stringFlag(parsed, "conversation"),
+    conversationFormat: conversationFormatFlag(parsed)
   });
 }
 
@@ -3286,6 +3295,7 @@ const PIPELINE_EXTRA_FLAGS = [
   "test-output",
   "coverage",
   "conversation",
+  "conversation-format",
   "agent-input",
   "previous-packet",
   "budget",
@@ -3426,6 +3436,16 @@ function flagsForCommand(command: string): Set<string> {
 function stringFlag(parsed: ParsedArgs, key: string): string | undefined {
   const value = parsed.flags[key];
   return typeof value === "string" ? value : undefined;
+}
+
+// review-surfaces.METHODOLOGY.6: parse --conversation-format. An unrecognized
+// value is ignored (returns undefined → auto-detect) rather than throwing, so a
+// typo never aborts the run; the chosen adapter is announced on stderr.
+function conversationFormatFlag(parsed: ParsedArgs): ConversationFormat | undefined {
+  const value = stringFlag(parsed, "conversation-format");
+  return value !== undefined && (CONVERSATION_FORMATS as string[]).includes(value)
+    ? (value as ConversationFormat)
+    : undefined;
 }
 
 function booleanFlag(parsed: ParsedArgs, key: string): boolean {
@@ -3719,6 +3739,8 @@ Options:
                    a local render writes comment.md and exits 0 (review-surfaces.RENDER.8).
   --conversation <path>
                    Optional text/Markdown/JSONL/YAML conversation log for methodology
+  --conversation-format <claude-code|codex|cursor|normalized>
+                   Force a raw-transcript adapter; default auto-detects by content shape
   --command-transcripts <dir>
                    Optional command transcript directory; default .review-surfaces/commands
   --test-output <path>

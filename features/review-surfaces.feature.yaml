@@ -153,8 +153,19 @@ components:
         requirement: Claimed tests without command or test-output evidence must be flagged.
       4:
         requirement: Missing logs must produce a useful finding rather than a fatal error.
+        note: "Now also covers (i) an unmatched/empty raw transcript and (ii) a failed auto-discovery (discovery runs but finds no session for this repo): both degrade non-fatally with quality_flags including conversation_log_missing, never a throw. conversation-audit uplift (docs/history/CONVERSATION_AUDIT_UPLIFT_GOAL.md)."
       5:
         requirement: Methodology findings must feed into risk analysis and review focus.
+        note: "Now including the cross-reference signals and CONV-GAP-* records. conversation-audit uplift."
+      6:
+        requirement: A pluggable raw-transcript adapter registry must normalize Claude Code session JSONL, Codex CLI rollout items, AND Cursor chat/composer exports into one ConversationEvent stream (incl. tool_use/tool_result/function_call evidence), auto-detecting by content shape with a --conversation-format claude-code|codex|cursor|normalized override; adapters must be tolerant of unknown fields and never fatal, and the three existing normalized forms stay supported. Claude Code is the reference/dogfood-validated adapter; the Codex and Cursor adapters are explicitly best-effort (their on-disk shapes are version-variable), ship with fixtures, and a rotted/unmatched shape must degrade to no-match (conversation_log_missing), never a wrong-adapter mis-normalization.
+        note: "conversation-audit uplift Phase 1 (D8/D10). Test: METHODOLOGY.6 unit tests (each adapter detect/normalize; convergence to same shape; tolerance; rotted shape -> no-match not mis-normalize)."
+      7:
+        requirement: A provider-leaf methodology audit must read the redacted normalized conversation under a bounded event budget (truncation-honest with a conversation_truncated flag from its first shipped increment) and produce item-4 judgement (considered / research / unchallenged / workflow-soundness), surfacing considered+research (4a/4b) on a render surface (not just storing them), with every finding anchored to validated conversation event ids and changed-file paths; validateEvidenceRef must reject a conversation-kind ref whose event_id is absent or not in the known-event-id set (path membership alone must not validate it), invalid anchors demote to advisory open questions, and when no provider is available the deterministic keyword extraction runs as fallback with a loud methodology_analysis_degraded quality flag (and still emits an empty workflow_findings array).
+        note: "conversation-audit uplift Phase 2 (D1/D2/D5). Test: METHODOLOGY.7 (FAKE-provider byte-stable findings; demote on bad anchor; degraded mock path; truncation flag)."
+      8:
+        requirement: The audit must flag what might NOT have been challenged and whether something important was skipped by cross-referencing conversation turns with the diff, semantic-change facts, and dependency/config facts, emitting the four signals risky-code-no-security / impl-no-test / API-or-schema-no-compat / deps-or-CI-no-rationale; these stay advisory unless an independent deterministic check also fires.
+        note: "conversation-audit uplift Phase 3 (item 4(c), D6). Test: METHODOLOGY.8 (each of the four signals fires; each stays advisory unless deterministic check fires)."
 
   RISK:
     name: Risk and test-gap analysis
@@ -168,8 +179,16 @@ components:
         requirement: Risk scoring must preserve severity, likelihood, and detectability labels.
       4:
         requirement: Missing manual checks and missing automatic tests must be listed separately.
+        note: "The missing-automatic / missing-manual split becomes evidence-routed (exactly one list) for the conversation-derived CONV-GAP-* class ONLY; the existing requirement-coverage class is explicitly UNCHANGED (still lands in BOTH missing-lists). conversation-audit uplift. Test: RISK.4 golden-guard."
       5:
         requirement: Risk findings must cite evidence or be marked as hypotheses.
+        note: "Conversation-derived risk findings cite evidence or are marked hypotheses (llm_proposed:true + validation_status). conversation-audit uplift."
+      6:
+        requirement: Risk analysis must compute, from the conversation, what was tested and which workflow steps lack automatic or manual tests, emitting CONV-GAP-* records that each cite a conversation event_id (validated against the known-event-id set, demoting to advisory when unknown) and land in exactly one of the missing-automatic / missing-manual lists by evidence (never in test_gaps, never both).
+        note: "conversation-audit uplift Phase 3 (item 5(a)/(c), evidence-bound). Test: RISK.6 (CONV-GAP in exactly one list, validated event_id, unknown id demotes)."
+      7:
+        requirement: Each conversation-derived test gap must carry a HOW-tested classification (unit|integration|manual|mocked|none|unknown), proposed by the leaf and confirmed against a real test artifact before unit/integration is trusted (else unknown/none).
+        note: "conversation-audit uplift Phase 3 (item 5(b), D5). Test: RISK.7 (tested_how confirmed before unit/integration trusted)."
 
   DOGFOOD:
     name: Self-dogfooding loop
@@ -882,6 +901,9 @@ constraints:
       6:
         requirement: Every postable or persisted surface that can carry diff-derived or model text must run secret redaction and expose the high-risk block signal — specifically the privacy ignore-diff filter must fail closed (drop a diff section whose `diff --git` header cannot be parsed into both paths, including git-quoted or space-containing paths), the GitHub draft-review export (pending_review.json and its stdout copy) must redact secrets and return a block signal so a strict-postability gate can later refuse a blocked payload, and provider-credential secret patterns (including google_api_key) must set the remote-block signal consistently. Redaction (not a refusal gate) is what closes each leak, so the requirement is satisfied once every surface redacts and the block signal is exposed.
         note: "ci-trust uplift Phase 1 (docs/history/CI_TRUST_UPLIFT_GOAL.md). Closes three confirmed leaks: filterIgnoredDiff kept ignored sections when its greedy regex failed on quoted paths; pending_review.json was the only postable surface with zero redactSecrets; google_api_key was blocked:false against the in-file 'all provider tokens blocked' invariant. Also anchors the existing PRIVACY.5 block-before-LLM behavior with an exact-ACID test."
+      7:
+        requirement: Raw transcript ingestion must (a) redact every extracted field (text, tool_use input, tool_result output, code-edit body) before normalization and before any remote provider call, AND route every PERSISTED field (incl. the normalized-log write) through redactForArtifact (redact-before-BOUND), storing any field where containsBlockedRedaction fires as a hash by default (raw masked excerpt only on explicit opt-in, per TRD 14.1) so a gitignored-but-local persisted artifact cannot retain blocked-secret context or hide that it held blocked material; AND (b) fold a conversation block signal into BOTH remote_provider_blocked (so a blocked secret in a tool_call/tool_result/code-edit privacy-blocks an ai-sdk run at the gate) AND secret_findings / the persisted privacy surface (so the postable surface exposes the high-risk block per PRIVACY.6), with that fold computed in collect.ts BEFORE the privacy object is assembled, and with any conversation secret_findings entry carrying a repo-relative normalized-log path or synthetic locus as its required path — NEVER the absolute discovered-session path; it must never copy raw transcript text into a public artifact by default.
+        note: "conversation-audit uplift (D8/D9). Persisted-surface redact-before-bound + hash-on-blocked (a) lands in Phase 1; the block-signal fold (b) into both surfaces lands in Phase 2. Test: PRIVACY.7 (persisted normalized log carries hash not raw blocked-secret context; tool_result/code-edit secret folds into BOTH remote_provider_blocked and secret_findings; ai-sdk run exits privacyBlocked)."
 
   QUALITY:
     name: Testing and release quality

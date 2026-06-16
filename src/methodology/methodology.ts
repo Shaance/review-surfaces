@@ -1,11 +1,7 @@
-import fs from "node:fs";
-import path from "node:path";
 import { CollectionResult } from "../collector/collect";
-import { ensureDir, readText, writeText } from "../core/files";
-import { isRecord } from "../core/guards";
-import { parseYaml } from "../core/simple-yaml";
+import { ConversationEvent, ConversationFormat } from "../conversation/events";
+import { loadConversationEvents, writeNormalizedConversation } from "../conversation/ingest";
 import { commandEvidence, EvidenceRef, missingEvidence } from "../evidence/evidence";
-import { redactSecrets } from "../privacy/secrets";
 
 export interface MethodologyModel {
   summary: string;
@@ -21,13 +17,6 @@ export interface MethodologyModel {
   evidence: EvidenceRef[];
 }
 
-interface ConversationEvent {
-  id: string;
-  actor: string;
-  kind: string;
-  summary: string;
-}
-
 interface TranscriptCommandEvidence {
   passed: Set<string>;
   failed: Set<string>;
@@ -37,9 +26,26 @@ export async function buildMethodology(
   cwd: string,
   collection: CollectionResult,
   conversationPath: string | undefined,
-  commands: string[]
+  commands: string[],
+  conversationFormat?: ConversationFormat
 ): Promise<MethodologyModel> {
-  if (!conversationPath) {
+  // Phase 1.5: the SINGLE producer runs inside collect.ts and attaches the
+  // redacted stream to CollectionResult, so both buildMethodology call sites READ
+  // collection.conversationEvents rather than re-parsing. The direct-load
+  // fallback below only serves unit-test callers (and any path that did not run
+  // the collector seam); production never re-parses here.
+  let events = collection.conversationEvents;
+  if (!events && conversationPath) {
+    const loaded = await loadConversationEvents(cwd, conversationPath, conversationFormat);
+    if (loaded) {
+      events = loaded.events;
+      await writeNormalizedConversation(collection.outputDir, loaded.events);
+    }
+  }
+
+  // review-surfaces.METHODOLOGY.4: a missing --conversation, an unreadable file,
+  // OR an unmatched/empty raw transcript all degrade to a non-fatal finding.
+  if (!events) {
     return {
       summary: "Conversation log not_provided; methodology is derived only from local files and command context.",
       missing_logs: true,
@@ -55,9 +61,6 @@ export async function buildMethodology(
     };
   }
 
-  const absolutePath = path.resolve(cwd, conversationPath);
-  const events = await parseConversationFile(absolutePath);
-  await writeNormalizedConversation(collection.outputDir, events);
   const transcriptCommandEvidence = buildTranscriptCommandEvidence(collection);
   const validationClaims = pickValidationClaims(events);
   const verifiedClaims = validationClaims.filter((claim) => claimHasCommandEvidence(claim, transcriptCommandEvidence));
@@ -67,8 +70,9 @@ export async function buildMethodology(
     ...(verifiedClaims.length > 0 ? ["test_claims_verified_by_command_transcripts"] : [])
   ];
 
+  const sourceLabel = conversationPath ?? collection.conversationSource ?? "the discovered conversation";
   return {
-    summary: `Methodology extracted ${events.length} event(s) from ${conversationPath}.`,
+    summary: `Methodology extracted ${events.length} event(s) from ${sourceLabel}.`,
     missing_logs: false,
     considered: pick(events, ["option", "considered", "alternative"]),
     research: pick(events, ["research", "inspect", "read", "context", "reference"]),
@@ -105,54 +109,6 @@ export async function buildMethodology(
       ...commands.map((command) => commandEvidence(command, "Command associated with this review run.", "medium"))
     ]
   };
-}
-
-async function parseConversationFile(filePath: string): Promise<ConversationEvent[]> {
-  const text = await readText(filePath);
-  if (filePath.endsWith(".jsonl")) {
-    return text
-      .split("\n")
-      .filter((line) => line.trim() !== "")
-      .map((line, index) => {
-        const parsed = JSON.parse(line);
-        return {
-          id: String(parsed.id ?? `evt_${String(index + 1).padStart(4, "0")}`),
-          actor: String(parsed.actor ?? "unknown"),
-          kind: String(parsed.kind ?? "message"),
-          summary: redactConversationSummary(parsed.summary ?? parsed.text ?? "")
-        };
-      });
-  }
-
-  if (filePath.endsWith(".yaml") || filePath.endsWith(".yml")) {
-    const parsed = parseYaml(text);
-    if (isRecord(parsed) && Array.isArray(parsed.events)) {
-      return parsed.events.map((event, index) => ({
-        id: String(isRecord(event) ? event.id ?? `evt_${String(index + 1).padStart(4, "0")}` : `evt_${String(index + 1).padStart(4, "0")}`),
-        actor: String(isRecord(event) ? event.actor ?? "unknown" : "unknown"),
-        kind: String(isRecord(event) ? event.kind ?? "message" : "message"),
-        summary: redactConversationSummary(isRecord(event) ? event.summary ?? event.text ?? "" : event)
-      }));
-    }
-  }
-
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line !== "")
-    .map((line, index) => ({
-      id: `evt_${String(index + 1).padStart(4, "0")}`,
-      actor: line.startsWith("user:") ? "user" : line.startsWith("assistant:") ? "assistant" : "unknown",
-      kind: line.startsWith("#") ? "heading" : "message",
-      summary: redactConversationSummary(line.replace(/^(user|assistant):\s*/i, ""))
-    }));
-}
-
-async function writeNormalizedConversation(outputDir: string, events: ConversationEvent[]): Promise<void> {
-  const inputsDir = path.join(outputDir, "inputs");
-  await ensureDir(inputsDir);
-  const lines = events.map((event) => JSON.stringify(event)).join("\n");
-  await writeText(path.join(inputsDir, "conversation.normalized.jsonl"), `${lines}\n`);
 }
 
 function pick(events: ConversationEvent[], keywords: string[]): string[] {
@@ -259,8 +215,4 @@ function cleanClaimedCommand(value: string): string {
 
 function commandLooksSupported(command: string): boolean {
   return /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+[\w:.-]+|exec\s+[\w:.-]+|test(?::[\w.-]+)?|lint|typecheck|build)(?:\s+[^\s,;]+)*|node\s+--test(?:\s+[^\s,;]+)*|tsc(?:\s+[^\s,;]+)*)$/.test(command);
-}
-
-function redactConversationSummary(value: unknown): string {
-  return redactSecrets(String(value)).text;
 }

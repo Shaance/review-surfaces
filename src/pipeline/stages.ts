@@ -1,5 +1,6 @@
 import { CollectionResult } from "../collector/collect";
 import { ReviewSurfacesConfig } from "../config/config";
+import { ConversationFormat } from "../conversation/events";
 import { ArchitectureModel, buildArchitecture, buildArchitectureModel } from "../diagrams/diagrams";
 import { EvaluationModel, evaluateIntent, verifyRequirementsWithTests } from "../evaluation/evaluate";
 import { buildIntent, IntentModel } from "../intent/intent";
@@ -25,6 +26,7 @@ export interface PipelineStageContext {
   areasOption: { areas?: ReviewArea[] };
   agentInput?: string;
   conversationPath?: string;
+  conversationFormat?: ConversationFormat;
 }
 
 export interface BuildPipelineStageContextOptions {
@@ -37,6 +39,7 @@ export interface BuildPipelineStageContextOptions {
   requestedModel?: string;
   agentInput?: string;
   conversationPath?: string;
+  conversationFormat?: ConversationFormat;
 }
 
 export function buildPipelineStageContext(options: BuildPipelineStageContextOptions): PipelineStageContext {
@@ -54,7 +57,8 @@ export function buildPipelineStageContext(options: BuildPipelineStageContextOpti
     requestedModel: options.requestedModel,
     areasOption,
     agentInput: options.agentInput,
-    conversationPath: options.conversationPath
+    conversationPath: options.conversationPath,
+    conversationFormat: options.conversationFormat
   };
 }
 
@@ -218,7 +222,13 @@ export async function loadOrComputeEvaluation(
 }
 
 export async function computeMethodology(context: PipelineStageContext): Promise<MethodologyModel> {
-  return buildMethodology(context.cwd, context.collection, context.conversationPath, context.commands);
+  return buildMethodology(
+    context.cwd,
+    context.collection,
+    context.conversationPath,
+    context.commands,
+    context.conversationFormat
+  );
 }
 
 export async function loadOrComputeMethodology(context: PipelineStageContext): Promise<MethodologyModel> {

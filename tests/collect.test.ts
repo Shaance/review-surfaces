@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { collectInputs } from "../src/collector/collect";
 import { collectChangedFiles } from "../src/collector/git";
 import { defaultConfig } from "../src/config/config";
+import { buildMethodology } from "../src/methodology/methodology";
 
 test("collects specs and writes first local artifacts", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-test-"));
@@ -286,4 +287,42 @@ test("review-surfaces.CLI.7 collection defaults command transcripts to the outpu
 
   assert.equal(result.commandTranscriptOutputPath, "custom-surfaces/inputs/commands.json");
   assert.equal(result.commandTranscripts[0].id, "CMD-CUSTOM-OUT");
+});
+
+test("review-surfaces.METHODOLOGY.6 collect.ts produces conversationEvents that buildMethodology reads without re-parsing", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-conv-seam-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.copyFileSync(
+    path.join(process.cwd(), "tests", "fixtures", "minimal-repo", "features", "example.feature.yaml"),
+    path.join(tmp, "features", "example.feature.yaml")
+  );
+  fs.copyFileSync(
+    path.join(process.cwd(), "tests", "fixtures", "conversations", "claude-code.jsonl"),
+    path.join(tmp, "session.jsonl")
+  );
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const result = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false,
+    conversationPath: "session.jsonl"
+  });
+
+  // The single producer ran inside collect.ts: the redacted stream + harness
+  // label are on the CollectionResult, and the normalized log was persisted.
+  assert.ok(result.conversationEvents && result.conversationEvents.length > 0);
+  assert.equal(result.conversationSource, "claude-code");
+  assert.ok(result.diagnostics.some((line) => line.startsWith("Conversation adapter: claude-code")));
+  assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "inputs", "conversation.normalized.jsonl")));
+  // A redacted tool_result secret never reaches the in-memory stream verbatim.
+  assert.ok(!result.conversationEvents.some((event) => event.summary.includes("ghp_")));
+
+  // Both call sites READ collection.conversationEvents rather than re-parsing:
+  // buildMethodology consumes the stream even though the path is never re-read.
+  const methodology = await buildMethodology(tmp, result, "session.jsonl", []);
+  assert.equal(methodology.missing_logs, false);
+  assert.match(methodology.summary, new RegExp(`extracted ${result.conversationEvents.length} event`));
 });
