@@ -862,19 +862,19 @@ async function runMethodologyAuditStage(
   }
 
   // Deterministic cross-chunk reconciliation: a test/validation that ran somewhere
-  // in the SELECTED events AFTER the change first appears means a chunk-local
+  // in the SELECTED events AFTER the change is EDITED means a chunk-local
   // "implementation changed, no test" flag is likely a partial-view artifact (the
   // test lived in another chunk), so the merged finding is contextualized rather
-  // than presented as fact. A test BEFORE the first changed-file touch (a baseline
-  // run, or one before the user request) cannot cover the new change. And when NO
-  // selected event touches the changed file at all, the order is UNKNOWN — the
-  // selected slice cannot establish that any test ran after the change — so we do
-  // NOT reconcile rather than risk presenting a real gap as a chunking artifact
-  // (Codex P2).
-  const firstChangeIndex = changedFileTouchIndex(selected, changedFiles);
+  // than presented as fact. A test BEFORE the edit (a baseline run, one before the
+  // user request, or one after only a mention/read of the file) cannot cover the
+  // new change. And when NO selected event EDITS the changed file, the order is
+  // UNKNOWN — the selected slice cannot establish that any test ran after the
+  // change — so we do NOT reconcile rather than risk presenting a real gap as a
+  // chunking artifact (Codex P2).
+  const firstEditIndex = changedFileEditIndex(selected, changedFiles);
   const testExecuted =
-    firstChangeIndex !== undefined &&
-    selected.some((event) => isTestExecutionEvent(event) && event.raw_index > firstChangeIndex);
+    firstEditIndex !== undefined &&
+    selected.some((event) => isTestExecutionEvent(event) && event.raw_index > firstEditIndex);
 
   // Per-CHUNK processing then merge: validate each chunk's items against the events
   // THAT CHUNK actually saw, so a finding can never validate against an event id
@@ -1175,8 +1175,14 @@ function salienceScore(event: ConversationEvent, changedFiles: Set<string>): num
     score += 2;
   }
   // A validation keyword may be in the summary OR the (often generic-summary) shell
-  // command, so check both (Codex P2).
-  if (/\b(?:tests?|lint|typecheck|build|pass(?:e[ds])?|fail(?:e[ds])?|verif|validat)/i.test(`${event.summary} ${event.command ?? ""}`)) {
+  // command, so check both. Keywords are WHOLE-WORD bounded (with explicit
+  // inflections) so prose like "building the UI" or "password handling" does not
+  // earn a false validation boost that could displace real evidence (Codex P3).
+  if (
+    /\b(?:tests?|lint(?:ing|ed|er|s)?|typecheck(?:ing|ed|s)?|build(?:s)?|pass(?:es|ed|ing)?|fail(?:s|ed|ing|ure)?|verif(?:y|ied|ies|ication)|validat(?:e|ed|es|ion|ing))\b/i.test(
+      `${event.summary} ${event.command ?? ""}`
+    )
+  ) {
     score += 2;
   }
   return score;
@@ -1193,9 +1199,14 @@ function touchesChangedFile(file: string, changedFiles: Set<string>): boolean {
   if (changedFiles.has(normalized)) {
     return true;
   }
+  // Only an ABSOLUTE event path may suffix-match a repo-relative changed path: a
+  // longer REPO-RELATIVE path like `packages/api/src/uploader.ts` is a DIFFERENT
+  // file from `src/uploader.ts`, so suffix-matching it would mis-attribute the edit
+  // and start the post-change ordering clock on the wrong file (Codex P2).
+  const isAbsolute = normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized);
   for (const changed of changedFiles) {
-    // event path is absolute/longer and ends with the FULL repo-relative changed path
-    if (normalized.endsWith(`/${changed}`)) {
+    // absolute event path ends with the FULL repo-relative changed path
+    if (isAbsolute && normalized.endsWith(`/${changed}`)) {
       return true;
     }
     // changed path ends with the event subpath, but only when the event path has a
@@ -1240,8 +1251,8 @@ function textNamesChangedFile(text: string, changedFiles: Set<string>): boolean 
 }
 
 // True when an event references a changed file via its edited path, a shell
-// command, or message text (summary). Used for both the salience boost and the
-// "when did the change first appear" ordering anchor (Codex P2).
+// command, or message text (summary). Broad predicate used for the SALIENCE boost
+// — a read or a mention of a changed file is worth ranking up (Codex P2).
 function eventTouchesChangedFile(event: ConversationEvent, changedFiles: Set<string>): boolean {
   return (
     (event.file !== undefined && touchesChangedFile(event.file, changedFiles)) ||
@@ -1250,14 +1261,35 @@ function eventTouchesChangedFile(event: ConversationEvent, changedFiles: Set<str
   );
 }
 
-// The earliest raw_index among events that touch a changed file, or undefined when
-// none do. Marks when the change first enters the transcript so a test run BEFORE
-// it (a baseline run, or a run before the user request) is not mistaken for
-// validation of the new change (Codex P2).
-function changedFileTouchIndex(events: ConversationEvent[], changedFiles: Set<string>): number | undefined {
+// Tools that WRITE/EDIT a file (vs. read or inspect it). Adapters normalize names
+// to families like `edit` (Cursor), `Edit`/`Write`/`MultiEdit`/`NotebookEdit`
+// (Claude Code), or `apply_patch` (Codex); a `Read`/`cat`/`grep` does NOT match.
+const EDIT_TOOL_PATTERN = /(?:edit|write|create|patch|replace|update|insert|append|modify|notebook)/i;
+
+// True when an event is an actual EDIT/WRITE of a changed file (a structured
+// edit-tool call whose target path is the changed file). The reconciliation
+// ordering anchor must be a real edit signal, not the broad touch predicate, so a
+// test that ran after a mere mention/read but BEFORE the edit is not mistaken for
+// post-change validation (Codex P2).
+function eventEditsChangedFile(event: ConversationEvent, changedFiles: Set<string>): boolean {
+  if (event.kind !== "tool_call" && event.kind !== "tool_result") {
+    return false;
+  }
+  if (event.file === undefined || !touchesChangedFile(event.file, changedFiles)) {
+    return false;
+  }
+  return event.tool === undefined || EDIT_TOOL_PATTERN.test(event.tool);
+}
+
+// The earliest raw_index at which a changed file is actually EDITED, or undefined
+// when no edit of a changed file appears in the selected stream. Marks when the
+// change is made so a test run BEFORE it (a baseline run, a run before the user
+// request, or a run after only a mention/read) is not mistaken for validation of
+// the new change (Codex P2).
+function changedFileEditIndex(events: ConversationEvent[], changedFiles: Set<string>): number | undefined {
   let earliest: number | undefined;
   for (const event of events) {
-    if (eventTouchesChangedFile(event, changedFiles) && (earliest === undefined || event.raw_index < earliest)) {
+    if (eventEditsChangedFile(event, changedFiles) && (earliest === undefined || event.raw_index < earliest)) {
       earliest = event.raw_index;
     }
   }
@@ -1289,8 +1321,11 @@ function isTestExecutionEvent(event: ConversationEvent): boolean {
   return commandRunsTest(event.command ?? "");
 }
 
-// Cross-ecosystem test runners the JS-focused classifier does not model.
-const CROSS_ECOSYSTEM_RUNNER = /^(?:node\s+--test|pytest|go\s+test|cargo\s+test|rspec|phpunit|(?:gradle|mvn)\s+test|ctest)\b/i;
+// Cross-ecosystem test runners the JS-focused classifier does not model. Includes
+// common Python wrappers (`python -m pytest`, `python3 -m unittest`) so a real
+// post-change test run is recognized (Codex P3).
+const CROSS_ECOSYSTEM_RUNNER =
+  /^(?:node\s+--test|python[0-9.]*\s+-m\s+(?:pytest|unittest)|pytest|go\s+test|cargo\s+test|rspec|phpunit|(?:gradle|mvn)\s+test|ctest)\b/i;
 const LEADING_ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
 
 // True when ANY executed segment of a (possibly chained) shell command runs a

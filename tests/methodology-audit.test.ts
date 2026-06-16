@@ -701,3 +701,74 @@ test("review-surfaces.METHODOLOGY.7 (D3) an equal-severity soundness tie prefers
   assert.equal(soundness.length, 1);
   assert.ok(soundness[0].evidence.some((ref) => ref.event_id === "e80" && ref.validation_status === "valid"), "the grounded verdict's anchor is kept on a severity tie");
 });
+
+test("review-surfaces.METHODOLOGY.7 (D3) a test before the EDIT (after only a mention) does not reconcile (Codex P2)", async () => {
+  // The file is mentioned (raw 0), a baseline test runs (raw 1), THEN the file is
+  // edited (raw 2). The ordering anchor must be the EDIT, so the baseline test is
+  // pre-change and does not reconcile.
+  const events: ConversationEvent[] = [
+    { id: "u1", actor: "user", kind: "message", summary: "please change src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 },
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 2 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "a test after only a mention but before the edit must not reconcile");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) an edit to a DIFFERENT repo-relative path is not the changed file (Codex P2)", async () => {
+  // `packages/api/src/uploader.ts` merely ends with the changed `src/uploader.ts`
+  // but is a different file; suffix-matching it would start the ordering clock on
+  // the wrong file. Only an absolute path may suffix-match.
+  const diffEvents: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "Edit(packages/api/src/uploader.ts)", tool: "Edit", file: "packages/api/src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const diff = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(diffEvents, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology: diff, risks: risks() }, {});
+  const implDiff = diff.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(implDiff);
+  assert.ok(!/test execution was observed/.test(implDiff.summary), "a different repo-relative path must not be treated as the changed file");
+
+  // An ABSOLUTE path ending with the changed path IS the changed file.
+  const absEvents: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "Edit(/Users/me/repo/src/uploader.ts)", tool: "Edit", file: "/Users/me/repo/src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const abs = methodologyDegraded();
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(absEvents, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology: abs, risks: risks() }, {});
+  const implAbs = abs.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(implAbs);
+  assert.match(implAbs.summary, /test execution was observed elsewhere/, "an absolute path ending with the changed path is the changed file");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a python-wrapped test runner counts as a test run (Codex P3)", async () => {
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(python -m pytest)", tool: "Bash", command: "python -m pytest tests/", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.match(impl.summary, /test execution was observed elsewhere/, "`python -m pytest` must count as a test run");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) prose like 'password' does not earn the validation salience boost (Codex P3)", async () => {
+  // 245 generic user messages (salience 2) + one whose text merely contains
+  // 'password' (NOT a validation event). Only an unbounded keyword match would lift
+  // it to salience 4; with whole-word bounding it ties at 2 and is dropped.
+  const events: ConversationEvent[] = Array.from({ length: 245 }, (_v, index) => ({ id: `u${index}`, actor: "user", kind: "message", summary: `chatter ${index}`, raw_index: index }));
+  events.push({ id: "pw", actor: "user", kind: "message", summary: "reviewing the password handling logic", raw_index: 245 });
+  const methodology = methodologyDegraded();
+  const audit = { unchallenged: [{ text: "assumed password handling is fine", anchors: { event_ids: ["pw"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const finding = methodology.workflow_findings.find((f) => f.signal_kind === "unchallenged_assumption");
+  assert.ok(finding);
+  assert.match(finding.summary, /unverified anchor\(s\): pw/, "'password' must not earn the validation boost and survive the budget");
+});
