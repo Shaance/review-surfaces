@@ -1343,6 +1343,30 @@ function patchHeaderTargets(text: string): string[] {
 // (`event.file`) is authoritative — a `Write docs/notes.md` whose body merely
 // mentions `src/x.ts` must NOT count as editing `src/x.ts`. Only patch-style tools
 // with no `event.file` fall back to their PATCH HEADERS (never free body text).
+// If an adapter kept an edit tool's STRUCTURED arguments as a JSON blob (e.g. an
+// apply_patch payload under a `patch`/`input` field), the patch newlines are escaped
+// and the `*** Update File:` controls are not at real line starts. Decode that body
+// (JSON.parse restores real newlines) before header scanning; otherwise pass the
+// text through unchanged (Codex P2).
+function decodePatchBody(command: string): string {
+  const trimmed = command.trim();
+  if (!trimmed.startsWith("{")) {
+    return command;
+  }
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (isRecord(parsed)) {
+      const body = parsed.patch ?? parsed.input ?? parsed.content ?? parsed.diff;
+      if (typeof body === "string") {
+        return body;
+      }
+    }
+  } catch {
+    // Not JSON; fall through.
+  }
+  return command;
+}
+
 function editTargetsChangedFile(event: ConversationEvent, changed: string): boolean {
   if (event.file !== undefined) {
     return touchesChangedFile(event.file, new Set([changed]));
@@ -1351,7 +1375,7 @@ function editTargetsChangedFile(event: ConversationEvent, changed: string): bool
   // EXACTLY (after normalizing `./`/backslashes) — NOT with the suffix logic, which
   // would treat `api/src/uploader.ts` as the reviewed `packages/api/src/uploader.ts`
   // (Codex P2).
-  return patchHeaderTargets(`${event.command ?? ""}\n${event.summary}`)
+  return patchHeaderTargets(`${decodePatchBody(event.command ?? "")}\n${event.summary}`)
     .map((target) => target.replace(/\\/g, "/").replace(/^\.\/+/, ""))
     .includes(changed);
 }
@@ -1473,11 +1497,15 @@ function commandRunsTest(command: string): boolean {
 // test command that appears only inside a heredoc body is not counted as an executed
 // test run. The body lines are removed so they never segment into commands (Codex P2).
 function stripHeredocBodies(command: string): string {
-  // Drop the body up to its terminator (CRLF-aware) OR, when the heredoc is
-  // TRUNCATED with no terminator (tool bodies are bounded to MAX_TOOL_BODY_LENGTH),
-  // up to end-of-command — so a dangling `pnpm test` body line is never segmented
-  // into a counted test run (Codex P2).
-  return command.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[\s\S]*?(?:\r?\n[ \t]*\2[ \t]*(?=\r?\n|$)|$)/g, "<<$2");
+  // The heredoc BODY starts on the NEXT line after the opener, so keep the rest of
+  // the opener line ($3) — a chained real command there (`cat <<EOF && pnpm test`)
+  // must survive — and drop only the body, up to its terminator (CRLF-aware) OR, for
+  // a TRUNCATED heredoc with no terminator (tool bodies bounded to
+  // MAX_TOOL_BODY_LENGTH), to end-of-command (Codex P2).
+  return command.replace(
+    /<<-?\s*(['"]?)([A-Za-z_]\w*)\1([^\n]*)(?:\r?\n[\s\S]*?\r?\n[ \t]*\2[ \t]*(?=\r?\n|$)|\r?\n[\s\S]*$)?/g,
+    "<<$2$3"
+  );
 }
 
 function commandSegments(command: string): string[] {

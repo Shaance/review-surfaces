@@ -1090,6 +1090,36 @@ test("review-surfaces.METHODOLOGY.7 (D3) a TRUNCATED heredoc (no terminator) is 
   assert.ok(!/test execution was observed/.test(impl.summary), "an unterminated heredoc body must be stripped, not counted as a test");
 });
 
+test("review-surfaces.METHODOLOGY.7 (D3) a real command chained on the heredoc opener line survives (#96)", async () => {
+  // `cat > f <<EOF && pnpm test ... EOF` runs pnpm test after cat; only the BODY
+  // (next line onward) is stripped, so the chained test still counts.
+  const events: ConversationEvent[] = [
+    { id: "e", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(write+test)", tool: "Bash", command: "cat > f <<EOF && pnpm test\nfile body\nEOF", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.match(impl.summary, /test execution was observed elsewhere/, "a test chained on the heredoc opener line must survive the body strip");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a JSON-wrapped apply_patch body is decoded for header scanning (#96)", async () => {
+  // The adapter kept the apply_patch payload as a JSON blob with escaped newlines;
+  // decoding restores real line breaks so the `*** Update File:` header is found.
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: JSON.stringify({ patch: "*** Update File: src/uploader.ts\n+  retry()" }), raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.match(impl.summary, /test execution was observed elsewhere/, "a JSON-wrapped patch body's header is decoded and matched");
+});
+
 test("review-surfaces.METHODOLOGY.7 (D3) a heredoc WRITTEN to a .sh file is not executed (#96)", async () => {
   // `cat > run-tests.sh <<EOF ... pnpm test ... EOF` writes a script; the `.sh`
   // filename must not be mistaken for an interpreter invocation.
