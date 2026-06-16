@@ -108,7 +108,11 @@ export const normalizedAdapter: ConversationAdapter = {
     }
     const firstRecord = firstJsonObject(input.text);
     if (firstRecord) {
-      return looksNormalizedJsonl(firstRecord);
+      // Even when the first JSON record looks normalized (e.g. a Claude
+      // `{type:"summary", summary:...}` meta line has a `summary` field), decline
+      // if a real Claude/Codex envelope appears later — let that adapter, which
+      // handles meta lines, claim the file instead of losing its tool structure.
+      return looksNormalizedJsonl(firstRecord) && !hasRawTranscriptLine(input.text);
     }
     // Plain text: a non-JSON first line. A leading `{`/`[`, or a raw harness
     // transcript line hiding behind a banner/header, means a raw adapter should

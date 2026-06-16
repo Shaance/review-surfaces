@@ -136,7 +136,8 @@ function blockToEvent(block: unknown, role: string, id: string, rawIndex: number
   }
   const type = typeof block.type === "string" ? block.type : "text";
   if (type === "tool_use") {
-    const tool = typeof block.name === "string" ? block.name : "tool";
+    // Redact the tool name before it enters `tool` and the summary (Codex P2).
+    const tool = redactText(typeof block.name === "string" ? block.name : "tool");
     const command = commandOf(block.input);
     return {
       id,

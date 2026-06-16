@@ -255,3 +255,26 @@ test("review-surfaces.METHODOLOGY.5 workflow findings feed the risk review focus
   // Empty on the deterministic path (no findings) -> no extra line (byte-stable).
   assert.ok(!buildRiskReviewFocus(methodologyDegraded()).some((line) => /workflow finding/.test(line)));
 });
+
+test("review-surfaces.METHODOLOGY.7 an event id beyond the audit cap is not a valid anchor", async () => {
+  const many: ConversationEvent[] = Array.from({ length: 100 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `t${index}`, raw_index: index }));
+  const methodology = methodologyDegraded();
+  const audit = {
+    unchallenged: [
+      { text: "anchored within the cap", anchors: { event_ids: ["e5"] } },
+      { text: "anchored beyond the cap", anchors: { event_ids: ["e90"] } }
+    ]
+  };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(many, []), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const findings = methodology.workflow_findings.filter((f) => f.signal_kind === "unchallenged_assumption");
+  const beyond = findings.find((f) => /beyond the cap/.test(f.summary));
+  assert.match(beyond?.summary ?? "", /unverified anchor.*e90/);
+  const within = findings.find((f) => /within the cap/.test(f.summary));
+  assert.ok(within?.evidence.some((ref) => ref.validation_status === "valid"));
+});
+
+test("review-surfaces.METHODOLOGY.7 a sound workflow assessment clears the degraded flag", async () => {
+  const methodology = methodologyDegraded();
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": { workflow_assessment: { soundness: "sound", summary: "workflow is sound" } } }), { collection: collectionWithEvents(THREE_EVENTS), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  assert.ok(!methodology.quality_flags.includes("methodology_analysis_degraded"));
+});

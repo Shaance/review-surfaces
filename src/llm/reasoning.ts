@@ -829,12 +829,21 @@ async function runMethodologyAuditStage(
   // not stamped valid (Codex P2).
   const changedFiles = new Set(inputs.collection.changedFiles.map((file) => file.path));
 
+  // Validate audit anchors against ONLY the events actually SENT to the provider
+  // (the bounded set), not every collected event — otherwise a model could cite an
+  // event id past the truncation cutoff and have it stamped valid even though
+  // conversation_truncated says those events were not analyzed (Codex P2).
+  const auditContext: EvidenceValidationContext = {
+    ...evidenceContext,
+    knownEventIds: new Set(bounded.map((event) => event.id))
+  };
+
   // Item 4a/4b: considered alternatives + research/context, surfaced as labeled
   // hypotheses — but ONLY when their anchors validate (event id / changed path),
   // so a provider's hallucinated research/alternative is not presented as a
   // conversation-derived fact (Codex P2), matching workflow_findings' discipline.
-  const consideredAdds = groundedAnchoredTexts(data.considered, evidenceContext, changedFiles).map(markHypothesis);
-  const researchAdds = groundedAnchoredTexts(data.research, evidenceContext, changedFiles).map(markHypothesis);
+  const consideredAdds = groundedAnchoredTexts(data.considered, auditContext, changedFiles).map(markHypothesis);
+  const researchAdds = groundedAnchoredTexts(data.research, auditContext, changedFiles).map(markHypothesis);
   methodology.considered = uniqueTruthy([...methodology.considered, ...consideredAdds]).slice(0, 16);
   methodology.research = uniqueTruthy([...methodology.research, ...researchAdds]).slice(0, 16);
 
@@ -844,7 +853,7 @@ async function runMethodologyAuditStage(
   let seq = methodology.workflow_findings.length;
   const addFinding = (signalKind: PacketWorkflowSignalKind, item: unknown, severity: PacketSeverity): void => {
     const text = isRecord(item) ? item.text : item;
-    findings.push(buildWorkflowFinding((seq += 1), signalKind, text, severity, isRecord(item) ? item.anchors : undefined, evidenceContext, changedFiles));
+    findings.push(buildWorkflowFinding((seq += 1), signalKind, text, severity, isRecord(item) ? item.anchors : undefined, auditContext, changedFiles));
   };
 
   for (const item of asArray(data.unchallenged).slice(0, MAX_PROPOSED_REQUIREMENTS)) {
@@ -864,7 +873,7 @@ async function runMethodologyAuditStage(
       // instead of being filtered out for lacking a validated anchor (Codex P2).
       const soundnessAnchors = assessment.anchors ?? firstAnchors(assessment.skipped_steps);
       findings.push(
-        buildWorkflowFinding((seq += 1), "workflow_soundness", summaryText, soundness === "unsound" ? "high" : "medium", soundnessAnchors, evidenceContext, changedFiles)
+        buildWorkflowFinding((seq += 1), "workflow_soundness", summaryText, soundness === "unsound" ? "high" : "medium", soundnessAnchors, auditContext, changedFiles)
       );
     }
   }
@@ -872,15 +881,18 @@ async function runMethodologyAuditStage(
     if (!isRecord(flag) || typeof flag.signal !== "string" || !CROSS_REF_SIGNALS.has(flag.signal)) {
       continue;
     }
-    findings.push(buildWorkflowFinding((seq += 1), flag.signal as PacketWorkflowSignalKind, flag.text, "medium", flag.anchors, evidenceContext, changedFiles));
+    findings.push(buildWorkflowFinding((seq += 1), flag.signal as PacketWorkflowSignalKind, flag.text, "medium", flag.anchors, auditContext, changedFiles));
   }
   methodology.workflow_findings = [...methodology.workflow_findings, ...findings].slice(0, 50);
 
   // Clear the "deep audit not run" marker ONLY when the provider actually produced
   // recognizable audit content — an `ok` but empty/irrelevant payload (e.g. an
   // agent-file blob for another stage) must NOT present the keyword fallback as a
-  // real audit (Codex P2).
-  const producedContent = consideredAdds.length > 0 || researchAdds.length > 0 || findings.length > 0;
+  // real audit (Codex P2). A valid workflow_assessment (even soundness:"sound"
+  // with no concerns) DOES count — the configured provider ran and judged the
+  // workflow (Codex P2).
+  const soundnessVerdict = isRecord(data.workflow_assessment) && typeof data.workflow_assessment.soundness === "string";
+  const producedContent = consideredAdds.length > 0 || researchAdds.length > 0 || findings.length > 0 || soundnessVerdict;
   if (producedContent) {
     methodology.quality_flags = methodology.quality_flags.filter((flag) => flag !== "methodology_analysis_degraded");
   }

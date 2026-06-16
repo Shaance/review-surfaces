@@ -224,3 +224,31 @@ test("review-surfaces.PRIVACY.7 a secret-shaped event id is redacted centrally",
   assert.ok(!result.events[0].id.includes("ghp_abcdefghijklmnopqrstuvwxyz"));
   assert.match(result.events[0].id, /\[REDACTED:github_token\]/);
 });
+
+test("review-surfaces.METHODOLOGY.6 a Claude JSONL led by a summary/meta line still routes to the claude adapter", () => {
+  const text = [
+    '{"type":"summary","summary":"prior session recap","leafUuid":"x"}',
+    '{"type":"assistant","uuid":"a1","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"pnpm run test"}}]}}'
+  ].join("\n");
+  const result = normalizeConversation(buildAdapterInput("session.jsonl", text));
+  assert.equal(result?.adapter, "claude-code");
+  assert.ok(result.events.some((event) => event.kind === "tool_call" && (event.command ?? "").includes("pnpm run test")));
+});
+
+test("review-surfaces.PRIVACY.7 a secret-shaped tool/function name is redacted in tool and summary", () => {
+  const text = '{"type":"function_call","name":"ghp_abcdefghijklmnopqrstuvwxyz0123456789","arguments":"{}","call_id":"c1"}';
+  const result = normalizeConversation(buildAdapterInput("codex.jsonl", text));
+  const call = result?.events.find((event) => event.kind === "tool_call");
+  assert.ok(call);
+  assert.ok(!(call.tool ?? "").includes("ghp_abcdefghijklmnopqrstuvwxyz"));
+  assert.ok(!call.summary.includes("ghp_abcdefghijklmnopqrstuvwxyz"));
+  assert.match(call.tool ?? "", /\[REDACTED:github_token\]/);
+});
+
+test("review-surfaces.PRIVACY.7 secret-shaped normalized actor/kind are redacted", () => {
+  const text = '{"id":"e1","actor":"ghp_abcdefghijklmnopqrstuvwxyz0123456789","kind":"message","summary":"hi"}';
+  const result = normalizeConversation(buildAdapterInput("conv.jsonl", text));
+  assert.ok(result);
+  assert.ok(!result.events[0].actor.includes("ghp_abcdefghijklmnopqrstuvwxyz"));
+  assert.match(result.events[0].actor, /\[REDACTED:github_token\]/);
+});

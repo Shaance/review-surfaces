@@ -138,7 +138,9 @@ export const codexAdapter: ConversationAdapter = {
 };
 
 function functionCallEvent(item: Record<string, unknown>, id: string, rawIndex: number): ConversationEvent {
-  const tool = typeof item.name === "string" ? item.name : "function";
+  // Redact the tool/function name before it enters `tool` and the summary — a
+  // token-shaped name must not reach the prompt/persisted fields raw (Codex P2).
+  const tool = redactText(typeof item.name === "string" ? item.name : "function");
   const command = redactBoundedBody(item.arguments);
   return {
     id,

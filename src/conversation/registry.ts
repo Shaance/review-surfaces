@@ -54,11 +54,20 @@ export function normalizeConversation(input: AdapterInput, forced?: Conversation
     // somehow throws degrades to no-events rather than crashing the run.
     events = [];
   }
-  // Event ids are caller-controlled for normalized/Cursor/Codex exports, and the
-  // id reaches the persisted log, the prompt, and the anchor allowlist — so redact
-  // it centrally (a normal uuid/call_id/index is unchanged; only a secret-shaped
-  // id is masked, consistently everywhere). Codex P2.
-  return { events: events.map((event) => ({ ...event, id: redactText(event.id) })), adapter: adapter.name };
+  // id/actor/kind are caller-controlled for normalized exports and reach the
+  // persisted log, the prompt, and the anchor allowlist — so redact them centrally
+  // (a normal value is unchanged; only a secret-shaped one is masked, consistently
+  // everywhere). summary/command/file/tool are already redacted by the adapters.
+  // Codex P2.
+  return {
+    events: events.map((event) => ({
+      ...event,
+      id: redactText(event.id),
+      actor: redactText(event.actor),
+      kind: redactText(event.kind)
+    })),
+    adapter: adapter.name
+  };
 }
 
 function safeDetect(adapter: ConversationAdapter, input: AdapterInput): boolean {
