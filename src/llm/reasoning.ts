@@ -752,6 +752,7 @@ const METHODOLOGY_AUDIT_SCHEMA = {
       properties: {
         summary: { type: "string" },
         soundness: { enum: ["sound", "questionable", "unsound"] },
+        anchors: ANCHORED_ITEM_SCHEMA.properties.anchors,
         skipped_steps: { type: "array", items: ANCHORED_ITEM_SCHEMA }
       }
     },
@@ -799,13 +800,7 @@ async function runMethodologyAuditStage(
   // Phase 2; Phase 5a replaces it with salience ordering + map-reduce.
   const ordered = [...events].sort((left, right) => left.raw_index - right.raw_index);
   const bounded = ordered.slice(0, MAX_EVENTS_PER_AUDIT_BATCH);
-  if (ordered.length > MAX_EVENTS_PER_AUDIT_BATCH) {
-    methodology.quality_flags = uniqueTruthy([...methodology.quality_flags, "conversation_truncated"]);
-    methodology.skipped_checks = uniqueTruthy([
-      ...methodology.skipped_checks,
-      `Methodology audit was partial: only the first ${MAX_EVENTS_PER_AUDIT_BATCH} of ${ordered.length} conversation events were analyzed.`
-    ]);
-  }
+  const truncated = ordered.length > MAX_EVENTS_PER_AUDIT_BATCH;
 
   const result = await provider.generateStructured(
     "methodology-audit",
@@ -814,9 +809,20 @@ async function runMethodologyAuditStage(
     generateOptions
   );
   if (!result.ok || !isRecord(result.data)) {
-    return; // SKIP: degraded keyword fallback + flag preserved
+    return; // SKIP: degraded keyword fallback + flag preserved; NO truncation flag
   }
   const data = result.data as MethodologyAuditOutput;
+
+  // The audit RAN: only NOW is the partial-coverage flag honest (a non-ok provider
+  // analyzed nothing, so flagging truncation there would falsely claim a partial
+  // audit — Codex P2).
+  if (truncated) {
+    methodology.quality_flags = uniqueTruthy([...methodology.quality_flags, "conversation_truncated"]);
+    methodology.skipped_checks = uniqueTruthy([
+      ...methodology.skipped_checks,
+      `Methodology audit was partial: only the first ${MAX_EVENTS_PER_AUDIT_BATCH} of ${ordered.length} conversation events were analyzed.`
+    ]);
+  }
 
   // Audit path anchors must be CHANGED-file paths (the prompt + feature text say
   // so), not any repo file — so a model citing an existing-but-unchanged file is
@@ -827,14 +833,10 @@ async function runMethodologyAuditStage(
   // hypotheses — but ONLY when their anchors validate (event id / changed path),
   // so a provider's hallucinated research/alternative is not presented as a
   // conversation-derived fact (Codex P2), matching workflow_findings' discipline.
-  methodology.considered = uniqueTruthy([
-    ...methodology.considered,
-    ...groundedAnchoredTexts(data.considered, evidenceContext, changedFiles).map(markHypothesis)
-  ]).slice(0, 16);
-  methodology.research = uniqueTruthy([
-    ...methodology.research,
-    ...groundedAnchoredTexts(data.research, evidenceContext, changedFiles).map(markHypothesis)
-  ]).slice(0, 16);
+  const consideredAdds = groundedAnchoredTexts(data.considered, evidenceContext, changedFiles).map(markHypothesis);
+  const researchAdds = groundedAnchoredTexts(data.research, evidenceContext, changedFiles).map(markHypothesis);
+  methodology.considered = uniqueTruthy([...methodology.considered, ...consideredAdds]).slice(0, 16);
+  methodology.research = uniqueTruthy([...methodology.research, ...researchAdds]).slice(0, 16);
 
   // Item 4c: unchallenged assumptions + skipped steps + workflow soundness +
   // the LLM cross-reference signals -> validated, advisory workflow_findings.
@@ -856,8 +858,13 @@ async function runMethodologyAuditStage(
     const soundness = assessment.soundness;
     if (soundness === "questionable" || soundness === "unsound") {
       const summaryText = typeof assessment.summary === "string" ? assessment.summary : `Workflow soundness assessed as ${soundness}.`;
+      // Anchor the soundness finding to the assessment's own anchors, falling
+      // back to the first skipped-step's anchors, so a high-severity soundness
+      // concern stays evidence-bound and can surface as a reviewer question
+      // instead of being filtered out for lacking a validated anchor (Codex P2).
+      const soundnessAnchors = assessment.anchors ?? firstAnchors(assessment.skipped_steps);
       findings.push(
-        buildWorkflowFinding((seq += 1), "workflow_soundness", summaryText, soundness === "unsound" ? "high" : "medium", undefined, evidenceContext, changedFiles)
+        buildWorkflowFinding((seq += 1), "workflow_soundness", summaryText, soundness === "unsound" ? "high" : "medium", soundnessAnchors, evidenceContext, changedFiles)
       );
     }
   }
@@ -869,9 +876,14 @@ async function runMethodologyAuditStage(
   }
   methodology.workflow_findings = [...methodology.workflow_findings, ...findings].slice(0, 50);
 
-  // The deep audit RAN: clear the "not run" flag so the cockpit/packet show the
-  // real audit instead of the fallback marker.
-  methodology.quality_flags = methodology.quality_flags.filter((flag) => flag !== "methodology_analysis_degraded");
+  // Clear the "deep audit not run" marker ONLY when the provider actually produced
+  // recognizable audit content — an `ok` but empty/irrelevant payload (e.g. an
+  // agent-file blob for another stage) must NOT present the keyword fallback as a
+  // real audit (Codex P2).
+  const producedContent = consideredAdds.length > 0 || researchAdds.length > 0 || findings.length > 0;
+  if (producedContent) {
+    methodology.quality_flags = methodology.quality_flags.filter((flag) => flag !== "methodology_analysis_degraded");
+  }
 }
 
 // Build one advisory (llm_proposed) workflow finding from a leaf item. Every
@@ -964,6 +976,14 @@ function resolveAuditAnchors(
   return { evidence, invalidTokens };
 }
 
+// The anchors of the first item in an anchored array, used so a workflow-soundness
+// finding can borrow the skipped-steps' validated anchors when the assessment
+// supplies none of its own.
+function firstAnchors(value: unknown): unknown {
+  const first = asArray(value).find((item) => isRecord(item) && isRecord(item.anchors));
+  return isRecord(first) ? first.anchors : undefined;
+}
+
 // Extract the redacted text of each anchored item (string or { text }), keeping
 // ONLY items whose anchors validate (a known event id or changed-file path), so
 // a hallucinated alternative/research item is not surfaced as a fact.
@@ -988,7 +1008,11 @@ function methodologyAuditPrompt(events: ConversationEvent[], inputs: ReasoningIn
       const head = `[${event.id}] ${event.actor}/${event.kind}`;
       const tool = event.tool ? ` tool=${event.tool}` : "";
       const file = event.file ? ` file=${event.file}` : "";
-      return `${head}${tool}${file}: ${truncateForPrompt(event.summary, 240)}`;
+      // Include the (already-redacted) command so a preserved tool_call carries
+      // its actual command to the leaf — research/validation can't be judged from
+      // a bare summary that omits the args (Codex P2).
+      const command = event.command ? ` cmd=${truncateForPrompt(event.command, 200)}` : "";
+      return `${head}${tool}${file}${command}: ${truncateForPrompt(event.summary, 240)}`;
     })
     .join("\n");
   const changedFiles = inputs.collection.changedFiles.slice(0, 30).map((file) => file.path).join("\n") || "(none)";

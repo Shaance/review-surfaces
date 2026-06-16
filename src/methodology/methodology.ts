@@ -69,20 +69,30 @@ export async function buildMethodology(
   // review-surfaces.METHODOLOGY.4: a missing --conversation, an unreadable file,
   // an unmatched shape, OR an adapter that matched but produced ZERO events (e.g.
   // an empty `{ "messages": [] }` export) all degrade to a non-fatal finding —
-  // never "extracted 0 events" reported as a real audit.
+  // never "extracted 0 events" reported as a real audit. When a path WAS supplied
+  // but failed, say so (so the adapter/format problem is visible) rather than
+  // reusing the not-provided message (Codex P2).
   if (!events || events.length === 0) {
+    const supplied = conversationPath !== undefined;
+    const reason = supplied
+      ? `Conversation log at ${conversationPath} could not be parsed into events (unreadable, an unrecognized format, or empty).`
+      : "Conversation log not_provided; methodology is derived only from local files and command context.";
     return {
-      summary: "Conversation log not_provided; methodology is derived only from local files and command context.",
+      summary: reason,
       missing_logs: true,
       considered: [],
       research: [],
       decisions: ["Use local deterministic evidence first; optional enrichment cannot prove behavior."],
       unchallenged_assumptions: ["No conversation log was supplied, so options considered outside files are unknown."],
-      skipped_checks: ["Conversation methodology audit skipped: --conversation not provided."],
+      skipped_checks: [
+        supplied
+          ? `Conversation methodology audit skipped: ${conversationPath} produced no events (check --conversation-format).`
+          : "Conversation methodology audit skipped: --conversation not provided."
+      ],
       claims_without_evidence: [],
       verified_claims: [],
       quality_flags: ["conversation_log_missing"],
-      evidence: [missingEvidence("No conversation log was provided.")],
+      evidence: [missingEvidence(supplied ? `Conversation log ${conversationPath} produced no usable events.` : "No conversation log was provided.")],
       workflow_findings: []
     };
   }

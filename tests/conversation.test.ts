@@ -216,3 +216,11 @@ test("review-surfaces.PRIVACY.7 a blocked secret beyond the persisted-field boun
   assert.ok(persisted.includes("[redacted-blocked]"));
   assert.match(persisted, /"blocked_field_hashes":\{"summary":"[0-9a-f]{64}"\}/);
 });
+
+test("review-surfaces.PRIVACY.7 a secret-shaped event id is redacted centrally", () => {
+  const text = '{"id":"ghp_abcdefghijklmnopqrstuvwxyz0123456789","actor":"assistant","kind":"message","summary":"hi"}';
+  const result = normalizeConversation(buildAdapterInput("conv.jsonl", text));
+  assert.ok(result);
+  assert.ok(!result.events[0].id.includes("ghp_abcdefghijklmnopqrstuvwxyz"));
+  assert.match(result.events[0].id, /\[REDACTED:github_token\]/);
+});

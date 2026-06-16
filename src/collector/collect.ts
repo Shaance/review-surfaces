@@ -234,6 +234,10 @@ export interface CollectOptions {
 const ROOT_ARTIFACT_PATH_PATTERNS = [
   /^inputs\/(specs\.index|changed_files|commits|docs\.index|tests\.index|repo\.index|feedback\.index|commands|coverage|privacy)\.json$/,
   /^inputs\/diff\.patch$/,
+  // The normalized/raw conversation logs written under a root output dir (--out .)
+  // must be excluded so a later literal-HEAD run does not collect the untracked
+  // transcript as a working-tree change (and possibly send it to a provider).
+  /^inputs\/conversation\.(normalized|raw)\.[A-Za-z0-9.]+$/,
   /^diagrams\/[^/]+\.mmd$/,
   /^commands\/[^/]+\.json$/,
   /^prompts\/agent-enrichment\.(md|schema\.json)$/
@@ -773,7 +777,7 @@ function collectConversationBlockedKinds(events: ConversationEvent[] | undefined
   }
   const kinds = new Set<string>();
   for (const event of events) {
-    for (const field of [event.summary, event.command, event.file]) {
+    for (const field of [event.summary, event.command, event.file, event.id]) {
       if (field === undefined) {
         continue;
       }

@@ -12,6 +12,7 @@ import { codexAdapter } from "./adapters/codex";
 import { cursorAdapter } from "./adapters/cursor";
 import { normalizedAdapter } from "./adapters/normalized";
 import { AdapterInput, ConversationAdapter, ConversationEvent, ConversationFormat } from "./events";
+import { redactText } from "./field";
 
 // Order is load-bearing: normalized first (legacy forms), then the three raw
 // harnesses. Claude Code precedes Codex so a role+content envelope is claimed by
@@ -53,7 +54,11 @@ export function normalizeConversation(input: AdapterInput, forced?: Conversation
     // somehow throws degrades to no-events rather than crashing the run.
     events = [];
   }
-  return { events, adapter: adapter.name };
+  // Event ids are caller-controlled for normalized/Cursor/Codex exports, and the
+  // id reaches the persisted log, the prompt, and the anchor allowlist — so redact
+  // it centrally (a normal uuid/call_id/index is unchanged; only a secret-shaped
+  // id is masked, consistently everywhere). Codex P2.
+  return { events: events.map((event) => ({ ...event, id: redactText(event.id) })), adapter: adapter.name };
 }
 
 function safeDetect(adapter: ConversationAdapter, input: AdapterInput): boolean {

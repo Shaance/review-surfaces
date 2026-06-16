@@ -250,16 +250,23 @@ function methodologyReviewFocus(methodology: MethodologyModel | undefined): stri
   if (!methodology) {
     return [];
   }
+  const focus: string[] = [];
   if (methodology.claims_without_evidence.length > 0) {
-    return ["Inspect methodology claims without command evidence before relying on claimed tests."];
+    focus.push("Inspect methodology claims without command evidence before relying on claimed tests.");
+  } else if (methodology.missing_logs) {
+    focus.push("Methodology conversation logs are missing; rely on local artifacts and command transcripts only.");
+  } else if (methodology.verified_claims.length > 0) {
+    focus.push("Use verified methodology claims only when backed by command transcript evidence.");
   }
-  if (methodology.missing_logs) {
-    return ["Methodology conversation logs are missing; rely on local artifacts and command transcripts only."];
+  // review-surfaces.METHODOLOGY.5: the conversation audit's workflow findings feed
+  // the review focus (they are empty on the deterministic/mock path, so this adds
+  // nothing there and stays byte-stable). Codex P2.
+  if (methodology.workflow_findings.length > 0) {
+    focus.push(
+      `Review ${methodology.workflow_findings.length} methodology workflow finding(s) (unchallenged assumptions, skipped steps, or cross-reference signals) from the conversation audit.`
+    );
   }
-  if (methodology.verified_claims.length > 0) {
-    return ["Use verified methodology claims only when backed by command transcript evidence."];
-  }
-  return [];
+  return focus;
 }
 
 function validationEvidenceFromFeedback(collection: CollectionResult, transcriptCommands: Set<string>): RisksModel["test_evidence"] {

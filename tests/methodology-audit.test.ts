@@ -9,7 +9,7 @@ import { IntentModel } from "../src/intent/intent";
 import { MethodologyModel } from "../src/methodology/methodology";
 import { mockProvider, ReasoningProvider, StructuredResult } from "../src/llm/provider";
 import { runMethodologyReasoning } from "../src/llm/reasoning";
-import { RisksModel } from "../src/risks/risks";
+import { buildRiskReviewFocus, RisksModel } from "../src/risks/risks";
 
 function stubProvider(byStage: Record<string, unknown>): ReasoningProvider {
   return {
@@ -222,4 +222,36 @@ test("review-surfaces.METHODOLOGY.7 considered/research are surfaced only when t
   assert.ok(methodology.considered.some((c) => c.includes("anchored alternative")));
   assert.ok(!methodology.considered.some((c) => c.includes("hallucinated alternative")));
   assert.ok(!methodology.research.some((r) => r.includes("ungrounded research")));
+});
+
+test("review-surfaces.METHODOLOGY.7 a non-ok provider adds no truncation flag (nothing was analyzed)", async () => {
+  const many: ConversationEvent[] = Array.from({ length: 120 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `t${index}`, raw_index: index }));
+  const methodology = methodologyDegraded();
+  // stub with no methodology-audit data -> generateStructured returns {ok:false}.
+  await runMethodologyReasoning(stubProvider({}), { collection: collectionWithEvents(many), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  assert.ok(!methodology.quality_flags.includes("conversation_truncated"));
+  assert.ok(methodology.quality_flags.includes("methodology_analysis_degraded"));
+});
+
+test("review-surfaces.METHODOLOGY.7 an ok-but-empty audit payload does not clear the degraded flag", async () => {
+  const methodology = methodologyDegraded();
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": {} }), { collection: collectionWithEvents(THREE_EVENTS), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  assert.ok(methodology.quality_flags.includes("methodology_analysis_degraded"));
+  assert.deepEqual(methodology.workflow_findings, []);
+});
+
+test("review-surfaces.METHODOLOGY.7 a workflow-soundness finding borrows the skipped-step anchors so it stays evidence-bound", async () => {
+  const methodology = methodologyDegraded();
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": FAKE_AUDIT }), { collection: collectionWithEvents(THREE_EVENTS), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const soundness = methodology.workflow_findings.find((f) => f.signal_kind === "workflow_soundness");
+  assert.ok(soundness);
+  assert.ok(soundness.evidence.some((ref) => ref.validation_status === "valid"));
+});
+
+test("review-surfaces.METHODOLOGY.5 workflow findings feed the risk review focus", () => {
+  const withFindings = { ...methodologyDegraded(), workflow_findings: [{ id: "WF-001", signal_kind: "impl_no_test" as const, summary: "x", severity: "medium" as const, advisory: true, evidence: [] }] };
+  const focus = buildRiskReviewFocus(withFindings);
+  assert.ok(focus.some((line) => /workflow finding/.test(line)));
+  // Empty on the deterministic path (no findings) -> no extra line (byte-stable).
+  assert.ok(!buildRiskReviewFocus(methodologyDegraded()).some((line) => /workflow finding/.test(line)));
 });
