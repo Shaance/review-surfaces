@@ -1252,10 +1252,12 @@ function touchesChangedFile(file: string, changedFiles: Set<string>): boolean {
 
 // True when a changed-file path appears as a PATH-BOUNDED token in free text (a
 // shell command or message). Fold backslashes so a Windows-separated reference
-// still matches the slash-separated changed path. The match must not be flanked by
-// path-name characters, so `src/foo.ts` does NOT match inside `src/foo.tsx` or
-// `mysrc/foo.ts` — a false mention must not feed the salience or change-order
-// signals (Codex P2).
+// still matches. The match must end on a path boundary (not `src/foo.tsx`), and the
+// FULL surrounding path token is then validated with the SAME rule as a structured
+// path (`touchesChangedFile`): only an exact match, a `./`-prefix, or an ABSOLUTE
+// path suffix counts. So `packages/api/src/uploader.ts` is a DIFFERENT file from
+// `src/uploader.ts` here too, and a false mention does not feed the salience or
+// change-order signals (Codex P2).
 function textNamesChangedFile(text: string, changedFiles: Set<string>): boolean {
   const haystack = text.replace(/\\/g, "/");
   for (const changed of changedFiles) {
@@ -1268,13 +1270,17 @@ function textNamesChangedFile(text: string, changedFiles: Set<string>): boolean 
       if (idx === -1) {
         break;
       }
-      const before = idx === 0 ? "" : haystack[idx - 1];
       const after = haystack[idx + changed.length] ?? "";
-      // `/` before is allowed (a longer path prefix references the same file);
-      // any path-name char (letters/digits/._-) immediately before or after means
-      // this is a DIFFERENT path, not a boundary-aligned mention.
-      if (!/[A-Za-z0-9._-]/.test(before) && !/[A-Za-z0-9._-]/.test(after)) {
-        return true;
+      if (!/[A-Za-z0-9._-]/.test(after)) {
+        // Walk back to the start of the surrounding path token, then apply the
+        // structured-path rule to it (absolute-only suffix; `./` allowed).
+        let start = idx;
+        while (start > 0 && /[A-Za-z0-9._/-]/.test(haystack[start - 1])) {
+          start -= 1;
+        }
+        if (touchesChangedFile(haystack.slice(start, idx + changed.length), new Set([changed]))) {
+          return true;
+        }
       }
       from = idx + 1;
     }
@@ -1300,17 +1306,24 @@ function eventTouchesChangedFile(event: ConversationEvent, changedFiles: Set<str
 // `notebook`/`create`/`update` are intentionally excluded (Codex P2).
 const EDIT_TOOL_PATTERN = /(?:edit|write|patch|replace)/i;
 
-// True when a tool_CALL is an actual EDIT/WRITE (an edit/write tool name with a
-// target path). The reconciliation ordering anchor must be a real edit signal, not
-// the broad touch predicate — a mere mention/read before the edit is not
-// post-change validation, and an untyped tool_result that merely carries a file is
-// NOT an edit (Codex P2).
+// True when a tool_CALL is an EDIT/WRITE invocation (an edit/write tool name). The
+// reconciliation ordering anchor must be a real edit signal, not the broad touch
+// predicate — a mere mention/read is not an edit, and an untyped tool_result that
+// merely carries a file is NOT an edit (Codex P2).
 function isEditCall(event: ConversationEvent): boolean {
+  return event.kind === "tool_call" && event.tool !== undefined && EDIT_TOOL_PATTERN.test(event.tool);
+}
+
+// True when an EDIT/WRITE tool call targets `changed` — via a structured
+// `event.file` OR a path named in the command/summary (patch-style tools such as
+// `apply_patch` carry the path only in the body, `*** Update File: src/x.ts`). The
+// path match is boundary-aligned, so a longer `packages/api/src/x.ts` is not it.
+function editTargetsChangedFile(event: ConversationEvent, changed: string): boolean {
+  const single = new Set([changed]);
   return (
-    event.kind === "tool_call" &&
-    event.tool !== undefined &&
-    EDIT_TOOL_PATTERN.test(event.tool) &&
-    event.file !== undefined
+    (event.file !== undefined && touchesChangedFile(event.file, single)) ||
+    (event.command !== undefined && textNamesChangedFile(event.command, single)) ||
+    textNamesChangedFile(event.summary, single)
   );
 }
 
@@ -1326,7 +1339,7 @@ function changedFileEditIndexByFile(events: ConversationEvent[], changedFiles: S
       continue;
     }
     for (const changed of changedFiles) {
-      if (!touchesChangedFile(event.file as string, new Set([changed]))) {
+      if (!editTargetsChangedFile(event, changed)) {
         continue;
       }
       const prev = byFile.get(changed);
@@ -1355,7 +1368,10 @@ function findingHasPostChangeTest(
     .filter((ref) => ref.kind === "file" && typeof ref.path === "string" && editIndexByFile.has(ref.path))
     .map((ref) => editIndexByFile.get(ref.path as string) as number);
   if (fileEdits.length > 0) {
-    return fileEdits.some((editIndex) => maxTestIndex > editIndex);
+    // A finding citing MULTIPLE changed files reconciles only when a test ran after
+    // EVERY cited file's edit — a test after `a.ts` must not clear a `b.ts` edited
+    // later that the finding also covers (Codex P2).
+    return fileEdits.every((editIndex) => maxTestIndex > editIndex);
   }
   return globalEditIndex !== undefined && maxTestIndex > globalEditIndex;
 }
@@ -1409,10 +1425,17 @@ function commandRunsTest(command: string): boolean {
   );
 }
 
+// Drop heredoc/here-string BODIES (`<<MARKER ... \nMARKER`) so their content lines
+// are not parsed as executed commands — a heredoc body containing `pnpm test` fed
+// to `cat`/`tee` is input, not a test run (Codex P2).
+function stripHeredocBodies(command: string): string {
+  return command.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, "<<$2");
+}
+
 function commandSegments(command: string): string[] {
   // Newlines are shell command separators too, so a multi-line tool command
   // (`cd api\npnpm test`) splits into its real commands (Codex P2).
-  return command.split(/&&|\|\||[|;\n\r]/).map((segment) => {
+  return stripHeredocBodies(command).split(/&&|\|\||[|;\n\r]/).map((segment) => {
     let seg = segment.trim();
     while (LEADING_ENV_ASSIGNMENT.test(seg)) {
       seg = seg.replace(LEADING_ENV_ASSIGNMENT, "");
