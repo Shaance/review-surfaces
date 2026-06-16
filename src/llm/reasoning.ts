@@ -1142,33 +1142,33 @@ function textNamesChangedFile(text: string, changedFiles: Set<string>): boolean 
   return false;
 }
 
-// A test/validation execution event in the SELECTED set — used to reconcile a
-// chunk-local impl_no_test claim that another chunk's test run contradicts.
+// A test/validation RUNNER invocation in the SELECTED set — used to reconcile a
+// chunk-local impl_no_test claim that another chunk's test run contradicts. It
+// must be an executed runner COMMAND, not a mere mention of "test" (e.g. reading
+// or grepping a test file does NOT count — Codex P2).
 function isTestExecutionEvent(event: ConversationEvent): boolean {
   if (event.kind !== "tool_call" && event.kind !== "tool_result") {
     return false;
   }
-  const text = `${event.command ?? ""} ${event.summary}`;
-  return /\b(?:tests?|vitest|jest|pytest|mocha|node --test|go test|cargo test|lint|typecheck)\b/i.test(text);
+  const command = event.command ?? "";
+  return /(?:^|\b)(?:(?:pnpm|npm|yarn|bun|pnpm exec|npx)\s+(?:run\s+)?(?:test|lint|typecheck|vitest|jest|mocha)|vitest|jest|pytest|mocha|node\s+--test|go\s+test|cargo\s+test|rspec|phpunit|tsc\b|(?:gradle|mvn)\s+test|ctest)\b/i.test(command);
 }
 
 // Select up to `budget` events by salience (desc), tie-broken by raw_index (asc)
-// for stability, then return the selection in CHRONOLOGICAL order so each chunk
-// reads as a coherent slice for the leaf. `truncated` is true when events were
-// dropped.
+// for stability, returning them in SALIENCE order so the chunker puts the most
+// important events in the FIRST batch(es) — if a later batch fails/truncates, the
+// high-salience events the map-reduce exists to preserve are the ones that ran
+// (Codex P2). Each batch is re-sorted chronologically for the prompt by
+// methodologyAuditPrompt. `truncated` is true when events were dropped.
 function selectSalientEvents(
   events: ConversationEvent[],
   changedFiles: Set<string>,
   budget: number
 ): { selected: ConversationEvent[]; truncated: boolean } {
-  if (events.length <= budget) {
-    return { selected: [...events].sort((left, right) => left.raw_index - right.raw_index), truncated: false };
-  }
   const ranked = [...events].sort(
     (left, right) => salienceScore(right, changedFiles) - salienceScore(left, changedFiles) || left.raw_index - right.raw_index
   );
-  const selected = ranked.slice(0, budget).sort((left, right) => left.raw_index - right.raw_index);
-  return { selected, truncated: true };
+  return { selected: ranked.slice(0, budget), truncated: events.length > budget };
 }
 
 // The raw_index of the first cited event id present in the selection, used as the
@@ -1251,7 +1251,10 @@ function firstAnchors(value: unknown): unknown {
 }
 
 function methodologyAuditPrompt(events: ConversationEvent[], inputs: ReasoningInputs, partial = false): string {
-  const eventLines = events
+  // The batch is composed in salience order; sort it chronologically here so the
+  // model reads a coherent slice (Codex P2).
+  const eventLines = [...events]
+    .sort((left, right) => left.raw_index - right.raw_index)
     .map((event) => {
       const head = `[${event.id}] ${event.actor}/${event.kind}`;
       const tool = event.tool ? ` tool=${event.tool}` : "";

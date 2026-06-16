@@ -418,3 +418,32 @@ test("review-surfaces.METHODOLOGY.7 (D3) an impl_no_test flag is contextualized 
   assert.ok(impl);
   assert.match(impl.summary, /test execution was observed elsewhere/);
 });
+
+test("review-surfaces.METHODOLOGY.7 (D3) merely READING a test file does not count as a test run", async () => {
+  const events: ConversationEvent[] = [
+    { id: "u1", actor: "user", kind: "message", summary: "change the uploader", raw_index: 0 },
+    { id: "r1", actor: "assistant", kind: "tool_call", summary: "Read(tests/uploader.test.ts)", tool: "Read", command: "tests/uploader.test.ts", raw_index: 1 },
+    { id: "a1", actor: "assistant", kind: "message", summary: "done", raw_index: 2 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "a test-file READ must not reconcile the impl_no_test flag");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) salience-ordered batches keep a late high-value event when a later batch fails", async () => {
+  const events: ConversationEvent[] = Array.from({ length: 300 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `chatter ${index}`, raw_index: index }));
+  events[295] = { id: "e295", actor: "assistant", kind: "tool_call", summary: "edited the file", tool: "Edit", file: "src/uploader.ts", raw_index: 295 };
+  const methodology = methodologyDegraded();
+  // 3 selected batches; the LAST one fails. e295 is high-salience so it must be in
+  // an early (analyzed) batch, not the dropped last one.
+  const provider = countingStub([
+    { research: [{ text: "edited the changed file", anchors: { event_ids: ["e295"] } }] },
+    { research: [{ text: "edited the changed file", anchors: { event_ids: ["e295"] } }] },
+    undefined
+  ]);
+  await runMethodologyReasoning(provider, { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  assert.ok(methodology.research.some((r) => r.includes("edited the changed file")));
+});
