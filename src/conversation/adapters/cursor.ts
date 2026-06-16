@@ -8,7 +8,7 @@
 // workspace-storage variants; unknown shapes degrade to a message summary.
 import { isRecord } from "../../core/guards";
 import { AdapterInput, ConversationAdapter, ConversationEvent } from "../events";
-import { redactBoundedBody, redactText } from "../field";
+import { redactBoundedBody, redactPath, redactText } from "../field";
 
 function parseRoot(text: string): Record<string, unknown> | undefined {
   try {
@@ -80,7 +80,9 @@ export const cursorAdapter: ConversationAdapter = {
         if (!isRecord(edit)) {
           return;
         }
-        const file = firstString(edit, ["file", "path", "uri", "fsPath", "filePath"]);
+        // Redact the edit path/uri before it touches the summary, the persisted
+        // file field, or the remote prompt — a Cursor edit uri can embed a secret.
+        const file = redactPath(firstString(edit, ["file", "path", "uri", "fsPath", "filePath"]));
         const body = firstString(edit, ["text", "content", "diff", "newText", "code"]);
         events.push({
           id: `${id}-edit-${editIndex}`,

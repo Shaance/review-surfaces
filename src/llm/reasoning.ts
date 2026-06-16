@@ -818,10 +818,23 @@ async function runMethodologyAuditStage(
   }
   const data = result.data as MethodologyAuditOutput;
 
-  // Item 4a/4b: considered alternatives + research/context, surfaced (not just
-  // stored) as labeled hypotheses on the existing string arrays.
-  methodology.considered = uniqueTruthy([...methodology.considered, ...anchoredTexts(data.considered).map(markHypothesis)]).slice(0, 16);
-  methodology.research = uniqueTruthy([...methodology.research, ...anchoredTexts(data.research).map(markHypothesis)]).slice(0, 16);
+  // Audit path anchors must be CHANGED-file paths (the prompt + feature text say
+  // so), not any repo file — so a model citing an existing-but-unchanged file is
+  // not stamped valid (Codex P2).
+  const changedFiles = new Set(inputs.collection.changedFiles.map((file) => file.path));
+
+  // Item 4a/4b: considered alternatives + research/context, surfaced as labeled
+  // hypotheses — but ONLY when their anchors validate (event id / changed path),
+  // so a provider's hallucinated research/alternative is not presented as a
+  // conversation-derived fact (Codex P2), matching workflow_findings' discipline.
+  methodology.considered = uniqueTruthy([
+    ...methodology.considered,
+    ...groundedAnchoredTexts(data.considered, evidenceContext, changedFiles).map(markHypothesis)
+  ]).slice(0, 16);
+  methodology.research = uniqueTruthy([
+    ...methodology.research,
+    ...groundedAnchoredTexts(data.research, evidenceContext, changedFiles).map(markHypothesis)
+  ]).slice(0, 16);
 
   // Item 4c: unchallenged assumptions + skipped steps + workflow soundness +
   // the LLM cross-reference signals -> validated, advisory workflow_findings.
@@ -829,7 +842,7 @@ async function runMethodologyAuditStage(
   let seq = methodology.workflow_findings.length;
   const addFinding = (signalKind: PacketWorkflowSignalKind, item: unknown, severity: PacketSeverity): void => {
     const text = isRecord(item) ? item.text : item;
-    findings.push(buildWorkflowFinding((seq += 1), signalKind, text, severity, isRecord(item) ? item.anchors : undefined, evidenceContext));
+    findings.push(buildWorkflowFinding((seq += 1), signalKind, text, severity, isRecord(item) ? item.anchors : undefined, evidenceContext, changedFiles));
   };
 
   for (const item of asArray(data.unchallenged).slice(0, MAX_PROPOSED_REQUIREMENTS)) {
@@ -844,7 +857,7 @@ async function runMethodologyAuditStage(
     if (soundness === "questionable" || soundness === "unsound") {
       const summaryText = typeof assessment.summary === "string" ? assessment.summary : `Workflow soundness assessed as ${soundness}.`;
       findings.push(
-        buildWorkflowFinding((seq += 1), "workflow_soundness", summaryText, soundness === "unsound" ? "high" : "medium", undefined, evidenceContext)
+        buildWorkflowFinding((seq += 1), "workflow_soundness", summaryText, soundness === "unsound" ? "high" : "medium", undefined, evidenceContext, changedFiles)
       );
     }
   }
@@ -852,7 +865,7 @@ async function runMethodologyAuditStage(
     if (!isRecord(flag) || typeof flag.signal !== "string" || !CROSS_REF_SIGNALS.has(flag.signal)) {
       continue;
     }
-    findings.push(buildWorkflowFinding((seq += 1), flag.signal as PacketWorkflowSignalKind, flag.text, "medium", flag.anchors, evidenceContext));
+    findings.push(buildWorkflowFinding((seq += 1), flag.signal as PacketWorkflowSignalKind, flag.text, "medium", flag.anchors, evidenceContext, changedFiles));
   }
   methodology.workflow_findings = [...methodology.workflow_findings, ...findings].slice(0, 50);
 
@@ -872,9 +885,10 @@ function buildWorkflowFinding(
   text: unknown,
   severity: PacketSeverity,
   anchors: unknown,
-  context: EvidenceValidationContext
+  context: EvidenceValidationContext,
+  changedFiles: Set<string>
 ): WorkflowFinding {
-  const { evidence, invalidTokens } = resolveAuditAnchors(anchors, context);
+  const { evidence, invalidTokens } = resolveAuditAnchors(anchors, context, changedFiles);
   const baseText = redactHypothesisText(typeof text === "string" ? text : "").trim() || "(no description provided)";
   const summary = invalidTokens.length > 0 ? `${baseText} (unverified anchor(s): ${invalidTokens.join(", ")})` : baseText;
   return {
@@ -898,7 +912,11 @@ function buildWorkflowFinding(
   };
 }
 
-function resolveAuditAnchors(anchors: unknown, context: EvidenceValidationContext): { evidence: EvidenceRef[]; invalidTokens: string[] } {
+function resolveAuditAnchors(
+  anchors: unknown,
+  context: EvidenceValidationContext,
+  changedFiles: Set<string>
+): { evidence: EvidenceRef[]; invalidTokens: string[] } {
   const evidence: EvidenceRef[] = [];
   const invalidTokens: string[] = [];
   const eventIds = isRecord(anchors) ? asStringArray(anchors.event_ids) : [];
@@ -930,11 +948,14 @@ function resolveAuditAnchors(anchors: unknown, context: EvidenceValidationContex
     if (token === "") {
       continue;
     }
+    const normalized = token.replace(/^\.\/+/, "");
     const ref = validateEvidenceRef(
       llmProposedEvidence("file", { path: token, note: "Methodology audit changed-file anchor.", confidence: "low" }),
       context
     );
-    if (ref.validation_status === "valid") {
+    // A path anchor must be BOTH valid evidence AND a changed file in this diff
+    // (the audit only judges the reviewed change).
+    if (ref.validation_status === "valid" && changedFiles.has(normalized)) {
       evidence.push(ref);
     } else {
       invalidTokens.push(token);
@@ -943,12 +964,22 @@ function resolveAuditAnchors(anchors: unknown, context: EvidenceValidationContex
   return { evidence, invalidTokens };
 }
 
-// Extract the redacted text of each anchored item (string or { text }).
-function anchoredTexts(value: unknown): string[] {
-  return asArray(value)
-    .map((item) => redactHypothesisText(isRecord(item) ? (typeof item.text === "string" ? item.text : "") : typeof item === "string" ? item : "").trim())
-    .filter((text) => text !== "")
-    .slice(0, MAX_PROPOSED_REQUIREMENTS);
+// Extract the redacted text of each anchored item (string or { text }), keeping
+// ONLY items whose anchors validate (a known event id or changed-file path), so
+// a hallucinated alternative/research item is not surfaced as a fact.
+function groundedAnchoredTexts(value: unknown, context: EvidenceValidationContext, changedFiles: Set<string>): string[] {
+  const texts: string[] = [];
+  for (const item of asArray(value).slice(0, MAX_PROPOSED_REQUIREMENTS)) {
+    const text = redactHypothesisText(isRecord(item) ? (typeof item.text === "string" ? item.text : "") : typeof item === "string" ? item : "").trim();
+    if (text === "") {
+      continue;
+    }
+    const { evidence } = resolveAuditAnchors(isRecord(item) ? item.anchors : undefined, context, changedFiles);
+    if (evidence.length > 0) {
+      texts.push(text);
+    }
+  }
+  return texts;
 }
 
 function methodologyAuditPrompt(events: ConversationEvent[], inputs: ReasoningInputs): string {

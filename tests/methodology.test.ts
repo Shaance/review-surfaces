@@ -319,3 +319,11 @@ function collectionFixture(tmp: string, overrides: Partial<CollectionResult> = {
     ...overrides
   } as CollectionResult;
 }
+
+test("review-surfaces.METHODOLOGY.4 an adapter that matched but produced zero events degrades as a missing log", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  fs.writeFileSync(path.join(tmp, "empty.json"), JSON.stringify({ messages: [] }));
+  const methodology = await buildMethodology(tmp, collectionFixture(tmp), "empty.json", []);
+  assert.equal(methodology.missing_logs, true);
+  assert.ok(methodology.quality_flags.includes("conversation_log_missing"));
+});

@@ -7,7 +7,7 @@
 // `message` summary, never throwing.
 import { isRecord } from "../../core/guards";
 import { AdapterInput, ConversationAdapter, ConversationEvent } from "../events";
-import { redactBoundedBody, redactText, stringify } from "../field";
+import { redactBoundedBody, redactPath, redactText, stringify } from "../field";
 
 interface Envelope {
   role: string;
@@ -145,7 +145,7 @@ function blockToEvent(block: unknown, role: string, id: string, rawIndex: number
       summary: `${tool}(${command})`,
       tool,
       command,
-      file: filePathOf(block.input),
+      file: redactPath(filePathOf(block.input)),
       raw_index: rawIndex
     };
   }
@@ -156,7 +156,7 @@ function blockToEvent(block: unknown, role: string, id: string, rawIndex: number
       actor: "tool",
       kind: "tool_result",
       summary: redactBoundedBody(body),
-      file: filePathOf(block),
+      file: redactPath(filePathOf(block)),
       raw_index: rawIndex
     };
   }

@@ -9,7 +9,7 @@
 // mis-normalization.
 import { isRecord } from "../../core/guards";
 import { AdapterInput, ConversationAdapter, ConversationEvent } from "../events";
-import { redactBoundedBody, redactText, stringify } from "../field";
+import { redactBoundedBody, redactPath, redactText, stringify } from "../field";
 
 const CODEX_ITEM_TYPES = new Set(["input_text", "output_text", "function_call", "function_call_output"]);
 
@@ -90,29 +90,12 @@ export const codexAdapter: ConversationAdapter = {
       const type = typeof item.type === "string" ? item.type : "message";
 
       if (type === "function_call") {
-        const tool = typeof item.name === "string" ? item.name : "function";
-        const command = redactBoundedBody(item.arguments);
-        events.push({
-          id,
-          actor: "assistant",
-          kind: "tool_call",
-          summary: `${tool}(${command})`,
-          tool,
-          command,
-          file: filePathOf(item.arguments),
-          raw_index: rawIndex
-        });
+        events.push(functionCallEvent(item, id, rawIndex));
         rawIndex += 1;
         return;
       }
       if (type === "function_call_output") {
-        events.push({
-          id,
-          actor: "tool",
-          kind: "tool_result",
-          summary: redactBoundedBody("output" in item ? item.output : item.content),
-          raw_index: rawIndex
-        });
+        events.push(functionOutputEvent(item, id, rawIndex));
         rawIndex += 1;
         return;
       }
@@ -129,15 +112,19 @@ export const codexAdapter: ConversationAdapter = {
       }
       if (type === "message" && Array.isArray(item.content)) {
         const role = typeof item.role === "string" ? item.role : "assistant";
+        const multi = item.content.length > 1;
         item.content.forEach((block, blockIndex) => {
-          const text = isRecord(block) ? block.text ?? stringify(block) : block;
-          events.push({
-            id: item.content && (item.content as unknown[]).length > 1 ? `${id}-${blockIndex}` : id,
-            actor: role,
-            kind: "message",
-            summary: redactText(text),
-            raw_index: rawIndex
-          });
+          const blockId = multi ? `${id}-${blockIndex}` : id;
+          // Codex versions that NEST tool calls under message.content must still
+          // produce tool_call/tool_result events, not stringified messages.
+          if (isRecord(block) && block.type === "function_call") {
+            events.push(functionCallEvent(block, blockId, rawIndex));
+          } else if (isRecord(block) && block.type === "function_call_output") {
+            events.push(functionOutputEvent(block, blockId, rawIndex));
+          } else {
+            const text = isRecord(block) ? block.text ?? stringify(block) : block;
+            events.push({ id: blockId, actor: role, kind: "message", summary: redactText(text), raw_index: rawIndex });
+          }
           rawIndex += 1;
         });
         return;
@@ -149,3 +136,31 @@ export const codexAdapter: ConversationAdapter = {
     return events;
   }
 };
+
+function functionCallEvent(item: Record<string, unknown>, id: string, rawIndex: number): ConversationEvent {
+  const tool = typeof item.name === "string" ? item.name : "function";
+  const command = redactBoundedBody(item.arguments);
+  return {
+    id,
+    actor: "assistant",
+    kind: "tool_call",
+    summary: `${tool}(${command})`,
+    tool,
+    command,
+    file: redactPath(filePathOf(item.arguments)),
+    raw_index: rawIndex
+  };
+}
+
+function functionOutputEvent(item: Record<string, unknown>, id: string, rawIndex: number): ConversationEvent {
+  // A function_call and its function_call_output normally share one call_id, so
+  // suffix the output id to keep the tool invocation and its result distinct
+  // events that an anchor can point at unambiguously (Codex P2).
+  return {
+    id: `${id}-output`,
+    actor: "tool",
+    kind: "tool_result",
+    summary: redactBoundedBody("output" in item ? item.output : item.content),
+    raw_index: rawIndex
+  };
+}

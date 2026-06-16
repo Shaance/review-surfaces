@@ -67,8 +67,10 @@ export async function buildMethodology(
   }
 
   // review-surfaces.METHODOLOGY.4: a missing --conversation, an unreadable file,
-  // OR an unmatched/empty raw transcript all degrade to a non-fatal finding.
-  if (!events) {
+  // an unmatched shape, OR an adapter that matched but produced ZERO events (e.g.
+  // an empty `{ "messages": [] }` export) all degrade to a non-fatal finding —
+  // never "extracted 0 events" reported as a real audit.
+  if (!events || events.length === 0) {
     return {
       summary: "Conversation log not_provided; methodology is derived only from local files and command context.",
       missing_logs: true,

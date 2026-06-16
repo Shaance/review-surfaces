@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ConversationEvent } from "../src/conversation/events";
+import { redactBoundedBody } from "../src/conversation/field";
 import { writeNormalizedConversation } from "../src/conversation/ingest";
 import { buildAdapterInput, normalizeConversation, selectAdapter } from "../src/conversation/registry";
 
@@ -138,4 +139,49 @@ test("review-surfaces.PRIVACY.7 the persisted normalized log stores a blocked fi
   assert.match(persisted, /"blocked_field_hashes":\{"summary":"[0-9a-f]{64}"\}/);
   // Non-blocked fields are still readable (bounded redacted text, not hashed).
   assert.ok(persisted.includes("Add a retry to the uploader"));
+});
+
+test("review-surfaces.PRIVACY.7 a secret-bearing Cursor edit path is redacted in the summary and file field", () => {
+  const text = JSON.stringify({
+    messages: [
+      { id: "m1", role: "assistant", text: "applying edit", edits: [{ file: "deploy/ghp_abcdefghijklmnopqrstuvwxyz0123456789.ts", text: "const x = 1;" }] }
+    ]
+  });
+  const result = normalizeConversation(buildAdapterInput("c.json", text));
+  const edit = result?.events.find((event) => event.kind === "tool_call");
+  assert.ok(edit);
+  assert.ok(!edit.summary.includes("ghp_abcdefghijklmnopqrstuvwxyz"));
+  assert.ok(!(edit.file ?? "").includes("ghp_abcdefghijklmnopqrstuvwxyz"));
+  assert.match(edit.file ?? "", /\[REDACTED:github_token\]/);
+});
+
+test("review-surfaces.PRIVACY.7 a blocked marker beyond the body bound is preserved so the block scan still sees it", () => {
+  // The secret sits AFTER the 1200-char in-memory bound; redactBoundedBody must
+  // still surface its [REDACTED:<kind>] marker so collectConversationBlockedKinds
+  // detects the block.
+  const body = `${"a".repeat(1300)} GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789`;
+  const bounded = redactBoundedBody(body);
+  assert.ok(!bounded.includes("ghp_abcdefghijklmnopqrstuvwxyz"));
+  assert.match(bounded, /\[REDACTED:github_token\]/);
+});
+
+test("review-surfaces.METHODOLOGY.6 nested Codex tool blocks under message.content become tool events", () => {
+  const text = [
+    JSON.stringify({ type: "message", role: "assistant", content: [{ type: "function_call", name: "shell", arguments: "{\"command\":\"pnpm run test\"}" }] }),
+    JSON.stringify({ type: "message", role: "tool", content: [{ type: "function_call_output", output: "all tests pass" }] })
+  ].join("\n");
+  const result = normalizeConversation(buildAdapterInput("codex.jsonl", text));
+  assert.equal(result?.adapter, "codex");
+  assert.ok(result.events.some((event) => event.kind === "tool_call" && (event.command ?? "").includes("pnpm run test")));
+  assert.ok(result.events.some((event) => event.kind === "tool_result"));
+});
+
+test("review-surfaces.METHODOLOGY.6 a Codex function_call and its output get distinct event ids", () => {
+  const text = [
+    JSON.stringify({ type: "function_call", name: "shell", arguments: "{}", call_id: "call_1" }),
+    JSON.stringify({ type: "function_call_output", call_id: "call_1", output: "done" })
+  ].join("\n");
+  const result = normalizeConversation(buildAdapterInput("codex.jsonl", text));
+  const ids = result?.events.map((event) => event.id) ?? [];
+  assert.equal(new Set(ids).size, ids.length, `ids must be unique: ${ids.join(", ")}`);
 });

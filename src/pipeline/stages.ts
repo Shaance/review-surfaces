@@ -401,16 +401,20 @@ export async function runReasoningWithVerification(
 
   verifyRequirementsWithTests(collection, intent, evaluation, areasOption);
 
-  // Recompute risks against the POST-promotion evaluation, then re-apply the
-  // candidate-evidence review_focus delta so that enrichment is not lost.
+  // review-surfaces.METHODOLOGY.5/.7: run the methodology audit leaf BEFORE risk
+  // analysis so its workflow_findings + cleared/degraded flags actually FEED
+  // analyzeRisks and the review focus (Codex P2). It reads the redacted
+  // conversation stream + methodology model; it does not consume risks. Mock is a
+  // no-op so the deterministic fallback + degraded flag survive byte-stable.
+  await runMethodologyReasoning(reasoningProvider, reasoningInputs, reasoningOptions);
+
+  // Recompute risks against the POST-promotion evaluation + the POST-audit
+  // methodology, then re-apply the candidate-evidence review_focus delta so that
+  // enrichment is not lost.
   const risks = analyzeRisks(collection, evaluation, commands, methodology);
   risks.review_focus.push(...evalReviewFocusDelta);
   reasoningInputs.risks = risks;
   await runNarrativeReasoning(reasoningProvider, reasoningInputs, reasoningOptions);
-  // review-surfaces.METHODOLOGY.7: the methodology audit leaf reads the redacted
-  // conversation stream on `collection` and judges item 4. Mock is a no-op so the
-  // deterministic fallback + degraded flag survive byte-stable.
-  await runMethodologyReasoning(reasoningProvider, reasoningInputs, reasoningOptions);
   return { evaluation, risks };
 }
 

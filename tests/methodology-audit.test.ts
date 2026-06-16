@@ -187,3 +187,39 @@ test("review-surfaces.METHODOLOGY.7 validateEvidenceRef binds event_id to the kn
   assert.equal(validateEvidenceRef({ kind: "command", command: "pnpm run test", event_id: "CMD-TEST", confidence: "low" }, context).validation_status, "valid");
   assert.equal(validateEvidenceRef({ kind: "command", command: "pnpm run test", event_id: "CMD-GHOST", confidence: "low" }, context).validation_status, "invalid");
 });
+
+test("review-surfaces.METHODOLOGY.8 a path anchor that is not a CHANGED file is rejected (demoted)", async () => {
+  const methodology = methodologyDegraded();
+  // src/uploader.ts is changed (valid); src/unchanged.ts exists in the repo set
+  // but is NOT in changedFiles, so it must be rejected as an audit anchor.
+  const collection = collectionWithEvents(THREE_EVENTS, ["src/uploader.ts"]);
+  (collection as { repositoryFiles: string[] }).repositoryFiles = ["src/uploader.ts", "src/unchanged.ts"];
+  const audit = {
+    cross_ref_flags: [
+      { signal: "impl_no_test", text: "changed file", anchors: { paths: ["src/uploader.ts"] } },
+      { signal: "api_no_compat", text: "unchanged file cited", anchors: { paths: ["src/unchanged.ts"] } }
+    ]
+  };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection, intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+
+  const changed = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(changed?.evidence.some((e) => e.kind === "file" && e.validation_status === "valid"));
+  const unchanged = methodology.workflow_findings.find((f) => f.signal_kind === "api_no_compat");
+  assert.match(unchanged?.summary ?? "", /unverified anchor.*src\/unchanged\.ts/);
+});
+
+test("review-surfaces.METHODOLOGY.7 considered/research are surfaced only when their anchors validate", async () => {
+  const methodology = methodologyDegraded();
+  const audit = {
+    considered: [
+      { text: "anchored alternative", anchors: { event_ids: ["a1"] } },
+      { text: "hallucinated alternative", anchors: { event_ids: ["GHOST"] } }
+    ],
+    research: [{ text: "ungrounded research with no anchors" }]
+  };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(THREE_EVENTS), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+
+  assert.ok(methodology.considered.some((c) => c.includes("anchored alternative")));
+  assert.ok(!methodology.considered.some((c) => c.includes("hallucinated alternative")));
+  assert.ok(!methodology.research.some((r) => r.includes("ungrounded research")));
+});
