@@ -375,3 +375,46 @@ test("review-surfaces.METHODOLOGY.7 (D3) skipped steps are preserved even withou
   await runMethodologyReasoning(provider, { collection: collectionWithEvents(THREE_EVENTS), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
   assert.ok(methodology.workflow_findings.some((f) => f.signal_kind === "skipped_step" && /no regression test/.test(f.summary)));
 });
+
+test("review-surfaces.METHODOLOGY.7 (D3) the partial-audit note reports the ACTUAL analyzed event count", async () => {
+  const many: ConversationEvent[] = Array.from({ length: 300 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `t${index}`, raw_index: index }));
+  const methodology = methodologyDegraded();
+  // 300 events -> 240 selected -> 3 batches; the middle batch fails -> 160 analyzed.
+  const provider = countingStub([{ unchallenged: [{ text: "x", anchors: { event_ids: ["e0"] } }] }, undefined, { unchallenged: [{ text: "y", anchors: { event_ids: ["e160"] } }] }]);
+  await runMethodologyReasoning(provider, { collection: collectionWithEvents(many, []), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  assert.ok(methodology.skipped_checks.some((line) => /160 of 300/.test(line)), methodology.skipped_checks.join(" | "));
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) salience boosts a shell command that names a changed file", async () => {
+  const events: ConversationEvent[] = Array.from({ length: 300 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `chatter ${index}`, raw_index: index }));
+  events[295] = { id: "e295", actor: "assistant", kind: "tool_call", summary: "ran a diff", tool: "Bash", command: "git diff src/uploader.ts", raw_index: 295 };
+  const methodology = methodologyDegraded();
+  const audit = { research: [{ text: "diffed the changed file", anchors: { event_ids: ["e295"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  assert.ok(methodology.research.some((r) => r.includes("diffed the changed file")));
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) duplicate finding evidence is unioned across chunks", async () => {
+  const many: ConversationEvent[] = Array.from({ length: 160 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `t${index}`, raw_index: index }));
+  const methodology = methodologyDegraded();
+  // Same finding text, anchored to e0 in chunk 1 and e80 in chunk 2.
+  const provider = countingStub([
+    { unchallenged: [{ text: "assumed idempotent", anchors: { event_ids: ["e0"] } }] },
+    { unchallenged: [{ text: "assumed idempotent", anchors: { event_ids: ["e80"] } }] }
+  ]);
+  await runMethodologyReasoning(provider, { collection: collectionWithEvents(many, []), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const finding = methodology.workflow_findings.find((f) => f.signal_kind === "unchallenged_assumption");
+  assert.ok(finding);
+  const eventIds = finding.evidence.filter((e) => e.validation_status === "valid").map((e) => e.event_id);
+  assert.ok(eventIds.includes("e0") && eventIds.includes("e80"), `expected both anchors, got ${eventIds.join(",")}`);
+  assert.ok(!/unverified anchor/.test(finding.summary));
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) an impl_no_test flag is contextualized when a test actually ran", async () => {
+  const methodology = methodologyDegraded();
+  // THREE_EVENTS includes a `pnpm run test` tool_call, so the impl_no_test flag is reconciled.
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": FAKE_AUDIT }), { collection: collectionWithEvents(THREE_EVENTS), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.match(impl.summary, /test execution was observed elsewhere/);
+});

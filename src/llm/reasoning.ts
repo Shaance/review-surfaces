@@ -834,17 +834,23 @@ async function runMethodologyAuditStage(
 
   const eventRawIndex = new Map(selected.map((event) => [event.id, event.raw_index]));
 
-  // The audit RAN: flag a partial audit when events were dropped by the budget OR a
-  // provider batch failed (so part of the conversation went un-analyzed) — Codex P2.
-  if (truncated || someBatchFailed) {
+  // The audit RAN: flag a partial audit using the ACTUAL number of analyzed events
+  // (the sum of successful batch sizes) so a run that is BOTH over budget AND has a
+  // failed batch does not overstate coverage (Codex P2).
+  const analyzedEventCount = batchIdSets.reduce((sum, set) => sum + set.size, 0);
+  if (analyzedEventCount < events.length) {
     methodology.quality_flags = uniqueTruthy([...methodology.quality_flags, "conversation_truncated"]);
     methodology.skipped_checks = uniqueTruthy([
       ...methodology.skipped_checks,
-      truncated
-        ? `Methodology audit was partial: ${selected.length} of ${events.length} conversation events were analyzed (salience-ranked).`
-        : `Methodology audit was partial: ${auditOutputs.length} of ${batches.length} event batches were analyzed (a provider batch did not respond).`
+      `Methodology audit was partial: ${analyzedEventCount} of ${events.length} conversation events were analyzed (salience-ranked${someBatchFailed ? "; a provider batch did not respond" : ""}).`
     ]);
   }
+
+  // Deterministic cross-chunk reconciliation: if a test/validation actually ran
+  // somewhere in the SELECTED events, a chunk-local "implementation changed, no
+  // test" flag is likely a partial-view artifact (the test lived in another chunk),
+  // so the merged finding is contextualized rather than presented as fact (Codex P2).
+  const testExecuted = selected.some(isTestExecutionEvent);
 
   // Per-CHUNK processing then merge: validate each chunk's items against the events
   // THAT CHUNK actually saw, so a finding can never validate against an event id
@@ -900,7 +906,7 @@ async function runMethodologyAuditStage(
   // Item 4c: merge finding candidates — dedup by (signal_kind + core text)
   // PREFERRING the grounded then higher-severity copy (so a chunk that validated an
   // anchor wins over one that did not), sort, cap, assign ids.
-  const findings = mergeFindingCandidates(findingCandidates, methodology.workflow_findings.length);
+  const findings = mergeFindingCandidates(findingCandidates, methodology.workflow_findings.length, testExecuted);
   methodology.workflow_findings = [...methodology.workflow_findings, ...findings].slice(0, 50);
 
   // Clear the "deep audit not run" marker ONLY when the provider produced
@@ -998,27 +1004,66 @@ function mergeCandidateTexts(candidates: AnchoredCandidate[]): string[] {
     .map((candidate) => candidate.text);
 }
 
-function mergeFindingCandidates(candidates: FindingCandidate[], baseCount: number): WorkflowFinding[] {
+function mergeFindingCandidates(candidates: FindingCandidate[], baseCount: number, testExecuted: boolean): WorkflowFinding[] {
   const byKey = new Map<string, FindingCandidate>();
   for (const candidate of candidates) {
     const existing = byKey.get(candidate.dedupKey);
-    if (
-      !existing ||
-      (candidate.grounded && !existing.grounded) ||
-      (candidate.grounded === existing.grounded && candidate.severityRank > existing.severityRank)
-    ) {
-      byKey.set(candidate.dedupKey, candidate);
-    }
+    // Merge duplicates across chunks: UNION the evidence + invalid tokens (a token
+    // valid in any chunk is no longer "unverified"), take the worst severity and
+    // earliest event, and stay grounded if either copy was (Codex P2).
+    byKey.set(candidate.dedupKey, existing ? mergeFindingCandidate(existing, candidate) : candidate);
   }
   return [...byKey.values()]
-    .sort((left, right) => left.sortIndex - right.sortIndex || compareText(left.dedupKey, right.dedupKey))
+    // Sort by severity DESC first so a late high-severity finding (e.g. an unsound
+    // verdict) is never capped out by earlier low-severity ones (Codex P2).
+    .sort(
+      (left, right) =>
+        right.severityRank - left.severityRank || left.sortIndex - right.sortIndex || compareText(left.dedupKey, right.dedupKey)
+    )
     .slice(0, MAX_PROPOSED_REQUIREMENTS * 4)
-    .map((candidate, index) => decorateFindingCandidate(baseCount + index + 1, candidate));
+    .map((candidate, index) => decorateFindingCandidate(baseCount + index + 1, candidate, testExecuted));
 }
 
-function decorateFindingCandidate(seq: number, candidate: FindingCandidate): WorkflowFinding {
-  const summary =
+function mergeFindingCandidate(existing: FindingCandidate, incoming: FindingCandidate): FindingCandidate {
+  const evidence = unionEvidence(existing.evidence, incoming.evidence);
+  const valid = new Set<string>();
+  for (const ref of evidence) {
+    if (typeof ref.event_id === "string") {
+      valid.add(ref.event_id);
+    }
+    if (typeof ref.path === "string") {
+      valid.add(ref.path);
+    }
+  }
+  const invalidTokens = [...new Set([...existing.invalidTokens, ...incoming.invalidTokens])].filter((token) => !valid.has(token));
+  const worst = incoming.severityRank > existing.severityRank ? incoming : existing;
+  return {
+    ...worst,
+    evidence,
+    invalidTokens,
+    grounded: existing.grounded || incoming.grounded,
+    sortIndex: Math.min(existing.sortIndex, incoming.sortIndex)
+  };
+}
+
+function unionEvidence(left: EvidenceRef[], right: EvidenceRef[]): EvidenceRef[] {
+  const byKey = new Map<string, EvidenceRef>();
+  for (const ref of [...left, ...right]) {
+    const key = `${ref.kind}:${ref.event_id ?? ""}:${ref.path ?? ""}`;
+    if (!byKey.has(key)) {
+      byKey.set(key, ref);
+    }
+  }
+  return [...byKey.values()];
+}
+
+function decorateFindingCandidate(seq: number, candidate: FindingCandidate, testExecuted: boolean): WorkflowFinding {
+  let summary =
     candidate.invalidTokens.length > 0 ? `${candidate.coreText} (unverified anchor(s): ${candidate.invalidTokens.join(", ")})` : candidate.coreText;
+  // Contextualize a chunk-local "no test" claim when a test actually ran elsewhere.
+  if (candidate.signalKind === "impl_no_test" && testExecuted) {
+    summary += " (note: a test execution was observed elsewhere in the conversation — confirm it does not already cover this change)";
+  }
   return {
     id: `WF-${String(seq).padStart(3, "0")}`,
     signal_kind: candidate.signalKind,
@@ -1057,7 +1102,12 @@ function salienceScore(event: ConversationEvent, changedFiles: Set<string>): num
   } else if (event.actor === "assistant") {
     score += 1;
   }
-  if (event.file !== undefined && touchesChangedFile(event.file, changedFiles)) {
+  // A changed file may be named in event.file OR inside a shell tool_call's
+  // command (e.g. `cat src/uploader.ts`), so check both (Codex P2).
+  if (
+    (event.file !== undefined && touchesChangedFile(event.file, changedFiles)) ||
+    (event.command !== undefined && textNamesChangedFile(event.command, changedFiles))
+  ) {
     score += 2;
   }
   if (/\b(?:tests?|lint|typecheck|build|pass(?:e[ds])?|fail(?:e[ds])?|verif|validat)/i.test(event.summary)) {
@@ -1080,6 +1130,26 @@ function touchesChangedFile(file: string, changedFiles: Set<string>): boolean {
     }
   }
   return false;
+}
+
+// True when a changed-file path appears anywhere in free text (a shell command).
+function textNamesChangedFile(text: string, changedFiles: Set<string>): boolean {
+  for (const changed of changedFiles) {
+    if (changed.length > 0 && text.includes(changed)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// A test/validation execution event in the SELECTED set — used to reconcile a
+// chunk-local impl_no_test claim that another chunk's test run contradicts.
+function isTestExecutionEvent(event: ConversationEvent): boolean {
+  if (event.kind !== "tool_call" && event.kind !== "tool_result") {
+    return false;
+  }
+  const text = `${event.command ?? ""} ${event.summary}`;
+  return /\b(?:tests?|vitest|jest|pytest|mocha|node --test|go test|cargo test|lint|typecheck)\b/i.test(text);
 }
 
 // Select up to `budget` events by salience (desc), tie-broken by raw_index (asc)
