@@ -1473,8 +1473,11 @@ function commandRunsTest(command: string): boolean {
 // test command that appears only inside a heredoc body is not counted as an executed
 // test run. The body lines are removed so they never segment into commands (Codex P2).
 function stripHeredocBodies(command: string): string {
-  // `\r?\n` around the terminator so Windows CRLF heredocs are stripped too (Codex P2).
-  return command.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[\s\S]*?\r?\n[ \t]*\2[ \t]*(?=\r?\n|$)/g, "<<$2");
+  // Drop the body up to its terminator (CRLF-aware) OR, when the heredoc is
+  // TRUNCATED with no terminator (tool bodies are bounded to MAX_TOOL_BODY_LENGTH),
+  // up to end-of-command — so a dangling `pnpm test` body line is never segmented
+  // into a counted test run (Codex P2).
+  return command.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[\s\S]*?(?:\r?\n[ \t]*\2[ \t]*(?=\r?\n|$)|$)/g, "<<$2");
 }
 
 function commandSegments(command: string): string[] {
