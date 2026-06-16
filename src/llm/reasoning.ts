@@ -1314,28 +1314,26 @@ function isEditCall(event: ConversationEvent): boolean {
   return event.kind === "tool_call" && event.tool !== undefined && EDIT_TOOL_PATTERN.test(event.tool);
 }
 
-// The paths a patch-style tool edits, taken from PATCH HEADER lines ONLY (never
-// arbitrary body text, which may merely mention another path): apply_patch
-// `*** Update/Add/Delete/Move/Rename File: <path>`, and unified-diff
-// `diff --git a/<p> b/<p>` / `--- a/<p>` / `+++ b/<p>`. The `a/`/`b/` prefix is
-// stripped only on the real diff operands — an apply_patch `*** Update File:
-// b/src/x.ts` keeps `b/` (it is a real path, not a diff prefix) — Codex P2.
+// The paths an apply_patch-style tool edits, taken ONLY from its unambiguous
+// CONTROL lines — `*** Update/Add/Delete File: <path>` and a move's
+// `*** Move to: <path>` — anchored at the LINE START (`^\*\*\*`, no leading
+// whitespace), which a `+`/`-`/` `-prefixed hunk/content line can never be. So a
+// path merely MENTIONED in patch body text, or a literal `diff --git` snippet
+// inside a docs patch, is NOT treated as an edit target. The whole rest of the line
+// is captured, so a path with spaces (`docs/api notes.md`) is not truncated. We do
+// NOT parse unified-diff `diff`/`---`/`+++` operands (git's format, not the
+// apply_patch tool) — those stay conservatively unrecognized (Codex P2).
 function patchHeaderTargets(text: string): string[] {
   const targets: string[] = [];
   for (const line of text.split(/\r?\n/)) {
-    const apply = line.match(/^\s*\*\*\*\s+(?:Update|Add|Delete|Move|Rename)\s+File:\s+(\S+)/i);
-    if (apply) {
-      targets.push(apply[1]);
+    const fileHeader = line.match(/^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s+(.+?)\s*$/i);
+    if (fileHeader) {
+      targets.push(fileHeader[1]);
       continue;
     }
-    const gitDiff = line.match(/^\s*diff --git\s+a\/(\S+)\s+b\/(\S+)/);
-    if (gitDiff) {
-      targets.push(gitDiff[1], gitDiff[2]);
-      continue;
-    }
-    const unified = line.match(/^\s*(?:---|\+\+\+)\s+[ab]\/(\S+)/);
-    if (unified) {
-      targets.push(unified[1]);
+    const moveTo = line.match(/^\*\*\*\s+Move\s+to:\s+(.+?)\s*$/i);
+    if (moveTo) {
+      targets.push(moveTo[1]);
     }
   }
   return targets;
@@ -1391,9 +1389,14 @@ function findingHasPostChangeTest(
   if (maxTestIndex < 0) {
     return false;
   }
+  // Normalize a cited path (`./src/b.ts`, backslashes) to its changed-file key
+  // before membership — `resolveAuditAnchors` keeps the original token in evidence,
+  // so an un-normalized `changedFiles.has` would drop a valid cited file and let a
+  // multi-file finding reconcile on a subset (Codex P2).
   const citedChanged = candidate.evidence
-    .filter((ref) => ref.kind === "file" && typeof ref.path === "string" && changedFiles.has(ref.path))
-    .map((ref) => ref.path as string);
+    .filter((ref) => ref.kind === "file" && typeof ref.path === "string")
+    .map((ref) => (ref.path as string).replace(/\\/g, "/").replace(/^\.\/+/, ""))
+    .filter((path) => changedFiles.has(path));
   if (citedChanged.length > 0) {
     // A finding citing changed files reconciles only when EVERY cited changed file
     // has a KNOWN edit AND a test that ran after it. A cited file with no detected
@@ -1457,31 +1460,15 @@ function commandRunsTest(command: string): boolean {
   );
 }
 
-// Drop heredoc BODIES (`<<MARKER ... \nMARKER`) so their content lines are not
-// parsed as executed commands — a heredoc body containing `pnpm test` fed to
-// `cat`/`tee` is INPUT, not a test run. BUT a heredoc fed to a shell INTERPRETER
-// (`bash <<EOF ... pnpm test ... EOF`) really executes its body, so that body is
-// preserved for segmentation (Codex P2).
-// Matches a receiver that is a bare shell interpreter invocation — the interpreter
-// (after `sudo`/env assignments) followed by FLAGS ONLY, with no positional script
-// argument, up to the `<<`. Only then does the heredoc body become commands the
-// shell executes (`bash <<EOF`, `bash -e <<EOF`). A redirect/filename receiver
-// (`cat > run-tests.sh <<EOF`) or an interpreter given a SCRIPT argument
-// (`bash run.sh <<EOF`, `python tools/gen.py <<EOF`) feeds the body as inert input,
-// not executed commands (Codex P2).
-const HEREDOC_INTERPRETER =
-  /^\s*(?:sudo\s+)?(?:[A-Za-z_]\w*=\S*\s+)*(?:bash|sh|zsh|ksh|dash|python[0-9.]*|node|ruby|perl)(?:\s+-{1,2}[\w-]+)*\s*$/i;
+// Conservatively drop ALL heredoc BODIES (`<<MARKER ... \nMARKER`) before command
+// segmentation. A heredoc body is ambiguous — inert input to `cat`/`tee`, stdin to
+// a script (`bash run.sh <<EOF`), or executed by a bare interpreter (`bash <<EOF`,
+// `cat <<EOF | bash`). Rather than parse the shell precisely (an unbounded
+// edge-case surface), the ADVISORY reconciliation note errs toward NOT firing: a
+// test command that appears only inside a heredoc body is not counted as an executed
+// test run. The body lines are removed so they never segment into commands (Codex P2).
 function stripHeredocBodies(command: string): string {
-  return command.replace(
-    /<<-?\s*(['"]?)([A-Za-z_]\w*)\1([\s\S]*?)(\n[ \t]*\2[ \t]*)(?=\n|$)/g,
-    (full, _quote: string, marker: string, _body: string, close: string, offset: number, source: string) => {
-      const before = source.slice(0, offset);
-      const segmentStart = Math.max(before.lastIndexOf("\n"), before.lastIndexOf(";"), before.lastIndexOf("&"), before.lastIndexOf("|"));
-      const receiver = before.slice(segmentStart + 1);
-      // Interpreter receiver -> the body is executed; keep it so its lines segment.
-      return HEREDOC_INTERPRETER.test(receiver) ? full : `<<${marker}${close}`;
-    }
-  );
+  return command.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, "<<$2");
 }
 
 function commandSegments(command: string): string[] {

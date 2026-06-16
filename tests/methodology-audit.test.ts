@@ -960,7 +960,9 @@ test("review-surfaces.METHODOLOGY.7 (D3) an edit body that merely MENTIONS anoth
   assert.match(impl.summary, /test execution was observed elsewhere/, "a later write to a different file must not reset uploader's edit clock");
 });
 
-test("review-surfaces.METHODOLOGY.7 (D3) a heredoc fed to a shell interpreter IS a test run (#96)", async () => {
+test("review-surfaces.METHODOLOGY.7 (D3) a heredoc body test command is conservatively NOT a test run (#96)", async () => {
+  // Heredoc bodies are ambiguous (inert input / stdin / interpreter-executed); the
+  // advisory note errs toward NOT firing rather than parsing the shell precisely.
   const events: ConversationEvent[] = [
     { id: "e", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
     { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(run script)", tool: "Bash", command: "bash <<EOF\npnpm test\nEOF", raw_index: 1 }
@@ -970,10 +972,12 @@ test("review-surfaces.METHODOLOGY.7 (D3) a heredoc fed to a shell interpreter IS
   await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
   const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
   assert.ok(impl);
-  assert.match(impl.summary, /test execution was observed elsewhere/, "a heredoc piped to bash executes its body");
+  assert.ok(!/test execution was observed/.test(impl.summary), "a test command inside a heredoc body is conservatively not counted");
 });
 
-test("review-surfaces.METHODOLOGY.7 (D3) a unified-diff path (b/src/...) in a patch body is detected as an edit (#96)", async () => {
+test("review-surfaces.METHODOLOGY.7 (D3) a git unified-diff body (not apply_patch control lines) is conservatively not an edit (#96)", async () => {
+  // Only apply_patch `*** ... File:` control lines are parsed; a raw `diff --git`
+  // body (git's format, not the apply_patch tool) is not, so the clock stays unknown.
   const events: ConversationEvent[] = [
     { id: "edit", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: "diff --git a/src/uploader.ts b/src/uploader.ts\n+  retry()", raw_index: 0 },
     { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
@@ -983,7 +987,7 @@ test("review-surfaces.METHODOLOGY.7 (D3) a unified-diff path (b/src/...) in a pa
   await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
   const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
   assert.ok(impl);
-  assert.match(impl.summary, /test execution was observed elsewhere/, "a `b/src/uploader.ts` diff path names the changed file");
+  assert.ok(!/test execution was observed/.test(impl.summary), "a raw git diff body is not parsed as an apply_patch edit");
 });
 
 test("review-surfaces.METHODOLOGY.7 (D3) a cited changed file with NO observed edit is treated as unreconciled (#96)", async () => {
@@ -999,6 +1003,48 @@ test("review-surfaces.METHODOLOGY.7 (D3) a cited changed file with NO observed e
   const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
   assert.ok(impl);
   assert.ok(!/test execution was observed/.test(impl.summary), "b.ts cited but never edited -> unknown coverage -> no reconcile");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a ./-prefixed cited path is normalized in the every-file check (#96)", async () => {
+  // The finding cites `src/a.ts` and `./src/b.ts`; b.ts is edited AFTER the test, so
+  // normalizing `./src/b.ts` to `src/b.ts` keeps it in the check and blocks reconcile.
+  const events: ConversationEvent[] = [
+    { id: "ea", actor: "assistant", kind: "tool_call", summary: "Edit(src/a.ts)", tool: "Edit", file: "src/a.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 },
+    { id: "eb", actor: "assistant", kind: "tool_call", summary: "Edit(src/b.ts)", tool: "Edit", file: "src/b.ts", raw_index: 2 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "a and b changed", anchors: { paths: ["src/a.ts", "./src/b.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/a.ts", "src/b.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "./src/b.ts must not be dropped from the every-file check");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) apply_patch Move-to and space-containing paths are captured (#96)", async () => {
+  // `*** Move to:` names the new path; the whole rest of the line is captured so a
+  // path with spaces is not truncated.
+  const moveEvents: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: "*** Move to: src/uploader.ts\n+  retry()", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const moveM = methodologyDegraded();
+  const moveAudit = { cross_ref_flags: [{ signal: "impl_no_test", text: "moved file untested", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": moveAudit }), { collection: collectionWithEvents(moveEvents, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology: moveM, risks: risks() }, {});
+  const moveImpl = moveM.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(moveImpl);
+  assert.match(moveImpl.summary, /test execution was observed elsewhere/, "*** Move to: names the edited file");
+
+  const spaceEvents: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: "*** Update File: docs/api notes.md\n+  text", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const spaceM = methodologyDegraded();
+  const spaceAudit = { cross_ref_flags: [{ signal: "impl_no_test", text: "doc untested", anchors: { paths: ["docs/api notes.md"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": spaceAudit }), { collection: collectionWithEvents(spaceEvents, ["docs/api notes.md"]), intent: intent(), evaluation: evaluation(), methodology: spaceM, risks: risks() }, {});
+  const spaceImpl = spaceM.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(spaceImpl);
+  assert.match(spaceImpl.summary, /test execution was observed elsewhere/, "a path with spaces is captured whole, not truncated at the first space");
 });
 
 test("review-surfaces.METHODOLOGY.7 (D3) a heredoc WRITTEN to a .sh file is not executed (#96)", async () => {
