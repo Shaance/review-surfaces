@@ -1344,11 +1344,16 @@ function patchHeaderTargets(text: string): string[] {
 // mentions `src/x.ts` must NOT count as editing `src/x.ts`. Only patch-style tools
 // with no `event.file` fall back to their PATCH HEADERS (never free body text).
 function editTargetsChangedFile(event: ConversationEvent, changed: string): boolean {
-  const single = new Set([changed]);
   if (event.file !== undefined) {
-    return touchesChangedFile(event.file, single);
+    return touchesChangedFile(event.file, new Set([changed]));
   }
-  return patchHeaderTargets(`${event.command ?? ""}\n${event.summary}`).some((target) => touchesChangedFile(target, single));
+  // A patch header is itself a repo-relative control-line path, so compare it
+  // EXACTLY (after normalizing `./`/backslashes) — NOT with the suffix logic, which
+  // would treat `api/src/uploader.ts` as the reviewed `packages/api/src/uploader.ts`
+  // (Codex P2).
+  return patchHeaderTargets(`${event.command ?? ""}\n${event.summary}`)
+    .map((target) => target.replace(/\\/g, "/").replace(/^\.\/+/, ""))
+    .includes(changed);
 }
 
 // The LATEST raw_index at which EACH changed file is actually EDITED. Tracking
@@ -1468,7 +1473,8 @@ function commandRunsTest(command: string): boolean {
 // test command that appears only inside a heredoc body is not counted as an executed
 // test run. The body lines are removed so they never segment into commands (Codex P2).
 function stripHeredocBodies(command: string): string {
-  return command.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, "<<$2");
+  // `\r?\n` around the terminator so Windows CRLF heredocs are stripped too (Codex P2).
+  return command.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[\s\S]*?\r?\n[ \t]*\2[ \t]*(?=\r?\n|$)/g, "<<$2");
 }
 
 function commandSegments(command: string): string[] {

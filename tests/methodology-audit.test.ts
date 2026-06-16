@@ -1047,6 +1047,34 @@ test("review-surfaces.METHODOLOGY.7 (D3) apply_patch Move-to and space-containin
   assert.match(spaceImpl.summary, /test execution was observed elsewhere/, "a path with spaces is captured whole, not truncated at the first space");
 });
 
+test("review-surfaces.METHODOLOGY.7 (D3) a patch header is matched EXACTLY, not by repo-relative suffix (#96)", async () => {
+  // The patch edits `api/src/uploader.ts`; the reviewed changed file is the DIFFERENT
+  // `packages/api/src/uploader.ts`. Suffix matching would conflate them.
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: "*** Update File: api/src/uploader.ts\n+  retry()", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["packages/api/src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["packages/api/src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "api/src/uploader.ts is not the reviewed packages/api/src/uploader.ts");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a CRLF heredoc body is stripped too (#96)", async () => {
+  const events: ConversationEvent[] = [
+    { id: "e", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(write notes)", tool: "Bash", command: "cat > notes.txt <<EOF\r\npnpm test\r\nEOF\r\n", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "a CRLF heredoc body must also be stripped, not counted as a test");
+});
+
 test("review-surfaces.METHODOLOGY.7 (D3) a heredoc WRITTEN to a .sh file is not executed (#96)", async () => {
   // `cat > run-tests.sh <<EOF ... pnpm test ... EOF` writes a script; the `.sh`
   // filename must not be mistaken for an interpreter invocation.
