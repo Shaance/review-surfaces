@@ -901,7 +901,7 @@ async function runMethodologyAuditStage(
     -1
   );
   const reconcilesFinding = (candidate: FindingCandidate): boolean =>
-    findingHasPostChangeTest(candidate, editIndexByFile, globalEditIndex, maxTestIndex);
+    findingHasPostChangeTest(candidate, changedFiles, editIndexByFile, globalEditIndex, maxTestIndex);
 
   // Per-CHUNK processing then merge: validate each chunk's items against the events
   // THAT CHUNK actually saw, so a finding can never validate against an event id
@@ -1273,12 +1273,16 @@ function textNamesChangedFile(text: string, changedFiles: Set<string>): boolean 
       const after = haystack[idx + changed.length] ?? "";
       if (!/[A-Za-z0-9._-]/.test(after)) {
         // Walk back to the start of the surrounding path token, then apply the
-        // structured-path rule to it (absolute-only suffix; `./` allowed).
+        // structured-path rule to it (absolute-only suffix; `./` allowed). Also try
+        // the token with a leading unified-diff prefix (`a/`, `b/`) stripped, so a
+        // patch body path like `b/src/uploader.ts` matches `src/uploader.ts` (Codex P2).
         let start = idx;
         while (start > 0 && /[A-Za-z0-9._/-]/.test(haystack[start - 1])) {
           start -= 1;
         }
-        if (touchesChangedFile(haystack.slice(start, idx + changed.length), new Set([changed]))) {
+        const token = haystack.slice(start, idx + changed.length);
+        const single = new Set([changed]);
+        if (touchesChangedFile(token, single) || touchesChangedFile(token.replace(/^[ab]\//, ""), single)) {
           return true;
         }
       }
@@ -1314,17 +1318,19 @@ function isEditCall(event: ConversationEvent): boolean {
   return event.kind === "tool_call" && event.tool !== undefined && EDIT_TOOL_PATTERN.test(event.tool);
 }
 
-// True when an EDIT/WRITE tool call targets `changed` — via a structured
-// `event.file` OR a path named in the command/summary (patch-style tools such as
-// `apply_patch` carry the path only in the body, `*** Update File: src/x.ts`). The
-// path match is boundary-aligned, so a longer `packages/api/src/x.ts` is not it.
+// True when an EDIT/WRITE tool call targets `changed`. When the event has a
+// STRUCTURED target (`event.file`), that is authoritative — a `Write docs/notes.md`
+// whose body merely mentions `src/x.ts` must NOT count as editing `src/x.ts` and
+// reset its edit clock. Only patch-style tools that carry the path in the body
+// (no structured `event.file`, e.g. `apply_patch ... *** Update File: src/x.ts`)
+// fall back to scanning the command/summary. The path match is boundary-aligned, so
+// a longer `packages/api/src/x.ts` is not it (Codex P2).
 function editTargetsChangedFile(event: ConversationEvent, changed: string): boolean {
   const single = new Set([changed]);
-  return (
-    (event.file !== undefined && touchesChangedFile(event.file, single)) ||
-    (event.command !== undefined && textNamesChangedFile(event.command, single)) ||
-    textNamesChangedFile(event.summary, single)
-  );
+  if (event.file !== undefined) {
+    return touchesChangedFile(event.file, single);
+  }
+  return (event.command !== undefined && textNamesChangedFile(event.command, single)) || textNamesChangedFile(event.summary, single);
 }
 
 // The LATEST raw_index at which EACH changed file is actually EDITED. Tracking
@@ -1357,6 +1363,7 @@ function changedFileEditIndexByFile(events: ConversationEvent[], changedFiles: S
 // soundness verdict) any test after the earliest edit counts (Codex P2).
 function findingHasPostChangeTest(
   candidate: FindingCandidate,
+  changedFiles: Set<string>,
   editIndexByFile: Map<string, number>,
   globalEditIndex: number | undefined,
   maxTestIndex: number
@@ -1364,14 +1371,19 @@ function findingHasPostChangeTest(
   if (maxTestIndex < 0) {
     return false;
   }
-  const fileEdits = candidate.evidence
-    .filter((ref) => ref.kind === "file" && typeof ref.path === "string" && editIndexByFile.has(ref.path))
-    .map((ref) => editIndexByFile.get(ref.path as string) as number);
-  if (fileEdits.length > 0) {
-    // A finding citing MULTIPLE changed files reconciles only when a test ran after
-    // EVERY cited file's edit — a test after `a.ts` must not clear a `b.ts` edited
-    // later that the finding also covers (Codex P2).
-    return fileEdits.every((editIndex) => maxTestIndex > editIndex);
+  const citedChanged = candidate.evidence
+    .filter((ref) => ref.kind === "file" && typeof ref.path === "string" && changedFiles.has(ref.path))
+    .map((ref) => ref.path as string);
+  if (citedChanged.length > 0) {
+    // A finding citing changed files reconciles only when EVERY cited changed file
+    // has a KNOWN edit AND a test that ran after it. A cited file with no detected
+    // edit is treated as unreconciled (its coverage is unknown) rather than dropped
+    // from the check, so a test after `a.ts` can't clear an also-cited `b.ts` whose
+    // edit was never observed in the selected slice (Codex P2).
+    return citedChanged.every((path) => {
+      const editIndex = editIndexByFile.get(path);
+      return editIndex !== undefined && maxTestIndex > editIndex;
+    });
   }
   return globalEditIndex !== undefined && maxTestIndex > globalEditIndex;
 }
@@ -1425,11 +1437,23 @@ function commandRunsTest(command: string): boolean {
   );
 }
 
-// Drop heredoc/here-string BODIES (`<<MARKER ... \nMARKER`) so their content lines
-// are not parsed as executed commands — a heredoc body containing `pnpm test` fed
-// to `cat`/`tee` is input, not a test run (Codex P2).
+// Drop heredoc BODIES (`<<MARKER ... \nMARKER`) so their content lines are not
+// parsed as executed commands — a heredoc body containing `pnpm test` fed to
+// `cat`/`tee` is INPUT, not a test run. BUT a heredoc fed to a shell INTERPRETER
+// (`bash <<EOF ... pnpm test ... EOF`) really executes its body, so that body is
+// preserved for segmentation (Codex P2).
+const HEREDOC_INTERPRETER = /\b(?:bash|sh|zsh|ksh|dash|python[0-9.]*|node|ruby|perl)\b/i;
 function stripHeredocBodies(command: string): string {
-  return command.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, "<<$2");
+  return command.replace(
+    /<<-?\s*(['"]?)([A-Za-z_]\w*)\1([\s\S]*?)(\n[ \t]*\2[ \t]*)(?=\n|$)/g,
+    (full, _quote: string, marker: string, _body: string, close: string, offset: number, source: string) => {
+      const before = source.slice(0, offset);
+      const segmentStart = Math.max(before.lastIndexOf("\n"), before.lastIndexOf(";"), before.lastIndexOf("&"), before.lastIndexOf("|"));
+      const receiver = before.slice(segmentStart + 1);
+      // Interpreter receiver -> the body is executed; keep it so its lines segment.
+      return HEREDOC_INTERPRETER.test(receiver) ? full : `<<${marker}${close}`;
+    }
+  );
 }
 
 function commandSegments(command: string): string[] {
