@@ -787,11 +787,15 @@ function collectConversationBlockedKinds(events: ConversationEvent[] | undefined
   return [...kinds].sort(compareStrings);
 }
 
-// The gitignored repo-relative normalized-log path used as the conversation
-// secret_finding locus. Never an absolute discovered-session path (PRIVACY.7 /
-// isSafeRepositoryPath).
+// The gitignored normalized-log path used as the conversation secret_finding
+// locus. MUST stay repo-relative and non-escaping — never an absolute path nor a
+// `../`-escaping path that leaks the home dir when --out points outside the repo
+// (PRIVACY.7 / isSafeRepositoryPath). When the output dir is inside the repo we
+// prefix it; when it escapes (custom --out outside the repo) we fall back to the
+// bare relative log path rather than leak the absolute location.
 function normalizedConversationLogPath(outputDirRelative: string): string {
-  return outputDirRelative ? `${outputDirRelative}/inputs/conversation.normalized.jsonl` : "inputs/conversation.normalized.jsonl";
+  const safePrefix = outputDirRelative && !outputDirRelative.split("/").includes("..");
+  return safePrefix ? `${outputDirRelative}/inputs/conversation.normalized.jsonl` : "inputs/conversation.normalized.jsonl";
 }
 
 function collectSecretFindings(rawDiff: string): SecretFinding[] {

@@ -359,4 +359,21 @@ test("review-surfaces.PRIVACY.7 a conversation tool_result secret folds into rem
   assert.ok(conversationFinding, "secret_findings exposes the conversation block");
   assert.ok(conversationFinding.kinds.includes("github_token"));
   assert.ok(!conversationFinding.path.startsWith("/"));
+
+  // The locus must stay repo-relative and NON-ESCAPING even when --out points
+  // OUTSIDE the repo (else path.relative yields a ../../.. that leaks the absolute
+  // home dir). Caught by live-testing; pinned here.
+  const outsideOut = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rs-out-")), "out");
+  const escaped = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false,
+    outputDir: outsideOut,
+    conversationPath: "session.jsonl"
+  });
+  const escapedFinding = escaped.privacy.secret_findings.find((finding) => finding.path.includes("conversation.normalized"));
+  assert.ok(escapedFinding);
+  assert.ok(!escapedFinding.path.startsWith("/") && !escapedFinding.path.includes(".."), `locus must not escape: ${escapedFinding.path}`);
 });
