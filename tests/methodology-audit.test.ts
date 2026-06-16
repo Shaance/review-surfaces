@@ -154,7 +154,7 @@ test("review-surfaces.METHODOLOGY.7 the mock provider leaves the degraded fallba
 });
 
 test("review-surfaces.METHODOLOGY.7 exceeding the event budget sets conversation_truncated, never silent", async () => {
-  const many: ConversationEvent[] = Array.from({ length: 120 }, (_value, index) => ({
+  const many: ConversationEvent[] = Array.from({ length: 300 }, (_value, index) => ({
     id: `e${index}`,
     actor: "assistant",
     kind: "message",
@@ -225,7 +225,7 @@ test("review-surfaces.METHODOLOGY.7 considered/research are surfaced only when t
 });
 
 test("review-surfaces.METHODOLOGY.7 a non-ok provider adds no truncation flag (nothing was analyzed)", async () => {
-  const many: ConversationEvent[] = Array.from({ length: 120 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `t${index}`, raw_index: index }));
+  const many: ConversationEvent[] = Array.from({ length: 300 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `t${index}`, raw_index: index }));
   const methodology = methodologyDegraded();
   // stub with no methodology-audit data -> generateStructured returns {ok:false}.
   await runMethodologyReasoning(stubProvider({}), { collection: collectionWithEvents(many), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
@@ -257,18 +257,18 @@ test("review-surfaces.METHODOLOGY.5 workflow findings feed the risk review focus
 });
 
 test("review-surfaces.METHODOLOGY.7 an event id beyond the audit cap is not a valid anchor", async () => {
-  const many: ConversationEvent[] = Array.from({ length: 100 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `t${index}`, raw_index: index }));
+  const many: ConversationEvent[] = Array.from({ length: 300 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `t${index}`, raw_index: index }));
   const methodology = methodologyDegraded();
   const audit = {
     unchallenged: [
       { text: "anchored within the cap", anchors: { event_ids: ["e5"] } },
-      { text: "anchored beyond the cap", anchors: { event_ids: ["e90"] } }
+      { text: "anchored beyond the cap", anchors: { event_ids: ["e250"] } }
     ]
   };
   await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(many, []), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
   const findings = methodology.workflow_findings.filter((f) => f.signal_kind === "unchallenged_assumption");
   const beyond = findings.find((f) => /beyond the cap/.test(f.summary));
-  assert.match(beyond?.summary ?? "", /unverified anchor.*e90/);
+  assert.match(beyond?.summary ?? "", /unverified anchor.*e250/);
   const within = findings.find((f) => /within the cap/.test(f.summary));
   assert.ok(within?.evidence.some((ref) => ref.validation_status === "valid"));
 });
@@ -289,4 +289,41 @@ test("review-surfaces.METHODOLOGY.7 a command-transcript id is not a valid CONVE
   await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection, intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
   const finding = methodology.workflow_findings.find((f) => f.signal_kind === "unchallenged_assumption");
   assert.match(finding?.summary ?? "", /unverified anchor.*CMD-X/);
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) map-reduce dedups findings across chunks deterministically", async () => {
+  // 160 events -> 2 chunks of 80; the stub returns the same finding for each chunk,
+  // so the deterministic merge must dedup to ONE finding, not two.
+  const many: ConversationEvent[] = Array.from({ length: 160 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `t${index}`, raw_index: index }));
+  const audit = { unchallenged: [{ text: "assumed retries are idempotent", anchors: { event_ids: ["e0"] } }] };
+  const run = async (): Promise<MethodologyModel> => {
+    const methodology = methodologyDegraded();
+    await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(many, []), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+    return methodology;
+  };
+  const methodology = await run();
+  const unchallenged = methodology.workflow_findings.filter((f) => f.signal_kind === "unchallenged_assumption");
+  assert.equal(unchallenged.length, 1, "duplicate findings across chunks must merge to one");
+  // Deterministic across reruns.
+  assert.equal(JSON.stringify(await run()), JSON.stringify(methodology));
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) salience keeps a late high-value tool_call over chit-chat", async () => {
+  // 300 low-salience messages + one high-salience tool_call (touches a changed
+  // file) at index 290. The budget is 240, so by raw_index alone e290 would be
+  // dropped; salience must keep it (anchor validates) while a late chit-chat event
+  // (e250) is dropped (anchor demoted).
+  const events: ConversationEvent[] = Array.from({ length: 300 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `chatter ${index}`, raw_index: index }));
+  events[290] = { id: "e290", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", file: "src/uploader.ts", raw_index: 290 };
+  const methodology = methodologyDegraded();
+  const audit = {
+    research: [{ text: "ran the suite (high-salience late tool call)", anchors: { event_ids: ["e290"] } }],
+    unchallenged: [{ text: "cites a dropped chit-chat event", anchors: { event_ids: ["e250"] } }]
+  };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  // The late high-salience tool_call was analyzed -> its research item is surfaced.
+  assert.ok(methodology.research.some((r) => r.includes("high-salience late tool call")));
+  // The dropped chit-chat anchor is demoted.
+  const dropped = methodology.workflow_findings.find((f) => /dropped chit-chat/.test(f.summary));
+  assert.match(dropped?.summary ?? "", /unverified anchor.*e250/);
 });

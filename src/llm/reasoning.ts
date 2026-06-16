@@ -71,6 +71,12 @@ const MAX_PROPOSED_REQUIREMENTS = 5;
 // shippable increment is truncation-honest; Phase 5a replaces it with
 // salience-ordered chunking + map-reduce (the conversation_truncated flag stays).
 const MAX_EVENTS_PER_AUDIT_BATCH = 80;
+// review-surfaces.METHODOLOGY.7 (D3): the methodology audit summarizes at most
+// this many salience-ranked chunks (one bounded generateStructured call each), so
+// the number of LLM calls is bounded; beyond MAX_EVENTS_PER_AUDIT_BATCH ×
+// MAX_AUDIT_BATCHES events the audit is truncation-honest (conversation_truncated).
+const MAX_AUDIT_BATCHES = 3;
+const AUDIT_EVENT_BUDGET = MAX_EVENTS_PER_AUDIT_BATCH * MAX_AUDIT_BATCHES;
 // Stage A #1: batch the evaluation candidate-evidence call instead of issuing
 // one generateStructured call per weak requirement. We still bound the per-call
 // payload: very large repos are split into a few bounded batches rather than one
@@ -794,46 +800,57 @@ async function runMethodologyAuditStage(
   }
   const methodology = inputs.methodology;
 
-  // Bounded event budget (truncation-honest). A simple head-cap by raw_index in
-  // Phase 2; Phase 5a replaces it with salience ordering + map-reduce.
-  const ordered = [...events].sort((left, right) => left.raw_index - right.raw_index);
-  const bounded = ordered.slice(0, MAX_EVENTS_PER_AUDIT_BATCH);
-  const truncated = ordered.length > MAX_EVENTS_PER_AUDIT_BATCH;
+  // review-surfaces.METHODOLOGY.7 (D3): salience-ordered map-reduce. Rank events
+  // by salience (user instructions, decisions, tool calls/results, validation
+  // turns, and turns touching changed files over chit-chat), keep a bounded budget
+  // across at most MAX_AUDIT_BATCHES chunks, summarize each chunk, then merge the
+  // per-chunk audits with a DETERMINISTIC order. Replaces the Phase-2 head-cap; the
+  // conversation_truncated flag stays. Cross-run caching is the manifest signature's
+  // job — the conversation file hash + adapter label already bust it, so an
+  // unchanged conversation restores the whole packet without re-summarizing.
+  const changedFiles = new Set(inputs.collection.changedFiles.map((file) => file.path));
+  const { selected, truncated } = selectSalientEvents(events, changedFiles, AUDIT_EVENT_BUDGET);
+  const batches = chunk(selected, MAX_EVENTS_PER_AUDIT_BATCH);
 
-  const result = await provider.generateStructured(
-    "methodology-audit",
-    methodologyAuditPrompt(bounded, inputs),
-    METHODOLOGY_AUDIT_SCHEMA,
-    generateOptions
-  );
-  if (!result.ok || !isRecord(result.data)) {
-    return; // SKIP: degraded keyword fallback + flag preserved; NO truncation flag
+  const auditOutputs: MethodologyAuditOutput[] = [];
+  for (const batch of batches) {
+    const result = await provider.generateStructured(
+      "methodology-audit",
+      methodologyAuditPrompt(batch, inputs),
+      METHODOLOGY_AUDIT_SCHEMA,
+      generateOptions
+    );
+    if (result.ok && isRecord(result.data)) {
+      auditOutputs.push(result.data as MethodologyAuditOutput);
+    }
   }
-  const data = result.data as MethodologyAuditOutput;
+  if (auditOutputs.length === 0) {
+    return; // SKIP: every batch returned non-ok; degraded fallback + flag preserved, NO truncation flag
+  }
 
-  // The audit RAN: only NOW is the partial-coverage flag honest (a non-ok provider
-  // analyzed nothing, so flagging truncation there would falsely claim a partial
-  // audit — Codex P2).
+  // Deterministic merge of the per-chunk audits: the audit arrays have no natural
+  // per-item id, so dedup by normalized text and sort by the first-cited event's
+  // raw_index then normalized text (see mergeAuditOutputs).
+  const eventRawIndex = new Map(selected.map((event) => [event.id, event.raw_index]));
+  const data = mergeAuditOutputs(auditOutputs, eventRawIndex);
+
+  // The audit RAN: only NOW is the partial-coverage flag honest (a fully non-ok
+  // provider analyzed nothing, so flagging truncation there would falsely claim a
+  // partial audit — Codex P2).
   if (truncated) {
     methodology.quality_flags = uniqueTruthy([...methodology.quality_flags, "conversation_truncated"]);
     methodology.skipped_checks = uniqueTruthy([
       ...methodology.skipped_checks,
-      `Methodology audit was partial: only the first ${MAX_EVENTS_PER_AUDIT_BATCH} of ${ordered.length} conversation events were analyzed.`
+      `Methodology audit was partial: ${selected.length} of ${events.length} conversation events were analyzed (salience-ranked).`
     ]);
   }
 
-  // Audit path anchors must be CHANGED-file paths (the prompt + feature text say
-  // so), not any repo file — so a model citing an existing-but-unchanged file is
-  // not stamped valid (Codex P2).
-  const changedFiles = new Set(inputs.collection.changedFiles.map((file) => file.path));
-
   // Validate audit anchors against ONLY the events actually SENT to the provider
-  // (the bounded set), not every collected event — otherwise a model could cite an
-  // event id past the truncation cutoff and have it stamped valid even though
-  // conversation_truncated says those events were not analyzed (Codex P2).
+  // (the selected salient set), not every collected event — otherwise a model could
+  // cite an unanalyzed event id and have it stamped valid (Codex P2).
   const auditContext: EvidenceValidationContext = {
     ...evidenceContext,
-    knownEventIds: new Set(bounded.map((event) => event.id))
+    knownEventIds: new Set(selected.map((event) => event.id))
   };
 
   // Item 4a/4b: considered alternatives + research/context, surfaced as labeled
@@ -894,6 +911,151 @@ async function runMethodologyAuditStage(
   if (producedContent) {
     methodology.quality_flags = methodology.quality_flags.filter((flag) => flag !== "methodology_analysis_degraded");
   }
+}
+
+// review-surfaces.METHODOLOGY.7 (D3): rank an event's importance for the audit.
+// Tool calls/results are the primary evidence (D8); user turns carry instructions;
+// decisions, validation turns, and turns touching a changed file matter more than
+// chit-chat. Deterministic — no wall-clock, no randomness.
+function salienceScore(event: ConversationEvent, changedFiles: Set<string>): number {
+  let score = 0;
+  if (event.kind === "tool_call" || event.kind === "tool_result") {
+    score += 3;
+  }
+  if (event.kind === "decision") {
+    score += 3;
+  }
+  if (event.actor === "user") {
+    score += 2;
+  } else if (event.actor === "assistant") {
+    score += 1;
+  }
+  if (event.file !== undefined && changedFiles.has(event.file)) {
+    score += 2;
+  }
+  if (/\b(?:tests?|lint|typecheck|build|pass(?:e[ds])?|fail(?:e[ds])?|verif|validat)/i.test(event.summary)) {
+    score += 2;
+  }
+  return score;
+}
+
+// Select up to `budget` events by salience (desc), tie-broken by raw_index (asc)
+// for stability, then return the selection in CHRONOLOGICAL order so each chunk
+// reads as a coherent slice for the leaf. `truncated` is true when events were
+// dropped.
+function selectSalientEvents(
+  events: ConversationEvent[],
+  changedFiles: Set<string>,
+  budget: number
+): { selected: ConversationEvent[]; truncated: boolean } {
+  if (events.length <= budget) {
+    return { selected: [...events].sort((left, right) => left.raw_index - right.raw_index), truncated: false };
+  }
+  const ranked = [...events].sort(
+    (left, right) => salienceScore(right, changedFiles) - salienceScore(left, changedFiles) || left.raw_index - right.raw_index
+  );
+  const selected = ranked.slice(0, budget).sort((left, right) => left.raw_index - right.raw_index);
+  return { selected, truncated: true };
+}
+
+// The raw_index of the first cited event id present in the selection, used as the
+// stable merge sort key (Infinity sorts unanchored items last).
+function firstCitedRawIndex(anchors: unknown, eventRawIndex: Map<string, number>): number {
+  if (!isRecord(anchors)) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  for (const raw of asStringArray(anchors.event_ids)) {
+    const index = eventRawIndex.get(raw.trim());
+    if (index !== undefined) {
+      return index;
+    }
+  }
+  return Number.MAX_SAFE_INTEGER;
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+// Merge per-chunk audit outputs into one, deterministically: concatenate each
+// array in chunk order, dedup by normalized text (signal+text for cross-ref
+// flags), sort by first-cited event raw_index then normalized text, and cap. The
+// workflow_assessment takes the WORST soundness across chunks with its summary,
+// and the union of skipped steps.
+function mergeAuditOutputs(outputs: MethodologyAuditOutput[], eventRawIndex: Map<string, number>): MethodologyAuditOutput {
+  const mergeAnchoredItems = (pick: (output: MethodologyAuditOutput) => unknown): unknown[] => {
+    const seen = new Set<string>();
+    const entries: { item: unknown; sortIndex: number; text: string }[] = [];
+    for (const output of outputs) {
+      for (const item of asArray(pick(output))) {
+        const text = isRecord(item) ? (typeof item.text === "string" ? item.text : "") : typeof item === "string" ? item : "";
+        const normalized = text.trim().toLowerCase();
+        if (normalized === "" || seen.has(normalized)) {
+          continue;
+        }
+        seen.add(normalized);
+        entries.push({ item, sortIndex: firstCitedRawIndex(isRecord(item) ? item.anchors : undefined, eventRawIndex), text: normalized });
+      }
+    }
+    entries.sort((left, right) => left.sortIndex - right.sortIndex || compareText(left.text, right.text));
+    return entries.slice(0, MAX_PROPOSED_REQUIREMENTS).map((entry) => entry.item);
+  };
+
+  const crossRefFlags = (() => {
+    const seen = new Set<string>();
+    const entries: { flag: unknown; sortIndex: number; key: string }[] = [];
+    for (const output of outputs) {
+      for (const flag of asArray(output.cross_ref_flags)) {
+        if (!isRecord(flag)) {
+          continue;
+        }
+        const signal = typeof flag.signal === "string" ? flag.signal : "";
+        const text = typeof flag.text === "string" ? flag.text : "";
+        const key = `${signal}::${text.trim().toLowerCase()}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        entries.push({ flag, sortIndex: firstCitedRawIndex(flag.anchors, eventRawIndex), key });
+      }
+    }
+    entries.sort((left, right) => left.sortIndex - right.sortIndex || compareText(left.key, right.key));
+    return entries.slice(0, MAX_PROPOSED_REQUIREMENTS).map((entry) => entry.flag);
+  })();
+
+  const soundnessRank: Record<string, number> = { sound: 1, questionable: 2, unsound: 3 };
+  let worstSoundness: string | undefined;
+  let worstRank = 0;
+  let assessmentSummary = "";
+  let assessmentAnchors: unknown;
+  for (const output of outputs) {
+    const assessment = isRecord(output.workflow_assessment) ? output.workflow_assessment : undefined;
+    if (!assessment) {
+      continue;
+    }
+    if (assessmentAnchors === undefined && isRecord(assessment.anchors)) {
+      assessmentAnchors = assessment.anchors;
+    }
+    const rank = typeof assessment.soundness === "string" ? soundnessRank[assessment.soundness] ?? 0 : 0;
+    if (rank > worstRank) {
+      worstRank = rank;
+      worstSoundness = assessment.soundness as string;
+      assessmentSummary = typeof assessment.summary === "string" ? assessment.summary : "";
+    }
+  }
+  const skippedSteps = mergeAnchoredItems((output) =>
+    isRecord(output.workflow_assessment) ? output.workflow_assessment.skipped_steps : undefined
+  );
+
+  return {
+    considered: mergeAnchoredItems((output) => output.considered),
+    research: mergeAnchoredItems((output) => output.research),
+    unchallenged: mergeAnchoredItems((output) => output.unchallenged),
+    cross_ref_flags: crossRefFlags,
+    workflow_assessment: worstSoundness
+      ? { soundness: worstSoundness, summary: assessmentSummary, anchors: assessmentAnchors, skipped_steps: skippedSteps }
+      : undefined
+  };
 }
 
 // Build one advisory (llm_proposed) workflow finding from a leaf item. Every
