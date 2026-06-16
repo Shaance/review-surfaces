@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { CollectionResult } from "../src/collector/collect";
 import { ConversationEvent } from "../src/conversation/events";
@@ -20,10 +22,22 @@ function stubProvider(byStage: Record<string, unknown>): ReasoningProvider {
   };
 }
 
+// A UNIQUE temp cwd per call so the per-conversation ai-sdk audit cache (issue #95)
+// never carries over between tests (these stubs use the "ai-sdk" name, which the
+// cache is active for) — each test sees a cold cache.
+let cwdCounter = 0;
+function freshFixtureCwd(): string {
+  const dir = path.join(os.tmpdir(), "rs-mau-fixture", `${process.pid}-${cwdCounter++}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 function collectionWithEvents(events: ConversationEvent[], changed: string[] = ["src/uploader.ts"]): CollectionResult {
+  const cwd = freshFixtureCwd();
   return {
-    cwd: "/tmp/fixture",
-    outputDir: "/tmp/fixture/.review-surfaces",
+    cwd,
+    outputDir: path.join(cwd, ".review-surfaces"),
     manifest: { tool_version: "0.1.0", repo: "fixture", base_ref: "HEAD", head_ref: "HEAD", head_sha: "abc", run_mode: "local", input_hashes: [] },
     specIndex: { schema_version: "review-surfaces.specs.index.v1", specs: [] },
     changedFiles: changed.map((p) => ({ path: p, status: "M", source: "working_tree" })),
