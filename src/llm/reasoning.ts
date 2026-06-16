@@ -21,7 +21,8 @@ import { MethodologyModel, WorkflowFinding } from "../methodology/methodology";
 import { RisksModel } from "../risks/risks";
 import { buildReviewAreas, createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
 import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
-import { GenerateStructuredOptions, ReasoningProvider } from "./provider";
+import { auditCacheDir, auditCacheKey, loadCachedAudit, storeCachedAudit } from "./audit-cache";
+import { effectiveModelId, GenerateStructuredOptions, ReasoningProvider } from "./provider";
 
 /**
  * Phase 3-2: schema-bound, evidence-gated LLM reasoning stages.
@@ -59,6 +60,9 @@ export interface ReasoningOptions {
   // a hypothesis (status stayed missing, tripping --strict) despite the config
   // area mapping. Absent => fall back to repo-index cluster areas (unchanged).
   reviewAreas?: ReviewArea[];
+  // The requested "<provider>:<model>" string, folded into the methodology-audit
+  // cache key so a model change busts the cache (issue #95). Absent => default model.
+  model?: string;
 }
 
 interface EvaluationReasoningRunOptions {
@@ -119,7 +123,7 @@ export async function runReasoningStages(
   );
   appendCandidateReviewFocus(inputs.risks.review_focus, candidateApplication.review_focus);
   await runNarrativeStage(provider, inputs, generateOptions);
-  await runMethodologyAuditStage(provider, inputs, evidenceContext, generateOptions);
+  await runMethodologyAuditStage(provider, inputs, evidenceContext, generateOptions, options.model);
 }
 
 // FINDING C: resolve the review areas the candidate-evidence group mapping must
@@ -229,7 +233,7 @@ export async function runMethodologyReasoning(
   if (provider.name === "mock") {
     return;
   }
-  await runMethodologyAuditStage(provider, inputs, buildEvidenceContext(inputs), toGenerateOptions(options));
+  await runMethodologyAuditStage(provider, inputs, buildEvidenceContext(inputs), toGenerateOptions(options), options.model);
 }
 
 // ---------------------------------------------------------------------------
@@ -791,7 +795,8 @@ async function runMethodologyAuditStage(
   provider: ReasoningProvider,
   inputs: ReasoningInputs,
   evidenceContext: EvidenceValidationContext,
-  generateOptions: GenerateStructuredOptions
+  generateOptions: GenerateStructuredOptions,
+  model?: string
 ): Promise<void> {
   const events = inputs.collection.conversationEvents ?? [];
   if (events.length === 0) {
@@ -806,26 +811,44 @@ async function runMethodologyAuditStage(
   // turns, and turns touching changed files over chit-chat), keep a bounded budget
   // across at most MAX_AUDIT_BATCHES chunks, summarize each chunk, then merge the
   // per-chunk audits with a DETERMINISTIC order. Replaces the Phase-2 head-cap; the
-  // conversation_truncated flag stays. Cross-run caching is the manifest signature's
-  // job — the conversation file hash + adapter label already bust it, so an
-  // unchanged conversation restores the whole packet without re-summarizing.
+  // conversation_truncated flag stays.
   const changedFiles = new Set(inputs.collection.changedFiles.map((file) => file.path));
   const { selected, truncated } = selectSalientEvents(events, changedFiles, AUDIT_EVENT_BUDGET);
   const batches = chunk(selected, MAX_EVENTS_PER_AUDIT_BATCH);
+
+  // issue #95 (Phase 5a follow-up): a content-hash cache for the EXPENSIVE remote
+  // `ai-sdk` leaf only. mock never reaches this stage; agent-file output depends on
+  // a local file, not the prompt, so it is not cached. A privacy-blocked run must
+  // NOT read a previously-cached remote response (the provider would now contribute
+  // nothing), so the block is a hard cache skip too (Codex P2). The key folds in the
+  // resolved model AND the redaction mode — a `--no-redact-secrets` run sends a
+  // different effective prompt, so it must not share an entry with a redacted run.
+  const cacheable = provider.name === "ai-sdk" && generateOptions.remotePrivacyBlocked !== true;
+  const cacheDir = auditCacheDir(inputs.collection.outputDir);
+  const modelId = effectiveModelId(model);
+  const redactMode = generateOptions.redactSecrets === false ? "noredact" : "redact";
 
   const multiBatch = batches.length > 1 || truncated;
   const auditOutputs: MethodologyAuditOutput[] = [];
   const batchIdSets: Set<string>[] = [];
   let emptyChunks = 0;
   for (const batch of batches) {
-    const result = await provider.generateStructured(
-      "methodology-audit",
-      methodologyAuditPrompt(batch, inputs, multiBatch),
-      METHODOLOGY_AUDIT_SCHEMA,
-      generateOptions
-    );
+    const prompt = methodologyAuditPrompt(batch, inputs, multiBatch);
+    const cacheKey = cacheable ? auditCacheKey(["ai-sdk", modelId, redactMode, prompt]) : undefined;
+    let result = cacheKey ? loadCachedAudit(cacheDir, cacheKey) : undefined;
+    const fromCache = result !== undefined;
+    if (!result) {
+      result = await provider.generateStructured("methodology-audit", prompt, METHODOLOGY_AUDIT_SCHEMA, generateOptions);
+    }
     if (result.ok && isRecord(result.data)) {
       const data = result.data as MethodologyAuditOutput;
+      // Cache a FRESHLY-FETCHED response only when it carries recognizable audit
+      // content: a non-ok call (privacy block / missing key / failure) and a
+      // schema-valid-but-empty `{}` are NOT cached, so a transient empty response
+      // can't leave the audit permanently degraded — a rerun recovers (Codex P2).
+      if (cacheKey && !fromCache && hasAuditContent(data)) {
+        storeCachedAudit(cacheDir, cacheKey, data);
+      }
       auditOutputs.push(data);
       batchIdSets.push(new Set(batch.map((event) => event.id)));
       if (!hasAuditContent(data)) {

@@ -79,7 +79,10 @@ export function reasoningOptionsFor(context: PipelineStageContext): ReasoningOpt
     // (config mode only) so the composed candidate-evidence stage maps cited paths
     // by config area, matching `all`. Undefined in fallback mode preserves the
     // prior repo-index-cluster behavior.
-    reviewAreas: context.areasOption.areas
+    reviewAreas: context.areasOption.areas,
+    // issue #95: thread the requested model so the methodology-audit cache key
+    // matches the model the ai-sdk provider actually resolves.
+    model: context.requestedModel
   };
 }
 
