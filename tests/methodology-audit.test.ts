@@ -561,3 +561,74 @@ test("review-surfaces.METHODOLOGY.7 (D3) an adjacent same-kind tool event is NOT
   assert.ok(finding);
   assert.match(finding.summary, /unverified anchor\(s\): c2/, "c2 must not be selected via a same-kind partner pull");
 });
+
+test("review-surfaces.METHODOLOGY.7 (D3) the merged soundness verdict keeps its OWN anchor, not the loser's (Codex P2)", async () => {
+  const many: ConversationEvent[] = Array.from({ length: 160 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `t${index}`, raw_index: index }));
+  const methodology = methodologyDegraded();
+  // chunk 0: a LOWER-severity questionable verdict WITH a valid anchor (e0);
+  // chunk 1: the WORST verdict (unsound) with NO anchor. The merged finding must not
+  // borrow e0 and present the unsound verdict as evidence-bound.
+  const provider = countingStub([
+    { workflow_assessment: { soundness: "questionable", summary: "some concerns", anchors: { event_ids: ["e0"] }, skipped_steps: [] } },
+    { workflow_assessment: { soundness: "unsound", summary: "no tests at all", skipped_steps: [] } }
+  ]);
+  await runMethodologyReasoning(provider, { collection: collectionWithEvents(many, []), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const soundness = methodology.workflow_findings.filter((f) => f.signal_kind === "workflow_soundness");
+  assert.equal(soundness.length, 1);
+  assert.match(soundness[0].summary, /no tests at all/, "the worst (unsound) verdict wins");
+  assert.ok(!soundness[0].evidence.some((ref) => ref.event_id === "e0" && ref.validation_status === "valid"), "the unsound verdict must not borrow the questionable chunk's anchor");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a chained test command (not first) counts as a test run (Codex P2)", async () => {
+  const events: ConversationEvent[] = [
+    { id: "u1", actor: "user", kind: "message", summary: "change the uploader", raw_index: 0 },
+    { id: "a1", actor: "assistant", kind: "tool_call", summary: "Bash(cd api && pnpm test)", tool: "Bash", command: "cd api && pnpm test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.match(impl.summary, /test execution was observed elsewhere/, "a test in a later shell segment must reconcile the impl_no_test flag");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a test that ran BEFORE the change does not reconcile a no-test finding (Codex P2)", async () => {
+  // A baseline test at index 0, then the edit to the changed file at index 1. The
+  // test predates the change, so it cannot cover it and must NOT reconcile.
+  const beforeEvents: ConversationEvent[] = [
+    { id: "t0", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 0 },
+    { id: "e1", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 1 }
+  ];
+  const before = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(beforeEvents, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology: before, risks: risks() }, {});
+  const implBefore = before.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(implBefore);
+  assert.ok(!/test execution was observed/.test(implBefore.summary), "a pre-change test must not reconcile a no-test finding");
+
+  // The mirror: the edit at index 0, then the test at index 1 (after) DOES reconcile.
+  const afterEvents: ConversationEvent[] = [
+    { id: "e0", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t1", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const after = methodologyDegraded();
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(afterEvents, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology: after, risks: risks() }, {});
+  const implAfter = after.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(implAfter);
+  assert.match(implAfter.summary, /test execution was observed elsewhere/, "a post-change test must reconcile the finding");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a changed-file mention in message text earns the salience boost (Codex P2)", async () => {
+  // 245 generic user messages (salience 2) + one user instruction that names the
+  // changed file in its summary. Only if the summary is matched does it reach
+  // salience 4 and outrank the chatter; at the LAST index it would otherwise tie at
+  // 2 and be dropped by the 240 budget, demoting its anchor.
+  const events: ConversationEvent[] = Array.from({ length: 245 }, (_v, index) => ({ id: `u${index}`, actor: "user", kind: "message", summary: `chatter ${index}`, raw_index: index }));
+  events.push({ id: "req", actor: "user", kind: "message", summary: "change src/uploader.ts but keep the API stable", raw_index: 245 });
+  const methodology = methodologyDegraded();
+  const audit = { unchallenged: [{ text: "assumed the API stays stable", anchors: { event_ids: ["req"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const finding = methodology.workflow_findings.find((f) => f.signal_kind === "unchallenged_assumption");
+  assert.ok(finding);
+  assert.ok(!/unverified anchor/.test(finding.summary), "a user instruction naming the changed file must be kept by the salience boost");
+});

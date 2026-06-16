@@ -861,11 +861,18 @@ async function runMethodologyAuditStage(
     ]);
   }
 
-  // Deterministic cross-chunk reconciliation: if a test/validation actually ran
-  // somewhere in the SELECTED events, a chunk-local "implementation changed, no
-  // test" flag is likely a partial-view artifact (the test lived in another chunk),
-  // so the merged finding is contextualized rather than presented as fact (Codex P2).
-  const testExecuted = selected.some(isTestExecutionEvent);
+  // Deterministic cross-chunk reconciliation: a test/validation that ran somewhere
+  // in the SELECTED events AFTER the change first appears means a chunk-local
+  // "implementation changed, no test" flag is likely a partial-view artifact (the
+  // test lived in another chunk), so the merged finding is contextualized rather
+  // than presented as fact. A test BEFORE the first changed-file touch (a baseline
+  // run, or one before the user request) cannot cover the new change, so it does
+  // NOT reconcile. When the change never appears in the selected stream the order
+  // is unknown, so any test run still counts (Codex P2).
+  const firstChangeIndex = changedFileTouchIndex(selected, changedFiles);
+  const testExecuted = selected.some(
+    (event) => isTestExecutionEvent(event) && (firstChangeIndex === undefined || event.raw_index > firstChangeIndex)
+  );
 
   // Per-CHUNK processing then merge: validate each chunk's items against the events
   // THAT CHUNK actually saw, so a finding can never validate against an event id
@@ -1044,6 +1051,16 @@ function mergeFindingCandidates(candidates: FindingCandidate[], baseCount: numbe
 }
 
 function mergeFindingCandidate(existing: FindingCandidate, incoming: FindingCandidate): FindingCandidate {
+  const worst = incoming.severityRank > existing.severityRank ? incoming : existing;
+  // Different-text candidates share a dedup key only because workflow_soundness
+  // collapses by signal alone (one overall verdict per run). There the WINNING
+  // (worst) verdict keeps its OWN evidence so a high-severity verdict is never
+  // presented as evidence-bound by borrowing the losing verdict's anchor (Codex P2).
+  if (existing.coreText !== incoming.coreText) {
+    return worst;
+  }
+  // True duplicates (same signal + text across chunks): union the evidence and
+  // invalid tokens so a token valid in ANY chunk is no longer "unverified".
   const evidence = unionEvidence(existing.evidence, incoming.evidence);
   const valid = new Set<string>();
   for (const ref of evidence) {
@@ -1055,7 +1072,6 @@ function mergeFindingCandidate(existing: FindingCandidate, incoming: FindingCand
     }
   }
   const invalidTokens = [...new Set([...existing.invalidTokens, ...incoming.invalidTokens])].filter((token) => !valid.has(token));
-  const worst = incoming.severityRank > existing.severityRank ? incoming : existing;
   return {
     ...worst,
     evidence,
@@ -1141,12 +1157,11 @@ function salienceScore(event: ConversationEvent, changedFiles: Set<string>): num
   } else if (event.actor === "assistant") {
     score += 1;
   }
-  // A changed file may be named in event.file OR inside a shell tool_call's
-  // command (e.g. `cat src/uploader.ts`), so check both (Codex P2).
-  if (
-    (event.file !== undefined && touchesChangedFile(event.file, changedFiles)) ||
-    (event.command !== undefined && textNamesChangedFile(event.command, changedFiles))
-  ) {
+  // A changed file may be named in event.file, inside a shell tool_call's command
+  // (e.g. `cat src/uploader.ts`), OR in message text — a user instruction like
+  // "change src/uploader.ts but keep the API stable" carries the constraints this
+  // phase must preserve, so check the summary too (Codex P2).
+  if (eventTouchesChangedFile(event, changedFiles)) {
     score += 2;
   }
   // A validation keyword may be in the summary OR the (often generic-summary) shell
@@ -1195,6 +1210,31 @@ function textNamesChangedFile(text: string, changedFiles: Set<string>): boolean 
   return false;
 }
 
+// True when an event references a changed file via its edited path, a shell
+// command, or message text (summary). Used for both the salience boost and the
+// "when did the change first appear" ordering anchor (Codex P2).
+function eventTouchesChangedFile(event: ConversationEvent, changedFiles: Set<string>): boolean {
+  return (
+    (event.file !== undefined && touchesChangedFile(event.file, changedFiles)) ||
+    (event.command !== undefined && textNamesChangedFile(event.command, changedFiles)) ||
+    textNamesChangedFile(event.summary, changedFiles)
+  );
+}
+
+// The earliest raw_index among events that touch a changed file, or undefined when
+// none do. Marks when the change first enters the transcript so a test run BEFORE
+// it (a baseline run, or a run before the user request) is not mistaken for
+// validation of the new change (Codex P2).
+function changedFileTouchIndex(events: ConversationEvent[], changedFiles: Set<string>): number | undefined {
+  let earliest: number | undefined;
+  for (const event of events) {
+    if (eventTouchesChangedFile(event, changedFiles) && (earliest === undefined || event.raw_index < earliest)) {
+      earliest = event.raw_index;
+    }
+  }
+  return earliest;
+}
+
 // True when an audit chunk's output carries recognizable item-4 content.
 function hasAuditContent(data: MethodologyAuditOutput): boolean {
   if (
@@ -1217,32 +1257,37 @@ function isTestExecutionEvent(event: ConversationEvent): boolean {
   if (event.kind !== "tool_call" && event.kind !== "tool_result") {
     return false;
   }
-  const command = event.command ?? "";
+  return commandRunsTest(event.command ?? "");
+}
+
+// Cross-ecosystem test runners the JS-focused classifier does not model.
+const CROSS_ECOSYSTEM_RUNNER = /^(?:node\s+--test|pytest|go\s+test|cargo\s+test|rspec|phpunit|(?:gradle|mvn)\s+test|ctest)\b/i;
+const LEADING_ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
+
+// True when ANY executed segment of a (possibly chained) shell command runs a
+// test. Splitting on `&&`/`||`/`|`/`;` and stripping leading `VAR=value`
+// assignments lets a test that is not the first command count
+// (`pnpm run lint && pnpm run test`, `cd api && pnpm test`) while a mere mention
+// (`grep pytest pyproject.toml`, `echo "go test"`) does not, because each segment
+// is matched at its executed command position. Reuses the workspace/filter-aware
+// package classifier for JS monorepo selectors (`pnpm --filter api test`) and the
+// cross-ecosystem regex for the runners it does not model (Codex P2).
+function commandRunsTest(command: string): boolean {
   if (command.trim() === "") {
     return false;
   }
-  // Reuse the workspace/filter-aware package-command classifier so monorepo
-  // selectors (`pnpm --filter api test`, `npm --workspace web test`, run-script
-  // aliases) count as a real test run instead of slipping past a narrow prefix
-  // regex (Codex P2). The classifier is JS/TS-focused, so OR in a small fallback
-  // for the cross-ecosystem runners it does not model.
-  return commandLooksLikeTestCommand(command) || commandStartsWithCrossEcosystemRunner(command);
+  return commandSegments(command).some(
+    (segment) => commandLooksLikeTestCommand(segment) || CROSS_ECOSYSTEM_RUNNER.test(segment)
+  );
 }
 
-// Cross-ecosystem test runners the JS-focused classifier does not model. Matched
-// only at an EXECUTED command position (the start of a `&&`/`||`/`|`/`;` segment,
-// after leading `VAR=value` env assignments) so a mere mention such as
-// `grep pytest pyproject.toml` or `echo "go test"` does NOT count as a test run
-// (Codex P2).
-const CROSS_ECOSYSTEM_RUNNER = /^(?:node\s+--test|pytest|go\s+test|cargo\s+test|rspec|phpunit|(?:gradle|mvn)\s+test|ctest)\b/i;
-const LEADING_ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
-function commandStartsWithCrossEcosystemRunner(command: string): boolean {
-  return command.split(/&&|\|\||[|;]/).some((segment) => {
+function commandSegments(command: string): string[] {
+  return command.split(/&&|\|\||[|;]/).map((segment) => {
     let seg = segment.trim();
     while (LEADING_ENV_ASSIGNMENT.test(seg)) {
       seg = seg.replace(LEADING_ENV_ASSIGNMENT, "");
     }
-    return CROSS_ECOSYSTEM_RUNNER.test(seg);
+    return seg;
   });
 }
 
