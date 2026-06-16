@@ -433,6 +433,39 @@ test("review-surfaces.METHODOLOGY.7 (D3) merely READING a test file does not cou
   assert.ok(!/test execution was observed/.test(impl.summary), "a test-file READ must not reconcile the impl_no_test flag");
 });
 
+test("review-surfaces.METHODOLOGY.7 (D3) a monorepo-filtered test command counts as a test run (Codex P2)", async () => {
+  const events: ConversationEvent[] = [
+    { id: "u1", actor: "user", kind: "message", summary: "change the uploader", raw_index: 0 },
+    { id: "a1", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm --filter api test)", tool: "Bash", command: "pnpm --filter api test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.match(impl.summary, /test execution was observed elsewhere/, "a `pnpm --filter` selector test run must reconcile the impl_no_test flag");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a test-related skipped_step is reconciled when a test ran in another chunk (Codex P2)", async () => {
+  const methodology = methodologyDegraded();
+  // THREE_EVENTS runs `pnpm run test`; a chunk that emitted "no regression test" from a
+  // partial view is contextualized across chunks, not surfaced as fact.
+  const audit = { workflow_assessment: { skipped_steps: [{ text: "no regression test was added", anchors: { event_ids: ["a2"] } }] } };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(THREE_EVENTS), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const skipped = methodology.workflow_findings.find((f) => f.signal_kind === "skipped_step");
+  assert.ok(skipped);
+  assert.match(skipped.summary, /test execution was observed elsewhere/);
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a non-test skipped_step is NOT spuriously reconciled by a test run (Codex P2)", async () => {
+  const methodology = methodologyDegraded();
+  const audit = { workflow_assessment: { skipped_steps: [{ text: "no design review before the refactor", anchors: { event_ids: ["a2"] } }] } };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(THREE_EVENTS), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const skipped = methodology.workflow_findings.find((f) => f.signal_kind === "skipped_step");
+  assert.ok(skipped);
+  assert.ok(!/test execution was observed/.test(skipped.summary), "an unrelated skipped step must not get the test-reconciliation note");
+});
+
 test("review-surfaces.METHODOLOGY.7 (D3) salience-ordered batches keep a late high-value event when a later batch fails", async () => {
   const events: ConversationEvent[] = Array.from({ length: 300 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `chatter ${index}`, raw_index: index }));
   events[295] = { id: "e295", actor: "assistant", kind: "tool_call", summary: "edited the file", tool: "Edit", file: "src/uploader.ts", raw_index: 295 };

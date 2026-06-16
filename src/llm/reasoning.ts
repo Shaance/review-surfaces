@@ -1,4 +1,5 @@
 import { CollectionResult } from "../collector/collect";
+import { commandLooksLikeTestCommand } from "../commands/classify";
 import { ConversationEvent } from "../conversation/events";
 import { isRecord, uniqueTruthy } from "../core/guards";
 import { EvidenceRef, llmProposedEvidence } from "../evidence/evidence";
@@ -1071,11 +1072,31 @@ function unionEvidence(left: EvidenceRef[], right: EvidenceRef[]): EvidenceRef[]
   return [...byKey.values()];
 }
 
+// A finding whose claim is "tests/validation are missing". impl_no_test always
+// qualifies; a skipped_step or workflow_soundness verdict qualifies only when its
+// text is actually about testing, so a non-test skipped step (e.g. "no design
+// review") is NOT spuriously reconciled by an unrelated test run.
+const MISSING_VALIDATION_TEXT = /\b(?:tests?|testing|coverage|regression|validat|verif|untested|unverified)\b/i;
+function assertsMissingValidation(signalKind: PacketWorkflowSignalKind, coreText: string): boolean {
+  if (signalKind === "impl_no_test") {
+    return true;
+  }
+  if (signalKind === "skipped_step" || signalKind === "workflow_soundness") {
+    return MISSING_VALIDATION_TEXT.test(coreText);
+  }
+  return false;
+}
+
 function decorateFindingCandidate(seq: number, candidate: FindingCandidate, testExecuted: boolean): WorkflowFinding {
   let summary =
     candidate.invalidTokens.length > 0 ? `${candidate.coreText} (unverified anchor(s): ${candidate.invalidTokens.join(", ")})` : candidate.coreText;
-  // Contextualize a chunk-local "no test" claim when a test actually ran elsewhere.
-  if (candidate.signalKind === "impl_no_test" && testExecuted) {
+  // Cross-chunk reconciliation (Codex P2): a finding that asserts MISSING
+  // tests/validation can be a partial-view artifact — one batch never saw the
+  // validation that ran in another. When a test actually ran somewhere in the
+  // selected events, contextualize the claim (impl_no_test always, and a
+  // skipped_step / soundness verdict whose text is about testing) rather than
+  // presenting absence as fact. The finding is kept, not dropped (demote-not-drop).
+  if (testExecuted && assertsMissingValidation(candidate.signalKind, candidate.coreText)) {
     summary += " (note: a test execution was observed elsewhere in the conversation — confirm it does not already cover this change)";
   }
   return {
@@ -1188,7 +1209,18 @@ function isTestExecutionEvent(event: ConversationEvent): boolean {
     return false;
   }
   const command = event.command ?? "";
-  return /(?:^|\b)(?:(?:pnpm|npm|yarn|bun|pnpm exec|npx)\s+(?:run\s+)?(?:test|lint|typecheck|vitest|jest|mocha)|vitest|jest|pytest|mocha|node\s+--test|go\s+test|cargo\s+test|rspec|phpunit|tsc\b|(?:gradle|mvn)\s+test|ctest)\b/i.test(command);
+  if (command.trim() === "") {
+    return false;
+  }
+  // Reuse the workspace/filter-aware package-command classifier so monorepo
+  // selectors (`pnpm --filter api test`, `npm --workspace web test`, run-script
+  // aliases) count as a real test run instead of slipping past a narrow prefix
+  // regex (Codex P2). The classifier is JS/TS-focused, so OR in a small fallback
+  // for the cross-ecosystem runners it does not model.
+  return (
+    commandLooksLikeTestCommand(command) ||
+    /(?:^|\b)(?:node\s+--test|pytest|go\s+test|cargo\s+test|rspec|phpunit|(?:gradle|mvn)\s+test|ctest)\b/i.test(command)
+  );
 }
 
 // Select up to `budget` events by salience (desc), tie-broken by raw_index (asc)
