@@ -327,3 +327,12 @@ test("review-surfaces.METHODOLOGY.4 an adapter that matched but produced zero ev
   assert.equal(methodology.missing_logs, true);
   assert.ok(methodology.quality_flags.includes("conversation_log_missing"));
 });
+
+test("review-surfaces.METHODOLOGY.7 the generated conversation evidence carries a real event_id (valid under the new rule)", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  fs.writeFileSync(path.join(tmp, "conversation.md"), "user: add a retry\nassistant: done\n");
+  const methodology = await buildMethodology(tmp, collectionFixture(tmp), "conversation.md", []);
+  const conv = methodology.evidence.find((e) => e.kind === "conversation");
+  assert.ok(conv);
+  assert.ok(typeof conv.event_id === "string" && conv.event_id.length > 0);
+});

@@ -6,8 +6,7 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import { ensureDir, isRegularFile, readText, writeText } from "../core/files";
-import { redactForArtifact } from "../privacy/redact";
-import { containsBlockedRedaction } from "../privacy/secrets";
+import { containsBlockedRedaction, redactSecrets } from "../privacy/secrets";
 import { ConversationEvent, ConversationFormat } from "./events";
 import { buildAdapterInput, normalizeConversation, NormalizeResult } from "./registry";
 
@@ -68,12 +67,15 @@ function toPersisted(event: ConversationEvent): PersistedEvent {
     if (value === undefined) {
       return undefined;
     }
-    const bounded = redactForArtifact(value, PERSIST_FIELD_LIMIT).excerpt ?? "";
-    if (containsBlockedRedaction(bounded)) {
-      blockedHashes[name] = sha256(bounded);
+    // Redact the FULL value and check IT for blocked markers — a blocked secret
+    // beyond PERSIST_FIELD_LIMIT must still hash-and-mark the field, not slip
+    // through because its [REDACTED:<kind>] marker fell after the bound (Codex P2).
+    const fullRedacted = redactSecrets(value).text;
+    if (containsBlockedRedaction(fullRedacted)) {
+      blockedHashes[name] = sha256(fullRedacted);
       return "[redacted-blocked]";
     }
-    return bounded;
+    return fullRedacted.length <= PERSIST_FIELD_LIMIT ? fullRedacted : fullRedacted.slice(0, PERSIST_FIELD_LIMIT);
   };
 
   const persisted: PersistedEvent = {

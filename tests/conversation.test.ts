@@ -185,3 +185,34 @@ test("review-surfaces.METHODOLOGY.6 a Codex function_call and its output get dis
   const ids = result?.events.map((event) => event.id) ?? [];
   assert.equal(new Set(ids).size, ids.length, `ids must be unique: ${ids.join(", ")}`);
 });
+
+test("review-surfaces.METHODOLOGY.6 a raw JSONL transcript with a leading banner still routes to its harness adapter", () => {
+  const text = [
+    "=== Claude Code session 2026-06-16 (banner) ===",
+    '{"type":"assistant","uuid":"a1","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"pnpm run test"}}]}}'
+  ].join("\n");
+  const result = normalizeConversation(buildAdapterInput("session.jsonl", text));
+  assert.equal(result?.adapter, "claude-code");
+  assert.ok(result.events.some((event) => event.kind === "tool_call" && (event.command ?? "").includes("pnpm run test")));
+});
+
+test("review-surfaces.METHODOLOGY.6 the normalized adapter round-trips tool/command/file fields", () => {
+  const text = '{"id":"e1","actor":"tool","kind":"tool_call","summary":"Bash(pnpm run test)","tool":"Bash","command":"pnpm run test","file":"src/x.ts"}';
+  const result = normalizeConversation(buildAdapterInput("conv.jsonl", text));
+  assert.equal(result?.adapter, "normalized");
+  assert.equal(result.events[0].tool, "Bash");
+  assert.equal(result.events[0].command, "pnpm run test");
+  assert.equal(result.events[0].file, "src/x.ts");
+});
+
+test("review-surfaces.PRIVACY.7 a blocked secret beyond the persisted-field bound is still hash-marked", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-persist-"));
+  const events: ConversationEvent[] = [
+    { id: "e1", actor: "tool", kind: "tool_result", summary: `${"x".repeat(2100)} GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789`, raw_index: 0 }
+  ];
+  await writeNormalizedConversation(tmp, events);
+  const persisted = fs.readFileSync(path.join(tmp, "inputs", "conversation.normalized.jsonl"), "utf8");
+  assert.ok(!persisted.includes("ghp_abcdefghijklmnopqrstuvwxyz"));
+  assert.ok(persisted.includes("[redacted-blocked]"));
+  assert.match(persisted, /"blocked_field_hashes":\{"summary":"[0-9a-f]{64}"\}/);
+});

@@ -18,6 +18,22 @@ function evtId(index: number): string {
   return `evt_${String(index + 1).padStart(4, "0")}`;
 }
 
+// Carry the optional tool/command/file fields through when an already-normalized
+// record supplies them (redacted as defense-in-depth).
+function toolFields(record: Record<string, unknown>): { tool?: string; command?: string; file?: string } {
+  const fields: { tool?: string; command?: string; file?: string } = {};
+  if (typeof record.tool === "string") {
+    fields.tool = redactText(record.tool);
+  }
+  if (typeof record.command === "string") {
+    fields.command = redactText(record.command);
+  }
+  if (typeof record.file === "string") {
+    fields.file = redactText(record.file);
+  }
+  return fields;
+}
+
 function firstJsonObject(text: string): Record<string, unknown> | undefined {
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
@@ -32,6 +48,41 @@ function firstJsonObject(text: string): Record<string, unknown> | undefined {
     }
   }
   return undefined;
+}
+
+// True when SOME line parses as a raw harness transcript record (a Claude Code
+// envelope or a Codex response item). Used so the plain-text branch declines a
+// raw JSONL that carries a leading banner/non-JSON header line — letting the
+// claude/codex adapters (which scan past the header) claim it, instead of losing
+// its tool structure to plain-text parsing (Codex P2). An incidental JSON line in
+// a genuine prose log does NOT match (it carries none of these markers).
+function hasRawTranscriptLine(text: string): boolean {
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "" || !trimmed.startsWith("{")) {
+      continue;
+    }
+    let record: Record<string, unknown> | undefined;
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      record = isRecord(parsed) ? parsed : undefined;
+    } catch {
+      continue;
+    }
+    if (!record) {
+      continue;
+    }
+    const message = isRecord(record.message) ? record.message : record;
+    const isClaudeEnvelope = typeof message.role === "string" && (Array.isArray(message.content) || typeof message.content === "string");
+    const item = isRecord(record.payload) ? record.payload : record;
+    const isCodexItem =
+      (typeof item.type === "string" && /^(input_text|output_text|function_call|function_call_output)$/.test(item.type)) ||
+      typeof item.call_id === "string";
+    if (isClaudeEnvelope || isCodexItem) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // A normalized jsonl line carries the { actor | summary | kind } markers and is
@@ -59,10 +110,14 @@ export const normalizedAdapter: ConversationAdapter = {
     if (firstRecord) {
       return looksNormalizedJsonl(firstRecord);
     }
-    // Plain text: a non-JSON first line. A leading `{`/`[` means a JSON document
-    // a raw adapter should claim, so this branch declines it.
+    // Plain text: a non-JSON first line. A leading `{`/`[`, or a raw harness
+    // transcript line hiding behind a banner/header, means a raw adapter should
+    // claim it, so this branch declines those.
     const firstLine = input.firstLines.find((line) => line.trim() !== "")?.trim() ?? "";
-    return firstLine !== "" && !firstLine.startsWith("{") && !firstLine.startsWith("[");
+    if (firstLine === "" || firstLine.startsWith("{") || firstLine.startsWith("[") || hasRawTranscriptLine(input.text)) {
+      return false;
+    }
+    return true;
   },
   normalize(input: AdapterInput): ConversationEvent[] {
     if (/\.ya?ml$/i.test(input.path)) {
@@ -73,6 +128,7 @@ export const normalizedAdapter: ConversationAdapter = {
           actor: String(isRecord(event) ? event.actor ?? "unknown" : "unknown"),
           kind: String(isRecord(event) ? event.kind ?? "message" : "message"),
           summary: redactText(isRecord(event) ? event.summary ?? event.text ?? "" : event),
+          ...(isRecord(event) ? toolFields(event) : {}),
           raw_index: index
         }));
       }
@@ -97,6 +153,10 @@ export const normalizedAdapter: ConversationAdapter = {
             actor: String(parsed.actor ?? "unknown"),
             kind: String(parsed.kind ?? "message"),
             summary: redactText(parsed.summary ?? parsed.text ?? ""),
+            // Preserve tool/command/file so an already-normalized log (including
+            // the conversation.normalized.jsonl this tool writes) round-trips its
+            // tool_call/tool_result evidence instead of flattening to a message.
+            ...toolFields(parsed),
             raw_index: index
           };
         });

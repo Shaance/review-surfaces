@@ -121,6 +121,10 @@ export async function buildMethodology(
       {
         kind: "conversation",
         path: conversationPath,
+        // Carry a real normalized event id so this conversation-kind ref stays
+        // VALID under the new validateEvidenceRef rule (a conversation ref now
+        // requires a known event_id; path membership alone is insufficient).
+        event_id: events[0].id,
         confidence: "medium",
         validation_status: "valid",
         note: "Conversation was normalized into inputs/conversation.normalized.jsonl."
