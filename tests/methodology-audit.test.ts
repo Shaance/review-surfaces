@@ -772,3 +772,72 @@ test("review-surfaces.METHODOLOGY.7 (D3) prose like 'password' does not earn the
   assert.ok(finding);
   assert.match(finding.summary, /unverified anchor\(s\): pw/, "'password' must not earn the validation boost and survive the budget");
 });
+
+test("review-surfaces.METHODOLOGY.7 (D3) pulling a low-salience partner never evicts a higher-ranked event (Codex P2)", async () => {
+  // 121 high-salience changed-file/test tool_calls (sal 8) each followed by a
+  // low-salience tool_result (sal 3): 242 events, budget 240. The greedy old pull
+  // filled the budget at 120 calls + 120 results, dropping call #121; winner-based
+  // selection keeps all 121 calls (the results rank below them).
+  const events: ConversationEvent[] = [];
+  for (let i = 0; i < 121; i += 1) {
+    events.push({ id: `c${i}`, actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test src/uploader.ts)", tool: "Bash", command: "pnpm run test src/uploader.ts", raw_index: i * 2 });
+    events.push({ id: `r${i}`, actor: "tool", kind: "tool_result", summary: "ok", raw_index: i * 2 + 1 });
+  }
+  const methodology = methodologyDegraded();
+  const audit = { unchallenged: [{ text: "assumed the last call mattered", anchors: { event_ids: ["c120"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const finding = methodology.workflow_findings.find((f) => f.signal_kind === "unchallenged_assumption");
+  assert.ok(finding);
+  assert.ok(!/unverified anchor/.test(finding.summary), "the 121st high-salience call must not be evicted by earlier results");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) an untyped tool_result carrying a file is NOT treated as an edit (Codex P2)", async () => {
+  // A read/inspect tool_result with a file but no tool name must not start the
+  // post-change clock, so a later test does not reconcile a no-test finding.
+  const events: ConversationEvent[] = [
+    { id: "tr", actor: "tool", kind: "tool_result", summary: "read src/uploader.ts", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "an untyped tool_result with a file is not an edit");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) post-change test ordering is tracked PER changed file (Codex P2)", async () => {
+  // Edit a.ts (raw 0), run tests (raw 1), THEN edit b.ts (raw 2). The test post-dates
+  // a.ts's edit but PRE-dates b.ts's, so only a.ts's no-test finding reconciles.
+  const events: ConversationEvent[] = [
+    { id: "ea", actor: "assistant", kind: "tool_call", summary: "Edit(src/a.ts)", tool: "Edit", file: "src/a.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 },
+    { id: "eb", actor: "assistant", kind: "tool_call", summary: "Edit(src/b.ts)", tool: "Edit", file: "src/b.ts", raw_index: 2 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = {
+    cross_ref_flags: [
+      { signal: "impl_no_test", text: "a.ts changed without a test", anchors: { paths: ["src/a.ts"] } },
+      { signal: "impl_no_test", text: "b.ts changed without a test", anchors: { paths: ["src/b.ts"] } }
+    ]
+  };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/a.ts", "src/b.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const aFinding = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test" && /a\.ts/.test(f.summary));
+  const bFinding = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test" && /b\.ts/.test(f.summary));
+  assert.ok(aFinding && bFinding);
+  assert.match(aFinding.summary, /test execution was observed elsewhere/, "a.ts was edited before the test, so it reconciles");
+  assert.ok(!/test execution was observed/.test(bFinding.summary), "b.ts was edited AFTER the test, so it must not reconcile");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a 'no validation was run' skipped step reconciles when validation followed (Codex P2)", async () => {
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { workflow_assessment: { skipped_steps: [{ text: "no validation was run for the change", anchors: { event_ids: ["edit"] } }] } };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const skipped = methodology.workflow_findings.find((f) => f.signal_kind === "skipped_step");
+  assert.ok(skipped);
+  assert.match(skipped.summary, /test execution was observed elsewhere/, "'no validation was run' must be recognized as a missing-validation concern");
+});

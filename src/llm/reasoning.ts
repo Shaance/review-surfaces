@@ -867,14 +867,18 @@ async function runMethodologyAuditStage(
   // test lived in another chunk), so the merged finding is contextualized rather
   // than presented as fact. A test BEFORE the edit (a baseline run, one before the
   // user request, or one after only a mention/read of the file) cannot cover the
-  // new change. And when NO selected event EDITS the changed file, the order is
-  // UNKNOWN — the selected slice cannot establish that any test ran after the
-  // change — so we do NOT reconcile rather than risk presenting a real gap as a
-  // chunking artifact (Codex P2).
-  const firstEditIndex = changedFileEditIndex(selected, changedFiles);
-  const testExecuted =
-    firstEditIndex !== undefined &&
-    selected.some((event) => isTestExecutionEvent(event) && event.raw_index > firstEditIndex);
+  // new change. Ordering is tracked PER changed file: a test that ran after editing
+  // `a.ts` must NOT reconcile a no-test finding for `b.ts` that was edited later
+  // (Codex P2). When NO selected event EDITS the changed file the order is UNKNOWN,
+  // so we do NOT reconcile rather than risk presenting a real gap as an artifact.
+  const editIndexByFile = changedFileEditIndexByFile(selected, changedFiles);
+  const globalEditIndex = editIndexByFile.size > 0 ? Math.min(...editIndexByFile.values()) : undefined;
+  const maxTestIndex = selected.reduce(
+    (max, event) => (isTestExecutionEvent(event) && event.raw_index > max ? event.raw_index : max),
+    -1
+  );
+  const reconcilesFinding = (candidate: FindingCandidate): boolean =>
+    findingHasPostChangeTest(candidate, editIndexByFile, globalEditIndex, maxTestIndex);
 
   // Per-CHUNK processing then merge: validate each chunk's items against the events
   // THAT CHUNK actually saw, so a finding can never validate against an event id
@@ -930,7 +934,7 @@ async function runMethodologyAuditStage(
   // Item 4c: merge finding candidates — dedup by (signal_kind + core text)
   // PREFERRING the grounded then higher-severity copy (so a chunk that validated an
   // anchor wins over one that did not), sort, cap, assign ids.
-  const findings = mergeFindingCandidates(findingCandidates, methodology.workflow_findings.length, testExecuted);
+  const findings = mergeFindingCandidates(findingCandidates, methodology.workflow_findings.length, reconcilesFinding);
   methodology.workflow_findings = [...methodology.workflow_findings, ...findings].slice(0, 50);
 
   // Clear the "deep audit not run" marker ONLY when the provider produced
@@ -1032,7 +1036,11 @@ function mergeCandidateTexts(candidates: AnchoredCandidate[]): string[] {
     .map((candidate) => candidate.text);
 }
 
-function mergeFindingCandidates(candidates: FindingCandidate[], baseCount: number, testExecuted: boolean): WorkflowFinding[] {
+function mergeFindingCandidates(
+  candidates: FindingCandidate[],
+  baseCount: number,
+  reconciles: (candidate: FindingCandidate) => boolean
+): WorkflowFinding[] {
   const byKey = new Map<string, FindingCandidate>();
   for (const candidate of candidates) {
     const existing = byKey.get(candidate.dedupKey);
@@ -1049,7 +1057,7 @@ function mergeFindingCandidates(candidates: FindingCandidate[], baseCount: numbe
         right.severityRank - left.severityRank || left.sortIndex - right.sortIndex || compareText(left.dedupKey, right.dedupKey)
     )
     .slice(0, MAX_PROPOSED_REQUIREMENTS * 4)
-    .map((candidate, index) => decorateFindingCandidate(baseCount + index + 1, candidate, testExecuted));
+    .map((candidate, index) => decorateFindingCandidate(baseCount + index + 1, candidate, reconciles(candidate)));
 }
 
 function mergeFindingCandidate(existing: FindingCandidate, incoming: FindingCandidate): FindingCandidate {
@@ -1106,7 +1114,8 @@ function unionEvidence(left: EvidenceRef[], right: EvidenceRef[]): EvidenceRef[]
 // qualifies; a skipped_step or workflow_soundness verdict qualifies only when its
 // text is actually about testing, so a non-test skipped step (e.g. "no design
 // review") is NOT spuriously reconciled by an unrelated test run.
-const MISSING_VALIDATION_TEXT = /\b(?:tests?|testing|coverage|regression|validat|verif|untested|unverified)\b/i;
+const MISSING_VALIDATION_TEXT =
+  /\b(?:tests?|testing|coverage|regression|validat(?:e|ed|es|ion|ing)|verif(?:y|ied|ies|ication)|untested|unverified)\b/i;
 function assertsMissingValidation(signalKind: PacketWorkflowSignalKind, coreText: string): boolean {
   if (signalKind === "impl_no_test") {
     return true;
@@ -1266,34 +1275,62 @@ function eventTouchesChangedFile(event: ConversationEvent, changedFiles: Set<str
 // (Claude Code), or `apply_patch` (Codex); a `Read`/`cat`/`grep` does NOT match.
 const EDIT_TOOL_PATTERN = /(?:edit|write|create|patch|replace|update|insert|append|modify|notebook)/i;
 
-// True when an event is an actual EDIT/WRITE of a changed file (a structured
-// edit-tool call whose target path is the changed file). The reconciliation
-// ordering anchor must be a real edit signal, not the broad touch predicate, so a
-// test that ran after a mere mention/read but BEFORE the edit is not mistaken for
-// post-change validation (Codex P2).
-function eventEditsChangedFile(event: ConversationEvent, changedFiles: Set<string>): boolean {
-  if (event.kind !== "tool_call" && event.kind !== "tool_result") {
-    return false;
-  }
-  if (event.file === undefined || !touchesChangedFile(event.file, changedFiles)) {
-    return false;
-  }
-  return event.tool === undefined || EDIT_TOOL_PATTERN.test(event.tool);
+// True when a tool_CALL is an actual EDIT/WRITE (an edit/write tool name with a
+// target path). The reconciliation ordering anchor must be a real edit signal, not
+// the broad touch predicate — a mere mention/read before the edit is not
+// post-change validation, and an untyped tool_result that merely carries a file is
+// NOT an edit (Codex P2).
+function isEditCall(event: ConversationEvent): boolean {
+  return (
+    event.kind === "tool_call" &&
+    event.tool !== undefined &&
+    EDIT_TOOL_PATTERN.test(event.tool) &&
+    event.file !== undefined
+  );
 }
 
-// The earliest raw_index at which a changed file is actually EDITED, or undefined
-// when no edit of a changed file appears in the selected stream. Marks when the
-// change is made so a test run BEFORE it (a baseline run, a run before the user
-// request, or a run after only a mention/read) is not mistaken for validation of
-// the new change (Codex P2).
-function changedFileEditIndex(events: ConversationEvent[], changedFiles: Set<string>): number | undefined {
-  let earliest: number | undefined;
+// The earliest raw_index at which EACH changed file is actually EDITED. Tracking
+// edits PER FILE means a test that ran after editing `a.ts` does not reconcile a
+// no-test finding for `b.ts` that was edited later (Codex P2).
+function changedFileEditIndexByFile(events: ConversationEvent[], changedFiles: Set<string>): Map<string, number> {
+  const byFile = new Map<string, number>();
   for (const event of events) {
-    if (eventEditsChangedFile(event, changedFiles) && (earliest === undefined || event.raw_index < earliest)) {
-      earliest = event.raw_index;
+    if (!isEditCall(event)) {
+      continue;
+    }
+    for (const changed of changedFiles) {
+      if (!touchesChangedFile(event.file as string, new Set([changed]))) {
+        continue;
+      }
+      const prev = byFile.get(changed);
+      if (prev === undefined || event.raw_index < prev) {
+        byFile.set(changed, event.raw_index);
+      }
     }
   }
-  return earliest;
+  return byFile;
+}
+
+// True when a missing-validation finding is contradicted by a test that ran AFTER
+// the relevant edit. If the finding anchors a specific changed file, the test must
+// post-date THAT file's edit; otherwise (a non-file-specific skipped_step /
+// soundness verdict) any test after the earliest edit counts (Codex P2).
+function findingHasPostChangeTest(
+  candidate: FindingCandidate,
+  editIndexByFile: Map<string, number>,
+  globalEditIndex: number | undefined,
+  maxTestIndex: number
+): boolean {
+  if (maxTestIndex < 0) {
+    return false;
+  }
+  const fileEdits = candidate.evidence
+    .filter((ref) => ref.kind === "file" && typeof ref.path === "string" && editIndexByFile.has(ref.path))
+    .map((ref) => editIndexByFile.get(ref.path as string) as number);
+  if (fileEdits.length > 0) {
+    return fileEdits.some((editIndex) => maxTestIndex > editIndex);
+  }
+  return globalEditIndex !== undefined && maxTestIndex > globalEditIndex;
 }
 
 // True when an audit chunk's output carries recognizable item-4 content.
@@ -1371,35 +1408,32 @@ function selectSalientEvents(
   const ranked = [...events].sort(
     (left, right) => salienceScore(right, changedFiles) - salienceScore(left, changedFiles) || left.raw_index - right.raw_index
   );
+  // The WINNERS are the top-`budget` events by salience — selection never includes
+  // a non-winner, so pulling a partner can never evict a higher-ranked event (Codex
+  // P2). Co-location below only reorders winners; it never forces a low-salience
+  // partner into the budget.
+  const winners = new Set(ranked.slice(0, budget).map((event) => event.id));
   const byRawIndex = new Map(events.map((event) => [event.raw_index, event]));
-  // Keep a selected tool_call/tool_result WITH its adjacent partner (so the leaf
-  // sees both the command and its outcome) by inserting the partner right next to
-  // it in salience order, then cap to the budget. This runs even when nothing is
-  // truncated, because the chunker still splits `selected` into 80-event batches —
-  // co-locating partners keeps a command and its outcome in the SAME chunk rather
-  // than letting salience scatter them across chunks (Codex P2).
+  // Emit winners in salience order, but place a winner's COMPLEMENTARY partner
+  // (a tool_call's following tool_result, or a tool_result's preceding tool_call)
+  // right after it when the partner is ALSO a winner — so a command and its outcome
+  // stay adjacent and land in the same 80-event chunk (round-8 #3423068338) without
+  // displacing any higher-ranked event (round-10 #3423378795).
   const selected: ConversationEvent[] = [];
-  const taken = new Set<string>();
+  const emitted = new Set<string>();
   for (const event of ranked) {
-    if (selected.length >= budget) {
-      break;
+    if (!winners.has(event.id) || emitted.has(event.id)) {
+      continue;
     }
-    if (!taken.has(event.id)) {
-      selected.push(event);
-      taken.add(event.id);
-    }
-    // Pull in the COMPLEMENTARY neighbor only: a tool_call's partner is the
-    // following tool_result, a tool_result's partner is the preceding tool_call.
-    // Requiring the complementary kind stops adjacent same-kind tool events (two
-    // back-to-back calls before their results) from spending budget slots on a
-    // non-partner and dropping a later higher-salience event (Codex P2).
+    selected.push(event);
+    emitted.add(event.id);
     const partnerKind = event.kind === "tool_call" ? "tool_result" : event.kind === "tool_result" ? "tool_call" : undefined;
     const partnerIndex = event.kind === "tool_call" ? event.raw_index + 1 : event.kind === "tool_result" ? event.raw_index - 1 : undefined;
-    if (partnerKind !== undefined && partnerIndex !== undefined && selected.length < budget) {
+    if (partnerKind !== undefined && partnerIndex !== undefined) {
       const partner = byRawIndex.get(partnerIndex);
-      if (partner && partner.kind === partnerKind && !taken.has(partner.id)) {
+      if (partner && partner.kind === partnerKind && winners.has(partner.id) && !emitted.has(partner.id)) {
         selected.push(partner);
-        taken.add(partner.id);
+        emitted.add(partner.id);
       }
     }
   }
