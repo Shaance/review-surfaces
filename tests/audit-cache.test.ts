@@ -22,6 +22,10 @@ function freshCwd(name: string): string {
   return dir;
 }
 
+function outDir(cwd: string): string {
+  return path.join(cwd, ".review-surfaces");
+}
+
 // An ai-sdk-NAMED provider (so the cache is active) that counts its calls.
 function countingAiSdk(data: unknown, ok = true): ReasoningProvider & { calls: number } {
   const provider = {
@@ -78,13 +82,18 @@ const EVENTS: ConversationEvent[] = [
 ];
 const AUDIT = { considered: [{ text: "backoff vs fixed delay", anchors: { event_ids: ["a1"] } }] };
 
-function run(cwd: string, provider: ReasoningProvider, m: MethodologyModel, model?: string): Promise<void> {
-  return runMethodologyReasoning(provider, { collection: collection(cwd, EVENTS), intent: intent(), evaluation: evaluation(), methodology: m, risks: risks() }, { model });
+interface RunOpts {
+  model?: string;
+  redactSecrets?: boolean;
+  remotePrivacyBlocked?: boolean;
+}
+function run(cwd: string, provider: ReasoningProvider, m: MethodologyModel, opts: RunOpts = {}): Promise<void> {
+  return runMethodologyReasoning(provider, { collection: collection(cwd, EVENTS), intent: intent(), evaluation: evaluation(), methodology: m, risks: risks() }, opts);
 }
 
 test("issue #95: the cache module key is stable and store/load round-trips", () => {
   const cwd = freshCwd("unit");
-  const dir = auditCacheDir(cwd);
+  const dir = auditCacheDir(outDir(cwd));
   assert.equal(auditCacheKey(["ai-sdk", "m", "p"]), auditCacheKey(["ai-sdk", "m", "p"]));
   assert.notEqual(auditCacheKey(["ai-sdk", "m", "p"]), auditCacheKey(["ai-sdk", "m2", "p"]));
   assert.equal(loadCachedAudit(dir, "missing"), undefined);
@@ -111,11 +120,42 @@ test("issue #95: a second ai-sdk run over the same conversation hits the cache (
 test("issue #95: a model change busts the cache", async () => {
   const cwd = freshCwd("model");
   const a = countingAiSdk(AUDIT);
-  await run(cwd, a, methodology(), "anthropic:claude-x");
+  await run(cwd, a, methodology(), { model: "anthropic:claude-x" });
   assert.equal(a.calls, 1);
   const b = countingAiSdk(AUDIT);
-  await run(cwd, b, methodology(), "openai:gpt-x");
+  await run(cwd, b, methodology(), { model: "openai:gpt-x" });
   assert.equal(b.calls, 1, "a different model is a cache miss and re-issues the call");
+});
+
+test("issue #95: a privacy-blocked run does NOT read the remote-backed cache (Codex P2)", async () => {
+  const cwd = freshCwd("privacy");
+  // A clean run caches a remote audit.
+  await run(cwd, countingAiSdk(AUDIT), methodology());
+  assert.ok(fs.existsSync(auditCacheDir(outDir(cwd))));
+  // A later privacy-blocked run must NOT reuse it; the provider contributes nothing.
+  const blocked = countingAiSdk(AUDIT, false);
+  const m = methodology();
+  await run(cwd, blocked, m, { remotePrivacyBlocked: true });
+  assert.ok(!m.considered.some((c) => c.includes("backoff vs fixed delay")), "blocked run must not apply cached remote output");
+  assert.ok(m.quality_flags.includes("methodology_analysis_degraded"), "blocked run stays degraded");
+});
+
+test("issue #95: a --no-redact-secrets run does not share a cache entry with a redacted run (Codex P2)", async () => {
+  const cwd = freshCwd("redactmode");
+  await run(cwd, countingAiSdk(AUDIT), methodology(), { redactSecrets: true });
+  const noredact = countingAiSdk(AUDIT);
+  await run(cwd, noredact, methodology(), { redactSecrets: false });
+  assert.equal(noredact.calls, 1, "a different redaction mode is a cache miss");
+});
+
+test("issue #95: the cache is written under the run's OUTPUT dir, not the repo cwd (Codex P2)", async () => {
+  const cwd = freshCwd("outdir");
+  const customOut = path.join(freshCwd("outdir-out"), "artifacts");
+  const coll = collection(cwd, EVENTS);
+  (coll as unknown as { outputDir: string }).outputDir = customOut;
+  await runMethodologyReasoning(countingAiSdk(AUDIT), { collection: coll, intent: intent(), evaluation: evaluation(), methodology: methodology(), risks: risks() }, {});
+  assert.ok(fs.existsSync(auditCacheDir(customOut)), "cache lands under the configured output dir");
+  assert.ok(!fs.existsSync(path.join(cwd, ".review-surfaces", "cache")), "cache does NOT land under the repo cwd");
 });
 
 test("issue #95: a non-ok ai-sdk response is NOT cached", async () => {
@@ -138,7 +178,7 @@ test("issue #95: the cache persists only the response, never transcript/prompt c
   ];
   const provider = countingAiSdk(AUDIT);
   await runMethodologyReasoning(provider, { collection: collection(cwd, events), intent: intent(), evaluation: evaluation(), methodology: methodology(), risks: risks() }, {});
-  const dir = auditCacheDir(cwd);
+  const dir = auditCacheDir(outDir(cwd));
   const files = fs.readdirSync(dir);
   assert.ok(files.length >= 1, "an ai-sdk run writes a cache entry");
   for (const file of files) {
@@ -157,5 +197,5 @@ test("issue #95: agent-file (file-driven, not prompt-driven) does NOT use the au
     }
   };
   await run(cwd, provider, methodology());
-  assert.ok(!fs.existsSync(auditCacheDir(cwd)), "agent-file must not populate the ai-sdk audit cache");
+  assert.ok(!fs.existsSync(auditCacheDir(outDir(cwd))), "agent-file must not populate the ai-sdk audit cache");
 });

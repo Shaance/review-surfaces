@@ -817,12 +817,16 @@ async function runMethodologyAuditStage(
   const batches = chunk(selected, MAX_EVENTS_PER_AUDIT_BATCH);
 
   // issue #95 (Phase 5a follow-up): a content-hash cache for the EXPENSIVE remote
-  // `ai-sdk` leaf only. mock never reaches this stage; agent-file
-  // output depends on a local file, not the prompt, so it is not cached. The key
-  // folds in the resolved model so a model change busts the cache.
-  const cacheable = provider.name === "ai-sdk";
-  const cacheDir = auditCacheDir(inputs.collection.cwd);
+  // `ai-sdk` leaf only. mock never reaches this stage; agent-file output depends on
+  // a local file, not the prompt, so it is not cached. A privacy-blocked run must
+  // NOT read a previously-cached remote response (the provider would now contribute
+  // nothing), so the block is a hard cache skip too (Codex P2). The key folds in the
+  // resolved model AND the redaction mode — a `--no-redact-secrets` run sends a
+  // different effective prompt, so it must not share an entry with a redacted run.
+  const cacheable = provider.name === "ai-sdk" && generateOptions.remotePrivacyBlocked !== true;
+  const cacheDir = auditCacheDir(inputs.collection.outputDir);
   const modelId = effectiveModelId(model);
+  const redactMode = generateOptions.redactSecrets === false ? "noredact" : "redact";
 
   const multiBatch = batches.length > 1 || truncated;
   const auditOutputs: MethodologyAuditOutput[] = [];
@@ -830,7 +834,7 @@ async function runMethodologyAuditStage(
   let emptyChunks = 0;
   for (const batch of batches) {
     const prompt = methodologyAuditPrompt(batch, inputs, multiBatch);
-    const cacheKey = cacheable ? auditCacheKey(["ai-sdk", modelId, prompt]) : undefined;
+    const cacheKey = cacheable ? auditCacheKey(["ai-sdk", modelId, redactMode, prompt]) : undefined;
     let result = cacheKey ? loadCachedAudit(cacheDir, cacheKey) : undefined;
     if (!result) {
       result = await provider.generateStructured("methodology-audit", prompt, METHODOLOGY_AUDIT_SCHEMA, generateOptions);

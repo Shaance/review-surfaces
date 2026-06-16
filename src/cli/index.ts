@@ -773,7 +773,10 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     // a config-area-mapped citation upgrades missing -> partial like the
     // deterministic evaluator's mapping would. Undefined in fallback mode keeps
     // the prior repo-index-cluster behavior.
-    reviewAreas: areasOption.areas
+    reviewAreas: areasOption.areas,
+    // issue #95: thread the requested model (same one the provider resolves) so the
+    // methodology-audit cache key reflects the model actually used by `all`.
+    model: requestedModel
   };
   // FINDING A: intent synthesis (which may append LLM candidate_requirements) runs
   // BEFORE evaluateIntent inside this helper, so the returned evaluation has a
