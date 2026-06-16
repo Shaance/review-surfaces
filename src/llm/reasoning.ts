@@ -1282,7 +1282,15 @@ function textNamesChangedFile(text: string, changedFiles: Set<string>): boolean 
         }
         const token = haystack.slice(start, idx + changed.length);
         const single = new Set([changed]);
-        if (touchesChangedFile(token, single) || touchesChangedFile(token.replace(/^[ab]\//, ""), single)) {
+        if (touchesChangedFile(token, single)) {
+          return true;
+        }
+        // Strip a unified-diff `a/`/`b/` prefix ONLY on an actual diff-header line
+        // (`diff --git ...`, `--- a/...`, `+++ b/...`), so a real top-level `b/` dir
+        // path is not mis-stripped into the changed file (Codex P2).
+        const lineStart = haystack.lastIndexOf("\n", idx) + 1;
+        const line = haystack.slice(lineStart, idx + changed.length);
+        if (/^\s*(?:diff\s|[-+*]{3}\s)/.test(line) && touchesChangedFile(token.replace(/^[ab]\//, ""), single)) {
           return true;
         }
       }
@@ -1442,7 +1450,11 @@ function commandRunsTest(command: string): boolean {
 // `cat`/`tee` is INPUT, not a test run. BUT a heredoc fed to a shell INTERPRETER
 // (`bash <<EOF ... pnpm test ... EOF`) really executes its body, so that body is
 // preserved for segmentation (Codex P2).
-const HEREDOC_INTERPRETER = /\b(?:bash|sh|zsh|ksh|dash|python[0-9.]*|node|ruby|perl)\b/i;
+// Anchored at the START of the receiving command (after leading `sudo`/env
+// assignments) so it matches the INVOKED interpreter, not an interpreter-looking
+// filename/redirect target — `cat > run-tests.sh <<EOF` writes a file (not executed)
+// while `bash <<EOF` runs the body (Codex P2).
+const HEREDOC_INTERPRETER = /^\s*(?:sudo\s+)?(?:[A-Za-z_]\w*=\S*\s+)*(?:bash|sh|zsh|ksh|dash|python[0-9.]*|node|ruby|perl)\b/i;
 function stripHeredocBodies(command: string): string {
   return command.replace(
     /<<-?\s*(['"]?)([A-Za-z_]\w*)\1([\s\S]*?)(\n[ \t]*\2[ \t]*)(?=\n|$)/g,
