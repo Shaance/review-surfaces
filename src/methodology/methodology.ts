@@ -2,6 +2,20 @@ import { CollectionResult } from "../collector/collect";
 import { ConversationEvent, ConversationFormat } from "../conversation/events";
 import { loadConversationEvents, writeNormalizedConversation } from "../conversation/ingest";
 import { commandEvidence, EvidenceRef, missingEvidence } from "../evidence/evidence";
+import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
+
+// review-surfaces.METHODOLOGY.7/.8: a validated item-4 workflow finding produced
+// by the methodology leaf (unchallenged assumption, skipped step, workflow
+// soundness, or one of the LLM cross-reference signals). Advisory by default
+// (D5) — it never moves the deterministic verdict on its own.
+export interface WorkflowFinding {
+  id: string;
+  signal_kind: PacketWorkflowSignalKind;
+  summary: string;
+  severity: PacketSeverity;
+  advisory: boolean;
+  evidence: EvidenceRef[];
+}
 
 export interface MethodologyModel {
   summary: string;
@@ -15,6 +29,13 @@ export interface MethodologyModel {
   verified_claims: string[];
   quality_flags: string[];
   evidence: EvidenceRef[];
+  // House tighter-than-schema pattern: REQUIRED []-defaulted array (optional in
+  // the JSON schema). EVERY code path — including the degraded keyword fallback —
+  // populates it (at least []). The leaf fills it; the fallback leaves it empty.
+  workflow_findings: WorkflowFinding[];
+  // The harness adapter label (claude-code|codex|cursor|normalized) when a
+  // conversation was ingested; omitted otherwise / on the degraded path.
+  conversation_source?: string;
 }
 
 interface TranscriptCommandEvidence {
@@ -35,10 +56,12 @@ export async function buildMethodology(
   // fallback below only serves unit-test callers (and any path that did not run
   // the collector seam); production never re-parses here.
   let events = collection.conversationEvents;
+  let source = collection.conversationSource;
   if (!events && conversationPath) {
     const loaded = await loadConversationEvents(cwd, conversationPath, conversationFormat);
     if (loaded) {
       events = loaded.events;
+      source = loaded.adapter;
       await writeNormalizedConversation(collection.outputDir, loaded.events);
     }
   }
@@ -57,7 +80,8 @@ export async function buildMethodology(
       claims_without_evidence: [],
       verified_claims: [],
       quality_flags: ["conversation_log_missing"],
-      evidence: [missingEvidence("No conversation log was provided.")]
+      evidence: [missingEvidence("No conversation log was provided.")],
+      workflow_findings: []
     };
   }
 
@@ -67,10 +91,16 @@ export async function buildMethodology(
   const claimsWithoutEvidence = validationClaims.filter((claim) => !claimHasCommandEvidence(claim, transcriptCommandEvidence));
   const qualityFlags = [
     ...(claimsWithoutEvidence.length > 0 ? ["test_claims_without_command_evidence"] : []),
-    ...(verifiedClaims.length > 0 ? ["test_claims_verified_by_command_transcripts"] : [])
+    ...(verifiedClaims.length > 0 ? ["test_claims_verified_by_command_transcripts"] : []),
+    // review-surfaces.METHODOLOGY.7 (D2): the deterministic builder is the
+    // FALLBACK. Mark the deep audit as not-run by default; a successful provider
+    // leaf (runMethodologyReasoning) clears this flag and fills workflow_findings.
+    // Under the mock default (the de-facto shipped OUTPUT) the leaf never runs, so
+    // this flag stays — the cockpit must never mistake the fallback for the audit.
+    "methodology_analysis_degraded"
   ];
 
-  const sourceLabel = conversationPath ?? collection.conversationSource ?? "the discovered conversation";
+  const sourceLabel = conversationPath ?? source ?? "the discovered conversation";
   return {
     summary: `Methodology extracted ${events.length} event(s) from ${sourceLabel}.`,
     missing_logs: false,
@@ -107,7 +137,9 @@ export async function buildMethodology(
         )
       ),
       ...commands.map((command) => commandEvidence(command, "Command associated with this review run.", "medium"))
-    ]
+    ],
+    workflow_findings: [],
+    ...(source !== undefined ? { conversation_source: source } : {})
   };
 }
 

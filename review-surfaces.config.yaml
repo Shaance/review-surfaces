@@ -299,12 +299,11 @@ quality_gate:
   # The conversation-audit uplift (docs/history/CONVERSATION_AUDIT_UPLIFT_GOAL.md)
   # follows the same convention: Phase 0 stages every not-yet-shipped ACID below,
   # and each later phase removes its own ACIDs in the PR that ships them. The gate
-  # must be back to `allow_missing: []` when the final phase lands. Phase 1 ships
-  # METHODOLOGY.6 + PRIVACY.7(a) (removed); the rest stay staged until their phase:
-  #   Phase 2:  review-surfaces.METHODOLOGY.7
+  # must be back to `allow_missing: []` when the final phase lands. Phase 1 shipped
+  # METHODOLOGY.6 + PRIVACY.7(a); Phase 2 shipped METHODOLOGY.7 (+ PRIVACY.7(b));
+  # the rest stay staged until their phase:
   #   Phase 3:  review-surfaces.METHODOLOGY.8, review-surfaces.RISK.6, review-surfaces.RISK.7
   allow_missing:
-    - review-surfaces.METHODOLOGY.7
     - review-surfaces.METHODOLOGY.8
     - review-surfaces.RISK.6
     - review-surfaces.RISK.7

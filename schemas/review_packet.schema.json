@@ -847,6 +847,58 @@
           "items": {
             "$ref": "#/$defs/EvidenceRef"
           }
+        },
+        "conversation_source": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "workflow_findings": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "$ref": "#/$defs/WorkflowFinding"
+          }
+        }
+      }
+    },
+    "WorkflowFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "signal_kind", "summary", "severity", "advisory", "evidence"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "signal_kind": {
+          "type": "string",
+          "enum": [
+            "risky_no_security",
+            "impl_no_test",
+            "api_no_compat",
+            "deps_no_rationale",
+            "unchallenged_assumption",
+            "skipped_step",
+            "workflow_soundness"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 20000
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "critical", "unknown"]
+        },
+        "advisory": {
+          "type": "boolean"
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          }
         }
       }
     },

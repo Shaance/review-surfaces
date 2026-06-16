@@ -228,6 +228,7 @@ test("review-surfaces.DOGFOOD.4 surfaces latest feedback findings in dogfood out
     skipped_checks: [],
     claims_without_evidence: [],
     verified_claims: [],
+    workflow_findings: [],
     quality_flags: [],
     evidence: []
   };
@@ -277,6 +278,7 @@ test("review-surfaces.DOGFOOD.4 keeps latest feedback across files with duplicat
     skipped_checks: [],
     claims_without_evidence: [],
     verified_claims: [],
+    workflow_findings: [],
     quality_flags: [],
     evidence: []
   };
@@ -349,6 +351,7 @@ test("review-surfaces.DOGFOOD.4 sorts feedback by created_at before selecting la
     skipped_checks: [],
     claims_without_evidence: [],
     verified_claims: [],
+    workflow_findings: [],
     quality_flags: [],
     evidence: []
   };

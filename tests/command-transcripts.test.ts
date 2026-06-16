@@ -262,6 +262,7 @@ test("review-surfaces.METHODOLOGY.5 feeds unverified methodology claims into ris
     skipped_checks: [],
     claims_without_evidence: ["evt_0001: tests are green"],
     verified_claims: [],
+    workflow_findings: [],
     quality_flags: ["test_claims_without_command_evidence"],
     evidence: []
   };

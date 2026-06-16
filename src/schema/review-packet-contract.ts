@@ -88,6 +88,20 @@ export const PACKET_COMPARISON_DIRECTIONS = ["improved", "regressed", "unchanged
 
 export const PACKET_HELPFULNESS_VALUES = ["yes", "partially", "no", "unknown"] as const;
 
+// conversation-audit uplift (METHODOLOGY.7/.8): the constrained signal_kind set
+// for a methodology workflow_finding. The first four mirror the D6 cross-reference
+// signals; the rest carry the item-4(c) judgement (unchallenged assumptions,
+// skipped steps, overall workflow soundness).
+export const PACKET_WORKFLOW_SIGNAL_KINDS = [
+  "risky_no_security",
+  "impl_no_test",
+  "api_no_compat",
+  "deps_no_rationale",
+  "unchallenged_assumption",
+  "skipped_step",
+  "workflow_soundness"
+] as const;
+
 export type PacketRunMode = (typeof PACKET_RUN_MODES)[number];
 export type PacketSourceKind = (typeof PACKET_SOURCE_KINDS)[number];
 export type PacketEvidenceKind = (typeof PACKET_EVIDENCE_KINDS)[number];
@@ -106,3 +120,4 @@ export type PacketRemediationType = (typeof PACKET_REMEDIATION_TYPES)[number];
 export type PacketDogfoodCategory = (typeof PACKET_DOGFOOD_CATEGORIES)[number];
 export type PacketComparisonDirection = (typeof PACKET_COMPARISON_DIRECTIONS)[number];
 export type PacketHelpfulness = (typeof PACKET_HELPFULNESS_VALUES)[number];
+export type PacketWorkflowSignalKind = (typeof PACKET_WORKFLOW_SIGNAL_KINDS)[number];

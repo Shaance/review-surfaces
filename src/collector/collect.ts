@@ -13,7 +13,7 @@ import { compareStrings } from "../core/compare";
 import { FeedbackFile, indexFeedbackFiles } from "../feedback/feedback";
 import { filterIgnoredDiff } from "../privacy/diff";
 import { loadPrivacyIgnore } from "../privacy/ignore";
-import { SecretRedaction, redactSecrets } from "../privacy/secrets";
+import { BLOCKED_REDACTION_KINDS, SecretRedaction, redactSecrets } from "../privacy/secrets";
 import { buildRepoIndex, RepoIndex } from "../indexer/indexer";
 import { providerMakesRemoteCall, type ProviderName } from "../llm/provider";
 import type { PacketRunMode } from "../schema/review-packet-contract";
@@ -397,13 +397,27 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     }
   }
 
+  // review-surfaces.PRIVACY.7(b): fold a conversation block signal into BOTH the
+  // gate signal (remote_provider_blocked) AND the persisted privacy surface
+  // (secret_findings), computed HERE before `privacy` is assembled so the
+  // reasoning provider reads the up-to-date block — not the stale diff-only one.
+  // The events are already redacted; a [REDACTED:<blocked-kind>] marker tells us a
+  // field HELD a blocked secret (in a tool_call/tool_result/code-edit) without
+  // exposing it. The locus is the gitignored repo-relative normalized-log path —
+  // NEVER an absolute discovered-session path.
+  const conversationBlockedKinds = collectConversationBlockedKinds(conversationEvents);
+  const conversationSecretFindings: SecretFinding[] =
+    conversationBlockedKinds.length > 0
+      ? [{ path: normalizedConversationLogPath(outputDirRelative), kinds: conversationBlockedKinds }]
+      : [];
+
   const privacy = {
     ignore_file: ignore.ignoreFile,
     ignore_patterns: ignore.patterns,
     ignored_changed_files: ignoredChangedFiles,
     diff_redactions: redactedDiff.redactions,
-    remote_provider_blocked: redactedDiff.blocked,
-    secret_findings: collectSecretFindings(filteredDiff)
+    remote_provider_blocked: redactedDiff.blocked || conversationBlockedKinds.length > 0,
+    secret_findings: [...collectSecretFindings(filteredDiff), ...conversationSecretFindings]
   };
 
   const inputHashes: ManifestInputHash[] = [];
@@ -749,6 +763,37 @@ export interface SecretFinding {
 // keys) without synthesizing a "key" from BEGIN/END markers that live in
 // different hunks (e.g. documentation examples). One finding per (file, kind),
 // each anchored to its own matching line.
+// review-surfaces.PRIVACY.7(b): which BLOCKED secret kinds the redacted
+// conversation stream HELD, detected from the [REDACTED:<kind>] markers the
+// adapters already inserted (never the secret text). Deduped, sorted for a
+// deterministic finding.
+function collectConversationBlockedKinds(events: ConversationEvent[] | undefined): string[] {
+  if (!events) {
+    return [];
+  }
+  const kinds = new Set<string>();
+  for (const event of events) {
+    for (const field of [event.summary, event.command, event.file]) {
+      if (field === undefined) {
+        continue;
+      }
+      for (const kind of BLOCKED_REDACTION_KINDS) {
+        if (field.includes(`[REDACTED:${kind}]`)) {
+          kinds.add(kind);
+        }
+      }
+    }
+  }
+  return [...kinds].sort(compareStrings);
+}
+
+// The gitignored repo-relative normalized-log path used as the conversation
+// secret_finding locus. Never an absolute discovered-session path (PRIVACY.7 /
+// isSafeRepositoryPath).
+function normalizedConversationLogPath(outputDirRelative: string): string {
+  return outputDirRelative ? `${outputDirRelative}/inputs/conversation.normalized.jsonl` : "inputs/conversation.normalized.jsonl";
+}
+
 function collectSecretFindings(rawDiff: string): SecretFinding[] {
   const findings: SecretFinding[] = [];
   for (const file of parseStructuredDiff(rawDiff).files) {

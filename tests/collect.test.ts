@@ -326,3 +326,37 @@ test("review-surfaces.METHODOLOGY.6 collect.ts produces conversationEvents that 
   assert.equal(methodology.missing_logs, false);
   assert.match(methodology.summary, new RegExp(`extracted ${result.conversationEvents.length} event`));
 });
+
+test("review-surfaces.PRIVACY.7 a conversation tool_result secret folds into remote_provider_blocked AND secret_findings", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-conv-priv-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.copyFileSync(
+    path.join(process.cwd(), "tests", "fixtures", "minimal-repo", "features", "example.feature.yaml"),
+    path.join(tmp, "features", "example.feature.yaml")
+  );
+  // claude-code.jsonl carries a github_token inside a tool_result.
+  fs.copyFileSync(
+    path.join(process.cwd(), "tests", "fixtures", "conversations", "claude-code.jsonl"),
+    path.join(tmp, "session.jsonl")
+  );
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const result = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false,
+    conversationPath: "session.jsonl"
+  });
+
+  // The gate signal is folded BEFORE privacy is assembled, so an ai-sdk run would
+  // privacy-block at the gate, not just the per-call short-circuit.
+  assert.equal(result.privacy.remote_provider_blocked, true);
+  // The persisted surface ALSO exposes the block (not a clean secret_findings next
+  // to a blocked run), with a repo-relative locus, never the conversation text.
+  const conversationFinding = result.privacy.secret_findings.find((finding) => finding.path.includes("conversation.normalized"));
+  assert.ok(conversationFinding, "secret_findings exposes the conversation block");
+  assert.ok(conversationFinding.kinds.includes("github_token"));
+  assert.ok(!conversationFinding.path.startsWith("/"));
+});

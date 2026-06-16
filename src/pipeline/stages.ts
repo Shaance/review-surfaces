@@ -5,7 +5,7 @@ import { ArchitectureModel, buildArchitecture, buildArchitectureModel } from "..
 import { EvaluationModel, evaluateIntent, verifyRequirementsWithTests } from "../evaluation/evaluate";
 import { buildIntent, IntentModel } from "../intent/intent";
 import { EnrichmentResult, ProviderName, enrichPacket, providerFor } from "../llm/provider";
-import { ReasoningOptions, runEvaluationReasoning, runIntentReasoning, runNarrativeReasoning } from "../llm/reasoning";
+import { ReasoningOptions, runEvaluationReasoning, runIntentReasoning, runMethodologyReasoning, runNarrativeReasoning } from "../llm/reasoning";
 import { buildMethodology, MethodologyModel } from "../methodology/methodology";
 import { buildReviewAreas, ReviewArea } from "../review-areas/areas";
 import { analyzeRisks, buildRiskReviewFocus, RisksModel } from "../risks/risks";
@@ -407,6 +407,10 @@ export async function runReasoningWithVerification(
   risks.review_focus.push(...evalReviewFocusDelta);
   reasoningInputs.risks = risks;
   await runNarrativeReasoning(reasoningProvider, reasoningInputs, reasoningOptions);
+  // review-surfaces.METHODOLOGY.7: the methodology audit leaf reads the redacted
+  // conversation stream on `collection` and judges item 4. Mock is a no-op so the
+  // deterministic fallback + degraded flag survive byte-stable.
+  await runMethodologyReasoning(reasoningProvider, reasoningInputs, reasoningOptions);
   return { evaluation, risks };
 }
 
@@ -429,7 +433,8 @@ export function emptyMethodology(): MethodologyModel {
     claims_without_evidence: [],
     verified_claims: [],
     quality_flags: [],
-    evidence: []
+    evidence: [],
+    workflow_findings: []
   };
 }
 

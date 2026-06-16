@@ -32,6 +32,18 @@ test("review-surfaces.COLLECTOR.4 writes conversation.normalized.jsonl from a ma
   assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "inputs", "conversation.normalized.jsonl")));
 });
 
+test("review-surfaces.METHODOLOGY.7 the deterministic fallback marks the deep audit degraded and seeds an empty workflow_findings", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  fs.writeFileSync(path.join(tmp, "conversation.md"), "Considered backoff\nDecision: keep deterministic core\n");
+
+  const methodology = await buildMethodology(tmp, collectionFixture(tmp), "conversation.md", []);
+
+  // The deterministic builder is the FALLBACK: it flags the deep audit as not-run
+  // and seeds workflow_findings: [] so the house tighter-than-schema array holds.
+  assert.ok(methodology.quality_flags.includes("methodology_analysis_degraded"));
+  assert.deepEqual(methodology.workflow_findings, []);
+});
+
 test("review-surfaces.METHODOLOGY.2 separates transcript-backed claims from unverified test claims", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
   const logPath = path.join(tmp, "conversation.md");

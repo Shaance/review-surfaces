@@ -43,6 +43,7 @@ test("review-surfaces.PRIVACY.2 redacts methodology claims when rendering packet
       skipped_checks: [],
       claims_without_evidence: ["evt_raw: SECRET_TOKEN=abc123456 tests are green"],
       verified_claims: ["evt_raw: API_KEY=abc123456 pnpm run test passed"],
+      workflow_findings: [],
       quality_flags: [],
       evidence: []
     },
@@ -102,6 +103,7 @@ test("review-surfaces.PRIVACY.2 redacts and prioritizes generated handoff valida
       skipped_checks: [],
       claims_without_evidence: [],
       verified_claims: [],
+      workflow_findings: [],
       quality_flags: [],
       evidence: []
     },
@@ -189,6 +191,7 @@ test("review-surfaces.CLI.7 handoff commands capture validation transcripts", ()
       skipped_checks: [],
       claims_without_evidence: [],
       verified_claims: [],
+      workflow_findings: [],
       quality_flags: [],
       evidence: []
     },
@@ -266,6 +269,7 @@ test("review-surfaces.DOGFOOD.5 marks truncated implemented changes in generated
       skipped_checks: [],
       claims_without_evidence: [],
       verified_claims: [],
+      workflow_findings: [],
       quality_flags: [],
       evidence: []
     },
@@ -351,6 +355,7 @@ function mockPacketInputs(): PacketInputs {
       skipped_checks: [],
       claims_without_evidence: [],
       verified_claims: [],
+      workflow_findings: [],
       quality_flags: [],
       evidence: []
     },
@@ -441,6 +446,7 @@ function packetWithRequirementResults(count: number): ReviewPacket {
       skipped_checks: [],
       claims_without_evidence: [],
       verified_claims: [],
+      workflow_findings: [],
       quality_flags: [],
       evidence: []
     },

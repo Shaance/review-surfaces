@@ -1,6 +1,7 @@
 import { CollectionResult } from "../collector/collect";
+import { ConversationEvent } from "../conversation/events";
 import { isRecord, uniqueTruthy } from "../core/guards";
-import { llmProposedEvidence } from "../evidence/evidence";
+import { EvidenceRef, llmProposedEvidence } from "../evidence/evidence";
 import { EvidenceValidationContext, validateEvidenceRef } from "../evidence/validate";
 import {
   appendCandidateReviewFocus,
@@ -15,9 +16,10 @@ import type {
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 import { markHypothesis, redactHypothesisText } from "../evidence/hypothesis";
 import { ClaimedIntentCandidate, IntentModel } from "../intent/intent";
-import { MethodologyModel } from "../methodology/methodology";
+import { MethodologyModel, WorkflowFinding } from "../methodology/methodology";
 import { RisksModel } from "../risks/risks";
 import { buildReviewAreas, createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
+import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
 import { GenerateStructuredOptions, ReasoningProvider } from "./provider";
 
 /**
@@ -64,6 +66,11 @@ interface EvaluationReasoningRunOptions {
 }
 
 const MAX_PROPOSED_REQUIREMENTS = 5;
+// review-surfaces.METHODOLOGY.7 (D3): the bounded event budget the methodology
+// leaf may send. Phase 2 uses a simple head-cap by raw_index so the FIRST
+// shippable increment is truncation-honest; Phase 5a replaces it with
+// salience-ordered chunking + map-reduce (the conversation_truncated flag stays).
+const MAX_EVENTS_PER_AUDIT_BATCH = 80;
 // Stage A #1: batch the evaluation candidate-evidence call instead of issuing
 // one generateStructured call per weak requirement. We still bound the per-call
 // payload: very large repos are split into a few bounded batches rather than one
@@ -105,6 +112,7 @@ export async function runReasoningStages(
   );
   appendCandidateReviewFocus(inputs.risks.review_focus, candidateApplication.review_focus);
   await runNarrativeStage(provider, inputs, generateOptions);
+  await runMethodologyAuditStage(provider, inputs, evidenceContext, generateOptions);
 }
 
 // FINDING C: resolve the review areas the candidate-evidence group mapping must
@@ -203,6 +211,20 @@ export async function runNarrativeReasoning(
   await runNarrativeStage(provider, inputs, toGenerateOptions(options));
 }
 
+// review-surfaces.METHODOLOGY.7: the composable per-stage runner for the
+// methodology leaf, used by runReasoningWithVerification (composed paths). Mock is
+// a guaranteed no-op so the degraded keyword fallback + flag survive byte-stable.
+export async function runMethodologyReasoning(
+  provider: ReasoningProvider,
+  inputs: ReasoningInputs,
+  options: ReasoningOptions = {}
+): Promise<void> {
+  if (provider.name === "mock") {
+    return;
+  }
+  await runMethodologyAuditStage(provider, inputs, buildEvidenceContext(inputs), toGenerateOptions(options));
+}
+
 // ---------------------------------------------------------------------------
 // Shared evidence validation context
 // ---------------------------------------------------------------------------
@@ -217,10 +239,19 @@ function buildEvidenceContext(inputs: ReasoningInputs): EvidenceValidationContex
   const knownAcids = new Set<string>(
     inputs.intent.requirements.map((requirement) => requirement.acai_id).filter(Boolean) as string[]
   );
+  // review-surfaces.METHODOLOGY.7 (D5): the event-id allowlist the methodology
+  // leaf's anchors validate against — conversation events + command transcripts +
+  // feedback findings. A leaf finding citing an unknown event_id demotes.
+  const knownEventIds = new Set<string>([
+    ...(inputs.collection.conversationEvents ?? []).map((event) => event.id),
+    ...(inputs.collection.commandTranscripts ?? []).map((transcript) => transcript.id),
+    ...inputs.collection.feedback.flatMap((file) => file.findings.map((finding) => finding.id))
+  ]);
   return {
     cwd: inputs.collection.cwd,
     knownPaths,
     knownAcids,
+    knownEventIds,
     pathExistsCache: new Map(),
     lineCountCache: new Map()
   };
@@ -685,9 +716,282 @@ Methodology summary: ${inputs.methodology.summary}
 }
 
 // ---------------------------------------------------------------------------
+// Stage 4: methodology audit leaf (item 4) — reads the redacted conversation
+// stream (incl. tool calls) and judges the workflow. LLM-primary when a provider
+// is configured; with mock/offline this stage never runs and the deterministic
+// keyword fallback + methodology_analysis_degraded flag survive (D1/D2).
+// ---------------------------------------------------------------------------
+
+const ANCHORED_ITEM_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    text: { type: "string" },
+    anchors: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        event_ids: { type: "array", items: { type: "string" } },
+        paths: { type: "array", items: { type: "string" } }
+      }
+    }
+  },
+  required: ["text"]
+} as const;
+
+const METHODOLOGY_AUDIT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    considered: { type: "array", items: ANCHORED_ITEM_SCHEMA },
+    research: { type: "array", items: ANCHORED_ITEM_SCHEMA },
+    unchallenged: { type: "array", items: ANCHORED_ITEM_SCHEMA },
+    workflow_assessment: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        summary: { type: "string" },
+        soundness: { enum: ["sound", "questionable", "unsound"] },
+        skipped_steps: { type: "array", items: ANCHORED_ITEM_SCHEMA }
+      }
+    },
+    cross_ref_flags: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          signal: { enum: ["risky_no_security", "impl_no_test", "api_no_compat", "deps_no_rationale"] },
+          text: { type: "string" },
+          anchors: ANCHORED_ITEM_SCHEMA.properties.anchors
+        },
+        required: ["signal", "text"]
+      }
+    }
+  }
+} as const;
+
+interface MethodologyAuditOutput {
+  considered?: unknown;
+  research?: unknown;
+  unchallenged?: unknown;
+  workflow_assessment?: unknown;
+  cross_ref_flags?: unknown;
+}
+
+const CROSS_REF_SIGNALS = new Set<string>(["risky_no_security", "impl_no_test", "api_no_compat", "deps_no_rationale"]);
+
+async function runMethodologyAuditStage(
+  provider: ReasoningProvider,
+  inputs: ReasoningInputs,
+  evidenceContext: EvidenceValidationContext,
+  generateOptions: GenerateStructuredOptions
+): Promise<void> {
+  const events = inputs.collection.conversationEvents ?? [];
+  if (events.length === 0) {
+    // No conversation stream: nothing to audit. The deterministic builder's
+    // methodology_analysis_degraded flag (when a log WAS present) stays as-is.
+    return;
+  }
+  const methodology = inputs.methodology;
+
+  // Bounded event budget (truncation-honest). A simple head-cap by raw_index in
+  // Phase 2; Phase 5a replaces it with salience ordering + map-reduce.
+  const ordered = [...events].sort((left, right) => left.raw_index - right.raw_index);
+  const bounded = ordered.slice(0, MAX_EVENTS_PER_AUDIT_BATCH);
+  if (ordered.length > MAX_EVENTS_PER_AUDIT_BATCH) {
+    methodology.quality_flags = uniqueTruthy([...methodology.quality_flags, "conversation_truncated"]);
+    methodology.skipped_checks = uniqueTruthy([
+      ...methodology.skipped_checks,
+      `Methodology audit was partial: only the first ${MAX_EVENTS_PER_AUDIT_BATCH} of ${ordered.length} conversation events were analyzed.`
+    ]);
+  }
+
+  const result = await provider.generateStructured(
+    "methodology-audit",
+    methodologyAuditPrompt(bounded, inputs),
+    METHODOLOGY_AUDIT_SCHEMA,
+    generateOptions
+  );
+  if (!result.ok || !isRecord(result.data)) {
+    return; // SKIP: degraded keyword fallback + flag preserved
+  }
+  const data = result.data as MethodologyAuditOutput;
+
+  // Item 4a/4b: considered alternatives + research/context, surfaced (not just
+  // stored) as labeled hypotheses on the existing string arrays.
+  methodology.considered = uniqueTruthy([...methodology.considered, ...anchoredTexts(data.considered).map(markHypothesis)]).slice(0, 16);
+  methodology.research = uniqueTruthy([...methodology.research, ...anchoredTexts(data.research).map(markHypothesis)]).slice(0, 16);
+
+  // Item 4c: unchallenged assumptions + skipped steps + workflow soundness +
+  // the LLM cross-reference signals -> validated, advisory workflow_findings.
+  const findings: WorkflowFinding[] = [];
+  let seq = methodology.workflow_findings.length;
+  const addFinding = (signalKind: PacketWorkflowSignalKind, item: unknown, severity: PacketSeverity): void => {
+    const text = isRecord(item) ? item.text : item;
+    findings.push(buildWorkflowFinding((seq += 1), signalKind, text, severity, isRecord(item) ? item.anchors : undefined, evidenceContext));
+  };
+
+  for (const item of asArray(data.unchallenged).slice(0, MAX_PROPOSED_REQUIREMENTS)) {
+    addFinding("unchallenged_assumption", item, "low");
+  }
+  const assessment = isRecord(data.workflow_assessment) ? data.workflow_assessment : undefined;
+  if (assessment) {
+    for (const item of asArray(assessment.skipped_steps).slice(0, MAX_PROPOSED_REQUIREMENTS)) {
+      addFinding("skipped_step", item, "medium");
+    }
+    const soundness = assessment.soundness;
+    if (soundness === "questionable" || soundness === "unsound") {
+      const summaryText = typeof assessment.summary === "string" ? assessment.summary : `Workflow soundness assessed as ${soundness}.`;
+      findings.push(
+        buildWorkflowFinding((seq += 1), "workflow_soundness", summaryText, soundness === "unsound" ? "high" : "medium", undefined, evidenceContext)
+      );
+    }
+  }
+  for (const flag of asArray(data.cross_ref_flags).slice(0, MAX_PROPOSED_REQUIREMENTS)) {
+    if (!isRecord(flag) || typeof flag.signal !== "string" || !CROSS_REF_SIGNALS.has(flag.signal)) {
+      continue;
+    }
+    findings.push(buildWorkflowFinding((seq += 1), flag.signal as PacketWorkflowSignalKind, flag.text, "medium", flag.anchors, evidenceContext));
+  }
+  methodology.workflow_findings = [...methodology.workflow_findings, ...findings].slice(0, 50);
+
+  // The deep audit RAN: clear the "not run" flag so the cockpit/packet show the
+  // real audit instead of the fallback marker.
+  methodology.quality_flags = methodology.quality_flags.filter((flag) => flag !== "methodology_analysis_degraded");
+}
+
+// Build one advisory (llm_proposed) workflow finding from a leaf item. Every
+// cited anchor is validated; an invalid anchor is surfaced in the summary and
+// the finding is demoted (never silently dropped), exactly like the intent
+// candidate path. A finding with no valid anchor still appears, marked advisory
+// with an llm_proposed unknown ref so it can never count as proof.
+function buildWorkflowFinding(
+  seq: number,
+  signalKind: PacketWorkflowSignalKind,
+  text: unknown,
+  severity: PacketSeverity,
+  anchors: unknown,
+  context: EvidenceValidationContext
+): WorkflowFinding {
+  const { evidence, invalidTokens } = resolveAuditAnchors(anchors, context);
+  const baseText = redactHypothesisText(typeof text === "string" ? text : "").trim() || "(no description provided)";
+  const summary = invalidTokens.length > 0 ? `${baseText} (unverified anchor(s): ${invalidTokens.join(", ")})` : baseText;
+  return {
+    id: `WF-${String(seq).padStart(3, "0")}`,
+    signal_kind: signalKind,
+    summary: markHypothesis(summary),
+    severity,
+    advisory: true,
+    evidence:
+      evidence.length > 0
+        ? evidence
+        : [
+            {
+              kind: "unknown",
+              note: "LLM-proposed: methodology audit finding lacks a validated anchor.",
+              confidence: "low",
+              validation_status: "not_checked",
+              llm_proposed: true
+            }
+          ]
+  };
+}
+
+function resolveAuditAnchors(anchors: unknown, context: EvidenceValidationContext): { evidence: EvidenceRef[]; invalidTokens: string[] } {
+  const evidence: EvidenceRef[] = [];
+  const invalidTokens: string[] = [];
+  const eventIds = isRecord(anchors) ? asStringArray(anchors.event_ids) : [];
+  const paths = isRecord(anchors) ? asStringArray(anchors.paths) : [];
+  for (const raw of eventIds) {
+    const token = redactHypothesisText(raw).trim();
+    if (token === "") {
+      continue;
+    }
+    const ref = validateEvidenceRef(
+      {
+        kind: "conversation",
+        event_id: token,
+        note: "LLM-proposed: methodology audit event anchor.",
+        confidence: "low",
+        validation_status: "not_checked",
+        llm_proposed: true
+      },
+      context
+    );
+    if (ref.validation_status === "valid") {
+      evidence.push(ref);
+    } else {
+      invalidTokens.push(token);
+    }
+  }
+  for (const raw of paths) {
+    const token = redactHypothesisText(raw).trim();
+    if (token === "") {
+      continue;
+    }
+    const ref = validateEvidenceRef(
+      llmProposedEvidence("file", { path: token, note: "Methodology audit changed-file anchor.", confidence: "low" }),
+      context
+    );
+    if (ref.validation_status === "valid") {
+      evidence.push(ref);
+    } else {
+      invalidTokens.push(token);
+    }
+  }
+  return { evidence, invalidTokens };
+}
+
+// Extract the redacted text of each anchored item (string or { text }).
+function anchoredTexts(value: unknown): string[] {
+  return asArray(value)
+    .map((item) => redactHypothesisText(isRecord(item) ? (typeof item.text === "string" ? item.text : "") : typeof item === "string" ? item : "").trim())
+    .filter((text) => text !== "")
+    .slice(0, MAX_PROPOSED_REQUIREMENTS);
+}
+
+function methodologyAuditPrompt(events: ConversationEvent[], inputs: ReasoningInputs): string {
+  const eventLines = events
+    .map((event) => {
+      const head = `[${event.id}] ${event.actor}/${event.kind}`;
+      const tool = event.tool ? ` tool=${event.tool}` : "";
+      const file = event.file ? ` file=${event.file}` : "";
+      return `${head}${tool}${file}: ${truncateForPrompt(event.summary, 240)}`;
+    })
+    .join("\n");
+  const changedFiles = inputs.collection.changedFiles.slice(0, 30).map((file) => file.path).join("\n") || "(none)";
+  return `Return compact JSON only matching the provided schema. You are auditing a coding agent's RAW conversation (messages + tool calls) that produced the diff below. Judge the methodology, citing only event ids and changed-file paths that appear here.
+
+Answer item 4:
+- considered: what alternatives/options were weighed (cite event_ids).
+- research: what research/context-gathering happened — ground EACH in the tool_call/tool_result events that did it (cite those event_ids).
+- unchallenged: assumptions that were made but NOT challenged (what is MISSING from the conversation), each with the nearest event_id.
+- workflow_assessment: an overall soundness verdict (sound|questionable|unsound) and any important steps that were skipped.
+- cross_ref_flags: where the diff changed something risky with no matching discussion — risky_no_security (auth/crypto/secrets/input-validation changed, no security discussion), impl_no_test (implementation changed, no test added/run), api_no_compat (exported API / schema / public contract changed, no compatibility discussion), deps_no_rationale (dependency/lockfile/CI/config changed, no rationale).
+
+Do NOT invent event ids or file paths; cite only ones present below. Keep each array to at most 5 items.
+
+Conversation events (id / actor / kind / summary):
+${eventLines || "(none)"}
+
+Changed files:
+${changedFiles}
+`;
+}
+
+function truncateForPrompt(value: string, limit: number): string {
+  return value.length <= limit ? value : `${value.slice(0, limit)}…`;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "") : [];
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
 }
