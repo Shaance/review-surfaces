@@ -149,6 +149,13 @@ export interface CollectionResult {
     // secret_in_diff risk consumes — a literal [REDACTED:...] placeholder in the
     // raw text matches no secret pattern, so it can never appear here.
     secret_findings: SecretFinding[];
+    // review-surfaces.PRIVACY.7(b): blocked-secret findings from the CONVERSATION
+    // transcript, kept SEPARATE from diff secret_findings so the secret_in_diff
+    // risk (pushSecretInDiff) never reports a transcript secret as a committed diff
+    // secret. Exposes the block on the persisted surface (PRIVACY.6); the gate uses
+    // remote_provider_blocked. Optional so existing in-memory CollectionResult
+    // fixtures need not set it; the collector always populates it.
+    conversation_secret_findings?: SecretFinding[];
   };
   git: GitInfo;
   // R6: human-readable collection warnings (unresolved base ref, working-tree
@@ -421,7 +428,10 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     ignored_changed_files: ignoredChangedFiles,
     diff_redactions: redactedDiff.redactions,
     remote_provider_blocked: redactedDiff.blocked || conversationBlockedKinds.length > 0,
-    secret_findings: [...collectSecretFindings(filteredDiff), ...conversationSecretFindings]
+    // Diff secrets ONLY here (the secret_in_diff risk consumes this); transcript
+    // secrets are exposed separately so they are not flagged as committed secrets.
+    secret_findings: collectSecretFindings(filteredDiff),
+    conversation_secret_findings: conversationSecretFindings
   };
 
   const inputHashes: ManifestInputHash[] = [];

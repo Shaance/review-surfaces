@@ -2,7 +2,7 @@
 // adapter. Each extracted field is redacted at normalization time; a bounded
 // excerpt (tool input / tool output / code-edit body) is redacted BEFORE it is
 // bounded so a secret straddling the limit cannot leak an unredacted prefix.
-import { BLOCKED_REDACTION_KINDS, redactSecrets } from "../privacy/secrets";
+import { BLOCKED_REDACTION_KINDS, containsBlockedRedaction, redactSecrets } from "../privacy/secrets";
 import { MAX_TOOL_BODY_LENGTH } from "./events";
 
 // Unbounded redacted text — used for plain message bodies so the legacy
@@ -21,23 +21,23 @@ export function redactPath(value: string | undefined): string | undefined {
 }
 
 // Redact-before-bound a high-exposure body (tool_use input, tool_result output,
-// Cursor code-edit body). Empty input collapses to "". A blocked-secret marker
-// that the redaction produced BEYOND the bound is re-appended to the excerpt so
-// the downstream block scan (collectConversationBlockedKinds) still sees that the
-// field held blocked material even when the marker fell after the limit (Codex P2).
+// Cursor code-edit body). Empty input collapses to "".
+//
+// When the body held a BLOCKED-kind secret, collapse to the block markers ALONE,
+// discarding the surrounding transcript context. Otherwise the redacted-but-
+// contextual body (e.g. "All tests pass. TOKEN=[REDACTED:...]") would flow into
+// the methodology prompt and into claims_without_evidence/verified_claims, so
+// methodology.yaml + the packet would retain transcript text around a blocked
+// secret even though the normalized log is hash-only (Codex P2). The markers keep
+// the block signal so collectConversationBlockedKinds still detects it.
 export function redactBoundedBody(value: unknown): string {
   const fullRedacted = redactSecrets(stringify(value)).text;
-  if (fullRedacted.length <= MAX_TOOL_BODY_LENGTH) {
-    return fullRedacted;
+  if (containsBlockedRedaction(fullRedacted)) {
+    return BLOCKED_REDACTION_KINDS.filter((kind) => fullRedacted.includes(`[REDACTED:${kind}]`))
+      .map((kind) => `[REDACTED:${kind}]`)
+      .join(" ");
   }
-  let excerpt = fullRedacted.slice(0, MAX_TOOL_BODY_LENGTH);
-  const droppedBlockMarkers = BLOCKED_REDACTION_KINDS.filter(
-    (kind) => fullRedacted.includes(`[REDACTED:${kind}]`) && !excerpt.includes(`[REDACTED:${kind}]`)
-  );
-  if (droppedBlockMarkers.length > 0) {
-    excerpt += ` ${droppedBlockMarkers.map((kind) => `[REDACTED:${kind}]`).join(" ")}`;
-  }
-  return excerpt;
+  return fullRedacted.length <= MAX_TOOL_BODY_LENGTH ? fullRedacted : fullRedacted.slice(0, MAX_TOOL_BODY_LENGTH);
 }
 
 // Tolerant stringify: objects/arrays serialize to compact JSON, primitives to

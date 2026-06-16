@@ -239,14 +239,12 @@ function buildEvidenceContext(inputs: ReasoningInputs): EvidenceValidationContex
   const knownAcids = new Set<string>(
     inputs.intent.requirements.map((requirement) => requirement.acai_id).filter(Boolean) as string[]
   );
-  // review-surfaces.METHODOLOGY.7 (D5): the event-id allowlist the methodology
-  // leaf's anchors validate against — conversation events + command transcripts +
-  // feedback findings. A leaf finding citing an unknown event_id demotes.
-  const knownEventIds = new Set<string>([
-    ...(inputs.collection.conversationEvents ?? []).map((event) => event.id),
-    ...(inputs.collection.commandTranscripts ?? []).map((transcript) => transcript.id),
-    ...inputs.collection.feedback.flatMap((file) => file.findings.map((finding) => finding.id))
-  ]);
+  // review-surfaces.METHODOLOGY.7 (D5): the event-id allowlist a conversation-kind
+  // anchor validates against is CONVERSATION events ONLY — a command-transcript or
+  // feedback id must not stamp a `kind:"conversation"` ref valid (those ids belong
+  // to their own evidence kinds). A leaf finding citing an unknown event_id demotes
+  // (Codex P2).
+  const knownEventIds = new Set<string>((inputs.collection.conversationEvents ?? []).map((event) => event.id));
   return {
     cwd: inputs.collection.cwd,
     knownPaths,

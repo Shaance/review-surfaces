@@ -336,3 +336,10 @@ test("review-surfaces.METHODOLOGY.7 the generated conversation evidence carries 
   assert.ok(conv);
   assert.ok(typeof conv.event_id === "string" && conv.event_id.length > 0);
 });
+
+test("review-surfaces.METHODOLOGY.7 a missing/unusable conversation also flags methodology_analysis_degraded", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  const methodology = await buildMethodology(tmp, collectionFixture(tmp), undefined, []);
+  assert.ok(methodology.quality_flags.includes("conversation_log_missing"));
+  assert.ok(methodology.quality_flags.includes("methodology_analysis_degraded"));
+});

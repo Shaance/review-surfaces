@@ -91,7 +91,10 @@ export async function buildMethodology(
       ],
       claims_without_evidence: [],
       verified_claims: [],
-      quality_flags: ["conversation_log_missing"],
+      // Also flag the deep audit as not-run so renderers that key off
+      // methodology_analysis_degraded show the SAME "audit not run" signal a
+      // mock/no-provider run shows for a parsed log (Codex P2).
+      quality_flags: ["conversation_log_missing", "methodology_analysis_degraded"],
       evidence: [missingEvidence(supplied ? `Conversation log ${conversationPath} produced no usable events.` : "No conversation log was provided.")],
       workflow_findings: []
     };

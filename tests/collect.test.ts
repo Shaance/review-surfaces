@@ -355,7 +355,7 @@ test("review-surfaces.PRIVACY.7 a conversation tool_result secret folds into rem
   assert.equal(result.privacy.remote_provider_blocked, true);
   // The persisted surface ALSO exposes the block (not a clean secret_findings next
   // to a blocked run), with a repo-relative locus, never the conversation text.
-  const conversationFinding = result.privacy.secret_findings.find((finding) => finding.path.includes("conversation.normalized"));
+  const conversationFinding = (result.privacy.conversation_secret_findings ?? []).find((finding) => finding.path.includes("conversation.normalized"));
   assert.ok(conversationFinding, "secret_findings exposes the conversation block");
   assert.ok(conversationFinding.kinds.includes("github_token"));
   assert.ok(!conversationFinding.path.startsWith("/"));
@@ -373,7 +373,7 @@ test("review-surfaces.PRIVACY.7 a conversation tool_result secret folds into rem
     outputDir: outsideOut,
     conversationPath: "session.jsonl"
   });
-  const escapedFinding = escaped.privacy.secret_findings.find((finding) => finding.path.includes("conversation.normalized"));
+  const escapedFinding = (escaped.privacy.conversation_secret_findings ?? []).find((finding) => finding.path.includes("conversation.normalized"));
   assert.ok(escapedFinding);
   assert.ok(!escapedFinding.path.startsWith("/") && !escapedFinding.path.includes(".."), `locus must not escape: ${escapedFinding.path}`);
 });

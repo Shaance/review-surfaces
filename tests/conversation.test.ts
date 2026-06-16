@@ -252,3 +252,12 @@ test("review-surfaces.PRIVACY.7 secret-shaped normalized actor/kind are redacted
   assert.ok(!result.events[0].actor.includes("ghp_abcdefghijklmnopqrstuvwxyz"));
   assert.match(result.events[0].actor, /\[REDACTED:github_token\]/);
 });
+
+test("review-surfaces.PRIVACY.7 a blocked tool_result body collapses to markers only (no surrounding context)", () => {
+  const text = '{"type":"user","uuid":"t1","message":{"role":"user","content":[{"type":"tool_result","content":"All tests pass. GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789"}]}}';
+  const result = normalizeConversation(buildAdapterInput("session.jsonl", text));
+  const toolResult = result?.events.find((event) => event.kind === "tool_result");
+  assert.ok(toolResult);
+  assert.equal(toolResult.summary, "[REDACTED:github_token]");
+  assert.ok(!toolResult.summary.includes("All tests pass"));
+});

@@ -278,3 +278,15 @@ test("review-surfaces.METHODOLOGY.7 a sound workflow assessment clears the degra
   await runMethodologyReasoning(stubProvider({ "methodology-audit": { workflow_assessment: { soundness: "sound", summary: "workflow is sound" } } }), { collection: collectionWithEvents(THREE_EVENTS), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
   assert.ok(!methodology.quality_flags.includes("methodology_analysis_degraded"));
 });
+
+test("review-surfaces.METHODOLOGY.7 a command-transcript id is not a valid CONVERSATION anchor", async () => {
+  const collection = collectionWithEvents(THREE_EVENTS);
+  (collection as { commandTranscripts: unknown[] }).commandTranscripts = [
+    { id: "CMD-X", command: "pnpm run test", status: "passed", exit_code: 0, truncated: false, source_path: "x" }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { unchallenged: [{ text: "cites a command id as a conversation event", anchors: { event_ids: ["CMD-X"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection, intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const finding = methodology.workflow_findings.find((f) => f.signal_kind === "unchallenged_assumption");
+  assert.match(finding?.summary ?? "", /unverified anchor.*CMD-X/);
+});
