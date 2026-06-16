@@ -872,7 +872,7 @@ async function runMethodologyAuditStage(
   // (Codex P2). When NO selected event EDITS the changed file the order is UNKNOWN,
   // so we do NOT reconcile rather than risk presenting a real gap as an artifact.
   const editIndexByFile = changedFileEditIndexByFile(selected, changedFiles);
-  const globalEditIndex = editIndexByFile.size > 0 ? Math.min(...editIndexByFile.values()) : undefined;
+  const globalEditIndex = editIndexByFile.size > 0 ? Math.max(...editIndexByFile.values()) : undefined;
   const maxTestIndex = selected.reduce(
     (max, event) => (isTestExecutionEvent(event) && event.raw_index > max ? event.raw_index : max),
     -1
@@ -1270,10 +1270,12 @@ function eventTouchesChangedFile(event: ConversationEvent, changedFiles: Set<str
   );
 }
 
-// Tools that WRITE/EDIT a file (vs. read or inspect it). Adapters normalize names
-// to families like `edit` (Cursor), `Edit`/`Write`/`MultiEdit`/`NotebookEdit`
-// (Claude Code), or `apply_patch` (Codex); a `Read`/`cat`/`grep` does NOT match.
-const EDIT_TOOL_PATTERN = /(?:edit|write|create|patch|replace|update|insert|append|modify|notebook)/i;
+// Tools that WRITE/EDIT a file (vs. read or inspect it). Matches only unambiguous
+// write verbs — `edit` (Cursor, `Edit`, `MultiEdit`, `NotebookEdit`), `write`
+// (`Write`, `write_file`), `patch` (`apply_patch`), `replace` (`str_replace`). A
+// `Read`/`cat`/`grep`/`NotebookRead` must NOT match, so vague substrings like
+// `notebook`/`create`/`update` are intentionally excluded (Codex P2).
+const EDIT_TOOL_PATTERN = /(?:edit|write|patch|replace)/i;
 
 // True when a tool_CALL is an actual EDIT/WRITE (an edit/write tool name with a
 // target path). The reconciliation ordering anchor must be a real edit signal, not
@@ -1289,9 +1291,11 @@ function isEditCall(event: ConversationEvent): boolean {
   );
 }
 
-// The earliest raw_index at which EACH changed file is actually EDITED. Tracking
+// The LATEST raw_index at which EACH changed file is actually EDITED. Tracking
 // edits PER FILE means a test that ran after editing `a.ts` does not reconcile a
-// no-test finding for `b.ts` that was edited later (Codex P2).
+// no-test finding for `b.ts` edited later; tracking the LATEST edit means a test
+// that ran between two edits of the SAME file (edit → test → edit) does not count
+// as covering the final change (Codex P2).
 function changedFileEditIndexByFile(events: ConversationEvent[], changedFiles: Set<string>): Map<string, number> {
   const byFile = new Map<string, number>();
   for (const event of events) {
@@ -1303,7 +1307,7 @@ function changedFileEditIndexByFile(events: ConversationEvent[], changedFiles: S
         continue;
       }
       const prev = byFile.get(changed);
-      if (prev === undefined || event.raw_index < prev) {
+      if (prev === undefined || event.raw_index > prev) {
         byFile.set(changed, event.raw_index);
       }
     }

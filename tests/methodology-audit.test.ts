@@ -841,3 +841,34 @@ test("review-surfaces.METHODOLOGY.7 (D3) a 'no validation was run' skipped step 
   assert.ok(skipped);
   assert.match(skipped.summary, /test execution was observed elsewhere/, "'no validation was run' must be recognized as a missing-validation concern");
 });
+
+test("review-surfaces.METHODOLOGY.7 (D3) a read-only NotebookRead is not treated as an edit (Codex P2)", async () => {
+  // `NotebookRead` contains 'notebook' but is a READ; it must not start the edit
+  // clock, so a later test does not reconcile a no-test finding.
+  const events: ConversationEvent[] = [
+    { id: "nr", actor: "assistant", kind: "tool_call", summary: "NotebookRead(src/uploader.ts)", tool: "NotebookRead", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "a read-only tool whose name contains 'notebook' is not an edit");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a test between two edits of the same file does not reconcile (Codex P2)", async () => {
+  // edit (raw 0) -> test (raw 1) -> edit again (raw 2): the test predates the FINAL
+  // edit, so it cannot cover the latest change.
+  const events: ConversationEvent[] = [
+    { id: "e1", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 },
+    { id: "e2", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 2 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "a test before the FINAL edit must not reconcile");
+});
