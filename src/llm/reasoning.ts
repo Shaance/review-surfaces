@@ -836,16 +836,19 @@ async function runMethodologyAuditStage(
     const prompt = methodologyAuditPrompt(batch, inputs, multiBatch);
     const cacheKey = cacheable ? auditCacheKey(["ai-sdk", modelId, redactMode, prompt]) : undefined;
     let result = cacheKey ? loadCachedAudit(cacheDir, cacheKey) : undefined;
+    const fromCache = result !== undefined;
     if (!result) {
       result = await provider.generateStructured("methodology-audit", prompt, METHODOLOGY_AUDIT_SCHEMA, generateOptions);
-      // Store only a successful (ok) response: a non-ok ai-sdk call is a privacy
-      // block / missing key / failure and must never be cached.
-      if (cacheKey && result.ok) {
-        storeCachedAudit(cacheDir, cacheKey, result.data);
-      }
     }
     if (result.ok && isRecord(result.data)) {
       const data = result.data as MethodologyAuditOutput;
+      // Cache a FRESHLY-FETCHED response only when it carries recognizable audit
+      // content: a non-ok call (privacy block / missing key / failure) and a
+      // schema-valid-but-empty `{}` are NOT cached, so a transient empty response
+      // can't leave the audit permanently degraded — a rerun recovers (Codex P2).
+      if (cacheKey && !fromCache && hasAuditContent(data)) {
+        storeCachedAudit(cacheDir, cacheKey, data);
+      }
       auditOutputs.push(data);
       batchIdSets.push(new Set(batch.map((event) => event.id)));
       if (!hasAuditContent(data)) {

@@ -140,6 +140,18 @@ test("issue #95: a privacy-blocked run does NOT read the remote-backed cache (Co
   assert.ok(m.quality_flags.includes("methodology_analysis_degraded"), "blocked run stays degraded");
 });
 
+test("issue #95: an empty audit response is NOT cached so a rerun can recover (Codex P2)", async () => {
+  const cwd = freshCwd("empty");
+  const empty = countingAiSdk({});
+  await run(cwd, empty, methodology());
+  assert.equal(empty.calls, 1);
+  const dir = auditCacheDir(outDir(cwd));
+  assert.ok(!fs.existsSync(dir) || fs.readdirSync(dir).length === 0, "an empty {} response must not be cached");
+  const second = countingAiSdk(AUDIT);
+  await run(cwd, second, methodology());
+  assert.equal(second.calls, 1, "a rerun re-calls the provider since the empty response was not cached");
+});
+
 test("issue #95: a --no-redact-secrets run does not share a cache entry with a redacted run (Codex P2)", async () => {
   const cwd = freshCwd("redactmode");
   await run(cwd, countingAiSdk(AUDIT), methodology(), { redactSecrets: true });
