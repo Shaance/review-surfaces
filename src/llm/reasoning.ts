@@ -866,13 +866,15 @@ async function runMethodologyAuditStage(
   // "implementation changed, no test" flag is likely a partial-view artifact (the
   // test lived in another chunk), so the merged finding is contextualized rather
   // than presented as fact. A test BEFORE the first changed-file touch (a baseline
-  // run, or one before the user request) cannot cover the new change, so it does
-  // NOT reconcile. When the change never appears in the selected stream the order
-  // is unknown, so any test run still counts (Codex P2).
+  // run, or one before the user request) cannot cover the new change. And when NO
+  // selected event touches the changed file at all, the order is UNKNOWN — the
+  // selected slice cannot establish that any test ran after the change — so we do
+  // NOT reconcile rather than risk presenting a real gap as a chunking artifact
+  // (Codex P2).
   const firstChangeIndex = changedFileTouchIndex(selected, changedFiles);
-  const testExecuted = selected.some(
-    (event) => isTestExecutionEvent(event) && (firstChangeIndex === undefined || event.raw_index > firstChangeIndex)
-  );
+  const testExecuted =
+    firstChangeIndex !== undefined &&
+    selected.some((event) => isTestExecutionEvent(event) && event.raw_index > firstChangeIndex);
 
   // Per-CHUNK processing then merge: validate each chunk's items against the events
   // THAT CHUNK actually saw, so a finding can never validate against an event id
@@ -1051,7 +1053,15 @@ function mergeFindingCandidates(candidates: FindingCandidate[], baseCount: numbe
 }
 
 function mergeFindingCandidate(existing: FindingCandidate, incoming: FindingCandidate): FindingCandidate {
-  const worst = incoming.severityRank > existing.severityRank ? incoming : existing;
+  // Pick the worst severity; break an equal-severity tie toward the GROUNDED
+  // candidate so a merged verdict (e.g. two same-severity soundness summaries)
+  // renders with available validated evidence rather than the first chunk's
+  // unanchored one. Otherwise keep the earlier candidate for determinism (Codex P2).
+  const worst =
+    incoming.severityRank > existing.severityRank ||
+    (incoming.severityRank === existing.severityRank && incoming.grounded && !existing.grounded)
+      ? incoming
+      : existing;
   // Different-text candidates share a dedup key only because workflow_soundness
   // collapses by signal alone (one overall verdict per run). There the WINNING
   // (worst) verdict keeps its OWN evidence so a high-severity verdict is never
@@ -1197,14 +1207,33 @@ function touchesChangedFile(file: string, changedFiles: Set<string>): boolean {
   return false;
 }
 
-// True when a changed-file path appears anywhere in free text (a shell command).
-// Fold backslashes so a Windows-separated reference still matches the
-// slash-separated changed path (Codex P2).
+// True when a changed-file path appears as a PATH-BOUNDED token in free text (a
+// shell command or message). Fold backslashes so a Windows-separated reference
+// still matches the slash-separated changed path. The match must not be flanked by
+// path-name characters, so `src/foo.ts` does NOT match inside `src/foo.tsx` or
+// `mysrc/foo.ts` — a false mention must not feed the salience or change-order
+// signals (Codex P2).
 function textNamesChangedFile(text: string, changedFiles: Set<string>): boolean {
   const haystack = text.replace(/\\/g, "/");
   for (const changed of changedFiles) {
-    if (changed.length > 0 && haystack.includes(changed)) {
-      return true;
+    if (changed.length === 0) {
+      continue;
+    }
+    let from = 0;
+    for (;;) {
+      const idx = haystack.indexOf(changed, from);
+      if (idx === -1) {
+        break;
+      }
+      const before = idx === 0 ? "" : haystack[idx - 1];
+      const after = haystack[idx + changed.length] ?? "";
+      // `/` before is allowed (a longer path prefix references the same file);
+      // any path-name char (letters/digits/._-) immediately before or after means
+      // this is a DIFFERENT path, not a boundary-aligned mention.
+      if (!/[A-Za-z0-9._-]/.test(before) && !/[A-Za-z0-9._-]/.test(after)) {
+        return true;
+      }
+      from = idx + 1;
     }
   }
   return false;
@@ -1282,7 +1311,9 @@ function commandRunsTest(command: string): boolean {
 }
 
 function commandSegments(command: string): string[] {
-  return command.split(/&&|\|\||[|;]/).map((segment) => {
+  // Newlines are shell command separators too, so a multi-line tool command
+  // (`cd api\npnpm test`) splits into its real commands (Codex P2).
+  return command.split(/&&|\|\||[|;\n\r]/).map((segment) => {
     let seg = segment.trim();
     while (LEADING_ENV_ASSIGNMENT.test(seg)) {
       seg = seg.replace(LEADING_ENV_ASSIGNMENT, "");
@@ -1302,21 +1333,16 @@ function selectSalientEvents(
   changedFiles: Set<string>,
   budget: number
 ): { selected: ConversationEvent[]; truncated: boolean } {
-  if (events.length <= budget) {
-    return {
-      selected: [...events].sort(
-        (left, right) => salienceScore(right, changedFiles) - salienceScore(left, changedFiles) || left.raw_index - right.raw_index
-      ),
-      truncated: false
-    };
-  }
   const ranked = [...events].sort(
     (left, right) => salienceScore(right, changedFiles) - salienceScore(left, changedFiles) || left.raw_index - right.raw_index
   );
   const byRawIndex = new Map(events.map((event) => [event.raw_index, event]));
   // Keep a selected tool_call/tool_result WITH its adjacent partner (so the leaf
   // sees both the command and its outcome) by inserting the partner right next to
-  // it in salience order, then cap to the budget (Codex P2).
+  // it in salience order, then cap to the budget. This runs even when nothing is
+  // truncated, because the chunker still splits `selected` into 80-event batches —
+  // co-locating partners keeps a command and its outcome in the SAME chunk rather
+  // than letting salience scatter them across chunks (Codex P2).
   const selected: ConversationEvent[] = [];
   const taken = new Set<string>();
   for (const event of ranked) {
@@ -1342,7 +1368,7 @@ function selectSalientEvents(
       }
     }
   }
-  return { selected, truncated: true };
+  return { selected, truncated: events.length > budget };
 }
 
 // The raw_index of the first cited event id present in the selection, used as the

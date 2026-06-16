@@ -412,8 +412,14 @@ test("review-surfaces.METHODOLOGY.7 (D3) duplicate finding evidence is unioned a
 
 test("review-surfaces.METHODOLOGY.7 (D3) an impl_no_test flag is contextualized when a test actually ran", async () => {
   const methodology = methodologyDegraded();
-  // THREE_EVENTS includes a `pnpm run test` tool_call, so the impl_no_test flag is reconciled.
-  await runMethodologyReasoning(stubProvider({ "methodology-audit": FAKE_AUDIT }), { collection: collectionWithEvents(THREE_EVENTS), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  // The changed file is edited (raw 0), THEN a test runs (raw 1) — a post-change
+  // test reconciles the impl_no_test flag.
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "a2", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
   const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
   assert.ok(impl);
   assert.match(impl.summary, /test execution was observed elsewhere/);
@@ -435,7 +441,7 @@ test("review-surfaces.METHODOLOGY.7 (D3) merely READING a test file does not cou
 
 test("review-surfaces.METHODOLOGY.7 (D3) a monorepo-filtered test command counts as a test run (Codex P2)", async () => {
   const events: ConversationEvent[] = [
-    { id: "u1", actor: "user", kind: "message", summary: "change the uploader", raw_index: 0 },
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
     { id: "a1", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm --filter api test)", tool: "Bash", command: "pnpm --filter api test", raw_index: 1 }
   ];
   const methodology = methodologyDegraded();
@@ -448,10 +454,14 @@ test("review-surfaces.METHODOLOGY.7 (D3) a monorepo-filtered test command counts
 
 test("review-surfaces.METHODOLOGY.7 (D3) a test-related skipped_step is reconciled when a test ran in another chunk (Codex P2)", async () => {
   const methodology = methodologyDegraded();
-  // THREE_EVENTS runs `pnpm run test`; a chunk that emitted "no regression test" from a
-  // partial view is contextualized across chunks, not surfaced as fact.
+  // The changed file is edited (raw 0), then a test runs (raw 1); a chunk that
+  // emitted "no regression test" from a partial view is contextualized post-change.
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "a2", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
   const audit = { workflow_assessment: { skipped_steps: [{ text: "no regression test was added", anchors: { event_ids: ["a2"] } }] } };
-  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(THREE_EVENTS), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
   const skipped = methodology.workflow_findings.find((f) => f.signal_kind === "skipped_step");
   assert.ok(skipped);
   assert.match(skipped.summary, /test execution was observed elsewhere/);
@@ -581,7 +591,7 @@ test("review-surfaces.METHODOLOGY.7 (D3) the merged soundness verdict keeps its 
 
 test("review-surfaces.METHODOLOGY.7 (D3) a chained test command (not first) counts as a test run (Codex P2)", async () => {
   const events: ConversationEvent[] = [
-    { id: "u1", actor: "user", kind: "message", summary: "change the uploader", raw_index: 0 },
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
     { id: "a1", actor: "assistant", kind: "tool_call", summary: "Bash(cd api && pnpm test)", tool: "Bash", command: "cd api && pnpm test", raw_index: 1 }
   ];
   const methodology = methodologyDegraded();
@@ -631,4 +641,63 @@ test("review-surfaces.METHODOLOGY.7 (D3) a changed-file mention in message text 
   const finding = methodology.workflow_findings.find((f) => f.signal_kind === "unchallenged_assumption");
   assert.ok(finding);
   assert.ok(!/unverified anchor/.test(finding.summary), "a user instruction naming the changed file must be kept by the salience boost");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) no selected event touches the changed file -> ordering unknown, no reconciliation (Codex P2)", async () => {
+  // A test runs but NOTHING in the stream touches the changed file, so the selected
+  // slice cannot establish the test ran after the change; do not reconcile.
+  const events: ConversationEvent[] = [
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 0 },
+    { id: "a", actor: "assistant", kind: "message", summary: "done", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "with no changed-file touch the order is unknown, so do not reconcile");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a .tsx mention does not count as touching the .ts changed file (Codex P2)", async () => {
+  // The only file-ish mention is src/uploader.tsx (a DIFFERENT file). With a
+  // boundary-aligned match no change touch is established, so the post-change test
+  // ordering is unknown and the finding is not reconciled.
+  const events: ConversationEvent[] = [
+    { id: "r", actor: "assistant", kind: "tool_call", summary: "Bash(cat src/uploader.tsx)", tool: "Bash", command: "cat src/uploader.tsx", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "a .tsx mention must not be treated as touching the .ts changed file");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a newline-separated test command counts as a test run (Codex P2)", async () => {
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "a1", actor: "assistant", kind: "tool_call", summary: "Bash(cd api ; pnpm test)", tool: "Bash", command: "cd api\npnpm test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.match(impl.summary, /test execution was observed elsewhere/, "a newline-separated test command must reconcile the impl_no_test flag");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) an equal-severity soundness tie prefers the grounded verdict (Codex P2)", async () => {
+  const many: ConversationEvent[] = Array.from({ length: 160 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `t${index}`, raw_index: index }));
+  const methodology = methodologyDegraded();
+  // Both chunks return a same-severity questionable verdict; chunk 0 is unanchored,
+  // chunk 1 cites a valid event. The tie must resolve to the grounded verdict.
+  const provider = countingStub([
+    { workflow_assessment: { soundness: "questionable", summary: "first concern", skipped_steps: [] } },
+    { workflow_assessment: { soundness: "questionable", summary: "second concern", anchors: { event_ids: ["e80"] }, skipped_steps: [] } }
+  ]);
+  await runMethodologyReasoning(provider, { collection: collectionWithEvents(many, []), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const soundness = methodology.workflow_findings.filter((f) => f.signal_kind === "workflow_soundness");
+  assert.equal(soundness.length, 1);
+  assert.ok(soundness[0].evidence.some((ref) => ref.event_id === "e80" && ref.validation_status === "valid"), "the grounded verdict's anchor is kept on a severity tie");
 });
