@@ -3863,7 +3863,32 @@ function buildQuestions(
     });
   }
 
+  // review-surfaces.METHODOLOGY.7 (D5): surface the methodology audit's item-4
+  // findings as ADVISORY clarifying questions — only the ones whose anchor the
+  // leaf VALIDATED against a real event id / changed path (so the demoted /
+  // unanchored ones never add noise). Advisory by default; a future deterministic
+  // cross-reference check (Phase 3a) can promote one to blocking. Under the mock
+  // default workflow_findings is empty, so this is a no-op on the offline path.
+  for (const finding of (input.packet.methodology.workflow_findings ?? []).filter(workflowFindingHasValidatedAnchor).slice(0, 3)) {
+    questions.push({
+      id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
+      severity: "clarifying",
+      question: `Did the agent's workflow account for this (${finding.signal_kind.replace(/_/g, " ")}): ${forQuestionTail(finding.summary)}?`,
+      reason: "The methodology audit of the agent conversation flagged this as advisory; confirm it before approval.",
+      evidence: finding.evidence,
+      maps_to_risks: [],
+      maps_to_requirements: []
+    });
+  }
+
   return capQuestionsPreservingIntent(dedupeQuestions(questions), Math.min(MAX_QUESTIONS, config.max_questions));
+}
+
+// A methodology workflow finding is worth a reviewer question only when the leaf
+// VALIDATED at least one anchor (a known event id or changed path); demoted /
+// unanchored findings stay out of the question queue.
+function workflowFindingHasValidatedAnchor(finding: { evidence: EvidenceRef[] }): boolean {
+  return finding.evidence.some((ref) => ref.validation_status === "valid");
 }
 
 function capQuestionsPreservingIntent(questions: ReviewerQuestion[], limit: number): ReviewerQuestion[] {
