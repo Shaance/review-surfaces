@@ -812,105 +812,232 @@ async function runMethodologyAuditStage(
   const { selected, truncated } = selectSalientEvents(events, changedFiles, AUDIT_EVENT_BUDGET);
   const batches = chunk(selected, MAX_EVENTS_PER_AUDIT_BATCH);
 
+  const multiBatch = batches.length > 1 || truncated;
   const auditOutputs: MethodologyAuditOutput[] = [];
+  const batchIdSets: Set<string>[] = [];
   for (const batch of batches) {
     const result = await provider.generateStructured(
       "methodology-audit",
-      methodologyAuditPrompt(batch, inputs),
+      methodologyAuditPrompt(batch, inputs, multiBatch),
       METHODOLOGY_AUDIT_SCHEMA,
       generateOptions
     );
     if (result.ok && isRecord(result.data)) {
       auditOutputs.push(result.data as MethodologyAuditOutput);
+      batchIdSets.push(new Set(batch.map((event) => event.id)));
     }
   }
   if (auditOutputs.length === 0) {
     return; // SKIP: every batch returned non-ok; degraded fallback + flag preserved, NO truncation flag
   }
+  const someBatchFailed = auditOutputs.length < batches.length;
 
-  // Deterministic merge of the per-chunk audits: the audit arrays have no natural
-  // per-item id, so dedup by normalized text and sort by the first-cited event's
-  // raw_index then normalized text (see mergeAuditOutputs).
   const eventRawIndex = new Map(selected.map((event) => [event.id, event.raw_index]));
-  const data = mergeAuditOutputs(auditOutputs, eventRawIndex);
 
-  // The audit RAN: only NOW is the partial-coverage flag honest (a fully non-ok
-  // provider analyzed nothing, so flagging truncation there would falsely claim a
-  // partial audit — Codex P2).
-  if (truncated) {
+  // The audit RAN: flag a partial audit when events were dropped by the budget OR a
+  // provider batch failed (so part of the conversation went un-analyzed) — Codex P2.
+  if (truncated || someBatchFailed) {
     methodology.quality_flags = uniqueTruthy([...methodology.quality_flags, "conversation_truncated"]);
     methodology.skipped_checks = uniqueTruthy([
       ...methodology.skipped_checks,
-      `Methodology audit was partial: ${selected.length} of ${events.length} conversation events were analyzed (salience-ranked).`
+      truncated
+        ? `Methodology audit was partial: ${selected.length} of ${events.length} conversation events were analyzed (salience-ranked).`
+        : `Methodology audit was partial: ${auditOutputs.length} of ${batches.length} event batches were analyzed (a provider batch did not respond).`
     ]);
   }
 
-  // Validate audit anchors against ONLY the events actually SENT to the provider
-  // (the selected salient set), not every collected event — otherwise a model could
-  // cite an unanalyzed event id and have it stamped valid (Codex P2).
-  const auditContext: EvidenceValidationContext = {
-    ...evidenceContext,
-    knownEventIds: new Set(selected.map((event) => event.id))
-  };
+  // Per-CHUNK processing then merge: validate each chunk's items against the events
+  // THAT CHUNK actually saw, so a finding can never validate against an event id
+  // from a different chunk and an invalid token is still NAMED, not silently
+  // dropped (Codex P2). Candidates are then merged deterministically.
+  const consideredCandidates: AnchoredCandidate[] = [];
+  const researchCandidates: AnchoredCandidate[] = [];
+  const findingCandidates: FindingCandidate[] = [];
+  let anySoundnessVerdict = false;
 
-  // Item 4a/4b: considered alternatives + research/context, surfaced as labeled
-  // hypotheses — but ONLY when their anchors validate (event id / changed path),
-  // so a provider's hallucinated research/alternative is not presented as a
-  // conversation-derived fact (Codex P2), matching workflow_findings' discipline.
-  const consideredAdds = groundedAnchoredTexts(data.considered, auditContext, changedFiles).map(markHypothesis);
-  const researchAdds = groundedAnchoredTexts(data.research, auditContext, changedFiles).map(markHypothesis);
+  auditOutputs.forEach((data, batchIndex) => {
+    const batchContext: EvidenceValidationContext = { ...evidenceContext, knownEventIds: batchIdSets[batchIndex] };
+    collectAnchoredCandidates(data.considered, batchContext, changedFiles, eventRawIndex, consideredCandidates);
+    collectAnchoredCandidates(data.research, batchContext, changedFiles, eventRawIndex, researchCandidates);
+
+    for (const item of asArray(data.unchallenged).slice(0, MAX_PROPOSED_REQUIREMENTS)) {
+      findingCandidates.push(buildFindingCandidate("unchallenged_assumption", item, "low", batchContext, changedFiles, eventRawIndex));
+    }
+    const assessment = isRecord(data.workflow_assessment) ? data.workflow_assessment : undefined;
+    if (assessment) {
+      if (typeof assessment.soundness === "string") {
+        anySoundnessVerdict = true;
+      }
+      for (const item of asArray(assessment.skipped_steps).slice(0, MAX_PROPOSED_REQUIREMENTS)) {
+        findingCandidates.push(buildFindingCandidate("skipped_step", item, "medium", batchContext, changedFiles, eventRawIndex));
+      }
+      if (assessment.soundness === "questionable" || assessment.soundness === "unsound") {
+        const summaryText =
+          typeof assessment.summary === "string" && assessment.summary.trim() !== ""
+            ? assessment.summary
+            : `Workflow soundness assessed as ${assessment.soundness}.`;
+        const soundnessItem = { text: summaryText, anchors: assessment.anchors ?? firstAnchors(assessment.skipped_steps) };
+        findingCandidates.push(
+          buildFindingCandidate("workflow_soundness", soundnessItem, assessment.soundness === "unsound" ? "high" : "medium", batchContext, changedFiles, eventRawIndex)
+        );
+      }
+    }
+    for (const flag of asArray(data.cross_ref_flags).slice(0, MAX_PROPOSED_REQUIREMENTS)) {
+      if (!isRecord(flag) || typeof flag.signal !== "string" || !CROSS_REF_SIGNALS.has(flag.signal)) {
+        continue;
+      }
+      findingCandidates.push(buildFindingCandidate(flag.signal as PacketWorkflowSignalKind, flag, "medium", batchContext, changedFiles, eventRawIndex));
+    }
+  });
+
+  // Item 4a/4b: merge grounded considered/research candidates (ungrounded ones were
+  // already dropped per chunk), dedup by text, sort by first-cited event, cap.
+  const consideredAdds = mergeCandidateTexts(consideredCandidates).map(markHypothesis);
+  const researchAdds = mergeCandidateTexts(researchCandidates).map(markHypothesis);
   methodology.considered = uniqueTruthy([...methodology.considered, ...consideredAdds]).slice(0, 16);
   methodology.research = uniqueTruthy([...methodology.research, ...researchAdds]).slice(0, 16);
 
-  // Item 4c: unchallenged assumptions + skipped steps + workflow soundness +
-  // the LLM cross-reference signals -> validated, advisory workflow_findings.
-  const findings: WorkflowFinding[] = [];
-  let seq = methodology.workflow_findings.length;
-  const addFinding = (signalKind: PacketWorkflowSignalKind, item: unknown, severity: PacketSeverity): void => {
-    const text = isRecord(item) ? item.text : item;
-    findings.push(buildWorkflowFinding((seq += 1), signalKind, text, severity, isRecord(item) ? item.anchors : undefined, auditContext, changedFiles));
-  };
-
-  for (const item of asArray(data.unchallenged).slice(0, MAX_PROPOSED_REQUIREMENTS)) {
-    addFinding("unchallenged_assumption", item, "low");
-  }
-  const assessment = isRecord(data.workflow_assessment) ? data.workflow_assessment : undefined;
-  if (assessment) {
-    for (const item of asArray(assessment.skipped_steps).slice(0, MAX_PROPOSED_REQUIREMENTS)) {
-      addFinding("skipped_step", item, "medium");
-    }
-    const soundness = assessment.soundness;
-    if (soundness === "questionable" || soundness === "unsound") {
-      const summaryText = typeof assessment.summary === "string" ? assessment.summary : `Workflow soundness assessed as ${soundness}.`;
-      // Anchor the soundness finding to the assessment's own anchors, falling
-      // back to the first skipped-step's anchors, so a high-severity soundness
-      // concern stays evidence-bound and can surface as a reviewer question
-      // instead of being filtered out for lacking a validated anchor (Codex P2).
-      const soundnessAnchors = assessment.anchors ?? firstAnchors(assessment.skipped_steps);
-      findings.push(
-        buildWorkflowFinding((seq += 1), "workflow_soundness", summaryText, soundness === "unsound" ? "high" : "medium", soundnessAnchors, auditContext, changedFiles)
-      );
-    }
-  }
-  for (const flag of asArray(data.cross_ref_flags).slice(0, MAX_PROPOSED_REQUIREMENTS)) {
-    if (!isRecord(flag) || typeof flag.signal !== "string" || !CROSS_REF_SIGNALS.has(flag.signal)) {
-      continue;
-    }
-    findings.push(buildWorkflowFinding((seq += 1), flag.signal as PacketWorkflowSignalKind, flag.text, "medium", flag.anchors, auditContext, changedFiles));
-  }
+  // Item 4c: merge finding candidates — dedup by (signal_kind + core text)
+  // PREFERRING the grounded then higher-severity copy (so a chunk that validated an
+  // anchor wins over one that did not), sort, cap, assign ids.
+  const findings = mergeFindingCandidates(findingCandidates, methodology.workflow_findings.length);
   methodology.workflow_findings = [...methodology.workflow_findings, ...findings].slice(0, 50);
 
-  // Clear the "deep audit not run" marker ONLY when the provider actually produced
-  // recognizable audit content — an `ok` but empty/irrelevant payload (e.g. an
-  // agent-file blob for another stage) must NOT present the keyword fallback as a
-  // real audit (Codex P2). A valid workflow_assessment (even soundness:"sound"
-  // with no concerns) DOES count — the configured provider ran and judged the
-  // workflow (Codex P2).
-  const soundnessVerdict = isRecord(data.workflow_assessment) && typeof data.workflow_assessment.soundness === "string";
-  const producedContent = consideredAdds.length > 0 || researchAdds.length > 0 || findings.length > 0 || soundnessVerdict;
+  // Clear the "deep audit not run" marker ONLY when the provider produced
+  // recognizable audit content — an `ok` but empty/irrelevant payload must NOT
+  // present the keyword fallback as a real audit; a valid workflow_assessment (even
+  // soundness:"sound" with no concerns) DOES count (Codex P2).
+  const producedContent = consideredAdds.length > 0 || researchAdds.length > 0 || findings.length > 0 || anySoundnessVerdict;
   if (producedContent) {
     methodology.quality_flags = methodology.quality_flags.filter((flag) => flag !== "methodology_analysis_degraded");
   }
+}
+
+interface AnchoredCandidate {
+  text: string;
+  sortIndex: number;
+}
+
+interface FindingCandidate {
+  signalKind: PacketWorkflowSignalKind;
+  coreText: string;
+  severity: PacketSeverity;
+  severityRank: number;
+  evidence: EvidenceRef[];
+  invalidTokens: string[];
+  grounded: boolean;
+  sortIndex: number;
+  dedupKey: string;
+}
+
+const SEVERITY_RANK: Record<string, number> = { unknown: 0, low: 1, medium: 2, high: 3, critical: 4 };
+
+// Collect the grounded (validated-anchor) considered/research items for ONE chunk.
+// Ungrounded items are dropped so a hallucinated alternative/research is not
+// surfaced as a conversation-derived fact.
+function collectAnchoredCandidates(
+  value: unknown,
+  context: EvidenceValidationContext,
+  changedFiles: Set<string>,
+  eventRawIndex: Map<string, number>,
+  out: AnchoredCandidate[]
+): void {
+  for (const item of asArray(value).slice(0, MAX_PROPOSED_REQUIREMENTS)) {
+    const text = redactHypothesisText(isRecord(item) ? (typeof item.text === "string" ? item.text : "") : typeof item === "string" ? item : "").trim();
+    if (text === "") {
+      continue;
+    }
+    const anchors = isRecord(item) ? item.anchors : undefined;
+    const { evidence } = resolveAuditAnchors(anchors, context, changedFiles);
+    if (evidence.length > 0) {
+      out.push({ text, sortIndex: firstCitedRawIndex(anchors, eventRawIndex) });
+    }
+  }
+}
+
+// Build one finding candidate from a leaf item, validating its anchors against the
+// chunk's context. Invalid anchors are recorded (named, not dropped) so the merged
+// finding can demote-and-name them.
+function buildFindingCandidate(
+  signalKind: PacketWorkflowSignalKind,
+  item: unknown,
+  severity: PacketSeverity,
+  context: EvidenceValidationContext,
+  changedFiles: Set<string>,
+  eventRawIndex: Map<string, number>
+): FindingCandidate {
+  const rawText = isRecord(item) ? item.text : item;
+  const anchors = isRecord(item) ? item.anchors : undefined;
+  const { evidence, invalidTokens } = resolveAuditAnchors(anchors, context, changedFiles);
+  const coreText = redactHypothesisText(typeof rawText === "string" ? rawText : "").trim() || "(no description provided)";
+  return {
+    signalKind,
+    coreText,
+    severity,
+    severityRank: SEVERITY_RANK[severity] ?? 0,
+    evidence,
+    invalidTokens,
+    grounded: evidence.length > 0,
+    sortIndex: firstCitedRawIndex(anchors, eventRawIndex),
+    dedupKey: `${signalKind}::${coreText.toLowerCase()}`
+  };
+}
+
+function mergeCandidateTexts(candidates: AnchoredCandidate[]): string[] {
+  const byText = new Map<string, AnchoredCandidate>();
+  for (const candidate of candidates) {
+    const key = candidate.text.toLowerCase();
+    const existing = byText.get(key);
+    if (!existing || candidate.sortIndex < existing.sortIndex) {
+      byText.set(key, candidate);
+    }
+  }
+  return [...byText.values()]
+    .sort((left, right) => left.sortIndex - right.sortIndex || compareText(left.text.toLowerCase(), right.text.toLowerCase()))
+    .slice(0, MAX_PROPOSED_REQUIREMENTS)
+    .map((candidate) => candidate.text);
+}
+
+function mergeFindingCandidates(candidates: FindingCandidate[], baseCount: number): WorkflowFinding[] {
+  const byKey = new Map<string, FindingCandidate>();
+  for (const candidate of candidates) {
+    const existing = byKey.get(candidate.dedupKey);
+    if (
+      !existing ||
+      (candidate.grounded && !existing.grounded) ||
+      (candidate.grounded === existing.grounded && candidate.severityRank > existing.severityRank)
+    ) {
+      byKey.set(candidate.dedupKey, candidate);
+    }
+  }
+  return [...byKey.values()]
+    .sort((left, right) => left.sortIndex - right.sortIndex || compareText(left.dedupKey, right.dedupKey))
+    .slice(0, MAX_PROPOSED_REQUIREMENTS * 4)
+    .map((candidate, index) => decorateFindingCandidate(baseCount + index + 1, candidate));
+}
+
+function decorateFindingCandidate(seq: number, candidate: FindingCandidate): WorkflowFinding {
+  const summary =
+    candidate.invalidTokens.length > 0 ? `${candidate.coreText} (unverified anchor(s): ${candidate.invalidTokens.join(", ")})` : candidate.coreText;
+  return {
+    id: `WF-${String(seq).padStart(3, "0")}`,
+    signal_kind: candidate.signalKind,
+    summary: markHypothesis(summary),
+    severity: candidate.severity,
+    advisory: true,
+    evidence:
+      candidate.evidence.length > 0
+        ? candidate.evidence
+        : [
+            {
+              kind: "unknown",
+              note: "LLM-proposed: methodology audit finding lacks a validated anchor.",
+              confidence: "low",
+              validation_status: "not_checked",
+              llm_proposed: true
+            }
+          ]
+  };
 }
 
 // review-surfaces.METHODOLOGY.7 (D3): rank an event's importance for the audit.
@@ -930,13 +1057,29 @@ function salienceScore(event: ConversationEvent, changedFiles: Set<string>): num
   } else if (event.actor === "assistant") {
     score += 1;
   }
-  if (event.file !== undefined && changedFiles.has(event.file)) {
+  if (event.file !== undefined && touchesChangedFile(event.file, changedFiles)) {
     score += 2;
   }
   if (/\b(?:tests?|lint|typecheck|build|pass(?:e[ds])?|fail(?:e[ds])?|verif|validat)/i.test(event.summary)) {
     score += 2;
   }
   return score;
+}
+
+// A tool file path may be absolute or `./`-prefixed while changedFiles is
+// repo-relative; match on the normalized path or a suffix so a real edit/test
+// touch is not missed (Codex P2).
+function touchesChangedFile(file: string, changedFiles: Set<string>): boolean {
+  const normalized = file.replace(/^\.\/+/, "");
+  if (changedFiles.has(normalized)) {
+    return true;
+  }
+  for (const changed of changedFiles) {
+    if (normalized.endsWith(`/${changed}`) || changed.endsWith(`/${normalized}`)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Select up to `budget` events by salience (desc), tie-broken by raw_index (asc)
@@ -975,125 +1118,6 @@ function firstCitedRawIndex(anchors: unknown, eventRawIndex: Map<string, number>
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-// Merge per-chunk audit outputs into one, deterministically: concatenate each
-// array in chunk order, dedup by normalized text (signal+text for cross-ref
-// flags), sort by first-cited event raw_index then normalized text, and cap. The
-// workflow_assessment takes the WORST soundness across chunks with its summary,
-// and the union of skipped steps.
-function mergeAuditOutputs(outputs: MethodologyAuditOutput[], eventRawIndex: Map<string, number>): MethodologyAuditOutput {
-  const mergeAnchoredItems = (pick: (output: MethodologyAuditOutput) => unknown): unknown[] => {
-    const seen = new Set<string>();
-    const entries: { item: unknown; sortIndex: number; text: string }[] = [];
-    for (const output of outputs) {
-      for (const item of asArray(pick(output))) {
-        const text = isRecord(item) ? (typeof item.text === "string" ? item.text : "") : typeof item === "string" ? item : "";
-        const normalized = text.trim().toLowerCase();
-        if (normalized === "" || seen.has(normalized)) {
-          continue;
-        }
-        seen.add(normalized);
-        entries.push({ item, sortIndex: firstCitedRawIndex(isRecord(item) ? item.anchors : undefined, eventRawIndex), text: normalized });
-      }
-    }
-    entries.sort((left, right) => left.sortIndex - right.sortIndex || compareText(left.text, right.text));
-    return entries.slice(0, MAX_PROPOSED_REQUIREMENTS).map((entry) => entry.item);
-  };
-
-  const crossRefFlags = (() => {
-    const seen = new Set<string>();
-    const entries: { flag: unknown; sortIndex: number; key: string }[] = [];
-    for (const output of outputs) {
-      for (const flag of asArray(output.cross_ref_flags)) {
-        if (!isRecord(flag)) {
-          continue;
-        }
-        const signal = typeof flag.signal === "string" ? flag.signal : "";
-        const text = typeof flag.text === "string" ? flag.text : "";
-        const key = `${signal}::${text.trim().toLowerCase()}`;
-        if (seen.has(key)) {
-          continue;
-        }
-        seen.add(key);
-        entries.push({ flag, sortIndex: firstCitedRawIndex(flag.anchors, eventRawIndex), key });
-      }
-    }
-    entries.sort((left, right) => left.sortIndex - right.sortIndex || compareText(left.key, right.key));
-    return entries.slice(0, MAX_PROPOSED_REQUIREMENTS).map((entry) => entry.flag);
-  })();
-
-  const soundnessRank: Record<string, number> = { sound: 1, questionable: 2, unsound: 3 };
-  let worstSoundness: string | undefined;
-  let worstRank = 0;
-  let assessmentSummary = "";
-  let assessmentAnchors: unknown;
-  for (const output of outputs) {
-    const assessment = isRecord(output.workflow_assessment) ? output.workflow_assessment : undefined;
-    if (!assessment) {
-      continue;
-    }
-    if (assessmentAnchors === undefined && isRecord(assessment.anchors)) {
-      assessmentAnchors = assessment.anchors;
-    }
-    const rank = typeof assessment.soundness === "string" ? soundnessRank[assessment.soundness] ?? 0 : 0;
-    if (rank > worstRank) {
-      worstRank = rank;
-      worstSoundness = assessment.soundness as string;
-      assessmentSummary = typeof assessment.summary === "string" ? assessment.summary : "";
-    }
-  }
-  const skippedSteps = mergeAnchoredItems((output) =>
-    isRecord(output.workflow_assessment) ? output.workflow_assessment.skipped_steps : undefined
-  );
-
-  return {
-    considered: mergeAnchoredItems((output) => output.considered),
-    research: mergeAnchoredItems((output) => output.research),
-    unchallenged: mergeAnchoredItems((output) => output.unchallenged),
-    cross_ref_flags: crossRefFlags,
-    workflow_assessment: worstSoundness
-      ? { soundness: worstSoundness, summary: assessmentSummary, anchors: assessmentAnchors, skipped_steps: skippedSteps }
-      : undefined
-  };
-}
-
-// Build one advisory (llm_proposed) workflow finding from a leaf item. Every
-// cited anchor is validated; an invalid anchor is surfaced in the summary and
-// the finding is demoted (never silently dropped), exactly like the intent
-// candidate path. A finding with no valid anchor still appears, marked advisory
-// with an llm_proposed unknown ref so it can never count as proof.
-function buildWorkflowFinding(
-  seq: number,
-  signalKind: PacketWorkflowSignalKind,
-  text: unknown,
-  severity: PacketSeverity,
-  anchors: unknown,
-  context: EvidenceValidationContext,
-  changedFiles: Set<string>
-): WorkflowFinding {
-  const { evidence, invalidTokens } = resolveAuditAnchors(anchors, context, changedFiles);
-  const baseText = redactHypothesisText(typeof text === "string" ? text : "").trim() || "(no description provided)";
-  const summary = invalidTokens.length > 0 ? `${baseText} (unverified anchor(s): ${invalidTokens.join(", ")})` : baseText;
-  return {
-    id: `WF-${String(seq).padStart(3, "0")}`,
-    signal_kind: signalKind,
-    summary: markHypothesis(summary),
-    severity,
-    advisory: true,
-    evidence:
-      evidence.length > 0
-        ? evidence
-        : [
-            {
-              kind: "unknown",
-              note: "LLM-proposed: methodology audit finding lacks a validated anchor.",
-              confidence: "low",
-              validation_status: "not_checked",
-              llm_proposed: true
-            }
-          ]
-  };
 }
 
 function resolveAuditAnchors(
@@ -1156,25 +1180,7 @@ function firstAnchors(value: unknown): unknown {
   return isRecord(first) ? first.anchors : undefined;
 }
 
-// Extract the redacted text of each anchored item (string or { text }), keeping
-// ONLY items whose anchors validate (a known event id or changed-file path), so
-// a hallucinated alternative/research item is not surfaced as a fact.
-function groundedAnchoredTexts(value: unknown, context: EvidenceValidationContext, changedFiles: Set<string>): string[] {
-  const texts: string[] = [];
-  for (const item of asArray(value).slice(0, MAX_PROPOSED_REQUIREMENTS)) {
-    const text = redactHypothesisText(isRecord(item) ? (typeof item.text === "string" ? item.text : "") : typeof item === "string" ? item : "").trim();
-    if (text === "") {
-      continue;
-    }
-    const { evidence } = resolveAuditAnchors(isRecord(item) ? item.anchors : undefined, context, changedFiles);
-    if (evidence.length > 0) {
-      texts.push(text);
-    }
-  }
-  return texts;
-}
-
-function methodologyAuditPrompt(events: ConversationEvent[], inputs: ReasoningInputs): string {
+function methodologyAuditPrompt(events: ConversationEvent[], inputs: ReasoningInputs, partial = false): string {
   const eventLines = events
     .map((event) => {
       const head = `[${event.id}] ${event.actor}/${event.kind}`;
@@ -1188,7 +1194,10 @@ function methodologyAuditPrompt(events: ConversationEvent[], inputs: ReasoningIn
     })
     .join("\n");
   const changedFiles = inputs.collection.changedFiles.slice(0, 30).map((file) => file.path).join("\n") || "(none)";
-  return `Return compact JSON only matching the provided schema. You are auditing a coding agent's RAW conversation (messages + tool calls) that produced the diff below. Judge the methodology, citing only event ids and changed-file paths that appear here.
+  const slice = partial
+    ? " NOTE: these events are a SALIENCE-RANKED SLICE of a longer conversation, not the whole of it — base 'unchallenged'/'skipped'/cross-reference claims only on what is clearly absent from the FULL change, since a step you cannot see here may have happened in an un-shown turn."
+    : "";
+  return `Return compact JSON only matching the provided schema. You are auditing a coding agent's RAW conversation (messages + tool calls) that produced the diff below. Judge the methodology, citing only event ids and changed-file paths that appear here.${slice}
 
 Answer item 4:
 - considered: what alternatives/options were weighed (cite event_ids).

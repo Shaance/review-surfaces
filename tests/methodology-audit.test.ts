@@ -327,3 +327,51 @@ test("review-surfaces.METHODOLOGY.7 (D3) salience keeps a late high-value tool_c
   const dropped = methodology.workflow_findings.find((f) => /dropped chit-chat/.test(f.summary));
   assert.match(dropped?.summary ?? "", /unverified anchor.*e250/);
 });
+
+function countingStub(perCall: (unknown | undefined)[]): ReasoningProvider {
+  let i = 0;
+  return {
+    name: "ai-sdk",
+    async generateStructured(stage): Promise<StructuredResult> {
+      if (stage !== "methodology-audit") return { ok: false, reason: "no" };
+      const data = perCall[i];
+      i += 1;
+      return data === undefined ? { ok: false, reason: "batch_fail" } : { ok: true, data };
+    }
+  };
+}
+
+test("review-surfaces.METHODOLOGY.7 (D3) a failed batch flags a partial audit", async () => {
+  const many: ConversationEvent[] = Array.from({ length: 160 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `t${index}`, raw_index: index }));
+  const methodology = methodologyDegraded();
+  // batch 0 ok, batch 1 fails.
+  const provider = countingStub([{ unchallenged: [{ text: "assumed thing", anchors: { event_ids: ["e0"] } }] }, undefined]);
+  await runMethodologyReasoning(provider, { collection: collectionWithEvents(many, []), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  assert.ok(methodology.quality_flags.includes("conversation_truncated"));
+  assert.ok(methodology.skipped_checks.some((line) => /batch did not respond/.test(line)));
+  // The successful batch still produced a finding.
+  assert.ok(methodology.workflow_findings.some((f) => f.signal_kind === "unchallenged_assumption"));
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) workflow soundness takes the WORST verdict across chunks with its anchor", async () => {
+  const many: ConversationEvent[] = Array.from({ length: 160 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `t${index}`, raw_index: index }));
+  const methodology = methodologyDegraded();
+  // chunk 0 (e0..e79) = sound; chunk 1 (e80..e159) = unsound, anchored to e80.
+  const provider = countingStub([
+    { workflow_assessment: { soundness: "sound", summary: "looks fine" } },
+    { workflow_assessment: { soundness: "unsound", summary: "no tests at all", anchors: { event_ids: ["e80"] } } }
+  ]);
+  await runMethodologyReasoning(provider, { collection: collectionWithEvents(many, []), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const soundness = methodology.workflow_findings.find((f) => f.signal_kind === "workflow_soundness");
+  assert.ok(soundness);
+  assert.equal(soundness.severity, "high");
+  assert.match(soundness.summary, /no tests at all/);
+  assert.ok(soundness.evidence.some((ref) => ref.validation_status === "valid"));
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) skipped steps are preserved even without a soundness verdict", async () => {
+  const methodology = methodologyDegraded();
+  const provider = countingStub([{ workflow_assessment: { skipped_steps: [{ text: "no regression test", anchors: { event_ids: ["a2"] } }] } }]);
+  await runMethodologyReasoning(provider, { collection: collectionWithEvents(THREE_EVENTS), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  assert.ok(methodology.workflow_findings.some((f) => f.signal_kind === "skipped_step" && /no regression test/.test(f.summary)));
+});
