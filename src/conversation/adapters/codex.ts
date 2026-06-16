@@ -51,6 +51,38 @@ function filePathOf(args: unknown): string | undefined {
   return undefined;
 }
 
+// Codex stores raw `function_call.arguments` (a JSON string like
+// `{"command":"pnpm run test"}` or `{"command":["bash","-lc","pnpm test"]}`).
+// Extract the inner shell command so downstream classifiers see `pnpm test`, not a
+// string starting with `{`; falls back to undefined so the raw bounded body is kept
+// for non-shell tools (Codex P2).
+function commandOf(args: unknown): string | undefined {
+  let parsed: unknown = args;
+  if (typeof args === "string") {
+    try {
+      parsed = JSON.parse(args);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!isRecord(parsed)) {
+    return undefined;
+  }
+  const command = parsed.command ?? parsed.cmd ?? parsed.script;
+  if (typeof command === "string") {
+    return command;
+  }
+  if (Array.isArray(command)) {
+    const strings = command.filter((token): token is string => typeof token === "string");
+    const flagIndex = strings.findIndex((token) => token === "-lc" || token === "-c");
+    if (flagIndex >= 0 && strings[flagIndex + 1] !== undefined) {
+      return strings[flagIndex + 1];
+    }
+    return strings.join(" ");
+  }
+  return undefined;
+}
+
 export const codexAdapter: ConversationAdapter = {
   name: "codex",
   detect(input: AdapterInput): boolean {
@@ -141,7 +173,8 @@ function functionCallEvent(item: Record<string, unknown>, id: string, rawIndex: 
   // Redact the tool/function name before it enters `tool` and the summary — a
   // token-shaped name must not reach the prompt/persisted fields raw (Codex P2).
   const tool = redactText(typeof item.name === "string" ? item.name : "function");
-  const command = redactBoundedBody(item.arguments);
+  const extractedCommand = commandOf(item.arguments);
+  const command = redactBoundedBody(extractedCommand !== undefined ? extractedCommand : item.arguments);
   return {
     id,
     actor: "assistant",

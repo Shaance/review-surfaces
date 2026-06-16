@@ -60,6 +60,13 @@ test("review-surfaces.METHODOLOGY.6 each adapter normalizes its harness shape an
   // A tool_result / function_call_output is captured as a tool event.
   assert.ok(claude!.events.some((event) => event.kind === "tool_result"));
   assert.ok(codex!.events.some((event) => event.kind === "tool_result"));
+
+  // Codex wraps the shell command in a JSON arguments blob; the adapter extracts
+  // the inner command so downstream classifiers see `pnpm run test`, not `{...}`
+  // (Codex P2).
+  const codexShell = codex!.events.find((event) => event.kind === "tool_call" && (event.command ?? "").includes("pnpm run test"));
+  assert.ok(codexShell);
+  assert.equal(codexShell.command, "pnpm run test", "the inner shell command is extracted from the JSON arguments wrapper");
 });
 
 test("review-surfaces.METHODOLOGY.6 auto-detects by content shape and honors a --conversation-format override", () => {
