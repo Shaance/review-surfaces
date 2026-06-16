@@ -901,7 +901,7 @@ async function runMethodologyAuditStage(
     -1
   );
   const reconcilesFinding = (candidate: FindingCandidate): boolean =>
-    findingHasPostChangeTest(candidate, editIndexByFile, globalEditIndex, maxTestIndex);
+    findingHasPostChangeTest(candidate, changedFiles, editIndexByFile, globalEditIndex, maxTestIndex);
 
   // Per-CHUNK processing then merge: validate each chunk's items against the events
   // THAT CHUNK actually saw, so a finding can never validate against an event id
@@ -1252,10 +1252,12 @@ function touchesChangedFile(file: string, changedFiles: Set<string>): boolean {
 
 // True when a changed-file path appears as a PATH-BOUNDED token in free text (a
 // shell command or message). Fold backslashes so a Windows-separated reference
-// still matches the slash-separated changed path. The match must not be flanked by
-// path-name characters, so `src/foo.ts` does NOT match inside `src/foo.tsx` or
-// `mysrc/foo.ts` — a false mention must not feed the salience or change-order
-// signals (Codex P2).
+// still matches. The match must end on a path boundary (not `src/foo.tsx`), and the
+// FULL surrounding path token is then validated with the SAME rule as a structured
+// path (`touchesChangedFile`): only an exact match, a `./`-prefix, or an ABSOLUTE
+// path suffix counts. So `packages/api/src/uploader.ts` is a DIFFERENT file from
+// `src/uploader.ts` here too, and a false mention does not feed the salience or
+// change-order signals (Codex P2).
 function textNamesChangedFile(text: string, changedFiles: Set<string>): boolean {
   const haystack = text.replace(/\\/g, "/");
   for (const changed of changedFiles) {
@@ -1268,13 +1270,17 @@ function textNamesChangedFile(text: string, changedFiles: Set<string>): boolean 
       if (idx === -1) {
         break;
       }
-      const before = idx === 0 ? "" : haystack[idx - 1];
       const after = haystack[idx + changed.length] ?? "";
-      // `/` before is allowed (a longer path prefix references the same file);
-      // any path-name char (letters/digits/._-) immediately before or after means
-      // this is a DIFFERENT path, not a boundary-aligned mention.
-      if (!/[A-Za-z0-9._-]/.test(before) && !/[A-Za-z0-9._-]/.test(after)) {
-        return true;
+      if (!/[A-Za-z0-9._-]/.test(after)) {
+        // Walk back to the start of the surrounding path token, then apply the
+        // structured-path rule to it (absolute-only suffix; `./` allowed).
+        let start = idx;
+        while (start > 0 && /[A-Za-z0-9._/-]/.test(haystack[start - 1])) {
+          start -= 1;
+        }
+        if (touchesChangedFile(haystack.slice(start, idx + changed.length), new Set([changed]))) {
+          return true;
+        }
       }
       from = idx + 1;
     }
@@ -1300,18 +1306,78 @@ function eventTouchesChangedFile(event: ConversationEvent, changedFiles: Set<str
 // `notebook`/`create`/`update` are intentionally excluded (Codex P2).
 const EDIT_TOOL_PATTERN = /(?:edit|write|patch|replace)/i;
 
-// True when a tool_CALL is an actual EDIT/WRITE (an edit/write tool name with a
-// target path). The reconciliation ordering anchor must be a real edit signal, not
-// the broad touch predicate — a mere mention/read before the edit is not
-// post-change validation, and an untyped tool_result that merely carries a file is
-// NOT an edit (Codex P2).
+// True when a tool_CALL is an EDIT/WRITE invocation (an edit/write tool name). The
+// reconciliation ordering anchor must be a real edit signal, not the broad touch
+// predicate — a mere mention/read is not an edit, and an untyped tool_result that
+// merely carries a file is NOT an edit (Codex P2).
 function isEditCall(event: ConversationEvent): boolean {
-  return (
-    event.kind === "tool_call" &&
-    event.tool !== undefined &&
-    EDIT_TOOL_PATTERN.test(event.tool) &&
-    event.file !== undefined
-  );
+  return event.kind === "tool_call" && event.tool !== undefined && EDIT_TOOL_PATTERN.test(event.tool);
+}
+
+// The paths an apply_patch-style tool edits, taken ONLY from its unambiguous
+// CONTROL lines — `*** Update/Add/Delete File: <path>` and a move's
+// `*** Move to: <path>` — anchored at the LINE START (`^\*\*\*`, no leading
+// whitespace), which a `+`/`-`/` `-prefixed hunk/content line can never be. So a
+// path merely MENTIONED in patch body text, or a literal `diff --git` snippet
+// inside a docs patch, is NOT treated as an edit target. The whole rest of the line
+// is captured, so a path with spaces (`docs/api notes.md`) is not truncated. We do
+// NOT parse unified-diff `diff`/`---`/`+++` operands (git's format, not the
+// apply_patch tool) — those stay conservatively unrecognized (Codex P2).
+function patchHeaderTargets(text: string): string[] {
+  const targets: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const fileHeader = line.match(/^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s+(.+?)\s*$/i);
+    if (fileHeader) {
+      targets.push(fileHeader[1]);
+      continue;
+    }
+    const moveTo = line.match(/^\*\*\*\s+Move\s+to:\s+(.+?)\s*$/i);
+    if (moveTo) {
+      targets.push(moveTo[1]);
+    }
+  }
+  return targets;
+}
+
+// True when an EDIT/WRITE tool call targets `changed`. A STRUCTURED target
+// (`event.file`) is authoritative — a `Write docs/notes.md` whose body merely
+// mentions `src/x.ts` must NOT count as editing `src/x.ts`. Only patch-style tools
+// with no `event.file` fall back to their PATCH HEADERS (never free body text).
+// If an adapter kept an edit tool's STRUCTURED arguments as a JSON blob (e.g. an
+// apply_patch payload under a `patch`/`input` field), the patch newlines are escaped
+// and the `*** Update File:` controls are not at real line starts. Decode that body
+// (JSON.parse restores real newlines) before header scanning; otherwise pass the
+// text through unchanged (Codex P2).
+function decodePatchBody(command: string): string {
+  const trimmed = command.trim();
+  if (!trimmed.startsWith("{")) {
+    return command;
+  }
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (isRecord(parsed)) {
+      const body = parsed.patch ?? parsed.input ?? parsed.content ?? parsed.diff;
+      if (typeof body === "string") {
+        return body;
+      }
+    }
+  } catch {
+    // Not JSON; fall through.
+  }
+  return command;
+}
+
+function editTargetsChangedFile(event: ConversationEvent, changed: string): boolean {
+  if (event.file !== undefined) {
+    return touchesChangedFile(event.file, new Set([changed]));
+  }
+  // A patch header is itself a repo-relative control-line path, so compare it
+  // EXACTLY (after normalizing `./`/backslashes) — NOT with the suffix logic, which
+  // would treat `api/src/uploader.ts` as the reviewed `packages/api/src/uploader.ts`
+  // (Codex P2).
+  return patchHeaderTargets(`${decodePatchBody(event.command ?? "")}\n${event.summary}`)
+    .map((target) => target.replace(/\\/g, "/").replace(/^\.\/+/, ""))
+    .includes(changed);
 }
 
 // The LATEST raw_index at which EACH changed file is actually EDITED. Tracking
@@ -1326,7 +1392,7 @@ function changedFileEditIndexByFile(events: ConversationEvent[], changedFiles: S
       continue;
     }
     for (const changed of changedFiles) {
-      if (!touchesChangedFile(event.file as string, new Set([changed]))) {
+      if (!editTargetsChangedFile(event, changed)) {
         continue;
       }
       const prev = byFile.get(changed);
@@ -1344,6 +1410,7 @@ function changedFileEditIndexByFile(events: ConversationEvent[], changedFiles: S
 // soundness verdict) any test after the earliest edit counts (Codex P2).
 function findingHasPostChangeTest(
   candidate: FindingCandidate,
+  changedFiles: Set<string>,
   editIndexByFile: Map<string, number>,
   globalEditIndex: number | undefined,
   maxTestIndex: number
@@ -1351,11 +1418,24 @@ function findingHasPostChangeTest(
   if (maxTestIndex < 0) {
     return false;
   }
-  const fileEdits = candidate.evidence
-    .filter((ref) => ref.kind === "file" && typeof ref.path === "string" && editIndexByFile.has(ref.path))
-    .map((ref) => editIndexByFile.get(ref.path as string) as number);
-  if (fileEdits.length > 0) {
-    return fileEdits.some((editIndex) => maxTestIndex > editIndex);
+  // Normalize a cited path (`./src/b.ts`, backslashes) to its changed-file key
+  // before membership — `resolveAuditAnchors` keeps the original token in evidence,
+  // so an un-normalized `changedFiles.has` would drop a valid cited file and let a
+  // multi-file finding reconcile on a subset (Codex P2).
+  const citedChanged = candidate.evidence
+    .filter((ref) => ref.kind === "file" && typeof ref.path === "string")
+    .map((ref) => (ref.path as string).replace(/\\/g, "/").replace(/^\.\/+/, ""))
+    .filter((path) => changedFiles.has(path));
+  if (citedChanged.length > 0) {
+    // A finding citing changed files reconciles only when EVERY cited changed file
+    // has a KNOWN edit AND a test that ran after it. A cited file with no detected
+    // edit is treated as unreconciled (its coverage is unknown) rather than dropped
+    // from the check, so a test after `a.ts` can't clear an also-cited `b.ts` whose
+    // edit was never observed in the selected slice (Codex P2).
+    return citedChanged.every((path) => {
+      const editIndex = editIndexByFile.get(path);
+      return editIndex !== undefined && maxTestIndex > editIndex;
+    });
   }
   return globalEditIndex !== undefined && maxTestIndex > globalEditIndex;
 }
@@ -1409,10 +1489,29 @@ function commandRunsTest(command: string): boolean {
   );
 }
 
+// Conservatively drop ALL heredoc BODIES (`<<MARKER ... \nMARKER`) before command
+// segmentation. A heredoc body is ambiguous — inert input to `cat`/`tee`, stdin to
+// a script (`bash run.sh <<EOF`), or executed by a bare interpreter (`bash <<EOF`,
+// `cat <<EOF | bash`). Rather than parse the shell precisely (an unbounded
+// edge-case surface), the ADVISORY reconciliation note errs toward NOT firing: a
+// test command that appears only inside a heredoc body is not counted as an executed
+// test run. The body lines are removed so they never segment into commands (Codex P2).
+function stripHeredocBodies(command: string): string {
+  // The heredoc BODY starts on the NEXT line after the opener, so keep the rest of
+  // the opener line ($3) — a chained real command there (`cat <<EOF && pnpm test`)
+  // must survive — and drop only the body, up to its terminator (CRLF-aware) OR, for
+  // a TRUNCATED heredoc with no terminator (tool bodies bounded to
+  // MAX_TOOL_BODY_LENGTH), to end-of-command (Codex P2).
+  return command.replace(
+    /<<-?\s*(['"]?)([A-Za-z_]\w*)\1([^\n]*)(?:\r?\n[\s\S]*?\r?\n[ \t]*\2[ \t]*(?=\r?\n|$)|\r?\n[\s\S]*$)?/g,
+    "<<$2$3"
+  );
+}
+
 function commandSegments(command: string): string[] {
   // Newlines are shell command separators too, so a multi-line tool command
   // (`cd api\npnpm test`) splits into its real commands (Codex P2).
-  return command.split(/&&|\|\||[|;\n\r]/).map((segment) => {
+  return stripHeredocBodies(command).split(/&&|\|\||[|;\n\r]/).map((segment) => {
     let seg = segment.trim();
     while (LEADING_ENV_ASSIGNMENT.test(seg)) {
       seg = seg.replace(LEADING_ENV_ASSIGNMENT, "");

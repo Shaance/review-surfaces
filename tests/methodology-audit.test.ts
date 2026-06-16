@@ -886,3 +886,311 @@ test("review-surfaces.METHODOLOGY.7 (D3) a test between two edits of the same fi
   assert.ok(impl);
   assert.ok(!/test execution was observed/.test(impl.summary), "a test before the FINAL edit must not reconcile");
 });
+
+test("review-surfaces.METHODOLOGY.7 (D3) a patch-style edit naming the file only in the body establishes the edit clock (#96)", async () => {
+  // apply_patch carries the path in the body, not event.file.
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: "*** Update File: src/uploader.ts\n+  retry()", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.match(impl.summary, /test execution was observed elsewhere/, "an apply_patch body naming the changed file is an edit");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a patch naming a DIFFERENT repo-relative path is not the changed file (#96)", async () => {
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: "*** Update File: packages/api/src/uploader.ts\n+  retry()", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "packages/api/src/uploader.ts is a different file");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a heredoc body containing a test command is not a test run (#96)", async () => {
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(write notes)", tool: "Bash", command: "cat > notes.txt <<EOF\npnpm test\nEOF", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "a `pnpm test` line inside a heredoc body is input, not an executed test");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a multi-file finding reconciles only when EVERY cited file was tested post-change (#96)", async () => {
+  // a.ts edited (0), test (1), b.ts edited later (2). A finding citing BOTH must not
+  // reconcile, because b.ts has no post-change test.
+  const events: ConversationEvent[] = [
+    { id: "ea", actor: "assistant", kind: "tool_call", summary: "Edit(src/a.ts)", tool: "Edit", file: "src/a.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 },
+    { id: "eb", actor: "assistant", kind: "tool_call", summary: "Edit(src/b.ts)", tool: "Edit", file: "src/b.ts", raw_index: 2 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "a.ts and b.ts changed without tests", anchors: { paths: ["src/a.ts", "src/b.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/a.ts", "src/b.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "b.ts edited after the test means not every cited file is covered");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) an edit body that merely MENTIONS another file does not reset that file's edit clock (#96)", async () => {
+  // Edit uploader (0), test (1), THEN Write docs/notes.md (2) whose body mentions
+  // uploader. The structured target is docs/notes.md, so uploader's clock stays at 0
+  // and the post-change test still reconciles.
+  const events: ConversationEvent[] = [
+    { id: "e", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 },
+    { id: "w", actor: "assistant", kind: "tool_call", summary: "Write(docs/notes.md)", tool: "Write", file: "docs/notes.md", command: "see src/uploader.ts for the retry", raw_index: 2 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.match(impl.summary, /test execution was observed elsewhere/, "a later write to a different file must not reset uploader's edit clock");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a heredoc body test command is conservatively NOT a test run (#96)", async () => {
+  // Heredoc bodies are ambiguous (inert input / stdin / interpreter-executed); the
+  // advisory note errs toward NOT firing rather than parsing the shell precisely.
+  const events: ConversationEvent[] = [
+    { id: "e", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(run script)", tool: "Bash", command: "bash <<EOF\npnpm test\nEOF", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "a test command inside a heredoc body is conservatively not counted");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a git unified-diff body (not apply_patch control lines) is conservatively not an edit (#96)", async () => {
+  // Only apply_patch `*** ... File:` control lines are parsed; a raw `diff --git`
+  // body (git's format, not the apply_patch tool) is not, so the clock stays unknown.
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: "diff --git a/src/uploader.ts b/src/uploader.ts\n+  retry()", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "a raw git diff body is not parsed as an apply_patch edit");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a cited changed file with NO observed edit is treated as unreconciled (#96)", async () => {
+  // a.ts edited (0), test (1); b.ts is also cited and changed but never edited in the
+  // selected slice — its coverage is unknown, so the finding does not reconcile.
+  const events: ConversationEvent[] = [
+    { id: "ea", actor: "assistant", kind: "tool_call", summary: "Edit(src/a.ts)", tool: "Edit", file: "src/a.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "a.ts and b.ts changed without tests", anchors: { paths: ["src/a.ts", "src/b.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/a.ts", "src/b.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "b.ts cited but never edited -> unknown coverage -> no reconcile");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a ./-prefixed cited path is normalized in the every-file check (#96)", async () => {
+  // The finding cites `src/a.ts` and `./src/b.ts`; b.ts is edited AFTER the test, so
+  // normalizing `./src/b.ts` to `src/b.ts` keeps it in the check and blocks reconcile.
+  const events: ConversationEvent[] = [
+    { id: "ea", actor: "assistant", kind: "tool_call", summary: "Edit(src/a.ts)", tool: "Edit", file: "src/a.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 },
+    { id: "eb", actor: "assistant", kind: "tool_call", summary: "Edit(src/b.ts)", tool: "Edit", file: "src/b.ts", raw_index: 2 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "a and b changed", anchors: { paths: ["src/a.ts", "./src/b.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/a.ts", "src/b.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "./src/b.ts must not be dropped from the every-file check");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) apply_patch Move-to and space-containing paths are captured (#96)", async () => {
+  // `*** Move to:` names the new path; the whole rest of the line is captured so a
+  // path with spaces is not truncated.
+  const moveEvents: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: "*** Move to: src/uploader.ts\n+  retry()", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const moveM = methodologyDegraded();
+  const moveAudit = { cross_ref_flags: [{ signal: "impl_no_test", text: "moved file untested", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": moveAudit }), { collection: collectionWithEvents(moveEvents, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology: moveM, risks: risks() }, {});
+  const moveImpl = moveM.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(moveImpl);
+  assert.match(moveImpl.summary, /test execution was observed elsewhere/, "*** Move to: names the edited file");
+
+  const spaceEvents: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: "*** Update File: docs/api notes.md\n+  text", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const spaceM = methodologyDegraded();
+  const spaceAudit = { cross_ref_flags: [{ signal: "impl_no_test", text: "doc untested", anchors: { paths: ["docs/api notes.md"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": spaceAudit }), { collection: collectionWithEvents(spaceEvents, ["docs/api notes.md"]), intent: intent(), evaluation: evaluation(), methodology: spaceM, risks: risks() }, {});
+  const spaceImpl = spaceM.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(spaceImpl);
+  assert.match(spaceImpl.summary, /test execution was observed elsewhere/, "a path with spaces is captured whole, not truncated at the first space");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a patch header is matched EXACTLY, not by repo-relative suffix (#96)", async () => {
+  // The patch edits `api/src/uploader.ts`; the reviewed changed file is the DIFFERENT
+  // `packages/api/src/uploader.ts`. Suffix matching would conflate them.
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: "*** Update File: api/src/uploader.ts\n+  retry()", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["packages/api/src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["packages/api/src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "api/src/uploader.ts is not the reviewed packages/api/src/uploader.ts");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a CRLF heredoc body is stripped too (#96)", async () => {
+  const events: ConversationEvent[] = [
+    { id: "e", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(write notes)", tool: "Bash", command: "cat > notes.txt <<EOF\r\npnpm test\r\nEOF\r\n", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "a CRLF heredoc body must also be stripped, not counted as a test");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a TRUNCATED heredoc (no terminator) is stripped to end-of-command (#96)", async () => {
+  // Tool bodies are bounded, so a heredoc can be cut off before its terminator; the
+  // dangling body must not be segmented into a counted `pnpm test`.
+  const events: ConversationEvent[] = [
+    { id: "e", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(write script)", tool: "Bash", command: "cat > run-tests.sh <<EOF\npnpm test\necho more", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "an unterminated heredoc body must be stripped, not counted as a test");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a real command chained on the heredoc opener line survives (#96)", async () => {
+  // `cat > f <<EOF && pnpm test ... EOF` runs pnpm test after cat; only the BODY
+  // (next line onward) is stripped, so the chained test still counts.
+  const events: ConversationEvent[] = [
+    { id: "e", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(write+test)", tool: "Bash", command: "cat > f <<EOF && pnpm test\nfile body\nEOF", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.match(impl.summary, /test execution was observed elsewhere/, "a test chained on the heredoc opener line must survive the body strip");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a JSON-wrapped apply_patch body is decoded for header scanning (#96)", async () => {
+  // The adapter kept the apply_patch payload as a JSON blob with escaped newlines;
+  // decoding restores real line breaks so the `*** Update File:` header is found.
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: JSON.stringify({ patch: "*** Update File: src/uploader.ts\n+  retry()" }), raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.match(impl.summary, /test execution was observed elsewhere/, "a JSON-wrapped patch body's header is decoded and matched");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a heredoc WRITTEN to a .sh file is not executed (#96)", async () => {
+  // `cat > run-tests.sh <<EOF ... pnpm test ... EOF` writes a script; the `.sh`
+  // filename must not be mistaken for an interpreter invocation.
+  const events: ConversationEvent[] = [
+    { id: "e", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(write script)", tool: "Bash", command: "cat > run-tests.sh <<EOF\npnpm test\nEOF", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "writing a heredoc into run-tests.sh is not a test run");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a real b/ directory path outside a diff is NOT the changed file (#96)", async () => {
+  // `b/src/uploader.ts` named in a NON-diff command is a real path under a top-level
+  // `b/` dir, not a diff prefix — it must not start the edit clock for src/uploader.ts.
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: "rewrote b/src/uploader.ts in the b workspace", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "b/src/uploader.ts outside a diff header is a different file");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a heredoc piped to an interpreter WITH a script arg is stdin, not commands (#96)", async () => {
+  // `bash run.sh <<EOF ... pnpm test ... EOF` feeds the body as stdin to run.sh.
+  const events: ConversationEvent[] = [
+    { id: "e", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(run script)", tool: "Bash", command: "bash run.sh <<EOF\npnpm test\nEOF", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "a heredoc fed to `bash run.sh` is stdin, not executed commands");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a patch editing a DIFFERENT file whose body mentions the changed file does not reset its clock (#96)", async () => {
+  // Edit uploader (0), test (1), then apply_patch to docs/notes.md (2) whose body
+  // mentions uploader. Targets come from patch HEADERS, so uploader's clock stays at 0.
+  const events: ConversationEvent[] = [
+    { id: "e", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 },
+    { id: "p", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: "*** Update File: docs/notes.md\n+ see src/uploader.ts for the retry", raw_index: 2 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.match(impl.summary, /test execution was observed elsewhere/, "a patch to docs/notes.md must not reset uploader's edit clock");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) an apply_patch header naming a real b/ path is not the changed file (#96)", async () => {
+  // `*** Update File: b/src/uploader.ts` is a real path under a `b/` dir, not a diff
+  // operand — it must not be stripped to src/uploader.ts.
+  const events: ConversationEvent[] = [
+    { id: "edit", actor: "assistant", kind: "tool_call", summary: "apply_patch", tool: "apply_patch", command: "*** Update File: b/src/uploader.ts\n+ retry()", raw_index: 0 },
+    { id: "t", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "an apply_patch `*** Update File: b/src/...` keeps b/ (a real path)");
+});
