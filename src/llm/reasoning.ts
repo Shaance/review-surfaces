@@ -1000,7 +1000,11 @@ function buildFindingCandidate(
     invalidTokens,
     grounded: evidence.length > 0,
     sortIndex: firstCitedRawIndex(anchors, eventRawIndex),
-    dedupKey: `${signalKind}::${coreText.toLowerCase()}`
+    // workflow_assessment is the ONE overall soundness verdict for the run, so all
+    // chunks' soundness candidates dedup to a single finding and the merge keeps the
+    // WORST verdict (higher severity wins) instead of rendering conflicting overall
+    // assessments per chunk. Other signals still dedup by signal + text (Codex P2).
+    dedupKey: signalKind === "workflow_soundness" ? signalKind : `${signalKind}::${coreText.toLowerCase()}`
   };
 }
 
@@ -1153,12 +1157,14 @@ function salienceScore(event: ConversationEvent, changedFiles: Set<string>): num
   return score;
 }
 
-// A tool file path may be absolute or `./`-prefixed while changedFiles is
-// repo-relative; match on the normalized path or a path-segment-aligned suffix so
-// a real edit/test touch is not missed — but NOT on a bare basename (e.g. a tool
-// inspecting some other `config.ts` must not match `src/config.ts`) — Codex P2.
+// A tool file path may be absolute, `./`-prefixed, or Windows-separated (e.g.
+// `src\uploader.ts`, `C:\repo\src\uploader.ts`) while changedFiles is
+// slash-separated repo-relative; fold backslashes to `/` then match on the
+// normalized path or a path-segment-aligned suffix so a real edit/test touch is
+// not missed — but NOT on a bare basename (e.g. a tool inspecting some other
+// `config.ts` must not match `src/config.ts`) — Codex P2.
 function touchesChangedFile(file: string, changedFiles: Set<string>): boolean {
-  const normalized = file.replace(/^\.\/+/, "");
+  const normalized = file.replace(/\\/g, "/").replace(/^\.\/+/, "");
   if (changedFiles.has(normalized)) {
     return true;
   }
@@ -1177,9 +1183,12 @@ function touchesChangedFile(file: string, changedFiles: Set<string>): boolean {
 }
 
 // True when a changed-file path appears anywhere in free text (a shell command).
+// Fold backslashes so a Windows-separated reference still matches the
+// slash-separated changed path (Codex P2).
 function textNamesChangedFile(text: string, changedFiles: Set<string>): boolean {
+  const haystack = text.replace(/\\/g, "/");
   for (const changed of changedFiles) {
-    if (changed.length > 0 && text.includes(changed)) {
+    if (changed.length > 0 && haystack.includes(changed)) {
       return true;
     }
   }
@@ -1217,10 +1226,24 @@ function isTestExecutionEvent(event: ConversationEvent): boolean {
   // aliases) count as a real test run instead of slipping past a narrow prefix
   // regex (Codex P2). The classifier is JS/TS-focused, so OR in a small fallback
   // for the cross-ecosystem runners it does not model.
-  return (
-    commandLooksLikeTestCommand(command) ||
-    /(?:^|\b)(?:node\s+--test|pytest|go\s+test|cargo\s+test|rspec|phpunit|(?:gradle|mvn)\s+test|ctest)\b/i.test(command)
-  );
+  return commandLooksLikeTestCommand(command) || commandStartsWithCrossEcosystemRunner(command);
+}
+
+// Cross-ecosystem test runners the JS-focused classifier does not model. Matched
+// only at an EXECUTED command position (the start of a `&&`/`||`/`|`/`;` segment,
+// after leading `VAR=value` env assignments) so a mere mention such as
+// `grep pytest pyproject.toml` or `echo "go test"` does NOT count as a test run
+// (Codex P2).
+const CROSS_ECOSYSTEM_RUNNER = /^(?:node\s+--test|pytest|go\s+test|cargo\s+test|rspec|phpunit|(?:gradle|mvn)\s+test|ctest)\b/i;
+const LEADING_ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
+function commandStartsWithCrossEcosystemRunner(command: string): boolean {
+  return command.split(/&&|\|\||[|;]/).some((segment) => {
+    let seg = segment.trim();
+    while (LEADING_ENV_ASSIGNMENT.test(seg)) {
+      seg = seg.replace(LEADING_ENV_ASSIGNMENT, "");
+    }
+    return CROSS_ECOSYSTEM_RUNNER.test(seg);
+  });
 }
 
 // Select up to `budget` events by salience (desc), tie-broken by raw_index (asc)
@@ -1259,10 +1282,16 @@ function selectSalientEvents(
       selected.push(event);
       taken.add(event.id);
     }
+    // Pull in the COMPLEMENTARY neighbor only: a tool_call's partner is the
+    // following tool_result, a tool_result's partner is the preceding tool_call.
+    // Requiring the complementary kind stops adjacent same-kind tool events (two
+    // back-to-back calls before their results) from spending budget slots on a
+    // non-partner and dropping a later higher-salience event (Codex P2).
+    const partnerKind = event.kind === "tool_call" ? "tool_result" : event.kind === "tool_result" ? "tool_call" : undefined;
     const partnerIndex = event.kind === "tool_call" ? event.raw_index + 1 : event.kind === "tool_result" ? event.raw_index - 1 : undefined;
-    if (partnerIndex !== undefined && selected.length < budget) {
+    if (partnerKind !== undefined && partnerIndex !== undefined && selected.length < budget) {
       const partner = byRawIndex.get(partnerIndex);
-      if (partner && (partner.kind === "tool_call" || partner.kind === "tool_result") && !taken.has(partner.id)) {
+      if (partner && partner.kind === partnerKind && !taken.has(partner.id)) {
         selected.push(partner);
         taken.add(partner.id);
       }

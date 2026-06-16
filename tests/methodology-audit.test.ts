@@ -499,3 +499,65 @@ test("review-surfaces.METHODOLOGY.7 (D3) an analyzed-but-empty chunk is reported
   await runMethodologyReasoning(provider, { collection: collectionWithEvents(many, []), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
   assert.ok(methodology.skipped_checks.some((line) => /1 of 2 analyzed chunk\(s\) returned no recognizable audit content/.test(line)), methodology.skipped_checks.join(" | "));
 });
+
+test("review-surfaces.METHODOLOGY.7 (D3) a Windows-separated changed-file path earns the salience boost (Codex P2)", async () => {
+  // 245 generic tool_calls (salience 4) + one tool_call whose event.file uses
+  // backslashes for the changed file. Only if the path is normalized does it reach
+  // salience 6; sitting at the LAST raw_index it would otherwise tie at 4 and be
+  // dropped by the 240 budget, so its research only surfaces when the boost applies.
+  const events: ConversationEvent[] = Array.from({ length: 245 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "tool_call", summary: "Bash(ls)", tool: "Bash", command: "ls", raw_index: index }));
+  events.push({ id: "win", actor: "assistant", kind: "tool_call", summary: "edited the file", tool: "Edit", file: "src\\uploader.ts", raw_index: 245 });
+  const methodology = methodologyDegraded();
+  const audit = { research: [{ text: "edited the changed file via a Windows path", anchors: { event_ids: ["win"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  assert.ok(methodology.research.some((r) => r.includes("Windows path")), "a backslash-separated changed-file path must earn the salience boost and be analyzed");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) per-chunk soundness verdicts merge to one worst finding (Codex P2)", async () => {
+  const many: ConversationEvent[] = Array.from({ length: 160 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `t${index}`, raw_index: index }));
+  const methodology = methodologyDegraded();
+  // 160 events -> 2 chunks; each returns a different non-sound overall verdict.
+  const provider = countingStub([
+    { workflow_assessment: { soundness: "questionable", summary: "some concerns", skipped_steps: [] } },
+    { workflow_assessment: { soundness: "unsound", summary: "no tests at all", skipped_steps: [] } }
+  ]);
+  await runMethodologyReasoning(provider, { collection: collectionWithEvents(many, []), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const soundness = methodology.workflow_findings.filter((f) => f.signal_kind === "workflow_soundness");
+  assert.equal(soundness.length, 1, "all chunk soundness verdicts must merge into one overall finding");
+  assert.equal(soundness[0].severity, "high", "the worst (unsound) verdict wins");
+  assert.match(soundness[0].summary, /no tests at all/);
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) a command that only MENTIONS a runner is not a test run (Codex P2)", async () => {
+  const events: ConversationEvent[] = [
+    { id: "u1", actor: "user", kind: "message", summary: "change the uploader", raw_index: 0 },
+    { id: "g1", actor: "assistant", kind: "tool_call", summary: "Bash(grep pytest pyproject.toml)", tool: "Bash", command: "grep pytest pyproject.toml", raw_index: 1 }
+  ];
+  const methodology = methodologyDegraded();
+  const audit = { cross_ref_flags: [{ signal: "impl_no_test", text: "uploader changed without a test", anchors: { paths: ["src/uploader.ts"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const impl = methodology.workflow_findings.find((f) => f.signal_kind === "impl_no_test");
+  assert.ok(impl);
+  assert.ok(!/test execution was observed/.test(impl.summary), "grep-ing for a runner name must not count as a test run");
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) an adjacent same-kind tool event is NOT pulled in as a partner (Codex P2)", async () => {
+  // c1 (raw 0) and the high-salience fillers touch the changed file + run a test;
+  // c2 (raw 1) is a low-salience generic tool_call ranked last under the budget. c2
+  // is only selected if it is wrongly pulled in as c1's "partner" — but a tool_call's
+  // partner must be a tool_RESULT, so c2 stays out and an audit anchored to it is
+  // reported as unverified.
+  const events: ConversationEvent[] = [
+    { id: "c1", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test src/uploader.ts)", tool: "Bash", command: "pnpm run test src/uploader.ts", raw_index: 0 },
+    { id: "c2", actor: "assistant", kind: "tool_call", summary: "Bash(ls)", tool: "Bash", command: "ls", raw_index: 1 }
+  ];
+  for (let i = 2; i < 245; i += 1) {
+    events.push({ id: `f${i}`, actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test src/uploader.ts)", tool: "Bash", command: "pnpm run test src/uploader.ts", raw_index: i });
+  }
+  const methodology = methodologyDegraded();
+  const audit = { unchallenged: [{ text: "assumed the ls output mattered", anchors: { event_ids: ["c2"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  const finding = methodology.workflow_findings.find((f) => f.signal_kind === "unchallenged_assumption");
+  assert.ok(finding);
+  assert.match(finding.summary, /unverified anchor\(s\): c2/, "c2 must not be selected via a same-kind partner pull");
+});
