@@ -815,6 +815,7 @@ async function runMethodologyAuditStage(
   const multiBatch = batches.length > 1 || truncated;
   const auditOutputs: MethodologyAuditOutput[] = [];
   const batchIdSets: Set<string>[] = [];
+  let emptyChunks = 0;
   for (const batch of batches) {
     const result = await provider.generateStructured(
       "methodology-audit",
@@ -823,8 +824,12 @@ async function runMethodologyAuditStage(
       generateOptions
     );
     if (result.ok && isRecord(result.data)) {
-      auditOutputs.push(result.data as MethodologyAuditOutput);
+      const data = result.data as MethodologyAuditOutput;
+      auditOutputs.push(data);
       batchIdSets.push(new Set(batch.map((event) => event.id)));
+      if (!hasAuditContent(data)) {
+        emptyChunks += 1;
+      }
     }
   }
   if (auditOutputs.length === 0) {
@@ -843,6 +848,15 @@ async function runMethodologyAuditStage(
     methodology.skipped_checks = uniqueTruthy([
       ...methodology.skipped_checks,
       `Methodology audit was partial: ${analyzedEventCount} of ${events.length} conversation events were analyzed (salience-ranked${someBatchFailed ? "; a provider batch did not respond" : ""}).`
+    ]);
+  }
+  // Be transparent when a chunk was analyzed but returned no recognizable audit
+  // content, so a long transcript is not presented as fully audited on the back of
+  // one empty chunk (Codex P2).
+  if (emptyChunks > 0) {
+    methodology.skipped_checks = uniqueTruthy([
+      ...methodology.skipped_checks,
+      `Methodology audit: ${emptyChunks} of ${auditOutputs.length} analyzed chunk(s) returned no recognizable audit content.`
     ]);
   }
 
@@ -1110,22 +1124,31 @@ function salienceScore(event: ConversationEvent, changedFiles: Set<string>): num
   ) {
     score += 2;
   }
-  if (/\b(?:tests?|lint|typecheck|build|pass(?:e[ds])?|fail(?:e[ds])?|verif|validat)/i.test(event.summary)) {
+  // A validation keyword may be in the summary OR the (often generic-summary) shell
+  // command, so check both (Codex P2).
+  if (/\b(?:tests?|lint|typecheck|build|pass(?:e[ds])?|fail(?:e[ds])?|verif|validat)/i.test(`${event.summary} ${event.command ?? ""}`)) {
     score += 2;
   }
   return score;
 }
 
 // A tool file path may be absolute or `./`-prefixed while changedFiles is
-// repo-relative; match on the normalized path or a suffix so a real edit/test
-// touch is not missed (Codex P2).
+// repo-relative; match on the normalized path or a path-segment-aligned suffix so
+// a real edit/test touch is not missed — but NOT on a bare basename (e.g. a tool
+// inspecting some other `config.ts` must not match `src/config.ts`) — Codex P2.
 function touchesChangedFile(file: string, changedFiles: Set<string>): boolean {
   const normalized = file.replace(/^\.\/+/, "");
   if (changedFiles.has(normalized)) {
     return true;
   }
   for (const changed of changedFiles) {
-    if (normalized.endsWith(`/${changed}`) || changed.endsWith(`/${normalized}`)) {
+    // event path is absolute/longer and ends with the FULL repo-relative changed path
+    if (normalized.endsWith(`/${changed}`)) {
+      return true;
+    }
+    // changed path ends with the event subpath, but only when the event path has a
+    // directory segment of its own (a bare basename is too loose to trust)
+    if (normalized.includes("/") && changed.endsWith(`/${normalized}`)) {
       return true;
     }
   }
@@ -1140,6 +1163,20 @@ function textNamesChangedFile(text: string, changedFiles: Set<string>): boolean 
     }
   }
   return false;
+}
+
+// True when an audit chunk's output carries recognizable item-4 content.
+function hasAuditContent(data: MethodologyAuditOutput): boolean {
+  if (
+    asArray(data.considered).length > 0 ||
+    asArray(data.research).length > 0 ||
+    asArray(data.unchallenged).length > 0 ||
+    asArray(data.cross_ref_flags).length > 0
+  ) {
+    return true;
+  }
+  const assessment = isRecord(data.workflow_assessment) ? data.workflow_assessment : undefined;
+  return assessment !== undefined && (typeof assessment.soundness === "string" || asArray(assessment.skipped_steps).length > 0);
 }
 
 // A test/validation RUNNER invocation in the SELECTED set — used to reconcile a
@@ -1165,10 +1202,41 @@ function selectSalientEvents(
   changedFiles: Set<string>,
   budget: number
 ): { selected: ConversationEvent[]; truncated: boolean } {
+  if (events.length <= budget) {
+    return {
+      selected: [...events].sort(
+        (left, right) => salienceScore(right, changedFiles) - salienceScore(left, changedFiles) || left.raw_index - right.raw_index
+      ),
+      truncated: false
+    };
+  }
   const ranked = [...events].sort(
     (left, right) => salienceScore(right, changedFiles) - salienceScore(left, changedFiles) || left.raw_index - right.raw_index
   );
-  return { selected: ranked.slice(0, budget), truncated: events.length > budget };
+  const byRawIndex = new Map(events.map((event) => [event.raw_index, event]));
+  // Keep a selected tool_call/tool_result WITH its adjacent partner (so the leaf
+  // sees both the command and its outcome) by inserting the partner right next to
+  // it in salience order, then cap to the budget (Codex P2).
+  const selected: ConversationEvent[] = [];
+  const taken = new Set<string>();
+  for (const event of ranked) {
+    if (selected.length >= budget) {
+      break;
+    }
+    if (!taken.has(event.id)) {
+      selected.push(event);
+      taken.add(event.id);
+    }
+    const partnerIndex = event.kind === "tool_call" ? event.raw_index + 1 : event.kind === "tool_result" ? event.raw_index - 1 : undefined;
+    if (partnerIndex !== undefined && selected.length < budget) {
+      const partner = byRawIndex.get(partnerIndex);
+      if (partner && (partner.kind === "tool_call" || partner.kind === "tool_result") && !taken.has(partner.id)) {
+        selected.push(partner);
+        taken.add(partner.id);
+      }
+    }
+  }
+  return { selected, truncated: true };
 }
 
 // The raw_index of the first cited event id present in the selection, used as the

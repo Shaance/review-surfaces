@@ -447,3 +447,22 @@ test("review-surfaces.METHODOLOGY.7 (D3) salience-ordered batches keep a late hi
   await runMethodologyReasoning(provider, { collection: collectionWithEvents(events, ["src/uploader.ts"]), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
   assert.ok(methodology.research.some((r) => r.includes("edited the changed file")));
 });
+
+test("review-surfaces.METHODOLOGY.7 (D3) a validation command in event.command raises salience", async () => {
+  const events: ConversationEvent[] = Array.from({ length: 300 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `chatter ${index}`, raw_index: index }));
+  // generic summary, but the actual validation command is in event.command.
+  events[295] = { id: "e295", actor: "assistant", kind: "tool_call", summary: "ran a command", tool: "Bash", command: "pytest tests/unit.py", raw_index: 295 };
+  const methodology = methodologyDegraded();
+  const audit = { research: [{ text: "ran the test suite", anchors: { event_ids: ["e295"] } }] };
+  await runMethodologyReasoning(stubProvider({ "methodology-audit": audit }), { collection: collectionWithEvents(events, []), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  assert.ok(methodology.research.some((r) => r.includes("ran the test suite")));
+});
+
+test("review-surfaces.METHODOLOGY.7 (D3) an analyzed-but-empty chunk is reported", async () => {
+  const many: ConversationEvent[] = Array.from({ length: 160 }, (_v, index) => ({ id: `e${index}`, actor: "assistant", kind: "message", summary: `t${index}`, raw_index: index }));
+  const methodology = methodologyDegraded();
+  // chunk 0 returns an empty payload; chunk 1 returns a real finding.
+  const provider = countingStub([{}, { unchallenged: [{ text: "assumed thing", anchors: { event_ids: ["e80"] } }] }]);
+  await runMethodologyReasoning(provider, { collection: collectionWithEvents(many, []), intent: intent(), evaluation: evaluation(), methodology, risks: risks() }, {});
+  assert.ok(methodology.skipped_checks.some((line) => /1 of 2 analyzed chunk\(s\) returned no recognizable audit content/.test(line)), methodology.skipped_checks.join(" | "));
+});
