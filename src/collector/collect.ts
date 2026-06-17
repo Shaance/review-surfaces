@@ -1126,9 +1126,13 @@ function computeSignature(input: SignatureInput): string {
     input_hashes: [...input.inputHashes]
       .sort((left, right) => compareStrings(left.path, right.path))
       .map((entry) => ({ path: entry.path, kind: entry.kind, hash: entry.hash })),
+    // old_path folded in via a conditional spread so the rename SOURCE perturbs
+    // the key (two runs renaming DIFFERENT same-content sources to the SAME
+    // destination must not collide — the source drives api_no_compat) while a
+    // run with no renames stays byte-identical to before (#103, Codex P2).
     changed_files: [...input.changedFileHashes]
       .sort((left, right) => compareStrings(left.path, right.path))
-      .map((entry) => ({ path: entry.path, status: entry.status, hash: entry.hash })),
+      .map((entry) => ({ path: entry.path, status: entry.status, hash: entry.hash, ...(entry.old_path ? { old_path: entry.old_path } : {}) })),
     // Sorted by kind then path so the key is independent of the order flags were
     // supplied. Empty when no flag-input files were given, leaving the default
     // (no-flag) signature byte-identical to before this addition.

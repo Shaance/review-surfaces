@@ -144,6 +144,66 @@ test("collector records staged and committed renames by their new path", () => {
   }
 });
 
+test("manifest signature distinguishes two same-content renames to the same destination (#103, Codex P2)", async () => {
+  // Two working-tree renames with an IDENTICAL committed head, identical
+  // destination bytes, identical status — differing ONLY in the rename SOURCE.
+  // The rename source drives api_no_compat, so the cache key must change with it;
+  // otherwise --cache reuses a stale methodology result. Same head_sha here means
+  // base/head sha, input hashes, and the dest content hash are all equal, so any
+  // signature difference is attributable solely to old_path.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-rename-sig-"));
+  try {
+    fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+    fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, "features", "example.feature.yaml"),
+      `feature:
+  name: example
+components:
+  ALPHA:
+    requirements:
+      1: The first behavior.
+`
+    );
+    // a.ts and b.ts share byte-identical content so the renamed destination hashes
+    // the same regardless of which source it came from.
+    fs.writeFileSync(path.join(tmp, "src", "a.ts"), "export const value = 1;\n");
+    fs.writeFileSync(path.join(tmp, "src", "b.ts"), "export const value = 1;\n");
+    execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
+
+    const config = {
+      ...defaultConfig,
+      specs: ["features/**/*.feature.yaml"],
+      docs: [],
+      tests: [],
+      output_dir: ".review-surfaces"
+    };
+    const collect = () => collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false });
+
+    // Run 1: a.ts -> src/dest.ts. Only a.ts is deleted, so git pairs the rename
+    // with a.ts unambiguously.
+    execFileSync("git", ["mv", "src/a.ts", "src/dest.ts"], { cwd: tmp, stdio: "ignore" });
+    const first = await collect();
+    assert.equal(first.changedFiles.find((file) => file.path === "src/dest.ts")?.old_path, "src/a.ts", "run 1 renames from a.ts");
+    const sig1 = first.manifest.signature ?? "";
+    assert.ok(sig1.length > 0, "run 1 records a signature");
+
+    // Run 2: restore a.ts, then b.ts -> src/dest.ts. Same head, same dest bytes,
+    // same status — only the source differs.
+    execFileSync("git", ["mv", "src/dest.ts", "src/a.ts"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["mv", "src/b.ts", "src/dest.ts"], { cwd: tmp, stdio: "ignore" });
+    const second = await collect();
+    assert.equal(second.changedFiles.find((file) => file.path === "src/dest.ts")?.old_path, "src/b.ts", "run 2 renames from b.ts");
+    const sig2 = second.manifest.signature ?? "";
+
+    assert.notEqual(sig2, sig1, "a different rename source must change the manifest signature so --cache does not reuse a stale methodology result");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("collector marks a diff file as working_tree when it is dirty after HEAD", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-dirty-diff-"));
   try {
