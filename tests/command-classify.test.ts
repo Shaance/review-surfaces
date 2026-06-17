@@ -384,3 +384,38 @@ test("review-surfaces.COLLECTOR.7 cross-ecosystem monorepo/CI scope selectors (C
   // `gradle help --task test` prints task info, it does not run tests.
   assert.equal(commandLooksLikeTestCommand("gradle help --task test"), false);
 });
+
+test("review-surfaces.COLLECTOR.7 cross-ecosystem runner/flag vocabulary (Codex P2 round 4)", () => {
+  // Launcher options before the wrapped runner are stripped (uv run [OPTIONS] CMD).
+  assert.equal(commandLooksLikeBroadTestCommand("uv run --locked pytest"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("uv run --group dev pytest -k login"), true);
+
+  // Help/version anywhere, and info subcommands behind global options, print & exit.
+  assert.equal(commandLooksLikeTestCommand("gradle --help"), false);
+  assert.equal(commandLooksLikeTestCommand("gradle --console=plain help"), false);
+  assert.equal(commandLooksLikeTestCommand("swift test --help"), false);
+  // ...but -v is verbose, not version — a real run.
+  assert.equal(commandLooksLikeBroadTestCommand("go test -v ./..."), true);
+
+  // Swift list-only invocations don't execute tests; a `list` filter value does.
+  assert.equal(commandLooksLikeTestCommand("swift test --list-tests"), false);
+  assert.equal(commandLooksLikeTestCommand("swift test list"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("swift test --filter list"), true);
+
+  // Suite-exclusion / reduction filters are focused.
+  assert.equal(commandLooksLikeFocusedTestCommand("go test -skip TestSlow ./..."), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("pytest --deselect tests/test_x.py::test_y"), true);
+
+  // Dart test files are specific targets.
+  assert.equal(commandLooksLikeFocusedTestCommand("dart test test/widget_test.dart"), true);
+
+  // A Go SUBTREE glob scopes to a prefix -> focused; only the whole-module glob is broad.
+  assert.equal(commandLooksLikeFocusedTestCommand("go test ./pkg/..."), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("go test pkg/..."), true);
+  assert.equal(commandLooksLikeBroadTestCommand("go test ./..."), true);
+
+  // unittest discover scoped to a start directory is focused; bare discover is broad.
+  assert.equal(commandLooksLikeFocusedTestCommand("python3 -m unittest discover -s tests/sub"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("python3 -m unittest discover"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("python3 -m unittest discover -s ."), true);
+});
