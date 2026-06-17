@@ -372,6 +372,7 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
     model: signatureModel(parsed, runConfig, signatureProvider),
     conversationPath: stringFlag(parsed, "conversation"),
     conversationFormat: conversationFormatFlag(parsed),
+    conversationDiscovery: !booleanFlag(parsed, "no-conversation-discovery"),
     agentInputPath: stringFlag(parsed, "agent-input"),
     configPath,
     previousPacketPath: resolvePreviousPacketInput(cwd, parsed)
@@ -3225,7 +3226,7 @@ function parseArgs(args: string[]): ParsedArgs {
 
 // Flags that are always boolean switches (no value argument). Listed so the
 // permissive parser does not consume a following positional as their "value".
-const BOOLEAN_FLAGS = new Set(["cache", "check", "dogfood", "force", "json", "no-redact-secrets", "post", "strict", "strict-postability", "verbose", "help", "interactive", "version"]);
+const BOOLEAN_FLAGS = new Set(["cache", "check", "dogfood", "force", "json", "no-conversation-discovery", "no-redact-secrets", "post", "strict", "strict-postability", "verbose", "help", "interactive", "version"]);
 
 // review-surfaces.CLI.9: the TRULY-UNIVERSAL minimum — only the flags EVERY
 // command honors on every code path. --verbose drives the shared isVerbose stderr
@@ -3299,6 +3300,7 @@ const PIPELINE_EXTRA_FLAGS = [
   "coverage",
   "conversation",
   "conversation-format",
+  "no-conversation-discovery",
   "agent-input",
   "previous-packet",
   "budget",
@@ -3741,9 +3743,13 @@ Options:
                    non-zero (evidence-validation) exit even without --post. Default off:
                    a local render writes comment.md and exits 0 (review-surfaces.RENDER.8).
   --conversation <path>
-                   Optional text/Markdown/JSONL/YAML conversation log for methodology
+                   Optional text/Markdown/JSONL/YAML conversation log for methodology.
+                   When omitted, the Claude Code session for this repo is auto-discovered
+                   (read-only; the picked file is announced on stderr). --conversation wins.
   --conversation-format <claude-code|codex|cursor|normalized>
                    Force a raw-transcript adapter; default auto-detects by content shape
+  --no-conversation-discovery
+                   Disable session auto-discovery (use only an explicit --conversation)
   --command-transcripts <dir>
                    Optional command transcript directory; default .review-surfaces/commands
   --test-output <path>

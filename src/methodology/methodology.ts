@@ -133,7 +133,12 @@ export async function buildMethodology(
     evidence: [
       {
         kind: "conversation",
-        path: conversationPath,
+        // Phase 5b (PRIVACY.1): an auto-discovered session carries a repo-relative
+        // normalized-log anchor (collection.conversationEvidencePath), NEVER its
+        // absolute home-dir path — which would fail isSafeRepositoryPath and leak a
+        // username-bearing path into a persisted artifact. An explicit --conversation
+        // path keeps its own value.
+        path: collection.conversationEvidencePath ?? conversationPath,
         // Carry a real normalized event id so this conversation-kind ref stays
         // VALID under the new validateEvidenceRef rule (a conversation ref now
         // requires a known event_id; path membership alone is insufficient).

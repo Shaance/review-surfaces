@@ -1,10 +1,12 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { AcaiSpecIndex, indexAcaiSpecs } from "../acai/acai";
 import { CommandTranscript, commandTranscriptInputDir, commandTranscriptOutputPath, indexCommandTranscriptFiles } from "../commands/transcripts";
 import { ReviewSurfacesConfig } from "../config/config";
 import { ConversationEvent, ConversationFormat } from "../conversation/events";
+import { discoverConversationSession } from "../conversation/discovery";
 import { loadConversationEvents, writeNormalizedConversation } from "../conversation/ingest";
 import { filterPathsByPatterns, walkFiles } from "../core/glob";
 import { ensureDir, fileExists, hashFile, isRegularFile, writeJson, writeText } from "../core/files";
@@ -177,6 +179,12 @@ export interface CollectionResult {
   // The adapter that matched the conversation file (harness label), e.g.
   // "claude-code". Absent when no conversation was ingested.
   conversationSource?: string;
+  // Phase 5b (PRIVACY.1): the repo-relative, isSafeRepositoryPath-clean path to
+  // persist as the conversation EvidenceRef anchor. Set ONLY for an auto-discovered
+  // (non-repo) session — its absolute home-dir path must never reach a persisted
+  // artifact, so the methodology evidence points at the gitignored normalized log
+  // instead. Absent for an explicit --conversation path (its path is used as-is).
+  conversationEvidencePath?: string;
 }
 
 export interface CollectOptions {
@@ -212,6 +220,14 @@ export interface CollectOptions {
   // Absent => auto-detect by content shape. The RESOLVED adapter label is folded
   // into the cache signature so a format change over the same bytes is a miss.
   conversationFormat?: ConversationFormat;
+  // Phase 5b (D4): when no explicit conversationPath is supplied, auto-discover the
+  // single harness session that produced base..head. `false` disables discovery (the
+  // determinism-check / self-dogfood pass this so a live-growing session store does
+  // not make their byte-for-byte runs non-deterministic). Absent/true => discover.
+  conversationDiscovery?: boolean;
+  // The home/root under which harness session stores live, injected so tests point at
+  // a fixture store instead of the real ~/.claude. Absent => os.homedir().
+  conversationStoreRoot?: string;
   // Resolved --agent-input file path consumed by the agent-file provider. Folded
   // into the signature so a changed hypothesis set is a cache miss. Absent => no
   // agent-input flag was supplied.
@@ -394,17 +410,39 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // events and the methodology surface degrades to conversation_log_missing.
   let conversationEvents: ConversationEvent[] | undefined;
   let conversationSource: string | undefined;
-  if (options.conversationPath !== undefined) {
-    const loaded = await loadConversationEvents(options.cwd, options.conversationPath, options.conversationFormat);
+  let conversationEvidencePath: string | undefined;
+  // Phase 5b (D4): `--conversation` ALWAYS wins; otherwise auto-discover the single
+  // harness session for this repo (read-only). Discovery returns the ABSOLUTE
+  // home-dir session path for the registry to parse — but that path must NEVER reach
+  // a persisted artifact, so when it is used we persist the repo-relative
+  // normalized-log path as the evidence anchor and announce the absolute path on
+  // stderr only (PRIVACY.1).
+  const discovered =
+    options.conversationPath === undefined && options.conversationDiscovery !== false
+      ? discoverConversationSession({ storeRoot: options.conversationStoreRoot ?? os.homedir(), cwd: options.cwd })
+      : undefined;
+  const resolvedConversationPath = options.conversationPath ?? discovered?.path;
+  if (resolvedConversationPath !== undefined) {
+    const loaded = await loadConversationEvents(options.cwd, resolvedConversationPath, options.conversationFormat);
     if (loaded) {
       conversationEvents = loaded.events;
       conversationSource = loaded.adapter;
+      // An auto-discovered (non-repo) session anchors to the gitignored
+      // normalized log, never its absolute home-dir path (isSafeRepositoryPath +
+      // PRIVACY.1); an explicit --conversation path keeps its own value.
+      conversationEvidencePath = discovered ? normalizedConversationLogPath(outputDirRelative) : undefined;
       await writeNormalizedConversation(outputDir, loaded.events);
       // Announce the chosen adapter on stderr (via diagnostics), mirroring the
       // collection-diagnostics pattern — stdout ordering contracts must not move.
-      diagnostics.push(`Conversation adapter: ${loaded.adapter} (${options.conversationPath})`);
+      // For a discovered session the absolute picked path appears HERE (stderr)
+      // only; it is the user's signal to correct a wrong match.
+      diagnostics.push(
+        discovered
+          ? `Auto-discovered conversation session: ${discovered.path} (adapter ${loaded.adapter})`
+          : `Conversation adapter: ${loaded.adapter} (${resolvedConversationPath})`
+      );
     } else {
-      diagnostics.push(`Conversation log unmatched or unreadable: ${options.conversationPath}`);
+      diagnostics.push(`Conversation log unmatched or unreadable: ${resolvedConversationPath}`);
     }
   }
 
@@ -490,7 +528,11 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const lcovSource = resolveLcovSource(options.cwd, options.coverageOutputPath);
 
   const flagInputHashes = await hashFlagInputs(options.cwd, [
-    { kind: "conversation", path: options.conversationPath },
+    // Phase 5b: hash the RESOLVED conversation file — the explicit --conversation
+    // path OR the auto-discovered session — so the discovered session's CONTENT
+    // (not just its path) drives the signature. A live-growing in-session run thus
+    // legitimately busts the cache (it must be re-audited); a static fixture recurs.
+    { kind: "conversation", path: resolvedConversationPath },
     { kind: "coverage", path: options.coverageOutputPath },
     { kind: "coverage-lcov", path: lcovSource?.sourcePath },
     { kind: "agent-input", path: options.agentInputPath },
@@ -665,7 +707,8 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     diagnostics: [...new Set(diagnostics)],
     diff_source: diffSource,
     conversationEvents,
-    conversationSource
+    conversationSource,
+    conversationEvidencePath
   };
 }
 

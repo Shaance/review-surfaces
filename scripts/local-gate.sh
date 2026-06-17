@@ -58,6 +58,7 @@ GATE_OUT="$(mktemp -d)/out"
 trap 'rm -rf "$PACK_TMP" "$(dirname "$GATE_OUT")"' EXIT
 node bin/review-surfaces.js all \
   --provider mock \
+  --no-conversation-discovery \
   --base HEAD \
   --head HEAD \
   --dogfood \
