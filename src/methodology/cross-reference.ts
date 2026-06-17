@@ -295,12 +295,16 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
     );
   const uncoveredImpl = broadTestRun ? [] : implFiles.filter((file) => !coveringTestStems.has(fileStem(file.path)));
   if (uncoveredImpl.length > 0 && !discusses(haystack, TEST_KEYWORDS)) {
-    const weakened = facts.test_weakening.length > 0;
+    // Promote only on a test-weakening RELATED to an uncovered file (its name stem
+    // matches) — an unrelated weakening elsewhere should not escalate this gap
+    // (Codex P2).
+    const uncoveredStems = new Set(uncoveredImpl.map((file) => fileStem(file.path)));
+    const relatedWeakening = facts.test_weakening.find((signal) => uncoveredStems.has(fileStem(signal.path)));
     emit(
       "impl_no_test",
-      weakened,
+      relatedWeakening !== undefined,
       `Implementation changed with no test coverage evidence or test discussion: ${fileList(uncoveredImpl.map((file) => file.path))}.${
-        weakened ? ` A test-weakening change was also detected (${facts.test_weakening[0].kind}).` : ""
+        relatedWeakening ? ` A related test-weakening change was also detected (${relatedWeakening.kind}).` : ""
       }`,
       uncoveredImpl[0].path
     );
