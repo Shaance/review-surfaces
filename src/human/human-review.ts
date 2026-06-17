@@ -3863,18 +3863,26 @@ function buildQuestions(
     });
   }
 
-  // review-surfaces.METHODOLOGY.7 (D5): surface the methodology audit's item-4
-  // findings as ADVISORY clarifying questions — only the ones whose anchor the
-  // leaf VALIDATED against a real event id / changed path (so the demoted /
-  // unanchored ones never add noise). Advisory by default; a future deterministic
-  // cross-reference check (Phase 3a) can promote one to blocking. Under the mock
+  // review-surfaces.METHODOLOGY.7/.8 (D5/D6): surface the methodology audit's item-4
+  // findings as reviewer questions — only the ones whose anchor was VALIDATED
+  // against a real event id / changed path (so the demoted / unanchored ones never
+  // add noise). A finding stays a CLARIFYING/advisory question UNLESS it was PROMOTED
+  // (advisory === false) — i.e. an independent deterministic cross-reference check
+  // (Phase 3a: a secret finding, a breaking API/schema change, a test-weakening, a
+  // moved lockfile) corroborated it — in which case it becomes a BLOCKING question so
+  // the promotion bit actually moves reviewer gating (Codex P2). Under the mock
   // default workflow_findings is empty, so this is a no-op on the offline path.
   for (const finding of (input.packet.methodology.workflow_findings ?? []).filter(workflowFindingHasValidatedAnchor).slice(0, 3)) {
+    const corroborated = finding.advisory === false;
     questions.push({
       id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
-      severity: "clarifying",
-      question: `Did the agent's workflow account for this (${finding.signal_kind.replace(/_/g, " ")}): ${forQuestionTail(finding.summary)}?`,
-      reason: "The methodology audit of the agent conversation flagged this as advisory; confirm it before approval.",
+      severity: corroborated ? "blocking" : "clarifying",
+      question: corroborated
+        ? `A deterministic check corroborated this (${finding.signal_kind.replace(/_/g, " ")}): ${forQuestionTail(finding.summary)}. Confirm it was intended before approval.`
+        : `Did the agent's workflow account for this (${finding.signal_kind.replace(/_/g, " ")}): ${forQuestionTail(finding.summary)}?`,
+      reason: corroborated
+        ? "The methodology audit's deterministic cross-reference check corroborated this; resolve it before approval."
+        : "The methodology audit of the agent conversation flagged this as advisory; confirm it before approval.",
       evidence: finding.evidence,
       maps_to_risks: [],
       maps_to_requirements: []

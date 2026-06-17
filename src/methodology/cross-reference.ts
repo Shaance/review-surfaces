@@ -50,6 +50,28 @@ function basename(filePath: string): string {
   return parts[parts.length - 1] ?? filePath;
 }
 
+// A file's NAME stem with extension and any test/spec marker stripped, used to
+// correlate a test file with an implementation file (`uploader.ts` and
+// `uploader.test.ts` share the stem `uploader`).
+function fileStem(filePath: string): string {
+  let name = basename(filePath).toLowerCase();
+  name = name.replace(/\.(?:test|spec)\.[^.]+$/, ""); // uploader.test.ts -> uploader
+  name = name.replace(/\.[^.]+$/, ""); // strip a remaining extension
+  name = name.replace(/[._-](?:test|spec)$/, ""); // uploader_test -> uploader
+  return name;
+}
+
+// A public-contract surface whose removal/rename is inherently breaking even when
+// the structural diff produced no schema/api fact (a pure delete/rename has no
+// property-level diff): a JSON schema, a schemas/ file, or a type declaration.
+function isPublicSurfacePath(filePath: string): boolean {
+  return (
+    filePath.endsWith(".d.ts") ||
+    /(^|\/)schemas?\//.test(filePath) ||
+    (filePath.endsWith(".json") && /schema/i.test(basename(filePath)))
+  );
+}
+
 function isLockfile(filePath: string): boolean {
   return LOCKFILES.has(basename(filePath));
 }
@@ -93,14 +115,18 @@ function isDepOrConfigFile(filePath: string): boolean {
   );
 }
 
-// The lowercased text the discussion checks scan: only NATURAL-LANGUAGE turns
-// (user/assistant messages). Tool-call summaries/commands carry the changed-file
-// paths themselves (e.g. `Edit(src/auth/login.ts)`), so scanning them would let
-// merely TOUCHING a file count as "discussing" its topic and suppress the very
-// signal it should raise (Codex P2). The events are already redacted (Phase 1).
+// Tool turns carry a file path in their summary/command (`Edit(src/auth/login.ts)`),
+// so counting them as discussion would let merely TOUCHING a file suppress the very
+// signal it should raise (Codex P2). EVERY OTHER kind is natural language — message,
+// decision, heading, and any tolerant/unknown kind a normalized log carries — and
+// MUST be scanned, so a `kind: "decision"` summary saying "reviewed security" counts.
+const TOOL_KINDS = new Set(["tool_call", "tool_result"]);
+
+// The lowercased text the discussion checks scan: every NON-tool turn's summary. The
+// events are already redacted (Phase 1).
 function conversationHaystack(events: ConversationEvent[]): string {
   return events
-    .filter((event) => event.kind === "message")
+    .filter((event) => !TOOL_KINDS.has(event.kind))
     .map((event) => event.summary ?? "")
     .join("\n")
     .toLowerCase();
@@ -176,12 +202,15 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
   }
 
   // 2. impl_no_test: implementation source changed (any language) with no test
-  // coverage evidence and no test discussion. Coverage = a NON-weakened test edit OR
-  // a captured passing test run. Promoted by a concrete test-weakening fact.
+  // coverage evidence and no test discussion. Coverage = a CORRELATED non-weakened
+  // test edit (its name stem matches a changed impl file, so an UNRELATED test edit
+  // does not count, Codex P2) OR a captured passing test run (broad evidence).
+  // Promoted by a concrete test-weakening fact.
   const implFiles = changed.filter((file) => isImplSourceFile(file.path));
+  const implStems = new Set(implFiles.map((file) => fileStem(file.path)));
   const weakenedTestPaths = new Set(facts.test_weakening.map((signal) => signal.path));
-  const strengtheningTest = changed.some(
-    (file) => isTestPath(file.path) && file.status !== "D" && !weakenedTestPaths.has(file.path)
+  const correlatedTest = changed.some(
+    (file) => isTestPath(file.path) && file.status !== "D" && !weakenedTestPaths.has(file.path) && implStems.has(fileStem(file.path))
   );
   const passedTestRun = (collection.commandTranscripts ?? []).some(
     (transcript) =>
@@ -190,7 +219,7 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
       typeof transcript.command === "string" &&
       commandLooksLikeTestCommand(transcript.command)
   );
-  if (implFiles.length > 0 && !strengtheningTest && !passedTestRun && !discusses(haystack, TEST_KEYWORDS)) {
+  if (implFiles.length > 0 && !correlatedTest && !passedTestRun && !discusses(haystack, TEST_KEYWORDS)) {
     const weakened = facts.test_weakening.length > 0;
     emit(
       "impl_no_test",
@@ -203,22 +232,25 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
   }
 
   // 3. api_no_compat: an exported API surface or JSON-schema changed with no
-  // backward-compatibility discussion. Fires from the semantic api/schema facts (not
-  // only declaration filenames). Promoted by a backward-INCOMPATIBLE change or a
-  // removed/renamed surface file.
+  // backward-compatibility discussion. Fires from the semantic api/schema facts AND
+  // from a removed/renamed public-contract surface (a pure delete/rename yields no
+  // structural fact, so it must be its own TRIGGER, not just a promotion flag —
+  // Codex P2). Promoted by a backward-INCOMPATIBLE structural change or any
+  // removed/renamed surface.
   const apiFactPaths = [...facts.api_changes.map((change) => change.path), ...facts.schema_changes.map((change) => change.path)];
-  const removedSurface = changed.some(
-    (file) => (file.status === "D" || file.status.startsWith("R")) && (isImplSourceFile(file.path) || file.path.endsWith(".json"))
-  );
-  if (apiFactPaths.length > 0 && !discusses(haystack, COMPAT_KEYWORDS)) {
-    const breaking = hasBreakingSemanticChange(facts) || removedSurface;
+  const removedSurfacePaths = changed
+    .filter((file) => (file.status === "D" || file.status.startsWith("R")) && isPublicSurfacePath(file.path))
+    .map((file) => file.path);
+  const apiTriggerPaths = [...new Set([...apiFactPaths, ...removedSurfacePaths])];
+  if (apiTriggerPaths.length > 0 && !discusses(haystack, COMPAT_KEYWORDS)) {
+    const breaking = hasBreakingSemanticChange(facts) || removedSurfacePaths.length > 0;
     emit(
       "api_no_compat",
       breaking,
-      `API/schema surface changed with no backward-compatibility discussion: ${fileList(apiFactPaths)}.${
+      `API/schema surface changed with no backward-compatibility discussion: ${fileList(apiTriggerPaths)}.${
         breaking ? " A backward-incompatible change (a removed export/property/surface, a required field, or a signature change) was detected." : ""
       }`,
-      apiFactPaths[0]
+      apiTriggerPaths[0]
     );
   }
 

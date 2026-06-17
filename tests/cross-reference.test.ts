@@ -185,6 +185,30 @@ test("review-surfaces.METHODOLOGY.8 every cross-reference finding anchors to a c
   }
 });
 
+test("review-surfaces.METHODOLOGY.8 a natural-language decision turn counts as discussion (Codex P2)", () => {
+  // A normalized log can carry kind:"decision"; it is natural language and must be scanned.
+  const events: ConversationEvent[] = [{ id: "d0", actor: "assistant", kind: "decision", summary: "Reviewed the auth flow for security before merging", raw_index: 0 }];
+  assert.equal(signal(computeCrossReferenceSignals(collection([file("src/auth/login.ts")]), events), "risky_no_security"), undefined);
+});
+
+test("review-surfaces.METHODOLOGY.8 api_no_compat fires for a DELETED schema surface even with no structural fact (Codex P2)", () => {
+  // A pure delete yields no schema_changes fact; the removed surface must still trigger.
+  const sig = signal(computeCrossReferenceSignals(collection([file("schemas/review_packet.schema.json", "D")]), talk("removed an old schema")), "api_no_compat");
+  assert.ok(sig, "a removed public-contract surface triggers the signal on its own");
+  assert.equal(sig.advisory, false, "a removed surface is inherently breaking");
+});
+
+test("review-surfaces.METHODOLOGY.8 impl_no_test still fires when only an UNRELATED test was edited (Codex P2)", () => {
+  // The test file shares no name stem with the changed impl, so it is not coverage.
+  const findings = computeCrossReferenceSignals(collection([file("src/payments.ts"), file("tests/unrelated.test.ts", "A")]), talk("changed payments"));
+  assert.ok(signal(findings, "impl_no_test"), "an unrelated test edit must not be treated as coverage");
+});
+
+test("review-surfaces.METHODOLOGY.8 a correlated test (matching name stem) DOES count as coverage", () => {
+  const findings = computeCrossReferenceSignals(collection([file("src/payments.ts"), file("tests/payments.test.ts", "A")]), talk("changed payments"));
+  assert.equal(signal(findings, "impl_no_test"), undefined, "a test whose stem matches the impl is coverage");
+});
+
 test("review-surfaces.METHODOLOGY.8 an empty diff yields no cross-reference findings", () => {
   assert.deepEqual(computeCrossReferenceSignals(collection([]), talk("anything")), []);
 });
