@@ -346,3 +346,41 @@ test("review-surfaces.COLLECTOR.7 screens no-execution, excluded, and ambiguous 
   // ...while rspec -e really is a focus selector.
   assert.equal(commandLooksLikeFocusedTestCommand("rspec -e \"signs in\""), true);
 });
+
+test("review-surfaces.COLLECTOR.7 cross-ecosystem monorepo/CI scope selectors (Codex P2 round 3)", () => {
+  // Maven/Gradle/dotnet/unittest scoped selectors are FOCUSED, not whole-repo broad.
+  assert.equal(commandLooksLikeFocusedTestCommand("mvn -pl api test"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("mvn --projects api,web test"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("./gradlew :api:test"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("gradle test"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("python3 -m unittest module.TestClass.test_method"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("dotnet test ./src/Foo.Tests/Foo.Tests.csproj"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("dotnet test MySolution.sln"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("dotnet test"), true);
+
+  // Marker / short / skip selectors narrow the executed suite -> focused.
+  assert.equal(commandLooksLikeFocusedTestCommand("pytest -m 'not slow'"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("go test -short ./..."), true);
+
+  // -N is ctest-only: `mvn -N test` (--non-recursive) still RUNS tests -> broad.
+  assert.equal(commandLooksLikeBroadTestCommand("mvn -N test"), true);
+  assert.equal(commandLooksLikeTestCommand("ctest -N"), false);
+  // -DskipTests=false RE-ENABLES tests; only a real skip drops the run.
+  assert.equal(commandLooksLikeBroadTestCommand("mvn test -DskipTests=false"), true);
+  assert.equal(commandLooksLikeTestCommand("mvn test -DskipTests"), false);
+
+  // A value-option operand is not a cargo test-name filter -> stays broad.
+  assert.equal(commandLooksLikeBroadTestCommand("cargo test --workspace --jobs 4"), true);
+  // ...but a cargo package selector IS scoped -> focused.
+  assert.equal(commandLooksLikeFocusedTestCommand("cargo test -p mycrate"), true);
+
+  // tox/nox can run any session; a session selector is scoped (focused), only a bare
+  // invocation is broad — and a docs/lint session is never a broad test run.
+  assert.equal(commandLooksLikeBroadTestCommand("tox"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("tox -e docs"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("nox --sessions lint"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("tox -e docs"), false);
+
+  // `gradle help --task test` prints task info, it does not run tests.
+  assert.equal(commandLooksLikeTestCommand("gradle help --task test"), false);
+});

@@ -44,18 +44,39 @@ const CROSS_ECOSYSTEM_RUNNERS: Array<{ runner: CrossRunner; head: RegExp; strip:
   { runner: "gradle", head: /^(?:gradle|gradlew|\.\/gradlew)\b.*\b(?:test|check|integrationTest|connectedAndroidTest)\b/, strip: /^(?:gradle|gradlew|\.\/gradlew)\s*/ }
 ];
 
-// Recognized as a runner but does NOT execute tests, so must not be credited as a
-// passing test run: go -list, cargo --no-run, pytest --collect-only, ctest -N/
-// --show-only, a Gradle `-x test`/`--exclude-task test`, or a Maven test skip (Codex P2).
-const CROSS_ECOSYSTEM_NO_EXECUTION =
-  /(?:^|\s)(?:-list|--no-run|--collect-only|-N|--show-only)(?:[=\s]|$)|(?:^|\s)(?:-x\s+test|--exclude-task[=\s]test)\b|(?:^|\s)-D(?:skipTests|maven\.test\.skip)\b/;
+// Informational subcommands that PRINT rather than run tests, even when a test goal
+// word appears as an argument (`gradle help --task test`, `mvn -h`) — never a test
+// run (Codex P2).
+const CROSS_ECOSYSTEM_NON_TEST_SUBCOMMAND =
+  /^(?:gradle|gradlew|\.\/gradlew|mvn|mvnw|\.\/mvnw)\s+(?:help|tasks|properties|projects|dependencies|-h|--help|-v|--version)\b/;
+
+// No-execution flags (list/compile/collect-only), scoped to the runner they belong
+// to — `mvn -N test` (Maven --non-recursive, still runs tests) must NOT be confused
+// with `ctest -N` (Codex P2).
+const NO_EXECUTION_BY_RUNNER: Partial<Record<CrossRunner, RegExp>> = {
+  go: /(?:^|\s)-list(?:[=\s]|$)/,
+  cargo: /(?:^|\s)--no-run(?:[=\s]|$)/,
+  pytest: /(?:^|\s)--collect-only(?:[=\s]|$)/,
+  ctest: /(?:^|\s)(?:-N|--show-only)(?:[=\s]|$)/
+};
+// Gradle excluding the test task, and a Maven test skip — but `-DskipTests=false`
+// RE-ENABLES tests (a default-skip project override), so it is NOT a skip (Codex P2).
+const GRADLE_TEST_EXCLUDED = /(?:^|\s)(?:-x\s+test|--exclude-task[=\s]test)\b/;
+const MAVEN_TEST_SKIPPED = /(?:^|\s)-D(?:skipTests|maven\.test\.skip)(?!=false)\b/;
 
 // Explicit focus selectors shared across runners: go -run, pytest -k, dotnet/gradle
 // --filter/--tests, cargo --test, ctest -R, mix --only, dart/flutter --name, maven
-// -Dtest=, rake TEST=. NOTE: `-e` is NOT here — it collides with Maven's --errors;
-// it counts as a focus flag only for Ruby/rspec (handled per-runner).
+// -Dtest=/-pl/--projects, rake TEST=. NOTE: `-e` is NOT here — it collides with
+// Maven's --errors; it counts as focus only for Ruby/rspec (handled per-runner).
 const CROSS_ECOSYSTEM_FOCUS_FLAG =
-  /(?:^|\s)(?:-run|-k|--filter|--tests?|--name|--plain-name|--example|-R|--only)(?:[=\s]|$)|(?:^|\s)(?:-Dtest|TEST)=/;
+  /(?:^|\s)(?:-run|-k|--filter|--tests?|--name|--plain-name|--example|-R|--only|-pl|--projects)(?:[=\s]|$)|(?:^|\s)(?:-Dtest|TEST)=/;
+
+// Value-consuming options whose OPERAND must not be read as a test-name positional
+// (cargo `--jobs 4`). Boolean flags are absent, so a positional after them is still
+// read. `-p`/`--package` is deliberately NOT here — a cargo package selector scopes
+// the run, so its operand SHOULD register as a focused target.
+const CROSS_ECOSYSTEM_VALUE_OPTION =
+  /^(?:-j|--jobs|--target|--target-dir|--features|--manifest-path|--color|--message-format|--profile|--config|--num-threads|--rootdir|--maxfail|-o|--output)$/;
 
 export function normalizeCommand(command: string): string {
   return command.trim().replace(/\s+/g, " ");
@@ -167,48 +188,113 @@ function looksLikeBroadTestScriptAlias(alias: string): boolean {
 
 // undefined when `normalized` is not a recognized non-JS test RUN; otherwise "broad"
 // (whole suite) or "focused" (narrowed to a flag/target). A command that recognizes
-// as a runner but does not execute tests (list/compile/collect-only, or an excluded/
-// skipped test task) returns undefined — it is not a passing test run (Codex P2).
+// as a runner but does not execute tests (info subcommand, list/compile/collect-only,
+// or an excluded/skipped test task) returns undefined — not a passing test run.
 function crossEcosystemTestKind(normalized: string): "broad" | "focused" | undefined {
   const command = normalized.replace(CROSS_ECOSYSTEM_LAUNCHER, "");
+  if (CROSS_ECOSYSTEM_NON_TEST_SUBCOMMAND.test(command)) {
+    return undefined; // `gradle help --task test`, `mvn -h`
+  }
   const match = CROSS_ECOSYSTEM_RUNNERS.find((entry) => entry.head.test(command));
   if (match === undefined) {
     return undefined;
   }
-  if (CROSS_ECOSYSTEM_NO_EXECUTION.test(command)) {
+  if (crossEcosystemIsNoExecution(match.runner, command)) {
     return undefined;
   }
   return crossEcosystemTestIsFocused(match.runner, match.strip, command) ? "focused" : "broad";
+}
+
+function crossEcosystemIsNoExecution(runner: CrossRunner, command: string): boolean {
+  if (NO_EXECUTION_BY_RUNNER[runner]?.test(command)) {
+    return true;
+  }
+  if (runner === "gradle") {
+    return GRADLE_TEST_EXCLUDED.test(command);
+  }
+  if (runner === "maven") {
+    return MAVEN_TEST_SKIPPED.test(command);
+  }
+  return false;
 }
 
 function crossEcosystemTestIsFocused(runner: CrossRunner, strip: RegExp, command: string): boolean {
   if (CROSS_ECOSYSTEM_FOCUS_FLAG.test(command)) {
     return true;
   }
+  const body = command.replace(strip, "");
   if (runner === "ruby" && /(?:^|\s)-e(?:[=\s]|$)/.test(command)) {
     return true; // rspec -e "description" (Ruby-only; -e is Maven's --errors elsewhere)
   }
-  // unittest `discover` is a whole-suite run; its -p PATTERN is discovery, not a focus.
-  if (runner === "unittest" && /(?:^|\s)discover(?:\s|$)/.test(command)) {
-    return false;
+  if (runner === "pytest" && /(?:^|\s)-m(?:[=\s]|$)/.test(body)) {
+    return true; // pytest -m MARKEXPR (post-strip, so the `python -m pytest` head is gone)
   }
-  const positionals = command
-    .replace(strip, "")
-    .split(/\s+/)
-    .map(cleanCommandToken)
-    .filter((token) => token !== "" && !token.startsWith("-"));
+  if (runner === "go" && /(?:^|\s)-short(?:[=\s]|$)/.test(command)) {
+    return true; // `go test -short` runs a reduced suite
+  }
+  if (runner === "orchestrator") {
+    // tox/nox can run ANY session, not just tests, and we cannot statically prove a
+    // selected session runs tests — so a session-scoped run (`tox -e docs`,
+    // `nox -s lint`) is treated as FOCUSED (scoped), and only a bare `tox`/`nox`
+    // (the default envs) counts as broad (Codex P2, bounded).
+    return /(?:^|\s)(?:-e|-s|--sessions?)(?:[=\s]|$)/.test(command);
+  }
+  if (runner === "unittest" && /(?:^|\s)discover(?:\s|$)/.test(command)) {
+    return false; // `discover` is a whole-suite run; its -p PATTERN is discovery, not focus
+  }
+  const positionals = crossEcosystemPositionals(body);
   if (runner === "go") {
-    // An explicit package argument narrows the run; `./...`, `...`, `pkg/...`, `.`
-    // are the whole-module globs that stay broad.
-    return positionals.some((token) => !isBroadGoPackageTarget(token));
+    // An explicit package PATH narrows the run; `./...`/`...`/`.` are whole-module
+    // globs (broad), and a bare flag operand like `-count 1`'s `1` is not a package.
+    return positionals.some((token) => isGoPackageTarget(token) && !isBroadGoPackageTarget(token));
   }
   if (runner === "cargo") {
-    // `cargo test <name>` filters by substring — any bare positional narrows it.
+    // `cargo test <name>` filters by substring — any surviving bare positional narrows
+    // it (option operands like `--jobs 4` are skipped by crossEcosystemPositionals).
     return positionals.length > 0;
   }
-  // pytest / ruby / php / mix / unittest: a specific test FILE or test id, never a
-  // bare directory or a glob.
+  if (runner === "gradle") {
+    return positionals.some((token) => /^:.*:(?:test|check|integrationtest|connectedandroidtest)$/i.test(token));
+  }
+  if (runner === "unittest") {
+    // `discover` returned broad above; any remaining positional is a module/class/
+    // method selector (`module.TestClass.test_method`) that narrows the run.
+    return positionals.length > 0;
+  }
+  if (runner === "dotnet") {
+    // A specific project/solution/path scopes the run.
+    return positionals.some((token) => /\.(?:csproj|vbproj|fsproj|sln)$/i.test(token) || token.includes("/"));
+  }
+  // pytest / ruby / php / mix: a specific test FILE or test id, never a bare dir/glob.
   return positionals.some(isSpecificTestTargetToken);
+}
+
+// Positionals of a head-stripped command, dropping flags AND the operands of
+// value-consuming options (so cargo `--jobs 4`'s `4` is not read as a test name) and
+// anything after `--` (passed to the test binary, not a runner positional).
+function crossEcosystemPositionals(body: string): string[] {
+  const tokens = body.split(/\s+/).filter(Boolean);
+  const positionals: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token === "--") {
+      break;
+    }
+    if (token.startsWith("-")) {
+      if (!token.includes("=") && CROSS_ECOSYSTEM_VALUE_OPTION.test(token)) {
+        index += 1; // skip this option's operand
+      }
+      continue;
+    }
+    positionals.push(cleanCommandToken(token));
+  }
+  return positionals;
+}
+
+function isGoPackageTarget(token: string): boolean {
+  // ./pkg, ../pkg, example.com/mod/pkg, a/b, or `.` — a package pattern, not a bare
+  // flag operand (`go test -count 1`'s `1`).
+  return token === "." || token.startsWith("./") || token.startsWith("../") || token.includes("/");
 }
 
 function isBroadGoPackageTarget(token: string): boolean {
