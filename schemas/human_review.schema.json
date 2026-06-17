@@ -113,8 +113,9 @@
     "methodology_audit": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["considered", "research", "workflow_findings"],
+      "required": ["degraded", "considered", "research", "workflow_findings"],
       "properties": {
+        "degraded": { "type": "boolean" },
         "considered": { "type": "array", "items": { "type": "string" } },
         "research": { "type": "array", "items": { "type": "string" } },
         "workflow_findings": {
@@ -125,11 +126,21 @@
             "required": ["id", "signal_kind", "summary", "severity", "advisory", "evidence"],
             "properties": {
               "id": { "type": "string" },
-              "signal_kind": { "type": "string" },
+              "signal_kind": {
+                "enum": [
+                  "risky_no_security",
+                  "impl_no_test",
+                  "api_no_compat",
+                  "deps_no_rationale",
+                  "unchallenged_assumption",
+                  "skipped_step",
+                  "workflow_soundness"
+                ]
+              },
               "summary": { "type": "string" },
-              "severity": { "type": "string" },
+              "severity": { "$ref": "#/$defs/severity" },
               "advisory": { "type": "boolean" },
-              "evidence": { "type": "array" }
+              "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } }
             }
           }
         }

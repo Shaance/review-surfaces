@@ -3917,6 +3917,7 @@ function workflowFindingHasValidatedAnchor(finding: { evidence: EvidenceRef[] })
 function buildMethodologyAudit(input: BuildHumanReviewInput): MethodologyAudit {
   const methodology = input.packet.methodology;
   return {
+    degraded: (methodology.quality_flags ?? []).includes("methodology_analysis_degraded"),
     considered: (methodology.considered ?? []).slice(0, 8),
     research: (methodology.research ?? []).slice(0, 8),
     workflow_findings: (methodology.workflow_findings ?? [])

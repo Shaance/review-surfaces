@@ -4348,7 +4348,20 @@ test("review-surfaces.METHODOLOGY.7 the cockpit surfaces the agent-workflow audi
   assert.match(html, /Research \/ context gathered/);
   assert.match(html, /read the uploader spec/);
   assert.match(html, /uploader changed without a test/);
+  assert.match(html, /src\/uploader\.ts/, "the finding renders its evidence anchor (Codex P2)");
   assert.doesNotMatch(html, /unverifiable assumption/, "the unanchored finding is not surfaced");
+});
+
+test("review-surfaces.METHODOLOGY.7 a degraded methodology audit is loudly flagged on the cockpit, not shown as a real audit", () => {
+  const packet = packetFixture();
+  packet.methodology.quality_flags = ["methodology_analysis_degraded"];
+  packet.methodology.considered = ["a keyword-picked option"];
+  packet.methodology.research = [];
+  packet.methodology.workflow_findings = [];
+
+  const model = buildHumanReview({ packet });
+  assert.equal(model.methodology_audit.degraded, true);
+  assert.match(renderHumanReviewHtml(model), /Deep audit not run/, "the cockpit carries the loud degradation signal (D2)");
 });
 
 test("review-surfaces.METHODOLOGY.8 a PROMOTED (non-advisory) workflow finding becomes a BLOCKING question, not advisory", () => {

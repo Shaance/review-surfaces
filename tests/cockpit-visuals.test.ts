@@ -85,7 +85,7 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
         confidence: "medium"
       }
     ],
-    methodology_audit: { considered: [], research: [], workflow_findings: [] },
+    methodology_audit: { degraded: false, considered: [], research: [], workflow_findings: [] },
     intent_mismatch: { expected_by_spec: [], observed_in_diff: [], possible_mismatches: [], possible_overreach: [], missing_intent: [], claimed_candidates: [] },
     review_routes: [],
     since_last_review: {

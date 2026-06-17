@@ -46,7 +46,7 @@ const HUMAN_REQUIRED_DEFAULTS = {
   narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
   semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
   risk_lens_findings: [],
-  methodology_audit: { considered: [], research: [], workflow_findings: [] },
+  methodology_audit: { degraded: false, considered: [], research: [], workflow_findings: [] },
   intent_mismatch: {
     expected_by_spec: [],
     observed_in_diff: [],
@@ -592,7 +592,7 @@ test("human review schema validates intent-mismatch slices", () => {
       invalid_evidence: [],
       confidence_summary: "Fixture."
     },
-    methodology_audit: { considered: [], research: [], workflow_findings: [] },
+    methodology_audit: { degraded: false, considered: [], research: [], workflow_findings: [] },
     intent_mismatch: {
       expected_by_spec: [
         {
@@ -666,7 +666,7 @@ test("human review schema rejects intent-mismatch items without evidence", () =>
       invalid_evidence: [],
       confidence_summary: "Fixture."
     },
-    methodology_audit: { considered: [], research: [], workflow_findings: [] },
+    methodology_audit: { degraded: false, considered: [], research: [], workflow_findings: [] },
     intent_mismatch: {
       expected_by_spec: [
         {

@@ -537,10 +537,16 @@ function renderMethodologyAudit(model: HumanReviewModel): string {
       : `<h3>Workflow findings</h3><ul>${audit.workflow_findings
           .map(
             (finding) =>
-              `<li><span class="badge ${finding.advisory ? "low" : esc(finding.severity)}">${finding.advisory ? "advisory" : "corroborated"}</span> <span class="muted">${esc(finding.signal_kind.replace(/_/g, " "))}</span>: ${esc(finding.summary)}</li>`
+              `<li><span class="badge ${finding.advisory ? "low" : esc(finding.severity)}">${finding.advisory ? "advisory" : "corroborated"}</span> <span class="muted">${esc(finding.signal_kind.replace(/_/g, " "))}</span>: ${esc(finding.summary)} <span class="muted">[${evidenceRefsHtml(finding.evidence)}]</span></li>`
           )
           .join("")}</ul>`;
+  // D2 (Codex P2): when the deep audit did not run, considered/research are keyword
+  // PICKS, not a real audit — say so loudly so they are not mistaken for one.
+  const degradedNote = audit.degraded
+    ? `<p class="muted"><em>Deep audit not run (no LLM provider); the items below are deterministic keyword picks, not a conversation audit.</em></p>`
+    : "";
   const body = [
+    degradedNote,
     list("Considered alternatives", audit.considered),
     list("Research / context gathered", audit.research),
     findings

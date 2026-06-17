@@ -1,7 +1,7 @@
 import type { EvidenceRef } from "../evidence/evidence";
 import type { ProviderName } from "../llm/provider";
 import type { SemanticChangeFacts } from "../risks/semantic-diff";
-import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-contract";
+import type { PacketConfidence, PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
 
 export type { SemanticChangeFacts };
 
@@ -650,7 +650,7 @@ export interface EvalScoreboardSummary {
 // rather than rendering an absent section (SCHEMA.3).
 export interface MethodologyAuditWorkflowFinding {
   id: string;
-  signal_kind: string;
+  signal_kind: PacketWorkflowSignalKind;
   summary: string;
   severity: PacketSeverity;
   advisory: boolean;
@@ -658,6 +658,10 @@ export interface MethodologyAuditWorkflowFinding {
 }
 
 export interface MethodologyAudit {
+  // True when the deep audit did NOT run (mock/no-provider or a degraded fallback):
+  // considered/research are keyword PICKS, not a real audit, so the cockpit must
+  // carry the loud degradation signal alongside them (D2, Codex P2).
+  degraded: boolean;
   considered: string[];
   research: string[];
   workflow_findings: MethodologyAuditWorkflowFinding[];
