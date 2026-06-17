@@ -225,3 +225,86 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeLocalValidationCommand("pnpm exec vitest"), true);
   assert.equal(commandLooksLikeLocalValidationCommand("pnpm run start"), false);
 });
+
+test("review-surfaces.COLLECTOR.7 recognizes cross-ecosystem (non-JS) test runners", () => {
+  // Broad whole-suite runs across ecosystems — recognized AND broad (so a passing
+  // run suppresses the per-area test-gap risk on a non-Node repo).
+  for (const broad of [
+    "go test ./...",
+    "go test",
+    "cargo test",
+    "cargo nextest run",
+    "pytest",
+    "py.test",
+    "python -m pytest",
+    "python3 -m pytest",
+    "python3 -m unittest",
+    "tox",
+    "rspec",
+    "rake test",
+    "rake spec",
+    "phpunit",
+    "vendor/bin/phpunit",
+    "./vendor/bin/phpunit",
+    "pest",
+    "mvn test",
+    "mvn clean verify",
+    "./mvnw test",
+    "gradle test",
+    "./gradlew test",
+    "gradle build check",
+    "dotnet test",
+    "ctest",
+    "mix test",
+    "swift test",
+    "dart test",
+    "flutter test"
+  ]) {
+    assert.equal(commandLooksLikeTestCommand(broad), true, `recognize: ${broad}`);
+    assert.equal(commandLooksLikeBroadTestCommand(broad), true, `broad: ${broad}`);
+    assert.equal(commandLooksLikeFocusedTestCommand(broad), false, `not focused: ${broad}`);
+    assert.equal(commandLooksLikeLocalValidationCommand(broad), true, `local validation: ${broad}`);
+  }
+
+  // Env-prefixed and launcher-prefixed forms still classify.
+  assert.equal(commandLooksLikeBroadTestCommand("CI=1 go test ./..."), true);
+  assert.equal(commandLooksLikeBroadTestCommand("bundle exec rspec"), true);
+  assert.equal(commandLooksLikeTestCommand("poetry run pytest"), true);
+
+  // Focused runs — an explicit filter flag or a specific test file/id.
+  for (const focused of [
+    "go test -run TestLogin ./auth",
+    "cargo test --test integration_login",
+    "pytest -k login",
+    "pytest tests/test_auth.py",
+    "pytest tests/test_auth.py::test_login",
+    "python3 -m pytest tests/test_auth.py::test_login",
+    "rspec spec/models/user_spec.rb",
+    "rspec spec/models/user_spec.rb:42",
+    "bundle exec rspec spec/models/user_spec.rb",
+    "phpunit tests/UserTest.php",
+    "phpunit --filter testLogin",
+    "mvn -Dtest=UserTest test",
+    "gradle test --tests com.example.UserTest",
+    "dotnet test --filter Name=Login",
+    "ctest -R login",
+    "mix test test/user_test.exs",
+    "swift test --filter LoginTests"
+  ]) {
+    assert.equal(commandLooksLikeTestCommand(focused), true, `recognize: ${focused}`);
+    assert.equal(commandLooksLikeFocusedTestCommand(focused), true, `focused: ${focused}`);
+    assert.equal(commandLooksLikeBroadTestCommand(focused), false, `not broad: ${focused}`);
+  }
+
+  // Documented conservative bound: a bare package/dir positional stays BROAD (a
+  // narrow miss under-credits rather than inventing test-weakening noise).
+  assert.equal(commandLooksLikeBroadTestCommand("go test ./pkg/auth"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("pytest tests/"), true);
+
+  // A mere mention is not a test run (segment-start matching only).
+  assert.equal(commandLooksLikeTestCommand("grep pytest pyproject.toml"), false);
+  assert.equal(commandLooksLikeTestCommand("echo go test"), false);
+  assert.equal(commandLooksLikeTestCommand("cat go.mod"), false);
+  // -DskipTests is not a test goal.
+  assert.equal(commandLooksLikeTestCommand("mvn deploy -DskipTests"), false);
+});

@@ -1714,11 +1714,6 @@ function isTestExecutionEvent(event: ConversationEvent): boolean {
   return commandRunsTest(event.command ?? "");
 }
 
-// Cross-ecosystem test runners the JS-focused classifier does not model. Includes
-// common Python wrappers (`python -m pytest`, `python3 -m unittest`) so a real
-// post-change test run is recognized (Codex P3).
-const CROSS_ECOSYSTEM_RUNNER =
-  /^(?:node\s+--test|python[0-9.]*\s+-m\s+(?:pytest|unittest)|pytest|go\s+test|cargo\s+test|rspec|phpunit|(?:gradle|mvn)\s+test|ctest)\b/i;
 const LEADING_ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
 
 // True when ANY executed segment of a (possibly chained) shell command runs a
@@ -1726,16 +1721,15 @@ const LEADING_ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
 // assignments lets a test that is not the first command count
 // (`pnpm run lint && pnpm run test`, `cd api && pnpm test`) while a mere mention
 // (`grep pytest pyproject.toml`, `echo "go test"`) does not, because each segment
-// is matched at its executed command position. Reuses the workspace/filter-aware
-// package classifier for JS monorepo selectors (`pnpm --filter api test`) and the
-// cross-ecosystem regex for the runners it does not model (Codex P2).
+// is matched at its executed command position. `commandLooksLikeTestCommand` now
+// models both JS monorepo selectors (`pnpm --filter api test`) AND the cross-
+// ecosystem runners (`go test`, `pytest`, `mvn test`, ...), so no parallel regex
+// is needed here (review-surfaces.COLLECTOR.7).
 function commandRunsTest(command: string): boolean {
   if (command.trim() === "") {
     return false;
   }
-  return commandSegments(command).some(
-    (segment) => commandLooksLikeTestCommand(segment) || CROSS_ECOSYSTEM_RUNNER.test(segment)
-  );
+  return commandSegments(command).some((segment) => commandLooksLikeTestCommand(segment));
 }
 
 // Conservatively drop ALL heredoc BODIES (`<<MARKER ... \nMARKER`) before command
