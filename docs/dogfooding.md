@@ -22,6 +22,17 @@ Use `.agents/skills/composed-review-loop/SKILL.md` when a review should combine 
 
 The dogfood-loop skill should not replace the packet. It should make the loop repeatable: implement a scoped change, capture command evidence, generate local artifacts, inspect the packet, then convert useful findings into code, tests, schema, specs, docs, skills, feedback files, or explicit deferrals.
 
+## Live-dogfood checklist (read the output, not just the gate)
+
+The local gate (`scripts/local-gate.sh`) runs `--provider mock` over an empty `HEAD..HEAD` self-dogfood. It proves byte-stable determinism and schema validity, but it is **blind to whether a surface produces sensible output** — a fully green fixture suite can still ship a cockpit full of garbage. Passing the gate is necessary, not sufficient. Before calling a feature done:
+
+1. **Run it on a real diff.** `node bin/review-surfaces.js all --provider mock --base HEAD~1 --head HEAD --out /tmp/dog`. Auto-discovery finds this repo's own agent session under `~/.claude/projects/<cwd-slug>/` (announced on stderr).
+2. **Read what it generated**, not just whether it exited 0: open `/tmp/dog/human_review.html`, and read `/tmp/dog/human_review.json` `.methodology_audit` (`considered`/`research`/`workflow_findings`/`quality_flags`), `methodology.yaml`, and `risks.yaml` (`CONV-GAP-*`).
+3. **Remember real sessions ≠ fixtures.** They carry kilobyte tool-call bodies, secret-shaped test strings, and loose event kinds that clean fixtures never exercise — the live run is what surfaces the gap.
+4. **Validate the LLM leaves** (methodology audit, CONV-GAP) under a remote provider: `set -a; . ./.env.local; set +a` then `--provider ai-sdk --conversation <clean.md>`. The privacy guard refuses to send a transcript or diff holding a blocked-kind secret (`remote_provider_blocked` → "AI SDK provider skipped") — the real session and the secret-bearing test fixtures self-block by design, so feed a **clean** synthetic transcript. Confirm there is no "skipped" line, then check whether `methodology_analysis_degraded` cleared.
+
+See `.agents/skills/review-surfaces-dogfood-loop/SKILL.md` for the full procedure.
+
 ## Feedback file shape
 
 Store manual feedback under `.review-surfaces/feedback/*.yaml`.

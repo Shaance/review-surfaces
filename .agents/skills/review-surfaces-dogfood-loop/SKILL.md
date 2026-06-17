@@ -20,6 +20,50 @@ Use this skill when a change to `review-surfaces` should be reviewed by `review-
 7. Convert each useful dogfood finding into one of: code, test, schema, spec, docs, skill update, feedback file, or explicit deferral with evidence.
 8. Update `.review-surfaces/agent_handoff.md` or a feedback file so the next agent does not depend on hidden chat context.
 
+## Proactive live dogfood — read the OUTPUT, not just the gate
+
+The local gate (`scripts/local-gate.sh`) runs `--provider mock` over an EMPTY
+`HEAD..HEAD` self-dogfood. That proves byte-stable determinism and schema validity
+— it does NOT prove a feature produces *sensible* output. **Passing the gate is
+necessary, not sufficient.** A green suite of fixture tests can hide a surface that
+dumps garbage on a real session. So run the tool against a REAL diff and read what
+it generates:
+
+```bash
+node bin/review-surfaces.js all --provider mock --base HEAD~1 --head HEAD --out /tmp/dog
+```
+
+Auto-discovery finds this repo's own agent session under
+`~/.claude/projects/<cwd-slug>/` (it announces the picked file on stderr). Then open
+and READ:
+
+- `/tmp/dog/human_review.html` — the cockpit (incl. the "Agent workflow audit" card).
+- `/tmp/dog/human_review.json` → `.methodology_audit` — `considered`/`research`,
+  `workflow_findings`, and `quality_flags` (degraded / truncated).
+- `/tmp/dog/methodology.yaml`, `/tmp/dog/risks.yaml` (look for `CONV-GAP-*`).
+
+Real sessions are NOT the test fixtures: they carry kilobyte tool-call bodies,
+secret-shaped test strings, and loose event kinds. Clean fixtures hide that, so a
+live run is what surfaces it (e.g. it caught the methodology pick dumping whole tool
+bodies onto the cockpit — a bug the full test suite missed).
+
+### Validating the LLM leaves (`ai-sdk`)
+
+The methodology *audit* and CONV-GAP leaves only run under a remote provider:
+
+```bash
+set -a; . ./.env.local; set +a   # source the provider key; never paste or commit it
+node bin/review-surfaces.js all --provider ai-sdk --conversation <clean.md> --base HEAD --head HEAD --out /tmp/dog
+```
+
+The privacy guard REFUSES to send a transcript or diff that holds a blocked-kind
+secret (`remote_provider_blocked` → "AI SDK provider skipped because collected
+inputs contained high-risk secret material") — nothing leaves the machine. The real
+session and the secret-bearing test fixtures self-block by design, so feed a CLEAN
+synthetic transcript (no secret strings) via `--conversation` to exercise the leaves.
+Confirm there is no "skipped" line, then check whether `methodology_analysis_degraded`
+cleared and `workflow_findings` / `CONV-GAP-*` populated.
+
 ## Review Rules
 
 - Keep local files first; provider integrations and PR comments are later renderers.
