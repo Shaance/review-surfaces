@@ -10,7 +10,7 @@
 // methodology.workflow_findings; it never writes risks.items (which would duplicate
 // the risk-lens findings).
 import { CollectionResult } from "../collector/collect";
-import { commandLooksLikeTestCommand } from "../commands/classify";
+import { commandLooksLikeBroadTestCommand } from "../commands/classify";
 import { ConversationEvent } from "../conversation/events";
 import { EvidenceRef } from "../evidence/evidence";
 import { ConfigFact, ConfigFactKind } from "../risks/config-facts";
@@ -247,13 +247,15 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
     findings.push({ id: `XREF-${String(seq).padStart(3, "0")}`, signal_kind: kind, summary, severity, advisory: !promoted, evidence });
   };
 
-  // 1. risky_no_security: a changed auth/crypto/secrets file OR a security-relevant
-  // config fact, with no security discussion. Promoted by a secret finding on a
-  // changed file or any security-relevant config fact.
+  // 1. risky_no_security: a changed auth/crypto/secrets file, a security-relevant
+  // config fact, OR a secret finding on ANY changed file (a secret in `src/client.ts`
+  // is a security-relevant change even without a security-named path — Codex P2), with
+  // no security discussion. Promoted by a secret finding or a security config fact.
   const securityFiles = changed.filter((file) => isSecuritySensitive(file.path));
-  if ((securityFiles.length > 0 || securityConfig.length > 0) && !discusses(haystack, SECURITY_KEYWORDS)) {
-    const promoted = securityFiles.some((file) => secretPaths.has(file.path)) || securityConfig.length > 0;
-    const loci = [...securityFiles.map((file) => file.path), ...securityConfig.map((fact) => fact.path)];
+  const secretChangedPaths = changed.filter((file) => secretPaths.has(file.path)).map((file) => file.path);
+  if ((securityFiles.length > 0 || securityConfig.length > 0 || secretChangedPaths.length > 0) && !discusses(haystack, SECURITY_KEYWORDS)) {
+    const promoted = secretChangedPaths.length > 0 || securityConfig.length > 0;
+    const loci = [...new Set([...securityFiles.map((file) => file.path), ...secretChangedPaths, ...securityConfig.map((fact) => fact.path)])];
     emit(
       "risky_no_security",
       promoted,
@@ -275,11 +277,13 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
   const coveringTestStems = new Set(
     changed.filter((file) => isTestFile(file.path) && file.status !== "D" && !weakenedTestPaths.has(file.path)).map((file) => fileStem(file.path))
   );
-  // Only a CURRENT-HEAD passing test run is coverage: a transcript recorded against
-  // an older commit cannot have exercised this diff (Codex P2, mirrors the PR-risk
-  // staleness rule). Requires a real head sha to match against.
+  // Only a CURRENT-HEAD, BROAD passing test run is GLOBAL coverage: a focused run
+  // (`node --test dist/tests/foo.test.js`, `pnpm run test:api`) exercised only its
+  // target, not every changed file, and a transcript from an older commit cannot have
+  // exercised this diff at all (Codex P2, mirrors the PR-risk broad/focused +
+  // staleness rules). A focused run is left to the per-file stem correlation below.
   const headSha = collection.git?.head_sha ?? "";
-  const passedTestRun =
+  const broadTestRun =
     headSha !== "" &&
     (collection.commandTranscripts ?? []).some(
       (transcript) =>
@@ -287,9 +291,9 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
         transcript.exit_code === 0 &&
         transcript.head_sha === headSha &&
         typeof transcript.command === "string" &&
-        commandLooksLikeTestCommand(transcript.command)
+        commandLooksLikeBroadTestCommand(transcript.command)
     );
-  const uncoveredImpl = passedTestRun ? [] : implFiles.filter((file) => !coveringTestStems.has(fileStem(file.path)));
+  const uncoveredImpl = broadTestRun ? [] : implFiles.filter((file) => !coveringTestStems.has(fileStem(file.path)));
   if (uncoveredImpl.length > 0 && !discusses(haystack, TEST_KEYWORDS)) {
     const weakened = facts.test_weakening.length > 0;
     emit(

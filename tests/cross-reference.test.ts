@@ -289,6 +289,23 @@ test("review-surfaces.METHODOLOGY.8 a multipart test name still correlates with 
   assert.equal(signal(findings, "impl_no_test"), undefined, "payments.integration.test.ts covers payments.ts");
 });
 
+test("review-surfaces.METHODOLOGY.8 a secret finding in an ordinary file triggers risky_no_security (Codex P2)", () => {
+  // src/client.ts has no auth/security token in its name, but a secret finding on it
+  // is concrete security evidence and must raise (and promote) the signal.
+  const sig = signal(computeCrossReferenceSignals(collection([file("src/client.ts")], { secretPaths: ["src/client.ts"] }), talk("client work")), "risky_no_security");
+  assert.ok(sig, "a secret finding triggers the signal even without a security-named path");
+  assert.equal(sig.advisory, false);
+});
+
+test("review-surfaces.METHODOLOGY.8 a FOCUSED test run does not globally suppress impl_no_test (Codex P2)", () => {
+  // A focused run exercised only its target; an unrelated impl file is still uncovered.
+  const findings = computeCrossReferenceSignals(
+    collection([file("src/uploader.ts")], { transcripts: [{ command: "node --test dist/tests/foo.test.js", status: "passed", exit_code: 0, head_sha: HEAD_SHA }] }),
+    talk("changed the uploader")
+  );
+  assert.ok(signal(findings, "impl_no_test"), "a focused test run is not global coverage");
+});
+
 test("review-surfaces.METHODOLOGY.8 an empty diff yields no cross-reference findings", () => {
   assert.deepEqual(computeCrossReferenceSignals(collection([]), talk("anything")), []);
 });
