@@ -66,6 +66,9 @@ function fileStem(filePath: string): string {
   name = name.replace(/^(?:test|spec)[._-]/, ""); // test_uploader -> uploader
   name = name.replace(/[._-](?:test|spec)$/, ""); // uploader_test -> uploader
   name = name.replace(/(?:test|spec)$/, ""); // uploadertest (UploaderTest.java) -> uploader
+  // Drop a trailing test qualifier so a multipart test name still correlates with
+  // its impl (`payments.integration` -> `payments`) — Codex P2.
+  name = name.replace(/\.(?:integration|unit|e2e|browser|node|api|smoke|acceptance|contract)$/, "");
   return name;
 }
 
@@ -89,8 +92,14 @@ function isLockfile(filePath: string): boolean {
 // input-validation changes, Codex P2). Conservative whole-word-ish matching so e.g.
 // "author.ts" does not match "auth".
 function isSecuritySensitive(filePath: string): boolean {
-  return /(^|[/_.-])(auth|authn|authz|crypto|secret|secrets|security|login|logout|session|token|jwt|oauth|password|sanitize|sanitizer|escape|permission|acl|rbac|validate|validator|validation|validators)([/_.-]|$)/i.test(
-    filePath
+  // The whole-word tokens (auth, authn, authz, ...) require a boundary on both
+  // sides so "author.ts" does not match; the auth* family is matched as a PREFIX so
+  // "authentication/provider.ts" and "authorization/policy.ts" DO (Codex P2).
+  return (
+    /(^|[/_.-])(authenticat|authoriz)/i.test(filePath) ||
+    /(^|[/_.-])(auth|authn|authz|crypto|secret|secrets|security|login|logout|session|token|jwt|oauth|password|sanitize|sanitizer|escape|permission|acl|rbac|validate|validator|validation|validators)([/_.-]|$)/i.test(
+      filePath
+    )
   );
 }
 
@@ -104,12 +113,12 @@ function isTestFile(filePath: string): boolean {
   }
   const name = basename(filePath);
   return (
-    /(^|\/)(tests?|__tests__|spec)\//.test(filePath) ||
-    /(^|[._-])(test|spec)\.[^.]+$/i.test(name) ||
-    /(^|[._-])(test|spec)[._-].*$/i.test(name) ||
-    /_(test|spec)\.[^.]+$/i.test(name) ||
-    /test\.[^.]+$/i.test(name) ||
-    /Test\.[^.]+$/.test(name)
+    /(^|\/)(tests?|__tests__|spec)\//.test(filePath) || // a tests/ or spec/ directory
+    /(^|[._-])(test|spec)[._-]/i.test(name) || // test_foo.py, spec.foo
+    /(^|[._-])(test|spec)\.[^.]+$/i.test(name) || // foo.test.ts, foo_test.go, foo-spec.rb
+    /(?:Test|Spec)\.[^.]+$/.test(name) // FooTest.java, FooSpec.scala (boundary via the capital)
+    // NOTE: an UNanchored `test`/`spec` is intentionally NOT matched — `latest.ts`,
+    // `contest.py`, `request.ts` are implementation, not tests (Codex P2).
   );
 }
 
@@ -127,11 +136,34 @@ function isImplSourceFile(filePath: string): boolean {
 
 // A dependency/CI/config file by path — the fallback that lets deps_no_rationale fire
 // even when the fact detectors found nothing structured to report.
+// Non-Node dependency manifests/lockfiles whose structured detectors do not run, so
+// a change to them still raises the advisory deps_no_rationale signal (Codex P2).
+const NON_NODE_MANIFESTS = new Set([
+  "go.mod",
+  "go.sum",
+  "cargo.toml",
+  "cargo.lock",
+  "requirements.txt",
+  "requirements-dev.txt",
+  "pyproject.toml",
+  "pipfile",
+  "pipfile.lock",
+  "poetry.lock",
+  "gemfile",
+  "gemfile.lock",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "composer.json",
+  "composer.lock"
+]);
+
 function isDepOrConfigFile(filePath: string): boolean {
   const name = basename(filePath);
   return (
     name === "package.json" ||
     isLockfile(filePath) ||
+    NON_NODE_MANIFESTS.has(name.toLowerCase()) ||
     /(^|\/)\.github\//.test(filePath) ||
     /(^|\/)Dockerfile([._-][\w.-]+)?$/i.test(filePath) ||
     filePath.toLowerCase().endsWith(".dockerfile") ||
@@ -243,13 +275,20 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
   const coveringTestStems = new Set(
     changed.filter((file) => isTestFile(file.path) && file.status !== "D" && !weakenedTestPaths.has(file.path)).map((file) => fileStem(file.path))
   );
-  const passedTestRun = (collection.commandTranscripts ?? []).some(
-    (transcript) =>
-      transcript.status === "passed" &&
-      transcript.exit_code === 0 &&
-      typeof transcript.command === "string" &&
-      commandLooksLikeTestCommand(transcript.command)
-  );
+  // Only a CURRENT-HEAD passing test run is coverage: a transcript recorded against
+  // an older commit cannot have exercised this diff (Codex P2, mirrors the PR-risk
+  // staleness rule). Requires a real head sha to match against.
+  const headSha = collection.git?.head_sha ?? "";
+  const passedTestRun =
+    headSha !== "" &&
+    (collection.commandTranscripts ?? []).some(
+      (transcript) =>
+        transcript.status === "passed" &&
+        transcript.exit_code === 0 &&
+        transcript.head_sha === headSha &&
+        typeof transcript.command === "string" &&
+        commandLooksLikeTestCommand(transcript.command)
+    );
   const uncoveredImpl = passedTestRun ? [] : implFiles.filter((file) => !coveringTestStems.has(fileStem(file.path)));
   if (uncoveredImpl.length > 0 && !discusses(haystack, TEST_KEYWORDS)) {
     const weakened = facts.test_weakening.length > 0;

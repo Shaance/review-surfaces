@@ -9,9 +9,11 @@ function file(path: string, status = "M"): { path: string; status: string; sourc
   return { path, status, source: "working_tree" };
 }
 
+const HEAD_SHA = "headsha0000000000000000000000000000000000";
+
 interface CollOpts {
   secretPaths?: string[];
-  transcripts?: Array<{ command: string; status: string; exit_code: number }>;
+  transcripts?: Array<{ command: string; status: string; exit_code: number; head_sha?: string }>;
   semanticFacts?: Partial<SemanticChangeFacts>;
   dependencyFacts?: Array<{ kind: string; package: string; detail: string; source_path: string }>;
   configFacts?: Array<{ kind: string; path: string; detail: string }>;
@@ -22,6 +24,7 @@ function collection(changed: ReturnType<typeof file>[], opts: CollOpts = {}): Co
     changedFiles: changed,
     privacy: { secret_findings: (opts.secretPaths ?? []).map((path) => ({ path, kinds: ["aws_key"] })) },
     commandTranscripts: opts.transcripts ?? [],
+    git: { repo: "fixture", base_ref: "HEAD", head_ref: "HEAD", head_sha: HEAD_SHA },
     semanticChangeFacts: { schema_changes: [], api_changes: [], test_weakening: [], ...(opts.semanticFacts ?? {}) },
     dependencyFacts: opts.dependencyFacts ?? [],
     configFacts: opts.configFacts ?? []
@@ -96,12 +99,20 @@ test("review-surfaces.METHODOLOGY.8 impl_no_test fires for a non-JS source file 
   assert.ok(sig, "Python/Go/Rust sources are implementation too");
 });
 
-test("review-surfaces.METHODOLOGY.8 impl_no_test does NOT fire when a captured test run passed (Codex P2)", () => {
+test("review-surfaces.METHODOLOGY.8 impl_no_test does NOT fire when a current-head test run passed (Codex P2)", () => {
   const findings = computeCrossReferenceSignals(
-    collection([file("src/uploader.ts")], { transcripts: [{ command: "pnpm run test", status: "passed", exit_code: 0 }] }),
+    collection([file("src/uploader.ts")], { transcripts: [{ command: "pnpm run test", status: "passed", exit_code: 0, head_sha: HEAD_SHA }] }),
     talk("implemented the retry")
   );
-  assert.equal(signal(findings, "impl_no_test"), undefined, "a passing transcripted test run is coverage evidence");
+  assert.equal(signal(findings, "impl_no_test"), undefined, "a current-head passing test run is coverage evidence");
+});
+
+test("review-surfaces.METHODOLOGY.8 a STALE (old-head) passing test run is NOT coverage (Codex P2)", () => {
+  const findings = computeCrossReferenceSignals(
+    collection([file("src/uploader.ts")], { transcripts: [{ command: "pnpm run test", status: "passed", exit_code: 0, head_sha: "oldcommitsha000000000000000000000000000000" }] }),
+    talk("implemented the retry")
+  );
+  assert.ok(signal(findings, "impl_no_test"), "a transcript from an older commit cannot have exercised this diff");
 });
 
 test("review-surfaces.METHODOLOGY.8 impl_no_test does NOT fire when a test was added alongside the impl", () => {
@@ -252,6 +263,30 @@ test("review-surfaces.METHODOLOGY.8 impl_no_test fires for the UNTESTED file whe
   assert.ok(sig, "the untested refunds change still flags");
   assert.match(sig.summary, /refunds/, "the finding names the uncovered file");
   assert.doesNotMatch(sig.summary, /payments\.ts/, "the covered file is not listed");
+});
+
+test("review-surfaces.METHODOLOGY.8 an ordinary filename ending in 'test' is NOT a test file (Codex P2)", () => {
+  // src/latest.ts and src/contest.py are implementation; impl_no_test must fire.
+  assert.ok(signal(computeCrossReferenceSignals(collection([file("src/latest.ts")]), talk("worked on it")), "impl_no_test"));
+  assert.ok(signal(computeCrossReferenceSignals(collection([file("src/contest.py")]), talk("worked on it")), "impl_no_test"));
+});
+
+test("review-surfaces.METHODOLOGY.8 full authentication/authorization paths are security-sensitive (Codex P2)", () => {
+  assert.ok(signal(computeCrossReferenceSignals(collection([file("src/authentication/provider.ts")]), talk("provider work")), "risky_no_security"));
+  assert.ok(signal(computeCrossReferenceSignals(collection([file("src/authorization/policy.ts")]), talk("policy work")), "risky_no_security"));
+  // "author.ts" is NOT security-sensitive (no false positive).
+  assert.equal(signal(computeCrossReferenceSignals(collection([file("src/author.ts")]), talk("byline")), "risky_no_security"), undefined);
+});
+
+test("review-surfaces.METHODOLOGY.8 non-Node manifests raise deps_no_rationale (Codex P2)", () => {
+  for (const manifest of ["go.mod", "Cargo.toml", "requirements.txt", "pyproject.toml", "Gemfile", "pom.xml"]) {
+    assert.ok(signal(computeCrossReferenceSignals(collection([file(manifest)]), talk("dependency work")), "deps_no_rationale"), `${manifest} should flag`);
+  }
+});
+
+test("review-surfaces.METHODOLOGY.8 a multipart test name still correlates with its impl (Codex P2)", () => {
+  const findings = computeCrossReferenceSignals(collection([file("src/payments.ts"), file("tests/payments.integration.test.ts", "A")]), talk("changed payments"));
+  assert.equal(signal(findings, "impl_no_test"), undefined, "payments.integration.test.ts covers payments.ts");
 });
 
 test("review-surfaces.METHODOLOGY.8 an empty diff yields no cross-reference findings", () => {
