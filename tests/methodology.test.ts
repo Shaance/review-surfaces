@@ -336,7 +336,10 @@ test("review-surfaces.METHODOLOGY.1 considered/research pick from natural-langua
       // — it must NOT be picked (it is an embedded body, not reasoning).
       { id: "t0", actor: "tool", kind: "tool_result", summary: `Read(file): ${"x".repeat(2000)} option to read context`, raw_index: 0 },
       // A real assistant message stating a considered alternative — picked + bounded.
-      { id: "m0", actor: "assistant", kind: "message", summary: `I considered ${"y".repeat(400)} as an alternative`, raw_index: 1 }
+      { id: "m0", actor: "assistant", kind: "message", summary: `I considered ${"y".repeat(400)} as an alternative`, raw_index: 1 },
+      // A normalized log's CUSTOM (loose) kind is still natural language — must be
+      // picked, not whitelisted out (Codex P2).
+      { id: "c0", actor: "assistant", kind: "analysis", summary: "considered streaming as an alternative", raw_index: 2 }
     ]
   });
   const methodology = await buildMethodology(tmp, collection, undefined, []);
@@ -344,6 +347,7 @@ test("review-surfaces.METHODOLOGY.1 considered/research pick from natural-langua
   const picked = methodology.considered.find((entry) => entry.startsWith("m0:"));
   assert.ok(picked, "the natural-language message is picked");
   assert.ok(picked.length <= 220 && picked.endsWith("…"), "the picked entry is bounded/truncated");
+  assert.ok(methodology.considered.some((entry) => entry.startsWith("c0:")), "a custom non-tool kind is still picked (loose kinds, not a whitelist)");
 });
 
 test("review-surfaces.METHODOLOGY.7 the generated conversation evidence carries a real event_id (valid under the new rule)", async () => {

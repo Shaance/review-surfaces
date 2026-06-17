@@ -182,7 +182,11 @@ export async function buildMethodology(
 // dogfooding the live session). Each kept entry is bounded so even a long message
 // stays scannable.
 const PICK_TEXT_LIMIT = 200;
-const PICK_NATURAL_LANGUAGE_KINDS = new Set(["message", "decision", "heading"]);
+// Only the TOOL kinds are excluded (their summary is an embedded body); every other
+// kind is natural language. `ConversationEvent.kind` is intentionally loose, so a
+// normalized log's custom kind (e.g. {kind:"analysis"}) must still be picked — a
+// whitelist would silently drop it (Codex P2). Mirrors the Phase-3a discussion check.
+const PICK_TOOL_KINDS = new Set(["tool_call", "tool_result"]);
 
 function pick(events: ConversationEvent[], keywords: string[]): string[] {
   const result: string[] = [];
@@ -190,7 +194,7 @@ function pick(events: ConversationEvent[], keywords: string[]): string[] {
     if (result.length >= 12) {
       break;
     }
-    if (!PICK_NATURAL_LANGUAGE_KINDS.has(event.kind)) {
+    if (PICK_TOOL_KINDS.has(event.kind)) {
       continue;
     }
     const lower = event.summary.toLowerCase();
