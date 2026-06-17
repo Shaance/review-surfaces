@@ -15,6 +15,11 @@ export interface ChangedFile {
   path: string;
   status: string;
   source: "diff" | "working_tree";
+  // The pre-rename path for an `R*` (rename) status — the destination is `path`.
+  // Lets a consumer tell that a public surface LEFT its old location (e.g. a schema
+  // renamed to a non-schema path), which the new path alone cannot show. Absent for
+  // non-rename changes. (#103)
+  old_path?: string;
 }
 
 // R6: whether the changed-file set / diff was derived from the requested
@@ -234,10 +239,11 @@ function parseDiffNameStatusOutput(output: string): ChangedFile[] {
       continue;
     }
     if (isRenameOrCopyStatus(status)) {
+      const oldPath = fields[index + 1];
       index += 2;
       const filePath = fields[index];
       if (filePath) {
-        files.push({ path: filePath, status, source: "diff" });
+        files.push({ path: filePath, status, source: "diff", ...(oldPath ? { old_path: oldPath } : {}) });
       }
       continue;
     }

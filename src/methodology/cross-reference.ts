@@ -22,6 +22,7 @@ import { WorkflowFinding } from "./methodology";
 interface ChangedFileLike {
   path: string;
   status: string;
+  old_path?: string;
 }
 
 // Keyword sets that prove the matching topic was actually REASONED ABOUT (so the
@@ -332,9 +333,24 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
   // Codex P2). Promoted by a backward-INCOMPATIBLE structural change or any
   // removed/renamed surface.
   const apiFactPaths = [...facts.api_changes.map((change) => change.path), ...facts.schema_changes.map((change) => change.path)];
-  const removedSurfacePaths = changed
-    .filter((file) => (file.status === "D" || file.status.startsWith("R")) && isPublicSurfacePath(file.path))
-    .map((file) => file.path);
+  const removedSurfacePaths = changed.flatMap((file) => {
+    if (file.status === "D" && isPublicSurfacePath(file.path)) {
+      return [file.path];
+    }
+    if (file.status.startsWith("R")) {
+      // A rename REMOVES the public surface from its OLD location — a consumer
+      // referencing the old schema/declaration path breaks — even when the NEW path
+      // is not itself a public surface (#103). When the old path is unknown, fall
+      // back to the new path's public-ness (the prior behavior).
+      if (file.old_path !== undefined && isPublicSurfacePath(file.old_path)) {
+        return [file.old_path];
+      }
+      if (isPublicSurfacePath(file.path)) {
+        return [file.path];
+      }
+    }
+    return [];
+  });
   const apiTriggerPaths = [...new Set([...apiFactPaths, ...removedSurfacePaths])];
   if (apiTriggerPaths.length > 0 && !discusses(haystack, COMPAT_KEYWORDS)) {
     const breaking = hasBreakingSemanticChange(facts) || removedSurfacePaths.length > 0;

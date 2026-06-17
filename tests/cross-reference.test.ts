@@ -209,6 +209,17 @@ test("review-surfaces.METHODOLOGY.8 api_no_compat fires for a DELETED schema sur
   assert.equal(sig.advisory, false, "a removed surface is inherently breaking");
 });
 
+test("review-surfaces.METHODOLOGY.8 api_no_compat fires when a public schema is renamed OUT of public scope (#103)", () => {
+  // Renaming schemas/public.schema.json -> a non-schema path removes the public
+  // contract from its old location; the NEW path is not a public surface, so only
+  // the OLD path reveals it (the new path alone would miss the signal).
+  const renamed = { path: "archive/old.txt", status: "R100", source: "diff", old_path: "schemas/public.schema.json" };
+  const sig = signal(computeCrossReferenceSignals(collection([renamed]), talk("archived an old schema")), "api_no_compat");
+  assert.ok(sig, "a public surface renamed out of scope triggers the signal via its old path");
+  assert.equal(sig.advisory, false, "removing/renaming a public surface is inherently breaking");
+  assert.match(sig.summary, /public\.schema\.json/, "the finding names the removed (old) public path");
+});
+
 test("review-surfaces.METHODOLOGY.8 impl_no_test still fires when only an UNRELATED test was edited (Codex P2)", () => {
   // The test file shares no name stem with the changed impl, so it is not coverage.
   const findings = computeCrossReferenceSignals(collection([file("src/payments.ts"), file("tests/unrelated.test.ts", "A")]), talk("changed payments"));
