@@ -339,15 +339,21 @@ test("review-surfaces.METHODOLOGY.1 considered/research pick from natural-langua
       { id: "m0", actor: "assistant", kind: "message", summary: `I considered ${"y".repeat(400)} as an alternative`, raw_index: 1 },
       // A normalized log's CUSTOM (loose) kind is still natural language — must be
       // picked, not whitelisted out (Codex P2).
-      { id: "c0", actor: "assistant", kind: "analysis", summary: "considered streaming as an alternative", raw_index: 2 }
+      { id: "c0", actor: "assistant", kind: "analysis", summary: "considered streaming as an alternative", raw_index: 2 },
+      // A SHORT tool_call (a bounded invocation) IS research evidence — kept (Codex P2).
+      { id: "tc0", actor: "assistant", kind: "tool_call", tool: "Read", summary: "Read(docs/goal.md) for research context", raw_index: 3 },
+      // A LONG tool_call body matching a keyword deep inside is noise — excluded.
+      { id: "tc1", actor: "assistant", kind: "tool_call", tool: "Write", summary: `Write(${"z".repeat(2000)} considered)`, raw_index: 4 }
     ]
   });
   const methodology = await buildMethodology(tmp, collection, undefined, []);
   assert.ok(!methodology.considered.some((entry) => entry.startsWith("t0:")), "a tool_result body is not picked as a considered alternative");
+  assert.ok(!methodology.considered.some((entry) => entry.startsWith("tc1:")), "a long tool_call body is not picked");
   const picked = methodology.considered.find((entry) => entry.startsWith("m0:"));
   assert.ok(picked, "the natural-language message is picked");
-  assert.ok(picked.length <= 220 && picked.endsWith("…"), "the picked entry is bounded/truncated");
+  assert.ok(picked.length <= 250 && picked.endsWith("…"), "the picked entry is bounded/truncated");
   assert.ok(methodology.considered.some((entry) => entry.startsWith("c0:")), "a custom non-tool kind is still picked (loose kinds, not a whitelist)");
+  assert.ok(methodology.research.some((entry) => entry.startsWith("tc0:")), "a short tool_call (bounded invocation) is kept as research evidence");
 });
 
 test("review-surfaces.METHODOLOGY.7 the generated conversation evidence carries a real event_id (valid under the new rule)", async () => {

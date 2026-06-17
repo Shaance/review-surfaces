@@ -182,11 +182,38 @@ export async function buildMethodology(
 // dogfooding the live session). Each kept entry is bounded so even a long message
 // stays scannable.
 const PICK_TEXT_LIMIT = 200;
-// Only the TOOL kinds are excluded (their summary is an embedded body); every other
-// kind is natural language. `ConversationEvent.kind` is intentionally loose, so a
-// normalized log's custom kind (e.g. {kind:"analysis"}) must still be picked — a
-// whitelist would silently drop it (Codex P2). Mirrors the Phase-3a discussion check.
-const PICK_TOOL_KINDS = new Set(["tool_call", "tool_result"]);
+
+// A turn worth keyword-picking. A tool_RESULT summary is always an output body
+// (file content, command stdout) — never a stated alternative — so it is excluded.
+// A tool_CALL is kept ONLY when its summary is SHORT: a bounded invocation like
+// `Read(docs/goal.md)` IS research evidence (Codex P2), while a `Write({...huge
+// content...})`/`Edit({...})` payload is the noise dogfooding caught. Every other
+// (loose) kind is natural language and kept (no whitelist — Codex P2).
+function isPickableEvent(event: ConversationEvent): boolean {
+  if (event.kind === "tool_result") {
+    return false;
+  }
+  if (event.kind === "tool_call") {
+    return event.summary.length <= PICK_TEXT_LIMIT;
+  }
+  return true;
+}
+
+// Bound the kept text to PICK_TEXT_LIMIT, keeping the window around the FIRST keyword
+// match so the truncation still shows WHY the entry was picked (Codex P3).
+function boundPickText(summary: string, keywords: string[]): string {
+  if (summary.length <= PICK_TEXT_LIMIT) {
+    return summary;
+  }
+  const lower = summary.toLowerCase();
+  const matchIndex = keywords
+    .map((keyword) => lower.indexOf(keyword))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0];
+  const start = matchIndex === undefined ? 0 : Math.max(0, matchIndex - 40);
+  const slice = summary.slice(start, start + PICK_TEXT_LIMIT).trim();
+  return `${start > 0 ? "…" : ""}${slice}…`;
+}
 
 function pick(events: ConversationEvent[], keywords: string[]): string[] {
   const result: string[] = [];
@@ -194,13 +221,12 @@ function pick(events: ConversationEvent[], keywords: string[]): string[] {
     if (result.length >= 12) {
       break;
     }
-    if (PICK_TOOL_KINDS.has(event.kind)) {
+    if (!isPickableEvent(event)) {
       continue;
     }
     const lower = event.summary.toLowerCase();
     if (keywords.some((keyword) => lower.includes(keyword))) {
-      const text = event.summary.length > PICK_TEXT_LIMIT ? `${event.summary.slice(0, PICK_TEXT_LIMIT).trimEnd()}…` : event.summary;
-      result.push(`${event.id}: ${text}`);
+      result.push(`${event.id}: ${boundPickText(event.summary, keywords)}`);
     }
   }
   return result;
