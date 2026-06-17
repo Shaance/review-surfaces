@@ -44,8 +44,8 @@ const CROSS_ECOSYSTEM_RUNNERS: Array<{ runner: CrossRunner; head: RegExp; strip:
   { runner: "dart", head: /^(?:dart|flutter)\s+test\b/, strip: /^(?:dart|flutter)\s+test\s*/ },
   // mvn/gradle (and the ./mvnw/./gradlew wrappers) carry the test goal among other
   // goals/flags; focus is flag-only so the strip is just the launcher.
-  { runner: "maven", head: /^(?:mvn|mvnw|\.\/mvnw)\b.*\b(?:test|verify|integration-test)\b/, strip: /^(?:mvn|mvnw|\.\/mvnw)\s*/ },
-  { runner: "gradle", head: /^(?:gradle|gradlew|\.\/gradlew)\b.*\b(?:test|check|integrationTest|connectedAndroidTest)\b/, strip: /^(?:gradle|gradlew|\.\/gradlew)\s*/ }
+  { runner: "maven", head: /^(?:mvn|mvnw|\.\/mvnw)\b.*(?:^|\s)(?:test|verify|integration-test)(?:\s|$)/, strip: /^(?:mvn|mvnw|\.\/mvnw)\s*/ },
+  { runner: "gradle", head: /^(?:gradle|gradlew|\.\/gradlew)\b.*(?:^|\s)(?:[\w.:-]*:)?(?:test|check|integrationTest|connectedAndroidTest)(?:\s|$)/, strip: /^(?:gradle|gradlew|\.\/gradlew)\s*/ }
 ];
 
 // Informational subcommands that PRINT rather than run tests, even when a test goal
@@ -65,18 +65,28 @@ const CROSS_ECOSYSTEM_INFO_SUBCOMMAND =
 // to — `mvn -N test` (Maven --non-recursive, still runs tests) must NOT be confused
 // with `ctest -N` (Codex P2).
 const NO_EXECUTION_BY_RUNNER: Partial<Record<CrossRunner, RegExp>> = {
-  go: /(?:^|\s)-list(?:[=\s]|$)/,
+  go: /(?:^|\s)(?:-list|-c)(?:[=\s]|$)/, // go `-c` compiles the test binary, runs nothing
   cargo: /(?:^|\s)--no-run(?:[=\s]|$)/,
-  pytest: /(?:^|\s)--collect-only(?:[=\s]|$)/,
+  pytest: /(?:^|\s)(?:--collect-only|--co)(?:[=\s]|$)/, // --co is the official --collect-only alias
   ctest: /(?:^|\s)(?:-N|--show-only)(?:[=\s]|$)/,
+  dotnet: /(?:^|\s)(?:-t|--list-tests)(?:[=\s]|$)/,
   // `--list-tests`, or the `list` SUBCOMMAND right after `swift test` (not a `list`
   // value of some other flag, e.g. `swift test --filter list`).
   swift: /(?:^|\s)--list-tests(?:[=\s]|$)|^swift\s+test\s+list\b/
 };
-// Gradle excluding the test task, and a Maven test skip — but `-DskipTests=false`
-// RE-ENABLES tests (a default-skip project override), so it is NOT a skip (Codex P2).
+// Gradle excluding the test task or a dry-run; a Maven test skip — but
+// `-DskipTests=false` RE-ENABLES tests (a default-skip override), so it is NOT a skip.
+// `-v`/`--version` on a JVM tool prints the version and exits (Codex P2).
 const GRADLE_TEST_EXCLUDED = /(?:^|\s)(?:-x\s+test|--exclude-task[=\s]test)\b/;
+const GRADLE_DRY_RUN = /(?:^|\s)(?:-m|--dry-run)(?:[=\s]|$)/;
 const MAVEN_TEST_SKIPPED = /(?:^|\s)-D(?:skipTests|maven\.test\.skip)(?!=false)\b/;
+const JVM_VERSION_ONLY = /(?:^|\s)(?:-v|--version)(?:[=\s]|$)/;
+// A tox/nox session whose name is clearly NON-test (lint, docs, type-check, ...) does
+// not run tests, so it must not be recorded as test evidence. Unknown session names
+// stay recognized-but-focused (bounded — proving a session runs tests needs the
+// tox.ini/noxfile) (Codex P2).
+const ORCHESTRATOR_NON_TEST_SESSION =
+  /(?:^|\s)(?:-e|-s|--sessions?)[=\s]+[\w.,-]*(?:lint|docs?|format|fmt|mypy|typecheck|types?|build|safety|style|flake8|black|isort|pre-commit)\b/i;
 
 // Explicit focus selectors shared across runners: go -run, pytest -k, dotnet/gradle
 // --filter/--tests, cargo --test, ctest -R, mix --only, dart/flutter --name, maven
@@ -242,10 +252,13 @@ function crossEcosystemIsNoExecution(runner: CrossRunner, command: string): bool
     return true;
   }
   if (runner === "gradle") {
-    return GRADLE_TEST_EXCLUDED.test(command);
+    return GRADLE_TEST_EXCLUDED.test(command) || GRADLE_DRY_RUN.test(command) || JVM_VERSION_ONLY.test(command);
   }
   if (runner === "maven") {
-    return MAVEN_TEST_SKIPPED.test(command);
+    return MAVEN_TEST_SKIPPED.test(command) || JVM_VERSION_ONLY.test(command);
+  }
+  if (runner === "orchestrator") {
+    return ORCHESTRATOR_NON_TEST_SESSION.test(command);
   }
   return false;
 }
@@ -264,6 +277,15 @@ function crossEcosystemTestIsFocused(runner: CrossRunner, strip: RegExp, command
   if (runner === "go" && /(?:^|\s)-short(?:[=\s]|$)/.test(command)) {
     return true; // `go test -short` runs a reduced suite
   }
+  if (runner === "cargo" && /(?:^|\s)(?:--lib|--bin|--bins|--doc|--bench|--benches)(?:[=\s]|$)/.test(command)) {
+    return true; // cargo target selectors run only the selected target(s)
+  }
+  if (runner === "pytest" && /(?:^|\s)(?:--lf|--last-failed|--ff|--failed-first)(?:[=\s]|$)/.test(command)) {
+    return true; // pytest reruns only previously-failed tests
+  }
+  if (runner === "ctest" && /(?:^|\s)(?:-L|-LE|-E|--label-regex|--label-exclude|--rerun-failed)(?:[=\s]|$)/.test(command)) {
+    return true; // ctest label/exclude/rerun filters reduce the executed suite
+  }
   if (runner === "orchestrator") {
     // tox/nox can run ANY session, not just tests, and we cannot statically prove a
     // selected session runs tests — so a session-scoped run (`tox -e docs`,
@@ -272,9 +294,12 @@ function crossEcosystemTestIsFocused(runner: CrossRunner, strip: RegExp, command
     return /(?:^|\s)(?:-e|-s|--sessions?)(?:[=\s]|$)/.test(command);
   }
   if (runner === "unittest" && /(?:^|\s)discover(?:\s|$)/.test(command)) {
-    // `discover` is a whole-suite run (its -p PATTERN is discovery, not focus) UNLESS
-    // -s/--start-directory scopes it to a specific subdirectory (not the root `.`).
-    const startDir = command.match(/(?:^|\s)(?:-s|--start-directory)[=\s]+(\S+)/)?.[1];
+    // `discover` is a whole-suite run (its -p PATTERN is discovery, not focus) UNLESS a
+    // start directory scopes it to a subdirectory — given via -s/--start-directory OR
+    // as the first positional (`discover project_dir` == `discover -s project_dir`),
+    // but not the root `.` (Codex P2).
+    const startDir = command.match(/(?:^|\s)(?:-s|--start-directory)[=\s]+(\S+)/)?.[1]
+      ?? body.match(/^discover\s+([^-\s]\S*)/)?.[1];
     return startDir !== undefined && startDir !== "." && startDir !== "./";
   }
   const positionals = crossEcosystemPositionals(body);
@@ -333,9 +358,10 @@ function isGoPackageTarget(token: string): boolean {
 }
 
 function isBroadGoPackageTarget(token: string): boolean {
-  // Only the WHOLE-module forms are broad. A SUBTREE glob like `pkg/...` or
-  // `./pkg/...` scopes to that prefix's packages, so it is focused (Codex P2).
-  return token === "." || token === "./" || token === "..." || token === "./...";
+  // Only the WHOLE-module globs are broad. `go test .`/`./` is package-list mode (the
+  // CURRENT package only), and a SUBTREE glob like `pkg/...`/`./pkg/...` scopes to that
+  // prefix — both are focused, not whole-module (Codex P2).
+  return token === "..." || token === "./...";
 }
 
 function isSpecificTestTargetToken(token: string): boolean {

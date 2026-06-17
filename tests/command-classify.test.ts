@@ -374,12 +374,13 @@ test("review-surfaces.COLLECTOR.7 cross-ecosystem monorepo/CI scope selectors (C
   // ...but a cargo package selector IS scoped -> focused.
   assert.equal(commandLooksLikeFocusedTestCommand("cargo test -p mycrate"), true);
 
-  // tox/nox can run any session; a session selector is scoped (focused), only a bare
-  // invocation is broad — and a docs/lint session is never a broad test run.
+  // tox/nox can run any session; an UNKNOWN session selector is scoped (focused) and
+  // only a bare invocation is broad (a clearly non-test docs/lint session is screened
+  // out entirely — see the round-5 test).
   assert.equal(commandLooksLikeBroadTestCommand("tox"), true);
-  assert.equal(commandLooksLikeFocusedTestCommand("tox -e docs"), true);
-  assert.equal(commandLooksLikeFocusedTestCommand("nox --sessions lint"), true);
-  assert.equal(commandLooksLikeBroadTestCommand("tox -e docs"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("tox -e py39"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("nox --sessions integration"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("tox -e py39"), false);
 
   // `gradle help --task test` prints task info, it does not run tests.
   assert.equal(commandLooksLikeTestCommand("gradle help --task test"), false);
@@ -418,4 +419,44 @@ test("review-surfaces.COLLECTOR.7 cross-ecosystem runner/flag vocabulary (Codex 
   assert.equal(commandLooksLikeFocusedTestCommand("python3 -m unittest discover -s tests/sub"), true);
   assert.equal(commandLooksLikeBroadTestCommand("python3 -m unittest discover"), true);
   assert.equal(commandLooksLikeBroadTestCommand("python3 -m unittest discover -s ."), true);
+});
+
+test("review-surfaces.COLLECTOR.7 cross-ecosystem goal scoping and no-exec aliases (Codex P2 round 5)", () => {
+  // The JVM head matches a test PHASE/TASK token, not `test` inside a -D/-P value.
+  assert.equal(commandLooksLikeTestCommand("mvn dependency:tree -Dincludes=junit:test"), false);
+  assert.equal(commandLooksLikeTestCommand("gradle assemble -Penv=test"), false);
+  assert.equal(commandLooksLikeBroadTestCommand("mvn clean test"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("gradle :app:test"), true);
+
+  // No-execution: compile/list/dry-run/version-only/short-alias don't run tests.
+  assert.equal(commandLooksLikeTestCommand("go test -c ./..."), false);
+  assert.equal(commandLooksLikeTestCommand("dotnet test --list-tests"), false);
+  assert.equal(commandLooksLikeTestCommand("gradle test --dry-run"), false);
+  assert.equal(commandLooksLikeTestCommand("gradle -m test"), false);
+  assert.equal(commandLooksLikeTestCommand("mvn -v test"), false);
+  assert.equal(commandLooksLikeTestCommand("gradle -v test"), false);
+  assert.equal(commandLooksLikeTestCommand("pytest --co"), false);
+  // ...but `go test -count 1` is a real run (not the compile-only `-c`).
+  assert.equal(commandLooksLikeBroadTestCommand("go test -count 1 ./..."), true);
+
+  // More focus selectors: cargo targets, pytest last-failed, ctest label/rerun.
+  assert.equal(commandLooksLikeFocusedTestCommand("cargo test --lib"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("pytest --lf"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("ctest -L api"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("ctest --rerun-failed"), true);
+
+  // go test . / ./ is the current package (focused); bare `go test` is broad.
+  assert.equal(commandLooksLikeFocusedTestCommand("go test ."), true);
+  assert.equal(commandLooksLikeBroadTestCommand("go test"), true);
+
+  // unittest discover with a POSITIONAL start dir is focused; a -p pattern stays broad.
+  assert.equal(commandLooksLikeFocusedTestCommand("python3 -m unittest discover tests/sub"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("python3 -m unittest discover -p '*_test.py'"), true);
+
+  // A clearly non-test tox/nox session is not test evidence; an unknown session is
+  // recognized-but-focused (bounded); a bare invocation is broad.
+  assert.equal(commandLooksLikeTestCommand("nox -s lint"), false);
+  assert.equal(commandLooksLikeTestCommand("tox -e docs"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("tox -e py39"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("tox"), true);
 });
