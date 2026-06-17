@@ -67,8 +67,10 @@ const CROSS_ECOSYSTEM_INFO_SUBCOMMAND =
 const NO_EXECUTION_BY_RUNNER: Partial<Record<CrossRunner, RegExp>> = {
   go: /(?:^|\s)(?:-list|-c)(?:[=\s]|$)/, // go `-c` compiles the test binary, runs nothing
   cargo: /(?:^|\s)--no-run(?:[=\s]|$)/,
-  pytest: /(?:^|\s)(?:--collect-only|--co)(?:[=\s]|$)/, // --co is the official --collect-only alias
-  ctest: /(?:^|\s)(?:-N|--show-only)(?:[=\s]|$)/,
+  // --co aliases --collect-only; --setup-plan/--setup-only inspect fixtures; -V prints version.
+  pytest: /(?:^|\s)(?:--collect-only|--co|--setup-plan|--setup-only|-V)(?:[=\s]|$)/,
+  // -N show-only, and the single-dash -version/-help info aliases.
+  ctest: /(?:^|\s)(?:-N|--show-only|-version|-help)(?:[=\s]|$)/,
   dotnet: /(?:^|\s)(?:-t|--list-tests)(?:[=\s]|$)/,
   // `--list-tests`, or the `list` SUBCOMMAND right after `swift test` (not a `list`
   // value of some other flag, e.g. `swift test --filter list`).
@@ -277,8 +279,8 @@ function crossEcosystemTestIsFocused(runner: CrossRunner, strip: RegExp, command
   if (runner === "go" && /(?:^|\s)-short(?:[=\s]|$)/.test(command)) {
     return true; // `go test -short` runs a reduced suite
   }
-  if (runner === "cargo" && /(?:^|\s)(?:--lib|--bin|--bins|--doc|--bench|--benches)(?:[=\s]|$)/.test(command)) {
-    return true; // cargo target selectors run only the selected target(s)
+  if (runner === "cargo" && /(?:^|\s)(?:--lib|--bin|--bins|--doc|--bench|--benches|--package|-p)(?:[=\s]|$)/.test(command)) {
+    return true; // cargo target/package selectors run only the selected target(s) — incl. the inline `--package=x`/`-p=x` form
   }
   if (runner === "pytest" && /(?:^|\s)(?:--lf|--last-failed|--ff|--failed-first)(?:[=\s]|$)/.test(command)) {
     return true; // pytest reruns only previously-failed tests

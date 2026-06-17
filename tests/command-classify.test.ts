@@ -460,3 +460,14 @@ test("review-surfaces.COLLECTOR.7 cross-ecosystem goal scoping and no-exec alias
   assert.equal(commandLooksLikeFocusedTestCommand("tox -e py39"), true);
   assert.equal(commandLooksLikeBroadTestCommand("tox"), true);
 });
+
+test("review-surfaces.COLLECTOR.7 cross-ecosystem no-exec aliases and inline cargo selectors (Codex P2 round 6)", () => {
+  // Inspection/version aliases don't execute tests.
+  assert.equal(commandLooksLikeTestCommand("pytest -V"), false);
+  assert.equal(commandLooksLikeTestCommand("pytest --setup-plan"), false);
+  assert.equal(commandLooksLikeTestCommand("ctest -version"), false);
+  assert.equal(commandLooksLikeTestCommand("ctest -help"), false);
+  // The inline `--package=`/`-p=` cargo selector scopes to one package -> focused.
+  assert.equal(commandLooksLikeFocusedTestCommand("cargo test --package=mycrate"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("cargo test -p mycrate"), true);
+});
