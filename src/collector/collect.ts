@@ -385,7 +385,12 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const changedFilesResult = collectChangedFiles(options.cwd, options.baseRef, options.headRef, includeWorkingTree, isArtifactPath);
   diagnostics.push(...changedFilesResult.diagnostics);
   const allChangedFiles = changedFilesResult.files;
-  const changedFiles = allChangedFiles.filter((file) => !ignore.isIgnored(file.path));
+  const changedFiles = allChangedFiles
+    .filter((file) => !ignore.isIgnored(file.path))
+    // COLLECTOR.6: a rename whose SOURCE is ignored (but destination is not) must not
+    // leak the ignored old_path into changed_files.json or any onward surface — drop
+    // it before it is persisted (Codex P2).
+    .map((file) => (file.old_path !== undefined && ignore.isIgnored(file.old_path) ? { ...file, old_path: undefined } : file));
   const ignoredChangedFiles = allChangedFiles.filter((file) => ignore.isIgnored(file.path)).map((file) => file.path);
   const diffResult = collectDiff(options.cwd, options.baseRef, options.headRef, includeWorkingTree);
   diagnostics.push(...diffResult.diagnostics);

@@ -120,6 +120,7 @@ test("collector records staged and committed renames by their new path", () => {
     assert.ok(staged.some((file) => file.path === newPath && file.status.startsWith("R")), "staged rename must use the new path");
     assert.ok(!staged.some((file) => file.path === `${oldPath} -> ${newPath}`), "staged rename must not keep porcelain's old -> new display path");
     assert.ok(!staged.some((file) => file.path.includes("\"")), "staged rename paths must be unquoted");
+    assert.equal(staged.find((file) => file.path === newPath)?.old_path, oldPath, "a staged (working-tree) rename captures its old_path (#103)");
 
     execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "rename"], { cwd: tmp, stdio: "ignore" });
     const committed = collectChangedFiles(tmp, base, "HEAD").files;
@@ -129,6 +130,7 @@ test("collector records staged and committed renames by their new path", () => {
       "committed rename diff must use the new path"
     );
     assert.ok(!committed.some((file) => file.path === oldPath), "committed rename must not report the old path as changed");
+    assert.equal(committed.find((file) => file.path === newPath)?.old_path, oldPath, "a committed rename captures its old_path (#103)");
 
     fs.writeFileSync(path.join(tmp, newPath), "export const renamed = 3;\n");
     const dirty = collectChangedFiles(tmp, base, "HEAD").files;
