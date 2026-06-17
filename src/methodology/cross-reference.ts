@@ -24,13 +24,18 @@ interface ChangedFileLike {
   status: string;
 }
 
-// Keyword sets a conversation must mention for the matching signal NOT to fire — a
-// single hit in any NATURAL-LANGUAGE turn counts as "discussed". Broad on purpose:
-// the goal is to suppress the flag whenever the topic was genuinely raised.
-const SECURITY_KEYWORDS = ["security", "vulnerab", "crypto", "auth", "password", "secret", "token", "credential", "permission", "sanitiz", "escape", "injection", "encrypt"];
-const TEST_KEYWORDS = ["test", "spec", "coverage", "assert", "pytest", "jest", "vitest", "mocha"];
+// Keyword sets that prove the matching topic was actually REASONED ABOUT (so the
+// signal does NOT fire). These are REVIEW/REASONING words, NOT the domain nouns that
+// merely NAME the changed category — otherwise just saying "changed the auth flow" or
+// "updated package.json and the lockfile" would count as discussion and suppress the
+// very signal it should raise (Codex P2). Matched at a word boundary (prefix), so
+// "vulnerab" still catches "vulnerability" while "test" never matches "latest".
+const SECURITY_KEYWORDS = ["security", "secure", "threat", "vulnerab", "exploit", "attack", "sanitiz", "escape", "injection", "xss", "csrf", "permission", "authoriz", "encrypt", "harden", "validate input", "input validation"];
+const TEST_KEYWORDS = ["test", "tested", "coverage", "assert", "pytest", "jest", "vitest", "mocha", "unit", "regression"];
 const COMPAT_KEYWORDS = ["backward", "compat", "breaking", "deprecat", "migration", "semver", "major version"];
-const RATIONALE_KEYWORDS = ["depend", "dependency", "package", "upgrade", "bump", "version", "install", "lockfile", "rationale", "because"];
+// Suppress deps_no_rationale only on EXPLANATORY language (a stated reason), never on
+// the descriptive nouns that just name the change (depend/package/version/lockfile).
+const RATIONALE_KEYWORDS = ["because", "rationale", "reason", "needed", "in order to", "so that", "to fix", "to avoid", "required by", "cve", "justif", "upgrade to fix", "security patch"];
 
 const LOCKFILES = new Set(["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "npm-shrinkwrap.json"]);
 
@@ -51,13 +56,16 @@ function basename(filePath: string): string {
 }
 
 // A file's NAME stem with extension and any test/spec marker stripped, used to
-// correlate a test file with an implementation file (`uploader.ts` and
-// `uploader.test.ts` share the stem `uploader`).
+// correlate a test file with an implementation file across conventions:
+// `uploader.test.ts`, `uploader_test.go`, `test_uploader.py`, `UploaderTest.java`
+// all reduce to `uploader` (the impl `uploader.ts`'s stem).
 function fileStem(filePath: string): string {
   let name = basename(filePath).toLowerCase();
-  name = name.replace(/\.(?:test|spec)\.[^.]+$/, ""); // uploader.test.ts -> uploader
-  name = name.replace(/\.[^.]+$/, ""); // strip a remaining extension
+  name = name.replace(/\.[^.]+$/, ""); // strip extension
+  name = name.replace(/\.(?:test|spec)$/, ""); // uploader.test -> uploader
+  name = name.replace(/^(?:test|spec)[._-]/, ""); // test_uploader -> uploader
   name = name.replace(/[._-](?:test|spec)$/, ""); // uploader_test -> uploader
+  name = name.replace(/(?:test|spec)$/, ""); // uploadertest (UploaderTest.java) -> uploader
   return name;
 }
 
@@ -76,12 +84,32 @@ function isLockfile(filePath: string): boolean {
   return LOCKFILES.has(basename(filePath));
 }
 
-// A security-sensitive source/config file by path convention (auth, crypto, secrets,
-// session, input sanitization). Conservative whole-word-ish matching so e.g.
+// A security-sensitive source/config file by path convention — auth, crypto,
+// secrets, session, AND input-validation/sanitization (D6 explicitly calls out
+// input-validation changes, Codex P2). Conservative whole-word-ish matching so e.g.
 // "author.ts" does not match "auth".
 function isSecuritySensitive(filePath: string): boolean {
-  return /(^|[/_.-])(auth|authn|authz|crypto|secret|secrets|security|login|logout|session|token|jwt|oauth|password|sanitize|escape|permission|acl|rbac)([/_.-]|$)/i.test(
+  return /(^|[/_.-])(auth|authn|authz|crypto|secret|secrets|security|login|logout|session|token|jwt|oauth|password|sanitize|sanitizer|escape|permission|acl|rbac|validate|validator|validation|validators)([/_.-]|$)/i.test(
     filePath
+  );
+}
+
+// A test file across conventions, including colocated NON-JS tests (`foo_test.go`,
+// `test_foo.py`, `foo_test.py`, `foo_spec.rb`, `FooTest.java`, `foo_test.rs`) that
+// `isTestPath` (tests/ + .test./.spec.) does not recognize, so a test-only change in
+// those languages is not misread as implementation (Codex P2).
+function isTestFile(filePath: string): boolean {
+  if (isTestPath(filePath)) {
+    return true;
+  }
+  const name = basename(filePath);
+  return (
+    /(^|\/)(tests?|__tests__|spec)\//.test(filePath) ||
+    /(^|[._-])(test|spec)\.[^.]+$/i.test(name) ||
+    /(^|[._-])(test|spec)[._-].*$/i.test(name) ||
+    /_(test|spec)\.[^.]+$/i.test(name) ||
+    /test\.[^.]+$/i.test(name) ||
+    /Test\.[^.]+$/.test(name)
   );
 }
 
@@ -94,7 +122,7 @@ function isImplSourceFile(filePath: string): boolean {
   if (!/\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m)$/i.test(filePath)) {
     return false;
   }
-  return !isTestPath(filePath);
+  return !isTestFile(filePath);
 }
 
 // A dependency/CI/config file by path — the fallback that lets deps_no_rationale fire
@@ -132,8 +160,11 @@ function conversationHaystack(events: ConversationEvent[]): string {
     .toLowerCase();
 }
 
+// Word-boundary (prefix) match so a domain noun embedded in a larger word does not
+// count and a reasoning prefix still matches its inflections ("vulnerab" ->
+// "vulnerability", "deprecat" -> "deprecated"); a multi-word phrase matches verbatim.
 function discusses(haystack: string, keywords: string[]): boolean {
-  return keywords.some((keyword) => haystack.includes(keyword));
+  return keywords.some((keyword) => new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(haystack));
 }
 
 function fileList(paths: string[]): string {
@@ -202,15 +233,15 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
   }
 
   // 2. impl_no_test: implementation source changed (any language) with no test
-  // coverage evidence and no test discussion. Coverage = a CORRELATED non-weakened
-  // test edit (its name stem matches a changed impl file, so an UNRELATED test edit
-  // does not count, Codex P2) OR a captured passing test run (broad evidence).
+  // coverage and no test discussion. Coverage is evaluated PER impl file (Codex P2):
+  // an impl file is covered by a captured passing test run (broad evidence) OR by a
+  // CORRELATED non-weakened test edit (a test whose name stem matches THAT file). So a
+  // PR that changes two modules but only tests one still flags the untested one.
   // Promoted by a concrete test-weakening fact.
   const implFiles = changed.filter((file) => isImplSourceFile(file.path));
-  const implStems = new Set(implFiles.map((file) => fileStem(file.path)));
   const weakenedTestPaths = new Set(facts.test_weakening.map((signal) => signal.path));
-  const correlatedTest = changed.some(
-    (file) => isTestPath(file.path) && file.status !== "D" && !weakenedTestPaths.has(file.path) && implStems.has(fileStem(file.path))
+  const coveringTestStems = new Set(
+    changed.filter((file) => isTestFile(file.path) && file.status !== "D" && !weakenedTestPaths.has(file.path)).map((file) => fileStem(file.path))
   );
   const passedTestRun = (collection.commandTranscripts ?? []).some(
     (transcript) =>
@@ -219,15 +250,16 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
       typeof transcript.command === "string" &&
       commandLooksLikeTestCommand(transcript.command)
   );
-  if (implFiles.length > 0 && !correlatedTest && !passedTestRun && !discusses(haystack, TEST_KEYWORDS)) {
+  const uncoveredImpl = passedTestRun ? [] : implFiles.filter((file) => !coveringTestStems.has(fileStem(file.path)));
+  if (uncoveredImpl.length > 0 && !discusses(haystack, TEST_KEYWORDS)) {
     const weakened = facts.test_weakening.length > 0;
     emit(
       "impl_no_test",
       weakened,
-      `Implementation changed with no test coverage evidence or test discussion: ${fileList(implFiles.map((file) => file.path))}.${
+      `Implementation changed with no test coverage evidence or test discussion: ${fileList(uncoveredImpl.map((file) => file.path))}.${
         weakened ? ` A test-weakening change was also detected (${facts.test_weakening[0].kind}).` : ""
       }`,
-      implFiles[0].path
+      uncoveredImpl[0].path
     );
   }
 
@@ -264,12 +296,15 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
   ];
   const uniqueDepConfigPaths = [...new Set(depConfigPaths)];
   if (uniqueDepConfigPaths.length > 0 && !discusses(haystack, RATIONALE_KEYWORDS)) {
-    const promoted = dependencyFacts.length > 0 || securityConfig.length > 0 || changed.some((file) => isLockfile(file.path));
+    // Any deterministic dependency OR config fact (not just security ones) is an
+    // independent check that moves the signal off advisory — a CI/Docker/env/SQL
+    // fact is as concrete as a dependency change (Codex P2, METHODOLOGY.8).
+    const promoted = dependencyFacts.length > 0 || configFacts.length > 0 || changed.some((file) => isLockfile(file.path));
     emit(
       "deps_no_rationale",
       promoted,
       `Dependency/CI/config change with no rationale in the conversation: ${fileList(uniqueDepConfigPaths)}.${
-        promoted ? " A concrete dependency-set change or a risky config fact was also detected." : ""
+        promoted ? " A concrete dependency or CI/Docker/config fact was also detected." : ""
       }`,
       uniqueDepConfigPaths[0]
     );

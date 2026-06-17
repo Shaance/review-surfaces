@@ -209,6 +209,51 @@ test("review-surfaces.METHODOLOGY.8 a correlated test (matching name stem) DOES 
   assert.equal(signal(findings, "impl_no_test"), undefined, "a test whose stem matches the impl is coverage");
 });
 
+test("review-surfaces.METHODOLOGY.8 merely NAMING the auth domain does not count as security discussion (Codex P2)", () => {
+  // "changed the auth flow" names the domain but proves no security reasoning.
+  assert.ok(signal(computeCrossReferenceSignals(collection([file("src/auth/login.ts")]), talk("changed the auth login flow")), "risky_no_security"));
+});
+
+test("review-surfaces.METHODOLOGY.8 input-validation paths are security-sensitive (Codex P2)", () => {
+  assert.ok(signal(computeCrossReferenceSignals(collection([file("src/validators/user.ts")]), talk("tweaked the validator")), "risky_no_security"));
+});
+
+test("review-surfaces.METHODOLOGY.8 naming the package/lockfile is not a rationale (Codex P2)", () => {
+  assert.ok(signal(computeCrossReferenceSignals(collection([file("package.json"), file("pnpm-lock.yaml")]), talk("updated package.json and the lockfile")), "deps_no_rationale"));
+});
+
+test("review-surfaces.METHODOLOGY.8 mentioning a product spec does not suppress impl_no_test (Codex P2)", () => {
+  assert.ok(signal(computeCrossReferenceSignals(collection([file("src/uploader.ts")]), talk("implemented it per the product spec")), "impl_no_test"));
+});
+
+test("review-surfaces.METHODOLOGY.8 a colocated non-JS test file is NOT treated as implementation (Codex P2)", () => {
+  // Only a Go test file changed — it must not read as an implementation change.
+  assert.equal(signal(computeCrossReferenceSignals(collection([file("src/uploader_test.go")]), []), "impl_no_test"), undefined);
+});
+
+test("review-surfaces.METHODOLOGY.8 deps_no_rationale is PROMOTED by a non-security config fact (Codex P2)", () => {
+  const sig = signal(
+    computeCrossReferenceSignals(
+      collection([file(".github/workflows/ci.yml")], { configFacts: [{ kind: "ci_unpinned_action", path: ".github/workflows/ci.yml", detail: "x" }] }),
+      talk("pipeline change")
+    ),
+    "deps_no_rationale"
+  );
+  assert.ok(sig);
+  assert.equal(sig.advisory, false, "any deterministic config fact is an independent check");
+});
+
+test("review-surfaces.METHODOLOGY.8 impl_no_test fires for the UNTESTED file when only one of two impls is tested (Codex P2)", () => {
+  const findings = computeCrossReferenceSignals(
+    collection([file("src/payments.ts"), file("src/refunds.ts"), file("tests/payments.test.ts", "A")]),
+    talk("changed payments and refunds")
+  );
+  const sig = signal(findings, "impl_no_test");
+  assert.ok(sig, "the untested refunds change still flags");
+  assert.match(sig.summary, /refunds/, "the finding names the uncovered file");
+  assert.doesNotMatch(sig.summary, /payments\.ts/, "the covered file is not listed");
+});
+
 test("review-surfaces.METHODOLOGY.8 an empty diff yields no cross-reference findings", () => {
   assert.deepEqual(computeCrossReferenceSignals(collection([]), talk("anything")), []);
 });

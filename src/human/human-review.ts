@@ -3872,7 +3872,15 @@ function buildQuestions(
   // moved lockfile) corroborated it — in which case it becomes a BLOCKING question so
   // the promotion bit actually moves reviewer gating (Codex P2). Under the mock
   // default workflow_findings is empty, so this is a no-op on the offline path.
-  for (const finding of (input.packet.methodology.workflow_findings ?? []).filter(workflowFindingHasValidatedAnchor).slice(0, 3)) {
+  // Order PROMOTED (non-advisory, corroborated) findings first so the cap never drops
+  // a blocking D6 signal in favor of earlier advisory ones (Codex P2). Stable within
+  // each group (producer order preserved).
+  const orderedWorkflowFindings = (input.packet.methodology.workflow_findings ?? [])
+    .filter(workflowFindingHasValidatedAnchor)
+    .map((finding, index) => ({ finding, index }))
+    .sort((a, b) => Number(a.finding.advisory !== false) - Number(b.finding.advisory !== false) || a.index - b.index)
+    .map((entry) => entry.finding);
+  for (const finding of orderedWorkflowFindings.slice(0, 3)) {
     const corroborated = finding.advisory === false;
     questions.push({
       id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
