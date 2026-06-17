@@ -1,11 +1,13 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { AcaiSpecIndex, indexAcaiSpecs } from "../acai/acai";
 import { CommandTranscript, commandTranscriptInputDir, commandTranscriptOutputPath, indexCommandTranscriptFiles } from "../commands/transcripts";
 import { ReviewSurfacesConfig } from "../config/config";
 import { ConversationEvent, ConversationFormat } from "../conversation/events";
-import { loadConversationEvents, writeNormalizedConversation } from "../conversation/ingest";
+import { discoverConversationSession } from "../conversation/discovery";
+import { loadConversationEvents, normalizeConversationText, writeNormalizedConversation } from "../conversation/ingest";
 import { filterPathsByPatterns, walkFiles } from "../core/glob";
 import { ensureDir, fileExists, hashFile, isRegularFile, writeJson, writeText } from "../core/files";
 import { VERSION } from "../core/version";
@@ -177,6 +179,12 @@ export interface CollectionResult {
   // The adapter that matched the conversation file (harness label), e.g.
   // "claude-code". Absent when no conversation was ingested.
   conversationSource?: string;
+  // Phase 5b (PRIVACY.1): the repo-relative, isSafeRepositoryPath-clean path to
+  // persist as the conversation EvidenceRef anchor. Set ONLY for an auto-discovered
+  // (non-repo) session — its absolute home-dir path must never reach a persisted
+  // artifact, so the methodology evidence points at the gitignored normalized log
+  // instead. Absent for an explicit --conversation path (its path is used as-is).
+  conversationEvidencePath?: string;
 }
 
 export interface CollectOptions {
@@ -212,6 +220,14 @@ export interface CollectOptions {
   // Absent => auto-detect by content shape. The RESOLVED adapter label is folded
   // into the cache signature so a format change over the same bytes is a miss.
   conversationFormat?: ConversationFormat;
+  // Phase 5b (D4): when no explicit conversationPath is supplied, auto-discover the
+  // single harness session that produced base..head. `false` disables discovery (the
+  // determinism-check / self-dogfood pass this so a live-growing session store does
+  // not make their byte-for-byte runs non-deterministic). Absent/true => discover.
+  conversationDiscovery?: boolean;
+  // The home/root under which harness session stores live, injected so tests point at
+  // a fixture store instead of the real ~/.claude. Absent => os.homedir().
+  conversationStoreRoot?: string;
   // Resolved --agent-input file path consumed by the agent-file provider. Folded
   // into the signature so a changed hypothesis set is a cache miss. Absent => no
   // agent-input flag was supplied.
@@ -394,17 +410,55 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // events and the methodology surface degrades to conversation_log_missing.
   let conversationEvents: ConversationEvent[] | undefined;
   let conversationSource: string | undefined;
-  if (options.conversationPath !== undefined) {
-    const loaded = await loadConversationEvents(options.cwd, options.conversationPath, options.conversationFormat);
+  let conversationEvidencePath: string | undefined;
+  // Phase 5b (D4): `--conversation` ALWAYS wins; otherwise auto-discover the single
+  // harness session for this repo (read-only). Discovery returns the ABSOLUTE
+  // home-dir session path for the registry to parse — but that path must NEVER reach
+  // a persisted artifact, so when it is used we persist the repo-relative
+  // normalized-log path as the evidence anchor and announce the absolute path on
+  // stderr only (PRIVACY.1).
+  const discovered =
+    options.conversationPath === undefined && options.conversationDiscovery !== false
+      ? discoverConversationSession({
+          storeRoot: options.conversationStoreRoot ?? os.homedir(),
+          cwd: options.cwd,
+          changedFiles: changedFiles.map((file) => file.path)
+        })
+      : undefined;
+  const resolvedConversationPath = options.conversationPath ?? discovered?.path;
+  if (resolvedConversationPath !== undefined) {
+    // A discovered session is parsed from its discovery-time SNAPSHOT (never a
+    // re-read), so parsing and the cache-signature hash see identical bytes even if
+    // the live session grows mid-run (Codex P2). An explicit path is read normally.
+    const loaded = discovered
+      ? normalizeConversationText(discovered.path, discovered.content, options.conversationFormat)
+      : await loadConversationEvents(options.cwd, resolvedConversationPath, options.conversationFormat);
     if (loaded) {
       conversationEvents = loaded.events;
       conversationSource = loaded.adapter;
+      // PRIVACY.1: a discovered session anchors to the gitignored normalized log,
+      // never its absolute home-dir path. For an --out OUTSIDE the repo the log is
+      // written outside too, so a repo-relative anchor would point at a file that
+      // does not exist — use the PATHLESS (event-id + label) evidence form there
+      // (the conversation-kind ref validates on its known event_id — Codex P2).
+      conversationEvidencePath = discovered ? repoRelativeNormalizedLogAnchor(outputDirRelative) : undefined;
       await writeNormalizedConversation(outputDir, loaded.events);
       // Announce the chosen adapter on stderr (via diagnostics), mirroring the
       // collection-diagnostics pattern — stdout ordering contracts must not move.
-      diagnostics.push(`Conversation adapter: ${loaded.adapter} (${options.conversationPath})`);
+      // For a discovered session the absolute picked path appears HERE (stderr)
+      // only, with the match basis so the user can correct an ambiguous same-repo
+      // pick with --conversation (Codex P2).
+      diagnostics.push(
+        discovered
+          ? `Auto-discovered conversation session: ${discovered.path} (adapter ${loaded.adapter}; ${
+              discovered.matchedChangedFiles > 0
+                ? `matched ${discovered.matchedChangedFiles} changed file(s)`
+                : "by recency only — pass --conversation to correct an ambiguous match"
+            })`
+          : `Conversation adapter: ${loaded.adapter} (${resolvedConversationPath})`
+      );
     } else {
-      diagnostics.push(`Conversation log unmatched or unreadable: ${options.conversationPath}`);
+      diagnostics.push(`Conversation log unmatched or unreadable: ${resolvedConversationPath}`);
     }
   }
 
@@ -490,6 +544,9 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const lcovSource = resolveLcovSource(options.cwd, options.coverageOutputPath);
 
   const flagInputHashes = await hashFlagInputs(options.cwd, [
+    // Only the EXPLICIT --conversation file is hashed by re-reading here; an
+    // auto-discovered session is folded below from its discovery-time SNAPSHOT hash
+    // (re-reading the live path here could hash bytes the audit never saw — Codex P2).
     { kind: "conversation", path: options.conversationPath },
     { kind: "coverage", path: options.coverageOutputPath },
     { kind: "coverage-lcov", path: lcovSource?.sourcePath },
@@ -507,6 +564,14 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // when a conversation was ingested, so no-conversation runs stay byte-identical.
   if (conversationSource !== undefined) {
     flagInputHashes.push({ kind: "conversation-format", path: conversationSource, algorithm: "sha256", hash: conversationSource });
+  }
+  // Phase 5b: fold the auto-discovered session's CONTENT hash (the discovery-time
+  // snapshot — the exact bytes parsed) into the signature, so a live session that
+  // grew legitimately busts the cache and a static fixture recurs identically. The
+  // absolute path is the signature locus only (internal cache key, never a persisted
+  // public artifact). Explicit --conversation files are already hashed above.
+  if (discovered !== undefined) {
+    flagInputHashes.push({ kind: "conversation", path: discovered.path, algorithm: "sha256", hash: discovered.hash });
   }
 
   // Resolve run_mode/milestone ONCE so the same values feed both the signature
@@ -665,7 +730,8 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     diagnostics: [...new Set(diagnostics)],
     diff_source: diffSource,
     conversationEvents,
-    conversationSource
+    conversationSource,
+    conversationEvidencePath
   };
 }
 
@@ -810,6 +876,17 @@ function collectConversationBlockedKinds(events: ConversationEvent[] | undefined
 function normalizedConversationLogPath(outputDirRelative: string): string {
   const safePrefix = outputDirRelative && !outputDirRelative.split("/").includes("..");
   return safePrefix ? `${outputDirRelative}/inputs/conversation.normalized.jsonl` : "inputs/conversation.normalized.jsonl";
+}
+
+// The repo-relative normalized-log path to persist as a discovered session's
+// conversation evidence anchor, OR undefined when --out lands OUTSIDE the repo (the
+// log is written outside too, so no repo-relative path resolves to it — the caller
+// then uses the pathless event-id-only evidence form). Codex P2.
+function repoRelativeNormalizedLogAnchor(outputDirRelative: string): string | undefined {
+  if (outputDirRelative.split("/").includes("..")) {
+    return undefined;
+  }
+  return normalizedConversationLogPath(outputDirRelative);
 }
 
 function collectSecretFindings(rawDiff: string): SecretFinding[] {

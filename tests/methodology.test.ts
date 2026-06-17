@@ -343,3 +343,25 @@ test("review-surfaces.METHODOLOGY.7 a missing/unusable conversation also flags m
   assert.ok(methodology.quality_flags.includes("conversation_log_missing"));
   assert.ok(methodology.quality_flags.includes("methodology_analysis_degraded"));
 });
+
+// review-surfaces.PRIVACY.1 (Phase 5b): an AUTO-DISCOVERED session lives at an
+// absolute ~/.claude home-dir path. The persisted conversation EvidenceRef must
+// carry the repo-relative normalized-log anchor (collection.conversationEvidencePath),
+// NEVER that absolute path — which would fail isSafeRepositoryPath and leak a
+// username-bearing path into a public artifact.
+test("review-surfaces.PRIVACY.1 a discovered session's evidence anchor is repo-relative, never the absolute home-dir path", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  const absoluteSessionPath = "/Users/someone/.claude/projects/-repo-app/abc123.jsonl";
+  const collection = collectionFixture(tmp, {
+    conversationEvents: [{ id: "e0", actor: "user", kind: "message", summary: "add a retry", raw_index: 0 }],
+    conversationSource: "claude-code",
+    conversationEvidencePath: "inputs/conversation.normalized.jsonl"
+  });
+  // buildMethodology is called with the absolute discovered path (as collect would
+  // pass it), but the persisted evidence must use the safe anchor instead.
+  const methodology = await buildMethodology(tmp, collection, absoluteSessionPath, []);
+  const conv = methodology.evidence.find((e) => e.kind === "conversation");
+  assert.ok(conv);
+  assert.equal(conv.path, "inputs/conversation.normalized.jsonl", "the evidence anchor is the repo-relative normalized log");
+  assert.ok(!String(conv.path).includes(".claude"), "the absolute home-dir session path must not appear in persisted evidence");
+});

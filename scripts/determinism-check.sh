@@ -26,6 +26,7 @@ run() {
   rm -rf "$OUT"
   node bin/review-surfaces.js all \
     --provider mock \
+    --no-conversation-discovery \
     --base origin/main \
     --head HEAD \
     --spec features/review-surfaces.feature.yaml \
