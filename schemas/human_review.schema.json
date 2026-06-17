@@ -18,6 +18,7 @@
     "suggested_comments",
     "trust_audit",
     "risk_lens_findings",
+    "methodology_audit",
     "intent_mismatch",
     "review_routes",
     "since_last_review",
@@ -107,6 +108,31 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/riskLensFinding"
+      }
+    },
+    "methodology_audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["considered", "research", "workflow_findings"],
+      "properties": {
+        "considered": { "type": "array", "items": { "type": "string" } },
+        "research": { "type": "array", "items": { "type": "string" } },
+        "workflow_findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "signal_kind", "summary", "severity", "advisory", "evidence"],
+            "properties": {
+              "id": { "type": "string" },
+              "signal_kind": { "type": "string" },
+              "summary": { "type": "string" },
+              "severity": { "type": "string" },
+              "advisory": { "type": "boolean" },
+              "evidence": { "type": "array" }
+            }
+          }
+        }
       }
     },
     "intent_mismatch": {

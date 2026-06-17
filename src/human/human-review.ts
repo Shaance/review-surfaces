@@ -43,6 +43,7 @@ import {
   IntentMismatch,
   IntentMismatchItem,
   InvalidEvidenceSummary,
+  MethodologyAudit,
   MissingEvidenceSummary,
   ReviewBlocker,
   DependencyChain,
@@ -431,6 +432,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     suggested_comments: suggestedComments,
     trust_audit: trustAudit,
     risk_lens_findings: riskLensFindings,
+    methodology_audit: buildMethodologyAudit(input),
     intent_mismatch: intentMismatch,
     review_routes: reviewRoutes,
     since_last_review: sinceLastReview,
@@ -3905,6 +3907,30 @@ function buildQuestions(
 // unanchored findings stay out of the question queue.
 function workflowFindingHasValidatedAnchor(finding: { evidence: EvidenceRef[] }): boolean {
   return finding.evidence.some((ref) => ref.validation_status === "valid");
+}
+
+// review-surfaces.METHODOLOGY.7/.8 (Phase 4): the agent-workflow audit card for the
+// cockpit — considered alternatives (4a), research/context (4b), and the GROUNDED
+// item-4 workflow findings (only the validated-anchor ones, so demoted/unanchored
+// LLM proposals never add noise — the same signal-to-noise rule the questions use).
+// Bounded so the card stays scannable. Empty arrays when the audit produced nothing.
+function buildMethodologyAudit(input: BuildHumanReviewInput): MethodologyAudit {
+  const methodology = input.packet.methodology;
+  return {
+    considered: (methodology.considered ?? []).slice(0, 8),
+    research: (methodology.research ?? []).slice(0, 8),
+    workflow_findings: (methodology.workflow_findings ?? [])
+      .filter(workflowFindingHasValidatedAnchor)
+      .slice(0, 8)
+      .map((finding) => ({
+        id: finding.id,
+        signal_kind: finding.signal_kind,
+        summary: finding.summary,
+        severity: finding.severity,
+        advisory: finding.advisory,
+        evidence: finding.evidence
+      }))
+  };
 }
 
 function capQuestionsPreservingIntent(questions: ReviewerQuestion[], limit: number): ReviewerQuestion[] {

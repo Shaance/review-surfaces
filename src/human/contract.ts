@@ -642,6 +642,27 @@ export interface EvalScoreboardSummary {
   classes: Array<{ name: string; passed: number; total: number }>;
 }
 
+// review-surfaces.METHODOLOGY.7/.8 (Phase 4): the agent-workflow audit surfaced on
+// the cockpit — the considered alternatives (4a) and research/context (4b) the
+// methodology leaf extracted, plus the item-4 workflow findings (LLM proposals AND
+// the deterministic D6 cross-reference signals). Always present (empty arrays when
+// nothing applies) so a stale artifact lacking it fails validation and is rebuilt
+// rather than rendering an absent section (SCHEMA.3).
+export interface MethodologyAuditWorkflowFinding {
+  id: string;
+  signal_kind: string;
+  summary: string;
+  severity: PacketSeverity;
+  advisory: boolean;
+  evidence: EvidenceRef[];
+}
+
+export interface MethodologyAudit {
+  considered: string[];
+  research: string[];
+  workflow_findings: MethodologyAuditWorkflowFinding[];
+}
+
 export interface HumanReviewModel {
   schema_version: typeof HUMAN_REVIEW_SCHEMA_VERSION;
   mode: "pr" | "repo";
@@ -666,6 +687,8 @@ export interface HumanReviewModel {
   suggested_comments: SuggestedReviewComment[];
   trust_audit: TrustAudit;
   risk_lens_findings: RiskLensFinding[];
+  // review-surfaces.METHODOLOGY.7/.8 (Phase 4): the agent-workflow audit card.
+  methodology_audit: MethodologyAudit;
   intent_mismatch: IntentMismatch;
   review_routes: ReviewRoute[];
   since_last_review: SinceLastReview;

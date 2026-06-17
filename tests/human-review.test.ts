@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildHumanReview, humanReviewConfigSignature } from "../src/human/human-review";
+import { renderHumanReviewHtml } from "../src/human/render-html";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import type { CollectionResult } from "../src/collector/collect";
 import type { EvaluationModel } from "../src/evaluation/evaluate";
@@ -4307,6 +4308,47 @@ test("review-surfaces.METHODOLOGY.7 a validated methodology workflow finding sur
   assert.equal(methodologyQuestion.severity, "clarifying");
   // The unanchored finding stays out of the queue (no noise).
   assert.ok(!model.questions.some((q) => /assumed something unverifiable/.test(q.question)));
+});
+
+test("review-surfaces.METHODOLOGY.7 the cockpit surfaces the agent-workflow audit (considered/research/findings)", () => {
+  const packet = packetFixture();
+  packet.methodology.considered = ["batch upload vs streaming", "retry with backoff"];
+  packet.methodology.research = ["read the uploader spec", "checked the S3 SDK docs"];
+  packet.methodology.workflow_findings = [
+    {
+      id: "XREF-001",
+      signal_kind: "impl_no_test",
+      summary: "uploader changed without a test",
+      severity: "medium",
+      advisory: true,
+      evidence: [{ kind: "file", path: "src/uploader.ts", confidence: "medium", validation_status: "valid" }]
+    },
+    {
+      // unanchored -> filtered out of the audit card (no noise)
+      id: "XREF-002",
+      signal_kind: "unchallenged_assumption",
+      summary: "unverifiable assumption",
+      severity: "low",
+      advisory: true,
+      evidence: [{ kind: "unknown", note: "LLM-proposed", confidence: "low", validation_status: "not_checked", llm_proposed: true }]
+    }
+  ];
+
+  const model = buildHumanReview({ packet });
+  assert.deepEqual(model.methodology_audit.considered, ["batch upload vs streaming", "retry with backoff"]);
+  assert.deepEqual(model.methodology_audit.research, ["read the uploader spec", "checked the S3 SDK docs"]);
+  assert.equal(model.methodology_audit.workflow_findings.length, 1, "only the validated-anchor finding is kept");
+  assert.equal(model.methodology_audit.workflow_findings[0].id, "XREF-001");
+
+  // The cockpit renders the dedicated section with all three parts.
+  const html = renderHumanReviewHtml(model);
+  assert.match(html, /Agent workflow audit/);
+  assert.match(html, /Considered alternatives/);
+  assert.match(html, /batch upload vs streaming/);
+  assert.match(html, /Research \/ context gathered/);
+  assert.match(html, /read the uploader spec/);
+  assert.match(html, /uploader changed without a test/);
+  assert.doesNotMatch(html, /unverifiable assumption/, "the unanchored finding is not surfaced");
 });
 
 test("review-surfaces.METHODOLOGY.8 a PROMOTED (non-advisory) workflow finding becomes a BLOCKING question, not advisory", () => {

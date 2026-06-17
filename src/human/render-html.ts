@@ -101,6 +101,9 @@ ${renderRounds(model)}
 <h2 id="trust">Trust audit</h2>
 ${renderTrust(model)}
 
+<h2 id="methodology">Agent workflow audit</h2>
+${renderMethodologyAudit(model)}
+
 <h2 id="questions">Questions for the author</h2>
 ${model.questions.length === 0 ? `<p class="muted">No reviewer questions generated.</p>` : `<ul>${model.questions.map((question) => `<li><span class="badge ${esc(question.severity)}">${esc(question.severity)}</span> ${esc(question.question)} <span class="muted">(${esc(question.id)})</span></li>`).join("")}</ul>`}
 
@@ -517,6 +520,32 @@ function renderTrust(model: HumanReviewModel): string {
     section("Missing evidence", trust.missing_evidence.map((item) => esc(item.summary))),
     section("Invalid evidence", trust.invalid_evidence.map((item) => esc(item.summary)))
   ].join("");
+}
+
+// review-surfaces.METHODOLOGY.7/.8 (Phase 4): the agent-workflow audit card —
+// considered alternatives (4a), research/context (4b), and the grounded item-4
+// workflow findings (the LLM proposals AND the deterministic D6 cross-reference
+// signals). A corroborated (non-advisory) finding is badged so the cockpit shows
+// the promotion, mirroring the question gating.
+function renderMethodologyAudit(model: HumanReviewModel): string {
+  const audit = model.methodology_audit;
+  const list = (label: string, entries: string[]): string =>
+    entries.length === 0 ? "" : `<h3>${esc(label)}</h3><ul>${entries.map((entry) => `<li>${esc(entry)}</li>`).join("")}</ul>`;
+  const findings =
+    audit.workflow_findings.length === 0
+      ? ""
+      : `<h3>Workflow findings</h3><ul>${audit.workflow_findings
+          .map(
+            (finding) =>
+              `<li><span class="badge ${finding.advisory ? "low" : esc(finding.severity)}">${finding.advisory ? "advisory" : "corroborated"}</span> <span class="muted">${esc(finding.signal_kind.replace(/_/g, " "))}</span>: ${esc(finding.summary)}</li>`
+          )
+          .join("")}</ul>`;
+  const body = [
+    list("Considered alternatives", audit.considered),
+    list("Research / context gathered", audit.research),
+    findings
+  ].join("");
+  return body === "" ? `<p class="muted">No agent-workflow audit content (no conversation analyzed, or nothing flagged).</p>` : body;
 }
 
 // review-surfaces.COVERAGE.6: the cockpit's per-line coverage gutter. Each
