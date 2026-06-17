@@ -224,6 +224,15 @@ test("review-surfaces.METHODOLOGY.8 api_no_compat fires when a public schema is 
   assert.equal(sig.evidence[0].path, "archive/old.txt", "evidence anchors to the existing rename destination, not the deleted old path");
 });
 
+test("review-surfaces.METHODOLOGY.8 a rename INTO public scope does NOT fire api_no_compat (#103 round-5)", () => {
+  // archive/old.txt -> schemas/public.schema.json ADDS a public surface; no public
+  // contract left its old location, so this is not a removal. With old_path known
+  // and non-public, the new-path fallback must NOT fire.
+  const renamedIn = { path: "schemas/public.schema.json", status: "R100", source: "diff", old_path: "archive/old.txt" };
+  const findings = computeCrossReferenceSignals(collection([renamedIn]), talk("promoted a file into the public schemas dir"));
+  assert.equal(signal(findings, "api_no_compat"), undefined, "moving a file into public scope removes no contract");
+});
+
 test("review-surfaces.METHODOLOGY.8 impl_no_test still fires when only an UNRELATED test was edited (Codex P2)", () => {
   // The test file shares no name stem with the changed impl, so it is not coverage.
   const findings = computeCrossReferenceSignals(collection([file("src/payments.ts"), file("tests/unrelated.test.ts", "A")]), talk("changed payments"));
