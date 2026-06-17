@@ -343,12 +343,16 @@ test("review-surfaces.METHODOLOGY.1 considered/research pick from natural-langua
       // A SHORT tool_call (a bounded invocation) IS research evidence — kept (Codex P2).
       { id: "tc0", actor: "assistant", kind: "tool_call", tool: "Read", summary: "Read(docs/goal.md) for research context", raw_index: 3 },
       // A LONG tool_call body matching a keyword deep inside is noise — excluded.
-      { id: "tc1", actor: "assistant", kind: "tool_call", tool: "Write", summary: `Write(${"z".repeat(2000)} considered)`, raw_index: 4 }
+      { id: "tc1", actor: "assistant", kind: "tool_call", tool: "Write", summary: `Write(${"z".repeat(2000)} considered)`, raw_index: 4 },
+      // A SHORT edit/write body is STILL noise (an embedded body, not research) —
+      // excluded by tool type, not just length (Codex P2).
+      { id: "tc2", actor: "assistant", kind: "tool_call", tool: "Edit", summary: "Edit(src/options.ts): considered context", raw_index: 5 }
     ]
   });
   const methodology = await buildMethodology(tmp, collection, undefined, []);
   assert.ok(!methodology.considered.some((entry) => entry.startsWith("t0:")), "a tool_result body is not picked as a considered alternative");
   assert.ok(!methodology.considered.some((entry) => entry.startsWith("tc1:")), "a long tool_call body is not picked");
+  assert.ok(!methodology.considered.some((entry) => entry.startsWith("tc2:")), "a SHORT edit/write body is excluded by tool type, not just length");
   const picked = methodology.considered.find((entry) => entry.startsWith("m0:"));
   assert.ok(picked, "the natural-language message is picked");
   assert.ok(picked.length <= 250 && picked.endsWith("…"), "the picked entry is bounded/truncated");

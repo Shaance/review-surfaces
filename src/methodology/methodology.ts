@@ -183,18 +183,31 @@ export async function buildMethodology(
 // stays scannable.
 const PICK_TEXT_LIMIT = 200;
 
-// A turn worth keyword-picking. A tool_RESULT summary is always an output body
-// (file content, command stdout) — never a stated alternative — so it is excluded.
-// A tool_CALL is kept ONLY when its summary is SHORT: a bounded invocation like
-// `Read(docs/goal.md)` IS research evidence (Codex P2), while a `Write({...huge
-// content...})`/`Edit({...})` payload is the noise dogfooding caught. Every other
+// An EDIT/WRITE tool-call — identified by its tool name OR (for adapters like Cursor
+// that put `edit <file>: <body>` in the summary without a tool field) the summary's
+// leading verb. Its summary is an embedded body, never a stated alternative, so it
+// is excluded at ANY length — a short `edit src/x.ts: …context…` is noise, not
+// research (Codex P2). A READ/inspect invocation is not matched.
+const PICK_WRITE_PATTERN = /(?:edit|write|patch|replace|multiedit|create|update|insert|apply)/i;
+
+function isEditOrWriteToolCall(event: ConversationEvent): boolean {
+  if (event.tool !== undefined && PICK_WRITE_PATTERN.test(event.tool)) {
+    return true;
+  }
+  return /^(?:edit|write|patch|replace|create|update|apply)\b/i.test(event.summary.trim());
+}
+
+// A turn worth keyword-picking. A tool_RESULT summary is always an output body, so
+// it is excluded. A tool_CALL is kept ONLY when it is a SHORT, non-edit/write
+// invocation — a bounded `Read(docs/goal.md)` IS research evidence (Codex P2), while
+// an edit/write payload (any length) is the noise dogfooding caught. Every other
 // (loose) kind is natural language and kept (no whitelist — Codex P2).
 function isPickableEvent(event: ConversationEvent): boolean {
   if (event.kind === "tool_result") {
     return false;
   }
   if (event.kind === "tool_call") {
-    return event.summary.length <= PICK_TEXT_LIMIT;
+    return event.summary.length <= PICK_TEXT_LIMIT && !isEditOrWriteToolCall(event);
   }
   return true;
 }
