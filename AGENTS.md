@@ -94,7 +94,13 @@ Record what could not yet be run and why.
 pnpm run local-review   # all --dogfood over origin/main...HEAD + cockpit + validate
 ```
 
-In a **Claude Code** session auto-discovery finds this repo's own transcript (announced on stderr); in **Codex/Cursor** pass `--conversation <file>` (discovery is Claude-store-only). Open `.review-surfaces/human_review.html` and read `human_review.json` `.methodology_audit`. The LLM `audit`/CONV-GAP leaves need `--provider ai-sdk` over a CLEAN transcript and a real diff — see `.agents/skills/review-surfaces-dogfood-loop/SKILL.md` (a secret-bearing transcript/diff, including the test fixtures, self-blocks the remote call by design).
+In a **Claude Code** session auto-discovery finds this repo's own transcript (announced on stderr). Discovery is Claude-store-only, so in **Codex/Cursor** it degrades to `conversation_log_missing`; pass the transcript explicitly with the raw CLI (the `local-review` wrapper accepts only `--base`/`--head`/`--out`/`--previous`/`--provider`, not `--conversation`):
+
+```bash
+node bin/review-surfaces.js all --provider mock --dogfood --base origin/main --head HEAD --conversation <file> --out .review-surfaces
+```
+
+Open `.review-surfaces/human_review.html` and read `human_review.json` `.methodology_audit`. The LLM `audit`/CONV-GAP leaves need `--provider ai-sdk` over a CLEAN transcript and a real diff — see `.agents/skills/review-surfaces-dogfood-loop/SKILL.md` (a secret-bearing transcript OR diff, including the test fixtures, self-blocks the remote call by design).
 
 A problem found while using `review-surfaces` to build `review-surfaces` is product feedback. Convert it into one of:
 

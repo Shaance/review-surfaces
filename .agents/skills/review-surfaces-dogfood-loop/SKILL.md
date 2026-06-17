@@ -67,11 +67,19 @@ node bin/review-surfaces.js all --provider ai-sdk --dogfood --conversation <clea
 
 The privacy guard REFUSES to send a transcript or diff that holds a blocked-kind
 secret (`remote_provider_blocked` → "AI SDK provider skipped because collected
-inputs contained high-risk secret material") — nothing leaves the machine. The real
-session and the secret-bearing test fixtures self-block by design, so feed a CLEAN
-synthetic transcript (no secret strings) via `--conversation` to exercise the leaves.
-Confirm there is no "skipped" line, then check whether `methodology_analysis_degraded`
-cleared and `workflow_findings` / `CONV-GAP-*` populated.
+inputs contained high-risk secret material") — nothing leaves the machine. The block
+fires when EITHER the diff OR the conversation carries a blocked-kind secret, so a
+clean transcript is NOT enough on its own — the DIFF must also be secret-free. The
+real session and the secret-bearing test fixtures self-block by design, so feed a
+CLEAN synthetic transcript (no secret strings) via `--conversation`; and if your
+branch's real diff edits those secret-shaped fixtures, validate the leaves over a
+SEPARATE secret-free range instead of this branch (otherwise the run still skips).
+Confirm there is no "skipped" line. Then check the right success signal: a clean
+transcript with no real gaps legitimately produces an EMPTY gap set, so "`CONV-GAP-*`
+appeared" is NOT the criterion. Check instead that the degraded flags cleared —
+`methodology_analysis_degraded` is gone and `risks.yaml` no longer carries
+`methodology_test_gap_degraded` — and read any `workflow_findings` / `CONV-GAP-*`
+records that did populate.
 
 ## Review Rules
 
