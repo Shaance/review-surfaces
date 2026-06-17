@@ -233,6 +233,15 @@ test("review-surfaces.METHODOLOGY.8 a rename INTO public scope does NOT fire api
   assert.equal(signal(findings, "api_no_compat"), undefined, "moving a file into public scope removes no contract");
 });
 
+test("review-surfaces.METHODOLOGY.8 a rename with a REDACTED source and public destination does NOT fire (#103 round-6)", () => {
+  // When the rename source is ignored, collect strips old_path. The public NEW path
+  // must NOT be used as a removed surface — that would false-fire a breaking removal
+  // for what is a rename INTO public scope from a redacted source.
+  const redactedRename = { path: "schemas/public.schema.json", status: "R100", source: "diff" }; // no old_path
+  const findings = computeCrossReferenceSignals(collection([redactedRename]), talk("moved a generated file into schemas"));
+  assert.equal(signal(findings, "api_no_compat"), undefined, "an absent old_path must not fall back to the new path's public-ness");
+});
+
 test("review-surfaces.METHODOLOGY.8 impl_no_test still fires when only an UNRELATED test was edited (Codex P2)", () => {
   // The test file shares no name stem with the changed impl, so it is not coverage.
   const findings = computeCrossReferenceSignals(collection([file("src/payments.ts"), file("tests/unrelated.test.ts", "A")]), talk("changed payments"));
