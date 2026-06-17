@@ -174,15 +174,72 @@ export async function buildMethodology(
   };
 }
 
+// review-surfaces.METHODOLOGY.1: the deterministic keyword fallback for
+// considered/research/decisions/etc. Scans ONLY natural-language turns — a
+// tool_call/tool_result summary is an embedded body (file content, an edit payload,
+// a command's stdout) where a keyword match is noise, not a considered alternative,
+// and pushing it whole dumped kilobytes of code onto the cockpit card (found by
+// dogfooding the live session). Each kept entry is bounded so even a long message
+// stays scannable.
+const PICK_TEXT_LIMIT = 200;
+
+// An EDIT/WRITE tool-call — identified by its tool name OR (for adapters like Cursor
+// that put `edit <file>: <body>` in the summary without a tool field) the summary's
+// leading verb. Its summary is an embedded body, never a stated alternative, so it
+// is excluded at ANY length — a short `edit src/x.ts: …context…` is noise, not
+// research (Codex P2). A READ/inspect invocation is not matched.
+const PICK_WRITE_PATTERN = /(?:edit|write|patch|replace|multiedit|create|update|insert|apply)/i;
+
+function isEditOrWriteToolCall(event: ConversationEvent): boolean {
+  if (event.tool !== undefined && PICK_WRITE_PATTERN.test(event.tool)) {
+    return true;
+  }
+  return /^(?:edit|write|patch|replace|create|update|apply)\b/i.test(event.summary.trim());
+}
+
+// A turn worth keyword-picking. A tool_RESULT summary is always an output body, so
+// it is excluded. A tool_CALL is kept ONLY when it is a SHORT, non-edit/write
+// invocation — a bounded `Read(docs/goal.md)` IS research evidence (Codex P2), while
+// an edit/write payload (any length) is the noise dogfooding caught. Every other
+// (loose) kind is natural language and kept (no whitelist — Codex P2).
+function isPickableEvent(event: ConversationEvent): boolean {
+  if (event.kind === "tool_result") {
+    return false;
+  }
+  if (event.kind === "tool_call") {
+    return event.summary.length <= PICK_TEXT_LIMIT && !isEditOrWriteToolCall(event);
+  }
+  return true;
+}
+
+// Bound the kept text to PICK_TEXT_LIMIT, keeping the window around the FIRST keyword
+// match so the truncation still shows WHY the entry was picked (Codex P3).
+function boundPickText(summary: string, keywords: string[]): string {
+  if (summary.length <= PICK_TEXT_LIMIT) {
+    return summary;
+  }
+  const lower = summary.toLowerCase();
+  const matchIndex = keywords
+    .map((keyword) => lower.indexOf(keyword))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0];
+  const start = matchIndex === undefined ? 0 : Math.max(0, matchIndex - 40);
+  const slice = summary.slice(start, start + PICK_TEXT_LIMIT).trim();
+  return `${start > 0 ? "…" : ""}${slice}…`;
+}
+
 function pick(events: ConversationEvent[], keywords: string[]): string[] {
   const result: string[] = [];
   for (const event of events) {
     if (result.length >= 12) {
       break;
     }
+    if (!isPickableEvent(event)) {
+      continue;
+    }
     const lower = event.summary.toLowerCase();
     if (keywords.some((keyword) => lower.includes(keyword))) {
-      result.push(`${event.id}: ${event.summary}`);
+      result.push(`${event.id}: ${boundPickText(event.summary, keywords)}`);
     }
   }
   return result;
