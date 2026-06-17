@@ -265,7 +265,20 @@ export async function loadOrComputeRisks(
     return loaded;
   }
   logComputed("risks");
-  return computeRisks(context, await evaluationForCompute(), await methodologyForCompute());
+  const evaluation = await evaluationForCompute();
+  const methodology = await methodologyForCompute();
+  const risks = computeRisks(context, evaluation, methodology);
+  // review-surfaces.RISK.6/.7: a FRESH risks compute (e.g. `handoff --provider ...`
+  // with no current risks.yaml) must also get the conversation-derived CONV-GAP
+  // records, so the gap surface is consistent with the `all`/`risks` paths. Mock is a
+  // no-op, so the deterministic risks model stays byte-stable.
+  const intent = context.artifacts.loadCurrentIntent() ?? emptyIntent();
+  await runConversationGapReasoning(
+    reasoningProviderFor(context),
+    { collection: context.collection, intent, evaluation, methodology, risks },
+    reasoningOptionsFor(context)
+  );
+  return risks;
 }
 
 export async function computeArchitecture(
@@ -428,6 +441,10 @@ export async function runReasoningWithVerification(
 // emptyEvaluation / emptyMethodology / emptyRisks are placeholders for stages
 // that only read a subset of the reasoning inputs. Mock is a no-op, so they are
 // never consulted in the default offline path.
+export function emptyIntent(): IntentModel {
+  return { summary: "", spec_mode: "acai", requirements: [], constraints: [], non_goals: [], assumptions: [], open_questions: [], sources: [] };
+}
+
 export function emptyEvaluation(): EvaluationModel {
   return { summary: "", results: [], overreach: [], acai_coverage: {} };
 }

@@ -128,7 +128,7 @@ test("review-surfaces.RISK.7 a proposed tested_how of unit is downgraded to unkn
 
 test("review-surfaces.RISK.7 a proposed tested_how of unit is TRUSTED when a real test artifact confirms it", async () => {
   const r = risks();
-  const data = { gaps: [{ summary: "really has unit coverage", kind: "manual", manual_check: "review", tested_how: "unit", anchors: { event_ids: ["edit"] } }] };
+  const data = { gaps: [{ summary: "really has unit coverage", kind: "manual", manual_check: "review", tested_how: "unit", anchors: { event_ids: ["a1"] } }] };
   await run(stub(data), collection({ passingTest: true }), methodology(), r);
   const gap = (r.missing_manual_checks ?? []).find((g) => g.id.startsWith("CONV-GAP-"));
   assert.ok(gap);
@@ -137,7 +137,7 @@ test("review-surfaces.RISK.7 a proposed tested_how of unit is TRUSTED when a rea
 
 test("review-surfaces.RISK.7 a passed test COMMAND also confirms unit/integration", async () => {
   const r = risks();
-  const data = { gaps: [{ summary: "integration via a test command", kind: "manual", manual_check: "review", tested_how: "integration", anchors: { event_ids: ["edit"] } }] };
+  const data = { gaps: [{ summary: "integration via a test command", kind: "manual", manual_check: "review", tested_how: "integration", anchors: { event_ids: ["a1"] } }] };
   await run(stub(data), collection({ passedTestCommand: true }), methodology(), r);
   const gap = (r.missing_manual_checks ?? []).find((g) => g.id.startsWith("CONV-GAP-"));
   assert.ok(gap);
@@ -148,11 +148,31 @@ test("review-surfaces.RISK.7 tested_how confirmation is tied to the gap: an unre
   const r = risks();
   // The gap cites a1 (a test-run turn that does NOT touch a changed file). Even with
   // a passing test artifact, an unrelated test must not confirm this gap's unit claim.
-  const data = { gaps: [{ summary: "claims unit on a non-code turn", kind: "manual", manual_check: "review", tested_how: "unit", anchors: { event_ids: ["a1"] } }] };
+  const data = { gaps: [{ summary: "claims unit on a non-code turn", kind: "manual", manual_check: "review", tested_how: "unit", anchors: { event_ids: ["a2"] } }] };
   await run(stub(data), collection({ passingTest: true }), methodology(), r);
   const gap = (r.missing_manual_checks ?? []).find((g) => g.id.startsWith("CONV-GAP-"));
   assert.ok(gap);
   assert.equal(gap.tested_how, "unknown", "a passing test not tied to the gap's reviewed-code work must not confirm unit");
+});
+
+test("review-surfaces.RISK.6 a gap citing ANY invalid event id is demoted to advisory (not partially grounded)", async () => {
+  const r = risks();
+  // mixes a real (a1) and a hallucinated (GHOST) event id.
+  const data = { gaps: [{ summary: "mixed anchors", kind: "automatic", suggested_test: "x", tested_how: "none", anchors: { event_ids: ["a1", "GHOST"] } }] };
+  await run(stub(data), collection(), methodology(), r);
+  const gap = (r.missing_automatic_tests ?? []).find((g) => g.id.startsWith("CONV-GAP-"));
+  assert.ok(gap);
+  assert.match(gap.summary, /unverified anchor\(s\): GHOST/);
+  assert.ok(gap.evidence?.every((e) => e.validation_status !== "valid"), "an unclean anchor set is not evidence-grounded");
+  assert.ok(gap.evidence?.some((e) => e.llm_proposed === true), "demoted to advisory");
+});
+
+test("review-surfaces.RISK.6 an OK payload with no gaps array keeps the degraded flag (agent-file other-stage object)", async () => {
+  const r = risks();
+  const m = methodology();
+  // An agent-file object meant for another stage: ok + record, but no `gaps` array.
+  await run(stub({ review_focus: ["x"] }), collection(), m, r);
+  assert.ok(m.quality_flags.includes("methodology_test_gap_degraded"), "an unrecognized payload must not mark the gap audit as run");
 });
 
 test("review-surfaces.RISK.6 a successful EMPTY gap audit clears the degraded flag", async () => {
@@ -166,7 +186,7 @@ test("review-surfaces.RISK.6 a successful EMPTY gap audit clears the degraded fl
 test("review-surfaces.RISK.6 appending CONV-GAP records augments the risk summary", async () => {
   const r = risks();
   r.summary = "0 test gap(s).";
-  const data = { gaps: [{ summary: "a gap", kind: "automatic", suggested_test: "x", tested_how: "none", anchors: { event_ids: ["edit"] } }] };
+  const data = { gaps: [{ summary: "a gap", kind: "automatic", suggested_test: "x", tested_how: "none", anchors: { event_ids: ["a1"] } }] };
   await run(stub(data), collection(), methodology(), r);
   assert.match(r.summary, /conversation-derived test gap/, "the summary reflects the appended CONV-GAP records");
 });
@@ -213,7 +233,7 @@ test("review-surfaces.RISK.7 a passed non-JS test command (pytest) confirms test
   (coll as unknown as { commandTranscripts: unknown[] }).commandTranscripts = [
     { id: "c1", command: "pytest tests/", status: "passed", exit_code: 0, truncated: false, source_path: "x" }
   ];
-  const data = { gaps: [{ summary: "py integration", kind: "manual", manual_check: "review", tested_how: "integration", anchors: { event_ids: ["edit"] } }] };
+  const data = { gaps: [{ summary: "py integration", kind: "manual", manual_check: "review", tested_how: "integration", anchors: { event_ids: ["a1"] } }] };
   await run(stub(data), coll, methodology(), r);
   const gap = (r.missing_manual_checks ?? []).find((g) => g.id.startsWith("CONV-GAP-"));
   assert.ok(gap);

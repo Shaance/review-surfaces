@@ -1046,15 +1046,22 @@ async function runConversationGapStage(
   if (!result.ok || !isRecord(result.data)) {
     return; // No leaf contribution: keep the deterministic gaps + degraded flag.
   }
-  // The leaf successfully ANALYZED the conversation -> clear the "not run" marker,
-  // even on a clean empty result (a fully-covered conversation is not degraded).
+  const gapsArray = (result.data as ConvGapOutput).gaps;
+  if (!Array.isArray(gapsArray)) {
+    // An ok object with NO recognizable `gaps` array (easy with agent-file, where the
+    // same input object is returned to every stage) is NOT a gap analysis — keep the
+    // degraded flag rather than mark the audit as run (Codex P2).
+    return;
+  }
+  // The leaf successfully ANALYZED the conversation (a `gaps` array, even empty) ->
+  // clear the "not run" marker; a fully-covered conversation is not degraded.
   inputs.methodology.quality_flags = inputs.methodology.quality_flags.filter((flag) => flag !== "methodology_test_gap_degraded");
 
   const hasTestArtifact = collectionHasTestArtifact(inputs.collection);
   const newAutomatic: MissingAutomaticTest[] = [];
   const newManual: MissingManualCheck[] = [];
   let counter = 0;
-  for (const item of asArray((result.data as ConvGapOutput).gaps).slice(0, MAX_PROPOSED_REQUIREMENTS * 2)) {
+  for (const item of gapsArray.slice(0, MAX_PROPOSED_REQUIREMENTS * 2)) {
     if (!isRecord(item)) {
       continue;
     }
@@ -1069,34 +1076,39 @@ async function runConversationGapStage(
     }
     // event_id is NOT self-validating: route ONLY the event_ids through the SAME
     // knownEventIds check (RISK.6 requires a conversation event id — a path anchor is
-    // not accepted as evidence here). No valid event id => advisory (llm-proposed).
+    // not accepted as evidence here). ANY invalid/unknown id demotes the WHOLE gap to
+    // advisory (an unclean anchor set is not evidence-grounded), per RISK.6.
     const { evidence, invalidTokens } = resolveAuditAnchors(
       { event_ids: isRecord(item.anchors) ? item.anchors.event_ids : undefined },
       context,
       changedFiles
     );
-    const ref =
-      evidence.length > 0
-        ? evidence
-        : [llmProposedEvidence("unknown", { note: "LLM-proposed conversation test gap lacks a validated event anchor.", confidence: "low" })];
+    const grounded = evidence.length > 0 && invalidTokens.length === 0;
+    const ref = grounded
+      ? evidence
+      : [llmProposedEvidence("unknown", { note: "LLM-proposed conversation test gap lacks a clean validated event anchor.", confidence: "low" })];
     const text = invalidTokens.length > 0 ? `${summary} (unverified anchor(s): ${invalidTokens.join(", ")})` : summary;
-    // Tie tested_how confirmation to THIS gap: unit/integration is trusted only when
-    // a real test artifact exists AND the gap is grounded in a cited event that
-    // touches a changed file — so one unrelated passing test can't confirm an
-    // arbitrary gap's unit/integration claim (Codex P2).
-    const gapTouchesChange = evidence.some((entry) => {
-      const event = typeof entry.event_id === "string" ? selectedById.get(entry.event_id) : undefined;
-      return event !== undefined && eventTouchesChangedFile(event, changedFiles);
-    });
-    const testedHow = confirmTestedHow(item.tested_how, hasTestArtifact && gapTouchesChange);
+    // Tie tested_how confirmation to THIS gap's CITED TEST: unit/integration is
+    // trusted only when the gap cites an event that IS a test run AND a passing test
+    // artifact exists — one unrelated passing test can't confirm an arbitrary gap
+    // (Codex P2).
+    const gapCitesTestRun =
+      grounded &&
+      evidence.some((entry) => {
+        const event = typeof entry.event_id === "string" ? selectedById.get(entry.event_id) : undefined;
+        return event !== undefined && isTestExecutionEvent(event);
+      });
+    const testedHow = confirmTestedHow(item.tested_how, hasTestArtifact && gapCitesTestRun);
     counter += 1;
     const id = `CONV-GAP-${String(counter).padStart(3, "0")}`;
+    // The rendered action text (suggested_test/manual_check) is LLM-authored, so mark
+    // it a hypothesis too — not just the (often unshown) summary (Codex P2).
     if (item.kind === "manual") {
       const manualCheck = redactHypothesisText(typeof item.manual_check === "string" ? item.manual_check : "").trim() || "Manually verify this step.";
-      newManual.push({ id, summary: markHypothesis(text), manual_check: manualCheck, tested_how: testedHow, evidence: ref });
+      newManual.push({ id, summary: markHypothesis(text), manual_check: markHypothesis(manualCheck), tested_how: testedHow, evidence: ref });
     } else {
       const suggestedTest = redactHypothesisText(typeof item.suggested_test === "string" ? item.suggested_test : "").trim() || "Add an automated test that exercises this step.";
-      newAutomatic.push({ id, summary: markHypothesis(text), suggested_test: suggestedTest, tested_how: testedHow, evidence: ref });
+      newAutomatic.push({ id, summary: markHypothesis(text), suggested_test: markHypothesis(suggestedTest), tested_how: testedHow, evidence: ref });
     }
   }
 
@@ -1113,8 +1125,10 @@ async function runConversationGapStage(
     risks.summary = `${risks.summary} +${addedGaps} conversation-derived test gap(s).`.trim();
   }
   // Truncation honesty: a long session analyzed from a salience slice may omit a
-  // turn that covers a step — mirror the methodology audit's partial-audit note.
+  // turn that covers a step — mirror the methodology audit's partial-audit note AND
+  // the machine-readable conversation_truncated flag (Codex P2/P3).
   if (truncated) {
+    inputs.methodology.quality_flags = uniqueTruthy([...inputs.methodology.quality_flags, "conversation_truncated"]);
     inputs.methodology.skipped_checks = uniqueTruthy([
       ...inputs.methodology.skipped_checks,
       `Conversation test-gap audit was partial: only ${selected.length} of ${events.length} salience-ranked events were analyzed.`
