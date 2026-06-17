@@ -1079,21 +1079,42 @@ async function runConversationGapStage(
       context,
       changedFiles
     );
-    const grounded = evidence.length > 0 && invalidTokens.length === 0;
+    // The events behind the CLEAN anchors — used both to require diff-relevance
+    // and to order a cited test against the edit it must post-date.
+    const citedEvents = evidence
+      .map((entry) => (typeof entry.event_id === "string" ? selectedById.get(entry.event_id) : undefined))
+      .filter((event): event is ConversationEvent => event !== undefined);
+    // A gap is GROUNDED only when its anchor set is clean AND at least one cited
+    // turn actually touches a changed file (the audited diff). A provider can cite
+    // a valid-but-unrelated turn — a user message, or a read-only/test turn that
+    // names no changed file — which is not evidence the gap concerns THIS change;
+    // such a gap demotes to advisory rather than minting a spurious review task
+    // for the diff (Codex P2).
+    const touchesChangedFile = citedEvents.some((event) => eventTouchesChangedFile(event, changedFiles));
+    const grounded = evidence.length > 0 && invalidTokens.length === 0 && touchesChangedFile;
     const ref = grounded
       ? evidence
-      : [llmProposedEvidence("unknown", { note: "LLM-proposed conversation test gap lacks a clean validated event anchor.", confidence: "low" })];
+      : [llmProposedEvidence("unknown", { note: "LLM-proposed conversation test gap lacks a clean validated event anchor that touches a changed file.", confidence: "low" })];
     const text = invalidTokens.length > 0 ? `${summary} (unverified anchor(s): ${invalidTokens.join(", ")})` : summary;
-    // Tie tested_how confirmation to THIS gap's CITED TEST: unit/integration is
-    // trusted only when the gap cites a test-run event WHOSE command matches a PASSED
-    // command transcript — so neither an unrelated passing test nor a cited-but-
-    // failed/unrecorded test turn can confirm the claim (Codex P2).
+    // Tie tested_how confirmation to THIS gap's CITED TEST that POST-DATES the edit:
+    // unit/integration is trusted only when the gap cites a test-run event whose
+    // command matches a PASSED transcript AND whose raw_index is AFTER the last
+    // cited edit to a changed file. A baseline test recorded BEFORE the edit cannot
+    // have exercised the reviewed change, so it must not confirm the HOW-tested
+    // claim — the same post-change ordering the methodology reconciliation uses
+    // (Codex P2). The -1 sentinel means "no cited edit observed", so ordering is
+    // UNKNOWN and the claim is not trusted.
+    const citedEditIndexByFile = changedFileEditIndexByFile(citedEvents, changedFiles);
+    const lastCitedEditIndex = citedEditIndexByFile.size > 0 ? Math.max(...citedEditIndexByFile.values()) : -1;
     const gapCitesPassedTest =
       grounded &&
-      evidence.some((entry) => {
-        const event = typeof entry.event_id === "string" ? selectedById.get(entry.event_id) : undefined;
-        return event !== undefined && isTestExecutionEvent(event) && citedTestPassed(event, inputs.collection);
-      });
+      lastCitedEditIndex >= 0 &&
+      citedEvents.some(
+        (event) =>
+          isTestExecutionEvent(event) &&
+          event.raw_index > lastCitedEditIndex &&
+          citedTestPassed(event, inputs.collection)
+      );
     const testedHow = confirmTestedHow(item.tested_how, gapCitesPassedTest);
     counter += 1;
     const id = `CONV-GAP-${String(counter).padStart(3, "0")}`;

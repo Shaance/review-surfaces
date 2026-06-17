@@ -163,7 +163,7 @@ function buildHandoff(inputs: PacketInputs): ReviewPacket["agent_handoff"] {
       .sort(compareHandoffFailedValidationEvidence)
       .slice(0, 6)
       .map(formatHandoffEvidence),
-    methodology_flags: handoffMethodologyFlags(inputs.methodology),
+    methodology_flags: handoffMethodologyFlags(inputs.methodology, inputs.risks),
     next_tasks: [
       ...inputs.risks.test_gaps.slice(0, 5).map((gap) => `${gap.acai_id ?? gap.requirement_id ?? gap.id}: ${gap.suggested_test ?? gap.summary}`),
       // RISK.6: CONV-GAP records live ONLY in the missing-lists (never test_gaps), so
@@ -269,7 +269,7 @@ Skipped/unknown:
 ${(packet.methodology.skipped_checks ?? []).map((item) => `- ${item}`).join("\n") || "- None recorded."}
 
 ## 6. Test evidence and gaps
-${packet.risks.summary}
+${packet.risks.summary}${riskGapAuditNote(packet.risks.quality_flags)}
 
 Validation evidence:
 ${previewLines(packet.risks.test_evidence ?? [], (evidence) => `- ${evidence.id} [${evidence.kind}]: ${evidence.summary}`, 8)}
@@ -670,11 +670,32 @@ function isFeedbackOnlyEvidence(evidence: RisksModel["test_evidence"][number]): 
   return refs.length > 0 && refs.every((ref) => ref.kind === "feedback");
 }
 
-function handoffMethodologyFlags(methodology: MethodologyModel): string[] {
+function handoffMethodologyFlags(methodology: MethodologyModel, risks: RisksModel): string[] {
   return unique([
     ...methodology.quality_flags,
+    // RISK.6: the conversation test-gap audit's degraded/truncated markers live on the
+    // RISKS model (so they persist with risks.yaml), but they ARE methodology-audit
+    // signals — surface them in the handoff's methodology flags so a reviewer who sees
+    // no CONV-GAP entries also sees that the audit did not run / was partial (Codex P2).
+    ...(risks.quality_flags ?? []),
     ...(methodology.missing_logs ? ["conversation_log_missing"] : []),
     ...(methodology.claims_without_evidence.length > 0 ? ["claims_without_evidence"] : []),
     ...(methodology.verified_claims.length > 0 ? ["verified_claims_available"] : [])
   ]);
+}
+
+// A reviewer-facing note for section 6 when the conversation test-gap audit is
+// degraded (did not run / no usable result) or truncated (only a salience slice
+// analyzed), so a clean-looking "no gaps" list is not mistaken for a complete audit
+// (Codex P2). Returns "" (no note) when neither flag is set.
+function riskGapAuditNote(qualityFlags: string[] | undefined): string {
+  const flags = qualityFlags ?? [];
+  const notes: string[] = [];
+  if (flags.includes("methodology_test_gap_degraded")) {
+    notes.push("_Conversation test-gap audit degraded: it did not run or returned no usable result, so the missing-test lists below may be incomplete._");
+  }
+  if (flags.includes("conversation_truncated")) {
+    notes.push("_Conversation test-gap audit was partial: only a salience-ranked slice of a long conversation was analyzed, so some steps may be unreviewed._");
+  }
+  return notes.length > 0 ? `\n${notes.join("\n")}` : "";
 }

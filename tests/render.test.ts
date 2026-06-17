@@ -390,6 +390,29 @@ test("review-surfaces.EVIDENCE.6 mock packet omits LLM hypotheses UI when there 
   }
 });
 
+// RISK.6: a degraded/truncated conversation test-gap audit lives on risks.quality_flags;
+// it must be VISIBLE to a reviewer — as a section-6 note in the packet markdown and as a
+// methodology flag in the handoff — not just persisted in risks.yaml (Codex P2).
+test("review-surfaces.RISK.6 a degraded gap audit is surfaced in packet markdown and handoff flags", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-render-gapflag-"));
+  try {
+    const inputs = mockPacketInputs();
+    (inputs.risks as unknown as { quality_flags: string[] }).quality_flags = ["methodology_test_gap_degraded", "conversation_truncated"];
+    // The handoff is only built when a dogfood milestone is present.
+    (inputs as unknown as { dogfood: unknown }).dogfood = { milestone: "M5", summary: "dogfood fixture", findings: [] };
+    const packet = createReviewPacket(inputs);
+    await rewriteReviewPacket(tmp, packet);
+    const markdown = fs.readFileSync(path.join(tmp, "review_packet.md"), "utf8");
+    assert.match(markdown, /Conversation test-gap audit degraded/, "the degraded gap audit is noted in section 6");
+    assert.match(markdown, /Conversation test-gap audit was partial/, "the truncated gap audit is noted in section 6");
+    // The handoff (a separate reviewer surface) also carries the flag, not just methodology flags.
+    assert.ok(packet.agent_handoff?.methodology_flags?.includes("methodology_test_gap_degraded"), "the degraded flag reaches the handoff");
+    assert.ok(packet.agent_handoff?.methodology_flags?.includes("conversation_truncated"), "the truncation flag reaches the handoff");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // #4/#5 fixture: a packet whose evaluation results are generated so the count
 // can cross the compact group-rollup threshold. Each result carries an Acai id
 // (so it has a group_key) and a deterministic status spread across groups.
