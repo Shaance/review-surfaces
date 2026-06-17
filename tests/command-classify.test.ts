@@ -296,10 +296,13 @@ test("review-surfaces.COLLECTOR.7 recognizes cross-ecosystem (non-JS) test runne
     assert.equal(commandLooksLikeBroadTestCommand(focused), false, `not broad: ${focused}`);
   }
 
-  // Documented conservative bound: a bare package/dir positional stays BROAD (a
-  // narrow miss under-credits rather than inventing test-weakening noise).
-  assert.equal(commandLooksLikeBroadTestCommand("go test ./pkg/auth"), true);
+  // A bare TEST-ROOT directory stays broad (it runs the whole suite under it), but
+  // an explicit Go package argument NARROWS the run, so it is focused (Codex P2).
   assert.equal(commandLooksLikeBroadTestCommand("pytest tests/"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("go test ./..."), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("go test ./pkg/auth"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("go test ./pkg/auth"), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("cargo test login"), true);
 
   // A mere mention is not a test run (segment-start matching only).
   assert.equal(commandLooksLikeTestCommand("grep pytest pyproject.toml"), false);
@@ -307,4 +310,39 @@ test("review-surfaces.COLLECTOR.7 recognizes cross-ecosystem (non-JS) test runne
   assert.equal(commandLooksLikeTestCommand("cat go.mod"), false);
   // -DskipTests is not a test goal.
   assert.equal(commandLooksLikeTestCommand("mvn deploy -DskipTests"), false);
+});
+
+test("review-surfaces.COLLECTOR.7 screens no-execution, excluded, and ambiguous cross-ecosystem invocations (Codex P2)", () => {
+  // No-execution invocations don't run tests, so they must NOT be credited as a
+  // (broad) test run that would suppress the per-area test-gap risk.
+  for (const noExec of [
+    "go test -list Test ./...",
+    "cargo test --no-run",
+    "pytest --collect-only",
+    "ctest -N",
+    "ctest --show-only"
+  ]) {
+    assert.equal(commandLooksLikeTestCommand(noExec), false, `no-execution: ${noExec}`);
+    assert.equal(commandLooksLikeBroadTestCommand(noExec), false, `not broad: ${noExec}`);
+  }
+
+  // Excluding/skipping the test task is not a test run.
+  assert.equal(commandLooksLikeTestCommand("gradle -x test check"), false);
+  assert.equal(commandLooksLikeTestCommand("./gradlew check --exclude-task test"), false);
+  assert.equal(commandLooksLikeTestCommand("mvn test -DskipTests"), false);
+  assert.equal(commandLooksLikeTestCommand("mvn -Dmaven.test.skip=true verify"), false);
+  // ...but excluding a DIFFERENT task while running tests is still a test run.
+  assert.equal(commandLooksLikeBroadTestCommand("gradle test -x integrationTest"), true);
+
+  // unittest discovery with a -p PATTERN is a BROAD suite run, not a focused file.
+  assert.equal(commandLooksLikeBroadTestCommand("python3 -m unittest discover -p '*_test.py'"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("python3 -m unittest discover -p '*_test.py'"), false);
+  // A glob target is a set, not a single focused test.
+  assert.equal(commandLooksLikeBroadTestCommand("pytest tests/*_test.py"), true);
+
+  // Maven -e is --errors (output), NOT a focus selector — a full-suite run stays broad.
+  assert.equal(commandLooksLikeBroadTestCommand("mvn -e test"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("mvn -e test"), false);
+  // ...while rspec -e really is a focus selector.
+  assert.equal(commandLooksLikeFocusedTestCommand("rspec -e \"signs in\""), true);
 });

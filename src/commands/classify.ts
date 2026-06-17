@@ -10,43 +10,52 @@ const TEST_SCRIPT_ALIAS_PATTERN = /^(?:run\s+)?test:([\w.:-]+)(?:\s|$)/;
 // cross-language "tests ran / tests weakened" signals fire on non-Node repos
 // instead of silently missing a real post-change test run (review-surfaces.COLLECTOR.7).
 //
-// Recognition is intentionally broad; focus detection is deliberately CONSERVATIVE:
-// a recognized runner is BROAD unless it carries an explicit focus FLAG or names a
-// specific test file/id, because a broad passing run is what SUPPRESSES the per-area
-// test-gap risk. Erring toward broad under-credits a narrow run (an advisory miss)
-// rather than inventing a test-weakening false positive. A bare package/dir
-// positional (`go test ./pkg/x`, `pytest tests/`) stays broad by design — only an
-// explicit filter flag or a specific file/id (`::`, `file:line`, `*.py|rb|php|exs`)
-// marks a run focused.
+// Classification is RUNNER-AWARE: each runner head is identified, commands that do
+// NOT execute tests (list/compile/collect-only) or explicitly exclude/skip the test
+// task are screened out, and focus detection applies the runner's own selector
+// vocabulary. A broad passing run is what SUPPRESSES the per-area test-gap risk, so
+// the rules err toward a real full-suite run being BROAD and a clearly narrowed run
+// being FOCUSED.
+type CrossRunner =
+  | "go" | "cargo" | "pytest" | "unittest" | "ruby" | "php"
+  | "maven" | "gradle" | "dotnet" | "ctest" | "mix" | "swift" | "dart" | "orchestrator";
+
 const CROSS_ECOSYSTEM_LAUNCHER = /^(?:bundle\s+exec|poetry\s+run|pdm\s+run|pipenv\s+run|uv\s+run)\s+/;
-const CROSS_ECOSYSTEM_TEST_HEAD = [
-  /^go\s+test\b/,
-  /^cargo\s+(?:test|nextest\s+run)\b/,
-  /^py\.?test\b/,
-  /^python[0-9.]*\s+-m\s+(?:pytest|unittest|nose2?)\b/,
-  /^tox\b/,
-  /^nox\b/,
-  /^rspec\b/,
-  /^rake\s+(?:test|spec)\b/,
-  /^(?:\.\/)?vendor\/bin\/(?:phpunit|pest)\b/,
-  /^phpunit\b/,
-  /^pest\b/,
-  /^dotnet\s+test\b/,
-  /^ctest\b/,
-  /^mix\s+test\b/,
-  /^swift\s+test\b/,
-  /^dart\s+test\b/,
-  /^flutter\s+test\b/
+
+// Runner head -> the regex that recognizes its test invocation AND the prefix to
+// strip before reading positionals (so `cargo nextest run login` yields the
+// positional `login`, not `nextest`/`run`).
+const CROSS_ECOSYSTEM_RUNNERS: Array<{ runner: CrossRunner; head: RegExp; strip: RegExp }> = [
+  { runner: "go", head: /^go\s+test\b/, strip: /^go\s+test\s*/ },
+  { runner: "cargo", head: /^cargo\s+(?:test|nextest\s+run)\b/, strip: /^cargo\s+(?:nextest\s+run|test)\s*/ },
+  { runner: "pytest", head: /^(?:py\.?test|python[0-9.]*\s+-m\s+(?:pytest|nose2?))\b/, strip: /^(?:py\.?test|python[0-9.]*\s+-m\s+(?:pytest|nose2?))\s*/ },
+  { runner: "unittest", head: /^python[0-9.]*\s+-m\s+unittest\b/, strip: /^python[0-9.]*\s+-m\s+unittest\s*/ },
+  { runner: "orchestrator", head: /^(?:tox|nox)\b/, strip: /^(?:tox|nox)\s*/ },
+  { runner: "ruby", head: /^(?:rspec|rake\s+(?:test|spec))\b/, strip: /^(?:rspec|rake\s+(?:test|spec))\s*/ },
+  { runner: "php", head: /^(?:(?:\.\/)?vendor\/bin\/)?(?:phpunit|pest)\b/, strip: /^(?:(?:\.\/)?vendor\/bin\/)?(?:phpunit|pest)\s*/ },
+  { runner: "dotnet", head: /^dotnet\s+test\b/, strip: /^dotnet\s+test\s*/ },
+  { runner: "ctest", head: /^ctest\b/, strip: /^ctest\s*/ },
+  { runner: "mix", head: /^mix\s+test\b/, strip: /^mix\s+test\s*/ },
+  { runner: "swift", head: /^swift\s+test\b/, strip: /^swift\s+test\s*/ },
+  { runner: "dart", head: /^(?:dart|flutter)\s+test\b/, strip: /^(?:dart|flutter)\s+test\s*/ },
+  // mvn/gradle (and the ./mvnw/./gradlew wrappers) carry the test goal among other
+  // goals/flags; focus is flag-only so the strip is just the launcher.
+  { runner: "maven", head: /^(?:mvn|mvnw|\.\/mvnw)\b.*\b(?:test|verify|integration-test)\b/, strip: /^(?:mvn|mvnw|\.\/mvnw)\s*/ },
+  { runner: "gradle", head: /^(?:gradle|gradlew|\.\/gradlew)\b.*\b(?:test|check|integrationTest|connectedAndroidTest)\b/, strip: /^(?:gradle|gradlew|\.\/gradlew)\s*/ }
 ];
-// mvn/gradle (and the ./mvnw/./gradlew wrappers) carry the test goal among other
-// goals and flags, so match a test-ish goal anywhere on the command line.
-const CROSS_ECOSYSTEM_BUILD_TOOL_TEST =
-  /^(?:mvn|mvnw|\.\/mvnw|gradle|gradlew|\.\/gradlew)\b.*\b(?:test|verify|integration-test|integrationTest|check|connectedAndroidTest)\b/;
+
+// Recognized as a runner but does NOT execute tests, so must not be credited as a
+// passing test run: go -list, cargo --no-run, pytest --collect-only, ctest -N/
+// --show-only, a Gradle `-x test`/`--exclude-task test`, or a Maven test skip (Codex P2).
+const CROSS_ECOSYSTEM_NO_EXECUTION =
+  /(?:^|\s)(?:-list|--no-run|--collect-only|-N|--show-only)(?:[=\s]|$)|(?:^|\s)(?:-x\s+test|--exclude-task[=\s]test)\b|(?:^|\s)-D(?:skipTests|maven\.test\.skip)\b/;
+
 // Explicit focus selectors shared across runners: go -run, pytest -k, dotnet/gradle
-// --filter/--tests, cargo --test, rspec -e/--example, ctest -R, mix --only,
-// dart/flutter --name, maven -Dtest=, rake TEST=.
+// --filter/--tests, cargo --test, ctest -R, mix --only, dart/flutter --name, maven
+// -Dtest=, rake TEST=. NOTE: `-e` is NOT here — it collides with Maven's --errors;
+// it counts as a focus flag only for Ruby/rspec (handled per-runner).
 const CROSS_ECOSYSTEM_FOCUS_FLAG =
-  /(?:^|\s)(?:-run|-k|--filter|--tests?|--name|--plain-name|--example|-e|-R|--only)(?:[=\s]|$)|(?:^|\s)(?:-Dtest|TEST)=/;
+  /(?:^|\s)(?:-run|-k|--filter|--tests?|--name|--plain-name|--example|-R|--only)(?:[=\s]|$)|(?:^|\s)(?:-Dtest|TEST)=/;
 
 export function normalizeCommand(command: string): string {
   return command.trim().replace(/\s+/g, " ");
@@ -156,25 +165,54 @@ function looksLikeBroadTestScriptAlias(alias: string): boolean {
   return /^(?:all|ci|cov|coverage|fast|full)(?:[.:_-]|$)/.test(alias);
 }
 
-// undefined when `normalized` is not a recognized non-JS test runner; otherwise
-// "broad" (whole suite) or "focused" (a filter flag or a specific test file/id).
+// undefined when `normalized` is not a recognized non-JS test RUN; otherwise "broad"
+// (whole suite) or "focused" (narrowed to a flag/target). A command that recognizes
+// as a runner but does not execute tests (list/compile/collect-only, or an excluded/
+// skipped test task) returns undefined — it is not a passing test run (Codex P2).
 function crossEcosystemTestKind(normalized: string): "broad" | "focused" | undefined {
   const command = normalized.replace(CROSS_ECOSYSTEM_LAUNCHER, "");
-  const looksLikeTest = CROSS_ECOSYSTEM_TEST_HEAD.some((pattern) => pattern.test(command))
-    || CROSS_ECOSYSTEM_BUILD_TOOL_TEST.test(command);
-  if (!looksLikeTest) {
+  const match = CROSS_ECOSYSTEM_RUNNERS.find((entry) => entry.head.test(command));
+  if (match === undefined) {
     return undefined;
   }
-  return crossEcosystemTestIsFocused(command) ? "focused" : "broad";
+  if (CROSS_ECOSYSTEM_NO_EXECUTION.test(command)) {
+    return undefined;
+  }
+  return crossEcosystemTestIsFocused(match.runner, match.strip, command) ? "focused" : "broad";
 }
 
-function crossEcosystemTestIsFocused(command: string): boolean {
+function crossEcosystemTestIsFocused(runner: CrossRunner, strip: RegExp, command: string): boolean {
   if (CROSS_ECOSYSTEM_FOCUS_FLAG.test(command)) {
     return true;
   }
-  // Runner words (`go`, `test`, `pytest`, `cargo`, `-m`, ...) never look like a
-  // specific test file/id, so scanning every token is safe and keeps this simple.
-  return command.split(/\s+/).some(isSpecificTestTargetToken);
+  if (runner === "ruby" && /(?:^|\s)-e(?:[=\s]|$)/.test(command)) {
+    return true; // rspec -e "description" (Ruby-only; -e is Maven's --errors elsewhere)
+  }
+  // unittest `discover` is a whole-suite run; its -p PATTERN is discovery, not a focus.
+  if (runner === "unittest" && /(?:^|\s)discover(?:\s|$)/.test(command)) {
+    return false;
+  }
+  const positionals = command
+    .replace(strip, "")
+    .split(/\s+/)
+    .map(cleanCommandToken)
+    .filter((token) => token !== "" && !token.startsWith("-"));
+  if (runner === "go") {
+    // An explicit package argument narrows the run; `./...`, `...`, `pkg/...`, `.`
+    // are the whole-module globs that stay broad.
+    return positionals.some((token) => !isBroadGoPackageTarget(token));
+  }
+  if (runner === "cargo") {
+    // `cargo test <name>` filters by substring — any bare positional narrows it.
+    return positionals.length > 0;
+  }
+  // pytest / ruby / php / mix / unittest: a specific test FILE or test id, never a
+  // bare directory or a glob.
+  return positionals.some(isSpecificTestTargetToken);
+}
+
+function isBroadGoPackageTarget(token: string): boolean {
+  return token === "." || token === "./" || token === "..." || /(?:^|\/)\.\.\.$/.test(token);
 }
 
 function isSpecificTestTargetToken(token: string): boolean {
@@ -182,8 +220,8 @@ function isSpecificTestTargetToken(token: string): boolean {
   if (value === "" || value.startsWith("-")) {
     return false;
   }
-  // `./...`, `...`, `pkg/...` are Go's BROAD package globs — not a focused target.
-  if (value === "..." || /(?:^|\/)\.\.\.$/.test(value)) {
+  // A glob/discovery pattern (`*_test.py`, `**/foo`) targets a SET, not one test.
+  if (value.includes("*")) {
     return false;
   }
   if (value.includes("::")) {
@@ -192,8 +230,8 @@ function isSpecificTestTargetToken(token: string): boolean {
   if (/:[0-9]+$/.test(value)) {
     return true; // rspec/file:line target
   }
-  // A specific test FILE passed positionally (pytest/rspec/phpunit). Bare directory
-  // or package positionals deliberately do NOT match — they stay broad.
+  // A specific test FILE passed positionally (pytest/rspec/phpunit/mix). Bare
+  // directory or package positionals deliberately do NOT match — they stay broad.
   return /\.(?:py|rb|php|exs)$/i.test(value.split("::")[0]);
 }
 
