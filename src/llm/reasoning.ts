@@ -1142,14 +1142,22 @@ async function runConversationGapStage(
 
 // True when a CITED test-execution event's command corresponds to a PASSED command
 // transcript — the per-gap confirmation that the specific cited test actually ran
-// and passed (not just that some unrelated test exists) — Codex P2.
+// and passed (not just that some unrelated test exists) — Codex P2. A "passed"
+// status with a non-zero/missing exit_code is NOT trusted: every other producer
+// (methodology.ts, risks.ts, pr-risks.ts) requires `status === "passed" &&
+// exit_code === 0` before treating a transcript as passing test evidence, so the
+// HOW-tested confirmation uses the same conjunction — Codex P2.
 function citedTestPassed(event: ConversationEvent, collection: CollectionResult): boolean {
   const command = (event.command ?? "").trim();
   if (command === "") {
     return false;
   }
   return collection.commandTranscripts.some(
-    (transcript) => transcript.status === "passed" && typeof transcript.command === "string" && transcript.command.trim() === command
+    (transcript) =>
+      transcript.status === "passed" &&
+      transcript.exit_code === 0 &&
+      typeof transcript.command === "string" &&
+      transcript.command.trim() === command
   );
 }
 

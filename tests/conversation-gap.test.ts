@@ -230,6 +230,22 @@ test("review-surfaces.RISK.7 a status:failed transcript (even exit_code 0) does 
   assert.equal(gap.tested_how, "unknown", "a failed test transcript must not confirm unit");
 });
 
+test("review-surfaces.RISK.7 a status:passed transcript with a non-zero exit_code does not confirm tested_how", async () => {
+  const r = risks();
+  const coll = collection();
+  // status says "passed" but the command exited non-zero — every other producer
+  // requires exit_code === 0 before trusting test evidence, so the HOW-tested
+  // confirmation must not trust this either (Codex P2).
+  (coll as unknown as { commandTranscripts: unknown[] }).commandTranscripts = [
+    { id: "c1", command: "pnpm run test", status: "passed", exit_code: 1, truncated: false, source_path: "x" }
+  ];
+  const data = { gaps: [{ summary: "claims unit", kind: "manual", manual_check: "review", tested_how: "unit", anchors: { event_ids: ["a1"] } }] };
+  await run(stub(data), coll, methodology(), r);
+  const gap = (r.missing_manual_checks ?? []).find((g) => g.id.startsWith("CONV-GAP-"));
+  assert.ok(gap);
+  assert.equal(gap.tested_how, "unknown", "a passed status with a non-zero exit_code must not confirm unit");
+});
+
 test("review-surfaces.RISK.7 a passed non-JS test command (pytest) cited by the gap confirms tested_how", async () => {
   const r = risks();
   // The gap cites a pytest tool_call whose command matches a passed pytest transcript.
