@@ -40,10 +40,13 @@ range reviews only the last commit and misses files changed earlier in a multi-c
 branch. Keep `--dogfood` or `dogfood.yaml` and `agent_handoff.md` are not built.
 
 In a **Claude Code** session, auto-discovery finds this repo's own transcript under
-`~/.claude/projects/<cwd-slug>/` (announced on stderr). In a **Codex or Cursor**
-session discovery finds nothing (it scans only the Claude store) and the run degrades
-to `conversation_log_missing` — pass `--conversation <file>` explicitly there. Then
-open and READ:
+`~/.claude/projects/<cwd-slug>/` (announced on stderr). Discovery does NOT know the
+current harness — it just scans the Claude store and picks the best readable session
+by changed-file score and recency. So in a **Codex or Cursor** session it either
+finds nothing (degrading to `conversation_log_missing`) or, on a machine that also
+has prior Claude sessions for this repo, silently audits a STALE Claude transcript —
+making the methodology audit look valid for the wrong session. Pass `--conversation
+<file>` explicitly there (mandatory, not optional). Then open and READ:
 
 - `.review-surfaces/human_review.html` (or `/tmp/dog/...`) — the cockpit (incl. the "Agent workflow audit" card).
 - `human_review.json` → `.methodology_audit` — `considered`/`research`, `workflow_findings`, `quality_flags`.
