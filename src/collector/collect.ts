@@ -127,6 +127,10 @@ export interface ChangedFileHash {
   source: string;
   algorithm: "sha256";
   hash: string;
+  // Folded into the manifest signature so two runs that rename DIFFERENT
+  // same-content sources to the SAME destination get distinct cache keys — the
+  // rename source changes the methodology result (e.g. api_no_compat) (#103, Codex P2).
+  old_path?: string;
 }
 
 export interface CollectionResult {
@@ -850,7 +854,7 @@ async function hashChangedFiles(
         hash = crypto.createHash("sha256").update(blob).digest("hex");
       }
     }
-    return { path: file.path, status: file.status, source: file.source, algorithm: "sha256" as const, hash };
+    return { path: file.path, status: file.status, source: file.source, algorithm: "sha256" as const, hash, ...(file.old_path ? { old_path: file.old_path } : {}) };
   };
 
   const results = new Array<ChangedFileHash>(changedFiles.length);
