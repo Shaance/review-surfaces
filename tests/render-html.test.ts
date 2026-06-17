@@ -48,7 +48,7 @@ function model(over: Partial<HumanReviewModel> = {}): HumanReviewModel {
     risk_lens_findings: [
       { id: "LENS-001", lens: "reviewer_ux", severity: "medium", summary: "s", reviewer_action: "a", evidence: [], suggested_tests: [], suggested_comments: [], risk_ids: ["PR-RISK-001"], requirement_ids: [], paths: ["src/render.ts"], confidence: "medium" }
     ],
-    methodology_audit: { degraded: false, considered: [], research: [], workflow_findings: [] },
+    methodology_audit: { quality_flags: [], considered: [], research: [], workflow_findings: [] },
     intent_mismatch: { expected_by_spec: [], observed_in_diff: [], possible_mismatches: [], possible_overreach: [], missing_intent: [] },
     review_routes: [],
     since_last_review: {

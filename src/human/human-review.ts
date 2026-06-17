@@ -44,6 +44,7 @@ import {
   IntentMismatchItem,
   InvalidEvidenceSummary,
   MethodologyAudit,
+  MethodologyAuditFlag,
   MissingEvidenceSummary,
   ReviewBlocker,
   DependencyChain,
@@ -3914,14 +3915,32 @@ function workflowFindingHasValidatedAnchor(finding: { evidence: EvidenceRef[] })
 // item-4 workflow findings (only the validated-anchor ones, so demoted/unanchored
 // LLM proposals never add noise — the same signal-to-noise rule the questions use).
 // Bounded so the card stays scannable. Empty arrays when the audit produced nothing.
+const METHODOLOGY_AUDIT_FLAGS: MethodologyAuditFlag[] = ["methodology_analysis_degraded", "conversation_log_missing", "conversation_truncated"];
+
+// Provider (LLM-proposed) considered/research entries are appended AFTER the keyword
+// picks, so a plain head-cap would hide them; surface them FIRST before the cap so
+// the grounded 4a/4b audit reaches the cockpit (Codex P2).
+function providerFirst(entries: string[]): string[] {
+  const provider = entries.filter((entry) => entry.startsWith("LLM-proposed:"));
+  const rest = entries.filter((entry) => !entry.startsWith("LLM-proposed:"));
+  return [...provider, ...rest].slice(0, 8);
+}
+
 function buildMethodologyAudit(input: BuildHumanReviewInput): MethodologyAudit {
   const methodology = input.packet.methodology;
   return {
-    degraded: (methodology.quality_flags ?? []).includes("methodology_analysis_degraded"),
-    considered: (methodology.considered ?? []).slice(0, 8),
-    research: (methodology.research ?? []).slice(0, 8),
+    quality_flags: (methodology.quality_flags ?? []).filter((flag): flag is MethodologyAuditFlag =>
+      (METHODOLOGY_AUDIT_FLAGS as string[]).includes(flag)
+    ),
+    considered: providerFirst(methodology.considered ?? []),
+    research: providerFirst(methodology.research ?? []),
     workflow_findings: (methodology.workflow_findings ?? [])
       .filter(workflowFindingHasValidatedAnchor)
+      // Promoted (corroborated, advisory===false) findings first so the cap never
+      // drops a blocking D6 signal for earlier advisory ones (Codex P2).
+      .map((finding, index) => ({ finding, index }))
+      .sort((a, b) => Number(a.finding.advisory !== false) - Number(b.finding.advisory !== false) || a.index - b.index)
+      .map((entry) => entry.finding)
       .slice(0, 8)
       .map((finding) => ({
         id: finding.id,

@@ -47,7 +47,7 @@ function baseModel(overrides: Partial<HumanReviewModel>): HumanReviewModel {
       confidence_summary: "Medium confidence fixture."
     },
     risk_lens_findings: [],
-    methodology_audit: { degraded: false, considered: [], research: [], workflow_findings: [] },
+    methodology_audit: { quality_flags: [], considered: [], research: [], workflow_findings: [] },
     intent_mismatch: {
       expected_by_spec: [],
       observed_in_diff: [],

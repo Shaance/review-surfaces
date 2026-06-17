@@ -4360,8 +4360,29 @@ test("review-surfaces.METHODOLOGY.7 a degraded methodology audit is loudly flagg
   packet.methodology.workflow_findings = [];
 
   const model = buildHumanReview({ packet });
-  assert.equal(model.methodology_audit.degraded, true);
+  assert.ok(model.methodology_audit.quality_flags.includes("methodology_analysis_degraded"));
   assert.match(renderHumanReviewHtml(model), /Deep audit not run/, "the cockpit carries the loud degradation signal (D2)");
+});
+
+test("review-surfaces.METHODOLOGY.7 a TRUNCATED (but run) audit shows the partial caveat, not 'no LLM provider' (Codex P2)", () => {
+  const packet = packetFixture();
+  // The deep audit RAN (no methodology_analysis_degraded) but was partial.
+  packet.methodology.quality_flags = ["conversation_truncated"];
+  packet.methodology.considered = ["LLM-proposed: streaming vs batch"];
+
+  const model = buildHumanReview({ packet });
+  assert.deepEqual(model.methodology_audit.quality_flags, ["conversation_truncated"]);
+  const html = renderHumanReviewHtml(model);
+  assert.match(html, /Audit was partial/, "a truncated run shows the partial caveat");
+  assert.doesNotMatch(html, /Deep audit not run/, "a run-but-truncated audit is not mislabeled as not-run");
+});
+
+test("review-surfaces.METHODOLOGY.7 the audit prefers provider-derived considered entries before the cap (Codex P2)", () => {
+  const packet = packetFixture();
+  packet.methodology.considered = [...Array.from({ length: 8 }, (_, i) => `keyword pick ${i}`), "LLM-proposed: the grounded alternative"];
+
+  const model = buildHumanReview({ packet });
+  assert.ok(model.methodology_audit.considered.includes("LLM-proposed: the grounded alternative"), "the provider entry survives the cap");
 });
 
 test("review-surfaces.METHODOLOGY.8 a PROMOTED (non-advisory) workflow finding becomes a BLOCKING question, not advisory", () => {

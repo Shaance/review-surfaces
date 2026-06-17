@@ -113,9 +113,14 @@
     "methodology_audit": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["degraded", "considered", "research", "workflow_findings"],
+      "required": ["quality_flags", "considered", "research", "workflow_findings"],
       "properties": {
-        "degraded": { "type": "boolean" },
+        "quality_flags": {
+          "type": "array",
+          "items": {
+            "enum": ["methodology_analysis_degraded", "conversation_log_missing", "conversation_truncated"]
+          }
+        },
         "considered": { "type": "array", "items": { "type": "string" } },
         "research": { "type": "array", "items": { "type": "string" } },
         "workflow_findings": {

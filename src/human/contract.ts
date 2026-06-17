@@ -657,11 +657,16 @@ export interface MethodologyAuditWorkflowFinding {
   evidence: EvidenceRef[];
 }
 
+// The audit-completeness flags the cockpit card carries so it can show the RIGHT
+// caveat (Codex P2): keyword fallback vs no conversation vs a PARTIAL (truncated)
+// audit — not collapsed to a single "degraded" boolean that mislabels truncation.
+export type MethodologyAuditFlag = "methodology_analysis_degraded" | "conversation_log_missing" | "conversation_truncated";
+
 export interface MethodologyAudit {
-  // True when the deep audit did NOT run (mock/no-provider or a degraded fallback):
-  // considered/research are keyword PICKS, not a real audit, so the cockpit must
-  // carry the loud degradation signal alongside them (D2, Codex P2).
-  degraded: boolean;
+  // The subset of methodology.quality_flags relevant to audit completeness. Empty
+  // when the deep audit ran cleanly. considered/research are keyword PICKS (not a
+  // real audit) whenever methodology_analysis_degraded is present (D2).
+  quality_flags: MethodologyAuditFlag[];
   considered: string[];
   research: string[];
   workflow_findings: MethodologyAuditWorkflowFinding[];

@@ -540,11 +540,16 @@ function renderMethodologyAudit(model: HumanReviewModel): string {
               `<li><span class="badge ${finding.advisory ? "low" : esc(finding.severity)}">${finding.advisory ? "advisory" : "corroborated"}</span> <span class="muted">${esc(finding.signal_kind.replace(/_/g, " "))}</span>: ${esc(finding.summary)} <span class="muted">[${evidenceRefsHtml(finding.evidence)}]</span></li>`
           )
           .join("")}</ul>`;
-  // D2 (Codex P2): when the deep audit did not run, considered/research are keyword
-  // PICKS, not a real audit — say so loudly so they are not mistaken for one.
-  const degradedNote = audit.degraded
-    ? `<p class="muted"><em>Deep audit not run (no LLM provider); the items below are deterministic keyword picks, not a conversation audit.</em></p>`
-    : "";
+  // D2 (Codex P2): show the RIGHT caveat per audit-completeness flag — keyword
+  // fallback vs no conversation vs a PARTIAL (truncated) audit — so a truncated run
+  // is not mislabeled "no LLM provider" and keyword picks are not read as an audit.
+  const NOTE: Record<string, string> = {
+    methodology_analysis_degraded: "Deep audit not run (no LLM provider); the items below are deterministic keyword picks, not a conversation audit.",
+    conversation_log_missing: "No conversation log was available — this audit is derived only from local files and command context.",
+    conversation_truncated: "Audit was partial — only a salience-ranked slice of a long conversation was analyzed."
+  };
+  const notes = audit.quality_flags.map((flag) => NOTE[flag]).filter((note): note is string => Boolean(note));
+  const degradedNote = notes.length === 0 ? "" : `<p class="muted"><em>${notes.map((note) => esc(note)).join(" ")}</em></p>`;
   const body = [
     degradedNote,
     list("Considered alternatives", audit.considered),
