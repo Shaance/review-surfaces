@@ -11,6 +11,7 @@ import type {
   PacketRiskDetectability,
   PacketRiskLikelihood,
   PacketSeverity,
+  PacketTestedHow,
   PacketTestEvidenceKind
 } from "../schema/review-packet-contract";
 import { NormalizedTestCase, TestResults } from "../tests-evidence/junit";
@@ -30,6 +31,40 @@ export interface RiskItem {
   manual_review?: boolean;
 }
 
+// conversation-audit uplift (RISK.7): `tested_how` is the OPTIONAL HOW-tested axis,
+// proposed by the leaf and deterministically confirmed before unit/integration is
+// trusted. Optional so the existing deterministic gaps validate without it.
+export interface TestGap {
+  id: string;
+  requirement_id?: string;
+  acai_id?: string;
+  summary: string;
+  suggested_test?: string;
+  manual_check?: string;
+  tested_how?: PacketTestedHow;
+  evidence?: EvidenceRef[];
+}
+
+export interface MissingAutomaticTest {
+  id: string;
+  requirement_id?: string;
+  acai_id?: string;
+  summary: string;
+  suggested_test: string;
+  tested_how?: PacketTestedHow;
+  evidence?: EvidenceRef[];
+}
+
+export interface MissingManualCheck {
+  id: string;
+  requirement_id?: string;
+  acai_id?: string;
+  summary: string;
+  manual_check: string;
+  tested_how?: PacketTestedHow;
+  evidence?: EvidenceRef[];
+}
+
 export interface RisksModel {
   summary: string;
   items: RiskItem[];
@@ -40,31 +75,9 @@ export interface RisksModel {
     requirement_ids?: string[];
     evidence?: EvidenceRef[];
   }>;
-  test_gaps: Array<{
-    id: string;
-    requirement_id?: string;
-    acai_id?: string;
-    summary: string;
-    suggested_test?: string;
-    manual_check?: string;
-    evidence?: EvidenceRef[];
-  }>;
-  missing_automatic_tests?: Array<{
-    id: string;
-    requirement_id?: string;
-    acai_id?: string;
-    summary: string;
-    suggested_test: string;
-    evidence?: EvidenceRef[];
-  }>;
-  missing_manual_checks?: Array<{
-    id: string;
-    requirement_id?: string;
-    acai_id?: string;
-    summary: string;
-    manual_check: string;
-    evidence?: EvidenceRef[];
-  }>;
+  test_gaps: TestGap[];
+  missing_automatic_tests?: MissingAutomaticTest[];
+  missing_manual_checks?: MissingManualCheck[];
   review_focus: string[];
 }
 

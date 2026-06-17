@@ -5,7 +5,7 @@ import { ArchitectureModel, buildArchitecture, buildArchitectureModel } from "..
 import { EvaluationModel, evaluateIntent, verifyRequirementsWithTests } from "../evaluation/evaluate";
 import { buildIntent, IntentModel } from "../intent/intent";
 import { EnrichmentResult, ProviderName, enrichPacket, providerFor } from "../llm/provider";
-import { ReasoningOptions, runEvaluationReasoning, runIntentReasoning, runMethodologyReasoning, runNarrativeReasoning } from "../llm/reasoning";
+import { ReasoningOptions, runConversationGapReasoning, runEvaluationReasoning, runIntentReasoning, runMethodologyReasoning, runNarrativeReasoning } from "../llm/reasoning";
 import { buildMethodology, MethodologyModel } from "../methodology/methodology";
 import { buildReviewAreas, ReviewArea } from "../review-areas/areas";
 import { analyzeRisks, buildRiskReviewFocus, RisksModel } from "../risks/risks";
@@ -417,6 +417,10 @@ export async function runReasoningWithVerification(
   const risks = analyzeRisks(collection, evaluation, commands, methodology);
   risks.review_focus.push(...evalReviewFocusDelta);
   reasoningInputs.risks = risks;
+  // review-surfaces.RISK.6/.7: the conversation-derived test-gap leaf runs AFTER the
+  // deterministic gaps are built, appending CONV-GAP-* records to risks. Mock is a
+  // no-op so the deterministic risks model stays byte-stable.
+  await runConversationGapReasoning(reasoningProvider, reasoningInputs, reasoningOptions);
   await runNarrativeReasoning(reasoningProvider, reasoningInputs, reasoningOptions);
   return { evaluation, risks };
 }

@@ -18,9 +18,9 @@ import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 import { markHypothesis, redactHypothesisText } from "../evidence/hypothesis";
 import { ClaimedIntentCandidate, IntentModel } from "../intent/intent";
 import { MethodologyModel, WorkflowFinding } from "../methodology/methodology";
-import { RisksModel } from "../risks/risks";
+import { MissingAutomaticTest, MissingManualCheck, RisksModel } from "../risks/risks";
 import { buildReviewAreas, createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
-import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
+import { PACKET_TESTED_HOW, PacketSeverity, PacketTestedHow, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
 import { auditCacheDir, auditCacheKey, loadCachedAudit, storeCachedAudit } from "./audit-cache";
 import { effectiveModelId, GenerateStructuredOptions, ReasoningProvider } from "./provider";
 
@@ -124,6 +124,7 @@ export async function runReasoningStages(
   appendCandidateReviewFocus(inputs.risks.review_focus, candidateApplication.review_focus);
   await runNarrativeStage(provider, inputs, generateOptions);
   await runMethodologyAuditStage(provider, inputs, evidenceContext, generateOptions, options.model);
+  await runConversationGapStage(provider, inputs, evidenceContext, generateOptions);
 }
 
 // FINDING C: resolve the review areas the candidate-evidence group mapping must
@@ -234,6 +235,21 @@ export async function runMethodologyReasoning(
     return;
   }
   await runMethodologyAuditStage(provider, inputs, buildEvidenceContext(inputs), toGenerateOptions(options), options.model);
+}
+
+// review-surfaces.RISK.6/RISK.7: the composable per-stage runner for the
+// conversation-derived test-gap leaf (CONV-GAP-*), used by
+// runReasoningWithVerification AFTER analyzeRisks has built the deterministic gaps.
+// Mock is a guaranteed no-op so the deterministic risks model stays byte-stable.
+export async function runConversationGapReasoning(
+  provider: ReasoningProvider,
+  inputs: ReasoningInputs,
+  options: ReasoningOptions = {}
+): Promise<void> {
+  if (provider.name === "mock") {
+    return;
+  }
+  await runConversationGapStage(provider, inputs, buildEvidenceContext(inputs), toGenerateOptions(options));
 }
 
 // ---------------------------------------------------------------------------
@@ -968,6 +984,157 @@ async function runMethodologyAuditStage(
   if (producedContent) {
     methodology.quality_flags = methodology.quality_flags.filter((flag) => flag !== "methodology_analysis_degraded");
   }
+}
+
+// review-surfaces.RISK.6/RISK.7 (item 5): the conversation-derived test-gap leaf.
+// From the redacted transcript, the leaf names what was tested and which workflow
+// steps lack an AUTOMATIC or a MANUAL check, emitting CONV-GAP-* records that each
+// cite a conversation event_id and carry a HOW-tested classification. Each record
+// is gated by the SAME deterministic checks as the methodology audit: the event_id
+// must be a known event (else the gap is demoted to advisory), and a proposed
+// tested_how of unit/integration is downgraded to `unknown` unless a real test
+// artifact confirms it. Each record lands in EXACTLY ONE of missing_automatic_tests
+// / missing_manual_checks (never test_gaps, never both).
+const CONV_GAP_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    gaps: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          summary: { type: "string" },
+          kind: { enum: ["automatic", "manual"] },
+          suggested_test: { type: "string" },
+          manual_check: { type: "string" },
+          tested_how: { enum: [...PACKET_TESTED_HOW] },
+          anchors: {
+            type: "object",
+            additionalProperties: false,
+            properties: { event_ids: { type: "array", items: { type: "string" } } }
+          }
+        },
+        required: ["summary", "kind"]
+      }
+    }
+  }
+} as const;
+
+interface ConvGapOutput {
+  gaps?: unknown;
+}
+
+async function runConversationGapStage(
+  provider: ReasoningProvider,
+  inputs: ReasoningInputs,
+  evidenceContext: EvidenceValidationContext,
+  generateOptions: GenerateStructuredOptions
+): Promise<void> {
+  const events = inputs.collection.conversationEvents ?? [];
+  if (events.length === 0) {
+    return; // No conversation stream: nothing to derive; the degraded flag stays.
+  }
+  const risks = inputs.risks;
+  const changedFiles = new Set(inputs.collection.changedFiles.map((file) => file.path));
+  const { selected } = selectSalientEvents(events, changedFiles, AUDIT_EVENT_BUDGET);
+  const context: EvidenceValidationContext = { ...evidenceContext, knownEventIds: new Set(selected.map((event) => event.id)) };
+
+  const result = await provider.generateStructured("conversation-test-gaps", conversationGapPrompt(selected, inputs), CONV_GAP_SCHEMA, generateOptions);
+  if (!result.ok || !isRecord(result.data)) {
+    return; // No leaf contribution: keep the deterministic gaps + degraded flag.
+  }
+
+  const hasTestArtifact = collectionHasTestArtifact(inputs.collection);
+  const newAutomatic: MissingAutomaticTest[] = [];
+  const newManual: MissingManualCheck[] = [];
+  let counter = 0;
+  for (const item of asArray((result.data as ConvGapOutput).gaps).slice(0, MAX_PROPOSED_REQUIREMENTS * 2)) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    const summary = redactHypothesisText(typeof item.summary === "string" ? item.summary : "").trim();
+    if (summary === "") {
+      continue;
+    }
+    // event_id is NOT self-validating: route through the SAME knownEventIds check.
+    // No valid anchor => the gap is advisory (llm-proposed fallback evidence).
+    const { evidence, invalidTokens } = resolveAuditAnchors(isRecord(item.anchors) ? item.anchors : {}, context, changedFiles);
+    const ref =
+      evidence.length > 0
+        ? evidence
+        : [llmProposedEvidence("unknown", { note: "LLM-proposed conversation test gap lacks a validated event anchor.", confidence: "low" })];
+    const text = invalidTokens.length > 0 ? `${summary} (unverified anchor(s): ${invalidTokens.join(", ")})` : summary;
+    const testedHow = confirmTestedHow(item.tested_how, hasTestArtifact);
+    counter += 1;
+    const id = `CONV-GAP-${String(counter).padStart(3, "0")}`;
+    if (item.kind === "manual") {
+      const manualCheck = redactHypothesisText(typeof item.manual_check === "string" ? item.manual_check : "").trim() || "Manually verify this step.";
+      newManual.push({ id, summary: markHypothesis(text), manual_check: manualCheck, tested_how: testedHow, evidence: ref });
+    } else {
+      const suggestedTest = redactHypothesisText(typeof item.suggested_test === "string" ? item.suggested_test : "").trim() || "Add an automated test that exercises this step.";
+      newAutomatic.push({ id, summary: markHypothesis(text), suggested_test: suggestedTest, tested_how: testedHow, evidence: ref });
+    }
+  }
+
+  if (newAutomatic.length > 0) {
+    risks.missing_automatic_tests = [...(risks.missing_automatic_tests ?? []), ...newAutomatic];
+  }
+  if (newManual.length > 0) {
+    risks.missing_manual_checks = [...(risks.missing_manual_checks ?? []), ...newManual];
+  }
+  // The leaf RAN and produced gaps -> clear the "test-gap analysis not run" marker.
+  if (newAutomatic.length + newManual.length > 0) {
+    inputs.methodology.quality_flags = inputs.methodology.quality_flags.filter((flag) => flag !== "methodology_test_gap_degraded");
+  }
+}
+
+// review-surfaces.RISK.7 (D5): the leaf PROPOSES tested_how; unit/integration is
+// only trusted when a real test artifact (a passing parsed test case or a passed
+// test command) exists, else it degrades to `unknown`. manual/mocked/none/unknown
+// pass through; an unrecognized value becomes `unknown`.
+function confirmTestedHow(proposed: unknown, hasTestArtifact: boolean): PacketTestedHow {
+  if (typeof proposed !== "string" || !(PACKET_TESTED_HOW as readonly string[]).includes(proposed)) {
+    return "unknown";
+  }
+  if ((proposed === "unit" || proposed === "integration") && !hasTestArtifact) {
+    return "unknown";
+  }
+  return proposed as PacketTestedHow;
+}
+
+// A real test artifact exists when a parsed test case passed OR a test command ran
+// to completion (exit 0) — the deterministic confirmation for tested_how.
+function collectionHasTestArtifact(collection: CollectionResult): boolean {
+  if ((collection.testResults?.cases ?? []).some((testCase) => testCase.status === "passed")) {
+    return true;
+  }
+  return collection.commandTranscripts.some(
+    (transcript) => typeof transcript.command === "string" && commandLooksLikeTestCommand(transcript.command) && transcript.exit_code === 0
+  );
+}
+
+function conversationGapPrompt(events: ConversationEvent[], inputs: ReasoningInputs): string {
+  const changed = inputs.collection.changedFiles.map((file) => file.path).slice(0, 40).join(", ");
+  const lines = [...events]
+    .sort((left, right) => left.raw_index - right.raw_index)
+    .map((event) => {
+      const cmd = event.command ? ` cmd=${event.command}` : "";
+      const file = event.file ? ` file=${event.file}` : "";
+      return `- [${event.id}] ${event.actor}/${event.kind}: ${event.summary}${cmd}${file}`;
+    })
+    .join("\n");
+  return [
+    "From this agent conversation, list the workflow steps that touch the CHANGED FILES and LACK a test.",
+    "Return JSON only: { gaps: [ { summary, kind: 'automatic'|'manual', suggested_test?, manual_check?, tested_how?, anchors: { event_ids: [...] } } ] }.",
+    "kind='automatic' when the step was only run by hand / has no automated check; kind='manual' when it has an automated check but needs human judgement (UI/security).",
+    "tested_how is HOW the step WAS tested: unit|integration|manual|mocked|none|unknown.",
+    "Every gap MUST cite the event_id(s) it is grounded in via anchors.event_ids. Do not invent ids, paths, or tests.",
+    `Changed files: ${changed || "(none)"}`,
+    "Conversation:",
+    lines
+  ].join("\n");
 }
 
 interface AnchoredCandidate {

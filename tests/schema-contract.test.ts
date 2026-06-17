@@ -24,6 +24,7 @@ import {
   PACKET_SCHEMA_VERSION,
   PACKET_SOURCE_KINDS,
   PACKET_TEST_EVIDENCE_KINDS,
+  PACKET_TESTED_HOW,
   PACKET_VALIDATION_STATUSES,
   PACKET_WORKFLOW_SIGNAL_KINDS
 } from "../src/schema/review-packet-contract";
@@ -201,6 +202,21 @@ const enumContracts: Array<{
     name: "workflow finding signal_kind",
     path: ["$defs", "WorkflowFinding", "properties", "signal_kind", "enum"],
     values: PACKET_WORKFLOW_SIGNAL_KINDS
+  },
+  {
+    name: "test gap tested_how",
+    path: ["$defs", "TestGap", "properties", "tested_how", "enum"],
+    values: PACKET_TESTED_HOW
+  },
+  {
+    name: "missing automatic test tested_how",
+    path: ["$defs", "MissingAutomaticTest", "properties", "tested_how", "enum"],
+    values: PACKET_TESTED_HOW
+  },
+  {
+    name: "missing manual check tested_how",
+    path: ["$defs", "MissingManualCheck", "properties", "tested_how", "enum"],
+    values: PACKET_TESTED_HOW
   }
 ];
 

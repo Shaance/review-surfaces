@@ -112,7 +112,10 @@ export async function buildMethodology(
     // leaf (runMethodologyReasoning) clears this flag and fills workflow_findings.
     // Under the mock default (the de-facto shipped OUTPUT) the leaf never runs, so
     // this flag stays — the cockpit must never mistake the fallback for the audit.
-    "methodology_analysis_degraded"
+    "methodology_analysis_degraded",
+    // review-surfaces.RISK.6: the conversation-derived test-gap leaf (CONV-GAP-*)
+    // is likewise not-run by default; the leaf clears this when it produces gaps.
+    "methodology_test_gap_degraded"
   ];
 
   const sourceLabel = conversationPath ?? source ?? "the discovered conversation";

@@ -273,10 +273,10 @@ Gaps:
 ${previewLines(packet.risks.test_gaps, (gap) => `- ${gap.id} (${gap.acai_id ?? gap.requirement_id ?? "unmapped"}): ${gap.summary}`, 10)}
 
 Missing automatic tests:
-${previewLines(packet.risks.missing_automatic_tests ?? [], (gap) => `- ${gap.id} (${gap.acai_id ?? gap.requirement_id ?? "unmapped"}): ${gap.suggested_test}`, 8)}
+${previewLines(packet.risks.missing_automatic_tests ?? [], (gap) => `- ${gap.id} (${gap.acai_id ?? gap.requirement_id ?? "unmapped"}): ${gap.suggested_test}${gap.tested_how ? ` [tested_how: ${gap.tested_how}]` : ""}`, 8)}
 
 Missing manual checks:
-${previewLines(packet.risks.missing_manual_checks ?? [], (gap) => `- ${gap.id} (${gap.acai_id ?? gap.requirement_id ?? "unmapped"}): ${gap.manual_check}`, 8)}
+${previewLines(packet.risks.missing_manual_checks ?? [], (gap) => `- ${gap.id} (${gap.acai_id ?? gap.requirement_id ?? "unmapped"}): ${gap.manual_check}${gap.tested_how ? ` [tested_how: ${gap.tested_how}]` : ""}`, 8)}
 
 ## 7. Risks
 ${previewLines(packet.risks.items, (risk) => `- ${risk.id} [${risk.severity}]: ${risk.summary}`, 10)}

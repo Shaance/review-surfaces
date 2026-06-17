@@ -102,6 +102,11 @@ export const PACKET_WORKFLOW_SIGNAL_KINDS = [
   "workflow_soundness"
 ] as const;
 
+// conversation-audit uplift (RISK.7): the HOW-tested axis on a (conversation-derived)
+// test gap. The leaf PROPOSES the value; a deterministic check downgrades unit/
+// integration to `unknown` unless a real test artifact confirms it (D5).
+export const PACKET_TESTED_HOW = ["unit", "integration", "manual", "mocked", "none", "unknown"] as const;
+
 export type PacketRunMode = (typeof PACKET_RUN_MODES)[number];
 export type PacketSourceKind = (typeof PACKET_SOURCE_KINDS)[number];
 export type PacketEvidenceKind = (typeof PACKET_EVIDENCE_KINDS)[number];
@@ -121,3 +126,4 @@ export type PacketDogfoodCategory = (typeof PACKET_DOGFOOD_CATEGORIES)[number];
 export type PacketComparisonDirection = (typeof PACKET_COMPARISON_DIRECTIONS)[number];
 export type PacketHelpfulness = (typeof PACKET_HELPFULNESS_VALUES)[number];
 export type PacketWorkflowSignalKind = (typeof PACKET_WORKFLOW_SIGNAL_KINDS)[number];
+export type PacketTestedHow = (typeof PACKET_TESTED_HOW)[number];

@@ -1058,6 +1058,9 @@
           "type": "string",
           "maxLength": 20000
         },
+        "tested_how": {
+          "enum": ["unit", "integration", "manual", "mocked", "none", "unknown"]
+        },
         "evidence": {
           "type": "array",
           "maxItems": 1000,
@@ -1152,6 +1155,9 @@
           "type": "string",
           "maxLength": 20000
         },
+        "tested_how": {
+          "enum": ["unit", "integration", "manual", "mocked", "none", "unknown"]
+        },
         "evidence": {
           "type": "array",
           "maxItems": 1000,
@@ -1186,6 +1192,9 @@
         "manual_check": {
           "type": "string",
           "maxLength": 20000
+        },
+        "tested_how": {
+          "enum": ["unit", "integration", "manual", "mocked", "none", "unknown"]
         },
         "evidence": {
           "type": "array",
