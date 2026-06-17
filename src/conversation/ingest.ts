@@ -30,6 +30,17 @@ export async function loadConversationEvents(
   } catch {
     return undefined;
   }
+  return normalizeConversationText(absolutePath, text, format);
+}
+
+// Parse already-read conversation bytes (a discovery SNAPSHOT) without re-opening
+// the file, so the caller parses and hashes the EXACT same content even when the
+// underlying session is still being written (Codex P2).
+export function normalizeConversationText(
+  absolutePath: string,
+  text: string,
+  format?: ConversationFormat
+): NormalizeResult | undefined {
   return normalizeConversation(buildAdapterInput(absolutePath, text), format);
 }
 

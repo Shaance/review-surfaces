@@ -47,7 +47,7 @@ test("review-surfaces.METHODOLOGY.4 discovers the single Claude Code session for
   const store = freshStore();
   try {
     const full = writeSession(store, "-repo-app", "only.jsonl", [line("2026-06-17T10:00:00.000Z", "add a retry")]);
-    const discovered = discoverConversationSession({ storeRoot: store, cwd: "/repo/app" });
+    const discovered = discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: [] });
     assert.ok(discovered);
     assert.equal(discovered.path, full, "the discovered path is the absolute session file under the slug dir");
     assert.equal(discovered.adapter, "claude-code");
@@ -66,7 +66,7 @@ test("review-surfaces.METHODOLOGY.4 tie-break picks the session with the latest 
       line("2026-06-17T09:00:00.000Z", "start"),
       line("2026-06-17T11:30:00.000Z", "latest turn")
     ]);
-    const discovered = discoverConversationSession({ storeRoot: store, cwd: "/repo/app" });
+    const discovered = discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: [] });
     assert.ok(discovered);
     assert.equal(discovered.path, newer, "the session whose latest event is most recent wins");
   } finally {
@@ -81,11 +81,33 @@ test("review-surfaces.METHODOLOGY.4 a timestamp tie resolves deterministically b
   try {
     writeSession(store, "-repo-app", "a-session.jsonl", [line("2026-06-17T10:00:00.000Z", "a")]);
     const b = writeSession(store, "-repo-app", "b-session.jsonl", [line("2026-06-17T10:00:00.000Z", "b")]);
-    const first = discoverConversationSession({ storeRoot: store, cwd: "/repo/app" });
-    const second = discoverConversationSession({ storeRoot: store, cwd: "/repo/app" });
+    const first = discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: [] });
+    const second = discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: [] });
     assert.ok(first && second);
     assert.equal(first.path, b, "the greater path wins a timestamp tie");
     assert.equal(first.path, second.path, "selection is reproducible across runs");
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+// review-surfaces D7 (Codex P2): the same repo's slug holds sessions for every
+// branch/task. A NEWER unrelated session must NOT win over an OLDER session that
+// references the base..head changed files — the diff discriminator ties the pick to
+// the review range.
+test("review-surfaces.METHODOLOGY.4 a session referencing the changed files beats a newer unrelated one", () => {
+  const store = freshStore();
+  try {
+    const onTopic = writeSession(store, "-repo-app", "on-topic.jsonl", [
+      line("2026-06-17T08:00:00.000Z", "editing src/uploader.ts to add a retry")
+    ]);
+    // A more RECENT session that never touches the changed file (different task).
+    writeSession(store, "-repo-app", "unrelated.jsonl", [line("2026-06-17T12:00:00.000Z", "writing docs/readme")]);
+    const discovered = discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: ["src/uploader.ts"] });
+    assert.ok(discovered);
+    assert.equal(discovered.path, onTopic, "the diff-referencing session wins despite being older");
+    assert.equal(discovered.matchedChangedFiles, 1, "the match basis reflects the changed-file reference");
+    assert.ok(discovered.hash.length === 64, "a sha256 content hash is returned for the cache signature");
   } finally {
     fs.rmSync(store, { recursive: true, force: true });
   }
@@ -98,7 +120,7 @@ test("review-surfaces.METHODOLOGY.4 no matching session store returns undefined 
   try {
     // A session exists for a DIFFERENT repo's slug, none for this one.
     writeSession(store, "-other-repo", "x.jsonl", [line("2026-06-17T10:00:00.000Z", "elsewhere")]);
-    assert.equal(discoverConversationSession({ storeRoot: store, cwd: "/repo/app" }), undefined);
+    assert.equal(discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: [] }), undefined);
   } finally {
     fs.rmSync(store, { recursive: true, force: true });
   }
@@ -111,10 +133,10 @@ test("review-surfaces.METHODOLOGY.4 non-jsonl and non-Claude files in the slug d
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "notes.txt"), "not a session");
     fs.writeFileSync(path.join(dir, "garbage.jsonl"), "this is not json\n{also not}\n");
-    assert.equal(discoverConversationSession({ storeRoot: store, cwd: "/repo/app" }), undefined, "no valid session -> no match");
+    assert.equal(discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: [] }), undefined, "no valid session -> no match");
     // Adding one valid session makes it discoverable, ignoring the noise.
     const good = writeSession(store, "-repo-app", "good.jsonl", [line("2026-06-17T10:00:00.000Z", "real")]);
-    assert.equal(discoverConversationSession({ storeRoot: store, cwd: "/repo/app" })?.path, good);
+    assert.equal(discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: [] })?.path, good);
   } finally {
     fs.rmSync(store, { recursive: true, force: true });
   }
@@ -192,5 +214,23 @@ test("review-surfaces.METHODOLOGY.4 --no-conversation-discovery suppresses disco
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.PRIVACY.1 a discovered session with an outside-repo --out uses a pathless evidence anchor", async () => {
+  const tmp = initRepo();
+  const store = freshStore();
+  const externalOut = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-extout-"));
+  try {
+    writeSession(store, claudeCodeProjectSlug(tmp), "live.jsonl", [line("2026-06-17T10:00:00.000Z", "work")]);
+    const result = await collectInputs(collectOptions(tmp, store, { outputDir: externalOut }));
+    assert.ok((result.conversationEvents ?? []).length > 0, "discovery still ingests events");
+    // The normalized log is written OUTSIDE the repo, so no repo-relative path
+    // resolves to it -> pathless evidence (the ref validates on its event_id).
+    assert.equal(result.conversationEvidencePath, undefined, "outside-repo output -> pathless conversation evidence");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(store, { recursive: true, force: true });
+    fs.rmSync(externalOut, { recursive: true, force: true });
   }
 });
