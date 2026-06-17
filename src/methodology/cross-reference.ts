@@ -354,13 +354,29 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
   const apiTriggerPaths = [...new Set([...apiFactPaths, ...removedSurfacePaths])];
   if (apiTriggerPaths.length > 0 && !discusses(haystack, COMPAT_KEYWORDS)) {
     const breaking = hasBreakingSemanticChange(facts) || removedSurfacePaths.length > 0;
+    // The anchor becomes file evidence stamped `validation_status: "valid"`, so it
+    // must be a path that actually exists in the changed set. apiFactPaths and a
+    // D-deletion path are changed-file paths, but a renamed surface's trigger is the
+    // REMOVED old_path (absent from changedFiles) — anchoring there would publish a
+    // "valid" link to a non-existent file. Anchor to the first trigger that is a real
+    // changed path, else the rename DESTINATION the old_path maps to (#103 round-4).
+    const changedPathSet = new Set(changed.map((file) => file.path));
+    const renameDestForOldPath = new Map(
+      changed
+        .filter((file) => file.status.startsWith("R") && file.old_path !== undefined)
+        .map((file) => [file.old_path as string, file.path] as const)
+    );
+    const apiAnchorPath =
+      apiTriggerPaths.find((path) => changedPathSet.has(path))
+      ?? apiTriggerPaths.map((path) => renameDestForOldPath.get(path)).find((path): path is string => path !== undefined)
+      ?? apiTriggerPaths[0];
     emit(
       "api_no_compat",
       breaking,
       `API/schema surface changed with no backward-compatibility discussion: ${fileList(apiTriggerPaths)}.${
         breaking ? " A backward-incompatible change (a removed export/property/surface, a required field, or a signature change) was detected." : ""
       }`,
-      apiTriggerPaths[0]
+      apiAnchorPath
     );
   }
 

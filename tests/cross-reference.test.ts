@@ -218,6 +218,10 @@ test("review-surfaces.METHODOLOGY.8 api_no_compat fires when a public schema is 
   assert.ok(sig, "a public surface renamed out of scope triggers the signal via its old path");
   assert.equal(sig.advisory, false, "removing/renaming a public surface is inherently breaking");
   assert.match(sig.summary, /public\.schema\.json/, "the finding names the removed (old) public path");
+  // The summary keeps the removed old path, but file evidence (stamped valid) must
+  // anchor to a path that actually exists in the changed set — the rename
+  // destination — not the deleted old_path (#103 round-4).
+  assert.equal(sig.evidence[0].path, "archive/old.txt", "evidence anchors to the existing rename destination, not the deleted old path");
 });
 
 test("review-surfaces.METHODOLOGY.8 impl_no_test still fires when only an UNRELATED test was edited (Codex P2)", () => {
