@@ -1058,6 +1058,9 @@
           "type": "string",
           "maxLength": 20000
         },
+        "tested_how": {
+          "enum": ["unit", "integration", "manual", "mocked", "none", "unknown"]
+        },
         "evidence": {
           "type": "array",
           "maxItems": 1000,
@@ -1116,6 +1119,14 @@
             "$ref": "#/$defs/MissingManualCheck"
           }
         },
+        "quality_flags": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "string",
+            "maxLength": 20000
+          }
+        },
         "review_focus": {
           "type": "array",
           "maxItems": 1000,
@@ -1152,6 +1163,9 @@
           "type": "string",
           "maxLength": 20000
         },
+        "tested_how": {
+          "enum": ["unit", "integration", "manual", "mocked", "none", "unknown"]
+        },
         "evidence": {
           "type": "array",
           "maxItems": 1000,
@@ -1186,6 +1200,9 @@
         "manual_check": {
           "type": "string",
           "maxLength": 20000
+        },
+        "tested_how": {
+          "enum": ["unit", "integration", "manual", "mocked", "none", "unknown"]
         },
         "evidence": {
           "type": "array",

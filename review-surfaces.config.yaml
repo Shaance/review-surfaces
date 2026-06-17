@@ -301,12 +301,10 @@ quality_gate:
   # and each later phase removes its own ACIDs in the PR that ships them. The gate
   # must be back to `allow_missing: []` when the final phase lands. Phase 1 shipped
   # METHODOLOGY.6 + PRIVACY.7(a); Phase 2 shipped METHODOLOGY.7 (+ PRIVACY.7(b));
-  # the rest stay staged until their phase:
-  #   Phase 3:  review-surfaces.METHODOLOGY.8, review-surfaces.RISK.6, review-surfaces.RISK.7
+  # Phase 3b shipped RISK.6 + RISK.7 (CONV-GAP-* + tested_how). METHODOLOGY.8 (the
+  # deterministic D6 four-signal promotion, Phase 3a) stays staged until it lands:
   allow_missing:
     - review-surfaces.METHODOLOGY.8
-    - review-surfaces.RISK.6
-    - review-surfaces.RISK.7
 human_review:
   enabled: true
   default_entrypoint: true

@@ -18,9 +18,9 @@ import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 import { markHypothesis, redactHypothesisText } from "../evidence/hypothesis";
 import { ClaimedIntentCandidate, IntentModel } from "../intent/intent";
 import { MethodologyModel, WorkflowFinding } from "../methodology/methodology";
-import { RisksModel } from "../risks/risks";
+import { MissingAutomaticTest, MissingManualCheck, RisksModel } from "../risks/risks";
 import { buildReviewAreas, createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
-import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
+import { PACKET_TESTED_HOW, PacketSeverity, PacketTestedHow, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
 import { auditCacheDir, auditCacheKey, loadCachedAudit, storeCachedAudit } from "./audit-cache";
 import { effectiveModelId, GenerateStructuredOptions, ReasoningProvider } from "./provider";
 
@@ -124,6 +124,7 @@ export async function runReasoningStages(
   appendCandidateReviewFocus(inputs.risks.review_focus, candidateApplication.review_focus);
   await runNarrativeStage(provider, inputs, generateOptions);
   await runMethodologyAuditStage(provider, inputs, evidenceContext, generateOptions, options.model);
+  await runConversationGapStage(provider, inputs, evidenceContext, generateOptions);
 }
 
 // FINDING C: resolve the review areas the candidate-evidence group mapping must
@@ -234,6 +235,21 @@ export async function runMethodologyReasoning(
     return;
   }
   await runMethodologyAuditStage(provider, inputs, buildEvidenceContext(inputs), toGenerateOptions(options), options.model);
+}
+
+// review-surfaces.RISK.6/RISK.7: the composable per-stage runner for the
+// conversation-derived test-gap leaf (CONV-GAP-*), used by
+// runReasoningWithVerification AFTER analyzeRisks has built the deterministic gaps.
+// Mock is a guaranteed no-op so the deterministic risks model stays byte-stable.
+export async function runConversationGapReasoning(
+  provider: ReasoningProvider,
+  inputs: ReasoningInputs,
+  options: ReasoningOptions = {}
+): Promise<void> {
+  if (provider.name === "mock") {
+    return;
+  }
+  await runConversationGapStage(provider, inputs, buildEvidenceContext(inputs), toGenerateOptions(options));
 }
 
 // ---------------------------------------------------------------------------
@@ -968,6 +984,239 @@ async function runMethodologyAuditStage(
   if (producedContent) {
     methodology.quality_flags = methodology.quality_flags.filter((flag) => flag !== "methodology_analysis_degraded");
   }
+}
+
+// review-surfaces.RISK.6/RISK.7 (item 5): the conversation-derived test-gap leaf.
+// From the redacted transcript, the leaf names what was tested and which workflow
+// steps lack an AUTOMATIC or a MANUAL check, emitting CONV-GAP-* records that each
+// cite a conversation event_id and carry a HOW-tested classification. Each record
+// is gated by the SAME deterministic checks as the methodology audit: the event_id
+// must be a known event (else the gap is demoted to advisory), and a proposed
+// tested_how of unit/integration is downgraded to `unknown` unless a real test
+// artifact confirms it. Each record lands in EXACTLY ONE of missing_automatic_tests
+// / missing_manual_checks (never test_gaps, never both).
+const CONV_GAP_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    gaps: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          summary: { type: "string" },
+          kind: { enum: ["automatic", "manual"] },
+          suggested_test: { type: "string" },
+          manual_check: { type: "string" },
+          tested_how: { enum: [...PACKET_TESTED_HOW] },
+          anchors: {
+            type: "object",
+            additionalProperties: false,
+            properties: { event_ids: { type: "array", items: { type: "string" } } }
+          }
+        },
+        required: ["summary", "kind"]
+      }
+    }
+  }
+} as const;
+
+interface ConvGapOutput {
+  gaps?: unknown;
+}
+
+async function runConversationGapStage(
+  provider: ReasoningProvider,
+  inputs: ReasoningInputs,
+  evidenceContext: EvidenceValidationContext,
+  generateOptions: GenerateStructuredOptions
+): Promise<void> {
+  const events = inputs.collection.conversationEvents ?? [];
+  if (events.length === 0) {
+    return; // No conversation stream: nothing to derive; the degraded flag stays.
+  }
+  const risks = inputs.risks;
+  const changedFiles = new Set(inputs.collection.changedFiles.map((file) => file.path));
+  const { selected, truncated } = selectSalientEvents(events, changedFiles, AUDIT_EVENT_BUDGET);
+  const context: EvidenceValidationContext = { ...evidenceContext, knownEventIds: new Set(selected.map((event) => event.id)) };
+  const selectedById = new Map(selected.map((event) => [event.id, event]));
+
+  const result = await provider.generateStructured("conversation-test-gaps", conversationGapPrompt(selected, inputs), CONV_GAP_SCHEMA, generateOptions);
+  if (!result.ok || !isRecord(result.data)) {
+    return; // No leaf contribution: keep the deterministic gaps + degraded flag.
+  }
+  const gapsArray = (result.data as ConvGapOutput).gaps;
+  if (!Array.isArray(gapsArray)) {
+    // An ok object with NO recognizable `gaps` array (easy with agent-file, where the
+    // same input object is returned to every stage) is NOT a gap analysis — keep the
+    // degraded flag rather than mark the audit as run (Codex P2).
+    return;
+  }
+
+  const newAutomatic: MissingAutomaticTest[] = [];
+  const newManual: MissingManualCheck[] = [];
+  let counter = 0;
+  for (const item of gapsArray.slice(0, MAX_PROPOSED_REQUIREMENTS * 2)) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    // Only accept the two valid routes; a malformed/missing kind (possible from the
+    // unschema'd agent-file provider) is skipped, never defaulted into a real gap.
+    if (item.kind !== "automatic" && item.kind !== "manual") {
+      continue;
+    }
+    const summary = redactHypothesisText(typeof item.summary === "string" ? item.summary : "").trim();
+    if (summary === "") {
+      continue;
+    }
+    // event_id is NOT self-validating: route ONLY the event_ids through the SAME
+    // knownEventIds check (RISK.6 requires a conversation event id — a path anchor is
+    // not accepted as evidence here). ANY invalid/unknown id demotes the WHOLE gap to
+    // advisory (an unclean anchor set is not evidence-grounded), per RISK.6.
+    const { evidence, invalidTokens } = resolveAuditAnchors(
+      { event_ids: isRecord(item.anchors) ? item.anchors.event_ids : undefined },
+      context,
+      changedFiles
+    );
+    // The events behind the CLEAN anchors — used both to require diff-relevance
+    // and to order a cited test against the edit it must post-date.
+    const citedEvents = evidence
+      .map((entry) => (typeof entry.event_id === "string" ? selectedById.get(entry.event_id) : undefined))
+      .filter((event): event is ConversationEvent => event !== undefined);
+    // A gap is GROUNDED only when its anchor set is clean AND at least one cited
+    // turn actually touches a changed file (the audited diff). A provider can cite
+    // a valid-but-unrelated turn — a user message, or a read-only/test turn that
+    // names no changed file — which is not evidence the gap concerns THIS change;
+    // such a gap demotes to advisory rather than minting a spurious review task
+    // for the diff (Codex P2).
+    const touchesChangedFile = citedEvents.some((event) => eventTouchesChangedFile(event, changedFiles));
+    const grounded = evidence.length > 0 && invalidTokens.length === 0 && touchesChangedFile;
+    const ref = grounded
+      ? evidence
+      : [llmProposedEvidence("unknown", { note: "LLM-proposed conversation test gap lacks a clean validated event anchor that touches a changed file.", confidence: "low" })];
+    const text = invalidTokens.length > 0 ? `${summary} (unverified anchor(s): ${invalidTokens.join(", ")})` : summary;
+    // Tie tested_how confirmation to THIS gap's CITED TEST that POST-DATES the edit:
+    // unit/integration is trusted only when the gap cites a test-run event whose
+    // command matches a PASSED transcript AND whose raw_index is AFTER the last
+    // cited edit to a changed file. A baseline test recorded BEFORE the edit cannot
+    // have exercised the reviewed change, so it must not confirm the HOW-tested
+    // claim — the same post-change ordering the methodology reconciliation uses
+    // (Codex P2). The -1 sentinel means "no cited edit observed", so ordering is
+    // UNKNOWN and the claim is not trusted.
+    const citedEditIndexByFile = changedFileEditIndexByFile(citedEvents, changedFiles);
+    const lastCitedEditIndex = citedEditIndexByFile.size > 0 ? Math.max(...citedEditIndexByFile.values()) : -1;
+    const gapCitesPassedTest =
+      grounded &&
+      lastCitedEditIndex >= 0 &&
+      citedEvents.some(
+        (event) =>
+          isTestExecutionEvent(event) &&
+          event.raw_index > lastCitedEditIndex &&
+          citedTestPassed(event, inputs.collection)
+      );
+    const testedHow = confirmTestedHow(item.tested_how, gapCitesPassedTest);
+    counter += 1;
+    const id = `CONV-GAP-${String(counter).padStart(3, "0")}`;
+    // The rendered action text (suggested_test/manual_check) is LLM-authored, so mark
+    // it a hypothesis too — not just the (often unshown) summary (Codex P2).
+    if (item.kind === "manual") {
+      const manualCheck = redactHypothesisText(typeof item.manual_check === "string" ? item.manual_check : "").trim() || "Manually verify this step.";
+      newManual.push({ id, summary: markHypothesis(text), manual_check: markHypothesis(manualCheck), tested_how: testedHow, evidence: ref });
+    } else {
+      const suggestedTest = redactHypothesisText(typeof item.suggested_test === "string" ? item.suggested_test : "").trim() || "Add an automated test that exercises this step.";
+      newAutomatic.push({ id, summary: markHypothesis(text), suggested_test: markHypothesis(suggestedTest), tested_how: testedHow, evidence: ref });
+    }
+  }
+
+  if (newAutomatic.length > 0) {
+    risks.missing_automatic_tests = [...(risks.missing_automatic_tests ?? []), ...newAutomatic];
+  }
+  if (newManual.length > 0) {
+    risks.missing_manual_checks = [...(risks.missing_manual_checks ?? []), ...newManual];
+  }
+  const addedGaps = newAutomatic.length + newManual.length;
+  if (addedGaps > 0) {
+    // The deterministic summary counts only test_gaps; surface the CONV-GAP records
+    // so a "0 test gap(s)" summary doesn't contradict the listed missing checks.
+    risks.summary = `${risks.summary} +${addedGaps} conversation-derived test gap(s).`.trim();
+  }
+  // Clear the "gap audit not run" marker ONLY after the loop proves the leaf produced
+  // a usable result — a usable gap OR an intentionally empty `gaps` array. An array
+  // whose entries are all malformed (and skipped) leaves the audit degraded so a
+  // failed analysis is not presented as a clean "no gaps" (Codex P2). The flag lives
+  // on the RISKS model, so it persists with risks.yaml and stays consistent across a
+  // staged risks -> packet/handoff flow.
+  if (addedGaps > 0 || gapsArray.length === 0) {
+    risks.quality_flags = (risks.quality_flags ?? []).filter((flag) => flag !== "methodology_test_gap_degraded");
+  }
+  // Truncation honesty: a long session analyzed from a salience slice may omit a turn
+  // that covers a step — add a machine-readable flag + a methodology partial note.
+  if (truncated) {
+    risks.quality_flags = uniqueTruthy([...(risks.quality_flags ?? []), "conversation_truncated"]);
+    inputs.methodology.skipped_checks = uniqueTruthy([
+      ...inputs.methodology.skipped_checks,
+      `Conversation test-gap audit was partial: only ${selected.length} of ${events.length} salience-ranked events were analyzed.`
+    ]);
+  }
+}
+
+// True when a CITED test-execution event's command corresponds to a PASSED command
+// transcript — the per-gap confirmation that the specific cited test actually ran
+// and passed (not just that some unrelated test exists) — Codex P2. A "passed"
+// status with a non-zero/missing exit_code is NOT trusted: every other producer
+// (methodology.ts, risks.ts, pr-risks.ts) requires `status === "passed" &&
+// exit_code === 0` before treating a transcript as passing test evidence, so the
+// HOW-tested confirmation uses the same conjunction — Codex P2.
+function citedTestPassed(event: ConversationEvent, collection: CollectionResult): boolean {
+  const command = (event.command ?? "").trim();
+  if (command === "") {
+    return false;
+  }
+  return collection.commandTranscripts.some(
+    (transcript) =>
+      transcript.status === "passed" &&
+      transcript.exit_code === 0 &&
+      typeof transcript.command === "string" &&
+      transcript.command.trim() === command
+  );
+}
+
+// review-surfaces.RISK.7 (D5): the leaf PROPOSES tested_how; unit/integration is
+// only trusted when `confirmed` (the gap cites a test run that matches a passed
+// transcript), else it degrades to `unknown`. manual/mocked/none/unknown pass
+// through; an unrecognized value becomes `unknown`.
+function confirmTestedHow(proposed: unknown, confirmed: boolean): PacketTestedHow {
+  if (typeof proposed !== "string" || !(PACKET_TESTED_HOW as readonly string[]).includes(proposed)) {
+    return "unknown";
+  }
+  if ((proposed === "unit" || proposed === "integration") && !confirmed) {
+    return "unknown";
+  }
+  return proposed as PacketTestedHow;
+}
+
+
+function conversationGapPrompt(events: ConversationEvent[], inputs: ReasoningInputs): string {
+  const changed = inputs.collection.changedFiles.map((file) => file.path).slice(0, 40).join(", ");
+  const lines = [...events]
+    .sort((left, right) => left.raw_index - right.raw_index)
+    .map((event) => {
+      const cmd = event.command ? ` cmd=${truncateForPrompt(event.command, 200)}` : "";
+      const file = event.file ? ` file=${event.file}` : "";
+      return `- [${event.id}] ${event.actor}/${event.kind}: ${truncateForPrompt(event.summary, 240)}${cmd}${file}`;
+    })
+    .join("\n");
+  return [
+    "From this agent conversation, list the workflow steps that touch the CHANGED FILES and LACK a test.",
+    "Return JSON only: { gaps: [ { summary, kind: 'automatic'|'manual', suggested_test?, manual_check?, tested_how?, anchors: { event_ids: [...] } } ] }.",
+    "kind='automatic' when the step was only run by hand / has no automated check; kind='manual' when it has an automated check but needs human judgement (UI/security).",
+    "tested_how is HOW the step WAS tested: unit|integration|manual|mocked|none|unknown.",
+    "Every gap MUST cite the event_id(s) it is grounded in via anchors.event_ids. Do not invent ids, paths, or tests.",
+    `Changed files: ${changed || "(none)"}`,
+    "Conversation:",
+    lines
+  ].join("\n");
 }
 
 interface AnchoredCandidate {
