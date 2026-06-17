@@ -2,6 +2,7 @@ import { CollectionResult } from "../collector/collect";
 import { ConversationEvent, ConversationFormat } from "../conversation/events";
 import { loadConversationEvents, writeNormalizedConversation } from "../conversation/ingest";
 import { commandEvidence, EvidenceRef, missingEvidence } from "../evidence/evidence";
+import { computeCrossReferenceSignals } from "./cross-reference";
 import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
 
 // review-surfaces.METHODOLOGY.7/.8: a validated item-4 workflow finding produced
@@ -96,7 +97,10 @@ export async function buildMethodology(
       // mock/no-provider run shows for a parsed log (Codex P2).
       quality_flags: ["conversation_log_missing", "methodology_analysis_degraded"],
       evidence: [missingEvidence(supplied ? `Conversation log ${conversationPath} produced no usable events.` : "No conversation log was provided.")],
-      workflow_findings: []
+      // METHODOLOGY.8 (D6): the deterministic cross-reference signals are diff-based,
+      // so they still fire when no conversation is available (the empty transcript IS
+      // maximal "no discussion") — the deterministic shell works without the leaf.
+      workflow_findings: computeCrossReferenceSignals(collection, [])
     };
   }
 
@@ -162,7 +166,10 @@ export async function buildMethodology(
       ),
       ...commands.map((command) => commandEvidence(command, "Command associated with this review run.", "medium"))
     ],
-    workflow_findings: [],
+    // review-surfaces.METHODOLOGY.8 (D6): the deterministic cross-reference signals
+    // fire here (offline), so they are present even under the mock provider; a
+    // running LLM leaf APPENDS its proposed findings on top (runMethodologyAuditStage).
+    workflow_findings: computeCrossReferenceSignals(collection, events),
     ...(source !== undefined ? { conversation_source: source } : {})
   };
 }

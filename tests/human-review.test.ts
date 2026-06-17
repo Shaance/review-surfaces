@@ -4308,3 +4308,41 @@ test("review-surfaces.METHODOLOGY.7 a validated methodology workflow finding sur
   // The unanchored finding stays out of the queue (no noise).
   assert.ok(!model.questions.some((q) => /assumed something unverifiable/.test(q.question)));
 });
+
+test("review-surfaces.METHODOLOGY.8 a PROMOTED (non-advisory) workflow finding becomes a BLOCKING question, not advisory", () => {
+  const packet = packetFixture();
+  packet.methodology.workflow_findings = [
+    {
+      id: "XREF-001",
+      signal_kind: "api_no_compat",
+      summary: "a public type was removed",
+      severity: "high",
+      // advisory:false = an independent deterministic check corroborated it (Phase 3a D6).
+      advisory: false,
+      evidence: [{ kind: "file", path: "types/public.d.ts", confidence: "medium", validation_status: "valid" }]
+    }
+  ];
+
+  const model = buildHumanReview({ packet });
+  const question = model.questions.find((q) => /api no compat/.test(q.question));
+  assert.ok(question, "the corroborated finding surfaces as a question");
+  assert.equal(question.severity, "blocking", "promotion moves reviewer gating (blocking, not advisory)");
+  assert.match(question.reason, /corroborated/, "the reason reflects deterministic corroboration, not 'advisory'");
+});
+
+test("review-surfaces.METHODOLOGY.8 a PROMOTED workflow finding survives the question cap over earlier advisory ones (Codex P2)", () => {
+  const packet = packetFixture();
+  const anchor = (path: string) => [{ kind: "file" as const, path, confidence: "medium" as const, validation_status: "valid" as const }];
+  packet.methodology.workflow_findings = [
+    { id: "XREF-001", signal_kind: "risky_no_security", summary: "advisory one", severity: "medium", advisory: true, evidence: anchor("a.ts") },
+    { id: "XREF-002", signal_kind: "impl_no_test", summary: "advisory two", severity: "medium", advisory: true, evidence: anchor("b.ts") },
+    { id: "XREF-003", signal_kind: "deps_no_rationale", summary: "advisory three", severity: "medium", advisory: true, evidence: anchor("c.ts") },
+    // The ONLY promoted finding is last in producer order — it must not be dropped by the cap.
+    { id: "XREF-004", signal_kind: "api_no_compat", summary: "corroborated breaking change", severity: "high", advisory: false, evidence: anchor("d.ts") }
+  ];
+
+  const model = buildHumanReview({ packet });
+  const blocking = model.questions.find((q) => /corroborated breaking change/.test(q.question));
+  assert.ok(blocking, "the promoted finding reaches the surface despite being emitted last");
+  assert.equal(blocking.severity, "blocking");
+});

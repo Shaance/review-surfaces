@@ -26,7 +26,10 @@ import {
   TEST_RESULTS_SCHEMA_VERSION,
   TestResults
 } from "../tests-evidence/junit";
-import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, commitTimeAtRef, gitInfoDiagnostics, GitInfo, isCurrentStateHeadRequest, readFileBytesAtRef } from "./git";
+import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, commitTimeAtRef, gitInfoDiagnostics, GitInfo, isCurrentStateHeadRequest, readFileAtRef, readFileBytesAtRef, resolveMergeBaseSha } from "./git";
+import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
+import { computeDependencyFacts, DependencyFact } from "../risks/dependency-facts";
+import { computeConfigFacts, ConfigFact } from "../risks/config-facts";
 import { LcovCoverage, looksLikeLcov, parseLcov } from "../tests-evidence/lcov";
 import { parseStructuredDiff } from "./diff-hunks";
 
@@ -185,6 +188,15 @@ export interface CollectionResult {
   // artifact, so the methodology evidence points at the gitignored normalized log
   // instead. Absent for an explicit --conversation path (its path is used as-is).
   conversationEvidencePath?: string;
+  // Phase 3a (METHODOLOGY.8): the deterministic semantic/dependency/config facts,
+  // computed once here (sync git access) so the deterministic cross-reference audit
+  // in buildMethodology can PROMOTE its four signals with real facts instead of path
+  // heuristics. In-memory only (the human-review build computes its own copy because
+  // it can run standalone from a persisted packet). Empty arrays when there is no
+  // diff / no git access.
+  semanticChangeFacts?: SemanticChangeFacts;
+  dependencyFacts?: DependencyFact[];
+  configFacts?: ConfigFact[];
 }
 
 export interface CollectOptions {
@@ -389,6 +401,39 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   );
   const diffSource = diffResult.diffSource;
   const filteredDiff = filterIgnoredDiff(rawDiff, ignore.isIgnored);
+
+  // review-surfaces.METHODOLOGY.8 (Phase 3a): the deterministic semantic/dependency/
+  // config facts, computed from the ignore-filtered diff + base/head readers so the
+  // cross-reference audit can promote its four signals with real facts. Mirrors the
+  // human-review build's reader semantics (merge-base OLD side; worktree-or-blob NEW
+  // side) so the two computations agree.
+  const structuredFactDiff = parseStructuredDiff(filteredDiff);
+  const baseReadRef = options.baseRef
+    ? resolveMergeBaseSha(options.cwd, options.baseRef, git.head_sha || options.headRef || "HEAD") ?? options.baseRef
+    : "";
+  const readBaseFact = baseReadRef
+    ? (filePath: string): string | undefined => readFileAtRef(options.cwd, baseReadRef, filePath)
+    : (): string | undefined => undefined;
+  const readHeadFact = includeWorkingTree
+    ? (filePath: string): string | undefined => {
+        try {
+          return fs.readFileSync(path.resolve(options.cwd, filePath), "utf8");
+        } catch {
+          return undefined;
+        }
+      }
+    : (filePath: string): string | undefined => readFileAtRef(options.cwd, git.head_sha, filePath);
+  const semanticChangeFacts =
+    structuredFactDiff.files.length > 0
+      ? computeSemanticChangeFacts({ diff: structuredFactDiff, readBase: readBaseFact, readHead: readHeadFact })
+      : emptySemanticChangeFacts();
+  const dependencyFacts = computeDependencyFacts({
+    changedFiles: structuredFactDiff.files.map((file) => ({ path: file.path, old_path: file.old_path })),
+    readBase: readBaseFact,
+    readHead: readHeadFact
+  });
+  const configFacts =
+    structuredFactDiff.files.length > 0 ? computeConfigFacts({ diff: structuredFactDiff, readBase: readBaseFact, readHead: readHeadFact }) : [];
   // R4.6 (mirror of provider.ts split): ALWAYS compute the secret-block signal
   // so a PEM/provider-token in the diff sets remote_provider_blocked regardless
   // of redact_secrets. Only substitute the redacted text onto disk when
@@ -731,7 +776,10 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     diff_source: diffSource,
     conversationEvents,
     conversationSource,
-    conversationEvidencePath
+    conversationEvidencePath,
+    semanticChangeFacts,
+    dependencyFacts,
+    configFacts
   };
 }
 

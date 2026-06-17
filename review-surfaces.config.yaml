@@ -297,14 +297,13 @@ quality_gate:
   # all staged ACIDs landed phase by phase and were removed as they shipped.
   #
   # The conversation-audit uplift (docs/history/CONVERSATION_AUDIT_UPLIFT_GOAL.md)
-  # follows the same convention: Phase 0 stages every not-yet-shipped ACID below,
-  # and each later phase removes its own ACIDs in the PR that ships them. The gate
-  # must be back to `allow_missing: []` when the final phase lands. Phase 1 shipped
-  # METHODOLOGY.6 + PRIVACY.7(a); Phase 2 shipped METHODOLOGY.7 (+ PRIVACY.7(b));
-  # Phase 3b shipped RISK.6 + RISK.7 (CONV-GAP-* + tested_how). METHODOLOGY.8 (the
-  # deterministic D6 four-signal promotion, Phase 3a) stays staged until it lands:
-  allow_missing:
-    - review-surfaces.METHODOLOGY.8
+  # followed the same convention: Phase 0 staged every not-yet-shipped ACID here,
+  # and each later phase removed its own ACIDs in the PR that shipped them. Phase 1
+  # shipped METHODOLOGY.6 + PRIVACY.7(a); Phase 2 shipped METHODOLOGY.7
+  # (+ PRIVACY.7(b)); Phase 3b shipped RISK.6 + RISK.7 (CONV-GAP-* + tested_how);
+  # Phase 3a shipped METHODOLOGY.8 (the deterministic D6 four-signal cross-reference
+  # promotion). The allowlist is back to [] — the uplift's gated ACIDs all landed.
+  allow_missing: []
 human_review:
   enabled: true
   default_entrypoint: true
