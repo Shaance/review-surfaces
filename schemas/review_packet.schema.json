@@ -1119,6 +1119,14 @@
             "$ref": "#/$defs/MissingManualCheck"
           }
         },
+        "quality_flags": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "string",
+            "maxLength": 20000
+          }
+        },
         "review_focus": {
           "type": "array",
           "maxItems": 1000,

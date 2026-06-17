@@ -93,10 +93,8 @@ export async function buildMethodology(
       verified_claims: [],
       // Also flag the deep audit as not-run so renderers that key off
       // methodology_analysis_degraded show the SAME "audit not run" signal a
-      // mock/no-provider run shows for a parsed log (Codex P2). The CONV-GAP leaf
-      // likewise cannot run without a conversation, so flag the item-5 gap audit
-      // degraded too.
-      quality_flags: ["conversation_log_missing", "methodology_analysis_degraded", "methodology_test_gap_degraded"],
+      // mock/no-provider run shows for a parsed log (Codex P2).
+      quality_flags: ["conversation_log_missing", "methodology_analysis_degraded"],
       evidence: [missingEvidence(supplied ? `Conversation log ${conversationPath} produced no usable events.` : "No conversation log was provided.")],
       workflow_findings: []
     };
@@ -114,10 +112,7 @@ export async function buildMethodology(
     // leaf (runMethodologyReasoning) clears this flag and fills workflow_findings.
     // Under the mock default (the de-facto shipped OUTPUT) the leaf never runs, so
     // this flag stays — the cockpit must never mistake the fallback for the audit.
-    "methodology_analysis_degraded",
-    // review-surfaces.RISK.6: the conversation-derived test-gap leaf (CONV-GAP-*)
-    // is likewise not-run by default; the leaf clears this when it produces gaps.
-    "methodology_test_gap_degraded"
+    "methodology_analysis_degraded"
   ];
 
   const sourceLabel = conversationPath ?? source ?? "the discovered conversation";

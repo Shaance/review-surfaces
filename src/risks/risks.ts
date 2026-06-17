@@ -78,6 +78,13 @@ export interface RisksModel {
   test_gaps: TestGap[];
   missing_automatic_tests?: MissingAutomaticTest[];
   missing_manual_checks?: MissingManualCheck[];
+  // conversation-audit uplift (RISK.6): conversation-gap-audit signals that live
+  // WITH the risks artifact (so a staged `risks` -> `packet`/`handoff` flow stays
+  // self-consistent): `methodology_test_gap_degraded` (the CONV-GAP leaf has not
+  // run) and `conversation_truncated` (gaps came from a salience slice). Optional so
+  // the many existing RisksModel constructors validate without it (the loader and
+  // analyzeRisks always populate it).
+  quality_flags?: string[];
   review_focus: string[];
 }
 
@@ -240,6 +247,9 @@ export function analyzeRisks(
     test_gaps: testGaps,
     missing_automatic_tests: missingAutomaticTests,
     missing_manual_checks: missingManualChecks,
+    // Default the CONV-GAP audit to DEGRADED whenever there is a conversation to
+    // audit; the LLM gap leaf clears it on a successful analysis (RISK.6).
+    quality_flags: (collection.conversationEvents ?? []).length > 0 ? ["methodology_test_gap_degraded"] : [],
     review_focus: buildRiskReviewFocus(methodology, specless)
   };
 }

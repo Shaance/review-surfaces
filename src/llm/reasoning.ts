@@ -1053,11 +1053,7 @@ async function runConversationGapStage(
     // degraded flag rather than mark the audit as run (Codex P2).
     return;
   }
-  // The leaf successfully ANALYZED the conversation (a `gaps` array, even empty) ->
-  // clear the "not run" marker; a fully-covered conversation is not degraded.
-  inputs.methodology.quality_flags = inputs.methodology.quality_flags.filter((flag) => flag !== "methodology_test_gap_degraded");
 
-  const hasTestArtifact = collectionHasTestArtifact(inputs.collection);
   const newAutomatic: MissingAutomaticTest[] = [];
   const newManual: MissingManualCheck[] = [];
   let counter = 0;
@@ -1089,16 +1085,16 @@ async function runConversationGapStage(
       : [llmProposedEvidence("unknown", { note: "LLM-proposed conversation test gap lacks a clean validated event anchor.", confidence: "low" })];
     const text = invalidTokens.length > 0 ? `${summary} (unverified anchor(s): ${invalidTokens.join(", ")})` : summary;
     // Tie tested_how confirmation to THIS gap's CITED TEST: unit/integration is
-    // trusted only when the gap cites an event that IS a test run AND a passing test
-    // artifact exists — one unrelated passing test can't confirm an arbitrary gap
-    // (Codex P2).
-    const gapCitesTestRun =
+    // trusted only when the gap cites a test-run event WHOSE command matches a PASSED
+    // command transcript — so neither an unrelated passing test nor a cited-but-
+    // failed/unrecorded test turn can confirm the claim (Codex P2).
+    const gapCitesPassedTest =
       grounded &&
       evidence.some((entry) => {
         const event = typeof entry.event_id === "string" ? selectedById.get(entry.event_id) : undefined;
-        return event !== undefined && isTestExecutionEvent(event);
+        return event !== undefined && isTestExecutionEvent(event) && citedTestPassed(event, inputs.collection);
       });
-    const testedHow = confirmTestedHow(item.tested_how, hasTestArtifact && gapCitesTestRun);
+    const testedHow = confirmTestedHow(item.tested_how, gapCitesPassedTest);
     counter += 1;
     const id = `CONV-GAP-${String(counter).padStart(3, "0")}`;
     // The rendered action text (suggested_test/manual_check) is LLM-authored, so mark
@@ -1124,11 +1120,19 @@ async function runConversationGapStage(
     // so a "0 test gap(s)" summary doesn't contradict the listed missing checks.
     risks.summary = `${risks.summary} +${addedGaps} conversation-derived test gap(s).`.trim();
   }
-  // Truncation honesty: a long session analyzed from a salience slice may omit a
-  // turn that covers a step — mirror the methodology audit's partial-audit note AND
-  // the machine-readable conversation_truncated flag (Codex P2/P3).
+  // Clear the "gap audit not run" marker ONLY after the loop proves the leaf produced
+  // a usable result — a usable gap OR an intentionally empty `gaps` array. An array
+  // whose entries are all malformed (and skipped) leaves the audit degraded so a
+  // failed analysis is not presented as a clean "no gaps" (Codex P2). The flag lives
+  // on the RISKS model, so it persists with risks.yaml and stays consistent across a
+  // staged risks -> packet/handoff flow.
+  if (addedGaps > 0 || gapsArray.length === 0) {
+    risks.quality_flags = (risks.quality_flags ?? []).filter((flag) => flag !== "methodology_test_gap_degraded");
+  }
+  // Truncation honesty: a long session analyzed from a salience slice may omit a turn
+  // that covers a step — add a machine-readable flag + a methodology partial note.
   if (truncated) {
-    inputs.methodology.quality_flags = uniqueTruthy([...inputs.methodology.quality_flags, "conversation_truncated"]);
+    risks.quality_flags = uniqueTruthy([...(risks.quality_flags ?? []), "conversation_truncated"]);
     inputs.methodology.skipped_checks = uniqueTruthy([
       ...inputs.methodology.skipped_checks,
       `Conversation test-gap audit was partial: only ${selected.length} of ${events.length} salience-ranked events were analyzed.`
@@ -1136,33 +1140,33 @@ async function runConversationGapStage(
   }
 }
 
+// True when a CITED test-execution event's command corresponds to a PASSED command
+// transcript — the per-gap confirmation that the specific cited test actually ran
+// and passed (not just that some unrelated test exists) — Codex P2.
+function citedTestPassed(event: ConversationEvent, collection: CollectionResult): boolean {
+  const command = (event.command ?? "").trim();
+  if (command === "") {
+    return false;
+  }
+  return collection.commandTranscripts.some(
+    (transcript) => transcript.status === "passed" && typeof transcript.command === "string" && transcript.command.trim() === command
+  );
+}
+
 // review-surfaces.RISK.7 (D5): the leaf PROPOSES tested_how; unit/integration is
-// only trusted when a real test artifact (a passing parsed test case or a passed
-// test command) exists, else it degrades to `unknown`. manual/mocked/none/unknown
-// pass through; an unrecognized value becomes `unknown`.
-function confirmTestedHow(proposed: unknown, hasTestArtifact: boolean): PacketTestedHow {
+// only trusted when `confirmed` (the gap cites a test run that matches a passed
+// transcript), else it degrades to `unknown`. manual/mocked/none/unknown pass
+// through; an unrecognized value becomes `unknown`.
+function confirmTestedHow(proposed: unknown, confirmed: boolean): PacketTestedHow {
   if (typeof proposed !== "string" || !(PACKET_TESTED_HOW as readonly string[]).includes(proposed)) {
     return "unknown";
   }
-  if ((proposed === "unit" || proposed === "integration") && !hasTestArtifact) {
+  if ((proposed === "unit" || proposed === "integration") && !confirmed) {
     return "unknown";
   }
   return proposed as PacketTestedHow;
 }
 
-// A real test artifact exists when a parsed test case PASSED, OR a transcript whose
-// status is `passed` ran a test command. Uses the transcript's authoritative status
-// (not a bare exit_code, which can be 0 on a `status: failed` shape) and the broad
-// cross-ecosystem runner detection (pytest/go test/cargo test/... not just the JS
-// classifier) — Codex P2.
-function collectionHasTestArtifact(collection: CollectionResult): boolean {
-  if ((collection.testResults?.cases ?? []).some((testCase) => testCase.status === "passed")) {
-    return true;
-  }
-  return collection.commandTranscripts.some(
-    (transcript) => typeof transcript.command === "string" && transcript.status === "passed" && commandRunsTest(transcript.command)
-  );
-}
 
 function conversationGapPrompt(events: ConversationEvent[], inputs: ReasoningInputs): string {
   const changed = inputs.collection.changedFiles.map((file) => file.path).slice(0, 40).join(", ");

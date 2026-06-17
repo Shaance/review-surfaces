@@ -146,6 +146,7 @@ export function loadRisks(outputDir: string): RisksModel | null {
       parsed.missing_manual_checks === undefined
         ? missingManualChecksFromGaps(testGaps)
         : asArray(parsed.missing_manual_checks).map(normalizeMissingManualCheck),
+    quality_flags: asStringArray(parsed.quality_flags),
     review_focus: asStringArray(parsed.review_focus)
   };
 }

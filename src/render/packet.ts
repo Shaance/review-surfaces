@@ -166,6 +166,11 @@ function buildHandoff(inputs: PacketInputs): ReviewPacket["agent_handoff"] {
     methodology_flags: handoffMethodologyFlags(inputs.methodology),
     next_tasks: [
       ...inputs.risks.test_gaps.slice(0, 5).map((gap) => `${gap.acai_id ?? gap.requirement_id ?? gap.id}: ${gap.suggested_test ?? gap.summary}`),
+      // RISK.6: CONV-GAP records live ONLY in the missing-lists (never test_gaps), so
+      // the handoff must read them from there or it drops the conversation-derived
+      // missing automatic/manual checks (Codex P2).
+      ...(inputs.risks.missing_automatic_tests ?? []).filter((gap) => gap.id.startsWith("CONV-GAP-")).slice(0, 3).map((gap) => `${gap.id}: ${gap.suggested_test}`),
+      ...(inputs.risks.missing_manual_checks ?? []).filter((gap) => gap.id.startsWith("CONV-GAP-")).slice(0, 3).map((gap) => `${gap.id}: ${gap.manual_check}`),
       "Inspect review_packet.md (next to this handoff) before trusting generated summaries."
     ],
     open_risks: inputs.risks.items.slice(0, 6).map((risk) => `${risk.id}: ${risk.summary}`),
@@ -273,10 +278,10 @@ Gaps:
 ${previewLines(packet.risks.test_gaps, (gap) => `- ${gap.id} (${gap.acai_id ?? gap.requirement_id ?? "unmapped"}): ${gap.summary}`, 10)}
 
 Missing automatic tests:
-${previewLines(packet.risks.missing_automatic_tests ?? [], (gap) => `- ${gap.id} (${gap.acai_id ?? gap.requirement_id ?? "unmapped"}): ${gap.suggested_test}${gap.tested_how ? ` [tested_how: ${gap.tested_how}]` : ""}`, 8)}
+${previewLines(packet.risks.missing_automatic_tests ?? [], (gap) => `- ${gap.id} (${gap.acai_id ?? gap.requirement_id ?? "unmapped"}): ${gap.summary} → ${gap.suggested_test}${gap.tested_how ? ` [tested_how: ${gap.tested_how}]` : ""}`, 8)}
 
 Missing manual checks:
-${previewLines(packet.risks.missing_manual_checks ?? [], (gap) => `- ${gap.id} (${gap.acai_id ?? gap.requirement_id ?? "unmapped"}): ${gap.manual_check}${gap.tested_how ? ` [tested_how: ${gap.tested_how}]` : ""}`, 8)}
+${previewLines(packet.risks.missing_manual_checks ?? [], (gap) => `- ${gap.id} (${gap.acai_id ?? gap.requirement_id ?? "unmapped"}): ${gap.summary} → ${gap.manual_check}${gap.tested_how ? ` [tested_how: ${gap.tested_how}]` : ""}`, 8)}
 
 ## 7. Risks
 ${previewLines(packet.risks.items, (risk) => `- ${risk.id} [${risk.severity}]: ${risk.summary}`, 10)}
