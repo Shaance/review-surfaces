@@ -33,6 +33,7 @@ function model(rounds: RoundsLedgerEntry[] | undefined): HumanReviewModel {
     suggested_comments: [],
     trust_audit: { confidence_summary: "", verified_facts: [], claimed_not_verified: [], missing_evidence: [], invalid_evidence: [] },
     risk_lens_findings: [],
+    methodology_audit: { quality_flags: [], considered: [], research: [], workflow_findings: [] },
     intent_mismatch: { expected_by_spec: [], observed_in_diff: [], possible_mismatches: [], possible_overreach: [], missing_intent: [], claimed_candidates: [] },
     review_routes: [],
     since_last_review: {

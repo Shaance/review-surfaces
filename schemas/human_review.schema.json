@@ -18,6 +18,7 @@
     "suggested_comments",
     "trust_audit",
     "risk_lens_findings",
+    "methodology_audit",
     "intent_mismatch",
     "review_routes",
     "since_last_review",
@@ -107,6 +108,47 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/riskLensFinding"
+      }
+    },
+    "methodology_audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["quality_flags", "considered", "research", "workflow_findings"],
+      "properties": {
+        "quality_flags": {
+          "type": "array",
+          "items": {
+            "enum": ["methodology_analysis_degraded", "conversation_log_missing", "conversation_truncated"]
+          }
+        },
+        "considered": { "type": "array", "items": { "type": "string" } },
+        "research": { "type": "array", "items": { "type": "string" } },
+        "workflow_findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "signal_kind", "summary", "severity", "advisory", "evidence"],
+            "properties": {
+              "id": { "type": "string" },
+              "signal_kind": {
+                "enum": [
+                  "risky_no_security",
+                  "impl_no_test",
+                  "api_no_compat",
+                  "deps_no_rationale",
+                  "unchallenged_assumption",
+                  "skipped_step",
+                  "workflow_soundness"
+                ]
+              },
+              "summary": { "type": "string" },
+              "severity": { "$ref": "#/$defs/severity" },
+              "advisory": { "type": "boolean" },
+              "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } }
+            }
+          }
+        }
       }
     },
     "intent_mismatch": {

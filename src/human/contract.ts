@@ -1,7 +1,7 @@
 import type { EvidenceRef } from "../evidence/evidence";
 import type { ProviderName } from "../llm/provider";
 import type { SemanticChangeFacts } from "../risks/semantic-diff";
-import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-contract";
+import type { PacketConfidence, PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
 
 export type { SemanticChangeFacts };
 
@@ -642,6 +642,36 @@ export interface EvalScoreboardSummary {
   classes: Array<{ name: string; passed: number; total: number }>;
 }
 
+// review-surfaces.METHODOLOGY.7/.8 (Phase 4): the agent-workflow audit surfaced on
+// the cockpit — the considered alternatives (4a) and research/context (4b) the
+// methodology leaf extracted, plus the item-4 workflow findings (LLM proposals AND
+// the deterministic D6 cross-reference signals). Always present (empty arrays when
+// nothing applies) so a stale artifact lacking it fails validation and is rebuilt
+// rather than rendering an absent section (SCHEMA.3).
+export interface MethodologyAuditWorkflowFinding {
+  id: string;
+  signal_kind: PacketWorkflowSignalKind;
+  summary: string;
+  severity: PacketSeverity;
+  advisory: boolean;
+  evidence: EvidenceRef[];
+}
+
+// The audit-completeness flags the cockpit card carries so it can show the RIGHT
+// caveat (Codex P2): keyword fallback vs no conversation vs a PARTIAL (truncated)
+// audit — not collapsed to a single "degraded" boolean that mislabels truncation.
+export type MethodologyAuditFlag = "methodology_analysis_degraded" | "conversation_log_missing" | "conversation_truncated";
+
+export interface MethodologyAudit {
+  // The subset of methodology.quality_flags relevant to audit completeness. Empty
+  // when the deep audit ran cleanly. considered/research are keyword PICKS (not a
+  // real audit) whenever methodology_analysis_degraded is present (D2).
+  quality_flags: MethodologyAuditFlag[];
+  considered: string[];
+  research: string[];
+  workflow_findings: MethodologyAuditWorkflowFinding[];
+}
+
 export interface HumanReviewModel {
   schema_version: typeof HUMAN_REVIEW_SCHEMA_VERSION;
   mode: "pr" | "repo";
@@ -666,6 +696,8 @@ export interface HumanReviewModel {
   suggested_comments: SuggestedReviewComment[];
   trust_audit: TrustAudit;
   risk_lens_findings: RiskLensFinding[];
+  // review-surfaces.METHODOLOGY.7/.8 (Phase 4): the agent-workflow audit card.
+  methodology_audit: MethodologyAudit;
   intent_mismatch: IntentMismatch;
   review_routes: ReviewRoute[];
   since_last_review: SinceLastReview;

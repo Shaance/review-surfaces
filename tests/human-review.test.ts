@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildHumanReview, humanReviewConfigSignature } from "../src/human/human-review";
+import { renderHumanReviewHtml } from "../src/human/render-html";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import type { CollectionResult } from "../src/collector/collect";
 import type { EvaluationModel } from "../src/evaluation/evaluate";
@@ -4307,6 +4308,81 @@ test("review-surfaces.METHODOLOGY.7 a validated methodology workflow finding sur
   assert.equal(methodologyQuestion.severity, "clarifying");
   // The unanchored finding stays out of the queue (no noise).
   assert.ok(!model.questions.some((q) => /assumed something unverifiable/.test(q.question)));
+});
+
+test("review-surfaces.METHODOLOGY.7 the cockpit surfaces the agent-workflow audit (considered/research/findings)", () => {
+  const packet = packetFixture();
+  packet.methodology.considered = ["batch upload vs streaming", "retry with backoff"];
+  packet.methodology.research = ["read the uploader spec", "checked the S3 SDK docs"];
+  packet.methodology.workflow_findings = [
+    {
+      id: "XREF-001",
+      signal_kind: "impl_no_test",
+      summary: "uploader changed without a test",
+      severity: "medium",
+      advisory: true,
+      evidence: [{ kind: "file", path: "src/uploader.ts", confidence: "medium", validation_status: "valid" }]
+    },
+    {
+      // unanchored -> filtered out of the audit card (no noise)
+      id: "XREF-002",
+      signal_kind: "unchallenged_assumption",
+      summary: "unverifiable assumption",
+      severity: "low",
+      advisory: true,
+      evidence: [{ kind: "unknown", note: "LLM-proposed", confidence: "low", validation_status: "not_checked", llm_proposed: true }]
+    }
+  ];
+
+  const model = buildHumanReview({ packet });
+  assert.deepEqual(model.methodology_audit.considered, ["batch upload vs streaming", "retry with backoff"]);
+  assert.deepEqual(model.methodology_audit.research, ["read the uploader spec", "checked the S3 SDK docs"]);
+  assert.equal(model.methodology_audit.workflow_findings.length, 1, "only the validated-anchor finding is kept");
+  assert.equal(model.methodology_audit.workflow_findings[0].id, "XREF-001");
+
+  // The cockpit renders the dedicated section with all three parts.
+  const html = renderHumanReviewHtml(model);
+  assert.match(html, /Agent workflow audit/);
+  assert.match(html, /Considered alternatives/);
+  assert.match(html, /batch upload vs streaming/);
+  assert.match(html, /Research \/ context gathered/);
+  assert.match(html, /read the uploader spec/);
+  assert.match(html, /uploader changed without a test/);
+  assert.match(html, /src\/uploader\.ts/, "the finding renders its evidence anchor (Codex P2)");
+  assert.doesNotMatch(html, /unverifiable assumption/, "the unanchored finding is not surfaced");
+});
+
+test("review-surfaces.METHODOLOGY.7 a degraded methodology audit is loudly flagged on the cockpit, not shown as a real audit", () => {
+  const packet = packetFixture();
+  packet.methodology.quality_flags = ["methodology_analysis_degraded"];
+  packet.methodology.considered = ["a keyword-picked option"];
+  packet.methodology.research = [];
+  packet.methodology.workflow_findings = [];
+
+  const model = buildHumanReview({ packet });
+  assert.ok(model.methodology_audit.quality_flags.includes("methodology_analysis_degraded"));
+  assert.match(renderHumanReviewHtml(model), /Deep audit not run/, "the cockpit carries the loud degradation signal (D2)");
+});
+
+test("review-surfaces.METHODOLOGY.7 a TRUNCATED (but run) audit shows the partial caveat, not 'no LLM provider' (Codex P2)", () => {
+  const packet = packetFixture();
+  // The deep audit RAN (no methodology_analysis_degraded) but was partial.
+  packet.methodology.quality_flags = ["conversation_truncated"];
+  packet.methodology.considered = ["LLM-proposed: streaming vs batch"];
+
+  const model = buildHumanReview({ packet });
+  assert.deepEqual(model.methodology_audit.quality_flags, ["conversation_truncated"]);
+  const html = renderHumanReviewHtml(model);
+  assert.match(html, /Audit was partial/, "a truncated run shows the partial caveat");
+  assert.doesNotMatch(html, /Deep audit not run/, "a run-but-truncated audit is not mislabeled as not-run");
+});
+
+test("review-surfaces.METHODOLOGY.7 the audit prefers provider-derived considered entries before the cap (Codex P2)", () => {
+  const packet = packetFixture();
+  packet.methodology.considered = [...Array.from({ length: 8 }, (_, i) => `keyword pick ${i}`), "LLM-proposed: the grounded alternative"];
+
+  const model = buildHumanReview({ packet });
+  assert.ok(model.methodology_audit.considered.includes("LLM-proposed: the grounded alternative"), "the provider entry survives the cap");
 });
 
 test("review-surfaces.METHODOLOGY.8 a PROMOTED (non-advisory) workflow finding becomes a BLOCKING question, not advisory", () => {

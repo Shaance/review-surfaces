@@ -43,6 +43,8 @@ import {
   IntentMismatch,
   IntentMismatchItem,
   InvalidEvidenceSummary,
+  MethodologyAudit,
+  MethodologyAuditFlag,
   MissingEvidenceSummary,
   ReviewBlocker,
   DependencyChain,
@@ -431,6 +433,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     suggested_comments: suggestedComments,
     trust_audit: trustAudit,
     risk_lens_findings: riskLensFindings,
+    methodology_audit: buildMethodologyAudit(input),
     intent_mismatch: intentMismatch,
     review_routes: reviewRoutes,
     since_last_review: sinceLastReview,
@@ -3905,6 +3908,49 @@ function buildQuestions(
 // unanchored findings stay out of the question queue.
 function workflowFindingHasValidatedAnchor(finding: { evidence: EvidenceRef[] }): boolean {
   return finding.evidence.some((ref) => ref.validation_status === "valid");
+}
+
+// review-surfaces.METHODOLOGY.7/.8 (Phase 4): the agent-workflow audit card for the
+// cockpit — considered alternatives (4a), research/context (4b), and the GROUNDED
+// item-4 workflow findings (only the validated-anchor ones, so demoted/unanchored
+// LLM proposals never add noise — the same signal-to-noise rule the questions use).
+// Bounded so the card stays scannable. Empty arrays when the audit produced nothing.
+const METHODOLOGY_AUDIT_FLAGS: MethodologyAuditFlag[] = ["methodology_analysis_degraded", "conversation_log_missing", "conversation_truncated"];
+
+// Provider (LLM-proposed) considered/research entries are appended AFTER the keyword
+// picks, so a plain head-cap would hide them; surface them FIRST before the cap so
+// the grounded 4a/4b audit reaches the cockpit (Codex P2).
+function providerFirst(entries: string[]): string[] {
+  const provider = entries.filter((entry) => entry.startsWith("LLM-proposed:"));
+  const rest = entries.filter((entry) => !entry.startsWith("LLM-proposed:"));
+  return [...provider, ...rest].slice(0, 8);
+}
+
+function buildMethodologyAudit(input: BuildHumanReviewInput): MethodologyAudit {
+  const methodology = input.packet.methodology;
+  return {
+    quality_flags: (methodology.quality_flags ?? []).filter((flag): flag is MethodologyAuditFlag =>
+      (METHODOLOGY_AUDIT_FLAGS as string[]).includes(flag)
+    ),
+    considered: providerFirst(methodology.considered ?? []),
+    research: providerFirst(methodology.research ?? []),
+    workflow_findings: (methodology.workflow_findings ?? [])
+      .filter(workflowFindingHasValidatedAnchor)
+      // Promoted (corroborated, advisory===false) findings first so the cap never
+      // drops a blocking D6 signal for earlier advisory ones (Codex P2).
+      .map((finding, index) => ({ finding, index }))
+      .sort((a, b) => Number(a.finding.advisory !== false) - Number(b.finding.advisory !== false) || a.index - b.index)
+      .map((entry) => entry.finding)
+      .slice(0, 8)
+      .map((finding) => ({
+        id: finding.id,
+        signal_kind: finding.signal_kind,
+        summary: finding.summary,
+        severity: finding.severity,
+        advisory: finding.advisory,
+        evidence: finding.evidence
+      }))
+  };
 }
 
 function capQuestionsPreservingIntent(questions: ReviewerQuestion[], limit: number): ReviewerQuestion[] {
