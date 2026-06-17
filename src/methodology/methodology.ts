@@ -93,8 +93,10 @@ export async function buildMethodology(
       verified_claims: [],
       // Also flag the deep audit as not-run so renderers that key off
       // methodology_analysis_degraded show the SAME "audit not run" signal a
-      // mock/no-provider run shows for a parsed log (Codex P2).
-      quality_flags: ["conversation_log_missing", "methodology_analysis_degraded"],
+      // mock/no-provider run shows for a parsed log (Codex P2). The CONV-GAP leaf
+      // likewise cannot run without a conversation, so flag the item-5 gap audit
+      // degraded too.
+      quality_flags: ["conversation_log_missing", "methodology_analysis_degraded", "methodology_test_gap_degraded"],
       evidence: [missingEvidence(supplied ? `Conversation log ${conversationPath} produced no usable events.` : "No conversation log was provided.")],
       workflow_findings: []
     };

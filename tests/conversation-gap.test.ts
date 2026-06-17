@@ -48,8 +48,9 @@ function collection(opts: CollectionOpts = {}): CollectionResult {
 }
 
 const EVENTS: ConversationEvent[] = [
-  { id: "a1", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 0 },
-  { id: "a2", actor: "user", kind: "message", summary: "ship it", raw_index: 1 }
+  { id: "edit", actor: "assistant", kind: "tool_call", summary: "Edit(src/uploader.ts)", tool: "Edit", file: "src/uploader.ts", raw_index: 0 },
+  { id: "a1", actor: "assistant", kind: "tool_call", summary: "Bash(pnpm run test)", tool: "Bash", command: "pnpm run test", raw_index: 1 },
+  { id: "a2", actor: "user", kind: "message", summary: "ship it", raw_index: 2 }
 ];
 
 function methodology(): MethodologyModel {
@@ -127,7 +128,7 @@ test("review-surfaces.RISK.7 a proposed tested_how of unit is downgraded to unkn
 
 test("review-surfaces.RISK.7 a proposed tested_how of unit is TRUSTED when a real test artifact confirms it", async () => {
   const r = risks();
-  const data = { gaps: [{ summary: "really has unit coverage", kind: "manual", manual_check: "review", tested_how: "unit", anchors: { event_ids: ["a1"] } }] };
+  const data = { gaps: [{ summary: "really has unit coverage", kind: "manual", manual_check: "review", tested_how: "unit", anchors: { event_ids: ["edit"] } }] };
   await run(stub(data), collection({ passingTest: true }), methodology(), r);
   const gap = (r.missing_manual_checks ?? []).find((g) => g.id.startsWith("CONV-GAP-"));
   assert.ok(gap);
@@ -136,11 +137,38 @@ test("review-surfaces.RISK.7 a proposed tested_how of unit is TRUSTED when a rea
 
 test("review-surfaces.RISK.7 a passed test COMMAND also confirms unit/integration", async () => {
   const r = risks();
-  const data = { gaps: [{ summary: "integration via a test command", kind: "manual", manual_check: "review", tested_how: "integration", anchors: { event_ids: ["a1"] } }] };
+  const data = { gaps: [{ summary: "integration via a test command", kind: "manual", manual_check: "review", tested_how: "integration", anchors: { event_ids: ["edit"] } }] };
   await run(stub(data), collection({ passedTestCommand: true }), methodology(), r);
   const gap = (r.missing_manual_checks ?? []).find((g) => g.id.startsWith("CONV-GAP-"));
   assert.ok(gap);
   assert.equal(gap.tested_how, "integration", "a passed test command confirms integration");
+});
+
+test("review-surfaces.RISK.7 tested_how confirmation is tied to the gap: an unrelated test does not confirm a non-code gap", async () => {
+  const r = risks();
+  // The gap cites a1 (a test-run turn that does NOT touch a changed file). Even with
+  // a passing test artifact, an unrelated test must not confirm this gap's unit claim.
+  const data = { gaps: [{ summary: "claims unit on a non-code turn", kind: "manual", manual_check: "review", tested_how: "unit", anchors: { event_ids: ["a1"] } }] };
+  await run(stub(data), collection({ passingTest: true }), methodology(), r);
+  const gap = (r.missing_manual_checks ?? []).find((g) => g.id.startsWith("CONV-GAP-"));
+  assert.ok(gap);
+  assert.equal(gap.tested_how, "unknown", "a passing test not tied to the gap's reviewed-code work must not confirm unit");
+});
+
+test("review-surfaces.RISK.6 a successful EMPTY gap audit clears the degraded flag", async () => {
+  const r = risks();
+  const m = methodology();
+  await run(stub({ gaps: [] }), collection(), m, r);
+  assert.equal((r.missing_automatic_tests ?? []).filter((g) => g.id.startsWith("CONV-GAP-")).length, 0);
+  assert.ok(!m.quality_flags.includes("methodology_test_gap_degraded"), "a fully-covered conversation is analyzed, not degraded");
+});
+
+test("review-surfaces.RISK.6 appending CONV-GAP records augments the risk summary", async () => {
+  const r = risks();
+  r.summary = "0 test gap(s).";
+  const data = { gaps: [{ summary: "a gap", kind: "automatic", suggested_test: "x", tested_how: "none", anchors: { event_ids: ["edit"] } }] };
+  await run(stub(data), collection(), methodology(), r);
+  assert.match(r.summary, /conversation-derived test gap/, "the summary reflects the appended CONV-GAP records");
 });
 
 test("review-surfaces.RISK.6 a malformed/missing kind is skipped, not defaulted into a gap", async () => {
@@ -185,7 +213,7 @@ test("review-surfaces.RISK.7 a passed non-JS test command (pytest) confirms test
   (coll as unknown as { commandTranscripts: unknown[] }).commandTranscripts = [
     { id: "c1", command: "pytest tests/", status: "passed", exit_code: 0, truncated: false, source_path: "x" }
   ];
-  const data = { gaps: [{ summary: "py integration", kind: "manual", manual_check: "review", tested_how: "integration", anchors: { event_ids: ["a1"] } }] };
+  const data = { gaps: [{ summary: "py integration", kind: "manual", manual_check: "review", tested_how: "integration", anchors: { event_ids: ["edit"] } }] };
   await run(stub(data), coll, methodology(), r);
   const gap = (r.missing_manual_checks ?? []).find((g) => g.id.startsWith("CONV-GAP-"));
   assert.ok(gap);

@@ -1038,13 +1038,17 @@ async function runConversationGapStage(
   }
   const risks = inputs.risks;
   const changedFiles = new Set(inputs.collection.changedFiles.map((file) => file.path));
-  const { selected } = selectSalientEvents(events, changedFiles, AUDIT_EVENT_BUDGET);
+  const { selected, truncated } = selectSalientEvents(events, changedFiles, AUDIT_EVENT_BUDGET);
   const context: EvidenceValidationContext = { ...evidenceContext, knownEventIds: new Set(selected.map((event) => event.id)) };
+  const selectedById = new Map(selected.map((event) => [event.id, event]));
 
   const result = await provider.generateStructured("conversation-test-gaps", conversationGapPrompt(selected, inputs), CONV_GAP_SCHEMA, generateOptions);
   if (!result.ok || !isRecord(result.data)) {
     return; // No leaf contribution: keep the deterministic gaps + degraded flag.
   }
+  // The leaf successfully ANALYZED the conversation -> clear the "not run" marker,
+  // even on a clean empty result (a fully-covered conversation is not degraded).
+  inputs.methodology.quality_flags = inputs.methodology.quality_flags.filter((flag) => flag !== "methodology_test_gap_degraded");
 
   const hasTestArtifact = collectionHasTestArtifact(inputs.collection);
   const newAutomatic: MissingAutomaticTest[] = [];
@@ -1076,7 +1080,15 @@ async function runConversationGapStage(
         ? evidence
         : [llmProposedEvidence("unknown", { note: "LLM-proposed conversation test gap lacks a validated event anchor.", confidence: "low" })];
     const text = invalidTokens.length > 0 ? `${summary} (unverified anchor(s): ${invalidTokens.join(", ")})` : summary;
-    const testedHow = confirmTestedHow(item.tested_how, hasTestArtifact);
+    // Tie tested_how confirmation to THIS gap: unit/integration is trusted only when
+    // a real test artifact exists AND the gap is grounded in a cited event that
+    // touches a changed file — so one unrelated passing test can't confirm an
+    // arbitrary gap's unit/integration claim (Codex P2).
+    const gapTouchesChange = evidence.some((entry) => {
+      const event = typeof entry.event_id === "string" ? selectedById.get(entry.event_id) : undefined;
+      return event !== undefined && eventTouchesChangedFile(event, changedFiles);
+    });
+    const testedHow = confirmTestedHow(item.tested_how, hasTestArtifact && gapTouchesChange);
     counter += 1;
     const id = `CONV-GAP-${String(counter).padStart(3, "0")}`;
     if (item.kind === "manual") {
@@ -1094,9 +1106,19 @@ async function runConversationGapStage(
   if (newManual.length > 0) {
     risks.missing_manual_checks = [...(risks.missing_manual_checks ?? []), ...newManual];
   }
-  // The leaf RAN and produced gaps -> clear the "test-gap analysis not run" marker.
-  if (newAutomatic.length + newManual.length > 0) {
-    inputs.methodology.quality_flags = inputs.methodology.quality_flags.filter((flag) => flag !== "methodology_test_gap_degraded");
+  const addedGaps = newAutomatic.length + newManual.length;
+  if (addedGaps > 0) {
+    // The deterministic summary counts only test_gaps; surface the CONV-GAP records
+    // so a "0 test gap(s)" summary doesn't contradict the listed missing checks.
+    risks.summary = `${risks.summary} +${addedGaps} conversation-derived test gap(s).`.trim();
+  }
+  // Truncation honesty: a long session analyzed from a salience slice may omit a
+  // turn that covers a step — mirror the methodology audit's partial-audit note.
+  if (truncated) {
+    inputs.methodology.skipped_checks = uniqueTruthy([
+      ...inputs.methodology.skipped_checks,
+      `Conversation test-gap audit was partial: only ${selected.length} of ${events.length} salience-ranked events were analyzed.`
+    ]);
   }
 }
 
@@ -1133,9 +1155,9 @@ function conversationGapPrompt(events: ConversationEvent[], inputs: ReasoningInp
   const lines = [...events]
     .sort((left, right) => left.raw_index - right.raw_index)
     .map((event) => {
-      const cmd = event.command ? ` cmd=${event.command}` : "";
+      const cmd = event.command ? ` cmd=${truncateForPrompt(event.command, 200)}` : "";
       const file = event.file ? ` file=${event.file}` : "";
-      return `- [${event.id}] ${event.actor}/${event.kind}: ${event.summary}${cmd}${file}`;
+      return `- [${event.id}] ${event.actor}/${event.kind}: ${truncateForPrompt(event.summary, 240)}${cmd}${file}`;
     })
     .join("\n");
   return [
