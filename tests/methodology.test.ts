@@ -328,6 +328,24 @@ test("review-surfaces.METHODOLOGY.4 an adapter that matched but produced zero ev
   assert.ok(methodology.quality_flags.includes("conversation_log_missing"));
 });
 
+test("review-surfaces.METHODOLOGY.1 considered/research pick from natural-language turns only, bounded (not tool bodies)", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  const collection = collectionFixture(tmp, {
+    conversationEvents: [
+      // A tool_result whose body happens to contain the trigger words "read"/"option"
+      // — it must NOT be picked (it is an embedded body, not reasoning).
+      { id: "t0", actor: "tool", kind: "tool_result", summary: `Read(file): ${"x".repeat(2000)} option to read context`, raw_index: 0 },
+      // A real assistant message stating a considered alternative — picked + bounded.
+      { id: "m0", actor: "assistant", kind: "message", summary: `I considered ${"y".repeat(400)} as an alternative`, raw_index: 1 }
+    ]
+  });
+  const methodology = await buildMethodology(tmp, collection, undefined, []);
+  assert.ok(!methodology.considered.some((entry) => entry.startsWith("t0:")), "a tool_result body is not picked as a considered alternative");
+  const picked = methodology.considered.find((entry) => entry.startsWith("m0:"));
+  assert.ok(picked, "the natural-language message is picked");
+  assert.ok(picked.length <= 220 && picked.endsWith("…"), "the picked entry is bounded/truncated");
+});
+
 test("review-surfaces.METHODOLOGY.7 the generated conversation evidence carries a real event_id (valid under the new rule)", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
   fs.writeFileSync(path.join(tmp, "conversation.md"), "user: add a retry\nassistant: done\n");

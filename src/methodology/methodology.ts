@@ -174,15 +174,29 @@ export async function buildMethodology(
   };
 }
 
+// review-surfaces.METHODOLOGY.1: the deterministic keyword fallback for
+// considered/research/decisions/etc. Scans ONLY natural-language turns — a
+// tool_call/tool_result summary is an embedded body (file content, an edit payload,
+// a command's stdout) where a keyword match is noise, not a considered alternative,
+// and pushing it whole dumped kilobytes of code onto the cockpit card (found by
+// dogfooding the live session). Each kept entry is bounded so even a long message
+// stays scannable.
+const PICK_TEXT_LIMIT = 200;
+const PICK_NATURAL_LANGUAGE_KINDS = new Set(["message", "decision", "heading"]);
+
 function pick(events: ConversationEvent[], keywords: string[]): string[] {
   const result: string[] = [];
   for (const event of events) {
     if (result.length >= 12) {
       break;
     }
+    if (!PICK_NATURAL_LANGUAGE_KINDS.has(event.kind)) {
+      continue;
+    }
     const lower = event.summary.toLowerCase();
     if (keywords.some((keyword) => lower.includes(keyword))) {
-      result.push(`${event.id}: ${event.summary}`);
+      const text = event.summary.length > PICK_TEXT_LIMIT ? `${event.summary.slice(0, PICK_TEXT_LIMIT).trimEnd()}…` : event.summary;
+      result.push(`${event.id}: ${text}`);
     }
   }
   return result;
