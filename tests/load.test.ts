@@ -150,3 +150,28 @@ test("review-surfaces.RISK.4 loadRisks backfills missing-check lists from stale 
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("review-surfaces.RISK.7 loadRisks round-trips tested_how on the three gap lists", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-load-risks-tested-how-"));
+  try {
+    fs.writeFileSync(
+      path.join(tmp, "risks.yaml"),
+      stringifyYaml({
+        summary: "gaps with tested_how",
+        items: [],
+        test_evidence: [],
+        test_gaps: [{ id: "GAP-001", summary: "gap", tested_how: "manual" }],
+        missing_automatic_tests: [{ id: "CONV-GAP-001", summary: "auto gap", suggested_test: "add a test", tested_how: "unit" }],
+        missing_manual_checks: [{ id: "CONV-GAP-002", summary: "manual gap", manual_check: "review it", tested_how: "mocked" }],
+        review_focus: []
+      })
+    );
+    const loaded = loadRisks(tmp);
+    assert.ok(loaded);
+    assert.equal(loaded!.test_gaps[0]?.tested_how, "manual");
+    assert.equal(loaded!.missing_automatic_tests?.find((g) => g.id === "CONV-GAP-001")?.tested_how, "unit");
+    assert.equal(loaded!.missing_manual_checks?.find((g) => g.id === "CONV-GAP-002")?.tested_how, "mocked");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

@@ -1054,13 +1054,23 @@ async function runConversationGapStage(
     if (!isRecord(item)) {
       continue;
     }
+    // Only accept the two valid routes; a malformed/missing kind (possible from the
+    // unschema'd agent-file provider) is skipped, never defaulted into a real gap.
+    if (item.kind !== "automatic" && item.kind !== "manual") {
+      continue;
+    }
     const summary = redactHypothesisText(typeof item.summary === "string" ? item.summary : "").trim();
     if (summary === "") {
       continue;
     }
-    // event_id is NOT self-validating: route through the SAME knownEventIds check.
-    // No valid anchor => the gap is advisory (llm-proposed fallback evidence).
-    const { evidence, invalidTokens } = resolveAuditAnchors(isRecord(item.anchors) ? item.anchors : {}, context, changedFiles);
+    // event_id is NOT self-validating: route ONLY the event_ids through the SAME
+    // knownEventIds check (RISK.6 requires a conversation event id — a path anchor is
+    // not accepted as evidence here). No valid event id => advisory (llm-proposed).
+    const { evidence, invalidTokens } = resolveAuditAnchors(
+      { event_ids: isRecord(item.anchors) ? item.anchors.event_ids : undefined },
+      context,
+      changedFiles
+    );
     const ref =
       evidence.length > 0
         ? evidence
@@ -1104,14 +1114,17 @@ function confirmTestedHow(proposed: unknown, hasTestArtifact: boolean): PacketTe
   return proposed as PacketTestedHow;
 }
 
-// A real test artifact exists when a parsed test case passed OR a test command ran
-// to completion (exit 0) — the deterministic confirmation for tested_how.
+// A real test artifact exists when a parsed test case PASSED, OR a transcript whose
+// status is `passed` ran a test command. Uses the transcript's authoritative status
+// (not a bare exit_code, which can be 0 on a `status: failed` shape) and the broad
+// cross-ecosystem runner detection (pytest/go test/cargo test/... not just the JS
+// classifier) — Codex P2.
 function collectionHasTestArtifact(collection: CollectionResult): boolean {
   if ((collection.testResults?.cases ?? []).some((testCase) => testCase.status === "passed")) {
     return true;
   }
   return collection.commandTranscripts.some(
-    (transcript) => typeof transcript.command === "string" && commandLooksLikeTestCommand(transcript.command) && transcript.exit_code === 0
+    (transcript) => typeof transcript.command === "string" && transcript.status === "passed" && commandRunsTest(transcript.command)
   );
 }
 

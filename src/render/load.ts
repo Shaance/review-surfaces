@@ -27,6 +27,7 @@ import {
   PACKET_RISK_SEVERITIES,
   PACKET_SOURCE_KINDS,
   PACKET_TEST_EVIDENCE_KINDS,
+  PACKET_TESTED_HOW,
   PACKET_VALIDATION_STATUSES
 } from "../schema/review-packet-contract";
 
@@ -276,6 +277,7 @@ function normalizeTestGap(value: unknown): RisksModel["test_gaps"][number] {
     summary: asString(record.summary),
     suggested_test: optionalString(record.suggested_test),
     manual_check: optionalString(record.manual_check),
+    tested_how: asEnum(record.tested_how, PACKET_TESTED_HOW),
     evidence: record.evidence === undefined ? undefined : asArray(record.evidence).map(normalizeEvidenceRef)
   };
 }
@@ -288,6 +290,7 @@ function normalizeMissingAutomaticTest(value: unknown): NonNullable<RisksModel["
     acai_id: optionalString(record.acai_id),
     summary: asString(record.summary),
     suggested_test: asString(record.suggested_test),
+    tested_how: asEnum(record.tested_how, PACKET_TESTED_HOW),
     evidence: record.evidence === undefined ? undefined : asArray(record.evidence).map(normalizeEvidenceRef)
   };
 }
@@ -300,6 +303,7 @@ function normalizeMissingManualCheck(value: unknown): NonNullable<RisksModel["mi
     acai_id: optionalString(record.acai_id),
     summary: asString(record.summary),
     manual_check: asString(record.manual_check),
+    tested_how: asEnum(record.tested_how, PACKET_TESTED_HOW),
     evidence: record.evidence === undefined ? undefined : asArray(record.evidence).map(normalizeEvidenceRef)
   };
 }

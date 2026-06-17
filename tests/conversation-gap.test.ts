@@ -143,6 +143,55 @@ test("review-surfaces.RISK.7 a passed test COMMAND also confirms unit/integratio
   assert.equal(gap.tested_how, "integration", "a passed test command confirms integration");
 });
 
+test("review-surfaces.RISK.6 a malformed/missing kind is skipped, not defaulted into a gap", async () => {
+  const r = risks();
+  const data = {
+    gaps: [
+      { summary: "bogus kind", kind: "automaic", suggested_test: "x", anchors: { event_ids: ["a1"] } },
+      { summary: "no kind at all", suggested_test: "x", anchors: { event_ids: ["a1"] } }
+    ]
+  };
+  await run(stub(data), collection(), methodology(), r);
+  assert.equal((r.missing_automatic_tests ?? []).filter((g) => g.id.startsWith("CONV-GAP-")).length, 0, "a typo'd kind is not coerced to automatic");
+  assert.equal((r.missing_manual_checks ?? []).filter((g) => g.id.startsWith("CONV-GAP-")).length, 0);
+});
+
+test("review-surfaces.RISK.6 a path-only anchor is advisory (only event_ids count as evidence)", async () => {
+  const r = risks();
+  const data = { gaps: [{ summary: "cites a changed file, no event", kind: "automatic", suggested_test: "x", anchors: { paths: ["src/uploader.ts"] } }] };
+  await run(stub(data), collection(), methodology(), r);
+  const gap = (r.missing_automatic_tests ?? []).find((g) => g.id.startsWith("CONV-GAP-"));
+  assert.ok(gap);
+  assert.ok(gap.evidence?.every((e) => e.validation_status !== "valid"), "a path anchor is not accepted as valid conversation evidence");
+  assert.ok(gap.evidence?.some((e) => e.llm_proposed === true), "path-only -> advisory llm-proposed fallback");
+});
+
+test("review-surfaces.RISK.7 a status:failed transcript (even exit_code 0) does not confirm tested_how", async () => {
+  const r = risks();
+  const coll = collection();
+  (coll as unknown as { commandTranscripts: unknown[] }).commandTranscripts = [
+    { id: "c1", command: "pnpm run test", status: "failed", exit_code: 0, truncated: false, source_path: "x" }
+  ];
+  const data = { gaps: [{ summary: "claims unit", kind: "manual", manual_check: "review", tested_how: "unit", anchors: { event_ids: ["a1"] } }] };
+  await run(stub(data), coll, methodology(), r);
+  const gap = (r.missing_manual_checks ?? []).find((g) => g.id.startsWith("CONV-GAP-"));
+  assert.ok(gap);
+  assert.equal(gap.tested_how, "unknown", "a failed test transcript must not confirm unit");
+});
+
+test("review-surfaces.RISK.7 a passed non-JS test command (pytest) confirms tested_how", async () => {
+  const r = risks();
+  const coll = collection();
+  (coll as unknown as { commandTranscripts: unknown[] }).commandTranscripts = [
+    { id: "c1", command: "pytest tests/", status: "passed", exit_code: 0, truncated: false, source_path: "x" }
+  ];
+  const data = { gaps: [{ summary: "py integration", kind: "manual", manual_check: "review", tested_how: "integration", anchors: { event_ids: ["a1"] } }] };
+  await run(stub(data), coll, methodology(), r);
+  const gap = (r.missing_manual_checks ?? []).find((g) => g.id.startsWith("CONV-GAP-"));
+  assert.ok(gap);
+  assert.equal(gap.tested_how, "integration", "a passed pytest run is a real test artifact");
+});
+
 test("review-surfaces.RISK.6 mock provider is a no-op (no CONV-GAP, degraded flag stays)", async () => {
   const r = risks();
   const m = methodology();
