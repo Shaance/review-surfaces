@@ -88,13 +88,13 @@ Record what could not yet be run and why.
 
 ## Dogfood rule
 
-**Run it on your own work, and read the output — not just the gate.** The local gate (`scripts/local-gate.sh`) uses `--provider mock` over an empty `HEAD..HEAD` self-dogfood: it proves byte-stable determinism and schema validity but is BLIND to whether a surface produces *sensible* output, so a green test suite can still ship a cockpit full of garbage. Before calling a feature done, run it against a REAL diff and read what it generates:
+**Run it on your own work, and read the output — not just the gate.** The local gate (`scripts/local-gate.sh`) uses `--provider mock` over an empty `HEAD..HEAD` self-dogfood: it proves byte-stable determinism and schema validity but is BLIND to whether a surface produces *sensible* output, so a green test suite can still ship a cockpit full of garbage. Before calling a feature done, run it against your branch's REAL diff (the merge-base range, with `--dogfood`) and read what it generates:
 
 ```bash
-node bin/review-surfaces.js all --provider mock --base HEAD~1 --head HEAD --out /tmp/dog
+pnpm run local-review   # all --dogfood over origin/main...HEAD + cockpit + validate
 ```
 
-Auto-discovery finds this repo's own agent session (announced on stderr); open `/tmp/dog/human_review.html` and read `human_review.json` `.methodology_audit`. The LLM `audit`/CONV-GAP leaves need `--provider ai-sdk` over a CLEAN transcript — see `.agents/skills/review-surfaces-dogfood-loop/SKILL.md` (a secret-bearing transcript/diff, including the test fixtures, self-blocks the remote call by design).
+In a **Claude Code** session auto-discovery finds this repo's own transcript (announced on stderr); in **Codex/Cursor** pass `--conversation <file>` (discovery is Claude-store-only). Open `.review-surfaces/human_review.html` and read `human_review.json` `.methodology_audit`. The LLM `audit`/CONV-GAP leaves need `--provider ai-sdk` over a CLEAN transcript and a real diff — see `.agents/skills/review-surfaces-dogfood-loop/SKILL.md` (a secret-bearing transcript/diff, including the test fixtures, self-blocks the remote call by design).
 
 A problem found while using `review-surfaces` to build `review-surfaces` is product feedback. Convert it into one of:
 

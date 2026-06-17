@@ -30,17 +30,24 @@ dumps garbage on a real session. So run the tool against a REAL diff and read wh
 it generates:
 
 ```bash
-node bin/review-surfaces.js all --provider mock --base HEAD~1 --head HEAD --out /tmp/dog
+pnpm run local-review        # all --dogfood over origin/main...HEAD, + cockpit + validate, to .review-surfaces
+# or, to a scratch dir:
+node bin/review-surfaces.js all --provider mock --dogfood --base origin/main --head HEAD --out /tmp/dog
 ```
 
-Auto-discovery finds this repo's own agent session under
-`~/.claude/projects/<cwd-slug>/` (it announces the picked file on stderr). Then open
-and READ:
+Use the branch's merge-base (`--base origin/main`), NOT `HEAD~1` — a single-commit
+range reviews only the last commit and misses files changed earlier in a multi-commit
+branch. Keep `--dogfood` or `dogfood.yaml` and `agent_handoff.md` are not built.
 
-- `/tmp/dog/human_review.html` — the cockpit (incl. the "Agent workflow audit" card).
-- `/tmp/dog/human_review.json` → `.methodology_audit` — `considered`/`research`,
-  `workflow_findings`, and `quality_flags` (degraded / truncated).
-- `/tmp/dog/methodology.yaml`, `/tmp/dog/risks.yaml` (look for `CONV-GAP-*`).
+In a **Claude Code** session, auto-discovery finds this repo's own transcript under
+`~/.claude/projects/<cwd-slug>/` (announced on stderr). In a **Codex or Cursor**
+session discovery finds nothing (it scans only the Claude store) and the run degrades
+to `conversation_log_missing` — pass `--conversation <file>` explicitly there. Then
+open and READ:
+
+- `.review-surfaces/human_review.html` (or `/tmp/dog/...`) — the cockpit (incl. the "Agent workflow audit" card).
+- `human_review.json` → `.methodology_audit` — `considered`/`research`, `workflow_findings`, `quality_flags`.
+- `methodology.yaml`, `risks.yaml` (look for `CONV-GAP-*`).
 
 Real sessions are NOT the test fixtures: they carry kilobyte tool-call bodies,
 secret-shaped test strings, and loose event kinds. Clean fixtures hide that, so a
@@ -49,11 +56,13 @@ bodies onto the cockpit — a bug the full test suite missed).
 
 ### Validating the LLM leaves (`ai-sdk`)
 
-The methodology *audit* and CONV-GAP leaves only run under a remote provider:
+The methodology *audit* and CONV-GAP leaves need a remote provider AND a real diff
+(CONV-GAP only grounds a gap on a CHANGED file, so an empty `HEAD..HEAD` range leaves
+it unexercised):
 
 ```bash
 set -a; . ./.env.local; set +a   # source the provider key; never paste or commit it
-node bin/review-surfaces.js all --provider ai-sdk --conversation <clean.md> --base HEAD --head HEAD --out /tmp/dog
+node bin/review-surfaces.js all --provider ai-sdk --dogfood --conversation <clean.md> --base origin/main --head HEAD --out /tmp/dog
 ```
 
 The privacy guard REFUSES to send a transcript or diff that holds a blocked-kind
