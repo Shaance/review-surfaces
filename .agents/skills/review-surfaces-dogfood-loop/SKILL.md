@@ -31,7 +31,7 @@ it generates:
 
 ```bash
 pnpm run local-review        # all --dogfood over origin/main...HEAD, + cockpit + validate, to .review-surfaces
-# or, to a scratch dir:
+# or, to a scratch dir (the raw bin shim needs a built dist/ — run `pnpm run build` first):
 node bin/review-surfaces.js all --provider mock --dogfood --base origin/main --head HEAD --out /tmp/dog
 ```
 
@@ -58,11 +58,16 @@ bodies onto the cockpit — a bug the full test suite missed).
 
 The methodology *audit* and CONV-GAP leaves need a remote provider AND a real diff
 (CONV-GAP only grounds a gap on a CHANGED file, so an empty `HEAD..HEAD` range leaves
-it unexercised):
+it unexercised). `ai-sdk` DEFAULTS to Google, so an unqualified run needs
+`GOOGLE_GENERATIVE_AI_API_KEY`; if `.env.local` only has an Anthropic or OpenAI key,
+pass the matching `--model` (`anthropic:<id>` / `openai:<id>`) so that provider's key
+is read instead — otherwise the run skips with "GOOGLE_GENERATIVE_AI_API_KEY is not set":
 
 ```bash
 set -a; . ./.env.local; set +a   # source the provider key; never paste or commit it
+pnpm run build                   # the raw bin shim refuses to run an unbuilt dist/
 node bin/review-surfaces.js all --provider ai-sdk --dogfood --conversation <clean.md> --base origin/main --head HEAD --out /tmp/dog
+#   add e.g. --model anthropic:claude-sonnet-4-6  (or --model openai:gpt-...) for a non-Google key
 ```
 
 The privacy guard REFUSES to send a transcript or diff that holds a blocked-kind
