@@ -60,12 +60,17 @@ function basename(filePath: string): string {
 // `uploader.test.ts`, `uploader_test.go`, `test_uploader.py`, `UploaderTest.java`
 // all reduce to `uploader` (the impl `uploader.ts`'s stem).
 function fileStem(filePath: string): string {
-  let name = basename(filePath).toLowerCase();
-  name = name.replace(/\.[^.]+$/, ""); // strip extension
+  const raw = basename(filePath).replace(/\.[^.]+$/, ""); // strip extension, keep case
+  let name = raw.toLowerCase();
   name = name.replace(/\.(?:test|spec)$/, ""); // uploader.test -> uploader
   name = name.replace(/^(?:test|spec)[._-]/, ""); // test_uploader -> uploader
   name = name.replace(/[._-](?:test|spec)$/, ""); // uploader_test -> uploader
-  name = name.replace(/(?:test|spec)$/, ""); // uploadertest (UploaderTest.java) -> uploader
+  // PascalCase suffix (Java/Scala `UploaderTest`/`UploaderSpec`): strip a trailing
+  // Test/Spec ONLY when the ORIGINAL name actually used the capitalized convention,
+  // so an ordinary word like `contest`/`protest`/`latest` keeps its stem (Codex P2).
+  if (/(?:Test|Spec)$/.test(raw)) {
+    name = name.replace(/(?:test|spec)$/, "");
+  }
   // Drop a trailing test qualifier so a multipart test name still correlates with
   // its impl (`payments.integration` -> `payments`) — Codex P2.
   name = name.replace(/\.(?:integration|unit|e2e|browser|node|api|smoke|acceptance|contract)$/, "");
@@ -295,16 +300,26 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
     );
   const uncoveredImpl = broadTestRun ? [] : implFiles.filter((file) => !coveringTestStems.has(fileStem(file.path)));
   if (uncoveredImpl.length > 0 && !discusses(haystack, TEST_KEYWORDS)) {
-    // Promote only on a test-weakening RELATED to an uncovered file (its name stem
+    // Promote on a test-weakening RELATED to an uncovered file (its name stem
     // matches) — an unrelated weakening elsewhere should not escalate this gap
-    // (Codex P2).
+    // (Codex P2). A DELETED colocated test (any language, e.g. `foo_test.go`) is also
+    // a concrete weakening even though the JS-oriented semantic detector emits no
+    // test_weakening fact for it (Codex P2).
     const uncoveredStems = new Set(uncoveredImpl.map((file) => fileStem(file.path)));
     const relatedWeakening = facts.test_weakening.find((signal) => uncoveredStems.has(fileStem(signal.path)));
+    const deletedRelatedTest = changed.find(
+      (file) => file.status === "D" && isTestFile(file.path) && uncoveredStems.has(fileStem(file.path))
+    );
+    const promoted = relatedWeakening !== undefined || deletedRelatedTest !== undefined;
     emit(
       "impl_no_test",
-      relatedWeakening !== undefined,
+      promoted,
       `Implementation changed with no test coverage evidence or test discussion: ${fileList(uncoveredImpl.map((file) => file.path))}.${
-        relatedWeakening ? ` A related test-weakening change was also detected (${relatedWeakening.kind}).` : ""
+        relatedWeakening
+          ? ` A related test-weakening change was also detected (${relatedWeakening.kind}).`
+          : deletedRelatedTest
+            ? ` A related test file was deleted (${deletedRelatedTest.path}).`
+            : ""
       }`,
       uncoveredImpl[0].path
     );

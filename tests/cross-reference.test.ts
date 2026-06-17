@@ -306,6 +306,23 @@ test("review-surfaces.METHODOLOGY.8 a FOCUSED test run does not globally suppres
   assert.ok(signal(findings, "impl_no_test"), "a focused test run is not global coverage");
 });
 
+test("review-surfaces.METHODOLOGY.8 fileStem does not strip 'test' from ordinary words like contest (Codex P2)", () => {
+  // src/contest.ts is impl; an unrelated src/con.ts test must NOT be treated as its coverage.
+  const findings = computeCrossReferenceSignals(collection([file("src/contest.ts"), file("tests/con.test.ts", "A")]), talk("worked on contest"));
+  const sig = signal(findings, "impl_no_test");
+  assert.ok(sig, "contest.ts is uncovered (con.test.ts is unrelated)");
+  assert.match(sig.summary, /contest/);
+});
+
+test("review-surfaces.METHODOLOGY.8 a DELETED colocated test promotes impl_no_test (Codex P2)", () => {
+  const sig = signal(
+    computeCrossReferenceSignals(collection([file("src/uploader.go"), file("src/uploader_test.go", "D")]), talk("dropped the old flow")),
+    "impl_no_test"
+  );
+  assert.ok(sig);
+  assert.equal(sig.advisory, false, "a deleted colocated test is a concrete weakening");
+});
+
 test("review-surfaces.METHODOLOGY.8 an empty diff yields no cross-reference findings", () => {
   assert.deepEqual(computeCrossReferenceSignals(collection([]), talk("anything")), []);
 });
