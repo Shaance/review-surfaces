@@ -5,6 +5,7 @@ import {
   commandLooksLikeFocusedTestCommand,
   commandLooksLikeLocalValidationCommand,
   commandLooksLikeTestCommand,
+  matchCommandRule,
   normalizeCommand
 } from "../src/commands/classify";
 
@@ -531,6 +532,16 @@ test("review-surfaces.COLLECTOR.9 validated wrapper command rules classify repos
   assert.equal(commandLooksLikeTestCommand("./scripts/harness.sh ios-quick", rules), false);
   assert.equal(commandLooksLikeLocalValidationCommand("./scripts/harness.sh ios-quick", rules), true);
   assert.equal(commandLooksLikeBroadTestCommand("./scripts/harness.sh full", rules), true);
+
+  // Leading env assignments are stripped before wrapper matching, just like the
+  // built-in classifiers — `CI=1 ./scripts/check-ios.sh` still resolves its rule
+  // instead of being downgraded to unrecognized.
+  assert.equal(commandLooksLikeBroadTestCommand("CI=1 ./scripts/check-ios.sh", rules), true);
+  assert.equal(
+    commandLooksLikeFocusedTestCommand("CI=1 SWIFT_DETERMINISTIC=1 ./scripts/check-ios.sh --quick", rules),
+    true
+  );
+  assert.equal(matchCommandRule("CI=1 ./scripts/check-ios.sh", rules)?.id, "ios-full");
 
   // No rule -> a bare wrapper is unrecognized (no fabricated test evidence).
   assert.equal(commandLooksLikeTestCommand("./scripts/check-ios.sh"), false);

@@ -228,7 +228,11 @@ export interface CommandRule {
 }
 
 export function matchCommandRule(command: string, rules: readonly CommandRule[]): CommandRule | undefined {
-  const normalized = normalizeCommand(command);
+  // Strip leading env assignments (`CI=1 ./scripts/check-ios.sh`) the same way the
+  // built-in classifiers do, so a wrapper rule for `./scripts/check-ios.sh` still
+  // matches when the transcript carries an env prefix. Rule commands never carry an
+  // env prefix, so they keep plain whitespace normalization.
+  const normalized = normalizeCommandForClassification(command);
   let best: CommandRule | undefined;
   let bestCommand = "";
   for (const rule of rules) {

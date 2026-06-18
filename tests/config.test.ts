@@ -202,6 +202,21 @@ test("review-surfaces.COLLECTOR.9 command_rules default to empty and parse valid
   );
 });
 
+test("review-surfaces.COLLECTOR.8 default test globs index every recognized Swift test target directory", () => {
+  // Zero-config repos build tests.index.json by globbing defaultConfig.tests, so the
+  // Swift test-directory globs must mirror SWIFT_TEST_DIRS in source-kind.ts; otherwise
+  // a non-`*Test(s).swift` helper under SnapshotTests/Test/UITest/__Tests__ is missed.
+  for (const dir of ["Tests", "Test", "UITests", "UITest", "SnapshotTests", "__Tests__"]) {
+    assert.ok(
+      defaultConfig.tests.includes(`**/${dir}/**/*.swift`),
+      `default tests should glob **/${dir}/**/*.swift`
+    );
+  }
+  // The basename conventions stay covered too.
+  assert.ok(defaultConfig.tests.includes("**/*Tests.swift"));
+  assert.ok(defaultConfig.tests.includes("**/*Test.swift"));
+});
+
 test("review-surfaces.COLLECTOR.9 command_rules fail the load loudly on malformed or duplicate rules", () => {
   const cases: Array<{ rules: unknown; why: string }> = [
     { rules: { command_rules: "nope" }, why: "non-list" },

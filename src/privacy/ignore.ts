@@ -17,14 +17,22 @@ export const DEFAULT_PRIVACY_IGNORE_PATTERNS = [
   // state, and build caches are excluded by default. Reviewable service-plist /
   // entitlement / project TEXT is intentionally NOT excluded here — it stays
   // available to deterministic detectors and is protected by redact-before-persist
-  // and block-before-remote instead.
+  // and block-before-remote instead. The signing-extension and build-cache sets
+  // mirror src/collector/source-kind.ts (isAppleSigningArtifactPath /
+  // isAppleGeneratedPath) so anything the classifier marks private is also never
+  // persisted in changed_files / diff.patch.
   "**/*.mobileprovision",
   "**/*.provisionprofile",
   "**/*.p12",
+  "**/*.cer",
+  "**/*.certSigningRequest",
+  "**/*.keychain",
   "**/*.xcuserstate",
   "**/xcuserdata/**",
   "**/DerivedData/**",
   "**/.build/**",
+  "**/SourcePackages/**",
+  "**/.swiftpm/**",
   ".claude/",
   ".review-surfaces/feedback/raw/**",
   ".review-surfaces/inputs/conversation.raw.*"

@@ -104,6 +104,38 @@ test("review-surfaces.PRIVACY.3 default ignore excludes local Claude state", asy
   assert.equal(ignore.isIgnored("CLAUDE.md"), false);
 });
 
+test("review-surfaces.PRIVACY.8 default ignore drops every Apple signing artifact + build cache the classifier marks private", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ignore-apple-"));
+  const ignore = await loadPrivacyIgnore(tmp, ".review-surfacesignore");
+
+  // Signing/provisioning material: the default list must cover the same extensions
+  // src/collector/source-kind.ts treats as signing artifacts, so nothing it marks
+  // private is persisted in changed_files / diff.patch.
+  for (const p of [
+    "App/App.mobileprovision",
+    "Dev.provisionprofile",
+    "secrets/cert.p12",
+    "ci.cer",
+    "MyCert.certSigningRequest",
+    "login.keychain"
+  ]) {
+    assert.equal(ignore.isIgnored(p), true, `${p} should be ignored by default`);
+  }
+  // Build/package caches (SwiftPM resolved checkouts + workspace state) join
+  // DerivedData/.build as never-persisted generated state.
+  for (const p of [
+    "SourcePackages/checkouts/Dep/Sources/Dep.swift",
+    ".swiftpm/configuration/registries.json",
+    "DerivedData/App/Build/x.o",
+    ".build/release/App"
+  ]) {
+    assert.equal(ignore.isIgnored(p), true, `${p} should be ignored by default`);
+  }
+  // Reviewable project/config TEXT stays available to detectors (not privacy-dropped).
+  assert.equal(ignore.isIgnored("App/Info.plist"), false);
+  assert.equal(ignore.isIgnored("App/App.entitlements"), false);
+});
+
 test("review-surfaces.PRIVACY.2 blocks high-risk private key material for remote prompts", () => {
   const pemLabel = "PRIVATE KEY";
   const result = redactSecrets(`PRIVATE_KEY=-----BEGIN ${pemLabel}-----\nabc\n-----END ${pemLabel}-----`);

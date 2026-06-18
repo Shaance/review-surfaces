@@ -6,9 +6,11 @@
 // on the repo-relative POSIX path — no filesystem reads, no content inspection —
 // so it is deterministic and safe to call from any stage.
 //
-// Scope of v1 (goal contract D2/D3): path-shape recognition only. A name like
-// `project.yml` is NOT classified as an Apple project file here because that needs
-// content (XcodeGen shape); the content-aware project model lands in Phase 3.
+// Scope of v1 (goal contract D2/D3): path-shape recognition only. XcodeGen's
+// `project.yml`/`project.yaml` is recognized by name as an Apple project/config
+// file (COLLECTOR.8 lists it explicitly); the CONTENT-aware project model that
+// parses the XcodeGen shape and reconciles it with the generated `.xcodeproj`
+// still lands in Phase 3.
 
 function posix(filePath: string): string {
   return filePath.replace(/\\/g, "/");
@@ -77,10 +79,15 @@ const APPLE_CONFIG_EXTENSIONS: readonly string[] = [
 ];
 
 // Exact basenames that identify an Apple project/config file regardless of path.
+// `project.yml`/`project.yaml` are the XcodeGen author-intent spec files; COLLECTOR.8
+// requires the shared classifier to recognize them by name (Phase 3 adds the
+// content-aware parse + generated-project reconciliation).
 const APPLE_CONFIG_BASENAMES: ReadonlySet<string> = new Set([
   "Package.swift",
   "PrivacyInfo.xcprivacy",
-  "project.pbxproj"
+  "project.pbxproj",
+  "project.yml",
+  "project.yaml"
 ]);
 
 // `Package.resolved` is an Apple/SwiftPM LOCK file: recognized so dependency facts
@@ -90,10 +97,10 @@ export function isAppleLockPath(filePath: string): boolean {
   return baseName(filePath) === "Package.resolved";
 }
 
-// A reviewable Apple project/config file (Package.swift, the .pbxproj, schemes,
-// test plans, xcconfig, entitlements, privacy manifest, Info.plist and other text
-// plists). project.pbxproj is deliberately NOT treated as generated — it is often
-// the source-of-truth project file (goal contract Phase 1).
+// A reviewable Apple project/config file (Package.swift, the .pbxproj, XcodeGen
+// project.yml/.yaml, schemes, test plans, xcconfig, entitlements, privacy manifest,
+// Info.plist and other text plists). project.pbxproj is deliberately NOT treated as
+// generated — it is often the source-of-truth project file (goal contract Phase 1).
 export function isAppleProjectConfigPath(filePath: string): boolean {
   const base = baseName(filePath);
   if (APPLE_CONFIG_BASENAMES.has(base)) {
@@ -143,7 +150,9 @@ const APPLE_SIGNING_EXTENSIONS: readonly string[] = [
 
 export function isAppleSigningArtifactPath(filePath: string): boolean {
   const lower = baseName(filePath).toLowerCase();
-  if (APPLE_SIGNING_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
+  // Compare against lowercased extensions so a mixed-case canonical name like
+  // `Foo.certSigningRequest` still matches the lowercased basename.
+  if (APPLE_SIGNING_EXTENSIONS.some((ext) => lower.endsWith(ext.toLowerCase()))) {
     return true;
   }
   // Bare private-key material commonly committed by accident next to iOS configs.

@@ -53,7 +53,10 @@ test("review-surfaces.COLLECTOR.8 Apple project/config files are recognized (pbx
     "App.xcodeproj/xcshareddata/xcschemes/App.xcscheme",
     "Plans/Unit.xctestplan",
     "App/PrivacyInfo.xcprivacy",
-    "App/Info.plist"
+    "App/Info.plist",
+    // XcodeGen author-intent spec files — COLLECTOR.8 lists `project.yml` explicitly.
+    "project.yml",
+    "App/project.yaml"
   ];
   for (const path of configs) {
     assert.equal(isAppleProjectConfigPath(path), true, `${path} should be Apple project/config`);
@@ -86,7 +89,17 @@ test("review-surfaces.COLLECTOR.8 Apple generated/cache/user-state paths are rec
 });
 
 test("review-surfaces.COLLECTOR.8 + PRIVACY.8 signing artifacts and non-review union", () => {
-  for (const path of ["App.mobileprovision", "Dev.provisionprofile", "cert.p12", "secret.key", "key.pem"]) {
+  for (const path of [
+    "App.mobileprovision",
+    "Dev.provisionprofile",
+    "cert.p12",
+    "ci.cer",
+    // mixed-case canonical CSR name must still match after basename lowercasing.
+    "MyCert.certSigningRequest",
+    "login.keychain",
+    "secret.key",
+    "key.pem"
+  ]) {
     assert.equal(isAppleSigningArtifactPath(path), true, `${path} should be a signing artifact`);
   }
   assert.equal(isAppleNonReviewArtifactPath("Package.resolved"), true);

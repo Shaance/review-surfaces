@@ -77,14 +77,21 @@ export const defaultConfig: ReviewSurfacesConfig = {
   docs: ["README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md", "docs/**/*.md", ".agents/skills/**/SKILL.md"],
   // review-surfaces.COLLECTOR.8: zero-config repositories index Swift/Xcode tests
   // alongside the existing JS/TS defaults (added, not replaced) so XCTest / Swift
-  // Testing suites are collected as tests rather than implementation.
+  // Testing suites are collected as tests rather than implementation. The Swift
+  // test-directory globs mirror SWIFT_TEST_DIRS in src/collector/source-kind.ts so
+  // a non-`*Test(s).swift` helper under any recognized test target (e.g.
+  // `SnapshotTests/Support/Fixture.swift`) is still indexed as test evidence.
   tests: [
     "tests/**/*.test.ts",
     "tests/**/*.test.js",
     "**/*Tests.swift",
     "**/*Test.swift",
     "**/Tests/**/*.swift",
-    "**/UITests/**/*.swift"
+    "**/Test/**/*.swift",
+    "**/UITests/**/*.swift",
+    "**/UITest/**/*.swift",
+    "**/SnapshotTests/**/*.swift",
+    "**/__Tests__/**/*.swift"
   ],
   privacy: {
     ignore_file: ".review-surfacesignore",
