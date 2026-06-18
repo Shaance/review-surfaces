@@ -2176,14 +2176,26 @@ function buildReviewQueue(
     });
   }
 
-  // Cold-start review-focus floor (review-surfaces.HUMAN_REVIEW.28): when NO detector
-  // produced a queue item — a spec-less / no-PR-surface run where nothing structural
-  // fired — a substantive diff must still not yield an empty queue. Rank the changed
+  // Cold-start review-focus floor (review-surfaces.HUMAN_REVIEW.28): rank the changed
   // files by DETERMINISTIC signals (churn, exported surface, an impl file with no
   // connected changed test, sensitive error/async/auth/persistence paths) and surface
   // the files most worth reading, WITHOUT fabricating any risk or blocker.
+  const baselineDrafts = baselineReviewFocusDrafts(input, diffIndex, semanticFacts);
   if (drafts.length === 0) {
-    drafts.push(...baselineReviewFocusDrafts(input, diffIndex, semanticFacts));
+    // Empty queue (spec-less / nothing structural fired): the floor IS the queue.
+    drafts.push(...baselineDrafts);
+  } else {
+    // Non-empty but possibly THIN: a lone dependency/config detector finding (e.g. a
+    // package.json version bump) can be the only queue item while the diff's substantive
+    // SOURCE goes unranked and hidden. Augment with review-focus items for IMPLEMENTATION
+    // files that no existing draft already covers, so the source a reviewer should read is
+    // never buried under a dependency/config finding. Only impl source is added (never
+    // docs/tests/config) to keep an already-populated queue low-noise (HUMAN_REVIEW.28).
+    const coveredPaths = new Set(drafts.map((draft) => draft.path).filter((path): path is string => Boolean(path)));
+    const augment = baselineDrafts.filter(
+      (draft) => Boolean(draft.path) && !coveredPaths.has(draft.path) && baselineFileRole(draft.path) === "impl"
+    );
+    drafts.push(...augment);
   }
 
   // review-surfaces.RANKING.1/.3: annotate each draft with its evidence tier and
