@@ -4422,3 +4422,29 @@ test("review-surfaces.METHODOLOGY.8 a PROMOTED workflow finding survives the que
   assert.ok(blocking, "the promoted finding reaches the surface despite being emitted last");
   assert.equal(blocking.severity, "blocking");
 });
+
+test("review-surfaces.METHODOLOGY.8 a corroborated workflow question survives the GLOBAL cap behind other questions (#109)", () => {
+  const packet = packetFixture();
+  const anchor = (path: string) => [{ kind: "file" as const, path, confidence: "medium" as const, validation_status: "valid" as const }];
+  // A single corroborated (blocking) D6 finding — appended AFTER the blocker/risk/gap
+  // questions packetFixture produces. With a cap of 1, the within-workflow ordering is
+  // not enough: the GLOBAL cap must still preserve this deterministic-backed question.
+  packet.methodology.workflow_findings = [
+    { id: "XREF-009", signal_kind: "api_no_compat", summary: "globally-capped corroborated change", severity: "high", advisory: false, evidence: anchor("late.ts") }
+  ];
+  // packetFixture yields a non-preserved "clarifying" question first, then a preserved
+  // intent-mismatch question; the corroborated workflow question is appended last.
+  const uncapped = buildHumanReview({ packet });
+  assert.ok(uncapped.questions.length >= 3, "precondition: there are questions before the workflow one");
+  assert.ok(uncapped.questions.some((q) => /needs tests/.test(q.reason)), "precondition: a non-preserved filler question exists");
+
+  // Cap below the question count: the late-appended corroborated question must survive
+  // by evicting the NON-preserved filler (not the preserved intent-mismatch one).
+  const model = buildHumanReview({ packet, config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_questions: 2 } });
+  assert.equal(model.questions.length, 2, "the cap is honored");
+  assert.ok(
+    model.questions.some((q) => /globally-capped corroborated change/.test(q.question) && q.severity === "blocking"),
+    "the corroborated D6 question is preserved through the global cap"
+  );
+  assert.ok(!model.questions.some((q) => /needs tests/.test(q.reason)), "the non-preserved filler was evicted, not the corroborated D6 question");
+});

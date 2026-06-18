@@ -248,6 +248,10 @@ const MAX_CHANGED_FILE_QUEUE = 8;
 const MAX_FEEDBACK_EFFECTS = 12;
 const MAX_MISSING_TEAM_POLICY_QUESTION_EFFECTS = 3;
 const INTENT_MISMATCH_QUESTION_REASON = "The intent-mismatch surface found changed behavior or missing evidence that does not cleanly map to stated intent.";
+// A corroborated (advisory===false) D6 workflow finding: a deterministic check backs
+// it, so its question must survive the global cap even when appended after the
+// blocker/risk/gap questions (Codex P2, #109).
+const CORROBORATED_WORKFLOW_QUESTION_REASON = "The methodology audit's deterministic cross-reference check corroborated this; resolve it before approval.";
 const FEEDBACK_ACTION_DOWNGRADE_TO_LOW = "downgrade_to_low";
 const FEEDBACK_ACTION_RETAIN_LOW_PRIORITY = "retain_low_priority";
 const FEEDBACK_ACTION_PRIORITIZE_REVIEW_FOCUS = "prioritize_review_focus";
@@ -3892,7 +3896,7 @@ function buildQuestions(
         ? `A deterministic check corroborated this (${finding.signal_kind.replace(/_/g, " ")}): ${forQuestionTail(finding.summary)}. Confirm it was intended before approval.`
         : `Did the agent's workflow account for this (${finding.signal_kind.replace(/_/g, " ")}): ${forQuestionTail(finding.summary)}?`,
       reason: corroborated
-        ? "The methodology audit's deterministic cross-reference check corroborated this; resolve it before approval."
+        ? CORROBORATED_WORKFLOW_QUESTION_REASON
         : "The methodology audit of the agent conversation flagged this as advisory; confirm it before approval.",
       evidence: finding.evidence,
       maps_to_risks: [],
@@ -3962,19 +3966,32 @@ function capQuestionsPreservingIntent(questions: ReviewerQuestion[], limit: numb
   }
 
   const selected = questions.slice(0, limit);
-  const firstIntentQuestion = questions.find(isIntentMismatchQuestion);
-  if (!firstIntentQuestion || selected.some(isIntentMismatchQuestion)) {
-    return renumberQuestions(selected);
+  // Some questions carry intent the head-cap must not silently drop just because they
+  // were appended late: an intent-mismatch question, and a corroborated (blocking) D6
+  // workflow question. For each that the head-cap excluded, swap it in over the LAST
+  // selected question of equal-or-lower severity that is not itself preserved, so a
+  // deterministic-backed signal still reaches the reviewer (Codex P2, #109).
+  for (const priority of questions.filter(isPriorityPreservedQuestion)) {
+    if (selected.includes(priority)) {
+      continue;
+    }
+    const priorityRank = questionSeverityRank(priority.severity);
+    const replacementIndex = findLastQuestionIndex(
+      selected,
+      (question) => questionSeverityRank(question.severity) <= priorityRank && !isPriorityPreservedQuestion(question)
+    );
+    if (replacementIndex < 0) {
+      continue;
+    }
+    selected[replacementIndex] = priority;
   }
-
-  const intentRank = questionSeverityRank(firstIntentQuestion.severity);
-  const replacementIndex = findLastQuestionIndex(selected, (question) => questionSeverityRank(question.severity) <= intentRank);
-  if (replacementIndex < 0) {
-    return renumberQuestions(selected);
-  }
-
-  selected[replacementIndex] = firstIntentQuestion;
   return renumberQuestions(dedupeQuestions(selected).slice(0, limit));
+}
+
+// Questions whose intent must survive the global question cap even when appended after
+// the blocker/risk/gap questions.
+function isPriorityPreservedQuestion(question: ReviewerQuestion): boolean {
+  return isIntentMismatchQuestion(question) || question.reason === CORROBORATED_WORKFLOW_QUESTION_REASON;
 }
 
 function isIntentMismatchQuestion(question: ReviewerQuestion): boolean {

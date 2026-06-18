@@ -187,6 +187,47 @@ test("review-surfaces.METHODOLOGY.8 deps_no_rationale does NOT fire when the cha
   assert.equal(signal(findings, "deps_no_rationale"), undefined);
 });
 
+test("review-surfaces.METHODOLOGY.8 deps_no_rationale STILL fires when the rationale is about an UNRELATED topic (#109)", () => {
+  // The package IS named, but the only rationale word ("because") is far away and
+  // explains the auth refactor, not the dependency — proximity is not met.
+  const findings = computeCrossReferenceSignals(
+    collection([file("package.json")], { dependencyFacts: [{ kind: "added", package: "left-pad", detail: "x", source_path: "package.json" }] }),
+    talk(`Upgraded left-pad to v2 in package.json. ${"context ".repeat(40)} Separately I refactored the auth module because it was confusing.`)
+  );
+  assert.ok(signal(findings, "deps_no_rationale"), "a rationale stated about an unrelated topic must not suppress the dependency gap");
+});
+
+test("review-surfaces.METHODOLOGY.8 deps_no_rationale does NOT fire when the rationale is NEAR the package (#109)", () => {
+  const findings = computeCrossReferenceSignals(
+    collection([file("package.json")], { dependencyFacts: [{ kind: "added", package: "left-pad", detail: "x", source_path: "package.json" }] }),
+    talk("upgraded left-pad because of a security patch")
+  );
+  assert.equal(signal(findings, "deps_no_rationale"), undefined, "a rationale next to the package name suppresses the gap");
+});
+
+test("review-surfaces.METHODOLOGY.8 impl_no_test: a file-correlated test mention clears only THAT file's gap (#109)", () => {
+  const findings = computeCrossReferenceSignals(collection([file("src/alpha.ts"), file("src/beta.ts")]), talk("I added tests for alpha"));
+  const sig = signal(findings, "impl_no_test");
+  assert.ok(sig, "beta has no test discussion, so its gap still fires");
+  assert.match(sig.summary, /beta\.ts/, "the gap names the file with no test discussion");
+  assert.doesNotMatch(sig.summary, /alpha\.ts/, "alpha's gap is cleared by the file-correlated test mention");
+});
+
+test("review-surfaces.METHODOLOGY.8 impl_no_test: a GENERIC test mention does not clear an unmentioned file's gap (#109)", () => {
+  const findings = computeCrossReferenceSignals(collection([file("src/uploader.ts")]), talk("added comprehensive tests"));
+  assert.ok(signal(findings, "impl_no_test"), "a generic 'added tests' with no file reference must not clear the per-file gap");
+});
+
+test("review-surfaces.METHODOLOGY.8 risky_no_security STILL fires when only the domain noun 'permission' is named (#109)", () => {
+  // Naming "permissions" is not a security DISCUSSION; the dropped suppressor means it fires.
+  assert.ok(signal(computeCrossReferenceSignals(collection([file("src/auth/login.ts")]), talk("updated the permissions list")), "risky_no_security"));
+});
+
+test("review-surfaces.METHODOLOGY.8 impl_no_test STILL fires when 'unit' appears only inside an unrelated word (#109)", () => {
+  // "united" must not count as a test discussion now that the 'unit' suppressor was dropped.
+  assert.ok(signal(computeCrossReferenceSignals(collection([file("src/payments.ts")]), talk("we united the billing modules")), "impl_no_test"));
+});
+
 test("review-surfaces.METHODOLOGY.8 every cross-reference finding anchors to a changed file with a distinct id", () => {
   const findings = computeCrossReferenceSignals(collection([file("src/auth/login.ts")]), []);
   assert.ok(findings.length > 0);

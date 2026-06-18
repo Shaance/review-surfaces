@@ -31,8 +31,14 @@ interface ChangedFileLike {
 // "updated package.json and the lockfile" would count as discussion and suppress the
 // very signal it should raise (Codex P2). Matched at a word boundary (prefix), so
 // "vulnerab" still catches "vulnerability" while "test" never matches "latest".
-const SECURITY_KEYWORDS = ["security", "secure", "threat", "vulnerab", "exploit", "attack", "sanitiz", "escape", "injection", "xss", "csrf", "permission", "authoriz", "encrypt", "harden", "validate input", "input validation"];
-const TEST_KEYWORDS = ["test", "tested", "coverage", "assert", "pytest", "jest", "vitest", "mocha", "unit", "regression"];
+// Suppressor keywords are REASONING words that prove the topic was reasoned about,
+// NOT the domain NOUNS that merely name the changed category — a domain noun both
+// FIRES the signal (via the path heuristic) and SUPPRESSES it (via discussion), so it
+// can never fire for its own category. Dropped: "permission"/"authoriz" (a changed
+// `permissions.ts` self-suppresses on "updated the permissions"), and "unit" (collides
+// with "unity"/"united"/"reunite" and is redundant with "test") (Codex P2, #109).
+const SECURITY_KEYWORDS = ["security", "secure", "threat", "vulnerab", "exploit", "attack", "sanitiz", "escape", "injection", "xss", "csrf", "encrypt", "harden", "validate input", "input validation"];
+const TEST_KEYWORDS = ["test", "tested", "coverage", "assert", "pytest", "jest", "vitest", "mocha", "regression"];
 const COMPAT_KEYWORDS = ["backward", "compat", "breaking", "deprecat", "migration", "semver", "major version"];
 // Suppress deps_no_rationale only on EXPLANATORY language (a stated reason), never on
 // the descriptive nouns that just name the change (depend/package/version/lockfile).
@@ -201,8 +207,52 @@ function conversationHaystack(events: ConversationEvent[]): string {
 // Word-boundary (prefix) match so a domain noun embedded in a larger word does not
 // count and a reasoning prefix still matches its inflections ("vulnerab" ->
 // "vulnerability", "deprecat" -> "deprecated"); a multi-word phrase matches verbatim.
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function discusses(haystack: string, keywords: string[]): boolean {
-  return keywords.some((keyword) => new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(haystack));
+  return keywords.some((keyword) => new RegExp(`\\b${escapeRegExp(keyword)}`).test(haystack));
+}
+
+// True when a REASONING keyword appears within `window` chars of a TOPIC token — i.e.
+// the rationale / test discussion is ABOUT the changed dependency or file, not
+// unrelated reasoning elsewhere in the conversation. The haystack is already
+// lowercased; topics shorter than 3 chars are ignored to avoid spurious anchors
+// (Codex P2, #109).
+function discussesNear(haystack: string, keywords: string[], topics: string[], window = 160): boolean {
+  const topicSpans: Array<[number, number]> = [];
+  for (const topic of topics) {
+    const needle = topic.toLowerCase();
+    if (needle.length < 3) {
+      continue;
+    }
+    const topicRegExp = new RegExp(escapeRegExp(needle), "g");
+    let match: RegExpExecArray | null;
+    while ((match = topicRegExp.exec(haystack)) !== null) {
+      topicSpans.push([match.index, match.index + match[0].length]);
+      if (match.index === topicRegExp.lastIndex) {
+        topicRegExp.lastIndex += 1;
+      }
+    }
+  }
+  if (topicSpans.length === 0) {
+    return false;
+  }
+  for (const keyword of keywords) {
+    const keywordRegExp = new RegExp(`\\b${escapeRegExp(keyword)}`, "g");
+    let match: RegExpExecArray | null;
+    while ((match = keywordRegExp.exec(haystack)) !== null) {
+      const position = match.index;
+      if (topicSpans.some(([start, end]) => position >= start - window && position <= end + window)) {
+        return true;
+      }
+      if (match.index === keywordRegExp.lastIndex) {
+        keywordRegExp.lastIndex += 1;
+      }
+    }
+  }
+  return false;
 }
 
 function fileList(paths: string[]): string {
@@ -299,8 +349,22 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
         typeof transcript.command === "string" &&
         commandLooksLikeBroadTestCommand(transcript.command)
     );
-  const uncoveredImpl = broadTestRun ? [] : implFiles.filter((file) => !coveringTestStems.has(fileStem(file.path)));
-  if (uncoveredImpl.length > 0 && !discusses(haystack, TEST_KEYWORDS)) {
+  const uncoveredImpl = broadTestRun
+    ? []
+    : implFiles.filter((file) => {
+        const stem = fileStem(file.path);
+        if (coveringTestStems.has(stem)) {
+          return false; // a colocated / added test by name stem covers it
+        }
+        // A test DISCUSSION only clears THIS file's gap when it actually references the
+        // file (its name stem near a test keyword) — a generic "added tests" mention
+        // must not clear every per-file gap at once (Codex P2, #109).
+        if (stem.length >= 3 && discussesNear(haystack, TEST_KEYWORDS, [stem])) {
+          return false;
+        }
+        return true;
+      });
+  if (uncoveredImpl.length > 0) {
     // Promote on a test-weakening RELATED to an uncovered file (its name stem
     // matches) — an unrelated weakening elsewhere should not escalate this gap
     // (Codex P2). A DELETED colocated test (any language, e.g. `foo_test.go`) is also
@@ -388,7 +452,15 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
     ...changed.filter((file) => isDepOrConfigFile(file.path)).map((file) => file.path)
   ];
   const uniqueDepConfigPaths = [...new Set(depConfigPaths)];
-  if (uniqueDepConfigPaths.length > 0 && !discusses(haystack, RATIONALE_KEYWORDS)) {
+  // Scope the rationale to the dependency/config TOPIC — a package name, a changed
+  // dep/config filename, or a dependency noun — so a rationale stated about something
+  // ELSE in the conversation does not suppress THIS gap (Codex P2, #109).
+  const depTopics = [
+    ...dependencyFacts.map((fact) => fact.package).filter((pkg): pkg is string => typeof pkg === "string"),
+    ...uniqueDepConfigPaths.map(basename),
+    "dependenc", "lockfile", "package.json", "upgrade", "downgrade"
+  ];
+  if (uniqueDepConfigPaths.length > 0 && !discussesNear(haystack, RATIONALE_KEYWORDS, depTopics)) {
     // Any deterministic dependency OR config fact (not just security ones) is an
     // independent check that moves the signal off advisory — a CI/Docker/env/SQL
     // fact is as concrete as a dependency change (Codex P2, METHODOLOGY.8).
