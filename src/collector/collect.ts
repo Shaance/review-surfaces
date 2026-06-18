@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { AcaiSpecIndex, indexAcaiSpecs } from "../acai/acai";
+import type { CommandRule } from "../commands/classify";
 import { CommandTranscript, commandTranscriptInputDir, commandTranscriptOutputPath, indexCommandTranscriptFiles } from "../commands/transcripts";
 import { ReviewSurfacesConfig } from "../config/config";
 import { ConversationEvent, ConversationFormat } from "../conversation/events";
@@ -144,6 +145,10 @@ export interface CollectionResult {
   feedback: FeedbackFile[];
   commandTranscripts: CommandTranscript[];
   commandTranscriptOutputPath: string;
+  // review-surfaces.COLLECTOR.9: validated wrapper command rules from config,
+  // carried so transcript classification (test-evidence) honors them. Optional so
+  // partial test fixtures need not set it; consumers read `?? []`.
+  commandRules?: CommandRule[];
   testResults: TestResults;
   repositoryFiles: string[];
   repoIndex: RepoIndex;
@@ -778,6 +783,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     feedback,
     commandTranscripts,
     commandTranscriptOutputPath: commandsOutputPath,
+    commandRules: options.config.command_rules,
     testResults,
     repositoryFiles,
     repoIndex,

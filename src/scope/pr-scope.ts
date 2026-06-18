@@ -1,4 +1,10 @@
 import { CollectionResult } from "../collector/collect";
+import {
+  isAppleGeneratedPath,
+  isAppleLockPath,
+  isAppleProjectConfigPath,
+  isSwiftTestPath
+} from "../collector/source-kind";
 import { compareStrings } from "../core/compare";
 import { ACID_PATTERN, groupFromAcid } from "../evaluation/evidence-rules";
 import { IntentModel, IntentRequirement } from "../intent/intent";
@@ -229,7 +235,13 @@ export function classifyRole(filePath: string, areas: string[]): ChangedFileRole
 }
 
 export function isTestPath(filePath: string): boolean {
-  return filePath.startsWith("tests/") || /\.test\.[^./]+$/.test(filePath) || /\.spec\.[^./]+$/.test(filePath);
+  return (
+    filePath.startsWith("tests/") ||
+    /\.test\.[^./]+$/.test(filePath) ||
+    /\.spec\.[^./]+$/.test(filePath) ||
+    // review-surfaces.COLLECTOR.8: Swift/Xcode test files and target directories.
+    isSwiftTestPath(filePath)
+  );
 }
 
 function isSpecPath(filePath: string): boolean {
@@ -247,7 +259,11 @@ function isConfigPath(filePath: string): boolean {
     filePath.endsWith(".yml") ||
     filePath.endsWith(".json") ||
     base === "tsconfig.json" ||
-    base.startsWith("tsconfig.")
+    base.startsWith("tsconfig.") ||
+    // review-surfaces.COLLECTOR.8: Apple project/config files (Package.swift, the
+    // .pbxproj, schemes, test plans, xcconfig, entitlements, plists) are reviewable
+    // config — the .pbxproj is NOT treated as generated.
+    isAppleProjectConfigPath(filePath)
   );
 }
 
@@ -259,7 +275,17 @@ const LOCKFILES = new Set([
 ]);
 
 function isGeneratedPath(filePath: string): boolean {
-  return filePath.startsWith("dist/") || filePath.includes("/dist/") || LOCKFILES.has(baseName(filePath));
+  return (
+    filePath.startsWith("dist/") ||
+    filePath.includes("/dist/") ||
+    LOCKFILES.has(baseName(filePath)) ||
+    // review-surfaces.COLLECTOR.8: Apple build/cache/user-state output, and the
+    // SwiftPM Package.resolved lock, are treated as generated for ranking so they
+    // never dominate the queue (dependency facts still read Package.resolved by
+    // path in Phase 4a).
+    isAppleGeneratedPath(filePath) ||
+    isAppleLockPath(filePath)
+  );
 }
 
 // --- scope rules -----------------------------------------------------------

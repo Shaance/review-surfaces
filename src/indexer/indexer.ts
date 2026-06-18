@@ -1,6 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ChangedFile } from "../collector/git";
+import {
+  isAppleGeneratedPath,
+  isAppleLockPath,
+  isAppleProjectConfigPath,
+  isSwiftTestPath
+} from "../collector/source-kind";
 import { toPosixPath } from "../core/files";
 import { compareStrings } from "../core/compare";
 
@@ -102,19 +108,24 @@ export function classifyFile(filePath: string): FileClassification {
   const lower = posix.toLowerCase();
   const lowerBase = base.toLowerCase();
 
-  if (LOCKFILES.has(base)) {
+  // review-surfaces.COLLECTOR.8: Apple/Swift recognition delegates to the shared
+  // source-kind module (case-sensitive on the original posix path), folded in
+  // alongside the existing lowercased heuristics. Package.resolved is a lockfile;
+  // .build/DerivedData/xcuserdata are generated; Swift test files are tests; the
+  // .pbxproj/xcconfig/entitlements/plists are config (never generated).
+  if (LOCKFILES.has(base) || isAppleLockPath(posix)) {
     return "lockfile";
   }
-  if (isGenerated(lower, lowerBase)) {
+  if (isGenerated(lower, lowerBase) || isAppleGeneratedPath(posix)) {
     return "generated";
   }
-  if (isTest(lower, lowerBase)) {
+  if (isTest(lower, lowerBase) || isSwiftTestPath(posix)) {
     return "test";
   }
   if (isDocs(lower, lowerBase)) {
     return "docs";
   }
-  if (isConfig(lower, lowerBase)) {
+  if (isConfig(lower, lowerBase) || isAppleProjectConfigPath(posix)) {
     return "config";
   }
   if (SOURCE_EXTENSIONS.has(extName(lowerBase))) {

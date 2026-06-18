@@ -13,6 +13,18 @@ export const DEFAULT_PRIVACY_IGNORE_PATTERNS = [
   "**/*.key",
   "**/id_rsa",
   "**/id_ed25519",
+  // review-surfaces.PRIVACY.8: Apple signing/provisioning material, per-user Xcode
+  // state, and build caches are excluded by default. Reviewable service-plist /
+  // entitlement / project TEXT is intentionally NOT excluded here — it stays
+  // available to deterministic detectors and is protected by redact-before-persist
+  // and block-before-remote instead.
+  "**/*.mobileprovision",
+  "**/*.provisionprofile",
+  "**/*.p12",
+  "**/*.xcuserstate",
+  "**/xcuserdata/**",
+  "**/DerivedData/**",
+  "**/.build/**",
   ".claude/",
   ".review-surfaces/feedback/raw/**",
   ".review-surfaces/inputs/conversation.raw.*"

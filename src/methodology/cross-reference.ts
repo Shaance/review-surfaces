@@ -331,7 +331,7 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
         transcript.exit_code === 0 &&
         transcript.head_sha === headSha &&
         typeof transcript.command === "string" &&
-        commandLooksLikeBroadTestCommand(transcript.command)
+        commandLooksLikeBroadTestCommand(transcript.command, collection.commandRules ?? [])
     );
   // Stems shared by more than one impl file (e.g. two `index.ts`) are AMBIGUOUS: a
   // "tests for index" mention cannot be attributed to one of them, so a stem-correlated

@@ -23,6 +23,7 @@ import type { FeedbackFile } from "../feedback/feedback";
 import { PrRiskCandidate, PrReviewSurfaceModel, StructuredDiff, StructuredDiffFile, StructuredDiffHunk } from "../pr/contract";
 import { PR_RISK_RULE_METADATA } from "../pr/risk-metadata";
 import { ReviewPacket } from "../render/packet";
+import { isAppleGeneratedPath, isAppleNonReviewArtifactPath } from "../collector/source-kind";
 import { looksLikeRecordedCiSecretBoundaryManualCheck } from "../risks/manual-checks";
 import { RisksModel } from "../risks/risks";
 import { classifyRole, isTestPath } from "../scope/pr-scope";
@@ -2682,7 +2683,10 @@ const BASELINE_LOCKFILE_NAMES = new Set([
 ]);
 function isNonReviewArtifact(filePath: string): boolean {
   const base = (filePath.split("/").pop() ?? filePath).toLowerCase();
-  return BASELINE_NON_REVIEW_EXT.test(base) || BASELINE_LOCKFILE_NAMES.has(base);
+  // review-surfaces.COLLECTOR.8: Apple build/cache/user-state output, the SwiftPM
+  // Package.resolved lock, and signing material are not cold-start review-focus
+  // items — delegated to the shared source-kind module rather than re-listed here.
+  return BASELINE_NON_REVIEW_EXT.test(base) || BASELINE_LOCKFILE_NAMES.has(base) || isAppleNonReviewArtifactPath(filePath);
 }
 
 // `classifyRole`'s isTestPath only matches `tests/` + `.test.`/`.spec.`; broaden it to
@@ -2705,7 +2709,9 @@ type BaselineRole = "impl" | "test" | "config" | "ci" | "doc" | "generated" | "o
 function baselineFileRole(filePath: string): BaselineRole {
   // Generated/build output first: a path under generated/build/target/vendor is not
   // worth a manual read even if its extension looks like source (Codex #112 round-2).
-  if (BASELINE_GENERATED_DIR.test(filePath)) {
+  // review-surfaces.COLLECTOR.8: Apple .build/DerivedData/SourcePackages/xcuserdata
+  // generated output is folded in via the shared source-kind module.
+  if (BASELINE_GENERATED_DIR.test(filePath) || isAppleGeneratedPath(filePath)) {
     return "generated";
   }
   const role = classifyRole(filePath, []);
@@ -4673,7 +4679,7 @@ function isClaimedValidationEvidence(item: RisksModel["test_evidence"][number]):
   if (commands.length === 0) {
     return true;
   }
-  return commands.some(commandLooksLikeLocalValidationCommand);
+  return commands.some((command) => commandLooksLikeLocalValidationCommand(command));
 }
 
 // review-surfaces.HUMAN_REVIEW.21: each focused-requirement test item's "Expected"
