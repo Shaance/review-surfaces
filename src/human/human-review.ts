@@ -2579,9 +2579,11 @@ function changedFileQueueDrafts(
 // STEMS, matched as prefixes (`[a-z]*` tail, not a trailing `\b`) so the family forms
 // fire too: `auth`->authentication/authorize, `persist`->persistence, `migrat`->
 // migration/migrate, `permission`->permissions. A leading `\b` still prevents matching
-// mid-identifier (e.g. `coauthor` does not match `auth`) (Codex #112 round-2).
+// mid-identifier (e.g. `coauthor` does not match `auth`) (Codex #112 round-2). The `auth`
+// stem uses `auth(?!or(?!iz))` so it fires on authn/authentication AND authoriz(e/ation) but
+// NOT on content-authoring words (author/authors/authorId) (Codex #112 round-6).
 const BASELINE_SENSITIVE =
-  /\b(async|await|abort|signal|retry|catch|throw|reject|error|timeout|auth|login|logout|session|token|permission|oauth|password|fetch|request|http|url|socket|persist|database|migrat|cache|transaction|lifecycle|useeffect|dispose|cleanup)[a-z]*/i;
+  /\b(async|await|abort|signal|retry|catch|throw|reject|error|timeout|auth(?!or(?!iz))|login|logout|session|token|permission|oauth|password|fetch|request|http|url|socket|persist|database|migrat|cache|transaction|lifecycle|useeffect|dispose|cleanup)[a-z]*/i;
 // Exported/public surface added or removed in the diff itself (HUMAN_REVIEW.28 round-2):
 // in the spec-less cold-start path `semanticFacts.api_changes` is empty, so the only way
 // to see a public-surface change is the changed lines. Cross-language: TS/JS `export`/
@@ -2601,7 +2603,11 @@ const BASELINE_CODE_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|java|kt|kts
 // + `.md`). Outside `docs/`, a `README.mdx`/`CHANGELOG.rst` would otherwise fall through to
 // `other` and be queued (Codex #112 round-5). The cold-start floor never asks a human to
 // "read this changed file" for prose.
-const BASELINE_DOC_EXT = /\.(md|mdx|markdown|mkd|rst|adoc|asciidoc|txt|org|textile|rdoc|pod)$/i;
+// `.txt` is intentionally NOT here: it is too ambiguous (requirements.txt / constraints.txt
+// are substantive dependency manifests, not prose), so dropping it would hide a real change
+// (Codex #112 round-6). A genuinely prose .txt falls through to "other" and is merely ranked
+// low — never wrongly excluded.
+const BASELINE_DOC_EXT = /\.(md|mdx|markdown|mkd|rst|adoc|asciidoc|org|textile|rdoc|pod)$/i;
 // Files no human reads line-by-line on a cold-start: lockfiles, images/fonts, source maps,
 // snapshots, AND archive/executable/compiled binaries (a `.zip`/`.jar`/`.exe` is not a
 // review-focus item — Codex #112 round-5). Excluded from the baseline floor (Codex #112).
@@ -2714,7 +2720,15 @@ function baselineReviewFocusDrafts(
   // attributed to an impl by evidence.
   const changedTestStems = new Set(
     files
-      .filter((file) => baselineFileRole(file.path) === "test" && file.status !== "D" && !attributedTestPaths.has(file.path))
+      .filter(
+        (file) =>
+          baselineFileRole(file.path) === "test" &&
+          file.status !== "D" &&
+          // A non-review artifact under a test dir (tests/foo.snap, tests/foo.png) is not a
+          // real test — it must not lend its stem as connected coverage (Codex #112 round-6).
+          !isNonReviewArtifact(file.path) &&
+          !attributedTestPaths.has(file.path)
+      )
       .map((file) => baselineStem(file.path))
   );
   // The stem fallback (used only without `changed_tests_by_impl` evidence) is ambiguous

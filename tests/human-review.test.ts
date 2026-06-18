@@ -4818,3 +4818,64 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: extension completeness — .mt
   assert.ok(!model.review_queue.some((entry) => entry.path === "README.mdx"), "a .mdx doc outside docs/ is excluded");
   assert.ok(!model.review_queue.some((entry) => entry.path === "fixtures/app.jar"), "a .jar binary artifact is not a review-focus item");
 });
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: 'author' is not auth-sensitive but 'authorization' is (Codex #112 round-6)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/src/authors.ts b/src/authors.ts",
+    "--- a/src/authors.ts",
+    "+++ b/src/authors.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const authors = [];",
+    "+export const authorId = 1;",
+    "diff --git a/src/authorization.ts b/src/authorization.ts",
+    "--- a/src/authorization.ts",
+    "+++ b/src/authorization.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const x = 1;",
+    "+export function authorize() {}",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const authors = model.review_queue.find((entry) => entry.path === "src/authors.ts");
+  const authz = model.review_queue.find((entry) => entry.path === "src/authorization.ts");
+  assert.ok(authors && authz, "both files are queued");
+  assert.ok(!/error\/async\/auth\/network\/persistence paths/.test(authors.reason), "content-authoring 'authors' is not flagged auth-sensitive");
+  assert.match(authz.reason, /error\/async\/auth\/network\/persistence paths/, "'authorization'/'authorize' still fires the sensitive signal");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: requirements.txt is not dropped as documentation (Codex #112 round-6)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/requirements.txt b/requirements.txt",
+    "--- a/requirements.txt",
+    "+++ b/requirements.txt",
+    "@@ -1,1 +1,2 @@",
+    " flask==2.0.0",
+    "+requests==2.31.0",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  assert.ok(model.review_queue.some((entry) => entry.path === "requirements.txt"), "a .txt dependency manifest is a substantive change, not prose to drop");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a test-dir artifact does not lend connected-test coverage (Codex #112 round-6)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/src/foo.ts b/src/foo.ts",
+    "--- a/src/foo.ts",
+    "+++ b/src/foo.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const foo = 1;",
+    "+export const foo2 = 2;",
+    "diff --git a/tests/foo.snap b/tests/foo.snap",
+    "--- a/tests/foo.snap",
+    "+++ b/tests/foo.snap",
+    "@@ -1,1 +1,2 @@",
+    " old snapshot",
+    "+new snapshot",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const foo = model.review_queue.find((entry) => entry.path === "src/foo.ts");
+  assert.ok(foo, "src/foo.ts is queued");
+  assert.match(foo.reason, /no connected test change/, "a tests/foo.snap artifact is not a real test, so foo.ts keeps its boost");
+  assert.ok(!model.review_queue.some((entry) => entry.path === "tests/foo.snap"), "the snapshot artifact itself is not a review-focus item");
+});
