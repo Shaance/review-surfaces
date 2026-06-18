@@ -1,0 +1,162 @@
+#!/usr/bin/env node
+// review-surfaces real-world effectiveness benchmark (review-surfaces.BENCH.1).
+//
+// Runs the FULL `all` pipeline (mock provider) over a set of PINNED real PR-shaped diffs
+// across languages and scores the review surface against the failure modes the tool is
+// meant to avoid. This is NOT the CI gate (which is a fast seeded empty-diff self-dogfood,
+// blind to whether a surface produces *sensible* output) — it is the live-output check the
+// dogfood discipline calls for, run on demand: `node bench/run.mjs`.
+//
+// Each case pins a public repo + base/head SHAs (deterministic given the SHAs). Repos are
+// cloned on demand into a gitignored cache, so the only requirements are network + a built
+// checkout. Metrics are mostly OBJECTIVE (no per-PR annotation needed); `expected_focus`
+// is optional and only adds the top-5 recall metric for cases that carry it.
+//
+// Metrics (aggregate):
+//   empty_queue_rate    — substantive code diffs that produced 0 review-first items (LOWER is better; target 0)
+//   false_blocker_rate  — spec-less runs that fabricated a blocker (LOWER is better; target 0)
+//   top_is_code_rate    — cases whose #1 review-focus item is a code/impl file (HIGHER is better)
+//   irrelevant_top_rate — cases with a doc/generated/binary file in the top 5 (LOWER is better; target 0)
+//   focus_recall@5      — mean over annotated cases of |expected_focus ∩ top5| / |expected_focus| (HIGHER is better)
+
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const BENCH_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.dirname(BENCH_DIR);
+const CACHE_DIR = process.env.BENCH_CACHE ?? path.join(BENCH_DIR, ".cache");
+const CLI = path.join(REPO_ROOT, "bin", "review-surfaces.js");
+const MANIFEST = path.join(BENCH_DIR, "manifest.json");
+
+const CODE_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m)$/i;
+const DOC_EXT = /\.(md|mdx|markdown|rst|adoc|txt|org)$/i;
+const TEST_RE = /(^|\/)(tests?|__tests__|spec)\/|(^|[._-])(test|spec)[._.-]|_test\.|(?:Test|Spec)\.[^.]+$/;
+
+function sh(cmd, args, cwd) {
+  return execFileSync(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+}
+
+// Clone exactly the two pinned commits (shallow) into the cache, once per repo+sha pair.
+function ensureRepo(repoUrl, base, head) {
+  const key = `${repoUrl.replace(/[^a-z0-9]+/gi, "-")}-${head.slice(0, 12)}`;
+  const dir = path.join(CACHE_DIR, key);
+  if (fs.existsSync(path.join(dir, ".git"))) {
+    return dir;
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  sh("git", ["init", "-q"], dir);
+  sh("git", ["remote", "add", "origin", repoUrl], dir);
+  // Fetch each pinned commit with a little history so base..head is computable.
+  sh("git", ["fetch", "-q", "--depth", "5", "origin", head], dir);
+  try {
+    sh("git", ["fetch", "-q", "--depth", "5", "origin", base], dir);
+  } catch {
+    // base may already be reachable from head's shallow history; ignore.
+  }
+  sh("git", ["checkout", "-q", head], dir);
+  return dir;
+}
+
+function classify(p) {
+  if (TEST_RE.test(p)) return "test";
+  if (DOC_EXT.test(p)) return "doc";
+  if (/(^|\/)(generated|dist|build|vendor|node_modules|target)\//i.test(p)) return "generated";
+  if (CODE_EXT.test(p)) return "code";
+  return "other";
+}
+
+function scoreCase(c, model) {
+  const queue = model.review_queue ?? [];
+  const blockers = model.blockers ?? [];
+  const top5 = queue.slice(0, 5).map((q) => q.path).filter(Boolean);
+  const topRole = queue.length > 0 ? classify(queue[0].path ?? "") : null;
+  const irrelevantTop = top5.some((p) => ["doc", "generated"].includes(classify(p)));
+  const emptyQueue = c.substantive !== false && queue.length === 0;
+  const falseBlocker = c.expect_no_blockers !== false && blockers.length > 0;
+  let focusRecall = null;
+  if (Array.isArray(c.expected_focus) && c.expected_focus.length > 0) {
+    const hit = c.expected_focus.filter((f) => top5.includes(f)).length;
+    focusRecall = hit / c.expected_focus.length;
+  }
+  return { id: c.id, lang: c.lang, queue_size: queue.length, blockers: blockers.length, top: queue[0]?.path ?? null, topRole, top5, emptyQueue, falseBlocker, irrelevantTop, focusRecall };
+}
+
+function pct(n, d) {
+  return d === 0 ? "n/a" : `${Math.round((100 * n) / d)}% (${n}/${d})`;
+}
+
+function main() {
+  if (!fs.existsSync(CLI)) {
+    console.error(`bench: ${CLI} not found — run \`pnpm run build\` first.`);
+    process.exit(2);
+  }
+  const cases = JSON.parse(fs.readFileSync(MANIFEST, "utf8")).cases;
+  const outRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rs-bench-out-"));
+  const results = [];
+  for (const c of cases) {
+    process.stderr.write(`bench: ${c.id} (${c.lang}) ... `);
+    try {
+      const repoDir = ensureRepo(c.repo, c.base, c.head);
+      const out = path.join(outRoot, c.id);
+      sh("node", [CLI, "all", "--provider", "mock", "--base", c.base, "--head", c.head, "--out", out], repoDir);
+      const model = JSON.parse(fs.readFileSync(path.join(out, "human_review.json"), "utf8"));
+      const r = scoreCase(c, model);
+      results.push(r);
+      process.stderr.write(`queue=${r.queue_size} blockers=${r.blockers} top=${r.topRole ?? "-"}\n`);
+    } catch (err) {
+      process.stderr.write(`ERROR ${(err && err.message ? err.message : String(err)).split("\n")[0]}\n`);
+      results.push({ id: c.id, lang: c.lang, error: true });
+    }
+  }
+
+  const ok = results.filter((r) => !r.error);
+  const substantive = ok.filter((r) => r.queue_size !== undefined);
+  const annotated = ok.filter((r) => r.focusRecall !== null && r.focusRecall !== undefined);
+  const emptyN = ok.filter((r) => r.emptyQueue).length;
+  const blockerN = ok.filter((r) => r.falseBlocker).length;
+  const codeTopN = ok.filter((r) => r.topRole === "code").length;
+  const irrelevantN = ok.filter((r) => r.irrelevantTop).length;
+  const recallMean = annotated.length ? annotated.reduce((s, r) => s + r.focusRecall, 0) / annotated.length : null;
+
+  const lines = [];
+  lines.push("# review-surfaces effectiveness scorecard");
+  lines.push("");
+  lines.push(`Cases run: **${ok.length}/${results.length}** (mock provider, full \`all\` pipeline over pinned real diffs).`);
+  lines.push("");
+  lines.push("| Metric | Result | Target |");
+  lines.push("|---|---|---|");
+  lines.push(`| empty-queue rate (substantive diffs) | ${pct(emptyN, substantive.length)} | 0% |`);
+  lines.push(`| false-blocker rate (spec-less) | ${pct(blockerN, ok.length)} | 0% |`);
+  lines.push(`| top item is code/impl | ${pct(codeTopN, ok.length)} | high |`);
+  lines.push(`| irrelevant (doc/generated) in top-5 | ${pct(irrelevantN, ok.length)} | 0% |`);
+  lines.push(`| focus recall@5 (annotated) | ${recallMean === null ? "n/a" : `${Math.round(100 * recallMean)}%`} | high |`);
+  lines.push("");
+  lines.push("## Per-case");
+  lines.push("");
+  lines.push("| id | lang | queue | blockers | top item | top role | empty? | false-blocker? | recall@5 |");
+  lines.push("|---|---|---|---|---|---|---|---|---|");
+  for (const r of results) {
+    if (r.error) {
+      lines.push(`| ${r.id} | ${r.lang} | — | — | _error_ | — | — | — | — |`);
+      continue;
+    }
+    lines.push(
+      `| ${r.id} | ${r.lang} | ${r.queue_size} | ${r.blockers} | \`${r.top ?? "—"}\` | ${r.topRole ?? "—"} | ${r.emptyQueue ? "**YES**" : "no"} | ${r.falseBlocker ? "**YES**" : "no"} | ${r.focusRecall === null || r.focusRecall === undefined ? "—" : `${Math.round(100 * r.focusRecall)}%`} |`
+    );
+  }
+  lines.push("");
+  const scorecard = lines.join("\n") + "\n";
+  fs.writeFileSync(path.join(BENCH_DIR, "SCORECARD.md"), scorecard);
+  fs.rmSync(outRoot, { recursive: true, force: true });
+  process.stdout.write(scorecard);
+  // Non-zero exit if a core failure mode is present, so the bench can gate a follow-up.
+  if (emptyN > 0 || blockerN > 0) {
+    process.stderr.write(`\nbench: FAIL — ${emptyN} empty-queue, ${blockerN} false-blocker case(s).\n`);
+    process.exit(1);
+  }
+}
+
+main();

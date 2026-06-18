@@ -1,0 +1,71 @@
+{
+  "description": "Pinned real PR-shaped diffs across languages for the review-surfaces effectiveness benchmark (BENCH.1). Each case pins a public repo + base/head commit SHAs; `node bench/run.mjs` clones the two commits on demand and runs the full `all` pipeline (mock provider). `expected_focus` is OPTIONAL (adds the top-5 recall metric); the other metrics need no annotation. Add cases freely — the harness aggregates whatever is listed. Target set: 20-30 across TS/Py/Go/Rust/JVM.",
+  "cases": [
+    {
+      "id": "ky-network-error",
+      "lang": "ts",
+      "repo": "https://github.com/sindresorhus/ky.git",
+      "base": "e0fcf780de2bd69af2528e4b7b87ccae6bb727b1",
+      "head": "61d6d66d27911001b9b4d57ab93139f9ad61384b",
+      "substantive": true,
+      "expect_no_blockers": true,
+      "expected_focus": ["source/utils/is-network-error.ts"],
+      "note": "network-error handling source fix + new retry tests (the original empty-queue repro)"
+    },
+    {
+      "id": "cobra-args",
+      "lang": "go",
+      "repo": "https://github.com/spf13/cobra.git",
+      "base": "746ef07158728502482cea9f880a6f4b21ef29a9",
+      "head": "ad460ea8f249db69c943a365fb84f3a59042d54e",
+      "substantive": true,
+      "expect_no_blockers": true,
+      "expected_focus": ["args.go"],
+      "note": "args validation logic + test + user-guide doc (doc must not rank above args.go)"
+    },
+    {
+      "id": "flask-cli",
+      "lang": "py",
+      "repo": "https://github.com/pallets/flask.git",
+      "base": "9fcd34c9f3065640bd1cd86234216ca068633fb9",
+      "head": "954f5684e4841aad84a8eec7ace7b81a0d3f6831",
+      "substantive": true,
+      "expect_no_blockers": true,
+      "expected_focus": ["src/flask/cli.py"],
+      "note": "CLI source change + pre-commit config + uv.lock (lock must be excluded, cli.py is the focus)"
+    },
+    {
+      "id": "requests-models",
+      "lang": "py",
+      "repo": "https://github.com/psf/requests.git",
+      "base": "6f205ff422bccd5e4c4fc0b64c5f3e7df5181db6",
+      "head": "6f66281a1d6326b1b9c4ac09ca30de0fc4e6ef43",
+      "substantive": true,
+      "expect_no_blockers": true,
+      "expected_focus": ["src/requests/models.py"],
+      "note": "models + _types source change with tests"
+    },
+    {
+      "id": "ripgrep-flags",
+      "lang": "rust",
+      "repo": "https://github.com/BurntSushi/ripgrep.git",
+      "base": "cb66736f146f093497f4dc537b33d0826f9af33c",
+      "head": "4519153e5e461527f4bca45b042fff45c4ec6fb9",
+      "substantive": true,
+      "expect_no_blockers": true,
+      "expected_focus": ["crates/core/flags/defs.rs"],
+      "note": "flag definitions source change + GUIDE.md (doc must not rank above defs.rs)"
+    },
+    {
+      "id": "gson-jsonreader",
+      "lang": "java",
+      "repo": "https://github.com/google/gson.git",
+      "base": "ed2397502708ebaba53643e5c3d60e0974d7045f",
+      "head": "004e7a4949e08b430e3c8996998ee5a17ff9423a",
+      "substantive": true,
+      "expect_no_blockers": true,
+      "expected_focus": ["gson/src/main/java/com/google/gson/stream/JsonReader.java"],
+      "note": "JsonReader source change + JsonReaderTest"
+    }
+  ]
+}
