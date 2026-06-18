@@ -28,4 +28,6 @@ test("review-surfaces.BENCH.1 the effectiveness benchmark ships a runnable harne
 
   const runnerSrc = fs.readFileSync(runner, "utf8");
   assert.match(runnerSrc, /--no-conversation-discovery/, "benchmark runs stay hermetic (no auto-discovery of the runner's own sessions)");
+  assert.match(runnerSrc, /--config/, "benchmark forces a neutral config so a target repo's own config can't change the result");
+  assert.ok(fs.existsSync(path.join(root, "bench", "neutral.config.yaml")), "the neutral benchmark config ships");
 });

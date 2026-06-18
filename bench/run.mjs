@@ -30,6 +30,7 @@ const REPO_ROOT = path.dirname(BENCH_DIR);
 const CACHE_DIR = process.env.BENCH_CACHE ?? path.join(BENCH_DIR, ".cache");
 const CLI = path.join(REPO_ROOT, "bin", "review-surfaces.js");
 const MANIFEST = path.join(BENCH_DIR, "manifest.json");
+const NEUTRAL_CONFIG = path.join(BENCH_DIR, "neutral.config.yaml");
 
 const CODE_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m)$/i;
 const DOC_EXT = /\.(md|mdx|markdown|rst|adoc|txt|org)$/i;
@@ -47,12 +48,21 @@ function sh(cmd, args, cwd) {
   return execFileSync(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 }
 
-// Clone exactly the two pinned commits (shallow) into the cache, once per repo+sha pair.
+// Clone exactly the two pinned commits (shallow) into the cache, once per repo+base+head.
+// The key includes BOTH pins so changing a case's base re-clones instead of reusing a clone
+// that lacks the new base; a cached dir is reused only after revalidating that both pinned
+// commits are present, so an interrupted earlier clone is rebuilt, not trusted (Codex BENCH.1).
 function ensureRepo(repoUrl, base, head) {
-  const key = `${repoUrl.replace(/[^a-z0-9]+/gi, "-")}-${head.slice(0, 12)}`;
+  const key = `${repoUrl.replace(/[^a-z0-9]+/gi, "-")}-${base.slice(0, 12)}-${head.slice(0, 12)}`;
   const dir = path.join(CACHE_DIR, key);
   if (fs.existsSync(path.join(dir, ".git"))) {
-    return dir;
+    try {
+      sh("git", ["cat-file", "-e", `${head}^{commit}`], dir);
+      sh("git", ["cat-file", "-e", `${base}^{commit}`], dir);
+      return dir; // complete cache — both pins present.
+    } catch {
+      fs.rmSync(dir, { recursive: true, force: true }); // partial/interrupted clone — rebuild.
+    }
   }
   fs.mkdirSync(dir, { recursive: true });
   sh("git", ["init", "-q"], dir);
@@ -134,7 +144,10 @@ function main() {
       // auto-discover the BENCHMARK RUNNER's own Claude/Codex sessions and fold a
       // machine-specific transcript into the result, making the scorecard nondeterministic
       // and polluted by the runner's environment (Codex BENCH.1).
-      sh("node", [CLI, "all", "--provider", "mock", "--no-conversation-discovery", "--base", c.base, "--head", c.head, "--out", out], repoDir);
+      // --config forces the benchmark's neutral config (spec-less, defaults) so a target
+      // repo's own review-surfaces.config.yaml / feature spec can't change the result, and
+      // --no-conversation-discovery keeps the run from folding the runner's own sessions in.
+      sh("node", [CLI, "all", "--provider", "mock", "--config", NEUTRAL_CONFIG, "--no-conversation-discovery", "--base", c.base, "--head", c.head, "--out", out], repoDir);
       const model = JSON.parse(fs.readFileSync(path.join(out, "human_review.json"), "utf8"));
       const r = scoreCase(c, model);
       results.push(r);
