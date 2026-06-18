@@ -57,12 +57,29 @@ function ensureRepo(repoUrl, base, head) {
   fs.mkdirSync(dir, { recursive: true });
   sh("git", ["init", "-q"], dir);
   sh("git", ["remote", "add", "origin", repoUrl], dir);
-  // Fetch each pinned commit with a little history so base..head is computable.
-  sh("git", ["fetch", "-q", "--depth", "5", "origin", head], dir);
+  sh("git", ["fetch", "-q", "--depth", "1", "origin", head], dir);
   try {
-    sh("git", ["fetch", "-q", "--depth", "5", "origin", base], dir);
+    sh("git", ["fetch", "-q", "--depth", "1", "origin", base], dir);
   } catch {
-    // base may already be reachable from head's shallow history; ignore.
+    // base may already be reachable from head's history; deepening below recovers it.
+  }
+  // Deepen head's history until a real merge base with base exists, so a multi-commit
+  // PR-shaped range (head more than a few commits past base) still has a common ancestor
+  // and `base..head` is computed correctly, not from a broken shallow boundary (Codex BENCH.1).
+  let depth = 1;
+  for (let i = 0; i < 10; i += 1) {
+    try {
+      sh("git", ["merge-base", base, head], dir);
+      break;
+    } catch {
+      depth += 50;
+      try {
+        sh("git", ["fetch", "-q", "--depth", String(depth), "origin", head], dir);
+        sh("git", ["fetch", "-q", "--depth", String(depth), "origin", base], dir);
+      } catch {
+        break; // remote can't deepen further; proceed with what we have.
+      }
+    }
   }
   sh("git", ["checkout", "-q", head], dir);
   return dir;
@@ -84,14 +101,16 @@ function scoreCase(c, model) {
   const top5 = queue.slice(0, 5).map((q) => q.path).filter(Boolean);
   const topRole = queue.length > 0 ? classify(queue[0].path ?? "") : null;
   const irrelevantTop = top5.some((p) => IRRELEVANT_ROLES.has(classify(p)));
-  const emptyQueue = c.substantive !== false && queue.length === 0;
-  const falseBlocker = c.expect_no_blockers !== false && blockers.length > 0;
+  const substantiveCase = c.substantive !== false;
+  const blockerEligible = c.expect_no_blockers !== false;
+  const emptyQueue = substantiveCase && queue.length === 0;
+  const falseBlocker = blockerEligible && blockers.length > 0;
   let focusRecall = null;
   if (Array.isArray(c.expected_focus) && c.expected_focus.length > 0) {
     const hit = c.expected_focus.filter((f) => top5.includes(f)).length;
     focusRecall = hit / c.expected_focus.length;
   }
-  return { id: c.id, lang: c.lang, queue_size: queue.length, blockers: blockers.length, top: queue[0]?.path ?? null, topRole, top5, emptyQueue, falseBlocker, irrelevantTop, focusRecall };
+  return { id: c.id, lang: c.lang, queue_size: queue.length, blockers: blockers.length, top: queue[0]?.path ?? null, topRole, top5, substantiveCase, blockerEligible, emptyQueue, falseBlocker, irrelevantTop, focusRecall };
 }
 
 function pct(n, d) {
@@ -128,10 +147,13 @@ function main() {
 
   const ok = results.filter((r) => !r.error);
   const erroredN = results.filter((r) => r.error).length;
-  const substantive = ok.filter((r) => r.queue_size !== undefined);
+  // Each rate's denominator is the cases ELIGIBLE for that metric, not all cases — a
+  // `substantive:false` or `expect_no_blockers:false` case must not dilute the rate (Codex BENCH.1).
+  const substantive = ok.filter((r) => r.substantiveCase);
+  const blockerEligible = ok.filter((r) => r.blockerEligible);
   const annotated = ok.filter((r) => r.focusRecall !== null && r.focusRecall !== undefined);
-  const emptyN = ok.filter((r) => r.emptyQueue).length;
-  const blockerN = ok.filter((r) => r.falseBlocker).length;
+  const emptyN = substantive.filter((r) => r.emptyQueue).length;
+  const blockerN = blockerEligible.filter((r) => r.falseBlocker).length;
   const codeTopN = ok.filter((r) => r.topRole === "code").length;
   const irrelevantN = ok.filter((r) => r.irrelevantTop).length;
   const recallMean = annotated.length ? annotated.reduce((s, r) => s + r.focusRecall, 0) / annotated.length : null;
@@ -144,7 +166,7 @@ function main() {
   lines.push("| Metric | Result | Target |");
   lines.push("|---|---|---|");
   lines.push(`| empty-queue rate (substantive diffs) | ${pct(emptyN, substantive.length)} | 0% |`);
-  lines.push(`| false-blocker rate (spec-less) | ${pct(blockerN, ok.length)} | 0% |`);
+  lines.push(`| false-blocker rate (spec-less) | ${pct(blockerN, blockerEligible.length)} | 0% |`);
   lines.push(`| top item is code/impl | ${pct(codeTopN, ok.length)} | high |`);
   lines.push(`| irrelevant (doc/generated/lock/binary) in top-5 | ${pct(irrelevantN, ok.length)} | 0% |`);
   lines.push(`| focus recall@5 (annotated) | ${recallMean === null ? "n/a" : `${Math.round(100 * recallMean)}%`} | high |`);
