@@ -78,6 +78,15 @@ package name `review-surfaces` was verified unclaimed on 2026-06-12.
   `scripts/local-review.sh` forwards `--conversation`, `--conversation-format`, and
   `--no-conversation-discovery` verbatim. See
   [`docs/conversation-auditing.md`](https://github.com/Shaance/review-surfaces/blob/main/docs/conversation-auditing.md).
+- Cold-start review-focus floor (`HUMAN_REVIEW.28`): a substantive diff no longer
+  produces an empty review queue on a spec-less repo. When no detector produces a
+  ranked item, a deterministic baseline queue ranks the changed files most worth
+  reading — by churn, exported/public surface (read from the diff across TS/JS/Rust/
+  Java/Go/Python), an implementation change with no connected test, and sensitive
+  error/async/auth/network/persistence paths — and **fabricates no risk or blocker**
+  (every item says "No risk rule produced a ranked finding, but this is worth reading
+  because …"). Docs, generated/build output, and binary/lock artifacts are excluded.
+  Verified live: `sindresorhus/ky` 0→2 and `spf13/cobra` 0→4 review-first items.
 
 ## 0.1.0 — 2026-05-30 through 2026-06-12 (unpublished development history; never on npm)
 
