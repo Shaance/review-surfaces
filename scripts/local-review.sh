@@ -7,12 +7,21 @@
 #
 # Usage: scripts/local-review.sh [--base <ref>] [--head <ref>] [--out <dir>]
 #                                [--previous <dir>] [--provider <name>]
+#                                [--conversation <path>]
+#                                [--conversation-format claude-code|codex|cursor|normalized]
+#                                [--no-conversation-discovery]
 #
 # Defaults: --base origin/main, --head HEAD, --out .review-surfaces,
 # --provider mock (network use: git only). When --previous is omitted and a
 # prior run's review_packet.json exists in the out directory, it is snapshotted
 # and passed as the previous packet so since-last-review deltas work from local
 # prior packets, not only CI artifacts (LOCAL_LOOP.3).
+#
+# Conversation auditing (METHODOLOGY.4/.9): with no flags the run auto-discovers
+# the harness session that produced base..head from the Claude Code and Codex
+# stores. Pass --conversation to point at a specific transcript (required for
+# Cursor — export the chat and pass the JSON), --conversation-format to force an
+# adapter, or --no-conversation-discovery to skip discovery entirely.
 #
 set -euo pipefail
 
@@ -24,6 +33,12 @@ HEAD="HEAD"
 OUT=".review-surfaces"
 PREVIOUS=""
 PROVIDER="mock"
+# Conversation-auditing passthrough (METHODOLOGY.4/.9): forwarded verbatim to the
+# `all` command, which owns discovery, precedence, and validation. The wrapper only
+# threads them through — no conversation logic lives here (LOCAL_LOOP.1).
+CONVERSATION=""
+CONVERSATION_FORMAT=""
+NO_CONVERSATION_DISCOVERY=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -32,6 +47,9 @@ while [ $# -gt 0 ]; do
     --out) OUT="$2"; shift 2 ;;
     --previous) PREVIOUS="$2"; shift 2 ;;
     --provider) PROVIDER="$2"; shift 2 ;;
+    --conversation) CONVERSATION="$2"; shift 2 ;;
+    --conversation-format) CONVERSATION_FORMAT="$2"; shift 2 ;;
+    --no-conversation-discovery) NO_CONVERSATION_DISCOVERY="1"; shift ;;
     *) echo "local-review: unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -60,13 +78,27 @@ elif [ -f "$OUT/review_packet.json" ]; then
   echo "local-review: comparing against previous local packet ($PREV_SNAP)"
 fi
 
+# Conversation-auditing flags (METHODOLOGY.4/.9): only the ones the caller set are
+# forwarded, so the default zero-config auto-discovery path is unchanged.
+CONV_ARGS=()
+if [ -n "$CONVERSATION" ]; then
+  CONV_ARGS+=(--conversation "$CONVERSATION")
+fi
+if [ -n "$CONVERSATION_FORMAT" ]; then
+  CONV_ARGS+=(--conversation-format "$CONVERSATION_FORMAT")
+fi
+if [ -n "$NO_CONVERSATION_DISCOVERY" ]; then
+  CONV_ARGS+=(--no-conversation-discovery)
+fi
+
 node bin/review-surfaces.js all \
   --provider "$PROVIDER" \
   --base "$BASE" \
   --head "$HEAD" \
   --dogfood \
   --out "$OUT" \
-  "${PREV_ARGS[@]+"${PREV_ARGS[@]}"}"
+  "${PREV_ARGS[@]+"${PREV_ARGS[@]}"}" \
+  "${CONV_ARGS[@]+"${CONV_ARGS[@]}"}"
 
 node bin/review-surfaces.js comment --format sticky --out "$OUT"
 node bin/review-surfaces.js human --format html --out "$OUT"

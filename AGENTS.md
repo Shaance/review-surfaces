@@ -94,9 +94,11 @@ Record what could not yet be run and why.
 pnpm run local-review   # all --dogfood over origin/main...HEAD + cockpit + validate
 ```
 
-In a **Claude Code** session auto-discovery finds this repo's own transcript (announced on stderr). Discovery scans the Claude store only (`~/.claude/projects/<cwd-slug>/`), so in a **Codex/Cursor** session it either finds nothing (degrading to `conversation_log_missing`) or — on a machine that also has prior Claude sessions for this repo — silently picks a **stale** Claude transcript by score/recency. Either way it will not audit the current Codex/Cursor session, so passing `--conversation <file>` explicitly is **mandatory** there. The `local-review` wrapper accepts only `--base`/`--head`/`--out`/`--previous`/`--provider`, so use the raw CLI (build first — the bin shim refuses to run an unbuilt checkout):
+In a **Claude Code** OR **Codex** session, auto-discovery finds this repo's own transcript (announced on stderr). Discovery spans the Claude store (`~/.claude/projects/<cwd-slug>/`) AND the Codex rollout store (`~/.codex/sessions/`, scoped to this repo by the recorded `session_meta.cwd`), picking the session that references the changed range, then recency. If the picked session references **none** of the reviewed range it is announced as a hard `WARNING` pointing at `--conversation`. **Cursor** keeps its chat in a per-workspace SQLite db with no loose transcript file, so it has no zero-config discovery — export the chat and pass `--conversation <file> --conversation-format cursor`. The `local-review` wrapper now forwards `--conversation`, `--conversation-format`, and `--no-conversation-discovery` verbatim, so the loop gets the same default and overrides (see `docs/conversation-auditing.md`):
 
 ```bash
+pnpm run local-review --conversation <file> --conversation-format cursor
+# or the raw CLI (build first — the bin shim refuses to run an unbuilt checkout):
 pnpm run build && node bin/review-surfaces.js all --provider mock --dogfood --base origin/main --head HEAD --conversation <file> --out .review-surfaces
 ```
 
