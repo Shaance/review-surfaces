@@ -4499,7 +4499,7 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: a substantive diff yields a de
   assert.ok(model.review_queue.length >= 2, "a substantive impl diff does not produce an empty queue");
   // The async/error/network impl file with no connected test ranks first.
   assert.equal(model.review_queue[0].path, "src/payment-processor.ts");
-  assert.match(model.review_queue[0].reason, /No risk rule fired/);
+  assert.match(model.review_queue[0].reason, /No risk rule produced a ranked finding/);
   assert.match(model.review_queue[0].reason, /no connected test change|error\/async/);
   // Docs are not a "read this first" candidate.
   assert.ok(!model.review_queue.some((item) => item.path === "docs/guide.md"), "docs are excluded from the review-focus floor");
@@ -4527,7 +4527,7 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: a REAL external diff (sindreso
   assert.ok(model.review_queue.some((item) => item.path === "test/retry.ts"), "the changed test file is queued");
   // The source error-handling change with no connected test ranks first.
   assert.equal(model.review_queue[0].path, "source/utils/is-network-error.ts");
-  assert.ok(model.review_queue.every((item) => item.risk_ids.length === 0 && /No risk rule fired/.test(item.reason)), "every baseline item is honest and fabricates no risk");
+  assert.ok(model.review_queue.every((item) => item.risk_ids.length === 0 && /No risk rule produced a ranked finding/.test(item.reason)), "every baseline item is honest and fabricates no risk");
 });
 
 test("review-surfaces.HUMAN_REVIEW.28 cold-start: a substantive NON-code file (shell/infra) is still queued, and items carry a non-risk ranking reason (Codex #112)", () => {
@@ -4652,4 +4652,60 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: same-basename impls are not al
   assert.ok(a && b, "both same-basename impl files are queued");
   assert.match(a.reason, /no connected test change/, "src/foo.ts keeps its no-connected-test boost under stem ambiguity");
   assert.match(b.reason, /no connected test change/, "src/legacy/foo.ts keeps its no-connected-test boost under stem ambiguity");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: import evidence overrides the same-stem fallback (Codex #112 round-3)", () => {
+  // Evidence says tests/foo.test.ts covers src/bar.ts (it imports bar), NOT src/foo.ts.
+  // The stem `foo` coincides with src/foo.ts, but because import evidence EXISTS it is
+  // authoritative — the stem fallback is disabled, so src/foo.ts keeps its no-connected-
+  // test boost and src/bar.ts (covered per evidence) does not get one.
+  const diff = parseStructuredDiff([
+    "diff --git a/src/foo.ts b/src/foo.ts",
+    "--- a/src/foo.ts",
+    "+++ b/src/foo.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const foo = 1;",
+    "+export const foo2 = 2;",
+    "diff --git a/src/bar.ts b/src/bar.ts",
+    "--- a/src/bar.ts",
+    "+++ b/src/bar.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const bar = 1;",
+    "+export const bar2 = 2;",
+    "diff --git a/tests/foo.test.ts b/tests/foo.test.ts",
+    "--- a/tests/foo.test.ts",
+    "+++ b/tests/foo.test.ts",
+    "@@ -1,1 +1,2 @@",
+    " import { bar } from '../src/bar';",
+    "+it('bar', () => {});",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({
+    packet: minimalReviewPacket() as unknown as ReviewPacket,
+    diff,
+    rankingEvidence: { changed_tests_by_impl: { "src/bar.ts": ["tests/foo.test.ts"] } }
+  });
+  const foo = model.review_queue.find((entry) => entry.path === "src/foo.ts");
+  const bar = model.review_queue.find((entry) => entry.path === "src/bar.ts");
+  assert.ok(foo, "src/foo.ts is queued");
+  assert.match(foo.reason, /no connected test change/, "foo keeps its boost: the test imports bar, not foo");
+  if (bar) {
+    assert.ok(!/no connected test change/.test(bar.reason), "bar is connected per import evidence, so no no-test boost");
+  }
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a .d.ts declaration file is treated as public surface (Codex #112 round-3)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/types/index.d.ts b/types/index.d.ts",
+    "--- a/types/index.d.ts",
+    "+++ b/types/index.d.ts",
+    "@@ -1,1 +1,2 @@",
+    " // types",
+    "+export declare function publicApi(n: number): number;",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const item = model.review_queue.find((entry) => entry.path === "types/index.d.ts");
+  assert.ok(item, "the declaration file is queued");
+  assert.match(item.reason, /exported\/public surface/, "a .d.ts is recognized as exported public surface from the diff");
 });

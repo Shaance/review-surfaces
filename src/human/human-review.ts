@@ -2672,7 +2672,8 @@ function baselineStem(filePath: string): string {
 // Cold-start review-focus floor (HUMAN_REVIEW.28): rank the changed files from the
 // structured diff ALONE — no prSurface, no detector facts required — by deterministic
 // signals so a substantive diff never yields an empty queue. Fabricates no risk or
-// blocker; every item says "no risk rule fired, but this is worth reading because ...".
+// blocker; every item says "no risk rule produced a ranked finding, but this is worth
+// reading because ..." (accurate even when a pathless risk was skipped — Codex #112 r3).
 function baselineReviewFocusDrafts(
   input: BuildHumanReviewInput,
   diffIndex: DiffIndex | undefined,
@@ -2702,6 +2703,11 @@ function baselineReviewFocusDrafts(
       implStemCounts.set(stem, (implStemCounts.get(stem) ?? 0) + 1);
     }
   }
+  // The stem fallback is a LAST resort: it runs only when there is no import-derived
+  // `changed_tests_by_impl` evidence AT ALL. When that evidence exists it is authoritative
+  // about which impl each changed test covers, so a same-stem impl the test does NOT import
+  // must not be silently marked connected by stem coincidence (Codex #112 round-3).
+  const hasRankingEvidence = Object.keys(changedTestsByImpl).length > 0;
 
   const ranked = files
     .map((file) => {
@@ -2731,12 +2737,15 @@ function baselineReviewFocusDrafts(
       const isImpl = role === "impl";
       // `surfacePaths` (semantic api/schema changes) is empty in the spec-less cold-start
       // path, so also read the public surface from the changed lines themselves (Codex
-      // #112 round-2); gated to impl files so a config/SQL "export" word does not count.
-      const exported = surfacePaths.has(file.path) || (isImpl && BASELINE_EXPORT.test(changedText));
+      // #112 round-2). A `.d.ts` is excluded from the impl role but is PURE public surface,
+      // so it is a public-surface candidate too (Codex #112 round-3); a config/SQL "export"
+      // word still does not count.
+      const isDeclaration = /\.d\.ts$/i.test(file.path);
+      const exported = surfacePaths.has(file.path) || ((isImpl || isDeclaration) && BASELINE_EXPORT.test(changedText));
       const stem = baselineStem(file.path);
       const hasConnectedTest =
         (changedTestsByImpl[file.path]?.length ?? 0) > 0 ||
-        (isImpl && changedTestStems.has(stem) && (implStemCounts.get(stem) ?? 0) <= 1);
+        (!hasRankingEvidence && isImpl && changedTestStems.has(stem) && (implStemCounts.get(stem) ?? 0) <= 1);
       const sensitive = BASELINE_SENSITIVE.test(file.path) || BASELINE_SENSITIVE.test(changedText);
       let score = Math.min(churn, 200) / 10;
       if (isImpl) score += 8;
@@ -2759,7 +2768,7 @@ function baselineReviewFocusDrafts(
     .slice(0, MAX_CHANGED_FILE_QUEUE);
 
   return ranked.map((entry) => {
-    const evidence = fileEvidence(entry.file.path, "Ranked by deterministic change signals because no risk rule fired.");
+    const evidence = fileEvidence(entry.file.path, "Ranked by deterministic change signals because no detector produced a ranked finding.");
     const anchor = queueAnchorForEvidence(evidence, diffIndex);
     return {
       title: `Review-focus: ${entry.file.path}`,
@@ -2770,8 +2779,8 @@ function baselineReviewFocusDrafts(
       line_end: anchor.line_end,
       anchor_side: anchor.side,
       reviewer_action: "No defect pattern fired here — read this changed file to confirm the change is intended and skim-safe.",
-      reason: `No risk rule fired, but this is among the changed files most worth reading: ${entry.why}.`,
-      baseline: `ranked by deterministic change signals (no risk rule fired): ${entry.why}`,
+      reason: `No risk rule produced a ranked finding here, but this is among the changed files most worth reading: ${entry.why}.`,
+      baseline: `ranked by deterministic change signals (no detector produced a ranked finding): ${entry.why}`,
       evidence: [evidence],
       requirement_ids: [],
       risk_ids: [],
