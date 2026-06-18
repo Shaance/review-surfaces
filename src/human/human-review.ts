@@ -2653,20 +2653,26 @@ function baselineFileRole(filePath: string): BaselineRole {
   if (BASELINE_GENERATED_DIR.test(filePath)) {
     return "generated";
   }
-  if (isBaselineTest(filePath)) {
-    return "test";
-  }
   const role = classifyRole(filePath, []);
+  // A definite doc/ci/generated/config/spec classification WINS over the broad test-name
+  // heuristic: `docs/test.md` is a doc and `.github/workflows/test.yml` is CI, not tests,
+  // even though their basename looks test-shaped (Codex #112 round-7).
   if (role === "config" || role === "ci" || role === "doc" || role === "generated") {
     return role;
   }
-  if (role === "spec") {
-    return "config";
-  }
   // A documentation extension `classifyRole` missed (e.g. README.mdx / CHANGELOG.rst outside
-  // docs/) is prose, not a review-focus item (Codex #112 round-5).
+  // docs/) is prose, not a review-focus item (Codex #112 round-5) — also before the test-name
+  // fallback so `docs/spec.mdx` is a doc, not a test.
   if (BASELINE_DOC_EXT.test(filePath)) {
     return "doc";
+  }
+  // The broad cross-language test-name fallback runs only AFTER the definite doc/ci/config
+  // roles, so it catches `test/retry.ts` / `FooTest.java` without hijacking a doc/CI path.
+  if (isBaselineTest(filePath)) {
+    return "test";
+  }
+  if (role === "spec") {
+    return "config";
   }
   // `classifyRole` returns "unknown" when no areas are threaded (the spec-less / diff
   // path): decide impl by code extension (a .d.ts declaration is not implementation).

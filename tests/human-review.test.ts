@@ -4879,3 +4879,34 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: a test-dir artifact does not l
   assert.match(foo.reason, /no connected test change/, "a tests/foo.snap artifact is not a real test, so foo.ts keeps its boost");
   assert.ok(!model.review_queue.some((entry) => entry.path === "tests/foo.snap"), "the snapshot artifact itself is not a review-focus item");
 });
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a doc with a test-shaped basename stays a doc, real tests still detected (Codex #112 round-7)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/docs/test.md b/docs/test.md",
+    "--- a/docs/test.md",
+    "+++ b/docs/test.md",
+    "@@ -1,1 +1,2 @@",
+    " # Testing guide",
+    "+More prose.",
+    "diff --git a/src/app.ts b/src/app.ts",
+    "--- a/src/app.ts",
+    "+++ b/src/app.ts",
+    "@@ -1,1 +1,2 @@",
+    " const a = 1;",
+    "+const b = 2;",
+    "diff --git a/test/retry.ts b/test/retry.ts",
+    "--- a/test/retry.ts",
+    "+++ b/test/retry.ts",
+    "@@ -1,1 +1,2 @@",
+    " it('retries', () => {});",
+    "+it('more', () => {});",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  assert.ok(!model.review_queue.some((entry) => entry.path === "docs/test.md"), "docs/test.md is a doc, not a test — excluded despite its basename");
+  // The broad test-name fallback still catches a real test outside tests/ (the round-1 case).
+  const retry = model.review_queue.find((entry) => entry.path === "test/retry.ts");
+  if (retry) {
+    assert.equal(retry.estimated_review_effort, "quick", "test/retry.ts is still recognized as a test");
+  }
+});
