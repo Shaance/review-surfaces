@@ -2575,9 +2575,25 @@ function changedFileQueueDrafts(
 }
 
 // Change regions that earn higher attention on a cold-start read: error/async handling,
-// auth, network requests, persistence, lifecycle (HUMAN_REVIEW.28).
+// auth, network requests, persistence, lifecycle (HUMAN_REVIEW.28). The members are
+// STEMS, matched as prefixes (`[a-z]*` tail, not a trailing `\b`) so the family forms
+// fire too: `auth`->authentication/authorize, `persist`->persistence, `migrat`->
+// migration/migrate, `permission`->permissions. A leading `\b` still prevents matching
+// mid-identifier (e.g. `coauthor` does not match `auth`) (Codex #112 round-2).
 const BASELINE_SENSITIVE =
-  /\b(async|await|abort|signal|retry|catch|throw|reject|error|timeout|auth|login|logout|session|token|permission|oauth|password|fetch|request|http|url|socket|persist|database|migrat|cache|transaction|lifecycle|useeffect|dispose|cleanup)\b/i;
+  /\b(async|await|abort|signal|retry|catch|throw|reject|error|timeout|auth|login|logout|session|token|permission|oauth|password|fetch|request|http|url|socket|persist|database|migrat|cache|transaction|lifecycle|useeffect|dispose|cleanup)[a-z]*/i;
+// Exported/public surface added or removed in the diff itself (HUMAN_REVIEW.28 round-2):
+// in the spec-less cold-start path `semanticFacts.api_changes` is empty, so the only way
+// to see a public-surface change is the changed lines. Cross-language: TS/JS `export`/
+// CommonJS `module.exports`, Rust `pub`, Java/Kotlin/C#/PHP `public`, Go exported
+// `func Name`/`type Name`, Python `__all__`.
+const BASELINE_EXPORT =
+  /\bexport\b|\bmodule\.exports\b|\bexports\.|\bpub(\s|\()|\bpublic\s+(class|interface|function|fun|static|final|abstract|async|void|[A-Z])|\bfunc\s+[A-Z]|\btype\s+[A-Z]\w*\s+(struct|interface)\b|\b__all__\b/;
+// Generated/build output a human does not read line-by-line on a cold start. `classifyRole`
+// only flags `dist/` + lockfiles, so the floor would otherwise rank a regenerated client
+// under `generated/`/`build/`/`target/` etc. (Codex #112 round-2).
+const BASELINE_GENERATED_DIR =
+  /(^|\/)(generated|__generated__|\.generated|build|dist|out|target|vendor|node_modules|coverage|\.next|\.nuxt|\.svelte-kit)\//i;
 const BASELINE_CODE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m)$/i;
 // Files no human reads line-by-line on a cold-start: lockfiles, images/binaries, source
 // maps, snapshots. Excluded from the baseline floor (Codex #112).
@@ -2617,6 +2633,11 @@ function isBaselineTest(filePath: string): boolean {
 
 type BaselineRole = "impl" | "test" | "config" | "ci" | "doc" | "generated" | "other";
 function baselineFileRole(filePath: string): BaselineRole {
+  // Generated/build output first: a path under generated/build/target/vendor is not
+  // worth a manual read even if its extension looks like source (Codex #112 round-2).
+  if (BASELINE_GENERATED_DIR.test(filePath)) {
+    return "generated";
+  }
   if (isBaselineTest(filePath)) {
     return "test";
   }
@@ -2669,6 +2690,18 @@ function baselineReviewFocusDrafts(
   const changedTestStems = new Set(
     files.filter((file) => baselineFileRole(file.path) === "test").map((file) => baselineStem(file.path))
   );
+  // The stem fallback (used only without `changed_tests_by_impl` evidence) is ambiguous
+  // when two changed impl files share a basename — e.g. `src/foo.ts` and `src/legacy/foo.ts`
+  // with a single `tests/foo.test.ts`. We cannot tell WHICH impl that test covers, so a stem
+  // shared by >1 changed impl is NOT treated as connected for any of them; each keeps its
+  // no-connected-test boost (over-surface, never wrongly clear) (Codex #112 round-2).
+  const implStemCounts = new Map<string, number>();
+  for (const file of files) {
+    if (baselineFileRole(file.path) === "impl") {
+      const stem = baselineStem(file.path);
+      implStemCounts.set(stem, (implStemCounts.get(stem) ?? 0) + 1);
+    }
+  }
 
   const ranked = files
     .map((file) => {
@@ -2696,9 +2729,14 @@ function baselineReviewFocusDrafts(
       }
       const churn = added + removed;
       const isImpl = role === "impl";
-      const exported = surfacePaths.has(file.path);
+      // `surfacePaths` (semantic api/schema changes) is empty in the spec-less cold-start
+      // path, so also read the public surface from the changed lines themselves (Codex
+      // #112 round-2); gated to impl files so a config/SQL "export" word does not count.
+      const exported = surfacePaths.has(file.path) || (isImpl && BASELINE_EXPORT.test(changedText));
+      const stem = baselineStem(file.path);
       const hasConnectedTest =
-        (changedTestsByImpl[file.path]?.length ?? 0) > 0 || (isImpl && changedTestStems.has(baselineStem(file.path)));
+        (changedTestsByImpl[file.path]?.length ?? 0) > 0 ||
+        (isImpl && changedTestStems.has(stem) && (implStemCounts.get(stem) ?? 0) <= 1);
       const sensitive = BASELINE_SENSITIVE.test(file.path) || BASELINE_SENSITIVE.test(changedText);
       let score = Math.min(churn, 200) / 10;
       if (isImpl) score += 8;

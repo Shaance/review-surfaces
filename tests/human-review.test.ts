@@ -4559,3 +4559,97 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: a substantive NON-code file (s
   assert.ok(sh.ranking_reasons?.some((r) => /deterministic change signals/.test(r)), "baseline ranking reason names the deterministic signal");
   assert.ok(!sh.ranking_reasons?.some((r) => /ranked by .* risk severity/.test(r)), "baseline item does not claim a risk severity ranking");
 });
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a SUFFIXED sensitive keyword (persistence/migration) fires the sensitive signal (Codex #112 round-2)", () => {
+  // The stem `persist`/`migrat` must match the family forms; the old trailing `\b` made
+  // them match nothing. Neither added line uses a bare-word sensitive token, so only the
+  // suffix-aware match can flag these.
+  const diff = parseStructuredDiff([
+    "diff --git a/src/store.ts b/src/store.ts",
+    "--- a/src/store.ts",
+    "+++ b/src/store.ts",
+    "@@ -1,1 +1,3 @@",
+    " export class Store {",
+    "+  private layer = new PersistenceLayer();",
+    "+  run() { return applyMigration(this.layer); }",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const item = model.review_queue.find((entry) => entry.path === "src/store.ts");
+  assert.ok(item, "the impl file is queued");
+  assert.match(item.reason, /error\/async\/auth\/network\/persistence paths/);
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: generated/build output is excluded even with a source extension (Codex #112 round-2)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/src/app.ts b/src/app.ts",
+    "--- a/src/app.ts",
+    "+++ b/src/app.ts",
+    "@@ -1,1 +1,2 @@",
+    " const a = 1;",
+    "+const b = 2;",
+    "diff --git a/src/generated/client.ts b/src/generated/client.ts",
+    "--- a/src/generated/client.ts",
+    "+++ b/src/generated/client.ts",
+    "@@ -1,1 +1,40 @@",
+    " // AUTO-GENERATED",
+    "+export const huge = 1;",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  assert.ok(model.review_queue.some((item) => item.path === "src/app.ts"), "the hand-written file is queued");
+  assert.ok(
+    !model.review_queue.some((item) => item.path === "src/generated/client.ts"),
+    "generated output under generated/ is not a review-focus item"
+  );
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: an exported surface is detected from the diff itself when no semantic facts exist (Codex #112 round-2)", () => {
+  // Spec-less path: semanticFacts.api_changes is empty, so the public surface can only be
+  // read from the changed lines.
+  const diff = parseStructuredDiff([
+    "diff --git a/src/api.ts b/src/api.ts",
+    "--- a/src/api.ts",
+    "+++ b/src/api.ts",
+    "@@ -1,1 +1,3 @@",
+    " // api",
+    "+export function publicThing(n: number) { return n + 1; }",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const item = model.review_queue.find((entry) => entry.path === "src/api.ts");
+  assert.ok(item, "the impl file is queued");
+  assert.match(item.reason, /exported\/public surface/);
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: same-basename impls are not all marked connected by one shared-stem test (Codex #112 round-2)", () => {
+  // `src/foo.ts` and `src/legacy/foo.ts` share the basename `foo`; a single `tests/foo.test.ts`
+  // cannot tell us which one it covers, so neither impl may lose its no-connected-test boost.
+  const diff = parseStructuredDiff([
+    "diff --git a/src/foo.ts b/src/foo.ts",
+    "--- a/src/foo.ts",
+    "+++ b/src/foo.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const foo = 1;",
+    "+export const foo2 = 2;",
+    "diff --git a/src/legacy/foo.ts b/src/legacy/foo.ts",
+    "--- a/src/legacy/foo.ts",
+    "+++ b/src/legacy/foo.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const legacyFoo = 1;",
+    "+export const legacyFoo2 = 2;",
+    "diff --git a/tests/foo.test.ts b/tests/foo.test.ts",
+    "--- a/tests/foo.test.ts",
+    "+++ b/tests/foo.test.ts",
+    "@@ -1,1 +1,2 @@",
+    " describe('foo', () => {",
+    "+  it('works', () => {});",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const a = model.review_queue.find((entry) => entry.path === "src/foo.ts");
+  const b = model.review_queue.find((entry) => entry.path === "src/legacy/foo.ts");
+  assert.ok(a && b, "both same-basename impl files are queued");
+  assert.match(a.reason, /no connected test change/, "src/foo.ts keeps its no-connected-test boost under stem ambiguity");
+  assert.match(b.reason, /no connected test change/, "src/legacy/foo.ts keeps its no-connected-test boost under stem ambiguity");
+});
