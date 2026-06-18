@@ -206,6 +206,32 @@ test("review-surfaces.METHODOLOGY.9 a Codex session recorded under a different c
   }
 });
 
+// A burst of NEWER sessions recorded under other repos' cwds must not crowd this repo's
+// rollout out of the probe window — the cwd probe walks past non-matches to collect this
+// repo's sessions (Codex #113), it does not slice the newest-N first and then filter.
+test("review-surfaces.METHODOLOGY.9 other repos' newer sessions do not crowd out this repo's Codex rollout", () => {
+  const store = freshStore();
+  try {
+    // Four NEWER sessions under unrelated cwds (later timestamps sort first in the scan).
+    for (const ts of ["20-00-00", "21-00-00", "22-00-00", "23-00-00"]) {
+      writeCodexSession(store, "2026/06/17", `rollout-2026-06-17T${ts}-other.jsonl`, [
+        codexMeta(`/some/other/repo-${ts}`, `2026-06-17T${ts.replace(/-/g, ":")}.000Z`),
+        codexLine(`2026-06-17T${ts.replace(/-/g, ":")}.000Z`, "unrelated work")
+      ]);
+    }
+    // This repo's session is OLDER (sorts last), so a slice-newest-then-filter would miss it.
+    const mine = writeCodexSession(store, "2026/06/17", "rollout-2026-06-17T10-00-00-mine.jsonl", [
+      codexMeta("/repo/app", "2026-06-17T10:00:00.000Z"),
+      codexLine("2026-06-17T10:00:00.000Z", "editing src/uploader.ts")
+    ]);
+    const discovered = discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: ["src/uploader.ts"] });
+    assert.ok(discovered);
+    assert.equal(discovered.path, mine, "this repo's rollout is found despite newer unrelated sessions");
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
 // Cross-store selection is ONE total order: a cwd-matched Codex session that references
 // the changed range beats a same-repo Claude session that references none (recency-only).
 test("review-surfaces.METHODOLOGY.9 a range-referencing Codex session beats a recency-only same-repo Claude session", () => {

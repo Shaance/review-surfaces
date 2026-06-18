@@ -16,10 +16,11 @@
 // path like `README.md` appears in many repos' sessions); instead a Codex rollout is
 // scoped to THIS repo by its recorded `session_meta.cwd` — the Codex analogue of the
 // Claude project slug. cwd is read cheaply from the head of each file (the meta is the
-// first line), so the whole store can be filtered without full reads; only the rollouts
-// recorded under this cwd are fully read and ranked. The probe is bounded to the
-// most-recent CODEX_SCAN_LIMIT rollouts (newest first) so a 1000-session store does not
-// force a scan of every file; a session older than that window needs --conversation.
+// first line), so the store can be filtered without full reads; only the rollouts recorded
+// under this cwd are fully read and ranked. The probe walks the newest rollouts and stops
+// once enough of THIS repo's sessions are collected — so a burst of unrelated newer sessions
+// from other repos cannot crowd this repo's rollout out of the window (Codex #113); a session
+// beyond the (generous) probe ceiling needs --conversation.
 // Cursor stores its chat in a per-workspace SQLite `state.vscdb` (no loose transcript
 // file to read), so it has NO zero-config discovery — Cursor users pass an exported
 // transcript with --conversation (the cursor adapter parses it). See
@@ -71,11 +72,15 @@ export interface DiscoveryOptions {
   changedFiles: string[];
 }
 
-// The most-recent Codex rollouts whose `session_meta.cwd` is probed in the global store.
-// The store holds every repo's sessions, so a full scan every run is wasteful; a review
-// is normally run right after the work, so the producing session is among the newest.
-// Bounded and documented; --conversation overrides when the session falls outside it.
-const CODEX_SCAN_LIMIT = 80;
+// The probe ceiling is decoupled from the match count so that other repos' newer sessions
+// cannot crowd out THIS repo's rollout (Codex #113): the cwd probe is a cheap head read, so
+// we probe up to CODEX_PROBE_LIMIT newest rollouts but stop once CODEX_MATCH_LIMIT of them
+// match this repo's cwd (enough to pick the best recent one). A review is normally run right
+// after the work, so this repo's producing session is among the newest of ITS OWN sessions
+// even when many unrelated sessions are interleaved. A session beyond the probe window needs
+// --conversation. (Probing 600 head reads is ~cheap; full reads happen only for matches.)
+const CODEX_PROBE_LIMIT = 600;
+const CODEX_MATCH_LIMIT = 12;
 // Bytes read from the head of a rollout to extract `session_meta.cwd`. The meta is the
 // first line and carries `cwd` near its start (before the large base_instructions blob),
 // so a small head read is enough; the value is regex-extracted to tolerate a first line
@@ -255,14 +260,19 @@ function codexSessionCwd(filePath: string): string | undefined {
   }
 }
 
-// Codex candidates: among the newest CODEX_SCAN_LIMIT rollouts, those recorded under
-// THIS repo's cwd (the Codex analogue of the Claude project slug) that are adapter-valid.
-// cwd-scoping — not a bare path-substring match — is what ties a global-store session to
-// this repo, so eligibility does NOT require a changed-file reference: a cwd-matched
-// session ranks by reference then recency exactly like a same-repo Claude session.
+// Codex candidates: probe the newest CODEX_PROBE_LIMIT rollouts (cheap head reads) for
+// those recorded under THIS repo's cwd (the Codex analogue of the Claude project slug),
+// collecting up to CODEX_MATCH_LIMIT of them — so a burst of unrelated newer sessions from
+// other repos does NOT crowd this repo's rollout out of the window (Codex #113). cwd-scoping
+// — not a bare path-substring match — is what ties a global-store session to this repo, so
+// eligibility does NOT require a changed-file reference: a cwd-matched session ranks by
+// reference then recency exactly like a same-repo Claude session.
 function codexCandidates(options: DiscoveryOptions): Candidate[] {
   const candidates: Candidate[] = [];
-  for (const full of codexRolloutPaths(options.storeRoot, CODEX_SCAN_LIMIT)) {
+  for (const full of codexRolloutPaths(options.storeRoot, CODEX_PROBE_LIMIT)) {
+    if (candidates.length >= CODEX_MATCH_LIMIT) {
+      break; // enough of this repo's most-recent sessions collected to pick the best.
+    }
     if (codexSessionCwd(full) !== options.cwd) {
       continue; // a different repo's session (the Codex store is global) — not a match.
     }
