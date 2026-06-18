@@ -49,21 +49,22 @@ exclusion-stress diffs); the intended target is **20–30**.
 The exclusion side is clean and the floor holds on every language: **0% empty-queue,
 0% false-blocker, 0% irrelevant-in-top-5** (docs, `go.sum`/`Cargo.lock`/`uv.lock`,
 CI workflows, `package.json`/`pom.xml`/`Cargo.toml` config all correctly kept out of the
-top 5), **95% focus recall@5**, **top-is-code on 20/22**. The two misses are both real,
-useful signals — kept in the set rather than tuned away:
+top 5), **100% focus recall@5**, **top-is-code on 20/22**.
 
-- **`express-send`: a dependency change SUPPRESSES the floor, hiding the source change**
-  (recall 0%, the only empty `expected_focus`). The diff bumps `content-disposition` in
-  `package.json` *and* edits `lib/response.js`. The dependency detector queues the
-  `package.json` bump, so the queue is non-empty — and the cold-start floor only fires when
-  the queue is **empty**, so `lib/response.js` is never ranked at all. The queue isn't
-  empty, but the substantive source is hidden. This is the most actionable finding: a
-  candidate to have the floor **augment** a thin detector-only queue with review-focus
-  items for unranked substantive source, rather than firing only on a fully empty queue.
+- **`express-send`: a dependency change used to hide the source change — now FIXED.** The
+  diff bumps `content-disposition` in `package.json` *and* edits `lib/response.js`. The
+  dependency detector queues the bump, so the queue was non-empty — and the cold-start
+  floor originally fired only when the queue was **empty**, so `lib/response.js` was never
+  ranked (recall 0%). The benchmark caught this; the floor now **augments** a thin
+  detector-only queue with review-focus items for uncovered impl source (`HUMAN_REVIEW.28`),
+  so `lib/response.js` is surfaced (recall **100%**). The dep finding still leads the queue
+  (a major bump is worth flagging first), which is why the #1 item is `package.json` — so
+  this case is correct, not a top-is-code miss to chase.
 - **`gson-jsonreader`: the test outranks its source.** `JsonReaderTest.java` (+14 lines)
   outranks `JsonReader.java` (a 2-line change) on churn. The source is still in the top 5
   (recall 100%), and a large new test block is legitimately worth reading, so this is a
   ranking **observation**, not a regression — a candidate for a future "prefer the
-  implementation over its own test at comparable evidence" tie-break.
+  implementation over its own test at comparable evidence" tie-break, tracked not chased.
 
-Both are tracked here rather than chased; the benchmark surfaces them on real diffs.
+The benchmark drove a real floor fix (the `express-send` augmentation) — exactly its
+purpose: surface gaps on real diffs, then confirm the fix closes them.
