@@ -25,7 +25,7 @@ import { PR_RISK_RULE_METADATA } from "../pr/risk-metadata";
 import { ReviewPacket } from "../render/packet";
 import { looksLikeRecordedCiSecretBoundaryManualCheck } from "../risks/manual-checks";
 import { RisksModel } from "../risks/risks";
-import { classifyRole } from "../scope/pr-scope";
+import { classifyRole, isTestPath } from "../scope/pr-scope";
 import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-contract";
 import {
   DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
@@ -168,6 +168,10 @@ interface QueueDraft {
   evidenceTier?: number;
   // review-surfaces.RANKING.2: the "why ranked here" lines for this draft.
   ranking_reasons?: string[];
+  // review-surfaces.HUMAN_REVIEW.28: a cold-start baseline item (no risk fired). Its
+  // ranking reason must be the deterministic signal, not a "ranked by risk severity"
+  // line that reads as a risk assessment.
+  baseline?: string;
 }
 
 type TestPlanDraft = Omit<TestPlanItem, "id">;
@@ -2172,6 +2176,16 @@ function buildReviewQueue(
     });
   }
 
+  // Cold-start review-focus floor (review-surfaces.HUMAN_REVIEW.28): when NO detector
+  // produced a queue item — a spec-less / no-PR-surface run where nothing structural
+  // fired — a substantive diff must still not yield an empty queue. Rank the changed
+  // files by DETERMINISTIC signals (churn, exported surface, an impl file with no
+  // connected changed test, sensitive error/async/auth/persistence paths) and surface
+  // the files most worth reading, WITHOUT fabricating any risk or blocker.
+  if (drafts.length === 0) {
+    drafts.push(...baselineReviewFocusDrafts(input, diffIndex, semanticFacts));
+  }
+
   // review-surfaces.RANKING.1/.3: annotate each draft with its evidence tier and
   // "why ranked here" lines, then sort. Evidence is the SECONDARY key — it breaks
   // ties and demotes well-evidenced items within a score band — so the primary
@@ -2265,7 +2279,9 @@ function applyRankingEvidence(drafts: QueueDraft[], input: BuildHumanReviewInput
       }
     }
     if (reasons.length === 0) {
-      reasons.push(defaultRankReason(draft));
+      // A cold-start baseline item has no risk class, so it must not render "ranked by
+      // <priority> risk severity" — use its deterministic signal instead (Codex #112).
+      reasons.push(draft.baseline ?? defaultRankReason(draft));
     }
     draft.ranking_reasons = reasons;
   }
@@ -2556,6 +2572,266 @@ function changedFileQueueDrafts(
         sortKey: `changed:${file.path}`
       };
     });
+}
+
+// Change regions that earn higher attention on a cold-start read: error/async handling,
+// auth, network requests, persistence, lifecycle (HUMAN_REVIEW.28). The members are
+// STEMS, matched as prefixes (`[a-z]*` tail, not a trailing `\b`) so the family forms
+// fire too: `auth`->authentication/authorize, `persist`->persistence, `migrat`->
+// migration/migrate, `permission`->permissions. A leading `\b` still prevents matching
+// mid-identifier (e.g. `coauthor` does not match `auth`) (Codex #112 round-2). The `auth`
+// stem uses `auth(?!or(?!iz))` so it fires on authn/authentication AND authoriz(e/ation) but
+// NOT on content-authoring words (author/authors/authorId) (Codex #112 round-6).
+const BASELINE_SENSITIVE =
+  /\b(async|await|abort|signal|retry|catch|throw|reject|error|timeout|auth(?!or(?!iz))|login|logout|session|token|permission|oauth|password|fetch|request|http|url|socket|persist|database|migrat|cache|transaction|lifecycle|useeffect|dispose|cleanup)[a-z]*/i;
+// Exported/public surface added or removed in the diff itself (HUMAN_REVIEW.28 round-2):
+// in the spec-less cold-start path `semanticFacts.api_changes` is empty, so the only way
+// to see a public-surface change is the changed lines. Cross-language: TS/JS `export`/
+// CommonJS `module.exports`, Rust `pub`, Java/Kotlin/C#/PHP `public`, Go exported
+// `func Name` / receiver method `func (r T) Name` / `type Name`, Python `__all__`. This is
+// an advisory boost, not an exhaustive surface parser — rarer public-declaration forms
+// (Kotlin top-level `fun`, Scala, Swift `open`) are intentionally NOT chased (Codex #112 r4).
+const BASELINE_EXPORT =
+  /\bexport\b|\bmodule\.exports\b|\bexports\.|\bpub(\s|\()|\bpublic\s+(class|interface|function|fun|static|final|abstract|async|void|[A-Z])|\bfunc\s+(\([^)]*\)\s*)?[A-Z]|\btype\s+[A-Z]\w*\s+(struct|interface)\b|\b__all__\b/;
+// Generated/build output a human does not read line-by-line on a cold start. `classifyRole`
+// only flags `dist/` + lockfiles, so the floor would otherwise rank a regenerated client
+// under `generated/`/`build/`/`target/` etc. (Codex #112 round-2).
+const BASELINE_GENERATED_DIR =
+  /(^|\/)(generated|__generated__|\.generated|build|dist|out|target|vendor|node_modules|coverage|\.next|\.nuxt|\.svelte-kit)\//i;
+const BASELINE_CODE_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m)$/i;
+// Documentation extensions `classifyRole` does not already flag as `doc` (it keys on `docs/`
+// + `.md`). Outside `docs/`, a `README.mdx`/`CHANGELOG.rst` would otherwise fall through to
+// `other` and be queued (Codex #112 round-5). The cold-start floor never asks a human to
+// "read this changed file" for prose.
+// `.txt` is intentionally NOT here: it is too ambiguous (requirements.txt / constraints.txt
+// are substantive dependency manifests, not prose), so dropping it would hide a real change
+// (Codex #112 round-6). A genuinely prose .txt falls through to "other" and is merely ranked
+// low — never wrongly excluded.
+const BASELINE_DOC_EXT = /\.(md|mdx|markdown|mkd|rst|adoc|asciidoc|org|textile|rdoc|pod)$/i;
+// Files no human reads line-by-line on a cold-start: lockfiles, images/fonts, source maps,
+// snapshots, AND archive/executable/compiled binaries (a `.zip`/`.jar`/`.exe` is not a
+// review-focus item — Codex #112 round-5). Excluded from the baseline floor (Codex #112).
+const BASELINE_NON_REVIEW_EXT =
+  /\.(png|jpe?g|gif|svg|ico|webp|bmp|pdf|woff2?|ttf|eot|otf|map|min\.js|min\.css|snap|lock|wasm|node|zip|tar|gz|tgz|bz2|xz|7z|rar|jar|war|ear|exe|dll|so|dylib|bin|class|o|a|lib|obj|pyc|pyo|deb|rpm|dmg|iso|mp4|mov|mp3|wav)$/i;
+const BASELINE_LOCKFILE_NAMES = new Set([
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "npm-shrinkwrap.json",
+  "cargo.lock",
+  "go.sum",
+  "poetry.lock",
+  "gemfile.lock",
+  "composer.lock",
+  "pipfile.lock"
+]);
+function isNonReviewArtifact(filePath: string): boolean {
+  const base = (filePath.split("/").pop() ?? filePath).toLowerCase();
+  return BASELINE_NON_REVIEW_EXT.test(base) || BASELINE_LOCKFILE_NAMES.has(base);
+}
+
+// `classifyRole`'s isTestPath only matches `tests/` + `.test.`/`.spec.`; broaden it to
+// the cross-language test conventions (`test/`, `spec/`, `__tests__/`, `foo_test.go`,
+// `FooTest.java`) so a `test/retry.ts` is not mislabeled implementation (HUMAN_REVIEW.28).
+function isBaselineTest(filePath: string): boolean {
+  if (isTestPath(filePath)) {
+    return true;
+  }
+  const base = filePath.split("/").pop() ?? filePath;
+  return (
+    /(^|\/)(tests?|__tests__|spec)\//.test(filePath) ||
+    /(^|[._-])(test|spec)[._-]/i.test(base) ||
+    /(^|[._-])(test|spec)\.[^.]+$/i.test(base) ||
+    /(?:Test|Spec)\.[^.]+$/.test(base)
+  );
+}
+
+type BaselineRole = "impl" | "test" | "config" | "ci" | "doc" | "generated" | "other";
+function baselineFileRole(filePath: string): BaselineRole {
+  // Generated/build output first: a path under generated/build/target/vendor is not
+  // worth a manual read even if its extension looks like source (Codex #112 round-2).
+  if (BASELINE_GENERATED_DIR.test(filePath)) {
+    return "generated";
+  }
+  const role = classifyRole(filePath, []);
+  // A definite doc/ci/generated/config/spec classification WINS over the broad test-name
+  // heuristic: `docs/test.md` is a doc and `.github/workflows/test.yml` is CI, not tests,
+  // even though their basename looks test-shaped (Codex #112 round-7).
+  if (role === "config" || role === "ci" || role === "doc" || role === "generated") {
+    return role;
+  }
+  // A documentation extension `classifyRole` missed (e.g. README.mdx / CHANGELOG.rst outside
+  // docs/) is prose, not a review-focus item (Codex #112 round-5) — also before the test-name
+  // fallback so `docs/spec.mdx` is a doc, not a test.
+  if (BASELINE_DOC_EXT.test(filePath)) {
+    return "doc";
+  }
+  // The broad cross-language test-name fallback runs only AFTER the definite doc/ci/config
+  // roles, so it catches `test/retry.ts` / `FooTest.java` without hijacking a doc/CI path.
+  if (isBaselineTest(filePath)) {
+    return "test";
+  }
+  if (role === "spec") {
+    return "config";
+  }
+  // `classifyRole` returns "unknown" when no areas are threaded (the spec-less / diff
+  // path): decide impl by code extension (a .d.ts declaration is not implementation).
+  if (BASELINE_CODE_EXT.test(filePath) && !/\.d\.ts$/i.test(filePath)) {
+    return "impl";
+  }
+  return "other";
+}
+
+function baselineStem(filePath: string): string {
+  const base = filePath.split("/").pop() ?? filePath;
+  const raw = base.replace(/\.[^.]+$/, ""); // strip extension, keep case
+  let name = raw.toLowerCase();
+  name = name.replace(/[._-](test|spec)$/i, "").replace(/^(test|spec)[._-]/i, "");
+  // PascalCase suffix (`FooTest`/`FooSpec` for `Foo.java`/`Foo.kt`) — strip only when
+  // the original used the capitalized convention, so `latest`/`contest` keep their stem.
+  if (/(?:Test|Spec)$/.test(raw)) {
+    name = name.replace(/(?:test|spec)$/, "");
+  }
+  return name;
+}
+
+// Cold-start review-focus floor (HUMAN_REVIEW.28): rank the changed files from the
+// structured diff ALONE — no prSurface, no detector facts required — by deterministic
+// signals so a substantive diff never yields an empty queue. Fabricates no risk or
+// blocker; every item says "no risk rule produced a ranked finding, but this is worth
+// reading because ..." (accurate even when a pathless risk was skipped — Codex #112 r3).
+function baselineReviewFocusDrafts(
+  input: BuildHumanReviewInput,
+  diffIndex: DiffIndex | undefined,
+  semanticFacts: SemanticChangeFacts
+): QueueDraft[] {
+  const files = input.diff?.files ?? [];
+  if (files.length === 0) {
+    return [];
+  }
+  const surfacePaths = new Set<string>([
+    ...semanticFacts.api_changes.map((change) => change.path),
+    ...semanticFacts.schema_changes.map((change) => change.path)
+  ]);
+  const changedTestsByImpl = input.rankingEvidence?.changed_tests_by_impl ?? {};
+  // Tests the import evidence already attributed to an impl cover THAT impl; their stem must
+  // not be reused as a fallback connection for a different same-stem impl (Codex #112 r3).
+  // The map is keyed by the narrower `isTestPath`, so a test it never saw (a cross-language
+  // `FooTest.java` the broader baseline detector recognizes) is NOT attributed and may still
+  // drive the stem fallback — a single evidence entry must not disable the fallback for the
+  // whole diff (Codex #112 r4).
+  const attributedTestPaths = new Set(Object.values(changedTestsByImpl).flat());
+  // The stem fallback uses only changed test files that are (a) NOT deletions — a removed
+  // test is the opposite of connected coverage (Codex #112 r4) — and (b) not already
+  // attributed to an impl by evidence.
+  const changedTestStems = new Set(
+    files
+      .filter(
+        (file) =>
+          baselineFileRole(file.path) === "test" &&
+          file.status !== "D" &&
+          // A non-review artifact under a test dir (tests/foo.snap, tests/foo.png) is not a
+          // real test — it must not lend its stem as connected coverage (Codex #112 round-6).
+          !isNonReviewArtifact(file.path) &&
+          !attributedTestPaths.has(file.path)
+      )
+      .map((file) => baselineStem(file.path))
+  );
+  // The stem fallback (used only without `changed_tests_by_impl` evidence) is ambiguous
+  // when two changed impl files share a basename — e.g. `src/foo.ts` and `src/legacy/foo.ts`
+  // with a single `tests/foo.test.ts`. We cannot tell WHICH impl that test covers, so a stem
+  // shared by >1 changed impl is NOT treated as connected for any of them; each keeps its
+  // no-connected-test boost (over-surface, never wrongly clear) (Codex #112 round-2).
+  const implStemCounts = new Map<string, number>();
+  for (const file of files) {
+    if (baselineFileRole(file.path) === "impl") {
+      const stem = baselineStem(file.path);
+      implStemCounts.set(stem, (implStemCounts.get(stem) ?? 0) + 1);
+    }
+  }
+
+  const ranked = files
+    .map((file) => {
+      const role = baselineFileRole(file.path);
+      // Drop only docs/generated output and non-review artifacts (lockfiles, images,
+      // maps, snapshots). A substantive "other" file — a shell script, Dockerfile,
+      // Terraform, SQL, proto — is KEPT so a diff that only changes those is not empty
+      // (Codex #112).
+      if (role === "doc" || role === "generated" || isNonReviewArtifact(file.path)) {
+        return undefined;
+      }
+      let added = 0;
+      let removed = 0;
+      let changedText = "";
+      for (const hunk of file.hunks) {
+        for (const line of hunk.lines) {
+          if (line.kind === "add") {
+            added += 1;
+            changedText += ` ${line.text}`;
+          } else if (line.kind === "delete") {
+            removed += 1;
+            changedText += ` ${line.text}`; // deleting sensitive logic (a removed catch/retry/token) counts too (Codex #112)
+          }
+        }
+      }
+      const churn = added + removed;
+      const isImpl = role === "impl";
+      // `surfacePaths` (semantic api/schema changes) is empty in the spec-less cold-start
+      // path, so also read the public surface from the changed lines themselves (Codex
+      // #112 round-2). A `.d.ts` is excluded from the impl role but is PURE public surface,
+      // so it is a public-surface candidate too (Codex #112 round-3); a config/SQL "export"
+      // word still does not count.
+      const isDeclaration = /\.d\.ts$/i.test(file.path);
+      const exported = surfacePaths.has(file.path) || ((isImpl || isDeclaration) && BASELINE_EXPORT.test(changedText));
+      const stem = baselineStem(file.path);
+      const hasConnectedTest =
+        (changedTestsByImpl[file.path]?.length ?? 0) > 0 ||
+        (isImpl && changedTestStems.has(stem) && (implStemCounts.get(stem) ?? 0) <= 1);
+      const sensitive = BASELINE_SENSITIVE.test(file.path) || BASELINE_SENSITIVE.test(changedText);
+      let score = Math.min(churn, 200) / 10;
+      if (isImpl) score += 8;
+      else if (role === "config" || role === "ci") score += 6;
+      else if (role === "other") score += 4; // a substantive script/infra/sql file still ranks
+      if (exported) score += 12;
+      if (isImpl && !hasConnectedTest && churn > 0) score += 14;
+      if (sensitive) score += 10;
+
+      const reasons: string[] = [];
+      if (exported) reasons.push("changes an exported/public surface");
+      if (isImpl && !hasConnectedTest && churn > 0) reasons.push("an implementation change with no connected test change");
+      if (sensitive) reasons.push("touches error/async/auth/network/persistence paths");
+      if (churn >= 50) reasons.push(`high churn (+${added}/-${removed})`);
+      const why = reasons.length > 0 ? reasons.join(", ") : `a ${role} change worth a manual read`;
+      return { file, role, churn, score, why };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
+    .sort((left, right) => right.score - left.score || right.churn - left.churn || compareStrings(left.file.path, right.file.path))
+    .slice(0, MAX_CHANGED_FILE_QUEUE);
+
+  return ranked.map((entry) => {
+    const evidence = fileEvidence(entry.file.path, "Ranked by deterministic change signals because no detector produced a ranked finding.");
+    const anchor = queueAnchorForEvidence(evidence, diffIndex);
+    return {
+      title: `Review-focus: ${entry.file.path}`,
+      path: anchor.path,
+      old_path: anchor.old_path,
+      hunk_header: anchor.hunk_header,
+      line_start: anchor.line_start,
+      line_end: anchor.line_end,
+      anchor_side: anchor.side,
+      reviewer_action: "No defect pattern fired here — read this changed file to confirm the change is intended and skim-safe.",
+      reason: `No risk rule produced a ranked finding here, but this is among the changed files most worth reading: ${entry.why}.`,
+      baseline: `ranked by deterministic change signals (no detector produced a ranked finding): ${entry.why}`,
+      evidence: [evidence],
+      requirement_ids: [],
+      risk_ids: [],
+      confidence: anchor.line_start || anchor.hunk_header ? ("high" as const) : ("medium" as const),
+      priority: (entry.role === "impl" && entry.score >= 20 ? "medium" : "low") as HumanReviewPriority,
+      estimated_review_effort: entry.role === "test" ? ("quick" as const) : ("moderate" as const),
+      score: entry.score + (anchor.line_start ? 4 : 0) + (anchor.hunk_header ? 4 : 0),
+      sortKey: `baseline:${entry.file.path}`
+    };
+  });
 }
 
 function buildFeedbackPolicyEffects(input: BuildHumanReviewInput, config: HumanReviewBuildConfig): FeedbackPolicyEffect[] {

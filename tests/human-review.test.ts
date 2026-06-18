@@ -4454,3 +4454,459 @@ test("review-surfaces.METHODOLOGY.8 a corroborated workflow question survives th
   assert.equal(capped1.questions.length, 1);
   assert.match(capped1.questions[0].question, /globally-capped corroborated change/, "the blocking corroborated question is prioritized over the intent question");
 });
+
+function coldStartDiff() {
+  return parseStructuredDiff([
+    "diff --git a/src/payment-processor.ts b/src/payment-processor.ts",
+    "--- a/src/payment-processor.ts",
+    "+++ b/src/payment-processor.ts",
+    "@@ -10,2 +10,8 @@",
+    " export class PaymentProcessor {",
+    "+  async charge(req: Request) {",
+    "+    try { await fetch(this.url, { signal: req.signal }); }",
+    "+    catch (error) { this.retry(error); }",
+    "+  }",
+    "+  private retry(e: unknown) { /* ... */ }",
+    "   stop() {}",
+    "diff --git a/src/format.ts b/src/format.ts",
+    "--- a/src/format.ts",
+    "+++ b/src/format.ts",
+    "@@ -3,1 +3,2 @@",
+    " export function format(x: string) {",
+    "+  return x.trim();",
+    "diff --git a/test/format.test.ts b/test/format.test.ts",
+    "--- a/test/format.test.ts",
+    "+++ b/test/format.test.ts",
+    "@@ -1,1 +1,2 @@",
+    " describe('format', () => {",
+    "+  it('trims', () => {});",
+    "diff --git a/docs/guide.md b/docs/guide.md",
+    "--- a/docs/guide.md",
+    "+++ b/docs/guide.md",
+    "@@ -1,1 +1,2 @@",
+    " # Guide",
+    "+More words.",
+    ""
+  ].join("\n"));
+}
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a substantive diff yields a deterministic review-focus queue when no detector fires", () => {
+  // minimalReviewPacket has no risks and there is no prSurface / semantic facts, so no
+  // detector produces a queue item — the baseline floor must still surface files.
+  const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  const model = buildHumanReview({ packet, diff: coldStartDiff() });
+
+  assert.ok(model.review_queue.length >= 2, "a substantive impl diff does not produce an empty queue");
+  // The async/error/network impl file with no connected test ranks first.
+  assert.equal(model.review_queue[0].path, "src/payment-processor.ts");
+  assert.match(model.review_queue[0].reason, /No risk rule produced a ranked finding/);
+  assert.match(model.review_queue[0].reason, /no connected test change|error\/async/);
+  // Docs are not a "read this first" candidate.
+  assert.ok(!model.review_queue.some((item) => item.path === "docs/guide.md"), "docs are excluded from the review-focus floor");
+  // The floor fabricates no risk or blocker.
+  assert.ok(model.review_queue.every((item) => item.risk_ids.length === 0), "the cold-start floor cites no risk ids");
+  assert.equal(model.blockers.length, 0, "the cold-start floor adds no blockers");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start floor is additive-only: it does NOT fire when a detector already queued an item", () => {
+  // packetFixture carries RISK-001, which produces a real queue draft — so the baseline
+  // floor must stay silent (no `Review-focus:` items).
+  const model = buildHumanReview({ packet: packetFixture(), diff: coldStartDiff() });
+  assert.ok(model.review_queue.length > 0);
+  assert.ok(!model.review_queue.some((item) => /^Review-focus:/.test(item.title)), "the baseline floor does not fire when a detector produced a queue item");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a REAL external diff (sindresorhus/ky) yields a non-empty review-focus queue", () => {
+  // Pinned real diff: an error-handling source fix + new tests — exactly the spec-less
+  // case that produced an empty queue before this change.
+  const rawDiff = fs.readFileSync(path.join(process.cwd(), "tests", "fixtures", "cold-start", "ky-network-error.diff"), "utf8");
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff: parseStructuredDiff(rawDiff) });
+
+  assert.ok(model.review_queue.length >= 2, "the real spec-less diff does not produce an empty queue");
+  assert.ok(model.review_queue.some((item) => item.path === "source/utils/is-network-error.ts"), "the changed source file is queued");
+  assert.ok(model.review_queue.some((item) => item.path === "test/retry.ts"), "the changed test file is queued");
+  // The source error-handling change with no connected test ranks first.
+  assert.equal(model.review_queue[0].path, "source/utils/is-network-error.ts");
+  assert.ok(model.review_queue.every((item) => item.risk_ids.length === 0 && /No risk rule produced a ranked finding/.test(item.reason)), "every baseline item is honest and fabricates no risk");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a substantive NON-code file (shell/infra) is still queued, and items carry a non-risk ranking reason (Codex #112)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/scripts/deploy.sh b/scripts/deploy.sh",
+    "--- a/scripts/deploy.sh",
+    "+++ b/scripts/deploy.sh",
+    "@@ -1,2 +1,6 @@",
+    " #!/usr/bin/env bash",
+    "+set -euo pipefail",
+    "+aws s3 sync ./dist s3://prod-bucket",
+    "+kubectl rollout restart deploy/api",
+    "+echo done",
+    "diff --git a/package-lock.json b/package-lock.json",
+    "--- a/package-lock.json",
+    "+++ b/package-lock.json",
+    "@@ -1,1 +1,2 @@",
+    " {",
+    "+  \"lockfileVersion\": 3,",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+
+  assert.ok(model.review_queue.some((item) => item.path === "scripts/deploy.sh"), "a substantive shell/infra change is queued (not dropped as 'other')");
+  assert.ok(!model.review_queue.some((item) => item.path === "package-lock.json"), "a lockfile is excluded as a non-review artifact");
+  // The baseline item's ranking reason must be the deterministic signal, not a risk claim.
+  const sh = model.review_queue.find((item) => item.path === "scripts/deploy.sh");
+  assert.ok(sh, "the deploy.sh item exists");
+  assert.ok(sh.ranking_reasons?.some((r) => /deterministic change signals/.test(r)), "baseline ranking reason names the deterministic signal");
+  assert.ok(!sh.ranking_reasons?.some((r) => /ranked by .* risk severity/.test(r)), "baseline item does not claim a risk severity ranking");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a SUFFIXED sensitive keyword (persistence/migration) fires the sensitive signal (Codex #112 round-2)", () => {
+  // The stem `persist`/`migrat` must match the family forms; the old trailing `\b` made
+  // them match nothing. Neither added line uses a bare-word sensitive token, so only the
+  // suffix-aware match can flag these.
+  const diff = parseStructuredDiff([
+    "diff --git a/src/store.ts b/src/store.ts",
+    "--- a/src/store.ts",
+    "+++ b/src/store.ts",
+    "@@ -1,1 +1,3 @@",
+    " export class Store {",
+    "+  private layer = new PersistenceLayer();",
+    "+  run() { return applyMigration(this.layer); }",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const item = model.review_queue.find((entry) => entry.path === "src/store.ts");
+  assert.ok(item, "the impl file is queued");
+  assert.match(item.reason, /error\/async\/auth\/network\/persistence paths/);
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: generated/build output is excluded even with a source extension (Codex #112 round-2)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/src/app.ts b/src/app.ts",
+    "--- a/src/app.ts",
+    "+++ b/src/app.ts",
+    "@@ -1,1 +1,2 @@",
+    " const a = 1;",
+    "+const b = 2;",
+    "diff --git a/src/generated/client.ts b/src/generated/client.ts",
+    "--- a/src/generated/client.ts",
+    "+++ b/src/generated/client.ts",
+    "@@ -1,1 +1,40 @@",
+    " // AUTO-GENERATED",
+    "+export const huge = 1;",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  assert.ok(model.review_queue.some((item) => item.path === "src/app.ts"), "the hand-written file is queued");
+  assert.ok(
+    !model.review_queue.some((item) => item.path === "src/generated/client.ts"),
+    "generated output under generated/ is not a review-focus item"
+  );
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: an exported surface is detected from the diff itself when no semantic facts exist (Codex #112 round-2)", () => {
+  // Spec-less path: semanticFacts.api_changes is empty, so the public surface can only be
+  // read from the changed lines.
+  const diff = parseStructuredDiff([
+    "diff --git a/src/api.ts b/src/api.ts",
+    "--- a/src/api.ts",
+    "+++ b/src/api.ts",
+    "@@ -1,1 +1,3 @@",
+    " // api",
+    "+export function publicThing(n: number) { return n + 1; }",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const item = model.review_queue.find((entry) => entry.path === "src/api.ts");
+  assert.ok(item, "the impl file is queued");
+  assert.match(item.reason, /exported\/public surface/);
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: same-basename impls are not all marked connected by one shared-stem test (Codex #112 round-2)", () => {
+  // `src/foo.ts` and `src/legacy/foo.ts` share the basename `foo`; a single `tests/foo.test.ts`
+  // cannot tell us which one it covers, so neither impl may lose its no-connected-test boost.
+  const diff = parseStructuredDiff([
+    "diff --git a/src/foo.ts b/src/foo.ts",
+    "--- a/src/foo.ts",
+    "+++ b/src/foo.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const foo = 1;",
+    "+export const foo2 = 2;",
+    "diff --git a/src/legacy/foo.ts b/src/legacy/foo.ts",
+    "--- a/src/legacy/foo.ts",
+    "+++ b/src/legacy/foo.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const legacyFoo = 1;",
+    "+export const legacyFoo2 = 2;",
+    "diff --git a/tests/foo.test.ts b/tests/foo.test.ts",
+    "--- a/tests/foo.test.ts",
+    "+++ b/tests/foo.test.ts",
+    "@@ -1,1 +1,2 @@",
+    " describe('foo', () => {",
+    "+  it('works', () => {});",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const a = model.review_queue.find((entry) => entry.path === "src/foo.ts");
+  const b = model.review_queue.find((entry) => entry.path === "src/legacy/foo.ts");
+  assert.ok(a && b, "both same-basename impl files are queued");
+  assert.match(a.reason, /no connected test change/, "src/foo.ts keeps its no-connected-test boost under stem ambiguity");
+  assert.match(b.reason, /no connected test change/, "src/legacy/foo.ts keeps its no-connected-test boost under stem ambiguity");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: import evidence overrides the same-stem fallback (Codex #112 round-3)", () => {
+  // Evidence says tests/foo.test.ts covers src/bar.ts (it imports bar), NOT src/foo.ts.
+  // The stem `foo` coincides with src/foo.ts, but because import evidence EXISTS it is
+  // authoritative — the stem fallback is disabled, so src/foo.ts keeps its no-connected-
+  // test boost and src/bar.ts (covered per evidence) does not get one.
+  const diff = parseStructuredDiff([
+    "diff --git a/src/foo.ts b/src/foo.ts",
+    "--- a/src/foo.ts",
+    "+++ b/src/foo.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const foo = 1;",
+    "+export const foo2 = 2;",
+    "diff --git a/src/bar.ts b/src/bar.ts",
+    "--- a/src/bar.ts",
+    "+++ b/src/bar.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const bar = 1;",
+    "+export const bar2 = 2;",
+    "diff --git a/tests/foo.test.ts b/tests/foo.test.ts",
+    "--- a/tests/foo.test.ts",
+    "+++ b/tests/foo.test.ts",
+    "@@ -1,1 +1,2 @@",
+    " import { bar } from '../src/bar';",
+    "+it('bar', () => {});",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({
+    packet: minimalReviewPacket() as unknown as ReviewPacket,
+    diff,
+    rankingEvidence: { changed_tests_by_impl: { "src/bar.ts": ["tests/foo.test.ts"] } }
+  });
+  const foo = model.review_queue.find((entry) => entry.path === "src/foo.ts");
+  const bar = model.review_queue.find((entry) => entry.path === "src/bar.ts");
+  assert.ok(foo, "src/foo.ts is queued");
+  assert.match(foo.reason, /no connected test change/, "foo keeps its boost: the test imports bar, not foo");
+  if (bar) {
+    assert.ok(!/no connected test change/.test(bar.reason), "bar is connected per import evidence, so no no-test boost");
+  }
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a .d.ts declaration file is treated as public surface (Codex #112 round-3)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/types/index.d.ts b/types/index.d.ts",
+    "--- a/types/index.d.ts",
+    "+++ b/types/index.d.ts",
+    "@@ -1,1 +1,2 @@",
+    " // types",
+    "+export declare function publicApi(n: number): number;",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const item = model.review_queue.find((entry) => entry.path === "types/index.d.ts");
+  assert.ok(item, "the declaration file is queued");
+  assert.match(item.reason, /exported\/public surface/, "a .d.ts is recognized as exported public surface from the diff");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a DELETED test does not count as a connected test (Codex #112 round-4)", () => {
+  // Deleting tests/foo_test.go while changing src/foo.go is test weakening — the removed
+  // test must not clear src/foo.go's no-connected-test boost.
+  const diff = parseStructuredDiff([
+    "diff --git a/src/foo.go b/src/foo.go",
+    "--- a/src/foo.go",
+    "+++ b/src/foo.go",
+    "@@ -1,1 +1,2 @@",
+    " package foo",
+    "+func Helper() {}",
+    "diff --git a/test/foo_test.go b/test/foo_test.go",
+    "deleted file mode 100644",
+    "--- a/test/foo_test.go",
+    "+++ /dev/null",
+    "@@ -1,2 +0,0 @@",
+    "-package foo",
+    "-func TestFoo(t *testing.T) {}",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const foo = model.review_queue.find((entry) => entry.path === "src/foo.go");
+  assert.ok(foo, "the changed impl file is queued");
+  assert.match(foo.reason, /no connected test change/, "a deleted same-stem test does not count as connected coverage");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: one import-evidence entry does not disable the stem fallback for unrelated tests (Codex #112 round-4)", () => {
+  // Evidence exists for src/bar.ts (via tests/bar.test.ts), but FooTest.java is a test the
+  // narrower isTestPath-based evidence map never saw. The stem fallback must still connect
+  // src/foo.java to FooTest.java — a single evidence entry must not disable it globally.
+  const diff = parseStructuredDiff([
+    "diff --git a/src/foo.java b/src/foo.java",
+    "--- a/src/foo.java",
+    "+++ b/src/foo.java",
+    "@@ -1,1 +1,2 @@",
+    " class Foo {}",
+    "+class Foo2 {}",
+    "diff --git a/src/FooTest.java b/src/FooTest.java",
+    "--- a/src/FooTest.java",
+    "+++ b/src/FooTest.java",
+    "@@ -1,1 +1,2 @@",
+    " class FooTest {}",
+    "+void t() {}",
+    "diff --git a/src/bar.ts b/src/bar.ts",
+    "--- a/src/bar.ts",
+    "+++ b/src/bar.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const bar = 1;",
+    "+export const bar2 = 2;",
+    "diff --git a/tests/bar.test.ts b/tests/bar.test.ts",
+    "--- a/tests/bar.test.ts",
+    "+++ b/tests/bar.test.ts",
+    "@@ -1,1 +1,2 @@",
+    " it('bar', () => {});",
+    "+it('bar2', () => {});",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({
+    packet: minimalReviewPacket() as unknown as ReviewPacket,
+    diff,
+    rankingEvidence: { changed_tests_by_impl: { "src/bar.ts": ["tests/bar.test.ts"] } }
+  });
+  const foo = model.review_queue.find((entry) => entry.path === "src/foo.java");
+  assert.ok(foo, "src/foo.java is queued");
+  assert.ok(!/no connected test change/.test(foo.reason), "FooTest.java still connects to Foo via the stem fallback despite unrelated evidence");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a Go receiver method is recognized as public surface (Codex #112 round-4)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/client.go b/client.go",
+    "--- a/client.go",
+    "+++ b/client.go",
+    "@@ -1,1 +1,2 @@",
+    " package client",
+    "+func (c *Client) Do() error { return nil }",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const item = model.review_queue.find((entry) => entry.path === "client.go");
+  assert.ok(item, "the Go file is queued");
+  assert.match(item.reason, /exported\/public surface/, "a Go receiver method is detected as exported public surface");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: extension completeness — .mts is impl, doc exts and binaries are excluded (Codex #112 round-5)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/src/api.mts b/src/api.mts",
+    "--- a/src/api.mts",
+    "+++ b/src/api.mts",
+    "@@ -1,1 +1,2 @@",
+    " // api",
+    "+export function go() { return 1; }",
+    "diff --git a/README.mdx b/README.mdx",
+    "--- a/README.mdx",
+    "+++ b/README.mdx",
+    "@@ -1,1 +1,2 @@",
+    " # Readme",
+    "+More prose.",
+    "diff --git a/fixtures/app.jar b/fixtures/app.jar",
+    "index 0000000..abcdef0 100644",
+    "Binary files a/fixtures/app.jar and b/fixtures/app.jar differ",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const mts = model.review_queue.find((entry) => entry.path === "src/api.mts");
+  assert.ok(mts, "a .mts module is treated as implementation and queued");
+  assert.match(mts.reason, /exported\/public surface/, ".mts impl gets the public-surface signal");
+  assert.ok(!model.review_queue.some((entry) => entry.path === "README.mdx"), "a .mdx doc outside docs/ is excluded");
+  assert.ok(!model.review_queue.some((entry) => entry.path === "fixtures/app.jar"), "a .jar binary artifact is not a review-focus item");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: 'author' is not auth-sensitive but 'authorization' is (Codex #112 round-6)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/src/authors.ts b/src/authors.ts",
+    "--- a/src/authors.ts",
+    "+++ b/src/authors.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const authors = [];",
+    "+export const authorId = 1;",
+    "diff --git a/src/authorization.ts b/src/authorization.ts",
+    "--- a/src/authorization.ts",
+    "+++ b/src/authorization.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const x = 1;",
+    "+export function authorize() {}",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const authors = model.review_queue.find((entry) => entry.path === "src/authors.ts");
+  const authz = model.review_queue.find((entry) => entry.path === "src/authorization.ts");
+  assert.ok(authors && authz, "both files are queued");
+  assert.ok(!/error\/async\/auth\/network\/persistence paths/.test(authors.reason), "content-authoring 'authors' is not flagged auth-sensitive");
+  assert.match(authz.reason, /error\/async\/auth\/network\/persistence paths/, "'authorization'/'authorize' still fires the sensitive signal");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: requirements.txt is not dropped as documentation (Codex #112 round-6)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/requirements.txt b/requirements.txt",
+    "--- a/requirements.txt",
+    "+++ b/requirements.txt",
+    "@@ -1,1 +1,2 @@",
+    " flask==2.0.0",
+    "+requests==2.31.0",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  assert.ok(model.review_queue.some((entry) => entry.path === "requirements.txt"), "a .txt dependency manifest is a substantive change, not prose to drop");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a test-dir artifact does not lend connected-test coverage (Codex #112 round-6)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/src/foo.ts b/src/foo.ts",
+    "--- a/src/foo.ts",
+    "+++ b/src/foo.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const foo = 1;",
+    "+export const foo2 = 2;",
+    "diff --git a/tests/foo.snap b/tests/foo.snap",
+    "--- a/tests/foo.snap",
+    "+++ b/tests/foo.snap",
+    "@@ -1,1 +1,2 @@",
+    " old snapshot",
+    "+new snapshot",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const foo = model.review_queue.find((entry) => entry.path === "src/foo.ts");
+  assert.ok(foo, "src/foo.ts is queued");
+  assert.match(foo.reason, /no connected test change/, "a tests/foo.snap artifact is not a real test, so foo.ts keeps its boost");
+  assert.ok(!model.review_queue.some((entry) => entry.path === "tests/foo.snap"), "the snapshot artifact itself is not a review-focus item");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a doc with a test-shaped basename stays a doc, real tests still detected (Codex #112 round-7)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/docs/test.md b/docs/test.md",
+    "--- a/docs/test.md",
+    "+++ b/docs/test.md",
+    "@@ -1,1 +1,2 @@",
+    " # Testing guide",
+    "+More prose.",
+    "diff --git a/src/app.ts b/src/app.ts",
+    "--- a/src/app.ts",
+    "+++ b/src/app.ts",
+    "@@ -1,1 +1,2 @@",
+    " const a = 1;",
+    "+const b = 2;",
+    "diff --git a/test/retry.ts b/test/retry.ts",
+    "--- a/test/retry.ts",
+    "+++ b/test/retry.ts",
+    "@@ -1,1 +1,2 @@",
+    " it('retries', () => {});",
+    "+it('more', () => {});",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  assert.ok(!model.review_queue.some((entry) => entry.path === "docs/test.md"), "docs/test.md is a doc, not a test — excluded despite its basename");
+  // The broad test-name fallback still catches a real test outside tests/ (the round-1 case).
+  const retry = model.review_queue.find((entry) => entry.path === "test/retry.ts");
+  if (retry) {
+    assert.equal(retry.estimated_review_effort, "quick", "test/retry.ts is still recognized as a test");
+  }
+});
