@@ -2182,19 +2182,52 @@ function buildReviewQueue(
   // the files most worth reading, WITHOUT fabricating any risk or blocker.
   const baselineDrafts = baselineReviewFocusDrafts(input, diffIndex, semanticFacts);
   if (drafts.length === 0) {
-    // Empty queue (spec-less / nothing structural fired): the floor IS the queue.
-    drafts.push(...baselineDrafts);
+    // Empty queue (spec-less / nothing structural fired): the floor IS the queue, capped to
+    // the floor's own budget.
+    drafts.push(...baselineDrafts.slice(0, MAX_CHANGED_FILE_QUEUE));
   } else {
     // Non-empty but possibly THIN: a lone dependency/config detector finding (e.g. a
     // package.json version bump) can be the only queue item while the diff's substantive
     // SOURCE goes unranked and hidden. Augment with review-focus items for IMPLEMENTATION
-    // files that no existing draft already covers, so the source a reviewer should read is
-    // never buried under a dependency/config finding. Only impl source is added (never
-    // docs/tests/config) to keep an already-populated queue low-noise (HUMAN_REVIEW.28).
-    const coveredPaths = new Set(drafts.map((draft) => draft.path).filter((path): path is string => Boolean(path)));
-    const augment = baselineDrafts.filter(
-      (draft) => Boolean(draft.path) && !coveredPaths.has(draft.path) && baselineFileRole(draft.path) === "impl"
-    );
+    // files no existing draft already covers — by path OR rename old_path — so the source a
+    // reviewer should read is never buried under a dependency/config finding. Only impl
+    // source is added (low-noise), and only within the queue's remaining HEADROOM so
+    // augmentation never evicts the detector item that motivated it (Codex #117).
+    const coveredPaths = new Set<string>();
+    for (const draft of drafts) {
+      if (draft.path) {
+        coveredPaths.add(draft.path);
+      }
+      if (draft.old_path) {
+        coveredPaths.add(draft.old_path);
+      }
+    }
+    const headroom = Math.max(0, Math.min(MAX_QUEUE, config.max_review_first) - drafts.length);
+    const augment = baselineDrafts
+      .filter((draft) => {
+        const path = draft.path;
+        if (!path || coveredPaths.has(path)) {
+          return false;
+        }
+        if (draft.old_path && coveredPaths.has(draft.old_path)) {
+          return false;
+        }
+        return baselineFileRole(path) === "impl";
+      })
+      .slice(0, Math.min(headroom, MAX_CHANGED_FILE_QUEUE))
+      .map((draft) => ({
+        ...draft,
+        // A detector DID produce a finding for this diff — just not for this file — so the
+        // augmented item must not claim "no detector produced a ranked finding" (Codex #117).
+        reason: draft.reason.replace(
+          "No risk rule produced a ranked finding here, but this is among the changed files most worth reading:",
+          "Another finding leads the queue, but this changed source is also worth reading:"
+        ),
+        baseline: draft.baseline?.replace(
+          "ranked by deterministic change signals (no detector produced a ranked finding):",
+          "ranked by deterministic change signals (surfaced alongside a detector finding):"
+        )
+      }));
     drafts.push(...augment);
   }
 
@@ -2817,8 +2850,11 @@ function baselineReviewFocusDrafts(
       return { file, role, churn, score, why };
     })
     .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
-    .sort((left, right) => right.score - left.score || right.churn - left.churn || compareStrings(left.file.path, right.file.path))
-    .slice(0, MAX_CHANGED_FILE_QUEUE);
+    .sort((left, right) => right.score - left.score || right.churn - left.churn || compareStrings(left.file.path, right.file.path));
+  // NOT capped here — the CALLER caps: the empty-queue path takes the top
+  // MAX_CHANGED_FILE_QUEUE, while the augment path filters to uncovered impl FIRST and then
+  // caps, so an uncovered impl file ranked past the cap is not dropped before filtering
+  // (Codex #117).
 
   return ranked.map((entry) => {
     const evidence = fileEvidence(entry.file.path, "Ranked by deterministic change signals because no detector produced a ranked finding.");

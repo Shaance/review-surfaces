@@ -4526,6 +4526,23 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start floor augments a thin detector 
     model.review_queue.filter((item) => /^Review-focus:/.test(item.title)).every((item) => item.risk_ids.length === 0),
     "augmented review-focus items cite no risk"
   );
+  // The augmented wording does NOT claim no detector fired (a detector DID fire here).
+  const augmented = model.review_queue.find((item) => item.path === "src/payment-processor.ts");
+  assert.ok(augmented, "the augmented item exists");
+  assert.match(augmented.reason, /Another finding leads the queue, but this changed source is also worth reading/);
+  assert.ok(!/no risk rule produced a ranked finding/i.test(augmented.reason), "augmented item does not claim no detector fired");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 augmentation stays within headroom and never evicts the detector item", () => {
+  // With a small max_review_first, augmentation must not push the detector-backed item out of
+  // the queue — it only fills the remaining headroom under the cap.
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    diff: coldStartDiff(),
+    config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_review_first: 2 }
+  });
+  assert.ok(model.review_queue.length <= 2, "the queue respects max_review_first");
+  assert.ok(model.review_queue.some((item) => item.risk_ids.includes("RISK-001")), "the detector item survives augmentation under a small cap");
 });
 
 test("review-surfaces.HUMAN_REVIEW.28 cold-start augmentation does not duplicate a changed file a detector already covers", () => {
