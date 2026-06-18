@@ -127,6 +127,10 @@ export interface ChangedFileHash {
   source: string;
   algorithm: "sha256";
   hash: string;
+  // Folded into the manifest signature so two runs that rename DIFFERENT
+  // same-content sources to the SAME destination get distinct cache keys — the
+  // rename source changes the methodology result (e.g. api_no_compat) (#103, Codex P2).
+  old_path?: string;
 }
 
 export interface CollectionResult {
@@ -385,7 +389,12 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const changedFilesResult = collectChangedFiles(options.cwd, options.baseRef, options.headRef, includeWorkingTree, isArtifactPath);
   diagnostics.push(...changedFilesResult.diagnostics);
   const allChangedFiles = changedFilesResult.files;
-  const changedFiles = allChangedFiles.filter((file) => !ignore.isIgnored(file.path));
+  const changedFiles = allChangedFiles
+    .filter((file) => !ignore.isIgnored(file.path))
+    // COLLECTOR.6: a rename whose SOURCE is ignored (but destination is not) must not
+    // leak the ignored old_path into changed_files.json or any onward surface — drop
+    // it before it is persisted (Codex P2).
+    .map((file) => (file.old_path !== undefined && ignore.isIgnored(file.old_path) ? { ...file, old_path: undefined } : file));
   const ignoredChangedFiles = allChangedFiles.filter((file) => ignore.isIgnored(file.path)).map((file) => file.path);
   const diffResult = collectDiff(options.cwd, options.baseRef, options.headRef, includeWorkingTree);
   diagnostics.push(...diffResult.diagnostics);
@@ -845,7 +854,7 @@ async function hashChangedFiles(
         hash = crypto.createHash("sha256").update(blob).digest("hex");
       }
     }
-    return { path: file.path, status: file.status, source: file.source, algorithm: "sha256" as const, hash };
+    return { path: file.path, status: file.status, source: file.source, algorithm: "sha256" as const, hash, ...(file.old_path ? { old_path: file.old_path } : {}) };
   };
 
   const results = new Array<ChangedFileHash>(changedFiles.length);
@@ -1117,9 +1126,13 @@ function computeSignature(input: SignatureInput): string {
     input_hashes: [...input.inputHashes]
       .sort((left, right) => compareStrings(left.path, right.path))
       .map((entry) => ({ path: entry.path, kind: entry.kind, hash: entry.hash })),
+    // old_path folded in via a conditional spread so the rename SOURCE perturbs
+    // the key (two runs renaming DIFFERENT same-content sources to the SAME
+    // destination must not collide — the source drives api_no_compat) while a
+    // run with no renames stays byte-identical to before (#103, Codex P2).
     changed_files: [...input.changedFileHashes]
       .sort((left, right) => compareStrings(left.path, right.path))
-      .map((entry) => ({ path: entry.path, status: entry.status, hash: entry.hash })),
+      .map((entry) => ({ path: entry.path, status: entry.status, hash: entry.hash, ...(entry.old_path ? { old_path: entry.old_path } : {}) })),
     // Sorted by kind then path so the key is independent of the order flags were
     // supplied. Empty when no flag-input files were given, leaving the default
     // (no-flag) signature byte-identical to before this addition.

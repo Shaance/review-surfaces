@@ -15,6 +15,11 @@ export interface ChangedFile {
   path: string;
   status: string;
   source: "diff" | "working_tree";
+  // The pre-rename path for an `R*` (rename) status — the destination is `path`.
+  // Lets a consumer tell that a public surface LEFT its old location (e.g. a schema
+  // renamed to a non-schema path), which the new path alone cannot show. Absent for
+  // non-rename changes. (#103)
+  old_path?: string;
 }
 
 // R6: whether the changed-file set / diff was derived from the requested
@@ -202,21 +207,21 @@ export function collectChangedFiles(
 
   const statusOutput = includeWorkingTree ? git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]) : undefined;
   if (statusOutput) {
-    for (const { status, filePath } of parsePorcelainStatusOutput(statusOutput)) {
+    for (const { status, filePath, oldPath } of parsePorcelainStatusOutput(statusOutput)) {
       if (!filePath || filePath.endsWith("/") || filePath === ".DS_Store") {
         continue;
       }
       const existing = byPath.get(filePath);
       if (existing) {
         const mergedStatus = shouldPreserveRangeStatus(existing.status, status) ? existing.status : status;
-        byPath.set(filePath, { ...existing, status: mergedStatus, source: "working_tree" });
+        byPath.set(filePath, { ...existing, status: mergedStatus, source: "working_tree", ...(oldPath ? { old_path: oldPath } : {}) });
         continue;
       }
       if (isExcludedWorkingTreePath?.(filePath)) {
         continue;
       }
       if (status.includes("D") || isRegularFile(path.resolve(cwd, filePath))) {
-        byPath.set(filePath, { path: filePath, status, source: "working_tree" });
+        byPath.set(filePath, { path: filePath, status, source: "working_tree", ...(oldPath ? { old_path: oldPath } : {}) });
       }
     }
   }
@@ -234,10 +239,14 @@ function parseDiffNameStatusOutput(output: string): ChangedFile[] {
       continue;
     }
     if (isRenameOrCopyStatus(status)) {
+      const oldPath = fields[index + 1];
       index += 2;
       const filePath = fields[index];
       if (filePath) {
-        files.push({ path: filePath, status, source: "diff" });
+        // old_path ONLY for a RENAME (the source is gone). A COPY (C*) leaves the
+        // source in place, so recording its source as old_path would misreport the
+        // copy as a modification of the source (Codex P2).
+        files.push({ path: filePath, status, source: "diff", ...(status.startsWith("R") && oldPath ? { old_path: oldPath } : {}) });
       }
       continue;
     }
@@ -250,18 +259,23 @@ function parseDiffNameStatusOutput(output: string): ChangedFile[] {
   return files;
 }
 
-function parsePorcelainStatusOutput(output: string): Array<{ status: string; filePath: string }> {
+function parsePorcelainStatusOutput(output: string): Array<{ status: string; filePath: string; oldPath?: string }> {
   const records = splitNullOutput(output);
-  const files: Array<{ status: string; filePath: string }> = [];
+  const files: Array<{ status: string; filePath: string; oldPath?: string }> = [];
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
     const status = record.slice(0, 2).trim() || "modified";
     const filePath = record.slice(3);
-    if (filePath) {
-      files.push({ status, filePath });
-    }
+    // Porcelain v1 `-z` emits a rename/copy as the destination record followed by
+    // the SOURCE path in the next field. Capture it (renames only, like the range
+    // parser) so a staged/dirty rename also carries its old path (Codex P2).
+    let oldPath: string | undefined;
     if (isRenameOrCopyStatus(status)) {
+      oldPath = records[index + 1];
       index += 1;
+    }
+    if (filePath) {
+      files.push({ status, filePath, ...(status.startsWith("R") && oldPath ? { oldPath } : {}) });
     }
   }
   return files;
