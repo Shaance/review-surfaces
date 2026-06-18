@@ -4709,3 +4709,85 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: a .d.ts declaration file is tr
   assert.ok(item, "the declaration file is queued");
   assert.match(item.reason, /exported\/public surface/, "a .d.ts is recognized as exported public surface from the diff");
 });
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a DELETED test does not count as a connected test (Codex #112 round-4)", () => {
+  // Deleting tests/foo_test.go while changing src/foo.go is test weakening — the removed
+  // test must not clear src/foo.go's no-connected-test boost.
+  const diff = parseStructuredDiff([
+    "diff --git a/src/foo.go b/src/foo.go",
+    "--- a/src/foo.go",
+    "+++ b/src/foo.go",
+    "@@ -1,1 +1,2 @@",
+    " package foo",
+    "+func Helper() {}",
+    "diff --git a/test/foo_test.go b/test/foo_test.go",
+    "deleted file mode 100644",
+    "--- a/test/foo_test.go",
+    "+++ /dev/null",
+    "@@ -1,2 +0,0 @@",
+    "-package foo",
+    "-func TestFoo(t *testing.T) {}",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const foo = model.review_queue.find((entry) => entry.path === "src/foo.go");
+  assert.ok(foo, "the changed impl file is queued");
+  assert.match(foo.reason, /no connected test change/, "a deleted same-stem test does not count as connected coverage");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: one import-evidence entry does not disable the stem fallback for unrelated tests (Codex #112 round-4)", () => {
+  // Evidence exists for src/bar.ts (via tests/bar.test.ts), but FooTest.java is a test the
+  // narrower isTestPath-based evidence map never saw. The stem fallback must still connect
+  // src/foo.java to FooTest.java — a single evidence entry must not disable it globally.
+  const diff = parseStructuredDiff([
+    "diff --git a/src/foo.java b/src/foo.java",
+    "--- a/src/foo.java",
+    "+++ b/src/foo.java",
+    "@@ -1,1 +1,2 @@",
+    " class Foo {}",
+    "+class Foo2 {}",
+    "diff --git a/src/FooTest.java b/src/FooTest.java",
+    "--- a/src/FooTest.java",
+    "+++ b/src/FooTest.java",
+    "@@ -1,1 +1,2 @@",
+    " class FooTest {}",
+    "+void t() {}",
+    "diff --git a/src/bar.ts b/src/bar.ts",
+    "--- a/src/bar.ts",
+    "+++ b/src/bar.ts",
+    "@@ -1,1 +1,2 @@",
+    " export const bar = 1;",
+    "+export const bar2 = 2;",
+    "diff --git a/tests/bar.test.ts b/tests/bar.test.ts",
+    "--- a/tests/bar.test.ts",
+    "+++ b/tests/bar.test.ts",
+    "@@ -1,1 +1,2 @@",
+    " it('bar', () => {});",
+    "+it('bar2', () => {});",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({
+    packet: minimalReviewPacket() as unknown as ReviewPacket,
+    diff,
+    rankingEvidence: { changed_tests_by_impl: { "src/bar.ts": ["tests/bar.test.ts"] } }
+  });
+  const foo = model.review_queue.find((entry) => entry.path === "src/foo.java");
+  assert.ok(foo, "src/foo.java is queued");
+  assert.ok(!/no connected test change/.test(foo.reason), "FooTest.java still connects to Foo via the stem fallback despite unrelated evidence");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a Go receiver method is recognized as public surface (Codex #112 round-4)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/client.go b/client.go",
+    "--- a/client.go",
+    "+++ b/client.go",
+    "@@ -1,1 +1,2 @@",
+    " package client",
+    "+func (c *Client) Do() error { return nil }",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const item = model.review_queue.find((entry) => entry.path === "client.go");
+  assert.ok(item, "the Go file is queued");
+  assert.match(item.reason, /exported\/public surface/, "a Go receiver method is detected as exported public surface");
+});

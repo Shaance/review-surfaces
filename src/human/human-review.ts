@@ -2586,9 +2586,11 @@ const BASELINE_SENSITIVE =
 // in the spec-less cold-start path `semanticFacts.api_changes` is empty, so the only way
 // to see a public-surface change is the changed lines. Cross-language: TS/JS `export`/
 // CommonJS `module.exports`, Rust `pub`, Java/Kotlin/C#/PHP `public`, Go exported
-// `func Name`/`type Name`, Python `__all__`.
+// `func Name` / receiver method `func (r T) Name` / `type Name`, Python `__all__`. This is
+// an advisory boost, not an exhaustive surface parser — rarer public-declaration forms
+// (Kotlin top-level `fun`, Scala, Swift `open`) are intentionally NOT chased (Codex #112 r4).
 const BASELINE_EXPORT =
-  /\bexport\b|\bmodule\.exports\b|\bexports\.|\bpub(\s|\()|\bpublic\s+(class|interface|function|fun|static|final|abstract|async|void|[A-Z])|\bfunc\s+[A-Z]|\btype\s+[A-Z]\w*\s+(struct|interface)\b|\b__all__\b/;
+  /\bexport\b|\bmodule\.exports\b|\bexports\.|\bpub(\s|\()|\bpublic\s+(class|interface|function|fun|static|final|abstract|async|void|[A-Z])|\bfunc\s+(\([^)]*\)\s*)?[A-Z]|\btype\s+[A-Z]\w*\s+(struct|interface)\b|\b__all__\b/;
 // Generated/build output a human does not read line-by-line on a cold start. `classifyRole`
 // only flags `dist/` + lockfiles, so the floor would otherwise rank a regenerated client
 // under `generated/`/`build/`/`target/` etc. (Codex #112 round-2).
@@ -2688,8 +2690,20 @@ function baselineReviewFocusDrafts(
     ...semanticFacts.schema_changes.map((change) => change.path)
   ]);
   const changedTestsByImpl = input.rankingEvidence?.changed_tests_by_impl ?? {};
+  // Tests the import evidence already attributed to an impl cover THAT impl; their stem must
+  // not be reused as a fallback connection for a different same-stem impl (Codex #112 r3).
+  // The map is keyed by the narrower `isTestPath`, so a test it never saw (a cross-language
+  // `FooTest.java` the broader baseline detector recognizes) is NOT attributed and may still
+  // drive the stem fallback — a single evidence entry must not disable the fallback for the
+  // whole diff (Codex #112 r4).
+  const attributedTestPaths = new Set(Object.values(changedTestsByImpl).flat());
+  // The stem fallback uses only changed test files that are (a) NOT deletions — a removed
+  // test is the opposite of connected coverage (Codex #112 r4) — and (b) not already
+  // attributed to an impl by evidence.
   const changedTestStems = new Set(
-    files.filter((file) => baselineFileRole(file.path) === "test").map((file) => baselineStem(file.path))
+    files
+      .filter((file) => baselineFileRole(file.path) === "test" && file.status !== "D" && !attributedTestPaths.has(file.path))
+      .map((file) => baselineStem(file.path))
   );
   // The stem fallback (used only without `changed_tests_by_impl` evidence) is ambiguous
   // when two changed impl files share a basename — e.g. `src/foo.ts` and `src/legacy/foo.ts`
@@ -2703,11 +2717,6 @@ function baselineReviewFocusDrafts(
       implStemCounts.set(stem, (implStemCounts.get(stem) ?? 0) + 1);
     }
   }
-  // The stem fallback is a LAST resort: it runs only when there is no import-derived
-  // `changed_tests_by_impl` evidence AT ALL. When that evidence exists it is authoritative
-  // about which impl each changed test covers, so a same-stem impl the test does NOT import
-  // must not be silently marked connected by stem coincidence (Codex #112 round-3).
-  const hasRankingEvidence = Object.keys(changedTestsByImpl).length > 0;
 
   const ranked = files
     .map((file) => {
@@ -2745,7 +2754,7 @@ function baselineReviewFocusDrafts(
       const stem = baselineStem(file.path);
       const hasConnectedTest =
         (changedTestsByImpl[file.path]?.length ?? 0) > 0 ||
-        (!hasRankingEvidence && isImpl && changedTestStems.has(stem) && (implStemCounts.get(stem) ?? 0) <= 1);
+        (isImpl && changedTestStems.has(stem) && (implStemCounts.get(stem) ?? 0) <= 1);
       const sensitive = BASELINE_SENSITIVE.test(file.path) || BASELINE_SENSITIVE.test(changedText);
       let score = Math.min(churn, 200) / 10;
       if (isImpl) score += 8;
