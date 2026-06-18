@@ -34,6 +34,14 @@ const MANIFEST = path.join(BENCH_DIR, "manifest.json");
 const CODE_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m)$/i;
 const DOC_EXT = /\.(md|mdx|markdown|rst|adoc|txt|org)$/i;
 const TEST_RE = /(^|\/)(tests?|__tests__|spec)\/|(^|[._-])(test|spec)[._.-]|_test\.|(?:Test|Spec)\.[^.]+$/;
+const LOCK_NAMES = new Set([
+  "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "npm-shrinkwrap.json", "cargo.lock",
+  "go.sum", "poetry.lock", "composer.lock", "uv.lock", "gemfile.lock", "pipfile.lock"
+]);
+const BINARY_EXT = /\.(png|jpe?g|gif|svg|ico|webp|pdf|zip|tar|gz|jar|war|exe|dll|so|dylib|class|wasm|woff2?|ttf|min\.js|min\.css|map|snap)$/i;
+// A human does not read these on a cold start; a lock/binary leaking into the top-5 is the
+// same "irrelevant top item" failure as a doc/generated file (Codex BENCH.1).
+const IRRELEVANT_ROLES = new Set(["doc", "generated", "artifact"]);
 
 function sh(cmd, args, cwd) {
   return execFileSync(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
@@ -61,6 +69,8 @@ function ensureRepo(repoUrl, base, head) {
 }
 
 function classify(p) {
+  const base = (p.split("/").pop() ?? p).toLowerCase();
+  if (LOCK_NAMES.has(base) || BINARY_EXT.test(base)) return "artifact";
   if (TEST_RE.test(p)) return "test";
   if (DOC_EXT.test(p)) return "doc";
   if (/(^|\/)(generated|dist|build|vendor|node_modules|target)\//i.test(p)) return "generated";
@@ -73,7 +83,7 @@ function scoreCase(c, model) {
   const blockers = model.blockers ?? [];
   const top5 = queue.slice(0, 5).map((q) => q.path).filter(Boolean);
   const topRole = queue.length > 0 ? classify(queue[0].path ?? "") : null;
-  const irrelevantTop = top5.some((p) => ["doc", "generated"].includes(classify(p)));
+  const irrelevantTop = top5.some((p) => IRRELEVANT_ROLES.has(classify(p)));
   const emptyQueue = c.substantive !== false && queue.length === 0;
   const falseBlocker = c.expect_no_blockers !== false && blockers.length > 0;
   let focusRecall = null;
@@ -101,7 +111,11 @@ function main() {
     try {
       const repoDir = ensureRepo(c.repo, c.base, c.head);
       const out = path.join(outRoot, c.id);
-      sh("node", [CLI, "all", "--provider", "mock", "--base", c.base, "--head", c.head, "--out", out], repoDir);
+      // --no-conversation-discovery keeps the run hermetic: without it `all` would
+      // auto-discover the BENCHMARK RUNNER's own Claude/Codex sessions and fold a
+      // machine-specific transcript into the result, making the scorecard nondeterministic
+      // and polluted by the runner's environment (Codex BENCH.1).
+      sh("node", [CLI, "all", "--provider", "mock", "--no-conversation-discovery", "--base", c.base, "--head", c.head, "--out", out], repoDir);
       const model = JSON.parse(fs.readFileSync(path.join(out, "human_review.json"), "utf8"));
       const r = scoreCase(c, model);
       results.push(r);
@@ -113,6 +127,7 @@ function main() {
   }
 
   const ok = results.filter((r) => !r.error);
+  const erroredN = results.filter((r) => r.error).length;
   const substantive = ok.filter((r) => r.queue_size !== undefined);
   const annotated = ok.filter((r) => r.focusRecall !== null && r.focusRecall !== undefined);
   const emptyN = ok.filter((r) => r.emptyQueue).length;
@@ -124,14 +139,14 @@ function main() {
   const lines = [];
   lines.push("# review-surfaces effectiveness scorecard");
   lines.push("");
-  lines.push(`Cases run: **${ok.length}/${results.length}** (mock provider, full \`all\` pipeline over pinned real diffs).`);
+  lines.push(`Cases run: **${ok.length}/${results.length}**${erroredN ? ` (**${erroredN} errored**)` : ""} (mock provider, full \`all\` pipeline over pinned real diffs).`);
   lines.push("");
   lines.push("| Metric | Result | Target |");
   lines.push("|---|---|---|");
   lines.push(`| empty-queue rate (substantive diffs) | ${pct(emptyN, substantive.length)} | 0% |`);
   lines.push(`| false-blocker rate (spec-less) | ${pct(blockerN, ok.length)} | 0% |`);
   lines.push(`| top item is code/impl | ${pct(codeTopN, ok.length)} | high |`);
-  lines.push(`| irrelevant (doc/generated) in top-5 | ${pct(irrelevantN, ok.length)} | 0% |`);
+  lines.push(`| irrelevant (doc/generated/lock/binary) in top-5 | ${pct(irrelevantN, ok.length)} | 0% |`);
   lines.push(`| focus recall@5 (annotated) | ${recallMean === null ? "n/a" : `${Math.round(100 * recallMean)}%`} | high |`);
   lines.push("");
   lines.push("## Per-case");
@@ -152,9 +167,11 @@ function main() {
   fs.writeFileSync(path.join(BENCH_DIR, "SCORECARD.md"), scorecard);
   fs.rmSync(outRoot, { recursive: true, force: true });
   process.stdout.write(scorecard);
-  // Non-zero exit if a core failure mode is present, so the bench can gate a follow-up.
-  if (emptyN > 0 || blockerN > 0) {
-    process.stderr.write(`\nbench: FAIL — ${emptyN} empty-queue, ${blockerN} false-blocker case(s).\n`);
+  // Non-zero exit if a core failure mode is present OR any case errored — a benchmark that
+  // silently skips a case it could not run (missing dist/, clone failure, CLI crash) would
+  // over-report coverage (Codex BENCH.1).
+  if (emptyN > 0 || blockerN > 0 || erroredN > 0) {
+    process.stderr.write(`\nbench: FAIL — ${erroredN} errored, ${emptyN} empty-queue, ${blockerN} false-blocker case(s).\n`);
     process.exit(1);
   }
 }

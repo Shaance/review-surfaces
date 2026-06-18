@@ -951,3 +951,11 @@ constraints:
       6:
         requirement: Schema-version and enum drift must be test-guarded across all artifact schemas — pr_review_surface.schema.json schema_version const asserted equal to PR_SURFACE_SCHEMA_VERSION (as packet and human already are), and the risk-lens and evidence-kind enums duplicated in human_review.schema.json hoisted to a single definition (or otherwise tied by test) to the runtime RISK_LENSES and PACKET_EVIDENCE_KINDS source of truth.
         note: "ci-trust uplift Phase 2. The PR-surface const had no guard test; the lens enum was inline-duplicated three times with only the $defs copy guarded."
+
+  BENCH:
+    name: Real-world effectiveness benchmark
+    description: Measure the review surface on pinned real cross-language diffs, separate from the seeded CI gate.
+    requirements:
+      1:
+        requirement: An on-demand benchmark (`bench/`, run by `node bench/run.mjs`, NOT in CI because it needs network) must run the full `all` pipeline (mock provider, `--no-conversation-discovery` for hermetic deterministic runs) over PINNED real PR-shaped diffs (public repo + base/head SHAs) across languages, and score the review surface against the failure modes the tool exists to avoid — empty review queue on a substantive diff, fabricated blockers on a spec-less run, doc/generated/lock/binary leakage into the top-5, and top-item-not-code — plus an optional top-5 focus-recall over a hand-annotated `expected_focus` subset. It must fail (non-zero exit) when any case errors, hits an empty queue, or fabricates a blocker, and write a scorecard. This is the live-output check the dogfood discipline calls for, complementary to the seeded empty-diff local gate which is blind to output sensibility.
+        note: "post-uplift adoption work (2026-06-18). Seed set: 6 cases (TS/Go/Rust/Java + Python x2) validating the HUMAN_REVIEW.28 cold-start floor live: 0% empty-queue, 0% false-blocker, 100% focus recall@5. Target 20-30. See bench/README.md."

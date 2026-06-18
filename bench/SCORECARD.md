@@ -7,7 +7,7 @@ Cases run: **6/6** (mock provider, full `all` pipeline over pinned real diffs).
 | empty-queue rate (substantive diffs) | 0% (0/6) | 0% |
 | false-blocker rate (spec-less) | 0% (0/6) | 0% |
 | top item is code/impl | 83% (5/6) | high |
-| irrelevant (doc/generated) in top-5 | 0% (0/6) | 0% |
+| irrelevant (doc/generated/lock/binary) in top-5 | 0% (0/6) | 0% |
 | focus recall@5 (annotated) | 100% | high |
 
 ## Per-case

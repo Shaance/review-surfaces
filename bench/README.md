@@ -27,7 +27,7 @@ reads `human_review.json`.
 | **empty-queue rate** | substantive code diffs that produced **0** review-first items | **0%** |
 | **false-blocker rate** | spec-less runs that **fabricated** a blocker | **0%** |
 | **top item is code/impl** | the #1 review-focus item is a source file (not a doc/lock/test) | high |
-| **irrelevant in top-5** | a doc/generated/binary file leaked into the top 5 | **0%** |
+| **irrelevant in top-5** | a doc / generated / lockfile / binary leaked into the top 5 | **0%** |
 | **focus recall@5** | of the annotated `expected_focus` paths, the share that appear in the top 5 | high |
 
 Most metrics are **objective** and need no annotation. `expected_focus` is optional and
