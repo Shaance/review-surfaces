@@ -1,0 +1,7 @@
+# review-surfaces.BENCH.1: the neutral config the benchmark forces on every case
+# (`--config <abs path to this file>`), so a target repo that ships its OWN
+# review-surfaces.config.yaml or feature spec cannot change the benchmark's behavior —
+# every case is measured spec-less with default settings, keeping the scorecard
+# comparable across repos. `specs: []` makes the run spec-less (the cold-start floor's
+# domain); everything else falls back to defaults via normalizeConfig.
+specs: []
