@@ -206,6 +206,28 @@ test("review-surfaces.METHODOLOGY.9 a Codex session recorded under a different c
   }
 });
 
+// The repo key comes ONLY from the session_meta first line — a `"cwd"` in a later response
+// item (e.g. a function_call recording a shell command's working directory) must never be
+// read as the repo key over the global store (Codex #113 r4).
+test("review-surfaces.METHODOLOGY.9 a tool-call cwd in a later line is not used as the repo key", () => {
+  const store = freshStore();
+  try {
+    writeCodexSession(store, "2026/06/17", "rollout-2026-06-17T10-00-00-nometa.jsonl", [
+      // session_meta WITHOUT a cwd field...
+      { timestamp: "2026-06-17T10:00:00.000Z", type: "session_meta", payload: { id: "s", timestamp: "2026-06-17T10:00:00.000Z", originator: "test" } },
+      // ...and a later function_call whose arguments mention /repo/app as a command cwd.
+      { timestamp: "2026-06-17T10:00:01.000Z", type: "response_item", payload: { type: "function_call", call_id: "c1", arguments: JSON.stringify({ cwd: "/repo/app", command: "ls" }) } }
+    ]);
+    assert.equal(
+      discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: ["src/uploader.ts"] }),
+      undefined,
+      "a function_call cwd is not the session's recorded repo key"
+    );
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
 // A burst of NEWER sessions recorded under other repos' cwds must not crowd this repo's
 // rollout out of the probe window — the cwd probe walks past non-matches to collect this
 // repo's sessions (Codex #113), it does not slice the newest-N first and then filter.

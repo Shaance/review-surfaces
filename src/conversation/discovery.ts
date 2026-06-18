@@ -233,10 +233,12 @@ function codexRolloutPaths(storeRoot: string, limit: number): string[] {
 }
 
 // The repo cwd a Codex rollout was recorded under, from its `session_meta` line's
-// `payload.cwd`. Read from the head of the file (the meta is the first line) so the
-// store can be filtered without full reads, and regex-extracted so a first line longer
-// than the probe window (the meta carries a large base_instructions blob) still yields
-// the cwd, which sits near the line start. Returns undefined when absent/unreadable.
+// `payload.cwd`. ONLY the FIRST line is inspected and only when it is the `session_meta`
+// record — so a later line's `"cwd"` (e.g. a function_call recording a shell command's
+// working directory) can never be mistaken for the repo key over the global store (Codex
+// #113 r4). The first line is read from the head (regex-extracted, since the meta's large
+// base_instructions blob can push the line past the probe window, while `cwd` sits near
+// the line start). Returns undefined when absent/unreadable/not a session_meta line.
 function codexSessionCwd(filePath: string): string | undefined {
   let head: string;
   try {
@@ -251,7 +253,15 @@ function codexSessionCwd(filePath: string): string | undefined {
   } catch {
     return undefined;
   }
-  const match = /"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(head);
+  // Scope to the FIRST line only (the session_meta), so a `"cwd"` in a later response item
+  // is never read; if the first line overflows the probe window there is no newline and the
+  // whole head IS the (truncated) first line, whose cwd still sits before the overflow.
+  const newline = head.indexOf("\n");
+  const firstLine = newline === -1 ? head : head.slice(0, newline);
+  if (!/"type"\s*:\s*"session_meta"/.test(firstLine)) {
+    return undefined; // not a session_meta first line -> do not guess a repo key.
+  }
+  const match = /"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(firstLine);
   if (!match) {
     return undefined;
   }
