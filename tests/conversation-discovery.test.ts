@@ -232,6 +232,33 @@ test("review-surfaces.METHODOLOGY.9 other repos' newer sessions do not crowd out
   }
 });
 
+// Many newer SAME-repo sessions must not skip this repo's range-referencing producing
+// session — there is no match-count cap, so the diff-referencing rollout is read and wins
+// even when it is older than a dozen unrelated same-repo sessions (Codex #113 r2).
+test("review-surfaces.METHODOLOGY.9 a match-count cap does not skip the range-referencing same-repo rollout", () => {
+  const store = freshStore();
+  try {
+    // 15 NEWER same-repo sessions that do NOT reference the changed file.
+    for (let i = 10; i < 25; i += 1) {
+      writeCodexSession(store, "2026/06/17", `rollout-2026-06-17T${i}-30-00-newer.jsonl`, [
+        codexMeta("/repo/app", `2026-06-17T${i}:30:00.000Z`),
+        codexLine(`2026-06-17T${i}:30:00.000Z`, "later unrelated same-repo work")
+      ]);
+    }
+    // An OLDER same-repo session that DOES reference the changed file (the producing one).
+    const producing = writeCodexSession(store, "2026/06/17", "rollout-2026-06-17T09-00-00-producing.jsonl", [
+      codexMeta("/repo/app", "2026-06-17T09:00:00.000Z"),
+      codexLine("2026-06-17T09:00:00.000Z", "implementing src/uploader.ts retry")
+    ]);
+    const discovered = discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: ["src/uploader.ts"] });
+    assert.ok(discovered);
+    assert.equal(discovered.path, producing, "the range-referencing rollout wins on score despite 15 newer same-repo sessions");
+    assert.equal(discovered.matchedChangedFiles, 1);
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
 // Cross-store selection is ONE total order: a cwd-matched Codex session that references
 // the changed range beats a same-repo Claude session that references none (recency-only).
 test("review-surfaces.METHODOLOGY.9 a range-referencing Codex session beats a recency-only same-repo Claude session", () => {

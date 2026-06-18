@@ -17,10 +17,11 @@
 // scoped to THIS repo by its recorded `session_meta.cwd` — the Codex analogue of the
 // Claude project slug. cwd is read cheaply from the head of each file (the meta is the
 // first line), so the store can be filtered without full reads; only the rollouts recorded
-// under this cwd are fully read and ranked. The probe walks the newest rollouts and stops
-// once enough of THIS repo's sessions are collected — so a burst of unrelated newer sessions
-// from other repos cannot crowd this repo's rollout out of the window (Codex #113); a session
-// beyond the (generous) probe ceiling needs --conversation.
+// under this cwd are fully read and ranked. The probe walks the newest rollouts up to a
+// generous ceiling and full-reads EVERY same-repo match (no match-count cap) — so neither a
+// burst of unrelated newer sessions (Codex #113 r1) nor many newer same-repo sessions (r2)
+// can crowd this repo's producing session out of the window; one beyond the ceiling needs
+// --conversation.
 // Cursor stores its chat in a per-workspace SQLite `state.vscdb` (no loose transcript
 // file to read), so it has NO zero-config discovery — Cursor users pass an exported
 // transcript with --conversation (the cursor adapter parses it). See
@@ -72,15 +73,16 @@ export interface DiscoveryOptions {
   changedFiles: string[];
 }
 
-// The probe ceiling is decoupled from the match count so that other repos' newer sessions
-// cannot crowd out THIS repo's rollout (Codex #113): the cwd probe is a cheap head read, so
-// we probe up to CODEX_PROBE_LIMIT newest rollouts but stop once CODEX_MATCH_LIMIT of them
-// match this repo's cwd (enough to pick the best recent one). A review is normally run right
-// after the work, so this repo's producing session is among the newest of ITS OWN sessions
-// even when many unrelated sessions are interleaved. A session beyond the probe window needs
-// --conversation. (Probing 600 head reads is ~cheap; full reads happen only for matches.)
+// The cwd probe is a cheap head read, so the cost bound is on the PROBE, not the match count:
+// we probe up to CODEX_PROBE_LIMIT newest rollouts and FULL-read every one whose recorded cwd
+// is this repo's. This means (a) other repos' newer sessions cannot crowd out this repo's
+// rollout — a non-match costs only a head read (Codex #113 r1) — and (b) there is no match cap
+// that could skip this repo's producing session when many newer SAME-repo sessions exist
+// (Codex #113 r2): all this repo's matches within the window are ranked by changed-file
+// reference then recency. The producing session is virtually always within the newest few
+// hundred global rollouts; one beyond the (generous) ceiling needs --conversation. Worst case
+// — every probed rollout belongs to this repo — is CODEX_PROBE_LIMIT full reads, still bounded.
 const CODEX_PROBE_LIMIT = 600;
-const CODEX_MATCH_LIMIT = 12;
 // Bytes read from the head of a rollout to extract `session_meta.cwd`. The meta is the
 // first line and carries `cwd` near its start (before the large base_instructions blob),
 // so a small head read is enough; the value is regex-extracted to tolerate a first line
@@ -260,19 +262,17 @@ function codexSessionCwd(filePath: string): string | undefined {
   }
 }
 
-// Codex candidates: probe the newest CODEX_PROBE_LIMIT rollouts (cheap head reads) for
-// those recorded under THIS repo's cwd (the Codex analogue of the Claude project slug),
-// collecting up to CODEX_MATCH_LIMIT of them — so a burst of unrelated newer sessions from
-// other repos does NOT crowd this repo's rollout out of the window (Codex #113). cwd-scoping
-// — not a bare path-substring match — is what ties a global-store session to this repo, so
-// eligibility does NOT require a changed-file reference: a cwd-matched session ranks by
-// reference then recency exactly like a same-repo Claude session.
+// Codex candidates: probe the newest CODEX_PROBE_LIMIT rollouts (cheap head reads) and
+// full-read every one recorded under THIS repo's cwd (the Codex analogue of the Claude
+// project slug). No match-count cap — a burst of unrelated newer sessions from other repos
+// only costs head reads (Codex #113 r1), and this repo's producing session is not skipped
+// even when many newer same-repo sessions exist (Codex #113 r2). cwd-scoping — not a bare
+// path-substring match — is what ties a global-store session to this repo, so eligibility
+// does NOT require a changed-file reference: a cwd-matched session ranks by reference then
+// recency exactly like a same-repo Claude session.
 function codexCandidates(options: DiscoveryOptions): Candidate[] {
   const candidates: Candidate[] = [];
   for (const full of codexRolloutPaths(options.storeRoot, CODEX_PROBE_LIMIT)) {
-    if (candidates.length >= CODEX_MATCH_LIMIT) {
-      break; // enough of this repo's most-recent sessions collected to pick the best.
-    }
     if (codexSessionCwd(full) !== options.cwd) {
       continue; // a different repo's session (the Codex store is global) — not a match.
     }
