@@ -31,8 +31,12 @@ interface ChangedFileLike {
 // "updated package.json and the lockfile" would count as discussion and suppress the
 // very signal it should raise (Codex P2). Matched at a word boundary (prefix), so
 // "vulnerab" still catches "vulnerability" while "test" never matches "latest".
+// Suppressor keywords prove the topic was reasoned about. "authoriz"/"permission" are
+// KEPT (an explicit "reviewed the authorization/permission model" IS a security
+// discussion — Codex #110), but the colliding "unit" was dropped from TEST_KEYWORDS (it
+// matches inside "unity"/"united"/"reunite" and is redundant with "test") (#109).
 const SECURITY_KEYWORDS = ["security", "secure", "threat", "vulnerab", "exploit", "attack", "sanitiz", "escape", "injection", "xss", "csrf", "permission", "authoriz", "encrypt", "harden", "validate input", "input validation"];
-const TEST_KEYWORDS = ["test", "tested", "coverage", "assert", "pytest", "jest", "vitest", "mocha", "unit", "regression"];
+const TEST_KEYWORDS = ["test", "tested", "coverage", "assert", "pytest", "jest", "vitest", "mocha", "regression"];
 const COMPAT_KEYWORDS = ["backward", "compat", "breaking", "deprecat", "migration", "semver", "major version"];
 // Suppress deps_no_rationale only on EXPLANATORY language (a stated reason), never on
 // the descriptive nouns that just name the change (depend/package/version/lockfile).
@@ -201,8 +205,38 @@ function conversationHaystack(events: ConversationEvent[]): string {
 // Word-boundary (prefix) match so a domain noun embedded in a larger word does not
 // count and a reasoning prefix still matches its inflections ("vulnerab" ->
 // "vulnerability", "deprecat" -> "deprecated"); a multi-word phrase matches verbatim.
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function discusses(haystack: string, keywords: string[]): boolean {
-  return keywords.some((keyword) => new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(haystack));
+  return keywords.some((keyword) => new RegExp(`\\b${escapeRegExp(keyword)}`).test(haystack));
+}
+
+// True when a REASONING keyword co-occurs with a TOPIC in the SAME discussion unit (a
+// conversation turn or sentence) — so the rationale / test discussion is ABOUT the
+// changed dependency or file, not unrelated reasoning elsewhere in the conversation
+// (Codex P2, #109). The haystack is already lowercased. `exactTopics` (package names)
+// match at WORD boundaries so a short package (`ms`/`qs`) is recognized without
+// matching inside `milliseconds`; `substringTopics` (filenames, dependency/config
+// nouns) match as substrings but must be >= 3 chars to avoid spurious anchors. Sentence
+// boundaries require whitespace after the punctuation so a `package.json`/`v2.0` dot
+// does not split the unit.
+function discussesNear(haystack: string, keywords: string[], exactTopics: string[], substringTopics: string[]): boolean {
+  const topicMatchers = [
+    // Package-token boundaries (not `\b`, which fails on a leading `@` or trailing `/`):
+    // bounded by anything that is NOT part of a package identifier, so `@types/node` and
+    // `ms` both match without `ms` matching inside `items` (Codex #110).
+    ...exactTopics.map((topic) => topic.trim().toLowerCase()).filter(Boolean).map((topic) => new RegExp(`(?<![\\w@./-])${escapeRegExp(topic)}(?![\\w@./-])`)),
+    ...substringTopics.map((topic) => topic.trim().toLowerCase()).filter((topic) => topic.length >= 3).map((topic) => new RegExp(escapeRegExp(topic)))
+  ];
+  if (topicMatchers.length === 0) {
+    return false;
+  }
+  const keywordMatchers = keywords.map((keyword) => new RegExp(`\\b${escapeRegExp(keyword)}`));
+  return haystack
+    .split(/\n+|[.!?;]+\s+/)
+    .some((segment) => topicMatchers.some((re) => re.test(segment)) && keywordMatchers.some((re) => re.test(segment)));
 }
 
 function fileList(paths: string[]): string {
@@ -299,8 +333,31 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
         typeof transcript.command === "string" &&
         commandLooksLikeBroadTestCommand(transcript.command)
     );
-  const uncoveredImpl = broadTestRun ? [] : implFiles.filter((file) => !coveringTestStems.has(fileStem(file.path)));
-  if (uncoveredImpl.length > 0 && !discusses(haystack, TEST_KEYWORDS)) {
+  // Stems shared by more than one impl file (e.g. two `index.ts`) are AMBIGUOUS: a
+  // "tests for index" mention cannot be attributed to one of them, so a stem-correlated
+  // discussion only clears a file's gap when its stem is UNIQUE among the impl set
+  // (Codex #110). A real covering test file or a broad run still clears any of them.
+  const implStemCounts = new Map<string, number>();
+  for (const file of implFiles) {
+    const stem = fileStem(file.path);
+    implStemCounts.set(stem, (implStemCounts.get(stem) ?? 0) + 1);
+  }
+  const uncoveredImpl = broadTestRun
+    ? []
+    : implFiles.filter((file) => {
+        const stem = fileStem(file.path);
+        if (coveringTestStems.has(stem)) {
+          return false; // a colocated / added test by name stem covers it
+        }
+        // A test DISCUSSION only clears THIS file's gap when it references the file (its
+        // UNIQUE name stem in the same sentence/turn as a test keyword) — a generic
+        // "added tests" mention must not clear every per-file gap at once (Codex P2, #109).
+        if (stem.length >= 3 && implStemCounts.get(stem) === 1 && discussesNear(haystack, TEST_KEYWORDS, [stem], [])) {
+          return false;
+        }
+        return true;
+      });
+  if (uncoveredImpl.length > 0) {
     // Promote on a test-weakening RELATED to an uncovered file (its name stem
     // matches) — an unrelated weakening elsewhere should not escalate this gap
     // (Codex P2). A DELETED colocated test (any language, e.g. `foo_test.go`) is also
@@ -388,7 +445,24 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
     ...changed.filter((file) => isDepOrConfigFile(file.path)).map((file) => file.path)
   ];
   const uniqueDepConfigPaths = [...new Set(depConfigPaths)];
-  if (uniqueDepConfigPaths.length > 0 && !discusses(haystack, RATIONALE_KEYWORDS)) {
+  // Scope the rationale to the dependency/config TOPIC so a rationale stated about
+  // something ELSE in the conversation does not suppress THIS gap (Codex P2, #109).
+  // Exact (word-boundary) topics: package names and the short `ci` token. Substring
+  // topics: changed dep/config filenames plus dependency AND config nouns (a CI/Docker/
+  // config-only change is often described as "the workflow"/"the pipeline", not by its
+  // filename).
+  const depExactTopics = [
+    ...dependencyFacts.map((fact) => fact.package).filter((pkg): pkg is string => typeof pkg === "string"),
+    "ci"
+  ];
+  const depSubstringTopics = [
+    ...uniqueDepConfigPaths.map(basename),
+    // Dependency/config NOUNS only — NOT generic verbs like "upgrade"/"bump", which
+    // co-occur with rationale words by nature and would suppress unrelated changes
+    // (Codex #110).
+    "dependenc", "lockfile", "package.json", "workflow", "pipeline", "docker", "migration", "config", "environment"
+  ];
+  if (uniqueDepConfigPaths.length > 0 && !discussesNear(haystack, RATIONALE_KEYWORDS, depExactTopics, depSubstringTopics)) {
     // Any deterministic dependency OR config fact (not just security ones) is an
     // independent check that moves the signal off advisory — a CI/Docker/env/SQL
     // fact is as concrete as a dependency change (Codex P2, METHODOLOGY.8).

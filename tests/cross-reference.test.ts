@@ -187,6 +187,102 @@ test("review-surfaces.METHODOLOGY.8 deps_no_rationale does NOT fire when the cha
   assert.equal(signal(findings, "deps_no_rationale"), undefined);
 });
 
+test("review-surfaces.METHODOLOGY.8 deps_no_rationale STILL fires when the rationale is about an UNRELATED topic (#109)", () => {
+  // The package IS named, but the only rationale word ("because") is far away and
+  // explains the auth refactor, not the dependency — proximity is not met.
+  const findings = computeCrossReferenceSignals(
+    collection([file("package.json")], { dependencyFacts: [{ kind: "added", package: "left-pad", detail: "x", source_path: "package.json" }] }),
+    talk(`Upgraded left-pad to v2 in package.json. ${"context ".repeat(40)} Separately I refactored the auth module because it was confusing.`)
+  );
+  assert.ok(signal(findings, "deps_no_rationale"), "a rationale stated about an unrelated topic must not suppress the dependency gap");
+});
+
+test("review-surfaces.METHODOLOGY.8 deps_no_rationale does NOT fire when the rationale is NEAR the package (#109)", () => {
+  const findings = computeCrossReferenceSignals(
+    collection([file("package.json")], { dependencyFacts: [{ kind: "added", package: "left-pad", detail: "x", source_path: "package.json" }] }),
+    talk("upgraded left-pad because of a security patch")
+  );
+  assert.equal(signal(findings, "deps_no_rationale"), undefined, "a rationale next to the package name suppresses the gap");
+});
+
+test("review-surfaces.METHODOLOGY.8 deps_no_rationale: proximity is bounded to the SAME sentence (Codex #110)", () => {
+  // The package and the rationale word are close in characters but in DIFFERENT
+  // sentences about different things — that must not count as a rationale for the bump.
+  const findings = computeCrossReferenceSignals(
+    collection([file("package.json")], { dependencyFacts: [{ kind: "added", package: "left-pad", detail: "x", source_path: "package.json" }] }),
+    talk("Bumped left-pad. The auth refactor was needed because the old code was confusing.")
+  );
+  assert.ok(signal(findings, "deps_no_rationale"), "a rationale in a separate sentence must not suppress the dependency gap");
+});
+
+test("review-surfaces.METHODOLOGY.8 deps_no_rationale: a config-noun rationale suppresses a CI/config change (Codex #110)", () => {
+  // A workflow-only change is described by a config NOUN ("pipeline"), not its filename.
+  const findings = computeCrossReferenceSignals(
+    collection([file(".github/workflows/ci.yml")]),
+    talk("reworked the pipeline because the deploy step was flaky")
+  );
+  assert.equal(signal(findings, "deps_no_rationale"), undefined, "rationale near a config noun suppresses the config gap");
+});
+
+test("review-surfaces.METHODOLOGY.8 deps_no_rationale: a short package name still correlates (Codex #110)", () => {
+  const findings = computeCrossReferenceSignals(
+    collection([file("package.json")], { dependencyFacts: [{ kind: "added", package: "ms", detail: "x", source_path: "package.json" }] }),
+    talk("bumped ms because of a CVE")
+  );
+  assert.equal(signal(findings, "deps_no_rationale"), undefined, "a 2-char package name is recognized at a word boundary");
+});
+
+test("review-surfaces.METHODOLOGY.8 impl_no_test: a file-correlated test mention clears only THAT file's gap (#109)", () => {
+  const findings = computeCrossReferenceSignals(collection([file("src/alpha.ts"), file("src/beta.ts")]), talk("I added tests for alpha"));
+  const sig = signal(findings, "impl_no_test");
+  assert.ok(sig, "beta has no test discussion, so its gap still fires");
+  assert.match(sig.summary, /beta\.ts/, "the gap names the file with no test discussion");
+  assert.doesNotMatch(sig.summary, /alpha\.ts/, "alpha's gap is cleared by the file-correlated test mention");
+});
+
+test("review-surfaces.METHODOLOGY.8 impl_no_test: a GENERIC test mention does not clear an unmentioned file's gap (#109)", () => {
+  const findings = computeCrossReferenceSignals(collection([file("src/uploader.ts")]), talk("added comprehensive tests"));
+  assert.ok(signal(findings, "impl_no_test"), "a generic 'added tests' with no file reference must not clear the per-file gap");
+});
+
+test("review-surfaces.METHODOLOGY.8 risky_no_security: 'authorization' wording IS a security discussion (Codex #110)", () => {
+  // An explicit "reviewed the authorization model" is genuine security reasoning, so it
+  // suppresses the signal (authoriz/permission kept as suppressor keywords).
+  const findings = computeCrossReferenceSignals(collection([file("src/auth/login.ts")]), talk("reviewed the authorization model carefully"));
+  assert.equal(signal(findings, "risky_no_security"), undefined, "authorization reasoning counts as a security discussion");
+});
+
+test("review-surfaces.METHODOLOGY.8 impl_no_test STILL fires when 'unit' appears only inside an unrelated word (#109)", () => {
+  // "united" must not count as a test discussion now that the 'unit' suppressor was dropped.
+  assert.ok(signal(computeCrossReferenceSignals(collection([file("src/payments.ts")]), talk("we united the billing modules")), "impl_no_test"));
+});
+
+test("review-surfaces.METHODOLOGY.8 deps_no_rationale: a SCOPED package name correlates (Codex #110)", () => {
+  const findings = computeCrossReferenceSignals(
+    collection([file("package.json")], { dependencyFacts: [{ kind: "added", package: "@types/node", detail: "x", source_path: "package.json" }] }),
+    talk("updated @types/node because the build needed the new typings")
+  );
+  assert.equal(signal(findings, "deps_no_rationale"), undefined, "a scoped @scope/name package is recognized as a topic");
+});
+
+test("review-surfaces.METHODOLOGY.8 deps_no_rationale: a generic 'upgrade' verb is NOT a dependency topic (Codex #110)", () => {
+  // The only rationale ("because") is about the docs; "upgraded" must not anchor it to the dep.
+  const findings = computeCrossReferenceSignals(
+    collection([file("package.json")], { dependencyFacts: [{ kind: "added", package: "left-pad", detail: "x", source_path: "package.json" }] }),
+    talk("Upgraded the docs site because the old theme was ugly")
+  );
+  assert.ok(signal(findings, "deps_no_rationale"), "a generic upgrade verb must not let an unrelated rationale suppress the gap");
+});
+
+test("review-surfaces.METHODOLOGY.8 impl_no_test: a shared stem is NOT cleared by an ambiguous test mention (Codex #110)", () => {
+  // Two index.ts files share the stem "index"; "tests for index" cannot be attributed
+  // to one, so neither gap is cleared by the discussion alone.
+  const findings = computeCrossReferenceSignals(collection([file("src/foo/index.ts"), file("src/bar/index.ts")]), talk("added tests for index"));
+  const sig = signal(findings, "impl_no_test");
+  assert.ok(sig, "an ambiguous shared-stem test mention does not clear the gap");
+  assert.match(sig.summary, /src\/(foo|bar)\/index\.ts/, "the uncovered index files still surface");
+});
+
 test("review-surfaces.METHODOLOGY.8 every cross-reference finding anchors to a changed file with a distinct id", () => {
   const findings = computeCrossReferenceSignals(collection([file("src/auth/login.ts")]), []);
   assert.ok(findings.length > 0);
