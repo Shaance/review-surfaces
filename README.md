@@ -112,6 +112,42 @@ Honesty about depth, so you can calibrate trust:
   guess. A truncated import graph suppresses drift facts rather than asserting
   novelty it cannot prove.
 
+### Swift and iOS support
+
+`review-surfaces` reviews Swift, SwiftPM, and Xcode repositories as a first-class
+language alongside TypeScript/JavaScript. All Swift/Apple analysis is **static and
+cross-platform** — it reads committed repository files with injected base/head
+readers and never invokes Xcode, SourceKit, `swiftc`, `xcodebuild`, `xcodegen`, or
+`xcrun`. Recording an `xcodebuild`/`swift test` transcript is the only macOS-only
+piece, and you run that command yourself via `review-surfaces run -- …`.
+
+| Capability | Cross-platform static | Requires macOS/Xcode |
+|---|---:|---:|
+| Swift file / test / project / generated classification | yes | no |
+| Swift declaration, test-weakening, package, and config facts | yes | no |
+| Target-aware Swift symbol graph from committed project files | yes | no |
+| Recording an existing `xcodebuild`/`swift test` transcript | no | yes — you run the command |
+| Direct `.xcresult` / `xccov` ingestion | not in v1 (use lcov) | deferred |
+| Simulator / device execution | not provided | outside product scope |
+
+A reviewer runs the ordinary workflow in an iOS repo:
+
+```bash
+# optional: record a real test run (macOS), trusted by its captured exit code
+review-surfaces run -- \
+  xcodebuild test -project Example.xcodeproj -scheme Example \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
+
+review-surfaces all --base origin/main --head HEAD --provider mock --out .review-surfaces
+```
+
+Repository wrappers (`./scripts/check-ios.sh`) are classified through explicit,
+validated `command_rules` in `review-surfaces.config.yaml`. Parser bounds are
+deliberate: no compiler or type checker, Objective-C stays generic, binary plists
+are diagnostic-only, and an ambiguous Swift symbol creates no graph edge. See
+[`docs/swift-ios-support.md`](https://github.com/Shaance/review-surfaces/blob/main/docs/swift-ios-support.md)
+for the full matrix, the wrapper-rule example, and the known bounds.
+
 A seeded-regression eval harness gates review quality itself in CI — the
 [scoreboard](#eval-scoreboard) at the bottom of this README is regenerated from
 its results.
@@ -312,15 +348,18 @@ is developed spec-first and dogfood-first).
 <!-- review-surfaces:eval-scoreboard -->
 ### Eval scoreboard
 
-The seeded-regression eval harness (run inside `pnpm run test`) currently catches **20/20** seeded case(s) across 20 fact class(es) in the top 10 of the review queue:
+The seeded-regression eval harness (run inside `pnpm run test`) currently catches **23/23** seeded case(s) across 23 fact class(es) in the top 10 of the review queue:
 
 | fact class | cases in top N |
 | --- | --- |
 | api_break | 1/1 |
 | arch_drift | 1/1 |
 | benign_format | 1/1 |
+| benign_package_resolved_origin | 1/1 |
+| benign_pbxproj_churn | 1/1 |
 | benign_redaction_placeholder | 1/1 |
 | benign_rename | 1/1 |
+| benign_swift_body_edit | 1/1 |
 | blast_radius | 1/1 |
 | ci_permission_broadening | 1/1 |
 | destructive_migration | 1/1 |

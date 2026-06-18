@@ -94,6 +94,10 @@ export interface EvalFixtureOptions {
   // review-surfaces.COLD_START.4: when false, the fixture repo has NO Acai spec
   // and the pipeline runs without --spec — the spec-less cold-start case.
   spec?: boolean;
+  // Extra files committed into the BASE commit (only this fixture), so a case can
+  // test a BENIGN CHANGE to a file the shared base does not carry (e.g. a
+  // Package.resolved originHash rewrite or a pbxproj reorder).
+  extraBaseFiles?: Record<string, string>;
 }
 
 export function createEvalFixture(prefix: string, options: EvalFixtureOptions = {}): EvalFixture {
@@ -115,6 +119,9 @@ export function createEvalFixture(prefix: string, options: EvalFixtureOptions = 
     if (!withSpec && relativePath === "features/app.feature.yaml") {
       continue;
     }
+    write(relativePath, content);
+  }
+  for (const [relativePath, content] of Object.entries(options.extraBaseFiles ?? {})) {
     write(relativePath, content);
   }
   git("init", "-b", "main");

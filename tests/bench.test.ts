@@ -31,3 +31,17 @@ test("review-surfaces.BENCH.1 the effectiveness benchmark ships a runnable harne
   assert.match(runnerSrc, /--config/, "benchmark forces a neutral config so a target repo's own config can't change the result");
   assert.ok(fs.existsSync(path.join(root, "bench", "neutral.config.yaml")), "the neutral benchmark config ships");
 });
+
+// review-surfaces.BENCH.2: the pinned public benchmark includes representative
+// Swift/SwiftPM/iOS cases (well-formed; the on-demand runner exercises them).
+test("review-surfaces.BENCH.2 the benchmark pins Swift/SwiftPM cases", () => {
+  const root = process.cwd();
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, "bench", "manifest.json"), "utf8"));
+  const swift = manifest.cases.filter((c: { lang: string }) => c.lang === "swift");
+  assert.ok(swift.length >= 6, `the benchmark pins at least six Swift cases (found ${swift.length})`);
+  for (const c of swift) {
+    assert.match(c.base, /^[0-9a-f]{40}$/, `swift case ${c.id} base is a full commit SHA`);
+    assert.match(c.head, /^[0-9a-f]{40}$/, `swift case ${c.id} head is a full commit SHA`);
+    assert.match(c.repo, /^https:\/\/.+\.git$/, `swift case ${c.id} repo is clonable`);
+  }
+});

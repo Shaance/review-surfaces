@@ -557,3 +557,86 @@ test("review-surfaces.CONFIG_FACTS.5 an Xcode test-structure change ranks in the
     fixture.cleanup();
   }
 });
+
+// review-surfaces.EVAL_HARNESS.7 — benign Swift/iOS negatives must NOT elevate.
+test("review-surfaces.EVAL_HARNESS.7 a body-only Swift edit produces no declaration-contract finding", () => {
+  const fixture = createEvalFixture("swift-benign-body");
+  try {
+    fixture.write(
+      "Sources/App/Greeting.swift",
+      `public struct Greeting {\n  public func greet(name: String) -> String {\n    let prefix = "Hello"\n    return "\\(prefix), \\(name)"\n  }\n}\n`
+    );
+    fixture.commit("rewrite greet body only");
+    record("benign_swift_body_edit", () => {
+      const model = fixture.run();
+      assert.ok(
+        !model.review_queue.some((item) => item.path === "Sources/App/Greeting.swift" && /Swift declaration/i.test(item.title)),
+        "a body-only Swift edit must not produce a declaration-contract finding"
+      );
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("review-surfaces.EVAL_HARNESS.7 a Package.resolved originHash-only rewrite produces no package finding", () => {
+  const basePin = JSON.stringify({ version: 2, pins: [{ identity: "nio", location: "u", state: { version: "2.0.0", revision: "aaaaaaaa" } }] }, null, 2);
+  const fixture = createEvalFixture("swift-benign-pin", { extraBaseFiles: { "Package.resolved": basePin } });
+  try {
+    fixture.write("Package.resolved", JSON.stringify({ version: 3, originHash: "DIFFERENT", pins: [{ identity: "nio", location: "u", state: { version: "2.0.0", revision: "aaaaaaaa" } }] }, null, 2));
+    fixture.commit("originHash-only rewrite");
+    record("benign_package_resolved_origin", () => {
+      const model = fixture.run();
+      assert.ok(
+        !model.review_queue.some((item) => item.path === "Package.resolved" && /package|pin|supply/i.test(`${item.title} ${item.reason}`)),
+        "an originHash-only Package.resolved rewrite must not produce a package finding"
+      );
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("review-surfaces.EVAL_HARNESS.7 a pbxproj object reorder with an unchanged model produces no structure finding", () => {
+  const target = (extra: string) => `{ objects = {
+    ${extra}
+    APP = { isa = PBXNativeTarget; name = App; productType = "com.apple.product-type.application"; buildPhases = (); };
+  }; }`;
+  const fixture = createEvalFixture("swift-benign-pbx", { extraBaseFiles: { "App.xcodeproj/project.pbxproj": target("MISC = { isa = PBXGroup; children = (); };") } });
+  try {
+    // Reorder/rename the unrelated object: the parsed target model is unchanged.
+    fixture.write("App.xcodeproj/project.pbxproj", `{ objects = {
+    APP = { isa = PBXNativeTarget; name = App; productType = "com.apple.product-type.application"; buildPhases = (); };
+    OTHER = { isa = PBXGroup; children = (); };
+  }; }`);
+    fixture.commit("reorder pbxproj objects");
+    record("benign_pbxproj_churn", () => {
+      const model = fixture.run();
+      assert.ok(
+        !model.review_queue.some((item) => item.path.endsWith("project.pbxproj") && /target structure|test structure/i.test(item.title)),
+        "a pbxproj reorder with an unchanged target model must not produce a structure finding"
+      );
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// review-surfaces.EVAL_HARNESS.7 — the seeded eval covers every shipped Swift/iOS
+// fact class plus the benign negatives. Placed last so every record() above has run.
+test("review-surfaces.EVAL_HARNESS.7 the seeded eval covers every shipped Swift/iOS fact class", () => {
+  const required = [
+    "swift_contract_change",
+    "swift_test_weakening",
+    "swift_changed_test_connection",
+    "swiftpm_dependency_change",
+    "ios_privacy_capability_change",
+    "xcode_test_structure_change",
+    "benign_swift_body_edit",
+    "benign_package_resolved_origin",
+    "benign_pbxproj_churn"
+  ];
+  for (const klass of required) {
+    assert.ok(scoreboard[klass]?.passed >= 1, `eval class ${klass} must have a passing seeded case`);
+  }
+});
