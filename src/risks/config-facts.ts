@@ -17,7 +17,16 @@ export type ConfigFactKind =
   | "docker_curl_pipe_shell"
   | "docker_base_image_changed"
   | "docker_user_dropped"
-  | "sql_destructive_statement";
+  | "sql_destructive_statement"
+  // review-surfaces.CONFIG_FACTS.4/.5: Apple config + project-structure facts.
+  // They route to the security_privacy / architecture / test_evidence /
+  // cache_provenance lenses via configFactLens (apple-config-facts.ts produces them).
+  | "ios_privacy_capability_change"
+  | "ios_ats_broadened"
+  | "ios_build_setting_change"
+  | "ios_test_structure_change"
+  | "ios_target_structure_change"
+  | "ios_generator_drift";
 
 export interface ConfigFact {
   kind: ConfigFactKind;

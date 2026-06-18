@@ -515,3 +515,45 @@ test("review-surfaces.DEP_FACTS.6 a SwiftPM package change ranks in the top N", 
     fixture.cleanup();
   }
 });
+
+// review-surfaces.CONFIG_FACTS.4: an iOS privacy/capability change ranks in the top N.
+test("review-surfaces.CONFIG_FACTS.4 an iOS privacy change ranks in the top N", () => {
+  const fixture = createEvalFixture("ios-privacy");
+  try {
+    fixture.write(
+      "App/Info.plist",
+      `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict>\n  <key>NSCameraUsageDescription</key>\n  <string>Scan codes</string>\n</dict></plist>\n`
+    );
+    fixture.commit("add camera usage description");
+    record("ios_privacy_capability_change", () => {
+      const model = fixture.run();
+      assert.ok(
+        inTopQueue(model, (item) => item.path === "App/Info.plist" && /privacy|camera|NSCamera/i.test(`${item.title} ${item.reason}`)),
+        "the iOS privacy change must rank in the top N naming the key"
+      );
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// review-surfaces.CONFIG_FACTS.5: an Xcode test-structure change ranks in the top N.
+test("review-surfaces.CONFIG_FACTS.5 an Xcode test-structure change ranks in the top N", () => {
+  const fixture = createEvalFixture("ios-test-structure");
+  try {
+    fixture.write(
+      "Plans/Unit.xctestplan",
+      JSON.stringify({ configurations: [], testTargets: [{ target: { name: "AppTests" }, enabled: true, skippedTests: ["AppTests/testFlaky"] }] }, null, 2)
+    );
+    fixture.commit("skip a test in the test plan");
+    record("xcode_test_structure_change", () => {
+      const model = fixture.run();
+      assert.ok(
+        inTopQueue(model, (item) => item.path === "Plans/Unit.xctestplan" && /test structure|skip/i.test(`${item.title} ${item.reason}`)),
+        "the Xcode test-structure change must rank in the top N"
+      );
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
