@@ -2596,10 +2596,17 @@ const BASELINE_EXPORT =
 // under `generated/`/`build/`/`target/` etc. (Codex #112 round-2).
 const BASELINE_GENERATED_DIR =
   /(^|\/)(generated|__generated__|\.generated|build|dist|out|target|vendor|node_modules|coverage|\.next|\.nuxt|\.svelte-kit)\//i;
-const BASELINE_CODE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m)$/i;
-// Files no human reads line-by-line on a cold-start: lockfiles, images/binaries, source
-// maps, snapshots. Excluded from the baseline floor (Codex #112).
-const BASELINE_NON_REVIEW_EXT = /\.(png|jpe?g|gif|svg|ico|webp|bmp|pdf|woff2?|ttf|eot|otf|map|min\.js|min\.css|snap|lock|wasm|node)$/i;
+const BASELINE_CODE_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m)$/i;
+// Documentation extensions `classifyRole` does not already flag as `doc` (it keys on `docs/`
+// + `.md`). Outside `docs/`, a `README.mdx`/`CHANGELOG.rst` would otherwise fall through to
+// `other` and be queued (Codex #112 round-5). The cold-start floor never asks a human to
+// "read this changed file" for prose.
+const BASELINE_DOC_EXT = /\.(md|mdx|markdown|mkd|rst|adoc|asciidoc|txt|org|textile|rdoc|pod)$/i;
+// Files no human reads line-by-line on a cold-start: lockfiles, images/fonts, source maps,
+// snapshots, AND archive/executable/compiled binaries (a `.zip`/`.jar`/`.exe` is not a
+// review-focus item — Codex #112 round-5). Excluded from the baseline floor (Codex #112).
+const BASELINE_NON_REVIEW_EXT =
+  /\.(png|jpe?g|gif|svg|ico|webp|bmp|pdf|woff2?|ttf|eot|otf|map|min\.js|min\.css|snap|lock|wasm|node|zip|tar|gz|tgz|bz2|xz|7z|rar|jar|war|ear|exe|dll|so|dylib|bin|class|o|a|lib|obj|pyc|pyo|deb|rpm|dmg|iso|mp4|mov|mp3|wav)$/i;
 const BASELINE_LOCKFILE_NAMES = new Set([
   "package-lock.json",
   "pnpm-lock.yaml",
@@ -2649,6 +2656,11 @@ function baselineFileRole(filePath: string): BaselineRole {
   }
   if (role === "spec") {
     return "config";
+  }
+  // A documentation extension `classifyRole` missed (e.g. README.mdx / CHANGELOG.rst outside
+  // docs/) is prose, not a review-focus item (Codex #112 round-5).
+  if (BASELINE_DOC_EXT.test(filePath)) {
+    return "doc";
   }
   // `classifyRole` returns "unknown" when no areas are threaded (the spec-less / diff
   // path): decide impl by code extension (a .d.ts declaration is not implementation).

@@ -4791,3 +4791,30 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: a Go receiver method is recogn
   assert.ok(item, "the Go file is queued");
   assert.match(item.reason, /exported\/public surface/, "a Go receiver method is detected as exported public surface");
 });
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: extension completeness — .mts is impl, doc exts and binaries are excluded (Codex #112 round-5)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/src/api.mts b/src/api.mts",
+    "--- a/src/api.mts",
+    "+++ b/src/api.mts",
+    "@@ -1,1 +1,2 @@",
+    " // api",
+    "+export function go() { return 1; }",
+    "diff --git a/README.mdx b/README.mdx",
+    "--- a/README.mdx",
+    "+++ b/README.mdx",
+    "@@ -1,1 +1,2 @@",
+    " # Readme",
+    "+More prose.",
+    "diff --git a/fixtures/app.jar b/fixtures/app.jar",
+    "index 0000000..abcdef0 100644",
+    "Binary files a/fixtures/app.jar and b/fixtures/app.jar differ",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const mts = model.review_queue.find((entry) => entry.path === "src/api.mts");
+  assert.ok(mts, "a .mts module is treated as implementation and queued");
+  assert.match(mts.reason, /exported\/public surface/, ".mts impl gets the public-surface signal");
+  assert.ok(!model.review_queue.some((entry) => entry.path === "README.mdx"), "a .mdx doc outside docs/ is excluded");
+  assert.ok(!model.review_queue.some((entry) => entry.path === "fixtures/app.jar"), "a .jar binary artifact is not a review-focus item");
+});
