@@ -4529,8 +4529,34 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start floor augments a thin detector 
   // The augmented wording does NOT claim no detector fired (a detector DID fire here).
   const augmented = model.review_queue.find((item) => item.path === "src/payment-processor.ts");
   assert.ok(augmented, "the augmented item exists");
-  assert.match(augmented.reason, /Another finding leads the queue, but this changed source is also worth reading/);
+  assert.match(augmented.reason, /Another finding was queued for this diff, and this changed source is also worth reading/);
   assert.ok(!/no risk rule produced a ranked finding/i.test(augmented.reason), "augmented item does not claim no detector fired");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 augmentation does not fire on a fallback-only prSurface queue", () => {
+  // A prSurface with NO PR risks and no detector findings produces only the changed-file
+  // fallback (changedFileQueueDrafts) — which is ITSELF the floor. The baseline augmentation
+  // must NOT pile onto it, even though src/widget.ts is an uncovered impl file.
+  const surface = prSurfaceFixture();
+  surface.risks = { summary: "no risks", candidates: [] };
+  surface.scope.changed_files = [
+    ...surface.scope.changed_files,
+    { path: "src/widget.ts", status: "M", areas: ["HUMAN_REVIEW"], role: "implementation", added_lines: 8, deleted_lines: 1 }
+  ];
+  const diff = parseStructuredDiff([
+    "diff --git a/src/widget.ts b/src/widget.ts",
+    "--- a/src/widget.ts",
+    "+++ b/src/widget.ts",
+    "@@ -1,1 +1,2 @@",
+    " export function widget() {}",
+    "+export function widget2() { return 1; }",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, prSurface: surface, diff });
+  assert.ok(
+    !model.review_queue.some((item) => /Another finding was queued for this diff/.test(item.reason)),
+    "the baseline augmentation does not pile onto a fallback-only changed-file queue"
+  );
 });
 
 test("review-surfaces.HUMAN_REVIEW.28 augmentation stays within headroom and never evicts the detector item", () => {

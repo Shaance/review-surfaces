@@ -2134,8 +2134,14 @@ function buildReviewQueue(
 
   drafts.push(...feedbackReviewQueueDrafts(feedbackEffects, diffIndex));
 
+  // The prSurface changed-file fallback is ITSELF a floor (already capped to the floor
+  // budget). Count what it adds so the baseline augmentation below does not pile onto a
+  // fallback-only queue and bust that budget (Codex #117 round-2).
+  let fallbackDraftCount = 0;
   if (input.prSurface && prRiskQueueItemCount === 0) {
+    const beforeFallback = drafts.length;
     drafts.push(...changedFileQueueDrafts(input.prSurface, diffIndex));
+    fallbackDraftCount = drafts.length - beforeFallback;
   }
 
   for (const risk of input.packet.risks.items) {
@@ -2181,11 +2187,15 @@ function buildReviewQueue(
   // connected changed test, sensitive error/async/auth/persistence paths) and surface
   // the files most worth reading, WITHOUT fabricating any risk or blocker.
   const baselineDrafts = baselineReviewFocusDrafts(input, diffIndex, semanticFacts);
+  // The queue is "fallback-only" when its sole content is the prSurface changed-file
+  // fallback (no real detector finding) — that fallback already IS the floor, so it neither
+  // needs nor should receive baseline augmentation on top of its budget (Codex #117 r2).
+  const realDetectorDraftCount = drafts.length - fallbackDraftCount;
   if (drafts.length === 0) {
     // Empty queue (spec-less / nothing structural fired): the floor IS the queue, capped to
     // the floor's own budget.
     drafts.push(...baselineDrafts.slice(0, MAX_CHANGED_FILE_QUEUE));
-  } else {
+  } else if (realDetectorDraftCount > 0) {
     // Non-empty but possibly THIN: a lone dependency/config detector finding (e.g. a
     // package.json version bump) can be the only queue item while the diff's substantive
     // SOURCE goes unranked and hidden. Augment with review-focus items for IMPLEMENTATION
@@ -2221,7 +2231,7 @@ function buildReviewQueue(
         // augmented item must not claim "no detector produced a ranked finding" (Codex #117).
         reason: draft.reason.replace(
           "No risk rule produced a ranked finding here, but this is among the changed files most worth reading:",
-          "Another finding leads the queue, but this changed source is also worth reading:"
+          "Another finding was queued for this diff, and this changed source is also worth reading:"
         ),
         baseline: draft.baseline?.replace(
           "ranked by deterministic change signals (no detector produced a ranked finding):",
