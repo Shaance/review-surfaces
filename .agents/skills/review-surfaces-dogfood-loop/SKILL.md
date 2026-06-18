@@ -39,14 +39,15 @@ Use the branch's merge-base (`--base origin/main`), NOT `HEAD~1` — a single-co
 range reviews only the last commit and misses files changed earlier in a multi-commit
 branch. Keep `--dogfood` or `dogfood.yaml` and `agent_handoff.md` are not built.
 
-In a **Claude Code** session, auto-discovery finds this repo's own transcript under
-`~/.claude/projects/<cwd-slug>/` (announced on stderr). Discovery does NOT know the
-current harness — it just scans the Claude store and picks the best readable session
-by changed-file score and recency. So in a **Codex or Cursor** session it either
-finds nothing (degrading to `conversation_log_missing`) or, on a machine that also
-has prior Claude sessions for this repo, silently audits a STALE Claude transcript —
-making the methodology audit look valid for the wrong session. Pass `--conversation
-<file>` explicitly there (mandatory, not optional). Then open and READ:
+In a **Claude Code** OR **Codex** session, auto-discovery finds this repo's own
+transcript (announced on stderr): it spans the Claude store
+(`~/.claude/projects/<cwd-slug>/`) AND the Codex rollout store (`~/.codex/sessions/`,
+scoped to this repo by the recorded `session_meta.cwd`), picking the session that
+references the changed range, then recency. If the picked session references none of
+the reviewed range it is announced as a hard `WARNING` pointing at `--conversation`.
+**Cursor** keeps chat in a SQLite db with no loose transcript file, so export the chat
+and pass `--conversation <file> --conversation-format cursor` (the `local-review`
+wrapper now forwards it). Then open and READ:
 
 - `.review-surfaces/human_review.html` (or `/tmp/dog/...`) — the cockpit (incl. the "Agent workflow audit" card).
 - `human_review.json` → `.methodology_audit` — `considered`/`research`, `workflow_findings`, `quality_flags`.
