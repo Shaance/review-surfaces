@@ -18,6 +18,10 @@ export interface SwiftDeclarationChange {
   // a removed enum case, or a changed/removed protocol requirement.
   breaking: boolean;
   detail: string;
+  // review-surfaces.BLAST_RADIUS.4: in-target files that reference a unique type
+  // declared in this file. Absent when the symbol graph was not computed; a
+  // truncated graph carries the flag rather than a false "used by 0".
+  used_by?: { count: number; top: string[]; truncated?: boolean };
 }
 
 const CONTRACT_VISIBILITIES = new Set<SwiftVisibility>(["open", "public", "package"]);

@@ -63,8 +63,8 @@ Static collection and analysis must work anywhere the Node CLI works. Running `x
 - [x] Plan reviewed and accepted.
 - [x] Phase 0 — promote requirements and stage the strict gate.
 - [x] Phase 1 — Swift/Xcode file roles, command evidence, and Apple-sensitive artifact handling.
-- [ ] Phase 2 — Swift declaration facts and XCTest/Swift Testing weakening.
-- [ ] Phase 3 — Apple project model and target-aware Swift symbol graph.
+- [x] Phase 2 — Swift declaration facts and XCTest/Swift Testing weakening.
+- [x] Phase 3 — Apple project model and target-aware Swift symbol graph.
 - [ ] Phase 4a — SwiftPM and Xcode package facts.
 - [ ] Phase 4b — iOS/Xcode privacy, capability, build-setting, target, and scheme facts.
 - [ ] Phase 5 — full-surface integration, eval coverage, public benchmark, docs, dogfood, and release.
@@ -78,6 +78,10 @@ Record implementation findings here as work proceeds. Each entry must include th
 - **Phase 0 (worktree).** Two `claude/*` worktrees exist at the same commit; all work landed in `fervent-dewdney-e5cd14` (the harness primary dir). The contract copy lives at `docs/history/IOS_SWIFT_SUPPORT_GOAL.md`.
 - **Phase 1 (command_rules wiring).** `command_rules` are folded into the cache signature for free because `collect.ts` already hashes the loaded config file's content. Built-in classification always wins for directly-recognized commands (a rule can never reclassify `xcodebuild build`); rules only classify wrappers the built-ins do not recognize. Threaded into the test-evidence consumers (`risks.ts`, `pr-risks.ts`, `methodology/cross-reference.ts`).
 - **Phase 1 (test weakening reuse).** Because Phase 1's shared `isTestPath` now recognizes Swift test files, the existing `detectTestWeakening` already fires `deleted_test_file` on a deleted Swift test; Phase 2 only needs Swift-aware skip/assertion patterns. The human `semanticChangeFacts` schema is `additionalProperties: true`, and Swift weakening maps onto the existing `kind` enum, so Phase 2 needs minimal schema churn.
+- **Phase 2 (TS flow-narrowing in the lexer).** A closure that reassigns the lexer `state` variable defeated TS control-flow narrowing of the discriminated union; rewrote the loop as a `switch (state.kind)` with direct assignment (no `enter` closure) and an explicit `const depth: number` to break a circular flow-type inference.
+- **Phase 3 (symbol graph: module visibility).** Strict per-target uniqueness made a test target's `@testable import App` invisible to App's types, so test→impl attribution failed. Fixed by resolving references against a file's VISIBLE modules — own module + transitive target deps + `import`ed target names — and emitting an edge only when the union of declarers across those modules is exactly one file. A repo with no project model falls back to a single implicit module (repo-wide uniqueness), which is conservative.
+- **Phase 3 (macOS case-insensitive FS).** The eval fixture's `Tests/AppTests/` collapsed into the existing lowercase `tests/` dir on macOS, making the persisted path platform-dependent; fixtures now use a non-colliding `AppTests/` directory (the `…Tests.swift` basename is what classifies the test, so the directory name is free).
+- **Phase 3 (Phase 3 is inert on this repo).** `review-surfaces` has zero committed `.swift`/Apple project files, so `buildSwiftGraphForPacket` returns undefined, `apple_project.json` is never written, and the empty-diff self-dogfood + determinism output is byte-identical to before — the Swift graph only activates on actual Swift repos.
 
 ## Decision Log
 

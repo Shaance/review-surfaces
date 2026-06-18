@@ -312,7 +312,7 @@ is developed spec-first and dogfood-first).
 <!-- review-surfaces:eval-scoreboard -->
 ### Eval scoreboard
 
-The seeded-regression eval harness (run inside `pnpm run test`) currently catches **16/16** seeded case(s) across 16 fact class(es) in the top 10 of the review queue:
+The seeded-regression eval harness (run inside `pnpm run test`) currently catches **17/17** seeded case(s) across 17 fact class(es) in the top 10 of the review queue:
 
 | fact class | cases in top N |
 | --- | --- |
@@ -327,6 +327,7 @@ The seeded-regression eval harness (run inside `pnpm run test`) currently catche
 | schema_change | 1/1 |
 | secret_in_diff | 1/1 |
 | sneaky_dependency | 1/1 |
+| swift_changed_test_connection | 1/1 |
 | swift_contract_change | 1/1 |
 | swift_foundation_cold_start | 1/1 |
 | swift_test_weakening | 1/1 |

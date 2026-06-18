@@ -2523,7 +2523,7 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
     drafts.push(semanticDraft(diffIndex, {
       title: swiftDeclarationTitle(change),
       path: change.path,
-      reason: change.detail,
+      reason: swiftDeclarationReason(change),
       reviewer_action:
         change.change === "removed"
           ? "Confirm callers/conformers of the removed Swift declaration are updated or it is intentionally dropped."
@@ -2539,6 +2539,20 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
 function swiftDeclarationTitle(change: SwiftDeclarationChange): string {
   const verb = change.change === "added" ? "added" : change.change === "removed" ? "removed" : "changed";
   return `Swift declaration ${verb}`;
+}
+
+// review-surfaces.BLAST_RADIUS.4: append the symbol-graph blast radius to a Swift
+// declaration change's prose. A truncated graph carries the note rather than a
+// false "used by 0"; a real zero (graph present, no in-repo referrers) is silent.
+function swiftDeclarationReason(change: SwiftDeclarationChange): string {
+  const usedBy = change.used_by;
+  if (!usedBy || usedBy.count === 0) {
+    return change.detail;
+  }
+  const top = usedBy.top.map((p) => `\`${p}\``).join(", ");
+  return usedBy.truncated
+    ? `${change.detail} Referenced by at least ${usedBy.count} file(s) (top: ${top}; symbol graph truncated at the file cap).`
+    : `${change.detail} Referenced by ${usedBy.count} file(s) (top: ${top}).`;
 }
 
 function semanticDraft(
@@ -3193,7 +3207,7 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
   // lens. A public/package break is high; an additive or internal change is
   // advisory (medium) until Phase 3 supplies a deterministic used_by relationship.
   for (const change of semanticFacts.swift_declaration_changes) {
-    addSignal("api_contract", change.breaking ? "high" : "medium", [fileEvidence(change.path, change.detail)], [], [], [change.path]);
+    addSignal("api_contract", change.breaking ? "high" : "medium", [fileEvidence(change.path, swiftDeclarationReason(change))], [], [], [change.path]);
   }
   // review-surfaces.DEP_FACTS.2: dependency facts feed the supply_chain lens.
   for (const fact of input.dependencyFacts ?? []) {
