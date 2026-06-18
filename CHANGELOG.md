@@ -48,6 +48,24 @@ package name `review-surfaces` was verified unclaimed on 2026-06-12.
   runtime needs; and the README documents CI consumption with a copy-pasteable
   GitHub Action `uses:` snippet (linking the worked example workflow) and an
   exit-code table so a CI author can wire the action and branch on exit codes.
+- Agent-workflow / methodology audit (`METHODOLOGY.7-8`): the review reads the
+  agent conversation transcript (auto-discovered for Claude Code; `--conversation`
+  elsewhere) and surfaces an agent-workflow audit — considered alternatives,
+  research/context, and four DETERMINISTIC cross-reference (D6) signals computed by
+  cross-referencing the diff and the deterministic semantic/dependency/config facts
+  against the conversation: `impl_no_test`, `risky_no_security`, `api_no_compat`,
+  and `deps_no_rationale`. Each is advisory unless an independent deterministic fact
+  corroborates it, in which case it is promoted to a blocking reviewer question; LLM
+  leaves stay advisory until deterministic evidence validation accepts them. Rendered
+  as an audit card on the HTML cockpit, with a `CONV-GAP` risk when the conversation
+  reveals an untested changed file. A redaction/secret guard blocks any remote
+  provider call when the diff or transcript carries high-risk secret material.
+- Cross-language test-command recognition (`COLLECTOR.7`): the command classifier
+  recognizes non-JS test runners — `go test`, `cargo test`, `pytest`, `mvn`/`gradle`,
+  `dotnet test`, `rspec`, `phpunit`, `mix`/`swift`/`dart test` — with conservative
+  broad-vs-focused classification (no-execution, exclusion, and info invocations
+  screened out), so the "tests ran / tests weakened" and local-validation signals
+  fire on non-Node repositories, not only on JS/TS.
 
 ## 0.1.0 — 2026-05-30 through 2026-06-12 (unpublished development history; never on npm)
 
