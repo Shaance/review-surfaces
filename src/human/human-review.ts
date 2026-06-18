@@ -2134,8 +2134,14 @@ function buildReviewQueue(
 
   drafts.push(...feedbackReviewQueueDrafts(feedbackEffects, diffIndex));
 
+  // The prSurface changed-file fallback is ITSELF a floor (already capped to the floor
+  // budget). Count what it adds so the baseline augmentation below does not pile onto a
+  // fallback-only queue and bust that budget (Codex #117 round-2).
+  let fallbackDraftCount = 0;
   if (input.prSurface && prRiskQueueItemCount === 0) {
+    const beforeFallback = drafts.length;
     drafts.push(...changedFileQueueDrafts(input.prSurface, diffIndex));
+    fallbackDraftCount = drafts.length - beforeFallback;
   }
 
   for (const risk of input.packet.risks.items) {
@@ -2176,14 +2182,63 @@ function buildReviewQueue(
     });
   }
 
-  // Cold-start review-focus floor (review-surfaces.HUMAN_REVIEW.28): when NO detector
-  // produced a queue item — a spec-less / no-PR-surface run where nothing structural
-  // fired — a substantive diff must still not yield an empty queue. Rank the changed
+  // Cold-start review-focus floor (review-surfaces.HUMAN_REVIEW.28): rank the changed
   // files by DETERMINISTIC signals (churn, exported surface, an impl file with no
   // connected changed test, sensitive error/async/auth/persistence paths) and surface
   // the files most worth reading, WITHOUT fabricating any risk or blocker.
+  const baselineDrafts = baselineReviewFocusDrafts(input, diffIndex, semanticFacts);
+  // The queue is "fallback-only" when its sole content is the prSurface changed-file
+  // fallback (no real detector finding) — that fallback already IS the floor, so it neither
+  // needs nor should receive baseline augmentation on top of its budget (Codex #117 r2).
+  const realDetectorDraftCount = drafts.length - fallbackDraftCount;
   if (drafts.length === 0) {
-    drafts.push(...baselineReviewFocusDrafts(input, diffIndex, semanticFacts));
+    // Empty queue (spec-less / nothing structural fired): the floor IS the queue, capped to
+    // the floor's own budget.
+    drafts.push(...baselineDrafts.slice(0, MAX_CHANGED_FILE_QUEUE));
+  } else if (realDetectorDraftCount > 0) {
+    // Non-empty but possibly THIN: a lone dependency/config detector finding (e.g. a
+    // package.json version bump) can be the only queue item while the diff's substantive
+    // SOURCE goes unranked and hidden. Augment with review-focus items for IMPLEMENTATION
+    // files no existing draft already covers — by path OR rename old_path — so the source a
+    // reviewer should read is never buried under a dependency/config finding. Only impl
+    // source is added (low-noise), and only within the queue's remaining HEADROOM so
+    // augmentation never evicts the detector item that motivated it (Codex #117).
+    const coveredPaths = new Set<string>();
+    for (const draft of drafts) {
+      if (draft.path) {
+        coveredPaths.add(draft.path);
+      }
+      if (draft.old_path) {
+        coveredPaths.add(draft.old_path);
+      }
+    }
+    const headroom = Math.max(0, Math.min(MAX_QUEUE, config.max_review_first) - drafts.length);
+    const augment = baselineDrafts
+      .filter((draft) => {
+        const path = draft.path;
+        if (!path || coveredPaths.has(path)) {
+          return false;
+        }
+        if (draft.old_path && coveredPaths.has(draft.old_path)) {
+          return false;
+        }
+        return baselineFileRole(path) === "impl";
+      })
+      .slice(0, Math.min(headroom, MAX_CHANGED_FILE_QUEUE))
+      .map((draft) => ({
+        ...draft,
+        // A detector DID produce a finding for this diff — just not for this file — so the
+        // augmented item must not claim "no detector produced a ranked finding" (Codex #117).
+        reason: draft.reason.replace(
+          "No risk rule produced a ranked finding here, but this is among the changed files most worth reading:",
+          "Another finding was queued for this diff, and this changed source is also worth reading:"
+        ),
+        baseline: draft.baseline?.replace(
+          "ranked by deterministic change signals (no detector produced a ranked finding):",
+          "ranked by deterministic change signals (surfaced alongside a detector finding):"
+        )
+      }));
+    drafts.push(...augment);
   }
 
   // review-surfaces.RANKING.1/.3: annotate each draft with its evidence tier and
@@ -2805,8 +2860,11 @@ function baselineReviewFocusDrafts(
       return { file, role, churn, score, why };
     })
     .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
-    .sort((left, right) => right.score - left.score || right.churn - left.churn || compareStrings(left.file.path, right.file.path))
-    .slice(0, MAX_CHANGED_FILE_QUEUE);
+    .sort((left, right) => right.score - left.score || right.churn - left.churn || compareStrings(left.file.path, right.file.path));
+  // NOT capped here — the CALLER caps: the empty-queue path takes the top
+  // MAX_CHANGED_FILE_QUEUE, while the augment path filters to uncovered impl FIRST and then
+  // caps, so an uncovered impl file ranked past the cap is not dropped before filtering
+  // (Codex #117).
 
   return ranked.map((entry) => {
     const evidence = fileEvidence(entry.file.path, "Ranked by deterministic change signals because no detector produced a ranked finding.");

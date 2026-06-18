@@ -8,7 +8,7 @@ Cases run: **22/22** (mock provider, full `all` pipeline over pinned real diffs)
 | false-blocker rate (spec-less) | 0% (0/22) | 0% |
 | top item is code/impl | 91% (20/22) | high |
 | irrelevant (doc/generated/lock/binary) in top-5 | 0% (0/22) | 0% |
-| focus recall@5 (annotated) | 95% | high |
+| focus recall@5 (annotated) | 100% | high |
 
 ## Per-case
 
@@ -17,7 +17,7 @@ Cases run: **22/22** (mock provider, full `all` pipeline over pinned real diffs)
 | ky-network-error | ts | 2 | 0 | `source/utils/is-network-error.ts` | code | no | no | 100% |
 | ky-core | ts | 3 | 0 | `source/core/Ky.ts` | code | no | no | 100% |
 | express-response | js | 2 | 0 | `lib/response.js` | code | no | no | 100% |
-| express-send | js | 1 | 0 | `package.json` | other | no | no | 0% |
+| express-send | js | 2 | 0 | `package.json` | other | no | no | 100% |
 | cobra-args | go | 2 | 0 | `args.go` | code | no | no | 100% |
 | cobra-yaml-docs | go | 2 | 0 | `doc/yaml_docs.go` | code | no | no | 100% |
 | gin-version | go | 1 | 0 | `version.go` | code | no | no | 100% |

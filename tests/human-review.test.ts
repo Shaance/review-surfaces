@@ -4508,12 +4508,110 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: a substantive diff yields a de
   assert.equal(model.blockers.length, 0, "the cold-start floor adds no blockers");
 });
 
-test("review-surfaces.HUMAN_REVIEW.28 cold-start floor is additive-only: it does NOT fire when a detector already queued an item", () => {
-  // packetFixture carries RISK-001, which produces a real queue draft — so the baseline
-  // floor must stay silent (no `Review-focus:` items).
+test("review-surfaces.HUMAN_REVIEW.28 cold-start floor augments a thin detector queue with uncovered impl source", () => {
+  // packetFixture's RISK-001 queues one item (anchored to src/human/human-review.ts, not in
+  // this diff). The diff's substantive impl files (src/payment-processor.ts, src/format.ts)
+  // are covered by NO detector, so the floor augments the queue with Review-focus items for
+  // them — a lone detector finding must not leave the source a reviewer should read hidden.
   const model = buildHumanReview({ packet: packetFixture(), diff: coldStartDiff() });
-  assert.ok(model.review_queue.length > 0);
-  assert.ok(!model.review_queue.some((item) => /^Review-focus:/.test(item.title)), "the baseline floor does not fire when a detector produced a queue item");
+  assert.ok(model.review_queue.some((item) => item.risk_ids.includes("RISK-001")), "the detector finding is still present");
+  const focus = model.review_queue.filter((item) => /^Review-focus:/.test(item.title)).map((item) => item.path);
+  assert.ok(focus.includes("src/payment-processor.ts"), "an uncovered impl file is augmented as review-focus");
+  assert.ok(focus.includes("src/format.ts"), "every uncovered impl file is augmented");
+  // Only impl source is augmented into an already-populated queue — never docs or tests.
+  assert.ok(!focus.includes("docs/guide.md"), "docs are not augmented");
+  assert.ok(!focus.includes("test/format.test.ts"), "tests are not augmented into a non-empty queue");
+  // The augmented items still fabricate no risk.
+  assert.ok(
+    model.review_queue.filter((item) => /^Review-focus:/.test(item.title)).every((item) => item.risk_ids.length === 0),
+    "augmented review-focus items cite no risk"
+  );
+  // The augmented wording does NOT claim no detector fired (a detector DID fire here).
+  const augmented = model.review_queue.find((item) => item.path === "src/payment-processor.ts");
+  assert.ok(augmented, "the augmented item exists");
+  assert.match(augmented.reason, /Another finding was queued for this diff, and this changed source is also worth reading/);
+  assert.ok(!/no risk rule produced a ranked finding/i.test(augmented.reason), "augmented item does not claim no detector fired");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 augmentation does not fire on a fallback-only prSurface queue", () => {
+  // A prSurface with NO PR risks and no detector findings produces only the changed-file
+  // fallback (changedFileQueueDrafts) — which is ITSELF the floor. The baseline augmentation
+  // must NOT pile onto it, even though src/widget.ts is an uncovered impl file.
+  const surface = prSurfaceFixture();
+  surface.risks = { summary: "no risks", candidates: [] };
+  surface.scope.changed_files = [
+    ...surface.scope.changed_files,
+    { path: "src/widget.ts", status: "M", areas: ["HUMAN_REVIEW"], role: "implementation", added_lines: 8, deleted_lines: 1 }
+  ];
+  const diff = parseStructuredDiff([
+    "diff --git a/src/widget.ts b/src/widget.ts",
+    "--- a/src/widget.ts",
+    "+++ b/src/widget.ts",
+    "@@ -1,1 +1,2 @@",
+    " export function widget() {}",
+    "+export function widget2() { return 1; }",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, prSurface: surface, diff });
+  assert.ok(
+    !model.review_queue.some((item) => /Another finding was queued for this diff/.test(item.reason)),
+    "the baseline augmentation does not pile onto a fallback-only changed-file queue"
+  );
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 augmentation stays within headroom and never evicts the detector item", () => {
+  // With a small max_review_first, augmentation must not push the detector-backed item out of
+  // the queue — it only fills the remaining headroom under the cap.
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    diff: coldStartDiff(),
+    config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_review_first: 2 }
+  });
+  assert.ok(model.review_queue.length <= 2, "the queue respects max_review_first");
+  assert.ok(model.review_queue.some((item) => item.risk_ids.includes("RISK-001")), "the detector item survives augmentation under a small cap");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start augmentation does not duplicate a changed file a detector already covers", () => {
+  // A dependency/config detector covers a CHANGED file (here a risk anchored to package.json);
+  // the diff also changes package.json and an impl file. The impl file is augmented, but the
+  // covered package.json must NOT be re-listed as a Review-focus item (the express-send shape).
+  const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  packet.risks = {
+    summary: "dep risk",
+    items: [
+      {
+        id: "RISK-DEP",
+        category: "maintainability",
+        severity: "low",
+        summary: "Dependency bump in package.json.",
+        evidence: [fileEvidence("package.json", "Dependency bump.")],
+        suggested_checks: ["Review the dependency bump."],
+        manual_review: false
+      }
+    ],
+    test_evidence: [],
+    test_gaps: [],
+    review_focus: []
+  };
+  const diff = parseStructuredDiff([
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -1,1 +1,2 @@",
+    " {",
+    "+  \"dep\": \"^2.0.0\",",
+    "diff --git a/src/response.ts b/src/response.ts",
+    "--- a/src/response.ts",
+    "+++ b/src/response.ts",
+    "@@ -1,1 +1,3 @@",
+    " export function send() {}",
+    "+export function sendFile() { return 1; }",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet, diff });
+  const focus = model.review_queue.filter((item) => /^Review-focus:/.test(item.title)).map((item) => item.path);
+  assert.ok(focus.includes("src/response.ts"), "the uncovered impl source is surfaced, not hidden behind the dep finding");
+  assert.ok(!focus.includes("package.json"), "the file the dep detector already covers is not duplicated as review-focus");
 });
 
 test("review-surfaces.HUMAN_REVIEW.28 cold-start: a REAL external diff (sindresorhus/ky) yields a non-empty review-focus queue", () => {
