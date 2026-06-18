@@ -31,13 +31,11 @@ interface ChangedFileLike {
 // "updated package.json and the lockfile" would count as discussion and suppress the
 // very signal it should raise (Codex P2). Matched at a word boundary (prefix), so
 // "vulnerab" still catches "vulnerability" while "test" never matches "latest".
-// Suppressor keywords are REASONING words that prove the topic was reasoned about,
-// NOT the domain NOUNS that merely name the changed category — a domain noun both
-// FIRES the signal (via the path heuristic) and SUPPRESSES it (via discussion), so it
-// can never fire for its own category. Dropped: "permission"/"authoriz" (a changed
-// `permissions.ts` self-suppresses on "updated the permissions"), and "unit" (collides
-// with "unity"/"united"/"reunite" and is redundant with "test") (Codex P2, #109).
-const SECURITY_KEYWORDS = ["security", "secure", "threat", "vulnerab", "exploit", "attack", "sanitiz", "escape", "injection", "xss", "csrf", "encrypt", "harden", "validate input", "input validation"];
+// Suppressor keywords prove the topic was reasoned about. "authoriz"/"permission" are
+// KEPT (an explicit "reviewed the authorization/permission model" IS a security
+// discussion — Codex #110), but the colliding "unit" was dropped from TEST_KEYWORDS (it
+// matches inside "unity"/"united"/"reunite" and is redundant with "test") (#109).
+const SECURITY_KEYWORDS = ["security", "secure", "threat", "vulnerab", "exploit", "attack", "sanitiz", "escape", "injection", "xss", "csrf", "permission", "authoriz", "encrypt", "harden", "validate input", "input validation"];
 const TEST_KEYWORDS = ["test", "tested", "coverage", "assert", "pytest", "jest", "vitest", "mocha", "regression"];
 const COMPAT_KEYWORDS = ["backward", "compat", "breaking", "deprecat", "migration", "semver", "major version"];
 // Suppress deps_no_rationale only on EXPLANATORY language (a stated reason), never on
@@ -226,7 +224,10 @@ function discusses(haystack: string, keywords: string[]): boolean {
 // does not split the unit.
 function discussesNear(haystack: string, keywords: string[], exactTopics: string[], substringTopics: string[]): boolean {
   const topicMatchers = [
-    ...exactTopics.map((topic) => topic.trim().toLowerCase()).filter(Boolean).map((topic) => new RegExp(`\\b${escapeRegExp(topic)}\\b`)),
+    // Package-token boundaries (not `\b`, which fails on a leading `@` or trailing `/`):
+    // bounded by anything that is NOT part of a package identifier, so `@types/node` and
+    // `ms` both match without `ms` matching inside `items` (Codex #110).
+    ...exactTopics.map((topic) => topic.trim().toLowerCase()).filter(Boolean).map((topic) => new RegExp(`(?<![\\w@./-])${escapeRegExp(topic)}(?![\\w@./-])`)),
     ...substringTopics.map((topic) => topic.trim().toLowerCase()).filter((topic) => topic.length >= 3).map((topic) => new RegExp(escapeRegExp(topic)))
   ];
   if (topicMatchers.length === 0) {
@@ -332,6 +333,15 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
         typeof transcript.command === "string" &&
         commandLooksLikeBroadTestCommand(transcript.command)
     );
+  // Stems shared by more than one impl file (e.g. two `index.ts`) are AMBIGUOUS: a
+  // "tests for index" mention cannot be attributed to one of them, so a stem-correlated
+  // discussion only clears a file's gap when its stem is UNIQUE among the impl set
+  // (Codex #110). A real covering test file or a broad run still clears any of them.
+  const implStemCounts = new Map<string, number>();
+  for (const file of implFiles) {
+    const stem = fileStem(file.path);
+    implStemCounts.set(stem, (implStemCounts.get(stem) ?? 0) + 1);
+  }
   const uncoveredImpl = broadTestRun
     ? []
     : implFiles.filter((file) => {
@@ -339,10 +349,10 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
         if (coveringTestStems.has(stem)) {
           return false; // a colocated / added test by name stem covers it
         }
-        // A test DISCUSSION only clears THIS file's gap when it actually references the
-        // file (its name stem in the same sentence/turn as a test keyword) — a generic
+        // A test DISCUSSION only clears THIS file's gap when it references the file (its
+        // UNIQUE name stem in the same sentence/turn as a test keyword) — a generic
         // "added tests" mention must not clear every per-file gap at once (Codex P2, #109).
-        if (stem.length >= 3 && discussesNear(haystack, TEST_KEYWORDS, [stem], [])) {
+        if (stem.length >= 3 && implStemCounts.get(stem) === 1 && discussesNear(haystack, TEST_KEYWORDS, [stem], [])) {
           return false;
         }
         return true;
@@ -447,8 +457,10 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
   ];
   const depSubstringTopics = [
     ...uniqueDepConfigPaths.map(basename),
-    "dependenc", "lockfile", "package.json", "upgrade", "downgrade", "bump",
-    "workflow", "pipeline", "docker", "migration", "config", "environment"
+    // Dependency/config NOUNS only — NOT generic verbs like "upgrade"/"bump", which
+    // co-occur with rationale words by nature and would suppress unrelated changes
+    // (Codex #110).
+    "dependenc", "lockfile", "package.json", "workflow", "pipeline", "docker", "migration", "config", "environment"
   ];
   if (uniqueDepConfigPaths.length > 0 && !discussesNear(haystack, RATIONALE_KEYWORDS, depExactTopics, depSubstringTopics)) {
     // Any deterministic dependency OR config fact (not just security ones) is an

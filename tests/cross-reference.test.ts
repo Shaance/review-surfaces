@@ -245,14 +245,42 @@ test("review-surfaces.METHODOLOGY.8 impl_no_test: a GENERIC test mention does no
   assert.ok(signal(findings, "impl_no_test"), "a generic 'added tests' with no file reference must not clear the per-file gap");
 });
 
-test("review-surfaces.METHODOLOGY.8 risky_no_security STILL fires when only the domain noun 'permission' is named (#109)", () => {
-  // Naming "permissions" is not a security DISCUSSION; the dropped suppressor means it fires.
-  assert.ok(signal(computeCrossReferenceSignals(collection([file("src/auth/login.ts")]), talk("updated the permissions list")), "risky_no_security"));
+test("review-surfaces.METHODOLOGY.8 risky_no_security: 'authorization' wording IS a security discussion (Codex #110)", () => {
+  // An explicit "reviewed the authorization model" is genuine security reasoning, so it
+  // suppresses the signal (authoriz/permission kept as suppressor keywords).
+  const findings = computeCrossReferenceSignals(collection([file("src/auth/login.ts")]), talk("reviewed the authorization model carefully"));
+  assert.equal(signal(findings, "risky_no_security"), undefined, "authorization reasoning counts as a security discussion");
 });
 
 test("review-surfaces.METHODOLOGY.8 impl_no_test STILL fires when 'unit' appears only inside an unrelated word (#109)", () => {
   // "united" must not count as a test discussion now that the 'unit' suppressor was dropped.
   assert.ok(signal(computeCrossReferenceSignals(collection([file("src/payments.ts")]), talk("we united the billing modules")), "impl_no_test"));
+});
+
+test("review-surfaces.METHODOLOGY.8 deps_no_rationale: a SCOPED package name correlates (Codex #110)", () => {
+  const findings = computeCrossReferenceSignals(
+    collection([file("package.json")], { dependencyFacts: [{ kind: "added", package: "@types/node", detail: "x", source_path: "package.json" }] }),
+    talk("updated @types/node because the build needed the new typings")
+  );
+  assert.equal(signal(findings, "deps_no_rationale"), undefined, "a scoped @scope/name package is recognized as a topic");
+});
+
+test("review-surfaces.METHODOLOGY.8 deps_no_rationale: a generic 'upgrade' verb is NOT a dependency topic (Codex #110)", () => {
+  // The only rationale ("because") is about the docs; "upgraded" must not anchor it to the dep.
+  const findings = computeCrossReferenceSignals(
+    collection([file("package.json")], { dependencyFacts: [{ kind: "added", package: "left-pad", detail: "x", source_path: "package.json" }] }),
+    talk("Upgraded the docs site because the old theme was ugly")
+  );
+  assert.ok(signal(findings, "deps_no_rationale"), "a generic upgrade verb must not let an unrelated rationale suppress the gap");
+});
+
+test("review-surfaces.METHODOLOGY.8 impl_no_test: a shared stem is NOT cleared by an ambiguous test mention (Codex #110)", () => {
+  // Two index.ts files share the stem "index"; "tests for index" cannot be attributed
+  // to one, so neither gap is cleared by the discussion alone.
+  const findings = computeCrossReferenceSignals(collection([file("src/foo/index.ts"), file("src/bar/index.ts")]), talk("added tests for index"));
+  const sig = signal(findings, "impl_no_test");
+  assert.ok(sig, "an ambiguous shared-stem test mention does not clear the gap");
+  assert.match(sig.summary, /src\/(foo|bar)\/index\.ts/, "the uncovered index files still surface");
 });
 
 test("review-surfaces.METHODOLOGY.8 every cross-reference finding anchors to a changed file with a distinct id", () => {

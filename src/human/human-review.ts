@@ -3983,9 +3983,15 @@ function capQuestionsPreservingIntent(questions: ReviewerQuestion[], limit: numb
       continue;
     }
     const priorityRank = questionSeverityRank(priority.severity);
+    // Evict the last selected question of equal-or-lower severity that is either not
+    // preserved, or is a STRICTLY lower-severity preserved one — so a blocking
+    // corroborated question can take a scarce slot from a clarifying intent question,
+    // but two equal-severity preserved questions never thrash (Codex #110).
     const replacementIndex = findLastQuestionIndex(
       selected,
-      (question) => questionSeverityRank(question.severity) <= priorityRank && !preserved.includes(question)
+      (question) =>
+        questionSeverityRank(question.severity) <= priorityRank &&
+        (!preserved.includes(question) || questionSeverityRank(question.severity) < priorityRank)
     );
     if (replacementIndex < 0) {
       continue;
