@@ -76,9 +76,12 @@ On `release-prep-0.2.0` (this branch), against the freshly built `0.2.0` tarball
 | External TS repo (`sindresorhus/ky`, `HEAD~1..HEAD`: source fix + 33 test lines) | run **1.77 s**, artifacts **192 KB**, exit 0 |
 | External Go repo (`spf13/cobra`, `HEAD~3..HEAD`: source + 55 test lines + docs) | run **0.61 s**, artifacts **196 KB**, exit 0 |
 
-**Known limitation (tracked, next PR):** on both external (spec-less) repos the
-review queue was **empty (0 review-first items)** despite substantive diffs — the
-tool produced a verdict and asked for command evidence but did not rank
-files-worth-reading. This is the cold-start value floor; a deterministic baseline
-review-focus queue is the next planned change. It does NOT affect correctness of
-what the tool *does* emit, and `prepublishOnly` still gates every publish.
+**Cold-start value floor (resolved in #112, `HUMAN_REVIEW.28`):** the earlier
+pre-publish runs showed both external (spec-less) repos producing an **empty
+review queue (0 review-first items)** despite substantive diffs. That gap is now
+**fixed** — a deterministic baseline review-focus queue fires whenever no detector
+produced a ranked item, ranking the changed files by churn / exported surface /
+implementation-without-a-connected-test / sensitive (error·async·auth·network·
+persistence) paths, and **never fabricating a risk or blocker**. Re-verified after
+the fix: `sindresorhus/ky` now surfaces **2** and `spf13/cobra` **4** review-first
+items where both were previously empty. `prepublishOnly` still gates every publish.
