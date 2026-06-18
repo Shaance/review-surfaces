@@ -439,7 +439,7 @@ test("review-surfaces.SEMANTIC_DIFF.4 facts carry concrete language into the que
     api_changes: [
       { path: "src/api.ts", exports_added: [], exports_removed: ["legacyExport"], signatures_changed: [] }
     ],
-    test_weakening: []
+    test_weakening: [], swift_declaration_changes: []
   };
   const model = buildHumanReview({
     packet: packetFixture(),

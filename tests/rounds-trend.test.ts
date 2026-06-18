@@ -26,7 +26,7 @@ function model(rounds: RoundsLedgerEntry[] | undefined): HumanReviewModel {
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Rounds fixture.",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
-    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
+    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [], swift_declaration_changes: [] },
     review_queue: [],
     blockers: [],
     questions: [],

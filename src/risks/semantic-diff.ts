@@ -14,7 +14,9 @@
 
 import * as ts from "typescript";
 import { StructuredDiff, StructuredDiffFile } from "../pr/contract";
+import { isSwiftSourcePath, isSwiftTestPath } from "../collector/source-kind";
 import { isTestPath } from "../scope/pr-scope";
+import { diffSwiftDeclarations, SwiftDeclarationChange } from "./swift-semantic-diff";
 
 export interface SchemaContractChange {
   path: string;
@@ -51,6 +53,9 @@ export interface SemanticChangeFacts {
   schema_changes: SchemaContractChange[];
   api_changes: ApiSurfaceChange[];
   test_weakening: TestWeakeningSignal[];
+  // review-surfaces.SEMANTIC_DIFF.5: deterministic Swift declaration changes.
+  // Always present as [] so older consumers and artifacts stay compatible (D8).
+  swift_declaration_changes: SwiftDeclarationChange[];
 }
 
 export interface SemanticDiffSources {
@@ -62,7 +67,7 @@ export interface SemanticDiffSources {
 }
 
 export function emptySemanticChangeFacts(): SemanticChangeFacts {
-  return { schema_changes: [], api_changes: [], test_weakening: [] };
+  return { schema_changes: [], api_changes: [], test_weakening: [], swift_declaration_changes: [] };
 }
 
 // Shared, surface-agnostic renderings of the two compound schema-change fields,
@@ -81,6 +86,7 @@ export function formatEnumChanges(changes: SchemaContractChange["enum_changes"])
 export function computeSemanticChangeFacts(sources: SemanticDiffSources): SemanticChangeFacts {
   const schema_changes: SchemaContractChange[] = [];
   const api_changes: ApiSurfaceChange[] = [];
+  const swift_declaration_changes: SwiftDeclarationChange[] = [];
   for (const file of sources.diff.files) {
     if (isJsonSchemaPath(file.path)) {
       const change = diffSchemaFile(file, sources);
@@ -92,12 +98,18 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
       if (change) {
         api_changes.push(change);
       }
+    } else if (isSwiftSourcePath(file.path)) {
+      // review-surfaces.SEMANTIC_DIFF.5: Swift implementation files (not tests) get
+      // declaration-change facts. For a renamed module the base lives at old_path.
+      const changes = diffSwiftDeclarations(file.path, sources.readBase(baseReadPath(file)), sources.readHead(file.path));
+      swift_declaration_changes.push(...changes);
     }
   }
   return {
     schema_changes,
     api_changes,
-    test_weakening: detectTestWeakening(sources.diff)
+    test_weakening: detectTestWeakening(sources.diff),
+    swift_declaration_changes
   };
 }
 
@@ -249,6 +261,11 @@ function isEmptySchemaChange(change: SchemaContractChange): boolean {
 // skipped test) does not count as a real skip.
 const SKIP_PATTERN = /^\s*(?:(?:describe|it|test|context)\.skip|x(?:it|describe|test|context))\s*\(/;
 const ASSERTION_PATTERN = /\b(?:expect|assert)\s*\(|\bassert\.[a-zA-Z]|\.(?:toBe|toEqual|toMatch|toThrow|toContain|deepEqual|strictEqual|ok|equal)\s*\(/;
+// review-surfaces.SEMANTIC_DIFF.6: Swift test-weakening markers. Skips: XCTSkip
+// family and a Swift Testing `.disabled(...)` trait. Assertions/checks: XCTAssert
+// family, XCTFail, XCTUnwrap, and Swift Testing `#expect`/`#require`.
+const SWIFT_SKIP_PATTERN = /\bXCTSkip(?:If|Unless)?\b|\.disabled\s*\(/;
+const SWIFT_ASSERTION_PATTERN = /\bXCTAssert\w*\s*\(|\bXCTFail\s*\(|\bXCTUnwrap\s*\(|#(?:expect|require)\s*\(/;
 
 function detectTestWeakening(diff: StructuredDiff): TestWeakeningSignal[] {
   const signals: TestWeakeningSignal[] = [];
@@ -282,19 +299,26 @@ function detectTestWeakening(diff: StructuredDiff): TestWeakeningSignal[] {
     const added = file.hunks.flatMap((hunk) => hunk.lines.filter((line) => line.kind === "add").map((line) => line.text));
     const removed = file.hunks.flatMap((hunk) => hunk.lines.filter((line) => line.kind === "delete").map((line) => line.text));
 
+    // review-surfaces.SEMANTIC_DIFF.6: Swift tests use XCTest / Swift Testing
+    // vocabulary, not JS skip/assert markers — pick the patterns by file kind so a
+    // JS-only rule does not silently miss a weakened Swift test.
+    const swift = isSwiftTestPath(file.path);
+    const skipPattern = swift ? SWIFT_SKIP_PATTERN : SKIP_PATTERN;
+    const assertionPattern = swift ? SWIFT_ASSERTION_PATTERN : ASSERTION_PATTERN;
+
     // A newly-skipped test: a skip marker added that was not merely moved.
-    const addedSkips = added.filter((text) => SKIP_PATTERN.test(text)).length;
-    const removedSkips = removed.filter((text) => SKIP_PATTERN.test(text)).length;
+    const addedSkips = added.filter((text) => skipPattern.test(text)).length;
+    const removedSkips = removed.filter((text) => skipPattern.test(text)).length;
     if (addedSkips > removedSkips) {
-      signals.push({ kind: "skipped_test", path: file.path, detail: `${addedSkips - removedSkips} test(s) newly skipped; confirm the disabled coverage is intentional.` });
+      signals.push({ kind: "skipped_test", path: file.path, detail: `${addedSkips - removedSkips} test(s) newly skipped/disabled; confirm the disabled coverage is intentional.` });
     }
 
     // Removed assertions: more assertion lines deleted than added. A pure edit
     // (assertion modified, or unrelated change) nets to zero and does NOT fire.
-    const addedAsserts = added.filter((text) => ASSERTION_PATTERN.test(text)).length;
-    const removedAsserts = removed.filter((text) => ASSERTION_PATTERN.test(text)).length;
+    const addedAsserts = added.filter((text) => assertionPattern.test(text)).length;
+    const removedAsserts = removed.filter((text) => assertionPattern.test(text)).length;
     if (removedAsserts > addedAsserts) {
-      signals.push({ kind: "removed_assertion", path: file.path, detail: `${removedAsserts - addedAsserts} assertion(s) removed; confirm the checks were not weakened to pass.` });
+      signals.push({ kind: "removed_assertion", path: file.path, detail: `${removedAsserts - addedAsserts} assertion/check(s) removed; confirm the checks were not weakened to pass.` });
     }
   }
   return signals;

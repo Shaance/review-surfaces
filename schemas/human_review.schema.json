@@ -478,8 +478,25 @@
     "semanticChangeFacts": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["schema_changes", "api_changes", "test_weakening"],
+      "required": ["schema_changes", "api_changes", "test_weakening", "swift_declaration_changes"],
       "properties": {
+        "swift_declaration_changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["path", "name", "kind", "change", "visibility", "breaking", "detail"],
+            "properties": {
+              "path": { "type": "string" },
+              "name": { "type": "string" },
+              "kind": { "type": "string" },
+              "change": { "enum": ["added", "removed", "modified"] },
+              "visibility": { "type": "string" },
+              "breaking": { "type": "boolean" },
+              "detail": { "type": "string" }
+            }
+          }
+        },
         "schema_changes": {
           "type": "array",
           "items": {

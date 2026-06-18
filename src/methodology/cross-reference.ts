@@ -14,7 +14,7 @@ import { commandLooksLikeBroadTestCommand } from "../commands/classify";
 import { ConversationEvent } from "../conversation/events";
 import { EvidenceRef } from "../evidence/evidence";
 import { ConfigFact, ConfigFactKind } from "../risks/config-facts";
-import { SemanticChangeFacts } from "../risks/semantic-diff";
+import { emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { isTestPath } from "../scope/pr-scope";
 import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
 import { WorkflowFinding } from "./methodology";
@@ -275,7 +275,7 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
   }
   const haystack = conversationHaystack(events);
   const secretPaths = new Set((collection.privacy?.secret_findings ?? []).map((finding) => finding.path));
-  const facts: SemanticChangeFacts = collection.semanticChangeFacts ?? { schema_changes: [], api_changes: [], test_weakening: [] };
+  const facts: SemanticChangeFacts = collection.semanticChangeFacts ?? emptySemanticChangeFacts();
   const dependencyFacts = collection.dependencyFacts ?? [];
   const configFacts: ConfigFact[] = collection.configFacts ?? [];
   const securityConfig = configFacts.filter((fact) => SECURITY_CONFIG_KINDS.has(fact.kind));

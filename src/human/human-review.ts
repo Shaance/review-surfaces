@@ -7,6 +7,7 @@ import { stripUndefined, uniqueTruthy } from "../core/guards";
 import { formatHunkHeader, hunkOverlapsRange } from "../collector/diff-hunks";
 import { buildFallbackNarrative } from "./narrative";
 import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTypeChanges, SchemaContractChange, SemanticChangeFacts, TestWeakeningSignal } from "../risks/semantic-diff";
+import type { SwiftDeclarationChange } from "../risks/swift-semantic-diff";
 import { emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { buildReviewPlan } from "./budget";
 import { buildChangeGraphSections, ChangedFileFacts, ChangedImportEdge } from "./change-graph";
@@ -2513,7 +2514,28 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
       sortKey: `semantic-api:${change.path}`
     }));
   }
+  // review-surfaces.SEMANTIC_DIFF.5: Swift declaration changes — concrete
+  // language, public/package breaks outrank additive/internal changes.
+  for (const [index, change] of facts.swift_declaration_changes.entries()) {
+    drafts.push(semanticDraft(diffIndex, {
+      title: swiftDeclarationTitle(change),
+      path: change.path,
+      reason: change.detail,
+      reviewer_action:
+        change.change === "removed"
+          ? "Confirm callers/conformers of the removed Swift declaration are updated or it is intentionally dropped."
+          : "Confirm the Swift declaration change is intended and callers/conformers are updated.",
+      priority: change.breaking ? "high" : change.change === "added" ? "low" : "medium",
+      score: 150 - index + (change.breaking ? 20 : 0),
+      sortKey: `semantic-swift:${change.change}:${change.path}:${change.name}`
+    }));
+  }
   return drafts;
+}
+
+function swiftDeclarationTitle(change: SwiftDeclarationChange): string {
+  const verb = change.change === "added" ? "added" : change.change === "removed" ? "removed" : "changed";
+  return `Swift declaration ${verb}`;
 }
 
 function semanticDraft(
@@ -3157,6 +3179,12 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
   for (const change of semanticFacts.api_changes) {
     const breaking = change.exports_removed.length > 0 || change.signatures_changed.length > 0;
     addSignal("api_contract", breaking ? "high" : "medium", [fileEvidence(change.path, apiChangeReason(change))], [], [], [change.path]);
+  }
+  // review-surfaces.SEMANTIC_DIFF.5: Swift declaration changes feed the api_contract
+  // lens. A public/package break is high; an additive or internal change is
+  // advisory (medium) until Phase 3 supplies a deterministic used_by relationship.
+  for (const change of semanticFacts.swift_declaration_changes) {
+    addSignal("api_contract", change.breaking ? "high" : "medium", [fileEvidence(change.path, change.detail)], [], [], [change.path]);
   }
   // review-surfaces.DEP_FACTS.2: dependency facts feed the supply_chain lens.
   for (const fact of input.dependencyFacts ?? []) {

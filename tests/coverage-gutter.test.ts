@@ -32,7 +32,7 @@ function modelWithCoverage(): HumanReviewModel {
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Coverage gutter fixture.",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
-    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
+    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [], swift_declaration_changes: [] },
     review_queue: [
       {
         id: "Q-1",

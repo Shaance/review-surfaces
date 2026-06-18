@@ -57,7 +57,7 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Cockpit visuals fixture.",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
-    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
+    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [], swift_declaration_changes: [] },
     review_queue: [queueItem("Q-1", "src/core/a.ts", 1), queueItem("Q-2", "src/render/b.ts", 2)],
     blockers: [],
     questions: [],

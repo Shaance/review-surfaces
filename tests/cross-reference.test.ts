@@ -25,7 +25,7 @@ function collection(changed: ReturnType<typeof file>[], opts: CollOpts = {}): Co
     privacy: { secret_findings: (opts.secretPaths ?? []).map((path) => ({ path, kinds: ["aws_key"] })) },
     commandTranscripts: opts.transcripts ?? [],
     git: { repo: "fixture", base_ref: "HEAD", head_ref: "HEAD", head_sha: HEAD_SHA },
-    semanticChangeFacts: { schema_changes: [], api_changes: [], test_weakening: [], ...(opts.semanticFacts ?? {}) },
+    semanticChangeFacts: { schema_changes: [], api_changes: [], test_weakening: [], swift_declaration_changes: [], ...(opts.semanticFacts ?? {}) },
     dependencyFacts: opts.dependencyFacts ?? [],
     configFacts: opts.configFacts ?? []
   } as unknown as CollectionResult;

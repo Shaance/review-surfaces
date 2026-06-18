@@ -19,7 +19,7 @@ function model(over: Partial<HumanReviewModel> = {}): HumanReviewModel {
         { id: "C2", text: "Improves performance.", trust: "claimed", anchors: [], invalid_anchors: ["bogus"] }
       ]
     },
-    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
+    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [], swift_declaration_changes: [] },
     change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
     reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
