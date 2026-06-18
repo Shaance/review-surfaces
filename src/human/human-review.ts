@@ -3966,19 +3966,26 @@ function capQuestionsPreservingIntent(questions: ReviewerQuestion[], limit: numb
   }
 
   const selected = questions.slice(0, limit);
-  // Some questions carry intent the head-cap must not silently drop just because they
-  // were appended late: an intent-mismatch question, and a corroborated (blocking) D6
-  // workflow question. For each that the head-cap excluded, swap it in over the LAST
-  // selected question of equal-or-lower severity that is not itself preserved, so a
-  // deterministic-backed signal still reaches the reviewer (Codex P2, #109).
-  for (const priority of questions.filter(isPriorityPreservedQuestion)) {
+  // Questions the head-cap must not silently drop just because they were appended late:
+  // the FIRST intent-mismatch question (matching the prior single-preserve behavior),
+  // plus EVERY corroborated (blocking) D6 workflow question. Process them HIGHEST
+  // severity first so a blocking corroborated question wins a scarce slot over a
+  // lower-severity intent question; swap each in over the LAST selected question of
+  // equal-or-lower severity that is not itself preserved (Codex P2, #109).
+  const firstIntent = questions.find(isIntentMismatchQuestion);
+  const preserved = questions.filter((question) => question.reason === CORROBORATED_WORKFLOW_QUESTION_REASON);
+  if (firstIntent) {
+    preserved.push(firstIntent);
+  }
+  preserved.sort((a, b) => questionSeverityRank(b.severity) - questionSeverityRank(a.severity));
+  for (const priority of preserved) {
     if (selected.includes(priority)) {
       continue;
     }
     const priorityRank = questionSeverityRank(priority.severity);
     const replacementIndex = findLastQuestionIndex(
       selected,
-      (question) => questionSeverityRank(question.severity) <= priorityRank && !isPriorityPreservedQuestion(question)
+      (question) => questionSeverityRank(question.severity) <= priorityRank && !preserved.includes(question)
     );
     if (replacementIndex < 0) {
       continue;
@@ -3986,12 +3993,6 @@ function capQuestionsPreservingIntent(questions: ReviewerQuestion[], limit: numb
     selected[replacementIndex] = priority;
   }
   return renumberQuestions(dedupeQuestions(selected).slice(0, limit));
-}
-
-// Questions whose intent must survive the global question cap even when appended after
-// the blocker/risk/gap questions.
-function isPriorityPreservedQuestion(question: ReviewerQuestion): boolean {
-  return isIntentMismatchQuestion(question) || question.reason === CORROBORATED_WORKFLOW_QUESTION_REASON;
 }
 
 function isIntentMismatchQuestion(question: ReviewerQuestion): boolean {

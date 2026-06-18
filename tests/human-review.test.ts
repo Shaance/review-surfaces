@@ -4438,13 +4438,19 @@ test("review-surfaces.METHODOLOGY.8 a corroborated workflow question survives th
   assert.ok(uncapped.questions.length >= 3, "precondition: there are questions before the workflow one");
   assert.ok(uncapped.questions.some((q) => /needs tests/.test(q.reason)), "precondition: a non-preserved filler question exists");
 
-  // Cap below the question count: the late-appended corroborated question must survive
-  // by evicting the NON-preserved filler (not the preserved intent-mismatch one).
-  const model = buildHumanReview({ packet, config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_questions: 2 } });
-  assert.equal(model.questions.length, 2, "the cap is honored");
+  // Cap=2: the late-appended corroborated question survives by evicting the NON-preserved
+  // filler (not the preserved intent-mismatch one).
+  const capped2 = buildHumanReview({ packet, config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_questions: 2 } });
+  assert.equal(capped2.questions.length, 2, "the cap is honored");
   assert.ok(
-    model.questions.some((q) => /globally-capped corroborated change/.test(q.question) && q.severity === "blocking"),
+    capped2.questions.some((q) => /globally-capped corroborated change/.test(q.question) && q.severity === "blocking"),
     "the corroborated D6 question is preserved through the global cap"
   );
-  assert.ok(!model.questions.some((q) => /needs tests/.test(q.reason)), "the non-preserved filler was evicted, not the corroborated D6 question");
+  assert.ok(!capped2.questions.some((q) => /needs tests/.test(q.reason)), "the non-preserved filler was evicted, not the corroborated D6 question");
+
+  // Cap=1: when only one preserved question fits, the BLOCKING corroborated workflow
+  // question wins the slot over the lower-severity intent-mismatch question (Codex #110).
+  const capped1 = buildHumanReview({ packet, config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_questions: 1 } });
+  assert.equal(capped1.questions.length, 1);
+  assert.match(capped1.questions[0].question, /globally-capped corroborated change/, "the blocking corroborated question is prioritized over the intent question");
 });

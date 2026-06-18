@@ -215,44 +215,27 @@ function discusses(haystack: string, keywords: string[]): boolean {
   return keywords.some((keyword) => new RegExp(`\\b${escapeRegExp(keyword)}`).test(haystack));
 }
 
-// True when a REASONING keyword appears within `window` chars of a TOPIC token — i.e.
-// the rationale / test discussion is ABOUT the changed dependency or file, not
-// unrelated reasoning elsewhere in the conversation. The haystack is already
-// lowercased; topics shorter than 3 chars are ignored to avoid spurious anchors
-// (Codex P2, #109).
-function discussesNear(haystack: string, keywords: string[], topics: string[], window = 160): boolean {
-  const topicSpans: Array<[number, number]> = [];
-  for (const topic of topics) {
-    const needle = topic.toLowerCase();
-    if (needle.length < 3) {
-      continue;
-    }
-    const topicRegExp = new RegExp(escapeRegExp(needle), "g");
-    let match: RegExpExecArray | null;
-    while ((match = topicRegExp.exec(haystack)) !== null) {
-      topicSpans.push([match.index, match.index + match[0].length]);
-      if (match.index === topicRegExp.lastIndex) {
-        topicRegExp.lastIndex += 1;
-      }
-    }
-  }
-  if (topicSpans.length === 0) {
+// True when a REASONING keyword co-occurs with a TOPIC in the SAME discussion unit (a
+// conversation turn or sentence) — so the rationale / test discussion is ABOUT the
+// changed dependency or file, not unrelated reasoning elsewhere in the conversation
+// (Codex P2, #109). The haystack is already lowercased. `exactTopics` (package names)
+// match at WORD boundaries so a short package (`ms`/`qs`) is recognized without
+// matching inside `milliseconds`; `substringTopics` (filenames, dependency/config
+// nouns) match as substrings but must be >= 3 chars to avoid spurious anchors. Sentence
+// boundaries require whitespace after the punctuation so a `package.json`/`v2.0` dot
+// does not split the unit.
+function discussesNear(haystack: string, keywords: string[], exactTopics: string[], substringTopics: string[]): boolean {
+  const topicMatchers = [
+    ...exactTopics.map((topic) => topic.trim().toLowerCase()).filter(Boolean).map((topic) => new RegExp(`\\b${escapeRegExp(topic)}\\b`)),
+    ...substringTopics.map((topic) => topic.trim().toLowerCase()).filter((topic) => topic.length >= 3).map((topic) => new RegExp(escapeRegExp(topic)))
+  ];
+  if (topicMatchers.length === 0) {
     return false;
   }
-  for (const keyword of keywords) {
-    const keywordRegExp = new RegExp(`\\b${escapeRegExp(keyword)}`, "g");
-    let match: RegExpExecArray | null;
-    while ((match = keywordRegExp.exec(haystack)) !== null) {
-      const position = match.index;
-      if (topicSpans.some(([start, end]) => position >= start - window && position <= end + window)) {
-        return true;
-      }
-      if (match.index === keywordRegExp.lastIndex) {
-        keywordRegExp.lastIndex += 1;
-      }
-    }
-  }
-  return false;
+  const keywordMatchers = keywords.map((keyword) => new RegExp(`\\b${escapeRegExp(keyword)}`));
+  return haystack
+    .split(/\n+|[.!?;]+\s+/)
+    .some((segment) => topicMatchers.some((re) => re.test(segment)) && keywordMatchers.some((re) => re.test(segment)));
 }
 
 function fileList(paths: string[]): string {
@@ -357,9 +340,9 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
           return false; // a colocated / added test by name stem covers it
         }
         // A test DISCUSSION only clears THIS file's gap when it actually references the
-        // file (its name stem near a test keyword) — a generic "added tests" mention
-        // must not clear every per-file gap at once (Codex P2, #109).
-        if (stem.length >= 3 && discussesNear(haystack, TEST_KEYWORDS, [stem])) {
+        // file (its name stem in the same sentence/turn as a test keyword) — a generic
+        // "added tests" mention must not clear every per-file gap at once (Codex P2, #109).
+        if (stem.length >= 3 && discussesNear(haystack, TEST_KEYWORDS, [stem], [])) {
           return false;
         }
         return true;
@@ -452,15 +435,22 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
     ...changed.filter((file) => isDepOrConfigFile(file.path)).map((file) => file.path)
   ];
   const uniqueDepConfigPaths = [...new Set(depConfigPaths)];
-  // Scope the rationale to the dependency/config TOPIC — a package name, a changed
-  // dep/config filename, or a dependency noun — so a rationale stated about something
-  // ELSE in the conversation does not suppress THIS gap (Codex P2, #109).
-  const depTopics = [
+  // Scope the rationale to the dependency/config TOPIC so a rationale stated about
+  // something ELSE in the conversation does not suppress THIS gap (Codex P2, #109).
+  // Exact (word-boundary) topics: package names and the short `ci` token. Substring
+  // topics: changed dep/config filenames plus dependency AND config nouns (a CI/Docker/
+  // config-only change is often described as "the workflow"/"the pipeline", not by its
+  // filename).
+  const depExactTopics = [
     ...dependencyFacts.map((fact) => fact.package).filter((pkg): pkg is string => typeof pkg === "string"),
-    ...uniqueDepConfigPaths.map(basename),
-    "dependenc", "lockfile", "package.json", "upgrade", "downgrade"
+    "ci"
   ];
-  if (uniqueDepConfigPaths.length > 0 && !discussesNear(haystack, RATIONALE_KEYWORDS, depTopics)) {
+  const depSubstringTopics = [
+    ...uniqueDepConfigPaths.map(basename),
+    "dependenc", "lockfile", "package.json", "upgrade", "downgrade", "bump",
+    "workflow", "pipeline", "docker", "migration", "config", "environment"
+  ];
+  if (uniqueDepConfigPaths.length > 0 && !discussesNear(haystack, RATIONALE_KEYWORDS, depExactTopics, depSubstringTopics)) {
     // Any deterministic dependency OR config fact (not just security ones) is an
     // independent check that moves the signal off advisory — a CI/Docker/env/SQL
     // fact is as concrete as a dependency change (Codex P2, METHODOLOGY.8).

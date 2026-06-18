@@ -205,6 +205,33 @@ test("review-surfaces.METHODOLOGY.8 deps_no_rationale does NOT fire when the rat
   assert.equal(signal(findings, "deps_no_rationale"), undefined, "a rationale next to the package name suppresses the gap");
 });
 
+test("review-surfaces.METHODOLOGY.8 deps_no_rationale: proximity is bounded to the SAME sentence (Codex #110)", () => {
+  // The package and the rationale word are close in characters but in DIFFERENT
+  // sentences about different things — that must not count as a rationale for the bump.
+  const findings = computeCrossReferenceSignals(
+    collection([file("package.json")], { dependencyFacts: [{ kind: "added", package: "left-pad", detail: "x", source_path: "package.json" }] }),
+    talk("Bumped left-pad. The auth refactor was needed because the old code was confusing.")
+  );
+  assert.ok(signal(findings, "deps_no_rationale"), "a rationale in a separate sentence must not suppress the dependency gap");
+});
+
+test("review-surfaces.METHODOLOGY.8 deps_no_rationale: a config-noun rationale suppresses a CI/config change (Codex #110)", () => {
+  // A workflow-only change is described by a config NOUN ("pipeline"), not its filename.
+  const findings = computeCrossReferenceSignals(
+    collection([file(".github/workflows/ci.yml")]),
+    talk("reworked the pipeline because the deploy step was flaky")
+  );
+  assert.equal(signal(findings, "deps_no_rationale"), undefined, "rationale near a config noun suppresses the config gap");
+});
+
+test("review-surfaces.METHODOLOGY.8 deps_no_rationale: a short package name still correlates (Codex #110)", () => {
+  const findings = computeCrossReferenceSignals(
+    collection([file("package.json")], { dependencyFacts: [{ kind: "added", package: "ms", detail: "x", source_path: "package.json" }] }),
+    talk("bumped ms because of a CVE")
+  );
+  assert.equal(signal(findings, "deps_no_rationale"), undefined, "a 2-char package name is recognized at a word boundary");
+});
+
 test("review-surfaces.METHODOLOGY.8 impl_no_test: a file-correlated test mention clears only THAT file's gap (#109)", () => {
   const findings = computeCrossReferenceSignals(collection([file("src/alpha.ts"), file("src/beta.ts")]), talk("I added tests for alpha"));
   const sig = signal(findings, "impl_no_test");
