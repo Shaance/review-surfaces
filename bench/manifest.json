@@ -1,5 +1,5 @@
 {
-  "description": "Pinned real PR-shaped diffs across languages for the review-surfaces effectiveness benchmark (BENCH.1). Each case pins a public repo + base/head commit SHAs; `node bench/run.mjs` clones the two commits on demand and runs the full `all` pipeline (mock provider). `expected_focus` is OPTIONAL (adds the top-5 recall metric); the other metrics need no annotation. Add cases freely — the harness aggregates whatever is listed. Target set: 20-30 across TS/Py/Go/Rust/JVM.",
+  "description": "Pinned real PR-shaped diffs across languages for the review-surfaces effectiveness benchmark (BENCH.1). Each case pins a public repo + base/head commit SHAs; `node bench/run.mjs` clones the two commits on demand and runs the full `all` pipeline (mock provider, hermetic). `expected_focus` is OPTIONAL (adds the top-5 recall metric); the other metrics need no annotation. The seed leans on EXCLUSION-STRESS cases — source mixed with docs / lockfiles (go.sum, Cargo.lock, uv.lock) / CI workflows / config — so the floor's exclusion is exercised on real diffs. Add cases freely; target 20-30.",
   "cases": [
     {
       "id": "ky-network-error",
@@ -7,10 +7,39 @@
       "repo": "https://github.com/sindresorhus/ky.git",
       "base": "e0fcf780de2bd69af2528e4b7b87ccae6bb727b1",
       "head": "61d6d66d27911001b9b4d57ab93139f9ad61384b",
-      "substantive": true,
       "expect_no_blockers": true,
       "expected_focus": ["source/utils/is-network-error.ts"],
       "note": "network-error handling source fix + new retry tests (the original empty-queue repro)"
+    },
+    {
+      "id": "ky-core",
+      "lang": "ts",
+      "repo": "https://github.com/sindresorhus/ky.git",
+      "base": "346f8986f98b3b6769034e28d5095922670a7ed6",
+      "head": "8f28eac337e1e9a02187ef57b3b918dfe50bd2cf",
+      "expect_no_blockers": true,
+      "expected_focus": ["source/core/Ky.ts"],
+      "note": "core + types change with readme.md (doc must not rank above Ky.ts)"
+    },
+    {
+      "id": "express-response",
+      "lang": "js",
+      "repo": "https://github.com/expressjs/express.git",
+      "base": "59e205a57a04fced6bb7b8ec0b5dec29461a9996",
+      "head": "18e5985b8a9d5e8423db0a9121f22bdaecd5b120",
+      "expect_no_blockers": true,
+      "expected_focus": ["lib/response.js"],
+      "note": "response source change + History.md doc + test"
+    },
+    {
+      "id": "express-send",
+      "lang": "js",
+      "repo": "https://github.com/expressjs/express.git",
+      "base": "b3004cb8c825321279efa48d6ad115d91a6c1b83",
+      "head": "59e205a57a04fced6bb7b8ec0b5dec29461a9996",
+      "expect_no_blockers": true,
+      "expected_focus": ["lib/response.js"],
+      "note": "response change + package.json (config) + History.md + tests"
     },
     {
       "id": "cobra-args",
@@ -18,10 +47,39 @@
       "repo": "https://github.com/spf13/cobra.git",
       "base": "746ef07158728502482cea9f880a6f4b21ef29a9",
       "head": "ad460ea8f249db69c943a365fb84f3a59042d54e",
-      "substantive": true,
       "expect_no_blockers": true,
       "expected_focus": ["args.go"],
-      "note": "args validation logic + test + user-guide doc (doc must not rank above args.go)"
+      "note": "args validation logic + test + user-guide doc"
+    },
+    {
+      "id": "cobra-yaml-docs",
+      "lang": "go",
+      "repo": "https://github.com/spf13/cobra.git",
+      "base": "346d408fe7d4be00ff9481ea4d43c4abb5e5f77d",
+      "head": "88b30ab89da2d0d0abb153818746c5a2d30eccec",
+      "expect_no_blockers": true,
+      "expected_focus": ["doc/yaml_docs.go"],
+      "note": "doc-generator source + go.mod + go.sum (go.sum lock must be excluded)"
+    },
+    {
+      "id": "gin-version",
+      "lang": "go",
+      "repo": "https://github.com/gin-gonic/gin.git",
+      "base": "ae3f524974fc4f55d18c9e7fae4614503c015226",
+      "head": "e292e5caa777bce70b66fe08c94cbe9cef3e2ec9",
+      "expect_no_blockers": true,
+      "expected_focus": ["version.go"],
+      "note": "version source change + CHANGELOG.md + README.md (docs excluded)"
+    },
+    {
+      "id": "gin-debug",
+      "lang": "go",
+      "repo": "https://github.com/gin-gonic/gin.git",
+      "base": "38534e2bf98a06e1f62d6b24384e90b5f78699bf",
+      "head": "ae3f524974fc4f55d18c9e7fae4614503c015226",
+      "expect_no_blockers": true,
+      "expected_focus": ["debug.go"],
+      "note": "debug source + test + .github/workflows/gin.yml (CI) + README.md"
     },
     {
       "id": "flask-cli",
@@ -29,10 +87,19 @@
       "repo": "https://github.com/pallets/flask.git",
       "base": "9fcd34c9f3065640bd1cd86234216ca068633fb9",
       "head": "954f5684e4841aad84a8eec7ace7b81a0d3f6831",
-      "substantive": true,
       "expect_no_blockers": true,
       "expected_focus": ["src/flask/cli.py"],
-      "note": "CLI source change + pre-commit config + uv.lock (lock must be excluded, cli.py is the focus)"
+      "note": "CLI source change + pre-commit config + uv.lock (lock must be excluded)"
+    },
+    {
+      "id": "flask-app",
+      "lang": "py",
+      "repo": "https://github.com/pallets/flask.git",
+      "base": "06ea505ce2b2042af26e96d35ebf159af7c0869d",
+      "head": "9368fb3f3c52d74534d14c1bef03c79c103356cd",
+      "expect_no_blockers": true,
+      "expected_focus": ["src/flask/sansio/app.py"],
+      "note": "app source change + CHANGES.rst (rst doc excluded)"
     },
     {
       "id": "requests-models",
@@ -40,10 +107,28 @@
       "repo": "https://github.com/psf/requests.git",
       "base": "6f205ff422bccd5e4c4fc0b64c5f3e7df5181db6",
       "head": "6f66281a1d6326b1b9c4ac09ca30de0fc4e6ef43",
-      "substantive": true,
       "expect_no_blockers": true,
       "expected_focus": ["src/requests/models.py"],
       "note": "models + _types source change with tests"
+    },
+    {
+      "id": "requests-broad",
+      "lang": "py",
+      "repo": "https://github.com/psf/requests.git",
+      "base": "fbd0eb37320376740a1010f52f2b9870e8210d88",
+      "head": "661970d171d9c3e12e4c789c4768db647d8c4da0",
+      "expect_no_blockers": true,
+      "note": "broad multi-file change (9 source files) + pyproject.toml (config) — queue-cap / multi-file case, unannotated"
+    },
+    {
+      "id": "click-termui",
+      "lang": "py",
+      "repo": "https://github.com/pallets/click.git",
+      "base": "cd9bdd96a9dcc8e4ecabd45b5c244dbc70034484",
+      "head": "051bb0f30b545cf7426deef819811815297c2798",
+      "expect_no_blockers": true,
+      "expected_focus": ["src/click/_termui_impl.py"],
+      "note": "termui source + utils + test + CHANGES.rst (doc excluded)"
     },
     {
       "id": "ripgrep-flags",
@@ -51,10 +136,39 @@
       "repo": "https://github.com/BurntSushi/ripgrep.git",
       "base": "cb66736f146f093497f4dc537b33d0826f9af33c",
       "head": "4519153e5e461527f4bca45b042fff45c4ec6fb9",
-      "substantive": true,
       "expect_no_blockers": true,
       "expected_focus": ["crates/core/flags/defs.rs"],
-      "note": "flag definitions source change + GUIDE.md (doc must not rank above defs.rs)"
+      "note": "flag definitions source change + GUIDE.md (doc excluded)"
+    },
+    {
+      "id": "ripgrep-ignore",
+      "lang": "rust",
+      "repo": "https://github.com/BurntSushi/ripgrep.git",
+      "base": "36b7597693c994ffaf023b95d2e18aeeda7d9286",
+      "head": "85edf4c79671b00002123a2a43ff5238b6a27891",
+      "expect_no_blockers": true,
+      "expected_focus": ["crates/ignore/src/dir.rs"],
+      "note": "ignore-dir source change + CHANGELOG.md (doc excluded)"
+    },
+    {
+      "id": "clap-lib",
+      "lang": "rust",
+      "repo": "https://github.com/clap-rs/clap.git",
+      "base": "b73c627638fb8d03497079408f5d684f281d132d",
+      "head": "ac5fda6a799e4c640d671edd1111d4a5e723dc1a",
+      "expect_no_blockers": true,
+      "expected_focus": ["src/lib.rs"],
+      "note": "lib source + Cargo.lock + Cargo.toml + CITATION.cff + CHANGELOG.md (Cargo.lock lock must be excluded)"
+    },
+    {
+      "id": "clap-mangen",
+      "lang": "rust",
+      "repo": "https://github.com/clap-rs/clap.git",
+      "base": "87f57fa1db720b1f5e6b76cd5aa56c7107a3f946",
+      "head": "dd1fcd3d4be0fcc2d3eede07df4d9ec25663241c",
+      "expect_no_blockers": true,
+      "expected_focus": ["clap_mangen/src/render.rs"],
+      "note": "mangen render source + tests + Cargo.toml (config)"
     },
     {
       "id": "gson-jsonreader",
@@ -62,10 +176,49 @@
       "repo": "https://github.com/google/gson.git",
       "base": "ed2397502708ebaba53643e5c3d60e0974d7045f",
       "head": "004e7a4949e08b430e3c8996998ee5a17ff9423a",
-      "substantive": true,
       "expect_no_blockers": true,
       "expected_focus": ["gson/src/main/java/com/google/gson/stream/JsonReader.java"],
       "note": "JsonReader source change + JsonReaderTest"
+    },
+    {
+      "id": "gson-proto",
+      "lang": "java",
+      "repo": "https://github.com/google/gson.git",
+      "base": "53d703ee76ca3e951fa4a727307c1f28dbcaf3aa",
+      "head": "48db33cbf93af6b2f5b117dfdfd826de47f7229c",
+      "expect_no_blockers": true,
+      "expected_focus": ["proto/src/main/java/com/google/gson/protobuf/LegacyProtoTypeAdapterFactory.java"],
+      "note": "proto adapter source + tests + pom.xml (config) + .github workflow (CI) + .proto"
+    },
+    {
+      "id": "gson-graph",
+      "lang": "java",
+      "repo": "https://github.com/google/gson.git",
+      "base": "552b4135c87f8d52bfd9ffcee6e7098e37f7a217",
+      "head": "dbf0f0416596add88c9d38b3e80b4e44059863ca",
+      "expect_no_blockers": true,
+      "expected_focus": ["extras/src/main/java/com/google/gson/graph/GraphAdapterBuilder.java"],
+      "note": "graph adapter source + test + .github/workflows (CI excluded)"
+    },
+    {
+      "id": "okhttp-interceptor",
+      "lang": "kotlin",
+      "repo": "https://github.com/square/okhttp.git",
+      "base": "c85c685570d7a485721c0014bda3b3e52833b851",
+      "head": "385e70f1259d0970b9c657993687a9973aef0fd8",
+      "expect_no_blockers": true,
+      "expected_focus": ["okhttp/src/commonJvmAndroid/kotlin/okhttp3/Interceptor.kt"],
+      "note": "Interceptor source + chain + tests + build.gradle.kts + .api signature dumps"
+    },
+    {
+      "id": "sinatra-version",
+      "lang": "ruby",
+      "repo": "https://github.com/sinatra/sinatra.git",
+      "base": "2c7f8db854a5b75fe08102983788548f8eb806b0",
+      "head": "599a007a779dc9940e49f34e9077220f4c209f4b",
+      "expect_no_blockers": true,
+      "expected_focus": ["lib/sinatra/version.rb"],
+      "note": "version source + CHANGELOG.md + VERSION file (both excluded)"
     }
   ]
 }

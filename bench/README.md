@@ -41,16 +41,29 @@ Append to `manifest.json` — `id`, `lang`, `repo` (git URL), `base`/`head` SHAs
 `expected_focus` (source paths a reviewer should land on), `expect_no_blockers` (default
 true), `substantive` (default true). Pick commits that change real source alongside tests
 / docs / lockfiles so the floor's exclusion and ranking are exercised. The seed set is 6
-cases (one per TS / Go / Python ×2 / Rust / Java); the intended target is **20–30**.
+cases (across TS / JS / Go / Python / Rust / Java / Kotlin / Ruby, leaning on
+exclusion-stress diffs); the intended target is **20–30**.
 
-## Current findings (seed run)
+## Current findings (22-case run)
 
-The cold-start floor holds on every seeded language: **0% empty-queue, 0% false-blocker,
-0% irrelevant-in-top-5, 100% focus recall@5**, top-is-code on 5/6.
+The exclusion side is clean and the floor holds on every language: **0% empty-queue,
+0% false-blocker, 0% irrelevant-in-top-5** (docs, `go.sum`/`Cargo.lock`/`uv.lock`,
+CI workflows, `package.json`/`pom.xml`/`Cargo.toml` config all correctly kept out of the
+top 5), **95% focus recall@5**, **top-is-code on 20/22**. The two misses are both real,
+useful signals — kept in the set rather than tuned away:
 
-- **`gson-jsonreader` ranks the test above the source.** `JsonReaderTest.java` (+14 lines)
+- **`express-send`: a dependency change SUPPRESSES the floor, hiding the source change**
+  (recall 0%, the only empty `expected_focus`). The diff bumps `content-disposition` in
+  `package.json` *and* edits `lib/response.js`. The dependency detector queues the
+  `package.json` bump, so the queue is non-empty — and the cold-start floor only fires when
+  the queue is **empty**, so `lib/response.js` is never ranked at all. The queue isn't
+  empty, but the substantive source is hidden. This is the most actionable finding: a
+  candidate to have the floor **augment** a thin detector-only queue with review-focus
+  items for unranked substantive source, rather than firing only on a fully empty queue.
+- **`gson-jsonreader`: the test outranks its source.** `JsonReaderTest.java` (+14 lines)
   outranks `JsonReader.java` (a 2-line change) on churn. The source is still in the top 5
   (recall 100%), and a large new test block is legitimately worth reading, so this is a
-  noted **ranking observation**, not a regression — a candidate for a future "prefer the
-  implementation over its own test at comparable evidence" tie-break, tracked rather than
-  chased here.
+  ranking **observation**, not a regression — a candidate for a future "prefer the
+  implementation over its own test at comparable evidence" tie-break.
+
+Both are tracked here rather than chased; the benchmark surfaces them on real diffs.
