@@ -8,7 +8,7 @@ full working contracts live in
 (an absolute link because this changelog ships in the npm tarball, which does
 not carry that directory).
 
-## 0.2.0 — unreleased (intended first npm publish)
+## 0.2.0 — 2026-06-18 (first npm publish)
 
 The package manifest already carries `0.2.0`, so the owner's single manual
 step (`npm publish`) ships exactly this version — and `prepublishOnly` runs
