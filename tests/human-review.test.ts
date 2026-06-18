@@ -4454,3 +4454,78 @@ test("review-surfaces.METHODOLOGY.8 a corroborated workflow question survives th
   assert.equal(capped1.questions.length, 1);
   assert.match(capped1.questions[0].question, /globally-capped corroborated change/, "the blocking corroborated question is prioritized over the intent question");
 });
+
+function coldStartDiff() {
+  return parseStructuredDiff([
+    "diff --git a/src/payment-processor.ts b/src/payment-processor.ts",
+    "--- a/src/payment-processor.ts",
+    "+++ b/src/payment-processor.ts",
+    "@@ -10,2 +10,8 @@",
+    " export class PaymentProcessor {",
+    "+  async charge(req: Request) {",
+    "+    try { await fetch(this.url, { signal: req.signal }); }",
+    "+    catch (error) { this.retry(error); }",
+    "+  }",
+    "+  private retry(e: unknown) { /* ... */ }",
+    "   stop() {}",
+    "diff --git a/src/format.ts b/src/format.ts",
+    "--- a/src/format.ts",
+    "+++ b/src/format.ts",
+    "@@ -3,1 +3,2 @@",
+    " export function format(x: string) {",
+    "+  return x.trim();",
+    "diff --git a/test/format.test.ts b/test/format.test.ts",
+    "--- a/test/format.test.ts",
+    "+++ b/test/format.test.ts",
+    "@@ -1,1 +1,2 @@",
+    " describe('format', () => {",
+    "+  it('trims', () => {});",
+    "diff --git a/docs/guide.md b/docs/guide.md",
+    "--- a/docs/guide.md",
+    "+++ b/docs/guide.md",
+    "@@ -1,1 +1,2 @@",
+    " # Guide",
+    "+More words.",
+    ""
+  ].join("\n"));
+}
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a substantive diff yields a deterministic review-focus queue when no detector fires", () => {
+  // minimalReviewPacket has no risks and there is no prSurface / semantic facts, so no
+  // detector produces a queue item — the baseline floor must still surface files.
+  const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  const model = buildHumanReview({ packet, diff: coldStartDiff() });
+
+  assert.ok(model.review_queue.length >= 2, "a substantive impl diff does not produce an empty queue");
+  // The async/error/network impl file with no connected test ranks first.
+  assert.equal(model.review_queue[0].path, "src/payment-processor.ts");
+  assert.match(model.review_queue[0].reason, /No risk rule fired/);
+  assert.match(model.review_queue[0].reason, /no connected test change|error\/async/);
+  // Docs are not a "read this first" candidate.
+  assert.ok(!model.review_queue.some((item) => item.path === "docs/guide.md"), "docs are excluded from the review-focus floor");
+  // The floor fabricates no risk or blocker.
+  assert.ok(model.review_queue.every((item) => item.risk_ids.length === 0), "the cold-start floor cites no risk ids");
+  assert.equal(model.blockers.length, 0, "the cold-start floor adds no blockers");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start floor is additive-only: it does NOT fire when a detector already queued an item", () => {
+  // packetFixture carries RISK-001, which produces a real queue draft — so the baseline
+  // floor must stay silent (no `Review-focus:` items).
+  const model = buildHumanReview({ packet: packetFixture(), diff: coldStartDiff() });
+  assert.ok(model.review_queue.length > 0);
+  assert.ok(!model.review_queue.some((item) => /^Review-focus:/.test(item.title)), "the baseline floor does not fire when a detector produced a queue item");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a REAL external diff (sindresorhus/ky) yields a non-empty review-focus queue", () => {
+  // Pinned real diff: an error-handling source fix + new tests — exactly the spec-less
+  // case that produced an empty queue before this change.
+  const rawDiff = fs.readFileSync(path.join(__dirname, "fixtures", "cold-start", "ky-network-error.diff"), "utf8");
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff: parseStructuredDiff(rawDiff) });
+
+  assert.ok(model.review_queue.length >= 2, "the real spec-less diff does not produce an empty queue");
+  assert.ok(model.review_queue.some((item) => item.path === "source/utils/is-network-error.ts"), "the changed source file is queued");
+  assert.ok(model.review_queue.some((item) => item.path === "test/retry.ts"), "the changed test file is queued");
+  // The source error-handling change with no connected test ranks first.
+  assert.equal(model.review_queue[0].path, "source/utils/is-network-error.ts");
+  assert.ok(model.review_queue.every((item) => item.risk_ids.length === 0 && /No risk rule fired/.test(item.reason)), "every baseline item is honest and fabricates no risk");
+});

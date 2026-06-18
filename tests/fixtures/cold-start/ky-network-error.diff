@@ -1,0 +1,63 @@
+diff --git a/source/utils/is-network-error.ts b/source/utils/is-network-error.ts
+index d7a5449..616203c 100644
+--- a/source/utils/is-network-error.ts
++++ b/source/utils/is-network-error.ts
+@@ -1,4 +1,4 @@
+-// Inlined from https://github.com/sindresorhus/is-network-error v1.3.1
++// Inlined from https://github.com/sindresorhus/is-network-error v1.3.2
+ 
+ const objectToString = Object.prototype.toString;
+ 
+@@ -28,7 +28,7 @@ export default function isRawNetworkError(error: unknown): error is TypeError {
+ 	const {message, stack} = error;
+ 
+ 	// Safari 17+ has generic message but no stack for network errors
+-	if (message === 'Load failed') {
++	if (message === 'Load failed' || (message.startsWith('Load failed (') && message.endsWith(')'))) {
+ 		return stack === undefined
+ 			// Sentry adds its own stack trace to the fetch error, so also check for that
+ 			|| '__sentry_captured__' in error;
+diff --git a/test/retry.ts b/test/retry.ts
+index 1e60d92..daf7396 100644
+--- a/test/retry.ts
++++ b/test/retry.ts
+@@ -2039,6 +2039,39 @@ test('NetworkError wraps fetch network errors', async t => {
+ 	t.is(error.message, 'Request failed due to a network error: GET https://example.com/');
+ });
+ 
++test('NetworkError wraps Safari network errors with domain', async t => {
++	const error = await t.throwsAsync(
++		ky('https://example.com', {
++			retry: 0,
++			async fetch() {
++				const error = new TypeError('Load failed (api.example.com)');
++				error.stack = undefined;
++				throw error;
++			},
++		}),
++	);
++
++	t.true(error instanceof NetworkError);
++	t.true(isNetworkError(error));
++	t.true(error!.cause instanceof TypeError);
++	t.is((error!.cause as TypeError).message, 'Load failed (api.example.com)');
++});
++
++test('NetworkError does not wrap stacked Safari Load failed errors with domain', async t => {
++	const error = await t.throwsAsync(
++		ky('https://example.com', {
++			retry: 0,
++			async fetch() {
++				throw new TypeError('Load failed (api.example.com)');
++			},
++		}),
++	);
++
++	t.true(error instanceof TypeError);
++	t.false(isNetworkError(error));
++	t.is(error.message, 'Load failed (api.example.com)');
++});
++
+ test('non-network TypeError is not retried', async t => {
+ 	let fetchCallCount = 0;
+ 

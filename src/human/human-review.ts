@@ -25,7 +25,7 @@ import { PR_RISK_RULE_METADATA } from "../pr/risk-metadata";
 import { ReviewPacket } from "../render/packet";
 import { looksLikeRecordedCiSecretBoundaryManualCheck } from "../risks/manual-checks";
 import { RisksModel } from "../risks/risks";
-import { classifyRole } from "../scope/pr-scope";
+import { classifyRole, isTestPath } from "../scope/pr-scope";
 import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-contract";
 import {
   DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
@@ -2172,6 +2172,16 @@ function buildReviewQueue(
     });
   }
 
+  // Cold-start review-focus floor (review-surfaces.HUMAN_REVIEW.28): when NO detector
+  // produced a queue item — a spec-less / no-PR-surface run where nothing structural
+  // fired — a substantive diff must still not yield an empty queue. Rank the changed
+  // files by DETERMINISTIC signals (churn, exported surface, an impl file with no
+  // connected changed test, sensitive error/async/auth/persistence paths) and surface
+  // the files most worth reading, WITHOUT fabricating any risk or blocker.
+  if (drafts.length === 0) {
+    drafts.push(...baselineReviewFocusDrafts(input, diffIndex, semanticFacts));
+  }
+
   // review-surfaces.RANKING.1/.3: annotate each draft with its evidence tier and
   // "why ranked here" lines, then sort. Evidence is the SECONDARY key — it breaks
   // ties and demotes well-evidenced items within a score band — so the primary
@@ -2556,6 +2566,148 @@ function changedFileQueueDrafts(
         sortKey: `changed:${file.path}`
       };
     });
+}
+
+// Change regions that earn higher attention on a cold-start read: error/async handling,
+// auth, network requests, persistence, lifecycle (HUMAN_REVIEW.28).
+const BASELINE_SENSITIVE =
+  /\b(async|await|abort|signal|retry|catch|throw|reject|error|timeout|auth|login|logout|session|token|permission|oauth|password|fetch|request|http|url|socket|persist|database|migrat|cache|transaction|lifecycle|useeffect|dispose|cleanup)\b/i;
+const BASELINE_CODE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m)$/i;
+
+// `classifyRole`'s isTestPath only matches `tests/` + `.test.`/`.spec.`; broaden it to
+// the cross-language test conventions (`test/`, `spec/`, `__tests__/`, `foo_test.go`,
+// `FooTest.java`) so a `test/retry.ts` is not mislabeled implementation (HUMAN_REVIEW.28).
+function isBaselineTest(filePath: string): boolean {
+  if (isTestPath(filePath)) {
+    return true;
+  }
+  const base = filePath.split("/").pop() ?? filePath;
+  return (
+    /(^|\/)(tests?|__tests__|spec)\//.test(filePath) ||
+    /(^|[._-])(test|spec)[._-]/i.test(base) ||
+    /(^|[._-])(test|spec)\.[^.]+$/i.test(base) ||
+    /(?:Test|Spec)\.[^.]+$/.test(base)
+  );
+}
+
+type BaselineRole = "impl" | "test" | "config" | "ci" | "doc" | "generated" | "other";
+function baselineFileRole(filePath: string): BaselineRole {
+  if (isBaselineTest(filePath)) {
+    return "test";
+  }
+  const role = classifyRole(filePath, []);
+  if (role === "config" || role === "ci" || role === "doc" || role === "generated") {
+    return role;
+  }
+  if (role === "spec") {
+    return "config";
+  }
+  // `classifyRole` returns "unknown" when no areas are threaded (the spec-less / diff
+  // path): decide impl by code extension (a .d.ts declaration is not implementation).
+  if (BASELINE_CODE_EXT.test(filePath) && !/\.d\.ts$/i.test(filePath)) {
+    return "impl";
+  }
+  return "other";
+}
+
+function baselineStem(filePath: string): string {
+  const base = filePath.split("/").pop() ?? filePath;
+  return base
+    .replace(/\.[^.]+$/, "")
+    .replace(/[._-](test|spec)$/i, "")
+    .replace(/^(test|spec)[._-]/i, "")
+    .toLowerCase();
+}
+
+// Cold-start review-focus floor (HUMAN_REVIEW.28): rank the changed files from the
+// structured diff ALONE — no prSurface, no detector facts required — by deterministic
+// signals so a substantive diff never yields an empty queue. Fabricates no risk or
+// blocker; every item says "no risk rule fired, but this is worth reading because ...".
+function baselineReviewFocusDrafts(
+  input: BuildHumanReviewInput,
+  diffIndex: DiffIndex | undefined,
+  semanticFacts: SemanticChangeFacts
+): QueueDraft[] {
+  const files = input.diff?.files ?? [];
+  if (files.length === 0) {
+    return [];
+  }
+  const surfacePaths = new Set<string>([
+    ...semanticFacts.api_changes.map((change) => change.path),
+    ...semanticFacts.schema_changes.map((change) => change.path)
+  ]);
+  const changedTestsByImpl = input.rankingEvidence?.changed_tests_by_impl ?? {};
+  const changedTestStems = new Set(
+    files.filter((file) => baselineFileRole(file.path) === "test").map((file) => baselineStem(file.path))
+  );
+
+  const ranked = files
+    .map((file) => {
+      const role = baselineFileRole(file.path);
+      if (role === "doc" || role === "generated" || role === "other") {
+        return undefined; // not a "read this first" candidate
+      }
+      let added = 0;
+      let removed = 0;
+      let addedText = "";
+      for (const hunk of file.hunks) {
+        for (const line of hunk.lines) {
+          if (line.kind === "add") {
+            added += 1;
+            addedText += ` ${line.text}`;
+          } else if (line.kind === "delete") {
+            removed += 1;
+          }
+        }
+      }
+      const churn = added + removed;
+      const isImpl = role === "impl";
+      const exported = surfacePaths.has(file.path);
+      const hasConnectedTest =
+        (changedTestsByImpl[file.path]?.length ?? 0) > 0 || (isImpl && changedTestStems.has(baselineStem(file.path)));
+      const sensitive = BASELINE_SENSITIVE.test(file.path) || BASELINE_SENSITIVE.test(addedText);
+      let score = Math.min(churn, 200) / 10;
+      if (isImpl) score += 8;
+      if (role === "config" || role === "ci") score += 6;
+      if (exported) score += 12;
+      if (isImpl && !hasConnectedTest && churn > 0) score += 14;
+      if (sensitive) score += 10;
+
+      const reasons: string[] = [];
+      if (exported) reasons.push("changes an exported/public surface");
+      if (isImpl && !hasConnectedTest && churn > 0) reasons.push("an implementation change with no connected test change");
+      if (sensitive) reasons.push("touches error/async/auth/network/persistence paths");
+      if (churn >= 50) reasons.push(`high churn (+${added}/-${removed})`);
+      const why = reasons.length > 0 ? reasons.join(", ") : `a ${role} change worth a manual read`;
+      return { file, role, churn, score, why };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
+    .sort((left, right) => right.score - left.score || right.churn - left.churn || compareStrings(left.file.path, right.file.path))
+    .slice(0, MAX_CHANGED_FILE_QUEUE);
+
+  return ranked.map((entry) => {
+    const evidence = fileEvidence(entry.file.path, "Ranked by deterministic change signals because no risk rule fired.");
+    const anchor = queueAnchorForEvidence(evidence, diffIndex);
+    return {
+      title: `Review-focus: ${entry.file.path}`,
+      path: anchor.path,
+      old_path: anchor.old_path,
+      hunk_header: anchor.hunk_header,
+      line_start: anchor.line_start,
+      line_end: anchor.line_end,
+      anchor_side: anchor.side,
+      reviewer_action: "No defect pattern fired here — read this changed file to confirm the change is intended and skim-safe.",
+      reason: `No risk rule fired, but this is among the changed files most worth reading: ${entry.why}.`,
+      evidence: [evidence],
+      requirement_ids: [],
+      risk_ids: [],
+      confidence: anchor.line_start || anchor.hunk_header ? ("high" as const) : ("medium" as const),
+      priority: (entry.role === "impl" && entry.score >= 20 ? "medium" : "low") as HumanReviewPriority,
+      estimated_review_effort: entry.role === "test" ? ("quick" as const) : ("moderate" as const),
+      score: entry.score + (anchor.line_start ? 4 : 0) + (anchor.hunk_header ? 4 : 0),
+      sortKey: `baseline:${entry.file.path}`
+    };
+  });
 }
 
 function buildFeedbackPolicyEffects(input: BuildHumanReviewInput, config: HumanReviewBuildConfig): FeedbackPolicyEffect[] {
