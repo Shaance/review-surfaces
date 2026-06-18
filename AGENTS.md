@@ -88,6 +88,20 @@ Record what could not yet be run and why.
 
 ## Dogfood rule
 
+**Run it on your own work, and read the output — not just the gate.** The local gate (`scripts/local-gate.sh`) uses `--provider mock` over an empty `HEAD..HEAD` self-dogfood: it proves byte-stable determinism and schema validity but is BLIND to whether a surface produces *sensible* output, so a green test suite can still ship a cockpit full of garbage. Before calling a feature done, run it against your branch's REAL diff (the merge-base range, with `--dogfood`) and read what it generates:
+
+```bash
+pnpm run local-review   # all --dogfood over origin/main...HEAD + cockpit + validate
+```
+
+In a **Claude Code** session auto-discovery finds this repo's own transcript (announced on stderr). Discovery scans the Claude store only (`~/.claude/projects/<cwd-slug>/`), so in a **Codex/Cursor** session it either finds nothing (degrading to `conversation_log_missing`) or — on a machine that also has prior Claude sessions for this repo — silently picks a **stale** Claude transcript by score/recency. Either way it will not audit the current Codex/Cursor session, so passing `--conversation <file>` explicitly is **mandatory** there. The `local-review` wrapper accepts only `--base`/`--head`/`--out`/`--previous`/`--provider`, so use the raw CLI (build first — the bin shim refuses to run an unbuilt checkout):
+
+```bash
+pnpm run build && node bin/review-surfaces.js all --provider mock --dogfood --base origin/main --head HEAD --conversation <file> --out .review-surfaces
+```
+
+Open `.review-surfaces/human_review.html` and read `human_review.json` `.methodology_audit`. The LLM `audit`/CONV-GAP leaves need `--provider ai-sdk` over a CLEAN transcript and a real diff — see `.agents/skills/review-surfaces-dogfood-loop/SKILL.md` (a secret-bearing transcript OR diff, including the test fixtures, self-blocks the remote call by design).
+
 A problem found while using `review-surfaces` to build `review-surfaces` is product feedback. Convert it into one of:
 
 - code change;
