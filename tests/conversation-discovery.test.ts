@@ -31,6 +31,29 @@ function freshStore(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-store-"));
 }
 
+// The Codex `session_meta` first line, carrying the recorded repo `cwd` (the global
+// store's repo-match key) — mirrors the real on-disk shape.
+function codexMeta(cwd: string, timestamp: string): Record<string, unknown> {
+  return { timestamp, type: "session_meta", payload: { id: "s", timestamp, cwd, originator: "test" } };
+}
+
+// A minimal but adapter-VALID Codex rollout response line: a payload-wrapped response
+// item with a Codex item type and a top-level ISO-UTC timestamp.
+function codexLine(timestamp: string, text: string): Record<string, unknown> {
+  return { timestamp, type: "response_item", payload: { type: "output_text", text } };
+}
+
+// Codex rollouts live in a SINGLE GLOBAL store: <root>/.codex/sessions/YYYY/MM/DD/
+// rollout-<ts>.jsonl — not grouped by repo (the recorded cwd is the repo key).
+// `dateDirs` is the YYYY/MM/DD path.
+function writeCodexSession(storeRoot: string, dateDirs: string, name: string, lines: Record<string, unknown>[]): string {
+  const dir = path.join(storeRoot, ".codex", "sessions", ...dateDirs.split("/"));
+  fs.mkdirSync(dir, { recursive: true });
+  const full = path.join(dir, name);
+  fs.writeFileSync(full, lines.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+  return full;
+}
+
 // review-surfaces D4: the Claude Code project-slug must be EXACT — every '/' AND '.'
 // becomes '-', and an absolute path's leading '/' yields the leading '-'. A wrong
 // transform silently finds nothing.
@@ -142,6 +165,68 @@ test("review-surfaces.METHODOLOGY.4 non-jsonl and non-Claude files in the slug d
   }
 });
 
+// --- METHODOLOGY.9: Codex rollout-store discovery (global store, cwd-scoped) ---
+
+// A Codex rollout recorded under THIS repo's cwd that references a changed file is
+// discovered, even though the Codex store is one global directory across all repos.
+test("review-surfaces.METHODOLOGY.9 discovers a cwd-matched Codex rollout that references the changed files", () => {
+  const store = freshStore();
+  try {
+    const codex = writeCodexSession(store, "2026/06/17", "rollout-2026-06-17T10-00-00-abc.jsonl", [
+      codexMeta("/repo/app", "2026-06-17T10:00:00.000Z"),
+      codexLine("2026-06-17T10:00:00.000Z", "editing src/uploader.ts to add a retry")
+    ]);
+    const discovered = discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: ["src/uploader.ts"] });
+    assert.ok(discovered);
+    assert.equal(discovered.path, codex, "the cwd-matched, diff-referencing Codex rollout is discovered");
+    assert.equal(discovered.adapter, "codex");
+    assert.equal(discovered.matchedChangedFiles, 1);
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+// The Codex store is GLOBAL, so a path-substring hit is NOT enough: a session recorded
+// under a DIFFERENT repo's cwd must never be picked even when it mentions a changed-file
+// path (a generic name like README.md collides across repos). cwd is the repo key.
+test("review-surfaces.METHODOLOGY.9 a Codex session recorded under a different cwd is never picked", () => {
+  const store = freshStore();
+  try {
+    writeCodexSession(store, "2026/06/17", "rollout-2026-06-17T12-00-00-xyz.jsonl", [
+      codexMeta("/some/other/repo", "2026-06-17T12:00:00.000Z"),
+      codexLine("2026-06-17T12:00:00.000Z", "also edited src/uploader.ts in a different project")
+    ]);
+    assert.equal(
+      discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: ["src/uploader.ts"] }),
+      undefined,
+      "a different-cwd Codex session is not this repo's session despite the path mention"
+    );
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+// Cross-store selection is ONE total order: a cwd-matched Codex session that references
+// the changed range beats a same-repo Claude session that references none (recency-only).
+test("review-surfaces.METHODOLOGY.9 a range-referencing Codex session beats a recency-only same-repo Claude session", () => {
+  const store = freshStore();
+  try {
+    // Same-repo Claude session, but it does not reference the changed file (recency-only).
+    writeSession(store, claudeCodeProjectSlug("/repo/app"), "claude.jsonl", [line("2026-06-17T11:00:00.000Z", "unrelated notes")]);
+    // Codex session under the same cwd that DOES reference the changed file.
+    const codex = writeCodexSession(store, "2026/06/17", "rollout-2026-06-17T09-00-00-abc.jsonl", [
+      codexMeta("/repo/app", "2026-06-17T09:00:00.000Z"),
+      codexLine("2026-06-17T09:00:00.000Z", "fixing src/uploader.ts retry path")
+    ]);
+    const discovered = discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: ["src/uploader.ts"] });
+    assert.ok(discovered);
+    assert.equal(discovered.path, codex, "the range-referencing Codex session wins over a recency-only Claude session");
+    assert.equal(discovered.adapter, "codex");
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
 // --- collect() integration: the seam wires discovery, precedence, and path safety ---
 
 function initRepo(): string {
@@ -232,5 +317,25 @@ test("review-surfaces.PRIVACY.1 a discovered session with an outside-repo --out 
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.rmSync(store, { recursive: true, force: true });
     fs.rmSync(externalOut, { recursive: true, force: true });
+  }
+});
+
+// METHODOLOGY.9: when the picked session references NONE of the reviewed range it was
+// chosen by recency alone, which is a HARD warning (it may be the wrong/stale session),
+// not a silent pick. HEAD..HEAD has no changed files, so the same-repo Claude session
+// matches 0 and the warning must fire while the audit still proceeds.
+test("review-surfaces.METHODOLOGY.9 a recency-only discovery emits a hard 'does not reference the range' warning", async () => {
+  const tmp = initRepo();
+  const store = freshStore();
+  try {
+    writeSession(store, claudeCodeProjectSlug(tmp), "live.jsonl", [line("2026-06-17T10:00:00.000Z", "some work")]);
+    const result = await collectInputs(collectOptions(tmp, store));
+    assert.ok((result.conversationEvents ?? []).length > 0, "the session is still ingested (warning, not a hard fail)");
+    const warning = result.diagnostics.find((entry) => /WARNING/.test(entry) && /does NOT reference/.test(entry));
+    assert.ok(warning, "a hard warning names the unreferenced range and points at --conversation");
+    assert.match(warning, /--conversation/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(store, { recursive: true, force: true });
   }
 });

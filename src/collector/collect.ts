@@ -500,17 +500,22 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
       // Announce the chosen adapter on stderr (via diagnostics), mirroring the
       // collection-diagnostics pattern — stdout ordering contracts must not move.
       // For a discovered session the absolute picked path appears HERE (stderr)
-      // only, with the match basis so the user can correct an ambiguous same-repo
-      // pick with --conversation (Codex P2).
-      diagnostics.push(
-        discovered
-          ? `Auto-discovered conversation session: ${discovered.path} (adapter ${loaded.adapter}; ${
-              discovered.matchedChangedFiles > 0
-                ? `matched ${discovered.matchedChangedFiles} changed file(s)`
-                : "by recency only — pass --conversation to correct an ambiguous match"
-            })`
-          : `Conversation adapter: ${loaded.adapter} (${resolvedConversationPath})`
-      );
+      // only, with the match basis ("why this transcript") so the user can correct an
+      // ambiguous/stale pick with --conversation (Codex P2 / METHODOLOGY.9). A
+      // recency-only pick (matched 0 changed files) is a HARD warning, not a soft
+      // note: the session does not reference the reviewed range and may be the wrong
+      // or a stale session.
+      if (!discovered) {
+        diagnostics.push(`Conversation adapter: ${loaded.adapter} (${resolvedConversationPath})`);
+      } else if (discovered.matchedChangedFiles > 0) {
+        diagnostics.push(
+          `Auto-discovered conversation session: ${discovered.path} (adapter ${loaded.adapter}; matched ${discovered.matchedChangedFiles} changed file(s) in the reviewed range)`
+        );
+      } else {
+        diagnostics.push(
+          `WARNING: auto-discovered conversation session ${discovered.path} (adapter ${loaded.adapter}) does NOT reference any file in the reviewed range — picked by recency alone, so it may be the wrong or a stale session. Pass --conversation <path> to select the right transcript, or --no-conversation-discovery to skip auto-discovery.`
+        );
+      }
     } else {
       diagnostics.push(`Conversation log unmatched or unreadable: ${resolvedConversationPath}`);
     }

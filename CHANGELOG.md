@@ -66,6 +66,18 @@ package name `review-surfaces` was verified unclaimed on 2026-06-12.
   broad-vs-focused classification (no-execution, exclusion, and info invocations
   screened out), so the "tests ran / tests weakened" and local-validation signals
   fire on non-Node repositories, not only on JS/TS.
+- Zero-config transcript auditing for Codex (`METHODOLOGY.9`): when no
+  `--conversation` is given, discovery now spans BOTH the Claude Code project store
+  and the Codex rollout store (`~/.codex/sessions`). Because the Codex store is global
+  (one store across every repo), a Codex session is eligible only when it references
+  the reviewed range — never picked by recency alone — and the scan is bounded to the
+  most-recent rollouts; a discovered session that references none of the reviewed range
+  is a HARD warning pointing at `--conversation`, not a silent pick. Cursor keeps chat
+  in a per-workspace SQLite database with no loose transcript file, so it stays
+  explicit (`--conversation` with an exported chat; the `cursor` adapter parses it).
+  `scripts/local-review.sh` forwards `--conversation`, `--conversation-format`, and
+  `--no-conversation-discovery` verbatim. See
+  [`docs/conversation-auditing.md`](https://github.com/Shaance/review-surfaces/blob/main/docs/conversation-auditing.md).
 
 ## 0.1.0 — 2026-05-30 through 2026-06-12 (unpublished development history; never on npm)
 
