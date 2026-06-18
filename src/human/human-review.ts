@@ -168,6 +168,10 @@ interface QueueDraft {
   evidenceTier?: number;
   // review-surfaces.RANKING.2: the "why ranked here" lines for this draft.
   ranking_reasons?: string[];
+  // review-surfaces.HUMAN_REVIEW.28: a cold-start baseline item (no risk fired). Its
+  // ranking reason must be the deterministic signal, not a "ranked by risk severity"
+  // line that reads as a risk assessment.
+  baseline?: string;
 }
 
 type TestPlanDraft = Omit<TestPlanItem, "id">;
@@ -2275,7 +2279,9 @@ function applyRankingEvidence(drafts: QueueDraft[], input: BuildHumanReviewInput
       }
     }
     if (reasons.length === 0) {
-      reasons.push(defaultRankReason(draft));
+      // A cold-start baseline item has no risk class, so it must not render "ranked by
+      // <priority> risk severity" — use its deterministic signal instead (Codex #112).
+      reasons.push(draft.baseline ?? defaultRankReason(draft));
     }
     draft.ranking_reasons = reasons;
   }
@@ -2573,6 +2579,25 @@ function changedFileQueueDrafts(
 const BASELINE_SENSITIVE =
   /\b(async|await|abort|signal|retry|catch|throw|reject|error|timeout|auth|login|logout|session|token|permission|oauth|password|fetch|request|http|url|socket|persist|database|migrat|cache|transaction|lifecycle|useeffect|dispose|cleanup)\b/i;
 const BASELINE_CODE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m)$/i;
+// Files no human reads line-by-line on a cold-start: lockfiles, images/binaries, source
+// maps, snapshots. Excluded from the baseline floor (Codex #112).
+const BASELINE_NON_REVIEW_EXT = /\.(png|jpe?g|gif|svg|ico|webp|bmp|pdf|woff2?|ttf|eot|otf|map|min\.js|min\.css|snap|lock|wasm|node)$/i;
+const BASELINE_LOCKFILE_NAMES = new Set([
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "npm-shrinkwrap.json",
+  "cargo.lock",
+  "go.sum",
+  "poetry.lock",
+  "gemfile.lock",
+  "composer.lock",
+  "pipfile.lock"
+]);
+function isNonReviewArtifact(filePath: string): boolean {
+  const base = (filePath.split("/").pop() ?? filePath).toLowerCase();
+  return BASELINE_NON_REVIEW_EXT.test(base) || BASELINE_LOCKFILE_NAMES.has(base);
+}
 
 // `classifyRole`'s isTestPath only matches `tests/` + `.test.`/`.spec.`; broaden it to
 // the cross-language test conventions (`test/`, `spec/`, `__tests__/`, `foo_test.go`,
@@ -2612,11 +2637,15 @@ function baselineFileRole(filePath: string): BaselineRole {
 
 function baselineStem(filePath: string): string {
   const base = filePath.split("/").pop() ?? filePath;
-  return base
-    .replace(/\.[^.]+$/, "")
-    .replace(/[._-](test|spec)$/i, "")
-    .replace(/^(test|spec)[._-]/i, "")
-    .toLowerCase();
+  const raw = base.replace(/\.[^.]+$/, ""); // strip extension, keep case
+  let name = raw.toLowerCase();
+  name = name.replace(/[._-](test|spec)$/i, "").replace(/^(test|spec)[._-]/i, "");
+  // PascalCase suffix (`FooTest`/`FooSpec` for `Foo.java`/`Foo.kt`) — strip only when
+  // the original used the capitalized convention, so `latest`/`contest` keep their stem.
+  if (/(?:Test|Spec)$/.test(raw)) {
+    name = name.replace(/(?:test|spec)$/, "");
+  }
+  return name;
 }
 
 // Cold-start review-focus floor (HUMAN_REVIEW.28): rank the changed files from the
@@ -2644,19 +2673,24 @@ function baselineReviewFocusDrafts(
   const ranked = files
     .map((file) => {
       const role = baselineFileRole(file.path);
-      if (role === "doc" || role === "generated" || role === "other") {
-        return undefined; // not a "read this first" candidate
+      // Drop only docs/generated output and non-review artifacts (lockfiles, images,
+      // maps, snapshots). A substantive "other" file — a shell script, Dockerfile,
+      // Terraform, SQL, proto — is KEPT so a diff that only changes those is not empty
+      // (Codex #112).
+      if (role === "doc" || role === "generated" || isNonReviewArtifact(file.path)) {
+        return undefined;
       }
       let added = 0;
       let removed = 0;
-      let addedText = "";
+      let changedText = "";
       for (const hunk of file.hunks) {
         for (const line of hunk.lines) {
           if (line.kind === "add") {
             added += 1;
-            addedText += ` ${line.text}`;
+            changedText += ` ${line.text}`;
           } else if (line.kind === "delete") {
             removed += 1;
+            changedText += ` ${line.text}`; // deleting sensitive logic (a removed catch/retry/token) counts too (Codex #112)
           }
         }
       }
@@ -2665,10 +2699,11 @@ function baselineReviewFocusDrafts(
       const exported = surfacePaths.has(file.path);
       const hasConnectedTest =
         (changedTestsByImpl[file.path]?.length ?? 0) > 0 || (isImpl && changedTestStems.has(baselineStem(file.path)));
-      const sensitive = BASELINE_SENSITIVE.test(file.path) || BASELINE_SENSITIVE.test(addedText);
+      const sensitive = BASELINE_SENSITIVE.test(file.path) || BASELINE_SENSITIVE.test(changedText);
       let score = Math.min(churn, 200) / 10;
       if (isImpl) score += 8;
-      if (role === "config" || role === "ci") score += 6;
+      else if (role === "config" || role === "ci") score += 6;
+      else if (role === "other") score += 4; // a substantive script/infra/sql file still ranks
       if (exported) score += 12;
       if (isImpl && !hasConnectedTest && churn > 0) score += 14;
       if (sensitive) score += 10;
@@ -2698,6 +2733,7 @@ function baselineReviewFocusDrafts(
       anchor_side: anchor.side,
       reviewer_action: "No defect pattern fired here — read this changed file to confirm the change is intended and skim-safe.",
       reason: `No risk rule fired, but this is among the changed files most worth reading: ${entry.why}.`,
+      baseline: `ranked by deterministic change signals (no risk rule fired): ${entry.why}`,
       evidence: [evidence],
       requirement_ids: [],
       risk_ids: [],

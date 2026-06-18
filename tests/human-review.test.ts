@@ -4519,7 +4519,7 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start floor is additive-only: it does
 test("review-surfaces.HUMAN_REVIEW.28 cold-start: a REAL external diff (sindresorhus/ky) yields a non-empty review-focus queue", () => {
   // Pinned real diff: an error-handling source fix + new tests — exactly the spec-less
   // case that produced an empty queue before this change.
-  const rawDiff = fs.readFileSync(path.join(__dirname, "fixtures", "cold-start", "ky-network-error.diff"), "utf8");
+  const rawDiff = fs.readFileSync(path.join(process.cwd(), "tests", "fixtures", "cold-start", "ky-network-error.diff"), "utf8");
   const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff: parseStructuredDiff(rawDiff) });
 
   assert.ok(model.review_queue.length >= 2, "the real spec-less diff does not produce an empty queue");
@@ -4528,4 +4528,34 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: a REAL external diff (sindreso
   // The source error-handling change with no connected test ranks first.
   assert.equal(model.review_queue[0].path, "source/utils/is-network-error.ts");
   assert.ok(model.review_queue.every((item) => item.risk_ids.length === 0 && /No risk rule fired/.test(item.reason)), "every baseline item is honest and fabricates no risk");
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: a substantive NON-code file (shell/infra) is still queued, and items carry a non-risk ranking reason (Codex #112)", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/scripts/deploy.sh b/scripts/deploy.sh",
+    "--- a/scripts/deploy.sh",
+    "+++ b/scripts/deploy.sh",
+    "@@ -1,2 +1,6 @@",
+    " #!/usr/bin/env bash",
+    "+set -euo pipefail",
+    "+aws s3 sync ./dist s3://prod-bucket",
+    "+kubectl rollout restart deploy/api",
+    "+echo done",
+    "diff --git a/package-lock.json b/package-lock.json",
+    "--- a/package-lock.json",
+    "+++ b/package-lock.json",
+    "@@ -1,1 +1,2 @@",
+    " {",
+    "+  \"lockfileVersion\": 3,",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+
+  assert.ok(model.review_queue.some((item) => item.path === "scripts/deploy.sh"), "a substantive shell/infra change is queued (not dropped as 'other')");
+  assert.ok(!model.review_queue.some((item) => item.path === "package-lock.json"), "a lockfile is excluded as a non-review artifact");
+  // The baseline item's ranking reason must be the deterministic signal, not a risk claim.
+  const sh = model.review_queue.find((item) => item.path === "scripts/deploy.sh");
+  assert.ok(sh, "the deploy.sh item exists");
+  assert.ok(sh.ranking_reasons?.some((r) => /deterministic change signals/.test(r)), "baseline ranking reason names the deterministic signal");
+  assert.ok(!sh.ranking_reasons?.some((r) => /ranked by .* risk severity/.test(r)), "baseline item does not claim a risk severity ranking");
 });
