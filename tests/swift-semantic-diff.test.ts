@@ -400,3 +400,44 @@ test("review-surfaces.SEMANTIC_DIFF.6 detects an Xcode test plan disabling a tes
   const weakening = computeSemanticChangeFacts(sources(diffText, {}, {})).test_weakening;
   assert.ok(weakening.some((s) => s.kind === "skipped_test" && s.path === path), "a disabled test-plan entry fires skipped_test");
 });
+
+// --- Phase 2 Codex round 3: bug fixes (parser-completeness tail bounded) ------
+
+test("review-surfaces.SEMANTIC_DIFF.5 narrowing a setter to private(set) is a contract change", () => {
+  const base = "public struct S {\n  public var count = 0\n}\n";
+  const head = "public struct S {\n  public private(set) var count = 0\n}\n";
+  const change = diffSwiftDeclarations("S.swift", base, head).find((c) => c.name === "S.count");
+  assert.ok(change, "the setter-access narrowing is reported (private(set) kept in identity)");
+  assert.ok(/modifier/.test(change?.detail ?? ""));
+});
+
+test("review-surfaces.SEMANTIC_DIFF.5 removing a conformance declared via an extension is breaking", () => {
+  const base = "extension Foo: Sendable {}\n";
+  const head = "\n";
+  const change = diffSwiftDeclarations("Foo.swift", base, head).find((c) => c.kind === "extension" && c.change === "removed");
+  assert.ok(change, "the removed conforming extension is reported");
+  assert.equal(change?.breaking, true, "removing a conformance breaks callers regardless of the extension's own access");
+  assert.ok(/Sendable/.test(change?.detail ?? ""), "the removed conformance is named");
+});
+
+test("review-surfaces.SEMANTIC_DIFF.5 a Swift impl renamed OUT of source reports the removed public API", () => {
+  const oldPath = "Sources/App/API.swift";
+  const newPath = "Sources/App/API.swift.disabled";
+  const base = "public struct API {\n  public func run() {}\n}\n";
+  const diffText = [
+    `diff --git a/${oldPath} b/${newPath}`,
+    "similarity index 100%",
+    `rename from ${oldPath}`,
+    `rename to ${newPath}`,
+    ""
+  ].join("\n");
+  const facts = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(diffText),
+    readBase: (p) => (p === oldPath ? base : undefined),
+    readHead: () => undefined
+  });
+  assert.ok(
+    facts.swift_declaration_changes.some((c) => c.change === "removed" && /API/.test(c.name)),
+    "public Swift API that left the module is reported as removed"
+  );
+});

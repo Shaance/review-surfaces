@@ -2514,9 +2514,12 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
       sortKey: `semantic-api:${change.path}`
     }));
   }
-  // review-surfaces.SEMANTIC_DIFF.5: Swift declaration changes — concrete
-  // language, public/package breaks outrank additive/internal changes.
-  for (const [index, change] of facts.swift_declaration_changes.entries()) {
+  // review-surfaces.SEMANTIC_DIFF.5: Swift declaration changes — concrete language,
+  // public/package breaks outrank additive/internal changes. Bucket BREAKING facts
+  // first so a breaking change after many additive ones is not pushed below them by the
+  // raw index penalty (and sliced out by the queue cap).
+  const swiftChanges = [...facts.swift_declaration_changes].sort((a, b) => Number(b.breaking) - Number(a.breaking));
+  for (const [index, change] of swiftChanges.entries()) {
     drafts.push(semanticDraft(diffIndex, {
       title: swiftDeclarationTitle(change),
       path: change.path,
@@ -2526,7 +2529,7 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
           ? "Confirm callers/conformers of the removed Swift declaration are updated or it is intentionally dropped."
           : "Confirm the Swift declaration change is intended and callers/conformers are updated.",
       priority: change.breaking ? "high" : change.change === "added" ? "low" : "medium",
-      score: 150 - index + (change.breaking ? 20 : 0),
+      score: 150 - index + (change.breaking ? 40 : 0),
       sortKey: `semantic-swift:${change.change}:${change.path}:${change.name}`
     }));
   }
@@ -2817,7 +2820,11 @@ function baselineReviewFocusDrafts(
   }
   const surfacePaths = new Set<string>([
     ...semanticFacts.api_changes.map((change) => change.path),
-    ...semanticFacts.schema_changes.map((change) => change.path)
+    ...semanticFacts.schema_changes.map((change) => change.path),
+    // A Swift declaration fact already produces a concrete semantic queue item, so its
+    // path must be excluded from the generic cold-start floor too (like TS API / schema)
+    // — otherwise the same file also gets a duplicate "changed implementation" item.
+    ...semanticFacts.swift_declaration_changes.map((change) => change.path)
   ]);
   const changedTestsByImpl = input.rankingEvidence?.changed_tests_by_impl ?? {};
   // Tests the import evidence already attributed to an impl cover THAT impl; their stem must

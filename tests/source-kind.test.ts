@@ -147,6 +147,10 @@ test("review-surfaces.COLLECTOR.8 classifyAppleSourceKind precedence", () => {
   assert.equal(classifyAppleSourceKind("Package.resolved"), "apple_lock");
   assert.equal(classifyAppleSourceKind("App.mobileprovision"), "apple_signing");
   assert.equal(classifyAppleSourceKind("README.md"), "other");
+  // A SwiftPM manifest is a `.swift` file but is project config, not implementation
+  // source — the aggregate classifier must not route it as swift_source.
+  assert.equal(classifyAppleSourceKind("Package.swift"), "apple_project_config");
+  assert.equal(classifyAppleSourceKind("Package@swift-5.9.swift"), "apple_project_config");
 });
 
 // --- consumers delegate to the shared module --------------------------------

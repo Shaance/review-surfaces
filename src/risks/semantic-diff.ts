@@ -84,6 +84,12 @@ export function formatEnumChanges(changes: SchemaContractChange["enum_changes"])
     .join(", ");
 }
 
+// A Swift implementation source eligible for declaration-diffing: a `.swift` source
+// that is not a test and not the SwiftPM manifest (which is build config).
+function isSwiftImplSourcePath(filePath: string): boolean {
+  return isSwiftSourcePath(filePath) && !isSwiftPackageManifestPath(filePath);
+}
+
 export function computeSemanticChangeFacts(sources: SemanticDiffSources): SemanticChangeFacts {
   const schema_changes: SchemaContractChange[] = [];
   const api_changes: ApiSurfaceChange[] = [];
@@ -99,12 +105,16 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
       if (change) {
         api_changes.push(change);
       }
-    } else if (isSwiftSourcePath(file.path) && !isSwiftPackageManifestPath(file.path)) {
+    } else if (isSwiftImplSourcePath(file.path) || (file.old_path !== undefined && isSwiftImplSourcePath(file.old_path))) {
       // review-surfaces.SEMANTIC_DIFF.5: Swift implementation files (not tests, not the
-      // SwiftPM manifest) get declaration-change facts. A `Package.swift` manifest is
-      // build config (its `let package` is not an API surface) — the package/config
-      // fact paths own it. For a renamed module the base lives at old_path.
-      const changes = diffSwiftDeclarations(file.path, sources.readBase(baseReadPath(file)), sources.readHead(file.path));
+      // SwiftPM manifest) get declaration-change facts. The diff runs when EITHER side of
+      // a rename is a Swift impl source: a move OUT of the module (`API.swift ->
+      // API.swift.disabled`, or into Tests/) drops the head side so the public
+      // declarations that left are reported as removals. Base lives at old_path.
+      const newIsSwift = isSwiftImplSourcePath(file.path);
+      const factPath = newIsSwift ? file.path : file.old_path ?? file.path;
+      const headSource = newIsSwift ? sources.readHead(file.path) : undefined;
+      const changes = diffSwiftDeclarations(factPath, sources.readBase(baseReadPath(file)), headSource);
       swift_declaration_changes.push(...changes);
     }
   }

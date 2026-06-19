@@ -62,8 +62,15 @@ function qualifiedName(decl: SwiftDeclaration): string {
 const ACCESS_MODIFIERS = new Set(["public", "private", "internal", "fileprivate", "package", "open"]);
 function semanticModifiers(decl: SwiftDeclaration): string[] {
   return [...(decl.modifiers ?? [])]
-    .map((modifier) => modifier.split("(")[0])
-    .filter((modifier) => !ACCESS_MODIFIERS.has(modifier))
+    .filter((modifier) => {
+      // Keep setter-scope modifiers (`private(set)`, `internal(set)`, …) verbatim: they
+      // narrow the SETTER, a callable-interface change distinct from the getter's
+      // visibility. Drop plain access keywords (already captured by `visibility`).
+      if (/\(set\)$/.test(modifier)) {
+        return true;
+      }
+      return !ACCESS_MODIFIERS.has(modifier.split("(")[0]);
+    })
     .sort();
 }
 
@@ -165,7 +172,13 @@ function addedChange(path: string, shape: DeclShape): SwiftDeclarationChange {
 
 function removedChange(path: string, shape: DeclShape): SwiftDeclarationChange {
   const d = shape.decl;
-  const breaking = CONTRACT_VISIBILITIES.has(d.visibility);
+  // Removing an extension that DECLARED conformances (`extension Foo: Sendable {}`) is a
+  // break regardless of the extension keyword's own access: the conformance's visibility
+  // follows the conformed type, and callers relying on `Foo: Sendable/Codable` no longer
+  // compile. A plain extension defaults to `internal`, so its access alone misses this.
+  const removedConformanceBreak = d.kind === "extension" && d.conformances.length > 0;
+  const breaking = CONTRACT_VISIBILITIES.has(d.visibility) || removedConformanceBreak;
+  const conformanceNote = removedConformanceBreak ? ` removing conformance(s): ${[...d.conformances].sort().join(", ")}` : "";
   return {
     path,
     name: qualifiedName(d),
@@ -173,7 +186,7 @@ function removedChange(path: string, shape: DeclShape): SwiftDeclarationChange {
     change: "removed",
     visibility: d.visibility,
     breaking,
-    detail: `${kindLabel(d.kind)} \`${qualifiedName(d)}\` removed (${d.visibility})${breaking ? " — a public/package API removal" : ""}.`
+    detail: `${kindLabel(d.kind)} \`${qualifiedName(d)}\` removed (${d.visibility})${conformanceNote}${breaking && !removedConformanceBreak ? " — a public/package API removal" : ""}.`
   };
 }
 

@@ -223,6 +223,11 @@ export function classifyAppleSourceKind(filePath: string): AppleSourceKind {
   if (isSwiftTestPath(filePath)) {
     return "swift_test";
   }
+  // A SwiftPM manifest is a `.swift` file but is project CONFIG, not implementation
+  // source — classify it before the generic Swift-source branch.
+  if (isSwiftPackageManifestPath(filePath)) {
+    return "apple_project_config";
+  }
   if (isSwiftFilePath(filePath)) {
     return "swift_source";
   }
