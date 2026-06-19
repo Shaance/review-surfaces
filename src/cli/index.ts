@@ -13,6 +13,7 @@ import { isTestPath } from "../scope/pr-scope";
 import { intersectCoverageWithDiff } from "../tests-evidence/lcov";
 import { parseBudgetDuration } from "../human/budget";
 import { computeDependencyFacts } from "../risks/dependency-facts";
+import { computeSwiftPackageFacts } from "../risks/swift-package-facts";
 import { loadReviewPolicy, POLICY_FILE, ReviewPolicy } from "../feedback/policy";
 import { computeConfigFacts } from "../risks/config-facts";
 import { buildImportGraph, findSymbolImporters } from "../collector/import-graph";
@@ -1770,7 +1771,14 @@ function buildHumanReviewForPacket(
     coverageEvidence: computeCoverageEvidenceForPacket(outDir, resolvedDiff),
     // review-surfaces.DEP_FACTS / CONFIG_FACTS: deterministic, offline detectors
     // computed here so every build path carries them uniformly.
-    dependencyFacts: factReaders ? computeDependencyFacts({ changedFiles: factReaders.changedFiles, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
+    dependencyFacts: factReaders
+      ? [
+          ...computeDependencyFacts({ changedFiles: factReaders.changedFiles, readBase: factReaders.readBase, readHead: factReaders.readHead }),
+          // review-surfaces.DEP_FACTS.6: SwiftPM/Xcode package facts share the
+          // supply_chain lens.
+          ...computeSwiftPackageFacts({ changedFiles: factReaders.changedFiles, readBase: factReaders.readBase, readHead: factReaders.readHead })
+        ]
+      : [],
     configFacts: factReaders && resolvedDiff ? computeConfigFacts({ diff: resolvedDiff, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
     // review-surfaces.COLLECTOR.9: the validated wrapper rules so the trust audit
     // recognizes a configured wrapper as local validation exactly as the risks

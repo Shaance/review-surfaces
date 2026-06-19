@@ -493,3 +493,25 @@ test("review-surfaces.BLAST_RADIUS.4 a changed Swift test connects only to the i
     fixture.cleanup();
   }
 });
+
+// review-surfaces.DEP_FACTS.6: a SwiftPM package change ranks in the top N via the
+// supply_chain lens with concrete package language.
+test("review-surfaces.DEP_FACTS.6 a SwiftPM package change ranks in the top N", () => {
+  const fixture = createEvalFixture("swiftpm-dep");
+  try {
+    fixture.write(
+      "Package.swift",
+      `// swift-tools-version:5.9\nimport PackageDescription\nlet package = Package(name: "X", dependencies: [\n  .package(url: "https://github.com/apple/swift-nio.git", from: "2.0.0")\n])\n`
+    );
+    fixture.commit("add SwiftPM dependency");
+    record("swiftpm_dependency_change", () => {
+      const model = fixture.run();
+      assert.ok(
+        inTopQueue(model, (item) => /package|dependency|supply/i.test(`${item.title} ${item.reason}`) && /swift-nio/.test(item.reason)),
+        "the SwiftPM package change must rank in the top N naming the package"
+      );
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});

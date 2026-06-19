@@ -17,7 +17,16 @@ export type DependencyFactKind =
   | "major_version_downgrade"
   | "version_range_loosened"
   | "transitive_added"
-  | "install_scripts";
+  | "install_scripts"
+  // review-surfaces.DEP_FACTS.6: Swift package facts share this fact type and the
+  // supply_chain lens (swift-package-facts.ts produces them). Direct requirement
+  // facts from Package.swift / XcodeGen / pbxproj; pin facts from Package.resolved.
+  | "swift_package_added"
+  | "swift_package_removed"
+  | "swift_package_changed"
+  | "swift_package_requirement_loosened"
+  | "swift_package_major_change"
+  | "swift_package_pin_changed";
 
 export interface DependencyFact {
   kind: DependencyFactKind;
@@ -390,6 +399,18 @@ export function dependencyFactSeverityRank(kind: DependencyFactKind): number {
     case "dependency_removed":
     case "dependency_group_moved":
       return 4;
+    // review-surfaces.DEP_FACTS.6: Swift package severities. A loosened
+    // requirement (pinned -> moving ref) is the highest-risk supply-chain change;
+    // a resolved-pin-only change is the lowest.
+    case "swift_package_requirement_loosened":
+      return 0;
+    case "swift_package_added":
+    case "swift_package_removed":
+    case "swift_package_changed":
+    case "swift_package_major_change":
+      return 1;
+    case "swift_package_pin_changed":
+      return 2;
   }
 }
 

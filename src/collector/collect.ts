@@ -30,6 +30,7 @@ import {
 import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, commitTimeAtRef, gitInfoDiagnostics, GitInfo, isCurrentStateHeadRequest, readFileAtRef, readFileBytesAtRef, resolveMergeBaseSha } from "./git";
 import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { computeDependencyFacts, DependencyFact } from "../risks/dependency-facts";
+import { computeSwiftPackageFacts } from "../risks/swift-package-facts";
 import { computeConfigFacts, ConfigFact } from "../risks/config-facts";
 import { LcovCoverage, looksLikeLcov, parseLcov } from "../tests-evidence/lcov";
 import { parseStructuredDiff } from "./diff-hunks";
@@ -441,11 +442,21 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     structuredFactDiff.files.length > 0
       ? computeSemanticChangeFacts({ diff: structuredFactDiff, readBase: readBaseFact, readHead: readHeadFact })
       : emptySemanticChangeFacts();
-  const dependencyFacts = computeDependencyFacts({
-    changedFiles: structuredFactDiff.files.map((file) => ({ path: file.path, old_path: file.old_path })),
-    readBase: readBaseFact,
-    readHead: readHeadFact
-  });
+  const dependencyFacts = [
+    ...computeDependencyFacts({
+      changedFiles: structuredFactDiff.files.map((file) => ({ path: file.path, old_path: file.old_path })),
+      readBase: readBaseFact,
+      readHead: readHeadFact
+    }),
+    // review-surfaces.DEP_FACTS.6: SwiftPM/Xcode package facts must be on the COLLECTION
+    // too (not only the human-review rebuild), so the methodology audit can anchor/promote
+    // the dependency-rationale signal uniformly across packet surfaces.
+    ...computeSwiftPackageFacts({
+      changedFiles: structuredFactDiff.files.map((file) => ({ path: file.path, old_path: file.old_path })),
+      readBase: readBaseFact,
+      readHead: readHeadFact
+    })
+  ];
   const configFacts =
     structuredFactDiff.files.length > 0 ? computeConfigFacts({ diff: structuredFactDiff, readBase: readBaseFact, readHead: readHeadFact }) : [];
   // R4.6 (mirror of provider.ts split): ALWAYS compute the secret-block signal
