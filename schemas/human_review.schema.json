@@ -571,7 +571,7 @@
             "additionalProperties": true,
             "required": ["kind", "path", "detail"],
             "properties": {
-              "kind": { "enum": ["deleted_test_file", "skipped_test", "removed_assertion", "regenerated_snapshot"] },
+              "kind": { "enum": ["deleted_test_file", "removed_test_method", "skipped_test", "removed_assertion", "regenerated_snapshot"] },
               "path": { "type": "string" },
               "detail": { "type": "string" }
             }

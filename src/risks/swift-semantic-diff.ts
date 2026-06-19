@@ -213,6 +213,9 @@ function modifiedChange(path: string, b: DeclShape, h: DeclShape): SwiftDeclarat
   }
   if ((b.globalActor ?? "") !== (h.globalActor ?? "")) {
     parts.push(`actor isolation ${b.globalActor ? `from @${b.globalActor}` : "added"} ${h.globalActor ? `→ @${h.globalActor}` : "removed"}`.replace(/\s+/g, " ").trim());
+    // Global-actor isolation (e.g. @MainActor) is part of the callable interface — a
+    // public/package/open change forces call-site/conformance updates, so it breaks.
+    breaking = breaking || CONTRACT_VISIBILITIES.has(h.decl.visibility);
   }
 
   // Fallback: a signature change we did not decompose (parameters / return type).

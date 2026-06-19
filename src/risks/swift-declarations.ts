@@ -15,6 +15,7 @@ export type SwiftDeclarationKind =
   | "actor"
   | "extension"
   | "typealias"
+  | "associatedtype"
   | "function"
   | "initializer"
   | "subscript"
@@ -288,8 +289,6 @@ function readHead(s: string, start: number): ParsedHead | undefined {
     return undefined;
   }
 
-  // associatedtype is parsed but not emitted as a supported kind below; still
-  // consume its head so its name is not rescanned.
   // Read head text until the terminating `{` at this level or a newline.
   skipSpacesNoNewline();
   let depth = 0;
@@ -312,6 +311,19 @@ function readHead(s: string, start: number): ParsedHead | undefined {
       // enclosing frame. Not consuming it is what keeps the container stack honest.
       break;
     } else if (c === "\n" && depth === 0) {
+      // A Swift opening brace may sit on the NEXT line (`func run()\n{ ... }`). Look
+      // past blank lines/whitespace: if the next non-space char is `{`, the head
+      // continues to it so a body frame is pushed (otherwise local let/var/case edits
+      // inside that body would be emitted as bogus top-level declaration facts). If the
+      // next token is anything else, the head ends here with no body.
+      let k = j + 1;
+      while (k < n && (s[k] === " " || s[k] === "\t" || s[k] === "\r" || s[k] === "\n")) {
+        k += 1;
+      }
+      if (s[k] === "{") {
+        hasBrace = true;
+        j = k;
+      }
       break;
     } else if (c === ";" && depth === 0) {
       break;
@@ -475,8 +487,28 @@ function buildDeclaration(head: ParsedHead, stack: Frame[], line: number): Built
       };
       return { decl, opensBody: false, frameKind: "value" };
     }
+    case "associatedtype": {
+      // An associatedtype is a protocol requirement: adding/removing it can break
+      // existing conformers (SEMANTIC_DIFF.5). Emit it so attachToContainer records it
+      // in the protocol's protocol_requirements and the declaration diff sees it.
+      const name = memberName(body, "associatedtype");
+      if (!name) {
+        return undefined;
+      }
+      const decl: SwiftDeclaration = {
+        name,
+        kind: "associatedtype",
+        visibility,
+        ...(container ? { container } : {}),
+        signature: body,
+        attributes: head.attributes,
+        conformances: [],
+        line
+      };
+      return { decl, opensBody: false, frameKind: "value" };
+    }
     default:
-      return undefined; // associatedtype and anything else: consumed, not emitted
+      return undefined; // anything else: consumed, not emitted
   }
 }
 
@@ -503,9 +535,12 @@ function resolveVisibility(modifiers: string[], stack: Frame[]): SwiftVisibility
       return VISIBILITIES[base];
     }
   }
-  // A protocol's requirements inherit the protocol's visibility surface.
+  // A protocol's requirements inherit the protocol's visibility surface, and a member
+  // of a `public extension Foo { ... }` inherits the extension's access level unless it
+  // declares its own (Swift's default-access rule for extensions). A struct/class/enum
+  // does NOT widen its members, so only protocol/extension containers inherit.
   const top = stack[stack.length - 1];
-  if (top?.decl?.kind === "protocol") {
+  if (top?.decl?.kind === "protocol" || top?.decl?.kind === "extension") {
     return top.decl.visibility;
   }
   return "internal";
@@ -572,6 +607,9 @@ function conformancesFrom(body: string, name: string): string[] {
   }
   return rest
     .split(/[,&]/)
-    .map((entry) => entry.trim().replace(/<.*$/, "").trim())
+    // Strip leading conformance attributes (`@unchecked Sendable`, `@retroactive`,
+    // `@preconcurrency`) so the common `: @unchecked Sendable` form is recorded as a
+    // Sendable conformance rather than dropped (SEMANTIC_DIFF.5 isolation changes).
+    .map((entry) => entry.trim().replace(/^@\w+\s+/, "").replace(/<.*$/, "").trim())
     .filter((entry) => /^[A-Za-z_][A-Za-z0-9_.]*$/.test(entry));
 }

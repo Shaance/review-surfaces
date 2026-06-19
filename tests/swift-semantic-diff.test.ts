@@ -233,3 +233,93 @@ test("review-surfaces.SEMANTIC_DIFF.6 a Swift implementation body change is NOT 
   ].join("\n");
   assert.equal(computeSemanticChangeFacts(sources(diffText, { [path]: "" }, { [path]: "" })).test_weakening.length, 0);
 });
+
+// --- Phase 2 Codex round 1: parser/semantic correctness regressions ----------
+
+test("review-surfaces.SEMANTIC_DIFF.5 a next-line opening brace still scopes the body (no leaked local decl)", () => {
+  const base = "public struct S {\n  public func run()\n  {\n    let local = 1\n    doThing()\n  }\n}\n";
+  const head = "public struct S {\n  public func run()\n  {\n    let local = 2\n    doThing()\n  }\n}\n";
+  assert.equal(diffSwiftDeclarations("S.swift", base, head).length, 0, "a body-only edit under a next-line brace is not a contract change");
+  assert.ok(!extractSwiftDeclarations(base).some((d) => d.name === "local"), "a local inside a next-line-brace body never leaks as a top-level declaration");
+});
+
+test("review-surfaces.SEMANTIC_DIFF.5 a public global-actor change is a contract break", () => {
+  const base = "public final class VM {\n  public func reload() {}\n}\n";
+  const head = "@MainActor public final class VM {\n  public func reload() {}\n}\n";
+  const vm = diffSwiftDeclarations("VM.swift", base, head).find((c) => c.name === "VM" && c.change === "modified");
+  assert.ok(/actor isolation/.test(vm?.detail ?? ""), "the global-actor change is reported");
+  assert.equal(vm?.breaking, true, "a public @MainActor addition is breaking");
+});
+
+test("review-surfaces.SEMANTIC_DIFF.5 a new public protocol associatedtype is a breaking requirement", () => {
+  const base = "public protocol Store {\n  func load()\n}\n";
+  const head = "public protocol Store {\n  associatedtype Element\n  func load()\n}\n";
+  const change = diffSwiftDeclarations("Store.swift", base, head).find((c) => c.name === "Store");
+  assert.ok(/protocol requirement\(s\) added: Element/.test(change?.detail ?? ""), "associatedtype is recorded as a protocol requirement");
+  assert.equal(change?.breaking, true);
+});
+
+test("review-surfaces.SEMANTIC_DIFF.5 a member of a public extension is public (its removal is breaking)", () => {
+  const base = "public extension Foo {\n  func bar() {}\n}\n";
+  const head = "public extension Foo {\n}\n";
+  const removed = diffSwiftDeclarations("Foo.swift", base, head).find((c) => /bar/.test(c.name) && c.change === "removed");
+  assert.ok(removed, "the public-extension member is tracked as removed");
+  assert.equal(removed?.breaking, true, "a public-extension member removal is breaking");
+});
+
+test("review-surfaces.SEMANTIC_DIFF.5 an @unchecked Sendable conformance is recorded", () => {
+  const base = "public final class Cache {}\n";
+  const head = "public final class Cache: @unchecked Sendable {}\n";
+  const change = diffSwiftDeclarations("Cache.swift", base, head).find((c) => c.name === "Cache");
+  assert.ok(change, "the conformance change is reported");
+  assert.ok(/Sendable/.test(change?.detail ?? ""), "the @unchecked Sendable conformance add is detected");
+});
+
+test("review-surfaces.SEMANTIC_DIFF.5 a Package.swift manifest is not declaration-diffed", () => {
+  const path = "Package.swift";
+  const base = 'let package = Package(name: "A", targets: [])\n';
+  const head = 'let package = Package(name: "A", targets: [.target(name: "A")])\n';
+  const diffText = [
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    "@@ -1,1 +1,1 @@",
+    '-let package = Package(name: "A", targets: [])',
+    '+let package = Package(name: "A", targets: [.target(name: "A")])',
+    ""
+  ].join("\n");
+  const facts = computeSemanticChangeFacts(sources(diffText, { [path]: base }, { [path]: head }));
+  assert.equal(facts.swift_declaration_changes.length, 0, "Package.swift is left to the package/config fact paths");
+});
+
+test("review-surfaces.SEMANTIC_DIFF.6 fires removed_test_method when a whole test method is deleted (no assertion)", () => {
+  const path = "Tests/AppTests/SmokeTests.swift";
+  const diffText = [
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    "@@ -1,5 +1,1 @@",
+    "-  func testSmoke() throws {",
+    "-    try service.run()",
+    "-  }",
+    "   func testOther() {}",
+    ""
+  ].join("\n");
+  const weakening = computeSemanticChangeFacts(sources(diffText, {}, {})).test_weakening;
+  assert.ok(weakening.some((s) => s.kind === "removed_test_method" && s.path === path), "a deleted smoke test with no assertion still fires");
+});
+
+test("review-surfaces.SEMANTIC_DIFF.6 a .disabled( inside a Swift string/comment does not count as a skip", () => {
+  const path = "Tests/AppTests/FixtureTests.swift";
+  const diffText = [
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    "@@ -1,1 +1,2 @@",
+    "   func testFixtures() {",
+    '+    let sample = ".disabled(x)" // XCTSkipIf in a comment',
+    ""
+  ].join("\n");
+  const weakening = computeSemanticChangeFacts(sources(diffText, {}, {})).test_weakening;
+  assert.ok(!weakening.some((s) => s.kind === "skipped_test"), "skip markers inside strings/comments are ignored");
+});

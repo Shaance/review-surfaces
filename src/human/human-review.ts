@@ -2569,6 +2569,8 @@ function testWeakeningTitle(kind: TestWeakeningSignal["kind"]): string {
   switch (kind) {
     case "deleted_test_file":
       return "Test weakening: deleted test file";
+    case "removed_test_method":
+      return "Test weakening: removed test method";
     case "skipped_test":
       return "Test weakening: newly skipped test";
     case "removed_assertion":
@@ -3202,7 +3204,7 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
   }
 
   for (const signal of semanticFacts.test_weakening) {
-    const severe = signal.kind === "deleted_test_file" || signal.kind === "removed_assertion";
+    const severe = signal.kind === "deleted_test_file" || signal.kind === "removed_test_method" || signal.kind === "removed_assertion";
     addSignal("test_evidence", severe ? "high" : "medium", [fileEvidence(signal.path, signal.detail)], [], [], [signal.path]);
   }
 

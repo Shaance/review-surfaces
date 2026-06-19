@@ -94,6 +94,15 @@ const APPLE_CONFIG_BASENAMES: ReadonlySet<string> = new Set([
   "project.yaml"
 ]);
 
+// A SwiftPM manifest: `Package.swift` or a version-specific `Package@swift-5.9.swift`.
+// Recognized so the Swift DECLARATION differ skips it — its `let package = Package(...)`
+// is build configuration, not an API surface (package facts handle manifest changes) —
+// while it still classifies as Apple project config.
+export function isSwiftPackageManifestPath(filePath: string): boolean {
+  const base = baseName(filePath);
+  return base === "Package.swift" || /^Package@swift-.+\.swift$/.test(base);
+}
+
 // `Package.resolved` is an Apple/SwiftPM LOCK file: recognized so dependency facts
 // can read it (Phase 4a), but treated as lock/generated for baseline ranking so it
 // never dominates the review queue. Kept separate from project/config.

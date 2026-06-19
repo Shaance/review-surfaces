@@ -14,9 +14,10 @@
 
 import * as ts from "typescript";
 import { StructuredDiff, StructuredDiffFile } from "../pr/contract";
-import { isSwiftSourcePath, isSwiftTestPath } from "../collector/source-kind";
+import { isSwiftPackageManifestPath, isSwiftSourcePath, isSwiftTestPath } from "../collector/source-kind";
 import { isTestPath } from "../scope/pr-scope";
 import { diffSwiftDeclarations, SwiftDeclarationChange } from "./swift-semantic-diff";
+import { cleanSwiftSource } from "./swift-lexer";
 
 export interface SchemaContractChange {
   path: string;
@@ -41,7 +42,7 @@ export interface ApiSurfaceChange {
   used_by?: { count: number; top: string[]; truncated?: boolean };
 }
 
-export type TestWeakeningKind = "deleted_test_file" | "skipped_test" | "removed_assertion" | "regenerated_snapshot";
+export type TestWeakeningKind = "deleted_test_file" | "removed_test_method" | "skipped_test" | "removed_assertion" | "regenerated_snapshot";
 
 export interface TestWeakeningSignal {
   kind: TestWeakeningKind;
@@ -98,9 +99,11 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
       if (change) {
         api_changes.push(change);
       }
-    } else if (isSwiftSourcePath(file.path)) {
-      // review-surfaces.SEMANTIC_DIFF.5: Swift implementation files (not tests) get
-      // declaration-change facts. For a renamed module the base lives at old_path.
+    } else if (isSwiftSourcePath(file.path) && !isSwiftPackageManifestPath(file.path)) {
+      // review-surfaces.SEMANTIC_DIFF.5: Swift implementation files (not tests, not the
+      // SwiftPM manifest) get declaration-change facts. A `Package.swift` manifest is
+      // build config (its `let package` is not an API surface) — the package/config
+      // fact paths own it. For a renamed module the base lives at old_path.
       const changes = diffSwiftDeclarations(file.path, sources.readBase(baseReadPath(file)), sources.readHead(file.path));
       swift_declaration_changes.push(...changes);
     }
@@ -266,6 +269,11 @@ const ASSERTION_PATTERN = /\b(?:expect|assert)\s*\(|\bassert\.[a-zA-Z]|\.(?:toBe
 // family, XCTFail, XCTUnwrap, and Swift Testing `#expect`/`#require`.
 const SWIFT_SKIP_PATTERN = /\bXCTSkip(?:If|Unless)?\b|\.disabled\s*\(/;
 const SWIFT_ASSERTION_PATTERN = /\bXCTAssert\w*\s*\(|\bXCTFail\s*\(|\bXCTUnwrap\s*\(|#(?:expect|require)\s*\(/;
+// A Swift TEST METHOD declaration: an XCTest `func test...(` or a Swift Testing `@Test`
+// (often `@Test func example()`). Counting net-removed methods catches deleting a whole
+// test that has no assertion line (e.g. a smoke test that only `try await`s) —
+// SEMANTIC_DIFF.6 lists removed test methods, not only removed checks.
+const SWIFT_TEST_METHOD_PATTERN = /(?:^|\s)@Test\b|\bfunc\s+test[A-Za-z0-9_]*\s*[(<]/;
 
 function detectTestWeakening(diff: StructuredDiff): TestWeakeningSignal[] {
   const signals: TestWeakeningSignal[] = [];
@@ -296,13 +304,17 @@ function detectTestWeakening(diff: StructuredDiff): TestWeakeningSignal[] {
     if (file.status === "A") {
       continue;
     }
-    const added = file.hunks.flatMap((hunk) => hunk.lines.filter((line) => line.kind === "add").map((line) => line.text));
-    const removed = file.hunks.flatMap((hunk) => hunk.lines.filter((line) => line.kind === "delete").map((line) => line.text));
-
     // review-surfaces.SEMANTIC_DIFF.6: Swift tests use XCTest / Swift Testing
     // vocabulary, not JS skip/assert markers — pick the patterns by file kind so a
     // JS-only rule does not silently miss a weakened Swift test.
     const swift = isSwiftTestPath(file.path);
+    // For Swift, blank comments/strings per line before matching so a fixture string or
+    // comment containing `.disabled(` / `XCTSkipIf` does not false-fire (the JS rules are
+    // already anchored against this).
+    const lineText = (line: { text: string }): string => (swift ? cleanSwiftSource(line.text) : line.text);
+    const added = file.hunks.flatMap((hunk) => hunk.lines.filter((line) => line.kind === "add").map(lineText));
+    const removed = file.hunks.flatMap((hunk) => hunk.lines.filter((line) => line.kind === "delete").map(lineText));
+
     const skipPattern = swift ? SWIFT_SKIP_PATTERN : SKIP_PATTERN;
     const assertionPattern = swift ? SWIFT_ASSERTION_PATTERN : ASSERTION_PATTERN;
 
@@ -311,6 +323,16 @@ function detectTestWeakening(diff: StructuredDiff): TestWeakeningSignal[] {
     const removedSkips = removed.filter((text) => skipPattern.test(text)).length;
     if (addedSkips > removedSkips) {
       signals.push({ kind: "skipped_test", path: file.path, detail: `${addedSkips - removedSkips} test(s) newly skipped/disabled; confirm the disabled coverage is intentional.` });
+    }
+
+    // review-surfaces.SEMANTIC_DIFF.6: net-removed Swift test METHODS — deleting a whole
+    // `func test...()` / `@Test` that has no assertion line still drops coverage.
+    if (swift) {
+      const addedMethods = added.filter((text) => SWIFT_TEST_METHOD_PATTERN.test(text)).length;
+      const removedMethods = removed.filter((text) => SWIFT_TEST_METHOD_PATTERN.test(text)).length;
+      if (removedMethods > addedMethods) {
+        signals.push({ kind: "removed_test_method", path: file.path, detail: `${removedMethods - addedMethods} test method(s) removed; confirm the coverage moved elsewhere and was not silently dropped.` });
+      }
     }
 
     // Removed assertions: more assertion lines deleted than added. A pure edit
