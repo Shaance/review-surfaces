@@ -4990,12 +4990,16 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
         command: "pnpm run test -- tests/scoped-coverage.test.ts"
       })];
     case "untested_changed_impl":
+      // Keep the two actions DISTINCT rather than the conflated "add or identify":
+      // run an existing test at the current head (record the transcript), OR add a
+      // test if none exists. The PR risk's own summary/suggested_checks already say
+      // which case applies per file.
       return [riskDraft({
         kind: "automatic",
         priority: "required",
         suggested_file: suggestedFile,
-        scenario: `Add or identify a focused test that exercises the changed implementation${path ? ` in ${path}` : ""}.`,
-        expected_result: "A direct test or command transcript demonstrates the changed implementation behavior before approval.",
+        scenario: `Run the existing test for the changed implementation${path ? ` in ${path}` : ""} at the current head and record the transcript, or add a test if none covers it.`,
+        expected_result: "A direct test or current-head command transcript demonstrates the changed implementation behavior before approval.",
         command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test"
       })];
     case "unmapped_change":

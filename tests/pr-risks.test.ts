@@ -63,6 +63,7 @@ function buildInput(overrides: Partial<BuildPrRiskInput> = {}): BuildPrRiskInput
     ...(overrides.commandTranscripts !== undefined ? { commandTranscripts: overrides.commandTranscripts } : {}),
     ...(overrides.changedFileSources !== undefined ? { changedFileSources: overrides.changedFileSources } : {}),
     ...(overrides.reviewAreas !== undefined ? { reviewAreas: overrides.reviewAreas } : {}),
+    ...(overrides.repositoryTestAreas !== undefined ? { repositoryTestAreas: overrides.repositoryTestAreas } : {}),
     ...(overrides.config !== undefined ? { config: overrides.config } : {})
   };
 }
@@ -243,6 +244,52 @@ test("impl file with no co-changed test in its area produces an untested_changed
   );
 });
 
+test("untested impl with NO existing test in its area -> ADD-a-test wording (not run-existing)", () => {
+  const input = buildInput({
+    scope: scope({
+      changed_files: [
+        changedFile({ path: "src/foo/widget.ts", role: "implementation", areas: ["FOO"] })
+      ]
+    }),
+    repositoryTestAreas: new Set<string>() // no test maps to FOO
+  });
+
+  const candidate = buildPrRiskCandidates(input).candidates.find((c) => c.rule === "untested_changed_impl");
+  assert.ok(candidate, "untested_changed_impl candidate emitted");
+  assert.ok(
+    candidate.suggested_checks.some((check) => /^Add a test covering the change to src\/foo\/widget\.ts/.test(check)),
+    "no-existing-test files get the ADD-a-test action"
+  );
+  assert.ok(
+    !candidate.suggested_checks.some((check) => /Run the existing test/.test(check)),
+    "no-existing-test files must NOT be told to run an existing test"
+  );
+  assert.ok(/no test mapped to/.test(candidate.summary), "summary states no test maps to the area");
+});
+
+test("untested impl WITH an existing test in its area -> RUN-the-existing-test wording (not add)", () => {
+  const input = buildInput({
+    scope: scope({
+      changed_files: [
+        changedFile({ path: "src/foo/widget.ts", role: "implementation", areas: ["FOO"] })
+      ]
+    }),
+    repositoryTestAreas: new Set<string>(["FOO"]) // an existing (unchanged) test maps to FOO
+  });
+
+  const candidate = buildPrRiskCandidates(input).candidates.find((c) => c.rule === "untested_changed_impl");
+  assert.ok(candidate, "untested_changed_impl candidate emitted (existing test was not run at head)");
+  assert.ok(
+    candidate.suggested_checks.some((check) => /^Run the existing test\(s\) mapped to/.test(check)),
+    "existing-test files get the RUN-the-existing-test action first"
+  );
+  assert.ok(
+    !candidate.suggested_checks.some((check) => /^Add a test covering/.test(check)),
+    "existing-test files must NOT lead with add-a-test"
+  );
+  assert.ok(/no current-head passing transcript proves it ran/.test(candidate.summary), "summary states the existing test did not run at head");
+});
+
 test("impl file WITH a co-changed test in the same area does NOT fire untested_changed_impl", () => {
   const input = buildInput({
     scope: scope({
@@ -409,7 +456,7 @@ test("impl file with a stale focused test transcript still fires untested_change
   const candidate = model.candidates.find((c) => c.rule === "untested_changed_impl");
 
   assert.ok(candidate, "stale focused transcript does not suppress the untested candidate");
-  assert.ok(candidate.summary.includes("current-head command transcript"));
+  assert.ok(candidate.summary.includes("no current-head test transcript"));
 });
 
 test("impl file with a failed focused test transcript still fires untested_changed_impl", () => {

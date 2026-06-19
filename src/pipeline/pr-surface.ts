@@ -9,7 +9,7 @@ import { ProviderName, ReasoningProvider } from "../llm/provider";
 import { buildPrNarrative } from "../llm/pr-narrative";
 import { buildPrChangeDiagram } from "../diagrams/pr-change-diagram";
 import { buildPrRiskCandidates } from "../risks/pr-risks";
-import { ReviewArea } from "../review-areas/areas";
+import { createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
 import { buildPrScope } from "../scope/pr-scope";
 import { PrReviewSurfaceModel, PR_SURFACE_SCHEMA_VERSION, PrSurfaceBlockedReason, StructuredDiff } from "../pr/contract";
 
@@ -61,6 +61,18 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     baseEvaluation: input.baseEvaluation
   });
 
+  // Areas that have ANY test file in the repository (changed or not). Mapped with
+  // the same review_surface matcher buildPrScope uses for changed files, so the
+  // untested rule's "an existing test was not run at head" vs "no test exists"
+  // distinction is computed over the same area space the diff is scoped into.
+  const repositoryTestAreas = new Set<string>();
+  const repoTestMatcher = createReviewAreaMatcher(input.reviewAreas);
+  for (const test of input.collection.tests) {
+    for (const area of repoTestMatcher.groupsForPath(test.path, { purpose: "review_surface" })) {
+      repositoryTestAreas.add(area);
+    }
+  }
+
   const risks = buildPrRiskCandidates({
     specMode: input.intent.spec_mode,
     scope,
@@ -70,7 +82,8 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     commandTranscripts: input.collection.commandTranscripts,
     commandRules: input.collection.commandRules,
     changedFileSources: Object.fromEntries(input.collection.changedFiles.map((file) => [file.path, file.source])),
-    reviewAreas: input.reviewAreas
+    reviewAreas: input.reviewAreas,
+    repositoryTestAreas
   });
 
   const diagram = buildPrChangeDiagram({ scope, risks });

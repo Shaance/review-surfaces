@@ -48,6 +48,10 @@ export interface BuildPrRiskInput {
   commandRules?: CommandRule[];
   changedFileSources?: Record<string, ChangedFile["source"]>;
   reviewAreas?: ReviewArea[];
+  // Review areas that have ANY test file in the repository (changed or not).
+  // Lets untested_changed_impl tell "an existing test was not run at head" apart
+  // from "no relevant test exists" without conflating the two reviewer actions.
+  repositoryTestAreas?: Set<string>;
   config?: { largeDiffFileCap?: number; largeDiffLineCap?: number };
 }
 
@@ -180,48 +184,103 @@ function pushSecretInDiff(drafts: DraftCandidate[], input: BuildPrRiskInput): vo
 // An implementation-role changed file whose review area has no changed test file
 // and no current-head command transcript in scope. Cites the impl file. One
 // candidate per such file (id/path ordered).
+//
+// The reviewer_action distinguishes the two genuinely different states the prior
+// "add or update a test" wording conflated:
+//   - an existing test IS mapped to the file's area, but no current-head passing
+//     transcript proves it ran against this change -> RUN the existing test.
+//   - NO test maps to the file's area at all -> ADD a test.
+// "verified" (an existing test that DID run at head, or a co-changed test) never
+// reaches this rule: hasImplementationValidation() already cleared it.
 function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInput): void {
   const changed = input.scope.changed_files;
   const validation = buildImplementationValidationIndex(input);
+  const repositoryTestAreas = input.repositoryTestAreas ?? new Set<string>();
   const untested = changed
     .filter((file) => file.role === "implementation" && !hasImplementationValidation(file, validation))
     .sort((left, right) => compareStrings(left.path, right.path));
   for (const file of untested.slice(0, MAX_PER_FILE_CANDIDATES)) {
+    const hasExisting = fileHasExistingAreaTest(file, repositoryTestAreas);
     drafts.push({
       rule: "untested_changed_impl",
       category: "testing",
       severity: "medium",
-      summary: `Implementation file ${file.path} changed with no changed test or current-head command transcript in its review area.`,
+      summary: hasExisting
+        ? `Implementation file ${file.path} changed; a test is mapped to ${areaListForMessage(file)} but no current-head passing transcript proves it ran against this change.`
+        : `Implementation file ${file.path} changed with no test mapped to ${areaListForMessage(file)} and no current-head test transcript.`,
       evidence: [
-        fileEvidence(file.path, "Changed implementation file; no co-changed test or current-head passing test transcript mapped to its area."),
-        missingEvidence(`No changed test or current-head passing test transcript mapped to ${areaListForMessage(file)}.`)
+        fileEvidence(
+          file.path,
+          hasExisting
+            ? "Changed implementation file; an existing test maps to its area but no current-head passing transcript ran it."
+            : "Changed implementation file; no test maps to its area and no current-head passing transcript."
+        ),
+        missingEvidence(
+          hasExisting
+            ? `No current-head passing test transcript exercising ${file.path} (an existing test is mapped to ${areaListForMessage(file)}).`
+            : `No test mapped to ${areaListForMessage(file)} and no current-head test transcript covering ${file.path}.`
+        )
       ],
-      suggested_checks: [
-        `Add or update a test covering the change to ${file.path}.`,
-        "Record a current-head focused or broad test transcript if existing tests exercise the new behavior."
-      ],
+      suggested_checks: hasExisting
+        ? [
+            `Run the existing test(s) mapped to ${areaListForMessage(file)} at the current head and record the transcript (review-surfaces run -- <your test command>).`,
+            `Add a test only if the change to ${file.path} introduces behavior the existing tests do not cover.`
+          ]
+        : [
+            `Add a test covering the change to ${file.path}.`,
+            "Record a current-head broad or focused test transcript so the new test's run is verified."
+          ],
       sortPath: file.path
     });
   }
   if (untested.length > MAX_PER_FILE_CANDIDATES) {
-    const omitted = untested.length - MAX_PER_FILE_CANDIDATES;
-    const firstOmitted = untested[MAX_PER_FILE_CANDIDATES];
-    drafts.push({
-      rule: "untested_changed_impl",
-      category: "testing",
-      severity: "medium",
-      summary: `${omitted} additional implementation file(s) changed with no changed test or current-head command transcript in their review area.`,
-      evidence: evidenceForPaths(
-        untested.slice(MAX_PER_FILE_CANDIDATES).map((file) => file.path),
-        "Additional implementation file without changed test or current-head command transcript."
-      ),
-      suggested_checks: [
-        "Add or update tests for the additional untested implementation changes.",
-        "Record current-head focused or broad test transcripts if existing tests exercise the new behavior."
-      ],
-      sortPath: firstOmitted?.path ?? ""
-    });
+    // Partition the overflow by the SAME existing-test distinction so the aggregate
+    // line stays honest about which action each group needs (at most two extra drafts).
+    const overflow = untested.slice(MAX_PER_FILE_CANDIDATES);
+    const withExisting = overflow.filter((file) => fileHasExistingAreaTest(file, repositoryTestAreas));
+    const withoutExisting = overflow.filter((file) => !fileHasExistingAreaTest(file, repositoryTestAreas));
+    if (withExisting.length > 0) {
+      drafts.push({
+        rule: "untested_changed_impl",
+        category: "testing",
+        severity: "medium",
+        summary: `${withExisting.length} additional implementation file(s) changed whose mapped tests have no current-head passing transcript.`,
+        evidence: evidenceForPaths(
+          withExisting.map((file) => file.path),
+          "Additional implementation file with a mapped test but no current-head passing transcript."
+        ),
+        suggested_checks: [
+          "Run the existing tests mapped to these areas at the current head and record the transcripts.",
+          "Add tests only where the changes introduce behavior the existing tests do not cover."
+        ],
+        sortPath: withExisting[0]?.path ?? ""
+      });
+    }
+    if (withoutExisting.length > 0) {
+      drafts.push({
+        rule: "untested_changed_impl",
+        category: "testing",
+        severity: "medium",
+        summary: `${withoutExisting.length} additional implementation file(s) changed with no test mapped to their review area.`,
+        evidence: evidenceForPaths(
+          withoutExisting.map((file) => file.path),
+          "Additional implementation file with no mapped test and no current-head transcript."
+        ),
+        suggested_checks: [
+          "Add tests for these untested implementation changes.",
+          "Record current-head broad or focused test transcripts so the new tests' runs are verified."
+        ],
+        sortPath: withoutExisting[0]?.path ?? ""
+      });
+    }
   }
+}
+
+// True when at least one of the changed file's review areas has ANY test file in
+// the repository (changed or not). Distinguishes "an existing test was simply not
+// run at the current head" from "no relevant test exists" for the reviewer_action.
+function fileHasExistingAreaTest(file: ScopedChangedFile, repositoryTestAreas: Set<string>): boolean {
+  return file.areas.some((area) => repositoryTestAreas.has(area));
 }
 
 interface ImplementationValidationIndex {
