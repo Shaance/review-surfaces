@@ -2491,6 +2491,8 @@ function configFactTitle(kind: ConfigFact["kind"]): string {
       return "Xcode target structure change";
     case "ios_generator_drift":
       return "Possible generated-project drift";
+    case "ios_config_unparsed":
+      return "Apple config could not be inspected";
   }
 }
 
@@ -2506,6 +2508,7 @@ function configFactLens(kind: ConfigFact["kind"]): RiskLens {
     case "ios_test_structure_change":
       return "test_evidence";
     case "ios_generator_drift":
+    case "ios_config_unparsed":
       return "cache_provenance";
     default:
       return "security_privacy";

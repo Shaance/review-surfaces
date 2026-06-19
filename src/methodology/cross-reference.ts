@@ -52,7 +52,11 @@ const SECURITY_CONFIG_KINDS = new Set<ConfigFactKind>([
   "ci_new_secret_reference",
   "ci_pull_request_target_added",
   "docker_curl_pipe_shell",
-  "sql_destructive_statement"
+  "sql_destructive_statement",
+  // review-surfaces.CONFIG_FACTS.4: an iOS privacy/capability change or an ATS
+  // broadening is security-relevant, so it fires/promotes risky_no_security too.
+  "ios_privacy_capability_change",
+  "ios_ats_broadened"
 ]);
 
 function basename(filePath: string): string {

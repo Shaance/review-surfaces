@@ -7,6 +7,8 @@
 
 import { ConfigFact } from "./config-facts";
 import { StructuredDiff } from "../pr/contract";
+import { isAppleGeneratedPath } from "../collector/source-kind";
+import { redactSecrets } from "../privacy/secrets";
 import { readPlist } from "../collector/apple-project/plist";
 import { parseXcodegenProject } from "../collector/apple-project/xcodegen";
 import { parsePbxproj } from "../collector/apple-project/pbxproj";
@@ -50,7 +52,7 @@ function isXcconfigPath(p: string): boolean {
   return /\.xcconfig$/i.test(p);
 }
 function isXcodegenPath(p: string): boolean {
-  return p === "project.yml" || p.endsWith("/project.yml");
+  return /(^|\/)project\.ya?ml$/.test(p);
 }
 function isPbxprojPath(p: string): boolean {
   return p.endsWith(".xcodeproj/project.pbxproj");
@@ -68,6 +70,12 @@ export function computeAppleConfigFacts(input: ComputeAppleConfigFactsInput): Co
   const head = (file: { path: string }): string | undefined => input.readHead(file.path);
 
   for (const file of input.diff.files) {
+    // A generated Apple bundle (e.g. `Build/App.xcarchive/Info.plist`,
+    // `TestResults.xcresult/Info.plist`) is build output — never a review-focus config
+    // change, so it must not produce a high-priority privacy/ATS item.
+    if (isAppleGeneratedPath(file.path)) {
+      continue;
+    }
     const b = base(file);
     const h = head(file);
     if (isPrivacyManifestPath(file.path)) {
@@ -102,12 +110,21 @@ function diffSets<T>(base: Set<T>, head: Set<T>): { added: T[]; removed: T[] } {
 
 // --- Info.plist (CONFIG_FACTS.4) --------------------------------------------
 
+// A binary plist (or any unreadable side) must carry an explicit UNKNOWN diagnostic, not
+// silently look like "no change" (goal contract D10).
+function binaryPlistDiagnostic(path: string, baseView: { binary: boolean } | undefined, headView: { binary: boolean } | undefined): ConfigFact[] {
+  if (baseView?.binary || headView?.binary) {
+    return [{ kind: "ios_config_unparsed", path, detail: `\`${path}\` is a BINARY plist — its keys/values could not be inspected; review the change manually (no key absence is inferred).` }];
+  }
+  return [];
+}
+
 function infoPlistFacts(path: string, baseText: string | undefined, headText: string | undefined): ConfigFact[] {
   const baseView = baseText !== undefined ? readPlist(baseText) : undefined;
   const headView = headText !== undefined ? readPlist(headText) : undefined;
-  // A binary plist on either side: do not infer absence (no fact).
-  if (baseView?.binary || headView?.binary) {
-    return [];
+  const diagnostic = binaryPlistDiagnostic(path, baseView, headView);
+  if (diagnostic.length > 0) {
+    return diagnostic; // binary on a side: do not infer absence, but surface the gap.
   }
   const facts: ConfigFact[] = [];
   const baseKeys = new Set([...(baseView?.keys ?? [])].filter((k) => PRIVACY_PLIST_KEY.test(k)));
@@ -118,6 +135,13 @@ function infoPlistFacts(path: string, baseText: string | undefined, headText: st
   }
   for (const key of removed) {
     facts.push({ kind: "ios_privacy_capability_change", path, detail: `Info.plist removes privacy/transport key \`${key}\`` });
+  }
+  // A change UNDER an existing watched key (e.g. a new entry in NSPrivacyAccessedAPITypes,
+  // an added domain) — key set unchanged, value fingerprint differs.
+  for (const key of [...baseKeys].filter((k) => headKeys.has(k)).sort()) {
+    if (baseView?.valueFingerprint(key) !== headView?.valueFingerprint(key)) {
+      facts.push({ kind: "ios_privacy_capability_change", path, detail: `Info.plist changes the value of privacy/transport key \`${key}\`` });
+    }
   }
   // App Transport Security: arbitrary loads turned on is a transport broadening.
   const baseAts = baseView?.bool("NSAllowsArbitraryLoads");
@@ -133,16 +157,26 @@ function infoPlistFacts(path: string, baseText: string | undefined, headText: st
 function entitlementFacts(path: string, baseText: string | undefined, headText: string | undefined): ConfigFact[] {
   const baseView = baseText !== undefined ? readPlist(baseText) : undefined;
   const headView = headText !== undefined ? readPlist(headText) : undefined;
-  if (baseView?.binary || headView?.binary) {
-    return [];
+  const diagnostic = binaryPlistDiagnostic(path, baseView, headView);
+  if (diagnostic.length > 0) {
+    return diagnostic;
   }
-  const { added, removed } = diffSets(baseView?.keys ?? new Set<string>(), headView?.keys ?? new Set<string>());
+  const baseKeys = baseView?.keys ?? new Set<string>();
+  const headKeys = headView?.keys ?? new Set<string>();
+  const { added, removed } = diffSets(baseKeys, headKeys);
   const facts: ConfigFact[] = [];
   for (const key of added) {
     facts.push({ kind: "ios_privacy_capability_change", path, detail: `entitlement \`${key}\` added` });
   }
   for (const key of removed) {
     facts.push({ kind: "ios_privacy_capability_change", path, detail: `entitlement \`${key}\` removed` });
+  }
+  // A change to an existing entitlement's value (a new app group / keychain group /
+  // associated domain under the same key).
+  for (const key of [...baseKeys].filter((k) => headKeys.has(k)).sort()) {
+    if (baseView?.valueFingerprint(key) !== headView?.valueFingerprint(key)) {
+      facts.push({ kind: "ios_privacy_capability_change", path, detail: `entitlement \`${key}\` value changed` });
+    }
   }
   return facts;
 }
@@ -152,8 +186,9 @@ function entitlementFacts(path: string, baseText: string | undefined, headText: 
 function privacyManifestFacts(path: string, baseText: string | undefined, headText: string | undefined): ConfigFact[] {
   const baseView = baseText !== undefined ? readPlist(baseText) : undefined;
   const headView = headText !== undefined ? readPlist(headText) : undefined;
-  if (baseView?.binary || headView?.binary) {
-    return [];
+  const diagnostic = binaryPlistDiagnostic(path, baseView, headView);
+  if (diagnostic.length > 0) {
+    return diagnostic;
   }
   const facts: ConfigFact[] = [];
   const baseTracking = baseView?.bool("NSPrivacyTracking");
@@ -161,12 +196,21 @@ function privacyManifestFacts(path: string, baseText: string | undefined, headTe
   if (headTracking !== undefined && headTracking !== baseTracking) {
     facts.push({ kind: "ios_privacy_capability_change", path, detail: `privacy manifest NSPrivacyTracking ${baseTracking ? "true" : "false/unset"} → ${headTracking ? "true" : "false"}` });
   }
-  const { added, removed } = diffSets(baseView?.keys ?? new Set<string>(), headView?.keys ?? new Set<string>());
-  for (const key of added.filter((k) => /Tracking|AccessedAPI|CollectedData/.test(k))) {
+  const baseKeys = baseView?.keys ?? new Set<string>();
+  const headKeys = headView?.keys ?? new Set<string>();
+  const watched = (k: string): boolean => /Tracking|AccessedAPI|CollectedData/.test(k);
+  const { added, removed } = diffSets(baseKeys, headKeys);
+  for (const key of added.filter(watched)) {
     facts.push({ kind: "ios_privacy_capability_change", path, detail: `privacy manifest adds \`${key}\`` });
   }
-  for (const key of removed.filter((k) => /Tracking|AccessedAPI|CollectedData/.test(k))) {
+  for (const key of removed.filter(watched)) {
     facts.push({ kind: "ios_privacy_capability_change", path, detail: `privacy manifest removes \`${key}\`` });
+  }
+  // A changed REASON/entry under an existing required-reason / collected-data key.
+  for (const key of [...baseKeys].filter((k) => headKeys.has(k) && watched(k)).sort()) {
+    if (baseView?.valueFingerprint(key) !== headView?.valueFingerprint(key)) {
+      facts.push({ kind: "ios_privacy_capability_change", path, detail: `privacy manifest changes entries under \`${key}\`` });
+    }
   }
   return facts;
 }
@@ -176,9 +220,15 @@ function privacyManifestFacts(path: string, baseText: string | undefined, headTe
 function parseXcconfig(text: string): Map<string, string> {
   const result = new Map<string, string>();
   for (const line of text.split("\n")) {
-    const match = /^\s*([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line.replace(/\/\/.*$/, ""));
+    // The setting name may carry an Xcode condition suffix (`SETTING[sdk=iphoneos*]`);
+    // key the change on the BASE setting name (the condition is part of the value detail).
+    const match = /^\s*([A-Z][A-Z0-9_]*)(\[[^\]]*\])?\s*=\s*(.*?)\s*$/.exec(line.replace(/\/\/.*$/, ""));
     if (match) {
-      result.set(match[1], match[2]);
+      const key = match[1];
+      const value = `${match[2] ?? ""}${match[2] ? " " : ""}${match[3]}`.trim();
+      // Concatenate multiple conditional assignments of the same setting so any change is
+      // observed (e.g. a per-sdk override changing).
+      result.set(key, result.has(key) ? `${result.get(key)} ; ${value}` : value);
     }
   }
   return result;
@@ -192,7 +242,9 @@ function xcconfigFacts(path: string, baseText: string | undefined, headText: str
     const b = base.get(key);
     const h = head.get(key);
     if (b !== h && (b !== undefined || h !== undefined)) {
-      facts.push({ kind: "ios_build_setting_change", path, detail: `${key} ${b ?? "unset"} → ${h ?? "unset"}` });
+      // Values can carry credential-like tokens (`OTHER_SWIFT_FLAGS = -DAPI_KEY=…`), so
+      // redact before the detail is persisted/posted.
+      facts.push({ kind: "ios_build_setting_change", path, detail: `${key} ${redactSecrets(b ?? "unset").text} → ${redactSecrets(h ?? "unset").text}` });
     }
   }
   return facts;
@@ -204,24 +256,73 @@ function targetMap(targets: AppleTarget[]): Map<string, AppleTarget> {
   return new Map(targets.map((t) => [t.name, t]));
 }
 
+// Project-level build settings (CONFIG_FACTS.4) parsed directly from the project text:
+// pbxproj `KEY = value;` in XCBuildConfiguration, XcodeGen `KEY: value` under settings.
+// Multiple assignments of a setting are concatenated so any change is observed.
+function projectBuildSettings(text: string, yaml: boolean): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const key of WATCHED_BUILD_SETTINGS) {
+    const re = yaml ? new RegExp(`(?:^|\\n)\\s*${key}\\s*:\\s*(.+)`, "g") : new RegExp(`\\b${key}\\s*=\\s*([^;\\n]+)`, "g");
+    const values = [...text.matchAll(re)].map((m) => m[1].trim().replace(/^["']|["',;]+$/g, "").trim());
+    if (values.length > 0) {
+      result.set(key, [...new Set(values)].sort().join(" ; "));
+    }
+  }
+  return result;
+}
+
+function buildSettingFacts(path: string, baseText: string | undefined, headText: string | undefined, yaml: boolean): ConfigFact[] {
+  const base = baseText !== undefined ? projectBuildSettings(baseText, yaml) : new Map<string, string>();
+  const head = headText !== undefined ? projectBuildSettings(headText, yaml) : new Map<string, string>();
+  const facts: ConfigFact[] = [];
+  for (const key of WATCHED_BUILD_SETTINGS) {
+    const b = base.get(key);
+    const h = head.get(key);
+    if (b !== h && (b !== undefined || h !== undefined)) {
+      facts.push({ kind: "ios_build_setting_change", path, detail: `${key} ${redactSecrets(b ?? "unset").text} → ${redactSecrets(h ?? "unset").text}` });
+    }
+  }
+  return facts;
+}
+
 function xcodegenStructureFacts(path: string, baseText: string | undefined, headText: string | undefined): ConfigFact[] {
-  const base = baseText !== undefined ? targetMap(parseXcodegenProject(path, baseText).targets) : new Map<string, AppleTarget>();
-  const head = headText !== undefined ? targetMap(parseXcodegenProject(path, headText).targets) : new Map<string, AppleTarget>();
-  return structureFactsFromTargets(path, base, head);
+  const baseParse = baseText !== undefined ? parseXcodegenProject(path, baseText) : undefined;
+  const headParse = headText !== undefined ? parseXcodegenProject(path, headText) : undefined;
+  const basePresentUnparsed = baseText !== undefined && !baseParse?.isXcodegen;
+  const headPresentUnparsed = headText !== undefined && !headParse?.isXcodegen;
+  if (basePresentUnparsed && headPresentUnparsed) {
+    return []; // not an XcodeGen project on either side — no structure facts.
+  }
+  if (basePresentUnparsed || headPresentUnparsed) {
+    // One side parses, the other present side does not — never infer all-removed/added.
+    return [{ kind: "ios_config_unparsed", path, detail: `\`${path}\` could not be parsed as XcodeGen on one side — target/structure changes were not inferred.` }];
+  }
+  const base = targetMap(baseParse?.targets ?? []);
+  const head = targetMap(headParse?.targets ?? []);
+  return [...structureFactsFromTargets(path, base, head), ...buildSettingFacts(path, baseText, headText, true)];
 }
 
 function pbxStructureFacts(path: string, baseText: string | undefined, headText: string | undefined): ConfigFact[] {
-  const base = baseText !== undefined ? targetMap(parsePbxproj(path, baseText).targets) : new Map<string, AppleTarget>();
-  const head = headText !== undefined ? targetMap(parsePbxproj(path, headText).targets) : new Map<string, AppleTarget>();
-  return structureFactsFromTargets(path, base, head);
+  const baseParse = baseText !== undefined ? parsePbxproj(path, baseText) : undefined;
+  const headParse = headText !== undefined ? parsePbxproj(path, headText) : undefined;
+  const basePresentUnparsed = baseText !== undefined && !baseParse?.parsed;
+  const headPresentUnparsed = headText !== undefined && !headParse?.parsed;
+  if (basePresentUnparsed || headPresentUnparsed) {
+    // A present pbxproj that the bounded parser could not read — emit an UNKNOWN
+    // diagnostic rather than treating every target as removed/added (goal contract D10).
+    return [{ kind: "ios_config_unparsed", path, detail: `\`${path}\` could not be parsed — target/structure changes were not inferred.` }];
+  }
+  const base = targetMap(baseParse?.targets ?? []);
+  const head = targetMap(headParse?.targets ?? []);
+  return [...structureFactsFromTargets(path, base, head), ...buildSettingFacts(path, baseText, headText, false)];
 }
 
 function structureFactsFromTargets(path: string, base: Map<string, AppleTarget>, head: Map<string, AppleTarget>): ConfigFact[] {
   const facts: ConfigFact[] = [];
+  const isTestKind = (t: AppleTarget | undefined): boolean => t?.kind === "unit_test" || t?.kind === "ui_test";
   for (const name of new Set([...base.keys(), ...head.keys()])) {
     const b = base.get(name);
     const h = head.get(name);
-    const isTestKind = (t: AppleTarget | undefined): boolean => t?.kind === "unit_test" || t?.kind === "ui_test";
     if (b && !h) {
       if (isTestKind(b)) {
         facts.push({ kind: "ios_test_structure_change", path, detail: `test target \`${name}\` removed` });
@@ -234,8 +335,21 @@ function structureFactsFromTargets(path: string, base: Map<string, AppleTarget>,
       facts.push({ kind: "ios_target_structure_change", path, detail: `target \`${name}\` added (${h.kind})` });
       continue;
     }
-    if (b && h && b.kind !== h.kind) {
+    if (!b || !h) {
+      continue;
+    }
+    if (b.kind !== h.kind) {
       facts.push({ kind: "ios_target_structure_change", path, detail: `target \`${name}\` kind ${b.kind} → ${h.kind}` });
+    }
+    // review-surfaces.CONFIG_FACTS.5: a source REMOVED from a target, or an app<->test
+    // DEPENDENCY dropped, is a structure regression even when the kind is unchanged.
+    const src = diffSets(new Set(b.source_paths), new Set(h.source_paths));
+    if (src.added.length > 0 || src.removed.length > 0) {
+      facts.push({ kind: isTestKind(h) ? "ios_test_structure_change" : "ios_target_structure_change", path, detail: `target \`${name}\` source membership changed (added ${src.added.length}, removed ${src.removed.length})` });
+    }
+    const dep = diffSets(new Set(b.dependency_target_ids), new Set(h.dependency_target_ids));
+    if (dep.added.length > 0 || dep.removed.length > 0) {
+      facts.push({ kind: "ios_target_structure_change", path, detail: `target \`${name}\` dependencies changed: ${[...dep.added.map((d) => `+${d}`), ...dep.removed.map((d) => `-${d}`)].join(" ")}` });
     }
   }
   return facts;
@@ -274,35 +388,55 @@ function testPlanFacts(path: string, baseText: string | undefined, headText: str
   for (const added of [...headSkips].filter((s) => !baseSkips.has(s)).sort()) {
     facts.push({ kind: "ios_test_structure_change", path, detail: `test plan newly skips \`${added}\`` });
   }
+  // review-surfaces.CONFIG_FACTS.5: a newly-added `selectedTests` entry NARROWS the run
+  // to a subset (a focus) even with the same enabled target and no new skips.
+  const baseSelected = new Set(base?.selected_tests ?? []);
+  const headSelected = new Set(head?.selected_tests ?? []);
+  for (const added of [...headSelected].filter((s) => !baseSelected.has(s)).sort()) {
+    facts.push({ kind: "ios_test_structure_change", path, detail: `test plan now narrows the run to selected test \`${added}\` (focused selection)` });
+  }
   return facts;
 }
 
 // --- XcodeGen-vs-generated drift (CONFIG_FACTS.5) ---------------------------
 
 function driftFacts(input: ComputeAppleConfigFactsInput): ConfigFact[] {
-  // Compare HEAD project.yml intent against HEAD pbxproj observed output when BOTH
-  // are in the diff. A target only in one side is advisory possible drift.
-  const ymlFile = input.diff.files.find((f) => isXcodegenPath(f.path));
-  const pbxFile = input.diff.files.find((f) => isPbxprojPath(f.path));
-  if (!ymlFile || !pbxFile) {
-    return [];
-  }
-  const ymlText = input.readHead(ymlFile.path);
-  const pbxText = input.readHead(pbxFile.path);
-  if (ymlText === undefined || pbxText === undefined) {
-    return [];
-  }
-  const intent = new Set(parseXcodegenProject(ymlFile.path, ymlText).targets.map((t) => t.name));
-  const observed = new Set(parsePbxproj(pbxFile.path, pbxText).targets.map((t) => t.name));
-  if (intent.size === 0 || observed.size === 0) {
-    return [];
-  }
+  // Compare HEAD project.yml intent against the generated pbxproj observed output, PAIRED
+  // BY PROJECT DIRECTORY so an unrelated `mac/Mac.xcodeproj` is never compared against
+  // `ios/project.yml`. (Detecting drift when only ONE side is in the diff needs the full
+  // repo file list, which this fact path does not receive — bounded to changed pairs.)
+  const ymlDir = (p: string): string => p.replace(/(?:^|\/)project\.ya?ml$/, "");
+  const pbxDir = (p: string): string => p.replace(/(?:^|\/)[^/]+\.xcodeproj\/project\.pbxproj$/, "");
+  const ymls = input.diff.files.filter((f) => isXcodegenPath(f.path));
+  const pbxs = input.diff.files.filter((f) => isPbxprojPath(f.path));
   const facts: ConfigFact[] = [];
-  for (const name of [...intent].filter((n) => !observed.has(n)).sort()) {
-    facts.push({ kind: "ios_generator_drift", path: ymlFile.path, detail: `target \`${name}\` is in project.yml but not the generated project — possible generated-project drift; run the repository drift check` });
-  }
-  for (const name of [...observed].filter((n) => !intent.has(n)).sort()) {
-    facts.push({ kind: "ios_generator_drift", path: pbxFile.path, detail: `target \`${name}\` is in the generated project but not project.yml — possible generated-project drift; run the repository drift check` });
+  for (const ymlFile of ymls) {
+    const dir = ymlDir(ymlFile.path);
+    const pbxFile = pbxs.find((p) => pbxDir(p.path) === dir);
+    if (!pbxFile) {
+      continue;
+    }
+    const ymlText = input.readHead(ymlFile.path);
+    const pbxText = input.readHead(pbxFile.path);
+    if (ymlText === undefined || pbxText === undefined) {
+      continue;
+    }
+    const intentParse = parseXcodegenProject(ymlFile.path, ymlText);
+    const observedParse = parsePbxproj(pbxFile.path, pbxText);
+    if (!intentParse.isXcodegen || !observedParse.parsed) {
+      continue; // a side could not be parsed — no drift guess (goal contract D10).
+    }
+    const intent = new Set(intentParse.targets.map((t) => t.name));
+    const observed = new Set(observedParse.targets.map((t) => t.name));
+    if (intent.size === 0 || observed.size === 0) {
+      continue;
+    }
+    for (const name of [...intent].filter((n) => !observed.has(n)).sort()) {
+      facts.push({ kind: "ios_generator_drift", path: ymlFile.path, detail: `target \`${name}\` is in ${ymlFile.path} but not the generated project (${pbxFile.path}) — possible generated-project drift; run the repository drift check` });
+    }
+    for (const name of [...observed].filter((n) => !intent.has(n)).sort()) {
+      facts.push({ kind: "ios_generator_drift", path: pbxFile.path, detail: `target \`${name}\` is in the generated project (${pbxFile.path}) but not ${ymlFile.path} — possible generated-project drift; run the repository drift check` });
+    }
   }
   return facts;
 }

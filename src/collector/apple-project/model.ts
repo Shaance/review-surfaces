@@ -42,6 +42,9 @@ export interface AppleTestPlan {
   test_target_ids: string[];
   // Test identifiers explicitly skipped/disabled in the plan.
   skipped_tests: string[];
+  // Test identifiers a target was NARROWED to (`selectedTests`) — a focus that runs only
+  // these, distinct from skipping specific tests.
+  selected_tests: string[];
 }
 
 export type AppleDiagnosticKind =

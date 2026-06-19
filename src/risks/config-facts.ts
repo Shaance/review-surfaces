@@ -26,7 +26,11 @@ export type ConfigFactKind =
   | "ios_build_setting_change"
   | "ios_test_structure_change"
   | "ios_target_structure_change"
-  | "ios_generator_drift";
+  | "ios_generator_drift"
+  // An Apple config/project file changed but could not be inspected (binary plist, or a
+  // manifest/project the bounded parser does not support) — an explicit UNKNOWN so the
+  // uncertainty is surfaced rather than read as "no change" (goal contract D10).
+  | "ios_config_unparsed";
 
 export interface ConfigFact {
   kind: ConfigFactKind;

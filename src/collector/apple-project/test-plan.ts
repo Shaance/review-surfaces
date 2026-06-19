@@ -7,7 +7,7 @@ import { isRecord } from "../../core/guards";
 import { AppleTestPlan } from "./model";
 
 export function parseTestPlan(path: string, content: string): AppleTestPlan {
-  const empty: AppleTestPlan = { path, test_target_ids: [], skipped_tests: [] };
+  const empty: AppleTestPlan = { path, test_target_ids: [], skipped_tests: [], selected_tests: [] };
   let parsed: unknown;
   try {
     parsed = JSON.parse(content);
@@ -19,6 +19,8 @@ export function parseTestPlan(path: string, content: string): AppleTestPlan {
   }
   const targets = new Set<string>();
   const skipped = new Set<string>();
+  const selected = new Set<string>();
+  const qualify = (name: string | undefined, id: string): string => (name && !id.startsWith(`${name}/`) ? `${name}/${id}` : id);
   for (const entry of parsed.testTargets) {
     if (!isRecord(entry)) {
       continue;
@@ -34,9 +36,15 @@ export function parseTestPlan(path: string, content: string): AppleTestPlan {
       if (typeof skip === "string") {
         // Keep the skip identifier verbatim (it is already a class/method id within
         // the target); prefix the target only when the id is not already qualified.
-        skipped.add(name && !skip.startsWith(`${name}/`) ? `${name}/${skip}` : skip);
+        skipped.add(qualify(name, skip));
+      }
+    }
+    // `selectedTests` NARROWS a target to only these — a focus that drops the rest.
+    for (const sel of Array.isArray(entry.selectedTests) ? entry.selectedTests : []) {
+      if (typeof sel === "string") {
+        selected.add(qualify(name, sel));
       }
     }
   }
-  return { path, test_target_ids: [...targets].sort(), skipped_tests: [...skipped].sort() };
+  return { path, test_target_ids: [...targets].sort(), skipped_tests: [...skipped].sort(), selected_tests: [...selected].sort() };
 }

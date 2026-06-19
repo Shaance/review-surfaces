@@ -11,6 +11,10 @@ export interface PlistView {
   keys: Set<string>;
   // Boolean value of a specific key by its immediate <true/>/<false/> sibling.
   bool: (key: string) => boolean | undefined;
+  // A whitespace-normalized fingerprint of the VALUE region(s) under a key name (the
+  // text between its </key> and the next <key>), so a change UNDER an existing key (a new
+  // app group, a new privacy-reason entry) is detectable even when the key set is equal.
+  valueFingerprint: (key: string) => string | undefined;
 }
 
 export function isBinaryPlist(content: string): boolean {
@@ -19,11 +23,22 @@ export function isBinaryPlist(content: string): boolean {
 
 export function readPlist(content: string): PlistView {
   if (isBinaryPlist(content)) {
-    return { binary: true, keys: new Set(), bool: () => undefined };
+    return { binary: true, keys: new Set(), bool: () => undefined, valueFingerprint: () => undefined };
   }
   const keys = new Set<string>();
-  for (const match of content.matchAll(/<key>([^<]+)<\/key>/g)) {
-    keys.add(match[1].trim());
+  // key name -> concatenated value region(s). A key value runs from after its </key> to
+  // the next <key> tag (or end); duplicate key names across nested dicts are concatenated
+  // so any instance changing alters the fingerprint.
+  const values = new Map<string, string>();
+  const keyTag = /<key>([^<]*)<\/key>/g;
+  const matches = [...content.matchAll(keyTag)];
+  for (let i = 0; i < matches.length; i += 1) {
+    const name = matches[i][1].trim();
+    keys.add(name);
+    const valueStart = (matches[i].index ?? 0) + matches[i][0].length;
+    const valueEnd = i + 1 < matches.length ? matches[i + 1].index ?? content.length : content.length;
+    const region = content.slice(valueStart, valueEnd).replace(/\s+/g, " ").trim();
+    values.set(name, (values.get(name) ?? "") + region);
   }
   return {
     binary: false,
@@ -33,6 +48,7 @@ export function readPlist(content: string): PlistView {
       const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const match = new RegExp(`<key>\\s*${escaped}\\s*</key>\\s*<(true|false)\\s*/>`).exec(content);
       return match ? match[1] === "true" : undefined;
-    }
+    },
+    valueFingerprint: (key: string): string | undefined => values.get(key)
   };
 }

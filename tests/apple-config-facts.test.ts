@@ -62,7 +62,10 @@ test("review-surfaces.CONFIG_FACTS.4 a binary plist infers NO absence (diagnosti
   const base = { "App/Info.plist": "<plist><dict><key>NSCameraUsageDescription</key><string>cam</string></dict></plist>" };
   const head = { "App/Info.plist": "bplist00\u0000\u0000binarygarbage" };
   const result = facts(base, head);
-  assert.equal(result.length, 0, "a binary head plist must not be read as 'key removed'");
+  // A binary head plist must not be read as "key removed"; it carries an explicit
+  // UNKNOWN diagnostic instead (goal contract D10).
+  assert.ok(!result.some((f) => f.kind === "ios_privacy_capability_change"), "no false 'key removed' fact");
+  assert.ok(result.length > 0 && result.every((f) => f.kind === "ios_config_unparsed"), "only an unknown diagnostic is emitted");
 });
 
 test("review-surfaces.CONFIG_FACTS.5 a removed test target / disabled test-plan target is a test-structure fact", () => {
@@ -108,4 +111,67 @@ test("review-surfaces.CONFIG_FACTS.5 a deliberate XcodeGen-vs-generated mismatch
   );
   const drift = result.find((f) => f.kind === "ios_generator_drift");
   assert.ok(drift && /Extra/.test(drift.detail) && /drift check/.test(drift.detail), "an intent-only target is advisory drift");
+});
+
+// --- Phase 4b Codex round 1: parser/coverage fixes ---------------------------
+
+test("review-surfaces.CONFIG_FACTS.4 a binary plist emits an UNKNOWN diagnostic, never inferred absence", () => {
+  const base = { "App/Info.plist": "<plist><dict><key>NSCameraUsageDescription</key><string>x</string></dict></plist>" };
+  const head = { "App/Info.plist": "bplist00 garbage" };
+  const result = facts(base, head);
+  assert.ok(result.some((f) => f.kind === "ios_config_unparsed"), "binary plist -> ios_config_unparsed");
+  assert.ok(!result.some((f) => f.kind === "ios_privacy_capability_change"), "no false key-removed fact");
+});
+
+test("review-surfaces.CONFIG_FACTS.4 a value change under an existing entitlement key is flagged", () => {
+  const base = { "App/App.entitlements": "<plist><dict><key>com.apple.security.application-groups</key><array><string>group.a</string></array></dict></plist>" };
+  const head = { "App/App.entitlements": "<plist><dict><key>com.apple.security.application-groups</key><array><string>group.a</string><string>group.b</string></array></dict></plist>" };
+  assert.ok(facts(base, head).some((f) => f.kind === "ios_privacy_capability_change" && /value changed/.test(f.detail)), "an added app group is a capability change");
+});
+
+test("review-surfaces.CONFIG_FACTS.4 a conditional + secret-bearing xcconfig setting is flagged and redacted", () => {
+  const base = { "Config/App.xcconfig": "SWIFT_VERSION = 5.9\n" };
+  const head = { "Config/App.xcconfig": "SWIFT_VERSION[sdk=iphoneos*] = 6.0\nOTHER_SWIFT_FLAGS = -DAPI_KEY=AIzaSyA1234567890abcdefghijklmnopqrstuv\n" };
+  const result = facts(base, head);
+  assert.ok(result.some((f) => f.kind === "ios_build_setting_change" && /SWIFT_VERSION/.test(f.detail)), "conditional SWIFT_VERSION change detected");
+  const flags = result.find((f) => /OTHER_SWIFT_FLAGS/.test(f.detail));
+  assert.ok(flags && !/AIzaSyA1234567890/.test(flags.detail), "the credential token is redacted in the fact detail");
+});
+
+test("review-surfaces.CONFIG_FACTS.4 build settings change in project.yml (not only xcconfig) is flagged", () => {
+  const base = { "project.yml": "name: App\nsettings:\n  SWIFT_VERSION: 5.9\ntargets:\n  App: { type: application, sources: [Sources] }\n" };
+  const head = { "project.yml": "name: App\nsettings:\n  SWIFT_VERSION: 6.0\ntargets:\n  App: { type: application, sources: [Sources] }\n" };
+  assert.ok(facts(base, head).some((f) => f.kind === "ios_build_setting_change" && /SWIFT_VERSION/.test(f.detail)), "XcodeGen build-setting change detected");
+});
+
+test("review-surfaces.CONFIG_FACTS.5 a project.yaml test-target removal is flagged (not only project.yml)", () => {
+  const base = { "project.yaml": "name: App\ntargets:\n  App: { type: application, sources: [Sources] }\n  AppTests: { type: bundle.unit-test, sources: [Tests] }\n" };
+  const head = { "project.yaml": "name: App\ntargets:\n  App: { type: application, sources: [Sources] }\n" };
+  assert.ok(facts(base, head).some((f) => f.kind === "ios_test_structure_change"), "project.yaml is scanned for structure facts");
+});
+
+test("review-surfaces.CONFIG_FACTS.5 a dropped target dependency is a structure change", () => {
+  const base = { "project.yml": "name: App\ntargets:\n  App: { type: application, sources: [Sources], dependencies: [{target: Core}] }\n  Core: { type: framework, sources: [Core] }\n" };
+  const head = { "project.yml": "name: App\ntargets:\n  App: { type: application, sources: [Sources] }\n  Core: { type: framework, sources: [Core] }\n" };
+  assert.ok(facts(base, head).some((f) => f.kind === "ios_target_structure_change" && /dependencies changed/.test(f.detail)), "a dropped dependency is flagged");
+});
+
+test("review-surfaces.CONFIG_FACTS.5 a focused xctestplan selectedTests narrowing is flagged", () => {
+  const base = { "Plans/Unit.xctestplan": JSON.stringify({ testTargets: [{ target: { name: "AppTests" } }] }) };
+  const head = { "Plans/Unit.xctestplan": JSON.stringify({ testTargets: [{ target: { name: "AppTests" }, selectedTests: ["AppTests/FooTests/testA"] }] }) };
+  assert.ok(facts(base, head).some((f) => f.kind === "ios_test_structure_change" && /focused selection/.test(f.detail)), "a selectedTests narrowing is flagged");
+});
+
+test("review-surfaces.CONFIG_FACTS.5 a generated Apple bundle plist produces no config fact", () => {
+  const base = { "Build/App.xcarchive/Info.plist": "<plist><dict></dict></plist>" };
+  const head = { "Build/App.xcarchive/Info.plist": "<plist><dict><key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoads</key><true/></dict></dict></plist>" };
+  assert.equal(facts(base, head).length, 0, "a generated .xcarchive plist is not a review-focus config change");
+});
+
+test("review-surfaces.CONFIG_FACTS.5 an unparseable project.yml side yields an unknown diagnostic, not all-removed", () => {
+  const base = { "project.yml": "name: App\ntargets:\n  App: { type: application, sources: [Sources] }\n  AppTests: { type: bundle.unit-test, sources: [Tests] }\n" };
+  const head = { "project.yml": "{ this is not valid xcodegen yaml :::" };
+  const result = facts(base, head);
+  assert.ok(result.some((f) => f.kind === "ios_config_unparsed"), "an unparseable side -> unknown diagnostic");
+  assert.ok(!result.some((f) => f.kind === "ios_test_structure_change"), "no false test-target-removed facts from parser uncertainty");
 });
