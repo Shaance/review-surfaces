@@ -78,6 +78,28 @@ export function emptyAppleProjectModel(): AppleProjectModel {
 
 // Whether the repository contains ANY Apple project input worth modeling — lets the
 // pipeline skip the whole module on a non-Apple repo with zero cost.
+// Normalize a repo-relative path: collapse `.`/`//` and resolve safe `..` segments so a
+// stored source root/path (`ios/../Shared/Foo.swift`) matches the git-normalized tracked
+// path (`Shared/Foo.swift`). Returns undefined when `..` escapes the repo root (a
+// non-repo reference that must not be persisted or matched).
+export function normalizeRepoRelativePath(filePath: string): string | undefined {
+  const segments: string[] = [];
+  for (const segment of filePath.split("/")) {
+    if (segment === "" || segment === ".") {
+      continue;
+    }
+    if (segment === "..") {
+      if (segments.length === 0) {
+        return undefined; // escapes the repo root
+      }
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return segments.join("/");
+}
+
 export function hasAppleProjectInputs(paths: readonly string[]): boolean {
   return paths.some(
     (p) =>

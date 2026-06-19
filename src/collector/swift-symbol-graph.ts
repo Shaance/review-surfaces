@@ -22,6 +22,11 @@ export interface SwiftSymbolGraph {
   // declarer file -> unique type NAME -> sorted files referencing THAT type, so a
   // per-declaration blast radius does not attribute every type's importers to one change.
   importersByFileType: Map<string, Map<string, string[]>>;
+  // type NAME -> sorted files whose tokens reference it (PascalCase only). Used for a
+  // REMOVED declaration whose declarer is gone from the head tree: head can no longer
+  // resolve it as a unique declarer, but unchanged files still referencing the name are
+  // the broken callers.
+  referrersByType: Map<string, string[]>;
   precision: "unique_symbol_reference";
   truncated: boolean;
 }
@@ -112,6 +117,9 @@ export function buildSwiftSymbolGraph(options: {
   const moduleOf = moduleResolver(options.model);
 
   const targetNames = new Set((options.model?.targets ?? []).map((t) => t.id));
+  // The dependency closure VALIDATES an import (a file may only `import` a module its
+  // target actually depends on); it does NOT, by itself, put another module's
+  // declarations in scope — Swift requires an explicit `import`.
   const depClosure = transitiveDeps(options.model);
 
   // Per file: its module, the type names it declares, the identifier tokens it
@@ -132,19 +140,29 @@ export function buildSwiftSymbolGraph(options: {
     }
     const module = moduleOf(file);
     const cleaned = cleanSwiftSource(content);
-    const declaredTypes = new Set(extractSwiftDeclarations(content).filter((d) => TYPE_KINDS.has(d.kind)).map((d) => d.name));
+    // Only NON-file-private types can be referenced from another file, so file-private /
+    // private types must not enter the cross-file declarer index (a same-name token in
+    // another file would otherwise become a false edge to this file).
+    const declaredTypes = new Set(
+      extractSwiftDeclarations(content)
+        .filter((d) => TYPE_KINDS.has(d.kind) && d.visibility !== "private" && d.visibility !== "fileprivate")
+        .map((d) => d.name)
+    );
     // Reference tokens must EXCLUDE the module names on `import` lines: a test that only
     // `@testable import App` must not be read as referencing a type named `App` (a common
     // SwiftUI `@main struct App`). Import lines still feed module visibility below.
     const referenceText = cleaned.replace(/^[ \t]*(?:@testable[ \t]+)?import[ \t]+.*$/gm, "");
     const tokens = new Set(referenceText.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []);
-    // Visible modules: the file's own module, every module it depends on
-    // (transitively), and every `import`ed name that is a project target — so a
-    // test target's `@testable import App` lets it reference App's types.
-    const visibleModules = new Set<string>([module, ...(depClosure.get(module) ?? [])]);
+    // Visible modules: the file's own module, plus every `import`ed name that is a project
+    // target (a Swift target dependency does NOT put another module in scope without an
+    // explicit `import` — so a dependency is visible only when actually imported, and the
+    // dep closure just validates the import is a declared dependency).
+    const ownDeps = depClosure.get(module);
+    const visibleModules = new Set<string>([module]);
     for (const m of cleaned.matchAll(/(?:@testable\s+)?\bimport\s+([A-Za-z_][A-Za-z0-9_]*)/g)) {
-      if (targetNames.has(m[1])) {
-        visibleModules.add(m[1]);
+      const imported = m[1];
+      if (targetNames.has(imported) && (imported === module || ownDeps === undefined || ownDeps.size === 0 || ownDeps.has(imported))) {
+        visibleModules.add(imported);
       }
     }
     info.set(file, { module, tokens, visibleModules });
@@ -167,7 +185,25 @@ export function buildSwiftSymbolGraph(options: {
   const importersByFile = new Map<string, Set<string>>();
   // declarer file -> type name -> referrer files (for per-declaration blast radius).
   const importersByFileType = new Map<string, Map<string, Set<string>>>();
-  for (const [file, fileInfo] of fileCapExceeded ? [] : info) {
+  // PascalCase token -> files referencing it (for removed-declaration blast radius).
+  const referrersByType = new Map<string, Set<string>>();
+  for (const [file, fileInfo] of truncated ? [] : info) {
+    for (const token of fileInfo.tokens) {
+      if (!/^[A-Z]/.test(token)) {
+        continue; // Swift types are PascalCase; bound the index to type-like names.
+      }
+      let refs = referrersByType.get(token);
+      if (!refs) {
+        refs = new Set();
+        referrersByType.set(token, refs);
+      }
+      refs.add(file);
+    }
+  }
+  // Emit edges ONLY from a sound graph. Truncation (file cap exceeded OR a partial
+  // project model) makes uniqueness/module membership unreliable, so a partial graph
+  // emits no edges and carries the truncated flag instead of a possibly-false claim.
+  for (const [file, fileInfo] of truncated ? [] : info) {
     const deps = new Set<string>();
     for (const token of fileInfo.tokens) {
       // Collect declaring files of `token` across every VISIBLE module; emit an
@@ -220,6 +256,7 @@ export function buildSwiftSymbolGraph(options: {
     importersByFileType: new Map(
       [...importersByFileType].map(([file, byType]) => [file, new Map([...byType].map(([t, refs]) => [t, [...refs].sort(compareStrings)]))])
     ),
+    referrersByType: new Map([...referrersByType].map(([t, refs]) => [t, [...refs].sort(compareStrings)])),
     precision: "unique_symbol_reference",
     truncated
   };

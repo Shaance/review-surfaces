@@ -6,7 +6,7 @@
 
 import { parse as parseYaml } from "yaml";
 import { isRecord } from "../../core/guards";
-import { AppleTarget, AppleTargetKind } from "./model";
+import { AppleTarget, AppleTargetKind, normalizeRepoRelativePath } from "./model";
 
 export interface XcodegenResult {
   isXcodegen: boolean;
@@ -39,7 +39,10 @@ function sourcePaths(sources: unknown, dir: string): string[] {
   for (const entry of list) {
     const raw = typeof entry === "string" ? entry : isRecord(entry) && typeof entry.path === "string" ? entry.path : undefined;
     if (raw) {
-      paths.push(joinRepoPath(dir, raw));
+      const joined = joinRepoPath(dir, raw);
+      if (joined) {
+        paths.push(joined);
+      }
     }
   }
   return [...new Set(paths)].sort();
@@ -59,9 +62,10 @@ function dependencyTargets(dependencies: unknown): string[] {
 }
 
 // project.yml lives at `dir/project.yml`; its source paths are repo-relative to dir.
-function joinRepoPath(dir: string, relative: string): string {
-  const clean = relative.replace(/^\.\//, "").replace(/\/$/, "");
-  return dir ? `${dir}/${clean}` : clean;
+// Normalize `.`/`..`/`//` so a nested-project root (`ios/../Shared`) matches the
+// git-normalized tracked paths; a `..` escaping the repo yields undefined (dropped).
+function joinRepoPath(dir: string, relative: string): string | undefined {
+  return normalizeRepoRelativePath(dir ? `${dir}/${relative}` : relative);
 }
 
 export function parseXcodegenProject(path: string, content: string): XcodegenResult {

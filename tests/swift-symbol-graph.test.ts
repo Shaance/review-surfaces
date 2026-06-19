@@ -289,3 +289,60 @@ test("review-surfaces.BLAST_RADIUS.4 importersByFileType keys importers by the r
   assert.deepEqual(byType?.get("Foo"), ["UsesFoo.swift"], "Foo's importers exclude Bar's");
   assert.deepEqual(byType?.get("Bar"), ["UsesBar.swift"]);
 });
+
+// --- Phase 3 Codex round 2: graph/parser refinements -------------------------
+
+test("review-surfaces.BLAST_RADIUS.4 a dependency target is visible only when actually imported", () => {
+  const files = {
+    "project.yml": "name: P\ntargets:\n  App: { type: application, sources: [Sources], dependencies: [{target: Core}] }\n  Core: { type: framework, sources: [Core] }\n",
+    "Core/Widget.swift": "public struct Widget {}\n",
+    "Sources/User.swift": "func use() { _ = Widget() }\n"
+  };
+  assert.equal(graphOf(files).edgesByFile.has("Sources/User.swift"), false, "no edge to Core without an explicit import");
+  const withImport = { ...files, "Sources/User.swift": "import Core\nfunc use() { _ = Widget() }\n" };
+  assert.deepEqual(graphOf(withImport).edgesByFile.get("Sources/User.swift"), ["Core/Widget.swift"], "an explicit import Core connects the edge");
+});
+
+test("review-surfaces.BLAST_RADIUS.4 a partial project model suppresses edges", () => {
+  const files = { "A.swift": "struct W {}\n", "B.swift": "func u() { _ = W() }\n" };
+  const model = modelOf({});
+  model.truncated = true;
+  const g = buildSwiftSymbolGraph({ files: Object.keys(files), read: (p) => (files as Record<string, string>)[p], model });
+  assert.equal(g.truncated, true);
+  assert.equal(g.edgesByFile.size, 0, "a truncated/partial model emits no edges");
+});
+
+test("review-surfaces.BLAST_RADIUS.4 a file-private type is not a cross-file declarer", () => {
+  const g = graphOf({
+    "A.swift": "private struct Secret {}\n",
+    "B.swift": "func u() { _ = Secret() }\n"
+  });
+  assert.equal(g.edgesByFile.has("B.swift"), false, "a private/fileprivate type cannot be referenced cross-file");
+});
+
+test("review-surfaces.BLAST_RADIUS.4 XcodeGen normalizes ../ source roots", () => {
+  const model = modelOf({ "ios/project.yml": "name: P\ntargets:\n  App: { type: application, sources: [../Shared] }\n" });
+  assert.deepEqual(model.targets.find((t) => t.name === "App")?.source_paths, ["Shared"], "ios/../Shared normalizes to Shared");
+});
+
+test("review-surfaces.BLAST_RADIUS.4 pbxproj normalizes ../ file paths", () => {
+  const pbx = `// !$*UTF8*$!
+{ objects = {
+  APP = { isa = PBXNativeTarget; name = App; productType = "com.apple.product-type.application"; buildPhases = (P); };
+  P = { isa = PBXSourcesBuildPhase; files = (B); };
+  B = { isa = PBXBuildFile; fileRef = FR; };
+  FR = { isa = PBXFileReference; path = "../Shared/Foo.swift"; sourceTree = "<group>"; };
+}; }`;
+  const model = buildAppleProjectModel({ files: ["ios/App.xcodeproj/project.pbxproj"], read: () => pbx });
+  const paths = model.targets.find((t) => t.name === "App")?.source_paths ?? [];
+  assert.ok(paths.includes("Shared/Foo.swift"), `expected normalized Shared/Foo.swift, got ${JSON.stringify(paths)}`);
+  assert.ok(!paths.some((p) => p.includes("..")), "no unresolved .. segments persist");
+});
+
+test("review-surfaces.BLAST_RADIUS.4 referrersByType indexes PascalCase references (removed-decl blast radius)", () => {
+  const g = graphOf({
+    "Models.swift": "struct Removed {}\n",
+    "Caller.swift": "func u() { _ = Removed() }\n"
+  });
+  assert.ok((g.referrersByType.get("Removed") ?? []).includes("Caller.swift"), "a file referencing the removed type name is indexed");
+});

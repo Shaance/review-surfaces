@@ -5,7 +5,7 @@
 // XCRemoteSwiftPackageReference entries. Unsupported sections are ignored; a parse
 // failure yields nothing rather than a guess (goal contract D2/D10).
 
-import { AppleTarget, AppleTargetKind } from "./model";
+import { AppleTarget, AppleTargetKind, normalizeRepoRelativePath } from "./model";
 
 type PlistValue = string | PlistValue[] | { [key: string]: PlistValue };
 
@@ -234,8 +234,11 @@ export function parsePbxproj(pbxprojPath: string, content: string): PbxprojResul
     if (segments.length === 0) {
       return undefined;
     }
-    const joined = segments.join("/").replace(/\/+/g, "/");
-    return baseDir ? `${baseDir}/${joined}` : joined;
+    const joined = segments.join("/");
+    // Normalize `.`/`..`/`//` so a subdir-project ref (`ios/../Shared/Foo.swift`) matches
+    // the git-normalized tracked path (`Shared/Foo.swift`); a `..` that escapes the repo
+    // yields undefined (non-repo, dropped).
+    return normalizeRepoRelativePath(baseDir ? `${baseDir}/${joined}` : joined);
   };
 
   const targets: AppleTarget[] = [];

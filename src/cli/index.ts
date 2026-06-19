@@ -2265,8 +2265,16 @@ function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactR
       // multi-type file does not attribute Bar's importers to a change in Foo. Fall back
       // to file-level importers for members / non-type changes.
       const typeName = change.name.split(".").pop() ?? change.name;
-      const typeImporters = swiftGraph.graph.importersByFileType.get(change.path)?.get(typeName);
-      const importers = typeImporters ?? swiftGraph.graph.importersByFile.get(change.path) ?? [];
+      let importers: string[];
+      if (change.change === "removed") {
+        // A removed declaration is gone from the head tree, so it has no head declarer to
+        // resolve uniquely — the broken callers are the unchanged files still referencing
+        // the removed type name (exclude the now-removed file itself).
+        importers = (swiftGraph.graph.referrersByType.get(typeName) ?? []).filter((p) => p !== change.path);
+      } else {
+        const typeImporters = swiftGraph.graph.importersByFileType.get(change.path)?.get(typeName);
+        importers = typeImporters ?? swiftGraph.graph.importersByFile.get(change.path) ?? [];
+      }
       change.used_by = {
         count: importers.length,
         top: importers.slice(0, 5),
