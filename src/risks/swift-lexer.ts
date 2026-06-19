@@ -31,7 +31,15 @@ function blank(source: string, out: string[], start: number, end: number): void 
   }
 }
 
-export function cleanSwiftSource(source: string): string {
+export interface CleanSwiftOptions {
+  // When true, string literals are tracked (so a `//` inside one is not read as a
+  // comment) but their contents are PRESERVED. Used by readers that need string
+  // values (e.g. Package.swift target names) while still dropping comments.
+  keepStrings?: boolean;
+}
+
+export function cleanSwiftSource(source: string, options: CleanSwiftOptions = {}): string {
+  const keepStrings = options.keepStrings === true;
   const out = source.split("");
   let state: State = { kind: "code" };
   let segmentStart = 0;
@@ -138,7 +146,9 @@ export function cleanSwiftSource(source: string): string {
         const closer = multiline ? '"""' : '"';
         if (source.slice(i, i + closer.length) === closer && source.slice(i + closer.length, i + closer.length + hashes) === "#".repeat(hashes)) {
           const end = i + closer.length + hashes;
-          blank(source, out, segmentStart, end);
+          if (!keepStrings) {
+            blank(source, out, segmentStart, end);
+          }
           state = { kind: "code" };
           segmentStart = end;
           i = end;
@@ -151,8 +161,8 @@ export function cleanSwiftSource(source: string): string {
   }
 
   // An unterminated comment/string runs to EOF — blank the trailing segment so its
-  // contents never reach the scanner.
-  if (state.kind !== "code") {
+  // contents never reach the scanner (a kept string is left intact).
+  if (state.kind !== "code" && !(keepStrings && state.kind === "string")) {
     blank(source, out, segmentStart, n);
   }
   return out.join("");

@@ -466,3 +466,30 @@ test("review-surfaces.SEMANTIC_DIFF.6 a removed Swift test assertion ranks in th
     fixture.cleanup();
   }
 });
+
+// review-surfaces.BLAST_RADIUS.4: a changed Swift test clears the "no connected
+// test change" ranking signal ONLY for the implementation it actually references.
+// AlphaTests references Alpha (not Beta), so the symbol graph attributes the test
+// to Alpha alone: Alpha's ranking reasons name AlphaTests; Beta keeps the
+// no-connected-test boost and is never mis-attributed the test.
+test("review-surfaces.BLAST_RADIUS.4 a changed Swift test connects only to the impl it references", () => {
+  const fixture = createEvalFixture("swift-graph", { spec: false });
+  try {
+    fixture.write("Sources/Alpha.swift", `public struct Alpha {\n  public func run() -> Int { return 1 }\n}\n`);
+    fixture.write("Sources/Beta.swift", `public struct Beta {\n  public func run() -> Int { return 2 }\n}\n`);
+    fixture.write("AlphaTests.swift", `import XCTest\nfinal class AlphaTests: XCTestCase {\n  func testRun() { XCTAssertEqual(Alpha().run(), 1) }\n}\n`);
+    fixture.commit("add alpha, beta, alpha tests");
+    record("swift_changed_test_connection", () => {
+      const model = fixture.run();
+      const reasonsFor = (p: string): string =>
+        model.review_queue.filter((item) => item.path === p).flatMap((item) => item.ranking_reasons ?? []).join(" | ");
+      const alphaReasons = reasonsFor("Sources/Alpha.swift");
+      const betaReasons = reasonsFor("Sources/Beta.swift");
+      assert.match(alphaReasons, /AlphaTests\.swift/, "Alpha's connected changed test is attributed to it");
+      assert.match(betaReasons, /no changed test|no connected/i, "Beta keeps the no-connected-test boost");
+      assert.doesNotMatch(betaReasons, /AlphaTests\.swift/, "the test is NOT mis-attributed to Beta");
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});

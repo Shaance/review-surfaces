@@ -16,6 +16,9 @@ import { computeDependencyFacts } from "../risks/dependency-facts";
 import { loadReviewPolicy, POLICY_FILE, ReviewPolicy } from "../feedback/policy";
 import { computeConfigFacts } from "../risks/config-facts";
 import { buildImportGraph, findSymbolImporters } from "../collector/import-graph";
+import { buildAppleProjectModel } from "../collector/apple-project/build";
+import { AppleProjectModel, hasAppleProjectInputs } from "../collector/apple-project/model";
+import { buildSwiftSymbolGraph, SwiftSymbolGraph } from "../collector/swift-symbol-graph";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { loadPrivacyIgnoreSync } from "../privacy/ignore";
@@ -1743,6 +1746,10 @@ function buildHumanReviewForPacket(
   // from committed signals; the change map, tour, and drift facts all consume
   // the same value so they cannot disagree on what counts as implementation.
   const implementationRoots = detectRootsForPacket(cwd, factReaders);
+  // review-surfaces.BLAST_RADIUS.4: the Apple project model + target-aware Swift
+  // symbol graph, built once and shared by blast radius, ranking, and the change
+  // map. undefined on a repo with no Swift sources.
+  const swiftGraph = buildSwiftGraphForPacket(cwd, factReaders, outDir);
   const humanReview = buildHumanReview({
     packet,
     prSurface,
@@ -1754,10 +1761,10 @@ function buildHumanReviewForPacket(
     policyNowIso: typeof (packet.manifest as { created_at?: unknown }).created_at === "string" ? (packet.manifest as { created_at: string }).created_at : "",
     // review-surfaces.SEMANTIC_DIFF.1-4: computed here (sync git access) so the
     // facts are present uniformly on every build path — main, cache, standalone.
-    semanticFacts: withBlastRadius(cwd, computeSemanticFactsForPacket(resolvedDiff, factReaders), factReaders),
+    semanticFacts: withBlastRadius(cwd, computeSemanticFactsForPacket(resolvedDiff, factReaders), factReaders, swiftGraph),
     // review-surfaces.RANKING.1: per-changed-impl-path evidence (changed test ->
     // impl import map) computed here so it is uniform on every build path.
-    rankingEvidence: computeRankingEvidenceForPacket(cwd, packet, resolvedDiff),
+    rankingEvidence: computeRankingEvidenceForPacket(cwd, packet, resolvedDiff, swiftGraph),
     // review-surfaces.COVERAGE.3/.4: intersect the collected lcov model (if any)
     // with the diff; absent report -> the honest "no_report" negative.
     coverageEvidence: computeCoverageEvidenceForPacket(outDir, resolvedDiff),
@@ -1772,7 +1779,7 @@ function buildHumanReviewForPacket(
     // review-surfaces.CHANGE_MAP.1: import edges among changed files, from the
     // shared import-graph parser over head content — computed here (file access)
     // so the section is uniform on every build path.
-    changedImportEdges: computeChangedImportEdgesForPacket(cwd, resolvedDiff, factReaders),
+    changedImportEdges: computeChangedImportEdgesForPacket(cwd, resolvedDiff, factReaders, swiftGraph),
     implementationRoots,
     // review-surfaces.ARCH_DRIFT.1-3: base-vs-head resolved import diffs at
     // module altitude, computed here (base/head file access).
@@ -1900,12 +1907,17 @@ function detectRootsForPacket(cwd: string, readers: FactReaders | undefined): st
 // rules as the blast-radius graph. Deleted files carry no head content, so
 // they have no outgoing edges (documented v1 bound, same altitude as the
 // import graph's alias bound).
-function computeChangedImportEdgesForPacket(cwd: string, diff: StructuredDiff | undefined, readers: FactReaders | undefined): ChangedImportEdge[] {
+function computeChangedImportEdgesForPacket(
+  cwd: string,
+  diff: StructuredDiff | undefined,
+  readers: FactReaders | undefined,
+  swiftGraph?: SwiftGraphBundle
+): ChangedImportEdge[] {
   if (!diff || diff.files.length === 0 || !readers) {
     return [];
   }
   const changedPaths = diff.files.map((file) => file.path);
-  return computeChangedImportEdges({
+  const tsEdges = computeChangedImportEdges({
     changedPaths,
     read: readers.readHead,
     // Blob-only check for committed refs: `git show <ref>:<dir>` succeeds for
@@ -1921,6 +1933,31 @@ function computeChangedImportEdgesForPacket(cwd: string, diff: StructuredDiff | 
         }
       : (filePath) => blobExistsAtRef(cwd, readers.headSha, filePath)
   });
+  // review-surfaces.BLAST_RADIUS.4: add Swift symbol-graph edges AMONG the changed
+  // files (referrer -> the changed file declaring the unique type it uses).
+  if (!swiftGraph) {
+    return tsEdges;
+  }
+  const changed = new Set(changedPaths);
+  const swiftEdges: ChangedImportEdge[] = [];
+  for (const [importer, deps] of swiftGraph.graph.edgesByFile) {
+    if (!changed.has(importer)) {
+      continue;
+    }
+    for (const imported of deps) {
+      if (changed.has(imported) && imported !== importer) {
+        swiftEdges.push({ importer, imported });
+      }
+    }
+  }
+  const seen = new Set(tsEdges.map((edge) => JSON.stringify([edge.importer, edge.imported])));
+  for (const edge of swiftEdges) {
+    if (!seen.has(JSON.stringify([edge.importer, edge.imported]))) {
+      tsEdges.push(edge);
+      seen.add(JSON.stringify([edge.importer, edge.imported]));
+    }
+  }
+  return tsEdges.sort((a, b) => (a.importer === b.importer ? (a.imported < b.imported ? -1 : a.imported > b.imported ? 1 : 0) : a.importer < b.importer ? -1 : 1));
 }
 
 // review-surfaces.ARCH_DRIFT.1: diff base-vs-head resolved import sets for the
@@ -2161,7 +2198,101 @@ async function runScoreboard(parsed: ParsedArgs): Promise<number> {
 // in-repo importer counts from a bounded reverse import graph over the
 // git-tracked source files. A truncated graph carries the note rather than
 // presenting "used by 0" as fact.
-function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactReaders | undefined): SemanticChangeFacts {
+// review-surfaces.BLAST_RADIUS.4: the git-tracked head tree minus privacy/generated
+// exclusions — the file universe both the import graph and the Swift symbol graph
+// enumerate. Returns [] when the tree cannot be read.
+function trackedHeadFiles(cwd: string, readers: FactReaders): string[] {
+  let tracked: string[];
+  try {
+    tracked = execFileSync(
+      "git",
+      readers.headIsWorktree ? ["ls-files"] : ["ls-tree", "-r", "--name-only", readers.headSha],
+      { cwd, encoding: "utf8" }
+    )
+      .split("\n")
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+  const ignore = loadPrivacyIgnoreSync(cwd);
+  return tracked.filter((filePath) => !ignore.isIgnored(filePath));
+}
+
+export interface SwiftGraphBundle {
+  model: AppleProjectModel;
+  graph: SwiftSymbolGraph;
+}
+
+// review-surfaces.BLAST_RADIUS.4: build the Apple project model + target-aware Swift
+// symbol graph ONCE per packet over the reviewed head tree, and persist a bounded,
+// redacted apple_project.json (derived names/paths/provenance/diagnostics only). A
+// repo with no Swift sources yields undefined (zero cost on non-Swift repos).
+function buildSwiftGraphForPacket(cwd: string, readers: FactReaders | undefined, outDir: string): SwiftGraphBundle | undefined {
+  if (!readers) {
+    return undefined;
+  }
+  const tracked = trackedHeadFiles(cwd, readers);
+  const swiftFiles = tracked.filter((filePath) => filePath.toLowerCase().endsWith(".swift"));
+  if (swiftFiles.length === 0 && !hasAppleProjectInputs(tracked)) {
+    return undefined;
+  }
+  const model = buildAppleProjectModel({ files: tracked, read: readers.readHead });
+  const graph = buildSwiftSymbolGraph({ files: swiftFiles, read: readers.readHead, model });
+  // Persist the project model only when there is a real Apple project to observe,
+  // so a plain SwiftPM-less .swift collection adds no artifact.
+  if (hasAppleProjectInputs(tracked)) {
+    // Synchronous write: buildSwiftGraphForPacket is sync, so an async writeJson would
+    // escape this try/catch (unhandled rejection) and let callers proceed before the
+    // artifact exists. A best-effort observability artifact must never fail the build.
+    try {
+      const target = path.join(outDir, "inputs", "apple_project.json");
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, `${JSON.stringify({ schema_version: "review-surfaces.apple_project.v1", ...model }, null, 2)}\n`, "utf8");
+    } catch {
+      // best-effort observability artifact; never fail the build on it.
+    }
+  }
+  return { model, graph };
+}
+
+// Swift declaration kinds whose name IS a type the symbol graph indexes by name; other
+// kinds are members whose blast radius is keyed by their CONTAINER type.
+const SWIFT_TYPE_DECL_KINDS = new Set(["class", "struct", "enum", "protocol", "actor", "typealias"]);
+
+function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactReaders | undefined, swiftGraph?: SwiftGraphBundle): SemanticChangeFacts {
+  // review-surfaces.BLAST_RADIUS.4: Swift declaration changes get file-level used_by
+  // from the target-aware symbol graph (importers of the changed file's unique
+  // types). A truncated graph carries the flag, never a false "used by 0".
+  if (swiftGraph) {
+    for (const change of facts.swift_declaration_changes) {
+      // Prefer importers of the CHANGED declaration's type (the last name segment) so a
+      // multi-type file does not attribute Bar's importers to a change in Foo. Fall back
+      // to file-level importers for members / non-type changes.
+      const typeName = change.name.split(".").pop() ?? change.name;
+      let importers: string[];
+      if (change.change === "removed") {
+        // A removed declaration is gone from the head tree, so it has no head declarer to
+        // resolve uniquely — the broken callers are the unchanged files still referencing
+        // it. For a removed TYPE use its name; for a removed MEMBER (`Greeter.greet`) use
+        // the CONTAINER type (referrersByType is PascalCase-keyed, so a lowercase member
+        // segment finds nothing). Fall back to file-level importers if neither hits.
+        const segments = change.name.split(".");
+        const lookupName = SWIFT_TYPE_DECL_KINDS.has(change.kind) ? segments[segments.length - 1] : segments[0];
+        const removedRefs = (swiftGraph.graph.referrersByType.get(lookupName) ?? []).filter((p) => p !== change.path);
+        importers = removedRefs.length > 0 ? removedRefs : (swiftGraph.graph.importersByFile.get(change.path) ?? []).filter((p) => p !== change.path);
+      } else {
+        const typeImporters = swiftGraph.graph.importersByFileType.get(change.path)?.get(typeName);
+        importers = typeImporters ?? swiftGraph.graph.importersByFile.get(change.path) ?? [];
+      }
+      change.used_by = {
+        count: importers.length,
+        top: importers.slice(0, 5),
+        // Surface truncation even when zero importers were retained — a large/truncated
+        // graph means additional referrers are UNKNOWN, never a confirmed "used by 0".
+        ...(swiftGraph.graph.truncated ? { truncated: true } : {})
+      };
+    }
+  }
   const targets = facts.api_changes.filter((change) => change.exports_removed.length > 0 || change.signatures_changed.length > 0);
   if (!readers || targets.length === 0) {
     return facts;
@@ -2214,7 +2345,7 @@ function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactR
 // Reads each changed test file's head content (worktree or committed blob, same
 // resolution as the semantic facts) and resolves its relative imports against the
 // on-disk repo. Pure of clocks; the on-disk file set is stable for a given tree.
-function computeRankingEvidenceForPacket(cwd: string, packet: ReviewPacket, diff: StructuredDiff | undefined): RankingEvidence {
+function computeRankingEvidenceForPacket(cwd: string, packet: ReviewPacket, diff: StructuredDiff | undefined, swiftGraph?: SwiftGraphBundle): RankingEvidence {
   if (!diff || diff.files.length === 0) {
     return emptyRankingEvidence();
   }
@@ -2243,7 +2374,33 @@ function computeRankingEvidenceForPacket(cwd: string, packet: ReviewPacket, diff
         }
       }
     : (repoRelativePath: string): boolean => blobExistsAtRef(cwd, headSha, repoRelativePath);
-  return computeRankingEvidence({ diff, isTestPath, readHead, exists });
+  const base = computeRankingEvidence({ diff, isTestPath, readHead, exists });
+  // review-surfaces.BLAST_RADIUS.4: merge Swift changed-test -> changed-impl
+  // attribution from the symbol graph (a changed FooTests.swift that references the
+  // unique Foo type connects to Foo.swift). Higher-confidence than stem matching.
+  if (!swiftGraph) {
+    return base;
+  }
+  const changed = new Set(diff.files.map((file) => file.path));
+  const merged = new Map<string, Set<string>>();
+  for (const [impl, tests] of Object.entries(base.changed_tests_by_impl)) {
+    merged.set(impl, new Set(tests));
+  }
+  for (const file of diff.files) {
+    if (!isTestPath(file.path)) {
+      continue;
+    }
+    for (const impl of swiftGraph.graph.edgesByFile.get(file.path) ?? []) {
+      if (changed.has(impl) && !isTestPath(impl)) {
+        (merged.get(impl) ?? merged.set(impl, new Set()).get(impl) as Set<string>).add(file.path);
+      }
+    }
+  }
+  const changed_tests_by_impl: Record<string, string[]> = {};
+  for (const impl of [...merged.keys()].sort()) {
+    changed_tests_by_impl[impl] = [...(merged.get(impl) as Set<string>)].sort();
+  }
+  return { changed_tests_by_impl };
 }
 
 // review-surfaces.COVERAGE.3/.4: read the collected lcov model written by

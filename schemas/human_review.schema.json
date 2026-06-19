@@ -493,7 +493,17 @@
               "change": { "enum": ["added", "removed", "modified"] },
               "visibility": { "type": "string" },
               "breaking": { "type": "boolean" },
-              "detail": { "type": "string" }
+              "detail": { "type": "string" },
+              "used_by": {
+                "type": "object",
+                "additionalProperties": true,
+                "required": ["count", "top"],
+                "properties": {
+                  "count": { "type": "integer" },
+                  "top": { "type": "array", "items": { "type": "string" } },
+                  "truncated": { "type": "boolean" }
+                }
+              }
             }
           }
         },
