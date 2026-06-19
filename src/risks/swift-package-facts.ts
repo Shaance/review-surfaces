@@ -45,8 +45,19 @@ function describeRequirement(req: Requirement): string {
   }
 }
 
-const PINNED_KINDS = new Set<Requirement["kind"]>(["from", "exact", "range", "upToNextMajor", "upToNextMinor"]);
-const MOVING_KINDS = new Set<Requirement["kind"]>(["branch", "revision", "local"]);
+// A git `revision` (commit SHA) is IMMUTABLE -> pinned (the tightest ref), unlike a
+// `branch` (floats) or a `local` path (whatever is on disk).
+const PINNED_KINDS = new Set<Requirement["kind"]>(["from", "exact", "range", "upToNextMajor", "upToNextMinor", "revision"]);
+const MOVING_KINDS = new Set<Requirement["kind"]>(["branch", "local"]);
+// Allowed-range breadth (narrow -> wide). Widening at the same lower bound is a
+// requirement LOOSENING. `upToNextMajor` is normalized to `from`, so both are 2.
+const BREADTH_RANK: Partial<Record<Requirement["kind"], number>> = {
+  exact: 0,
+  upToNextMinor: 1,
+  from: 2,
+  upToNextMajor: 2,
+  range: 3
+};
 
 function majorOf(version: string): string | undefined {
   const match = /(\d+)\./.exec(version) ?? /^(\d+)$/.exec(version);
@@ -153,6 +164,11 @@ function parseXcodegenPackages(content: string): Map<string, Requirement> {
     if (!inPackages) {
       continue;
     }
+    // Skip YAML comment lines so a commented-out example (`# url: ...`, `# from: ...`)
+    // is not parsed as a real package (and a column-0 comment does not end the block).
+    if (/^\s*#/.test(line)) {
+      continue;
+    }
     if (/^\S/.test(line)) {
       // A new top-level key ends the packages block.
       flush();
@@ -167,9 +183,16 @@ function parseXcodegenPackages(content: string): Map<string, Requirement> {
       flush();
       continue;
     }
-    const url = /\b(?:url|github):\s*"?([^"\s]+)"?/.exec(line)?.[1];
-    if (url) {
-      currentUrl = url.startsWith("http") || url.includes("/") ? url : `https://github.com/${url}`;
+    // A full `url:` is used as-is; a `github: owner/repo` shorthand is normalized to its
+    // github.com URL so a `github:` <-> `url:` rewrite of the same package is not a false
+    // remove+add (the `owner/repo` form contains "/" and must NOT be mistaken for a URL).
+    const fullUrl = /\burl:\s*"?([^"\s]+)"?/.exec(line)?.[1];
+    if (fullUrl) {
+      currentUrl = fullUrl;
+    }
+    const githubShort = /\bgithub:\s*"?([^"\s]+)"?/.exec(line)?.[1];
+    if (githubShort) {
+      currentUrl = githubShort.startsWith("http") ? githubShort : `https://github.com/${githubShort}`;
     }
     // A LOCAL package (`path: ../Foo`) has no url — use its path as the identity so an
     // added/changed local dependency still produces a fact.
@@ -325,6 +348,17 @@ function diffDirect(sourcePath: string, base: Map<string, Requirement>, head: Ma
       });
       continue;
     }
+    // A same-major requirement WIDENING (exact -> from/range, upToNextMinor -> from, …)
+    // lets the package float to more future versions — a DEP_FACTS.6 loosening.
+    if (PINNED_KINDS.has(b.kind) && PINNED_KINDS.has(h.kind) && (BREADTH_RANK[h.kind] ?? 0) > (BREADTH_RANK[b.kind] ?? 0)) {
+      facts.push({
+        kind: "swift_package_requirement_loosened",
+        package: identity,
+        detail: `Swift package \`${identity}\` requirement loosened: ${describeRequirement(b)} → ${describeRequirement(h)}.`,
+        source_path: sourcePath
+      });
+      continue;
+    }
     facts.push({
       kind: "swift_package_changed",
       package: identity,
@@ -376,7 +410,7 @@ export function computeSwiftPackageFacts(input: ComputeSwiftPackageFactsInput): 
   const head = (file: { path: string; old_path?: string }): string | undefined => input.readHead(file.path);
   const match = (predicate: (path: string) => boolean) => input.changedFiles.filter((file) => predicate(file.path));
 
-  for (const file of match((p) => p === "Package.swift" || p.endsWith("/Package.swift"))) {
+  for (const file of match((p) => /(^|\/)Package(@swift-[^/]+)?\.swift$/.test(p))) {
     const b = base(file);
     const h = head(file);
     facts.push(...diffDirect(file.path, b ? parsePackageSwift(b) : new Map(), h ? parsePackageSwift(h) : new Map()));
@@ -394,11 +428,16 @@ export function computeSwiftPackageFacts(input: ComputeSwiftPackageFactsInput): 
   for (const file of match((p) => p === "Package.resolved" || p.endsWith("/Package.resolved"))) {
     const b = base(file);
     const h = head(file);
-    const basePins = b ? parsePackageResolved(b) : undefined;
-    const headPins = h ? parsePackageResolved(h) : undefined;
-    if (basePins !== undefined || headPins !== undefined) {
-      facts.push(...diffResolved(file.path, basePins ?? new Map(), headPins ?? new Map()));
+    // An ABSENT side (file added/removed) is an empty pin set; a PRESENT-but-unparsable
+    // side yields undefined. If either present side fails to parse, the lockfile is
+    // unsupported on that side — emit NO facts rather than diffing against empty and
+    // inventing every pin as added/removed (no-guess behavior).
+    const basePins = b === undefined ? new Map() : parsePackageResolved(b);
+    const headPins = h === undefined ? new Map() : parsePackageResolved(h);
+    if (basePins === undefined || headPins === undefined) {
+      continue;
     }
+    facts.push(...diffResolved(file.path, basePins, headPins));
   }
   facts.sort((a, b) => (a.package < b.package ? -1 : a.package > b.package ? 1 : 0) || (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0) || (a.source_path < b.source_path ? -1 : 1));
   return facts;

@@ -114,3 +114,42 @@ test("review-surfaces.DEP_FACTS.6 project.yaml (not only .yml) XcodeGen packages
   const head = "packages:\n  Lib:\n    url: https://github.com/a/lib.git\n    from: 2.0.0\n";
   assert.ok(facts("project.yaml", base, head).some((f) => f.kind === "swift_package_major_change"), "project.yaml is scanned the same as project.yml");
 });
+
+// --- Phase 4a Codex round 2: false-fact prevention + loosening ---------------
+
+test("review-surfaces.DEP_FACTS.6 commented-out XcodeGen package entries are ignored", () => {
+  const base = "packages:\n";
+  const head = "packages:\n  # url: https://github.com/a/b.git\n  # from: 1.0.0\n";
+  assert.equal(facts("project.yml", base, head).length, 0, "commented examples are not real packages");
+});
+
+test("review-surfaces.DEP_FACTS.6 a fixed->floating requirement (exact -> from) is loosened", () => {
+  const base = `let p = Package(dependencies: [ .package(url: "https://github.com/a/b.git", exact: "1.2.3") ])`;
+  const head = `let p = Package(dependencies: [ .package(url: "https://github.com/a/b.git", from: "1.2.3") ])`;
+  assert.ok(facts("Package.swift", base, head).some((f) => f.kind === "swift_package_requirement_loosened"), "exact -> from widens the allowed range");
+});
+
+test("review-surfaces.DEP_FACTS.6 a half-parsed Package.resolved yields no facts (no guess)", () => {
+  const valid = JSON.stringify({ version: 2, pins: [{ identity: "b", location: "https://github.com/a/b.git", state: { version: "1.0.0" } }] });
+  const garbage = "this is not json";
+  assert.equal(facts("Package.resolved", valid, garbage).length, 0, "an unparsable head side yields no facts");
+  assert.equal(facts("Package.resolved", garbage, valid).length, 0, "an unparsable base side yields no facts");
+});
+
+test("review-surfaces.DEP_FACTS.6 a version-specific Package@swift manifest is scanned", () => {
+  const base = `let p = Package(dependencies: [ .package(url: "https://github.com/a/b.git", from: "1.0.0") ])`;
+  const head = `let p = Package(dependencies: [ .package(url: "https://github.com/a/b.git", from: "2.0.0") ])`;
+  assert.ok(facts("Package@swift-5.9.swift", base, head).some((f) => f.kind === "swift_package_major_change"), "Package@swift-*.swift is scanned");
+});
+
+test("review-surfaces.DEP_FACTS.6 a revision pin is pinned (from -> revision is not loosened)", () => {
+  const base = `let p = Package(dependencies: [ .package(url: "https://github.com/a/b.git", from: "1.0.0") ])`;
+  const head = `let p = Package(dependencies: [ .package(url: "https://github.com/a/b.git", .revision("abc1234")) ])`;
+  assert.ok(!facts("Package.swift", base, head).some((f) => f.kind === "swift_package_requirement_loosened"), "pinning to an immutable revision is not loosening");
+});
+
+test("review-surfaces.DEP_FACTS.6 a github: <-> url: rewrite of the same package is not a change", () => {
+  const base = "packages:\n  Lib:\n    github: a/b\n    from: 1.0.0\n";
+  const head = "packages:\n  Lib:\n    url: https://github.com/a/b\n    from: 1.0.0\n";
+  assert.equal(facts("project.yml", base, head).length, 0, "github shorthand normalizes to the same identity as the full url");
+});
