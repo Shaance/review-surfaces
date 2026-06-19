@@ -37,11 +37,16 @@ export function parseAppleTestSummary(text: string | undefined): AppleTestSummar
   if (swift) {
     const executed = Number(swift[1]);
     const passed = swift[2] === "passed";
-    const issues = passed ? 0 : Number(SWIFT_TESTING_ISSUES.exec(text)?.[1] ?? "0");
+    // A failed run with a truncated/absent "with N issues" phrase must NOT default to
+    // 0 failures — that would render a failure as "0 failures" (goal contract D10:
+    // uncertainty is never shown as success). Leave failures undefined in that case;
+    // reported_success=false still carries the failure marker.
+    const issuesRaw = passed ? "0" : SWIFT_TESTING_ISSUES.exec(text)?.[1];
+    const issues = issuesRaw === undefined ? undefined : Number(issuesRaw);
     return stripUndefinedSummary({
       framework: "swift-testing",
       executed: Number.isFinite(executed) ? executed : undefined,
-      failures: Number.isFinite(issues) ? issues : undefined,
+      failures: issues !== undefined && Number.isFinite(issues) ? issues : undefined,
       reported_success: passed
     });
   }
@@ -91,6 +96,10 @@ export function formatAppleTestSummary(summary: AppleTestSummary): string {
   }
   if (summary.failures !== undefined) {
     parts.push(`${summary.failures} ${summary.failures === 1 ? "failure" : "failures"}`);
+  } else if (summary.reported_success === false) {
+    // Failed run without a parseable failure count — surface the failure rather than
+    // silently omit it (never let a failure read as success / 0 failures).
+    parts.push("reported failure (issue count unavailable)");
   }
   if (parts.length === 0 && summary.reported_success !== undefined) {
     parts.push(summary.reported_success ? "reported success" : "reported failure");

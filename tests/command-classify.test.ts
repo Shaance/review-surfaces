@@ -530,10 +530,19 @@ test("review-surfaces.COLLECTOR.9 dedicated xcodebuild classifier: test vs build
   assert.equal(commandLooksLikeTestCommand("xcodebuild -scheme App -destination 'platform=iOS Simulator,name=iPhone 17'"), false);
   assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild -scheme App"), true);
 
-  // Informational: prints and exits, never test evidence.
+  // A value operand that happens to be an action word is not read as the action.
+  assert.equal(commandLooksLikeTestCommand("xcodebuild build-for-testing -scheme App -testProductsPath test"), false);
+  assert.equal(
+    commandLooksLikeLocalValidationCommand("xcodebuild build-for-testing -scheme App -testProductsPath test"),
+    true // build-for-testing is still local validation; it is just not a TEST run
+  );
+
+  // Informational / setup-only: prints, lists, or installs — never test/validation evidence.
   assert.equal(commandLooksLikeTestCommand("xcodebuild -list"), false);
   assert.equal(commandLooksLikeTestCommand("xcodebuild -version"), false);
   assert.equal(commandLooksLikeTestCommand("xcodebuild -showBuildSettings -scheme App"), false);
+  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild -license"), false);
+  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild -runFirstLaunch"), false);
   // A scheme literally named with an action word is not read as the action.
   assert.equal(commandLooksLikeTestCommand("xcodebuild -scheme build"), false);
 });

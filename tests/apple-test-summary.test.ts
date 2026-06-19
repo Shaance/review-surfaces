@@ -37,6 +37,19 @@ test("review-surfaces.COLLECTOR.9 parses Swift Testing run summaries", () => {
   );
 });
 
+test("review-surfaces.COLLECTOR.9 a failed Swift Testing run without a parseable issue count never reads as 0 failures", () => {
+  // The bounded excerpt caught the `failed` line but truncated the `with N issues`
+  // phrase — failures must stay UNDEFINED (goal contract D10), never default to 0.
+  const summary = parseAppleTestSummary("✘ Test run with 12 tests failed after 0.2 seconds");
+  assert.deepEqual(summary, { framework: "swift-testing", executed: 12, reported_success: false });
+  assert.equal(summary!.failures, undefined);
+  // And the rendered prose surfaces the failure rather than omitting it.
+  assert.equal(
+    formatAppleTestSummary(summary!),
+    "Swift Testing summary: 12 executed, reported failure (issue count unavailable)"
+  );
+});
+
 test("review-surfaces.COLLECTOR.9 returns undefined for non-Apple / empty output (never a guess)", () => {
   assert.equal(parseAppleTestSummary(undefined), undefined);
   assert.equal(parseAppleTestSummary(""), undefined);

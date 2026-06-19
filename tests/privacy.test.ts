@@ -123,10 +123,9 @@ test("review-surfaces.PRIVACY.8 default ignore drops every Apple signing artifac
   ]) {
     assert.equal(ignore.isIgnored(p), true, `${p} should be ignored by default`);
   }
-  // Build/package caches (SwiftPM resolved checkouts + workspace state) join
-  // DerivedData/.build as never-persisted generated state.
+  // Apple-specific build/package caches join DerivedData/.build as never-persisted
+  // generated state.
   for (const p of [
-    "SourcePackages/checkouts/Dep/Sources/Dep.swift",
     ".swiftpm/configuration/registries.json",
     "DerivedData/App/Build/x.o",
     ".build/release/App"
@@ -135,9 +134,13 @@ test("review-surfaces.PRIVACY.8 default ignore drops every Apple signing artifac
   }
   // The cache DIRECTORY path itself is ignored too, so the file walk skips it
   // instead of descending and ignoring each child afterward.
-  for (const dir of ["SourcePackages", ".swiftpm", "DerivedData", ".build", "App.xcodeproj/project.xcworkspace/xcuserdata"]) {
+  for (const dir of [".swiftpm", "DerivedData", ".build", "App.xcodeproj/project.xcworkspace/xcuserdata"]) {
     assert.equal(ignore.isIgnored(dir), true, `${dir} directory path should be ignored for walk-skip`);
   }
+  // `SourcePackages/` is NOT privacy-dropped — the name is too generic to drop
+  // unconditionally without breaking "inert on non-Swift repos". It only ranks as
+  // generated; Xcode's managed copy lives under the dropped DerivedData.
+  assert.equal(ignore.isIgnored("SourcePackages/checkouts/Dep/Sources/Dep.swift"), false);
   // Case-insensitive at the boundary: the classifier lowercases basenames, so an
   // uppercase-extension signing file must be dropped too on a case-sensitive checkout.
   for (const p of ["CI.CER", "secrets/Cert.P12", "Foo.CERTSIGNINGREQUEST", "Login.KeyChain"]) {
@@ -146,6 +149,17 @@ test("review-surfaces.PRIVACY.8 default ignore drops every Apple signing artifac
   // Reviewable project/config TEXT stays available to detectors (not privacy-dropped).
   assert.equal(ignore.isIgnored("App/Info.plist"), false);
   assert.equal(ignore.isIgnored("App/App.entitlements"), false);
+});
+
+test("review-surfaces.PRIVACY.8 case-insensitive DROP rules never reopen a case-variant secret via a negated allowlist", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ignore-negation-case-"));
+  const ignore = await loadPrivacyIgnore(tmp, ".review-surfacesignore");
+  // The exact allowlisted example is re-included...
+  assert.equal(ignore.isIgnored(".env.example"), false);
+  // ...but a case-variant must stay IGNORED: the negation is case-sensitive so it
+  // cannot reopen `.env.EXAMPLE`, which the case-insensitive `.env.*` drop still catches.
+  assert.equal(ignore.isIgnored(".env.EXAMPLE"), true);
+  assert.equal(ignore.isIgnored(".env.Local"), true);
 });
 
 test("review-surfaces.PRIVACY.2 blocks high-risk private key material for remote prompts", () => {

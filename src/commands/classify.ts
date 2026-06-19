@@ -134,11 +134,13 @@ const XCODEBUILD_BUILD_ACTIONS: ReadonlySet<string> = new Set([
   "docbuild"
 ]);
 const XCODEBUILD_ALL_ACTIONS = new Set([...XCODEBUILD_TEST_ACTIONS, ...XCODEBUILD_BUILD_ACTIONS]);
-// Informational flags that print and exit, even when an action word is also present.
-// `-enumerate-tests` LISTS the tests that would run instead of executing them per
-// xcodebuild(1), so a `test -enumerate-tests` transcript is enumeration, not a run.
+// Informational / setup-only flags that print, configure, or list and DO NOT build or
+// test the repo, even when an action word is also present. `-enumerate-tests` LISTS the
+// tests that would run instead of executing them; `-license`/`-runFirstLaunch` show the
+// license or install components — an exit-0 transcript of any of these is never repo
+// validation evidence (xcodebuild(1)).
 const XCODEBUILD_INFORMATIONAL =
-  /(?:^|\s)-(?:list|version|showBuildSettings|showsdks|showdestinations|showTestPlans|checkFirstLaunchStatus|help|usage|exportLocalizations|importLocalizations|enumerate-tests)\b|(?:^|\s)--help\b/;
+  /(?:^|\s)-(?:list|version|showBuildSettings|showsdks|showdestinations|showTestPlans|checkFirstLaunchStatus|help|usage|exportLocalizations|importLocalizations|enumerate-tests|license|runFirstLaunch)\b|(?:^|\s)--help\b/;
 // Focus selectors narrow a test run to a subset. xcodebuild(1) accepts both the
 // attached `-only-testing:Id` and the space-separated `-only-testing Id` forms, and
 // `-only-test-configuration`/`-skip-test-configuration` narrow a test plan to a subset
@@ -169,7 +171,15 @@ const XCODEBUILD_VALUE_OPTIONS: ReadonlySet<string> = new Set([
   "-exportOptionsPlist",
   "-exportPath",
   "-archivePath",
-  "-resultStreamPath"
+  "-resultStreamPath",
+  "-testProductsPath",
+  // The space-separated forms of the test/configuration selectors take an identifier
+  // operand that could itself be an action word (`-skip-test-configuration test`), so
+  // skip it rather than read it as an action.
+  "-only-testing",
+  "-skip-testing",
+  "-only-test-configuration",
+  "-skip-test-configuration"
 ]);
 
 function xcodebuildActions(command: string): string[] {

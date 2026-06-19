@@ -33,15 +33,19 @@ export const DEFAULT_PRIVACY_IGNORE_PATTERNS = [
   "**/xcuserdata/**",
   "**/DerivedData/**",
   "**/.build/**",
-  "**/SourcePackages/**",
   "**/.swiftpm/**",
+  // NOTE: `SourcePackages/` is deliberately NOT privacy-dropped here. The name is too
+  // generic to drop unconditionally without breaking the "inert on non-Swift repos"
+  // guarantee (a non-Apple repo may have real source under SourcePackages/). It still
+  // RANKS as generated via source-kind.isAppleGeneratedPath (a mild demotion, not a
+  // persistence drop); Xcode's own managed SourcePackages lives under the
+  // already-dropped DerivedData. Dot-prefixed `.swiftpm/` is unambiguously SwiftPM.
   // Directory forms so the file walk SKIPS these caches instead of descending and
   // ignoring each child afterward (walkFiles tests isIgnored on the directory path
   // before recursing). The `**/<dir>/**` forms above still drop child paths that
   // arrive via a git diff rather than the walk.
   "**/DerivedData/",
   "**/.build/",
-  "**/SourcePackages/",
   "**/.swiftpm/",
   "**/xcuserdata/",
   ".claude/",
@@ -100,12 +104,14 @@ function compileRule(rawPattern: string): IgnoreRule {
   pattern = pattern.replace(/\/+$/, "");
   const hasSlash = pattern.includes("/");
 
-  // Match the privacy boundary case-INSENSITIVELY: the shared source-kind classifier
-  // lowercases basenames before classifying signing/cache artifacts, so a changed
-  // `CI.CER` / `Cert.P12` / `foo.CERTSIGNINGREQUEST` must be dropped here too — never
-  // persisted to changed_files / diff.patch on a case-sensitive checkout (PRIVACY.8).
+  // Match DROP rules case-INSENSITIVELY: the shared source-kind classifier lowercases
+  // basenames before classifying signing/cache artifacts, so a changed `CI.CER` /
+  // `Cert.P12` / `foo.CERTSIGNINGREQUEST` must be dropped here too on a case-sensitive
+  // checkout (PRIVACY.8). NEGATION (allowlist) rules stay case-SENSITIVE so a broad
+  // secret drop followed by a narrow `!allow` (e.g. `.env.*` then `!.env.example`)
+  // cannot reopen a case-variant secret like `.env.EXAMPLE`.
   const base = globToRegExp(pattern);
-  const regex = base.flags.includes("i") ? base : new RegExp(base.source, `${base.flags}i`);
+  const regex = negate || base.flags.includes("i") ? base : new RegExp(base.source, `${base.flags}i`);
 
   return {
     pattern,
