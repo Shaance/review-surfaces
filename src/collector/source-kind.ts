@@ -31,15 +31,19 @@ function hasPathSegment(filePath: string, names: ReadonlySet<string>): boolean {
 
 // --- Swift source / tests --------------------------------------------------
 
-// Directory components that mark a Swift/Xcode test target by convention.
-const SWIFT_TEST_DIRS: ReadonlySet<string> = new Set([
-  "Tests",
-  "Test",
-  "UITests",
-  "UITest",
-  "SnapshotTests",
-  "__Tests__"
-]);
+// A PascalCase path SEGMENT that marks a Swift/Xcode test target by convention. The
+// dominant Xcode layout names the test target directory after the target with a
+// `Tests`/`UITests` suffix (`MyAppTests/`, `MyAppUITests/`), NOT a bare `Tests/`, so
+// the suffix is matched rather than an exact segment. Case-sensitive so lowercase
+// words that merely end in "test" (`latest`, `contest`) are not test directories;
+// `__Tests__` is the one underscored convention that needs an explicit allowance.
+const SWIFT_TEST_DIR_SUFFIX = /(?:UI|Snapshot)?Tests?$/;
+
+function hasSwiftTestDirSegment(filePath: string): boolean {
+  return posix(filePath)
+    .split("/")
+    .some((segment) => segment === "__Tests__" || SWIFT_TEST_DIR_SUFFIX.test(segment));
+}
 
 // Test file basenames: `FooTests.swift`, `FooTest.swift`, `FooUITests.swift`,
 // `FooUITest.swift`, `FooSnapshotTests.swift`. The plural `Tests.swift` is the
@@ -55,7 +59,7 @@ export function isSwiftTestPath(filePath: string): boolean {
   if (!isSwiftFilePath(filePath)) {
     return false;
   }
-  return SWIFT_TEST_BASENAME.test(baseName(filePath)) || hasPathSegment(filePath, SWIFT_TEST_DIRS);
+  return SWIFT_TEST_BASENAME.test(baseName(filePath)) || hasSwiftTestDirSegment(filePath);
 }
 
 // A Swift implementation file: a `.swift` source that is NOT a test and NOT a
@@ -121,6 +125,12 @@ const APPLE_GENERATED_DIRS: ReadonlySet<string> = new Set([
   "xcuserdata"
 ]);
 
+// Build/result/output BUNDLE extensions: a generated Apple artifact whether it is a
+// bundle directory (`App.xcarchive/…`, `TestResults.xcresult/…`, `App.dSYM/…`) or a
+// single file (`App.ipa`, `Tests.xctestproducts`). Matched on any path SEGMENT so the
+// bundle and everything inside it counts as generated.
+const APPLE_GENERATED_BUNDLE = /\.(?:xcresult|xcarchive|dsym|xctestproducts|ipa)$/i;
+
 export function isAppleGeneratedPath(filePath: string): boolean {
   const normalized = posix(filePath);
   if (hasPathSegment(normalized, APPLE_GENERATED_DIRS)) {
@@ -129,6 +139,9 @@ export function isAppleGeneratedPath(filePath: string): boolean {
   // `.swiftpm/**` is XcodeGen/SwiftPM workspace + cache state. The shared playgrounds
   // package marker `.swiftpm/configuration` etc. is not review-focus.
   if (/(^|\/)\.swiftpm\//.test(normalized)) {
+    return true;
+  }
+  if (normalized.split("/").some((segment) => APPLE_GENERATED_BUNDLE.test(segment))) {
     return true;
   }
   return /\.xcuserstate$/.test(baseName(normalized));
@@ -143,9 +156,11 @@ const APPLE_SIGNING_EXTENSIONS: readonly string[] = [
   ".mobileprovision",
   ".provisionprofile",
   ".p12",
+  ".p8", // App Store Connect API private key
   ".cer",
   ".certSigningRequest",
-  ".keychain"
+  ".keychain",
+  ".keychain-db" // modern macOS keychain
 ];
 
 export function isAppleSigningArtifactPath(filePath: string): boolean {

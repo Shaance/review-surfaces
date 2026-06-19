@@ -1654,7 +1654,7 @@ async function loadOrBuildHumanReviewJson(
 }
 
 function humanReviewJsonMatchesConfig(model: HumanReviewModel, config?: ReviewSurfacesConfig): boolean {
-  return model.generated_from.human_review_config_signature === humanReviewConfigSignature(config?.human_review);
+  return model.generated_from.human_review_config_signature === humanReviewConfigSignature(config?.human_review, config?.command_rules);
 }
 
 function humanReviewJsonSatisfiesStandaloneCommand(model: HumanReviewModel, command: string | undefined): boolean {

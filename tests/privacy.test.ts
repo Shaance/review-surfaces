@@ -115,9 +115,11 @@ test("review-surfaces.PRIVACY.8 default ignore drops every Apple signing artifac
     "App/App.mobileprovision",
     "Dev.provisionprofile",
     "secrets/cert.p12",
+    "secrets/AuthKey_ABC123.p8",
     "ci.cer",
     "MyCert.certSigningRequest",
-    "login.keychain"
+    "login.keychain",
+    "ci.keychain-db"
   ]) {
     assert.equal(ignore.isIgnored(p), true, `${p} should be ignored by default`);
   }
@@ -130,6 +132,11 @@ test("review-surfaces.PRIVACY.8 default ignore drops every Apple signing artifac
     ".build/release/App"
   ]) {
     assert.equal(ignore.isIgnored(p), true, `${p} should be ignored by default`);
+  }
+  // The cache DIRECTORY path itself is ignored too, so the file walk skips it
+  // instead of descending and ignoring each child afterward.
+  for (const dir of ["SourcePackages", ".swiftpm", "DerivedData", ".build", "App.xcodeproj/project.xcworkspace/xcuserdata"]) {
+    assert.equal(ignore.isIgnored(dir), true, `${dir} directory path should be ignored for walk-skip`);
   }
   // Case-insensitive at the boundary: the classifier lowercases basenames, so an
   // uppercase-extension signing file must be dropped too on a case-sensitive checkout.

@@ -505,6 +505,13 @@ test("review-surfaces.COLLECTOR.9 dedicated xcodebuild classifier: test vs build
     true
   );
   assert.equal(commandLooksLikeFocusedTestCommand("xcodebuild test -scheme App -skip-testing AppTests/SlowTests"), true);
+  // Test-plan configuration filters narrow the run -> focused, not a broad suite.
+  assert.equal(commandLooksLikeFocusedTestCommand("xcodebuild test -scheme App -only-test-configuration Smoke"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("xcodebuild test -scheme App -skip-test-configuration Flaky"), true);
+
+  // `-enumerate-tests` LISTS the tests instead of running them — never a test run.
+  assert.equal(commandLooksLikeTestCommand("xcodebuild test -scheme App -enumerate-tests"), false);
+  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild test -scheme App -enumerate-tests"), false);
 
   // `clean` alone removes build products and compiles nothing — recognized, but not
   // local-validation evidence; combined with a build/test action it keeps that role.

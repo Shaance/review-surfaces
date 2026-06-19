@@ -582,7 +582,10 @@ function humanReviewBuildConfig(input: BuildHumanReviewInput): HumanReviewBuildC
   };
 }
 
-export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): string {
+export function humanReviewConfigSignature(
+  config?: HumanReviewBuildConfig,
+  commandRules?: readonly CommandRule[]
+): string {
   const resolved = {
     ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
     ...config,
@@ -592,6 +595,15 @@ export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): str
     }
   };
   const fingerprint = {
+    // review-surfaces.COLLECTOR.9: command_rules change the rendered trust audit
+    // (which wrapper claims surface), so a config-only change to them must bust the
+    // cache / trigger a standalone rebuild rather than reuse a stale human_review.json.
+    command_rules: (commandRules ?? []).map((rule) => ({
+      id: rule.id,
+      match: rule.match,
+      command: rule.command,
+      classification: rule.classification
+    })),
     max_questions: resolved.max_questions,
     max_review_first: resolved.max_review_first,
     max_suggested_comments: resolved.max_suggested_comments,
@@ -629,7 +641,7 @@ function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["gen
     // COLD_START.7: working-tree files absorbed into this review (0 on clean or
     // pinned-head runs); every human surface announces a nonzero count.
     uncommitted_files: typeof manifest.uncommitted_files === "number" ? manifest.uncommitted_files : 0,
-    human_review_config_signature: humanReviewConfigSignature(input.config)
+    human_review_config_signature: humanReviewConfigSignature(input.config, input.commandRules)
   };
 }
 

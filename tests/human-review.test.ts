@@ -5040,3 +5040,22 @@ test("review-surfaces.COLLECTOR.9 trust audit surfaces a configured-wrapper clai
     "with command_rules: the configured wrapper claim surfaces as claimed-but-not-verified"
   );
 });
+
+// review-surfaces.COLLECTOR.9 — command_rules change the rendered trust audit (which
+// wrapper claims surface), so the human-review cache signature must fold them in;
+// otherwise a config-only command_rules change reuses a stale human_review.json on
+// standalone surfaces such as `trust`.
+test("review-surfaces.COLLECTOR.9 human review cache signature busts when command_rules change", () => {
+  const noRules = humanReviewConfigSignature(undefined, []);
+  const withRule = humanReviewConfigSignature(undefined, [
+    { id: "ios", match: "exact" as const, command: "./scripts/check-ios.sh", classification: "broad_test" as const }
+  ]);
+  assert.notEqual(noRules, withRule, "a command_rules change must change the signature");
+  // Deterministic: the same rules always produce the same signature.
+  assert.equal(
+    humanReviewConfigSignature(undefined, [
+      { id: "ios", match: "exact" as const, command: "./scripts/check-ios.sh", classification: "broad_test" as const }
+    ]),
+    withRule
+  );
+});

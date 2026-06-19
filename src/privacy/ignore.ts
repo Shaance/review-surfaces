@@ -24,15 +24,26 @@ export const DEFAULT_PRIVACY_IGNORE_PATTERNS = [
   "**/*.mobileprovision",
   "**/*.provisionprofile",
   "**/*.p12",
+  "**/*.p8",
   "**/*.cer",
   "**/*.certSigningRequest",
   "**/*.keychain",
+  "**/*.keychain-db",
   "**/*.xcuserstate",
   "**/xcuserdata/**",
   "**/DerivedData/**",
   "**/.build/**",
   "**/SourcePackages/**",
   "**/.swiftpm/**",
+  // Directory forms so the file walk SKIPS these caches instead of descending and
+  // ignoring each child afterward (walkFiles tests isIgnored on the directory path
+  // before recursing). The `**/<dir>/**` forms above still drop child paths that
+  // arrive via a git diff rather than the walk.
+  "**/DerivedData/",
+  "**/.build/",
+  "**/SourcePackages/",
+  "**/.swiftpm/",
+  "**/xcuserdata/",
   ".claude/",
   ".review-surfaces/feedback/raw/**",
   ".review-surfaces/inputs/conversation.raw.*"

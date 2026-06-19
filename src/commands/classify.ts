@@ -135,12 +135,15 @@ const XCODEBUILD_BUILD_ACTIONS: ReadonlySet<string> = new Set([
 ]);
 const XCODEBUILD_ALL_ACTIONS = new Set([...XCODEBUILD_TEST_ACTIONS, ...XCODEBUILD_BUILD_ACTIONS]);
 // Informational flags that print and exit, even when an action word is also present.
+// `-enumerate-tests` LISTS the tests that would run instead of executing them per
+// xcodebuild(1), so a `test -enumerate-tests` transcript is enumeration, not a run.
 const XCODEBUILD_INFORMATIONAL =
-  /(?:^|\s)-(?:list|version|showBuildSettings|showsdks|showdestinations|showTestPlans|checkFirstLaunchStatus|help|usage|exportLocalizations|importLocalizations)\b|(?:^|\s)--help\b/;
-// Focus selectors narrow a test run to specific identifiers. xcodebuild(1) accepts
-// both the `-only-testing:Id` attached form and the space-separated `-only-testing Id`
-// form, so a following space also counts as the separator.
-const XCODEBUILD_FOCUS = /(?:^|\s)-(?:only|skip)-testing(?:[:=]|\s)/;
+  /(?:^|\s)-(?:list|version|showBuildSettings|showsdks|showdestinations|showTestPlans|checkFirstLaunchStatus|help|usage|exportLocalizations|importLocalizations|enumerate-tests)\b|(?:^|\s)--help\b/;
+// Focus selectors narrow a test run to a subset. xcodebuild(1) accepts both the
+// attached `-only-testing:Id` and the space-separated `-only-testing Id` forms, and
+// `-only-test-configuration`/`-skip-test-configuration` narrow a test plan to a subset
+// of configurations — all are focused, not a broad suite run.
+const XCODEBUILD_FOCUS = /(?:^|\s)-(?:only|skip)-test(?:ing|-configuration)(?:[:=]|\s)/;
 // xcodebuild options whose NEXT token is a value (so an action word is not read out
 // of a `-scheme test` / `-destination '…'` value). Bounded to the common set; an
 // unknown `-flag` is treated as boolean (a following action word still registers).

@@ -27,12 +27,24 @@ test("review-surfaces.COLLECTOR.8 Swift test paths are recognized by file name a
     "ViewSnapshotTests.swift",
     "Tests/AppTests/FooTests.swift",
     "Tests/AppTests/SharedHelpers.swift", // helper in a Tests/ target dir
-    "MyApp/UITests/LoginFlow.swift"
+    "MyApp/UITests/LoginFlow.swift",
+    // The dominant Xcode layout: a SUFFIXED target dir (`<Target>Tests/`), helper
+    // basename that does not itself end in Test(s).swift.
+    "MyAppTests/Support/Fixture.swift",
+    "MyAppUITests/PageObjects/Login.swift",
+    "Features/FeatureSnapshotTests/Snap.swift"
   ];
   for (const path of tests) {
     assert.equal(isSwiftTestPath(path), true, `${path} should be a Swift test`);
   }
-  const notTests = ["Sources/Foo.swift", "App/Models/User.swift", "latest.swift", "contest.swift"];
+  const notTests = [
+    "Sources/Foo.swift",
+    "App/Models/User.swift",
+    "latest.swift",
+    "contest.swift",
+    "Sources/contest/User.swift", // lowercase dir ending in "test" is NOT a test target
+    "Manifests/Config.swift"
+  ];
   for (const path of notTests) {
     assert.equal(isSwiftTestPath(path), false, `${path} should NOT be a Swift test`);
   }
@@ -82,10 +94,19 @@ test("review-surfaces.COLLECTOR.8 Apple generated/cache/user-state paths are rec
     ".swiftpm/configuration/x",
     "SourcePackages/checkouts/Dep/x",
     "App.xcodeproj/project.xcworkspace/xcuserdata/me.xcuserdatad/UserInterfaceState.xcuserstate",
-    "App.xcuserstate"
+    "App.xcuserstate",
+    // Result / archive / debug-symbol / product bundles, whether bundle dir or file.
+    "TestResults.xcresult/Info.plist",
+    "build/App.xcarchive/Info.plist",
+    "build/App.dSYM/Contents/Resources/DWARF/App",
+    "build/App.ipa",
+    "DerivedData/.../Logs/Test/Run.xctestproducts"
   ]) {
     assert.equal(isAppleGeneratedPath(path), true, `${path} should be generated/cache`);
   }
+  // Source/config text is never generated.
+  assert.equal(isAppleGeneratedPath("Sources/App/User.swift"), false);
+  assert.equal(isAppleGeneratedPath("App/Info.plist"), false);
 });
 
 test("review-surfaces.COLLECTOR.8 + PRIVACY.8 signing artifacts and non-review union", () => {
@@ -93,10 +114,12 @@ test("review-surfaces.COLLECTOR.8 + PRIVACY.8 signing artifacts and non-review u
     "App.mobileprovision",
     "Dev.provisionprofile",
     "cert.p12",
+    "AuthKey_ABC123.p8", // App Store Connect API private key
     "ci.cer",
     // mixed-case canonical CSR name must still match after basename lowercasing.
     "MyCert.certSigningRequest",
     "login.keychain",
+    "ci.keychain-db", // modern macOS keychain
     "secret.key",
     "key.pem"
   ]) {
