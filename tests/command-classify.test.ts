@@ -499,6 +499,19 @@ test("review-surfaces.COLLECTOR.9 dedicated xcodebuild classifier: test vs build
     true
   );
   assert.equal(commandLooksLikeFocusedTestCommand("xcodebuild test -scheme App -skip-testing:AppTests/SlowTests"), true);
+  // xcodebuild(1) also accepts the space-separated selector form.
+  assert.equal(
+    commandLooksLikeFocusedTestCommand("xcodebuild test -scheme App -only-testing AppTests/FooTests/testFoo"),
+    true
+  );
+  assert.equal(commandLooksLikeFocusedTestCommand("xcodebuild test -scheme App -skip-testing AppTests/SlowTests"), true);
+
+  // `clean` alone removes build products and compiles nothing — recognized, but not
+  // local-validation evidence; combined with a build/test action it keeps that role.
+  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild clean"), false);
+  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild clean -scheme App"), false);
+  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild clean build -scheme App"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("xcodebuild clean test -scheme App"), true);
 
   // build / build-for-testing are validation, NEVER a test run.
   assert.equal(commandLooksLikeTestCommand("xcodebuild build-for-testing -scheme App"), false);

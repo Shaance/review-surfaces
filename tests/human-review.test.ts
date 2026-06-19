@@ -5008,3 +5008,35 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: a doc with a test-shaped basen
     assert.equal(retry.estimated_review_effort, "quick", "test/retry.ts is still recognized as a test");
   }
 });
+
+// review-surfaces.COLLECTOR.9 — the trust audit must recognize a configured wrapper
+// as local validation the SAME way the risks model did when it built the claimed
+// TEST-CMD row; otherwise a wrapper validation claim silently vanishes from
+// "Claimed but not verified" when no transcript was captured.
+test("review-surfaces.COLLECTOR.9 trust audit surfaces a configured-wrapper claim only when command_rules are threaded", () => {
+  const base = packetFixture();
+  const wrapperItem = {
+    id: "TEST-CMD-WRAP",
+    kind: "claimed" as const,
+    summary: "Command invoked by this run context: ./scripts/check-ios.sh",
+    evidence: [commandEvidence("./scripts/check-ios.sh", "Invocation recorded without output.", "medium")]
+  };
+  const packet = { ...base, risks: { ...base.risks, test_evidence: [wrapperItem] } };
+
+  const ruleBlind = buildHumanReview({ packet });
+  assert.ok(
+    !ruleBlind.trust_audit.claimed_not_verified.some((claim) => claim.claim.includes("check-ios.sh")),
+    "rule-blind: an unrecognized wrapper is not treated as a validation claim"
+  );
+
+  const withRules = buildHumanReview({
+    packet,
+    commandRules: [
+      { id: "ios", match: "exact" as const, command: "./scripts/check-ios.sh", classification: "broad_test" as const }
+    ]
+  });
+  assert.ok(
+    withRules.trust_audit.claimed_not_verified.some((claim) => claim.claim.includes("check-ios.sh")),
+    "with command_rules: the configured wrapper claim surfaces as claimed-but-not-verified"
+  );
+});

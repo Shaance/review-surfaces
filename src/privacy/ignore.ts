@@ -89,12 +89,19 @@ function compileRule(rawPattern: string): IgnoreRule {
   pattern = pattern.replace(/\/+$/, "");
   const hasSlash = pattern.includes("/");
 
+  // Match the privacy boundary case-INSENSITIVELY: the shared source-kind classifier
+  // lowercases basenames before classifying signing/cache artifacts, so a changed
+  // `CI.CER` / `Cert.P12` / `foo.CERTSIGNINGREQUEST` must be dropped here too — never
+  // persisted to changed_files / diff.patch on a case-sensitive checkout (PRIVACY.8).
+  const base = globToRegExp(pattern);
+  const regex = base.flags.includes("i") ? base : new RegExp(base.source, `${base.flags}i`);
+
   return {
     pattern,
     negate,
     directoryOnly,
     hasSlash,
-    regex: globToRegExp(pattern)
+    regex
   };
 }
 

@@ -131,6 +131,11 @@ test("review-surfaces.PRIVACY.8 default ignore drops every Apple signing artifac
   ]) {
     assert.equal(ignore.isIgnored(p), true, `${p} should be ignored by default`);
   }
+  // Case-insensitive at the boundary: the classifier lowercases basenames, so an
+  // uppercase-extension signing file must be dropped too on a case-sensitive checkout.
+  for (const p of ["CI.CER", "secrets/Cert.P12", "Foo.CERTSIGNINGREQUEST", "Login.KeyChain"]) {
+    assert.equal(ignore.isIgnored(p), true, `${p} should be ignored case-insensitively`);
+  }
   // Reviewable project/config TEXT stays available to detectors (not privacy-dropped).
   assert.equal(ignore.isIgnored("App/Info.plist"), false);
   assert.equal(ignore.isIgnored("App/App.entitlements"), false);

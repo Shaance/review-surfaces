@@ -137,8 +137,10 @@ const XCODEBUILD_ALL_ACTIONS = new Set([...XCODEBUILD_TEST_ACTIONS, ...XCODEBUIL
 // Informational flags that print and exit, even when an action word is also present.
 const XCODEBUILD_INFORMATIONAL =
   /(?:^|\s)-(?:list|version|showBuildSettings|showsdks|showdestinations|showTestPlans|checkFirstLaunchStatus|help|usage|exportLocalizations|importLocalizations)\b|(?:^|\s)--help\b/;
-// Focus selectors narrow a test run to specific identifiers.
-const XCODEBUILD_FOCUS = /(?:^|\s)-(?:only|skip)-testing[:=]/;
+// Focus selectors narrow a test run to specific identifiers. xcodebuild(1) accepts
+// both the `-only-testing:Id` attached form and the space-separated `-only-testing Id`
+// form, so a following space also counts as the separator.
+const XCODEBUILD_FOCUS = /(?:^|\s)-(?:only|skip)-testing(?:[:=]|\s)/;
 // xcodebuild options whose NEXT token is a value (so an action word is not read out
 // of a `-scheme test` / `-destination '…'` value). Bounded to the common set; an
 // unknown `-flag` is treated as boolean (a following action word still registers).
@@ -204,8 +206,14 @@ export function xcodebuildKind(command: string): XcodebuildKind | undefined {
   if (actions.some((action) => XCODEBUILD_TEST_ACTIONS.has(action))) {
     return XCODEBUILD_FOCUS.test(normalized) ? "focused_test" : "broad_test";
   }
-  // A recognized build/analyze/clean action, OR no action at all (xcodebuild
-  // defaults to `build`): a compile, never a test execution.
+  // `xcodebuild clean` with no build/test action removes build products and compiles
+  // nothing — recognized, but NOT local-validation evidence. `clean build` / `clean
+  // test` keep their build/test classification via the action checks above and below.
+  if (actions.length > 0 && actions.every((action) => action === "clean")) {
+    return "informational";
+  }
+  // A recognized build/analyze action, OR no action at all (xcodebuild defaults to
+  // `build`): a compile, never a test execution.
   return "validation";
 }
 

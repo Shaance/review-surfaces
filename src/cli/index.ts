@@ -1765,6 +1765,10 @@ function buildHumanReviewForPacket(
     // computed here so every build path carries them uniformly.
     dependencyFacts: factReaders ? computeDependencyFacts({ changedFiles: factReaders.changedFiles, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
     configFacts: factReaders && resolvedDiff ? computeConfigFacts({ diff: resolvedDiff, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
+    // review-surfaces.COLLECTOR.9: the validated wrapper rules so the trust audit
+    // recognizes a configured wrapper as local validation exactly as the risks
+    // model did when it built the claimed TEST-CMD row.
+    commandRules: effectiveConfig?.command_rules ?? [],
     // review-surfaces.CHANGE_MAP.1: import edges among changed files, from the
     // shared import-graph parser over head content — computed here (file access)
     // so the section is uniform on every build path.
