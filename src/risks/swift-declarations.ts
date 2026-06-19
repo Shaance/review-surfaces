@@ -32,6 +32,10 @@ export interface SwiftDeclaration {
   // Normalized declaration head text (keyword..body/EOL), whitespace-collapsed.
   signature: string;
   attributes: string[];
+  // Declaration modifiers (`static`, `class`, `mutating`, `nonisolated`, `final`, …)
+  // plus any access keywords. `body`/`signature` starts at the keyword, so these are
+  // kept separately to detect callable-interface changes like adding `static`.
+  modifiers?: string[];
   conformances: string[];
   protocol_requirements?: string[];
   enum_cases?: string[];
@@ -160,6 +164,13 @@ export function extractSwiftDeclarations(source: string): SwiftDeclaration[] {
       if (head) {
         const built = buildDeclaration(head, stack, lineAt(head.start));
         if (built) {
+          built.decl.modifiers = head.modifiers;
+          // A protocol property's `{ get }` / `{ get set }` accessor block is part of
+          // the requirement, not code — fold settability into the signature so a
+          // get -> get set change is a breaking declaration fact.
+          if (built.decl.kind === "property" && built.opensBody && stack[stack.length - 1]?.decl?.kind === "protocol") {
+            built.decl.signature += accessorSuffix(cleaned, head.end);
+          }
           attachToContainer(built.decl, stack);
           // Enum cases are recorded ONLY on their enum's enum_cases (above); they
           // are not emitted as standalone declarations, so a removed case is one
@@ -311,11 +322,13 @@ function readHead(s: string, start: number): ParsedHead | undefined {
       // enclosing frame. Not consuming it is what keeps the container stack honest.
       break;
     } else if (c === "\n" && depth === 0) {
-      // A Swift opening brace may sit on the NEXT line (`func run()\n{ ... }`). Look
-      // past blank lines/whitespace: if the next non-space char is `{`, the head
-      // continues to it so a body frame is pushed (otherwise local let/var/case edits
-      // inside that body would be emitted as bogus top-level declaration facts). If the
-      // next token is anything else, the head ends here with no body.
+      // A Swift declaration head can wrap onto the next line. Look past blank
+      // lines/whitespace at what follows:
+      //   - `{`  -> the body opens on the next line; continue to it and push a frame
+      //            (otherwise local let/var/case edits leak as top-level decl facts).
+      //   - `async`/`throws`/`rethrows`/`->`/`where` -> the SIGNATURE continues, so
+      //            keep scanning the head (so the effect/return change is captured).
+      //   - anything else -> the head ends here with no body.
       let k = j + 1;
       while (k < n && (s[k] === " " || s[k] === "\t" || s[k] === "\r" || s[k] === "\n")) {
         k += 1;
@@ -323,6 +336,11 @@ function readHead(s: string, start: number): ParsedHead | undefined {
       if (s[k] === "{") {
         hasBrace = true;
         j = k;
+        break;
+      }
+      if (/^(?:async\b|throws\b|rethrows\b|->|where\b)/.test(s.slice(k))) {
+        j = k - 1; // resume scanning the wrapped clause (the for-loop re-adds 1)
+        continue;
       }
       break;
     } else if (c === ";" && depth === 0) {
@@ -331,6 +349,24 @@ function readHead(s: string, start: number): ParsedHead | undefined {
   }
   const headText = `${keyword} ${s.slice(i, j)}`.replace(/\s+/g, " ").trim();
   return { start, end: j, attributes, modifiers, keyword, body: headText, hasBrace };
+}
+
+// Normalize a protocol property's accessor block at `bracePos` (the `{`) to
+// " { get set }" or " { get }" by inspecting the block for a `set` accessor. Operates
+// on the CLEANED source (comments/strings already blanked).
+function accessorSuffix(s: string, bracePos: number): string {
+  let depth = 0;
+  for (let k = bracePos; k < s.length; k += 1) {
+    if (s[k] === "{") {
+      depth += 1;
+    } else if (s[k] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return /\bset\b/.test(s.slice(bracePos + 1, k)) ? " { get set }" : " { get }";
+      }
+    }
+  }
+  return "";
 }
 
 // `class` is a TYPE keyword unless it is immediately followed by another decl
@@ -607,9 +643,9 @@ function conformancesFrom(body: string, name: string): string[] {
   }
   return rest
     .split(/[,&]/)
-    // Strip leading conformance attributes (`@unchecked Sendable`, `@retroactive`,
-    // `@preconcurrency`) so the common `: @unchecked Sendable` form is recorded as a
-    // Sendable conformance rather than dropped (SEMANTIC_DIFF.5 isolation changes).
-    .map((entry) => entry.trim().replace(/^@\w+\s+/, "").replace(/<.*$/, "").trim())
+    // Strip leading conformance attributes (possibly STACKED, e.g.
+    // `@preconcurrency @unchecked Sendable`) so the common `: @unchecked Sendable` form
+    // is recorded as a Sendable conformance rather than dropped (SEMANTIC_DIFF.5).
+    .map((entry) => entry.trim().replace(/^(?:@\w+\s+)+/, "").replace(/<.*$/, "").trim())
     .filter((entry) => /^[A-Za-z_][A-Za-z0-9_.]*$/.test(entry));
 }

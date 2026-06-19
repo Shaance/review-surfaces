@@ -323,3 +323,80 @@ test("review-surfaces.SEMANTIC_DIFF.6 a .disabled( inside a Swift string/comment
   const weakening = computeSemanticChangeFacts(sources(diffText, {}, {})).test_weakening;
   assert.ok(!weakening.some((s) => s.kind === "skipped_test"), "skip markers inside strings/comments are ignored");
 });
+
+// --- Phase 2 Codex round 2: deeper parser/semantic regressions ---------------
+
+test("review-surfaces.SEMANTIC_DIFF.5 a wrapped effect clause (async/throws on the next line) is parsed", () => {
+  const base = "public struct S {\n  public func run()\n    async throws\n  {\n    let local = 1\n  }\n}\n";
+  const head = "public struct S {\n  public func run()\n  {\n    let local = 1\n  }\n}\n";
+  const change = diffSwiftDeclarations("S.swift", base, head).find((c) => c.name === "S.run");
+  assert.ok(/no longer async|no longer throwing/.test(change?.detail ?? ""), "the wrapped effect drop is captured");
+  assert.ok(!extractSwiftDeclarations(base).some((d) => d.name === "local"), "a body local under a wrapped-effect head does not leak");
+});
+
+test("review-surfaces.SEMANTIC_DIFF.5 a static modifier change on a public member is a contract change", () => {
+  const base = "public enum API {\n  public func f() {}\n}\n";
+  const head = "public enum API {\n  public static func f() {}\n}\n";
+  const change = diffSwiftDeclarations("API.swift", base, head).find((c) => c.name === "API.f");
+  assert.ok(change, "the modifier change is reported");
+  assert.ok(/modifier/.test(change?.detail ?? ""), "the static addition is described");
+  assert.equal(change?.breaking, true, "a public modifier change is breaking");
+});
+
+test("review-surfaces.SEMANTIC_DIFF.5 a protocol property gaining a setter is a breaking requirement change", () => {
+  const base = "public protocol Model {\n  var value: Int { get }\n}\n";
+  const head = "public protocol Model {\n  var value: Int { get set }\n}\n";
+  const change = diffSwiftDeclarations("Model.swift", base, head).find((c) => /value/.test(c.name) && c.change === "modified");
+  assert.ok(change, "the accessor change is reported");
+  assert.equal(change?.breaking, true, "get -> get set breaks conformers");
+});
+
+test("review-surfaces.SEMANTIC_DIFF.5 a conformance added via a second extension is not dropped as ambiguous", () => {
+  const base = "extension Foo {\n  func a() {}\n}\n";
+  const head = "extension Foo {\n  func a() {}\n}\nextension Foo: Sendable {\n}\n";
+  const changes = diffSwiftDeclarations("Foo.swift", base, head);
+  const added = changes.find((c) => c.kind === "extension" && c.change === "added");
+  assert.ok(added, "the conforming extension is surfaced (not omitted as ambiguous)");
+  assert.ok(/Sendable/.test(added?.detail ?? ""), "the added conformance is named in the detail");
+});
+
+test("review-surfaces.SEMANTIC_DIFF.5 a stacked @preconcurrency @unchecked Sendable conformance is recorded", () => {
+  const base = "public final class Cache {}\n";
+  const head = "public final class Cache: @preconcurrency @unchecked Sendable {}\n";
+  const change = diffSwiftDeclarations("Cache.swift", base, head).find((c) => c.name === "Cache");
+  assert.ok(/Sendable/.test(change?.detail ?? ""), "stacked conformance attributes are stripped and Sendable recorded");
+});
+
+test("review-surfaces.SEMANTIC_DIFF.6 a .disabled( inside a multiline Swift string does not count as a skip", () => {
+  const path = "Tests/AppTests/FixtureTests.swift";
+  const diffText = [
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    "@@ -1,1 +1,4 @@",
+    "   func testFixtures() {",
+    '+    let fixture = """',
+    '+    sample .disabled("x") text',
+    '+    """',
+    ""
+  ].join("\n");
+  const weakening = computeSemanticChangeFacts(sources(diffText, {}, {})).test_weakening;
+  assert.ok(!weakening.some((s) => s.kind === "skipped_test"), "a skip marker inside a multiline string is ignored");
+});
+
+test("review-surfaces.SEMANTIC_DIFF.6 detects an Xcode test plan disabling a test/target", () => {
+  const path = "Plans/Unit.xctestplan";
+  const diffText = [
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    "@@ -1,3 +1,4 @@",
+    "       {",
+    '+        "enabled" : false,',
+    '         "target" : { "name" : "AppTests" }',
+    "       }",
+    ""
+  ].join("\n");
+  const weakening = computeSemanticChangeFacts(sources(diffText, {}, {})).test_weakening;
+  assert.ok(weakening.some((s) => s.kind === "skipped_test" && s.path === path), "a disabled test-plan entry fires skipped_test");
+});

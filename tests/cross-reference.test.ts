@@ -477,3 +477,32 @@ test("review-surfaces.COLLECTOR.8 a Swift impl with its plural-suffixed test doe
   );
   assert.ok(signal(withoutTest, "impl_no_test"), "an uncovered impl change still fires");
 });
+
+// review-surfaces.METHODOLOGY.8 + SEMANTIC_DIFF.5 — a breaking Swift declaration change
+// is a backward-incompatible API change, so the compatibility audit must consider it
+// (not only TypeScript api_changes / JSON schema_changes).
+test("review-surfaces.METHODOLOGY.8 a breaking Swift change with no compat discussion fires api_no_compat", () => {
+  const findings = computeCrossReferenceSignals(
+    collection([file("Sources/App/API.swift")], {
+      semanticFacts: {
+        swift_declaration_changes: [
+          { path: "Sources/App/API.swift", name: "API.run", kind: "function", change: "removed", visibility: "public", breaking: true, detail: "Swift function `API.run` removed (public)." }
+        ]
+      }
+    }),
+    talk("did a quick refactor")
+  );
+  assert.ok(signal(findings, "api_no_compat"), "a breaking public Swift change triggers the compat audit");
+  // A non-breaking Swift addition does NOT trigger it.
+  const additive = computeCrossReferenceSignals(
+    collection([file("Sources/App/API.swift")], {
+      semanticFacts: {
+        swift_declaration_changes: [
+          { path: "Sources/App/API.swift", name: "API.added", kind: "function", change: "added", visibility: "public", breaking: false, detail: "Swift function `API.added` added (public)." }
+        ]
+      }
+    }),
+    talk("did a quick refactor")
+  );
+  assert.equal(signal(additive, "api_no_compat"), undefined, "a compatible Swift addition does not trigger the compat audit");
+});

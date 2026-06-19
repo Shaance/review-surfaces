@@ -4625,6 +4625,16 @@ function semanticCommentCandidates(facts: SemanticChangeFacts): SuggestedComment
   for (const change of facts.api_changes) {
     add("clarifying", change.path, `${apiChangeReason(change)}${apiCallerCallToAction(change)}`, `semantic-api:${change.path}`);
   }
+  // review-surfaces.SEMANTIC_DIFF.4/.5: a ready-to-post comment for each Swift
+  // declaration change, carrying the concrete detail (a breaking public change blocks).
+  for (const change of facts.swift_declaration_changes) {
+    add(
+      change.breaking ? "blocking" : "clarifying",
+      change.path,
+      `${change.detail} Confirm callers/conformers are updated or the change is intentional.`,
+      `semantic-swift:${change.change}:${change.path}:${change.name}`
+    );
+  }
   return candidates;
 }
 

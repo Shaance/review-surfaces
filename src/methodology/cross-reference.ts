@@ -261,7 +261,10 @@ function hasBreakingSemanticChange(facts: SemanticChangeFacts): boolean {
       change.type_changes.length > 0 ||
       change.enum_changes.some((enumChange) => enumChange.removed.length > 0)
   );
-  return apiBreaking || schemaBreaking;
+  // A breaking Swift declaration change (removed public decl, narrowed access, changed
+  // signature/effects/requirements) is a backward-incompatible API change too.
+  const swiftBreaking = (facts.swift_declaration_changes ?? []).some((change) => change.breaking);
+  return apiBreaking || schemaBreaking || swiftBreaking;
 }
 
 // review-surfaces.METHODOLOGY.8: compute the four deterministic cross-reference
@@ -391,7 +394,13 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
   // structural fact, so it must be its own TRIGGER, not just a promotion flag —
   // Codex P2). Promoted by a backward-INCOMPATIBLE structural change or any
   // removed/renamed surface.
-  const apiFactPaths = [...facts.api_changes.map((change) => change.path), ...facts.schema_changes.map((change) => change.path)];
+  const apiFactPaths = [
+    ...facts.api_changes.map((change) => change.path),
+    ...facts.schema_changes.map((change) => change.path),
+    // A breaking Swift declaration change is an API-surface compat trigger too (a
+    // non-breaking Swift addition is compatible, so it does not trigger).
+    ...(facts.swift_declaration_changes ?? []).filter((change) => change.breaking).map((change) => change.path)
+  ];
   const removedSurfacePaths = changed.flatMap((file) => {
     if (file.status === "D" && isPublicSurfacePath(file.path)) {
       return [file.path];

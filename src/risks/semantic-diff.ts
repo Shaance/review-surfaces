@@ -289,6 +289,19 @@ function detectTestWeakening(diff: StructuredDiff): TestWeakeningSignal[] {
       }
       continue;
     }
+    // review-surfaces.SEMANTIC_DIFF.6: an Xcode test plan (.xctestplan) is classified as
+    // Apple config, not test source, but disabling/skipping tests or targets in it is a
+    // test-weakening the spec requires surfacing. Detect a net-added `"enabled": false`
+    // (a disabled test/target) or a `skippedTests` entry from the diff.
+    if (file.path.endsWith(".xctestplan") && file.status !== "A") {
+      const planAdded = file.hunks.flatMap((hunk) => hunk.lines.filter((line) => line.kind === "add").map((line) => line.text));
+      const planRemoved = file.hunks.flatMap((hunk) => hunk.lines.filter((line) => line.kind === "delete").map((line) => line.text));
+      const planSkip = (text: string): boolean => /"enabled"\s*:\s*false/.test(text) || /"skippedTests"/.test(text);
+      if (planAdded.filter(planSkip).length > planRemoved.filter(planSkip).length) {
+        signals.push({ kind: "skipped_test", path: file.path, detail: "Xcode test plan disables/skips test(s) or target(s); confirm the dropped coverage is intentional." });
+      }
+      continue;
+    }
     if (!isTestPath(file.path)) {
       continue;
     }
@@ -308,12 +321,14 @@ function detectTestWeakening(diff: StructuredDiff): TestWeakeningSignal[] {
     // vocabulary, not JS skip/assert markers — pick the patterns by file kind so a
     // JS-only rule does not silently miss a weakened Swift test.
     const swift = isSwiftTestPath(file.path);
-    // For Swift, blank comments/strings per line before matching so a fixture string or
-    // comment containing `.disabled(` / `XCTSkipIf` does not false-fire (the JS rules are
-    // already anchored against this).
-    const lineText = (line: { text: string }): string => (swift ? cleanSwiftSource(line.text) : line.text);
-    const added = file.hunks.flatMap((hunk) => hunk.lines.filter((line) => line.kind === "add").map(lineText));
-    const removed = file.hunks.flatMap((hunk) => hunk.lines.filter((line) => line.kind === "delete").map(lineText));
+    // For Swift, blank comments/strings before matching so a fixture string or comment
+    // containing `.disabled(` / `XCTSkipIf` does not false-fire. Clean the added and
+    // removed lines as BLOCKS (joined) so multiline-string / block-comment state carries
+    // across lines (a per-line clean cannot see it). cleanSwiftSource preserves newlines,
+    // so the split line count is unchanged.
+    const cleanBlock = (texts: string[]): string[] => (swift ? cleanSwiftSource(texts.join("\n")).split("\n") : texts);
+    const added = cleanBlock(file.hunks.flatMap((hunk) => hunk.lines.filter((line) => line.kind === "add").map((line) => line.text)));
+    const removed = cleanBlock(file.hunks.flatMap((hunk) => hunk.lines.filter((line) => line.kind === "delete").map((line) => line.text)));
 
     const skipPattern = swift ? SWIFT_SKIP_PATTERN : SKIP_PATTERN;
     const assertionPattern = swift ? SWIFT_ASSERTION_PATTERN : ASSERTION_PATTERN;

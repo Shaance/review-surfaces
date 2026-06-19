@@ -478,7 +478,7 @@
     "semanticChangeFacts": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["schema_changes", "api_changes", "test_weakening", "swift_declaration_changes"],
+      "required": ["schema_changes", "api_changes", "test_weakening"],
       "properties": {
         "swift_declaration_changes": {
           "type": "array",

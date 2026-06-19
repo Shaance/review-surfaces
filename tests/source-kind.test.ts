@@ -68,7 +68,10 @@ test("review-surfaces.COLLECTOR.8 Apple project/config files are recognized (pbx
     "App/Info.plist",
     // XcodeGen author-intent spec files — COLLECTOR.8 lists `project.yml` explicitly.
     "project.yml",
-    "App/project.yaml"
+    "App/project.yaml",
+    // SwiftPM manifests, including a version-specific manifest, are project config.
+    "Package.swift",
+    "Package@swift-5.9.swift"
   ];
   for (const path of configs) {
     assert.equal(isAppleProjectConfigPath(path), true, `${path} should be Apple project/config`);

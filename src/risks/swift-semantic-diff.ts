@@ -41,11 +41,30 @@ interface DeclShape {
 }
 
 function declKey(decl: SwiftDeclaration): string {
-  return `${decl.container ?? ""}::${decl.kind}::${decl.name}`;
+  const base = `${decl.container ?? ""}::${decl.kind}::${decl.name}`;
+  // A file commonly has several `extension Foo` blocks; keying only by name would mark
+  // them all ambiguous and drop a conformance change. Fold the sorted conformances into
+  // an extension's key so `extension Foo {}` and `extension Foo: Sendable {}` are
+  // distinct — adding the conforming extension is then reported, not omitted.
+  if (decl.kind === "extension") {
+    return `${base}::${[...decl.conformances].sort().join(",")}`;
+  }
+  return base;
 }
 
 function qualifiedName(decl: SwiftDeclaration): string {
   return decl.container ? `${decl.container}.${decl.name}` : decl.name;
+}
+
+// Access keywords are captured by `visibility`; the REMAINING modifiers (`static`,
+// `class`, `mutating`, `nonisolated`, `final`, `override`, …) are part of the callable
+// interface, so a change to them is a declaration change even when nothing else does.
+const ACCESS_MODIFIERS = new Set(["public", "private", "internal", "fileprivate", "package", "open"]);
+function semanticModifiers(decl: SwiftDeclaration): string[] {
+  return [...(decl.modifiers ?? [])]
+    .map((modifier) => modifier.split("(")[0])
+    .filter((modifier) => !ACCESS_MODIFIERS.has(modifier))
+    .sort();
 }
 
 function shapeOf(decl: SwiftDeclaration): DeclShape {
@@ -69,6 +88,7 @@ function identityOf(shape: DeclShape): string {
   return JSON.stringify([
     shape.normalizedSignature,
     d.visibility,
+    semanticModifiers(d),
     [...d.conformances].sort(),
     [...(d.enum_cases ?? [])].sort(),
     [...(d.protocol_requirements ?? [])].sort(),
@@ -126,6 +146,10 @@ export function diffSwiftDeclarations(path: string, baseSource: string | undefin
 
 function addedChange(path: string, shape: DeclShape): SwiftDeclarationChange {
   const d = shape.decl;
+  // A new `extension Foo: Sendable {}` ADDS those conformances to Foo — name them so a
+  // conformance/isolation change made via a fresh extension is concrete, not just
+  // "extension added" (SEMANTIC_DIFF.5).
+  const conformanceNote = d.kind === "extension" && d.conformances.length > 0 ? ` adding conformance(s): ${[...d.conformances].sort().join(", ")}` : "";
   return {
     path,
     name: qualifiedName(d),
@@ -135,7 +159,7 @@ function addedChange(path: string, shape: DeclShape): SwiftDeclarationChange {
     // Additions are generally lower severity; a NEW protocol requirement is a
     // contract change for every conformer even within a target.
     breaking: d.kind === "protocol" ? false : false,
-    detail: `${kindLabel(d.kind)} \`${qualifiedName(d)}\` added (${d.visibility}).`
+    detail: `${kindLabel(d.kind)} \`${qualifiedName(d)}\` added (${d.visibility})${conformanceNote}.`
   };
 }
 
@@ -165,6 +189,18 @@ function modifiedChange(path: string, b: DeclShape, h: DeclShape): SwiftDeclarat
     if (!widened && CONTRACT_VISIBILITIES.has(b.decl.visibility)) {
       breaking = true; // narrowing a public/package surface breaks callers
     }
+  }
+
+  // Modifier changes (static/class/mutating/nonisolated/final/…) — a callable-interface
+  // change on a public/package/open surface.
+  const modAdded = diffList(semanticModifiers(b.decl), semanticModifiers(h.decl));
+  const modRemoved = diffList(semanticModifiers(h.decl), semanticModifiers(b.decl));
+  if (modAdded.length || modRemoved.length) {
+    const bits: string[] = [];
+    if (modAdded.length) bits.push(`+${modAdded.join(" +")}`);
+    if (modRemoved.length) bits.push(`-${modRemoved.join(" -")}`);
+    parts.push(`modifier(s) changed: ${bits.join(" ")}`);
+    breaking = breaking || CONTRACT_VISIBILITIES.has(h.decl.visibility);
   }
 
   // Conformance / superclass changes.

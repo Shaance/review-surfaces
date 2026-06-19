@@ -116,6 +116,12 @@ export function isAppleLockPath(filePath: string): boolean {
 // generated — it is often the source-of-truth project file (goal contract Phase 1).
 export function isAppleProjectConfigPath(filePath: string): boolean {
   const base = baseName(filePath);
+  // Version-specific SwiftPM manifests (`Package@swift-5.9.swift`) are project config
+  // too, so a change to one lands in the manifest/package review focus rather than the
+  // generic unknown path (the exact `Package.swift` is already in the basename set).
+  if (isSwiftPackageManifestPath(filePath)) {
+    return true;
+  }
   if (APPLE_CONFIG_BASENAMES.has(base)) {
     return true;
   }
