@@ -4989,19 +4989,24 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
         expected_result: "The scoped coverage delta no longer reports a regression for the mapped requirement.",
         command: "pnpm run test -- tests/scoped-coverage.test.ts"
       })];
-    case "untested_changed_impl":
-      // Keep the two actions DISTINCT rather than the conflated "add or identify":
-      // run an existing test at the current head (record the transcript), OR add a
-      // test if none exists. The PR risk's own summary/suggested_checks already say
-      // which case applies per file.
+    case "untested_changed_impl": {
+      // Follow the PR risk's OWN state (run-existing/mixed vs add) so the test-plan
+      // item never contradicts the risk evidence, but keep it PATH-specific so each
+      // untested file gets its own item (Codex P2). A risk whose primary action is
+      // "Run the existing test…" (run-existing or mixed) maps to a run-and-record
+      // scenario; otherwise it is the add-a-test scenario.
+      const runExisting = /^run the existing test/i.test(risk.suggested_checks[0] ?? "");
       return [riskDraft({
         kind: "automatic",
         priority: "required",
         suggested_file: suggestedFile,
-        scenario: `Run the existing test for the changed implementation${path ? ` in ${path}` : ""} at the current head and record the transcript, or add a test if none covers it.`,
+        scenario: runExisting
+          ? `Run the existing test for the changed implementation${path ? ` in ${path}` : ""} at the current head and record the transcript.`
+          : `Add a test covering the changed implementation${path ? ` in ${path}` : ""}.`,
         expected_result: "A direct test or current-head command transcript demonstrates the changed implementation behavior before approval.",
         command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test"
       })];
+    }
     case "unmapped_change":
       // review-surfaces.COLD_START.5: spec-less repos are never asked to map
       // files to requirements — review areas are the only mapping concept.

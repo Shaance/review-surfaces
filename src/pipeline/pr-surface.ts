@@ -10,7 +10,7 @@ import { buildPrNarrative } from "../llm/pr-narrative";
 import { buildPrChangeDiagram } from "../diagrams/pr-change-diagram";
 import { buildPrRiskCandidates } from "../risks/pr-risks";
 import { createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
-import { buildPrScope } from "../scope/pr-scope";
+import { buildPrScope, isTestPath } from "../scope/pr-scope";
 import { PrReviewSurfaceModel, PR_SURFACE_SCHEMA_VERSION, PrSurfaceBlockedReason, StructuredDiff } from "../pr/contract";
 
 // ---------------------------------------------------------------------------
@@ -65,10 +65,21 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
   // the same review_surface matcher buildPrScope uses for changed files, so the
   // untested rule's "an existing test was not run at head" vs "no test exists"
   // distinction is computed over the same area space the diff is scoped into.
+  //
+  // Source = the SAME test classifier the scope/methodology use (isTestPath: tests/,
+  // *.test.*, *.spec.*, Swift tests) over every repository file, UNIONED with the
+  // config-glob-indexed collection.tests. Deriving from collection.tests alone would
+  // miss colocated src/foo.test.ts, *.spec.ts, and non-JS tests the scope still
+  // recognizes — wrongly pushing those files into the "no test exists / add a test"
+  // branch when an existing test is in fact mapped (Codex P2).
   const repositoryTestAreas = new Set<string>();
   const repoTestMatcher = createReviewAreaMatcher(input.reviewAreas);
-  for (const test of input.collection.tests) {
-    for (const area of repoTestMatcher.groupsForPath(test.path, { purpose: "review_surface" })) {
+  const repositoryTestPaths = new Set<string>([
+    ...input.collection.repositoryFiles.filter(isTestPath),
+    ...input.collection.tests.map((test) => test.path)
+  ]);
+  for (const testPath of repositoryTestPaths) {
+    for (const area of repoTestMatcher.groupsForPath(testPath, { purpose: "review_surface" })) {
       repositoryTestAreas.add(area);
     }
   }

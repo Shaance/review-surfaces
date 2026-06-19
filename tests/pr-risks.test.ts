@@ -290,6 +290,27 @@ test("untested impl WITH an existing test in its area -> RUN-the-existing-test w
   assert.ok(/no current-head passing transcript proves it ran/.test(candidate.summary), "summary states the existing test did not run at head");
 });
 
+test("untested impl in MIXED areas (one covered, one not) gets a split run-AND-add action", () => {
+  const input = buildInput({
+    scope: scope({
+      changed_files: [
+        // src/core/thing.ts maps to both CORE (has tests) and FOO (no tests)
+        changedFile({ path: "src/core/thing.ts", role: "implementation", areas: ["CORE", "FOO"] })
+      ]
+    }),
+    repositoryTestAreas: new Set<string>(["CORE"]) // only CORE has an existing test
+  });
+
+  const candidate = buildPrRiskCandidates(input).candidates.find((c) => c.rule === "untested_changed_impl");
+  assert.ok(candidate, "untested_changed_impl candidate emitted for the mixed-area file");
+  // The action must NOT hide that FOO has no coverage, NOR falsely deny CORE's test.
+  assert.ok(
+    candidate.suggested_checks.some((check) => /Run the existing test\(s\) mapped to CORE/.test(check) && /add a test covering FOO/.test(check)),
+    "mixed-area files get BOTH run-existing (CORE) and add (FOO) in one action"
+  );
+  assert.ok(/tests are mapped to CORE/.test(candidate.summary) && /FOO has no mapped test/.test(candidate.summary), "summary names the covered and uncovered areas");
+});
+
 test("impl file WITH a co-changed test in the same area does NOT fire untested_changed_impl", () => {
   const input = buildInput({
     scope: scope({
