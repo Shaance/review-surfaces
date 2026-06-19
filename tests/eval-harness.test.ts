@@ -402,7 +402,7 @@ test("review-surfaces.COLLECTOR.8 a Swift source + test change yields a non-empt
       `public struct Greeter {\n  public func greet(_ name: String) -> String {\n    return "Hello, \\(name)!"\n  }\n}\n`
     );
     fixture.write(
-      "Tests/AppTests/GreeterTests.swift",
+      "AppTests/GreeterTests.swift",
       `import XCTest\n@testable import App\n\nfinal class GreeterTests: XCTestCase {\n  func testGreet() {\n    XCTAssertEqual(Greeter().greet("a"), "Hello, a!")\n  }\n}\n`
     );
     fixture.commit("add Swift greeter + tests");
@@ -415,10 +415,52 @@ test("review-surfaces.COLLECTOR.8 a Swift source + test change yields a non-empt
       assert.equal(model.blockers.length, 0, "a benign Swift change must not fabricate a blocker");
       // Correctly ordered: the implementation ranks at or above its test file.
       const implIndex = model.review_queue.findIndex((item) => item.path === "Sources/App/Greeter.swift");
-      const testIndex = model.review_queue.findIndex((item) => item.path === "Tests/AppTests/GreeterTests.swift");
+      const testIndex = model.review_queue.findIndex((item) => item.path === "AppTests/GreeterTests.swift");
       if (testIndex >= 0) {
         assert.ok(implIndex < testIndex, "the Swift implementation must rank above its test file");
       }
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// review-surfaces.SEMANTIC_DIFF.5: a public Swift signature change ranks in the top N.
+test("review-surfaces.SEMANTIC_DIFF.5 a Swift public signature change ranks in the top N", () => {
+  const fixture = createEvalFixture("swift-contract");
+  try {
+    fixture.write(
+      "Sources/App/Greeting.swift",
+      `public struct Greeting {\n  public func greet(name: String, locale: String) -> String {\n    return "Hi \\(name)"\n  }\n}\n`
+    );
+    fixture.commit("change Swift signature");
+    record("swift_contract_change", () => {
+      const model = fixture.run();
+      assert.ok(
+        inTopQueue(model, (item) => item.path === "Sources/App/Greeting.swift" && /swift declaration|signature/i.test(`${item.title} ${item.reason}`)),
+        "the Swift signature change must rank in the top N with concrete language"
+      );
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// review-surfaces.SEMANTIC_DIFF.6: a removed XCTest assertion ranks in the top N.
+test("review-surfaces.SEMANTIC_DIFF.6 a removed Swift test assertion ranks in the top N", () => {
+  const fixture = createEvalFixture("swift-weakening");
+  try {
+    fixture.write(
+      "AppTests/GreetingTests.swift",
+      `import XCTest\n@testable import App\n\nfinal class GreetingTests: XCTestCase {\n  func testGreet() {\n    _ = Greeting().greet(name: "a")\n  }\n}\n`
+    );
+    fixture.commit("drop XCTest assertion");
+    record("swift_test_weakening", () => {
+      const model = fixture.run();
+      assert.ok(
+        inTopQueue(model, (item) => item.path === "AppTests/GreetingTests.swift" && /weakening|assertion|check/i.test(`${item.title} ${item.reason}`)),
+        "the removed XCTest assertion must rank in the top N"
+      );
     });
   } finally {
     fixture.cleanup();

@@ -480,6 +480,23 @@
       "additionalProperties": true,
       "required": ["schema_changes", "api_changes", "test_weakening"],
       "properties": {
+        "swift_declaration_changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["path", "name", "kind", "change", "visibility", "breaking", "detail"],
+            "properties": {
+              "path": { "type": "string" },
+              "name": { "type": "string" },
+              "kind": { "type": "string" },
+              "change": { "enum": ["added", "removed", "modified"] },
+              "visibility": { "type": "string" },
+              "breaking": { "type": "boolean" },
+              "detail": { "type": "string" }
+            }
+          }
+        },
         "schema_changes": {
           "type": "array",
           "items": {
@@ -554,7 +571,7 @@
             "additionalProperties": true,
             "required": ["kind", "path", "detail"],
             "properties": {
-              "kind": { "enum": ["deleted_test_file", "skipped_test", "removed_assertion", "regenerated_snapshot"] },
+              "kind": { "enum": ["deleted_test_file", "removed_test_method", "skipped_test", "removed_assertion", "regenerated_snapshot"] },
               "path": { "type": "string" },
               "detail": { "type": "string" }
             }

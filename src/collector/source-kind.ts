@@ -94,6 +94,15 @@ const APPLE_CONFIG_BASENAMES: ReadonlySet<string> = new Set([
   "project.yaml"
 ]);
 
+// A SwiftPM manifest: `Package.swift` or a version-specific `Package@swift-5.9.swift`.
+// Recognized so the Swift DECLARATION differ skips it — its `let package = Package(...)`
+// is build configuration, not an API surface (package facts handle manifest changes) —
+// while it still classifies as Apple project config.
+export function isSwiftPackageManifestPath(filePath: string): boolean {
+  const base = baseName(filePath);
+  return base === "Package.swift" || /^Package@swift-.+\.swift$/.test(base);
+}
+
 // `Package.resolved` is an Apple/SwiftPM LOCK file: recognized so dependency facts
 // can read it (Phase 4a), but treated as lock/generated for baseline ranking so it
 // never dominates the review queue. Kept separate from project/config.
@@ -107,6 +116,12 @@ export function isAppleLockPath(filePath: string): boolean {
 // generated — it is often the source-of-truth project file (goal contract Phase 1).
 export function isAppleProjectConfigPath(filePath: string): boolean {
   const base = baseName(filePath);
+  // Version-specific SwiftPM manifests (`Package@swift-5.9.swift`) are project config
+  // too, so a change to one lands in the manifest/package review focus rather than the
+  // generic unknown path (the exact `Package.swift` is already in the basename set).
+  if (isSwiftPackageManifestPath(filePath)) {
+    return true;
+  }
   if (APPLE_CONFIG_BASENAMES.has(base)) {
     return true;
   }
@@ -207,6 +222,11 @@ export function classifyAppleSourceKind(filePath: string): AppleSourceKind {
   }
   if (isSwiftTestPath(filePath)) {
     return "swift_test";
+  }
+  // A SwiftPM manifest is a `.swift` file but is project CONFIG, not implementation
+  // source — classify it before the generic Swift-source branch.
+  if (isSwiftPackageManifestPath(filePath)) {
+    return "apple_project_config";
   }
   if (isSwiftFilePath(filePath)) {
     return "swift_source";

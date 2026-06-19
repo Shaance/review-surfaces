@@ -7,6 +7,7 @@ import { stripUndefined, uniqueTruthy } from "../core/guards";
 import { formatHunkHeader, hunkOverlapsRange } from "../collector/diff-hunks";
 import { buildFallbackNarrative } from "./narrative";
 import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTypeChanges, SchemaContractChange, SemanticChangeFacts, TestWeakeningSignal } from "../risks/semantic-diff";
+import type { SwiftDeclarationChange } from "../risks/swift-semantic-diff";
 import { emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { buildReviewPlan } from "./budget";
 import { buildChangeGraphSections, ChangedFileFacts, ChangedImportEdge } from "./change-graph";
@@ -2513,7 +2514,31 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
       sortKey: `semantic-api:${change.path}`
     }));
   }
+  // review-surfaces.SEMANTIC_DIFF.5: Swift declaration changes — concrete language,
+  // public/package breaks outrank additive/internal changes. Bucket BREAKING facts
+  // first so a breaking change after many additive ones is not pushed below them by the
+  // raw index penalty (and sliced out by the queue cap).
+  const swiftChanges = [...facts.swift_declaration_changes].sort((a, b) => Number(b.breaking) - Number(a.breaking));
+  for (const [index, change] of swiftChanges.entries()) {
+    drafts.push(semanticDraft(diffIndex, {
+      title: swiftDeclarationTitle(change),
+      path: change.path,
+      reason: change.detail,
+      reviewer_action:
+        change.change === "removed"
+          ? "Confirm callers/conformers of the removed Swift declaration are updated or it is intentionally dropped."
+          : "Confirm the Swift declaration change is intended and callers/conformers are updated.",
+      priority: change.breaking ? "high" : change.change === "added" ? "low" : "medium",
+      score: 150 - index + (change.breaking ? 40 : 0),
+      sortKey: `semantic-swift:${change.change}:${change.path}:${change.name}`
+    }));
+  }
   return drafts;
+}
+
+function swiftDeclarationTitle(change: SwiftDeclarationChange): string {
+  const verb = change.change === "added" ? "added" : change.change === "removed" ? "removed" : "changed";
+  return `Swift declaration ${verb}`;
 }
 
 function semanticDraft(
@@ -2547,6 +2572,8 @@ function testWeakeningTitle(kind: TestWeakeningSignal["kind"]): string {
   switch (kind) {
     case "deleted_test_file":
       return "Test weakening: deleted test file";
+    case "removed_test_method":
+      return "Test weakening: removed test method";
     case "skipped_test":
       return "Test weakening: newly skipped test";
     case "removed_assertion":
@@ -2793,7 +2820,11 @@ function baselineReviewFocusDrafts(
   }
   const surfacePaths = new Set<string>([
     ...semanticFacts.api_changes.map((change) => change.path),
-    ...semanticFacts.schema_changes.map((change) => change.path)
+    ...semanticFacts.schema_changes.map((change) => change.path),
+    // A Swift declaration fact already produces a concrete semantic queue item, so its
+    // path must be excluded from the generic cold-start floor too (like TS API / schema)
+    // — otherwise the same file also gets a duplicate "changed implementation" item.
+    ...semanticFacts.swift_declaration_changes.map((change) => change.path)
   ]);
   const changedTestsByImpl = input.rankingEvidence?.changed_tests_by_impl ?? {};
   // Tests the import evidence already attributed to an impl cover THAT impl; their stem must
@@ -3158,6 +3189,12 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
     const breaking = change.exports_removed.length > 0 || change.signatures_changed.length > 0;
     addSignal("api_contract", breaking ? "high" : "medium", [fileEvidence(change.path, apiChangeReason(change))], [], [], [change.path]);
   }
+  // review-surfaces.SEMANTIC_DIFF.5: Swift declaration changes feed the api_contract
+  // lens. A public/package break is high; an additive or internal change is
+  // advisory (medium) until Phase 3 supplies a deterministic used_by relationship.
+  for (const change of semanticFacts.swift_declaration_changes) {
+    addSignal("api_contract", change.breaking ? "high" : "medium", [fileEvidence(change.path, change.detail)], [], [], [change.path]);
+  }
   // review-surfaces.DEP_FACTS.2: dependency facts feed the supply_chain lens.
   for (const fact of input.dependencyFacts ?? []) {
     const rank = dependencyFactSeverityRank(fact.kind);
@@ -3174,7 +3211,7 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
   }
 
   for (const signal of semanticFacts.test_weakening) {
-    const severe = signal.kind === "deleted_test_file" || signal.kind === "removed_assertion";
+    const severe = signal.kind === "deleted_test_file" || signal.kind === "removed_test_method" || signal.kind === "removed_assertion";
     addSignal("test_evidence", severe ? "high" : "medium", [fileEvidence(signal.path, signal.detail)], [], [], [signal.path]);
   }
 
@@ -4594,6 +4631,16 @@ function semanticCommentCandidates(facts: SemanticChangeFacts): SuggestedComment
   }
   for (const change of facts.api_changes) {
     add("clarifying", change.path, `${apiChangeReason(change)}${apiCallerCallToAction(change)}`, `semantic-api:${change.path}`);
+  }
+  // review-surfaces.SEMANTIC_DIFF.4/.5: a ready-to-post comment for each Swift
+  // declaration change, carrying the concrete detail (a breaking public change blocks).
+  for (const change of facts.swift_declaration_changes) {
+    add(
+      change.breaking ? "blocking" : "clarifying",
+      change.path,
+      `${change.detail} Confirm callers/conformers are updated or the change is intentional.`,
+      `semantic-swift:${change.change}:${change.path}:${change.name}`
+    );
   }
   return candidates;
 }

@@ -65,6 +65,28 @@ test("app.CORE.1 add sums two numbers", () => {
   assert.equal(add(1, 2), 3);
 });
 `,
+  // review-surfaces.SEMANTIC_DIFF.5/.6: a Swift implementation + matching XCTest
+  // in the base so a later mutation is a real CHANGE diff (not an addition).
+  // Unchanged in cases that do not touch them, so they never enter those diffs.
+  "Sources/App/Greeting.swift": `public struct Greeting {
+  public func greet(name: String) -> String {
+    return "Hi \\(name)"
+  }
+}
+`,
+  // Path is "AppTests/" not "Tests/" on purpose: a case-insensitive macOS FS would
+  // otherwise collapse "Tests/" into the existing lowercase "tests/" dir, making the
+  // path nondeterministic across platforms. The basename ...Tests.swift is what
+  // classifies it as a Swift test, so the directory name is free to differ.
+  "AppTests/GreetingTests.swift": `import XCTest
+@testable import App
+
+final class GreetingTests: XCTestCase {
+  func testGreet() {
+    XCTAssertEqual(Greeting().greet(name: "a"), "Hi a")
+  }
+}
+`,
   "README.md": "# fixture app\n"
 };
 

@@ -68,7 +68,10 @@ test("review-surfaces.COLLECTOR.8 Apple project/config files are recognized (pbx
     "App/Info.plist",
     // XcodeGen author-intent spec files — COLLECTOR.8 lists `project.yml` explicitly.
     "project.yml",
-    "App/project.yaml"
+    "App/project.yaml",
+    // SwiftPM manifests, including a version-specific manifest, are project config.
+    "Package.swift",
+    "Package@swift-5.9.swift"
   ];
   for (const path of configs) {
     assert.equal(isAppleProjectConfigPath(path), true, `${path} should be Apple project/config`);
@@ -144,6 +147,10 @@ test("review-surfaces.COLLECTOR.8 classifyAppleSourceKind precedence", () => {
   assert.equal(classifyAppleSourceKind("Package.resolved"), "apple_lock");
   assert.equal(classifyAppleSourceKind("App.mobileprovision"), "apple_signing");
   assert.equal(classifyAppleSourceKind("README.md"), "other");
+  // A SwiftPM manifest is a `.swift` file but is project config, not implementation
+  // source — the aggregate classifier must not route it as swift_source.
+  assert.equal(classifyAppleSourceKind("Package.swift"), "apple_project_config");
+  assert.equal(classifyAppleSourceKind("Package@swift-5.9.swift"), "apple_project_config");
 });
 
 // --- consumers delegate to the shared module --------------------------------
