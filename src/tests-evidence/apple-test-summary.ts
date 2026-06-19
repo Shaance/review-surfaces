@@ -16,7 +16,8 @@ export interface AppleTestSummary {
 }
 
 // XCTest: "Executed 42 tests, with 1 failure (0 unexpected) in 1.2 (1.4) seconds".
-const XCTEST_EXECUTED = /Executed\s+(\d+)\s+tests?,\s+with\s+(\d+)\s+failures?\b/;
+// Global so the LAST (overall) summary wins over an early per-suite line.
+const XCTEST_EXECUTED = /Executed\s+(\d+)\s+tests?,\s+with\s+(\d+)\s+failures?\b/g;
 // XCTest overall markers printed by xcodebuild.
 const XCTEST_SUCCEEDED = /\*\*\s*TEST SUCCEEDED\s*\*\*/;
 const XCTEST_FAILED = /\*\*\s*TEST FAILED\s*\*\*/;
@@ -51,15 +52,20 @@ export function parseAppleTestSummary(text: string | undefined): AppleTestSummar
     });
   }
 
-  const xctest = XCTEST_EXECUTED.exec(text);
+  // Take the FINAL "Executed N tests, with M failures" line (the overall total), not
+  // the first per-suite line — an early suite passing with 0 failures must not render a
+  // later-failing run as "0 failures". Also reconcile with the ** TEST FAILED ** marker.
+  const xctestMatches = [...text.matchAll(XCTEST_EXECUTED)];
+  const xctest = xctestMatches.at(-1);
   if (xctest) {
     const executed = Number(xctest[1]);
     const failures = Number(xctest[2]);
+    const markedFailed = XCTEST_FAILED.test(text);
     return stripUndefinedSummary({
       framework: "xctest",
       executed: Number.isFinite(executed) ? executed : undefined,
       failures: Number.isFinite(failures) ? failures : undefined,
-      reported_success: Number.isFinite(failures) ? failures === 0 : undefined
+      reported_success: markedFailed ? false : Number.isFinite(failures) ? failures === 0 : undefined
     });
   }
 

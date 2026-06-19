@@ -19,6 +19,21 @@ test("review-surfaces.COLLECTOR.9 parses an XCTest failure count", () => {
   assert.deepEqual(summary, { framework: "xctest", executed: 10, failures: 2, reported_success: false });
 });
 
+test("review-surfaces.COLLECTOR.9 uses the FINAL XCTest summary, not an early passing suite", () => {
+  // An early suite passes with 0 failures; the overall run fails. The parser must take
+  // the last/overall summary and reconcile with the TEST FAILED marker — never render
+  // the failed run as 0 failures / reported_success: true.
+  const log = [
+    "Test Suite 'FastTests' passed at 2026-06-19.",
+    "\t Executed 5 tests, with 0 failures (0 unexpected) in 0.1 (0.1) seconds",
+    "Test Suite 'SlowTests' failed at 2026-06-19.",
+    "\t Executed 12 tests, with 2 failures (0 unexpected) in 0.4 (0.5) seconds",
+    "** TEST FAILED **"
+  ].join("\n");
+  const summary = parseAppleTestSummary(log);
+  assert.deepEqual(summary, { framework: "xctest", executed: 12, failures: 2, reported_success: false });
+});
+
 test("review-surfaces.COLLECTOR.9 parses a bare xcodebuild marker", () => {
   assert.deepEqual(parseAppleTestSummary("** TEST SUCCEEDED **"), { framework: "xctest", reported_success: true });
   assert.deepEqual(parseAppleTestSummary("** TEST FAILED **"), { framework: "xctest", reported_success: false });

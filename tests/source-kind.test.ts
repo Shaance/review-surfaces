@@ -92,7 +92,8 @@ test("review-surfaces.COLLECTOR.8 Apple generated/cache/user-state paths are rec
     ".build/release/App",
     "DerivedData/App/Build/Products/x.o",
     ".swiftpm/configuration/x",
-    "SourcePackages/checkouts/Dep/x",
+    // Xcode's MANAGED SourcePackages lives under DerivedData -> still generated.
+    "DerivedData/App/SourcePackages/checkouts/Dep/x",
     "App.xcodeproj/project.xcworkspace/xcuserdata/me.xcuserdatad/UserInterfaceState.xcuserstate",
     "App.xcuserstate",
     // Result / archive / debug-symbol / product bundles, whether bundle dir or file.
@@ -107,6 +108,10 @@ test("review-surfaces.COLLECTOR.8 Apple generated/cache/user-state paths are rec
   // Source/config text is never generated.
   assert.equal(isAppleGeneratedPath("Sources/App/User.swift"), false);
   assert.equal(isAppleGeneratedPath("App/Info.plist"), false);
+  // A bare top-level `SourcePackages/` is NOT marked generated globally — the name is
+  // too generic; that would break "inert on non-Swift repos" (only the managed copy
+  // under DerivedData above is generated).
+  assert.equal(isAppleGeneratedPath("SourcePackages/Feature/User.swift"), false);
 });
 
 test("review-surfaces.COLLECTOR.8 + PRIVACY.8 signing artifacts and non-review union", () => {

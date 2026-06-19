@@ -116,12 +116,15 @@ export function isAppleProjectConfigPath(filePath: string): boolean {
 
 // --- Apple generated / cache / user state ----------------------------------
 
-// Directory components that hold generated build output, resolved package
-// checkouts, or per-user Xcode state — never a manual review-focus item.
+// Directory components that hold generated build output or per-user Xcode state —
+// never a manual review-focus item. `SourcePackages` is deliberately NOT listed: the
+// bare name is too generic to mark generated globally without breaking "inert on
+// non-Swift repos" (a non-Apple repo may keep real source under it). Xcode's MANAGED
+// SourcePackages lives under DerivedData (and SwiftPM's checkouts under `.build` /
+// `.swiftpm`), which are already covered here.
 const APPLE_GENERATED_DIRS: ReadonlySet<string> = new Set([
   ".build",
   "DerivedData",
-  "SourcePackages",
   "xcuserdata"
 ]);
 

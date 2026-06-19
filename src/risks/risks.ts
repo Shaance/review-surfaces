@@ -1,5 +1,5 @@
 import { CollectionResult } from "../collector/collect";
-import { CommandRule, commandLooksLikeLocalValidationCommand, commandLooksLikeTestCommand, normalizeCommand } from "../commands/classify";
+import { CommandRule, commandLooksLikeLocalValidationCommand, commandLooksLikeTestCommand, isInformationalXcodebuildCommand, normalizeCommand } from "../commands/classify";
 import { COMMAND_TRANSCRIPT_OUTPUT_PATH, CommandTranscript } from "../commands/transcripts";
 import { formatAppleTestSummary, parseAppleTestSummary } from "../tests-evidence/apple-test-summary";
 import { stripUndefined } from "../core/guards";
@@ -464,6 +464,13 @@ function validationEvidenceFromCommandTranscripts(collection: CollectionResult):
   const evidencePath = collection.commandTranscriptOutputPath ?? COMMAND_TRANSCRIPT_OUTPUT_PATH;
   const commandRules = collection.commandRules ?? [];
   for (const transcript of collection.commandTranscripts ?? []) {
+    // review-surfaces.COLLECTOR.9: an informational/setup-only xcodebuild command
+    // (`-list`, `-license`, `-runFirstLaunch`, `test ... -dry-run`, `-enumerate-tests`)
+    // ran but validated nothing — it must not appear as indirect "passed command"
+    // validation evidence that trust/handoff surfaces could read as validation.
+    if (isInformationalXcodebuildCommand(transcript.command)) {
+      continue;
+    }
     entries.push({
       id: `TEST-TR-${String(entries.length + 1).padStart(3, "0")}`,
       kind: testEvidenceKindForTranscript(transcript, commandRules),

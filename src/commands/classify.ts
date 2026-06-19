@@ -140,7 +140,7 @@ const XCODEBUILD_ALL_ACTIONS = new Set([...XCODEBUILD_TEST_ACTIONS, ...XCODEBUIL
 // license or install components — an exit-0 transcript of any of these is never repo
 // validation evidence (xcodebuild(1)).
 const XCODEBUILD_INFORMATIONAL =
-  /(?:^|\s)-(?:list|version|showBuildSettings|showsdks|showdestinations|showTestPlans|checkFirstLaunchStatus|help|usage|exportLocalizations|importLocalizations|enumerate-tests|license|runFirstLaunch)\b|(?:^|\s)--help\b/;
+  /(?:^|\s)-(?:list|version|showBuildSettings|showsdks|showdestinations|showTestPlans|checkFirstLaunchStatus|help|usage|exportLocalizations|importLocalizations|enumerate-tests|license|runFirstLaunch|dry-run)\b|(?:^|\s)--help\b/;
 // Focus selectors narrow a test run to a subset. xcodebuild(1) accepts both the
 // attached `-only-testing:Id` and the space-separated `-only-testing Id` forms, and
 // `-only-test-configuration`/`-skip-test-configuration` narrow a test plan to a subset
@@ -173,6 +173,8 @@ const XCODEBUILD_VALUE_OPTIONS: ReadonlySet<string> = new Set([
   "-archivePath",
   "-resultStreamPath",
   "-testProductsPath",
+  "-clonedSourcePackagesDirPath",
+  "-packageCachePath",
   // The space-separated forms of the test/configuration selectors take an identifier
   // operand that could itself be an action word (`-skip-test-configuration test`), so
   // skip it rather than read it as an action.
@@ -228,6 +230,15 @@ export function xcodebuildKind(command: string): XcodebuildKind | undefined {
   // A recognized build/analyze action, OR no action at all (xcodebuild defaults to
   // `build`): a compile, never a test execution.
   return "validation";
+}
+
+// True when a command is an xcodebuild invocation that PRINTS / LISTS / sets up and
+// validates nothing (`-list`, `-license`, `-runFirstLaunch`, `test ... -dry-run`,
+// `-enumerate-tests`). Env-prefix and launcher stripped first so it matches the same
+// forms the classifiers do. Callers use this to keep such transcripts out of
+// validation evidence entirely (COLLECTOR.9).
+export function isInformationalXcodebuildCommand(command: string): boolean {
+  return xcodebuildKind(stripCrossEcosystemLauncher(normalizeCommandForClassification(command))) === "informational";
 }
 
 // ---------------------------------------------------------------------------

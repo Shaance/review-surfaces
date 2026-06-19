@@ -5,6 +5,7 @@ import {
   commandLooksLikeFocusedTestCommand,
   commandLooksLikeLocalValidationCommand,
   commandLooksLikeTestCommand,
+  isInformationalXcodebuildCommand,
   matchCommandRule,
   normalizeCommand
 } from "../src/commands/classify";
@@ -543,6 +544,11 @@ test("review-surfaces.COLLECTOR.9 dedicated xcodebuild classifier: test vs build
   assert.equal(commandLooksLikeTestCommand("xcodebuild -showBuildSettings -scheme App"), false);
   assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild -license"), false);
   assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild -runFirstLaunch"), false);
+  // `-dry-run` does everything except run the commands -> no execution, never a test run.
+  assert.equal(commandLooksLikeTestCommand("xcodebuild test -scheme App -dry-run"), false);
+  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild test -scheme App -dry-run"), false);
+  // A path value option that takes an action-word operand is skipped, not read as action.
+  assert.equal(commandLooksLikeTestCommand("xcodebuild build -clonedSourcePackagesDirPath test"), false);
   // A scheme literally named with an action word is not read as the action.
   assert.equal(commandLooksLikeTestCommand("xcodebuild -scheme build"), false);
 });
@@ -579,6 +585,23 @@ test("review-surfaces.COLLECTOR.9 validated wrapper command rules classify repos
   // A rule can NEVER reclassify a direct built-in command (built-ins win).
   const badRule = [{ id: "evil", match: "prefix" as const, command: "xcodebuild build", classification: "broad_test" as const }];
   assert.equal(commandLooksLikeBroadTestCommand("xcodebuild build -scheme App", badRule), false);
+});
+
+test("review-surfaces.COLLECTOR.9 isInformationalXcodebuildCommand recognizes print/setup/dry-run xcodebuild commands", () => {
+  for (const cmd of [
+    "xcodebuild -list",
+    "xcodebuild -license",
+    "xcodebuild -runFirstLaunch",
+    "xcodebuild test -scheme App -enumerate-tests",
+    "xcodebuild test -scheme App -dry-run",
+    "CI=1 xcodebuild -list" // env-prefix stripped before classifying
+  ]) {
+    assert.equal(isInformationalXcodebuildCommand(cmd), true, `${cmd} is informational`);
+  }
+  // A real test/build run is NOT informational.
+  assert.equal(isInformationalXcodebuildCommand("xcodebuild test -scheme App"), false);
+  assert.equal(isInformationalXcodebuildCommand("xcodebuild build -scheme App"), false);
+  assert.equal(isInformationalXcodebuildCommand("pnpm test"), false);
 });
 
 test("review-surfaces.COLLECTOR.9 wrapper rule prefix matching is token-bounded and most-specific-wins", () => {
