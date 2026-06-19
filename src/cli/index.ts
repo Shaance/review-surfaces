@@ -16,6 +16,7 @@ import { computeDependencyFacts } from "../risks/dependency-facts";
 import { computeSwiftPackageFacts } from "../risks/swift-package-facts";
 import { loadReviewPolicy, POLICY_FILE, ReviewPolicy } from "../feedback/policy";
 import { computeConfigFacts } from "../risks/config-facts";
+import { computeAppleConfigFacts } from "../risks/apple-config-facts";
 import { buildImportGraph, findSymbolImporters } from "../collector/import-graph";
 import { buildAppleProjectModel } from "../collector/apple-project/build";
 import { AppleProjectModel, hasAppleProjectInputs } from "../collector/apple-project/model";
@@ -1779,7 +1780,15 @@ function buildHumanReviewForPacket(
           ...computeSwiftPackageFacts({ changedFiles: factReaders.changedFiles, readBase: factReaders.readBase, readHead: factReaders.readHead })
         ]
       : [],
-    configFacts: factReaders && resolvedDiff ? computeConfigFacts({ diff: resolvedDiff, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
+    configFacts:
+      factReaders && resolvedDiff
+        ? [
+            ...computeConfigFacts({ diff: resolvedDiff, readBase: factReaders.readBase, readHead: factReaders.readHead }),
+            // review-surfaces.CONFIG_FACTS.4/.5: Apple config + project-structure
+            // facts route through configFactLens into the right lenses.
+            ...computeAppleConfigFacts({ diff: resolvedDiff, readBase: factReaders.readBase, readHead: factReaders.readHead })
+          ]
+        : [],
     // review-surfaces.COLLECTOR.9: the validated wrapper rules so the trust audit
     // recognizes a configured wrapper as local validation exactly as the risks
     // model did when it built the claimed TEST-CMD row.

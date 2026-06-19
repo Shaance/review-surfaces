@@ -313,10 +313,10 @@ quality_gate:
   # Phase 5 EVAL_HARNESS.7, BENCH.2, DISTRIBUTION.16.
   # Phase 1 shipped COLLECTOR.8, COLLECTOR.9, PRIVACY.8; Phase 2 shipped
   # SEMANTIC_DIFF.5, SEMANTIC_DIFF.6; Phase 3 shipped BLAST_RADIUS.4; Phase 4a
-  # shipped DEP_FACTS.6 (all removed).
+  # shipped DEP_FACTS.6; Phase 4b shipped CONFIG_FACTS.4, CONFIG_FACTS.5. Only the
+  # Phase 5 consolidation ACIDs remain (eval/benchmark/docs), removed when Phase 5
+  # lands and the allowlist returns to [].
   allow_missing:
-    - review-surfaces.CONFIG_FACTS.4
-    - review-surfaces.CONFIG_FACTS.5
     - review-surfaces.EVAL_HARNESS.7
     - review-surfaces.BENCH.2
     - review-surfaces.DISTRIBUTION.16

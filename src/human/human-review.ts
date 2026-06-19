@@ -2431,7 +2431,12 @@ function isHighSeverityConfigFact(kind: ConfigFact["kind"]): boolean {
     kind === "ci_permissions_broadened" ||
     kind === "ci_pull_request_target_added" ||
     kind === "docker_curl_pipe_shell" ||
-    kind === "sql_destructive_statement"
+    kind === "sql_destructive_statement" ||
+    // review-surfaces.CONFIG_FACTS.4/.5: a privacy/capability/ATS broadening and a
+    // test-structure weakening are the high-signal Apple changes.
+    kind === "ios_privacy_capability_change" ||
+    kind === "ios_ats_broadened" ||
+    kind === "ios_test_structure_change"
   );
 }
 
@@ -2474,6 +2479,39 @@ function configFactTitle(kind: ConfigFact["kind"]): string {
       return "Dockerfile change";
     case "sql_destructive_statement":
       return "Destructive migration statement";
+    case "ios_privacy_capability_change":
+      return "iOS privacy/capability change";
+    case "ios_ats_broadened":
+      return "App Transport Security broadened";
+    case "ios_build_setting_change":
+      return "Xcode build setting change";
+    case "ios_test_structure_change":
+      return "Xcode test structure change";
+    case "ios_target_structure_change":
+      return "Xcode target structure change";
+    case "ios_generator_drift":
+      return "Possible generated-project drift";
+    case "ios_config_unparsed":
+      return "Apple config could not be inspected";
+  }
+}
+
+// review-surfaces.CONFIG_FACTS.4/.5: route each config fact to its lens. Apple
+// privacy/capability/ATS -> security_privacy; build settings / target structure ->
+// architecture; test structure -> test_evidence; generator drift ->
+// cache_provenance. Every existing CI/Docker/SQL/env kind stays security_privacy.
+function configFactLens(kind: ConfigFact["kind"]): RiskLens {
+  switch (kind) {
+    case "ios_build_setting_change":
+    case "ios_target_structure_change":
+      return "architecture";
+    case "ios_test_structure_change":
+      return "test_evidence";
+    case "ios_generator_drift":
+    case "ios_config_unparsed":
+      return "cache_provenance";
+    default:
+      return "security_privacy";
   }
 }
 
@@ -3226,7 +3264,7 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
   }
   // review-surfaces.CONFIG_FACTS.1-3: config/infra facts feed the security lens.
   for (const fact of input.configFacts ?? []) {
-    addSignal("security_privacy", isHighSeverityConfigFact(fact.kind) ? "high" : "medium", [fileEvidence(fact.path, fact.detail)], [], [], [fact.path]);
+    addSignal(configFactLens(fact.kind), isHighSeverityConfigFact(fact.kind) ? "high" : "medium", [fileEvidence(fact.path, fact.detail)], [], [], [fact.path]);
   }
 
   // review-surfaces.ARCH_DRIFT.2: drift facts feed the architecture lens.

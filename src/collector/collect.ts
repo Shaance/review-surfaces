@@ -32,6 +32,7 @@ import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFac
 import { computeDependencyFacts, DependencyFact } from "../risks/dependency-facts";
 import { computeSwiftPackageFacts } from "../risks/swift-package-facts";
 import { computeConfigFacts, ConfigFact } from "../risks/config-facts";
+import { computeAppleConfigFacts } from "../risks/apple-config-facts";
 import { LcovCoverage, looksLikeLcov, parseLcov } from "../tests-evidence/lcov";
 import { parseStructuredDiff } from "./diff-hunks";
 
@@ -458,7 +459,15 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     })
   ];
   const configFacts =
-    structuredFactDiff.files.length > 0 ? computeConfigFacts({ diff: structuredFactDiff, readBase: readBaseFact, readHead: readHeadFact }) : [];
+    structuredFactDiff.files.length > 0
+      ? [
+          ...computeConfigFacts({ diff: structuredFactDiff, readBase: readBaseFact, readHead: readHeadFact }),
+          // review-surfaces.CONFIG_FACTS.4/.5: Apple config + project-structure facts on
+          // the COLLECTION too (not only the human-review rebuild), so every packet
+          // surface carries them uniformly.
+          ...computeAppleConfigFacts({ diff: structuredFactDiff, readBase: readBaseFact, readHead: readHeadFact })
+        ]
+      : [];
   // R4.6 (mirror of provider.ts split): ALWAYS compute the secret-block signal
   // so a PEM/provider-token in the diff sets remote_provider_blocked regardless
   // of redact_secrets. Only substitute the redacted text onto disk when
