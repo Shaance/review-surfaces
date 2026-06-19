@@ -389,3 +389,38 @@ test("review-surfaces.EVAL_HARNESS.5 a seeded cross-module import (architecture 
     fixture.cleanup();
   }
 });
+
+// review-surfaces.COLLECTOR.8 (Phase 1 foundation): a Swift source + matching test
+// change must produce a non-empty, correctly ordered cold-start queue with the
+// Swift implementation present and NO fabricated blocker. Deep Swift semantic /
+// graph attribution lands in later phases; this proves the foundation roles.
+test("review-surfaces.COLLECTOR.8 a Swift source + test change yields a non-empty queue without fabricated blockers", () => {
+  const fixture = createEvalFixture("swift-foundation", { spec: false });
+  try {
+    fixture.write(
+      "Sources/App/Greeter.swift",
+      `public struct Greeter {\n  public func greet(_ name: String) -> String {\n    return "Hello, \\(name)!"\n  }\n}\n`
+    );
+    fixture.write(
+      "Tests/AppTests/GreeterTests.swift",
+      `import XCTest\n@testable import App\n\nfinal class GreeterTests: XCTestCase {\n  func testGreet() {\n    XCTAssertEqual(Greeter().greet("a"), "Hello, a!")\n  }\n}\n`
+    );
+    fixture.commit("add Swift greeter + tests");
+    record("swift_foundation_cold_start", () => {
+      const model = fixture.run();
+      assert.ok(model.review_queue.length > 0, "the Swift change must not yield an empty queue");
+      const implItem = topQueue(model).find((item) => item.path === "Sources/App/Greeter.swift");
+      assert.ok(implItem, "the Swift implementation must appear in the top queue");
+      // No fabricated blocker on a spec-less cold-start Swift change.
+      assert.equal(model.blockers.length, 0, "a benign Swift change must not fabricate a blocker");
+      // Correctly ordered: the implementation ranks at or above its test file.
+      const implIndex = model.review_queue.findIndex((item) => item.path === "Sources/App/Greeter.swift");
+      const testIndex = model.review_queue.findIndex((item) => item.path === "Tests/AppTests/GreeterTests.swift");
+      if (testIndex >= 0) {
+        assert.ok(implIndex < testIndex, "the Swift implementation must rank above its test file");
+      }
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});

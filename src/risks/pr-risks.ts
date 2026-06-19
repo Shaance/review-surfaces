@@ -1,5 +1,5 @@
 import { compareStrings } from "../core/compare";
-import { commandLooksLikeBroadTestCommand, commandLooksLikeFocusedTestCommand, commandLooksLikeTestCommand } from "../commands/classify";
+import { CommandRule, commandLooksLikeBroadTestCommand, commandLooksLikeFocusedTestCommand, commandLooksLikeTestCommand } from "../commands/classify";
 import { stripUndefined } from "../core/guards";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
 
@@ -43,6 +43,9 @@ export interface BuildPrRiskInput {
   coverage: PrScopedCoverageModel;
   testResults?: CollectionResult["testResults"];
   commandTranscripts?: CollectionResult["commandTranscripts"];
+  // review-surfaces.COLLECTOR.9: wrapper rules so a configured repository test
+  // wrapper transcript counts as broad/focused test evidence.
+  commandRules?: CommandRule[];
   changedFileSources?: Record<string, ChangedFile["source"]>;
   reviewAreas?: ReviewArea[];
   config?: { largeDiffFileCap?: number; largeDiffLineCap?: number };
@@ -249,16 +252,17 @@ function buildImplementationValidationIndex(input: BuildPrRiskInput): Implementa
   const keywordByArea = areaKeywordIndex(allAreas, input.reviewAreas ?? []);
 
   const focusedTranscriptAreas = new Set<string>();
+  const commandRules = input.commandRules ?? [];
   let hasBroadCurrentHeadTestTranscript = false;
   for (const transcript of input.commandTranscripts ?? []) {
-    if (!currentHeadPassingTestTranscript(transcript, input.scope.head_sha)) {
+    if (!currentHeadPassingTestTranscript(transcript, input.scope.head_sha, commandRules)) {
       continue;
     }
-    if (commandLooksLikeBroadTestCommand(transcript.command)) {
+    if (commandLooksLikeBroadTestCommand(transcript.command, commandRules)) {
       hasBroadCurrentHeadTestTranscript = true;
       continue;
     }
-    if (!commandLooksLikeFocusedTestCommand(transcript.command)) {
+    if (!commandLooksLikeFocusedTestCommand(transcript.command, commandRules)) {
       continue;
     }
     for (const area of matchingAreasForText(transcript.command, keywordByArea)) {
@@ -277,14 +281,15 @@ function buildImplementationValidationIndex(input: BuildPrRiskInput): Implementa
 
 function currentHeadPassingTestTranscript(
   transcript: NonNullable<BuildPrRiskInput["commandTranscripts"]>[number],
-  headSha: string
+  headSha: string,
+  commandRules: readonly CommandRule[] = []
 ): boolean {
   return (
     headSha !== "unknown" &&
     transcript.head_sha === headSha &&
     transcript.status === "passed" &&
     transcript.exit_code === 0 &&
-    commandLooksLikeTestCommand(transcript.command)
+    commandLooksLikeTestCommand(transcript.command, commandRules)
   );
 }
 

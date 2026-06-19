@@ -67,14 +67,16 @@ function basename(filePath: string): string {
 function fileStem(filePath: string): string {
   const raw = basename(filePath).replace(/\.[^.]+$/, ""); // strip extension, keep case
   let name = raw.toLowerCase();
-  name = name.replace(/\.(?:test|spec)$/, ""); // uploader.test -> uploader
-  name = name.replace(/^(?:test|spec)[._-]/, ""); // test_uploader -> uploader
-  name = name.replace(/[._-](?:test|spec)$/, ""); // uploader_test -> uploader
-  // PascalCase suffix (Java/Scala `UploaderTest`/`UploaderSpec`): strip a trailing
-  // Test/Spec ONLY when the ORIGINAL name actually used the capitalized convention,
-  // so an ordinary word like `contest`/`protest`/`latest` keeps its stem (Codex P2).
-  if (/(?:Test|Spec)$/.test(raw)) {
-    name = name.replace(/(?:test|spec)$/, "");
+  name = name.replace(/\.(?:tests?|specs?)$/, ""); // uploader.test -> uploader
+  name = name.replace(/^(?:tests?|specs?)[._-]/, ""); // test_uploader -> uploader
+  name = name.replace(/[._-](?:tests?|specs?)$/, ""); // uploader_test -> uploader
+  // PascalCase suffix (Java/Scala `UploaderTest`, plus the plural Swift conventions
+  // `GreeterTests`/`AppUITests`/`FooSnapshotTests`): strip a trailing Test(s)/Spec(s)
+  // ONLY when the ORIGINAL name used the capitalized convention, so an ordinary word
+  // like `contest`/`protest`/`latest` keeps its stem (Codex P2). Mirrors the cold-start
+  // baselineStem so Swift impl<->test correlation agrees across both surfaces.
+  if (/(?:UI|Snapshot)?(?:Test|Spec)s?$/.test(raw)) {
+    name = name.replace(/(?:ui|snapshot)?(?:test|spec)s?$/, "");
   }
   // Drop a trailing test qualifier so a multipart test name still correlates with
   // its impl (`payments.integration` -> `payments`) — Codex P2.
@@ -331,7 +333,7 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
         transcript.exit_code === 0 &&
         transcript.head_sha === headSha &&
         typeof transcript.command === "string" &&
-        commandLooksLikeBroadTestCommand(transcript.command)
+        commandLooksLikeBroadTestCommand(transcript.command, collection.commandRules ?? [])
     );
   // Stems shared by more than one impl file (e.g. two `index.ts`) are AMBIGUOUS: a
   // "tests for index" mention cannot be attributed to one of them, so a stem-correlated

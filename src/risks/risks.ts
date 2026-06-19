@@ -1,6 +1,7 @@
 import { CollectionResult } from "../collector/collect";
-import { commandLooksLikeLocalValidationCommand, commandLooksLikeTestCommand, normalizeCommand } from "../commands/classify";
+import { CommandRule, commandLooksLikeLocalValidationCommand, commandLooksLikeTestCommand, isInformationalXcodebuildCommand, normalizeCommand } from "../commands/classify";
 import { COMMAND_TRANSCRIPT_OUTPUT_PATH, CommandTranscript } from "../commands/transcripts";
+import { formatAppleTestSummary, parseAppleTestSummary } from "../tests-evidence/apple-test-summary";
 import { stripUndefined } from "../core/guards";
 import { commandEvidence, EvidenceRef, feedbackEvidence, missingEvidence, specEvidence } from "../evidence/evidence";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
@@ -190,7 +191,7 @@ export function analyzeRisks(
   const transcriptCommands = new Set((collection.commandTranscripts ?? []).map((transcript) => normalizeCommand(transcript.command)));
   const feedbackEvidence = validationEvidenceFromFeedback(collection, transcriptCommands);
   const claimedCommandEvidence = commands
-    .filter((command) => commandLooksLikeLocalValidationCommand(command))
+    .filter((command) => commandLooksLikeLocalValidationCommand(command, collection.commandRules ?? []))
     .filter((command) => !transcriptCommands.has(normalizeCommand(command)))
     .map((command, index) => ({
       id: `TEST-CMD-${String(index + 1).padStart(3, "0")}`,
@@ -461,10 +462,18 @@ function stripUndefinedEvidence(ref: EvidenceRef): EvidenceRef {
 function validationEvidenceFromCommandTranscripts(collection: CollectionResult): RisksModel["test_evidence"] {
   const entries: RisksModel["test_evidence"] = [];
   const evidencePath = collection.commandTranscriptOutputPath ?? COMMAND_TRANSCRIPT_OUTPUT_PATH;
+  const commandRules = collection.commandRules ?? [];
   for (const transcript of collection.commandTranscripts ?? []) {
+    // review-surfaces.COLLECTOR.9: an informational/setup-only xcodebuild command
+    // (`-list`, `-license`, `-runFirstLaunch`, `test ... -dry-run`, `-enumerate-tests`)
+    // ran but validated nothing — it must not appear as indirect "passed command"
+    // validation evidence that trust/handoff surfaces could read as validation.
+    if (isInformationalXcodebuildCommand(transcript.command)) {
+      continue;
+    }
     entries.push({
       id: `TEST-TR-${String(entries.length + 1).padStart(3, "0")}`,
-      kind: testEvidenceKindForTranscript(transcript),
+      kind: testEvidenceKindForTranscript(transcript, commandRules),
       summary: commandTranscriptSummary(transcript),
       requirement_ids: [],
       evidence: [
@@ -486,8 +495,11 @@ function validationEvidenceFromCommandTranscripts(collection: CollectionResult):
   return entries;
 }
 
-function testEvidenceKindForTranscript(transcript: CommandTranscript): RisksModel["test_evidence"][number]["kind"] {
-  if (transcript.status === "passed" && transcript.exit_code === 0 && commandLooksLikeTestCommand(transcript.command)) {
+function testEvidenceKindForTranscript(
+  transcript: CommandTranscript,
+  commandRules: readonly CommandRule[] = []
+): RisksModel["test_evidence"][number]["kind"] {
+  if (transcript.status === "passed" && transcript.exit_code === 0 && commandLooksLikeTestCommand(transcript.command, commandRules)) {
     return "direct";
   }
   if (transcript.status === "passed" && transcript.exit_code === 0) {
@@ -501,7 +513,13 @@ function testEvidenceKindForTranscript(transcript: CommandTranscript): RisksMode
 
 function commandTranscriptSummary(transcript: CommandTranscript): string {
   const exit = transcript.exit_code === undefined ? "unknown exit" : `exit ${transcript.exit_code}`;
-  return `Command transcript ${transcript.id} records ${exit}: ${transcript.command}`;
+  const base = `Command transcript ${transcript.id} records ${exit}: ${transcript.command}`;
+  // review-surfaces.COLLECTOR.9: enrich with a bounded XCTest/Swift Testing summary
+  // when one is present in the captured excerpt (advisory counts; the exit code
+  // above stays the trust source). undefined for non-Apple output, so TS/JS
+  // transcripts are byte-stable.
+  const apple = parseAppleTestSummary(transcript.stdout_excerpt) ?? parseAppleTestSummary(transcript.stderr_excerpt);
+  return apple ? `${base} [${formatAppleTestSummary(apple)}]` : base;
 }
 
 function suggestedTestFor(result: RequirementResult): string {

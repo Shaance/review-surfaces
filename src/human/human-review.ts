@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { SPEC_NONE_NOTE } from "../evaluation/status";
-import { commandLooksLikeLocalValidationCommand } from "../commands/classify";
+import { CommandRule, commandLooksLikeLocalValidationCommand } from "../commands/classify";
 import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
@@ -23,6 +23,7 @@ import type { FeedbackFile } from "../feedback/feedback";
 import { PrRiskCandidate, PrReviewSurfaceModel, StructuredDiff, StructuredDiffFile, StructuredDiffHunk } from "../pr/contract";
 import { PR_RISK_RULE_METADATA } from "../pr/risk-metadata";
 import { ReviewPacket } from "../render/packet";
+import { isAppleGeneratedPath, isAppleNonReviewArtifactPath } from "../collector/source-kind";
 import { looksLikeRecordedCiSecretBoundaryManualCheck } from "../risks/manual-checks";
 import { RisksModel } from "../risks/risks";
 import { classifyRole, isTestPath } from "../scope/pr-scope";
@@ -96,6 +97,10 @@ export interface BuildHumanReviewInput {
   // review-surfaces.CONFIG_FACTS.1-3: deterministic env/CI/Dockerfile/SQL facts
   // computed in the pipeline. Absent -> empty.
   configFacts?: ConfigFact[];
+  // review-surfaces.COLLECTOR.9: validated wrapper command rules, so the trust
+  // audit recognizes a configured wrapper as local validation the SAME way the
+  // risks model did when it created the claimed TEST-CMD row. Absent -> [].
+  commandRules?: CommandRule[];
   // review-surfaces.POLICY.1/.2: the committed team policy (validated by the
   // loader) and the deterministic run clock for suppression expiry.
   policy?: ReviewPolicy;
@@ -577,7 +582,10 @@ function humanReviewBuildConfig(input: BuildHumanReviewInput): HumanReviewBuildC
   };
 }
 
-export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): string {
+export function humanReviewConfigSignature(
+  config?: HumanReviewBuildConfig,
+  commandRules?: readonly CommandRule[]
+): string {
   const resolved = {
     ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
     ...config,
@@ -587,6 +595,15 @@ export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): str
     }
   };
   const fingerprint = {
+    // review-surfaces.COLLECTOR.9: command_rules change the rendered trust audit
+    // (which wrapper claims surface), so a config-only change to them must bust the
+    // cache / trigger a standalone rebuild rather than reuse a stale human_review.json.
+    command_rules: (commandRules ?? []).map((rule) => ({
+      id: rule.id,
+      match: rule.match,
+      command: rule.command,
+      classification: rule.classification
+    })),
     max_questions: resolved.max_questions,
     max_review_first: resolved.max_review_first,
     max_suggested_comments: resolved.max_suggested_comments,
@@ -624,7 +641,7 @@ function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["gen
     // COLD_START.7: working-tree files absorbed into this review (0 on clean or
     // pinned-head runs); every human surface announces a nonzero count.
     uncommitted_files: typeof manifest.uncommitted_files === "number" ? manifest.uncommitted_files : 0,
-    human_review_config_signature: humanReviewConfigSignature(input.config)
+    human_review_config_signature: humanReviewConfigSignature(input.config, input.commandRules)
   };
 }
 
@@ -2682,7 +2699,10 @@ const BASELINE_LOCKFILE_NAMES = new Set([
 ]);
 function isNonReviewArtifact(filePath: string): boolean {
   const base = (filePath.split("/").pop() ?? filePath).toLowerCase();
-  return BASELINE_NON_REVIEW_EXT.test(base) || BASELINE_LOCKFILE_NAMES.has(base);
+  // review-surfaces.COLLECTOR.8: Apple build/cache/user-state output, the SwiftPM
+  // Package.resolved lock, and signing material are not cold-start review-focus
+  // items — delegated to the shared source-kind module rather than re-listed here.
+  return BASELINE_NON_REVIEW_EXT.test(base) || BASELINE_LOCKFILE_NAMES.has(base) || isAppleNonReviewArtifactPath(filePath);
 }
 
 // `classifyRole`'s isTestPath only matches `tests/` + `.test.`/`.spec.`; broaden it to
@@ -2705,7 +2725,9 @@ type BaselineRole = "impl" | "test" | "config" | "ci" | "doc" | "generated" | "o
 function baselineFileRole(filePath: string): BaselineRole {
   // Generated/build output first: a path under generated/build/target/vendor is not
   // worth a manual read even if its extension looks like source (Codex #112 round-2).
-  if (BASELINE_GENERATED_DIR.test(filePath)) {
+  // review-surfaces.COLLECTOR.8: Apple .build/DerivedData/SourcePackages/xcuserdata
+  // generated output is folded in via the shared source-kind module.
+  if (BASELINE_GENERATED_DIR.test(filePath) || isAppleGeneratedPath(filePath)) {
     return "generated";
   }
   const role = classifyRole(filePath, []);
@@ -2737,15 +2759,20 @@ function baselineFileRole(filePath: string): BaselineRole {
   return "other";
 }
 
-function baselineStem(filePath: string): string {
+// Exported for unit coverage of the cold-start impl<->test stem matching (the Swift
+// plural-suffix case); internal callers below use it unchanged.
+export function baselineStem(filePath: string): string {
   const base = filePath.split("/").pop() ?? filePath;
   const raw = base.replace(/\.[^.]+$/, ""); // strip extension, keep case
   let name = raw.toLowerCase();
-  name = name.replace(/[._-](test|spec)$/i, "").replace(/^(test|spec)[._-]/i, "");
-  // PascalCase suffix (`FooTest`/`FooSpec` for `Foo.java`/`Foo.kt`) — strip only when
-  // the original used the capitalized convention, so `latest`/`contest` keep their stem.
-  if (/(?:Test|Spec)$/.test(raw)) {
-    name = name.replace(/(?:test|spec)$/, "");
+  name = name.replace(/[._-](tests?|specs?)$/i, "").replace(/^(tests?|specs?)[._-]/i, "");
+  // PascalCase suffix (`FooTest`/`FooSpec`, plus the plural Swift conventions
+  // `FooTests`/`FooUITests`/`FooSnapshotTests`) — strip only when the original used
+  // the capitalized convention, so lowercase `latest`/`contest` keep their stem. The
+  // plural strip lets `GreeterTests.swift` reduce to `greeter` and connect to
+  // `Greeter.swift` in cold-start impl<->test matching.
+  if (/(?:UI|Snapshot)?(?:Test|Spec)s?$/.test(raw)) {
+    name = name.replace(/(?:ui|snapshot)?(?:test|spec)s?$/, "");
   }
   return name;
 }
@@ -4634,7 +4661,7 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
       evidence: input.packet.methodology.evidence.length ? input.packet.methodology.evidence.slice(0, 3) : [missingEvidence("Methodology claim lacks evidence.")]
     })),
     ...input.packet.risks.test_evidence
-      .filter(isClaimedValidationEvidence)
+      .filter((item) => isClaimedValidationEvidence(item, input.commandRules ?? []))
       .map((item, index) => ({
         id: `TRUST-CLAIM-TEST-${String(index + 1).padStart(3, "0")}`,
         claim: item.summary,
@@ -4656,7 +4683,10 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
   };
 }
 
-function isClaimedValidationEvidence(item: RisksModel["test_evidence"][number]): boolean {
+function isClaimedValidationEvidence(
+  item: RisksModel["test_evidence"][number],
+  commandRules: readonly CommandRule[] = []
+): boolean {
   if (item.kind !== "claimed") {
     return false;
   }
@@ -4673,7 +4703,10 @@ function isClaimedValidationEvidence(item: RisksModel["test_evidence"][number]):
   if (commands.length === 0) {
     return true;
   }
-  return commands.some(commandLooksLikeLocalValidationCommand);
+  // review-surfaces.COLLECTOR.9: pass the configured wrapper rules so a wrapper the
+  // risks model recognized as validation (via a command_rule) does not vanish from
+  // "Claimed but not verified" because this re-check was rule-blind.
+  return commands.some((command) => commandLooksLikeLocalValidationCommand(command, commandRules));
 }
 
 // review-surfaces.HUMAN_REVIEW.21: each focused-requirement test item's "Expected"

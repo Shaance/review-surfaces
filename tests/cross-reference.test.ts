@@ -460,3 +460,20 @@ test("review-surfaces.METHODOLOGY.8 with no conversation, the diff-based signals
   const findings = computeCrossReferenceSignals(collection([file("src/auth/login.ts")]), []);
   assert.ok(signal(findings, "risky_no_security"));
 });
+
+// review-surfaces.COLLECTOR.8 — the methodology impl<->test correlation must use the
+// same Swift-aware stem as the cold-start floor: a changed `Greeter.swift` paired with
+// `GreeterTests.swift` (plural suffix) is COVERED, so impl_no_test must not fire.
+test("review-surfaces.COLLECTOR.8 a Swift impl with its plural-suffixed test does not fire impl_no_test", () => {
+  const withTest = computeCrossReferenceSignals(
+    collection([file("Sources/App/Greeter.swift"), file("Tests/AppTests/GreeterTests.swift")]),
+    talk("refactored Greeter")
+  );
+  assert.equal(signal(withTest, "impl_no_test"), undefined, "the matching plural-suffixed test connects to the impl");
+  // Control: the same impl change with NO test does fire impl_no_test.
+  const withoutTest = computeCrossReferenceSignals(
+    collection([file("Sources/App/Greeter.swift")]),
+    talk("refactored Greeter")
+  );
+  assert.ok(signal(withoutTest, "impl_no_test"), "an uncovered impl change still fires");
+});
