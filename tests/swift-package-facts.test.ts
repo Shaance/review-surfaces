@@ -88,3 +88,29 @@ test("review-surfaces.DEP_FACTS.6 pbxproj XCRemoteSwiftPackageReference requirem
 test("review-surfaces.DEP_FACTS.6 an unsupported Package.resolved (non-JSON) yields no guess", () => {
   assert.equal(facts("Package.resolved", "not json", "still not json").length, 0);
 });
+
+// --- Phase 4a Codex round 1: parser refinements ------------------------------
+
+test("review-surfaces.DEP_FACTS.6 from: and .upToNextMajor(from:) are equivalent (no false change)", () => {
+  const base = `let p = Package(dependencies: [ .package(url: "https://github.com/a/b.git", from: "1.2.3") ])`;
+  const head = `let p = Package(dependencies: [ .package(url: "https://github.com/a/b.git", .upToNextMajor(from: "1.2.3")) ])`;
+  assert.equal(facts("Package.swift", base, head).length, 0, "a from <-> upToNextMajor(from:) rewrite is not a requirement change");
+});
+
+test("review-surfaces.DEP_FACTS.6 an XcodeGen local-path package addition is a fact", () => {
+  const base = "packages:\n";
+  const head = "packages:\n  Local:\n    path: ../Local\n";
+  assert.ok(facts("project.yml", base, head).some((f) => f.kind === "swift_package_added"), "a local-path package gets an identity and a fact");
+});
+
+test("review-surfaces.DEP_FACTS.6 an XcodeGen majorVersion change is a major-version fact", () => {
+  const base = "packages:\n  Lib:\n    url: https://github.com/a/lib.git\n    majorVersion: 2.0.0\n";
+  const head = "packages:\n  Lib:\n    url: https://github.com/a/lib.git\n    majorVersion: 3.0.0\n";
+  assert.ok(facts("project.yml", base, head).some((f) => f.kind === "swift_package_major_change"), "majorVersion 2 -> 3 is a major change");
+});
+
+test("review-surfaces.DEP_FACTS.6 project.yaml (not only .yml) XcodeGen packages are scanned", () => {
+  const base = "packages:\n  Lib:\n    url: https://github.com/a/lib.git\n    from: 1.0.0\n";
+  const head = "packages:\n  Lib:\n    url: https://github.com/a/lib.git\n    from: 2.0.0\n";
+  assert.ok(facts("project.yaml", base, head).some((f) => f.kind === "swift_package_major_change"), "project.yaml is scanned the same as project.yml");
+});

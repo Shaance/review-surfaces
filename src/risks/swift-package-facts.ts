@@ -89,7 +89,9 @@ function requirementFromArgs(args: string): Requirement {
   }
   const upToMajor = /\.upToNextMajor\(\s*from:\s*"([^"]+)"\s*\)/.exec(args);
   if (upToMajor) {
-    return { kind: "upToNextMajor", value: upToMajor[1] };
+    // `.upToNextMajor(from: X)` is EXACTLY SwiftPM's `from: X` shorthand — normalize to
+    // the same kind so a pure syntax rewrite between the two forms is not a false change.
+    return { kind: "from", value: upToMajor[1] };
   }
   const range = /"([0-9][^"]*)"\s*\.\.[.<]\s*"([0-9][^"]*)"/.exec(args);
   if (range) {
@@ -169,9 +171,25 @@ function parseXcodegenPackages(content: string): Map<string, Requirement> {
     if (url) {
       currentUrl = url.startsWith("http") || url.includes("/") ? url : `https://github.com/${url}`;
     }
+    // A LOCAL package (`path: ../Foo`) has no url — use its path as the identity so an
+    // added/changed local dependency still produces a fact.
+    const localPath = /\bpath:\s*"?([^"\s]+)"?/.exec(line)?.[1];
+    if (localPath && !currentUrl) {
+      currentUrl = localPath;
+    }
     const from = /\bfrom:\s*"?([0-9][^"\s]*)"?/.exec(line)?.[1];
     if (from) {
       currentReq = { kind: "from", value: from };
+    }
+    // XcodeGen `majorVersion: X` == SwiftPM `.upToNextMajor(from: X)` == `from: X`;
+    // `minorVersion: X` == `.upToNextMinor(from: X)`.
+    const majorVersion = /\bmajorVersion:\s*"?([0-9][^"\s]*)"?/.exec(line)?.[1];
+    if (majorVersion) {
+      currentReq = { kind: "from", value: majorVersion };
+    }
+    const minorVersion = /\bminorVersion:\s*"?([0-9][^"\s]*)"?/.exec(line)?.[1];
+    if (minorVersion) {
+      currentReq = { kind: "upToNextMinor", value: minorVersion };
     }
     const exact = /\b(?:exactVersion|exact):\s*"?([0-9][^"\s]*)"?/.exec(line)?.[1];
     if (exact) {
@@ -363,7 +381,7 @@ export function computeSwiftPackageFacts(input: ComputeSwiftPackageFactsInput): 
     const h = head(file);
     facts.push(...diffDirect(file.path, b ? parsePackageSwift(b) : new Map(), h ? parsePackageSwift(h) : new Map()));
   }
-  for (const file of match((p) => p === "project.yml" || p.endsWith("/project.yml"))) {
+  for (const file of match((p) => /(^|\/)project\.ya?ml$/.test(p))) {
     const b = base(file);
     const h = head(file);
     facts.push(...diffDirect(file.path, b ? parseXcodegenPackages(b) : new Map(), h ? parseXcodegenPackages(h) : new Map()));
