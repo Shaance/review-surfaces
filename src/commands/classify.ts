@@ -140,7 +140,11 @@ const XCODEBUILD_ALL_ACTIONS = new Set([...XCODEBUILD_TEST_ACTIONS, ...XCODEBUIL
 // license or install components — an exit-0 transcript of any of these is never repo
 // validation evidence (xcodebuild(1)).
 const XCODEBUILD_INFORMATIONAL =
-  /(?:^|\s)-(?:list|version|showBuildSettings|showsdks|showdestinations|showTestPlans|checkFirstLaunchStatus|help|usage|exportLocalizations|importLocalizations|enumerate-tests|license|runFirstLaunch|dry-run)\b|(?:^|\s)--help\b/;
+  /(?:^|\s)-(?:list|version|showBuildSettings|showsdks|showdestinations|showTestPlans|checkFirstLaunchStatus|help|usage|exportLocalizations|importLocalizations|enumerate-tests|license|runFirstLaunch|dry-run|exportArchive|exportNotarizedApp)\b|(?:^|\s)--help\b/;
+// Actions that run but neither compile nor test the current head (`clean` removes
+// products; `installsrc` copies source to the source root) — recognized, but never
+// validation evidence. Compare lowercased.
+const XCODEBUILD_NO_COMPILE_ACTIONS: ReadonlySet<string> = new Set(["clean", "installsrc"]);
 // Focus selectors narrow a test run to a subset. xcodebuild(1) accepts both the
 // attached `-only-testing:Id` and the space-separated `-only-testing Id` forms, and
 // `-only-test-configuration`/`-skip-test-configuration` narrow a test plan to a subset
@@ -221,10 +225,10 @@ export function xcodebuildKind(command: string): XcodebuildKind | undefined {
   if (actions.some((action) => XCODEBUILD_TEST_ACTIONS.has(action))) {
     return XCODEBUILD_FOCUS.test(normalized) ? "focused_test" : "broad_test";
   }
-  // `xcodebuild clean` with no build/test action removes build products and compiles
-  // nothing — recognized, but NOT local-validation evidence. `clean build` / `clean
-  // test` keep their build/test classification via the action checks above and below.
-  if (actions.length > 0 && actions.every((action) => action === "clean")) {
+  // No-compile-only actions (`clean`, `installsrc`) remove products / copy source and
+  // compile nothing — recognized, but NOT local-validation evidence. `clean build` /
+  // `clean test` keep their build/test classification via the checks above and below.
+  if (actions.length > 0 && actions.every((action) => XCODEBUILD_NO_COMPILE_ACTIONS.has(action))) {
     return "informational";
   }
   // A recognized build/analyze action, OR no action at all (xcodebuild defaults to
@@ -342,6 +346,14 @@ function commandLooksLikeTestCommandFromNormalized(normalized: string, parsedPac
 }
 
 export function commandLooksLikeFocusedTestCommand(command: string, rules: readonly CommandRule[] = []): boolean {
+  // A configured WRAPPER command (not a recognized built-in) is classified SOLELY by
+  // its rule — generic focus heuristics like hasFocusedTestTarget() are meaningless for
+  // an opaque wrapper and would otherwise mark a broad_test wrapper focused just because
+  // it carries a path-like argument (`./scripts/check-ios.sh --report tests/out.json`).
+  const wrapperRule = applicableWrapperRule(command, rules);
+  if (wrapperRule !== undefined) {
+    return wrapperRule.classification === "focused_test";
+  }
   const normalized = normalizeCommandForClassification(command);
   const crossEcosystemKind = crossEcosystemTestKind(normalized);
   if (crossEcosystemKind !== undefined) {

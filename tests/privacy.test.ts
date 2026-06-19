@@ -162,6 +162,18 @@ test("review-surfaces.PRIVACY.8 case-insensitive DROP rules never reopen a case-
   assert.equal(ignore.isIgnored(".env.Local"), true);
 });
 
+test("review-surfaces.PRIVACY.8 case-folding applies to the Apple defaults only — user ignore rules stay case-sensitive", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ignore-userscope-"));
+  fs.writeFileSync(path.join(tmp, ".review-surfacesignore"), "docs/generated/**\n");
+  const ignore = await loadPrivacyIgnore(tmp, ".review-surfacesignore");
+  // The user rule keeps gitignore-standard case-sensitivity: the exact case drops...
+  assert.equal(ignore.isIgnored("docs/generated/api.md"), true);
+  // ...but a case-variant is NOT dropped (reviewable files don't silently vanish).
+  assert.equal(ignore.isIgnored("Docs/Generated/api.md"), false);
+  // The built-in Apple signing default still case-folds.
+  assert.equal(ignore.isIgnored("CI.CER"), true);
+});
+
 test("review-surfaces.PRIVACY.2 blocks high-risk private key material for remote prompts", () => {
   const pemLabel = "PRIVATE KEY";
   const result = redactSecrets(`PRIVATE_KEY=-----BEGIN ${pemLabel}-----\nabc\n-----END ${pemLabel}-----`);

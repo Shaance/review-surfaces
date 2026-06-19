@@ -71,7 +71,7 @@ export async function loadPrivacyIgnore(cwd: string, ignoreFile: string): Promis
   const ignorePath = path.resolve(cwd, ignoreFile);
   const filePatterns = fileExists(ignorePath) ? parseIgnoreFile(await readText(ignorePath)) : [];
   const patterns = unique([...DEFAULT_PRIVACY_IGNORE_PATTERNS, ...filePatterns]);
-  const rules = patterns.map(compileRule);
+  const rules = compilePrivacyRules(filePatterns);
 
   return {
     ignoreFile,
@@ -96,7 +96,17 @@ export function parseIgnoreFile(content: string): string[] {
     .filter((line) => line.length > 0 && !line.startsWith("#"));
 }
 
-function compileRule(rawPattern: string): IgnoreRule {
+// `caseFold` requests case-INSENSITIVE matching. It is applied ONLY to the built-in
+// DEFAULT drop rules: the shared source-kind classifier lowercases basenames before
+// classifying signing/cache artifacts, so a changed `CI.CER` / `Cert.P12` /
+// `foo.CERTSIGNINGREQUEST` must be dropped here too on a case-sensitive checkout
+// (PRIVACY.8). It is NOT applied to:
+//   - NEGATION (allowlist) rules — so a broad drop + narrow `!allow` (e.g. `.env.*`
+//     then `!.env.example`) cannot reopen a case-variant secret like `.env.EXAMPLE`;
+//   - USER `.review-surfacesignore` rules — those keep gitignore-standard
+//     case-sensitivity so a custom `docs/generated/**` does not also drop
+//     `Docs/Generated/...` and silently remove reviewable files.
+function compileRule(rawPattern: string, caseFold = false): IgnoreRule {
   const negate = rawPattern.startsWith("!");
   let pattern = negate ? rawPattern.slice(1) : rawPattern;
   pattern = normalizeRelativePath(pattern);
@@ -104,14 +114,9 @@ function compileRule(rawPattern: string): IgnoreRule {
   pattern = pattern.replace(/\/+$/, "");
   const hasSlash = pattern.includes("/");
 
-  // Match DROP rules case-INSENSITIVELY: the shared source-kind classifier lowercases
-  // basenames before classifying signing/cache artifacts, so a changed `CI.CER` /
-  // `Cert.P12` / `foo.CERTSIGNINGREQUEST` must be dropped here too on a case-sensitive
-  // checkout (PRIVACY.8). NEGATION (allowlist) rules stay case-SENSITIVE so a broad
-  // secret drop followed by a narrow `!allow` (e.g. `.env.*` then `!.env.example`)
-  // cannot reopen a case-variant secret like `.env.EXAMPLE`.
   const base = globToRegExp(pattern);
-  const regex = negate || base.flags.includes("i") ? base : new RegExp(base.source, `${base.flags}i`);
+  const insensitive = caseFold && !negate;
+  const regex = !insensitive || base.flags.includes("i") ? base : new RegExp(base.source, `${base.flags}i`);
 
   return {
     pattern,
@@ -120,6 +125,15 @@ function compileRule(rawPattern: string): IgnoreRule {
     hasSlash,
     regex
   };
+}
+
+// Compile the built-in defaults (case-folded) followed by user patterns
+// (case-sensitive). Default-then-user order preserves negation precedence.
+function compilePrivacyRules(filePatterns: string[]): IgnoreRule[] {
+  return [
+    ...DEFAULT_PRIVACY_IGNORE_PATTERNS.map((p) => compileRule(p, true)),
+    ...filePatterns.map((p) => compileRule(p, false))
+  ];
 }
 
 function matchesRule(rule: IgnoreRule, filePath: string): boolean {
@@ -160,8 +174,9 @@ export function loadPrivacyIgnoreSync(cwd: string, ignoreFile = ".review-surface
   } catch {
     fileText = "";
   }
-  const patterns = unique([...DEFAULT_PRIVACY_IGNORE_PATTERNS, ...parseIgnoreFile(fileText)]);
-  const rules = patterns.map(compileRule);
+  const filePatterns = parseIgnoreFile(fileText);
+  const patterns = unique([...DEFAULT_PRIVACY_IGNORE_PATTERNS, ...filePatterns]);
+  const rules = compilePrivacyRules(filePatterns);
   return {
     ignoreFile,
     patterns,

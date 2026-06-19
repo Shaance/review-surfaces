@@ -23,7 +23,8 @@ const XCTEST_SUCCEEDED = /\*\*\s*TEST SUCCEEDED\s*\*\*/;
 const XCTEST_FAILED = /\*\*\s*TEST FAILED\s*\*\*/;
 // Swift Testing: "Test run with 12 tests passed after 0.1 seconds." /
 // "Test run with 12 tests failed after 0.1 seconds with 2 issues.".
-const SWIFT_TESTING_RUN = /Test run with\s+(\d+)\s+tests?\s+(passed|failed)\b/;
+// Global so a multi-target run's FAILED line is preferred over an earlier passing one.
+const SWIFT_TESTING_RUN = /Test run with\s+(\d+)\s+tests?\s+(passed|failed)\b/g;
 const SWIFT_TESTING_ISSUES = /\bwith\s+(\d+)\s+issues?\b/;
 
 // Parse the FIRST recognizable summary in the text, preferring Swift Testing's
@@ -34,7 +35,11 @@ export function parseAppleTestSummary(text: string | undefined): AppleTestSummar
     return undefined;
   }
 
-  const swift = SWIFT_TESTING_RUN.exec(text);
+  const swiftMatches = [...text.matchAll(SWIFT_TESTING_RUN)];
+  // A FAILED target dominates an earlier passing one; otherwise use the last (overall)
+  // run line so a multi-target run is never reported as passing because the first
+  // target passed.
+  const swift = swiftMatches.find((match) => match[2] === "failed") ?? swiftMatches.at(-1);
   if (swift) {
     const executed = Number(swift[1]);
     const passed = swift[2] === "passed";

@@ -549,6 +549,13 @@ test("review-surfaces.COLLECTOR.9 dedicated xcodebuild classifier: test vs build
   assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild test -scheme App -dry-run"), false);
   // A path value option that takes an action-word operand is skipped, not read as action.
   assert.equal(commandLooksLikeTestCommand("xcodebuild build -clonedSourcePackagesDirPath test"), false);
+  // Export-only and no-compile actions validate nothing on the current head.
+  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild -exportArchive -archivePath App.xcarchive -exportPath out"), false);
+  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild -exportNotarizedApp -archivePath App.xcarchive"), false);
+  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild installsrc"), false);
+  // ...but a clean PAIRED with a real build keeps its validation role.
+  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild clean installsrc"), false);
+  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild installsrc build -scheme App"), true);
   // A scheme literally named with an action word is not read as the action.
   assert.equal(commandLooksLikeTestCommand("xcodebuild -scheme build"), false);
 });
@@ -577,6 +584,14 @@ test("review-surfaces.COLLECTOR.9 validated wrapper command rules classify repos
     true
   );
   assert.equal(matchCommandRule("CI=1 ./scripts/check-ios.sh", rules)?.id, "ios-full");
+
+  // A broad_test PREFIX wrapper rule wins over generic focus heuristics even when the
+  // wrapper carries a path-like argument that hasFocusedTestTarget() would flag.
+  const prefixRules = [
+    { id: "ios-prefix", match: "prefix" as const, command: "./scripts/check-ios.sh", classification: "broad_test" as const }
+  ];
+  assert.equal(commandLooksLikeBroadTestCommand("./scripts/check-ios.sh --report tests/results.json", prefixRules), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("./scripts/check-ios.sh --report tests/results.json", prefixRules), false);
 
   // No rule -> a bare wrapper is unrecognized (no fabricated test evidence).
   assert.equal(commandLooksLikeTestCommand("./scripts/check-ios.sh"), false);

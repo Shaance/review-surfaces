@@ -52,6 +52,17 @@ test("review-surfaces.COLLECTOR.9 parses Swift Testing run summaries", () => {
   );
 });
 
+test("review-surfaces.COLLECTOR.9 a later failed Swift Testing target dominates an earlier passing one", () => {
+  // Multi-target run: the first target passes, a later one fails. The summary must
+  // reflect the failure, never the early passing target.
+  const log = [
+    "✔ Test run with 8 tests passed after 0.1 seconds.",
+    "✘ Test run with 12 tests failed after 0.2 seconds with 2 issues."
+  ].join("\n");
+  const summary = parseAppleTestSummary(log);
+  assert.deepEqual(summary, { framework: "swift-testing", executed: 12, failures: 2, reported_success: false });
+});
+
 test("review-surfaces.COLLECTOR.9 a failed Swift Testing run without a parseable issue count never reads as 0 failures", () => {
   // The bounded excerpt caught the `failed` line but truncated the `with N issues`
   // phrase — failures must stay UNDEFINED (goal contract D10), never default to 0.
