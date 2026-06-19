@@ -392,7 +392,10 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   const changeGraphSections = buildChangeGraphSections({
     files: changedFileFactsForGraph(input),
     edges: input.changedImportEdges ?? [],
-    usedBy: semanticFacts.api_changes
+    // review-surfaces.BLAST_RADIUS.4: both TS api_changes AND Swift declaration changes
+    // contribute their used_by referrers to the change-map halo, so a changed Swift type
+    // used by an unchanged caller shows that caller in the map, not only in prose.
+    usedBy: [...semanticFacts.api_changes, ...semanticFacts.swift_declaration_changes]
       .filter((change) => change.used_by && change.used_by.top.length > 0)
       .map((change) => ({ path: change.path, top: (change.used_by as { top: string[] }).top })),
     lensFindings: riskLensFindings,

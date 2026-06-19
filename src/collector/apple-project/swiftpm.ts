@@ -6,7 +6,7 @@
 // given. Anything we cannot read produces no target rather than a guess.
 
 import { cleanSwiftSource } from "../../risks/swift-lexer";
-import { AppleTarget, AppleTargetKind } from "./model";
+import { AppleTarget, AppleTargetKind, normalizeRepoRelativePath } from "./model";
 
 export interface SwiftPackageResult {
   targets: AppleTarget[];
@@ -43,9 +43,11 @@ function balancedArgs(source: string, openParen: number): string | undefined {
   return undefined;
 }
 
-function repoJoin(dir: string, relative: string): string {
-  const clean = relative.replace(/^\.\//, "").replace(/\/$/, "");
-  return dir ? `${dir}/${clean}` : clean;
+// Join a manifest-relative path to the package dir and normalize `.`/`..`/`//` so an
+// explicit `path: "../Shared"` matches the git-normalized tracked path (and an absolute
+// or repo-escaping path is dropped rather than persisted).
+function repoJoin(dir: string, relative: string): string | undefined {
+  return normalizeRepoRelativePath(dir ? `${dir}/${relative}` : relative);
 }
 
 export function parseSwiftPackage(path: string, content: string): SwiftPackageResult {
@@ -79,11 +81,12 @@ export function parseSwiftPackage(path: string, content: string): SwiftPackageRe
     const explicitPath = /\bpath:\s*"([^"]+)"/.exec(args)?.[1];
     const kind = kindForCall(call);
     const defaultRoot = kind === "unit_test" ? `Tests/${name}` : `Sources/${name}`;
+    const root = repoJoin(dir, explicitPath ?? defaultRoot);
     targets.push({
       id: name,
       name,
       kind,
-      source_paths: [repoJoin(dir, explicitPath ?? defaultRoot)],
+      source_paths: root ? [root] : [],
       dependency_target_ids: bareDependencyTargets(args),
       provenance: ["swiftpm"]
     });

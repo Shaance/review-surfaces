@@ -106,6 +106,13 @@ export function buildAppleProjectModel(options: BuildAppleProjectOptions): Apple
       }
       const result = parseSwiftPackage(file, content);
       projects.push({ path: file, provenance: "swiftpm" });
+      // A manifest present but yielding NO literal targets (names built from constants,
+      // a helper returning the array, etc.) means target membership is UNKNOWN — mark the
+      // model partial so the Swift graph reports "unknown", not a false complete model.
+      if (result.targets.length === 0) {
+        diagnostics.push({ kind: "unparsed_section", path: file, detail: "Package.swift has no statically-recoverable targets; target membership is unknown for this package." });
+        truncated = true;
+      }
       for (const target of result.targets) {
         mergeTarget(target);
       }

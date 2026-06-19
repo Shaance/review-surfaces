@@ -1950,11 +1950,11 @@ function computeChangedImportEdgesForPacket(
       }
     }
   }
-  const seen = new Set(tsEdges.map((edge) => `${edge.importer} ${edge.imported}`));
+  const seen = new Set(tsEdges.map((edge) => JSON.stringify([edge.importer, edge.imported])));
   for (const edge of swiftEdges) {
-    if (!seen.has(`${edge.importer} ${edge.imported}`)) {
+    if (!seen.has(JSON.stringify([edge.importer, edge.imported]))) {
       tsEdges.push(edge);
-      seen.add(`${edge.importer} ${edge.imported}`);
+      seen.add(JSON.stringify([edge.importer, edge.imported]));
     }
   }
   return tsEdges.sort((a, b) => (a.importer === b.importer ? (a.imported < b.imported ? -1 : a.imported > b.imported ? 1 : 0) : a.importer < b.importer ? -1 : 1));
@@ -2255,6 +2255,10 @@ function buildSwiftGraphForPacket(cwd: string, readers: FactReaders | undefined,
   return { model, graph };
 }
 
+// Swift declaration kinds whose name IS a type the symbol graph indexes by name; other
+// kinds are members whose blast radius is keyed by their CONTAINER type.
+const SWIFT_TYPE_DECL_KINDS = new Set(["class", "struct", "enum", "protocol", "actor", "typealias"]);
+
 function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactReaders | undefined, swiftGraph?: SwiftGraphBundle): SemanticChangeFacts {
   // review-surfaces.BLAST_RADIUS.4: Swift declaration changes get file-level used_by
   // from the target-aware symbol graph (importers of the changed file's unique
@@ -2269,8 +2273,13 @@ function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactR
       if (change.change === "removed") {
         // A removed declaration is gone from the head tree, so it has no head declarer to
         // resolve uniquely — the broken callers are the unchanged files still referencing
-        // the removed type name (exclude the now-removed file itself).
-        importers = (swiftGraph.graph.referrersByType.get(typeName) ?? []).filter((p) => p !== change.path);
+        // it. For a removed TYPE use its name; for a removed MEMBER (`Greeter.greet`) use
+        // the CONTAINER type (referrersByType is PascalCase-keyed, so a lowercase member
+        // segment finds nothing). Fall back to file-level importers if neither hits.
+        const segments = change.name.split(".");
+        const lookupName = SWIFT_TYPE_DECL_KINDS.has(change.kind) ? segments[segments.length - 1] : segments[0];
+        const removedRefs = (swiftGraph.graph.referrersByType.get(lookupName) ?? []).filter((p) => p !== change.path);
+        importers = removedRefs.length > 0 ? removedRefs : (swiftGraph.graph.importersByFile.get(change.path) ?? []).filter((p) => p !== change.path);
       } else {
         const typeImporters = swiftGraph.graph.importersByFileType.get(change.path)?.get(typeName);
         importers = typeImporters ?? swiftGraph.graph.importersByFile.get(change.path) ?? [];

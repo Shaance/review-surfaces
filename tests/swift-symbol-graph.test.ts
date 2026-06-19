@@ -346,3 +346,32 @@ test("review-surfaces.BLAST_RADIUS.4 referrersByType indexes PascalCase referenc
   });
   assert.ok((g.referrersByType.get("Removed") ?? []).includes("Caller.swift"), "a file referencing the removed type name is indexed");
 });
+
+// --- Phase 3 Codex round 3: parser/graph bug fixes ---------------------------
+
+test("review-surfaces.BLAST_RADIUS.4 SwiftPM normalizes an explicit ../ source path", () => {
+  const model = modelOf({
+    "ios/Package.swift": `// swift-tools-version:5.9
+import PackageDescription
+let package = Package(name: "P", targets: [ .target(name: "Core", path: "../Shared/Core") ])`
+  });
+  assert.deepEqual(model.targets.find((t) => t.name === "Core")?.source_paths, ["Shared/Core"], "ios/../Shared/Core normalizes to Shared/Core");
+});
+
+test("review-surfaces.BLAST_RADIUS.4 a SwiftPM manifest with no recoverable targets marks the model partial", () => {
+  const model = modelOf({
+    "Package.swift": `// swift-tools-version:5.9
+import PackageDescription
+let package = Package(name: "P", targets: makeTargets())`
+  });
+  assert.equal(model.truncated, true, "a present manifest with no literal targets is partial/unknown");
+});
+
+test("review-surfaces.BLAST_RADIUS.4 a modeled file importing a NON-dependency target gets no edge", () => {
+  const g = graphOf({
+    "project.yml": "name: P\ntargets:\n  App: { type: application, sources: [Sources] }\n  Other: { type: framework, sources: [Other] }\n",
+    "Other/Widget.swift": "public struct Widget {}\n",
+    "Sources/User.swift": "import Other\nfunc u() { _ = Widget() }\n"
+  });
+  assert.equal(g.edgesByFile.has("Sources/User.swift"), false, "the model declares no App->Other dependency, so no cross-target edge");
+});

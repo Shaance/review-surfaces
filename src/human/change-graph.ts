@@ -4,6 +4,7 @@
 // used_by facts, and the computed lens findings / review queue. No new parsing
 // happens here: the import edges come from buildImportGraph() output.
 import { buildImportGraph } from "../collector/import-graph";
+import { isSwiftTestPath } from "../collector/source-kind";
 import { compareStrings } from "../core/compare";
 import { clusterOfPath, DEFAULT_IMPLEMENTATION_ROOTS } from "../core/source-roots";
 import {
@@ -498,8 +499,10 @@ function categoryOf(filePath: string, roots: readonly string[]): LegCategory {
     return "contracts";
   }
   // Test classification first: a co-located src/foo.test.ts is a test, not
-  // implementation — otherwise the tour breaks "tests after code".
-  if (top === "tests" || top === "test" || /\.(test|spec)\.[jt]sx?$/.test(filePath)) {
+  // implementation — otherwise the tour breaks "tests after code". The shared
+  // Swift-aware classifier routes Xcode `AppTests/GreeterTests.swift` to the tests leg
+  // (agreeing with the Swift changed-test attribution), not the config/docs leg.
+  if (top === "tests" || top === "test" || /\.(test|spec)\.[jt]sx?$/.test(filePath) || isSwiftTestPath(filePath)) {
     return "tests";
   }
   if (roots.includes(top)) {

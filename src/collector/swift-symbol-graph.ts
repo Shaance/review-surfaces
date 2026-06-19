@@ -158,10 +158,18 @@ export function buildSwiftSymbolGraph(options: {
     // explicit `import` — so a dependency is visible only when actually imported, and the
     // dep closure just validates the import is a declared dependency).
     const ownDeps = depClosure.get(module);
+    const modeled = module !== "";
     const visibleModules = new Set<string>([module]);
     for (const m of cleaned.matchAll(/(?:@testable\s+)?\bimport\s+([A-Za-z_][A-Za-z0-9_]*)/g)) {
       const imported = m[1];
-      if (targetNames.has(imported) && (imported === module || ownDeps === undefined || ownDeps.size === 0 || ownDeps.has(imported))) {
+      if (!targetNames.has(imported)) {
+        continue;
+      }
+      // A MODELED file (resolved to a target) may only see a target it actually depends
+      // on (or itself) — the model says other targets are unrelated. An UNMODELED file
+      // (no matched target -> module "") stays permissive: honor any import of a known
+      // target, since we lack the dependency data to validate it.
+      if (!modeled || imported === module || (ownDeps?.has(imported) ?? false)) {
         visibleModules.add(imported);
       }
     }
