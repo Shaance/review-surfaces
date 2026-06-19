@@ -349,7 +349,9 @@ function structureFactsFromTargets(path: string, base: Map<string, AppleTarget>,
     }
     const dep = diffSets(new Set(b.dependency_target_ids), new Set(h.dependency_target_ids));
     if (dep.added.length > 0 || dep.removed.length > 0) {
-      facts.push({ kind: "ios_target_structure_change", path, detail: `target \`${name}\` dependencies changed: ${[...dep.added.map((d) => `+${d}`), ...dep.removed.map((d) => `-${d}`)].join(" ")}` });
+      // A TEST target dropping a dependency (e.g. on the app under test) is test-evidence
+      // relevant, not just architecture.
+      facts.push({ kind: isTestKind(h) ? "ios_test_structure_change" : "ios_target_structure_change", path, detail: `target \`${name}\` dependencies changed: ${[...dep.added.map((d) => `+${d}`), ...dep.removed.map((d) => `-${d}`)].join(" ")}` });
     }
   }
   return facts;
@@ -375,6 +377,22 @@ function schemeFacts(path: string, baseText: string | undefined, headText: strin
 }
 
 function testPlanFacts(path: string, baseText: string | undefined, headText: string | undefined): ConfigFact[] {
+  // A present side that is not valid JSON is an unsupported/malformed test plan — emit an
+  // UNKNOWN diagnostic rather than letting the empty parse look like "all targets removed".
+  const malformed = (text: string | undefined): boolean => {
+    if (text === undefined || text.trim() === "") {
+      return false;
+    }
+    try {
+      JSON.parse(text);
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  if (malformed(baseText) || malformed(headText)) {
+    return [{ kind: "ios_config_unparsed", path, detail: `\`${path}\` is not valid JSON — test-plan changes were not inferred.` }];
+  }
   const base = baseText !== undefined ? parseTestPlan(path, baseText) : undefined;
   const head = headText !== undefined ? parseTestPlan(path, headText) : undefined;
   const facts: ConfigFact[] = [];
@@ -410,31 +428,44 @@ function driftFacts(input: ComputeAppleConfigFactsInput): ConfigFact[] {
   const ymls = input.diff.files.filter((f) => isXcodegenPath(f.path));
   const pbxs = input.diff.files.filter((f) => isPbxprojPath(f.path));
   const facts: ConfigFact[] = [];
+  // The set of drifting target names for a given yml/pbxproj content pair, or undefined
+  // when a side is missing/unparseable (no drift guess).
+  const driftOf = (ymlPath: string, pbxPath: string, ymlText: string | undefined, pbxText: string | undefined): { intentOnly: Set<string>; observedOnly: Set<string> } | undefined => {
+    if (ymlText === undefined || pbxText === undefined) {
+      return undefined;
+    }
+    const intentParse = parseXcodegenProject(ymlPath, ymlText);
+    const observedParse = parsePbxproj(pbxPath, pbxText);
+    if (!intentParse.isXcodegen || !observedParse.parsed) {
+      return undefined;
+    }
+    const intent = new Set(intentParse.targets.map((t) => t.name));
+    const observed = new Set(observedParse.targets.map((t) => t.name));
+    if (intent.size === 0 || observed.size === 0) {
+      return undefined;
+    }
+    return {
+      intentOnly: new Set([...intent].filter((n) => !observed.has(n))),
+      observedOnly: new Set([...observed].filter((n) => !intent.has(n)))
+    };
+  };
   for (const ymlFile of ymls) {
     const dir = ymlDir(ymlFile.path);
     const pbxFile = pbxs.find((p) => pbxDir(p.path) === dir);
     if (!pbxFile) {
       continue;
     }
-    const ymlText = input.readHead(ymlFile.path);
-    const pbxText = input.readHead(pbxFile.path);
-    if (ymlText === undefined || pbxText === undefined) {
+    const headDrift = driftOf(ymlFile.path, pbxFile.path, input.readHead(ymlFile.path), input.readHead(pbxFile.path));
+    if (!headDrift) {
       continue;
     }
-    const intentParse = parseXcodegenProject(ymlFile.path, ymlText);
-    const observedParse = parsePbxproj(pbxFile.path, pbxText);
-    if (!intentParse.isXcodegen || !observedParse.parsed) {
-      continue; // a side could not be parsed — no drift guess (goal contract D10).
-    }
-    const intent = new Set(intentParse.targets.map((t) => t.name));
-    const observed = new Set(observedParse.targets.map((t) => t.name));
-    if (intent.size === 0 || observed.size === 0) {
-      continue;
-    }
-    for (const name of [...intent].filter((n) => !observed.has(n)).sort()) {
+    // Only report drift this PR INTRODUCED — drift already present in the base (the repo
+    // was already out of sync) is not this change's regression.
+    const baseDrift = driftOf(ymlFile.path, pbxFile.path, input.readBase(ymlFile.old_path ?? ymlFile.path), input.readBase(pbxFile.old_path ?? pbxFile.path));
+    for (const name of [...headDrift.intentOnly].filter((n) => !baseDrift?.intentOnly.has(n)).sort()) {
       facts.push({ kind: "ios_generator_drift", path: ymlFile.path, detail: `target \`${name}\` is in ${ymlFile.path} but not the generated project (${pbxFile.path}) — possible generated-project drift; run the repository drift check` });
     }
-    for (const name of [...observed].filter((n) => !intent.has(n)).sort()) {
+    for (const name of [...headDrift.observedOnly].filter((n) => !baseDrift?.observedOnly.has(n)).sort()) {
       facts.push({ kind: "ios_generator_drift", path: pbxFile.path, detail: `target \`${name}\` is in the generated project (${pbxFile.path}) but not ${ymlFile.path} — possible generated-project drift; run the repository drift check` });
     }
   }

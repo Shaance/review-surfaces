@@ -102,15 +102,18 @@ test("review-surfaces.CONFIG_FACTS.5 XcodeGen and generated project agreeing yie
   assert.ok(!result.some((f) => f.kind === "ios_generator_drift"), "matching intent + observed -> no drift");
 });
 
-test("review-surfaces.CONFIG_FACTS.5 a deliberate XcodeGen-vs-generated mismatch is an advisory drift fact", () => {
-  const yml = "name: App\ntargets:\n  App: { type: application, sources: [App] }\n  Extra: { type: framework, sources: [Extra] }\n";
+test("review-surfaces.CONFIG_FACTS.5 a NEWLY-introduced XcodeGen-vs-generated mismatch is an advisory drift fact", () => {
+  // base agrees (App only); head adds Extra to project.yml without regenerating the
+  // .xcodeproj, so the drift is introduced by THIS change (pre-existing drift is suppressed).
+  const baseYml = "name: App\ntargets:\n  App: { type: application, sources: [App] }\n";
+  const headYml = "name: App\ntargets:\n  App: { type: application, sources: [App] }\n  Extra: { type: framework, sources: [Extra] }\n";
   const pbx = `{ objects = { T = { isa = PBXNativeTarget; name = App; productType = "com.apple.product-type.application"; buildPhases = (); }; }; }`;
   const result = facts(
-    { "project.yml": yml, "App.xcodeproj/project.pbxproj": pbx },
-    { "project.yml": yml, "App.xcodeproj/project.pbxproj": pbx }
+    { "project.yml": baseYml, "App.xcodeproj/project.pbxproj": pbx },
+    { "project.yml": headYml, "App.xcodeproj/project.pbxproj": pbx }
   );
   const drift = result.find((f) => f.kind === "ios_generator_drift");
-  assert.ok(drift && /Extra/.test(drift.detail) && /drift check/.test(drift.detail), "an intent-only target is advisory drift");
+  assert.ok(drift && /Extra/.test(drift.detail) && /drift check/.test(drift.detail), "a newly intent-only target is advisory drift");
 });
 
 // --- Phase 4b Codex round 1: parser/coverage fixes ---------------------------
@@ -174,4 +177,35 @@ test("review-surfaces.CONFIG_FACTS.5 an unparseable project.yml side yields an u
   const result = facts(base, head);
   assert.ok(result.some((f) => f.kind === "ios_config_unparsed"), "an unparseable side -> unknown diagnostic");
   assert.ok(!result.some((f) => f.kind === "ios_test_structure_change"), "no false test-target-removed facts from parser uncertainty");
+});
+
+// --- Phase 4b Codex round 2: refinements ------------------------------------
+
+test("review-surfaces.CONFIG_FACTS.5 a test target dropping a dependency is a TEST structure change", () => {
+  const base = { "project.yml": "name: App\ntargets:\n  App: { type: application, sources: [Sources] }\n  AppTests: { type: bundle.unit-test, sources: [Tests], dependencies: [{target: App}] }\n" };
+  const head = { "project.yml": "name: App\ntargets:\n  App: { type: application, sources: [Sources] }\n  AppTests: { type: bundle.unit-test, sources: [Tests] }\n" };
+  assert.ok(facts(base, head).some((f) => f.kind === "ios_test_structure_change" && /dependencies changed/.test(f.detail)), "a test target's dropped dependency is test-evidence relevant");
+});
+
+test("review-surfaces.CONFIG_FACTS.5 a malformed test plan yields an unknown diagnostic, not all-removed", () => {
+  const base = { "Plans/Unit.xctestplan": JSON.stringify({ testTargets: [{ target: { name: "AppTests" } }] }) };
+  const head = { "Plans/Unit.xctestplan": "{ not valid json :::" };
+  const result = facts(base, head);
+  assert.ok(result.some((f) => f.kind === "ios_config_unparsed"), "a malformed test plan -> unknown diagnostic");
+  assert.ok(!result.some((f) => f.kind === "ios_test_structure_change"), "no false target-removed fact from the parse failure");
+});
+
+test("review-surfaces.CONFIG_FACTS.5 only NEWLY-introduced generator drift is reported (pre-existing drift suppressed)", () => {
+  const pbx = "// !$*UTF8*$!\n{ objects = { F = { isa = PBXNativeTarget; name = Foo; productType = \"com.apple.product-type.application\"; buildPhases = (); }; }; }";
+  const base = {
+    "project.yml": "name: P\ntargets:\n  Foo: { type: application, sources: [Foo] }\n  Bar: { type: framework, sources: [Bar] }\n",
+    "App.xcodeproj/project.pbxproj": pbx
+  };
+  const head = {
+    "project.yml": "name: P\ntargets:\n  Foo: { type: application, sources: [Foo] }\n  Bar: { type: framework, sources: [Bar] }\n  Baz: { type: framework, sources: [Baz] }\n",
+    "App.xcodeproj/project.pbxproj": pbx
+  };
+  const drift = facts(base, head).filter((f) => f.kind === "ios_generator_drift");
+  assert.ok(drift.some((f) => /Baz/.test(f.detail)), "the NEW drift (Baz) is reported");
+  assert.ok(!drift.some((f) => /Bar/.test(f.detail)), "the pre-existing drift (Bar) is suppressed");
 });
