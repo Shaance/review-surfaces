@@ -19,6 +19,9 @@ export interface SwiftSymbolGraph {
   edgesByFile: Map<string, string[]>;
   // declarer file -> sorted files that reference one of its unique types.
   importersByFile: Map<string, string[]>;
+  // declarer file -> unique type NAME -> sorted files referencing THAT type, so a
+  // per-declaration blast radius does not attribute every type's importers to one change.
+  importersByFileType: Map<string, Map<string, string[]>>;
   precision: "unique_symbol_reference";
   truncated: boolean;
 }
@@ -47,14 +50,21 @@ function moduleResolver(model: AppleProjectModel | undefined): (file: string) =>
     .map((target) => ({ id: target.id, roots: target.source_paths.slice().sort(compareStrings) }))
     .sort((a, b) => compareStrings(a.id, b.id));
   return (file: string): string => {
+    // Pick the MOST SPECIFIC (longest) matching root so a file under a nested target
+    // (`Sources/AppTests` inside an app rooted at `Sources`) resolves to the nested
+    // target, not the parent. Ties break by sorted target id (targets are pre-sorted).
+    let bestId = "";
+    let bestLen = -1;
     for (const target of targets) {
       for (const root of target.roots) {
-        if (file === root || file.startsWith(`${root}/`) || file.startsWith(root.replace(/\/$/, "") + "/")) {
-          return target.id;
+        const r = root.replace(/\/$/, "");
+        if ((file === r || file.startsWith(`${r}/`)) && r.length > bestLen) {
+          bestLen = r.length;
+          bestId = target.id;
         }
       }
     }
-    return "";
+    return bestId;
   };
 }
 
@@ -91,7 +101,13 @@ export function buildSwiftSymbolGraph(options: {
 }): SwiftSymbolGraph {
   const cap = options.fileCap ?? DEFAULT_SWIFT_GRAPH_FILE_CAP;
   const swiftFiles = options.files.filter(isSwift).sort(compareStrings);
-  const truncated = swiftFiles.length > cap || options.model?.truncated === true;
+  // When the FILE CAP is exceeded, uniqueness is computed over only the retained slice,
+  // so a duplicate type beyond the cap could make a "unique" reference actually
+  // ambiguous in the full module — that makes edges unsound, so we suppress them (and
+  // carry the truncated flag) rather than emit a possibly-false attribution. A merely
+  // model-truncated graph keeps its CONSERVATIVE repo-wide uniqueness edges.
+  const fileCapExceeded = swiftFiles.length > cap;
+  const truncated = fileCapExceeded || options.model?.truncated === true;
   const files = swiftFiles.slice(0, cap);
   const moduleOf = moduleResolver(options.model);
 
@@ -117,7 +133,11 @@ export function buildSwiftSymbolGraph(options: {
     const module = moduleOf(file);
     const cleaned = cleanSwiftSource(content);
     const declaredTypes = new Set(extractSwiftDeclarations(content).filter((d) => TYPE_KINDS.has(d.kind)).map((d) => d.name));
-    const tokens = new Set(cleaned.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []);
+    // Reference tokens must EXCLUDE the module names on `import` lines: a test that only
+    // `@testable import App` must not be read as referencing a type named `App` (a common
+    // SwiftUI `@main struct App`). Import lines still feed module visibility below.
+    const referenceText = cleaned.replace(/^[ \t]*(?:@testable[ \t]+)?import[ \t]+.*$/gm, "");
+    const tokens = new Set(referenceText.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []);
     // Visible modules: the file's own module, every module it depends on
     // (transitively), and every `import`ed name that is a project target — so a
     // test target's `@testable import App` lets it reference App's types.
@@ -145,7 +165,9 @@ export function buildSwiftSymbolGraph(options: {
 
   const edgesByFile = new Map<string, string[]>();
   const importersByFile = new Map<string, Set<string>>();
-  for (const [file, fileInfo] of info) {
+  // declarer file -> type name -> referrer files (for per-declaration blast radius).
+  const importersByFileType = new Map<string, Map<string, Set<string>>>();
+  for (const [file, fileInfo] of fileCapExceeded ? [] : info) {
     const deps = new Set<string>();
     for (const token of fileInfo.tokens) {
       // Collect declaring files of `token` across every VISIBLE module; emit an
@@ -164,6 +186,18 @@ export function buildSwiftSymbolGraph(options: {
         const only = [...declarers][0];
         if (only !== file) {
           deps.add(only);
+          // Record the referrer against the SPECIFIC type `token` it referenced.
+          let byType = importersByFileType.get(only);
+          if (!byType) {
+            byType = new Map();
+            importersByFileType.set(only, byType);
+          }
+          let typeRefs = byType.get(token);
+          if (!typeRefs) {
+            typeRefs = new Set();
+            byType.set(token, typeRefs);
+          }
+          typeRefs.add(file);
         }
       }
     }
@@ -183,6 +217,9 @@ export function buildSwiftSymbolGraph(options: {
   return {
     edgesByFile,
     importersByFile: new Map([...importersByFile].map(([k, v]) => [k, [...v].sort(compareStrings)])),
+    importersByFileType: new Map(
+      [...importersByFileType].map(([file, byType]) => [file, new Map([...byType].map(([t, refs]) => [t, [...refs].sort(compareStrings)]))])
+    ),
     precision: "unique_symbol_reference",
     truncated
   };

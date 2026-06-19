@@ -55,13 +55,23 @@ export function parseSwiftPackage(path: string, content: string): SwiftPackageRe
   const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
   const targets: AppleTarget[] = [];
   TARGET_CALL.lastIndex = 0;
+  // A `.target(name: "Core")` nested inside another target's `dependencies:` list is a
+  // DEPENDENCY reference, not a target declaration. matchAll runs in source order, so a
+  // call whose start falls within the previous target's argument span is nested — skip
+  // it (the dependency name is still captured by bareDependencyTargets).
+  let consumedUntil = -1;
   for (const match of source.matchAll(TARGET_CALL)) {
+    const startIdx = match.index ?? 0;
+    if (startIdx < consumedUntil) {
+      continue;
+    }
     const call = match[1];
-    const openParen = (match.index ?? 0) + match[0].length - 1;
+    const openParen = startIdx + match[0].length - 1;
     const args = balancedArgs(source, openParen);
     if (args === undefined) {
       continue;
     }
+    consumedUntil = openParen + 1 + args.length + 1;
     const name = /name:\s*"([^"]+)"/.exec(args)?.[1];
     if (!name) {
       continue;

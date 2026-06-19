@@ -24,6 +24,19 @@ import { parseXcodegenProject } from "./xcodegen";
 
 const DEFAULT_PROJECT_FILE_CAP = 200;
 
+// A file the project-model parser actually consumes (XcodeGen spec, SwiftPM manifest,
+// the .pbxproj, a shared scheme, or a test plan). Filtering to these before the cap
+// keeps the cap meaningful on large repos.
+function isAppleProjectModelInput(file: string): boolean {
+  return (
+    /(^|\/)project\.ya?ml$/.test(file) ||
+    /(^|\/)Package\.swift$/.test(file) ||
+    /\.xcodeproj\/project\.pbxproj$/.test(file) ||
+    (/\.xcscheme$/.test(file) && /xcshareddata\//.test(file)) ||
+    /\.xctestplan$/.test(file)
+  );
+}
+
 export interface BuildAppleProjectOptions {
   files: string[];
   read: (filePath: string) => string | undefined;
@@ -65,12 +78,15 @@ export function buildAppleProjectModel(options: BuildAppleProjectOptions): Apple
     }
   };
 
-  const sorted = options.files.slice().sort(compareStrings).slice(0, cap);
-  let truncated = options.files.length > cap;
+  // Filter to project-MODEL inputs BEFORE the cap, so a large `Sources/...` tree that
+  // sorts ahead of `project.yml` cannot slice the actual Apple inputs out of range.
+  const candidates = options.files.filter(isAppleProjectModelInput).sort(compareStrings);
+  const sorted = candidates.slice(0, cap);
+  let truncated = candidates.length > cap;
 
   for (const file of sorted) {
     const read = (): string | undefined => options.read(file);
-    if (/(^|\/)project\.yml$/.test(file)) {
+    if (/(^|\/)project\.ya?ml$/.test(file)) {
       const content = read();
       if (content === undefined) {
         continue;

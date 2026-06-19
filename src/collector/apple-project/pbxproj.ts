@@ -214,17 +214,22 @@ export function parsePbxproj(pbxprojPath: string, content: string): PbxprojResul
         break;
       }
       const sourceTree = asString(dict.sourceTree);
+      // An ABSOLUTE / SDK / build-product source tree (`<absolute>`, `SDKROOT`,
+      // `DEVELOPER_DIR`, `BUILT_PRODUCTS_DIR`, …) is NOT repo-relative — reject the whole
+      // path so an absolute home/DerivedData path is never persisted (safety boundary).
+      if (sourceTree !== undefined && sourceTree !== "<group>" && sourceTree !== "SOURCE_ROOT") {
+        return undefined;
+      }
       const segment = asString(dict.path);
       if (segment) {
         segments.unshift(segment);
       }
-      // An absolute / SDK / group-rooted source tree stops upward accumulation at
-      // the project root (we only model repo-relative committed sources).
-      if (sourceTree === "SOURCE_ROOT" || sourceTree === "<group>" || sourceTree === undefined) {
-        current = parentOf.get(current);
-        continue;
+      // SOURCE_ROOT: the accumulated path is already project-root-relative — STOP (do not
+      // prepend parent group paths). `<group>`/undefined: continue up to parent groups.
+      if (sourceTree === "SOURCE_ROOT") {
+        break;
       }
-      break;
+      current = parentOf.get(current);
     }
     if (segments.length === 0) {
       return undefined;
@@ -263,8 +268,14 @@ export function parsePbxproj(pbxprojPath: string, content: string): PbxprojResul
       }
     }
     // PBXFileSystemSynchronizedRootGroup targets (Xcode 16 folder targets) list a
-    // membership group instead of explicit build files: fall back to the target's
-    // synchronized root path so the symbol graph can still scope the module.
+    // membership group instead of explicit build files: add the synchronized root
+    // folder path as a source root so the symbol graph can still scope the module.
+    for (const groupId of asArray(dict.fileSystemSynchronizedGroups)) {
+      const resolved = pathOfRef(asString(groupId) ?? "");
+      if (resolved) {
+        sourcePaths.add(resolved);
+      }
+    }
     const dependencyTargets = new Set<string>();
     for (const depId of asArray(dict.dependencies)) {
       const dep = asDict(objects[asString(depId) ?? ""]);
@@ -302,11 +313,20 @@ export function parsePbxproj(pbxprojPath: string, content: string): PbxprojResul
 }
 
 function targetNameOfDependency(dep: { [key: string]: PlistValue }, objects: { [key: string]: PlistValue }): string | undefined {
-  // A PBXTargetDependency carries either a direct `target` id or a proxy.
+  // A PBXTargetDependency carries either a direct `target` id...
   const targetId = asString(dep.target);
   if (targetId) {
-    const target = asDict(objects[targetId]);
-    return asString(target?.name);
+    return asString(asDict(objects[targetId])?.name);
+  }
+  // ...or (commonly) a `targetProxy` -> PBXContainerItemProxy whose
+  // `remoteGlobalIDString` points at the target. For a cross-project proxy the target
+  // is not in this objects table, so fall back to the proxy's `remoteInfo` name.
+  const proxyId = asString(dep.targetProxy);
+  if (proxyId) {
+    const proxy = asDict(objects[proxyId]);
+    const remoteId = asString(proxy?.remoteGlobalIDString);
+    const localName = remoteId ? asString(asDict(objects[remoteId])?.name) : undefined;
+    return localName ?? asString(proxy?.remoteInfo);
   }
   return undefined;
 }

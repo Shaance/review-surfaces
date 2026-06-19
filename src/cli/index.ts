@@ -2241,8 +2241,13 @@ function buildSwiftGraphForPacket(cwd: string, readers: FactReaders | undefined,
   // Persist the project model only when there is a real Apple project to observe,
   // so a plain SwiftPM-less .swift collection adds no artifact.
   if (hasAppleProjectInputs(tracked)) {
+    // Synchronous write: buildSwiftGraphForPacket is sync, so an async writeJson would
+    // escape this try/catch (unhandled rejection) and let callers proceed before the
+    // artifact exists. A best-effort observability artifact must never fail the build.
     try {
-      writeJson(path.join(outDir, "inputs", "apple_project.json"), { schema_version: "review-surfaces.apple_project.v1", ...model });
+      const target = path.join(outDir, "inputs", "apple_project.json");
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, `${JSON.stringify({ schema_version: "review-surfaces.apple_project.v1", ...model }, null, 2)}\n`, "utf8");
     } catch {
       // best-effort observability artifact; never fail the build on it.
     }
@@ -2256,10 +2261,17 @@ function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactR
   // types). A truncated graph carries the flag, never a false "used by 0".
   if (swiftGraph) {
     for (const change of facts.swift_declaration_changes) {
-      const importers = swiftGraph.graph.importersByFile.get(change.path) ?? [];
+      // Prefer importers of the CHANGED declaration's type (the last name segment) so a
+      // multi-type file does not attribute Bar's importers to a change in Foo. Fall back
+      // to file-level importers for members / non-type changes.
+      const typeName = change.name.split(".").pop() ?? change.name;
+      const typeImporters = swiftGraph.graph.importersByFileType.get(change.path)?.get(typeName);
+      const importers = typeImporters ?? swiftGraph.graph.importersByFile.get(change.path) ?? [];
       change.used_by = {
         count: importers.length,
         top: importers.slice(0, 5),
+        // Surface truncation even when zero importers were retained — a large/truncated
+        // graph means additional referrers are UNKNOWN, never a confirmed "used by 0".
         ...(swiftGraph.graph.truncated ? { truncated: true } : {})
       };
     }

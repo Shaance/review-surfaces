@@ -2546,8 +2546,15 @@ function swiftDeclarationTitle(change: SwiftDeclarationChange): string {
 // false "used by 0"; a real zero (graph present, no in-repo referrers) is silent.
 function swiftDeclarationReason(change: SwiftDeclarationChange): string {
   const usedBy = change.used_by;
-  if (!usedBy || usedBy.count === 0) {
+  if (!usedBy) {
     return change.detail;
+  }
+  if (usedBy.count === 0) {
+    // A truncated graph with zero RETAINED importers means referrers are UNKNOWN, not a
+    // confirmed zero — say so rather than hiding the truncation. A real zero is silent.
+    return usedBy.truncated
+      ? `${change.detail} Referrers unknown — the Swift symbol graph was truncated at the file cap.`
+      : change.detail;
   }
   const top = usedBy.top.map((p) => `\`${p}\``).join(", ");
   return usedBy.truncated

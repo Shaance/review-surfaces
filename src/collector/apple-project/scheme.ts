@@ -53,6 +53,11 @@ export function parseScheme(path: string, content: string): AppleScheme {
     if (!isRecord(testable)) {
       continue;
     }
+    // A `skipped="YES"` testable is disabled in the scheme — do NOT claim its target is
+    // selected for testing (that would overstate scheme coverage).
+    if (attr(testable, "skipped") === "YES") {
+      continue;
+    }
     const buildableRefs = toArray(testable.BuildableReference);
     for (const ref of buildableRefs) {
       const blueprint = attr(ref, "BlueprintName");

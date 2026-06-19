@@ -81,7 +81,7 @@ export function emptyAppleProjectModel(): AppleProjectModel {
 export function hasAppleProjectInputs(paths: readonly string[]): boolean {
   return paths.some(
     (p) =>
-      /(^|\/)project\.yml$/.test(p) ||
+      /(^|\/)project\.ya?ml$/.test(p) ||
       /(^|\/)Package\.swift$/.test(p) ||
       /\.xcodeproj\/project\.pbxproj$/.test(p) ||
       /\.xcscheme$/.test(p) ||
