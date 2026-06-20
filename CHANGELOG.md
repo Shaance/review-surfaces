@@ -8,6 +8,45 @@ full working contracts live in
 (an absolute link because this changelog ships in the npm tarball, which does
 not carry that directory).
 
+## 0.3.0 — first-class Swift and iOS repository support
+
+First-class static review of Swift, SwiftPM, Xcode, and iOS application
+repositories, alongside the existing TypeScript/JavaScript-deep analysis. All
+Swift/Apple facts are derived from committed files with injected base/head readers
+— the CLI never invokes Xcode/`swiftc`/`xcodebuild`/`xcodegen`/`xcrun`. The full
+working contract lives in
+[`docs/history/IOS_SWIFT_SUPPORT_GOAL.md`](https://github.com/Shaance/review-surfaces/blob/main/docs/history/IOS_SWIFT_SUPPORT_GOAL.md);
+see [`docs/swift-ios-support.md`](https://github.com/Shaance/review-surfaces/blob/main/docs/swift-ios-support.md)
+for the support matrix and bounds.
+
+- Foundation (`COLLECTOR.8`, `COLLECTOR.9`, `PRIVACY.8`): one shared source-kind
+  classifier for Swift/Apple files reused across scope, indexing, and ranking; a
+  dedicated `xcodebuild` parser plus validated repository wrapper `command_rules`;
+  a bounded XCTest/Swift Testing transcript summary parser; and Apple
+  signing/provisioning/user-state/cache artifacts excluded by default while
+  reviewable service-plist text stays redact-before-persist and block-before-remote.
+- Swift semantic facts (`SEMANTIC_DIFF.5`, `SEMANTIC_DIFF.6`): a deterministic
+  Swift lexer + declaration scanner and declaration-change facts (signatures,
+  conformances, protocol requirements, enum cases, `async`/`throws`, actor
+  isolation, access changes), plus XCTest/Swift Testing/snapshot/test-plan
+  weakening — a body-only edit produces no contract fact.
+- Project model + symbol graph (`BLAST_RADIUS.4`): one Apple project model
+  assembled with provenance from XcodeGen `project.yml`, `Package.swift`,
+  `project.pbxproj`, schemes, and test plans, and a target-aware Swift symbol graph
+  feeding changed-test→implementation attribution, blast radius, the change map,
+  and reading order; ambiguous or truncated graphs never emit a false "used by 0".
+- Package + config facts (`DEP_FACTS.6`, `CONFIG_FACTS.4`, `CONFIG_FACTS.5`):
+  SwiftPM/Xcode package requirement and resolved-pin facts (originHash-only churn
+  is silent); high-signal Info.plist/entitlement/privacy-manifest/build-setting
+  facts and Xcode target/scheme/test-plan/generator-drift facts, routed into the
+  existing security/privacy, architecture, test-evidence, and cache-provenance
+  lenses.
+- Eval + benchmark + docs (`EVAL_HARNESS.7`, `BENCH.2`, `DISTRIBUTION.16`): the
+  seeded eval covers every shipped Swift/iOS fact class plus benign negatives; the
+  pinned public benchmark gains Swift/SwiftPM cases; the README and AGENTS docs
+  publish an honest support matrix, the macOS execution boundary, and the parser
+  bounds.
+
 ## 0.2.0 — 2026-06-18 (first npm publish)
 
 The package manifest already carries `0.2.0`, so the owner's single manual
