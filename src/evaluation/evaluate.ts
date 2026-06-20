@@ -1,5 +1,6 @@
 import path from "node:path";
 import { CollectionResult } from "../collector/collect";
+import { readFileAtRef } from "../collector/git";
 import { isRegularFile, readText } from "../core/files";
 import { walkFiles } from "../core/glob";
 import { compareStrings } from "../core/compare";
@@ -270,24 +271,23 @@ async function buildEvidenceIndex(
   // a deterministic, requirement-specific link (not area membership), so it is sound
   // requirement proof regardless of which commit introduced the line.
   //
-  // Repo-wide scanning is restricted to files the indexer classifies as SOURCE: a
-  // data/results/doc file that merely MENTIONS an ACID (a junit.xml test report, a
-  // .json fixture, a markdown doc) is not implementation. classifyFile() is a
-  // per-path classifier (the repoIndex.files map is diff-scoped, so it cannot
-  // classify unchanged repo files). Changed files keep the original
-  // isImplementationEvidencePath gate (so a brand-new uncommitted source file still
-  // counts via the diff).
+  // Repo-wide scanning is restricted to IMPLEMENTATION SOURCE (isImplementationSourcePath:
+  // a classifyFile() "source" file or a shell script). A data/results/doc/config file
+  // that merely MENTIONS an ACID (a junit.xml report, a .json fixture, a markdown doc,
+  // package.json) is not implementation. Shell scripts carry real implementation ACIDs
+  // (scripts/local-*.sh) but classify as "unknown", so they are included explicitly.
+  // Changed files keep the original isImplementationEvidencePath gate (so a brand-new
+  // uncommitted source file still counts via the diff).
+  const changedPathSet = new Set(collection.changedFiles.map((file) => file.path));
   const sourceImplementationPaths = new Set(
     allFiles.filter(
-      (filePath) => isImplementationEvidencePath(filePath, testPaths) && classifyFile(filePath) === "source"
+      (filePath) => isImplementationEvidencePath(filePath, testPaths) && isImplementationSourcePath(filePath)
     )
   );
-  const implementationPaths = new Set<string>([...changedImplementationPaths, ...sourceImplementationPaths]);
   const candidateFiles = [
     ...collection.changedFiles.map((file) => file.path),
     ...collection.tests.map((test) => test.path),
     ...collection.docs.map((doc) => doc.path),
-    ...sourceImplementationPaths,
     ...allFiles.filter((file) => file.startsWith(".review-surfaces/agent_handoff.md"))
   ];
 
@@ -306,7 +306,32 @@ async function buildEvidenceIndex(
       pushMap(byAcid, acid, evidenceRef);
       if (evidenceRef.kind === "test") {
         pushMap(testsByAcid, acid, evidenceRef);
-      } else if (implementationPaths.has(filePath)) {
+      } else if (changedImplementationPaths.has(filePath)) {
+        pushMap(implementationByAcid, acid, evidenceRef);
+      }
+    }
+  }
+
+  // Repo-wide implementation ACID proof for UNCHANGED source, read AT THE REVIEWED
+  // HEAD (never the working tree) so an untracked or uncommitted source file cannot
+  // mark a requirement satisfied for a pinned --head range (features spec: pinned-range
+  // artifacts must exclude dirty/untracked content). Changed source files are already
+  // covered by the diff-scoped scan above; here we add the symmetric whole-repo proof
+  // that lets an untouched-but-implemented requirement read as satisfied instead of
+  // test_no_impl. A file absent at head (readFileAtRef === undefined) is skipped.
+  const headSha = collection.git?.head_sha;
+  if (headSha && headSha !== "unknown") {
+    for (const filePath of sourceImplementationPaths) {
+      if (changedPathSet.has(filePath)) {
+        continue; // changed source is handled by the diff-scoped scan above
+      }
+      const text = readFileAtRef(cwd, headSha, filePath);
+      if (text === undefined) {
+        continue; // not present at the reviewed head (untracked / new in the working tree)
+      }
+      for (const acid of text.match(ACID_PATTERN) ?? []) {
+        const evidenceRef = fileEvidence(filePath, `Mentions ${acid}.`, "high");
+        pushMap(byAcid, acid, evidenceRef);
         pushMap(implementationByAcid, acid, evidenceRef);
       }
     }
@@ -324,7 +349,12 @@ async function buildEvidenceIndex(
   // "this PR touched the area" signal; requirement-SPECIFIC repo-wide proof comes from
   // exact ACID references (implementationByAcid above).
   for (const changedFile of collection.changedFiles) {
-    if (!changedImplementationPaths.has(changedFile.path)) {
+    // Only IMPLEMENTATION SOURCE counts as area impl evidence. A changed config in a
+    // configured area (package.json, a src/**/*.yaml) is NOT excluded by
+    // isImplementationEvidencePath, so without this check it would re-introduce the
+    // per-requirement broad-area fan-out — and the same file would also surface as the
+    // unattributed-area advisory (double-reported). Configs/docs flow to the advisory only.
+    if (!changedImplementationPaths.has(changedFile.path) || !isImplementationSourcePath(changedFile.path)) {
       continue;
     }
     for (const group of matcher.groupsForPath(changedFile.path, { purpose: "requirement_proof" })) {
@@ -368,6 +398,15 @@ async function buildEvidenceIndex(
 // them from overreach so noise files do not get flagged one-by-one.
 const NON_REVIEW_CLASSIFICATIONS = new Set<FileClassification>(["lockfile", "generated"]);
 
+// A path that carries IMPLEMENTATION ACIDs: a classifyFile() "source" file, or a
+// shell script (classifyFile returns "unknown" for .sh/.bash, but scripts/local-*.sh
+// carry real implementation requirements). Used to gate area impl evidence, the
+// repo-wide impl scan, and the unattributed-area advisory consistently so a file is
+// never both "implementation" and "unattributed".
+function isImplementationSourcePath(filePath: string): boolean {
+  return classifyFile(filePath) === "source" || /\.(?:sh|bash)$/.test(filePath);
+}
+
 function detectOverreach(index: EvidenceIndex, requirements: IntentRequirement[]): RequirementResult[] {
   const knownGroups = new Set(requirements.map((requirement) => groupFromAcid(requirement.acai_id)).filter(Boolean) as string[]);
   const unmapped = index.allChangedFiles.filter(
@@ -410,8 +449,13 @@ function detectUnattributedAreaChanges(index: EvidenceIndex, requirements: Inten
     .filter((filePath) => {
       const classification = classifyFile(filePath);
       // Source = real impl evidence; test = test evidence; generated/lockfile are
-      // never review surfaces. Only docs/config/unknown reach the advisory.
-      if (classification === "source" || classification === "test" || NON_REVIEW_CLASSIFICATIONS.has(classification)) {
+      // never review surfaces; a shell script is implementation (isImplementationSourcePath),
+      // not advisory. Only docs/config/unknown-non-script reach the advisory.
+      if (
+        classification === "test" ||
+        NON_REVIEW_CLASSIFICATIONS.has(classification) ||
+        isImplementationSourcePath(filePath)
+      ) {
         return false;
       }
       return index.matcher.groupsForPath(filePath, { purpose: "review_surface" }).some((group) => knownGroups.has(group));

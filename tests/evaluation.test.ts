@@ -153,6 +153,80 @@ components:
   assert.equal(implNoTest.length, 0, "no per-requirement impl_no_test fan-out from the doc change");
 });
 
+test("repo-wide impl proof reads the reviewed head, not an untracked working-tree file", async () => {
+  // Regression for the pinned-range honesty contract: the repo-wide implementation
+  // ACID scan must read content AT THE REVIEWED HEAD, so an UNTRACKED source file that
+  // mentions an impl ACID cannot mark a requirement satisfied for a pinned head.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-head-honesty-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src", "evaluation"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "tests"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:\n  name: example\ncomponents:\n  EVAL:\n    requirements:\n      1: Evaluate implementation.\n`
+  );
+  // Committed state: a test carries the exact test ACID, but NO source mentions the
+  // impl ACID — so the committed head implements nothing for example.EVAL.1.
+  fs.writeFileSync(path.join(tmp, "src", "evaluation", "evaluate.ts"), "export const evaluate = true;\n");
+  fs.writeFileSync(path.join(tmp, "tests", "evaluation.test.ts"), "test('example.EVAL.1 evaluation', () => {});\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "add", "."], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
+  // UNTRACKED working-tree source that mentions the impl ACID — must be ignored.
+  fs.writeFileSync(path.join(tmp, "src", "evaluation", "untracked.ts"), "export const x = 'example.EVAL.1';\n");
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: ["tests/**/*.test.ts"] },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+  collection.changedFiles = [];
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
+
+  // The untracked file is NOT at the reviewed head, so EVAL.1 has test evidence but no
+  // implementation proof — it must stay partial (test_no_impl), never satisfied.
+  assert.equal(evaluation.acai_coverage["example.EVAL.1"], "partial");
+  const result = evaluation.results.find((r) => r.acai_id === "example.EVAL.1");
+  assert.ok(!result?.evidence?.some((ref) => ref.path === "src/evaluation/untracked.ts"), "untracked working-tree file is never impl evidence at a pinned head");
+});
+
+test("a shell script carrying an impl ACID counts as repo-wide implementation evidence", async () => {
+  // Regression: scripts/*.sh classify as "unknown" but carry real implementation ACIDs
+  // (e.g. review-surfaces.LOCAL_LOOP.*); they must count as implementation source.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-script-impl-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "scripts"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "tests"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:\n  name: example\ncomponents:\n  LOCAL_LOOP:\n    requirements:\n      1: Provide a local loop script.\n`
+  );
+  fs.writeFileSync(path.join(tmp, "scripts", "local-loop.sh"), "#!/usr/bin/env bash\n# example.LOCAL_LOOP.1\n");
+  fs.writeFileSync(path.join(tmp, "tests", "loop.test.ts"), "test('example.LOCAL_LOOP.1 loop', () => {});\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "add", "."], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: ["tests/**/*.test.ts"] },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+  collection.changedFiles = [];
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: [{ id: "SUB-LOCAL", name: "Local loop", groupKey: "LOCAL_LOOP", prefixes: ["scripts/"], purpose: "loop", pattern: "loop", testKeywords: ["loop"] }] });
+
+  // Implemented in a shell script + exact test ACID -> satisfied (script is impl source).
+  assert.equal(evaluation.acai_coverage["example.LOCAL_LOOP.1"], "satisfied");
+});
+
 test("evaluator keeps broad group evidence partial without exact requirement proof", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-broad-evidence-"));
   fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
