@@ -420,6 +420,14 @@ function currentHeadPassingTestTranscript(
 // least one of its areas has a changed test or current-head focused transcript,
 // or when a broad current-head test transcript proves the committed suite ran
 // after the change.
+//
+// BOUNDED LIMITATION (pre-existing, file-level granularity): validation is judged
+// across ALL of a file's areas together, so a file mapped to both a covered area
+// and an uncovered one is treated as validated and does not surface the uncovered
+// area's gap. The per-file mixed-state wording above only applies once a file has
+// no validation at all. Splitting validation per (file, area) is a deeper refactor
+// of this index and is intentionally deferred; this is not a regression from the
+// test-state wording change.
 function hasImplementationValidation(file: ScopedChangedFile, validation: ImplementationValidationIndex): boolean {
   if (file.areas.length === 0) {
     // No mapped area: not attributable to an untested area gap here.

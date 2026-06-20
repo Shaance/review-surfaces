@@ -4990,21 +4990,38 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
         command: "pnpm run test -- tests/scoped-coverage.test.ts"
       })];
     case "untested_changed_impl": {
-      // Follow the PR risk's OWN state (run-existing/mixed vs add) so the test-plan
-      // item never contradicts the risk evidence, but keep it PATH-specific so each
-      // untested file gets its own item (Codex P2). A risk whose primary action is
-      // "Run the existing test…" (run-existing or mixed) maps to a run-and-record
-      // scenario; otherwise it is the add-a-test scenario.
-      const runExisting = /^run the existing test/i.test(risk.suggested_checks[0] ?? "");
+      // Follow the PR risk's OWN per-file state so the test-plan item never contradicts
+      // the risk evidence, but keep it PATH-specific so each untested file gets its own
+      // item (Codex P2). Three states, read from the risk's primary action:
+      //   - add          : "Add a test covering …"
+      //   - mixed        : "Run the existing test(s) … and add a test covering …"
+      //   - run-existing : "Run the existing test(s) …" (no add)
+      // For run-existing/mixed the existing test may live anywhere (an integration or a
+      // non-JS test), so we must NOT fabricate a `tests/<basename>.test.ts` path/command
+      // for it; only the add path suggests a concrete file to create.
+      const primary = risk.suggested_checks[0] ?? "";
+      // Default to ADD unless the primary action is explicitly "Run the existing test…"
+      // (robust to wording like "Add a focused test"); a run action that also says
+      // "add a test" is the MIXED case.
+      const startsRun = /^run the existing test/i.test(primary);
+      const isMixed = startsRun && /\badd a test\b/i.test(primary);
+      const isRun = startsRun && !isMixed;
+      const isAdd = !startsRun;
+      const where = path ? ` in ${path}` : "";
+      const scenario = isRun
+        ? `Run the existing test for the changed implementation${where} at the current head and record the transcript.`
+        : isMixed
+          ? `Run the existing test for the changed implementation${where} at the current head and record the transcript, and add a test for any area without one.`
+          : `Add a test covering the changed implementation${where}.`;
       return [riskDraft({
         kind: "automatic",
         priority: "required",
-        suggested_file: suggestedFile,
-        scenario: runExisting
-          ? `Run the existing test for the changed implementation${path ? ` in ${path}` : ""} at the current head and record the transcript.`
-          : `Add a test covering the changed implementation${path ? ` in ${path}` : ""}.`,
+        // Only the add path names a file to CREATE; run-existing/mixed must not point at
+        // a fabricated test path (the real existing test may live elsewhere).
+        suggested_file: isAdd ? suggestedFile : undefined,
+        scenario,
         expected_result: "A direct test or current-head command transcript demonstrates the changed implementation behavior before approval.",
-        command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test"
+        command: isAdd && suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test"
       })];
     }
     case "unmapped_change":
