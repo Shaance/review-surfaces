@@ -5,7 +5,7 @@ import { walkFiles } from "../core/glob";
 import { compareStrings } from "../core/compare";
 import { EvidenceRef, fileEvidence, missingEvidence, specEvidence, testEvidence } from "../evidence/evidence";
 import { validateRequirementResultEvidence } from "../evidence/validate";
-import { FileClassification, RepoIndex } from "../indexer/indexer";
+import { classifyFile, FileClassification, RepoIndex } from "../indexer/indexer";
 import { IntentModel, IntentRequirement } from "../intent/intent";
 import {
   buildReviewAreas,
@@ -100,7 +100,10 @@ export async function evaluateIntent(
   // spec-shaped output in this mode.
   const overreach = intent.spec_mode === "none"
     ? []
-    : detectOverreach(index, intent.requirements).map((result) => validateRequirementResultEvidence(result, evidenceContext));
+    : [
+        ...detectOverreach(index, intent.requirements),
+        ...detectUnattributedAreaChanges(index, intent.requirements)
+      ].map((result) => validateRequirementResultEvidence(result, evidenceContext));
   const acai_coverage = Object.fromEntries(
     results.filter((result) => result.acai_id).map((result) => [result.acai_id as string, result.status])
   );
@@ -254,10 +257,37 @@ async function buildEvidenceIndex(
   const allFiles = (collection.repositoryFiles.length ? collection.repositoryFiles : await walkFiles(cwd)).filter(
     (filePath) => !filePath.startsWith(".review-surfaces/")
   );
+  const classificationByPath = new Map<string, FileClassification>(
+    (collection.repoIndex?.files ?? []).map((file) => [file.path, file.classification])
+  );
+  // Implementation evidence is scanned REPO-WIDE, symmetric with test evidence
+  // (which already scans every repo test). The evaluator is a whole-repo coverage
+  // model: a requirement implemented AND tested ANYWHERE in the repo is satisfied,
+  // whether or not its source happened to be in this diff. The prior asymmetry —
+  // repo-wide tests but diff-scoped implementation — made every requirement whose
+  // impl file was not in the diff read as "tested, not implemented" (test_no_impl),
+  // so a tiny or doc-only change produced hundreds of spurious gaps. ACID mention is
+  // a deterministic, requirement-specific link (not area membership), so it is sound
+  // requirement proof regardless of which commit introduced the line.
+  //
+  // Repo-wide scanning is restricted to files the indexer classifies as SOURCE: a
+  // data/results/doc file that merely MENTIONS an ACID (a junit.xml test report, a
+  // .json fixture, a markdown doc) is not implementation. classifyFile() is a
+  // per-path classifier (the repoIndex.files map is diff-scoped, so it cannot
+  // classify unchanged repo files). Changed files keep the original
+  // isImplementationEvidencePath gate (so a brand-new uncommitted source file still
+  // counts via the diff).
+  const sourceImplementationPaths = new Set(
+    allFiles.filter(
+      (filePath) => isImplementationEvidencePath(filePath, testPaths) && classifyFile(filePath) === "source"
+    )
+  );
+  const implementationPaths = new Set<string>([...changedImplementationPaths, ...sourceImplementationPaths]);
   const candidateFiles = [
     ...collection.changedFiles.map((file) => file.path),
     ...collection.tests.map((test) => test.path),
     ...collection.docs.map((doc) => doc.path),
+    ...sourceImplementationPaths,
     ...allFiles.filter((file) => file.startsWith(".review-surfaces/agent_handoff.md"))
   ];
 
@@ -276,23 +306,37 @@ async function buildEvidenceIndex(
       pushMap(byAcid, acid, evidenceRef);
       if (evidenceRef.kind === "test") {
         pushMap(testsByAcid, acid, evidenceRef);
-      } else if (changedImplementationPaths.has(filePath)) {
+      } else if (implementationPaths.has(filePath)) {
         pushMap(implementationByAcid, acid, evidenceRef);
       }
     }
   }
 
+  // Group-level (area) IMPLEMENTATION evidence for the CHANGED files uses the strict
+  // requirement_proof matcher (exact configured path / strict prefix), NOT the loose
+  // review_surface routing matcher, AND only counts files that are actually
+  // implementation evidence. A doc/config/bootstrap file (AGENTS.md, README, a
+  // markdown doc) that merely falls in an area is routing context, never proof that a
+  // requirement is implemented — letting it become per-requirement impl evidence is
+  // exactly the broad-area fan-out this fixes. Such area-only changed files are
+  // collected separately into a single unattributed-area advisory
+  // (detectUnattributedAreaChanges). This stays diff-scoped on purpose: it is the weak
+  // "this PR touched the area" signal; requirement-SPECIFIC repo-wide proof comes from
+  // exact ACID references (implementationByAcid above).
   for (const changedFile of collection.changedFiles) {
-    if (testPaths.has(changedFile.path)) {
+    if (!changedImplementationPaths.has(changedFile.path)) {
       continue;
     }
-    for (const group of matcher.groupsForPath(changedFile.path, { purpose: "review_surface" })) {
+    for (const group of matcher.groupsForPath(changedFile.path, { purpose: "requirement_proof" })) {
       pushMap(changedByGroup, group, fileEvidence(changedFile.path, `Changed file mapped to ${group}.`));
     }
   }
 
+  // Group-level TEST attribution is likewise requirement proof: a test file proves a
+  // group's requirement only via a strict configured prefix or its declared test
+  // keywords, never a loose substring area match.
   for (const test of collection.tests) {
-    for (const group of matcher.groupsForPath(test.path, { purpose: "review_surface" })) {
+    for (const group of matcher.groupsForPath(test.path, { purpose: "requirement_proof" })) {
       pushMap(testsByGroup, group, testEvidence(test.path, `Test path mapped to ${group}.`));
     }
   }
@@ -303,10 +347,6 @@ async function buildEvidenceIndex(
   // names a known requirement group strengthens that group. Conservative: only
   // PASSING cases that clearly map are attached as proof.
   attachParsedTestEvidence(collection.testResults, requirements, { testsByAcid, testsByGroup });
-
-  const classificationByPath = new Map<string, FileClassification>(
-    (collection.repoIndex?.files ?? []).map((file) => [file.path, file.classification])
-  );
 
   return {
     byAcid,
@@ -352,6 +392,54 @@ function detectOverreach(index: EvidenceIndex, requirements: IntentRequirement[]
     review_focus: "Confirm whether this file is in scope or the spec needs an explicit requirement.",
     confidence: "medium" as const
   }));
+}
+
+// review-surfaces requirement-proof tightening: a changed file that falls in a
+// known review AREA but is NOT implementation or test evidence (a doc, config, or
+// bootstrap file like AGENTS.md / a CHANGELOG) is routing context, never proof that
+// any individual requirement changed. Rather than letting it inflate every
+// requirement in the area into a per-requirement gap (the broad-area fan-out), it is
+// collapsed into ONE aggregate advisory. Returns at most one result. Disjoint from
+// detectOverreach (which flags files mapping to NO known group at all).
+function detectUnattributedAreaChanges(index: EvidenceIndex, requirements: IntentRequirement[]): RequirementResult[] {
+  if (index.areasMode === "fallback") {
+    return [];
+  }
+  const knownGroups = new Set(requirements.map((requirement) => groupFromAcid(requirement.acai_id)).filter(Boolean) as string[]);
+  const unattributed = index.allChangedFiles
+    .filter((filePath) => {
+      const classification = classifyFile(filePath);
+      // Source = real impl evidence; test = test evidence; generated/lockfile are
+      // never review surfaces. Only docs/config/unknown reach the advisory.
+      if (classification === "source" || classification === "test" || NON_REVIEW_CLASSIFICATIONS.has(classification)) {
+        return false;
+      }
+      return index.matcher.groupsForPath(filePath, { purpose: "review_surface" }).some((group) => knownGroups.has(group));
+    })
+    .sort(compareStrings);
+  if (unattributed.length === 0) {
+    return [];
+  }
+  const groups = [
+    ...new Set(
+      unattributed.flatMap((filePath) =>
+        index.matcher.groupsForPath(filePath, { purpose: "review_surface" }).filter((group) => knownGroups.has(group))
+      )
+    )
+  ].sort(compareStrings);
+  return [
+    {
+      requirement_id: "UNATTRIBUTED-AREA-001",
+      status: "overreach" as const,
+      summary: `${unattributed.length} changed file(s) fall in review area(s) [${groups.join(", ")}] but could not be attributed to any individual requirement (documentation/config, not implementation).`,
+      evidence: unattributed
+        .slice(0, 8)
+        .map((filePath) => fileEvidence(filePath, "Changed non-implementation file mapped to an area but not to a specific requirement.", "medium")),
+      missing_evidence: [],
+      review_focus: "Confirm whether these area-level changes need a specific requirement or are routing context only.",
+      confidence: "medium" as const
+    }
+  ];
 }
 
 function overreachClusters(index: EvidenceIndex, unmapped: string[]): RequirementResult[] {

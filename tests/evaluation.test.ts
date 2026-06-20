@@ -92,7 +92,65 @@ components:
   const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.INTENT.1"], "missing");
-  assert.equal(evaluation.acai_coverage["example.DOGFOOD.1"], "partial");
+  // The generated handoff lives under .review-surfaces/ and is NOT implementation
+  // evidence, so it no longer grants its area's requirement broad impl evidence:
+  // a generated artifact falling in the DOGFOOD area is routing context, not proof
+  // the requirement is implemented. With no source or test for DOGFOOD.1 in this
+  // synthetic repo, the honest status is missing (requirement-proof tightening).
+  assert.equal(evaluation.acai_coverage["example.DOGFOOD.1"], "missing");
+});
+
+test("a generic AGENTS.md change makes NO per-requirement impl claims and at most ONE area advisory", async () => {
+  // Regression for the broad-area fan-out: a bootstrap doc that maps to the BOOTSTRAP
+  // area must NOT become implementation evidence for every requirement in that area
+  // (hundreds of spurious gaps). It is collapsed into a single unattributed-area
+  // advisory instead.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-agents-fanout-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+components:
+  BOOTSTRAP:
+    requirements:
+      1: First bootstrap requirement.
+      2: Second bootstrap requirement.
+      3: Third bootstrap requirement.
+      4: Fourth bootstrap requirement.
+      5: Fifth bootstrap requirement.
+`
+  );
+  fs.writeFileSync(path.join(tmp, "AGENTS.md"), "# Agent workflow\nGeneric guidance, no ACID references.\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [] },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+  collection.changedFiles = [{ path: "AGENTS.md", status: "M", source: "working_tree" }];
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
+
+  // No requirement may cite AGENTS.md as IMPLEMENTATION evidence (the fan-out).
+  const implClaims = evaluation.results.flatMap((result) =>
+    (result.evidence ?? []).filter((ref) => ref.path === "AGENTS.md" && /mapped to|implementation/i.test(ref.note ?? ""))
+  );
+  assert.equal(implClaims.length, 0, "AGENTS.md is never per-requirement implementation evidence");
+
+  // At most ONE aggregate unattributed-area advisory (here exactly one, for BOOTSTRAP).
+  const advisories = evaluation.overreach.filter((result) => (result.requirement_id ?? "").startsWith("UNATTRIBUTED-AREA"));
+  assert.ok(advisories.length <= 1, "at most one unattributed-area advisory");
+  assert.equal(advisories.length, 1, "the bootstrap doc change yields exactly one advisory");
+  assert.match(advisories[0].summary, /could not be attributed to any individual requirement/);
+
+  // And it must NOT explode into per-requirement impl_no_test gaps.
+  const implNoTest = evaluation.results.filter((result) => result.partial_reason === "impl_no_test");
+  assert.equal(implNoTest.length, 0, "no per-requirement impl_no_test fan-out from the doc change");
 });
 
 test("evaluator keeps broad group evidence partial without exact requirement proof", async () => {
