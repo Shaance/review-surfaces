@@ -47,10 +47,21 @@ const NEUTRAL_CONFIG = path.join(BENCH_DIR, "neutral.config.yaml");
 
 const CODE_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m)$/i;
 const DOC_EXT = /\.(md|mdx|markdown|rst|adoc|txt|org)$/i;
-const TEST_RE = /(^|\/)(tests?|__tests__|spec)\/|(^|[._-])(test|spec)[._.-]|_test\.|(?:Test|Spec)\.[^.]+$/;
+// Test-path recognition. The trailing `(?:Tests?|Spec)\.[^.]+$` is case-SENSITIVE so the
+// PascalCase Swift/Xcode convention (`FooTests.swift`, `FooUITests.swift`,
+// `FooSnapshotTests.swift`) is recognized as a test — the legacy `(?:Test|Spec)` only caught
+// the singular `FooTest.java` form and misclassified Swift `…Tests.swift` as code (Codex
+// BENCH.2). `(^|\/)Tests\/` adds the SwiftPM `Tests/` package layout alongside lowercase
+// `tests/`; case-sensitivity keeps `latest`/`contest` from matching.
+const TEST_RE = /(^|\/)(tests?|__tests__|spec)\/|(^|\/)Tests\/|(^|[._-])(test|spec)[._.-]|_test\.|(?:Tests?|Spec)\.[^.]+$/;
 const LOCK_NAMES = new Set([
   "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "npm-shrinkwrap.json", "cargo.lock",
-  "go.sum", "poetry.lock", "composer.lock", "uv.lock", "gemfile.lock", "pipfile.lock"
+  // `package.resolved` is the SwiftPM lockfile: a reviewer does not read it line-by-line on a
+  // cold start, so it is a lock artifact like the others. Without it, a `Package.resolved`
+  // leaking into a top-5 would classify as `other` and the lock-exclusion metric would miss it
+  // (Codex BENCH.2). A case whose SUBJECT is the resolved pin (a dependency/pin diff) opts out
+  // via `allow_top_roles` below; everywhere else the lock is correctly excluded.
+  "go.sum", "poetry.lock", "composer.lock", "uv.lock", "gemfile.lock", "pipfile.lock", "package.resolved"
 ]);
 const BINARY_EXT = /\.(png|jpe?g|gif|svg|ico|webp|pdf|zip|tar|gz|jar|war|exe|dll|so|dylib|class|wasm|woff2?|ttf|min\.js|min\.css|map|snap)$/i;
 // A human does not read these on a cold start; a lock/binary leaking into the top-5 is the
@@ -123,7 +134,16 @@ function scoreCase(c, model) {
   const blockers = model.blockers ?? [];
   const top5 = queue.slice(0, 5).map((q) => q.path).filter(Boolean);
   const topRole = queue.length > 0 ? classify(queue[0].path ?? "") : null;
-  const irrelevantTop = top5.some((p) => IRRELEVANT_ROLES.has(classify(p)));
+  // `allow_top_roles` lets a case whose REVIEWED SUBJECT is a lock/artifact opt that role out of
+  // the irrelevant-top check — e.g. a package requirement/pin diff legitimately surfaces the
+  // `Package.resolved` resolved-pin fact in the top-5, which is the point of the review, not noise
+  // a reviewer should be spared. Every other case keeps strict doc/generated/lock/binary exclusion,
+  // so this never weakens the metric for the exclusion-stress cases it is meant to police.
+  const allowTopRoles = new Set(c.allow_top_roles ?? []);
+  const irrelevantTop = top5.some((p) => {
+    const role = classify(p);
+    return IRRELEVANT_ROLES.has(role) && !allowTopRoles.has(role);
+  });
   const substantiveCase = c.substantive !== false;
   const blockerEligible = c.expect_no_blockers !== false;
   const emptyQueue = substantiveCase && queue.length === 0;

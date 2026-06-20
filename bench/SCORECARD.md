@@ -1,13 +1,13 @@
 # review-surfaces effectiveness scorecard
 
-Cases run: **31/31** (mock provider, full `all` pipeline over pinned real diffs).
+Cases run: **32/32** (mock provider, full `all` pipeline over pinned real diffs).
 
 | Metric | Result | Target |
 |---|---|---|
-| empty-queue rate (substantive diffs) | 0% (0/31) | 0% |
-| false-blocker rate (spec-less) | 0% (0/31) | 0% |
-| top item is code/impl | 90% (28/31) | high |
-| irrelevant (doc/generated/lock/binary) in top-5 | 0% (0/31) | 0% |
+| empty-queue rate (substantive diffs) | 0% (0/32) | 0% |
+| false-blocker rate (spec-less) | 0% (0/32) | 0% |
+| top item is code/impl | 88% (28/32) | high |
+| irrelevant (doc/generated/lock/binary) in top-5 | 0% (0/32) | 0% |
 | focus recall@5 (annotated) | 100% | high |
 
 ## Per-case
@@ -42,6 +42,7 @@ Cases run: **31/31** (mock provider, full `all` pipeline over pinned real diffs)
 | swift-snapshot-record-api | swift | 4 | 0 | `Sources/SnapshotTesting/AssertSnapshot.swift` | code | no | no | 100% |
 | swift-snapshot-assert-source | swift | 9 | 0 | `Sources/SnapshotTesting/Snapshotting/String.swift` | code | no | no | 100% |
 | swift-snapshot-swift-testing-attachments | swift | 1 | 0 | `Sources/SnapshotTesting/AssertSnapshot.swift` | code | no | no | 100% |
+| swift-snapshot-swift-testing-weakening | swift | 6 | 0 | `Tests/SnapshotTestingTests/SwiftTestingTests.swift` | test | no | no | 100% |
 | swift-snapshot-testing-package-pin | swift | 3 | 0 | `Package.swift` | code | no | no | 100% |
 | alamofire-privacy-manifest | swift | 6 | 0 | `Source/PrivacyInfo.xcprivacy` | other | no | no | 100% |
 | swift-snapshot-testing-image-precision | swift | 20 | 0 | `Sources/SnapshotTesting/Snapshotting/NSBezierPath.swift` | code | no | no | — |

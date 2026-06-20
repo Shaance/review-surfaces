@@ -77,4 +77,10 @@ test("review-surfaces.BENCH.2 the benchmark pins Swift/SwiftPM cases", () => {
     swift.some((c) => focusPaths(c).some((p) => /(^|\/)Package(@swift-[^/]+)?\.swift$/.test(p))),
     "the Swift set includes a package requirement/pin case (BENCH.2 package shape)"
   );
+  // The Swift Testing weakening shape: a case documented as exercising the weakening
+  // regression class (a removed/disabled/softened @Test), focused on a Swift test file.
+  assert.ok(
+    swift.some((c) => /weakening/i.test((c as { id?: string; note?: string }).note ?? "") || /weakening/i.test(c.id)),
+    "the Swift set includes a Swift Testing weakening case (BENCH.2 weakening shape)"
+  );
 });

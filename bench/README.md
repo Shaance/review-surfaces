@@ -40,13 +40,13 @@ file".
 Append to `manifest.json` — `id`, `lang`, `repo` (git URL), `base`/`head` SHAs, optionally
 `expected_focus` (source paths a reviewer should land on), `expect_no_blockers` (default
 true), `substantive` (default true). Pick commits that change real source alongside tests
-/ docs / lockfiles so the floor's exclusion and ranking are exercised. The set is **31
+/ docs / lockfiles so the floor's exclusion and ranking are exercised. The set is **32
 cases** across TS / JS / Go / Python / Rust / Java / Kotlin / Ruby / Swift, leaning on
 exclusion-stress diffs; the intended target is **20–30** and is met.
 
 ## Swift / SwiftPM / iOS coverage (`BENCH.2`)
 
-The `lang: "swift"` cases (nine) are pinned public Swift/SwiftPM/iOS diffs spanning the
+The `lang: "swift"` cases (ten) are pinned public Swift/SwiftPM/iOS diffs spanning the
 six shapes `BENCH.2` requires, so the cold-start floor, Apple config/dependency facts, and
 generated/lock/binary exclusion are all exercised on real Apple-shaped diffs:
 
@@ -57,25 +57,36 @@ generated/lock/binary exclusion are all exercised on real Apple-shaped diffs:
 | `swift-argument-parser-flag-diagnostic` | single-file Swift source change | `@Flag` diagnostic edit in `Flag.swift` (source-only range, verified) |
 | `swift-snapshot-record-api` | SwiftPM public-declaration/deprecation change | new public API in `AssertSnapshot.swift` + deprecation shims in `Deprecations.swift` |
 | `swift-snapshot-assert-source` | **mixed** source+tests+docs+generated-churn | 8 source files + a Swift Testing test + a docc migration article + **five binary `.png` snapshots and a `.txt` snapshot** — source ranks, the doc and the generated/binary snapshots are excluded |
-| `swift-snapshot-swift-testing-attachments` | Swift Testing integration change | single-file change to the Swift Testing surface |
-| `swift-snapshot-testing-package-pin` | **package requirement/pin change** | swift-syntax bump in `Package.swift`/`Package@swift-5.9.swift` + the `Package.resolved` lock — the manifest requirement leads, the lock never fabricates a blocker |
+| `swift-snapshot-swift-testing-attachments` | Swift Testing integration change | single-file change to the Swift Testing surface (distinct from the weakening case) |
+| `swift-snapshot-swift-testing-weakening` | **Swift Testing weakening** | a `@Test` removed from a Swift Testing `@Suite` (TestScoping refactor) — the test-weakening detector flags `removed_test_method` and **leads the queue with the weakened test**; the `ci.yml` and package manifests stay out of the top-5 |
+| `swift-snapshot-testing-package-pin` | **package requirement/pin change** | swift-syntax bump in `Package.swift`/`Package@swift-5.9.swift` + the `Package.resolved` lock — the requirement leads and the resolved pin is surfaced as a dep fact; `Package.resolved` is a lock (`allow_top_roles` opts this subject-is-the-pin case out of the irrelevant check), never a fabricated blocker |
 | `alamofire-privacy-manifest` | **entitlement/privacy-manifest config change** | new `PrivacyInfo.xcprivacy` (+ `.pbxproj` ref + `Package.swift` resource) surfaced as Apple privacy/config facts; all-config diff, not a fabricated blocker |
 | `swift-snapshot-testing-image-precision` | mixed source + **three regenerated binary `.png` snapshots** (exclusion-stress, unannotated) | 14 `Snapshotting/*.swift` files; the three binaries never leak into the top-5 |
 
-On these nine cases `node bench/run.mjs` holds the full `BENCH.2` bar: **0 empty queues,
+On these ten cases `node bench/run.mjs` holds the full `BENCH.2` bar: **0 empty queues,
 0 fabricated blockers, 0 irrelevant generated/lock/binary entries in the top-5, and 100%
-expected-focus recall** on the eight annotated cases (the image-precision case is left
-unannotated on purpose — it only stresses binary exclusion). The `alamofire-privacy`
-case's top item is the privacy manifest (role `other`, not `code`), which is the correct
-behavior for a config-only diff, not a top-is-code miss.
+expected-focus recall** on the nine annotated cases (the image-precision case is left
+unannotated on purpose — it only stresses binary exclusion). Two cases legitimately lead
+with a non-`code` top item that IS their reviewed subject — `alamofire-privacy-manifest`
+leads with the privacy manifest (role `other`) and `swift-snapshot-swift-testing-weakening`
+leads with the weakened test (role `test`) — which is correct for those shapes, not a
+top-is-code miss.
 
-## Current findings (31-case run)
+## Current findings (32-case run)
 
 The exclusion side is clean and the floor holds on every language including Swift: **0%
-empty-queue, 0% false-blocker, 0% irrelevant-in-top-5** (docs, `go.sum`/`Cargo.lock`/
-`uv.lock`/`Package.resolved`, CI workflows, `package.json`/`pom.xml`/`Cargo.toml`/
-`.pbxproj`/`PrivacyInfo.xcprivacy` config, and binary `.png` snapshots all correctly kept
-out of the top 5), **100% focus recall@5**, **top-is-code on 28/31**.
+empty-queue, 0% false-blocker, 0% irrelevant-in-top-5** — incidental churn (docs,
+`go.sum`/`Cargo.lock`/`uv.lock`, CI workflows, and binary `.png` snapshots) is correctly
+kept out of the top 5 — **100% focus recall@5**, **top-is-code on 28/32**. Three Swift cases
+intentionally LEAD with a non-`code` top item because that item IS the reviewed subject
+(privacy manifest, removed test, dependency pin), and the scorecard reflects that:
+`alamofire-privacy-manifest` surfaces `Source/PrivacyInfo.xcprivacy` as the top item (a
+privacy-manifest review, role `other`, not a miss), `swift-snapshot-swift-testing-weakening`
+leads with the weakened `SwiftTestingTests.swift` (role `test`), and
+`swift-snapshot-testing-package-pin` leads with `Package.swift` and also
+surfaces the `Package.resolved` resolved-pin fact (`Package.resolved` is now classified as
+a SwiftPM lock; the pin case opts that role out of the irrelevant check via
+`allow_top_roles`, every other case keeps strict lock exclusion).
 
 - **`express-send`: a dependency change used to hide the source change — now FIXED.** The
   diff bumps `content-disposition` in `package.json` *and* edits `lib/response.js`. The

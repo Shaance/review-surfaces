@@ -1088,10 +1088,11 @@ Complete after implementation with:
 - **On-demand public benchmark (`node bench/run.mjs`) — deferred offline, RESOLVED
   2026-06-20.** It clones public repos over the network, so the offline implementation
   session could not run it; the cases were pinned and structurally validated then. With
-  network available the benchmark was subsequently run end-to-end: BENCH.2 now pins nine
-  Swift/SwiftPM/iOS cases spanning all six required shapes (each annotated `expected_focus`
-  except the deliberately-broad exclusion-stress case), and the run holds the quality bar
-  on them — zero empty queues, zero fabricated blockers, zero irrelevant
+  network available the benchmark was subsequently run end-to-end: BENCH.2 now pins ten
+  Swift/SwiftPM/iOS cases spanning all six required shapes — including a real Swift Testing
+  weakening case (a removed `@Test` the test-weakening detector flags) — each annotated
+  `expected_focus` except the deliberately-broad exclusion-stress case, and the run holds
+  the quality bar on them — zero empty queues, zero fabricated blockers, zero irrelevant
   generated/lock/binary entries in the top-5, and 100% expected-focus recall on the
   annotated cases — while every pre-existing case kept its pass outcome. The CI gate
   remains the seeded eval (network-free), which covers every shipped Swift/iOS fact class.

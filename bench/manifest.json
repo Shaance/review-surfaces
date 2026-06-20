@@ -278,7 +278,17 @@
       "head": "05b6f05b55ff9e2dcdcc21ac78c6ba81ea624791",
       "expect_no_blockers": true,
       "expected_focus": ["Sources/SnapshotTesting/AssertSnapshot.swift"],
-      "note": "BENCH.2 shape: Swift Testing integration change (native image attachments, #1067) — single-file change to the Swift Testing surface in AssertSnapshot.swift"
+      "note": "BENCH.2 shape: Swift Testing integration change (native image attachments, #1067) — single-file change to the Swift Testing surface in AssertSnapshot.swift. Distinct from the Swift Testing WEAKENING case below"
+    },
+    {
+      "id": "swift-snapshot-swift-testing-weakening",
+      "lang": "swift",
+      "repo": "https://github.com/pointfreeco/swift-snapshot-testing.git",
+      "base": "0a18d398dcfeb3dca6f77886d781eb3540689e37",
+      "head": "b3458b1fe9230deabd20a6f87f40205f04d3d363",
+      "expect_no_blockers": true,
+      "expected_focus": ["Tests/SnapshotTestingTests/SwiftTestingTests.swift"],
+      "note": "BENCH.2 shape: Swift Testing weakening. TestScoping refactor (#965) that removes the `@Test func testSnapshotFailure()` from the Swift Testing `@Suite` (folds its withKnownIssue assertion into testSnapshot). The deterministic test-weakening detector (SEMANTIC_DIFF.6) flags `removed_test_method` on SwiftTestingTests.swift and LEADS the queue with 'Test weakening: removed test method' so a reviewer confirms coverage moved and was not silently dropped — top item is the weakened test (role `test`, the reviewed subject, not a miss); the broad TestScoping churn (.github/workflows/ci.yml, Package@swift-6.0.swift, other suites) stays out of the top-5"
     },
     {
       "id": "swift-snapshot-testing-package-pin",
@@ -288,7 +298,8 @@
       "head": "ad5e3190cc63dc288f28546f9c6827efc1e9d495",
       "expect_no_blockers": true,
       "expected_focus": ["Package.swift"],
-      "note": "BENCH.2 shape: package requirement/pin change. Bump swift-syntax to latest (#1074) — the requirement range in Package.swift and Package@swift-5.9.swift plus the resolved pin in Package.resolved; the dependency facts must surface the manifest requirement first while Package.resolved (a SwiftPM lock) stays out of the lead and is never a fabricated blocker"
+      "allow_top_roles": ["artifact"],
+      "note": "BENCH.2 shape: package requirement/pin change. Bump swift-syntax to latest (#1074) — the requirement range in Package.swift and Package@swift-5.9.swift plus the resolved pin in Package.resolved (classified as a SwiftPM lock artifact). The dependency facts surface the manifest requirement first (Package.swift leads) and the resolved pin (Package.resolved: 602.0.0 → 603.0.0) as a dep fact, NOT raw noise — so `allow_top_roles: [artifact]` opts the lock out of the irrelevant-top check for THIS subject-is-the-pin case while every other case keeps strict lock exclusion. Never a fabricated blocker"
     },
     {
       "id": "alamofire-privacy-manifest",
