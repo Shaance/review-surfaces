@@ -19,7 +19,6 @@ areas:
       - src/cli/
       - src/pipeline/
       - bin/
-      - package.json
     purpose: Parse commands and wire local pipeline stages.
     pattern: command dispatcher
     test_keywords:
@@ -232,7 +231,6 @@ areas:
     group_key: QUALITY
     prefixes:
       - tests/
-      - package.json
     purpose: Verify local parsing, evidence, providers, and packet behavior.
     pattern: fixture tests
     test_keywords: []
@@ -245,6 +243,21 @@ areas:
     pattern: JSON schema
     test_keywords:
       - schema
+  - id: SUB-RELEASE
+    name: Release and distribution
+    group_key: DISTRIBUTION
+    prefixes:
+      - CHANGELOG.md
+      - src/core/version.ts
+      - package.json
+      - action.yml
+    purpose: Versioning, packaging, release notes, and distribution contracts.
+    pattern: release metadata
+    test_keywords:
+      - version
+      - package
+      - distribution
+      - release
 privacy:
   ignore_file: .review-surfacesignore
   redact_secrets: true

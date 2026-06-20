@@ -4198,6 +4198,35 @@ test("review-surfaces.HUMAN_REVIEW.23 reviewer questions strip ANY trailing sent
   }
 });
 
+test("an unmapped file flagged by both eval-overreach and PR out-of-scope yields ONE intent-mismatch item", () => {
+  // Canonical mapping-gap dedup: the same path must not produce two findings with the
+  // same action (one "not mapped to a requirement group" + one "not mapped to a review
+  // area"). The eval-overreach finding is kept; the redundant out-of-scope item is
+  // suppressed.
+  const packet = packetFixture();
+  packet.evaluation.overreach = [
+    {
+      requirement_id: "OVERREACH-001",
+      status: "overreach",
+      summary: "Changed file does not map to an Acai requirement group: scripts/release.sh",
+      evidence: [fileEvidence("scripts/release.sh", "Changed file did not map to a known requirement group.", "medium")],
+      missing_evidence: [],
+      review_focus: "Confirm whether this file is in scope.",
+      confidence: "medium"
+    }
+  ];
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files.push({ path: "scripts/release.sh", status: "M", areas: [], role: "implementation", added_lines: 3, deleted_lines: 1 });
+  prSurface.scope.out_of_scope_changed_files.push({ path: "scripts/release.sh", status: "M", reason: "unmapped" });
+
+  const model = buildHumanReview({ packet, prSurface, diff: structuredDiffFixture() });
+
+  const items = model.intent_mismatch.possible_overreach.filter((item) =>
+    (item.evidence ?? []).some((ref) => ref.path === "scripts/release.sh") || /scripts\/release\.sh/.test(item.summary)
+  );
+  assert.equal(items.length, 1, "scripts/release.sh is flagged exactly once, not twice");
+});
+
 test("review-surfaces.HUMAN_REVIEW.23 an empty-risk-id queue item omits the risk trailer entirely, never a bare 'Risk: none' / 'Risks: none'", () => {
   const surface = prSurfaceFixture();
   surface.risks.candidates = [];
