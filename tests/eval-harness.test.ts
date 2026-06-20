@@ -562,11 +562,14 @@ test("review-surfaces.CONFIG_FACTS.5 an Xcode test-structure change ranks in the
 test("review-surfaces.EVAL_HARNESS.7 a body-only Swift edit produces no declaration-contract finding", () => {
   const fixture = createEvalFixture("swift-benign-body");
   try {
+    // Behavior-PRESERVING body edit: restructure the body (introduce a local) but keep
+    // the exact "Hi \(name)" output so the committed XCTest still passes — a genuinely
+    // benign body change, not a behavior/test regression (Codex P2).
     fixture.write(
       "Sources/App/Greeting.swift",
-      `public struct Greeting {\n  public func greet(name: String) -> String {\n    let prefix = "Hello"\n    return "\\(prefix), \\(name)"\n  }\n}\n`
+      `public struct Greeting {\n  public func greet(name: String) -> String {\n    let prefix = "Hi"\n    return "\\(prefix) \\(name)"\n  }\n}\n`
     );
-    fixture.commit("rewrite greet body only");
+    fixture.commit("restructure greet body, same output");
     record("benign_swift_body_edit", () => {
       const model = fixture.run();
       assert.ok(
@@ -580,11 +583,15 @@ test("review-surfaces.EVAL_HARNESS.7 a body-only Swift edit produces no declarat
 });
 
 test("review-surfaces.EVAL_HARNESS.7 a Package.resolved originHash-only rewrite produces no package finding", () => {
-  const basePin = JSON.stringify({ version: 2, pins: [{ identity: "nio", location: "u", state: { version: "2.0.0", revision: "aaaaaaaa" } }] }, null, 2);
+  // Two pins so the head can REORDER them (not just rewrite originHash): pure pin
+  // reordering + an origin-hash change must both read as benign, never a package finding.
+  const nio = { identity: "nio", location: "u", state: { version: "2.0.0", revision: "aaaaaaaa" } };
+  const algo = { identity: "swift-algorithms", location: "v", state: { version: "1.2.0", revision: "bbbbbbbb" } };
+  const basePin = JSON.stringify({ version: 2, pins: [nio, algo] }, null, 2);
   const fixture = createEvalFixture("swift-benign-pin", { extraBaseFiles: { "Package.resolved": basePin } });
   try {
-    fixture.write("Package.resolved", JSON.stringify({ version: 3, originHash: "DIFFERENT", pins: [{ identity: "nio", location: "u", state: { version: "2.0.0", revision: "aaaaaaaa" } }] }, null, 2));
-    fixture.commit("originHash-only rewrite");
+    fixture.write("Package.resolved", JSON.stringify({ version: 3, originHash: "DIFFERENT", pins: [algo, nio] }, null, 2));
+    fixture.commit("reorder pins + originHash rewrite");
     record("benign_package_resolved_origin", () => {
       const model = fixture.run();
       assert.ok(
