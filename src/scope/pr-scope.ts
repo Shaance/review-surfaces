@@ -239,6 +239,10 @@ export function isTestPath(filePath: string): boolean {
     filePath.startsWith("tests/") ||
     /\.test\.[^./]+$/.test(filePath) ||
     /\.spec\.[^./]+$/.test(filePath) ||
+    // Colocated non-JS test conventions: Go `_test.go`, Python `test_*.py` / `*_test.py`,
+    // Ruby `*_spec.rb` / `*_test.rb`, PHP `*Test.php`. Without these the area-test signal
+    // misses an existing colocated test and wrongly asks reviewers to ADD one.
+    /(?:^|\/)(?:test_[^/]+\.py|[^/]+_test\.(?:go|py|rb)|[^/]+_spec\.rb|[^/]+Test\.php)$/.test(filePath) ||
     // review-surfaces.COLLECTOR.8: Swift/Xcode test files and target directories.
     isSwiftTestPath(filePath)
   );

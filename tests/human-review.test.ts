@@ -3797,6 +3797,54 @@ test("required PR risk checks stay visible when the test plan is capped", () => 
   assert.equal(model.test_plan.find((item) => item.maps_to_risks.includes("PR-RISK-CI"))?.kind, "manual");
 });
 
+test("untested_changed_impl test-plan item follows the risk's per-file state (add / run / mixed)", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [
+    {
+      ...prRiskFixture("untested_changed_impl"),
+      id: "PR-RISK-ADD",
+      evidence: [fileEvidence("src/human/add.ts", "no test maps to its area")],
+      suggested_checks: ["Add a test covering the change to src/human/add.ts."]
+    },
+    {
+      ...prRiskFixture("untested_changed_impl"),
+      id: "PR-RISK-RUN",
+      evidence: [fileEvidence("src/human/run.ts", "existing test not run at head")],
+      suggested_checks: ["Run the existing test(s) mapped to HUMAN_REVIEW at the current head and record the transcript (review-surfaces run -- <your test command>)."]
+    },
+    {
+      ...prRiskFixture("untested_changed_impl"),
+      id: "PR-RISK-MIXED",
+      evidence: [fileEvidence("src/human/mixed.ts", "one area covered, one not")],
+      suggested_checks: ["Run the existing test(s) mapped to CORE at the current head and record the transcript, and add a test covering FOO."]
+    }
+  ];
+
+  const model = buildHumanReview({ packet, prSurface: surface });
+  const itemFor = (riskId: string) => model.test_plan.find((item) => item.maps_to_risks.includes(riskId));
+
+  const add = itemFor("PR-RISK-ADD");
+  assert.ok(add && /^add a test covering/i.test(add.scenario), "add-state scenario says ADD");
+  assert.ok(add?.suggested_file, "add-state names a file to create");
+
+  const run = itemFor("PR-RISK-RUN");
+  assert.ok(run && /^run the existing test/i.test(run.scenario), "run-state scenario says RUN");
+  assert.ok(!/add a test/i.test(run.scenario), "pure run-state does not also say add");
+  assert.equal(run?.suggested_file, undefined, "run-state never fabricates a test file path");
+  assert.equal(run?.command, "pnpm run test", "run-state uses the generic suite command, not a fabricated path");
+
+  const mixed = itemFor("PR-RISK-MIXED");
+  assert.ok(mixed && /run the existing test/i.test(mixed.scenario) && /add a test/i.test(mixed.scenario), "mixed-state keeps BOTH run and add actions");
+  assert.equal(mixed?.suggested_file, undefined, "mixed-state does not fabricate a test file path");
+});
+
 test("duplicate PR risk drafts do not consume the cap before distinct focused gaps", () => {
   const packet = packetFixture();
   packet.risks.items = [];
