@@ -188,8 +188,25 @@ function explainPathForAreas(
 }
 
 function collectGroupsForPath(filePath: string, areas: ReviewArea[], options: ReviewAreaMatchOptions): string[] {
-  const groups: string[] = [];
   const context = createMatchContext(filePath);
+  // Exact-file precedence (requirement_proof only): when an area declares this EXACT
+  // path as a prefix (e.g. a dedicated release area listing `CHANGELOG.md`,
+  // `package.json`, `src/core/version.ts`), it is requirement PROOF for that file and
+  // wins over broader directory/area mappings (`src/core/`, the package.json CLI/QUALITY
+  // areas). Routing (review_surface) still collects every area so the change map keeps
+  // full context.
+  if (options.purpose === "requirement_proof") {
+    const exact: string[] = [];
+    for (const area of areas) {
+      if (area.prefixes.some((prefix) => !prefix.endsWith("/") && prefix !== ROOT_PREFIX && prefix === filePath)) {
+        addUnique(exact, area.groupKey);
+      }
+    }
+    if (exact.length > 0) {
+      return exact;
+    }
+  }
+  const groups: string[] = [];
   for (const area of areas) {
     if (areaMatchesPathForPurpose(filePath, area, options, context)) {
       addUnique(groups, area.groupKey);

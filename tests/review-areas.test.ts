@@ -27,6 +27,31 @@ test("review area matcher makes review_surface and requirement_proof semantics e
   assert.deepEqual(matcher.groupsForPath("tests/cli.test.ts", { purpose: "requirement_proof" }), ["CLI"]);
 });
 
+test("exact-file area takes precedence over broad mappings for requirement_proof only", () => {
+  const matcher = createReviewAreaMatcher([
+    { id: "SUB-CORE", name: "Core", groupKey: "CORE", prefixes: ["src/core/"], purpose: "core", pattern: "core", testKeywords: [] },
+    { id: "SUB-RELEASE", name: "Release", groupKey: "DISTRIBUTION", prefixes: ["src/core/version.ts", "package.json"], purpose: "release", pattern: "release", testKeywords: [] }
+  ]);
+
+  // requirement_proof: the EXACT-file release area wins over the broad src/core area.
+  assert.deepEqual(matcher.groupsForPath("src/core/version.ts", { purpose: "requirement_proof" }), ["DISTRIBUTION"]);
+  // review_surface (routing): still collects BOTH so the change map keeps full context.
+  assert.deepEqual(matcher.groupsForPath("src/core/version.ts", { purpose: "review_surface" }), ["CORE", "DISTRIBUTION"]);
+  // a non-exact core file is unaffected.
+  assert.deepEqual(matcher.groupsForPath("src/core/files.ts", { purpose: "requirement_proof" }), ["CORE"]);
+});
+
+test("review-surfaces.DISTRIBUTION release files map to the SUB-RELEASE area in the real config", async () => {
+  const matcher = createReviewAreaMatcher(await defaultReviewSurfacesAreas());
+  for (const file of ["CHANGELOG.md", "src/core/version.ts", "package.json", "action.yml"]) {
+    assert.deepEqual(
+      matcher.groupsForPath(file, { purpose: "requirement_proof" }),
+      ["DISTRIBUTION"],
+      `${file} should be requirement-proof for DISTRIBUTION only`
+    );
+  }
+});
+
 test("review area matcher token-scopes test keywords case-insensitively", () => {
   const matcher = createReviewAreaMatcher([{ ...AREAS[0], testKeywords: ["CLI"] }]);
 

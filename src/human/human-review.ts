@@ -1417,10 +1417,19 @@ function possibleOverreachDrafts(input: BuildHumanReviewInput, focus: IntentMism
     };
   });
 
-  const prOverreach = (input.prSurface?.scope.out_of_scope_changed_files ?? [])
-    .filter((file) => file.reason === "unmapped")
+  // Canonical mapping-gap dedup: a genuinely unmapped changed file can surface BOTH as
+  // an eval overreach (not mapped to a requirement group) AND a PR out-of-scope file
+  // (not mapped to a review area) — two findings with the same action. Emit ONE: when an
+  // out-of-scope path is already covered by an eval-overreach draft, suppress the
+  // redundant out-of-scope item (the overreach finding already flags the same file, and
+  // its summary feeds the reviewer-question template verbatim, so it is left untouched).
+  const packetOverreachPaths = new Set(
+    packetOverreach.flatMap((draft) => draft.paths.map((draftPath) => normalizeEvidencePath(draftPath)))
+  );
+  const prOverreach: IntentMismatchDraft[] = (input.prSurface?.scope.out_of_scope_changed_files ?? [])
+    .filter((file) => file.reason === "unmapped" && !packetOverreachPaths.has(normalizeEvidencePath(file.path)))
     .map((file) => ({
-      summary: `Out-of-scope changed file \`${file.path}\` is not mapped to stated intent.`,
+      summary: `Out-of-scope changed file \`${file.path}\` is not mapped to a review area or a stated requirement.`,
       evidence: [fileEvidence(file.path, "PR scope classified this changed file as unmapped.", "high")],
       requirement_ids: [],
       paths: [file.path],
