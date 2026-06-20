@@ -12,6 +12,19 @@
 // checkout. Metrics are mostly OBJECTIVE (no per-PR annotation needed); `expected_focus`
 // is optional and only adds the top-5 recall metric for cases that carry it.
 //
+// review-surfaces.BENCH.2: this same harness measures the Swift/SwiftPM/iOS surface. The
+// manifest pins `lang: "swift"` cases spanning the six required shapes — a SwiftPM
+// public-declaration change, app source + matching XCTest, a Swift Testing integration
+// change, a package requirement/pin change (Package.swift / Package.resolved), an
+// entitlement/privacy-manifest config change (PrivacyInfo.xcprivacy / .pbxproj), and a
+// mixed source+tests+docs+generated-churn case — and the metrics below ARE BENCH.2's
+// quality bar on them: zero empty queues, zero fabricated blockers, zero irrelevant
+// generated/lock/binary entries in the top-5 (Package.resolved and binary .png snapshots
+// included), and high expected-focus recall. Annotated Swift cases name a single primary
+// file so recall is meaningful; the broad image-precision case stays unannotated so it only
+// stresses the generated/binary exclusion. The targets are enforced identically across
+// every language — BENCH.2 is not a separate code path, it is coverage in the same manifest.
+//
 // Metrics (aggregate):
 //   empty_queue_rate    — substantive code diffs that produced 0 review-first items (LOWER is better; target 0)
 //   false_blocker_rate  — spec-less runs that fabricated a blocker (LOWER is better; target 0)

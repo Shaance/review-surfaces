@@ -1085,10 +1085,16 @@ Complete after implementation with:
 - **Private dogfood (MenuWhisper / HanziDeck) not run.** No access to the private
   repositories in this environment; per D9 their source/projects/diffs are never
   copied here. The acceptance matrices remain the owner's macOS dogfood step.
-- **On-demand public benchmark (`node bench/run.mjs`) not executed.** It clones
-  public repos over the network; the offline session could not run it. The cases
-  are pinned and structurally validated (BENCH.1/BENCH.2); the CI gate is the
-  seeded eval, which IS run and covers every shipped Swift/iOS fact class.
+- **On-demand public benchmark (`node bench/run.mjs`) — deferred offline, RESOLVED
+  2026-06-20.** It clones public repos over the network, so the offline implementation
+  session could not run it; the cases were pinned and structurally validated then. With
+  network available the benchmark was subsequently run end-to-end: BENCH.2 now pins nine
+  Swift/SwiftPM/iOS cases spanning all six required shapes (each annotated `expected_focus`
+  except the deliberately-broad exclusion-stress case), and the run holds the quality bar
+  on them — zero empty queues, zero fabricated blockers, zero irrelevant
+  generated/lock/binary entries in the top-5, and 100% expected-focus recall on the
+  annotated cases — while every pre-existing case kept its pass outcome. The CI gate
+  remains the seeded eval (network-free), which covers every shipped Swift/iOS fact class.
 - All explicit deferrals from the "Explicit deferrals" section above hold
   unchanged (no iOS client, no simulator execution, no `.xcresult`/SourceKit,
   binary-plist decoding diagnostic-only, etc.).

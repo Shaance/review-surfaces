@@ -43,9 +43,18 @@ for the support matrix and bounds.
   lenses.
 - Eval + benchmark + docs (`EVAL_HARNESS.7`, `BENCH.2`, `DISTRIBUTION.16`): the
   seeded eval covers every shipped Swift/iOS fact class plus benign negatives; the
-  pinned public benchmark gains Swift/SwiftPM cases; the README and AGENTS docs
-  publish an honest support matrix, the macOS execution boundary, and the parser
-  bounds.
+  pinned public benchmark (`bench/manifest.json`, `node bench/run.mjs`) gains nine
+  Swift/SwiftPM/iOS cases spanning all six `BENCH.2` shapes — a SwiftPM
+  public-declaration change, app source + matching XCTest, a Swift Testing
+  integration change, a package requirement/pin change, an entitlement/privacy-manifest
+  config change, and a mixed source+tests+docs+generated-churn case — each annotated
+  with `expected_focus` (a single intended primary file) except the deliberately-broad
+  exclusion-stress case. An on-demand run holds the quality bar on them: 0 empty
+  queues, 0 fabricated blockers, 0 irrelevant generated/lock/binary entries in the
+  top-5 (`Package.resolved` and binary `.png` snapshots included), and 100%
+  expected-focus recall on the annotated cases, with every pre-existing case keeping
+  its pass outcome (31/31). The README and AGENTS docs publish an honest support
+  matrix, the macOS execution boundary, and the parser bounds.
 
 ## 0.2.0 — 2026-06-18 (first npm publish)
 
