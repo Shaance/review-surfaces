@@ -1,4 +1,4 @@
-# Real-world effectiveness benchmark (`BENCH.1`)
+# Real-world effectiveness benchmark (`BENCH.1` + `BENCH.2`)
 
 The local gate (`scripts/local-gate.sh`) is a fast, seeded, empty-diff self-dogfood: it
 proves byte-stable determinism and schema validity but is **blind to whether a surface
@@ -40,16 +40,58 @@ file".
 Append to `manifest.json` — `id`, `lang`, `repo` (git URL), `base`/`head` SHAs, optionally
 `expected_focus` (source paths a reviewer should land on), `expect_no_blockers` (default
 true), `substantive` (default true). Pick commits that change real source alongside tests
-/ docs / lockfiles so the floor's exclusion and ranking are exercised. The seed set is 6
-cases (across TS / JS / Go / Python / Rust / Java / Kotlin / Ruby, leaning on
-exclusion-stress diffs); the intended target is **20–30**.
+/ docs / lockfiles so the floor's exclusion and ranking are exercised. The set is **32
+cases** across TS / JS / Go / Python / Rust / Java / Kotlin / Ruby / Swift, leaning on
+exclusion-stress diffs; the intended target is **20–30** and is met.
 
-## Current findings (22-case run)
+## Swift / SwiftPM / iOS coverage (`BENCH.2`)
 
-The exclusion side is clean and the floor holds on every language: **0% empty-queue,
-0% false-blocker, 0% irrelevant-in-top-5** (docs, `go.sum`/`Cargo.lock`/`uv.lock`,
-CI workflows, `package.json`/`pom.xml`/`Cargo.toml` config all correctly kept out of the
-top 5), **100% focus recall@5**, **top-is-code on 20/22**.
+The `lang: "swift"` cases (ten) are pinned public Swift/SwiftPM/iOS diffs spanning the
+six shapes `BENCH.2` requires, so the cold-start floor, Apple config/dependency facts, and
+generated/lock/binary exclusion are all exercised on real Apple-shaped diffs:
+
+| case | shape | what it stresses |
+|---|---|---|
+| `swift-argument-parser-name-conformance` | SwiftPM public-declaration change **+** source with matching XCTest | public conformance in `NameSpecification.swift`; the docc article (`.md`) and `NameSpecificationTests.swift` stay out of the top-5 |
+| `swift-argument-parser-invalid-cast` | single-file Swift source change | the floor still queues a 1-file impl change |
+| `swift-argument-parser-flag-diagnostic` | single-file Swift source change | `@Flag` diagnostic edit in `Flag.swift` (source-only range, verified) |
+| `swift-snapshot-record-api` | SwiftPM public-declaration/deprecation change | new public API in `AssertSnapshot.swift` + deprecation shims in `Deprecations.swift` |
+| `swift-snapshot-assert-source` | **mixed** source+tests+docs+generated-churn | 8 source files + a Swift Testing test + a docc migration article + **five binary `.png` snapshots and a `.txt` snapshot** — source ranks, the doc and the generated/binary snapshots are excluded |
+| `swift-snapshot-swift-testing-attachments` | Swift Testing integration change | single-file change to the Swift Testing surface (distinct from the weakening case) |
+| `swift-snapshot-swift-testing-weakening` | **Swift Testing weakening** | a `@Test` removed from a Swift Testing `@Suite` (TestScoping refactor) — the test-weakening detector flags `removed_test_method` and **leads the queue with the weakened test**; the `ci.yml` and package manifests stay out of the top-5 |
+| `swift-snapshot-testing-package-pin` | **package requirement/pin change** | swift-syntax bump in `Package.swift`/`Package@swift-5.9.swift` + the `Package.resolved` lock — the requirement leads and the resolved pin is surfaced as a dep fact; `Package.resolved` is a lock (`allow_top_roles` opts this subject-is-the-pin case out of the irrelevant check), never a fabricated blocker |
+| `alamofire-privacy-manifest` | **entitlement/privacy-manifest config change** | new `PrivacyInfo.xcprivacy` (+ `.pbxproj` ref + `Package.swift` resource) surfaced as Apple privacy/config facts; all-config diff, not a fabricated blocker |
+| `swift-snapshot-testing-image-precision` | mixed source + **three regenerated binary `.png` snapshots** (exclusion-stress, unannotated) | 14 `Snapshotting/*.swift` files; the three binaries never leak into the top-5 |
+
+On these ten cases `node bench/run.mjs` holds the full `BENCH.2` bar: **0 empty queues,
+0 fabricated blockers, 0 irrelevant generated/lock/binary entries in the top-5, and 100%
+expected-focus recall** on the nine annotated cases (the image-precision case is left
+unannotated on purpose — it only stresses binary exclusion). Two cases legitimately lead
+with a non-`code` top item that IS their reviewed subject — `alamofire-privacy-manifest`
+leads with the privacy manifest (role `other`) and `swift-snapshot-swift-testing-weakening`
+leads with the weakened test (role `test`) — which is correct for those shapes, not a
+top-is-code miss.
+
+## Current findings (32-case run)
+
+The exclusion side is clean and the floor holds on every language including Swift: **0%
+empty-queue, 0% false-blocker, 0% irrelevant-in-top-5** — incidental churn (docs,
+`go.sum`/`Cargo.lock`/`uv.lock`/`Package.resolved`, and binary `.png` snapshots) is
+correctly kept out of the top 5 — **100% focus recall@5**, **top-is-code on 27/32**. CI
+workflow changes are NOT excluded — a `.github/workflows/*` edit is hand-written,
+security-relevant supply-chain config that the tool deliberately SURFACES (e.g.
+`gin-debug` ranks `.github/workflows/gin.yml` at #2). The runner classifies it as a
+distinct `ci` role so it is tracked (never silently counted as `code`) but, unlike a
+lock/generated/binary, it is not an exclusion failure. Three Swift cases
+intentionally LEAD with a non-`code` top item because that item IS the reviewed subject
+(privacy manifest, removed test, dependency pin), and the scorecard reflects that:
+`alamofire-privacy-manifest` surfaces `Source/PrivacyInfo.xcprivacy` as the top item (a
+privacy-manifest review, role `other`, not a miss), `swift-snapshot-swift-testing-weakening`
+leads with the weakened `SwiftTestingTests.swift` (role `test`), and
+`swift-snapshot-testing-package-pin` leads with `Package.swift` and also
+surfaces the `Package.resolved` resolved-pin fact (`Package.resolved` is now classified as
+a SwiftPM lock; the pin case opts that role out of the irrelevant check via
+`allow_top_roles`, every other case keeps strict lock exclusion).
 
 - **`express-send`: a dependency change used to hide the source change — now FIXED.** The
   diff bumps `content-disposition` in `package.json` *and* edits `lib/response.js`. The
@@ -65,6 +107,10 @@ top 5), **100% focus recall@5**, **top-is-code on 20/22**.
   (recall 100%), and a large new test block is legitimately worth reading, so this is a
   ranking **observation**, not a regression — a candidate for a future "prefer the
   implementation over its own test at comparable evidence" tie-break, tracked not chased.
+- **`alamofire-privacy-manifest`: the top item is the privacy manifest, not code.** A
+  privacy-manifest/config-only diff has no impl source, so the `PrivacyInfo.xcprivacy`
+  facts legitimately lead (role `other`). This is the third non-code-top case and is
+  correct behavior for the config shape, not a ranking gap.
 
 The benchmark drove a real floor fix (the `express-send` augmentation) — exactly its
 purpose: surface gaps on real diffs, then confirm the fix closes them.

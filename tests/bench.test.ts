@@ -33,15 +33,64 @@ test("review-surfaces.BENCH.1 the effectiveness benchmark ships a runnable harne
 });
 
 // review-surfaces.BENCH.2: the pinned public benchmark includes representative
-// Swift/SwiftPM/iOS cases (well-formed; the on-demand runner exercises them).
+// Swift/SwiftPM/iOS cases (well-formed; the on-demand runner exercises them). This
+// guards the CONTRACT — the on-demand runner (network) is what actually scores the
+// quality bar. Beyond "≥6 well-formed Swift pins" it asserts the manifest carries the
+// shapes BENCH.2 enumerates that a structural check CAN see: the recall annotations,
+// an entitlement/privacy-manifest config case, and a package requirement/pin case.
 test("review-surfaces.BENCH.2 the benchmark pins Swift/SwiftPM cases", () => {
   const root = process.cwd();
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "bench", "manifest.json"), "utf8"));
-  const swift = manifest.cases.filter((c: { lang: string }) => c.lang === "swift");
+  type Case = { id: string; lang: string; base: string; head: string; repo: string; expected_focus?: unknown };
+  const swift = (manifest.cases as Case[]).filter((c) => c.lang === "swift");
   assert.ok(swift.length >= 6, `the benchmark pins at least six Swift cases (found ${swift.length})`);
   for (const c of swift) {
     assert.match(c.base, /^[0-9a-f]{40}$/, `swift case ${c.id} base is a full commit SHA`);
     assert.match(c.head, /^[0-9a-f]{40}$/, `swift case ${c.id} head is a full commit SHA`);
     assert.match(c.repo, /^https:\/\/.+\.git$/, `swift case ${c.id} repo is clonable`);
+    // Any expected_focus must be a non-empty array of path strings (the recall metric
+    // ignores a malformed annotation, so a typo would silently drop coverage).
+    if (c.expected_focus !== undefined) {
+      assert.ok(
+        Array.isArray(c.expected_focus) && c.expected_focus.length > 0 && c.expected_focus.every((p) => typeof p === "string" && p.length > 0),
+        `swift case ${c.id} expected_focus is a non-empty array of paths`
+      );
+    }
   }
+
+  // High expected-focus recall needs real annotation coverage: most Swift cases carry
+  // expected_focus (only deliberately-broad exclusion-stress cases stay unannotated).
+  const annotated = swift.filter((c) => Array.isArray(c.expected_focus) && c.expected_focus.length > 0);
+  assert.ok(annotated.length >= 6, `at least six Swift cases carry expected_focus for the recall metric (found ${annotated.length})`);
+
+  const focusPaths = (c: Case) => (Array.isArray(c.expected_focus) ? (c.expected_focus as string[]) : []);
+  // The entitlement/privacy-manifest config shape: a Swift case focused on a privacy
+  // manifest / entitlements / plist / xcconfig — NOT a SwiftPM manifest. Kept distinct from
+  // the package-manifest check below so that losing the privacy case (e.g. removing
+  // alamofire-privacy) fails this assertion instead of being masked by the package-pin case
+  // (Codex BENCH.2): `Package.swift` must not satisfy the privacy requirement.
+  const PRIVACY_CONFIG = /(\.xcprivacy|\.entitlements|\.plist|\.xcconfig)$/;
+  assert.ok(
+    swift.some((c) => focusPaths(c).some((p) => PRIVACY_CONFIG.test(p))),
+    "the Swift set includes an entitlement/privacy-manifest config case (BENCH.2 config shape)"
+  );
+  // The package requirement/pin shape: a case focused on a SwiftPM manifest.
+  assert.ok(
+    swift.some((c) => focusPaths(c).some((p) => /(^|\/)Package(@swift-[^/]+)?\.swift$/.test(p))),
+    "the Swift set includes a package requirement/pin case (BENCH.2 package shape)"
+  );
+  // The Swift Testing weakening shape: a case documented as weakening AND actually focused
+  // on a Swift test file — so a placeholder/non-test diff that merely keeps the word
+  // "weakening" in its note cannot satisfy the guard while the real coverage is gone
+  // (Codex BENCH.2). Swift test convention: a `*Tests.swift`/`*Test.swift` basename or a
+  // path under a `Tests/` directory.
+  const SWIFT_TEST_FOCUS = (p: string) => /Tests?\.swift$/.test(p) || /(^|\/)Tests\//.test(p);
+  assert.ok(
+    swift.some(
+      (c) =>
+        (/weakening/i.test((c as { id?: string; note?: string }).note ?? "") || /weakening/i.test(c.id)) &&
+        focusPaths(c).some(SWIFT_TEST_FOCUS)
+    ),
+    "the Swift set includes a Swift Testing weakening case focused on a Swift test file (BENCH.2 weakening shape)"
+  );
 });
