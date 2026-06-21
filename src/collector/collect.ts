@@ -18,7 +18,7 @@ import { filterIgnoredDiff } from "../privacy/diff";
 import { loadPrivacyIgnore } from "../privacy/ignore";
 import { BLOCKED_REDACTION_KINDS, SecretRedaction, redactSecrets } from "../privacy/secrets";
 import { buildRepoIndex, RepoIndex } from "../indexer/indexer";
-import { providerMakesRemoteCall, type ProviderName } from "../llm/provider";
+import { aiMaxOutputTokens, providerMakesRemoteCall, type ProviderName } from "../llm/provider";
 import type { PacketRunMode } from "../schema/review-packet-contract";
 import {
   emptyTestResults,
@@ -675,7 +675,13 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     milestone,
     inputHashes,
     changedFileHashes,
-    flagInputHashes
+    flagInputHashes,
+    // Gate on the EFFECTIVE provider, not just the (mock-forced) signature provider: in
+    // `--review-scope pr` the whole-repo packet is collected with provider "mock" while the
+    // run still issues ai-sdk calls for the PR surface / narrative (gateProvider carries the
+    // requested provider). Fold the budget when EITHER is ai-sdk so a budget change busts the
+    // cache in pr scope too; mock-only runs (neither ai-sdk) stay byte-identical (Codex BENCH.2).
+    aiMaxOutputTokens: options.provider === "ai-sdk" || options.gateProvider === "ai-sdk" ? aiMaxOutputTokens() : undefined
   });
 
   // review-surfaces.QUALITY_GATE.2 (Codex round-4 finding 2): precompute the EXACT
@@ -1136,6 +1142,11 @@ interface SignatureInput {
   inputHashes: ManifestInputHash[];
   changedFileHashes: ChangedFileHash[];
   flagInputHashes: FlagInputHash[];
+  // The live output-token budget (REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS), folded in ONLY for a
+  // remote provider so changing it busts the cache (a low-budget truncated run must not be
+  // reused after the user raises the budget). Undefined for mock/agent-file, so their
+  // signatures stay byte-identical to before (Codex BENCH.2 round-2).
+  aiMaxOutputTokens?: number;
 }
 
 // Deterministic sha256 over a SORTED, canonical fingerprint of the meaningful
@@ -1169,7 +1180,10 @@ function computeSignature(input: SignatureInput): string {
     // (no-flag) signature byte-identical to before this addition.
     flag_inputs: [...input.flagInputHashes]
       .sort((left, right) => compareStrings(left.kind, right.kind) || compareStrings(left.path, right.path))
-      .map((entry) => ({ kind: entry.kind, path: entry.path, hash: entry.hash }))
+      .map((entry) => ({ kind: entry.kind, path: entry.path, hash: entry.hash })),
+    // Conditional spread: only a remote (ai-sdk) run passes a value, so mock/agent-file
+    // signatures stay byte-identical to before this addition (the key is omitted entirely).
+    ...(input.aiMaxOutputTokens != null ? { ai_max_output_tokens: input.aiMaxOutputTokens } : {})
   };
   return crypto.createHash("sha256").update(JSON.stringify(fingerprint)).digest("hex");
 }
