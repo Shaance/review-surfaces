@@ -69,7 +69,7 @@ const AI_DEFAULT_TIMEOUT_MS = 60_000;
 // REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS for unusually large packets.
 const AI_DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
 
-interface ResolvedModel {
+export interface ResolvedModel {
   provider: "anthropic" | "google" | "openai";
   modelId: string;
 }
@@ -174,7 +174,7 @@ export function aiSdkProvider(options: ProviderFactoryOptions): ReasoningProvide
             schema: ai.jsonSchema(schema),
             prompt: safe.text,
             abortSignal: controller.signal,
-            maxOutputTokens: aiMaxOutputTokens()
+            maxOutputTokens: Math.min(aiMaxOutputTokens(), modelOutputCeiling(resolved))
           });
           return { ok: true, data: result.object };
         } finally {
@@ -275,7 +275,22 @@ function aiTimeoutMs(): number {
  */
 export function aiMaxOutputTokens(): number {
   const raw = Number(process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS);
-  return Number.isFinite(raw) && raw > 0 ? raw : AI_DEFAULT_MAX_OUTPUT_TOKENS;
+  // Token budgets are integer counts in the provider APIs; a positive non-integer (8192.5) is
+  // a malformed override and must fall back, not be forwarded as a fractional request value.
+  return Number.isInteger(raw) && raw > 0 ? raw : AI_DEFAULT_MAX_OUTPUT_TOKENS;
+}
+
+// Hard max-output-token limit for a model, used to clamp the configured budget DOWN so the
+// raised 8_192 default (or a higher override) never exceeds a lower-limit model's API cap and
+// turns a valid run into a request error (Codex BENCH.2 round-4). Only the original Claude 3
+// family (haiku/sonnet/opus — NOT 3.5+) caps below 8_192 (documented 4_096 max output);
+// gemini-2.5-* and gpt-4o* comfortably exceed it. An unknown model is not clamped — an
+// explicit non-default model choice plus REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS is the lever.
+export function modelOutputCeiling(resolved: ResolvedModel): number {
+  if (resolved.provider === "anthropic" && /(^|[:/-])claude-3-(haiku|sonnet|opus)-/.test(resolved.modelId.toLowerCase())) {
+    return 4_096;
+  }
+  return Number.POSITIVE_INFINITY;
 }
 
 function apiKeyFor(provider: ResolvedModel["provider"]): string | undefined {
