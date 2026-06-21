@@ -60,7 +60,14 @@ const OPENAI_DEFAULT_MODEL = "gpt-4o-mini";
 // AbortController timeout and a bounded output budget. These only affect the
 // live ai-sdk branch (never mock/offline), so golden fixtures are unaffected.
 const AI_DEFAULT_TIMEOUT_MS = 60_000;
-const AI_MAX_OUTPUT_TOKENS = 2_048;
+// Output budget for a live generateObject call. Raised from the original 2_048: a
+// reasoning model (notably the default `gemini-2.5-flash`, which thinks by default) spends a
+// large, variable share of this budget on reasoning tokens BEFORE the JSON, so a 2_048 cap
+// truncated the structured response mid-object (`finishReason: "length"`) and the whole
+// enrichment silently fell back to deterministic (live iOS dogfood finding). 8_192 leaves
+// ample room for reasoning + the bounded enrichment JSON; override with
+// REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS for unusually large packets.
+const AI_DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
 
 interface ResolvedModel {
   provider: "anthropic" | "google" | "openai";
@@ -167,7 +174,7 @@ export function aiSdkProvider(options: ProviderFactoryOptions): ReasoningProvide
             schema: ai.jsonSchema(schema),
             prompt: safe.text,
             abortSignal: controller.signal,
-            maxOutputTokens: AI_MAX_OUTPUT_TOKENS
+            maxOutputTokens: aiMaxOutputTokens()
           });
           return { ok: true, data: result.object };
         } finally {
@@ -258,6 +265,17 @@ export function resolveModel(model: string | undefined): ResolvedModel {
 function aiTimeoutMs(): number {
   const raw = Number(process.env.REVIEW_SURFACES_AI_TIMEOUT_MS);
   return Number.isFinite(raw) && raw > 0 ? raw : AI_DEFAULT_TIMEOUT_MS;
+}
+
+/**
+ * Output-token budget for a live generateObject call. Reads
+ * REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS once and falls back to
+ * AI_DEFAULT_MAX_OUTPUT_TOKENS for absent/invalid values. The budget must cover a
+ * reasoning model's thinking tokens AND the structured JSON, or the response truncates.
+ */
+function aiMaxOutputTokens(): number {
+  const raw = Number(process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS);
+  return Number.isFinite(raw) && raw > 0 ? raw : AI_DEFAULT_MAX_OUTPUT_TOKENS;
 }
 
 function apiKeyFor(provider: ResolvedModel["provider"]): string | undefined {

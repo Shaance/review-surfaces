@@ -347,6 +347,40 @@ test("ai-sdk live branch applies enrichment when generateObject resolves an obje
   });
 });
 
+test("ai-sdk live branch budgets generateObject output tokens (default 8192, env-overridable) so a reasoning model's thinking does not truncate the JSON", async () => {
+  // A reasoning model (the default gemini-2.5-flash thinks by default) spends a large,
+  // variable share of the output budget on reasoning tokens before the JSON; the original
+  // 2_048 cap truncated the structured response mid-object (finishReason "length") and the
+  // whole enrichment silently fell back to deterministic (live iOS dogfood finding).
+  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
+    let captured: { maxOutputTokens?: number } = {};
+    const provider = aiSdkProvider({
+      aiModuleLoader: fakeAiLoader(async (args: { maxOutputTokens?: number }) => {
+        captured = args;
+        return { object: { review_focus: ["X"] } };
+      })
+    });
+    const result = await provider.generateStructured("enrichment", "prompt", SCHEMA);
+    assert.equal(result.ok, true);
+    assert.equal(captured.maxOutputTokens, 8192, "default output budget leaves room for reasoning + the JSON");
+  });
+
+  // REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS overrides the budget for unusually large packets.
+  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
+    await withEnv("REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS", "20000", async () => {
+      let captured: { maxOutputTokens?: number } = {};
+      const provider = aiSdkProvider({
+        aiModuleLoader: fakeAiLoader(async (args: { maxOutputTokens?: number }) => {
+          captured = args;
+          return { object: {} };
+        })
+      });
+      await provider.generateStructured("enrichment", "prompt", SCHEMA);
+      assert.equal(captured.maxOutputTokens, 20000, "env override is honored");
+    });
+  });
+});
+
 test("ai-sdk live branch maps a thrown SDK error to ai_sdk_error", async () => {
   await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
     const provider = aiSdkProvider({
