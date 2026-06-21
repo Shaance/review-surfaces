@@ -204,6 +204,53 @@ components:
   }
 });
 
+test("manifest signature folds the ai-sdk output budget so REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS busts the cache; mock is byte-identical (Codex BENCH.2 round-2)", async () => {
+  // Raising the live output budget changes the generateObject request, so a cached
+  // low-budget (possibly truncated) artifact must NOT be reused — the override must bust
+  // the cache. For an offline provider (mock) the env is irrelevant and the signature must
+  // stay byte-identical so determinism and golden fixtures are unaffected.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-aibudget-sig-"));
+  try {
+    fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, "src", "a.ts"), "export const value = 1;\n");
+    execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
+    fs.writeFileSync(path.join(tmp, "src", "a.ts"), "export const value = 2;\n");
+
+    const config = { ...defaultConfig, specs: [], docs: [], tests: [], output_dir: ".review-surfaces" };
+    const signatureFor = async (provider: string, budget: string | undefined): Promise<string> => {
+      const prev = process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS;
+      if (budget === undefined) {
+        delete process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS;
+      } else {
+        process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = budget;
+      }
+      try {
+        const result = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider });
+        return result.manifest.signature ?? "";
+      } finally {
+        if (prev === undefined) {
+          delete process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS;
+        } else {
+          process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = prev;
+        }
+      }
+    };
+
+    const aiDefault = await signatureFor("ai-sdk", undefined);
+    const aiRaised = await signatureFor("ai-sdk", "20000");
+    assert.ok(aiDefault.length > 0 && aiRaised.length > 0, "both ai-sdk runs record a signature");
+    assert.notEqual(aiRaised, aiDefault, "raising the ai-sdk output budget must change the signature so --cache reissues the live call");
+
+    const mockDefault = await signatureFor("mock", undefined);
+    const mockRaised = await signatureFor("mock", "20000");
+    assert.equal(mockRaised, mockDefault, "the offline (mock) signature must ignore the ai budget — byte-identical, no determinism impact");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("collector marks a diff file as working_tree when it is dirty after HEAD", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-dirty-diff-"));
   try {

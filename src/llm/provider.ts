@@ -273,7 +273,7 @@ function aiTimeoutMs(): number {
  * AI_DEFAULT_MAX_OUTPUT_TOKENS for absent/invalid values. The budget must cover a
  * reasoning model's thinking tokens AND the structured JSON, or the response truncates.
  */
-function aiMaxOutputTokens(): number {
+export function aiMaxOutputTokens(): number {
   const raw = Number(process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS);
   return Number.isFinite(raw) && raw > 0 ? raw : AI_DEFAULT_MAX_OUTPUT_TOKENS;
 }
