@@ -4,7 +4,7 @@
 // used_by facts, and the computed lens findings / review queue. No new parsing
 // happens here: the import edges come from buildImportGraph() output.
 import { buildImportGraph } from "../collector/import-graph";
-import { isSwiftTestPath } from "../collector/source-kind";
+import { isSwiftTestPath, isSwiftSourcePath, isAppleProjectConfigPath } from "../collector/source-kind";
 import { compareStrings } from "../core/compare";
 import { clusterOfPath, DEFAULT_IMPLEMENTATION_ROOTS } from "../core/source-roots";
 import {
@@ -504,6 +504,19 @@ function categoryOf(filePath: string, roots: readonly string[]): LegCategory {
   // (agreeing with the Swift changed-test attribution), not the config/docs leg.
   if (top === "tests" || top === "test" || /\.(test|spec)\.[jt]sx?$/.test(filePath) || isSwiftTestPath(filePath)) {
     return "tests";
+  }
+  // Apple project/config files (the SwiftPM `Package.swift` manifest, `.pbxproj`, schemes,
+  // test plans, xcconfig, entitlements, privacy manifest, Info.plist) are config — checked
+  // before the Swift-source branch so the manifest, a `.swift` file, is not read as impl.
+  if (isAppleProjectConfigPath(filePath)) {
+    return "config";
+  }
+  // A Swift implementation source file is implementation even when its package puts it under
+  // SwiftPM's `Sources/` layout, which the roots detector (COLD_START.2: tsconfig/package.json
+  // /majority-driven) does not recognize — without this, Swift source reads as "config and
+  // docs — read last" in the tour (live iOS dogfood finding). Mirrors the Swift-aware tests leg.
+  if (isSwiftSourcePath(filePath)) {
+    return "implementation";
   }
   if (roots.includes(top)) {
     return "implementation";
