@@ -297,7 +297,7 @@
       "base": "e8192447ed7fd78c50f14ea74758ebabc0c57770",
       "head": "ad5e3190cc63dc288f28546f9c6827efc1e9d495",
       "expect_no_blockers": true,
-      "expected_focus": ["Package.swift"],
+      "expected_focus": ["Package.swift", "Package.resolved"],
       "allow_top_roles": ["artifact"],
       "note": "BENCH.2 shape: package requirement/pin change. Bump swift-syntax to latest (#1074) — the requirement range in Package.swift and Package@swift-5.9.swift plus the resolved pin in Package.resolved (classified as a SwiftPM lock artifact). The dependency facts surface the manifest requirement first (Package.swift leads) and the resolved pin (Package.resolved: 602.0.0 → 603.0.0) as a dep fact, NOT raw noise — so `allow_top_roles: [artifact]` opts the lock out of the irrelevant-top check for THIS subject-is-the-pin case while every other case keeps strict lock exclusion. Never a fabricated blocker"
     },

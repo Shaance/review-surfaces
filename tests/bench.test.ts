@@ -63,24 +63,34 @@ test("review-surfaces.BENCH.2 the benchmark pins Swift/SwiftPM cases", () => {
   const annotated = swift.filter((c) => Array.isArray(c.expected_focus) && c.expected_focus.length > 0);
   assert.ok(annotated.length >= 6, `at least six Swift cases carry expected_focus for the recall metric (found ${annotated.length})`);
 
-  // The config/privacy shape: a Swift case whose intended focus is an Apple
-  // project/config file (privacy manifest, entitlements, plist, xcconfig, or a SwiftPM
-  // manifest) rather than impl source.
-  const APPLE_CONFIG = /(\.xcprivacy|\.entitlements|\.plist|\.xcconfig|(^|\/)Package(@swift-[^/]+)?\.swift)$/;
   const focusPaths = (c: Case) => (Array.isArray(c.expected_focus) ? (c.expected_focus as string[]) : []);
+  // The entitlement/privacy-manifest config shape: a Swift case focused on a privacy
+  // manifest / entitlements / plist / xcconfig — NOT a SwiftPM manifest. Kept distinct from
+  // the package-manifest check below so that losing the privacy case (e.g. removing
+  // alamofire-privacy) fails this assertion instead of being masked by the package-pin case
+  // (Codex BENCH.2): `Package.swift` must not satisfy the privacy requirement.
+  const PRIVACY_CONFIG = /(\.xcprivacy|\.entitlements|\.plist|\.xcconfig)$/;
   assert.ok(
-    swift.some((c) => focusPaths(c).some((p) => APPLE_CONFIG.test(p))),
-    "the Swift set includes an entitlement/privacy-manifest or SwiftPM-manifest config case (BENCH.2 config/package shape)"
+    swift.some((c) => focusPaths(c).some((p) => PRIVACY_CONFIG.test(p))),
+    "the Swift set includes an entitlement/privacy-manifest config case (BENCH.2 config shape)"
   );
   // The package requirement/pin shape: a case focused on a SwiftPM manifest.
   assert.ok(
     swift.some((c) => focusPaths(c).some((p) => /(^|\/)Package(@swift-[^/]+)?\.swift$/.test(p))),
     "the Swift set includes a package requirement/pin case (BENCH.2 package shape)"
   );
-  // The Swift Testing weakening shape: a case documented as exercising the weakening
-  // regression class (a removed/disabled/softened @Test), focused on a Swift test file.
+  // The Swift Testing weakening shape: a case documented as weakening AND actually focused
+  // on a Swift test file — so a placeholder/non-test diff that merely keeps the word
+  // "weakening" in its note cannot satisfy the guard while the real coverage is gone
+  // (Codex BENCH.2). Swift test convention: a `*Tests.swift`/`*Test.swift` basename or a
+  // path under a `Tests/` directory.
+  const SWIFT_TEST_FOCUS = (p: string) => /Tests?\.swift$/.test(p) || /(^|\/)Tests\//.test(p);
   assert.ok(
-    swift.some((c) => /weakening/i.test((c as { id?: string; note?: string }).note ?? "") || /weakening/i.test(c.id)),
-    "the Swift set includes a Swift Testing weakening case (BENCH.2 weakening shape)"
+    swift.some(
+      (c) =>
+        (/weakening/i.test((c as { id?: string; note?: string }).note ?? "") || /weakening/i.test(c.id)) &&
+        focusPaths(c).some(SWIFT_TEST_FOCUS)
+    ),
+    "the Swift set includes a Swift Testing weakening case focused on a Swift test file (BENCH.2 weakening shape)"
   );
 });

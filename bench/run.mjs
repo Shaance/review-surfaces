@@ -65,8 +65,18 @@ const LOCK_NAMES = new Set([
 ]);
 const BINARY_EXT = /\.(png|jpe?g|gif|svg|ico|webp|pdf|zip|tar|gz|jar|war|exe|dll|so|dylib|class|wasm|woff2?|ttf|min\.js|min\.css|map|snap)$/i;
 // A human does not read these on a cold start; a lock/binary leaking into the top-5 is the
-// same "irrelevant top item" failure as a doc/generated file (Codex BENCH.1).
+// same "irrelevant top item" failure as a doc/generated file (Codex BENCH.1). A CI workflow
+// (`ci` role) is deliberately NOT here: unlike a lock/generated/binary that a reviewer never
+// reads, a `.github/workflows/*` change is hand-written, security-relevant (supply-chain)
+// config that this tool SURFACES on purpose (e.g. gin-debug ranks `.github/workflows/gin.yml`
+// at #2). It is tracked as its own role below so it is never silently lumped into `code`, but
+// it is not an exclusion failure — the README documents that CI changes are surfaced, not
+// excluded (Codex BENCH.2).
 const IRRELEVANT_ROLES = new Set(["doc", "generated", "artifact"]);
+// A SwiftPM manifest (`Package.swift`, `Package@swift-6.0.swift`) is build CONFIG/dependency
+// declaration, not implementation code — so it must not count toward the top-is-code metric
+// just because it ends in `.swift` (Codex BENCH.2). Classified `other`, like other config.
+const SWIFT_MANIFEST_RE = /^package(@swift-.+)?\.swift$/;
 
 function sh(cmd, args, cwd) {
   return execFileSync(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
@@ -122,9 +132,13 @@ function ensureRepo(repoUrl, base, head) {
 function classify(p) {
   const base = (p.split("/").pop() ?? p).toLowerCase();
   if (LOCK_NAMES.has(base) || BINARY_EXT.test(base)) return "artifact";
+  if (/(^|\/)\.github\/workflows\//.test(p)) return "ci";
   if (TEST_RE.test(p)) return "test";
   if (DOC_EXT.test(p)) return "doc";
   if (/(^|\/)(generated|dist|build|vendor|node_modules|target)\//i.test(p)) return "generated";
+  // A SwiftPM manifest is config/dependency declaration, NOT impl code — score before CODE_EXT
+  // so `Package.swift` (the package-pin lead) does not inflate the top-is-code metric.
+  if (SWIFT_MANIFEST_RE.test(base)) return "other";
   if (CODE_EXT.test(p)) return "code";
   return "other";
 }

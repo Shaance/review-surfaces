@@ -76,8 +76,13 @@ top-is-code miss.
 
 The exclusion side is clean and the floor holds on every language including Swift: **0%
 empty-queue, 0% false-blocker, 0% irrelevant-in-top-5** — incidental churn (docs,
-`go.sum`/`Cargo.lock`/`uv.lock`, CI workflows, and binary `.png` snapshots) is correctly
-kept out of the top 5 — **100% focus recall@5**, **top-is-code on 28/32**. Three Swift cases
+`go.sum`/`Cargo.lock`/`uv.lock`/`Package.resolved`, and binary `.png` snapshots) is
+correctly kept out of the top 5 — **100% focus recall@5**, **top-is-code on 27/32**. CI
+workflow changes are NOT excluded — a `.github/workflows/*` edit is hand-written,
+security-relevant supply-chain config that the tool deliberately SURFACES (e.g.
+`gin-debug` ranks `.github/workflows/gin.yml` at #2). The runner classifies it as a
+distinct `ci` role so it is tracked (never silently counted as `code`) but, unlike a
+lock/generated/binary, it is not an exclusion failure. Three Swift cases
 intentionally LEAD with a non-`code` top item because that item IS the reviewed subject
 (privacy manifest, removed test, dependency pin), and the scorecard reflects that:
 `alamofire-privacy-manifest` surfaces `Source/PrivacyInfo.xcprivacy` as the top item (a
