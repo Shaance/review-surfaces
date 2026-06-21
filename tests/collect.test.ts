@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { collectInputs } from "../src/collector/collect";
+import type { ProviderName } from "../src/llm/provider";
 import { collectChangedFiles } from "../src/collector/git";
 import { defaultConfig } from "../src/config/config";
 import { buildMethodology } from "../src/methodology/methodology";
@@ -219,7 +220,7 @@ test("manifest signature folds the ai-sdk output budget so REVIEW_SURFACES_AI_MA
     fs.writeFileSync(path.join(tmp, "src", "a.ts"), "export const value = 2;\n");
 
     const config = { ...defaultConfig, specs: [], docs: [], tests: [], output_dir: ".review-surfaces" };
-    const signatureFor = async (provider: string, budget: string | undefined): Promise<string> => {
+    const signatureFor = async (provider: string, budget: string | undefined, gateProvider?: string): Promise<string> => {
       const prev = process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS;
       if (budget === undefined) {
         delete process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS;
@@ -227,7 +228,7 @@ test("manifest signature folds the ai-sdk output budget so REVIEW_SURFACES_AI_MA
         process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = budget;
       }
       try {
-        const result = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider });
+        const result = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider, gateProvider: gateProvider as ProviderName | undefined });
         return result.manifest.signature ?? "";
       } finally {
         if (prev === undefined) {
@@ -243,9 +244,18 @@ test("manifest signature folds the ai-sdk output budget so REVIEW_SURFACES_AI_MA
     assert.ok(aiDefault.length > 0 && aiRaised.length > 0, "both ai-sdk runs record a signature");
     assert.notEqual(aiRaised, aiDefault, "raising the ai-sdk output budget must change the signature so --cache reissues the live call");
 
+    // --review-scope pr: the whole-repo packet is collected with provider "mock" while the
+    // run still issues ai-sdk calls (gateProvider carries the requested provider). The budget
+    // must still bust the cache here (Codex BENCH.2 round-3).
+    const prDefault = await signatureFor("mock", undefined, "ai-sdk");
+    const prRaised = await signatureFor("mock", "20000", "ai-sdk");
+    assert.notEqual(prRaised, prDefault, "in pr scope (gateProvider ai-sdk) the budget must change the signature even though the signature provider is mock");
+
     const mockDefault = await signatureFor("mock", undefined);
     const mockRaised = await signatureFor("mock", "20000");
     assert.equal(mockRaised, mockDefault, "the offline (mock) signature must ignore the ai budget — byte-identical, no determinism impact");
+    // A genuinely offline pr-scope run (gateProvider also mock) is likewise unaffected.
+    assert.equal(await signatureFor("mock", "20000", "mock"), mockDefault, "mock+gateProvider mock ignores the ai budget too");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

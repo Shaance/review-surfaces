@@ -676,7 +676,12 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     inputHashes,
     changedFileHashes,
     flagInputHashes,
-    aiMaxOutputTokens: options.provider === "ai-sdk" ? aiMaxOutputTokens() : undefined
+    // Gate on the EFFECTIVE provider, not just the (mock-forced) signature provider: in
+    // `--review-scope pr` the whole-repo packet is collected with provider "mock" while the
+    // run still issues ai-sdk calls for the PR surface / narrative (gateProvider carries the
+    // requested provider). Fold the budget when EITHER is ai-sdk so a budget change busts the
+    // cache in pr scope too; mock-only runs (neither ai-sdk) stay byte-identical (Codex BENCH.2).
+    aiMaxOutputTokens: options.provider === "ai-sdk" || options.gateProvider === "ai-sdk" ? aiMaxOutputTokens() : undefined
   });
 
   // review-surfaces.QUALITY_GATE.2 (Codex round-4 finding 2): precompute the EXACT
