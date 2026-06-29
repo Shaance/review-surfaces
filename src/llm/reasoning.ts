@@ -22,7 +22,7 @@ import { MissingAutomaticTest, MissingManualCheck, RisksModel } from "../risks/r
 import { buildReviewAreas, createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
 import { PACKET_TESTED_HOW, PacketSeverity, PacketTestedHow, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
 import { auditCacheDir, auditCacheKey, loadCachedAudit, storeCachedAudit } from "./audit-cache";
-import { effectiveModelId, GenerateStructuredOptions, ReasoningProvider } from "./provider";
+import { aiMaxOutputTokens, effectiveModelId, GenerateStructuredOptions, ReasoningProvider } from "./provider";
 
 /**
  * Phase 3-2: schema-bound, evidence-gated LLM reasoning stages.
@@ -843,6 +843,7 @@ async function runMethodologyAuditStage(
   const cacheDir = auditCacheDir(inputs.collection.outputDir);
   const modelId = effectiveModelId(model);
   const redactMode = generateOptions.redactSecrets === false ? "noredact" : "redact";
+  const tokenBudget = String(aiMaxOutputTokens());
 
   const multiBatch = batches.length > 1 || truncated;
   const auditOutputs: MethodologyAuditOutput[] = [];
@@ -850,7 +851,7 @@ async function runMethodologyAuditStage(
   let emptyChunks = 0;
   for (const batch of batches) {
     const prompt = methodologyAuditPrompt(batch, inputs, multiBatch);
-    const cacheKey = cacheable ? auditCacheKey(["ai-sdk", modelId, redactMode, prompt]) : undefined;
+    const cacheKey = cacheable ? auditCacheKey(["ai-sdk", modelId, redactMode, tokenBudget, prompt]) : undefined;
     let result = cacheKey ? loadCachedAudit(cacheDir, cacheKey) : undefined;
     const fromCache = result !== undefined;
     if (!result) {

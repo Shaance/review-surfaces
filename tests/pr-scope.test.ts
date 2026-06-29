@@ -288,6 +288,40 @@ test("a changed test file with the acai_id fires changed_test_exact_acid (not ex
   assert.ok(!rules.includes("exact_acid_in_diff"));
 });
 
+test("non-JS colocated test naming conventions classify as tests", () => {
+  const model = buildPrScope(
+    input({
+      collection: collectionStub([
+        { path: "pkg/foo_test.go", status: "M" },
+        { path: "pkg/test_auth.go", status: "M" },
+        { path: "test_auth.py", status: "M" },
+        { path: "foo_spec.rb", status: "M" },
+        { path: "FooTest.php", status: "M" },
+        { path: "Contest.java", status: "M" },
+        { path: "latest.cs", status: "M" }
+      ]),
+      diff: {
+        files: [
+          diffFile("pkg/foo_test.go", ["func TestFoo(t *testing.T) {}"]),
+          diffFile("pkg/test_auth.go", ["func Authenticate() {}"]),
+          diffFile("test_auth.py", ["def test_auth(): pass"]),
+          diffFile("foo_spec.rb", ["RSpec.describe Foo do end"]),
+          diffFile("FooTest.php", ["final class FooTest extends TestCase {}"]),
+          diffFile("Contest.java", ["final class Contest {}"]),
+          diffFile("latest.cs", ["public class latest {}"])
+        ]
+      }
+    })
+  );
+
+  for (const filePath of ["pkg/foo_test.go", "test_auth.py", "foo_spec.rb", "FooTest.php"]) {
+    assert.equal(model.changed_files.find((file) => file.path === filePath)?.role, "test", `${filePath} should be a test`);
+  }
+  for (const filePath of ["pkg/test_auth.go", "Contest.java", "latest.cs"]) {
+    assert.notEqual(model.changed_files.find((file) => file.path === filePath)?.role, "test", `${filePath} should not be a test`);
+  }
+});
+
 test("spec_block_changed fires when a changed spec hunk overlaps the requirement source range", () => {
   const specPath = "features/privacy.feature.yaml";
   const evidence = specEvidence(specPath, "review-surfaces.PRIVACY.2");

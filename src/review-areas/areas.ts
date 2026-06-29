@@ -25,6 +25,7 @@ export type ReviewAreaMatchPurpose = "review_surface" | "requirement_proof";
 
 export interface ReviewAreaMatchOptions {
   purpose: ReviewAreaMatchPurpose;
+  testPath?: boolean;
 }
 
 export interface ReviewAreaPathMatch {
@@ -162,7 +163,7 @@ function explainPathForAreas(
 ): ReviewAreaPathDiagnostic {
   const matches: ReviewAreaPathMatch[] = [];
   const groups: string[] = [];
-  const context = createMatchContext(filePath);
+  const context = createMatchContext(filePath, options);
   for (const area of areas) {
     for (const prefix of area.prefixes) {
       if (matchesPrefixForPurpose(filePath, prefix, options.purpose)) {
@@ -189,7 +190,7 @@ function explainPathForAreas(
 
 function collectGroupsForPath(filePath: string, areas: ReviewArea[], options: ReviewAreaMatchOptions): string[] {
   const groups: string[] = [];
-  const context = createMatchContext(filePath);
+  const context = createMatchContext(filePath, options);
   for (const area of areas) {
     if (areaMatchesPathForPurpose(filePath, area, options, context)) {
       addUnique(groups, area.groupKey);
@@ -213,8 +214,8 @@ function areaMatchesPathForPurpose(
   );
 }
 
-function createMatchContext(filePath: string): ReviewAreaMatchContext {
-  const testPath = filePath.startsWith("tests/");
+function createMatchContext(filePath: string, options: ReviewAreaMatchOptions): ReviewAreaMatchContext {
+  const testPath = options.testPath ?? filePath.startsWith("tests/");
   return {
     testPath,
     testTokens: testPath ? pathTokenList(filePath) : undefined

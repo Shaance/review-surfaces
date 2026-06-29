@@ -11,6 +11,12 @@ export const DEFAULT_PRIVACY_IGNORE_PATTERNS = [
   "**/.dev.vars",
   "**/*.pem",
   "**/*.key",
+  "**/*.p12",
+  "**/*.p8",
+  "**/*.mobileprovision",
+  "**/*.provisionprofile",
+  "**/*.keychain",
+  "**/*.keychain-db",
   "**/id_rsa",
   "**/id_ed25519",
   ".claude/",
@@ -37,7 +43,7 @@ export async function loadPrivacyIgnore(cwd: string, ignoreFile: string): Promis
   const filePatterns = fileExists(ignorePath) ? parseIgnoreFile(await readText(ignorePath)) : [];
   const patterns = unique([...DEFAULT_PRIVACY_IGNORE_PATTERNS, ...filePatterns]);
   const rules = [
-    ...DEFAULT_PRIVACY_IGNORE_PATTERNS.map((pattern) => compileRule(pattern, { caseInsensitive: true })),
+    ...DEFAULT_PRIVACY_IGNORE_PATTERNS.map((pattern) => compileRule(pattern, { caseInsensitive: !pattern.startsWith("!") })),
     ...filePatterns.map((pattern) => compileRule(pattern))
   ];
 
@@ -123,7 +129,7 @@ export function loadPrivacyIgnoreSync(cwd: string, ignoreFile = ".review-surface
   const filePatterns = parseIgnoreFile(fileText);
   const patterns = unique([...DEFAULT_PRIVACY_IGNORE_PATTERNS, ...filePatterns]);
   const rules = [
-    ...DEFAULT_PRIVACY_IGNORE_PATTERNS.map((pattern) => compileRule(pattern, { caseInsensitive: true })),
+    ...DEFAULT_PRIVACY_IGNORE_PATTERNS.map((pattern) => compileRule(pattern, { caseInsensitive: !pattern.startsWith("!") })),
     ...filePatterns.map((pattern) => compileRule(pattern))
   ];
   return {

@@ -9,8 +9,8 @@ import { ProviderName, ReasoningProvider } from "../llm/provider";
 import { buildPrNarrative } from "../llm/pr-narrative";
 import { buildPrChangeDiagram } from "../diagrams/pr-change-diagram";
 import { buildPrRiskCandidates } from "../risks/pr-risks";
-import { ReviewArea } from "../review-areas/areas";
-import { buildPrScope } from "../scope/pr-scope";
+import { createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
+import { buildPrScope, isExecutableTestPath } from "../scope/pr-scope";
 import { PrReviewSurfaceModel, PR_SURFACE_SCHEMA_VERSION, PrSurfaceBlockedReason, StructuredDiff } from "../pr/contract";
 
 // ---------------------------------------------------------------------------
@@ -61,6 +61,10 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     baseEvaluation: input.baseEvaluation
   });
 
+  const repositoryTestAreas = scope.changed_files.some((file) => file.role === "implementation")
+    ? collectRepositoryTestAreas(input)
+    : new Set<string>();
+
   const risks = buildPrRiskCandidates({
     specMode: input.intent.spec_mode,
     scope,
@@ -69,7 +73,8 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     testResults: input.collection.testResults,
     commandTranscripts: input.collection.commandTranscripts,
     changedFileSources: Object.fromEntries(input.collection.changedFiles.map((file) => [file.path, file.source])),
-    reviewAreas: input.reviewAreas
+    reviewAreas: input.reviewAreas,
+    repositoryTestAreas
   });
 
   const diagram = buildPrChangeDiagram({ scope, risks });
@@ -121,4 +126,19 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     narrative: narrativeResult.narrative,
     llm: narrativeResult.meta
   };
+}
+
+function collectRepositoryTestAreas(input: AssemblePrSurfaceInput): Set<string> {
+  const repositoryTestAreas = new Set<string>();
+  const testMatcher = createReviewAreaMatcher(input.reviewAreas);
+  const repositoryTestPaths = new Set<string>([
+    ...input.collection.tests.map((test) => test.path),
+    ...input.collection.repositoryFiles.filter(isExecutableTestPath)
+  ]);
+  for (const testPath of repositoryTestPaths) {
+    for (const area of testMatcher.groupsForPath(testPath, { purpose: "review_surface", testPath: true })) {
+      repositoryTestAreas.add(area);
+    }
+  }
+  return repositoryTestAreas;
 }

@@ -33,6 +33,8 @@ export { verifyRequirementsWithTests } from "./verification";
 
 export type RequirementStatus = PacketRequirementStatus;
 
+const MAX_UNCHANGED_IMPLEMENTATION_PROOF_SCAN_FILES = 500;
+
 // review-surfaces.EVAL: structured sub-reason for a partial status. The
 // evaluator already distinguishes these cases in prose; this lifts that
 // distinction into a small, deterministic enum so downstream surfaces can group
@@ -72,6 +74,12 @@ interface EvidenceIndex {
   areasMode: ReviewAreasMode;
   repoIndex?: RepoIndex;
   classificationByPath: Map<string, FileClassification>;
+}
+
+interface AcidEvidenceMaps {
+  byAcid: Map<string, EvidenceRef[]>;
+  implementationByAcid: Map<string, EvidenceRef[]>;
+  testsByAcid: Map<string, EvidenceRef[]>;
 }
 
 export interface EvaluateOptions {
@@ -254,32 +262,37 @@ async function buildEvidenceIndex(
   const allFiles = (collection.repositoryFiles.length ? collection.repositoryFiles : await walkFiles(cwd)).filter(
     (filePath) => !filePath.startsWith(".review-surfaces/")
   );
-  const candidateFiles = [
+  const implementationProofCandidates = unique([
+    ...allFiles,
+    ...collection.changedFiles.map((file) => file.path)
+  ]);
+  const implementationProofPaths = new Set(
+    implementationProofCandidates
+      .filter((filePath) => isImplementationEvidencePath(filePath, testPaths))
+      .sort(compareStrings)
+  );
+  const initialCandidateFiles = [
     ...collection.changedFiles.map((file) => file.path),
     ...collection.tests.map((test) => test.path),
     ...collection.docs.map((doc) => doc.path),
     ...allFiles.filter((file) => file.startsWith(".review-surfaces/agent_handoff.md"))
   ];
 
-  for (const filePath of unique(candidateFiles)) {
-    if (filePath.startsWith(".review-surfaces/")) {
-      continue;
-    }
-    const absolutePath = path.resolve(cwd, filePath);
-    if (!isRegularFile(absolutePath)) {
-      continue;
-    }
-    const text = await readText(absolutePath);
-    const acidMatches = text.match(ACID_PATTERN) ?? [];
-    for (const acid of acidMatches) {
-      const evidenceRef = evidenceForPath(filePath, `Mentions ${acid}.`, testPaths);
-      pushMap(byAcid, acid, evidenceRef);
-      if (evidenceRef.kind === "test") {
-        pushMap(testsByAcid, acid, evidenceRef);
-      } else if (changedImplementationPaths.has(filePath)) {
-        pushMap(implementationByAcid, acid, evidenceRef);
-      }
-    }
+  await scanAcidEvidence(cwd, unique(initialCandidateFiles), testPaths, implementationProofPaths, { byAcid, implementationByAcid, testsByAcid });
+
+  const initialCandidateSet = new Set(initialCandidateFiles);
+  const exactTestGroups = new Set([...testsByAcid.keys()].map(groupFromAcid).filter(Boolean) as string[]);
+  const unchangedImplementationProofPaths = [...implementationProofPaths].filter((filePath) => !initialCandidateSet.has(filePath));
+  const targetedImplementationProofPaths = unchangedImplementationProofPaths.filter((filePath) =>
+    matcher.groupsForPath(filePath, { purpose: "requirement_proof" }).some((group) => exactTestGroups.has(group))
+  );
+  const implementationProofScanPaths = (targetedImplementationProofPaths.length > 0
+    ? targetedImplementationProofPaths
+    : unchangedImplementationProofPaths
+  ).slice(0, MAX_UNCHANGED_IMPLEMENTATION_PROOF_SCAN_FILES);
+
+  if (testsByAcid.size > 0 && implementationProofScanPaths.length > 0) {
+    await scanAcidEvidence(cwd, implementationProofScanPaths, testPaths, implementationProofPaths, { byAcid, implementationByAcid, testsByAcid });
   }
 
   for (const changedFile of collection.changedFiles) {
@@ -292,7 +305,7 @@ async function buildEvidenceIndex(
   }
 
   for (const test of collection.tests) {
-    for (const group of matcher.groupsForPath(test.path, { purpose: "review_surface" })) {
+    for (const group of matcher.groupsForPath(test.path, { purpose: "review_surface", testPath: true })) {
       pushMap(testsByGroup, group, testEvidence(test.path, `Test path mapped to ${group}.`));
     }
   }
@@ -414,6 +427,35 @@ function hasInvalidSpecRef(requirement: IntentRequirement): boolean {
 
 function evidenceForPath(filePath: string, note: string, testPaths: Set<string>): EvidenceRef {
   return testPaths.has(filePath) ? testEvidence(filePath, note, "high") : fileEvidence(filePath, note, "high");
+}
+
+async function scanAcidEvidence(
+  cwd: string,
+  candidateFiles: string[],
+  testPaths: Set<string>,
+  implementationProofPaths: Set<string>,
+  maps: AcidEvidenceMaps
+): Promise<void> {
+  for (const filePath of unique(candidateFiles)) {
+    if (filePath.startsWith(".review-surfaces/")) {
+      continue;
+    }
+    const absolutePath = path.resolve(cwd, filePath);
+    if (!isRegularFile(absolutePath)) {
+      continue;
+    }
+    const text = await readText(absolutePath);
+    const acidMatches = text.match(ACID_PATTERN) ?? [];
+    for (const acid of acidMatches) {
+      const evidenceRef = evidenceForPath(filePath, `Mentions ${acid}.`, testPaths);
+      pushMap(maps.byAcid, acid, evidenceRef);
+      if (evidenceRef.kind === "test") {
+        pushMap(maps.testsByAcid, acid, evidenceRef);
+      } else if (implementationProofPaths.has(filePath)) {
+        pushMap(maps.implementationByAcid, acid, evidenceRef);
+      }
+    }
+  }
 }
 
 // Phase 5a: attach PASSING parsed JUnit cases as real test evidence, carrying

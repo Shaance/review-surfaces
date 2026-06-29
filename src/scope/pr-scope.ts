@@ -54,8 +54,9 @@ export function buildPrScope(input: BuildPrScopeInput): PrScopeModel {
 
   // --- changed_files -------------------------------------------------------
   const changedFiles: ScopedChangedFile[] = collection.changedFiles.map((changedFile) => {
+    const isChangedTestPath = isTestPath(changedFile.path);
     const areas = matcher
-      .groupsForPath(changedFile.path, { purpose: "review_surface" })
+      .groupsForPath(changedFile.path, { purpose: "review_surface", testPath: isChangedTestPath })
       .slice()
       .sort(compareStrings);
     const diffFile = diffByPath.get(changedFile.path);
@@ -229,7 +230,20 @@ export function classifyRole(filePath: string, areas: string[]): ChangedFileRole
 }
 
 export function isTestPath(filePath: string): boolean {
-  return filePath.startsWith("tests/") || /\.test\.[^./]+$/.test(filePath) || /\.spec\.[^./]+$/.test(filePath);
+  return filePath.startsWith("tests/") || isExecutableTestPath(filePath);
+}
+
+export function isExecutableTestPath(filePath: string): boolean {
+  const base = baseName(filePath);
+  const lowerBase = base.toLowerCase();
+  return (
+    /\.test\.[^./]+$/.test(filePath) ||
+    /\.spec\.[^./]+$/.test(filePath) ||
+    /^.+_test\.go$/.test(lowerBase) ||
+    /^(test_.+|.+_test)\.(py|rb|php)$/.test(lowerBase) ||
+    /^.+_spec\.(py|rb|php)$/.test(lowerBase) ||
+    /^.+(?:Test|Tests)\.(java|kt|kts|cs|php)$/.test(base)
+  );
 }
 
 function isSpecPath(filePath: string): boolean {

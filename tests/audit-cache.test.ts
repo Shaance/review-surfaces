@@ -127,6 +127,28 @@ test("issue #95: a model change busts the cache", async () => {
   assert.equal(b.calls, 1, "a different model is a cache miss and re-issues the call");
 });
 
+test("issue #95: token budget changes bust the ai-sdk audit cache", async () => {
+  const cwd = freshCwd("token-budget");
+  const previous = process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS;
+  try {
+    process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = "4096";
+    const first = countingAiSdk(AUDIT);
+    await run(cwd, first, methodology());
+    assert.equal(first.calls, 1);
+
+    process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = "12000";
+    const second = countingAiSdk(AUDIT);
+    await run(cwd, second, methodology());
+    assert.equal(second.calls, 1, "a different output-token budget is a cache miss");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS;
+    } else {
+      process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = previous;
+    }
+  }
+});
+
 test("issue #95: a privacy-blocked run does NOT read the remote-backed cache (Codex P2)", async () => {
   const cwd = freshCwd("privacy");
   // A clean run caches a remote audit.

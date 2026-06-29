@@ -45,6 +45,7 @@ export interface BuildPrRiskInput {
   commandTranscripts?: CollectionResult["commandTranscripts"];
   changedFileSources?: Record<string, ChangedFile["source"]>;
   reviewAreas?: ReviewArea[];
+  repositoryTestAreas?: Set<string>;
   config?: { largeDiffFileCap?: number; largeDiffLineCap?: number };
 }
 
@@ -180,44 +181,142 @@ function pushSecretInDiff(drafts: DraftCandidate[], input: BuildPrRiskInput): vo
 function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInput): void {
   const changed = input.scope.changed_files;
   const validation = buildImplementationValidationIndex(input);
+  const repositoryTestAreas = input.repositoryTestAreas ?? new Set<string>();
   const untested = changed
     .filter((file) => file.role === "implementation" && !hasImplementationValidation(file, validation))
     .sort((left, right) => compareStrings(left.path, right.path));
   for (const file of untested.slice(0, MAX_PER_FILE_CANDIDATES)) {
+    const state = untestedAreaState(file, repositoryTestAreas);
     drafts.push({
       rule: "untested_changed_impl",
       category: "testing",
       severity: "medium",
-      summary: `Implementation file ${file.path} changed with no changed test or current-head command transcript in its review area.`,
+      summary: untestedSummary(file, state),
       evidence: [
-        fileEvidence(file.path, "Changed implementation file; no co-changed test or current-head passing test transcript mapped to its area."),
-        missingEvidence(`No changed test or current-head passing test transcript mapped to ${areaListForMessage(file)}.`)
+        fileEvidence(file.path, untestedEvidenceNote(state)),
+        missingEvidence(untestedMissingNote(file, state))
       ],
-      suggested_checks: [
-        `Add or update a test covering the change to ${file.path}.`,
-        "Record a current-head focused or broad test transcript if existing tests exercise the new behavior."
-      ],
+      suggested_checks: untestedChecks(file, state),
       sortPath: file.path
     });
   }
   if (untested.length > MAX_PER_FILE_CANDIDATES) {
-    const omitted = untested.length - MAX_PER_FILE_CANDIDATES;
-    const firstOmitted = untested[MAX_PER_FILE_CANDIDATES];
-    drafts.push({
-      rule: "untested_changed_impl",
-      category: "testing",
-      severity: "medium",
-      summary: `${omitted} additional implementation file(s) changed with no changed test or current-head command transcript in their review area.`,
-      evidence: evidenceForPaths(
-        untested.slice(MAX_PER_FILE_CANDIDATES).map((file) => file.path),
-        "Additional implementation file without changed test or current-head command transcript."
-      ),
-      suggested_checks: [
-        "Add or update tests for the additional untested implementation changes.",
-        "Record current-head focused or broad test transcripts if existing tests exercise the new behavior."
-      ],
-      sortPath: firstOmitted?.path ?? ""
-    });
+    const overflow = untested.slice(MAX_PER_FILE_CANDIDATES);
+    const withExisting = overflow.filter((file) => fileHasExistingAreaTest(file, repositoryTestAreas));
+    const withoutExisting = overflow.filter((file) => !fileHasExistingAreaTest(file, repositoryTestAreas));
+    if (withExisting.length > 0) {
+      drafts.push({
+        rule: "untested_changed_impl",
+        category: "testing",
+        severity: "medium",
+        summary: `${withExisting.length} additional implementation file(s) changed whose mapped tests have no current-head passing transcript.`,
+        evidence: evidenceForPaths(
+          withExisting.map((file) => file.path),
+          "Additional implementation file with a mapped test but no current-head passing transcript."
+        ),
+        suggested_checks: [
+          "Run the existing tests mapped to these areas at the current head and record the transcripts.",
+          "Add tests only where the changes introduce behavior the existing tests do not cover."
+        ],
+        sortPath: withExisting[0]?.path ?? ""
+      });
+    }
+    if (withoutExisting.length > 0) {
+      drafts.push({
+        rule: "untested_changed_impl",
+        category: "testing",
+        severity: "medium",
+        summary: `${withoutExisting.length} additional implementation file(s) changed with no test mapped to their review area.`,
+        evidence: evidenceForPaths(
+          withoutExisting.map((file) => file.path),
+          "Additional implementation file with no mapped test and no current-head transcript."
+        ),
+        suggested_checks: [
+          "Add tests for these untested implementation changes.",
+          "Record current-head broad or focused test transcripts so the new tests' runs are verified."
+        ],
+        sortPath: withoutExisting[0]?.path ?? ""
+      });
+    }
+  }
+}
+
+function fileHasExistingAreaTest(file: ScopedChangedFile, repositoryTestAreas: Set<string>): boolean {
+  return file.areas.some((area) => repositoryTestAreas.has(area));
+}
+
+interface UntestedAreaState {
+  kind: "run_existing" | "add" | "mixed";
+  withTests: string[];
+  without: string[];
+}
+
+function untestedAreaState(file: ScopedChangedFile, repositoryTestAreas: Set<string>): UntestedAreaState {
+  const withTests = file.areas.filter((area) => repositoryTestAreas.has(area));
+  const without = file.areas.filter((area) => !repositoryTestAreas.has(area));
+  if (without.length === 0) {
+    return { kind: "run_existing", withTests, without };
+  }
+  if (withTests.length === 0) {
+    return { kind: "add", withTests, without };
+  }
+  return { kind: "mixed", withTests, without };
+}
+
+function areaList(areas: string[]): string {
+  return areas.length > 0 ? areas.join(", ") : "an unmapped review area";
+}
+
+function untestedSummary(file: ScopedChangedFile, state: UntestedAreaState): string {
+  switch (state.kind) {
+    case "run_existing":
+      return `Implementation file ${file.path} changed; a test is mapped to ${areaList(state.withTests)} but no current-head command transcript proves it ran against this change.`;
+    case "add":
+      return `Implementation file ${file.path} changed with no test mapped to ${areaList(state.without)} and no current-head command transcript.`;
+    case "mixed":
+      return `Implementation file ${file.path} changed; tests are mapped to ${areaList(state.withTests)} but ${areaList(state.without)} has no mapped test, and no current-head command transcript ran.`;
+  }
+}
+
+function untestedEvidenceNote(state: UntestedAreaState): string {
+  switch (state.kind) {
+    case "run_existing":
+      return "Changed implementation file; an existing test maps to its area but no current-head passing transcript ran it.";
+    case "add":
+      return "Changed implementation file; no test maps to its area and no current-head passing transcript.";
+    case "mixed":
+      return "Changed implementation file; some mapped areas have an existing test (not run at head) and others have none.";
+  }
+}
+
+function untestedMissingNote(file: ScopedChangedFile, state: UntestedAreaState): string {
+  switch (state.kind) {
+    case "run_existing":
+      return `No current-head passing test transcript exercising ${file.path} (an existing test is mapped to ${areaList(state.withTests)}).`;
+    case "add":
+      return `No test mapped to ${areaList(state.without)} and no current-head test transcript covering ${file.path}.`;
+    case "mixed":
+      return `No current-head transcript exercising ${file.path}; ${areaList(state.without)} also has no mapped test.`;
+  }
+}
+
+function untestedChecks(file: ScopedChangedFile, state: UntestedAreaState): string[] {
+  switch (state.kind) {
+    case "run_existing":
+      return [
+        `Run the existing test(s) mapped to ${areaList(state.withTests)} at the current head and record the transcript (review-surfaces run -- <your test command>).`,
+        `Add a test only if the change to ${file.path} introduces behavior the existing tests do not cover.`
+      ];
+    case "add":
+      return [
+        `Add a test covering the change to ${file.path}.`,
+        "Record a current-head broad or focused test transcript so the new test's run is verified."
+      ];
+    case "mixed":
+      return [
+        `Run the existing test(s) mapped to ${areaList(state.withTests)} at the current head and record the transcript, and add a test covering ${areaList(state.without)}.`,
+        `Record a current-head test transcript so the coverage of ${file.path} is verified.`
+      ];
   }
 }
 
@@ -382,10 +481,6 @@ function tokenMatches(token: string, tokens: Set<string>): boolean {
     return tokens.has(token.slice(0, -1));
   }
   return tokens.has(`${token}s`);
-}
-
-function areaListForMessage(file: ScopedChangedFile): string {
-  return file.areas.length > 0 ? file.areas.join(", ") : "an unmapped review area";
 }
 
 // --- Rule: unmapped_change (workflow, low) ---------------------------------

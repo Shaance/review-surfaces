@@ -17,7 +17,7 @@ import { filterIgnoredDiff } from "../privacy/diff";
 import { loadPrivacyIgnore } from "../privacy/ignore";
 import { BLOCKED_REDACTION_KINDS, SecretRedaction, redactSecrets } from "../privacy/secrets";
 import { buildRepoIndex, RepoIndex } from "../indexer/indexer";
-import { providerMakesRemoteCall, type ProviderName } from "../llm/provider";
+import { aiMaxOutputTokens, providerMakesRemoteCall, type ProviderName } from "../llm/provider";
 import type { PacketRunMode } from "../schema/review-packet-contract";
 import {
   emptyTestResults,
@@ -631,6 +631,14 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // public artifact). Explicit --conversation files are already hashed above.
   if (discovered !== undefined) {
     flagInputHashes.push({ kind: "conversation", path: discovered.path, algorithm: "sha256", hash: discovered.hash });
+  }
+  if (options.provider === "ai-sdk") {
+    flagInputHashes.push({
+      kind: "provider-option",
+      path: "ai-sdk:max-output-tokens",
+      algorithm: "sha256",
+      hash: String(aiMaxOutputTokens())
+    });
   }
 
   // Resolve run_mode/milestone ONCE so the same values feed both the signature

@@ -35,6 +35,14 @@ test("review area matcher token-scopes test keywords case-insensitively", () => 
   assert.deepEqual(matcher.groupsForPath("tests/cli.test.ts", { purpose: "requirement_proof" }), ["CLI"]);
 });
 
+test("review area matcher can map known tests outside tests directory", () => {
+  const matcher = createReviewAreaMatcher(AREAS);
+
+  assert.deepEqual(matcher.groupsForPath("spec/cli.test.ts", { purpose: "review_surface" }), []);
+  assert.deepEqual(matcher.groupsForPath("spec/cli.test.ts", { purpose: "review_surface", testPath: true }), ["CLI"]);
+  assert.deepEqual(matcher.groupsForPath("test_cli.py", { purpose: "requirement_proof", testPath: true }), ["CLI"]);
+});
+
 test("review area matcher exposes diagnostics without enforcing config validity", () => {
   const matcher = createReviewAreaMatcher(AREAS);
   const diagnostic = matcher.explainPath("tests/cli.test.ts", { purpose: "requirement_proof" });

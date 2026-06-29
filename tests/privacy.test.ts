@@ -105,7 +105,12 @@ test("review-surfaces.PRIVACY.3 built-in secret-file ignores are case-insensitiv
     assert.equal(rules.isIgnored(".ENV.PROD"), true);
     assert.equal(rules.isIgnored("secrets/PROD.PEM"), true);
     assert.equal(rules.isIgnored("keys/ID_RSA"), true);
-    assert.equal(rules.isIgnored(".ENV.EXAMPLE"), false, "the built-in .env.example negation is case-insensitive too");
+    assert.equal(rules.isIgnored(".ENV.EXAMPLE"), true, "the built-in .env.example negation stays exact/case-sensitive");
+    assert.equal(rules.isIgnored(".env.example"), false, "the exact built-in example remains allowed");
+    assert.equal(rules.isIgnored("certs/CERT.P12"), true);
+    assert.equal(rules.isIgnored("keys/AuthKey_123ABC.P8"), true);
+    assert.equal(rules.isIgnored("profiles/App.mobileprovision"), true);
+    assert.equal(rules.isIgnored("login.KEYCHAIN-DB"), true);
     assert.equal(rules.isIgnored("readme.md"), false, "user ignore patterns stay case-sensitive");
   }
 });

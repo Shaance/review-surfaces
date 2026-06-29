@@ -204,6 +204,49 @@ components:
   }
 });
 
+test("manifest signature changes with ai-sdk max output token budget", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ai-budget-sig-"));
+  const previous = process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS;
+  try {
+    fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+    fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, "features", "example.feature.yaml"),
+      `feature:
+  name: example
+components:
+  CORE:
+    requirements:
+      1: Build core.
+`
+    );
+    fs.writeFileSync(path.join(tmp, "src", "core.ts"), "export const core = true;\n");
+    execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "base"], { cwd: tmp, stdio: "ignore" });
+
+    const config = { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [] };
+    process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = "4096";
+    const first = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider: "ai-sdk" });
+    process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = "12000";
+    const second = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider: "ai-sdk" });
+    process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = "4096";
+    const third = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider: "mock" });
+    process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = "12000";
+    const fourth = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider: "mock" });
+
+    assert.notEqual(second.manifest.signature, first.manifest.signature, "ai-sdk token budget changes the cache signature");
+    assert.equal(fourth.manifest.signature, third.manifest.signature, "mock signatures ignore ai-sdk-only token budget");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS;
+    } else {
+      process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = previous;
+    }
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("collector marks a diff file as working_tree when it is dirty after HEAD", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-dirty-diff-"));
   try {

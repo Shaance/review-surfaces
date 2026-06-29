@@ -1399,9 +1399,11 @@ function possibleOverreachDrafts(input: BuildHumanReviewInput, focus: IntentMism
       severity: "medium" as const
     };
   });
+  const packetOverreachPaths = new Set(packetOverreach.flatMap((item) => item.paths));
 
   const prOverreach = (input.prSurface?.scope.out_of_scope_changed_files ?? [])
     .filter((file) => file.reason === "unmapped")
+    .filter((file) => !packetOverreachPaths.has(file.path))
     .map((file) => ({
       summary: `Out-of-scope changed file \`${file.path}\` is not mapped to stated intent.`,
       evidence: [fileEvidence(file.path, "PR scope classified this changed file as unmapped.", "high")],

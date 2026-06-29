@@ -63,6 +63,7 @@ function buildInput(overrides: Partial<BuildPrRiskInput> = {}): BuildPrRiskInput
     ...(overrides.commandTranscripts !== undefined ? { commandTranscripts: overrides.commandTranscripts } : {}),
     ...(overrides.changedFileSources !== undefined ? { changedFileSources: overrides.changedFileSources } : {}),
     ...(overrides.reviewAreas !== undefined ? { reviewAreas: overrides.reviewAreas } : {}),
+    ...(overrides.repositoryTestAreas !== undefined ? { repositoryTestAreas: overrides.repositoryTestAreas } : {}),
     ...(overrides.config !== undefined ? { config: overrides.config } : {})
   };
 }
@@ -241,6 +242,23 @@ test("impl file with no co-changed test in its area produces an untested_changed
     candidate.evidence.some((ref) => ref.path === "src/foo/widget.ts"),
     "evidence cites the untested impl file"
   );
+});
+
+test("impl file with an existing area test asks to run it before adding new tests", () => {
+  const input = buildInput({
+    scope: scope({
+      changed_files: [changedFile({ path: "src/foo/widget.ts", role: "implementation", areas: ["FOO"] })]
+    }),
+    repositoryTestAreas: new Set(["FOO"])
+  });
+
+  const model = buildPrRiskCandidates(input);
+  const candidate = model.candidates.find((c) => c.rule === "untested_changed_impl");
+
+  assert.ok(candidate);
+  assert.match(candidate.summary, /test is mapped to FOO/);
+  assert.ok(candidate.suggested_checks.some((check) => /Run the existing test/.test(check)));
+  assert.ok(candidate.suggested_checks.some((check) => /Add a test only if/.test(check)));
 });
 
 test("impl file WITH a co-changed test in the same area does NOT fire untested_changed_impl", () => {
