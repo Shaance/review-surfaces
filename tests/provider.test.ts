@@ -80,7 +80,9 @@ test("resolveModel defaults to google (Gemini first-class) and preserves provide
 });
 
 test("ai-sdk output-token budget is configurable and clamped for lower-ceiling models", async () => {
-  assert.equal(aiMaxOutputTokens(), 8192);
+  await withEnv("REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS", undefined, async () => {
+    assert.equal(aiMaxOutputTokens(), 8192);
+  });
   await withEnv("REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS", "12000", async () => {
     assert.equal(aiMaxOutputTokens(), 12000);
   });

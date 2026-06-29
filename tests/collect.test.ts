@@ -234,9 +234,18 @@ components:
     const third = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider: "mock" });
     process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = "12000";
     const fourth = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider: "mock" });
+    process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = "4096";
+    const prScopeFirst = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider: "mock", gateProvider: "ai-sdk" });
+    process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = "12000";
+    const prScopeSecond = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider: "mock", gateProvider: "ai-sdk" });
 
     assert.notEqual(second.manifest.signature, first.manifest.signature, "ai-sdk token budget changes the cache signature");
     assert.equal(fourth.manifest.signature, third.manifest.signature, "mock signatures ignore ai-sdk-only token budget");
+    assert.notEqual(
+      prScopeSecond.manifest.signature,
+      prScopeFirst.manifest.signature,
+      "PR-scope ai-sdk gate token budget changes the cache signature"
+    );
   } finally {
     if (previous === undefined) {
       delete process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS;

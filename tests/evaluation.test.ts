@@ -203,6 +203,7 @@ components:
 test("review-surfaces.EVAL.4 does not treat config files as implementation proof", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-config-not-impl-evidence-"));
   fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "tests"), { recursive: true });
   fs.writeFileSync(
     path.join(tmp, "features", "example.feature.yaml"),
     `feature:
@@ -211,24 +212,117 @@ components:
   CLI:
     requirements:
       1: Build command wiring.
+      2: Configure command wiring.
 `
   );
   fs.writeFileSync(path.join(tmp, "package.json"), "{ \"name\": \"example.CLI.1\" }\n");
+  fs.writeFileSync(path.join(tmp, "vite.config.ts"), "export default 'example.CLI.2';\n");
+  fs.writeFileSync(path.join(tmp, "tests", "cli.test.ts"), "test('example.CLI.2 exact test evidence', () => {});\n");
   execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
 
   const collection = await collectInputs({
     cwd: tmp,
-    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [] },
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: ["tests/**/*.test.ts"] },
     baseRef: "HEAD",
     headRef: "HEAD",
     dogfood: false
   });
-  collection.changedFiles = [{ path: "package.json", status: "M", source: "working_tree" }];
+  collection.changedFiles = [
+    { path: "package.json", status: "M", source: "working_tree" },
+    { path: "vite.config.ts", status: "M", source: "working_tree" }
+  ];
 
   const intent = await buildIntent(tmp, collection);
   const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
-  assert.equal(evaluation.acai_coverage["example.CLI.1"], "missing");
+  assert.equal(evaluation.acai_coverage["example.CLI.1"], "partial");
+  assert.equal(evaluation.results.find((result) => result.acai_id === "example.CLI.1")?.partial_reason, "test_no_impl");
+  assert.equal(evaluation.acai_coverage["example.CLI.2"], "partial");
+  assert.equal(evaluation.results.find((result) => result.acai_id === "example.CLI.2")?.partial_reason, "test_no_impl");
+});
+
+test("review-surfaces.EVAL.3 reads unchanged implementation ACID proof from the reviewed head", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-head-proof-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "tests"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+components:
+  CORE:
+    requirements:
+      1: Build core behavior.
+`
+  );
+  fs.writeFileSync(path.join(tmp, "src", "core.ts"), "export const core = true;\n");
+  fs.writeFileSync(path.join(tmp, "tests", "core.test.ts"), "test('example.CORE.1 exact test evidence', () => {});\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "head"], { cwd: tmp, stdio: "ignore" });
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
+
+  fs.writeFileSync(path.join(tmp, "src", "core.ts"), "export const core = 'example.CORE.1 dirty checkout only';\n");
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: ["tests/**/*.test.ts"] },
+    baseRef: head,
+    headRef: head,
+    dogfood: false
+  });
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
+
+  assert.equal(evaluation.acai_coverage["example.CORE.1"], "partial");
+  assert.equal(evaluation.results.find((result) => result.acai_id === "example.CORE.1")?.partial_reason, "test_no_impl");
+});
+
+test("review-surfaces.EVAL.3 scans exact ACID implementation proof outside targeted review areas", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-exact-proof-outside-area-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src", "evaluation"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "scripts"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "tests"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+components:
+  EVAL:
+    requirements:
+      1: Evaluate exact proof.
+  LOCAL_LOOP:
+    requirements:
+      1: Run the local review loop.
+`
+  );
+  fs.writeFileSync(path.join(tmp, "src", "evaluation", "evaluate.ts"), "export const evalProof = 'example.EVAL.1';\n");
+  fs.writeFileSync(path.join(tmp, "scripts", "local-review.sh"), "# example.LOCAL_LOOP.1\n");
+  fs.writeFileSync(
+    path.join(tmp, "tests", "evaluation.test.ts"),
+    "test('example.EVAL.1 exact test evidence', () => {});\ntest('example.LOCAL_LOOP.1 exact test evidence', () => {});\n"
+  );
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "head"], { cwd: tmp, stdio: "ignore" });
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: ["tests/**/*.test.ts"] },
+    baseRef: head,
+    headRef: head,
+    dogfood: false
+  });
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
+
+  assert.equal(evaluation.acai_coverage["example.EVAL.1"], "satisfied");
+  assert.equal(evaluation.acai_coverage["example.LOCAL_LOOP.1"], "satisfied");
 });
 
 test("review-surfaces.EVAL.3 treats configured test globs as exact test evidence outside tests directory", async () => {

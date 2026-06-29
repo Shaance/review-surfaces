@@ -3731,6 +3731,34 @@ test("human test plan synthesizes concrete checks for every PR risk rule", () =>
   assert.equal(model.test_plan.every((item) => item.maps_to_risks.length > 0), true);
 });
 
+test("human test plan carries run-existing PR risk guidance instead of inventing a new test file", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [
+    {
+      ...prRiskFixture("untested_changed_impl"),
+      suggested_checks: [
+        "Run the existing test(s) mapped to HUMAN_REVIEW at the current head and record the transcript (review-surfaces run -- <your test command>).",
+        "Add a test only if the change introduces behavior the existing tests do not cover."
+      ]
+    }
+  ];
+
+  const model = buildHumanReview({ packet, prSurface: surface });
+  const item = model.test_plan.find((testItem) => testItem.maps_to_risks.includes("PR-RISK-UNTESTED"));
+
+  assert.ok(item, "run-existing risk produces a test-plan item");
+  assert.equal(item.suggested_file, undefined);
+  assert.match(item.scenario, /Run the existing test/);
+  assert.equal(item.command, "review-surfaces run -- <existing test command>");
+});
+
 test("human trust audit records concrete deterministic PR risk firings", () => {
   const surface = prSurfaceFixture();
   const model = buildHumanReview({ packet: packetFixture(), prSurface: surface });

@@ -1,11 +1,12 @@
 import path from "node:path";
 import { CollectionResult } from "../collector/collect";
+import { readFileAtRef } from "../collector/git";
 import { isRegularFile, readText } from "../core/files";
 import { walkFiles } from "../core/glob";
 import { compareStrings } from "../core/compare";
 import { EvidenceRef, fileEvidence, missingEvidence, specEvidence, testEvidence } from "../evidence/evidence";
 import { validateRequirementResultEvidence } from "../evidence/validate";
-import { FileClassification, RepoIndex } from "../indexer/indexer";
+import { classifyFile, FileClassification, RepoIndex } from "../indexer/indexer";
 import { IntentModel, IntentRequirement } from "../intent/intent";
 import {
   buildReviewAreas,
@@ -257,7 +258,7 @@ async function buildEvidenceIndex(
   const matcher = createReviewAreaMatcher(areas);
   const testPaths = new Set(collection.tests.map((test) => test.path));
   const changedImplementationPaths = new Set(
-    collection.changedFiles.filter((changedFile) => isImplementationEvidencePath(changedFile.path, testPaths)).map((changedFile) => changedFile.path)
+    collection.changedFiles.filter((changedFile) => isImplementationProofPath(changedFile.path, testPaths)).map((changedFile) => changedFile.path)
   );
   const allFiles = (collection.repositoryFiles.length ? collection.repositoryFiles : await walkFiles(cwd)).filter(
     (filePath) => !filePath.startsWith(".review-surfaces/")
@@ -268,7 +269,7 @@ async function buildEvidenceIndex(
   ]);
   const implementationProofPaths = new Set(
     implementationProofCandidates
-      .filter((filePath) => isImplementationEvidencePath(filePath, testPaths))
+      .filter((filePath) => isImplementationProofPath(filePath, testPaths))
       .sort(compareStrings)
   );
   const initialCandidateFiles = [
@@ -286,13 +287,16 @@ async function buildEvidenceIndex(
   const targetedImplementationProofPaths = unchangedImplementationProofPaths.filter((filePath) =>
     matcher.groupsForPath(filePath, { purpose: "requirement_proof" }).some((group) => exactTestGroups.has(group))
   );
-  const implementationProofScanPaths = (targetedImplementationProofPaths.length > 0
-    ? targetedImplementationProofPaths
-    : unchangedImplementationProofPaths
-  ).slice(0, MAX_UNCHANGED_IMPLEMENTATION_PROOF_SCAN_FILES);
+  const implementationProofScanPaths = unique([
+    ...targetedImplementationProofPaths,
+    ...unchangedImplementationProofPaths
+  ]).slice(0, MAX_UNCHANGED_IMPLEMENTATION_PROOF_SCAN_FILES);
 
   if (testsByAcid.size > 0 && implementationProofScanPaths.length > 0) {
-    await scanAcidEvidence(cwd, implementationProofScanPaths, testPaths, implementationProofPaths, { byAcid, implementationByAcid, testsByAcid });
+    const headRef = collection.git.head_sha;
+    await scanAcidEvidence(cwd, implementationProofScanPaths, testPaths, implementationProofPaths, { byAcid, implementationByAcid, testsByAcid }, {
+      readFile: (filePath) => readFileAtRef(cwd, headRef, filePath)
+    });
   }
 
   for (const changedFile of collection.changedFiles) {
@@ -429,22 +433,36 @@ function evidenceForPath(filePath: string, note: string, testPaths: Set<string>)
   return testPaths.has(filePath) ? testEvidence(filePath, note, "high") : fileEvidence(filePath, note, "high");
 }
 
+function isImplementationProofPath(filePath: string, testPaths: Set<string>): boolean {
+  if (!isImplementationEvidencePath(filePath, testPaths)) {
+    return false;
+  }
+  const classification = classifyFile(filePath);
+  return classification === "source" || isScriptImplementationPath(filePath);
+}
+
+function isScriptImplementationPath(filePath: string): boolean {
+  return /^(?:scripts|bin)\//.test(filePath) && /\.(?:sh|bash|zsh)$/.test(filePath);
+}
+
+type CandidateFileReader = (filePath: string) => string | undefined | Promise<string | undefined>;
+
 async function scanAcidEvidence(
   cwd: string,
   candidateFiles: string[],
   testPaths: Set<string>,
   implementationProofPaths: Set<string>,
-  maps: AcidEvidenceMaps
+  maps: AcidEvidenceMaps,
+  options: { readFile?: CandidateFileReader } = {}
 ): Promise<void> {
   for (const filePath of unique(candidateFiles)) {
     if (filePath.startsWith(".review-surfaces/")) {
       continue;
     }
-    const absolutePath = path.resolve(cwd, filePath);
-    if (!isRegularFile(absolutePath)) {
+    const text = await readCandidateFile(cwd, filePath, options.readFile);
+    if (text === undefined) {
       continue;
     }
-    const text = await readText(absolutePath);
     const acidMatches = text.match(ACID_PATTERN) ?? [];
     for (const acid of acidMatches) {
       const evidenceRef = evidenceForPath(filePath, `Mentions ${acid}.`, testPaths);
@@ -456,6 +474,17 @@ async function scanAcidEvidence(
       }
     }
   }
+}
+
+async function readCandidateFile(cwd: string, filePath: string, readFile: CandidateFileReader | undefined): Promise<string | undefined> {
+  if (readFile !== undefined) {
+    return readFile(filePath);
+  }
+  const absolutePath = path.resolve(cwd, filePath);
+  if (!isRegularFile(absolutePath)) {
+    return undefined;
+  }
+  return readText(absolutePath);
 }
 
 // Phase 5a: attach PASSING parsed JUnit cases as real test evidence, carrying

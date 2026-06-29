@@ -4854,6 +4854,15 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
         command: "pnpm run test -- tests/scoped-coverage.test.ts"
       })];
     case "untested_changed_impl":
+      if (risk.suggested_checks.some((check) => /run the existing test/i.test(check))) {
+        return [riskDraft({
+          kind: "automatic",
+          priority: "required",
+          scenario: risk.suggested_checks.join(" "),
+          expected_result: "A current-head command transcript records the mapped existing test run; add new tests only for behavior those tests do not cover.",
+          command: "review-surfaces run -- <existing test command>"
+        })];
+      }
       return [riskDraft({
         kind: "automatic",
         priority: "required",

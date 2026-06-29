@@ -632,7 +632,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   if (discovered !== undefined) {
     flagInputHashes.push({ kind: "conversation", path: discovered.path, algorithm: "sha256", hash: discovered.hash });
   }
-  if (options.provider === "ai-sdk") {
+  if (options.provider === "ai-sdk" || options.gateProvider === "ai-sdk") {
     flagInputHashes.push({
       kind: "provider-option",
       path: "ai-sdk:max-output-tokens",
