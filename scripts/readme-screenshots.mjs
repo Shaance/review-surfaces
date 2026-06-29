@@ -25,6 +25,7 @@ const outDir = path.join(root, "docs", "images");
 fs.mkdirSync(outDir, { recursive: true });
 const readmePath = path.join(root, "README.md");
 const readmeImageBases = ["cockpit", "change-map", "change-map-detail", "sticky-comment"];
+const readmeImageBaseUrl = "https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images";
 
 const humanModelPath = path.join(artifacts, "human_review.json");
 const humanModel = JSON.parse(fs.readFileSync(humanModelPath, "utf8"));
@@ -69,8 +70,11 @@ function syncReadmeImageReferences() {
 
   let readme = fs.readFileSync(readmePath, "utf8");
   for (const [base, hashedName] of [...replacements.entries()].sort((a, b) => b[0].length - a[0].length)) {
-    const imagePathPattern = new RegExp(`docs/images/${escapeRegExp(base)}(?:-[0-9a-f]{8})?\\.png`, "g");
-    readme = readme.replace(imagePathPattern, `docs/images/${hashedName}`);
+    const imagePathPattern = new RegExp(
+      `(?:https://raw\\.githubusercontent\\.com/Shaance/review-surfaces/main/)?docs/images/${escapeRegExp(base)}(?:-[0-9a-f]{8})?\\.png`,
+      "g"
+    );
+    readme = readme.replace(imagePathPattern, `${readmeImageBaseUrl}/${hashedName}`);
   }
   fs.writeFileSync(readmePath, readme);
   console.log("updated README screenshot references");

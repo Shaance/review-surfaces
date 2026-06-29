@@ -60,7 +60,7 @@ Every `review-surfaces all` run writes a single self-contained
 per-line coverage gutters, clickable SVG change map with overview ↔ zoom, and
 progress tracking. No server, no CDN, opens from disk:
 
-![The HTML cockpit: verdict, lens chips, and the guided reading order](docs/images/cockpit-c4970315.png)
+![The HTML cockpit: verdict, lens chips, and the guided reading order](https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/cockpit-c4970315.png)
 
 ### The change map
 
@@ -76,13 +76,13 @@ file-to-file relationship lines, and review-lens tags). Rendered as deterministi
 in the cockpit and as mermaid on comment surfaces; layouts wrap instead of
 shrinking, so nothing ever renders below full size:
 
-![The change map overview: group cards summarizing changed areas](docs/images/change-map-2d9fb818.png)
+![The change map overview: group cards summarizing changed areas](https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/change-map-2d9fb818.png)
 
 After clicking a group, the cockpit opens that area's topic-grouped detail
 view, with files underneath each topic plus useful file-to-file relationship lines and
 risk-lens tags:
 
-![The change map detail after clicking the src group: topic groups, file nodes, and useful file-to-file relationship lines](docs/images/change-map-detail-e51cfbc9.png)
+![The change map detail after clicking the src group: topic groups, file nodes, and useful file-to-file relationship lines](https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/change-map-detail-e51cfbc9.png)
 
 ### The sticky PR comment
 
@@ -90,7 +90,7 @@ A reusable GitHub Action (or `review-surfaces comment --format sticky` locally)
 posts one idempotent comment per PR: verdict, top queue items with diff
 excerpts, and a since-last-review delta on every push:
 
-![The sticky PR comment: verdict, review-first queue, inline diff excerpts](docs/images/sticky-comment-8dca844a.png)
+![The sticky PR comment: verdict, review-first queue, inline diff excerpts](https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/sticky-comment-8dca844a.png)
 
 All four screenshots come from a real run of this tool on its own repository —
 the project reviews itself with itself (see [`docs/history/`](https://github.com/Shaance/review-surfaces/tree/main/docs/history) for
