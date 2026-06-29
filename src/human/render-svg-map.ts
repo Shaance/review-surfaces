@@ -12,6 +12,7 @@
 // in print. Node click filters the queue via the existing data- attribute
 // pattern (data-map-file), wired by the cockpit's vanilla JS.
 import { ChangeGraph, ChangeGraphOverview, RiskLens, RISK_LENS_METADATA } from "./contract";
+import { compareStrings } from "../core/compare";
 import { esc } from "./esc";
 // review-surfaces.MAP_SCALE.2: caps and layout constants live in the ONE
 // legibility-budget module so the natural width the budget reasons about and
@@ -107,10 +108,9 @@ const MAX_RENDERED_RELATIONSHIPS = 4;
 const COLUMNS_PER_BAND = Math.max(1, Math.floor((COCKPIT_WIDTH_PX - 2 * PADDING + COLUMN_GAP) / (NODE_WIDTH + COLUMN_GAP)));
 
 export interface RenderChangeMapSvgOptions {
-  // review-surfaces.MAP_SCALE.4: accepted for renderer API compatibility with
-  // the mermaid/detail pipeline. The SVG cockpit deliberately does not render
-  // cross-area stubs because generic labels like "tests use src" did not add
-  // reviewer value and created orphan-looking relationship lanes.
+  // review-surfaces.MAP_SCALE.4/.7: raw cross-area import stubs stay out of the
+  // SVG map, but provider-backed stubs are review-worthy relationships and must
+  // survive into the cockpit detail view.
   stubs?: DetailStub[];
   ariaLabel?: string;
 }
@@ -171,7 +171,10 @@ export function renderChangeMapSvg(graph: ChangeGraph, options: RenderChangeMapS
   }
 
   let width = maxRight + PADDING;
-  const allRelationships = prioritizeRelationships(buildDetailRelationships(graph, placed));
+  const allRelationships = prioritizeRelationships([
+    ...buildDetailRelationships(graph, placed),
+    ...buildStubRelationships(options.stubs ?? [], placed)
+  ]);
   const relationships = allRelationships.slice(0, MAX_RENDERED_RELATIONSHIPS);
   if (relationships.length > 0) {
     const edgeParts: string[] = [];
@@ -304,6 +307,32 @@ function buildDetailRelationships(
     });
   }
   return relationships;
+}
+
+function buildStubRelationships(
+  stubs: DetailStub[],
+  placed: Map<string, PlacedNode>
+): Array<{ from: PlacedNode; to: PlacedNode; summary: string; detail: string; kind: ChangeGraph["edges"][number]["kind"]; source: "fallback" | "provider" }> {
+  const anchors = [...placed.values()].sort((a, b) => compareStrings(a.path, b.path));
+  const leftAnchor = anchors[0];
+  const rightAnchor = anchors[anchors.length - 1];
+  if (!leftAnchor || !rightAnchor) {
+    return [];
+  }
+  return stubs
+    .filter((stub) => stub.insight_source === "provider")
+    .map((stub) => {
+      const from = stub.direction === "out" ? leftAnchor : rightAnchor;
+      const to = stub.direction === "out" ? rightAnchor : leftAnchor;
+      return {
+        from,
+        to,
+        kind: stub.has_removed ? "removed" as const : stub.has_new ? "new" as const : "existing" as const,
+        summary: stub.summary,
+        detail: stub.detail ? `${stub.summary}\n${stub.detail}` : stub.summary,
+        source: stub.insight_source
+      };
+    });
 }
 
 function shouldRenderFileRelationship(edge: ChangeGraph["edges"][number]): boolean {

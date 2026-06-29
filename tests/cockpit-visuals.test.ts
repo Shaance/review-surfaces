@@ -283,6 +283,13 @@ test("review-surfaces.MAP_SCALE.6 the cockpit pre-renders hidden per-group detai
   const sections = buildChangeGraphSections({
     files,
     edges: [{ importer: "tests/w0.test.ts", imported: "src/core/w0.ts" }],
+    edgeInsights: [{
+      from: "tests/w0.test.ts",
+      to: "src/core/w0.ts",
+      summary: "new tests exercise the core width budget path",
+      detail: "Provider-backed relationship text should stay visible in the src zoom map.",
+      source: "provider"
+    }],
     usedBy: [],
     lensFindings: [],
     reviewQueue: []
@@ -298,13 +305,12 @@ test("review-surfaces.MAP_SCALE.6 the cockpit pre-renders hidden per-group detai
   assert.match(html, /aria-label="Change map detail: src"/);
   const srcPanel = html.split('data-map-detail="src"')[1].split("</div>")[0];
   assert.match(srcPanel, /data-map-file="src\/core\/w0\.ts"/);
-  // Generic cross-area stubs like "tests use src" stay out of the visual map;
-  // they do not explain what to review together.
+  // Raw cross-area stubs like "tests use src" stay out, but provider-backed
+  // explanations survive into the visual detail map.
   assert.doesNotMatch(srcPanel, /tests use src/);
+  assert.match(srcPanel, /new tests exercise the core width budget path/);
   assert.doesNotMatch(srcPanel, /outside this area/);
-  assert.doesNotMatch(srcPanel, /stroke="#cf2d56"/);
-  assert.doesNotMatch(srcPanel, /#f54e00/);
-  assert.doesNotMatch(srcPanel, /<path d="M /);
+  assert.match(srcPanel, /<polyline points="/);
   // The vanilla JS toggle handler ships with the cockpit.
   assert.match(html, /\[data-map-group\]/);
   assert.match(html, /panel\.hidden = !panel\.hidden/);

@@ -189,10 +189,26 @@ function explainPathForAreas(
 }
 
 function collectGroupsForPath(filePath: string, areas: ReviewArea[], options: ReviewAreaMatchOptions): string[] {
+  if (options.purpose === "requirement_proof") {
+    const exact = exactFileGroupsForPath(filePath, areas);
+    if (exact.length > 0) {
+      return exact;
+    }
+  }
   const groups: string[] = [];
   const context = createMatchContext(filePath, options);
   for (const area of areas) {
     if (areaMatchesPathForPurpose(filePath, area, options, context)) {
+      addUnique(groups, area.groupKey);
+    }
+  }
+  return groups;
+}
+
+function exactFileGroupsForPath(filePath: string, areas: ReviewArea[]): string[] {
+  const groups: string[] = [];
+  for (const area of areas) {
+    if (area.prefixes.some((prefix) => !prefix.endsWith("/") && prefix !== ROOT_PREFIX && prefix === filePath)) {
       addUnique(groups, area.groupKey);
     }
   }

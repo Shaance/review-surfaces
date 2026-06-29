@@ -27,6 +27,32 @@ test("review area matcher makes review_surface and requirement_proof semantics e
   assert.deepEqual(matcher.groupsForPath("tests/cli.test.ts", { purpose: "requirement_proof" }), ["CLI"]);
 });
 
+test("review area matcher preserves exact-file precedence for requirement proof", () => {
+  const matcher = createReviewAreaMatcher([
+    {
+      id: "SUB-CLI",
+      name: "CLI",
+      groupKey: "CLI",
+      prefixes: ["src/cli/"],
+      purpose: "CLI command handling.",
+      pattern: "dispatcher",
+      testKeywords: ["cli"]
+    },
+    {
+      id: "SUB-ENTRY",
+      name: "CLI entry",
+      groupKey: "CLI_ENTRY",
+      prefixes: ["src/cli/index.ts"],
+      purpose: "Dedicated CLI entry point.",
+      pattern: "entry",
+      testKeywords: []
+    }
+  ]);
+
+  assert.deepEqual(matcher.groupsForPath("src/cli/index.ts", { purpose: "requirement_proof" }), ["CLI_ENTRY"]);
+  assert.deepEqual(matcher.groupsForPath("src/cli/index.ts", { purpose: "review_surface" }), ["CLI", "CLI_ENTRY"]);
+});
+
 test("review area matcher token-scopes test keywords case-insensitively", () => {
   const matcher = createReviewAreaMatcher([{ ...AREAS[0], testKeywords: ["CLI"] }]);
 

@@ -282,17 +282,23 @@ async function buildEvidenceIndex(
   await scanAcidEvidence(cwd, unique(initialCandidateFiles), testPaths, implementationProofPaths, { byAcid, implementationByAcid, testsByAcid });
 
   const initialCandidateSet = new Set(initialCandidateFiles);
-  const exactTestGroups = new Set([...testsByAcid.keys()].map(groupFromAcid).filter(Boolean) as string[]);
+  const exactRequirementGroups = new Set(
+    requirements.map((requirement) => groupFromAcid(requirement.acai_id)).filter(Boolean) as string[]
+  );
   const unchangedImplementationProofPaths = [...implementationProofPaths].filter((filePath) => !initialCandidateSet.has(filePath));
   const targetedImplementationProofPaths = unchangedImplementationProofPaths.filter((filePath) =>
-    matcher.groupsForPath(filePath, { purpose: "requirement_proof" }).some((group) => exactTestGroups.has(group))
+    matcher.groupsForPath(filePath, { purpose: "requirement_proof" }).some((group) => exactRequirementGroups.has(group))
   );
+  const targetedImplementationProofPathSet = new Set(targetedImplementationProofPaths);
+  const remainingImplementationProofPaths = unchangedImplementationProofPaths
+    .filter((filePath) => !targetedImplementationProofPathSet.has(filePath))
+    .slice(0, MAX_UNCHANGED_IMPLEMENTATION_PROOF_SCAN_FILES);
   const implementationProofScanPaths = unique([
     ...targetedImplementationProofPaths,
-    ...unchangedImplementationProofPaths
-  ]).slice(0, MAX_UNCHANGED_IMPLEMENTATION_PROOF_SCAN_FILES);
+    ...remainingImplementationProofPaths
+  ]);
 
-  if (testsByAcid.size > 0 && implementationProofScanPaths.length > 0) {
+  if (implementationProofScanPaths.length > 0) {
     const headRef = collection.git.head_sha;
     await scanAcidEvidence(cwd, implementationProofScanPaths, testPaths, implementationProofPaths, { byAcid, implementationByAcid, testsByAcid }, {
       readFile: (filePath) => readFileAtRef(cwd, headRef, filePath)
@@ -309,7 +315,7 @@ async function buildEvidenceIndex(
   }
 
   for (const test of collection.tests) {
-    for (const group of matcher.groupsForPath(test.path, { purpose: "review_surface", testPath: true })) {
+    for (const group of matcher.groupsForPath(test.path, { purpose: "requirement_proof", testPath: true })) {
       pushMap(testsByGroup, group, testEvidence(test.path, `Test path mapped to ${group}.`));
     }
   }

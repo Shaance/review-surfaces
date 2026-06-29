@@ -359,7 +359,9 @@ function buildOverview(
     existing.weight += 1;
     existing.has_new = existing.has_new || edge.kind === "new";
     existing.has_removed = existing.has_removed || edge.kind === "removed";
-    if (edge.insight_source === "provider" || !existing.detail) {
+    if (edge.insight_source === "provider") {
+      existing.summary = edge.summary;
+    } else if (!existing.detail) {
       existing.summary = `${usesPhrase(from, to)}: ${edge.summary}`;
     }
     const detail = edge.detail ?? edge.summary;
@@ -707,7 +709,9 @@ function addStub(
   stub.weight += 1;
   stub.has_new = stub.has_new || edge.kind === "new";
   stub.has_removed = stub.has_removed || edge.kind === "removed";
-  if (edge.insight_source === "provider" || !stub.detail) {
+  if (edge.insight_source === "provider") {
+    stub.summary = edge.summary;
+  } else if (!stub.detail) {
     stub.summary = direction === "out"
       ? `${usesPhrase(other, group)}: ${edge.summary}`
       : `${usesPhrase(group, other)}: ${edge.summary}`;
