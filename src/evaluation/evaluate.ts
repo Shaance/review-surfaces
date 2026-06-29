@@ -34,8 +34,6 @@ export { verifyRequirementsWithTests } from "./verification";
 
 export type RequirementStatus = PacketRequirementStatus;
 
-const MAX_UNCHANGED_IMPLEMENTATION_PROOF_SCAN_FILES = 500;
-
 // review-surfaces.EVAL: structured sub-reason for a partial status. The
 // evaluator already distinguishes these cases in prose; this lifts that
 // distinction into a small, deterministic enum so downstream surfaces can group
@@ -291,8 +289,7 @@ async function buildEvidenceIndex(
   );
   const targetedImplementationProofPathSet = new Set(targetedImplementationProofPaths);
   const remainingImplementationProofPaths = unchangedImplementationProofPaths
-    .filter((filePath) => !targetedImplementationProofPathSet.has(filePath))
-    .slice(0, MAX_UNCHANGED_IMPLEMENTATION_PROOF_SCAN_FILES);
+    .filter((filePath) => !targetedImplementationProofPathSet.has(filePath));
   const implementationProofScanPaths = unique([
     ...targetedImplementationProofPaths,
     ...remainingImplementationProofPaths

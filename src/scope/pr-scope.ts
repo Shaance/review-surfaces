@@ -242,7 +242,7 @@ export function isExecutableTestPath(filePath: string): boolean {
     /^.+_test\.go$/.test(lowerBase) ||
     /^(test_.+|.+_test)\.(py|rb|php)$/.test(lowerBase) ||
     /^.+_spec\.(py|rb|php)$/.test(lowerBase) ||
-    /^.+(?:Test|Tests)\.(java|kt|kts|cs|php)$/.test(base)
+    /^.+(?:Test|Tests|Spec|Specs)\.(java|kt|kts|cs|php)$/.test(base)
   );
 }
 

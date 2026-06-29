@@ -210,6 +210,28 @@ test("review-surfaces.RENDER.11 same-row relationship routes avoid intermediate 
   assert.ok(Math.min(...ys) < Math.max(...ys), points);
 });
 
+test("review-surfaces.RENDER.11 relationship ordering is locale-independent", () => {
+  const sections = buildChangeGraphSections({
+    files: [file("src/a/a.ts"), file("src/b/b.ts"), file("src/c/c.ts")],
+    edges: [
+      { importer: "src/b/b.ts", imported: "src/a/a.ts" },
+      { importer: "src/c/c.ts", imported: "src/a/a.ts" }
+    ],
+    edgeInsights: [
+      { from: "src/b/b.ts", to: "src/a/a.ts", summary: "apple consumes the core contract", source: "provider" },
+      { from: "src/c/c.ts", to: "src/a/a.ts", summary: "Zebra consumes the core contract", source: "provider" }
+    ],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: []
+  });
+  const svg = renderChangeMapSvg(sections.change_graph)!.svg;
+  assert.ok(
+    svg.indexOf("Zebra consumes the core contract") < svg.indexOf("apple consumes the core contract"),
+    "code-unit ordering keeps uppercase summaries before lowercase summaries"
+  );
+});
+
 test("review-surfaces.RENDER.12 the header strip renders lens-chip filter buttons with counts, the review_plan stacked bar with minutes, trust counts, and a progress bar — all with text labels", () => {
   const html = renderHumanReviewHtml(model(), {});
   // Chips ARE the filter buttons, with counts.

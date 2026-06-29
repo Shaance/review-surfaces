@@ -2703,7 +2703,7 @@ function isBaselineTest(filePath: string): boolean {
     /(^|\/)(tests?|__tests__|spec)\//.test(filePath) ||
     /(^|[._-])(test|spec)[._-]/i.test(base) ||
     /(^|[._-])(test|spec)\.[^.]+$/i.test(base) ||
-    /(?:Test|Spec)\.[^.]+$/.test(base)
+    /(?:Test|Spec)s?\.[^.]+$/.test(base)
   );
 }
 
@@ -2747,11 +2747,12 @@ function baselineStem(filePath: string): string {
   const base = filePath.split("/").pop() ?? filePath;
   const raw = base.replace(/\.[^.]+$/, ""); // strip extension, keep case
   let name = raw.toLowerCase();
-  name = name.replace(/[._-](test|spec)$/i, "").replace(/^(test|spec)[._-]/i, "");
-  // PascalCase suffix (`FooTest`/`FooSpec` for `Foo.java`/`Foo.kt`) — strip only when
-  // the original used the capitalized convention, so `latest`/`contest` keep their stem.
-  if (/(?:Test|Spec)$/.test(raw)) {
-    name = name.replace(/(?:test|spec)$/, "");
+  name = name.replace(/[._-](tests?|specs?)$/i, "").replace(/^(tests?|specs?)[._-]/i, "");
+  // PascalCase suffix (`FooTest`/`FooSpec`, plus plural `FooTests`/`FooSpecs`) —
+  // strip only when the original used the capitalized convention, so lowercase
+  // `latest`/`contest` keep their stem.
+  if (/(?:UI|Snapshot)?(?:Test|Spec)s?$/.test(raw)) {
+    name = name.replace(/(?:ui|snapshot)?(?:test|spec)s?$/, "");
   }
   return name;
 }

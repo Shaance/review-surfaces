@@ -111,7 +111,7 @@ test("PR surface existing-test guidance ignores non-executable test artifacts", 
   assert.equal(risk.suggested_checks.some((check) => /Run the existing test/.test(check)), false);
 });
 
-test("PR surface existing-test guidance honors configured and recognized tests outside tests directory", async () => {
+test("PR surface existing-test guidance honors configured, named, and directory-based tests", async () => {
   const configured = await surface({ tests: [{ path: "spec/foo.test.ts" }], repositoryFiles: [] } as unknown as Partial<CollectionResult>);
   const configuredRisk = configured.risks.candidates.find((candidate) => candidate.rule === "untested_changed_impl");
   assert.ok(configuredRisk);
@@ -122,4 +122,14 @@ test("PR surface existing-test guidance honors configured and recognized tests o
   const recognizedRisk = recognized.risks.candidates.find((candidate) => candidate.rule === "untested_changed_impl");
   assert.ok(recognizedRisk);
   assert.match(recognizedRisk.summary, /test is mapped to FOO/);
+
+  const testsDirectory = await surface({ repositoryFiles: ["tests/foo.ts"] } as unknown as Partial<CollectionResult>);
+  const testsDirectoryRisk = testsDirectory.risks.candidates.find((candidate) => candidate.rule === "untested_changed_impl");
+  assert.ok(testsDirectoryRisk);
+  assert.match(testsDirectoryRisk.summary, /test is mapped to FOO/);
+
+  const testDirectory = await surface({ repositoryFiles: ["test/foo.js"] } as unknown as Partial<CollectionResult>);
+  const testDirectoryRisk = testDirectory.risks.candidates.find((candidate) => candidate.rule === "untested_changed_impl");
+  assert.ok(testDirectoryRisk);
+  assert.match(testDirectoryRisk.summary, /test is mapped to FOO/);
 });

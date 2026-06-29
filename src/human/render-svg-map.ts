@@ -345,7 +345,7 @@ function prioritizeRelationships<T extends { source: "fallback" | "provider"; ki
     if (sourceRank !== 0) return sourceRank;
     const kindRank = relationshipKindRank(a.kind) - relationshipKindRank(b.kind);
     if (kindRank !== 0) return kindRank;
-    return a.summary.localeCompare(b.summary);
+    return compareStrings(a.summary, b.summary);
   });
 }
 

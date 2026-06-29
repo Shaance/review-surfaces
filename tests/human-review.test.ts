@@ -4903,6 +4903,43 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: one import-evidence entry does
   assert.ok(!/no connected test change/.test(foo.reason), "FooTest.java still connects to Foo via the stem fallback despite unrelated evidence");
 });
 
+test("review-surfaces.HUMAN_REVIEW.28 cold-start: plural PascalCase test/spec stems connect to implementation files", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/src/Foo.java b/src/Foo.java",
+    "--- a/src/Foo.java",
+    "+++ b/src/Foo.java",
+    "@@ -1,1 +1,2 @@",
+    " class Foo {}",
+    "+class Foo2 {}",
+    "diff --git a/src/FooTests.java b/src/FooTests.java",
+    "--- a/src/FooTests.java",
+    "+++ b/src/FooTests.java",
+    "@@ -1,1 +1,2 @@",
+    " class FooTests {}",
+    "+void t() {}",
+    "diff --git a/src/Widget.kt b/src/Widget.kt",
+    "--- a/src/Widget.kt",
+    "+++ b/src/Widget.kt",
+    "@@ -1,1 +1,2 @@",
+    " class Widget",
+    "+class Widget2",
+    "diff --git a/src/WidgetSpecs.kt b/src/WidgetSpecs.kt",
+    "--- a/src/WidgetSpecs.kt",
+    "+++ b/src/WidgetSpecs.kt",
+    "@@ -1,1 +1,2 @@",
+    " class WidgetSpecs",
+    "+fun t() {}",
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
+  const foo = model.review_queue.find((entry) => entry.path === "src/Foo.java");
+  const widget = model.review_queue.find((entry) => entry.path === "src/Widget.kt");
+  assert.ok(foo, "src/Foo.java is queued");
+  assert.ok(widget, "src/Widget.kt is queued");
+  assert.ok(!/no connected test change/.test(foo.reason), "FooTests.java connects to Foo.java");
+  assert.ok(!/no connected test change/.test(widget.reason), "WidgetSpecs.kt connects to Widget.kt");
+});
+
 test("review-surfaces.HUMAN_REVIEW.28 cold-start: a Go receiver method is recognized as public surface (Codex #112 round-4)", () => {
   const diff = parseStructuredDiff([
     "diff --git a/client.go b/client.go",

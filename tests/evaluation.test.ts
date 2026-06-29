@@ -399,6 +399,45 @@ components:
   assert.equal(evaluation.acai_coverage["example.EVAL.1"], "satisfied");
 });
 
+test("review-surfaces.EVAL.3 scans repo-wide implementation proof beyond 500 untargeted files", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-broad-proof-cap-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src", "misc"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "tests"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+components:
+  EVAL:
+    requirements:
+      1: Evaluate broad proof.
+`
+  );
+  for (let index = 0; index < 520; index += 1) {
+    fs.writeFileSync(path.join(tmp, "src", "misc", `a${String(index).padStart(3, "0")}.ts`), `export const n${index} = ${index};\n`);
+  }
+  fs.writeFileSync(path.join(tmp, "src", "misc", "z-proof.ts"), "export const evalProof = 'example.EVAL.1';\n");
+  fs.writeFileSync(path.join(tmp, "tests", "misc.test.ts"), "test('example.EVAL.1 broad test evidence', () => {});\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "head"], { cwd: tmp, stdio: "ignore" });
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: ["tests/**/*.test.ts"] },
+    baseRef: head,
+    headRef: head,
+    dogfood: false
+  });
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
+
+  assert.equal(evaluation.acai_coverage["example.EVAL.1"], "satisfied");
+});
+
 test("review-surfaces.EVAL.3 keeps test-path proof strict when area prefixes appear as nested substrings", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-strict-test-proof-"));
   fs.mkdirSync(path.join(tmp, "features"), { recursive: true });

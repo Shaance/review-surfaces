@@ -133,7 +133,7 @@ function collectRepositoryTestAreas(input: AssemblePrSurfaceInput): Set<string> 
   const testMatcher = createReviewAreaMatcher(input.reviewAreas);
   const repositoryTestPaths = new Set<string>([
     ...input.collection.tests.map((test) => test.path),
-    ...input.collection.repositoryFiles.filter(isExecutableTestPath)
+    ...input.collection.repositoryFiles.filter(isRepositoryExecutableTestPath)
   ]);
   for (const testPath of repositoryTestPaths) {
     for (const area of testMatcher.groupsForPath(testPath, { purpose: "review_surface", testPath: true })) {
@@ -141,4 +141,13 @@ function collectRepositoryTestAreas(input: AssemblePrSurfaceInput): Set<string> 
     }
   }
   return repositoryTestAreas;
+}
+
+const REPOSITORY_TEST_CODE_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m|sh|bash|zsh)$/i;
+
+function isRepositoryExecutableTestPath(filePath: string): boolean {
+  if (isExecutableTestPath(filePath)) {
+    return true;
+  }
+  return /(^|\/)(tests?|__tests__|spec)\//i.test(filePath) && REPOSITORY_TEST_CODE_EXT.test(filePath) && !/\.d\.ts$/i.test(filePath);
 }
