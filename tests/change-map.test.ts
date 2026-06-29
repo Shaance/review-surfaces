@@ -452,6 +452,59 @@ test("review-surfaces.MAP_SCALE.1 change_graph grows a schema-visible overview: 
   assert.ok(result.valid, JSON.stringify(result));
 });
 
+test("review-surfaces.MAP_SCALE.8 overview summaries and detail topics are reviewer-facing, provider-bounded, and fallback-stable", () => {
+  const files = [
+    file("src/cli/index.ts", "M", 12, 2),
+    file("src/human/change-graph.ts", "M", 20, 4),
+    file("src/human/render-svg-map.ts", "M", 18, 3)
+  ];
+  const fallbackGraph = buildChangeGraphSections({
+    files,
+    edges: [],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: []
+  }).change_graph;
+  const fallbackSrc = fallbackGraph.overview.groups.find((group) => group.name === "src");
+  assert.ok(fallbackSrc);
+  assert.match(fallbackSrc.summary, /Updates implementation code across 3 files/);
+  assert.deepEqual((fallbackSrc.topics ?? []).map((topic) => topic.label), ["Cli changes", "Human changes"]);
+  assert.deepEqual((fallbackSrc.topics ?? []).flatMap((topic) => topic.paths).sort(), files.map((entry) => entry.path).sort());
+
+  const providerGraph = buildChangeGraphSections({
+    files,
+    edges: [],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: [],
+    areaInsights: [
+      {
+        name: "src",
+        summary: "Review map UI now explains area purpose and topic grouping.",
+        source: "provider",
+        topics: [
+          {
+            label: "Map storytelling",
+            summary: "Files that make the visual map understandable to reviewers.",
+            paths: ["src/human/render-svg-map.ts", "fabricated.ts"],
+            source: "provider"
+          }
+        ]
+      }
+    ]
+  }).change_graph;
+  const providerSrc = providerGraph.overview.groups.find((group) => group.name === "src");
+  assert.ok(providerSrc);
+  assert.equal(providerSrc.summary, "Review map UI now explains area purpose and topic grouping.");
+  assert.equal(providerSrc.insight_source, "provider");
+  assert.deepEqual((providerSrc.topics ?? []).map((topic) => topic.label), ["Map storytelling", "Cli changes", "Human changes"]);
+  assert.deepEqual(providerSrc.topics?.[0].paths, ["src/human/render-svg-map.ts"]);
+  assert.ok((providerSrc.topics ?? []).every((topic) => !topic.paths.includes("fabricated.ts")));
+  const srcDetail = buildGroupDetailViews(providerGraph).find((view) => view.group === "src");
+  assert.ok(srcDetail);
+  assert.deepEqual(detailViewSubGraph(providerGraph, srcDetail).clusters.map((cluster) => cluster.name), ["Map storytelling", "Cli changes", "Human changes"]);
+});
+
 test("review-surfaces.MAP_SCALE.2 the legibility budget decides per surface: the overview leads everywhere on the wide fixture and the small-diff file-level map is unchanged", () => {
   const wide = wideFixtureSections();
   assert.equal(changeMapLeadLevel(wide.change_graph, "mermaid"), "overview");

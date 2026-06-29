@@ -308,6 +308,10 @@ function buildOverview(
     }
   }
 
+  // review-surfaces.MAP_SCALE.8: overview groups carry one reviewer-facing
+  // area summary and topic labels that explain why files are grouped together.
+  // Provider insights may replace the fallback prose, but topic paths are still
+  // intersected with the deterministic changed-file set below.
   const insightByGroup = new Map(areaInsights.map((insight) => [insight.name, insight]));
   const groups: ChangeGraphOverviewGroup[] = groupOrder.map((name) => {
     const entry = stats.get(name) as { files: number; added: number; removed: number; lensCounts: Map<RiskLens, number>; queue: number };
@@ -404,6 +408,9 @@ function topicsForGroup(
   clusters: ChangeGraphCluster[],
   providerTopics: ChangeGraphTopicInsight[] | undefined
 ): ChangeGraphTopicGroup[] {
+  // review-surfaces.MAP_SCALE.8: use provider topic labels only for validated
+  // changed paths, then fill the remaining files with deterministic reviewer
+  // buckets rather than mechanical continuation columns.
   const allPaths = new Set(nodes.map((node) => node.path));
   const assigned = new Set<string>();
   const topics: ChangeGraphTopicGroup[] = [];
