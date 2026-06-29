@@ -6,7 +6,6 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { validateJsonSchema } from "../src/schema/json-schema";
 import { ExitCodes } from "../src/core/exit-codes";
-import { VERSION } from "../src/core/version";
 import { COMMANDS } from "../src/cli/index";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
@@ -490,9 +489,7 @@ test("review-surfaces.CLI.1 supports top-level --help output", () => {
   const result = spawnSync("node", [cli, "--help"], { encoding: "utf8" });
 
   assert.equal(result.status, 0, result.stderr);
-  // Version-agnostic: the banner prints the current VERSION, so a release bump
-  // does not require editing this test.
-  assert.ok(result.stdout.includes(`review-surfaces ${VERSION}`), `help banner prints the current version; got:\n${result.stdout.slice(0, 80)}`);
+  assert.match(result.stdout, /review-surfaces 0\.2\.0/);
   assert.match(result.stdout, /Local-first human review decision cockpit/);
   assert.doesNotMatch(result.stdout, /Local-first review packet compiler/);
   assert.match(result.stdout, /run\s+Execute a local command/);

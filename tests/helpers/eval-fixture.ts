@@ -65,28 +65,6 @@ test("app.CORE.1 add sums two numbers", () => {
   assert.equal(add(1, 2), 3);
 });
 `,
-  // review-surfaces.SEMANTIC_DIFF.5/.6: a Swift implementation + matching XCTest
-  // in the base so a later mutation is a real CHANGE diff (not an addition).
-  // Unchanged in cases that do not touch them, so they never enter those diffs.
-  "Sources/App/Greeting.swift": `public struct Greeting {
-  public func greet(name: String) -> String {
-    return "Hi \\(name)"
-  }
-}
-`,
-  // Path is "AppTests/" not "Tests/" on purpose: a case-insensitive macOS FS would
-  // otherwise collapse "Tests/" into the existing lowercase "tests/" dir, making the
-  // path nondeterministic across platforms. The basename ...Tests.swift is what
-  // classifies it as a Swift test, so the directory name is free to differ.
-  "AppTests/GreetingTests.swift": `import XCTest
-@testable import App
-
-final class GreetingTests: XCTestCase {
-  func testGreet() {
-    XCTAssertEqual(Greeting().greet(name: "a"), "Hi a")
-  }
-}
-`,
   "README.md": "# fixture app\n"
 };
 
@@ -94,10 +72,6 @@ export interface EvalFixtureOptions {
   // review-surfaces.COLD_START.4: when false, the fixture repo has NO Acai spec
   // and the pipeline runs without --spec — the spec-less cold-start case.
   spec?: boolean;
-  // Extra files committed into the BASE commit (only this fixture), so a case can
-  // test a BENIGN CHANGE to a file the shared base does not carry (e.g. a
-  // Package.resolved originHash rewrite or a pbxproj reorder).
-  extraBaseFiles?: Record<string, string>;
 }
 
 export function createEvalFixture(prefix: string, options: EvalFixtureOptions = {}): EvalFixture {
@@ -119,9 +93,6 @@ export function createEvalFixture(prefix: string, options: EvalFixtureOptions = 
     if (!withSpec && relativePath === "features/app.feature.yaml") {
       continue;
     }
-    write(relativePath, content);
-  }
-  for (const [relativePath, content] of Object.entries(options.extraBaseFiles ?? {})) {
     write(relativePath, content);
   }
   git("init", "-b", "main");

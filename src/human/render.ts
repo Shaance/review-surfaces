@@ -1513,7 +1513,7 @@ function renderChangeMapSection(model: HumanReviewModel): string {
   // a constant title.
   if (embed.level === "overview") {
     for (const detail of changeMapDetailEmbeds(model.change_graph)) {
-      const summary = `${esc(detail.group)} — ${detail.file_count} file(s) · ${detail.cluster_count} cluster(s)`;
+      const summary = `${esc(detail.group)} — ${detail.file_count} file(s) · ${detail.topic_count} topic(s)`;
       sections.push(
         detail.body
           ? `<details><summary>${summary}</summary>\n\n\`\`\`mermaid\n${detail.body}\n\`\`\`\n\n</details>`

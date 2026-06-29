@@ -1,6 +1,6 @@
 {
   "name": "review-surfaces",
-  "version": "0.3.0",
+  "version": "0.2.0",
   "description": "Local-first review packet compiler for agent-generated code changes.",
   "license": "MIT",
   "repository": {

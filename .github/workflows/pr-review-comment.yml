@@ -39,59 +39,6 @@ jobs:
           path: subject
           fetch-depth: 0
           persist-credentials: false
-      - name: Stage head-bound command evidence (download + validate, never execute PR code)
-        # The unprivileged ci.yml (plain pull_request — no secrets, no write token)
-        # records typecheck/tests THROUGH the tool and uploads them as
-        # `command-evidence-<head sha>`. Here we DOWNLOAD that artifact, VALIDATE every
-        # transcript is stamped with THIS PR's head sha (a stale/forged head sha is
-        # rejected, never staged), and drop the survivors into the subject's command
-        # dir so the trusted action ingests verified, head-bound test evidence. The
-        # tests ran in the unprivileged context; this privileged job only validates and
-        # renders — it never runs PR-controlled install/build/test code to obtain proof.
-        #
-        # Best-effort + bounded wait: both workflows trigger on the same push, so the
-        # evidence may not be uploaded yet. Absence is the honest "tests not yet
-        # verified at this head" state (the comment still renders), never an error.
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          DEST: subject/.review-surfaces/commands
-        run: |
-          set +e
-          name="command-evidence-$HEAD_SHA"
-          id=""
-          for attempt in $(seq 1 20); do
-            id="$(gh api --paginate "repos/$REPO/actions/artifacts?name=$name" \
-              --jq '.artifacts[] | select(.expired==false) | .id' 2>/dev/null | head -n1)"
-            case "$id" in [0-9]*) break ;; esac
-            echo "command evidence not uploaded yet (attempt $attempt/20); waiting…"
-            sleep 15
-          done
-          case "$id" in
-            ""|*[!0-9]*) echo "No head-bound command evidence within the wait window; rendering without verified test transcripts."; exit 0 ;;
-          esac
-          tmp="$RUNNER_TEMP/cmd-ev"; rm -rf "$tmp"; mkdir -p "$tmp"
-          if ! gh api "repos/$REPO/actions/artifacts/$id/zip" > "$RUNNER_TEMP/cmd-ev.zip" 2>/dev/null \
-            || ! unzip -q -o "$RUNNER_TEMP/cmd-ev.zip" -d "$tmp" 2>/dev/null; then
-            echo "Could not download/unzip command evidence (best-effort); rendering without it."; exit 0
-          fi
-          mkdir -p "$DEST"
-          copied=0
-          while IFS= read -r f; do
-            [ -f "$f" ] || continue
-            ok="$(jq -r --arg sha "$HEAD_SHA" '
-              ((.commands // .transcripts // [.]) | if type=="array" then . else [.] end)
-              | all(.[]; (.head_sha // .headSha) == $sha)' "$f" 2>/dev/null)"
-            if [ "$ok" = "true" ]; then
-              cp "$f" "$DEST/"; copied=$((copied+1))
-            else
-              echo "Rejected $(basename "$f"): head_sha != $HEAD_SHA (stale or forged)."
-            fi
-          done < <(find "$tmp" -type f -name '*.json')
-          echo "Validated and staged $copied head-bound command transcript file(s)."
-          exit 0
       - name: review-surfaces PR surface (trusted action over credentialless subject)
         uses: ./tool
         with:

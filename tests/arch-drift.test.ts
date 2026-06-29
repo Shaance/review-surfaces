@@ -66,10 +66,16 @@ test("review-surfaces.ARCH_DRIFT.2 drift edge deltas set kind new/removed on cha
       removed: [{ importer: "src/render/legacy.ts", imported: "src/core/util.ts" }]
     }
   });
-  assert.deepEqual(sections.change_graph.edges, [
+  assert.deepEqual(sections.change_graph.edges.map((edge) => ({ from: edge.from, to: edge.to, kind: edge.kind })), [
     { from: "src/render/legacy.ts", to: "src/core/util.ts", kind: "removed" },
     { from: "src/render/view.ts", to: "src/core/util.ts", kind: "new" }
   ]);
+  assert.deepEqual(
+    sections.change_graph.edges.map((edge) => edge.insight_source),
+    ["fallback", "fallback"]
+  );
+  assert.match(sections.change_graph.edges[0]?.summary ?? "", /stopped using/);
+  assert.match(sections.change_graph.edges[1]?.summary ?? "", /now uses/);
   // The removed edge is not a head dependency: the tour must not order
   // src/core/util.ts before src/render/legacy.ts because of it.
   const flat = sections.reading_order.legs.flatMap((leg) => leg.steps.map((step) => step.path));

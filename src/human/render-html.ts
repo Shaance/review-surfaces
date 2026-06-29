@@ -37,27 +37,71 @@ export function renderHumanReviewHtml(model: HumanReviewModel, context: HumanRen
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>review-surfaces — human review</title>
 <style>
-:root { --fg:#1c1c1c; --muted:#666; --line:#ddd; --accent:#0b5fff; --bad:#b00020; --warn:#9a6700; --ok:#1a7f37; }
+:root {
+  --bg:#f7f7f4;
+  --chrome:#f2f1ed;
+  --card:#ebeae5;
+  --card-hover:#e6e5e0;
+  --fg:#26251e;
+  --strong:#050503;
+  --muted:#6f6a60;
+  --line:#d9d5cf;
+  --line-strong:#aaa49a;
+  --accent:#f54e00;
+  --bad:#cf2d56;
+  --warn:#c08532;
+  --ok:#1f8a65;
+  --info:#3a6a9f;
+  --shadow:0 1px 0 rgba(38,37,30,.06);
+}
 * { box-sizing: border-box; }
-body { margin:0 auto; max-width: 980px; padding: 2rem 1.25rem 4rem; color: var(--fg); font: 15px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif; }
-h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
-h2 { font-size: 1.1rem; margin: 2rem 0 .5rem; border-bottom: 1px solid var(--line); padding-bottom: .3rem; }
-code, pre { font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-pre { background:#f6f8fa; border:1px solid var(--line); border-radius:6px; padding:.6rem .8rem; overflow-x:auto; }
+html { background: var(--bg); }
+body { margin:0 auto; max-width: 1120px; padding: 28px 24px 64px; background: var(--bg); color: var(--fg); font: 14px/1.55 "CursorGothic", "CursorGothic Fallback", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+h1 { color: var(--strong); font-size: 26px; font-weight: 400; line-height: 32.5px; margin: 0 0 6px; }
+h2 { color: var(--strong); font-size: 18px; font-weight: 700; line-height: 1.25; margin: 30px 0 10px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+h3 { color: var(--strong); font-size: 14px; line-height: 1.35; margin: 18px 0 6px; }
+p { margin: .45rem 0; }
+ul, ol { margin: .45rem 0 .7rem; padding-left: 1.25rem; }
+li { margin: .18rem 0; }
+code, pre { font: 12.5px/1.5 "Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+code { background: rgba(38,37,30,.045); border:1px solid rgba(38,37,30,.08); border-radius:4px; padding:.06rem .28rem; color: var(--strong); overflow-wrap:anywhere; }
+pre { background: rgba(38,37,30,.045); border:1px solid var(--line); border-radius:4px; padding:.7rem .85rem; overflow-x:auto; color: var(--strong); }
 .muted { color: var(--muted); }
-.badge { display:inline-block; border-radius: 10px; padding: .05rem .55rem; font-size: .78rem; border:1px solid var(--line); }
-.badge.blocker, .badge.high, .badge.block_before_merge { color:var(--bad); border-color:var(--bad); }
-.badge.medium, .badge.needs_author_clarification, .badge.reviewable_with_attention { color:var(--warn); border-color:var(--warn); }
-.badge.low, .badge.probably_safe, .badge.covered { color:var(--ok); border-color:var(--ok); }
-.item { border:1px solid var(--line); border-radius:8px; padding: .7rem .9rem; margin: .6rem 0; }
-.item.done { opacity:.55; }
-.item header { display:flex; gap:.6rem; align-items:baseline; }
-.item header label { margin-left:auto; font-size:.8rem; color:var(--muted); white-space:nowrap; }
-details > summary { cursor:pointer; color:var(--accent); font-size:.85rem; }
-ul { padding-left: 1.2rem; }
-.filters button { margin: 0 .35rem .35rem 0; border:1px solid var(--line); background:#fff; border-radius:14px; padding:.2rem .7rem; cursor:pointer; font-size:.8rem; }
-.filters button.active { border-color: var(--accent); color: var(--accent); }
-a { color: var(--accent); }
+strong { color: var(--strong); }
+a { color: var(--accent); text-decoration-color: rgba(245,78,0,.35); text-underline-offset: 2px; }
+a:hover { text-decoration-color: var(--accent); }
+.badge { display:inline-flex; align-items:center; min-height:20px; border-radius:999px; padding: .05rem .5rem; font-size: 11px; font-weight: 500; line-height:1.35; border:1px solid var(--line); background: rgba(247,247,244,.7); color: var(--fg); white-space:nowrap; }
+.badge.blocker, .badge.high, .badge.block_before_merge { color:var(--bad); border-color:rgba(207,45,86,.38); background:rgba(207,45,86,.07); }
+.badge.medium, .badge.needs_author_clarification, .badge.reviewable_with_attention { color:var(--warn); border-color:rgba(192,133,50,.42); background:rgba(192,133,50,.09); }
+.badge.low, .badge.probably_safe, .badge.covered { color:var(--ok); border-color:rgba(31,138,101,.34); background:rgba(31,138,101,.08); }
+#strip, .three-questions { background: var(--chrome); border:1px solid var(--line); border-radius:4px; padding: 12px 14px; margin: 12px 0 16px; box-shadow: var(--shadow); }
+.item { background: var(--card); border:1px solid var(--line); border-radius:4px; padding: 12px 14px; margin: 10px 0; box-shadow: var(--shadow); }
+.item.done { opacity:.62; }
+.item header { display:flex; flex-wrap:wrap; gap:7px 8px; align-items:center; }
+.item header strong { min-width: min(100%, 280px); flex:1 1 420px; overflow-wrap:anywhere; }
+.item header label { margin-left:auto; display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--muted); white-space:nowrap; }
+input[type="checkbox"] { accent-color: var(--accent); }
+details { margin:.45rem 0; }
+details > summary { cursor:pointer; color:var(--fg); font-size:12px; font-weight:600; }
+details > summary:hover { color:var(--accent); }
+.filters { display:flex; flex-wrap:wrap; gap:6px; margin:.4rem 0 .65rem; }
+.filters button { border:1px solid var(--line); background:var(--chrome); color:var(--fg); border-radius:999px; padding:.25rem .7rem; cursor:pointer; font: inherit; font-size:12px; line-height:1.3; }
+.filters button:hover { background:var(--card-hover); border-color:var(--line-strong); }
+.filters button.active { border-color: rgba(245,78,0,.75); color: var(--accent); background:#f3ede6; box-shadow: inset 0 0 0 1px rgba(245,78,0,.12); }
+.strip-bar, .progress-track { border:1px solid var(--line); border-radius:4px; overflow:hidden; margin:.45rem 0; background:rgba(247,247,244,.72); }
+.strip-bar { display:flex; min-height:24px; }
+.budget-segment { display:inline-block; padding:.2rem .45rem; overflow:hidden; white-space:nowrap; font-size:12px; color:var(--fg); border-right:1px solid rgba(38,37,30,.08); }
+.budget-segment.read { background:rgba(31,138,101,.12); }
+.budget-segment.skim { background:rgba(192,133,50,.14); }
+.budget-segment.defer { background:rgba(38,37,30,.06); }
+.progress-track { height:10px; }
+#progress-bar { height:100%; width:0; background:var(--accent); }
+.lens-key { display:flex; flex-wrap:wrap; gap:8px 12px; }
+.lens-key span { display:inline-block; padding-left:.35rem; }
+.map-detail { background:var(--chrome); border:1px solid var(--line); border-radius:4px; padding:10px 12px; margin:12px 0; }
+table { width:100%; border-collapse:collapse; margin:.6rem 0; font-size:12px; }
+th, td { border-bottom:1px solid var(--line); padding:.35rem .45rem; text-align:left; vertical-align:top; }
+th { color:var(--muted); font-weight:600; }
 @media print { #file-filter-note, .item header label { display:none; } details > * { display:block; } }
 </style>
 </head>
@@ -266,18 +310,18 @@ function renderHeaderStrip(model: HumanReviewModel, lenses: string[]): string {
     const skim = minutes(plan.skim);
     const defer = minutes(plan.defer);
     const total = Math.max(1, read + skim + defer);
-    const segment = (label: string, value: number, background: string): string =>
+    const segment = (label: string, value: number, className: string): string =>
       value <= 0
         ? ""
-        : `<span style="display:inline-block;width:${Math.max(6, Math.round((value / total) * 100))}%;background:${background};padding:.15rem .3rem;overflow:hidden;white-space:nowrap;font-size:.75rem">${esc(label)} ${esc(value)}m</span>`;
-    budgetBar = `<div class="strip-bar" style="display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin:.4rem 0">${segment("read", read, "#d1fae5")}${segment("skim", skim, "#fef9c3")}${segment("defer", defer, "#e5e7eb")}</div>`;
+        : `<span class="budget-segment ${className}" style="width:${Math.max(6, Math.round((value / total) * 100))}%">${esc(label)} ${esc(value)}m</span>`;
+    budgetBar = `<div class="strip-bar">${segment("read", read, "read")}${segment("skim", skim, "skim")}${segment("defer", defer, "defer")}</div>`;
   }
 
   const trust = model.trust_audit;
   const trustLine = `<p class="muted">✓ ${esc(trust.verified_facts.length)} verified · ~ ${esc(trust.claimed_not_verified.length)} claimed · ${esc(trust.missing_evidence.length)} missing evidence · ${esc(trust.invalid_evidence.length)} invalid</p>`;
   const progress =
     model.review_queue.length > 0
-      ? `<div style="border:1px solid var(--line);border-radius:6px;overflow:hidden;height:10px;margin:.2rem 0"><div id="progress-bar" style="height:100%;width:0;background:#1a7f37"></div></div><p class="muted" id="progress-label">0 of ${esc(model.review_queue.length)} reviewed</p>`
+      ? `<div class="progress-track"><div id="progress-bar"></div></div><p class="muted" id="progress-label">0 of ${esc(model.review_queue.length)} reviewed</p>`
       : "";
   return `<div id="strip">${chips}${budgetBar}${trustLine}${progress}</div>`;
 }
@@ -295,8 +339,8 @@ function renderSvgMapSection(model: HumanReviewModel): string {
   }
   const legend =
     rendered.lenses.length > 0
-      ? `<p class="muted">Lenses: ${rendered.lenses
-          .map((lens) => `<span style="border-left:10px solid ${SVG_LENS_FILLS[lens]};padding-left:.3rem;margin-right:.6rem">${esc(RISK_LENS_METADATA[lens]?.label ?? lens)}</span>`)
+      ? `<p class="muted lens-key">Lenses: ${rendered.lenses
+          .map((lens) => `<span style="border-left:10px solid ${SVG_LENS_FILLS[lens]}">${esc(RISK_LENS_METADATA[lens]?.label ?? lens)}</span>`)
           .join("")}</p>`
       : "";
   if (level === "overview") {
@@ -328,12 +372,12 @@ function renderSvgMapSection(model: HumanReviewModel): string {
     }
     const combinedLegend =
       detailLenses.size > 0
-        ? `<p class="muted">Lenses: ${[...detailLenses]
+        ? `<p class="muted lens-key">Lenses: ${[...detailLenses]
             .sort()
-            .map((lens) => `<span style="border-left:10px solid ${SVG_LENS_FILLS[lens]};padding-left:.3rem;margin-right:.6rem">${esc(RISK_LENS_METADATA[lens]?.label ?? lens)}</span>`)
+            .map((lens) => `<span style="border-left:10px solid ${SVG_LENS_FILLS[lens]}">${esc(RISK_LENS_METADATA[lens]?.label ?? lens)}</span>`)
             .join("")}</p>`
         : "";
-    return `<p class="muted">Overview — ${esc(model.change_graph.nodes.length)} changed file(s) across ${esc(overview.groups.length)} group(s); the file-level map exceeds the legibility budget, so groups lead. Click a group to zoom; hover for details.</p>\n${rendered.svg}\n${panels.join("\n")}\n${combinedLegend}`;
+    return `<p class="muted">Overview — ${esc(model.change_graph.nodes.length)} changed file(s) across ${esc(overview.groups.length)} area(s). Cards summarize what changed; click a card to zoom into topic groups and files; hover for details.</p>\n${rendered.svg}\n${panels.join("\n")}\n${combinedLegend}`;
   }
   return `${rendered.svg}\n${legend}<p class="muted">Click a node to filter the review queue to that file; hover for details.</p>`;
 }
@@ -379,9 +423,9 @@ function renderThreeQuestions(model: HumanReviewModel): string {
   const unbackedAnswer = unbacked.length === 0
     ? "none — no claim lacks backing evidence"
     : `${unbacked.length} claim(s) recorded without proof`;
-  return `<div class="three-questions" style="border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.6rem 0">
+  return `<div class="three-questions">
 <strong>What a human reviewer needs to know</strong>
-<ul style="margin:.3rem 0">
+<ul>
 <li><a href="#queue">Did the agent overreach its instructions?</a> — ${esc(overreachAnswer)}</li>
 <li><a href="#queue">Did it weaken tests to make them pass?</a> — ${weakening.length === 0 ? esc(weakeningAnswer) : weakeningAnswer}</li>
 <li><a href="#trust">Did it claim things it didn't do?</a> — ${esc(unbackedAnswer)}</li>

@@ -1,13 +1,13 @@
 # review-surfaces effectiveness scorecard
 
-Cases run: **32/32** (mock provider, full `all` pipeline over pinned real diffs).
+Cases run: **22/22** (mock provider, full `all` pipeline over pinned real diffs).
 
 | Metric | Result | Target |
 |---|---|---|
-| empty-queue rate (substantive diffs) | 0% (0/32) | 0% |
-| false-blocker rate (spec-less) | 0% (0/32) | 0% |
-| top item is code/impl | 84% (27/32) | high |
-| irrelevant (doc/generated/lock/binary) in top-5 | 0% (0/32) | 0% |
+| empty-queue rate (substantive diffs) | 0% (0/22) | 0% |
+| false-blocker rate (spec-less) | 0% (0/22) | 0% |
+| top item is code/impl | 91% (20/22) | high |
+| irrelevant (doc/generated/lock/binary) in top-5 | 0% (0/22) | 0% |
 | focus recall@5 (annotated) | 100% | high |
 
 ## Per-case
@@ -36,14 +36,4 @@ Cases run: **32/32** (mock provider, full `all` pipeline over pinned real diffs)
 | gson-graph | java | 3 | 0 | `extras/src/main/java/com/google/gson/graph/GraphAdapterBuilder.java` | code | no | no | 100% |
 | okhttp-interceptor | kotlin | 7 | 0 | `okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/http/RealInterceptorChain.kt` | code | no | no | 100% |
 | sinatra-version | ruby | 4 | 0 | `lib/sinatra/version.rb` | code | no | no | 100% |
-| swift-argument-parser-name-conformance | swift | 6 | 0 | `Sources/ArgumentParser/Parsable Properties/NameSpecification.swift` | code | no | no | 100% |
-| swift-argument-parser-invalid-cast | swift | 1 | 0 | `Sources/ArgumentParser/Utilities/Platform.swift` | code | no | no | 100% |
-| swift-argument-parser-flag-diagnostic | swift | 1 | 0 | `Sources/ArgumentParser/Parsable Properties/Flag.swift` | code | no | no | 100% |
-| swift-snapshot-record-api | swift | 4 | 0 | `Sources/SnapshotTesting/AssertSnapshot.swift` | code | no | no | 100% |
-| swift-snapshot-assert-source | swift | 9 | 0 | `Sources/SnapshotTesting/Snapshotting/String.swift` | code | no | no | 100% |
-| swift-snapshot-swift-testing-attachments | swift | 1 | 0 | `Sources/SnapshotTesting/AssertSnapshot.swift` | code | no | no | 100% |
-| swift-snapshot-swift-testing-weakening | swift | 6 | 0 | `Tests/SnapshotTestingTests/SwiftTestingTests.swift` | test | no | no | 100% |
-| swift-snapshot-testing-package-pin | swift | 3 | 0 | `Package.swift` | other | no | no | 100% |
-| alamofire-privacy-manifest | swift | 6 | 0 | `Source/PrivacyInfo.xcprivacy` | other | no | no | 100% |
-| swift-snapshot-testing-image-precision | swift | 20 | 0 | `Sources/SnapshotTesting/Snapshotting/NSBezierPath.swift` | code | no | no | — |
 

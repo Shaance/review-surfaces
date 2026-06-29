@@ -3,7 +3,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { AcaiSpecIndex, indexAcaiSpecs } from "../acai/acai";
-import type { CommandRule } from "../commands/classify";
 import { CommandTranscript, commandTranscriptInputDir, commandTranscriptOutputPath, indexCommandTranscriptFiles } from "../commands/transcripts";
 import { ReviewSurfacesConfig } from "../config/config";
 import { ConversationEvent, ConversationFormat } from "../conversation/events";
@@ -18,7 +17,7 @@ import { filterIgnoredDiff } from "../privacy/diff";
 import { loadPrivacyIgnore } from "../privacy/ignore";
 import { BLOCKED_REDACTION_KINDS, SecretRedaction, redactSecrets } from "../privacy/secrets";
 import { buildRepoIndex, RepoIndex } from "../indexer/indexer";
-import { aiMaxOutputTokens, providerMakesRemoteCall, type ProviderName } from "../llm/provider";
+import { providerMakesRemoteCall, type ProviderName } from "../llm/provider";
 import type { PacketRunMode } from "../schema/review-packet-contract";
 import {
   emptyTestResults,
@@ -30,9 +29,7 @@ import {
 import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, commitTimeAtRef, gitInfoDiagnostics, GitInfo, isCurrentStateHeadRequest, readFileAtRef, readFileBytesAtRef, resolveMergeBaseSha } from "./git";
 import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { computeDependencyFacts, DependencyFact } from "../risks/dependency-facts";
-import { computeSwiftPackageFacts } from "../risks/swift-package-facts";
 import { computeConfigFacts, ConfigFact } from "../risks/config-facts";
-import { computeAppleConfigFacts } from "../risks/apple-config-facts";
 import { LcovCoverage, looksLikeLcov, parseLcov } from "../tests-evidence/lcov";
 import { parseStructuredDiff } from "./diff-hunks";
 
@@ -147,10 +144,6 @@ export interface CollectionResult {
   feedback: FeedbackFile[];
   commandTranscripts: CommandTranscript[];
   commandTranscriptOutputPath: string;
-  // review-surfaces.COLLECTOR.9: validated wrapper command rules from config,
-  // carried so transcript classification (test-evidence) honors them. Optional so
-  // partial test fixtures need not set it; consumers read `?? []`.
-  commandRules?: CommandRule[];
   testResults: TestResults;
   repositoryFiles: string[];
   repoIndex: RepoIndex;
@@ -443,31 +436,13 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     structuredFactDiff.files.length > 0
       ? computeSemanticChangeFacts({ diff: structuredFactDiff, readBase: readBaseFact, readHead: readHeadFact })
       : emptySemanticChangeFacts();
-  const dependencyFacts = [
-    ...computeDependencyFacts({
-      changedFiles: structuredFactDiff.files.map((file) => ({ path: file.path, old_path: file.old_path })),
-      readBase: readBaseFact,
-      readHead: readHeadFact
-    }),
-    // review-surfaces.DEP_FACTS.6: SwiftPM/Xcode package facts must be on the COLLECTION
-    // too (not only the human-review rebuild), so the methodology audit can anchor/promote
-    // the dependency-rationale signal uniformly across packet surfaces.
-    ...computeSwiftPackageFacts({
-      changedFiles: structuredFactDiff.files.map((file) => ({ path: file.path, old_path: file.old_path })),
-      readBase: readBaseFact,
-      readHead: readHeadFact
-    })
-  ];
+  const dependencyFacts = computeDependencyFacts({
+    changedFiles: structuredFactDiff.files.map((file) => ({ path: file.path, old_path: file.old_path })),
+    readBase: readBaseFact,
+    readHead: readHeadFact
+  });
   const configFacts =
-    structuredFactDiff.files.length > 0
-      ? [
-          ...computeConfigFacts({ diff: structuredFactDiff, readBase: readBaseFact, readHead: readHeadFact }),
-          // review-surfaces.CONFIG_FACTS.4/.5: Apple config + project-structure facts on
-          // the COLLECTION too (not only the human-review rebuild), so every packet
-          // surface carries them uniformly.
-          ...computeAppleConfigFacts({ diff: structuredFactDiff, readBase: readBaseFact, readHead: readHeadFact })
-        ]
-      : [];
+    structuredFactDiff.files.length > 0 ? computeConfigFacts({ diff: structuredFactDiff, readBase: readBaseFact, readHead: readHeadFact }) : [];
   // R4.6 (mirror of provider.ts split): ALWAYS compute the secret-block signal
   // so a PEM/provider-token in the diff sets remote_provider_blocked regardless
   // of redact_secrets. Only substitute the redacted text onto disk when
@@ -675,13 +650,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     milestone,
     inputHashes,
     changedFileHashes,
-    flagInputHashes,
-    // Gate on the EFFECTIVE provider, not just the (mock-forced) signature provider: in
-    // `--review-scope pr` the whole-repo packet is collected with provider "mock" while the
-    // run still issues ai-sdk calls for the PR surface / narrative (gateProvider carries the
-    // requested provider). Fold the budget when EITHER is ai-sdk so a budget change busts the
-    // cache in pr scope too; mock-only runs (neither ai-sdk) stay byte-identical (Codex BENCH.2).
-    aiMaxOutputTokens: options.provider === "ai-sdk" || options.gateProvider === "ai-sdk" ? aiMaxOutputTokens() : undefined
+    flagInputHashes
   });
 
   // review-surfaces.QUALITY_GATE.2 (Codex round-4 finding 2): precompute the EXACT
@@ -809,7 +778,6 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     feedback,
     commandTranscripts,
     commandTranscriptOutputPath: commandsOutputPath,
-    commandRules: options.config.command_rules,
     testResults,
     repositoryFiles,
     repoIndex,
@@ -1142,11 +1110,6 @@ interface SignatureInput {
   inputHashes: ManifestInputHash[];
   changedFileHashes: ChangedFileHash[];
   flagInputHashes: FlagInputHash[];
-  // The live output-token budget (REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS), folded in ONLY for a
-  // remote provider so changing it busts the cache (a low-budget truncated run must not be
-  // reused after the user raises the budget). Undefined for mock/agent-file, so their
-  // signatures stay byte-identical to before (Codex BENCH.2 round-2).
-  aiMaxOutputTokens?: number;
 }
 
 // Deterministic sha256 over a SORTED, canonical fingerprint of the meaningful
@@ -1180,10 +1143,7 @@ function computeSignature(input: SignatureInput): string {
     // (no-flag) signature byte-identical to before this addition.
     flag_inputs: [...input.flagInputHashes]
       .sort((left, right) => compareStrings(left.kind, right.kind) || compareStrings(left.path, right.path))
-      .map((entry) => ({ kind: entry.kind, path: entry.path, hash: entry.hash })),
-    // Conditional spread: only a remote (ai-sdk) run passes a value, so mock/agent-file
-    // signatures stay byte-identical to before this addition (the key is omitted entirely).
-    ...(input.aiMaxOutputTokens != null ? { ai_max_output_tokens: input.aiMaxOutputTokens } : {})
+      .map((entry) => ({ kind: entry.kind, path: entry.path, hash: entry.hash }))
   };
   return crypto.createHash("sha256").update(JSON.stringify(fingerprint)).digest("hex");
 }

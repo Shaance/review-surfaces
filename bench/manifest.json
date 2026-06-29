@@ -1,5 +1,5 @@
 {
-  "description": "Pinned real PR-shaped diffs across languages for the review-surfaces effectiveness benchmark (BENCH.1 + BENCH.2). Each case pins a public repo + base/head commit SHAs; `node bench/run.mjs` clones the two commits on demand and runs the full `all` pipeline (mock provider, hermetic). `expected_focus` is OPTIONAL (adds the top-5 recall metric); the other metrics need no annotation. The seed leans on EXCLUSION-STRESS cases — source mixed with docs / lockfiles (go.sum, Cargo.lock, uv.lock, Package.resolved) / CI workflows / config / binary snapshots — so the floor's exclusion is exercised on real diffs. BENCH.2: the Swift/SwiftPM/iOS cases (lang \"swift\") span the six required shapes — a SwiftPM public-declaration change, app source + matching XCTest, a Swift Testing integration change, a package requirement/pin change, an entitlement/privacy-manifest config change, and a mixed source+tests+docs+generated-churn case — each carrying expected_focus where a single primary file is intended. Add cases freely; target 20-30.",
+  "description": "Pinned real PR-shaped diffs across languages for the review-surfaces effectiveness benchmark (BENCH.1). Each case pins a public repo + base/head commit SHAs; `node bench/run.mjs` clones the two commits on demand and runs the full `all` pipeline (mock provider, hermetic). `expected_focus` is OPTIONAL (adds the top-5 recall metric); the other metrics need no annotation. The seed leans on EXCLUSION-STRESS cases — source mixed with docs / lockfiles (go.sum, Cargo.lock, uv.lock) / CI workflows / config — so the floor's exclusion is exercised on real diffs. Add cases freely; target 20-30.",
   "cases": [
     {
       "id": "ky-network-error",
@@ -219,106 +219,6 @@
       "expect_no_blockers": true,
       "expected_focus": ["lib/sinatra/version.rb"],
       "note": "version source + CHANGELOG.md + VERSION file (both excluded)"
-    },
-    {
-      "id": "swift-argument-parser-name-conformance",
-      "lang": "swift",
-      "repo": "https://github.com/apple/swift-argument-parser.git",
-      "base": "6ea3782fb94216b4eb34b89c23501acf64f818eb",
-      "head": "af51a49d377f2876edfb431747e9f6164e9a536d",
-      "expect_no_blockers": true,
-      "expected_focus": ["Sources/ArgumentParser/Parsable Properties/NameSpecification.swift"],
-      "note": "BENCH.2 shape: SwiftPM public-declaration change AND app source + matching XCTest. NameSpecification ExpressibleByStringLiteral conformance (#745) — public decl in NameSpecification.swift with NameSpecificationTests.swift; the docc article (.md) and tests stay out of the top-5"
-    },
-    {
-      "id": "swift-argument-parser-invalid-cast",
-      "lang": "swift",
-      "repo": "https://github.com/apple/swift-argument-parser.git",
-      "base": "ca37474853a4b5f59a22c74bfdd449b1f6bc4cc2",
-      "head": "955d761a94362fc83c2ac763184ddeee62db6862",
-      "expect_no_blockers": true,
-      "expected_focus": ["Sources/ArgumentParser/Utilities/Platform.swift"],
-      "note": "Swift library source change (make invalid cast explicit, #913) — single-file impl change, the cold-start floor must still queue it"
-    },
-    {
-      "id": "swift-argument-parser-flag-diagnostic",
-      "lang": "swift",
-      "repo": "https://github.com/apple/swift-argument-parser.git",
-      "base": "63958cf15f2db37de51bf91fa9d7b444b2033db7",
-      "head": "a544331c431f0e7aabbd2b3a50fee2e43c6526e6",
-      "expect_no_blockers": true,
-      "expected_focus": ["Sources/ArgumentParser/Parsable Properties/Flag.swift"],
-      "note": "Swift source change — improve @Flag Bool? diagnostic (#892). This pinned range is the source-only commit (Flag.swift); verified by clone, no test file is in base..head"
-    },
-    {
-      "id": "swift-snapshot-record-api",
-      "lang": "swift",
-      "repo": "https://github.com/pointfreeco/swift-snapshot-testing.git",
-      "base": "bf8d8c27f0f0c6d5e77bff0db76ab68f2050d15d",
-      "head": "6bb6c9ae9970387eeb4b8394c34bd8c350030500",
-      "expect_no_blockers": true,
-      "expected_focus": ["Sources/SnapshotTesting/AssertSnapshot.swift", "Sources/SnapshotTesting/Internal/Deprecations.swift"],
-      "note": "BENCH.2 shape: SwiftPM public-declaration/deprecation change. Introduce record: Record?, deprecate Bool? (#1057) — new public API in AssertSnapshot.swift plus the deprecation shims in Deprecations.swift"
-    },
-    {
-      "id": "swift-snapshot-assert-source",
-      "lang": "swift",
-      "repo": "https://github.com/pointfreeco/swift-snapshot-testing.git",
-      "base": "cfa6cc9566c3ca1ad14a8237d968f7f5d561ad8f",
-      "head": "af9607f9d9ca0f6dc361337faa45f96b74888567",
-      "expect_no_blockers": true,
-      "expected_focus": ["Sources/SnapshotTesting/AssertSnapshot.swift", "Sources/SnapshotTesting/Diffing.swift"],
-      "note": "BENCH.2 shape: MIXED source+tests+docs+generated-churn (#1064). 8 Swift source files + SwiftTestingTests.swift + a MigratingTo1.19 docc article + five binary .png snapshots and a .txt snapshot; the source must rank top while the doc and the generated/binary snapshots stay out of the top-5"
-    },
-    {
-      "id": "swift-snapshot-swift-testing-attachments",
-      "lang": "swift",
-      "repo": "https://github.com/pointfreeco/swift-snapshot-testing.git",
-      "base": "8ad49bfec87d8c07cbcca5461c6b0486577f24a3",
-      "head": "05b6f05b55ff9e2dcdcc21ac78c6ba81ea624791",
-      "expect_no_blockers": true,
-      "expected_focus": ["Sources/SnapshotTesting/AssertSnapshot.swift"],
-      "note": "BENCH.2 shape: Swift Testing integration change (native image attachments, #1067) — single-file change to the Swift Testing surface in AssertSnapshot.swift. Distinct from the Swift Testing WEAKENING case below"
-    },
-    {
-      "id": "swift-snapshot-swift-testing-weakening",
-      "lang": "swift",
-      "repo": "https://github.com/pointfreeco/swift-snapshot-testing.git",
-      "base": "0a18d398dcfeb3dca6f77886d781eb3540689e37",
-      "head": "b3458b1fe9230deabd20a6f87f40205f04d3d363",
-      "expect_no_blockers": true,
-      "expected_focus": ["Tests/SnapshotTestingTests/SwiftTestingTests.swift"],
-      "note": "BENCH.2 shape: Swift Testing weakening. TestScoping refactor (#965) that removes the `@Test func testSnapshotFailure()` from the Swift Testing `@Suite` (folds its withKnownIssue assertion into testSnapshot). The deterministic test-weakening detector (SEMANTIC_DIFF.6) flags `removed_test_method` on SwiftTestingTests.swift and LEADS the queue with 'Test weakening: removed test method' so a reviewer confirms coverage moved and was not silently dropped — top item is the weakened test (role `test`, the reviewed subject, not a miss); the broad TestScoping churn (.github/workflows/ci.yml, Package@swift-6.0.swift, other suites) stays out of the top-5"
-    },
-    {
-      "id": "swift-snapshot-testing-package-pin",
-      "lang": "swift",
-      "repo": "https://github.com/pointfreeco/swift-snapshot-testing.git",
-      "base": "e8192447ed7fd78c50f14ea74758ebabc0c57770",
-      "head": "ad5e3190cc63dc288f28546f9c6827efc1e9d495",
-      "expect_no_blockers": true,
-      "expected_focus": ["Package.swift", "Package.resolved"],
-      "allow_top_roles": ["artifact"],
-      "note": "BENCH.2 shape: package requirement/pin change. Bump swift-syntax to latest (#1074) — the requirement range in Package.swift and Package@swift-5.9.swift plus the resolved pin in Package.resolved (classified as a SwiftPM lock artifact). The dependency facts surface the manifest requirement first (Package.swift leads) and the resolved pin (Package.resolved: 602.0.0 → 603.0.0) as a dep fact, NOT raw noise — so `allow_top_roles: [artifact]` opts the lock out of the irrelevant-top check for THIS subject-is-the-pin case while every other case keeps strict lock exclusion. Never a fabricated blocker"
-    },
-    {
-      "id": "alamofire-privacy-manifest",
-      "lang": "swift",
-      "repo": "https://github.com/Alamofire/Alamofire.git",
-      "base": "0a8b4ca31ec9b7af7b9f1256abab0f983292e49c",
-      "head": "7eb18428e283dfbbee4f32c33b8c873ed0146011",
-      "expect_no_blockers": true,
-      "expected_focus": ["Source/PrivacyInfo.xcprivacy"],
-      "note": "BENCH.2 shape: entitlement/privacy-manifest config change. Add privacy manifest (#3792) — a new Source/PrivacyInfo.xcprivacy (declares NSPrivacyAccessedAPICategorySystemBootTime) plus the .pbxproj reference and the Package.swift resources entry; the Apple config/privacy facts must surface the manifest, all config (no impl source), so this is a config-shaped diff, not a fabricated blocker"
-    },
-    {
-      "id": "swift-snapshot-testing-image-precision",
-      "lang": "swift",
-      "repo": "https://github.com/pointfreeco/swift-snapshot-testing.git",
-      "base": "f13a1348a59013282313185003614d90a7d7571c",
-      "head": "36694f3f73d272dc311fbfd271f80bf0ac457d21",
-      "expect_no_blockers": true,
-      "note": "BENCH.2 shape: mixed source+tests+binary-snapshot churn (exclusion-stress). Perceptual image precision + 90% speed improvement (#628) — 14 Snapshotting/*.swift source files + a test plus three regenerated .png/binary snapshot artifacts; intentionally UNANNOTATED (broad multi-file change), the bar is that the three generated binaries never leak into the top-5 and the queue is neither empty nor a fabricated blocker"
     }
   ]
 }

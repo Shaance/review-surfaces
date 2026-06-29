@@ -500,18 +500,3 @@ test("review-surfaces.DISTRIBUTION.15 the README documents CI consumption: an ac
     assert.match(exitSource, new RegExp(`:\\s*${code}\\b`), `exit-codes.ts defines code ${code}`);
   }
 });
-
-// review-surfaces.DISTRIBUTION.16: the docs publish an honest Swift/iOS support
-// matrix, the macOS execution boundary, the wrapper-rule example, and the bounds.
-test("review-surfaces.DISTRIBUTION.16 README + docs publish the Swift/iOS support matrix and bounds", () => {
-  const readme = read("README.md");
-  assert.match(readme, /Swift and iOS support/, "README has a Swift/iOS support section");
-  assert.match(readme, /Requires macOS\/Xcode/, "README distinguishes the macOS execution boundary");
-  assert.match(readme, /command_rules/, "README documents the wrapper-rule config");
-
-  const swiftDoc = read("docs/swift-ios-support.md");
-  assert.match(swiftDoc, /Support matrix/, "the Swift/iOS doc has a support matrix");
-  assert.match(swiftDoc, /Known bounds/, "the Swift/iOS doc states the parser bounds plainly");
-  assert.match(swiftDoc, /no compiler|type checker/i, "the bounds name the no-compiler boundary");
-  assert.match(swiftDoc, /binary plist/i, "the bounds name binary-plist diagnostic-only handling");
-});

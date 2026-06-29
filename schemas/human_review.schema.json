@@ -220,11 +220,14 @@
           "items": {
             "type": "object",
             "additionalProperties": true,
-            "required": ["from", "to", "kind"],
+            "required": ["from", "to", "kind", "summary", "insight_source"],
             "properties": {
               "from": { "type": "string" },
               "to": { "type": "string" },
-              "kind": { "enum": ["existing", "new", "removed"] }
+              "kind": { "enum": ["existing", "new", "removed"] },
+              "summary": { "type": "string" },
+              "detail": { "type": "string" },
+              "insight_source": { "enum": ["fallback", "provider"] }
             }
           }
         },
@@ -236,7 +239,10 @@
             "required": ["name", "paths"],
             "properties": {
               "name": { "type": "string" },
-              "paths": { "type": "array", "items": { "type": "string" } }
+              "paths": { "type": "array", "items": { "type": "string" } },
+              "label": { "type": "string" },
+              "summary": { "type": "string" },
+              "insight_source": { "enum": ["fallback", "provider"] }
             }
           }
         },
@@ -250,15 +256,32 @@
               "items": {
                 "type": "object",
                 "additionalProperties": true,
-                "required": ["name", "file_count", "cluster_count", "churn_added", "churn_removed", "queue_count"],
+                "required": ["name", "file_count", "cluster_count", "churn_added", "churn_removed", "summary", "insight_source", "queue_count"],
                 "properties": {
                   "name": { "type": "string" },
                   "file_count": { "type": "integer", "minimum": 0 },
                   "cluster_count": { "type": "integer", "minimum": 0 },
                   "churn_added": { "type": "integer", "minimum": 0 },
                   "churn_removed": { "type": "integer", "minimum": 0 },
+                  "summary": { "type": "string" },
+                  "detail": { "type": "string" },
+                  "insight_source": { "enum": ["fallback", "provider"] },
                   "queue_count": { "type": "integer", "minimum": 0 },
-                  "lens": { "$ref": "#/$defs/riskLens" }
+                  "lens": { "$ref": "#/$defs/riskLens" },
+                  "topics": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "required": ["label", "summary", "paths", "insight_source"],
+                      "properties": {
+                        "label": { "type": "string" },
+                        "summary": { "type": "string" },
+                        "paths": { "type": "array", "items": { "type": "string" } },
+                        "insight_source": { "enum": ["fallback", "provider"] }
+                      }
+                    }
+                  }
                 }
               }
             },
@@ -268,13 +291,16 @@
               "items": {
                 "type": "object",
                 "additionalProperties": true,
-                "required": ["from", "to", "weight", "has_new", "has_removed"],
+                "required": ["from", "to", "weight", "has_new", "has_removed", "summary", "insight_source"],
                 "properties": {
                   "from": { "type": "string" },
                   "to": { "type": "string" },
                   "weight": { "type": "integer", "minimum": 1 },
                   "has_new": { "type": "boolean" },
-                  "has_removed": { "type": "boolean" }
+                  "has_removed": { "type": "boolean" },
+                  "summary": { "type": "string" },
+                  "detail": { "type": "string" },
+                  "insight_source": { "enum": ["fallback", "provider"] }
                 }
               }
             }
@@ -480,33 +506,6 @@
       "additionalProperties": true,
       "required": ["schema_changes", "api_changes", "test_weakening"],
       "properties": {
-        "swift_declaration_changes": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": true,
-            "required": ["path", "name", "kind", "change", "visibility", "breaking", "detail"],
-            "properties": {
-              "path": { "type": "string" },
-              "name": { "type": "string" },
-              "kind": { "type": "string" },
-              "change": { "enum": ["added", "removed", "modified"] },
-              "visibility": { "type": "string" },
-              "breaking": { "type": "boolean" },
-              "detail": { "type": "string" },
-              "used_by": {
-                "type": "object",
-                "additionalProperties": true,
-                "required": ["count", "top"],
-                "properties": {
-                  "count": { "type": "integer" },
-                  "top": { "type": "array", "items": { "type": "string" } },
-                  "truncated": { "type": "boolean" }
-                }
-              }
-            }
-          }
-        },
         "schema_changes": {
           "type": "array",
           "items": {
@@ -581,7 +580,7 @@
             "additionalProperties": true,
             "required": ["kind", "path", "detail"],
             "properties": {
-              "kind": { "enum": ["deleted_test_file", "removed_test_method", "skipped_test", "removed_assertion", "regenerated_snapshot"] },
+              "kind": { "enum": ["deleted_test_file", "skipped_test", "removed_assertion", "regenerated_snapshot"] },
               "path": { "type": "string" },
               "detail": { "type": "string" }
             }

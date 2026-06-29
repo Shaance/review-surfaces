@@ -439,7 +439,7 @@ test("review-surfaces.SEMANTIC_DIFF.4 facts carry concrete language into the que
     api_changes: [
       { path: "src/api.ts", exports_added: [], exports_removed: ["legacyExport"], signatures_changed: [] }
     ],
-    test_weakening: [], swift_declaration_changes: []
+    test_weakening: []
   };
   const model = buildHumanReview({
     packet: packetFixture(),
@@ -3797,54 +3797,6 @@ test("required PR risk checks stay visible when the test plan is capped", () => 
   assert.equal(model.test_plan.find((item) => item.maps_to_risks.includes("PR-RISK-CI"))?.kind, "manual");
 });
 
-test("untested_changed_impl test-plan item follows the risk's per-file state (add / run / mixed)", () => {
-  const packet = packetFixture();
-  packet.evaluation.results = [];
-  packet.evaluation.acai_coverage = {};
-  packet.risks.items = [];
-  packet.risks.missing_automatic_tests = [];
-  packet.risks.missing_manual_checks = [];
-
-  const surface = prSurfaceFixture();
-  surface.risks.candidates = [
-    {
-      ...prRiskFixture("untested_changed_impl"),
-      id: "PR-RISK-ADD",
-      evidence: [fileEvidence("src/human/add.ts", "no test maps to its area")],
-      suggested_checks: ["Add a test covering the change to src/human/add.ts."]
-    },
-    {
-      ...prRiskFixture("untested_changed_impl"),
-      id: "PR-RISK-RUN",
-      evidence: [fileEvidence("src/human/run.ts", "existing test not run at head")],
-      suggested_checks: ["Run the existing test(s) mapped to HUMAN_REVIEW at the current head and record the transcript (review-surfaces run -- <your test command>)."]
-    },
-    {
-      ...prRiskFixture("untested_changed_impl"),
-      id: "PR-RISK-MIXED",
-      evidence: [fileEvidence("src/human/mixed.ts", "one area covered, one not")],
-      suggested_checks: ["Run the existing test(s) mapped to CORE at the current head and record the transcript, and add a test covering FOO."]
-    }
-  ];
-
-  const model = buildHumanReview({ packet, prSurface: surface });
-  const itemFor = (riskId: string) => model.test_plan.find((item) => item.maps_to_risks.includes(riskId));
-
-  const add = itemFor("PR-RISK-ADD");
-  assert.ok(add && /^add a test covering/i.test(add.scenario), "add-state scenario says ADD");
-  assert.ok(add?.suggested_file, "add-state names a file to create");
-
-  const run = itemFor("PR-RISK-RUN");
-  assert.ok(run && /^run the existing test/i.test(run.scenario), "run-state scenario says RUN");
-  assert.ok(!/add a test/i.test(run.scenario), "pure run-state does not also say add");
-  assert.equal(run?.suggested_file, undefined, "run-state never fabricates a test file path");
-  assert.equal(run?.command, "pnpm run test", "run-state uses the generic suite command, not a fabricated path");
-
-  const mixed = itemFor("PR-RISK-MIXED");
-  assert.ok(mixed && /run the existing test/i.test(mixed.scenario) && /add a test/i.test(mixed.scenario), "mixed-state keeps BOTH run and add actions");
-  assert.equal(mixed?.suggested_file, undefined, "mixed-state does not fabricate a test file path");
-});
-
 test("duplicate PR risk drafts do not consume the cap before distinct focused gaps", () => {
   const packet = packetFixture();
   packet.risks.items = [];
@@ -4196,35 +4148,6 @@ test("review-surfaces.HUMAN_REVIEW.23 reviewer questions strip ANY trailing sent
       assert.equal(rendered.includes(doubled), false, `rendered surface must not contain '${doubled}'`);
     }
   }
-});
-
-test("an unmapped file flagged by both eval-overreach and PR out-of-scope yields ONE intent-mismatch item", () => {
-  // Canonical mapping-gap dedup: the same path must not produce two findings with the
-  // same action (one "not mapped to a requirement group" + one "not mapped to a review
-  // area"). The eval-overreach finding is kept; the redundant out-of-scope item is
-  // suppressed.
-  const packet = packetFixture();
-  packet.evaluation.overreach = [
-    {
-      requirement_id: "OVERREACH-001",
-      status: "overreach",
-      summary: "Changed file does not map to an Acai requirement group: scripts/release.sh",
-      evidence: [fileEvidence("scripts/release.sh", "Changed file did not map to a known requirement group.", "medium")],
-      missing_evidence: [],
-      review_focus: "Confirm whether this file is in scope.",
-      confidence: "medium"
-    }
-  ];
-  const prSurface = prSurfaceFixture();
-  prSurface.scope.changed_files.push({ path: "scripts/release.sh", status: "M", areas: [], role: "implementation", added_lines: 3, deleted_lines: 1 });
-  prSurface.scope.out_of_scope_changed_files.push({ path: "scripts/release.sh", status: "M", reason: "unmapped" });
-
-  const model = buildHumanReview({ packet, prSurface, diff: structuredDiffFixture() });
-
-  const items = model.intent_mismatch.possible_overreach.filter((item) =>
-    (item.evidence ?? []).some((ref) => ref.path === "scripts/release.sh") || /scripts\/release\.sh/.test(item.summary)
-  );
-  assert.equal(items.length, 1, "scripts/release.sh is flagged exactly once, not twice");
 });
 
 test("review-surfaces.HUMAN_REVIEW.23 an empty-risk-id queue item omits the risk trailer entirely, never a bare 'Risk: none' / 'Risks: none'", () => {
@@ -5084,55 +5007,4 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: a doc with a test-shaped basen
   if (retry) {
     assert.equal(retry.estimated_review_effort, "quick", "test/retry.ts is still recognized as a test");
   }
-});
-
-// review-surfaces.COLLECTOR.9 — the trust audit must recognize a configured wrapper
-// as local validation the SAME way the risks model did when it built the claimed
-// TEST-CMD row; otherwise a wrapper validation claim silently vanishes from
-// "Claimed but not verified" when no transcript was captured.
-test("review-surfaces.COLLECTOR.9 trust audit surfaces a configured-wrapper claim only when command_rules are threaded", () => {
-  const base = packetFixture();
-  const wrapperItem = {
-    id: "TEST-CMD-WRAP",
-    kind: "claimed" as const,
-    summary: "Command invoked by this run context: ./scripts/check-ios.sh",
-    evidence: [commandEvidence("./scripts/check-ios.sh", "Invocation recorded without output.", "medium")]
-  };
-  const packet = { ...base, risks: { ...base.risks, test_evidence: [wrapperItem] } };
-
-  const ruleBlind = buildHumanReview({ packet });
-  assert.ok(
-    !ruleBlind.trust_audit.claimed_not_verified.some((claim) => claim.claim.includes("check-ios.sh")),
-    "rule-blind: an unrecognized wrapper is not treated as a validation claim"
-  );
-
-  const withRules = buildHumanReview({
-    packet,
-    commandRules: [
-      { id: "ios", match: "exact" as const, command: "./scripts/check-ios.sh", classification: "broad_test" as const }
-    ]
-  });
-  assert.ok(
-    withRules.trust_audit.claimed_not_verified.some((claim) => claim.claim.includes("check-ios.sh")),
-    "with command_rules: the configured wrapper claim surfaces as claimed-but-not-verified"
-  );
-});
-
-// review-surfaces.COLLECTOR.9 — command_rules change the rendered trust audit (which
-// wrapper claims surface), so the human-review cache signature must fold them in;
-// otherwise a config-only command_rules change reuses a stale human_review.json on
-// standalone surfaces such as `trust`.
-test("review-surfaces.COLLECTOR.9 human review cache signature busts when command_rules change", () => {
-  const noRules = humanReviewConfigSignature(undefined, []);
-  const withRule = humanReviewConfigSignature(undefined, [
-    { id: "ios", match: "exact" as const, command: "./scripts/check-ios.sh", classification: "broad_test" as const }
-  ]);
-  assert.notEqual(noRules, withRule, "a command_rules change must change the signature");
-  // Deterministic: the same rules always produce the same signature.
-  assert.equal(
-    humanReviewConfigSignature(undefined, [
-      { id: "ios", match: "exact" as const, command: "./scripts/check-ios.sh", classification: "broad_test" as const }
-    ]),
-    withRule
-  );
 });

@@ -50,7 +50,7 @@ export function changeMapTitle(level: ChangeMapLevel): string {
 export interface ChangeMapDetailEmbed {
   group: string;
   file_count: number;
-  cluster_count: number;
+  topic_count: number;
   body?: string;
   blocked: boolean;
 }
@@ -61,7 +61,7 @@ export function changeMapDetailEmbeds(graph: ChangeGraph): ChangeMapDetailEmbed[
     const base = {
       group: view.group,
       file_count: group?.file_count ?? 0,
-      cluster_count: group?.cluster_count ?? 0
+      topic_count: view.topics.length > 0 ? view.topics.length : group?.cluster_count ?? 0
     };
     const rendered = renderChangeMapMermaid(detailViewSubGraph(graph, view), { stubs: view.stubs });
     if (!rendered) {

@@ -60,28 +60,19 @@ Static collection and analysis must work anywhere the Node CLI works. Running `x
 
 ## Progress
 
-- [x] Plan reviewed and accepted.
-- [x] Phase 0 — promote requirements and stage the strict gate.
-- [x] Phase 1 — Swift/Xcode file roles, command evidence, and Apple-sensitive artifact handling.
-- [x] Phase 2 — Swift declaration facts and XCTest/Swift Testing weakening.
-- [x] Phase 3 — Apple project model and target-aware Swift symbol graph.
-- [x] Phase 4a — SwiftPM and Xcode package facts.
-- [x] Phase 4b — iOS/Xcode privacy, capability, build-setting, target, and scheme facts.
-- [x] Phase 5 — full-surface integration, eval coverage, public benchmark, docs, dogfood, and release.
-- [x] Final `quality_gate.allow_missing: []` and empty-diff `pnpm run local-gate` green.
+- [ ] Plan reviewed and accepted.
+- [ ] Phase 0 — promote requirements and stage the strict gate.
+- [ ] Phase 1 — Swift/Xcode file roles, command evidence, and Apple-sensitive artifact handling.
+- [ ] Phase 2 — Swift declaration facts and XCTest/Swift Testing weakening.
+- [ ] Phase 3 — Apple project model and target-aware Swift symbol graph.
+- [ ] Phase 4a — SwiftPM and Xcode package facts.
+- [ ] Phase 4b — iOS/Xcode privacy, capability, build-setting, target, and scheme facts.
+- [ ] Phase 5 — full-surface integration, eval coverage, public benchmark, docs, dogfood, and release.
+- [ ] Final `quality_gate.allow_missing: []` and post-merge empty-diff `pnpm run local-gate` green.
 
 ## Surprises & Discoveries
 
 Record implementation findings here as work proceeds. Each entry must include the evidence path or command that established it and any change made to this contract.
-
-- **Phase 0 (gate mechanic).** In the empty-diff self-dogfood (`HEAD..HEAD`) there are no changed files, so a non-test-only ACID can only reach `partial` (test-evidence-only, via an exact-ACID-named test) — never `satisfied` (which needs a CHANGED implementation file). The gate counts only `missing`, so `partial` passes. This is why every shipped ACID needs an exact-ACID-named test and each phase removes its own ACIDs from `allow_missing`. Evidence: `src/evaluation/evaluate.ts` `evaluateRequirement` branches + `src/core/gate.ts` `countMissing`.
-- **Phase 0 (worktree).** Two `claude/*` worktrees exist at the same commit; all work landed in `fervent-dewdney-e5cd14` (the harness primary dir). The contract copy lives at `docs/history/IOS_SWIFT_SUPPORT_GOAL.md`.
-- **Phase 1 (command_rules wiring).** `command_rules` are folded into the cache signature for free because `collect.ts` already hashes the loaded config file's content. Built-in classification always wins for directly-recognized commands (a rule can never reclassify `xcodebuild build`); rules only classify wrappers the built-ins do not recognize. Threaded into the test-evidence consumers (`risks.ts`, `pr-risks.ts`, `methodology/cross-reference.ts`).
-- **Phase 1 (test weakening reuse).** Because Phase 1's shared `isTestPath` now recognizes Swift test files, the existing `detectTestWeakening` already fires `deleted_test_file` on a deleted Swift test; Phase 2 only needs Swift-aware skip/assertion patterns. The human `semanticChangeFacts` schema is `additionalProperties: true`, and Swift weakening maps onto the existing `kind` enum, so Phase 2 needs minimal schema churn.
-- **Phase 2 (TS flow-narrowing in the lexer).** A closure that reassigns the lexer `state` variable defeated TS control-flow narrowing of the discriminated union; rewrote the loop as a `switch (state.kind)` with direct assignment (no `enter` closure) and an explicit `const depth: number` to break a circular flow-type inference.
-- **Phase 3 (symbol graph: module visibility).** Strict per-target uniqueness made a test target's `@testable import App` invisible to App's types, so test→impl attribution failed. Fixed by resolving references against a file's VISIBLE modules — own module + transitive target deps + `import`ed target names — and emitting an edge only when the union of declarers across those modules is exactly one file. A repo with no project model falls back to a single implicit module (repo-wide uniqueness), which is conservative.
-- **Phase 3 (macOS case-insensitive FS).** The eval fixture's `Tests/AppTests/` collapsed into the existing lowercase `tests/` dir on macOS, making the persisted path platform-dependent; fixtures now use a non-colliding `AppTests/` directory (the `…Tests.swift` basename is what classifies the test, so the directory name is free).
-- **Phase 3 (Phase 3 is inert on this repo).** `review-surfaces` has zero committed `.swift`/Apple project files, so `buildSwiftGraphForPacket` returns undefined, `apple_project.json` is never written, and the empty-diff self-dogfood + determinism output is byte-identical to before — the Swift graph only activates on actual Swift repos.
 
 ## Decision Log
 
@@ -1040,75 +1031,3 @@ Complete after implementation with:
 - parser bounds discovered;
 - accepted deferrals and the evidence for them;
 - any architecture decision that changed from this contract.
-
-### Result (2026-06-18)
-
-- **Shipped version 0.3.0.** Implemented on branch `claude/fervent-dewdney-e5cd14`
-  as six phase commits (one per phase; Phase 0+1 share a commit because they
-  entangle `review-surfaces.config.yaml`):
-  - Phase 0+1 — spec promotion + Swift/Xcode foundation
-  - Phase 2 — Swift declaration + test-weakening facts
-  - Phase 3 — Apple project model + target-aware Swift symbol graph
-  - Phase 4a — SwiftPM/Xcode package facts
-  - Phase 4b — Apple config/structure facts
-  - Phase 5 — integration, benchmark, docs, release
-- **All 12 ACIDs landed with exact-ACID tests.** `quality_gate.allow_missing`
-  returned to `[]` with `max_missing: 0`. The full local gate is green: 1322
-  tests pass, determinism-check passes (byte-identical in repo and pr scope),
-  pack smoke passes (the tarball installs and runs outside the repo with the new
-  parser modules), and the strict empty-diff self-dogfood passes.
-- **Seeded eval scoreboard** gained six Swift/iOS fact classes
-  (`swift_contract_change`, `swift_test_weakening`,
-  `swift_changed_test_connection`, `swiftpm_dependency_change`,
-  `ios_privacy_capability_change`, `xcode_test_structure_change`) plus three
-  benign negatives (`benign_swift_body_edit`, `benign_package_resolved_origin`,
-  `benign_pbxproj_churn`), each passing 1/1.
-- **Public benchmark** gained six pinned Swift/SwiftPM cases
-  (`apple/swift-argument-parser`, `pointfreeco/swift-snapshot-testing`) by
-  immutable commit SHA.
-
-### Parser bounds discovered / confirmed
-
-- TypeScript control-flow narrowing breaks when a discriminated-union variable is
-  reassigned through a closure — the Swift lexer uses a `switch` with direct
-  assignment instead.
-- macOS's case-insensitive filesystem collapses `Tests/` into a sibling `tests/`,
-  so test fixtures use a non-colliding directory; the `…Tests.swift` basename is
-  what classifies a Swift test, so the directory name is free.
-- Strict per-target symbol uniqueness hid a test target's `@testable import App`;
-  the graph resolves references against a file's VISIBLE modules (own + transitive
-  deps + imported target names) and falls back to one implicit module (repo-wide
-  uniqueness, conservative) when no project model is present.
-
-### Accepted deferrals (evidence: this was an offline single-session implementation)
-
-- **Private dogfood (MenuWhisper / HanziDeck) not run.** No access to the private
-  repositories in this environment; per D9 their source/projects/diffs are never
-  copied here. The acceptance matrices remain the owner's macOS dogfood step.
-- **On-demand public benchmark (`node bench/run.mjs`) — deferred offline, RESOLVED
-  2026-06-20.** It clones public repos over the network, so the offline implementation
-  session could not run it; the cases were pinned and structurally validated then. With
-  network available the benchmark was subsequently run end-to-end: BENCH.2 now pins ten
-  Swift/SwiftPM/iOS cases spanning all six required shapes — including a real Swift Testing
-  weakening case (a removed `@Test` the test-weakening detector flags) — each annotated
-  `expected_focus` except the deliberately-broad exclusion-stress case, and the run holds
-  the quality bar on them — zero empty queues, zero fabricated blockers, zero irrelevant
-  generated/lock/binary entries in the top-5, and 100% expected-focus recall on the
-  annotated cases — while every pre-existing case kept its pass outcome. The CI gate
-  remains the seeded eval (network-free), which covers every shipped Swift/iOS fact class.
-- All explicit deferrals from the "Explicit deferrals" section above hold
-  unchanged (no iOS client, no simulator execution, no `.xcresult`/SourceKit,
-  binary-plist decoding diagnostic-only, etc.).
-
-### Decisions that held / refined from the contract
-
-- D8 (additive artifacts) was honored by adding a `swift_declaration_changes`
-  array to `SemanticChangeFacts` (the human `semanticChangeFacts` schema is
-  `additionalProperties: true`, and Swift test-weakening maps onto the existing
-  `kind` enum, so the schema change was small) and by reusing the `DependencyFact`
-  / `ConfigFact` shapes for Swift package and config facts rather than new
-  surfaces — config facts now route per-kind via `configFactLens`.
-- The whole uplift is inert on a non-Swift repository: with no committed Swift or
-  Apple project files, the Swift graph is `undefined`, no `apple_project.json` is
-  written, and `review-surfaces`'s own self-dogfood output is byte-identical to
-  before — Swift behavior only activates on actual Swift repositories.

@@ -8,7 +8,6 @@ import {
   agentFileProvider,
   enrichPacket,
   mockProvider,
-  modelOutputCeiling,
   providerFor,
   ReasoningProvider,
   resolveModel,
@@ -346,71 +345,6 @@ test("ai-sdk live branch applies enrichment when generateObject resolves an obje
     const result = await provider.generateStructured("enrichment", "prompt", SCHEMA);
     assert.deepEqual(result, { ok: true, data: { review_focus: ["X"] } });
   });
-});
-
-test("ai-sdk live branch budgets generateObject output tokens (default 8192, env-overridable) so a reasoning model's thinking does not truncate the JSON", async () => {
-  // A reasoning model (the default gemini-2.5-flash thinks by default) spends a large,
-  // variable share of the output budget on reasoning tokens before the JSON; the original
-  // 2_048 cap truncated the structured response mid-object (finishReason "length") and the
-  // whole enrichment silently fell back to deterministic (live iOS dogfood finding).
-  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
-    // Clear any inherited override so the default assertion is not flaky in a dev/CI shell
-    // that set REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS for live dogfood (Codex BENCH.2 round-4).
-    await withEnv("REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS", undefined, async () => {
-      let captured: { maxOutputTokens?: number } = {};
-      const provider = aiSdkProvider({
-        aiModuleLoader: fakeAiLoader(async (args: { maxOutputTokens?: number }) => {
-          captured = args;
-          return { object: { review_focus: ["X"] } };
-        })
-      });
-      const result = await provider.generateStructured("enrichment", "prompt", SCHEMA);
-      assert.equal(result.ok, true);
-      assert.equal(captured.maxOutputTokens, 8192, "default output budget leaves room for reasoning + the JSON");
-    });
-
-    // A positive NON-INTEGER override is malformed (token budgets are integer counts) and must
-    // fall back to the default, not forward a fractional value to the SDK (Codex BENCH.2 round-4).
-    await withEnv("REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS", "8192.5", async () => {
-      let captured: { maxOutputTokens?: number } = {};
-      const provider = aiSdkProvider({
-        aiModuleLoader: fakeAiLoader(async (args: { maxOutputTokens?: number }) => {
-          captured = args;
-          return { object: {} };
-        })
-      });
-      await provider.generateStructured("enrichment", "prompt", SCHEMA);
-      assert.equal(captured.maxOutputTokens, 8192, "a fractional override is rejected, falling back to the default");
-    });
-  });
-
-  // REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS overrides the budget for unusually large packets.
-  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
-    await withEnv("REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS", "20000", async () => {
-      let captured: { maxOutputTokens?: number } = {};
-      const provider = aiSdkProvider({
-        aiModuleLoader: fakeAiLoader(async (args: { maxOutputTokens?: number }) => {
-          captured = args;
-          return { object: {} };
-        })
-      });
-      await provider.generateStructured("enrichment", "prompt", SCHEMA);
-      assert.equal(captured.maxOutputTokens, 20000, "env override is honored");
-    });
-  });
-});
-
-test("modelOutputCeiling caps the original Claude 3 family at 4096 and leaves 3.5+/gemini/gpt uncapped (Codex BENCH.2 round-4)", () => {
-  // The raised 8192 default (and any higher override) must be clamped DOWN to a lower-limit
-  // model's hard API cap so an explicit lower-limit model choice does not turn into a request error.
-  assert.equal(modelOutputCeiling(resolveModel("anthropic:claude-3-haiku-20240307")), 4096);
-  assert.equal(modelOutputCeiling(resolveModel("anthropic:claude-3-opus-20240229")), 4096);
-  assert.equal(modelOutputCeiling(resolveModel("anthropic:claude-3-sonnet-20240229")), 4096);
-  // Claude 3.5+ (8192) and the high-limit default providers are not clamped.
-  assert.equal(modelOutputCeiling(resolveModel("anthropic:claude-3-5-haiku-latest")), Number.POSITIVE_INFINITY);
-  assert.equal(modelOutputCeiling(resolveModel("anthropic:claude-3-5-sonnet-latest")), Number.POSITIVE_INFINITY);
-  assert.equal(modelOutputCeiling(resolveModel("google:gemini-2.5-flash")), Number.POSITIVE_INFINITY);
-  assert.equal(modelOutputCeiling(resolveModel("openai:gpt-4o-mini")), Number.POSITIVE_INFINITY);
 });
 
 test("ai-sdk live branch maps a thrown SDK error to ai_sdk_error", async () => {

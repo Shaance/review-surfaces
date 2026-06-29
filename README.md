@@ -60,23 +60,29 @@ Every `review-surfaces all` run writes a single self-contained
 per-line coverage gutters, clickable SVG change map with overview ↔ zoom, and
 progress tracking. No server, no CDN, opens from disk:
 
-![The HTML cockpit: verdict, lens chips, and the guided reading order](https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/cockpit.png)
+![The HTML cockpit: verdict, lens chips, and the guided reading order](docs/images/cockpit-c4970315.png)
 
 ### The change map
 
 Two zoom levels, chosen by a legibility budget so the map is readable at any
 diff size. Small diffs get the file-level map: changed files grouped by
-module, import edges between them, churn and risk-lens tints, plus a halo of
-the unchanged files that depend most on what changed. When a diff is too wide
-to render legibly file by file, an **overview** leads instead — one card per
-top-level area with file/cluster counts, churn, and weighted edges that
-account for every import edge in the model — and clicking a card in the
-cockpit zooms into that area's detail view (its files, internal edges, and
-explicit "→ other-area ×N" stub ports). Rendered as deterministic inline SVG
+review topic, churn and risk-lens tints, plus useful file-to-file relationship
+lines when the tool has a review-worthy explanation. When a diff is too wide
+to render legibly file by file, an
+**overview** leads instead — one card per top-level area with a short
+what-changed summary, file/topic counts, and churn — and clicking a card in the
+cockpit zooms into that area's detail view (its topic groups, files, useful
+file-to-file relationship lines, and review-lens tags). Rendered as deterministic inline SVG
 in the cockpit and as mermaid on comment surfaces; layouts wrap instead of
 shrinking, so nothing ever renders below full size:
 
-![The change map overview: one card per area, weighted edges, and the blast-radius halo](https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/change-map.png)
+![The change map overview: group cards summarizing changed areas](docs/images/change-map-2d9fb818.png)
+
+After clicking a group, the cockpit opens that area's topic-grouped detail
+view, with files underneath each topic plus useful file-to-file relationship lines and
+risk-lens tags:
+
+![The change map detail after clicking the src group: topic groups, file nodes, and useful file-to-file relationship lines](docs/images/change-map-detail-e51cfbc9.png)
 
 ### The sticky PR comment
 
@@ -84,9 +90,9 @@ A reusable GitHub Action (or `review-surfaces comment --format sticky` locally)
 posts one idempotent comment per PR: verdict, top queue items with diff
 excerpts, and a since-last-review delta on every push:
 
-![The sticky PR comment: verdict, review-first queue, inline diff excerpts](https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/sticky-comment.png)
+![The sticky PR comment: verdict, review-first queue, inline diff excerpts](docs/images/sticky-comment-8dca844a.png)
 
-All three screenshots come from a real run of this tool on its own repository —
+All four screenshots come from a real run of this tool on its own repository —
 the project reviews itself with itself (see [`docs/history/`](https://github.com/Shaance/review-surfaces/tree/main/docs/history) for
 that story).
 
@@ -95,7 +101,7 @@ that story).
 Honesty about depth, so you can calibrate trust:
 
 - **TypeScript/JavaScript-first deep analysis.** The import graph, exported-API
-  surface diff, blast radius ("this removed export is used by 14 files"), and
+  surface diff, call-site reach ("this removed export is used by 14 files"), and
   architecture-drift facts parse TS/JS sources (via the TypeScript compiler).
   Implementation-root detection reads *your* repo's `tsconfig.json` and
   `package.json` — a `source/` layout classifies just like `src/`.
@@ -111,42 +117,6 @@ Honesty about depth, so you can calibrate trust:
   never as red. An unresolvable lockfile yields "no lockfile facts", never a
   guess. A truncated import graph suppresses drift facts rather than asserting
   novelty it cannot prove.
-
-### Swift and iOS support
-
-`review-surfaces` reviews Swift, SwiftPM, and Xcode repositories as a first-class
-language alongside TypeScript/JavaScript. All Swift/Apple analysis is **static and
-cross-platform** — it reads committed repository files with injected base/head
-readers and never invokes Xcode, SourceKit, `swiftc`, `xcodebuild`, `xcodegen`, or
-`xcrun`. Recording an `xcodebuild`/`swift test` transcript is the only macOS-only
-piece, and you run that command yourself via `review-surfaces run -- …`.
-
-| Capability | Cross-platform static | Requires macOS/Xcode |
-|---|---:|---:|
-| Swift file / test / project / generated classification | yes | no |
-| Swift declaration, test-weakening, package, and config facts | yes | no |
-| Target-aware Swift symbol graph from committed project files | yes | no |
-| Recording an existing `xcodebuild`/`swift test` transcript | no | yes — you run the command |
-| Direct `.xcresult` / `xccov` ingestion | not in v1 (use lcov) | deferred |
-| Simulator / device execution | not provided | outside product scope |
-
-A reviewer runs the ordinary workflow in an iOS repo:
-
-```bash
-# optional: record a real test run (macOS), trusted by its captured exit code
-review-surfaces run -- \
-  xcodebuild test -project Example.xcodeproj -scheme Example \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
-
-review-surfaces all --base origin/main --head HEAD --provider mock --out .review-surfaces
-```
-
-Repository wrappers (`./scripts/check-ios.sh`) are classified through explicit,
-validated `command_rules` in `review-surfaces.config.yaml`. Parser bounds are
-deliberate: no compiler or type checker, Objective-C stays generic, binary plists
-are diagnostic-only, and an ambiguous Swift symbol creates no graph edge. See
-[`docs/swift-ios-support.md`](https://github.com/Shaance/review-surfaces/blob/main/docs/swift-ios-support.md)
-for the full matrix, the wrapper-rule example, and the known bounds.
 
 A seeded-regression eval harness gates review quality itself in CI — the
 [scoreboard](#eval-scoreboard) at the bottom of this README is regenerated from
@@ -348,33 +318,23 @@ is developed spec-first and dogfood-first).
 <!-- review-surfaces:eval-scoreboard -->
 ### Eval scoreboard
 
-The seeded-regression eval harness (run inside `pnpm run test`) currently catches **23/23** seeded case(s) across 23 fact class(es) in the top 10 of the review queue:
+The seeded-regression eval harness (run inside `pnpm run test`) currently catches **13/13** seeded case(s) across 13 fact class(es) in the top 10 of the review queue:
 
 | fact class | cases in top N |
 | --- | --- |
 | api_break | 1/1 |
 | arch_drift | 1/1 |
 | benign_format | 1/1 |
-| benign_package_resolved_origin | 1/1 |
-| benign_pbxproj_churn | 1/1 |
 | benign_redaction_placeholder | 1/1 |
 | benign_rename | 1/1 |
-| benign_swift_body_edit | 1/1 |
 | blast_radius | 1/1 |
 | ci_permission_broadening | 1/1 |
 | destructive_migration | 1/1 |
-| ios_privacy_capability_change | 1/1 |
 | schema_change | 1/1 |
 | secret_in_diff | 1/1 |
 | sneaky_dependency | 1/1 |
-| swift_changed_test_connection | 1/1 |
-| swift_contract_change | 1/1 |
-| swift_foundation_cold_start | 1/1 |
-| swift_test_weakening | 1/1 |
-| swiftpm_dependency_change | 1/1 |
 | uncovered_changed_lines | 1/1 |
 | weakened_test | 1/1 |
-| xcode_test_structure_change | 1/1 |
 
 _Generated by `review-surfaces scoreboard` from `.review-surfaces/eval_scoreboard.json`; do not edit inside the markers._
 <!-- /review-surfaces:eval-scoreboard -->

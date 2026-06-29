@@ -19,7 +19,7 @@ export const SVG_NODE_HEIGHT = 40;
 export const SVG_COLUMN_GAP = 60;
 export const SVG_ROW_GAP = 14;
 export const SVG_PADDING = 16;
-export const SVG_HEADER_HEIGHT = 22;
+export const SVG_HEADER_HEIGHT = 50;
 
 // The cockpit renders the map inside a ~980px column; an SVG whose natural
 // width exceeds COCKPIT_WIDTH_PX / MIN_FULL_SIZE_SCALE would display below
@@ -33,10 +33,11 @@ export function svgNaturalWidth(columnCount: number): number {
   return 2 * SVG_PADDING + columnCount * SVG_NODE_WIDTH + Math.max(0, columnCount - 1) * SVG_COLUMN_GAP;
 }
 
-// Columns the file-level map needs: one per cluster plus the trailing dashed
-// halo column when halo nodes exist.
+// Columns the file-level map needs: one per changed-file cluster. Blast-radius
+// facts stay in the model and risk surfaces, but they no longer add a human-map
+// column because that made the zoom view read like it had orphan links.
 export function fileLevelColumnCount(graph: ChangeGraph): number {
-  return graph.clusters.length + (graph.halo_nodes.length > 0 ? 1 : 0);
+  return graph.clusters.length;
 }
 
 export type ChangeMapLevel = "file" | "overview";

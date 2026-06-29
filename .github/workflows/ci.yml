@@ -19,17 +19,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Record typecheck + tests THROUGH the tool so the self-review below (and the
-      # privileged comment job, via the uploaded artifact) can VERIFY they ran at this
-      # exact head — instead of seeing zero command evidence and falsely flagging every
-      # changed implementation file as untested. `review-surfaces run` stamps each
-      # transcript with HEAD's sha and its exit code; only a current-head passing broad
-      # run clears the untested-impl gap. `run` works before a build (bootstrap path);
-      # `pnpm test` builds dist, which the self-dogfood `all` step then reuses.
-      - name: Typecheck (recorded transcript)
-        run: node bin/review-surfaces.js run --id ci-typecheck -- pnpm run typecheck
-      - name: Tests (recorded transcript)
-        run: node bin/review-surfaces.js run --id ci-tests -- pnpm test
+      - run: pnpm run typecheck
+      - run: pnpm test
       - name: Assert pack ships dist + schemas
         run: |
           out="$(npm pack --dry-run 2>&1)"
@@ -52,21 +43,6 @@ jobs:
         run: node bin/review-surfaces.js validate .review-surfaces
       - name: Determinism check
         run: ./scripts/determinism-check.sh
-      # Hand the head-bound test evidence to the privileged comment workflow. This job
-      # is the UNPRIVILEGED `pull_request` context (no secrets, no write token), so the
-      # transcripts it produced are genuine head-sha-stamped output. The artifact name
-      # carries the exact head sha; `pr-review-comment.yml` (pull_request_target)
-      # downloads it, re-validates every transcript's head_sha, and renders WITHOUT
-      # executing PR-controlled code to obtain the evidence.
-      - name: Upload command evidence (bound to the head SHA)
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: command-evidence-${{ github.event.pull_request.head.sha }}
-          path: .review-surfaces/commands/
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 7
 
   locale-invariance:
     runs-on: ubuntu-latest

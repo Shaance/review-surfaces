@@ -1,5 +1,5 @@
 import { compareStrings } from "../core/compare";
-import { CommandRule, commandLooksLikeBroadTestCommand, commandLooksLikeFocusedTestCommand, commandLooksLikeTestCommand } from "../commands/classify";
+import { commandLooksLikeBroadTestCommand, commandLooksLikeFocusedTestCommand, commandLooksLikeTestCommand } from "../commands/classify";
 import { stripUndefined } from "../core/guards";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
 
@@ -43,15 +43,8 @@ export interface BuildPrRiskInput {
   coverage: PrScopedCoverageModel;
   testResults?: CollectionResult["testResults"];
   commandTranscripts?: CollectionResult["commandTranscripts"];
-  // review-surfaces.COLLECTOR.9: wrapper rules so a configured repository test
-  // wrapper transcript counts as broad/focused test evidence.
-  commandRules?: CommandRule[];
   changedFileSources?: Record<string, ChangedFile["source"]>;
   reviewAreas?: ReviewArea[];
-  // Review areas that have ANY test file in the repository (changed or not).
-  // Lets untested_changed_impl tell "an existing test was not run at head" apart
-  // from "no relevant test exists" without conflating the two reviewer actions.
-  repositoryTestAreas?: Set<string>;
   config?: { largeDiffFileCap?: number; largeDiffLineCap?: number };
 }
 
@@ -184,166 +177,47 @@ function pushSecretInDiff(drafts: DraftCandidate[], input: BuildPrRiskInput): vo
 // An implementation-role changed file whose review area has no changed test file
 // and no current-head command transcript in scope. Cites the impl file. One
 // candidate per such file (id/path ordered).
-//
-// The reviewer_action distinguishes the two genuinely different states the prior
-// "add or update a test" wording conflated:
-//   - an existing test IS mapped to the file's area, but no current-head passing
-//     transcript proves it ran against this change -> RUN the existing test.
-//   - NO test maps to the file's area at all -> ADD a test.
-// "verified" (an existing test that DID run at head, or a co-changed test) never
-// reaches this rule: hasImplementationValidation() already cleared it.
 function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInput): void {
   const changed = input.scope.changed_files;
   const validation = buildImplementationValidationIndex(input);
-  const repositoryTestAreas = input.repositoryTestAreas ?? new Set<string>();
   const untested = changed
     .filter((file) => file.role === "implementation" && !hasImplementationValidation(file, validation))
     .sort((left, right) => compareStrings(left.path, right.path));
   for (const file of untested.slice(0, MAX_PER_FILE_CANDIDATES)) {
-    const state = untestedAreaState(file, repositoryTestAreas);
     drafts.push({
       rule: "untested_changed_impl",
       category: "testing",
       severity: "medium",
-      summary: untestedSummary(file, state),
+      summary: `Implementation file ${file.path} changed with no changed test or current-head command transcript in its review area.`,
       evidence: [
-        fileEvidence(file.path, untestedEvidenceNote(state)),
-        missingEvidence(untestedMissingNote(file, state))
+        fileEvidence(file.path, "Changed implementation file; no co-changed test or current-head passing test transcript mapped to its area."),
+        missingEvidence(`No changed test or current-head passing test transcript mapped to ${areaListForMessage(file)}.`)
       ],
-      suggested_checks: untestedChecks(file, state),
+      suggested_checks: [
+        `Add or update a test covering the change to ${file.path}.`,
+        "Record a current-head focused or broad test transcript if existing tests exercise the new behavior."
+      ],
       sortPath: file.path
     });
   }
   if (untested.length > MAX_PER_FILE_CANDIDATES) {
-    // Partition the overflow by whether the file has ANY mapped existing test, so the
-    // aggregate line stays honest about which action each group needs (at most two
-    // extra drafts). Mixed-area files (some areas covered) join the run-existing group,
-    // whose wording also covers adding tests for any still-uncovered area.
-    const overflow = untested.slice(MAX_PER_FILE_CANDIDATES);
-    const withExisting = overflow.filter((file) => fileHasExistingAreaTest(file, repositoryTestAreas));
-    const withoutExisting = overflow.filter((file) => !fileHasExistingAreaTest(file, repositoryTestAreas));
-    if (withExisting.length > 0) {
-      drafts.push({
-        rule: "untested_changed_impl",
-        category: "testing",
-        severity: "medium",
-        summary: `${withExisting.length} additional implementation file(s) changed whose mapped tests have no current-head passing transcript.`,
-        evidence: evidenceForPaths(
-          withExisting.map((file) => file.path),
-          "Additional implementation file with a mapped test but no current-head passing transcript."
-        ),
-        suggested_checks: [
-          "Run the existing tests mapped to these areas at the current head and record the transcripts.",
-          "Add tests only where the changes introduce behavior the existing tests do not cover."
-        ],
-        sortPath: withExisting[0]?.path ?? ""
-      });
-    }
-    if (withoutExisting.length > 0) {
-      drafts.push({
-        rule: "untested_changed_impl",
-        category: "testing",
-        severity: "medium",
-        summary: `${withoutExisting.length} additional implementation file(s) changed with no test mapped to their review area.`,
-        evidence: evidenceForPaths(
-          withoutExisting.map((file) => file.path),
-          "Additional implementation file with no mapped test and no current-head transcript."
-        ),
-        suggested_checks: [
-          "Add tests for these untested implementation changes.",
-          "Record current-head broad or focused test transcripts so the new tests' runs are verified."
-        ],
-        sortPath: withoutExisting[0]?.path ?? ""
-      });
-    }
-  }
-}
-
-// True when at least one of the changed file's review areas has ANY test file in
-// the repository (changed or not). Used only to PARTITION the bounded overflow
-// aggregate; per-file drafts use the finer untestedAreaState() below.
-function fileHasExistingAreaTest(file: ScopedChangedFile, repositoryTestAreas: Set<string>): boolean {
-  return file.areas.some((area) => repositoryTestAreas.has(area));
-}
-
-// Per-file split of the changed impl's mapped areas into those that HAVE an existing
-// repository test and those that do not. A file in overlapping areas (e.g. CORE for
-// src/ + FOO for src/foo/) where only one area has a test is "mixed": telling the
-// reviewer to "just run the existing test" would hide that the other area has no
-// coverage, and telling them only to "add a test" would falsely deny the covered
-// area. The three kinds drive distinct, non-conflated reviewer actions (Codex P2).
-interface UntestedAreaState {
-  kind: "run_existing" | "add" | "mixed";
-  withTests: string[];
-  without: string[];
-}
-
-function untestedAreaState(file: ScopedChangedFile, repositoryTestAreas: Set<string>): UntestedAreaState {
-  const withTests = file.areas.filter((area) => repositoryTestAreas.has(area));
-  const without = file.areas.filter((area) => !repositoryTestAreas.has(area));
-  if (without.length === 0) {
-    return { kind: "run_existing", withTests, without };
-  }
-  if (withTests.length === 0) {
-    return { kind: "add", withTests, without };
-  }
-  return { kind: "mixed", withTests, without };
-}
-
-function areaList(areas: string[]): string {
-  return areas.length > 0 ? areas.join(", ") : "an unmapped review area";
-}
-
-function untestedSummary(file: ScopedChangedFile, state: UntestedAreaState): string {
-  switch (state.kind) {
-    case "run_existing":
-      return `Implementation file ${file.path} changed; a test is mapped to ${areaList(state.withTests)} but no current-head passing transcript proves it ran against this change.`;
-    case "add":
-      return `Implementation file ${file.path} changed with no test mapped to ${areaList(state.without)} and no current-head test transcript.`;
-    case "mixed":
-      return `Implementation file ${file.path} changed; tests are mapped to ${areaList(state.withTests)} but ${areaList(state.without)} has no mapped test, and no current-head transcript ran.`;
-  }
-}
-
-function untestedEvidenceNote(state: UntestedAreaState): string {
-  switch (state.kind) {
-    case "run_existing":
-      return "Changed implementation file; an existing test maps to its area but no current-head passing transcript ran it.";
-    case "add":
-      return "Changed implementation file; no test maps to its area and no current-head passing transcript.";
-    case "mixed":
-      return "Changed implementation file; some mapped areas have an existing test (not run at head) and others have none.";
-  }
-}
-
-function untestedMissingNote(file: ScopedChangedFile, state: UntestedAreaState): string {
-  switch (state.kind) {
-    case "run_existing":
-      return `No current-head passing test transcript exercising ${file.path} (an existing test is mapped to ${areaList(state.withTests)}).`;
-    case "add":
-      return `No test mapped to ${areaList(state.without)} and no current-head test transcript covering ${file.path}.`;
-    case "mixed":
-      return `No current-head transcript exercising ${file.path}; ${areaList(state.without)} also has no mapped test.`;
-  }
-}
-
-function untestedChecks(file: ScopedChangedFile, state: UntestedAreaState): string[] {
-  switch (state.kind) {
-    case "run_existing":
-      return [
-        `Run the existing test(s) mapped to ${areaList(state.withTests)} at the current head and record the transcript (review-surfaces run -- <your test command>).`,
-        `Add a test only if the change to ${file.path} introduces behavior the existing tests do not cover.`
-      ];
-    case "add":
-      return [
-        `Add a test covering the change to ${file.path}.`,
-        "Record a current-head broad or focused test transcript so the new test's run is verified."
-      ];
-    case "mixed":
-      return [
-        `Run the existing test(s) mapped to ${areaList(state.withTests)} at the current head and record the transcript, and add a test covering ${areaList(state.without)}.`,
-        `Record a current-head test transcript so the coverage of ${file.path} is verified.`
-      ];
+    const omitted = untested.length - MAX_PER_FILE_CANDIDATES;
+    const firstOmitted = untested[MAX_PER_FILE_CANDIDATES];
+    drafts.push({
+      rule: "untested_changed_impl",
+      category: "testing",
+      severity: "medium",
+      summary: `${omitted} additional implementation file(s) changed with no changed test or current-head command transcript in their review area.`,
+      evidence: evidenceForPaths(
+        untested.slice(MAX_PER_FILE_CANDIDATES).map((file) => file.path),
+        "Additional implementation file without changed test or current-head command transcript."
+      ),
+      suggested_checks: [
+        "Add or update tests for the additional untested implementation changes.",
+        "Record current-head focused or broad test transcripts if existing tests exercise the new behavior."
+      ],
+      sortPath: firstOmitted?.path ?? ""
+    });
   }
 }
 
@@ -375,17 +249,16 @@ function buildImplementationValidationIndex(input: BuildPrRiskInput): Implementa
   const keywordByArea = areaKeywordIndex(allAreas, input.reviewAreas ?? []);
 
   const focusedTranscriptAreas = new Set<string>();
-  const commandRules = input.commandRules ?? [];
   let hasBroadCurrentHeadTestTranscript = false;
   for (const transcript of input.commandTranscripts ?? []) {
-    if (!currentHeadPassingTestTranscript(transcript, input.scope.head_sha, commandRules)) {
+    if (!currentHeadPassingTestTranscript(transcript, input.scope.head_sha)) {
       continue;
     }
-    if (commandLooksLikeBroadTestCommand(transcript.command, commandRules)) {
+    if (commandLooksLikeBroadTestCommand(transcript.command)) {
       hasBroadCurrentHeadTestTranscript = true;
       continue;
     }
-    if (!commandLooksLikeFocusedTestCommand(transcript.command, commandRules)) {
+    if (!commandLooksLikeFocusedTestCommand(transcript.command)) {
       continue;
     }
     for (const area of matchingAreasForText(transcript.command, keywordByArea)) {
@@ -404,15 +277,14 @@ function buildImplementationValidationIndex(input: BuildPrRiskInput): Implementa
 
 function currentHeadPassingTestTranscript(
   transcript: NonNullable<BuildPrRiskInput["commandTranscripts"]>[number],
-  headSha: string,
-  commandRules: readonly CommandRule[] = []
+  headSha: string
 ): boolean {
   return (
     headSha !== "unknown" &&
     transcript.head_sha === headSha &&
     transcript.status === "passed" &&
     transcript.exit_code === 0 &&
-    commandLooksLikeTestCommand(transcript.command, commandRules)
+    commandLooksLikeTestCommand(transcript.command)
   );
 }
 
@@ -420,14 +292,6 @@ function currentHeadPassingTestTranscript(
 // least one of its areas has a changed test or current-head focused transcript,
 // or when a broad current-head test transcript proves the committed suite ran
 // after the change.
-//
-// BOUNDED LIMITATION (pre-existing, file-level granularity): validation is judged
-// across ALL of a file's areas together, so a file mapped to both a covered area
-// and an uncovered one is treated as validated and does not surface the uncovered
-// area's gap. The per-file mixed-state wording above only applies once a file has
-// no validation at all. Splitting validation per (file, area) is a deeper refactor
-// of this index and is intentionally deferred; this is not a regression from the
-// test-state wording change.
 function hasImplementationValidation(file: ScopedChangedFile, validation: ImplementationValidationIndex): boolean {
   if (file.areas.length === 0) {
     // No mapped area: not attributable to an untested area gap here.
@@ -520,6 +384,9 @@ function tokenMatches(token: string, tokens: Set<string>): boolean {
   return tokens.has(`${token}s`);
 }
 
+function areaListForMessage(file: ScopedChangedFile): string {
+  return file.areas.length > 0 ? file.areas.join(", ") : "an unmapped review area";
+}
 
 // --- Rule: unmapped_change (workflow, low) ---------------------------------
 // scope.out_of_scope_changed_files is non-empty. Cites those files.

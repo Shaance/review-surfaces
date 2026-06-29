@@ -35,7 +35,7 @@ function model(graph: ChangeGraph, order: ReadingOrder): HumanReviewModel {
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Reading order fixture.",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
-    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [], swift_declaration_changes: [] },
+    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
     review_queue: [],
     blockers: [],
     questions: [],
@@ -128,40 +128,6 @@ test("review-surfaces.READING_ORDER.1 the tour is topological dependencies-first
     reviewQueue: [queueItem("Q-7", "src/core/contract.ts", 1)]
   });
   assert.deepEqual(again.reading_order, order);
-});
-
-test("review-surfaces.READING_ORDER.1 Swift/SwiftPM source reads as implementation, the manifest as config", () => {
-  // A SwiftPM package keeps implementation under `Sources/`, which the JS/TS-oriented roots
-  // detector (COLD_START.2: tsconfig/package.json/majority) does not recognize — so without
-  // Swift-awareness the tour filed Swift source under "Config and docs — read last" (a live
-  // iOS dogfood finding). The leg routing must mirror the Swift-aware tests leg.
-  const sections = buildChangeGraphSections({
-    files: [
-      file("Sources/MyLib/Greeter.swift"),
-      file("Sources/MyLib/Helper.swift"),
-      file("Package.swift"),
-      file("Tests/MyLibTests/GreeterTests.swift"),
-      file("README.md")
-    ],
-    edges: [{ importer: "Sources/MyLib/Greeter.swift", imported: "Sources/MyLib/Helper.swift" }],
-    usedBy: [],
-    lensFindings: [],
-    reviewQueue: []
-  });
-  const legByPath = new Map<string, string>();
-  for (const leg of sections.reading_order.legs) {
-    for (const step of leg.steps) {
-      legByPath.set(step.path, leg.title);
-    }
-  }
-  assert.equal(legByPath.get("Sources/MyLib/Greeter.swift"), "Implementation", "Swift source under Sources/ is implementation, not config/docs");
-  assert.equal(legByPath.get("Sources/MyLib/Helper.swift"), "Implementation");
-  assert.equal(legByPath.get("Package.swift"), "Config and docs", "the SwiftPM manifest is config, not implementation");
-  assert.equal(legByPath.get("Tests/MyLibTests/GreeterTests.swift"), "Tests");
-  assert.equal(legByPath.get("README.md"), "Config and docs");
-  // Dependencies-first within the Implementation leg: Helper (imported) before Greeter.
-  const flat = sections.reading_order.legs.flatMap((leg) => leg.steps.map((step) => step.path));
-  assert.ok(flat.indexOf("Sources/MyLib/Helper.swift") < flat.indexOf("Sources/MyLib/Greeter.swift"));
 });
 
 test("review-surfaces.READING_ORDER.1 the tour never includes unchanged files (halo files belong to the map)", () => {

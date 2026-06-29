@@ -9,8 +9,8 @@ import { ProviderName, ReasoningProvider } from "../llm/provider";
 import { buildPrNarrative } from "../llm/pr-narrative";
 import { buildPrChangeDiagram } from "../diagrams/pr-change-diagram";
 import { buildPrRiskCandidates } from "../risks/pr-risks";
-import { createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
-import { buildPrScope, isTestPath } from "../scope/pr-scope";
+import { ReviewArea } from "../review-areas/areas";
+import { buildPrScope } from "../scope/pr-scope";
 import { PrReviewSurfaceModel, PR_SURFACE_SCHEMA_VERSION, PrSurfaceBlockedReason, StructuredDiff } from "../pr/contract";
 
 // ---------------------------------------------------------------------------
@@ -61,29 +61,6 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     baseEvaluation: input.baseEvaluation
   });
 
-  // Areas that have ANY test file in the repository (changed or not). Mapped with
-  // the same review_surface matcher buildPrScope uses for changed files, so the
-  // untested rule's "an existing test was not run at head" vs "no test exists"
-  // distinction is computed over the same area space the diff is scoped into.
-  //
-  // Source = the SAME test classifier the scope/methodology use (isTestPath: tests/,
-  // *.test.*, *.spec.*, Swift tests) over every repository file, UNIONED with the
-  // config-glob-indexed collection.tests. Deriving from collection.tests alone would
-  // miss colocated src/foo.test.ts, *.spec.ts, and non-JS tests the scope still
-  // recognizes — wrongly pushing those files into the "no test exists / add a test"
-  // branch when an existing test is in fact mapped (Codex P2).
-  const repositoryTestAreas = new Set<string>();
-  const repoTestMatcher = createReviewAreaMatcher(input.reviewAreas);
-  const repositoryTestPaths = new Set<string>([
-    ...input.collection.repositoryFiles.filter(isTestPath),
-    ...input.collection.tests.map((test) => test.path)
-  ]);
-  for (const testPath of repositoryTestPaths) {
-    for (const area of repoTestMatcher.groupsForPath(testPath, { purpose: "review_surface" })) {
-      repositoryTestAreas.add(area);
-    }
-  }
-
   const risks = buildPrRiskCandidates({
     specMode: input.intent.spec_mode,
     scope,
@@ -91,10 +68,8 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     secretFindings: input.collection.privacy.secret_findings,
     testResults: input.collection.testResults,
     commandTranscripts: input.collection.commandTranscripts,
-    commandRules: input.collection.commandRules,
     changedFileSources: Object.fromEntries(input.collection.changedFiles.map((file) => [file.path, file.source])),
-    reviewAreas: input.reviewAreas,
-    repositoryTestAreas
+    reviewAreas: input.reviewAreas
   });
 
   const diagram = buildPrChangeDiagram({ scope, risks });

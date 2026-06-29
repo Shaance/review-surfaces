@@ -2,20 +2,6 @@
 
 This repository is developed spec-first and dogfood-first.
 
-## Swift and iOS repositories
-
-Swift/SwiftPM/Xcode repositories are a first-class review surface (see
-[`docs/swift-ios-support.md`](docs/swift-ios-support.md)). All Swift/Apple
-analysis is static and cross-platform — never invoke Xcode/`swiftc`/`xcodebuild`/
-`xcodegen`/`xcrun` during collection. The only macOS-only step is recording a real
-`xcodebuild`/`swift test` transcript via `review-surfaces run -- …`, which is
-trusted by its captured exit code. Classify repository wrappers through validated
-`command_rules` in `review-surfaces.config.yaml`, never by hard-coding them.
-Dogfood against `MenuWhisper` (committed Xcode project, test plans) and
-`hanzideck-ios` (XcodeGen `project.yml`, Swift 6 strict concurrency) with
-`--provider mock` and local artifacts only — never copy private source, project
-files, diffs, command output, or generated artifacts into this repository.
-
 ## Source of truth
 
 1. Treat `features/review-surfaces.feature.yaml` as the authoritative requirements ledger.
