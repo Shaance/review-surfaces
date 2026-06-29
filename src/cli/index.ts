@@ -67,7 +67,7 @@ import { PACKET_SCHEMA_VERSION, PACKET_SEVERITIES } from "../schema/review-packe
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { packagedSchemaPath } from "../schema/packaged-schemas";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
-import { ChangedImportEdge, computeChangedImportEdges } from "../human/change-graph";
+import { ChangedImportEdge, ChangeGraphAreaInsight, ChangeGraphEdgeInsight, computeChangedImportEdges } from "../human/change-graph";
 import { buildChangeMapInsights, ChangeMapInsights } from "../human/change-map-insights";
 import { ArchDriftResult, computeArchDriftFacts, moduleOf } from "../risks/arch-drift";
 import { clusterOfPath, detectImplementationRoots, DEFAULT_IMPLEMENTATION_ROOTS } from "../core/source-roots";
@@ -540,6 +540,7 @@ interface HumanReviewArtifactInputs {
   // A provider-built narrative to carry through a cache-hit rebuild so it is not
   // overwritten by the deterministic fallback (review-surfaces.NARRATIVE.1).
   narrative?: ChangeNarrative;
+  changeMapInsights?: ChangeMapInsights;
 }
 
 // Resolve the EFFECTIVE output dir with the SAME precedence collectInputs uses
@@ -686,11 +687,15 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       const cachedNarrative = config.human_review.enabled
         ? readCachedNarrative(collection.outputDir, String(collection.manifest.head_sha ?? ""))
         : undefined;
+      const cachedChangeMapInsights = config.human_review.enabled
+        ? readCachedChangeMapInsights(collection.outputDir, String(collection.manifest.head_sha ?? ""))
+        : undefined;
       const cachedHumanInputs: HumanReviewArtifactInputs = {
         packet: cacheSnapshot.packet,
         prSurface: prSurfaceReuse.surface,
         feedback: collection.feedback,
-        narrative: cachedNarrative
+        narrative: cachedNarrative,
+        changeMapInsights: cachedChangeMapInsights
       };
       // Round 6: a cache hit must match a normal run's gate behavior. Run
       // applyGate on the cached evaluation so a cached packet with a
@@ -1745,13 +1750,33 @@ async function buildHumanReviewFromArtifacts(
       );
       return {
         outputDir,
-        model: buildHumanReviewForPacket(cwd, outputDir, packet, undefined, undefined, inputs?.feedback ?? readHumanReviewFeedback(outputDir), config, inputs?.narrative)
+        model: buildHumanReviewForPacket(
+          cwd,
+          outputDir,
+          packet,
+          undefined,
+          undefined,
+          inputs?.feedback ?? readHumanReviewFeedback(outputDir),
+          config,
+          inputs?.narrative,
+          inputs?.changeMapInsights
+        )
       };
     }
   }
   return {
     outputDir,
-    model: buildHumanReviewForPacket(cwd, outputDir, packet, surface, undefined, inputs?.feedback ?? readHumanReviewFeedback(outputDir), config, inputs?.narrative)
+    model: buildHumanReviewForPacket(
+      cwd,
+      outputDir,
+      packet,
+      surface,
+      undefined,
+      inputs?.feedback ?? readHumanReviewFeedback(outputDir),
+      config,
+      inputs?.narrative,
+      inputs?.changeMapInsights
+    )
   };
 }
 
@@ -2354,6 +2379,67 @@ function readCachedNarrative(outDir: string, headSha: string): ChangeNarrative |
       return model.narrative;
     }
     return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readCachedChangeMapInsights(outDir: string, headSha: string): ChangeMapInsights | undefined {
+  const humanReviewPath = path.join(outDir.endsWith(".json") ? path.dirname(outDir) : outDir, "human_review.json");
+  try {
+    const model = JSON.parse(fs.readFileSync(humanReviewPath, "utf8")) as unknown;
+    if (!isRecord(model) || !isRecord(model.generated_from) || model.generated_from.head_sha !== headSha || !isRecord(model.change_graph)) {
+      return undefined;
+    }
+    const graph = model.change_graph;
+    const edgeInsights: ChangeGraphEdgeInsight[] = [];
+    for (const edge of Array.isArray(graph.edges) ? graph.edges : []) {
+      if (
+        isRecord(edge) &&
+        edge.insight_source === "provider" &&
+        typeof edge.from === "string" &&
+        typeof edge.to === "string" &&
+        typeof edge.summary === "string"
+      ) {
+        edgeInsights.push({
+          from: edge.from,
+          to: edge.to,
+          summary: edge.summary,
+          ...(typeof edge.detail === "string" ? { detail: edge.detail } : {}),
+          source: "provider"
+        });
+      }
+    }
+    const areaInsights: ChangeGraphAreaInsight[] = [];
+    const groups = isRecord(graph.overview) && Array.isArray(graph.overview.groups) ? graph.overview.groups : [];
+    for (const group of groups) {
+      if (!isRecord(group) || group.insight_source !== "provider" || typeof group.name !== "string" || typeof group.summary !== "string") {
+        continue;
+      }
+      const topics: NonNullable<ChangeGraphAreaInsight["topics"]> = [];
+      for (const topic of Array.isArray(group.topics) ? group.topics : []) {
+        if (
+          isRecord(topic) &&
+          topic.insight_source === "provider" &&
+          typeof topic.label === "string" &&
+          typeof topic.summary === "string" &&
+          Array.isArray(topic.paths)
+        ) {
+          const paths = topic.paths.filter((filePath): filePath is string => typeof filePath === "string");
+          if (paths.length > 0) {
+            topics.push({ label: topic.label, summary: topic.summary, paths, source: "provider" });
+          }
+        }
+      }
+      areaInsights.push({
+        name: group.name,
+        summary: group.summary,
+        ...(typeof group.detail === "string" ? { detail: group.detail } : {}),
+        ...(topics.length > 0 ? { topics } : {}),
+        source: "provider"
+      });
+    }
+    return edgeInsights.length > 0 || areaInsights.length > 0 ? { edgeInsights, areaInsights } : undefined;
   } catch {
     return undefined;
   }

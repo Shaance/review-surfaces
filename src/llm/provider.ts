@@ -60,7 +60,10 @@ const OPENAI_DEFAULT_MODEL = "gpt-4o-mini";
 // AbortController timeout and a bounded output budget. These only affect the
 // live ai-sdk branch (never mock/offline), so golden fixtures are unaffected.
 const AI_DEFAULT_TIMEOUT_MS = 60_000;
-const AI_MAX_OUTPUT_TOKENS = 2_048;
+// Output budget for a live generateObject call. Reasoning models can spend a
+// large share of this budget before emitting JSON, so keep the default high and
+// allow operators to tune it for unusually large packets.
+const AI_DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
 
 interface ResolvedModel {
   provider: "anthropic" | "google" | "openai";
@@ -167,7 +170,7 @@ export function aiSdkProvider(options: ProviderFactoryOptions): ReasoningProvide
             schema: ai.jsonSchema(schema),
             prompt: safe.text,
             abortSignal: controller.signal,
-            maxOutputTokens: AI_MAX_OUTPUT_TOKENS
+            maxOutputTokens: Math.min(aiMaxOutputTokens(), modelOutputCeiling(resolved))
           });
           return { ok: true, data: result.object };
         } finally {
@@ -258,6 +261,18 @@ export function resolveModel(model: string | undefined): ResolvedModel {
 function aiTimeoutMs(): number {
   const raw = Number(process.env.REVIEW_SURFACES_AI_TIMEOUT_MS);
   return Number.isFinite(raw) && raw > 0 ? raw : AI_DEFAULT_TIMEOUT_MS;
+}
+
+export function aiMaxOutputTokens(): number {
+  const raw = Number(process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS);
+  return Number.isInteger(raw) && raw > 0 ? raw : AI_DEFAULT_MAX_OUTPUT_TOKENS;
+}
+
+export function modelOutputCeiling(resolved: ResolvedModel): number {
+  if (resolved.provider === "anthropic" && /(^|[:/-])claude-3-(haiku|sonnet|opus)-/.test(resolved.modelId.toLowerCase())) {
+    return 4_096;
+  }
+  return Number.POSITIVE_INFINITY;
 }
 
 function apiKeyFor(provider: ResolvedModel["provider"]): string | undefined {

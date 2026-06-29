@@ -6,7 +6,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { collectInputs } from "../src/collector/collect";
 import { defaultConfig } from "../src/config/config";
-import { loadPrivacyIgnore } from "../src/privacy/ignore";
+import { loadPrivacyIgnore, loadPrivacyIgnoreSync } from "../src/privacy/ignore";
 import { redactSecrets } from "../src/privacy/secrets";
 import { filterIgnoredDiff } from "../src/privacy/diff";
 
@@ -93,6 +93,21 @@ test("review-surfaces.PRIVACY.3 supports gitignore-style negation for tracked ex
 
   assert.equal(ignore.isIgnored(".env.local"), true);
   assert.equal(ignore.isIgnored(".env.example"), false);
+});
+
+test("review-surfaces.PRIVACY.3 built-in secret-file ignores are case-insensitive", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ignore-case-"));
+  fs.writeFileSync(path.join(tmp, ".review-surfacesignore"), "README.MD\n");
+  const asyncRules = await loadPrivacyIgnore(tmp, ".review-surfacesignore");
+  const syncRules = loadPrivacyIgnoreSync(tmp);
+
+  for (const rules of [asyncRules, syncRules]) {
+    assert.equal(rules.isIgnored(".ENV.PROD"), true);
+    assert.equal(rules.isIgnored("secrets/PROD.PEM"), true);
+    assert.equal(rules.isIgnored("keys/ID_RSA"), true);
+    assert.equal(rules.isIgnored(".ENV.EXAMPLE"), false, "the built-in .env.example negation is case-insensitive too");
+    assert.equal(rules.isIgnored("readme.md"), false, "user ignore patterns stay case-sensitive");
+  }
 });
 
 test("review-surfaces.PRIVACY.3 default ignore excludes local Claude state", async () => {

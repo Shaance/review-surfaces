@@ -21,14 +21,13 @@ function lensClassDef(lens: RiskLens): string {
 }
 
 export interface RenderChangeMapMermaidOptions {
-  // review-surfaces.MAP_SCALE.4: accepted for compatibility with callers that
-  // still pass detail-view cross-group stubs. The rendered human map suppresses
-  // those generic stubs because labels like "tests use src" are not actionable.
+  // review-surfaces.MAP_SCALE.4: detail-view cross-group stubs. Generic fallback
+  // stubs stay suppressed, but provider-backed summaries are useful enough to
+  // preserve in human_review.md detail blocks.
   stubs?: DetailStub[];
 }
 
 export function renderChangeMapMermaid(graph: ChangeGraph, options: RenderChangeMapMermaidOptions = {}): string | undefined {
-  void options;
   if (graph.nodes.length === 0) {
     return undefined;
   }
@@ -77,6 +76,15 @@ export function renderChangeMapMermaid(graph: ChangeGraph, options: RenderChange
     const arrow = edge.kind === "removed" ? "-.->" : edge.kind === "new" ? "==>" : "-->";
     const label = edge.summary ? `|"${diagramLabel(edge.summary)}"|` : "";
     lines.push(`  ${from} ${arrow}${label} ${to}`);
+  }
+  const providerStubs = (options.stubs ?? []).filter((stub) => stub.insight_source === "provider");
+  if (providerStubs.length > 0) {
+    lines.push(`  subgraph stubs["related areas"]`);
+    for (const [index, stub] of providerStubs.entries()) {
+      const direction = stub.direction === "out" ? "to" : "from";
+      lines.push(`    s${index}["${diagramLabel(`${direction} ${stub.other}: ${stub.summary}`)}"]`);
+    }
+    lines.push("  end");
   }
   for (const lens of [...usedLenses].sort()) {
     lines.push(`  classDef lens_${lens} ${lensClassDef(lens)}`);

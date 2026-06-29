@@ -19,8 +19,14 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run typecheck
-      - run: pnpm test
+      # Record typecheck + tests THROUGH the tool so the self-review below (and the
+      # privileged comment job, via the uploaded artifact) can VERIFY they ran at this
+      # exact head instead of seeing zero command evidence and falsely flagging every
+      # changed implementation file as untested.
+      - name: Typecheck (recorded transcript)
+        run: node bin/review-surfaces.js run --id ci-typecheck -- pnpm run typecheck
+      - name: Tests (recorded transcript)
+        run: node bin/review-surfaces.js run --id ci-tests -- pnpm test
       - name: Assert pack ships dist + schemas
         run: |
           out="$(npm pack --dry-run 2>&1)"
@@ -43,6 +49,18 @@ jobs:
         run: node bin/review-surfaces.js validate .review-surfaces
       - name: Determinism check
         run: ./scripts/determinism-check.sh
+      # Hand the head-bound test evidence to the privileged comment workflow. This job
+      # is the unprivileged `pull_request` context, so the transcripts it produced are
+      # genuine head-sha-stamped output.
+      - name: Upload command evidence (bound to the head SHA)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: command-evidence-${{ github.event.pull_request.head.sha }}
+          path: .review-surfaces/commands/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
 
   locale-invariance:
     runs-on: ubuntu-latest

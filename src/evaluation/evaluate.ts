@@ -283,10 +283,10 @@ async function buildEvidenceIndex(
   }
 
   for (const changedFile of collection.changedFiles) {
-    if (testPaths.has(changedFile.path)) {
+    if (testPaths.has(changedFile.path) || !changedImplementationPaths.has(changedFile.path)) {
       continue;
     }
-    for (const group of matcher.groupsForPath(changedFile.path, { purpose: "review_surface" })) {
+    for (const group of matcher.groupsForPath(changedFile.path, { purpose: "requirement_proof" })) {
       pushMap(changedByGroup, group, fileEvidence(changedFile.path, `Changed file mapped to ${group}.`));
     }
   }

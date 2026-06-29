@@ -287,8 +287,10 @@ function buildDetailRelationships(
     if (!shouldRenderFileRelationship(edge)) {
       continue;
     }
-    const from = placed.get(edge.from);
-    const to = placed.get(edge.to);
+    // Model edges are importer -> imported. The visual map draws dependency ->
+    // dependent to match the reading order and Mermaid emitter.
+    const from = placed.get(edge.to);
+    const to = placed.get(edge.from);
     if (!from || !to) {
       continue;
     }
@@ -391,9 +393,6 @@ function routeOverviewRelationship(from: PlacedNode, to: PlacedNode, laneY: numb
     x: fromLeft || sameColumn ? to.x + GROUP_WIDTH : to.x,
     y: to.y + GROUP_HEIGHT / 2
   };
-  if (!sameColumn && start.y === end.y) {
-    return [start, { x: (start.x + end.x) / 2, y: start.y }, end];
-  }
   const sourceLaneX = sameColumn ? routeRight : fromLeft ? from.x - GROUP_GAP_X / 2 : from.x + GROUP_WIDTH + GROUP_GAP_X / 2;
   const targetLaneX = sameColumn ? routeRight : fromLeft ? to.x + GROUP_WIDTH + GROUP_GAP_X / 2 : to.x - GROUP_GAP_X / 2;
   return [
@@ -560,8 +559,8 @@ export function renderChangeMapOverviewSvg(overview: ChangeGraphOverview): Rende
     const laneTop = PADDING + gridHeight + RELATION_LANE_TOP_GAP;
     const edgeParts: string[] = [];
     for (const [index, edge] of overviewRelationships.entries()) {
-      const from = placedGroups.get(edge.from);
-      const to = placedGroups.get(edge.to);
+      const from = placedGroups.get(edge.to);
+      const to = placedGroups.get(edge.from);
       if (!from || !to) {
         continue;
       }

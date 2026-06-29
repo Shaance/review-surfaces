@@ -36,7 +36,10 @@ export async function loadPrivacyIgnore(cwd: string, ignoreFile: string): Promis
   const ignorePath = path.resolve(cwd, ignoreFile);
   const filePatterns = fileExists(ignorePath) ? parseIgnoreFile(await readText(ignorePath)) : [];
   const patterns = unique([...DEFAULT_PRIVACY_IGNORE_PATTERNS, ...filePatterns]);
-  const rules = patterns.map(compileRule);
+  const rules = [
+    ...DEFAULT_PRIVACY_IGNORE_PATTERNS.map((pattern) => compileRule(pattern, { caseInsensitive: true })),
+    ...filePatterns.map((pattern) => compileRule(pattern))
+  ];
 
   return {
     ignoreFile,
@@ -61,20 +64,21 @@ export function parseIgnoreFile(content: string): string[] {
     .filter((line) => line.length > 0 && !line.startsWith("#"));
 }
 
-function compileRule(rawPattern: string): IgnoreRule {
+function compileRule(rawPattern: string, options: { caseInsensitive?: boolean } = {}): IgnoreRule {
   const negate = rawPattern.startsWith("!");
   let pattern = negate ? rawPattern.slice(1) : rawPattern;
   pattern = normalizeRelativePath(pattern);
   const directoryOnly = pattern.endsWith("/");
   pattern = pattern.replace(/\/+$/, "");
   const hasSlash = pattern.includes("/");
+  const regex = globToRegExp(pattern);
 
   return {
     pattern,
     negate,
     directoryOnly,
     hasSlash,
-    regex: globToRegExp(pattern)
+    regex: options.caseInsensitive ? new RegExp(regex.source, "i") : regex
   };
 }
 
@@ -116,8 +120,12 @@ export function loadPrivacyIgnoreSync(cwd: string, ignoreFile = ".review-surface
   } catch {
     fileText = "";
   }
-  const patterns = unique([...DEFAULT_PRIVACY_IGNORE_PATTERNS, ...parseIgnoreFile(fileText)]);
-  const rules = patterns.map(compileRule);
+  const filePatterns = parseIgnoreFile(fileText);
+  const patterns = unique([...DEFAULT_PRIVACY_IGNORE_PATTERNS, ...filePatterns]);
+  const rules = [
+    ...DEFAULT_PRIVACY_IGNORE_PATTERNS.map((pattern) => compileRule(pattern, { caseInsensitive: true })),
+    ...filePatterns.map((pattern) => compileRule(pattern))
+  ];
   return {
     ignoreFile,
     patterns,

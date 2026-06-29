@@ -4,9 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  aiMaxOutputTokens,
   aiSdkProvider,
   agentFileProvider,
   enrichPacket,
+  modelOutputCeiling,
   mockProvider,
   providerFor,
   ReasoningProvider,
@@ -75,6 +77,18 @@ test("resolveModel defaults to google (Gemini first-class) and preserves provide
     provider: "anthropic",
     modelId: "claude-3-5-haiku-latest"
   });
+});
+
+test("ai-sdk output-token budget is configurable and clamped for lower-ceiling models", async () => {
+  assert.equal(aiMaxOutputTokens(), 8192);
+  await withEnv("REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS", "12000", async () => {
+    assert.equal(aiMaxOutputTokens(), 12000);
+  });
+  await withEnv("REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS", "8192.5", async () => {
+    assert.equal(aiMaxOutputTokens(), 8192);
+  });
+  assert.equal(modelOutputCeiling({ provider: "anthropic", modelId: "claude-3-haiku-20240307" }), 4096);
+  assert.equal(modelOutputCeiling({ provider: "google", modelId: "gemini-2.5-flash" }), Number.POSITIVE_INFINITY);
 });
 
 test("review-surfaces.PRIVACY.5 ai-sdk provider honors remotePrivacyBlocked without a network call", async () => {

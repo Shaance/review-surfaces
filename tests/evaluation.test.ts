@@ -92,7 +92,7 @@ components:
   const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
 
   assert.equal(evaluation.acai_coverage["example.INTENT.1"], "missing");
-  assert.equal(evaluation.acai_coverage["example.DOGFOOD.1"], "partial");
+  assert.equal(evaluation.acai_coverage["example.DOGFOOD.1"], "missing");
 });
 
 test("evaluator keeps broad group evidence partial without exact requirement proof", async () => {
