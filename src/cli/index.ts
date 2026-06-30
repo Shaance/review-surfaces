@@ -63,6 +63,7 @@ import { GateContext, projectRunSummary, readQueueIds, renderRunSummaryFromPacke
 import { buildDraftReview } from "../render/draft-review";
 import { postStickyComment } from "../render/post-comment";
 import { writeJson, writeText } from "../core/files";
+import { compareStrings } from "../core/compare";
 import { PACKET_SCHEMA_VERSION, PACKET_SEVERITIES } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { packagedSchemaPath } from "../schema/packaged-schemas";
@@ -1093,7 +1094,7 @@ function changeMapAreasForInsights(diff: StructuredDiff | undefined, roots: read
     byArea.set(group, paths);
   }
   return [...byArea.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
+    .sort((a, b) => compareStrings(a[0], b[0]))
     .map(([name, paths]) => ({ name, paths: [...new Set(paths)].sort() }));
 }
 

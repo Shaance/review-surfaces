@@ -517,6 +517,42 @@ components:
   assert.equal(evaluation.acai_coverage["example.EVAL.1"], "satisfied");
 });
 
+test("review-surfaces.EVAL.3 treats changed discovered tests as exact test evidence outside configured globs", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-discovered-test-proof-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+components:
+  EVAL:
+    requirements:
+      1: Evaluate discovered test proof.
+`
+  );
+  fs.writeFileSync(path.join(tmp, "src", "foo.ts"), "export const evalProof = 'example.EVAL.1';\n");
+  fs.writeFileSync(path.join(tmp, "src", "foo.test.ts"), "test('example.EVAL.1 discovered exact test evidence', () => {});\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "head"], { cwd: tmp, stdio: "ignore" });
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: ["tests/**/*.test.ts"] },
+    baseRef: head,
+    headRef: head,
+    dogfood: false
+  });
+  collection.changedFiles = [{ path: "src/foo.test.ts", status: "M", source: "diff" }];
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
+
+  assert.equal(evaluation.acai_coverage["example.EVAL.1"], "satisfied");
+});
+
 test("review-surfaces.EVAL.4 does not treat docs as exact implementation evidence", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-docs-not-implementation-"));
   fs.mkdirSync(path.join(tmp, "features"), { recursive: true });

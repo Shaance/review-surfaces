@@ -13,6 +13,7 @@ import { renderStickySummary } from "../src/render/sticky-summary";
 import { renderHumanReviewMarkdown } from "../src/human/render";
 import { ChangeGraph, HumanReviewModel, HUMAN_REVIEW_SCHEMA_VERSION, ReviewQueueItem, RiskLensFinding } from "../src/human/contract";
 import type { ReasoningProvider, StructuredResult } from "../src/llm/provider";
+import type { StructuredDiff } from "../src/pr/contract";
 import { validateJsonSchema } from "../src/schema/json-schema";
 
 function file(filePath: string, status = "M", added = 10, removed = 2) {
@@ -237,6 +238,42 @@ test("review-surfaces.MAP_SCALE.7 agent-file edge insight enrichment can explain
     remotePrivacyBlocked: false
   });
   assert.deepEqual(liveProviderInsights, { edgeInsights: [], areaInsights: [] }, "live providers may only enrich graph items included in their bounded prompt");
+});
+
+test("review-surfaces.CHANGE_MAP.1 bounds long diff lines in provider insight prompts", async () => {
+  const longLine = "A".repeat(5000);
+  const diff: StructuredDiff = {
+    files: [
+      {
+        path: "src/importer.ts",
+        status: "M",
+        hunks: [{ old_start: 1, old_lines: 1, new_start: 1, new_lines: 1, lines: [{ kind: "add", text: longLine, new_line: 1 }] }]
+      },
+      {
+        path: "src/imported.ts",
+        status: "M",
+        hunks: [{ old_start: 1, old_lines: 1, new_start: 1, new_lines: 1, lines: [{ kind: "add", text: longLine, new_line: 1 }] }]
+      }
+    ]
+  };
+  const provider: ReasoningProvider = {
+    name: "ai-sdk",
+    async generateStructured(_stage, prompt): Promise<StructuredResult> {
+      assert.ok(prompt.length < 1400, `prompt should stay bounded, got ${prompt.length}`);
+      assert.equal(prompt.includes(longLine), false, "full minified/base64-like line must not reach the prompt");
+      return { ok: true, data: { edges: [] } };
+    }
+  };
+
+  await buildChangeMapInsights({
+    provider,
+    providerName: "ai-sdk",
+    edges: [{ importer: "src/importer.ts", imported: "src/imported.ts" }],
+    areas: [{ name: "src", paths: ["src/importer.ts", "src/imported.ts"] }],
+    diff,
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
 });
 
 test("review-surfaces.CHANGE_MAP.2 the mermaid emitter renders flowchart LR with cluster subgraphs, lens classDefs, and explicit overflow nodes — never silent truncation", () => {

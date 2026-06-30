@@ -360,7 +360,7 @@ function routeRelationship(from: PlacedNode, to: PlacedNode): Array<{ x: number;
   const sameColumn = from.x === to.x;
   if (sameColumn) {
     const routeLeft = from.x - COLUMN_GAP / 2 >= PADDING / 2;
-    const laneX = routeLeft ? from.x - COLUMN_GAP / 2 : from.x + NODE_WIDTH + COLUMN_GAP / 2;
+    const laneX = routeLeft ? from.x - COLUMN_GAP / 2 : from.x + NODE_WIDTH + PADDING / 2;
     const start = {
       x: routeLeft ? from.x : from.x + NODE_WIDTH,
       y: from.y + NODE_HEIGHT / 2

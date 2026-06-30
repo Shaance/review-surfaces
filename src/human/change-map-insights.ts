@@ -15,6 +15,8 @@ const MAX_TOPIC_PATHS = 40;
 const MAX_SUMMARY_CHARS = 110;
 const MAX_DETAIL_CHARS = 280;
 const MAX_SNIPPET_LINES = 8;
+const MAX_SNIPPET_LINE_CHARS = 160;
+const MAX_SNIPPET_TOTAL_CHARS = 900;
 
 export const CHANGE_MAP_INSIGHTS_SCHEMA = {
   type: "object",
@@ -230,8 +232,13 @@ function snippet(file: StructuredDiffFile | undefined): string {
   if (!file) {
     return "(no diff snippet)";
   }
-  const changed = file.hunks.flatMap((hunk) => hunk.lines.filter((line) => line.kind !== "context").map((line) => `${line.kind === "add" ? "+" : "-"} ${line.text.trim()}`));
-  return changed.slice(0, MAX_SNIPPET_LINES).join(" | ") || "(metadata-only change)";
+  const changed = file.hunks.flatMap((hunk) =>
+    hunk.lines
+      .filter((line) => line.kind !== "context")
+      .map((line) => `${line.kind === "add" ? "+" : "-"} ${bounded(line.text, MAX_SNIPPET_LINE_CHARS)}`)
+  );
+  const excerpt = changed.slice(0, MAX_SNIPPET_LINES).join(" | ");
+  return excerpt ? bounded(excerpt, MAX_SNIPPET_TOTAL_CHARS) : "(metadata-only change)";
 }
 
 function bounded(value: string, maxChars: number): string {

@@ -210,6 +210,29 @@ test("review-surfaces.RENDER.11 same-row relationship routes avoid intermediate 
   assert.ok(Math.min(...ys) < Math.max(...ys), points);
 });
 
+test("review-surfaces.RENDER.11 same-column relationship routes stay inside the SVG viewBox", () => {
+  const sections = buildChangeGraphSections({
+    files: [file("src/a/one.ts"), file("src/a/two.ts")],
+    edges: [{ importer: "src/a/two.ts", imported: "src/a/one.ts" }],
+    edgeInsights: [{
+      from: "src/a/two.ts",
+      to: "src/a/one.ts",
+      summary: "two consumes one",
+      source: "provider"
+    }],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: []
+  });
+  const svg = renderChangeMapSvg(sections.change_graph)!.svg;
+  const width = Number(svg.match(/viewBox="0 0 (\d+) \d+"/)?.[1]);
+  const points = svg.match(/<polyline points="([^"]+)"/)?.[1];
+  assert.ok(width > 0);
+  assert.ok(points);
+  const xs = points.split(" ").map((point) => Number(point.split(",")[0]));
+  assert.ok(Math.max(...xs) <= width, points);
+});
+
 test("review-surfaces.RENDER.11 relationship ordering is locale-independent", () => {
   const sections = buildChangeGraphSections({
     files: [file("src/a/a.ts"), file("src/b/b.ts"), file("src/c/c.ts")],

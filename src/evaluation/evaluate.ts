@@ -17,6 +17,7 @@ import {
   ReviewAreasMode
 } from "../review-areas/areas";
 import { NormalizedTestCase, TestResults } from "../tests-evidence/junit";
+import { isExecutableTestPath } from "../scope/pr-scope";
 import {
   ACID_PATTERN,
   allPresenceTokensExist,
@@ -33,6 +34,8 @@ import type { PacketConfidence, PacketPartialReason, PacketRequirementStatus } f
 export { verifyRequirementsWithTests } from "./verification";
 
 export type RequirementStatus = PacketRequirementStatus;
+
+const DISCOVERED_TEST_CODE_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m|sh|bash|zsh)$/i;
 
 // review-surfaces.EVAL: structured sub-reason for a partial status. The
 // evaluator already distinguishes these cases in prose; this lifts that
@@ -254,7 +257,10 @@ async function buildEvidenceIndex(
   const changedByGroup = new Map<string, EvidenceRef[]>();
   const testsByGroup = new Map<string, EvidenceRef[]>();
   const matcher = createReviewAreaMatcher(areas);
-  const testPaths = new Set(collection.tests.map((test) => test.path));
+  const testPaths = new Set([
+    ...collection.tests.map((test) => test.path),
+    ...collection.changedFiles.map((changedFile) => changedFile.path).filter(isDiscoveredTestEvidencePath)
+  ]);
   const changedImplementationPaths = new Set(
     collection.changedFiles.filter((changedFile) => isImplementationProofPath(changedFile.path, testPaths)).map((changedFile) => changedFile.path)
   );
@@ -446,6 +452,13 @@ function isImplementationProofPath(filePath: string, testPaths: Set<string>): bo
 
 function isScriptImplementationPath(filePath: string): boolean {
   return /^(?:scripts|bin)\//.test(filePath) && /\.(?:sh|bash|zsh)$/.test(filePath);
+}
+
+function isDiscoveredTestEvidencePath(filePath: string): boolean {
+  if (isExecutableTestPath(filePath)) {
+    return true;
+  }
+  return /(^|\/)(tests?|__tests__|spec)\//i.test(filePath) && DISCOVERED_TEST_CODE_EXT.test(filePath) && !/\.d\.ts$/i.test(filePath);
 }
 
 type CandidateFileReader = (filePath: string) => string | undefined | Promise<string | undefined>;
