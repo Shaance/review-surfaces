@@ -8,6 +8,17 @@ full working contracts live in
 (an absolute link because this changelog ships in the npm tarball, which does
 not carry that directory).
 
+## 0.3.1 — 2026-06-30 (review surface polish)
+
+- Human review change maps now favor reviewer-facing explanations over raw
+  dependency labels: provider-backed area summaries and relationship notes are
+  bounded, deterministic, and rendered without clipped or overlapping SVG routes.
+- Evaluation evidence handling preserves exact ACID test proof for discovered
+  changed tests outside configured globs, while repo-wide implementation proof
+  remains source-only and uncapped for correctness on large repositories.
+- Distribution metadata stays forward from the 0.3.0 line and keeps the CLI
+  help/version surfaces, package manifest, and changelog in lockstep.
+
 ## 0.2.0 — 2026-06-18 (first npm publish)
 
 The package manifest already carries `0.2.0`, so the owner's single manual

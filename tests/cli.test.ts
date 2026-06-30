@@ -487,9 +487,10 @@ test("review-surfaces.QUALITY_GATE.1 --fail-on is rejected on evaluate but accep
 test("review-surfaces.CLI.1 supports top-level --help output", () => {
   const cli = path.join(process.cwd(), "dist", "src", "cli", "index.js");
   const result = spawnSync("node", [cli, "--help"], { encoding: "utf8" });
+  const manifest = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as { version?: string };
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /review-surfaces 0\.2\.0/);
+  assert.ok(result.stdout.startsWith(`review-surfaces ${manifest.version}`));
   assert.match(result.stdout, /Local-first human review decision cockpit/);
   assert.doesNotMatch(result.stdout, /Local-first review packet compiler/);
   assert.match(result.stdout, /run\s+Execute a local command/);
