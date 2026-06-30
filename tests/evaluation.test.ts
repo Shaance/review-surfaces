@@ -588,6 +588,44 @@ components:
   assert.equal(evaluation.acai_coverage["example.EVAL.1"], "satisfied");
 });
 
+test("review-surfaces.EVAL.3 excludes deleted discovered tests from group evidence", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-deleted-test-evidence-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src", "evaluation"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+components:
+  EVAL:
+    requirements:
+      1: Evaluate deleted test proof.
+`
+  );
+  fs.writeFileSync(path.join(tmp, "src", "evaluation", "foo.ts"), "export const proof = 'example.EVAL.1';\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "head"], { cwd: tmp, stdio: "ignore" });
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: ["tests/**/*.test.ts"] },
+    baseRef: head,
+    headRef: head,
+    dogfood: false
+  });
+  collection.changedFiles = [{ path: "src/evaluation/foo.test.ts", status: "D", source: "diff" }];
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
+  const result = evaluation.results.find((item) => item.acai_id === "example.EVAL.1");
+
+  assert.equal(evaluation.acai_coverage["example.EVAL.1"], "partial");
+  assert.equal(result?.partial_reason, "impl_no_test");
+  assert.equal(result?.evidence.some((ref) => ref.kind === "test" && ref.path === "src/evaluation/foo.test.ts"), false);
+});
+
 test("review-surfaces.EVAL.4 does not treat docs as exact implementation evidence", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-docs-not-implementation-"));
   fs.mkdirSync(path.join(tmp, "features"), { recursive: true });

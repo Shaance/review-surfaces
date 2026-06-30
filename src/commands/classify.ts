@@ -108,9 +108,70 @@ export function normalizeCommand(command: string): string {
   return command.trim().replace(/\s+/g, " ");
 }
 
-export function commandLooksLikeTestCommand(command: string): boolean {
+export type CommandRuleClassification = "broad_test" | "focused_test" | "validation";
+
+export interface CommandRule {
+  id: string;
+  match: "exact" | "prefix";
+  command: string;
+  classification: CommandRuleClassification;
+}
+
+export function matchCommandRule(command: string, rules: readonly CommandRule[]): CommandRule | undefined {
   const normalized = normalizeCommandForClassification(command);
-  return commandLooksLikeTestCommandFromNormalized(normalized);
+  let best: CommandRule | undefined;
+  let bestCommand = "";
+  for (const rule of rules) {
+    const ruleCommand = normalizeCommand(rule.command);
+    const matches = rule.match === "exact" ? normalized === ruleCommand : rulePrefixMatches(normalized, ruleCommand);
+    if (!matches) {
+      continue;
+    }
+    if (best === undefined || moreSpecificRule(rule, ruleCommand, best, bestCommand)) {
+      best = rule;
+      bestCommand = ruleCommand;
+    }
+  }
+  return best;
+}
+
+function rulePrefixMatches(command: string, ruleCommand: string): boolean {
+  return command === ruleCommand || command.startsWith(`${ruleCommand} `);
+}
+
+function moreSpecificRule(candidate: CommandRule, candidateCommand: string, best: CommandRule, bestCommand: string): boolean {
+  if (candidateCommand.length !== bestCommand.length) {
+    return candidateCommand.length > bestCommand.length;
+  }
+  if (candidate.match !== best.match) {
+    return candidate.match === "exact";
+  }
+  return candidate.id < best.id;
+}
+
+function builtinCommandRecognized(command: string): boolean {
+  const normalized = normalizeCommandForClassification(command);
+  if (commandLooksLikeTestCommandFromNormalized(normalized)) {
+    return true;
+  }
+  const parsed = parsedPackageManagerCommand(normalized);
+  return packageRunScriptLooksLikeLocalValidation(parsed?.body ?? "") || /^tsc(?:\s|$)/.test(normalized);
+}
+
+function applicableWrapperRule(command: string, rules: readonly CommandRule[]): CommandRule | undefined {
+  if (rules.length === 0 || builtinCommandRecognized(command)) {
+    return undefined;
+  }
+  return matchCommandRule(command, rules);
+}
+
+export function commandLooksLikeTestCommand(command: string, rules: readonly CommandRule[] = []): boolean {
+  const normalized = normalizeCommandForClassification(command);
+  if (commandLooksLikeTestCommandFromNormalized(normalized)) {
+    return true;
+  }
+  const rule = applicableWrapperRule(command, rules);
+  return rule?.classification === "broad_test" || rule?.classification === "focused_test";
 }
 
 function commandLooksLikeTestCommandFromNormalized(normalized: string, parsedPackageCommand = parsedPackageManagerCommand(normalized)): boolean {
@@ -120,7 +181,11 @@ function commandLooksLikeTestCommandFromNormalized(normalized: string, parsedPac
     || crossEcosystemTestKind(normalized) !== undefined;
 }
 
-export function commandLooksLikeFocusedTestCommand(command: string): boolean {
+export function commandLooksLikeFocusedTestCommand(command: string, rules: readonly CommandRule[] = []): boolean {
+  const wrapperRule = applicableWrapperRule(command, rules);
+  if (wrapperRule !== undefined) {
+    return wrapperRule.classification === "focused_test";
+  }
   const normalized = normalizeCommandForClassification(command);
   const crossEcosystemKind = crossEcosystemTestKind(normalized);
   if (crossEcosystemKind !== undefined) {
@@ -151,19 +216,22 @@ export function commandLooksLikeFocusedTestCommand(command: string): boolean {
     || hasTestNameFilter(normalized);
 }
 
-export function commandLooksLikeBroadTestCommand(command: string): boolean {
-  return commandLooksLikeTestCommand(command) && !commandLooksLikeFocusedTestCommand(command);
+export function commandLooksLikeBroadTestCommand(command: string, rules: readonly CommandRule[] = []): boolean {
+  return commandLooksLikeTestCommand(command, rules) && !commandLooksLikeFocusedTestCommand(command, rules);
 }
 
-export function commandLooksLikeLocalValidationCommand(command: string): boolean {
+export function commandLooksLikeLocalValidationCommand(command: string, rules: readonly CommandRule[] = []): boolean {
   const normalized = normalizeCommandForClassification(command);
   const parsedPackageCommand = parsedPackageManagerCommand(normalized);
   const packageCommandBody = parsedPackageCommand?.body ?? "";
-  return (
+  if (
     commandLooksLikeTestCommandFromNormalized(normalized, parsedPackageCommand) ||
     packageRunScriptLooksLikeLocalValidation(packageCommandBody) ||
     /^tsc(?:\s|$)/.test(normalized)
-  );
+  ) {
+    return true;
+  }
+  return applicableWrapperRule(command, rules) !== undefined;
 }
 
 function normalizeCommandForClassification(command: string): string {

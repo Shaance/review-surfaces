@@ -392,7 +392,8 @@ test("review-surfaces.CLI.7 collection defaults command transcripts to the outpu
       render: { mode: "compact", include_evidence_appendix: true },
       dogfood: { enabled: true, milestone: "M1" },
       quality_gate: { max_missing: 0, allow_missing: [], fail_on: null },
-      human_review: defaultConfig.human_review
+      human_review: defaultConfig.human_review,
+      command_rules: []
     },
     baseRef: "HEAD",
     headRef: "HEAD",

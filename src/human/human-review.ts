@@ -4680,7 +4680,7 @@ function isClaimedValidationEvidence(item: RisksModel["test_evidence"][number]):
   if (commands.length === 0) {
     return true;
   }
-  return commands.some(commandLooksLikeLocalValidationCommand);
+  return commands.some((command) => commandLooksLikeLocalValidationCommand(command));
 }
 
 // review-surfaces.HUMAN_REVIEW.21: each focused-requirement test item's "Expected"

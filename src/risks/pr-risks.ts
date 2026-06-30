@@ -4,6 +4,7 @@ import { stripUndefined } from "../core/guards";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
 
 import type { CollectionResult } from "../collector/collect";
+import type { CommandRule } from "../commands/classify";
 import type { ChangedFile } from "../collector/git";
 import type {
   PrRiskCandidate,
@@ -43,6 +44,7 @@ export interface BuildPrRiskInput {
   coverage: PrScopedCoverageModel;
   testResults?: CollectionResult["testResults"];
   commandTranscripts?: CollectionResult["commandTranscripts"];
+  commandRules?: CommandRule[];
   changedFileSources?: Record<string, ChangedFile["source"]>;
   reviewAreas?: ReviewArea[];
   repositoryTestAreas?: Set<string>;
@@ -348,16 +350,17 @@ function buildImplementationValidationIndex(input: BuildPrRiskInput): Implementa
   const keywordByArea = areaKeywordIndex(allAreas, input.reviewAreas ?? []);
 
   const focusedTranscriptAreas = new Set<string>();
+  const commandRules = input.commandRules ?? [];
   let hasBroadCurrentHeadTestTranscript = false;
   for (const transcript of input.commandTranscripts ?? []) {
-    if (!currentHeadPassingTestTranscript(transcript, input.scope.head_sha)) {
+    if (!currentHeadPassingTestTranscript(transcript, input.scope.head_sha, commandRules)) {
       continue;
     }
-    if (commandLooksLikeBroadTestCommand(transcript.command)) {
+    if (commandLooksLikeBroadTestCommand(transcript.command, commandRules)) {
       hasBroadCurrentHeadTestTranscript = true;
       continue;
     }
-    if (!commandLooksLikeFocusedTestCommand(transcript.command)) {
+    if (!commandLooksLikeFocusedTestCommand(transcript.command, commandRules)) {
       continue;
     }
     for (const area of matchingAreasForText(transcript.command, keywordByArea)) {
@@ -376,14 +379,15 @@ function buildImplementationValidationIndex(input: BuildPrRiskInput): Implementa
 
 function currentHeadPassingTestTranscript(
   transcript: NonNullable<BuildPrRiskInput["commandTranscripts"]>[number],
-  headSha: string
+  headSha: string,
+  commandRules: readonly CommandRule[] = []
 ): boolean {
   return (
     headSha !== "unknown" &&
     transcript.head_sha === headSha &&
     transcript.status === "passed" &&
     transcript.exit_code === 0 &&
-    commandLooksLikeTestCommand(transcript.command)
+    commandLooksLikeTestCommand(transcript.command, commandRules)
   );
 }
 

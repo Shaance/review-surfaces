@@ -61,6 +61,7 @@ function buildInput(overrides: Partial<BuildPrRiskInput> = {}): BuildPrRiskInput
     coverage: overrides.coverage ?? coverage(),
     ...(overrides.testResults !== undefined ? { testResults: overrides.testResults } : {}),
     ...(overrides.commandTranscripts !== undefined ? { commandTranscripts: overrides.commandTranscripts } : {}),
+    ...(overrides.commandRules !== undefined ? { commandRules: overrides.commandRules } : {}),
     ...(overrides.changedFileSources !== undefined ? { changedFileSources: overrides.changedFileSources } : {}),
     ...(overrides.reviewAreas !== undefined ? { reviewAreas: overrides.reviewAreas } : {}),
     ...(overrides.repositoryTestAreas !== undefined ? { repositoryTestAreas: overrides.repositoryTestAreas } : {}),
@@ -486,6 +487,38 @@ test("impl file with a current-head broad test transcript does NOT fire untested
     model.candidates.find((c) => c.rule === "untested_changed_impl"),
     undefined,
     "current-head broad test transcript suppresses the untested candidate"
+  );
+});
+
+test("configured broad wrapper transcript counts as current-head test evidence", () => {
+  const input = buildInput({
+    scope: scope({
+      head_sha: "head123",
+      changed_files: [
+        changedFile({ path: "src/risks/risks.ts", role: "implementation", areas: ["RISK"] })
+      ]
+    }),
+    commandRules: [
+      { id: "full-check", match: "exact", command: "./scripts/full-check.sh", classification: "broad_test" }
+    ],
+    commandTranscripts: [
+      {
+        id: "CMD-WRAPPER",
+        command: "./scripts/full-check.sh",
+        status: "passed",
+        exit_code: 0,
+        head_sha: "head123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-WRAPPER.json"
+      }
+    ]
+  });
+
+  const model = buildPrRiskCandidates(input);
+  assert.equal(
+    model.candidates.find((c) => c.rule === "untested_changed_impl"),
+    undefined,
+    "configured broad wrapper test transcript suppresses the untested candidate"
   );
 });
 

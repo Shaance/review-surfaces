@@ -1,5 +1,6 @@
 import path from "node:path";
 import { parseBudgetDuration } from "../human/budget";
+import type { CommandRule, CommandRuleClassification } from "../commands/classify";
 import { CliError, ExitCodes } from "../core/exit-codes";
 import { fileExists, readText } from "../core/files";
 import { isRecord } from "../core/guards";
@@ -63,6 +64,7 @@ export interface ReviewSurfacesConfig {
     enabled: boolean;
     default_entrypoint: boolean;
   };
+  command_rules: CommandRule[];
 }
 
 export const defaultConfig: ReviewSurfacesConfig = {
@@ -109,7 +111,8 @@ export const defaultConfig: ReviewSurfacesConfig = {
     enabled: true,
     default_entrypoint: true,
     ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG
-  }
+  },
+  command_rules: []
 };
 
 export async function loadConfig(cwd: string, configPath = "review-surfaces.config.yaml"): Promise<ReviewSurfacesConfig> {
@@ -192,8 +195,60 @@ export function normalizeConfig(raw: Record<string, unknown>): ReviewSurfacesCon
       review_budget_minutes:
         parseBudgetDuration(typeof readRecord(raw.human_review).review_budget === "string" ? (readRecord(raw.human_review).review_budget as string) : undefined) ??
         defaultConfig.human_review.review_budget_minutes
-    }
+    },
+    command_rules: parseCommandRules(raw.command_rules)
   };
+}
+
+const COMMAND_RULE_MATCHES: readonly CommandRule["match"][] = ["exact", "prefix"];
+const COMMAND_RULE_CLASSIFICATIONS: readonly CommandRuleClassification[] = ["broad_test", "focused_test", "validation"];
+
+function parseCommandRules(value: unknown): CommandRule[] {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new CliError("Invalid command_rules: must be a list of rule objects.", ExitCodes.usageError);
+  }
+  const rules: CommandRule[] = [];
+  const seenIds = new Set<string>();
+  for (const [index, entry] of value.entries()) {
+    const record = readRecord(entry);
+    const id = stringValue(record.id, "").trim();
+    const command = stringValue(record.command, "").trim();
+    const match = stringValue(record.match, "");
+    const classification = stringValue(record.classification, "");
+    const where = `command_rules[${index}]`;
+    if (!id) {
+      throw new CliError(`Invalid ${where}: a stable non-empty id is required.`, ExitCodes.usageError);
+    }
+    if (seenIds.has(id)) {
+      throw new CliError(`Invalid command_rules: duplicate id ${JSON.stringify(id)}.`, ExitCodes.usageError);
+    }
+    if (!command) {
+      throw new CliError(`Invalid ${where} (${id}): a non-empty command is required.`, ExitCodes.usageError);
+    }
+    if (!(COMMAND_RULE_MATCHES as readonly string[]).includes(match)) {
+      throw new CliError(`Invalid ${where} (${id}): match must be one of ${COMMAND_RULE_MATCHES.join(", ")}.`, ExitCodes.usageError);
+    }
+    if (!(COMMAND_RULE_CLASSIFICATIONS as readonly string[]).includes(classification)) {
+      throw new CliError(
+        `Invalid ${where} (${id}): classification must be one of ${COMMAND_RULE_CLASSIFICATIONS.join(", ")}.`,
+        ExitCodes.usageError
+      );
+    }
+    seenIds.add(id);
+    rules.push({ id, command, match: match as CommandRule["match"], classification: classification as CommandRuleClassification });
+  }
+  return rules.slice().sort((left, right) => {
+    if (left.command.length !== right.command.length) {
+      return right.command.length - left.command.length;
+    }
+    if (left.match !== right.match) {
+      return left.match === "exact" ? -1 : 1;
+    }
+    return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+  });
 }
 
 function positiveIntValue(value: unknown, fallback: number): number {

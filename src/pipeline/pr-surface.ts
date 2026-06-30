@@ -72,6 +72,7 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     secretFindings: input.collection.privacy.secret_findings,
     testResults: input.collection.testResults,
     commandTranscripts: input.collection.commandTranscripts,
+    commandRules: input.collection.commandRules,
     changedFileSources: Object.fromEntries(input.collection.changedFiles.map((file) => [file.path, file.source])),
     reviewAreas: input.reviewAreas,
     repositoryTestAreas

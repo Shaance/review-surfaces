@@ -114,6 +114,23 @@ test("configured review areas map review-area matcher tests to EVIDENCE", async 
   );
 });
 
+test("configured review areas map release files to DISTRIBUTION", async () => {
+  const areas = await defaultReviewSurfacesAreas();
+  const matcher = createReviewAreaMatcher(areas);
+
+  for (const filePath of ["package.json", "CHANGELOG.md", "src/core/version.ts", "action.yml"]) {
+    assert.ok(
+      matcher.groupsForPath(filePath, { purpose: "review_surface" }).includes("DISTRIBUTION"),
+      `${filePath} should keep release PRs scoped to DISTRIBUTION`
+    );
+  }
+  assert.equal(
+    matcher.groupsForPath("package.json", { purpose: "review_surface" }).includes("CLI"),
+    false,
+    "package.json should not be scoped only through the generic CLI area"
+  );
+});
+
 test("configured review areas map methodology tests to METHODOLOGY", async () => {
   const areas = await defaultReviewSurfacesAreas();
   const matcher = createReviewAreaMatcher(areas);

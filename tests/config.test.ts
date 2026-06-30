@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadConfig, defaultConfig } from "../src/config/config";
+import { loadConfig, defaultConfig, normalizeConfig } from "../src/config/config";
 import { CliError, ExitCodes } from "../src/core/exit-codes";
 
 test("review-surfaces.PROVIDERS.3 loads local review-surfaces config with mock as the default provider", async () => {
@@ -183,5 +183,49 @@ test("review-surfaces.HUMAN_REVIEW.16 invalid human_review caps fall back to saf
     assert.deepEqual(config.human_review.required_manual_checks, []);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.COLLECTOR.9 command_rules default to empty and parse valid rules sorted most-specific-first", () => {
+  assert.deepEqual(defaultConfig.command_rules, []);
+  const config = normalizeConfig({
+    command_rules: [
+      { id: "a", match: "exact", command: "./run.sh", classification: "broad_test" },
+      { id: "b", match: "exact", command: "./run.sh --quick", classification: "focused_test" },
+      { id: "c", match: "prefix", command: "./run.sh --quick", classification: "validation" }
+    ]
+  });
+
+  assert.deepEqual(config.command_rules.map((rule) => rule.id), ["b", "c", "a"]);
+});
+
+test("review-surfaces.COLLECTOR.9 command_rules reject malformed or duplicate rules with usage errors", () => {
+  const cases: Array<{ rules: unknown; why: string }> = [
+    { rules: { command_rules: "nope" }, why: "non-list" },
+    { rules: { command_rules: [{ match: "exact", command: "x", classification: "validation" }] }, why: "missing id" },
+    { rules: { command_rules: [{ id: "a", command: "x", classification: "validation" }] }, why: "missing match" },
+    { rules: { command_rules: [{ id: "a", match: "regex", command: "x", classification: "validation" }] }, why: "bad match" },
+    { rules: { command_rules: [{ id: "a", match: "exact", command: "x", classification: "smoke" }] }, why: "bad classification" },
+    { rules: { command_rules: [{ id: "a", match: "exact", command: "", classification: "validation" }] }, why: "empty command" },
+    {
+      rules: {
+        command_rules: [
+          { id: "dup", match: "exact", command: "x", classification: "validation" },
+          { id: "dup", match: "exact", command: "y", classification: "validation" }
+        ]
+      },
+      why: "duplicate id"
+    }
+  ];
+
+  for (const { rules, why } of cases) {
+    let thrown: unknown;
+    try {
+      normalizeConfig(rules as Record<string, unknown>);
+    } catch (error) {
+      thrown = error;
+    }
+    assert.ok(thrown instanceof CliError, `${why} must throw a CliError`);
+    assert.equal((thrown as CliError).exitCode, ExitCodes.usageError, `${why} must exit with usage error`);
   }
 });

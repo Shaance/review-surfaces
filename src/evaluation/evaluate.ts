@@ -259,7 +259,10 @@ async function buildEvidenceIndex(
   const matcher = createReviewAreaMatcher(areas);
   const testPaths = new Set([
     ...collection.tests.map((test) => test.path),
-    ...collection.changedFiles.map((changedFile) => changedFile.path).filter(isDiscoveredTestEvidencePath)
+    ...collection.changedFiles
+      .filter((changedFile) => !changedFile.status.startsWith("D"))
+      .map((changedFile) => changedFile.path)
+      .filter(isDiscoveredTestEvidencePath)
   ]);
   const changedImplementationPaths = new Set(
     collection.changedFiles.filter((changedFile) => isImplementationProofPath(changedFile.path, testPaths)).map((changedFile) => changedFile.path)

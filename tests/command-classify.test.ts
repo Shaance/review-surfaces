@@ -5,6 +5,7 @@ import {
   commandLooksLikeFocusedTestCommand,
   commandLooksLikeLocalValidationCommand,
   commandLooksLikeTestCommand,
+  matchCommandRule,
   normalizeCommand
 } from "../src/commands/classify";
 
@@ -470,4 +471,46 @@ test("review-surfaces.COLLECTOR.7 cross-ecosystem no-exec aliases and inline car
   // The inline `--package=`/`-p=` cargo selector scopes to one package -> focused.
   assert.equal(commandLooksLikeFocusedTestCommand("cargo test --package=mycrate"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("cargo test -p mycrate"), true);
+});
+
+test("review-surfaces.COLLECTOR.9 validated wrapper command rules classify repository wrappers", () => {
+  const rules = [
+    { id: "full", match: "exact" as const, command: "./scripts/full-check.sh", classification: "broad_test" as const },
+    { id: "quick", match: "exact" as const, command: "./scripts/full-check.sh --quick", classification: "focused_test" as const },
+    { id: "build", match: "exact" as const, command: "./scripts/build-check.sh", classification: "validation" as const }
+  ];
+
+  assert.equal(commandLooksLikeBroadTestCommand("./scripts/full-check.sh", rules), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("./scripts/full-check.sh", rules), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("./scripts/full-check.sh --quick", rules), true);
+  assert.equal(commandLooksLikeBroadTestCommand("./scripts/full-check.sh --quick", rules), false);
+  assert.equal(commandLooksLikeTestCommand("./scripts/build-check.sh", rules), false);
+  assert.equal(commandLooksLikeLocalValidationCommand("./scripts/build-check.sh", rules), true);
+
+  assert.equal(commandLooksLikeBroadTestCommand("CI=1 ./scripts/full-check.sh", rules), true);
+  assert.equal(matchCommandRule("CI=1 ./scripts/full-check.sh", rules)?.id, "full");
+
+  const prefixRules = [
+    { id: "full-prefix", match: "prefix" as const, command: "./scripts/full-check.sh", classification: "broad_test" as const }
+  ];
+  assert.equal(commandLooksLikeBroadTestCommand("./scripts/full-check.sh --report tests/results.json", prefixRules), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("./scripts/full-check.sh --report tests/results.json", prefixRules), false);
+
+  assert.equal(commandLooksLikeTestCommand("./scripts/full-check.sh"), false);
+  assert.equal(commandLooksLikeLocalValidationCommand("./scripts/full-check.sh"), false);
+
+  const badRule = [{ id: "evil", match: "prefix" as const, command: "pnpm run test", classification: "focused_test" as const }];
+  assert.equal(commandLooksLikeBroadTestCommand("pnpm run test", badRule), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm run test", badRule), false);
+});
+
+test("review-surfaces.COLLECTOR.9 wrapper rule prefix matching is token-bounded and most-specific-wins", () => {
+  const rules = [
+    { id: "broad", match: "prefix" as const, command: "./run.sh", classification: "broad_test" as const },
+    { id: "focused", match: "exact" as const, command: "./run.sh --one", classification: "focused_test" as const }
+  ];
+
+  assert.equal(commandLooksLikeFocusedTestCommand("./run.sh --one", rules), true);
+  assert.equal(commandLooksLikeBroadTestCommand("./run.sh --all", rules), true);
+  assert.equal(commandLooksLikeTestCommand("./run.shadow", rules), false);
 });
