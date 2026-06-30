@@ -74,7 +74,7 @@ export function renderChangeMapMermaid(graph: ChangeGraph, options: RenderChange
       continue;
     }
     const arrow = edge.kind === "removed" ? "-.->" : edge.kind === "new" ? "==>" : "-->";
-    const label = edge.summary ? `|"${diagramLabel(edge.summary)}"|` : "";
+    const label = edge.summary ? `|"${edgeLabel(edge.summary)}"|` : "";
     lines.push(`  ${from} ${arrow}${label} ${to}`);
   }
   const providerStubs = (options.stubs ?? []).filter((stub) => stub.insight_source === "provider");
@@ -181,7 +181,7 @@ export function renderChangeMapOverviewMermaid(overview: ChangeGraphOverview): s
       continue;
     }
     const arrow = edge.has_new ? "==>" : edge.has_removed ? "-.->" : "-->";
-    lines.push(`  ${from} ${arrow}|"${diagramLabel(edge.summary)}"| ${to}`);
+    lines.push(`  ${from} ${arrow}|"${edgeLabel(edge.summary)}"| ${to}`);
   }
   for (const lens of [...usedLenses].sort()) {
     lines.push(`  classDef lens_${lens} ${lensClassDef(lens)}`);
@@ -194,4 +194,8 @@ function shouldRenderOverviewRelationship(edge: ChangeGraphOverview["edges"][num
     return false;
   }
   return edge.from !== "tests" && edge.to !== "tests";
+}
+
+function edgeLabel(text: string): string {
+  return diagramLabel(text).replace(/\|/g, "/");
 }

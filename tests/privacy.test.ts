@@ -111,6 +111,11 @@ test("review-surfaces.PRIVACY.3 built-in secret-file ignores are case-insensitiv
     assert.equal(rules.isIgnored("keys/AuthKey_123ABC.P8"), true);
     assert.equal(rules.isIgnored("profiles/App.mobileprovision"), true);
     assert.equal(rules.isIgnored("login.KEYCHAIN-DB"), true);
+    assert.equal(rules.isIgnored("DerivedData/Build/Intermediates.noindex/app.o"), true);
+    assert.equal(rules.isIgnored("packages/app/.swiftpm/configuration/registries.json"), true);
+    assert.equal(rules.isIgnored("packages/app/.build/debug/module.o"), true);
+    assert.equal(rules.isIgnored("App.xcodeproj/xcuserdata/me.xcuserdatad/xcschemes/scheme.xcscheme"), true);
+    assert.equal(rules.isIgnored("App.xcworkspace/xcuserdata/me.xcuserdatad/UserInterfaceState.xcuserstate"), true);
     assert.equal(rules.isIgnored("readme.md"), false, "user ignore patterns stay case-sensitive");
   }
 });

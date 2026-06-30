@@ -351,6 +351,27 @@ test("review-surfaces.CHANGE_MAP.4 labels pass the shared sanitizer, the fence-c
   });
   const body = renderChangeMapMermaid(sections.change_graph) as string;
   assert.doesNotMatch(body, /evil"\]/);
+  const edgeLabelGraph: ChangeGraph = {
+    nodes: [
+      { path: "src/importer.ts", churn_added: 1, churn_removed: 0, status: "modified", cluster: "src" },
+      { path: "src/imported.ts", churn_added: 1, churn_removed: 0, status: "modified", cluster: "src" }
+    ],
+    halo_nodes: [],
+    edges: [{ from: "src/importer.ts", to: "src/imported.ts", kind: "new", summary: "uses | config pipe", insight_source: "provider" }],
+    clusters: [{ name: "src", paths: ["src/imported.ts", "src/importer.ts"] }],
+    overview: {
+      groups: [
+        { name: "src", file_count: 1, cluster_count: 1, churn_added: 1, churn_removed: 0, summary: "imports", insight_source: "provider", queue_count: 0 },
+        { name: "docs", file_count: 1, cluster_count: 1, churn_added: 1, churn_removed: 0, summary: "explains", insight_source: "provider", queue_count: 0 }
+      ],
+      halo_count: 0,
+      edges: [{ from: "docs", to: "src", weight: 1, has_new: true, has_removed: false, summary: "explains | source", insight_source: "provider" }]
+    }
+  };
+  assert.match(renderChangeMapMermaid(edgeLabelGraph) as string, /\|"uses \/ config pipe"\|/);
+  assert.doesNotMatch(renderChangeMapMermaid(edgeLabelGraph) as string, /\|"uses \| config pipe"\|/);
+  assert.match(renderChangeMapOverviewMermaid(edgeLabelGraph.overview) as string, /\|"explains \/ source"\|/);
+  assert.doesNotMatch(renderChangeMapOverviewMermaid(edgeLabelGraph.overview) as string, /\|"explains \| source"\|/);
   const prChangeDiagramSource = fs.readFileSync(path.join(process.cwd(), "src", "diagrams", "pr-change-diagram.ts"), "utf8");
   assert.doesNotMatch(prChangeDiagramSource, /function diagramLabel/);
   // Fence-close guard at the embed point: a graph whose rendered body would

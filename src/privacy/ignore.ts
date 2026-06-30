@@ -20,6 +20,11 @@ export const DEFAULT_PRIVACY_IGNORE_PATTERNS = [
   "**/id_rsa",
   "**/id_ed25519",
   ".claude/",
+  ".build/",
+  ".swiftpm/",
+  "DerivedData/",
+  "xcuserdata/",
+  "*.xcuserstate",
   ".review-surfaces/feedback/raw/**",
   ".review-surfaces/inputs/conversation.raw.*"
 ];

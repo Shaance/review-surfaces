@@ -1,5 +1,5 @@
 import { CollectionResult } from "../collector/collect";
-import { commandLooksLikeLocalValidationCommand, commandLooksLikeTestCommand, normalizeCommand } from "../commands/classify";
+import { commandLooksLikeLocalValidationCommand, commandLooksLikeTestCommand, normalizeCommand, type CommandRule } from "../commands/classify";
 import { COMMAND_TRANSCRIPT_OUTPUT_PATH, CommandTranscript } from "../commands/transcripts";
 import { stripUndefined } from "../core/guards";
 import { commandEvidence, EvidenceRef, feedbackEvidence, missingEvidence, specEvidence } from "../evidence/evidence";
@@ -188,9 +188,10 @@ export function analyzeRisks(
   const parsedTestEvidence = validationEvidenceFromTestResults(collection.testResults);
   const testEvidence = validationEvidenceFromCommandTranscripts(collection);
   const transcriptCommands = new Set((collection.commandTranscripts ?? []).map((transcript) => normalizeCommand(transcript.command)));
+  const commandRules = collection.commandRules ?? [];
   const feedbackEvidence = validationEvidenceFromFeedback(collection, transcriptCommands);
   const claimedCommandEvidence = commands
-    .filter((command) => commandLooksLikeLocalValidationCommand(command))
+    .filter((command) => commandLooksLikeLocalValidationCommand(command, commandRules))
     .filter((command) => !transcriptCommands.has(normalizeCommand(command)))
     .map((command, index) => ({
       id: `TEST-CMD-${String(index + 1).padStart(3, "0")}`,
@@ -461,10 +462,11 @@ function stripUndefinedEvidence(ref: EvidenceRef): EvidenceRef {
 function validationEvidenceFromCommandTranscripts(collection: CollectionResult): RisksModel["test_evidence"] {
   const entries: RisksModel["test_evidence"] = [];
   const evidencePath = collection.commandTranscriptOutputPath ?? COMMAND_TRANSCRIPT_OUTPUT_PATH;
+  const commandRules = collection.commandRules ?? [];
   for (const transcript of collection.commandTranscripts ?? []) {
     entries.push({
       id: `TEST-TR-${String(entries.length + 1).padStart(3, "0")}`,
-      kind: testEvidenceKindForTranscript(transcript),
+      kind: testEvidenceKindForTranscript(transcript, commandRules),
       summary: commandTranscriptSummary(transcript),
       requirement_ids: [],
       evidence: [
@@ -486,8 +488,11 @@ function validationEvidenceFromCommandTranscripts(collection: CollectionResult):
   return entries;
 }
 
-function testEvidenceKindForTranscript(transcript: CommandTranscript): RisksModel["test_evidence"][number]["kind"] {
-  if (transcript.status === "passed" && transcript.exit_code === 0 && commandLooksLikeTestCommand(transcript.command)) {
+function testEvidenceKindForTranscript(
+  transcript: CommandTranscript,
+  commandRules: readonly CommandRule[] = []
+): RisksModel["test_evidence"][number]["kind"] {
+  if (transcript.status === "passed" && transcript.exit_code === 0 && commandLooksLikeTestCommand(transcript.command, commandRules)) {
     return "direct";
   }
   if (transcript.status === "passed" && transcript.exit_code === 0) {
