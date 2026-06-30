@@ -4855,6 +4855,18 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
         command: "pnpm run test -- tests/scoped-coverage.test.ts"
       })];
     case "untested_changed_impl":
+      if (hasMixedRunAndAddTestGuidance(risk.suggested_checks)) {
+        return [riskDraft({
+          kind: "automatic",
+          priority: "required",
+          suggested_file: suggestedFile,
+          scenario: risk.suggested_checks.join(" "),
+          expected_result: "A current-head command transcript records the mapped existing test run, and a new or updated test covers the area that had no mapped test.",
+          command: suggestedFile
+            ? `review-surfaces run -- <existing test command> && pnpm run test -- ${suggestedFile}`
+            : "review-surfaces run -- <existing test command> && pnpm run test"
+        })];
+      }
       if (risk.suggested_checks.some((check) => /run the existing test/i.test(check))) {
         return [riskDraft({
           kind: "automatic",
@@ -4959,6 +4971,11 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
         evidence_gap: riskEvidence[0]?.note ?? risk.summary
       })];
   }
+}
+
+function hasMixedRunAndAddTestGuidance(checks: string[]): boolean {
+  const joined = checks.join(" ");
+  return /run the existing test/i.test(joined) && /add a test covering/i.test(joined);
 }
 
 function compareTestPlanCandidates(

@@ -129,6 +129,41 @@ components:
   assert.equal(evaluation.acai_coverage["example.EVAL.1"], "partial");
 });
 
+test("evaluator maps discovered changed tests outside configured test globs into group evidence", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-discovered-test-group-evidence-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src", "evaluation"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:
+  name: example
+components:
+  EVAL:
+    requirements:
+      1: Evaluate implementation.
+`
+  );
+  fs.writeFileSync(path.join(tmp, "src", "evaluation", "evaluate.test.ts"), "test('evaluation broad evidence', () => {});\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: ["tests/**/*.test.ts"] },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+  collection.changedFiles = [{ path: "src/evaluation/evaluate.test.ts", status: "M", source: "working_tree" }];
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent, { areas: await defaultReviewSurfacesAreas() });
+  const result = evaluation.results.find((entry) => entry.acai_id === "example.EVAL.1");
+
+  assert.equal(result?.status, "partial");
+  assert.equal(result?.partial_reason, "test_no_impl");
+  assert.ok(result?.evidence.some((ref) => ref.kind === "test" && ref.path === "src/evaluation/evaluate.test.ts"));
+});
+
 test("review-surfaces.EVAL.4 requires exact test ACID evidence before marking a requirement satisfied", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-exact-test-evidence-"));
   fs.mkdirSync(path.join(tmp, "features"), { recursive: true });

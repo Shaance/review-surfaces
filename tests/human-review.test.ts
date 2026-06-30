@@ -3759,6 +3759,36 @@ test("human test plan carries run-existing PR risk guidance instead of inventing
   assert.equal(item.command, "review-surfaces run -- <existing test command>");
 });
 
+test("human test plan preserves add-test guidance for mixed untested PR risks", () => {
+  const packet = packetFixture();
+  packet.evaluation.results = [];
+  packet.evaluation.acai_coverage = {};
+  packet.risks.items = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [
+    {
+      ...prRiskFixture("untested_changed_impl"),
+      suggested_checks: [
+        "Run the existing test(s) mapped to HUMAN_REVIEW at the current head and record the transcript, and add a test covering RENDER.",
+        "Record a current-head test transcript so the coverage of src/human/human-review.ts is verified."
+      ]
+    }
+  ];
+
+  const model = buildHumanReview({ packet, prSurface: surface });
+  const item = model.test_plan.find((testItem) => testItem.maps_to_risks.includes("PR-RISK-UNTESTED"));
+
+  assert.ok(item, "mixed untested risk produces a test-plan item");
+  assert.equal(item.suggested_file, "tests/human-review.test.ts");
+  assert.match(item.scenario, /add a test covering RENDER/);
+  assert.match(item.expected_result, /new or updated test covers the area that had no mapped test/);
+  assert.match(item.command ?? "", /review-surfaces run -- <existing test command>/);
+  assert.match(item.command ?? "", /pnpm run test -- tests\/human-review\.test\.ts/);
+});
+
 test("human trust audit records concrete deterministic PR risk firings", () => {
   const surface = prSurfaceFixture();
   const model = buildHumanReview({ packet: packetFixture(), prSurface: surface });

@@ -70,11 +70,11 @@ function fileStem(filePath: string): string {
   name = name.replace(/\.(?:test|spec)$/, ""); // uploader.test -> uploader
   name = name.replace(/^(?:test|spec)[._-]/, ""); // test_uploader -> uploader
   name = name.replace(/[._-](?:test|spec)$/, ""); // uploader_test -> uploader
-  // PascalCase suffix (Java/Scala `UploaderTest`/`UploaderSpec`): strip a trailing
-  // Test/Spec ONLY when the ORIGINAL name actually used the capitalized convention,
+  // PascalCase suffix (Java/Scala `UploaderTest(s)`/`UploaderSpec(s)`): strip a trailing
+  // Test(s)/Spec(s) ONLY when the ORIGINAL name actually used the capitalized convention,
   // so an ordinary word like `contest`/`protest`/`latest` keeps its stem (Codex P2).
-  if (/(?:Test|Spec)$/.test(raw)) {
-    name = name.replace(/(?:test|spec)$/, "");
+  if (/(?:Tests?|Specs?)$/.test(raw)) {
+    name = name.replace(/(?:tests?|specs?)$/, "");
   }
   // Drop a trailing test qualifier so a multipart test name still correlates with
   // its impl (`payments.integration` -> `payments`) — Codex P2.

@@ -349,6 +349,14 @@ test("review-surfaces.METHODOLOGY.8 a correlated test (matching name stem) DOES 
   assert.equal(signal(findings, "impl_no_test"), undefined, "a test whose stem matches the impl is coverage");
 });
 
+test("review-surfaces.METHODOLOGY.8 plural PascalCase test/spec stems count as coverage", () => {
+  const javaFindings = computeCrossReferenceSignals(collection([file("src/Foo.java"), file("src/FooTests.java", "A")]), talk("changed Foo"));
+  assert.equal(signal(javaFindings, "impl_no_test"), undefined, "FooTests.java covers Foo.java");
+
+  const kotlinFindings = computeCrossReferenceSignals(collection([file("src/Widget.kt"), file("src/WidgetSpecs.kt", "A")]), talk("changed Widget"));
+  assert.equal(signal(kotlinFindings, "impl_no_test"), undefined, "WidgetSpecs.kt covers Widget.kt");
+});
+
 test("review-surfaces.METHODOLOGY.8 merely NAMING the auth domain does not count as security discussion (Codex P2)", () => {
   // "changed the auth flow" names the domain but proves no security reasoning.
   assert.ok(signal(computeCrossReferenceSignals(collection([file("src/auth/login.ts")]), talk("changed the auth login flow")), "risky_no_security"));

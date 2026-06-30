@@ -317,9 +317,9 @@ async function buildEvidenceIndex(
     }
   }
 
-  for (const test of collection.tests) {
-    for (const group of matcher.groupsForPath(test.path, { purpose: "requirement_proof", testPath: true })) {
-      pushMap(testsByGroup, group, testEvidence(test.path, `Test path mapped to ${group}.`));
+  for (const testPath of [...testPaths].sort(compareStrings)) {
+    for (const group of matcher.groupsForPath(testPath, { purpose: "requirement_proof", testPath: true })) {
+      pushMap(testsByGroup, group, testEvidence(testPath, `Test path mapped to ${group}.`));
     }
   }
 
