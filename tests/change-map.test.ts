@@ -5,8 +5,8 @@ import path from "node:path";
 import { buildChangeGraphSections, buildGroupDetailViews, computeChangedImportEdges, detailViewSubGraph } from "../src/human/change-graph";
 import { buildChangeMapInsights } from "../src/human/change-map-insights";
 import { renderChangeMapMermaid, renderChangeMapOverviewMermaid } from "../src/diagrams/change-map";
-import { changeMapLeadLevel, COCKPIT_WIDTH_PX } from "../src/human/legibility-budget";
-import { renderChangeMapOverviewSvg } from "../src/human/render-svg-map";
+import { changeMapLeadLevel, COCKPIT_WIDTH_PX, SVG_HEADER_HEIGHT, SVG_NODE_HEIGHT, SVG_PADDING, SVG_ROW_GAP } from "../src/human/legibility-budget";
+import { renderChangeMapOverviewSvg, renderChangeMapSvg } from "../src/human/render-svg-map";
 import { changeMapDetailsBlock } from "../src/render/change-map-embed";
 import { renderHumanPrComment } from "../src/render/pr-comment";
 import { renderStickySummary } from "../src/render/sticky-summary";
@@ -540,6 +540,118 @@ test("review-surfaces.MAP_SCALE.8 overview summaries and detail topics are revie
   const srcDetail = buildGroupDetailViews(providerGraph).find((view) => view.group === "src");
   assert.ok(srcDetail);
   assert.deepEqual(detailViewSubGraph(providerGraph, srcDetail).clusters.map((cluster) => cluster.name), ["Map storytelling", "Cli changes", "Human changes"]);
+
+  const collidingProviderSummary = "Provider only grouped one human renderer file.";
+  const collisionGraph = buildChangeGraphSections({
+    files,
+    edges: [],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: [],
+    areaInsights: [
+      {
+        name: "src",
+        summary: "Provider area summary.",
+        source: "provider",
+        topics: [
+          {
+            label: "Human changes",
+            summary: collidingProviderSummary,
+            paths: ["src/human/render-svg-map.ts"],
+            source: "provider"
+          }
+        ]
+      }
+    ]
+  }).change_graph;
+  const collisionSrc = collisionGraph.overview.groups.find((group) => group.name === "src");
+  const humanTopic = collisionSrc?.topics?.find((topic) => topic.label === "Human changes");
+  assert.ok(humanTopic);
+  assert.deepEqual(humanTopic.paths, ["src/human/change-graph.ts", "src/human/render-svg-map.ts"]);
+  assert.equal(humanTopic.insight_source, "fallback");
+  assert.notEqual(humanTopic.summary, collidingProviderSummary);
+  assert.match(humanTopic.summary, /Human changes: 2 changed files/);
+});
+
+test("review-surfaces.MAP_SCALE.8 SVG detail maps draw exact file relationships only, route row-spanning lines through row gaps, and bound long single-token labels", () => {
+  const routed = buildChangeGraphSections({
+    files: [
+      file("src/core/a.ts"),
+      file("src/core/b.ts"),
+      file("src/core/c.ts"),
+      file("src/render/use-c.ts")
+    ],
+    edges: [{ importer: "src/render/use-c.ts", imported: "src/core/c.ts" }],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: [],
+    edgeInsights: [
+      {
+        from: "src/render/use-c.ts",
+        to: "src/core/c.ts",
+        summary: "Renderer uses the new core helper.",
+        source: "provider"
+      }
+    ]
+  }).change_graph;
+  const routedSvg = renderChangeMapSvg(routed)?.svg ?? "";
+  const points = routedSvg.match(/<polyline points="([^"]+)"/)?.[1];
+  assert.ok(points);
+  const yValues = points.split(" ").map((point) => Number(point.split(",")[1]));
+  const interveningRowCenter = SVG_PADDING + SVG_HEADER_HEIGHT + (SVG_NODE_HEIGHT + SVG_ROW_GAP) + SVG_NODE_HEIGHT / 2;
+  const rowGapLane = SVG_PADDING + SVG_HEADER_HEIGHT + (SVG_NODE_HEIGHT + SVG_ROW_GAP) + SVG_NODE_HEIGHT + SVG_ROW_GAP / 2;
+  assert.ok(yValues.includes(rowGapLane), `relationship should route through row gap y=${rowGapLane}: ${points}`);
+  assert.ok(!yValues.includes(interveningRowCenter), `relationship must not route through intervening row center y=${interveningRowCenter}: ${points}`);
+
+  const stubOnly = buildChangeGraphSections({
+    files: [file("src/core/a.ts"), file("tests/a.test.ts")],
+    edges: [{ importer: "tests/a.test.ts", imported: "src/core/a.ts" }],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: [],
+    edgeInsights: [
+      {
+        from: "tests/a.test.ts",
+        to: "src/core/a.ts",
+        summary: "Tests exercise the provider-described behavior.",
+        source: "provider"
+      }
+    ]
+  }).change_graph;
+  const srcView = buildGroupDetailViews(stubOnly).find((view) => view.group === "src");
+  assert.ok(srcView);
+  const stubSvg = renderChangeMapSvg(detailViewSubGraph(stubOnly, srcView), { stubs: srcView.stubs })?.svg ?? "";
+  assert.doesNotMatch(stubSvg, /<polyline/);
+  assert.doesNotMatch(stubSvg, /Tests exercise the provider-described behavior/);
+
+  const longToken = "ProviderSummaryTokenThatIsFarTooLongToFitInOneMapTextLine";
+  const longLabelGraph = buildChangeGraphSections({
+    files: [file("src/human/render-svg-map.ts")],
+    edges: [],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: [],
+    areaInsights: [
+      {
+        name: "src",
+        summary: "Provider area summary.",
+        source: "provider",
+        topics: [
+          {
+            label: "Map storytelling",
+            summary: longToken,
+            paths: ["src/human/render-svg-map.ts"],
+            source: "provider"
+          }
+        ]
+      }
+    ]
+  }).change_graph;
+  const longLabelView = buildGroupDetailViews(longLabelGraph).find((view) => view.group === "src");
+  assert.ok(longLabelView);
+  const longLabelSvg = renderChangeMapSvg(detailViewSubGraph(longLabelGraph, longLabelView))?.svg ?? "";
+  assert.doesNotMatch(longLabelSvg, new RegExp(longToken));
+  assert.match(longLabelSvg, new RegExp(`${longToken.slice(0, 33)}\\.\\.\\.`));
 });
 
 test("review-surfaces.MAP_SCALE.2 the legibility budget decides per surface: the overview leads everywhere on the wide fixture and the small-diff file-level map is unchanged", () => {

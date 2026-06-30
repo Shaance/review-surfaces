@@ -350,12 +350,12 @@ test("review-surfaces.MAP_SCALE.6 the cockpit pre-renders hidden per-group detai
   assert.match(html, /aria-label="Change map detail: src"/);
   const srcPanel = html.split('data-map-detail="src"')[1].split("</div>")[0];
   assert.match(srcPanel, /data-map-file="src\/core\/w0\.ts"/);
-  // Raw cross-area stubs like "tests use src" stay out, but provider-backed
-  // explanations survive into the visual detail map.
+  // Cross-area stubs stay out of the SVG detail map unless they can anchor to
+  // exact visible files; otherwise the line would point at unrelated cards.
   assert.doesNotMatch(srcPanel, /tests use src/);
-  assert.match(srcPanel, /new tests exercise the core width budget path/);
+  assert.doesNotMatch(srcPanel, /new tests exercise the core width budget path/);
   assert.doesNotMatch(srcPanel, /outside this area/);
-  assert.match(srcPanel, /<polyline points="/);
+  assert.doesNotMatch(srcPanel, /<polyline points="/);
   // The vanilla JS toggle handler ships with the cockpit.
   assert.match(html, /\[data-map-group\]/);
   assert.match(html, /panel\.hidden = !panel\.hidden/);

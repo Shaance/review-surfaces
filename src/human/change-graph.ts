@@ -434,6 +434,8 @@ function topicsForGroup(
     const existing = topics.find((candidate) => candidate.label === topic.label);
     if (existing) {
       existing.paths = uniqueSorted([...existing.paths, ...topic.paths]);
+      existing.insight_source = "fallback";
+      existing.summary = summarizeTopic(existing.label, existing.paths);
       continue;
     }
     topics.push(topic);
