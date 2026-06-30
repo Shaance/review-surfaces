@@ -1,16 +1,15 @@
 import crypto from "node:crypto";
 import { SPEC_NONE_NOTE } from "../evaluation/status";
-import { CommandRule, commandLooksLikeLocalValidationCommand } from "../commands/classify";
+import { commandLooksLikeLocalValidationCommand } from "../commands/classify";
 import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
 import { formatHunkHeader, hunkOverlapsRange } from "../collector/diff-hunks";
 import { buildFallbackNarrative } from "./narrative";
 import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTypeChanges, SchemaContractChange, SemanticChangeFacts, TestWeakeningSignal } from "../risks/semantic-diff";
-import type { SwiftDeclarationChange } from "../risks/swift-semantic-diff";
 import { emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { buildReviewPlan } from "./budget";
-import { buildChangeGraphSections, ChangedFileFacts, ChangedImportEdge } from "./change-graph";
+import { buildChangeGraphSections, ChangedFileFacts, ChangedImportEdge, ChangeGraphAreaInsight, ChangeGraphEdgeInsight } from "./change-graph";
 import { ArchDriftFact, ArchDriftResult } from "../risks/arch-drift";
 import { DependencyFact, dependencyFactSeverityRank } from "../risks/dependency-facts";
 import { ConfigFact } from "../risks/config-facts";
@@ -24,7 +23,6 @@ import type { FeedbackFile } from "../feedback/feedback";
 import { PrRiskCandidate, PrReviewSurfaceModel, StructuredDiff, StructuredDiffFile, StructuredDiffHunk } from "../pr/contract";
 import { PR_RISK_RULE_METADATA } from "../pr/risk-metadata";
 import { ReviewPacket } from "../render/packet";
-import { isAppleGeneratedPath, isAppleNonReviewArtifactPath } from "../collector/source-kind";
 import { looksLikeRecordedCiSecretBoundaryManualCheck } from "../risks/manual-checks";
 import { RisksModel } from "../risks/risks";
 import { classifyRole, isTestPath } from "../scope/pr-scope";
@@ -98,10 +96,6 @@ export interface BuildHumanReviewInput {
   // review-surfaces.CONFIG_FACTS.1-3: deterministic env/CI/Dockerfile/SQL facts
   // computed in the pipeline. Absent -> empty.
   configFacts?: ConfigFact[];
-  // review-surfaces.COLLECTOR.9: validated wrapper command rules, so the trust
-  // audit recognizes a configured wrapper as local validation the SAME way the
-  // risks model did when it created the claimed TEST-CMD row. Absent -> [].
-  commandRules?: CommandRule[];
   // review-surfaces.POLICY.1/.2: the committed team policy (validated by the
   // loader) and the deterministic run clock for suppression expiry.
   policy?: ReviewPolicy;
@@ -110,6 +104,8 @@ export interface BuildHumanReviewInput {
   // computed in the pipeline from buildImportGraph() over head content (it needs
   // file access). Absent -> a map with no edges (nodes still render).
   changedImportEdges?: ChangedImportEdge[];
+  changeGraphEdgeInsights?: ChangeGraphEdgeInsight[];
+  changeGraphAreaInsights?: ChangeGraphAreaInsight[];
   // review-surfaces.COLD_START.2: implementation roots detected from the target
   // repo's signals; feeds the change-map clusters and the tour categorization.
   implementationRoots?: readonly string[];
@@ -392,14 +388,13 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   const changeGraphSections = buildChangeGraphSections({
     files: changedFileFactsForGraph(input),
     edges: input.changedImportEdges ?? [],
-    // review-surfaces.BLAST_RADIUS.4: both TS api_changes AND Swift declaration changes
-    // contribute their used_by referrers to the change-map halo, so a changed Swift type
-    // used by an unchanged caller shows that caller in the map, not only in prose.
-    usedBy: [...semanticFacts.api_changes, ...semanticFacts.swift_declaration_changes]
+    usedBy: semanticFacts.api_changes
       .filter((change) => change.used_by && change.used_by.top.length > 0)
       .map((change) => ({ path: change.path, top: (change.used_by as { top: string[] }).top })),
     lensFindings: riskLensFindings,
     reviewQueue,
+    edgeInsights: input.changeGraphEdgeInsights,
+    areaInsights: input.changeGraphAreaInsights,
     implementationRoots: input.implementationRoots,
     // review-surfaces.ARCH_DRIFT.2: drift edge deltas set kind new/removed so
     // both map renderers pick the drift up with zero extra work.
@@ -586,10 +581,7 @@ function humanReviewBuildConfig(input: BuildHumanReviewInput): HumanReviewBuildC
   };
 }
 
-export function humanReviewConfigSignature(
-  config?: HumanReviewBuildConfig,
-  commandRules?: readonly CommandRule[]
-): string {
+export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): string {
   const resolved = {
     ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
     ...config,
@@ -599,15 +591,6 @@ export function humanReviewConfigSignature(
     }
   };
   const fingerprint = {
-    // review-surfaces.COLLECTOR.9: command_rules change the rendered trust audit
-    // (which wrapper claims surface), so a config-only change to them must bust the
-    // cache / trigger a standalone rebuild rather than reuse a stale human_review.json.
-    command_rules: (commandRules ?? []).map((rule) => ({
-      id: rule.id,
-      match: rule.match,
-      command: rule.command,
-      classification: rule.classification
-    })),
     max_questions: resolved.max_questions,
     max_review_first: resolved.max_review_first,
     max_suggested_comments: resolved.max_suggested_comments,
@@ -645,7 +628,7 @@ function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["gen
     // COLD_START.7: working-tree files absorbed into this review (0 on clean or
     // pinned-head runs); every human surface announces a nonzero count.
     uncommitted_files: typeof manifest.uncommitted_files === "number" ? manifest.uncommitted_files : 0,
-    human_review_config_signature: humanReviewConfigSignature(input.config, input.commandRules)
+    human_review_config_signature: humanReviewConfigSignature(input.config)
   };
 }
 
@@ -1416,20 +1399,13 @@ function possibleOverreachDrafts(input: BuildHumanReviewInput, focus: IntentMism
       severity: "medium" as const
     };
   });
+  const packetOverreachPaths = new Set(packetOverreach.flatMap((item) => item.paths));
 
-  // Canonical mapping-gap dedup: a genuinely unmapped changed file can surface BOTH as
-  // an eval overreach (not mapped to a requirement group) AND a PR out-of-scope file
-  // (not mapped to a review area) — two findings with the same action. Emit ONE: when an
-  // out-of-scope path is already covered by an eval-overreach draft, suppress the
-  // redundant out-of-scope item (the overreach finding already flags the same file, and
-  // its summary feeds the reviewer-question template verbatim, so it is left untouched).
-  const packetOverreachPaths = new Set(
-    packetOverreach.flatMap((draft) => draft.paths.map((draftPath) => normalizeEvidencePath(draftPath)))
-  );
-  const prOverreach: IntentMismatchDraft[] = (input.prSurface?.scope.out_of_scope_changed_files ?? [])
-    .filter((file) => file.reason === "unmapped" && !packetOverreachPaths.has(normalizeEvidencePath(file.path)))
+  const prOverreach = (input.prSurface?.scope.out_of_scope_changed_files ?? [])
+    .filter((file) => file.reason === "unmapped")
+    .filter((file) => !packetOverreachPaths.has(file.path))
     .map((file) => ({
-      summary: `Out-of-scope changed file \`${file.path}\` is not mapped to a review area or a stated requirement.`,
+      summary: `Out-of-scope changed file \`${file.path}\` is not mapped to stated intent.`,
       evidence: [fileEvidence(file.path, "PR scope classified this changed file as unmapped.", "high")],
       requirement_ids: [],
       paths: [file.path],
@@ -2440,12 +2416,7 @@ function isHighSeverityConfigFact(kind: ConfigFact["kind"]): boolean {
     kind === "ci_permissions_broadened" ||
     kind === "ci_pull_request_target_added" ||
     kind === "docker_curl_pipe_shell" ||
-    kind === "sql_destructive_statement" ||
-    // review-surfaces.CONFIG_FACTS.4/.5: a privacy/capability/ATS broadening and a
-    // test-structure weakening are the high-signal Apple changes.
-    kind === "ios_privacy_capability_change" ||
-    kind === "ios_ats_broadened" ||
-    kind === "ios_test_structure_change"
+    kind === "sql_destructive_statement"
   );
 }
 
@@ -2488,39 +2459,6 @@ function configFactTitle(kind: ConfigFact["kind"]): string {
       return "Dockerfile change";
     case "sql_destructive_statement":
       return "Destructive migration statement";
-    case "ios_privacy_capability_change":
-      return "iOS privacy/capability change";
-    case "ios_ats_broadened":
-      return "App Transport Security broadened";
-    case "ios_build_setting_change":
-      return "Xcode build setting change";
-    case "ios_test_structure_change":
-      return "Xcode test structure change";
-    case "ios_target_structure_change":
-      return "Xcode target structure change";
-    case "ios_generator_drift":
-      return "Possible generated-project drift";
-    case "ios_config_unparsed":
-      return "Apple config could not be inspected";
-  }
-}
-
-// review-surfaces.CONFIG_FACTS.4/.5: route each config fact to its lens. Apple
-// privacy/capability/ATS -> security_privacy; build settings / target structure ->
-// architecture; test structure -> test_evidence; generator drift ->
-// cache_provenance. Every existing CI/Docker/SQL/env kind stays security_privacy.
-function configFactLens(kind: ConfigFact["kind"]): RiskLens {
-  switch (kind) {
-    case "ios_build_setting_change":
-    case "ios_target_structure_change":
-      return "architecture";
-    case "ios_test_structure_change":
-      return "test_evidence";
-    case "ios_generator_drift":
-    case "ios_config_unparsed":
-      return "cache_provenance";
-    default:
-      return "security_privacy";
   }
 }
 
@@ -2564,52 +2502,7 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
       sortKey: `semantic-api:${change.path}`
     }));
   }
-  // review-surfaces.SEMANTIC_DIFF.5: Swift declaration changes — concrete language,
-  // public/package breaks outrank additive/internal changes. Bucket BREAKING facts
-  // first so a breaking change after many additive ones is not pushed below them by the
-  // raw index penalty (and sliced out by the queue cap).
-  const swiftChanges = [...facts.swift_declaration_changes].sort((a, b) => Number(b.breaking) - Number(a.breaking));
-  for (const [index, change] of swiftChanges.entries()) {
-    drafts.push(semanticDraft(diffIndex, {
-      title: swiftDeclarationTitle(change),
-      path: change.path,
-      reason: swiftDeclarationReason(change),
-      reviewer_action:
-        change.change === "removed"
-          ? "Confirm callers/conformers of the removed Swift declaration are updated or it is intentionally dropped."
-          : "Confirm the Swift declaration change is intended and callers/conformers are updated.",
-      priority: change.breaking ? "high" : change.change === "added" ? "low" : "medium",
-      score: 150 - index + (change.breaking ? 40 : 0),
-      sortKey: `semantic-swift:${change.change}:${change.path}:${change.name}`
-    }));
-  }
   return drafts;
-}
-
-function swiftDeclarationTitle(change: SwiftDeclarationChange): string {
-  const verb = change.change === "added" ? "added" : change.change === "removed" ? "removed" : "changed";
-  return `Swift declaration ${verb}`;
-}
-
-// review-surfaces.BLAST_RADIUS.4: append the symbol-graph blast radius to a Swift
-// declaration change's prose. A truncated graph carries the note rather than a
-// false "used by 0"; a real zero (graph present, no in-repo referrers) is silent.
-function swiftDeclarationReason(change: SwiftDeclarationChange): string {
-  const usedBy = change.used_by;
-  if (!usedBy) {
-    return change.detail;
-  }
-  if (usedBy.count === 0) {
-    // A truncated graph with zero RETAINED importers means referrers are UNKNOWN, not a
-    // confirmed zero — say so rather than hiding the truncation. A real zero is silent.
-    return usedBy.truncated
-      ? `${change.detail} Referrers unknown — the Swift symbol graph was truncated at the file cap.`
-      : change.detail;
-  }
-  const top = usedBy.top.map((p) => `\`${p}\``).join(", ");
-  return usedBy.truncated
-    ? `${change.detail} Referenced by at least ${usedBy.count} file(s) (top: ${top}; symbol graph truncated at the file cap).`
-    : `${change.detail} Referenced by ${usedBy.count} file(s) (top: ${top}).`;
 }
 
 function semanticDraft(
@@ -2643,8 +2536,6 @@ function testWeakeningTitle(kind: TestWeakeningSignal["kind"]): string {
   switch (kind) {
     case "deleted_test_file":
       return "Test weakening: deleted test file";
-    case "removed_test_method":
-      return "Test weakening: removed test method";
     case "skipped_test":
       return "Test weakening: newly skipped test";
     case "removed_assertion":
@@ -2797,10 +2688,7 @@ const BASELINE_LOCKFILE_NAMES = new Set([
 ]);
 function isNonReviewArtifact(filePath: string): boolean {
   const base = (filePath.split("/").pop() ?? filePath).toLowerCase();
-  // review-surfaces.COLLECTOR.8: Apple build/cache/user-state output, the SwiftPM
-  // Package.resolved lock, and signing material are not cold-start review-focus
-  // items — delegated to the shared source-kind module rather than re-listed here.
-  return BASELINE_NON_REVIEW_EXT.test(base) || BASELINE_LOCKFILE_NAMES.has(base) || isAppleNonReviewArtifactPath(filePath);
+  return BASELINE_NON_REVIEW_EXT.test(base) || BASELINE_LOCKFILE_NAMES.has(base);
 }
 
 // `classifyRole`'s isTestPath only matches `tests/` + `.test.`/`.spec.`; broaden it to
@@ -2815,7 +2703,7 @@ function isBaselineTest(filePath: string): boolean {
     /(^|\/)(tests?|__tests__|spec)\//.test(filePath) ||
     /(^|[._-])(test|spec)[._-]/i.test(base) ||
     /(^|[._-])(test|spec)\.[^.]+$/i.test(base) ||
-    /(?:Test|Spec)\.[^.]+$/.test(base)
+    /(?:Test|Spec)s?\.[^.]+$/.test(base)
   );
 }
 
@@ -2823,9 +2711,7 @@ type BaselineRole = "impl" | "test" | "config" | "ci" | "doc" | "generated" | "o
 function baselineFileRole(filePath: string): BaselineRole {
   // Generated/build output first: a path under generated/build/target/vendor is not
   // worth a manual read even if its extension looks like source (Codex #112 round-2).
-  // review-surfaces.COLLECTOR.8: Apple .build/DerivedData/SourcePackages/xcuserdata
-  // generated output is folded in via the shared source-kind module.
-  if (BASELINE_GENERATED_DIR.test(filePath) || isAppleGeneratedPath(filePath)) {
+  if (BASELINE_GENERATED_DIR.test(filePath)) {
     return "generated";
   }
   const role = classifyRole(filePath, []);
@@ -2857,18 +2743,14 @@ function baselineFileRole(filePath: string): BaselineRole {
   return "other";
 }
 
-// Exported for unit coverage of the cold-start impl<->test stem matching (the Swift
-// plural-suffix case); internal callers below use it unchanged.
-export function baselineStem(filePath: string): string {
+function baselineStem(filePath: string): string {
   const base = filePath.split("/").pop() ?? filePath;
   const raw = base.replace(/\.[^.]+$/, ""); // strip extension, keep case
   let name = raw.toLowerCase();
   name = name.replace(/[._-](tests?|specs?)$/i, "").replace(/^(tests?|specs?)[._-]/i, "");
-  // PascalCase suffix (`FooTest`/`FooSpec`, plus the plural Swift conventions
-  // `FooTests`/`FooUITests`/`FooSnapshotTests`) — strip only when the original used
-  // the capitalized convention, so lowercase `latest`/`contest` keep their stem. The
-  // plural strip lets `GreeterTests.swift` reduce to `greeter` and connect to
-  // `Greeter.swift` in cold-start impl<->test matching.
+  // PascalCase suffix (`FooTest`/`FooSpec`, plus plural `FooTests`/`FooSpecs`) —
+  // strip only when the original used the capitalized convention, so lowercase
+  // `latest`/`contest` keep their stem.
   if (/(?:UI|Snapshot)?(?:Test|Spec)s?$/.test(raw)) {
     name = name.replace(/(?:ui|snapshot)?(?:test|spec)s?$/, "");
   }
@@ -2891,11 +2773,7 @@ function baselineReviewFocusDrafts(
   }
   const surfacePaths = new Set<string>([
     ...semanticFacts.api_changes.map((change) => change.path),
-    ...semanticFacts.schema_changes.map((change) => change.path),
-    // A Swift declaration fact already produces a concrete semantic queue item, so its
-    // path must be excluded from the generic cold-start floor too (like TS API / schema)
-    // — otherwise the same file also gets a duplicate "changed implementation" item.
-    ...semanticFacts.swift_declaration_changes.map((change) => change.path)
+    ...semanticFacts.schema_changes.map((change) => change.path)
   ]);
   const changedTestsByImpl = input.rankingEvidence?.changed_tests_by_impl ?? {};
   // Tests the import evidence already attributed to an impl cover THAT impl; their stem must
@@ -3260,12 +3138,6 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
     const breaking = change.exports_removed.length > 0 || change.signatures_changed.length > 0;
     addSignal("api_contract", breaking ? "high" : "medium", [fileEvidence(change.path, apiChangeReason(change))], [], [], [change.path]);
   }
-  // review-surfaces.SEMANTIC_DIFF.5: Swift declaration changes feed the api_contract
-  // lens. A public/package break is high; an additive or internal change is
-  // advisory (medium) until Phase 3 supplies a deterministic used_by relationship.
-  for (const change of semanticFacts.swift_declaration_changes) {
-    addSignal("api_contract", change.breaking ? "high" : "medium", [fileEvidence(change.path, swiftDeclarationReason(change))], [], [], [change.path]);
-  }
   // review-surfaces.DEP_FACTS.2: dependency facts feed the supply_chain lens.
   for (const fact of input.dependencyFacts ?? []) {
     const rank = dependencyFactSeverityRank(fact.kind);
@@ -3273,7 +3145,7 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
   }
   // review-surfaces.CONFIG_FACTS.1-3: config/infra facts feed the security lens.
   for (const fact of input.configFacts ?? []) {
-    addSignal(configFactLens(fact.kind), isHighSeverityConfigFact(fact.kind) ? "high" : "medium", [fileEvidence(fact.path, fact.detail)], [], [], [fact.path]);
+    addSignal("security_privacy", isHighSeverityConfigFact(fact.kind) ? "high" : "medium", [fileEvidence(fact.path, fact.detail)], [], [], [fact.path]);
   }
 
   // review-surfaces.ARCH_DRIFT.2: drift facts feed the architecture lens.
@@ -3282,7 +3154,7 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
   }
 
   for (const signal of semanticFacts.test_weakening) {
-    const severe = signal.kind === "deleted_test_file" || signal.kind === "removed_test_method" || signal.kind === "removed_assertion";
+    const severe = signal.kind === "deleted_test_file" || signal.kind === "removed_assertion";
     addSignal("test_evidence", severe ? "high" : "medium", [fileEvidence(signal.path, signal.detail)], [], [], [signal.path]);
   }
 
@@ -4703,16 +4575,6 @@ function semanticCommentCandidates(facts: SemanticChangeFacts): SuggestedComment
   for (const change of facts.api_changes) {
     add("clarifying", change.path, `${apiChangeReason(change)}${apiCallerCallToAction(change)}`, `semantic-api:${change.path}`);
   }
-  // review-surfaces.SEMANTIC_DIFF.4/.5: a ready-to-post comment for each Swift
-  // declaration change, carrying the concrete detail (a breaking public change blocks).
-  for (const change of facts.swift_declaration_changes) {
-    add(
-      change.breaking ? "blocking" : "clarifying",
-      change.path,
-      `${change.detail} Confirm callers/conformers are updated or the change is intentional.`,
-      `semantic-swift:${change.change}:${change.path}:${change.name}`
-    );
-  }
   return candidates;
 }
 
@@ -4779,7 +4641,7 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
       evidence: input.packet.methodology.evidence.length ? input.packet.methodology.evidence.slice(0, 3) : [missingEvidence("Methodology claim lacks evidence.")]
     })),
     ...input.packet.risks.test_evidence
-      .filter((item) => isClaimedValidationEvidence(item, input.commandRules ?? []))
+      .filter(isClaimedValidationEvidence)
       .map((item, index) => ({
         id: `TRUST-CLAIM-TEST-${String(index + 1).padStart(3, "0")}`,
         claim: item.summary,
@@ -4801,10 +4663,7 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
   };
 }
 
-function isClaimedValidationEvidence(
-  item: RisksModel["test_evidence"][number],
-  commandRules: readonly CommandRule[] = []
-): boolean {
+function isClaimedValidationEvidence(item: RisksModel["test_evidence"][number]): boolean {
   if (item.kind !== "claimed") {
     return false;
   }
@@ -4821,10 +4680,7 @@ function isClaimedValidationEvidence(
   if (commands.length === 0) {
     return true;
   }
-  // review-surfaces.COLLECTOR.9: pass the configured wrapper rules so a wrapper the
-  // risks model recognized as validation (via a command_rule) does not vanish from
-  // "Claimed but not verified" because this re-check was rule-blind.
-  return commands.some((command) => commandLooksLikeLocalValidationCommand(command, commandRules));
+  return commands.some((command) => commandLooksLikeLocalValidationCommand(command));
 }
 
 // review-surfaces.HUMAN_REVIEW.21: each focused-requirement test item's "Expected"
@@ -4998,41 +4854,36 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
         expected_result: "The scoped coverage delta no longer reports a regression for the mapped requirement.",
         command: "pnpm run test -- tests/scoped-coverage.test.ts"
       })];
-    case "untested_changed_impl": {
-      // Follow the PR risk's OWN per-file state so the test-plan item never contradicts
-      // the risk evidence, but keep it PATH-specific so each untested file gets its own
-      // item (Codex P2). Three states, read from the risk's primary action:
-      //   - add          : "Add a test covering …"
-      //   - mixed        : "Run the existing test(s) … and add a test covering …"
-      //   - run-existing : "Run the existing test(s) …" (no add)
-      // For run-existing/mixed the existing test may live anywhere (an integration or a
-      // non-JS test), so we must NOT fabricate a `tests/<basename>.test.ts` path/command
-      // for it; only the add path suggests a concrete file to create.
-      const primary = risk.suggested_checks[0] ?? "";
-      // Default to ADD unless the primary action is explicitly "Run the existing test…"
-      // (robust to wording like "Add a focused test"); a run action that also says
-      // "add a test" is the MIXED case.
-      const startsRun = /^run the existing test/i.test(primary);
-      const isMixed = startsRun && /\badd a test\b/i.test(primary);
-      const isRun = startsRun && !isMixed;
-      const isAdd = !startsRun;
-      const where = path ? ` in ${path}` : "";
-      const scenario = isRun
-        ? `Run the existing test for the changed implementation${where} at the current head and record the transcript.`
-        : isMixed
-          ? `Run the existing test for the changed implementation${where} at the current head and record the transcript, and add a test for any area without one.`
-          : `Add a test covering the changed implementation${where}.`;
+    case "untested_changed_impl":
+      if (hasMixedRunAndAddTestGuidance(risk.suggested_checks)) {
+        return [riskDraft({
+          kind: "automatic",
+          priority: "required",
+          suggested_file: suggestedFile,
+          scenario: risk.suggested_checks.join(" "),
+          expected_result: "A current-head command transcript records the mapped existing test run, and a new or updated test covers the area that had no mapped test.",
+          command: suggestedFile
+            ? `review-surfaces run -- <existing test command> && pnpm run test -- ${suggestedFile}`
+            : "review-surfaces run -- <existing test command> && pnpm run test"
+        })];
+      }
+      if (risk.suggested_checks.some((check) => /run the existing test/i.test(check))) {
+        return [riskDraft({
+          kind: "automatic",
+          priority: "required",
+          scenario: risk.suggested_checks.join(" "),
+          expected_result: "A current-head command transcript records the mapped existing test run; add new tests only for behavior those tests do not cover.",
+          command: "review-surfaces run -- <existing test command>"
+        })];
+      }
       return [riskDraft({
         kind: "automatic",
         priority: "required",
-        // Only the add path names a file to CREATE; run-existing/mixed must not point at
-        // a fabricated test path (the real existing test may live elsewhere).
-        suggested_file: isAdd ? suggestedFile : undefined,
-        scenario,
-        expected_result: "A direct test or current-head command transcript demonstrates the changed implementation behavior before approval.",
-        command: isAdd && suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test"
+        suggested_file: suggestedFile,
+        scenario: `Add or identify a focused test that exercises the changed implementation${path ? ` in ${path}` : ""}.`,
+        expected_result: "A direct test or command transcript demonstrates the changed implementation behavior before approval.",
+        command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test"
       })];
-    }
     case "unmapped_change":
       // review-surfaces.COLD_START.5: spec-less repos are never asked to map
       // files to requirements — review areas are the only mapping concept.
@@ -5120,6 +4971,11 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
         evidence_gap: riskEvidence[0]?.note ?? risk.summary
       })];
   }
+}
+
+function hasMixedRunAndAddTestGuidance(checks: string[]): boolean {
+  const joined = checks.join(" ");
+  return /run the existing test/i.test(joined) && /add a test covering/i.test(joined);
 }
 
 function compareTestPlanCandidates(

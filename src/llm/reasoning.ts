@@ -843,6 +843,7 @@ async function runMethodologyAuditStage(
   const cacheDir = auditCacheDir(inputs.collection.outputDir);
   const modelId = effectiveModelId(model);
   const redactMode = generateOptions.redactSecrets === false ? "noredact" : "redact";
+  const tokenBudget = String(aiMaxOutputTokens());
 
   const multiBatch = batches.length > 1 || truncated;
   const auditOutputs: MethodologyAuditOutput[] = [];
@@ -850,10 +851,7 @@ async function runMethodologyAuditStage(
   let emptyChunks = 0;
   for (const batch of batches) {
     const prompt = methodologyAuditPrompt(batch, inputs, multiBatch);
-    // The output-token budget is folded in too: changing REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS
-    // (e.g. to recover from a truncated low-budget response) changes the live generateObject
-    // request, so a cached audit from the old budget must NOT be reused (Codex BENCH.2 round-2).
-    const cacheKey = cacheable ? auditCacheKey(["ai-sdk", modelId, redactMode, String(aiMaxOutputTokens()), prompt]) : undefined;
+    const cacheKey = cacheable ? auditCacheKey(["ai-sdk", modelId, redactMode, tokenBudget, prompt]) : undefined;
     let result = cacheKey ? loadCachedAudit(cacheDir, cacheKey) : undefined;
     const fromCache = result !== undefined;
     if (!result) {

@@ -12,6 +12,15 @@ import { initGitRepo, runCli } from "./helpers/cli-repo";
 
 const root = process.cwd();
 const read = (relativePath: string): string => fs.readFileSync(path.join(root, relativePath), "utf8");
+const readmeRawImageBase = "https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/";
+
+function assertReadmeImage(readme: string, baseName: string): string {
+  const match = readme.match(new RegExp(`${readmeRawImageBase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(${baseName}-[0-9a-f]{8}\\.png)`));
+  assert.ok(match, `README embeds a cache-busted ${baseName} image`);
+  const fileName = match[1] ?? "";
+  assert.ok(fs.statSync(path.join(root, "docs", "images", fileName)).size > 10_000, `${fileName} is a real screenshot`);
+  return fileName;
+}
 
 test("review-surfaces.DISTRIBUTION.1 LICENSE (MIT) and CONTRIBUTING.md exist with the required content", () => {
   const license = read("LICENSE");
@@ -75,9 +84,8 @@ test("review-surfaces.DISTRIBUTION.3 README is written for a stranger's first fi
   assert.ok(!quickstart.includes("--spec"), "the quickstart must not require a spec");
 
   // A what-you-get tour with screenshots from a real run, and the images exist.
-  for (const image of ["docs/images/cockpit.png", "docs/images/change-map.png", "docs/images/sticky-comment.png"]) {
-    assert.ok(readme.includes(image), `README embeds ${image}`);
-    assert.ok(fs.statSync(path.join(root, image)).size > 10_000, `${image} is a real screenshot`);
+  for (const baseName of ["cockpit", "change-map", "change-map-detail", "sticky-comment"]) {
+    assertReadmeImage(readme, baseName);
   }
 
   // An explicit scope statement: TS/JS-first deep analysis, language-agnostic
@@ -151,8 +159,9 @@ test("review-surfaces.DISTRIBUTION.6 the README change-map screenshot shows the 
   assert.match(readme, /overview/i);
   assert.match(readme, /zoom/i);
   assert.match(readme, /legibility budget/);
-  assert.match(readme, /change-map\.png/);
-  assert.match(readme, /cockpit\.png/);
+  assert.match(readme, /change-map-[0-9a-f]{8}\.png/);
+  assert.match(readme, /change-map-detail-[0-9a-f]{8}\.png/);
+  assert.match(readme, /cockpit-[0-9a-f]{8}\.png/);
   // The committed map screenshot is no longer the 4680x768 ribbon that
   // demonstrated the scaling bug: its aspect ratio is README-legible.
   const png = fs.readFileSync(path.join(root, "docs", "images", "change-map.png"));
@@ -345,10 +354,17 @@ test("review-surfaces.DISTRIBUTION.14 the pack allowlist ships dist/src only, ne
   // so this test does NOT rebuild/clobber `dist` while sibling tests read it (the
   // repo hit exactly that race before). `npm pack --json` returns an array whose
   // first entry has a `files[].path` list of every tarball member.
-  const raw = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
-    cwd: root,
-    encoding: "utf8"
-  });
+  const npmCache = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-npm-cache-"));
+  let raw = "";
+  try {
+    raw = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, npm_config_cache: npmCache }
+    });
+  } finally {
+    fs.rmSync(npmCache, { recursive: true, force: true });
+  }
   let packed: Array<{ files?: Array<{ path?: string }> }>;
   try {
     packed = JSON.parse(raw) as Array<{ files?: Array<{ path?: string }> }>;
@@ -499,19 +515,4 @@ test("review-surfaces.DISTRIBUTION.15 the README documents CI consumption: an ac
   for (const code of [0, 2, 3, 4, 5, 10]) {
     assert.match(exitSource, new RegExp(`:\\s*${code}\\b`), `exit-codes.ts defines code ${code}`);
   }
-});
-
-// review-surfaces.DISTRIBUTION.16: the docs publish an honest Swift/iOS support
-// matrix, the macOS execution boundary, the wrapper-rule example, and the bounds.
-test("review-surfaces.DISTRIBUTION.16 README + docs publish the Swift/iOS support matrix and bounds", () => {
-  const readme = read("README.md");
-  assert.match(readme, /Swift and iOS support/, "README has a Swift/iOS support section");
-  assert.match(readme, /Requires macOS\/Xcode/, "README distinguishes the macOS execution boundary");
-  assert.match(readme, /command_rules/, "README documents the wrapper-rule config");
-
-  const swiftDoc = read("docs/swift-ios-support.md");
-  assert.match(swiftDoc, /Support matrix/, "the Swift/iOS doc has a support matrix");
-  assert.match(swiftDoc, /Known bounds/, "the Swift/iOS doc states the parser bounds plainly");
-  assert.match(swiftDoc, /no compiler|type checker/i, "the bounds name the no-compiler boundary");
-  assert.match(swiftDoc, /binary plist/i, "the bounds name binary-plist diagnostic-only handling");
 });

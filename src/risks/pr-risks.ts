@@ -1,9 +1,10 @@
 import { compareStrings } from "../core/compare";
-import { CommandRule, commandLooksLikeBroadTestCommand, commandLooksLikeFocusedTestCommand, commandLooksLikeTestCommand } from "../commands/classify";
+import { commandLooksLikeBroadTestCommand, commandLooksLikeFocusedTestCommand, commandLooksLikeTestCommand } from "../commands/classify";
 import { stripUndefined } from "../core/guards";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
 
 import type { CollectionResult } from "../collector/collect";
+import type { CommandRule } from "../commands/classify";
 import type { ChangedFile } from "../collector/git";
 import type {
   PrRiskCandidate,
@@ -43,14 +44,9 @@ export interface BuildPrRiskInput {
   coverage: PrScopedCoverageModel;
   testResults?: CollectionResult["testResults"];
   commandTranscripts?: CollectionResult["commandTranscripts"];
-  // review-surfaces.COLLECTOR.9: wrapper rules so a configured repository test
-  // wrapper transcript counts as broad/focused test evidence.
   commandRules?: CommandRule[];
   changedFileSources?: Record<string, ChangedFile["source"]>;
   reviewAreas?: ReviewArea[];
-  // Review areas that have ANY test file in the repository (changed or not).
-  // Lets untested_changed_impl tell "an existing test was not run at head" apart
-  // from "no relevant test exists" without conflating the two reviewer actions.
   repositoryTestAreas?: Set<string>;
   config?: { largeDiffFileCap?: number; largeDiffLineCap?: number };
 }
@@ -184,14 +180,6 @@ function pushSecretInDiff(drafts: DraftCandidate[], input: BuildPrRiskInput): vo
 // An implementation-role changed file whose review area has no changed test file
 // and no current-head command transcript in scope. Cites the impl file. One
 // candidate per such file (id/path ordered).
-//
-// The reviewer_action distinguishes the two genuinely different states the prior
-// "add or update a test" wording conflated:
-//   - an existing test IS mapped to the file's area, but no current-head passing
-//     transcript proves it ran against this change -> RUN the existing test.
-//   - NO test maps to the file's area at all -> ADD a test.
-// "verified" (an existing test that DID run at head, or a co-changed test) never
-// reaches this rule: hasImplementationValidation() already cleared it.
 function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInput): void {
   const changed = input.scope.changed_files;
   const validation = buildImplementationValidationIndex(input);
@@ -215,10 +203,6 @@ function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInp
     });
   }
   if (untested.length > MAX_PER_FILE_CANDIDATES) {
-    // Partition the overflow by whether the file has ANY mapped existing test, so the
-    // aggregate line stays honest about which action each group needs (at most two
-    // extra drafts). Mixed-area files (some areas covered) join the run-existing group,
-    // whose wording also covers adding tests for any still-uncovered area.
     const overflow = untested.slice(MAX_PER_FILE_CANDIDATES);
     const withExisting = overflow.filter((file) => fileHasExistingAreaTest(file, repositoryTestAreas));
     const withoutExisting = overflow.filter((file) => !fileHasExistingAreaTest(file, repositoryTestAreas));
@@ -259,19 +243,10 @@ function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInp
   }
 }
 
-// True when at least one of the changed file's review areas has ANY test file in
-// the repository (changed or not). Used only to PARTITION the bounded overflow
-// aggregate; per-file drafts use the finer untestedAreaState() below.
 function fileHasExistingAreaTest(file: ScopedChangedFile, repositoryTestAreas: Set<string>): boolean {
   return file.areas.some((area) => repositoryTestAreas.has(area));
 }
 
-// Per-file split of the changed impl's mapped areas into those that HAVE an existing
-// repository test and those that do not. A file in overlapping areas (e.g. CORE for
-// src/ + FOO for src/foo/) where only one area has a test is "mixed": telling the
-// reviewer to "just run the existing test" would hide that the other area has no
-// coverage, and telling them only to "add a test" would falsely deny the covered
-// area. The three kinds drive distinct, non-conflated reviewer actions (Codex P2).
 interface UntestedAreaState {
   kind: "run_existing" | "add" | "mixed";
   withTests: string[];
@@ -297,11 +272,11 @@ function areaList(areas: string[]): string {
 function untestedSummary(file: ScopedChangedFile, state: UntestedAreaState): string {
   switch (state.kind) {
     case "run_existing":
-      return `Implementation file ${file.path} changed; a test is mapped to ${areaList(state.withTests)} but no current-head passing transcript proves it ran against this change.`;
+      return `Implementation file ${file.path} changed; a test is mapped to ${areaList(state.withTests)} but no current-head command transcript proves it ran against this change.`;
     case "add":
-      return `Implementation file ${file.path} changed with no test mapped to ${areaList(state.without)} and no current-head test transcript.`;
+      return `Implementation file ${file.path} changed with no test mapped to ${areaList(state.without)} and no current-head command transcript.`;
     case "mixed":
-      return `Implementation file ${file.path} changed; tests are mapped to ${areaList(state.withTests)} but ${areaList(state.without)} has no mapped test, and no current-head transcript ran.`;
+      return `Implementation file ${file.path} changed; tests are mapped to ${areaList(state.withTests)} but ${areaList(state.without)} has no mapped test, and no current-head command transcript ran.`;
   }
 }
 
@@ -420,14 +395,6 @@ function currentHeadPassingTestTranscript(
 // least one of its areas has a changed test or current-head focused transcript,
 // or when a broad current-head test transcript proves the committed suite ran
 // after the change.
-//
-// BOUNDED LIMITATION (pre-existing, file-level granularity): validation is judged
-// across ALL of a file's areas together, so a file mapped to both a covered area
-// and an uncovered one is treated as validated and does not surface the uncovered
-// area's gap. The per-file mixed-state wording above only applies once a file has
-// no validation at all. Splitting validation per (file, area) is a deeper refactor
-// of this index and is intentionally deferred; this is not a regression from the
-// test-state wording change.
 function hasImplementationValidation(file: ScopedChangedFile, validation: ImplementationValidationIndex): boolean {
   if (file.areas.length === 0) {
     // No mapped area: not attributable to an untested area gap here.
@@ -519,7 +486,6 @@ function tokenMatches(token: string, tokens: Set<string>): boolean {
   }
   return tokens.has(`${token}s`);
 }
-
 
 // --- Rule: unmapped_change (workflow, low) ---------------------------------
 // scope.out_of_scope_changed_files is non-empty. Cites those files.

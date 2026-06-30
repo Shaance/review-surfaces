@@ -108,152 +108,6 @@ export function normalizeCommand(command: string): string {
   return command.trim().replace(/\s+/g, " ");
 }
 
-// ---------------------------------------------------------------------------
-// review-surfaces.COLLECTOR.9 — dedicated xcodebuild parser.
-//
-// xcodebuild's vocabulary is distinct from the runner-regex family above, so it
-// gets its own parser rather than a broad regex. ACTIONS are bare positionals
-// (`build`, `test`, `test-without-building`, …); OPTIONS are single-dash and may
-// consume the next token (`-scheme App`, `-destination '…'`). A test run is
-// `test`/`test-without-building`; `build`/`build-for-testing`/`analyze`/`archive`/
-// `clean` are validation (a build, not a test execution); `-list`/`-version`/
-// `-showBuildSettings`/`-help` are informational (print and exit). Focus is
-// `-only-testing:`/`-skip-testing:`. xcodebuild with no action defaults to `build`.
-// ---------------------------------------------------------------------------
-export type XcodebuildKind = "broad_test" | "focused_test" | "validation" | "informational";
-
-const XCODEBUILD_TEST_ACTIONS: ReadonlySet<string> = new Set(["test", "test-without-building"]);
-const XCODEBUILD_BUILD_ACTIONS: ReadonlySet<string> = new Set([
-  "build",
-  "build-for-testing",
-  "analyze",
-  "archive",
-  "clean",
-  "install",
-  "installsrc",
-  "docbuild"
-]);
-const XCODEBUILD_ALL_ACTIONS = new Set([...XCODEBUILD_TEST_ACTIONS, ...XCODEBUILD_BUILD_ACTIONS]);
-// Informational / setup-only flags that print, configure, or list and DO NOT build or
-// test the repo, even when an action word is also present. `-enumerate-tests` LISTS the
-// tests that would run instead of executing them; `-license`/`-runFirstLaunch` show the
-// license or install components — an exit-0 transcript of any of these is never repo
-// validation evidence (xcodebuild(1)).
-const XCODEBUILD_INFORMATIONAL =
-  /(?:^|\s)-(?:list|version|showBuildSettings|showsdks|showdestinations|showTestPlans|checkFirstLaunchStatus|help|usage|exportLocalizations|importLocalizations|enumerate-tests|license|runFirstLaunch|dry-run|exportArchive|exportNotarizedApp)\b|(?:^|\s)--help\b/;
-// Actions that run but neither compile nor test the current head (`clean` removes
-// products; `installsrc` copies source to the source root) — recognized, but never
-// validation evidence. Compare lowercased.
-const XCODEBUILD_NO_COMPILE_ACTIONS: ReadonlySet<string> = new Set(["clean", "installsrc"]);
-// Focus selectors narrow a test run to a subset. xcodebuild(1) accepts both the
-// attached `-only-testing:Id` and the space-separated `-only-testing Id` forms, and
-// `-only-test-configuration`/`-skip-test-configuration` narrow a test plan to a subset
-// of configurations — all are focused, not a broad suite run.
-const XCODEBUILD_FOCUS = /(?:^|\s)-(?:only|skip)-test(?:ing|-configuration)(?:[:=]|\s)/;
-// xcodebuild options whose NEXT token is a value (so an action word is not read out
-// of a `-scheme test` / `-destination '…'` value). Bounded to the common set; an
-// unknown `-flag` is treated as boolean (a following action word still registers).
-const XCODEBUILD_VALUE_OPTIONS: ReadonlySet<string> = new Set([
-  "-project",
-  "-target",
-  "-workspace",
-  "-scheme",
-  "-configuration",
-  "-xcconfig",
-  "-arch",
-  "-sdk",
-  "-destination",
-  "-destination-timeout",
-  "-toolchain",
-  "-derivedDataPath",
-  "-resultBundlePath",
-  "-resultBundleVersion",
-  "-xctestrun",
-  "-testPlan",
-  "-testLanguage",
-  "-testRegion",
-  "-exportOptionsPlist",
-  "-exportPath",
-  "-archivePath",
-  "-resultStreamPath",
-  "-testProductsPath",
-  "-clonedSourcePackagesDirPath",
-  "-packageCachePath",
-  // The space-separated forms of the test/configuration selectors take an identifier
-  // operand that could itself be an action word (`-skip-test-configuration test`), so
-  // skip it rather than read it as an action.
-  "-only-testing",
-  "-skip-testing",
-  "-only-test-configuration",
-  "-skip-test-configuration"
-]);
-
-function xcodebuildActions(command: string): string[] {
-  const tokens = command.split(" ").filter(Boolean);
-  const actions: string[] = [];
-  // tokens[0] is `xcodebuild`; scan the rest skipping options and their values.
-  for (let index = 1; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (token === "--") {
-      break;
-    }
-    if (token.startsWith("-")) {
-      if (!token.includes("=") && XCODEBUILD_VALUE_OPTIONS.has(token)) {
-        index += 1; // skip this option's value
-      }
-      continue;
-    }
-    if (token.includes("=")) {
-      continue; // build setting override (KEY=value), not an action
-    }
-    if (XCODEBUILD_ALL_ACTIONS.has(token.toLowerCase())) {
-      actions.push(token.toLowerCase());
-    }
-  }
-  return actions;
-}
-
-export function xcodebuildKind(command: string): XcodebuildKind | undefined {
-  const normalized = normalizeCommand(command);
-  if (!/^xcodebuild(?:\s|$)/.test(normalized)) {
-    return undefined;
-  }
-  if (XCODEBUILD_INFORMATIONAL.test(normalized)) {
-    return "informational";
-  }
-  const actions = xcodebuildActions(normalized);
-  if (actions.some((action) => XCODEBUILD_TEST_ACTIONS.has(action))) {
-    return XCODEBUILD_FOCUS.test(normalized) ? "focused_test" : "broad_test";
-  }
-  // No-compile-only actions (`clean`, `installsrc`) remove products / copy source and
-  // compile nothing — recognized, but NOT local-validation evidence. `clean build` /
-  // `clean test` keep their build/test classification via the checks above and below.
-  if (actions.length > 0 && actions.every((action) => XCODEBUILD_NO_COMPILE_ACTIONS.has(action))) {
-    return "informational";
-  }
-  // A recognized build/analyze action, OR no action at all (xcodebuild defaults to
-  // `build`): a compile, never a test execution.
-  return "validation";
-}
-
-// True when a command is an xcodebuild invocation that PRINTS / LISTS / sets up and
-// validates nothing (`-list`, `-license`, `-runFirstLaunch`, `test ... -dry-run`,
-// `-enumerate-tests`). Env-prefix and launcher stripped first so it matches the same
-// forms the classifiers do. Callers use this to keep such transcripts out of
-// validation evidence entirely (COLLECTOR.9).
-export function isInformationalXcodebuildCommand(command: string): boolean {
-  return xcodebuildKind(stripCrossEcosystemLauncher(normalizeCommandForClassification(command))) === "informational";
-}
-
-// ---------------------------------------------------------------------------
-// review-surfaces.COLLECTOR.9 — validated repository wrapper command rules.
-//
-// A repository wrapper (`./scripts/check-ios.sh`) is not a recognized built-in
-// runner, so config may declare its classification. Built-ins ALWAYS win for
-// commands they recognize (a rule can never reclassify `xcodebuild build` or
-// transform a failed exit into passing evidence — exit status is handled by the
-// transcript, not here). Among rules, the most specific match wins.
-// ---------------------------------------------------------------------------
 export type CommandRuleClassification = "broad_test" | "focused_test" | "validation";
 
 export interface CommandRule {
@@ -264,20 +118,16 @@ export interface CommandRule {
 }
 
 export function matchCommandRule(command: string, rules: readonly CommandRule[]): CommandRule | undefined {
-  // Strip leading env assignments (`CI=1 ./scripts/check-ios.sh`) the same way the
-  // built-in classifiers do, so a wrapper rule for `./scripts/check-ios.sh` still
-  // matches when the transcript carries an env prefix. Rule commands never carry an
-  // env prefix, so they keep plain whitespace normalization.
   const normalized = normalizeCommandForClassification(command);
   let best: CommandRule | undefined;
   let bestCommand = "";
   for (const rule of rules) {
     const ruleCommand = normalizeCommand(rule.command);
-    const matches = rule.match === "exact" ? normalized === ruleCommand : ruleNormalizedPrefixMatch(normalized, ruleCommand);
+    const matches = rule.match === "exact" ? normalized === ruleCommand : rulePrefixMatches(normalized, ruleCommand);
     if (!matches) {
       continue;
     }
-    if (best === undefined || isMoreSpecificRule(rule, ruleCommand, best, bestCommand)) {
+    if (best === undefined || moreSpecificRule(rule, ruleCommand, best, bestCommand)) {
       best = rule;
       bestCommand = ruleCommand;
     }
@@ -285,16 +135,11 @@ export function matchCommandRule(command: string, rules: readonly CommandRule[])
   return best;
 }
 
-// A prefix rule matches when the command equals the rule command or continues it
-// at a TOKEN boundary, so `./scripts/check-ios.sh` does not match
-// `./scripts/check-ios.shadow`.
-function ruleNormalizedPrefixMatch(command: string, ruleCommand: string): boolean {
+function rulePrefixMatches(command: string, ruleCommand: string): boolean {
   return command === ruleCommand || command.startsWith(`${ruleCommand} `);
 }
 
-// Most-specific: the longer rule command wins; on equal length an exact rule beats
-// a prefix rule; final tie-break by id for determinism.
-function isMoreSpecificRule(candidate: CommandRule, candidateCommand: string, best: CommandRule, bestCommand: string): boolean {
+function moreSpecificRule(candidate: CommandRule, candidateCommand: string, best: CommandRule, bestCommand: string): boolean {
   if (candidateCommand.length !== bestCommand.length) {
     return candidateCommand.length > bestCommand.length;
   }
@@ -304,22 +149,13 @@ function isMoreSpecificRule(candidate: CommandRule, candidateCommand: string, be
   return candidate.id < best.id;
 }
 
-// A command the built-in classifiers already recognize (a real runner, xcodebuild,
-// a package test/validation script, or tsc). Wrapper rules NEVER apply to these —
-// built-ins win for direct commands.
 function builtinCommandRecognized(command: string): boolean {
   const normalized = normalizeCommandForClassification(command);
   if (commandLooksLikeTestCommandFromNormalized(normalized)) {
     return true;
   }
-  if (xcodebuildKind(stripCrossEcosystemLauncher(normalized)) !== undefined) {
-    return true;
-  }
   const parsed = parsedPackageManagerCommand(normalized);
-  if (packageRunScriptLooksLikeLocalValidation(parsed?.body ?? "")) {
-    return true;
-  }
-  return /^tsc(?:\s|$)/.test(normalized);
+  return packageRunScriptLooksLikeLocalValidation(parsed?.body ?? "") || /^tsc(?:\s|$)/.test(normalized);
 }
 
 function applicableWrapperRule(command: string, rules: readonly CommandRule[]): CommandRule | undefined {
@@ -346,10 +182,6 @@ function commandLooksLikeTestCommandFromNormalized(normalized: string, parsedPac
 }
 
 export function commandLooksLikeFocusedTestCommand(command: string, rules: readonly CommandRule[] = []): boolean {
-  // A configured WRAPPER command (not a recognized built-in) is classified SOLELY by
-  // its rule — generic focus heuristics like hasFocusedTestTarget() are meaningless for
-  // an opaque wrapper and would otherwise mark a broad_test wrapper focused just because
-  // it carries a path-like argument (`./scripts/check-ios.sh --report tests/out.json`).
   const wrapperRule = applicableWrapperRule(command, rules);
   if (wrapperRule !== undefined) {
     return wrapperRule.classification === "focused_test";
@@ -374,7 +206,7 @@ export function commandLooksLikeFocusedTestCommand(command: string, rules: reado
   if (execNodeTestCommand !== undefined) {
     return hasPackageFocusFilter || (nodeTestFocusClassification(execNodeTestCommand) ?? false);
   }
-  const builtinFocused = (hasPackageFocusFilter && looksLikeTest)
+  return (hasPackageFocusFilter && looksLikeTest)
     || (testScriptAlias !== undefined && !looksLikeBroadTestScriptAlias(testScriptAlias))
     || ((yarnWorkspacesBody?.hasFocusFilter ?? false) && looksLikeTest)
     || (hasChangedOnlyTestFilter(normalized) && looksLikeTest)
@@ -382,10 +214,6 @@ export function commandLooksLikeFocusedTestCommand(command: string, rules: reado
     || (hasProjectOnlyTestFilter(normalized) && looksLikeTest)
     || hasFocusedTestTarget(normalized)
     || hasTestNameFilter(normalized);
-  if (builtinFocused) {
-    return true;
-  }
-  return applicableWrapperRule(command, rules)?.classification === "focused_test";
 }
 
 export function commandLooksLikeBroadTestCommand(command: string, rules: readonly CommandRule[] = []): boolean {
@@ -399,14 +227,10 @@ export function commandLooksLikeLocalValidationCommand(command: string, rules: r
   if (
     commandLooksLikeTestCommandFromNormalized(normalized, parsedPackageCommand) ||
     packageRunScriptLooksLikeLocalValidation(packageCommandBody) ||
-    /^tsc(?:\s|$)/.test(normalized) ||
-    // review-surfaces.COLLECTOR.9: `xcodebuild build`/`build-for-testing` is a
-    // compile — local validation evidence, but never "tests ran".
-    xcodebuildKind(stripCrossEcosystemLauncher(normalized)) === "validation"
+    /^tsc(?:\s|$)/.test(normalized)
   ) {
     return true;
   }
-  // A configured wrapper of ANY classification is at least local validation.
   return applicableWrapperRule(command, rules) !== undefined;
 }
 
@@ -482,13 +306,6 @@ function crossEcosystemTestKind(normalized: string): "broad" | "focused" | undef
   const command = stripCrossEcosystemLauncher(normalized);
   if (CROSS_ECOSYSTEM_HELP_OR_VERSION.test(command) || CROSS_ECOSYSTEM_INFO_SUBCOMMAND.test(command)) {
     return undefined; // `gradle help --task test`, `gradle --help`, `swift test --help`
-  }
-  // review-surfaces.COLLECTOR.9: xcodebuild has its own parser. Only test actions
-  // are a test run; build/build-for-testing/informational are not (the latter two
-  // reach the validation/ignored paths, never "tests ran").
-  const xcode = xcodebuildKind(command);
-  if (xcode !== undefined) {
-    return xcode === "broad_test" ? "broad" : xcode === "focused_test" ? "focused" : undefined;
   }
   const match = CROSS_ECOSYSTEM_RUNNERS.find((entry) => entry.head.test(command));
   if (match === undefined) {

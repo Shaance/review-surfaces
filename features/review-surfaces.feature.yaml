@@ -84,12 +84,6 @@ components:
       7:
         requirement: The collector must ingest bounded local command transcript artifacts and write .review-surfaces/inputs/commands.json.
         note: Transcripted successful test commands may be treated as direct evidence; feedback-recorded commands remain claimed or indirect unless backed by a transcript.
-      8:
-        requirement: One shared source-kind classifier must consistently recognize Swift implementation/test files, XCTest/UI-test target conventions, Apple project/config files (Package.swift, Package.resolved, XcodeGen project.yml, project.pbxproj, xcscheme, xctestplan, xcconfig, Info.plist, entitlements, PrivacyInfo.xcprivacy), and Apple generated/cache artifacts across collection, scope, test indexing, and human ranking.
-        note: "iOS/Swift support uplift (docs/history/IOS_SWIFT_SUPPORT_GOAL.md) Phase 1. src/collector/source-kind.ts is the single shared module; pr-scope, human-review ranking, config test defaults, and indexing delegate to it rather than carrying private Swift suffix lists. project.pbxproj is not globally treated as generated."
-      9:
-        requirement: Command evidence must recognize direct `xcodebuild test`/`xcodebuild test-without-building` and `swift test`, distinguish build-only (`build`, `build-for-testing`) and informational (`-list`, `-version`, `-showBuildSettings`) invocations from test runs, treat focused selectors (`--filter`, `-only-testing:`, `-skip-testing:`) as focused tests, parse bounded XCTest/Swift Testing summaries without overriding the captured exit code, and support validated repository-configured wrapper command rules.
-        note: "iOS/Swift support uplift (docs/history/IOS_SWIFT_SUPPORT_GOAL.md) Phase 1. src/commands/classify.ts gains a dedicated xcodebuild parser; config command_rules use normalized exact/prefix matching with most-specific-wins; a failed exit can never be reclassified as passing evidence."
 
   INTENT:
     name: Intent extraction
@@ -377,12 +371,6 @@ components:
         requirement: The tool must detect test-weakening signals (deleted test files, newly skipped tests, removed assertions, regenerated snapshots) as a distinct deterministic risk class surfaced near the top of the human surface.
       4:
         requirement: Semantic change facts must flow into review queue ranking, risk lenses, and suggested comments using concrete language instead of generic path-based phrasing.
-      5:
-        requirement: Deterministic Swift declaration facts must report supported public/package/open and target-level declaration additions, removals, and signature changes — including parameter and return-type changes, conformances, protocol requirements, enum cases, `async`/`throws`/`rethrows`, and global-actor/Sendable isolation changes — and route public/package/open contract breaks to the API-contract lens, without claiming compiler completeness; an unsupported or ambiguous parse never becomes a blocker.
-        note: "iOS/Swift support uplift (docs/history/IOS_SWIFT_SUPPORT_GOAL.md) Phase 2. src/risks/swift-lexer.ts + swift-declarations.ts + swift-semantic-diff.ts; a body-only edit produces no declaration-contract fact. Additive swift_declaration_changes facts; no native SwiftSyntax/SourceKit dependency."
-      6:
-        requirement: Deterministic Swift test-weakening facts must understand XCTest, Swift Testing, snapshot-reference, and Xcode test-plan changes — including removed test files/methods, removed `@Test`/`#expect`/`#require`/`XCTAssert*` checks (counted net added-vs-removed), newly skipped/disabled tests (`XCTSkip*`, `.disabled(...)` traits, test-plan skips), and selected test targets removed or disabled — using Swift-aware rules rather than JavaScript-only assertion heuristics.
-        note: "iOS/Swift support uplift (docs/history/IOS_SWIFT_SUPPORT_GOAL.md) Phase 2. Net added-vs-removed counting so an edited assertion is not a false weakening; added reference images are not weakening; binary content is never copied into an artifact."
 
   REVIEW_LOOP:
     name: Interactive review session
@@ -527,9 +515,6 @@ components:
       6:
         requirement: The eval scoreboard must be surfaced twice — a generated, marker-delimited README block (idempotently regenerated from eval_scoreboard.json like the sticky comment's marker upsert, never hand-edited inside the markers) citing cases passed over total per fact class, and one HTML cockpit footer line citing the score — with the local gate asserting the README block is current.
         note: "Visual uplift P2 tail (brainstorm idea 9). The adoption argument: a fact class that loses its seed shows up in the README diff."
-      7:
-        requirement: The real-pipeline seeded eval must cover every shipped Swift/iOS fact class — swift_contract_change, swift_test_weakening, swift_changed_test_connection, swiftpm_dependency_change, ios_privacy_capability_change, xcode_test_structure_change — plus benign negative cases (body-only Swift edit, Package.resolved origin-hash/order change, pbxproj object-ID/order churn) and record their pass counts in the existing eval scoreboard.
-        note: "iOS/Swift support uplift (docs/history/IOS_SWIFT_SUPPORT_GOAL.md). Each fact class gains its seeded eval case in the phase that ships the detector; EVAL_HARNESS.7 is removed from the allowlist only once the complete set exists (Phase 5 consolidation)."
 
   DEP_FACTS:
     name: Dependency and supply-chain facts
@@ -552,9 +537,6 @@ components:
       5:
         requirement: The dependency-fact detector must emit a deterministic fact for a major-version change in either direction, so a major-version downgrade (a likely-breaking supply-chain change) is surfaced, not only an upward bump.
         note: "ci-trust uplift Phase 3 (docs/history/CI_TRUST_UPLIFT_GOAL.md). dependency-facts only fired major_version_bump when headMajor > baseMajor; a ^3 -> ^2 downgrade produced no fact. A variant of the existing sneaky_dependency fact class, not a new eval-harness class."
-      6:
-        requirement: Deterministic Swift package facts must compare direct requirements and resolved pins from Package.swift, XcodeGen project.yml package declarations, Xcode remote package references (XCRemoteSwiftPackageReference in project.pbxproj), and nested Package.resolved v2/v3 files — emitting facts for added/removed/changed direct packages, requirement loosening, major-version changes in either direction, and resolved pin changes — without executing package manifests, guessing transitive attribution, or firing on a benign originHash-only rewrite.
-        note: "iOS/Swift support uplift (docs/history/IOS_SWIFT_SUPPORT_GOAL.md) Phase 4a. src/risks/swift-package-facts.ts feeds the existing supply_chain lens; provenance names the manifest/project/lock path; a pin that cannot be attributed to one direct dependency stays unattributed (never a guessed via)."
 
   BLAST_RADIUS:
     name: Blast-radius facts
@@ -571,9 +553,6 @@ components:
         requirement: For each changed or removed export from the existing surface diff, the tool must compute its blast radius as the set of files that import that module and reference the symbol, attaching used_by metadata (a count and the top three to five paths, alphabetical for determinism) to the queue item and contract risks, and feeding it into ranking so a removed export with many importers outranks one with none.
       3:
         requirement: The import-graph build must be bounded — parsing only indexed source files, skipping generated directories via the existing ignore rules, and recording a truncation note if the repository exceeds a file cap — so that "used by 0" is never produced from a silently partial graph.
-      4:
-        requirement: A bounded target-aware Swift symbol graph must connect unique type/protocol/actor/enum declarations and references within a project target/module, attribute changed Swift tests to the implementation types they exercise, and feed used_by blast-radius metadata, the change map, and reading order — emitting a file-to-file edge only when a referenced declaration is unique within the relevant target; ambiguous names, partial parses, and truncated graphs never emit a false "used by 0".
-        note: "iOS/Swift support uplift (docs/history/IOS_SWIFT_SUPPORT_GOAL.md) Phase 3. src/collector/apple-project/ builds the target model; src/collector/swift-symbol-graph.ts carries a unique_symbol_reference precision label and wires into the same consumers as the TypeScript import graph. V1 is type/protocol/actor/enum oriented, not a whole-program call graph."
 
   CONFIG_FACTS:
     name: Config and infrastructure facts
@@ -591,12 +570,6 @@ components:
       3:
         requirement: A Dockerfile detector (new RUN curl-pipe-shell patterns, base-image changes, dropped USER) and a SQL/migration detector (destructive statements such as DROP TABLE/COLUMN, ALTER ... TYPE, TRUNCATE, and DELETE without WHERE in changed .sql or migration-directory files) must flag changes for human attention, routing into existing lenses.
         note: Regex altitude is acceptable for these detectors; the fact language must say it is flagging for attention, not proving semantics.
-      4:
-        requirement: Deterministic Apple config facts must cover high-signal Info.plist, entitlement, privacy-manifest (PrivacyInfo.xcprivacy), xcconfig, and build-setting changes — privacy usage-description keys, App Transport Security broadening, tracking/required-reason declarations, app-group/keychain/iCloud/associated-domain/push capabilities, and toolchain settings such as IPHONEOS_DEPLOYMENT_TARGET / SWIFT_VERSION / SWIFT_STRICT_CONCURRENCY / ENABLE_TESTABILITY — and route them into the existing security_privacy, api_contract, and test_evidence lenses with concrete key/path language; a binary plist is a diagnostic, never an inferred absence.
-        note: "iOS/Swift support uplift (docs/history/IOS_SWIFT_SUPPORT_GOAL.md) Phase 4b. A bounded XML plist reader plus XcodeGen/pbxproj build-setting reads; benign generated ordering/object-ID/build-number churn must not outrank substantive Swift source."
-      5:
-        requirement: Deterministic Xcode structure facts must cover target added/removed or kind change, test target removed, source-file membership change, app-to-test dependency removed, scheme test-action and test-plan changes, and XcodeGen author-intent vs generated-project drift on the supported comparison subset — where a supported exact removal is a deterministic fact and uncertain generator drift remains a question/advisory ("possible generated-project drift; run the repository drift check"), never a blocker by itself.
-        note: "iOS/Swift support uplift (docs/history/IOS_SWIFT_SUPPORT_GOAL.md) Phase 4b. Compares base/head Apple project models from Phase 3; drift routes to cache_provenance/architecture with a verification command suggestion."
 
   POLICY:
     name: Team-shared review policy
@@ -799,9 +772,6 @@ components:
       15:
         requirement: README must document consuming the tool in CI — a copy-pasteable GitHub Action `uses:` snippet (linking the worked example workflow) and an exit-code table sourced from src/core/exit-codes.ts mapping each code to its meaning — so a CI author can wire the action and branch on exit codes without reading action.yml.
         note: "ci-trust uplift Phase 7. The README references the reusable Action three times with no usage snippet and sells --strict 'for CI' without documenting the exit codes CI gates on."
-      16:
-        requirement: README and agent documentation must publish an honest Swift/iOS support matrix distinguishing cross-platform static analysis from macOS/Xcode-only command recording, document the wrapper-rule config example and copy-pasteable Swift/Xcode commands, and state the parser bounds plainly (no compiler/type checker, Objective-C remains generic, binary plists are diagnostic-only, ambiguous symbols create no edges).
-        note: "iOS/Swift support uplift (docs/history/IOS_SWIFT_SUPPORT_GOAL.md) Phase 5. README support matrix + docs/swift-ios-support.md + AGENTS.md Swift dogfood guidance; static collection works anywhere the Node CLI works, while recording an xcodebuild transcript requires macOS and is run by the user."
 
   MAP_SCALE:
     name: Change-map legibility at scale
@@ -827,14 +797,20 @@ components:
         requirement: The overview must be honest by construction — group file counts must sum to the full changed-file count and aggregated edge weights must account for every model edge between groups — with ACID-named tests reproducing the 8-PR fixture (23 clusters, 99 files) and asserting the overview leads, fits the budget, and that both sums add up.
         note: "Phase 1. Closes failure 2: MAX_CHANGED_NODES leaves 74 of 99 files represented only as '+ N more' texts and edges touching capped files vanish with no note, violating the never-silent rule."
       4:
-        requirement: Each overview group must expand to a detail view containing its model clusters and files, intra-group edges, cross-group edges rendered as explicit stub ports (for example "-> src/render x3"), and its share of the halo, with a per-view node cap rendering an explicit "+ N more"; detail views must use the model clusters the queue and tour reference verbatim so map/tour agreement holds, and every changed file must appear in exactly one detail view, asserted on the 99-file fixture.
-        note: "Phase 2. Closes failure 4 (no zoom level exists although the model is already two-level) and keeps the never-silent rule inside each zoomed view."
+        requirement: Each overview group must expand to a detail view containing its model clusters and changed files, plus review-worthy intra-group edges and provider-backed cross-group relationship summaries when those relationships explain the change; the model may still carry cross-group edge totals, capped nodes, and halo share for evidence and non-human projections, but the human map must not promote unchanged-file halo cards or generic raw-import stubs such as "tests use src" when they do not add reviewer insight. Detail views must use the model clusters the queue and tour reference verbatim so map/tour agreement holds, and every changed file must appear in exactly one detail view, asserted on the 99-file fixture.
+        note: "Phase 2. Closes failure 4 (no zoom level exists although the model is already two-level) while preserving reviewer-facing signal: unchanged halo and mechanical cross-area stubs stay out of the human visual map unless enriched into useful explanation."
       5:
         requirement: All SVG map layouts must wrap — columns wrap into rows and long file stacks wrap — so that no rendered SVG (overview, detail, or small-diff file-level) exceeds the width budget; height may grow but width never, and the typical-PR file-level map (the pinned aefc63c~1..aefc63c range, previously 1792px natural width rendered at ~55 percent) must render at or above ~94 percent of natural size as a single wrapped file-level map.
         note: "Phase 2. Closes failure 1's typical-PR case and enforces the summarize-never-shrink standing rule: scale-to-fit below ~90 percent of natural size is a rendering bug."
       6:
         requirement: In the cockpit, clicking an overview group must toggle that group's pre-rendered hidden detail SVG using vanilla JS with deterministic markup and the same data- attribute pattern as existing filters, while file clicks inside a detail view keep filtering the review queue exactly as today; human_review.md must render one collapsed details block per group containing its detail mermaid in deterministic order with the embed guard applied per block; the sticky comment stays overview-only.
         note: "Phase 2. Closes the interaction half of failures 3 and 4: the cockpit's only interaction is node-click-filters-queue, and a reviewer cannot ask 'show me just src' anywhere."
+      7:
+        requirement: The HTML cockpit change map must preserve visual relationship lines for review-worthy relationships while routing them around cards with no line overlap, label overlap, orphan rails, or edges anchored to hidden nodes; provider-backed runs may enrich those relationships through the existing schema-bound provider boundary, while mock/offline runs must keep deterministic model evidence available without inventing edges or promoting generic raw-import summaries into the human map.
+        note: "Screenshot dogfood feedback: removing overlapping lines made the map cleaner but less useful, while numbered badges, relationship notes, and raw labels like 'tests use src' were impossible to read and did not explain the change. The reviewer needs high-level relationship insight only when the relationship itself carries signal."
+      8:
+        requirement: Overview cards must carry a reviewer-facing one-line summary of what changed in that area, and zoomed detail views must group files under reviewer-meaningful topic labels rather than mechanical continuation columns; provider-backed runs may enrich area summaries and topic groups through the existing schema-bound provider boundary, but every topic path must validate against the deterministic changed-file set and mock/offline runs must use deterministic fallback summaries and topic buckets.
+        note: "Screenshot dogfood feedback: file/count/churn cards and labels like 'tests (cont.)' still forced reviewers to reconstruct intent from filenames. The map should explain what each area is doing and why files are grouped together."
 
   QUALITY_GATE:
     name: CI quality gate and machine-readable summaries
@@ -940,9 +916,6 @@ constraints:
       7:
         requirement: Raw transcript ingestion must (a) redact every extracted field (text, tool_use input, tool_result output, code-edit body) before normalization and before any remote provider call, AND route every PERSISTED field (incl. the normalized-log write) through redactForArtifact (redact-before-BOUND), storing any field where containsBlockedRedaction fires as a hash by default (raw masked excerpt only on explicit opt-in, per TRD 14.1) so a gitignored-but-local persisted artifact cannot retain blocked-secret context or hide that it held blocked material; AND (b) fold a conversation block signal into BOTH remote_provider_blocked (so a blocked secret in a tool_call/tool_result/code-edit privacy-blocks an ai-sdk run at the gate) AND secret_findings / the persisted privacy surface (so the postable surface exposes the high-risk block per PRIVACY.6), with that fold computed in collect.ts BEFORE the privacy object is assembled, and with any conversation secret_findings entry carrying a repo-relative normalized-log path or synthetic locus as its required path — NEVER the absolute discovered-session path; it must never copy raw transcript text into a public artifact by default.
         note: "conversation-audit uplift (D8/D9). Persisted-surface redact-before-bound + hash-on-blocked (a) lands in Phase 1; the block-signal fold (b) into both surfaces lands in Phase 2. Test: PRIVACY.7 (persisted normalized log carries hash not raw blocked-secret context; tool_result/code-edit secret folds into BOTH remote_provider_blocked and secret_findings; ai-sdk run exits privacyBlocked)."
-      8:
-        requirement: Apple signing/provisioning/user-state artifacts (*.mobileprovision, *.provisionprofile, *.p12, private keys, xcuserdata/, *.xcuserstate, DerivedData, build caches) must be excluded by default, while reviewable service-plist/project text (GoogleService-Info.plist, entitlements, project files) remains subject to redact-before-persist and block-before-remote behavior — an API key in a service plist is redacted in every persisted/postable surface and raises the remote-provider block signal — and no absolute DerivedData or home-directory path is ever persisted.
-        note: "iOS/Swift support uplift (docs/history/IOS_SWIFT_SUPPORT_GOAL.md) Phase 1. Bootstrap ignore guidance gains the Apple signing/user-state set; an iOS-specific regression fixture proves the service-plist redaction and remote-block. Reuses the existing PRIVACY.6 secret-redaction/block boundary rather than an Apple-only path."
 
   QUALITY:
     name: Testing and release quality
@@ -992,6 +965,3 @@ constraints:
       1:
         requirement: An on-demand benchmark (`bench/`, run by `node bench/run.mjs`, NOT in CI because it needs network) must run the full `all` pipeline (mock provider, `--no-conversation-discovery` for hermetic deterministic runs) over PINNED real PR-shaped diffs (public repo + base/head SHAs) across languages, and score the review surface against the failure modes the tool exists to avoid — empty review queue on a substantive diff, fabricated blockers on a spec-less run, doc/generated/lock/binary leakage into the top-5, and top-item-not-code — plus an optional top-5 focus-recall over a hand-annotated `expected_focus` subset. It must fail (non-zero exit) when any case errors, hits an empty queue, or fabricates a blocker, and write a scorecard. This is the live-output check the dogfood discipline calls for, complementary to the seeded empty-diff local gate which is blind to output sensibility.
         note: "post-uplift adoption work (2026-06-18). Seed set: 6 cases (TS/Go/Rust/Java + Python x2) validating the HUMAN_REVIEW.28 cold-start floor live: 0% empty-queue, 0% false-blocker, 100% focus recall@5. Target 20-30. See bench/README.md."
-      2:
-        requirement: The pinned public effectiveness benchmark must include at least six representative Swift/SwiftPM/iOS-shaped diffs (a SwiftPM public-declaration change, app source plus matching XCTest, Swift Testing weakening, a package requirement/pin change, an XcodeGen/entitlement/privacy config change, and a mixed source+tests+docs+generated-churn case) and preserve the benchmark's quality targets on them — zero empty queues, zero fabricated blockers, zero irrelevant generated/lock/binary entries in the top five, and high expected-focus recall — while all pre-existing benchmark cases retain their pass outcome.
-        note: "iOS/Swift support uplift (docs/history/IOS_SWIFT_SUPPORT_GOAL.md) Phase 5. bench/manifest.json gains pinned public Swift cases (immutable base/head SHAs, small enough for reliable execution); the seeded eval remains the CI gate, this stays on-demand (node bench/run.mjs)."

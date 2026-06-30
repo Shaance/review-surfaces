@@ -64,9 +64,6 @@ export interface ReviewSurfacesConfig {
     enabled: boolean;
     default_entrypoint: boolean;
   };
-  // review-surfaces.COLLECTOR.9: validated repository wrapper command rules. A
-  // direct command is always classified by the built-ins; these rules only
-  // classify local wrappers the built-ins do not recognize. Empty by default.
   command_rules: CommandRule[];
 }
 
@@ -75,22 +72,7 @@ export const defaultConfig: ReviewSurfacesConfig = {
   output_dir: ".review-surfaces",
   specs: ["features/**/*.feature.yaml"],
   docs: ["README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md", "docs/**/*.md", ".agents/skills/**/SKILL.md"],
-  // review-surfaces.COLLECTOR.8: zero-config repositories index Swift/Xcode tests
-  // alongside the existing JS/TS defaults (added, not replaced) so XCTest / Swift
-  // Testing suites are collected as tests rather than implementation. The Swift
-  // test-directory globs mirror the suffixed-dir rule in src/collector/source-kind.ts
-  // (`*Tests/` / `*Test/`) so a non-`*Test(s).swift` helper under any recognized test
-  // target — including the dominant `MyAppTests/Support/Fixture.swift` layout — is
-  // still indexed as test evidence.
-  tests: [
-    "tests/**/*.test.ts",
-    "tests/**/*.test.js",
-    "**/*Tests.swift",
-    "**/*Test.swift",
-    "**/*Tests/**/*.swift",
-    "**/*Test/**/*.swift",
-    "**/__Tests__/**/*.swift"
-  ],
+  tests: ["tests/**/*.test.ts", "tests/**/*.test.js"],
   privacy: {
     ignore_file: ".review-surfacesignore",
     redact_secrets: true
@@ -218,11 +200,6 @@ export function normalizeConfig(raw: Record<string, unknown>): ReviewSurfacesCon
   };
 }
 
-// review-surfaces.COLLECTOR.9: parse and VALIDATE wrapper command rules. A
-// malformed or duplicate rule FAILS the load loudly (usage exit code) rather than
-// silently weakening evidence — the same fail-fast contract as quality_gate.fail_on.
-// Rules are sorted most-specific-first (longest command, then exact over prefix,
-// then id) so application order is deterministic regardless of authored order.
 const COMMAND_RULE_MATCHES: readonly CommandRule["match"][] = ["exact", "prefix"];
 const COMMAND_RULE_CLASSIFICATIONS: readonly CommandRuleClassification[] = ["broad_test", "focused_test", "validation"];
 
@@ -251,10 +228,10 @@ function parseCommandRules(value: unknown): CommandRule[] {
     if (!command) {
       throw new CliError(`Invalid ${where} (${id}): a non-empty command is required.`, ExitCodes.usageError);
     }
-    if (!(COMMAND_RULE_MATCHES as string[]).includes(match)) {
+    if (!(COMMAND_RULE_MATCHES as readonly string[]).includes(match)) {
       throw new CliError(`Invalid ${where} (${id}): match must be one of ${COMMAND_RULE_MATCHES.join(", ")}.`, ExitCodes.usageError);
     }
-    if (!(COMMAND_RULE_CLASSIFICATIONS as string[]).includes(classification)) {
+    if (!(COMMAND_RULE_CLASSIFICATIONS as readonly string[]).includes(classification)) {
       throw new CliError(
         `Invalid ${where} (${id}): classification must be one of ${COMMAND_RULE_CLASSIFICATIONS.join(", ")}.`,
         ExitCodes.usageError
@@ -263,16 +240,12 @@ function parseCommandRules(value: unknown): CommandRule[] {
     seenIds.add(id);
     rules.push({ id, command, match: match as CommandRule["match"], classification: classification as CommandRuleClassification });
   }
-  return sortCommandRules(rules);
-}
-
-function sortCommandRules(rules: CommandRule[]): CommandRule[] {
   return rules.slice().sort((left, right) => {
     if (left.command.length !== right.command.length) {
-      return right.command.length - left.command.length; // longest (most specific) first
+      return right.command.length - left.command.length;
     }
     if (left.match !== right.match) {
-      return left.match === "exact" ? -1 : 1; // exact beats prefix on equal length
+      return left.match === "exact" ? -1 : 1;
     }
     return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
   });

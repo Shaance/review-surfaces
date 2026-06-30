@@ -25,7 +25,7 @@ function collection(changed: ReturnType<typeof file>[], opts: CollOpts = {}): Co
     privacy: { secret_findings: (opts.secretPaths ?? []).map((path) => ({ path, kinds: ["aws_key"] })) },
     commandTranscripts: opts.transcripts ?? [],
     git: { repo: "fixture", base_ref: "HEAD", head_ref: "HEAD", head_sha: HEAD_SHA },
-    semanticChangeFacts: { schema_changes: [], api_changes: [], test_weakening: [], swift_declaration_changes: [], ...(opts.semanticFacts ?? {}) },
+    semanticChangeFacts: { schema_changes: [], api_changes: [], test_weakening: [], ...(opts.semanticFacts ?? {}) },
     dependencyFacts: opts.dependencyFacts ?? [],
     configFacts: opts.configFacts ?? []
   } as unknown as CollectionResult;
@@ -349,6 +349,14 @@ test("review-surfaces.METHODOLOGY.8 a correlated test (matching name stem) DOES 
   assert.equal(signal(findings, "impl_no_test"), undefined, "a test whose stem matches the impl is coverage");
 });
 
+test("review-surfaces.METHODOLOGY.8 plural PascalCase test/spec stems count as coverage", () => {
+  const javaFindings = computeCrossReferenceSignals(collection([file("src/Foo.java"), file("src/FooTests.java", "A")]), talk("changed Foo"));
+  assert.equal(signal(javaFindings, "impl_no_test"), undefined, "FooTests.java covers Foo.java");
+
+  const kotlinFindings = computeCrossReferenceSignals(collection([file("src/Widget.kt"), file("src/WidgetSpecs.kt", "A")]), talk("changed Widget"));
+  assert.equal(signal(kotlinFindings, "impl_no_test"), undefined, "WidgetSpecs.kt covers Widget.kt");
+});
+
 test("review-surfaces.METHODOLOGY.8 merely NAMING the auth domain does not count as security discussion (Codex P2)", () => {
   // "changed the auth flow" names the domain but proves no security reasoning.
   assert.ok(signal(computeCrossReferenceSignals(collection([file("src/auth/login.ts")]), talk("changed the auth login flow")), "risky_no_security"));
@@ -459,50 +467,4 @@ test("review-surfaces.METHODOLOGY.8 an empty diff yields no cross-reference find
 test("review-surfaces.METHODOLOGY.8 with no conversation, the diff-based signals still fire (deterministic shell)", () => {
   const findings = computeCrossReferenceSignals(collection([file("src/auth/login.ts")]), []);
   assert.ok(signal(findings, "risky_no_security"));
-});
-
-// review-surfaces.COLLECTOR.8 — the methodology impl<->test correlation must use the
-// same Swift-aware stem as the cold-start floor: a changed `Greeter.swift` paired with
-// `GreeterTests.swift` (plural suffix) is COVERED, so impl_no_test must not fire.
-test("review-surfaces.COLLECTOR.8 a Swift impl with its plural-suffixed test does not fire impl_no_test", () => {
-  const withTest = computeCrossReferenceSignals(
-    collection([file("Sources/App/Greeter.swift"), file("Tests/AppTests/GreeterTests.swift")]),
-    talk("refactored Greeter")
-  );
-  assert.equal(signal(withTest, "impl_no_test"), undefined, "the matching plural-suffixed test connects to the impl");
-  // Control: the same impl change with NO test does fire impl_no_test.
-  const withoutTest = computeCrossReferenceSignals(
-    collection([file("Sources/App/Greeter.swift")]),
-    talk("refactored Greeter")
-  );
-  assert.ok(signal(withoutTest, "impl_no_test"), "an uncovered impl change still fires");
-});
-
-// review-surfaces.METHODOLOGY.8 + SEMANTIC_DIFF.5 — a breaking Swift declaration change
-// is a backward-incompatible API change, so the compatibility audit must consider it
-// (not only TypeScript api_changes / JSON schema_changes).
-test("review-surfaces.METHODOLOGY.8 a breaking Swift change with no compat discussion fires api_no_compat", () => {
-  const findings = computeCrossReferenceSignals(
-    collection([file("Sources/App/API.swift")], {
-      semanticFacts: {
-        swift_declaration_changes: [
-          { path: "Sources/App/API.swift", name: "API.run", kind: "function", change: "removed", visibility: "public", breaking: true, detail: "Swift function `API.run` removed (public)." }
-        ]
-      }
-    }),
-    talk("did a quick refactor")
-  );
-  assert.ok(signal(findings, "api_no_compat"), "a breaking public Swift change triggers the compat audit");
-  // A non-breaking Swift addition does NOT trigger it.
-  const additive = computeCrossReferenceSignals(
-    collection([file("Sources/App/API.swift")], {
-      semanticFacts: {
-        swift_declaration_changes: [
-          { path: "Sources/App/API.swift", name: "API.added", kind: "function", change: "added", visibility: "public", breaking: false, detail: "Swift function `API.added` added (public)." }
-        ]
-      }
-    }),
-    talk("did a quick refactor")
-  );
-  assert.equal(signal(additive, "api_no_compat"), undefined, "a compatible Swift addition does not trigger the compat audit");
 });

@@ -316,19 +316,6 @@ quality_gate:
   # (+ PRIVACY.7(b)); Phase 3b shipped RISK.6 + RISK.7 (CONV-GAP-* + tested_how);
   # Phase 3a shipped METHODOLOGY.8 (the deterministic D6 four-signal cross-reference
   # promotion). The allowlist is back to [] — the uplift's gated ACIDs all landed.
-  #
-  # The iOS/Swift support uplift (docs/history/IOS_SWIFT_SUPPORT_GOAL.md) follows the
-  # same convention: Phase 0 stages every not-yet-shipped Swift/iOS ACID below, and
-  # each later phase removes its own ACIDs in the PR that ships them. The gate must
-  # be back to `allow_missing: []` when Phase 5 lands. Phase 1 removes COLLECTOR.8,
-  # COLLECTOR.9, PRIVACY.8; Phase 2 SEMANTIC_DIFF.5, SEMANTIC_DIFF.6; Phase 3
-  # BLAST_RADIUS.4; Phase 4a DEP_FACTS.6; Phase 4b CONFIG_FACTS.4, CONFIG_FACTS.5;
-  # Phase 5 EVAL_HARNESS.7, BENCH.2, DISTRIBUTION.16.
-  # The iOS/Swift support uplift (docs/history/IOS_SWIFT_SUPPORT_GOAL.md) is fully
-  # shipped: all twelve staged ACIDs landed phase by phase and were removed as they
-  # shipped (Phase 1 COLLECTOR.8/.9 + PRIVACY.8; Phase 2 SEMANTIC_DIFF.5/.6; Phase 3
-  # BLAST_RADIUS.4; Phase 4a DEP_FACTS.6; Phase 4b CONFIG_FACTS.4/.5; Phase 5
-  # EVAL_HARNESS.7 + BENCH.2 + DISTRIBUTION.16). The allowlist is back to [].
   allow_missing: []
 human_review:
   enabled: true

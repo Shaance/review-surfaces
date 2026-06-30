@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { collectInputs } from "../src/collector/collect";
-import type { ProviderName } from "../src/llm/provider";
 import { collectChangedFiles } from "../src/collector/git";
 import { defaultConfig } from "../src/config/config";
 import { buildMethodology } from "../src/methodology/methodology";
@@ -205,58 +204,54 @@ components:
   }
 });
 
-test("manifest signature folds the ai-sdk output budget so REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS busts the cache; mock is byte-identical (Codex BENCH.2 round-2)", async () => {
-  // Raising the live output budget changes the generateObject request, so a cached
-  // low-budget (possibly truncated) artifact must NOT be reused — the override must bust
-  // the cache. For an offline provider (mock) the env is irrelevant and the signature must
-  // stay byte-identical so determinism and golden fixtures are unaffected.
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-aibudget-sig-"));
+test("manifest signature changes with ai-sdk max output token budget", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ai-budget-sig-"));
+  const previous = process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS;
   try {
+    fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
     fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
-    fs.writeFileSync(path.join(tmp, "src", "a.ts"), "export const value = 1;\n");
+    fs.writeFileSync(
+      path.join(tmp, "features", "example.feature.yaml"),
+      `feature:
+  name: example
+components:
+  CORE:
+    requirements:
+      1: Build core.
+`
+    );
+    fs.writeFileSync(path.join(tmp, "src", "core.ts"), "export const core = true;\n");
     execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
     execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
-    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
-    fs.writeFileSync(path.join(tmp, "src", "a.ts"), "export const value = 2;\n");
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "base"], { cwd: tmp, stdio: "ignore" });
 
-    const config = { ...defaultConfig, specs: [], docs: [], tests: [], output_dir: ".review-surfaces" };
-    const signatureFor = async (provider: string, budget: string | undefined, gateProvider?: string): Promise<string> => {
-      const prev = process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS;
-      if (budget === undefined) {
-        delete process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS;
-      } else {
-        process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = budget;
-      }
-      try {
-        const result = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider, gateProvider: gateProvider as ProviderName | undefined });
-        return result.manifest.signature ?? "";
-      } finally {
-        if (prev === undefined) {
-          delete process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS;
-        } else {
-          process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = prev;
-        }
-      }
-    };
+    const config = { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [] };
+    process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = "4096";
+    const first = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider: "ai-sdk" });
+    process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = "12000";
+    const second = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider: "ai-sdk" });
+    process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = "4096";
+    const third = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider: "mock" });
+    process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = "12000";
+    const fourth = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider: "mock" });
+    process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = "4096";
+    const prScopeFirst = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider: "mock", gateProvider: "ai-sdk" });
+    process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = "12000";
+    const prScopeSecond = await collectInputs({ cwd: tmp, config, baseRef: "HEAD", headRef: "HEAD", dogfood: false, provider: "mock", gateProvider: "ai-sdk" });
 
-    const aiDefault = await signatureFor("ai-sdk", undefined);
-    const aiRaised = await signatureFor("ai-sdk", "20000");
-    assert.ok(aiDefault.length > 0 && aiRaised.length > 0, "both ai-sdk runs record a signature");
-    assert.notEqual(aiRaised, aiDefault, "raising the ai-sdk output budget must change the signature so --cache reissues the live call");
-
-    // --review-scope pr: the whole-repo packet is collected with provider "mock" while the
-    // run still issues ai-sdk calls (gateProvider carries the requested provider). The budget
-    // must still bust the cache here (Codex BENCH.2 round-3).
-    const prDefault = await signatureFor("mock", undefined, "ai-sdk");
-    const prRaised = await signatureFor("mock", "20000", "ai-sdk");
-    assert.notEqual(prRaised, prDefault, "in pr scope (gateProvider ai-sdk) the budget must change the signature even though the signature provider is mock");
-
-    const mockDefault = await signatureFor("mock", undefined);
-    const mockRaised = await signatureFor("mock", "20000");
-    assert.equal(mockRaised, mockDefault, "the offline (mock) signature must ignore the ai budget — byte-identical, no determinism impact");
-    // A genuinely offline pr-scope run (gateProvider also mock) is likewise unaffected.
-    assert.equal(await signatureFor("mock", "20000", "mock"), mockDefault, "mock+gateProvider mock ignores the ai budget too");
+    assert.notEqual(second.manifest.signature, first.manifest.signature, "ai-sdk token budget changes the cache signature");
+    assert.equal(fourth.manifest.signature, third.manifest.signature, "mock signatures ignore ai-sdk-only token budget");
+    assert.notEqual(
+      prScopeSecond.manifest.signature,
+      prScopeFirst.manifest.signature,
+      "PR-scope ai-sdk gate token budget changes the cache signature"
+    );
   } finally {
+    if (previous === undefined) {
+      delete process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS;
+    } else {
+      process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS = previous;
+    }
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });

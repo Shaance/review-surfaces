@@ -6,7 +6,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { collectInputs } from "../src/collector/collect";
 import { defaultConfig } from "../src/config/config";
-import { loadPrivacyIgnore } from "../src/privacy/ignore";
+import { loadPrivacyIgnore, loadPrivacyIgnoreSync } from "../src/privacy/ignore";
 import { redactSecrets } from "../src/privacy/secrets";
 import { filterIgnoredDiff } from "../src/privacy/diff";
 
@@ -95,6 +95,31 @@ test("review-surfaces.PRIVACY.3 supports gitignore-style negation for tracked ex
   assert.equal(ignore.isIgnored(".env.example"), false);
 });
 
+test("review-surfaces.PRIVACY.3 built-in secret-file ignores are case-insensitive", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ignore-case-"));
+  fs.writeFileSync(path.join(tmp, ".review-surfacesignore"), "README.MD\n");
+  const asyncRules = await loadPrivacyIgnore(tmp, ".review-surfacesignore");
+  const syncRules = loadPrivacyIgnoreSync(tmp);
+
+  for (const rules of [asyncRules, syncRules]) {
+    assert.equal(rules.isIgnored(".ENV.PROD"), true);
+    assert.equal(rules.isIgnored("secrets/PROD.PEM"), true);
+    assert.equal(rules.isIgnored("keys/ID_RSA"), true);
+    assert.equal(rules.isIgnored(".ENV.EXAMPLE"), true, "the built-in .env.example negation stays exact/case-sensitive");
+    assert.equal(rules.isIgnored(".env.example"), false, "the exact built-in example remains allowed");
+    assert.equal(rules.isIgnored("certs/CERT.P12"), true);
+    assert.equal(rules.isIgnored("keys/AuthKey_123ABC.P8"), true);
+    assert.equal(rules.isIgnored("profiles/App.mobileprovision"), true);
+    assert.equal(rules.isIgnored("login.KEYCHAIN-DB"), true);
+    assert.equal(rules.isIgnored("DerivedData/Build/Intermediates.noindex/app.o"), true);
+    assert.equal(rules.isIgnored("packages/app/.swiftpm/configuration/registries.json"), true);
+    assert.equal(rules.isIgnored("packages/app/.build/debug/module.o"), true);
+    assert.equal(rules.isIgnored("App.xcodeproj/xcuserdata/me.xcuserdatad/xcschemes/scheme.xcscheme"), true);
+    assert.equal(rules.isIgnored("App.xcworkspace/xcuserdata/me.xcuserdatad/UserInterfaceState.xcuserstate"), true);
+    assert.equal(rules.isIgnored("readme.md"), false, "user ignore patterns stay case-sensitive");
+  }
+});
+
 test("review-surfaces.PRIVACY.3 default ignore excludes local Claude state", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ignore-claude-"));
   const ignore = await loadPrivacyIgnore(tmp, ".review-surfacesignore");
@@ -102,76 +127,6 @@ test("review-surfaces.PRIVACY.3 default ignore excludes local Claude state", asy
   assert.equal(ignore.isIgnored(".claude/settings.local.json"), true);
   assert.equal(ignore.isIgnored(".claude/scheduled_tasks.lock"), true);
   assert.equal(ignore.isIgnored("CLAUDE.md"), false);
-});
-
-test("review-surfaces.PRIVACY.8 default ignore drops every Apple signing artifact + build cache the classifier marks private", async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ignore-apple-"));
-  const ignore = await loadPrivacyIgnore(tmp, ".review-surfacesignore");
-
-  // Signing/provisioning material: the default list must cover the same extensions
-  // src/collector/source-kind.ts treats as signing artifacts, so nothing it marks
-  // private is persisted in changed_files / diff.patch.
-  for (const p of [
-    "App/App.mobileprovision",
-    "Dev.provisionprofile",
-    "secrets/cert.p12",
-    "secrets/AuthKey_ABC123.p8",
-    "ci.cer",
-    "MyCert.certSigningRequest",
-    "login.keychain",
-    "ci.keychain-db"
-  ]) {
-    assert.equal(ignore.isIgnored(p), true, `${p} should be ignored by default`);
-  }
-  // Apple-specific build/package caches join DerivedData/.build as never-persisted
-  // generated state.
-  for (const p of [
-    ".swiftpm/configuration/registries.json",
-    "DerivedData/App/Build/x.o",
-    ".build/release/App"
-  ]) {
-    assert.equal(ignore.isIgnored(p), true, `${p} should be ignored by default`);
-  }
-  // The cache DIRECTORY path itself is ignored too, so the file walk skips it
-  // instead of descending and ignoring each child afterward.
-  for (const dir of [".swiftpm", "DerivedData", ".build", "App.xcodeproj/project.xcworkspace/xcuserdata"]) {
-    assert.equal(ignore.isIgnored(dir), true, `${dir} directory path should be ignored for walk-skip`);
-  }
-  // `SourcePackages/` is NOT privacy-dropped — the name is too generic to drop
-  // unconditionally without breaking "inert on non-Swift repos". It only ranks as
-  // generated; Xcode's managed copy lives under the dropped DerivedData.
-  assert.equal(ignore.isIgnored("SourcePackages/checkouts/Dep/Sources/Dep.swift"), false);
-  // Case-insensitive at the boundary: the classifier lowercases basenames, so an
-  // uppercase-extension signing file must be dropped too on a case-sensitive checkout.
-  for (const p of ["CI.CER", "secrets/Cert.P12", "Foo.CERTSIGNINGREQUEST", "Login.KeyChain"]) {
-    assert.equal(ignore.isIgnored(p), true, `${p} should be ignored case-insensitively`);
-  }
-  // Reviewable project/config TEXT stays available to detectors (not privacy-dropped).
-  assert.equal(ignore.isIgnored("App/Info.plist"), false);
-  assert.equal(ignore.isIgnored("App/App.entitlements"), false);
-});
-
-test("review-surfaces.PRIVACY.8 case-insensitive DROP rules never reopen a case-variant secret via a negated allowlist", async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ignore-negation-case-"));
-  const ignore = await loadPrivacyIgnore(tmp, ".review-surfacesignore");
-  // The exact allowlisted example is re-included...
-  assert.equal(ignore.isIgnored(".env.example"), false);
-  // ...but a case-variant must stay IGNORED: the negation is case-sensitive so it
-  // cannot reopen `.env.EXAMPLE`, which the case-insensitive `.env.*` drop still catches.
-  assert.equal(ignore.isIgnored(".env.EXAMPLE"), true);
-  assert.equal(ignore.isIgnored(".env.Local"), true);
-});
-
-test("review-surfaces.PRIVACY.8 case-folding applies to the Apple defaults only — user ignore rules stay case-sensitive", async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ignore-userscope-"));
-  fs.writeFileSync(path.join(tmp, ".review-surfacesignore"), "docs/generated/**\n");
-  const ignore = await loadPrivacyIgnore(tmp, ".review-surfacesignore");
-  // The user rule keeps gitignore-standard case-sensitivity: the exact case drops...
-  assert.equal(ignore.isIgnored("docs/generated/api.md"), true);
-  // ...but a case-variant is NOT dropped (reviewable files don't silently vanish).
-  assert.equal(ignore.isIgnored("Docs/Generated/api.md"), false);
-  // The built-in Apple signing default still case-folds.
-  assert.equal(ignore.isIgnored("CI.CER"), true);
 });
 
 test("review-surfaces.PRIVACY.2 blocks high-risk private key material for remote prompts", () => {
@@ -387,75 +342,4 @@ test("review-surfaces.PRIVACY.6 filterIgnoredDiff drops an ignored quoted-name p
   ].join("\n");
   const filtered = filterIgnoredDiff(diff, (p) => p === 'new"name.env' || p === 'old"name.env');
   assert.equal(filtered, "", "the ignored quoted-name rename section must be dropped");
-});
-
-test("review-surfaces.PRIVACY.8 redacts a service plist API key + blocks remote, excludes signing/DerivedData artifacts", async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ios-privacy-"));
-  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
-  fs.mkdirSync(path.join(tmp, "App"), { recursive: true });
-  fs.mkdirSync(path.join(tmp, "DerivedData", "App"), { recursive: true });
-  fs.writeFileSync(
-    path.join(tmp, "features", "example.feature.yaml"),
-    `feature:
-  name: example
-components:
-  PRIVACY:
-    requirements:
-      8: Apple signing/user-state artifacts must be excluded while service plist text is redacted before persist.
-`
-  );
-  fs.writeFileSync(path.join(tmp, "App", "placeholder.swift"), "let x = 1\n");
-  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
-  execFileSync("git", ["add", "."], { cwd: tmp, stdio: "ignore" });
-  execFileSync("git", ["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "init"], {
-    cwd: tmp,
-    stdio: "ignore"
-  });
-
-  // A reviewable service plist carrying an API key: STAYS collected but is redacted.
-  fs.writeFileSync(
-    path.join(tmp, "App", "GoogleService-Info.plist"),
-    [
-      '<?xml version="1.0" encoding="UTF-8"?>',
-      '<plist version="1.0"><dict>',
-      "  <key>API_KEY</key>",
-      "  <string>AIzaSyFakeSecretForTestingOnly000000</string>",
-      "</dict></plist>",
-      ""
-    ].join("\n")
-  );
-  // Signing material + build cache: excluded by default before any persist.
-  fs.writeFileSync(path.join(tmp, "App", "App.mobileprovision"), "binary-ish provisioning blob SECRETPROVISION\n");
-  fs.writeFileSync(path.join(tmp, "DerivedData", "App", "build.log"), "absolute-cache-output SECRETDERIVED\n");
-  // Commit the additions so they appear in the base..head diff (untracked files
-  // are not shown by `git diff`); the ignore filter still drops the signing/cache
-  // sections before persist.
-  execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
-  execFileSync("git", ["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "add ios artifacts"], {
-    cwd: tmp,
-    stdio: "ignore"
-  });
-
-  const result = await collectInputs({
-    cwd: tmp,
-    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [], output_dir: ".review-surfaces" },
-    baseRef: "HEAD~1",
-    headRef: "HEAD",
-    dogfood: false
-  });
-
-  const diff = fs.readFileSync(path.join(tmp, ".review-surfaces", "inputs", "diff.patch"), "utf8");
-  // The service plist API key is redacted in the persisted diff and raises the block.
-  assert.doesNotMatch(diff, /AIzaSyFakeSecretForTestingOnly/);
-  assert.match(diff, /\[REDACTED:google_api_key\]/);
-  assert.equal(result.privacy.remote_provider_blocked, true, "a blocked secret in a service plist must set the remote block");
-  // The service plist itself stays reviewable (collected, classified config).
-  assert.ok(result.changedFiles.some((file) => file.path === "App/GoogleService-Info.plist"));
-
-  // Signing material and DerivedData are excluded BEFORE persist — never in the diff.
-  assert.doesNotMatch(diff, /SECRETPROVISION/);
-  assert.doesNotMatch(diff, /SECRETDERIVED/);
-  assert.ok(!result.changedFiles.some((file) => file.path === "App/App.mobileprovision"));
-  assert.ok(!result.changedFiles.some((file) => file.path.startsWith("DerivedData/")));
-  assert.ok(result.privacy.ignored_changed_files.includes("App/App.mobileprovision"));
 });

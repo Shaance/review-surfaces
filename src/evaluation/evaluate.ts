@@ -17,6 +17,7 @@ import {
   ReviewAreasMode
 } from "../review-areas/areas";
 import { NormalizedTestCase, TestResults } from "../tests-evidence/junit";
+import { isExecutableTestPath } from "../scope/pr-scope";
 import {
   ACID_PATTERN,
   allPresenceTokensExist,
@@ -33,6 +34,8 @@ import type { PacketConfidence, PacketPartialReason, PacketRequirementStatus } f
 export { verifyRequirementsWithTests } from "./verification";
 
 export type RequirementStatus = PacketRequirementStatus;
+
+const DISCOVERED_TEST_CODE_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m|sh|bash|zsh)$/i;
 
 // review-surfaces.EVAL: structured sub-reason for a partial status. The
 // evaluator already distinguishes these cases in prose; this lifts that
@@ -75,6 +78,12 @@ interface EvidenceIndex {
   classificationByPath: Map<string, FileClassification>;
 }
 
+interface AcidEvidenceMaps {
+  byAcid: Map<string, EvidenceRef[]>;
+  implementationByAcid: Map<string, EvidenceRef[]>;
+  testsByAcid: Map<string, EvidenceRef[]>;
+}
+
 export interface EvaluateOptions {
   areas?: ReviewArea[];
 }
@@ -101,10 +110,7 @@ export async function evaluateIntent(
   // spec-shaped output in this mode.
   const overreach = intent.spec_mode === "none"
     ? []
-    : [
-        ...detectOverreach(index, intent.requirements),
-        ...detectUnattributedAreaChanges(index, intent.requirements)
-      ].map((result) => validateRequirementResultEvidence(result, evidenceContext));
+    : detectOverreach(index, intent.requirements).map((result) => validateRequirementResultEvidence(result, evidenceContext));
   const acai_coverage = Object.fromEntries(
     results.filter((result) => result.acai_id).map((result) => [result.acai_id as string, result.status])
   );
@@ -251,110 +257,62 @@ async function buildEvidenceIndex(
   const changedByGroup = new Map<string, EvidenceRef[]>();
   const testsByGroup = new Map<string, EvidenceRef[]>();
   const matcher = createReviewAreaMatcher(areas);
-  const testPaths = new Set(collection.tests.map((test) => test.path));
+  const testPaths = new Set([
+    ...collection.tests.map((test) => test.path),
+    ...collection.changedFiles
+      .filter((changedFile) => !changedFile.status.startsWith("D"))
+      .map((changedFile) => changedFile.path)
+      .filter(isDiscoveredTestEvidencePath)
+  ]);
   const changedImplementationPaths = new Set(
-    collection.changedFiles.filter((changedFile) => isImplementationEvidencePath(changedFile.path, testPaths)).map((changedFile) => changedFile.path)
+    collection.changedFiles.filter((changedFile) => isImplementationProofPath(changedFile.path, testPaths)).map((changedFile) => changedFile.path)
   );
   const allFiles = (collection.repositoryFiles.length ? collection.repositoryFiles : await walkFiles(cwd)).filter(
     (filePath) => !filePath.startsWith(".review-surfaces/")
   );
-  const classificationByPath = new Map<string, FileClassification>(
-    (collection.repoIndex?.files ?? []).map((file) => [file.path, file.classification])
+  const implementationProofCandidates = unique([
+    ...allFiles,
+    ...collection.changedFiles.map((file) => file.path)
+  ]);
+  const implementationProofPaths = new Set(
+    implementationProofCandidates
+      .filter((filePath) => isImplementationProofPath(filePath, testPaths))
+      .sort(compareStrings)
   );
-  // Implementation evidence is scanned REPO-WIDE, symmetric with test evidence
-  // (which already scans every repo test). The evaluator is a whole-repo coverage
-  // model: a requirement implemented AND tested ANYWHERE in the repo is satisfied,
-  // whether or not its source happened to be in this diff. The prior asymmetry —
-  // repo-wide tests but diff-scoped implementation — made every requirement whose
-  // impl file was not in the diff read as "tested, not implemented" (test_no_impl),
-  // so a tiny or doc-only change produced hundreds of spurious gaps. ACID mention is
-  // a deterministic, requirement-specific link (not area membership), so it is sound
-  // requirement proof regardless of which commit introduced the line.
-  //
-  // Repo-wide scanning is restricted to IMPLEMENTATION SOURCE (isImplementationSourcePath:
-  // a classifyFile() "source" file or a shell script). A data/results/doc/config file
-  // that merely MENTIONS an ACID (a junit.xml report, a .json fixture, a markdown doc,
-  // package.json) is not implementation. Shell scripts carry real implementation ACIDs
-  // (scripts/local-*.sh) but classify as "unknown", so they are included explicitly.
-  // Changed files keep the original isImplementationEvidencePath gate (so a brand-new
-  // uncommitted source file still counts via the diff).
-  const changedPathSet = new Set(collection.changedFiles.map((file) => file.path));
-  const sourceImplementationPaths = new Set(
-    allFiles.filter(
-      (filePath) => isImplementationEvidencePath(filePath, testPaths) && isImplementationSourcePath(filePath)
-    )
-  );
-  const candidateFiles = [
+  const initialCandidateFiles = [
     ...collection.changedFiles.map((file) => file.path),
     ...collection.tests.map((test) => test.path),
     ...collection.docs.map((doc) => doc.path),
     ...allFiles.filter((file) => file.startsWith(".review-surfaces/agent_handoff.md"))
   ];
 
-  for (const filePath of unique(candidateFiles)) {
-    if (filePath.startsWith(".review-surfaces/")) {
-      continue;
-    }
-    const absolutePath = path.resolve(cwd, filePath);
-    if (!isRegularFile(absolutePath)) {
-      continue;
-    }
-    const text = await readText(absolutePath);
-    const acidMatches = text.match(ACID_PATTERN) ?? [];
-    for (const acid of acidMatches) {
-      const evidenceRef = evidenceForPath(filePath, `Mentions ${acid}.`, testPaths);
-      pushMap(byAcid, acid, evidenceRef);
-      if (evidenceRef.kind === "test") {
-        pushMap(testsByAcid, acid, evidenceRef);
-      } else if (changedImplementationPaths.has(filePath)) {
-        pushMap(implementationByAcid, acid, evidenceRef);
-      }
-    }
+  await scanAcidEvidence(cwd, unique(initialCandidateFiles), testPaths, implementationProofPaths, { byAcid, implementationByAcid, testsByAcid });
+
+  const initialCandidateSet = new Set(initialCandidateFiles);
+  const exactRequirementGroups = new Set(
+    requirements.map((requirement) => groupFromAcid(requirement.acai_id)).filter(Boolean) as string[]
+  );
+  const unchangedImplementationProofPaths = [...implementationProofPaths].filter((filePath) => !initialCandidateSet.has(filePath));
+  const targetedImplementationProofPaths = unchangedImplementationProofPaths.filter((filePath) =>
+    matcher.groupsForPath(filePath, { purpose: "requirement_proof" }).some((group) => exactRequirementGroups.has(group))
+  );
+  const targetedImplementationProofPathSet = new Set(targetedImplementationProofPaths);
+  const remainingImplementationProofPaths = unchangedImplementationProofPaths
+    .filter((filePath) => !targetedImplementationProofPathSet.has(filePath));
+  const implementationProofScanPaths = unique([
+    ...targetedImplementationProofPaths,
+    ...remainingImplementationProofPaths
+  ]);
+
+  if (implementationProofScanPaths.length > 0) {
+    const headRef = collection.git.head_sha;
+    await scanAcidEvidence(cwd, implementationProofScanPaths, testPaths, implementationProofPaths, { byAcid, implementationByAcid, testsByAcid }, {
+      readFile: (filePath) => readFileAtRef(cwd, headRef, filePath)
+    });
   }
 
-  // Repo-wide implementation ACID proof for UNCHANGED source, read AT THE REVIEWED
-  // HEAD (never the working tree) so an untracked or uncommitted source file cannot
-  // mark a requirement satisfied for a pinned --head range (features spec: pinned-range
-  // artifacts must exclude dirty/untracked content). Changed source files are already
-  // covered by the diff-scoped scan above; here we add the symmetric whole-repo proof
-  // that lets an untouched-but-implemented requirement read as satisfied instead of
-  // test_no_impl. A file absent at head (readFileAtRef === undefined) is skipped.
-  const headSha = collection.git?.head_sha;
-  if (headSha && headSha !== "unknown") {
-    for (const filePath of sourceImplementationPaths) {
-      if (changedPathSet.has(filePath)) {
-        continue; // changed source is handled by the diff-scoped scan above
-      }
-      const text = readFileAtRef(cwd, headSha, filePath);
-      if (text === undefined) {
-        continue; // not present at the reviewed head (untracked / new in the working tree)
-      }
-      for (const acid of text.match(ACID_PATTERN) ?? []) {
-        const evidenceRef = fileEvidence(filePath, `Mentions ${acid}.`, "high");
-        pushMap(byAcid, acid, evidenceRef);
-        pushMap(implementationByAcid, acid, evidenceRef);
-      }
-    }
-  }
-
-  // Group-level (area) IMPLEMENTATION evidence for the CHANGED files uses the strict
-  // requirement_proof matcher (exact configured path / strict prefix), NOT the loose
-  // review_surface routing matcher, AND only counts files that are actually
-  // implementation evidence. A doc/config/bootstrap file (AGENTS.md, README, a
-  // markdown doc) that merely falls in an area is routing context, never proof that a
-  // requirement is implemented — letting it become per-requirement impl evidence is
-  // exactly the broad-area fan-out this fixes. Such area-only changed files are
-  // collected separately into a single unattributed-area advisory
-  // (detectUnattributedAreaChanges). This stays diff-scoped on purpose: it is the weak
-  // "this PR touched the area" signal; requirement-SPECIFIC repo-wide proof comes from
-  // exact ACID references (implementationByAcid above).
   for (const changedFile of collection.changedFiles) {
-    // Only IMPLEMENTATION SOURCE counts as area impl evidence. A changed config in a
-    // configured area (package.json, a src/**/*.yaml) is NOT excluded by
-    // isImplementationEvidencePath, so without this check it would re-introduce the
-    // per-requirement broad-area fan-out — and the same file would also surface as the
-    // unattributed-area advisory (double-reported). Configs/docs flow to the advisory only.
-    if (!changedImplementationPaths.has(changedFile.path) || !isImplementationSourcePath(changedFile.path)) {
+    if (testPaths.has(changedFile.path) || !changedImplementationPaths.has(changedFile.path)) {
       continue;
     }
     for (const group of matcher.groupsForPath(changedFile.path, { purpose: "requirement_proof" })) {
@@ -362,12 +320,9 @@ async function buildEvidenceIndex(
     }
   }
 
-  // Group-level TEST attribution is likewise requirement proof: a test file proves a
-  // group's requirement only via a strict configured prefix or its declared test
-  // keywords, never a loose substring area match.
-  for (const test of collection.tests) {
-    for (const group of matcher.groupsForPath(test.path, { purpose: "requirement_proof" })) {
-      pushMap(testsByGroup, group, testEvidence(test.path, `Test path mapped to ${group}.`));
+  for (const testPath of [...testPaths].sort(compareStrings)) {
+    for (const group of matcher.groupsForPath(testPath, { purpose: "requirement_proof", testPath: true })) {
+      pushMap(testsByGroup, group, testEvidence(testPath, `Test path mapped to ${group}.`));
     }
   }
 
@@ -377,6 +332,10 @@ async function buildEvidenceIndex(
   // names a known requirement group strengthens that group. Conservative: only
   // PASSING cases that clearly map are attached as proof.
   attachParsedTestEvidence(collection.testResults, requirements, { testsByAcid, testsByGroup });
+
+  const classificationByPath = new Map<string, FileClassification>(
+    (collection.repoIndex?.files ?? []).map((file) => [file.path, file.classification])
+  );
 
   return {
     byAcid,
@@ -397,15 +356,6 @@ async function buildEvidenceIndex(
 // Classifications that are never review surfaces in their own right; suppress
 // them from overreach so noise files do not get flagged one-by-one.
 const NON_REVIEW_CLASSIFICATIONS = new Set<FileClassification>(["lockfile", "generated"]);
-
-// A path that carries IMPLEMENTATION ACIDs: a classifyFile() "source" file, or a
-// shell script (classifyFile returns "unknown" for .sh/.bash, but scripts/local-*.sh
-// carry real implementation requirements). Used to gate area impl evidence, the
-// repo-wide impl scan, and the unattributed-area advisory consistently so a file is
-// never both "implementation" and "unattributed".
-function isImplementationSourcePath(filePath: string): boolean {
-  return classifyFile(filePath) === "source" || /\.(?:sh|bash)$/.test(filePath);
-}
 
 function detectOverreach(index: EvidenceIndex, requirements: IntentRequirement[]): RequirementResult[] {
   const knownGroups = new Set(requirements.map((requirement) => groupFromAcid(requirement.acai_id)).filter(Boolean) as string[]);
@@ -431,59 +381,6 @@ function detectOverreach(index: EvidenceIndex, requirements: IntentRequirement[]
     review_focus: "Confirm whether this file is in scope or the spec needs an explicit requirement.",
     confidence: "medium" as const
   }));
-}
-
-// review-surfaces requirement-proof tightening: a changed file that falls in a
-// known review AREA but is NOT implementation or test evidence (a doc, config, or
-// bootstrap file like AGENTS.md / a CHANGELOG) is routing context, never proof that
-// any individual requirement changed. Rather than letting it inflate every
-// requirement in the area into a per-requirement gap (the broad-area fan-out), it is
-// collapsed into ONE aggregate advisory. Returns at most one result. Disjoint from
-// detectOverreach (which flags files mapping to NO known group at all).
-function detectUnattributedAreaChanges(index: EvidenceIndex, requirements: IntentRequirement[]): RequirementResult[] {
-  if (index.areasMode === "fallback") {
-    return [];
-  }
-  const knownGroups = new Set(requirements.map((requirement) => groupFromAcid(requirement.acai_id)).filter(Boolean) as string[]);
-  const unattributed = index.allChangedFiles
-    .filter((filePath) => {
-      const classification = classifyFile(filePath);
-      // Source = real impl evidence; test = test evidence; generated/lockfile are
-      // never review surfaces; a shell script is implementation (isImplementationSourcePath),
-      // not advisory. Only docs/config/unknown-non-script reach the advisory.
-      if (
-        classification === "test" ||
-        NON_REVIEW_CLASSIFICATIONS.has(classification) ||
-        isImplementationSourcePath(filePath)
-      ) {
-        return false;
-      }
-      return index.matcher.groupsForPath(filePath, { purpose: "review_surface" }).some((group) => knownGroups.has(group));
-    })
-    .sort(compareStrings);
-  if (unattributed.length === 0) {
-    return [];
-  }
-  const groups = [
-    ...new Set(
-      unattributed.flatMap((filePath) =>
-        index.matcher.groupsForPath(filePath, { purpose: "review_surface" }).filter((group) => knownGroups.has(group))
-      )
-    )
-  ].sort(compareStrings);
-  return [
-    {
-      requirement_id: "UNATTRIBUTED-AREA-001",
-      status: "overreach" as const,
-      summary: `${unattributed.length} changed file(s) fall in review area(s) [${groups.join(", ")}] but could not be attributed to any individual requirement (documentation/config, not implementation).`,
-      evidence: unattributed
-        .slice(0, 8)
-        .map((filePath) => fileEvidence(filePath, "Changed non-implementation file mapped to an area but not to a specific requirement.", "medium")),
-      missing_evidence: [],
-      review_focus: "Confirm whether these area-level changes need a specific requirement or are routing context only.",
-      confidence: "medium" as const
-    }
-  ];
 }
 
 function overreachClusters(index: EvidenceIndex, unmapped: string[]): RequirementResult[] {
@@ -546,6 +443,67 @@ function hasInvalidSpecRef(requirement: IntentRequirement): boolean {
 
 function evidenceForPath(filePath: string, note: string, testPaths: Set<string>): EvidenceRef {
   return testPaths.has(filePath) ? testEvidence(filePath, note, "high") : fileEvidence(filePath, note, "high");
+}
+
+function isImplementationProofPath(filePath: string, testPaths: Set<string>): boolean {
+  if (!isImplementationEvidencePath(filePath, testPaths)) {
+    return false;
+  }
+  const classification = classifyFile(filePath);
+  return classification === "source" || isScriptImplementationPath(filePath);
+}
+
+function isScriptImplementationPath(filePath: string): boolean {
+  return /^(?:scripts|bin)\//.test(filePath) && /\.(?:sh|bash|zsh)$/.test(filePath);
+}
+
+function isDiscoveredTestEvidencePath(filePath: string): boolean {
+  if (isExecutableTestPath(filePath)) {
+    return true;
+  }
+  return /(^|\/)(tests?|__tests__|spec)\//i.test(filePath) && DISCOVERED_TEST_CODE_EXT.test(filePath) && !/\.d\.ts$/i.test(filePath);
+}
+
+type CandidateFileReader = (filePath: string) => string | undefined | Promise<string | undefined>;
+
+async function scanAcidEvidence(
+  cwd: string,
+  candidateFiles: string[],
+  testPaths: Set<string>,
+  implementationProofPaths: Set<string>,
+  maps: AcidEvidenceMaps,
+  options: { readFile?: CandidateFileReader } = {}
+): Promise<void> {
+  for (const filePath of unique(candidateFiles)) {
+    if (filePath.startsWith(".review-surfaces/")) {
+      continue;
+    }
+    const text = await readCandidateFile(cwd, filePath, options.readFile);
+    if (text === undefined) {
+      continue;
+    }
+    const acidMatches = text.match(ACID_PATTERN) ?? [];
+    for (const acid of acidMatches) {
+      const evidenceRef = evidenceForPath(filePath, `Mentions ${acid}.`, testPaths);
+      pushMap(maps.byAcid, acid, evidenceRef);
+      if (evidenceRef.kind === "test") {
+        pushMap(maps.testsByAcid, acid, evidenceRef);
+      } else if (implementationProofPaths.has(filePath)) {
+        pushMap(maps.implementationByAcid, acid, evidenceRef);
+      }
+    }
+  }
+}
+
+async function readCandidateFile(cwd: string, filePath: string, readFile: CandidateFileReader | undefined): Promise<string | undefined> {
+  if (readFile !== undefined) {
+    return readFile(filePath);
+  }
+  const absolutePath = path.resolve(cwd, filePath);
+  if (!isRegularFile(absolutePath)) {
+    return undefined;
+  }
+  return readText(absolutePath);
 }
 
 // Phase 5a: attach PASSING parsed JUnit cases as real test evidence, carrying

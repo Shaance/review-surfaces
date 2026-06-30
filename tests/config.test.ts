@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import { loadConfig, defaultConfig, normalizeConfig } from "../src/config/config";
 import { CliError, ExitCodes } from "../src/core/exit-codes";
-import { globToRegExp } from "../src/core/glob";
 
 test("review-surfaces.PROVIDERS.3 loads local review-surfaces config with mock as the default provider", async () => {
   const config = await loadConfig(process.cwd());
@@ -196,36 +195,11 @@ test("review-surfaces.COLLECTOR.9 command_rules default to empty and parse valid
       { id: "c", match: "prefix", command: "./run.sh --quick", classification: "validation" }
     ]
   });
-  // Longest command first; on equal length exact beats prefix.
-  assert.deepEqual(
-    config.command_rules.map((rule) => rule.id),
-    ["b", "c", "a"]
-  );
+
+  assert.deepEqual(config.command_rules.map((rule) => rule.id), ["b", "c", "a"]);
 });
 
-test("review-surfaces.COLLECTOR.8 default test globs index every recognized Swift test target directory", () => {
-  // Zero-config repos build tests.index.json by globbing defaultConfig.tests, so the
-  // Swift test-directory globs must mirror the suffixed-dir rule in source-kind.ts;
-  // otherwise a non-`*Test(s).swift` helper under a test target is missed and ranked
-  // as implementation. Assert behaviorally against the compiled globs.
-  const matchesAnyTestGlob = (filePath: string): boolean =>
-    defaultConfig.tests.some((glob) => globToRegExp(glob).test(filePath));
-  for (const p of [
-    "Tests/AppTests/FooTests.swift",
-    "MyAppTests/Support/Fixture.swift", // suffixed target dir, helper basename
-    "MyAppUITests/PageObjects/Login.swift",
-    "Features/SnapshotTests/View.swift",
-    "Pkg/__Tests__/Helper.swift",
-    "FooTests.swift"
-  ]) {
-    assert.ok(matchesAnyTestGlob(p), `default test globs should index ${p}`);
-  }
-  // Ordinary implementation is NOT swept into the test index.
-  assert.equal(matchesAnyTestGlob("Sources/App/Greeter.swift"), false);
-  assert.equal(matchesAnyTestGlob("Sources/contest/Engine.swift"), false);
-});
-
-test("review-surfaces.COLLECTOR.9 command_rules fail the load loudly on malformed or duplicate rules", () => {
+test("review-surfaces.COLLECTOR.9 command_rules reject malformed or duplicate rules with usage errors", () => {
   const cases: Array<{ rules: unknown; why: string }> = [
     { rules: { command_rules: "nope" }, why: "non-list" },
     { rules: { command_rules: [{ match: "exact", command: "x", classification: "validation" }] }, why: "missing id" },
@@ -243,6 +217,7 @@ test("review-surfaces.COLLECTOR.9 command_rules fail the load loudly on malforme
       why: "duplicate id"
     }
   ];
+
   for (const { rules, why } of cases) {
     let thrown: unknown;
     try {
@@ -251,6 +226,6 @@ test("review-surfaces.COLLECTOR.9 command_rules fail the load loudly on malforme
       thrown = error;
     }
     assert.ok(thrown instanceof CliError, `${why} must throw a CliError`);
-    assert.equal((thrown as CliError).exitCode, ExitCodes.usageError, `${why} must exit a usage code`);
+    assert.equal((thrown as CliError).exitCode, ExitCodes.usageError, `${why} must exit with usage error`);
   }
 });

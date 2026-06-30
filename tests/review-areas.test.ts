@@ -27,29 +27,30 @@ test("review area matcher makes review_surface and requirement_proof semantics e
   assert.deepEqual(matcher.groupsForPath("tests/cli.test.ts", { purpose: "requirement_proof" }), ["CLI"]);
 });
 
-test("exact-file area takes precedence over broad mappings for requirement_proof only", () => {
+test("review area matcher preserves exact-file precedence for requirement proof", () => {
   const matcher = createReviewAreaMatcher([
-    { id: "SUB-CORE", name: "Core", groupKey: "CORE", prefixes: ["src/core/"], purpose: "core", pattern: "core", testKeywords: [] },
-    { id: "SUB-RELEASE", name: "Release", groupKey: "DISTRIBUTION", prefixes: ["src/core/version.ts", "package.json"], purpose: "release", pattern: "release", testKeywords: [] }
+    {
+      id: "SUB-CLI",
+      name: "CLI",
+      groupKey: "CLI",
+      prefixes: ["src/cli/"],
+      purpose: "CLI command handling.",
+      pattern: "dispatcher",
+      testKeywords: ["cli"]
+    },
+    {
+      id: "SUB-ENTRY",
+      name: "CLI entry",
+      groupKey: "CLI_ENTRY",
+      prefixes: ["src/cli/index.ts"],
+      purpose: "Dedicated CLI entry point.",
+      pattern: "entry",
+      testKeywords: []
+    }
   ]);
 
-  // requirement_proof: the EXACT-file release area wins over the broad src/core area.
-  assert.deepEqual(matcher.groupsForPath("src/core/version.ts", { purpose: "requirement_proof" }), ["DISTRIBUTION"]);
-  // review_surface (routing): still collects BOTH so the change map keeps full context.
-  assert.deepEqual(matcher.groupsForPath("src/core/version.ts", { purpose: "review_surface" }), ["CORE", "DISTRIBUTION"]);
-  // a non-exact core file is unaffected.
-  assert.deepEqual(matcher.groupsForPath("src/core/files.ts", { purpose: "requirement_proof" }), ["CORE"]);
-});
-
-test("review-surfaces.DISTRIBUTION release files map to the SUB-RELEASE area in the real config", async () => {
-  const matcher = createReviewAreaMatcher(await defaultReviewSurfacesAreas());
-  for (const file of ["CHANGELOG.md", "src/core/version.ts", "package.json", "action.yml"]) {
-    assert.deepEqual(
-      matcher.groupsForPath(file, { purpose: "requirement_proof" }),
-      ["DISTRIBUTION"],
-      `${file} should be requirement-proof for DISTRIBUTION only`
-    );
-  }
+  assert.deepEqual(matcher.groupsForPath("src/cli/index.ts", { purpose: "requirement_proof" }), ["CLI_ENTRY"]);
+  assert.deepEqual(matcher.groupsForPath("src/cli/index.ts", { purpose: "review_surface" }), ["CLI", "CLI_ENTRY"]);
 });
 
 test("review area matcher token-scopes test keywords case-insensitively", () => {
@@ -58,6 +59,14 @@ test("review area matcher token-scopes test keywords case-insensitively", () => 
   assert.deepEqual(matcher.groupsForPath("tests/clinical.test.ts", { purpose: "review_surface" }), []);
   assert.deepEqual(matcher.groupsForPath("tests/CLI.test.ts", { purpose: "review_surface" }), ["CLI"]);
   assert.deepEqual(matcher.groupsForPath("tests/cli.test.ts", { purpose: "requirement_proof" }), ["CLI"]);
+});
+
+test("review area matcher can map known tests outside tests directory", () => {
+  const matcher = createReviewAreaMatcher(AREAS);
+
+  assert.deepEqual(matcher.groupsForPath("spec/cli.test.ts", { purpose: "review_surface" }), []);
+  assert.deepEqual(matcher.groupsForPath("spec/cli.test.ts", { purpose: "review_surface", testPath: true }), ["CLI"]);
+  assert.deepEqual(matcher.groupsForPath("test_cli.py", { purpose: "requirement_proof", testPath: true }), ["CLI"]);
 });
 
 test("review area matcher exposes diagnostics without enforcing config validity", () => {
@@ -102,6 +111,23 @@ test("configured review areas map review-area matcher tests to EVIDENCE", async 
   assert.ok(
     matcher.groupsForPath("tests/review-areas.test.ts", { purpose: "requirement_proof" }).includes("EVIDENCE"),
     "tests/review-areas.test.ts should count as EVIDENCE validation evidence"
+  );
+});
+
+test("configured review areas map release files to DISTRIBUTION", async () => {
+  const areas = await defaultReviewSurfacesAreas();
+  const matcher = createReviewAreaMatcher(areas);
+
+  for (const filePath of ["package.json", "CHANGELOG.md", "src/core/version.ts", "action.yml"]) {
+    assert.ok(
+      matcher.groupsForPath(filePath, { purpose: "review_surface" }).includes("DISTRIBUTION"),
+      `${filePath} should keep release PRs scoped to DISTRIBUTION`
+    );
+  }
+  assert.equal(
+    matcher.groupsForPath("package.json", { purpose: "review_surface" }).includes("CLI"),
+    false,
+    "package.json should not be scoped only through the generic CLI area"
   );
 });
 

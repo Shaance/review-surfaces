@@ -31,6 +31,13 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
   const sections = buildChangeGraphSections({
     files: [file("src/core/a.ts"), file("src/render/b.ts")],
     edges: [{ importer: "src/render/b.ts", imported: "src/core/a.ts" }],
+    edgeInsights: [{
+      from: "src/render/b.ts",
+      to: "src/core/a.ts",
+      summary: "renderer reads the core map contract",
+      detail: "The render file consumes the core change-map model, so review them together.",
+      source: "provider"
+    }],
     usedBy: [{ path: "src/core/a.ts", top: ["src/other/halo.ts"] }],
     lensFindings: [
       {
@@ -57,7 +64,7 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Cockpit visuals fixture.",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
-    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [], swift_declaration_changes: [] },
+    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
     review_queue: [queueItem("Q-1", "src/core/a.ts", 1), queueItem("Q-2", "src/render/b.ts", 2)],
     blockers: [],
     questions: [],
@@ -123,7 +130,7 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
   };
 }
 
-test("review-surfaces.RENDER.11 the cockpit renders the change_graph as deterministic inline SVG with layered clusters, dashed halo, title hover details, and click-to-filter hooks", () => {
+test("review-surfaces.RENDER.11 the cockpit renders the change_graph as deterministic inline SVG with layered clusters, useful relationships, title hover details, and click-to-filter hooks", () => {
   const fixture = model();
   const rendered = renderChangeMapSvg(fixture.change_graph);
   assert.ok(rendered);
@@ -138,14 +145,25 @@ test("review-surfaces.RENDER.11 the cockpit renders the change_graph as determin
   // Click-to-filter via the data- attribute pattern; hover via <title>.
   assert.match(svg, /data-map-file="src\/core\/a\.ts"/);
   assert.match(svg, /<title>/);
-  // Halo node dashed.
-  assert.match(svg, /stroke-dasharray="5 5"/);
+  // Blast-radius halo facts stay out of the human map; otherwise they create
+  // orphan-looking lanes for files that are not part of the diff.
+  assert.doesNotMatch(svg, /unchanged files using/);
+  assert.doesNotMatch(svg, /src\/other\/halo\.ts/);
+  // Provider-backed relationships render as routed lines, preserving the
+  // visual link without drawing through cards or adding a disconnected note list.
+  assert.match(svg, /<polyline/);
+  assert.doesNotMatch(svg, /Why files are linked/);
+  assert.match(svg, /renderer reads the core map contract/);
+  assert.doesNotMatch(svg, /<path d="M /);
   // Byte-deterministic: identical model -> identical output.
   assert.equal(svg, renderChangeMapSvg(fixture.change_graph)!.svg);
   // Empty graph renders no SVG.
   assert.equal(renderChangeMapSvg({ nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } }), undefined);
   // Lens color never alone: the lens name appears as text alongside the fill.
   assert.match(svg, /security_privacy/);
+  // The map uses the muted DESIGN.md palette instead of saturated warning fills.
+  assert.match(svg, /fill="#f3ede6"/);
+  assert.doesNotMatch(svg, /#fde2e2|#fee2b3|#f9fafb|#6b7280/);
   // The cockpit embeds the SVG with a text legend and the filter note.
   const html = renderHumanReviewHtml(fixture, {});
   assert.match(html, /<h2 id="map">Change map<\/h2>/);
@@ -167,7 +185,74 @@ test("review-surfaces.RENDER.11 SVG caps render explicit overflow entries, never
   });
   const svg = renderChangeMapSvg(many.change_graph)!.svg;
   assert.match(svg, /\+ 5 more files/); // 30 changed - 25 cap
-  assert.match(svg, /\+ 2 more files/); // 12 halo - 10 cap
+  assert.doesNotMatch(svg, /src\/halo/);
+  assert.doesNotMatch(svg, /unchanged files using/);
+});
+
+test("review-surfaces.RENDER.11 same-row relationship routes avoid intermediate cards", () => {
+  const sections = buildChangeGraphSections({
+    files: [file("src/a/a.ts"), file("src/b/b.ts"), file("src/c/c.ts")],
+    edges: [{ importer: "src/c/c.ts", imported: "src/a/a.ts" }],
+    edgeInsights: [{
+      from: "src/c/c.ts",
+      to: "src/a/a.ts",
+      summary: "third column consumes the first column contract",
+      source: "provider"
+    }],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: []
+  });
+  const svg = renderChangeMapSvg(sections.change_graph)!.svg;
+  const points = svg.match(/<polyline points="([^"]+)"/)?.[1];
+  assert.ok(points);
+  const ys = points.split(" ").map((point) => Number(point.split(",")[1]));
+  assert.ok(Math.min(...ys) < Math.max(...ys), points);
+});
+
+test("review-surfaces.RENDER.11 same-column relationship routes stay inside the SVG viewBox", () => {
+  const sections = buildChangeGraphSections({
+    files: [file("src/a/one.ts"), file("src/a/two.ts")],
+    edges: [{ importer: "src/a/two.ts", imported: "src/a/one.ts" }],
+    edgeInsights: [{
+      from: "src/a/two.ts",
+      to: "src/a/one.ts",
+      summary: "two consumes one",
+      source: "provider"
+    }],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: []
+  });
+  const svg = renderChangeMapSvg(sections.change_graph)!.svg;
+  const width = Number(svg.match(/viewBox="0 0 (\d+) \d+"/)?.[1]);
+  const points = svg.match(/<polyline points="([^"]+)"/)?.[1];
+  assert.ok(width > 0);
+  assert.ok(points);
+  const xs = points.split(" ").map((point) => Number(point.split(",")[0]));
+  assert.ok(Math.max(...xs) <= width, points);
+});
+
+test("review-surfaces.RENDER.11 relationship ordering is locale-independent", () => {
+  const sections = buildChangeGraphSections({
+    files: [file("src/a/a.ts"), file("src/b/b.ts"), file("src/c/c.ts")],
+    edges: [
+      { importer: "src/b/b.ts", imported: "src/a/a.ts" },
+      { importer: "src/c/c.ts", imported: "src/a/a.ts" }
+    ],
+    edgeInsights: [
+      { from: "src/b/b.ts", to: "src/a/a.ts", summary: "apple consumes the core contract", source: "provider" },
+      { from: "src/c/c.ts", to: "src/a/a.ts", summary: "Zebra consumes the core contract", source: "provider" }
+    ],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: []
+  });
+  const svg = renderChangeMapSvg(sections.change_graph)!.svg;
+  assert.ok(
+    svg.indexOf("Zebra consumes the core contract") < svg.indexOf("apple consumes the core contract"),
+    "code-unit ordering keeps uppercase summaries before lowercase summaries"
+  );
 });
 
 test("review-surfaces.RENDER.12 the header strip renders lens-chip filter buttons with counts, the review_plan stacked bar with minutes, trust counts, and a progress bar — all with text labels", () => {
@@ -178,6 +263,8 @@ test("review-surfaces.RENDER.12 the header strip renders lens-chip filter button
   // Stacked budget bar with minutes as text (color never alone).
   assert.match(html, /read 12m/);
   assert.match(html, /skim 6m/);
+  assert.match(html, /class="strip-bar"/);
+  assert.match(html, /class="progress-track"/);
   // Trust counts with glyphs.
   assert.match(html, /✓ 1 verified · ~ 1 claimed/);
   // Progress bar fed by the existing checkbox state.
@@ -213,14 +300,15 @@ test("review-surfaces.MAP_SCALE.5 the file-level SVG wraps columns into bands an
   const rendered = renderChangeMapSvg(sections.change_graph) as { svg: string };
   const viewBox = rendered.svg.match(/viewBox="0 0 (\d+) (\d+)"/) as RegExpMatchArray;
   assert.ok(Number(viewBox[1]) <= COCKPIT_WIDTH_PX, `wrapped width ${viewBox[1]} must fit the ${COCKPIT_WIDTH_PX}px budget`);
-  // 8 columns at 3 per band -> 3 bands: the same column x repeats across bands.
+  // 7 changed-file columns at 3 per band -> 3 bands: the same column x repeats
+  // across bands. Blast-radius halo facts no longer add a visual column.
   const headerXs = [...rendered.svg.matchAll(/<text x="(\d+)" y="(\d+)" font-size="11" font-weight="600"/g)];
-  assert.equal(headerXs.length, 8);
+  assert.equal(headerXs.length, 7);
   const distinctY = new Set(headerXs.map((match) => match[2]));
   assert.equal(distinctY.size, 3);
   // A long stack wraps into a continuation slot with an attributable header.
   const tall = buildChangeGraphSections({
-    files: Array.from({ length: 12 }, (_, i) => file(`src/core/long${String(i).padStart(2, "0")}.ts`)),
+    files: Array.from({ length: 13 }, (_, i) => file(`src/core/long${String(i).padStart(2, "0")}.ts`)),
     edges: [],
     usedBy: [],
     lensFindings: [],
@@ -240,6 +328,13 @@ test("review-surfaces.MAP_SCALE.6 the cockpit pre-renders hidden per-group detai
   const sections = buildChangeGraphSections({
     files,
     edges: [{ importer: "tests/w0.test.ts", imported: "src/core/w0.ts" }],
+    edgeInsights: [{
+      from: "tests/w0.test.ts",
+      to: "src/core/w0.ts",
+      summary: "new tests exercise the core width budget path",
+      detail: "Provider-backed relationship text should stay visible in the src zoom map.",
+      source: "provider"
+    }],
     usedBy: [],
     lensFindings: [],
     reviewQueue: []
@@ -255,8 +350,12 @@ test("review-surfaces.MAP_SCALE.6 the cockpit pre-renders hidden per-group detai
   assert.match(html, /aria-label="Change map detail: src"/);
   const srcPanel = html.split('data-map-detail="src"')[1].split("</div>")[0];
   assert.match(srcPanel, /data-map-file="src\/core\/w0\.ts"/);
-  // The stub port renders inside the detail panel, never silently dropped.
-  assert.match(srcPanel, /→ tests ×1/);
+  // Cross-area stubs stay out of the SVG detail map unless they can anchor to
+  // exact visible files; otherwise the line would point at unrelated cards.
+  assert.doesNotMatch(srcPanel, /tests use src/);
+  assert.doesNotMatch(srcPanel, /new tests exercise the core width budget path/);
+  assert.doesNotMatch(srcPanel, /outside this area/);
+  assert.doesNotMatch(srcPanel, /<polyline points="/);
   // The vanilla JS toggle handler ships with the cockpit.
   assert.match(html, /\[data-map-group\]/);
   assert.match(html, /panel\.hidden = !panel\.hidden/);

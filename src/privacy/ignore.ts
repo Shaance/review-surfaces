@@ -11,44 +11,20 @@ export const DEFAULT_PRIVACY_IGNORE_PATTERNS = [
   "**/.dev.vars",
   "**/*.pem",
   "**/*.key",
-  "**/id_rsa",
-  "**/id_ed25519",
-  // review-surfaces.PRIVACY.8: Apple signing/provisioning material, per-user Xcode
-  // state, and build caches are excluded by default. Reviewable service-plist /
-  // entitlement / project TEXT is intentionally NOT excluded here — it stays
-  // available to deterministic detectors and is protected by redact-before-persist
-  // and block-before-remote instead. The signing-extension and build-cache sets
-  // mirror src/collector/source-kind.ts (isAppleSigningArtifactPath /
-  // isAppleGeneratedPath) so anything the classifier marks private is also never
-  // persisted in changed_files / diff.patch.
-  "**/*.mobileprovision",
-  "**/*.provisionprofile",
   "**/*.p12",
   "**/*.p8",
-  "**/*.cer",
-  "**/*.certSigningRequest",
+  "**/*.mobileprovision",
+  "**/*.provisionprofile",
   "**/*.keychain",
   "**/*.keychain-db",
-  "**/*.xcuserstate",
-  "**/xcuserdata/**",
-  "**/DerivedData/**",
-  "**/.build/**",
-  "**/.swiftpm/**",
-  // NOTE: `SourcePackages/` is deliberately NOT privacy-dropped here. The name is too
-  // generic to drop unconditionally without breaking the "inert on non-Swift repos"
-  // guarantee (a non-Apple repo may have real source under SourcePackages/). It still
-  // RANKS as generated via source-kind.isAppleGeneratedPath (a mild demotion, not a
-  // persistence drop); Xcode's own managed SourcePackages lives under the
-  // already-dropped DerivedData. Dot-prefixed `.swiftpm/` is unambiguously SwiftPM.
-  // Directory forms so the file walk SKIPS these caches instead of descending and
-  // ignoring each child afterward (walkFiles tests isIgnored on the directory path
-  // before recursing). The `**/<dir>/**` forms above still drop child paths that
-  // arrive via a git diff rather than the walk.
-  "**/DerivedData/",
-  "**/.build/",
-  "**/.swiftpm/",
-  "**/xcuserdata/",
+  "**/id_rsa",
+  "**/id_ed25519",
   ".claude/",
+  ".build/",
+  ".swiftpm/",
+  "DerivedData/",
+  "xcuserdata/",
+  "*.xcuserstate",
   ".review-surfaces/feedback/raw/**",
   ".review-surfaces/inputs/conversation.raw.*"
 ];
@@ -71,7 +47,10 @@ export async function loadPrivacyIgnore(cwd: string, ignoreFile: string): Promis
   const ignorePath = path.resolve(cwd, ignoreFile);
   const filePatterns = fileExists(ignorePath) ? parseIgnoreFile(await readText(ignorePath)) : [];
   const patterns = unique([...DEFAULT_PRIVACY_IGNORE_PATTERNS, ...filePatterns]);
-  const rules = compilePrivacyRules(filePatterns);
+  const rules = [
+    ...DEFAULT_PRIVACY_IGNORE_PATTERNS.map((pattern) => compileRule(pattern, { caseInsensitive: !pattern.startsWith("!") })),
+    ...filePatterns.map((pattern) => compileRule(pattern))
+  ];
 
   return {
     ignoreFile,
@@ -96,44 +75,22 @@ export function parseIgnoreFile(content: string): string[] {
     .filter((line) => line.length > 0 && !line.startsWith("#"));
 }
 
-// `caseFold` requests case-INSENSITIVE matching. It is applied ONLY to the built-in
-// DEFAULT drop rules: the shared source-kind classifier lowercases basenames before
-// classifying signing/cache artifacts, so a changed `CI.CER` / `Cert.P12` /
-// `foo.CERTSIGNINGREQUEST` must be dropped here too on a case-sensitive checkout
-// (PRIVACY.8). It is NOT applied to:
-//   - NEGATION (allowlist) rules — so a broad drop + narrow `!allow` (e.g. `.env.*`
-//     then `!.env.example`) cannot reopen a case-variant secret like `.env.EXAMPLE`;
-//   - USER `.review-surfacesignore` rules — those keep gitignore-standard
-//     case-sensitivity so a custom `docs/generated/**` does not also drop
-//     `Docs/Generated/...` and silently remove reviewable files.
-function compileRule(rawPattern: string, caseFold = false): IgnoreRule {
+function compileRule(rawPattern: string, options: { caseInsensitive?: boolean } = {}): IgnoreRule {
   const negate = rawPattern.startsWith("!");
   let pattern = negate ? rawPattern.slice(1) : rawPattern;
   pattern = normalizeRelativePath(pattern);
   const directoryOnly = pattern.endsWith("/");
   pattern = pattern.replace(/\/+$/, "");
   const hasSlash = pattern.includes("/");
-
-  const base = globToRegExp(pattern);
-  const insensitive = caseFold && !negate;
-  const regex = !insensitive || base.flags.includes("i") ? base : new RegExp(base.source, `${base.flags}i`);
+  const regex = globToRegExp(pattern);
 
   return {
     pattern,
     negate,
     directoryOnly,
     hasSlash,
-    regex
+    regex: options.caseInsensitive ? new RegExp(regex.source, "i") : regex
   };
-}
-
-// Compile the built-in defaults (case-folded) followed by user patterns
-// (case-sensitive). Default-then-user order preserves negation precedence.
-function compilePrivacyRules(filePatterns: string[]): IgnoreRule[] {
-  return [
-    ...DEFAULT_PRIVACY_IGNORE_PATTERNS.map((p) => compileRule(p, true)),
-    ...filePatterns.map((p) => compileRule(p, false))
-  ];
 }
 
 function matchesRule(rule: IgnoreRule, filePath: string): boolean {
@@ -176,7 +133,10 @@ export function loadPrivacyIgnoreSync(cwd: string, ignoreFile = ".review-surface
   }
   const filePatterns = parseIgnoreFile(fileText);
   const patterns = unique([...DEFAULT_PRIVACY_IGNORE_PATTERNS, ...filePatterns]);
-  const rules = compilePrivacyRules(filePatterns);
+  const rules = [
+    ...DEFAULT_PRIVACY_IGNORE_PATTERNS.map((pattern) => compileRule(pattern, { caseInsensitive: !pattern.startsWith("!") })),
+    ...filePatterns.map((pattern) => compileRule(pattern))
+  ];
   return {
     ignoreFile,
     patterns,

@@ -3,14 +3,17 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { buildChangeGraphSections, buildGroupDetailViews, computeChangedImportEdges, detailViewSubGraph } from "../src/human/change-graph";
+import { buildChangeMapInsights } from "../src/human/change-map-insights";
 import { renderChangeMapMermaid, renderChangeMapOverviewMermaid } from "../src/diagrams/change-map";
-import { changeMapLeadLevel, COCKPIT_WIDTH_PX } from "../src/human/legibility-budget";
-import { renderChangeMapOverviewSvg } from "../src/human/render-svg-map";
+import { changeMapLeadLevel, COCKPIT_WIDTH_PX, SVG_HEADER_HEIGHT, SVG_NODE_HEIGHT, SVG_PADDING, SVG_ROW_GAP } from "../src/human/legibility-budget";
+import { renderChangeMapOverviewSvg, renderChangeMapSvg } from "../src/human/render-svg-map";
 import { changeMapDetailsBlock } from "../src/render/change-map-embed";
 import { renderHumanPrComment } from "../src/render/pr-comment";
 import { renderStickySummary } from "../src/render/sticky-summary";
 import { renderHumanReviewMarkdown } from "../src/human/render";
 import { ChangeGraph, HumanReviewModel, HUMAN_REVIEW_SCHEMA_VERSION, ReviewQueueItem, RiskLensFinding } from "../src/human/contract";
+import type { ReasoningProvider, StructuredResult } from "../src/llm/provider";
+import type { StructuredDiff } from "../src/pr/contract";
 import { validateJsonSchema } from "../src/schema/json-schema";
 
 function file(filePath: string, status = "M", added = 10, removed = 2) {
@@ -59,7 +62,7 @@ function model(graph: ChangeGraph, legs: HumanReviewModel["reading_order"]["legs
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Change map fixture.",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
-    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [], swift_declaration_changes: [] },
+    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
     review_queue: [],
     blockers: [],
     questions: [],
@@ -120,10 +123,12 @@ test("review-surfaces.CHANGE_MAP.1 change_graph carries churn/lens/status nodes,
   assert.equal(a.cluster, "src/core");
   // Edges: importer -> imported per the contract (renderers reverse at draw
   // time), kind slot present (existing in M9), deduped.
-  assert.deepEqual(graph.edges, [
+  assert.deepEqual(graph.edges.map((edge) => ({ from: edge.from, to: edge.to, kind: edge.kind })), [
     { from: "src/render/b.ts", to: "src/core/a.ts", kind: "existing" },
     { from: "tests/a.test.ts", to: "src/core/a.ts", kind: "existing" }
   ]);
+  assert.match(graph.edges[0].summary, /render\/b\.ts uses core\/a\.ts/);
+  assert.equal(graph.edges[0].insight_source, "fallback");
   // Halo: at most TWO per high-blast node, alphabetical as the fact stores them.
   assert.deepEqual(graph.halo_nodes.map((node) => node.path), ["src/other/x.ts", "src/other/y.ts"]);
   assert.deepEqual(graph.halo_nodes[0].imports, ["src/core/a.ts"]);
@@ -149,6 +154,128 @@ test("review-surfaces.CHANGE_MAP.1 computeChangedImportEdges restricts buildImpo
   assert.deepEqual(edges.map((edge) => `${edge.imported} -> ${edge.importer}`), ["src/a.ts -> src/b.ts", "src/b.ts -> src/c.ts"]);
 });
 
+test("review-surfaces.MAP_SCALE.7 agent-file edge insight enrichment can explain later graph edges without widening live-provider prompts", async () => {
+  const edges = Array.from({ length: 45 }, (_, index) => ({
+    importer: `tests/t${index}.test.ts`,
+    imported: `src/f${index}.ts`
+  }));
+  const areas = Array.from({ length: 22 }, (_, index) => ({
+    name: `area${index}`,
+    paths: [`area${index}/a.ts`, `area${index}/b.ts`]
+  }));
+  const lateEdge = edges[44];
+  const lateArea = areas[21];
+  const providerData = {
+    edges: [
+      {
+        from: lateEdge.importer,
+        to: lateEdge.imported,
+        summary: "late test edge exercises the changed feature path"
+      }
+    ],
+    areas: [
+      {
+        name: lateArea.name,
+        summary: "late area wires the reviewer-facing topic grouping",
+        topics: [
+          {
+            label: "Reviewer topic grouping",
+            summary: "Files that build the topic grouping behavior",
+            paths: [lateArea.paths[1], lateArea.paths[0], "fabricated.ts"]
+          }
+        ]
+      }
+    ]
+  };
+  const provider: ReasoningProvider = {
+    name: "agent-file",
+    async generateStructured(_stage, prompt): Promise<StructuredResult> {
+      assert.match(prompt, /tests\/t0\.test\.ts/);
+      assert.doesNotMatch(prompt, /tests\/t44\.test\.ts/, "prompt stays bounded to the first edge window");
+      assert.match(prompt, /name=area0/);
+      assert.doesNotMatch(prompt, /name=area21/, "area prompt stays bounded too");
+      return { ok: true, data: providerData };
+    }
+  };
+  const agentFileInsights = await buildChangeMapInsights({
+    provider,
+    providerName: "agent-file",
+    edges,
+    areas,
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
+  assert.deepEqual(agentFileInsights.edgeInsights.map(({ from, to, summary, source }) => ({ from, to, summary, source })), [
+    {
+      from: lateEdge.importer,
+      to: lateEdge.imported,
+      summary: "late test edge exercises the changed feature path",
+      source: "provider"
+    }
+  ]);
+  assert.deepEqual(agentFileInsights.areaInsights.map(({ name, summary, source, topics }) => ({ name, summary, source, topics })), [
+    {
+      name: lateArea.name,
+      summary: "late area wires the reviewer-facing topic grouping",
+      source: "provider",
+      topics: [
+        {
+          label: "Reviewer topic grouping",
+          summary: "Files that build the topic grouping behavior",
+          paths: ["area21/a.ts", "area21/b.ts"],
+          source: "provider"
+        }
+      ]
+    }
+  ]);
+
+  const liveProviderInsights = await buildChangeMapInsights({
+    provider: { ...provider, name: "ai-sdk" },
+    providerName: "ai-sdk",
+    edges,
+    areas,
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
+  assert.deepEqual(liveProviderInsights, { edgeInsights: [], areaInsights: [] }, "live providers may only enrich graph items included in their bounded prompt");
+});
+
+test("review-surfaces.CHANGE_MAP.1 bounds long diff lines in provider insight prompts", async () => {
+  const longLine = "A".repeat(5000);
+  const diff: StructuredDiff = {
+    files: [
+      {
+        path: "src/importer.ts",
+        status: "M",
+        hunks: [{ old_start: 1, old_lines: 1, new_start: 1, new_lines: 1, lines: [{ kind: "add", text: longLine, new_line: 1 }] }]
+      },
+      {
+        path: "src/imported.ts",
+        status: "M",
+        hunks: [{ old_start: 1, old_lines: 1, new_start: 1, new_lines: 1, lines: [{ kind: "add", text: longLine, new_line: 1 }] }]
+      }
+    ]
+  };
+  const provider: ReasoningProvider = {
+    name: "ai-sdk",
+    async generateStructured(_stage, prompt): Promise<StructuredResult> {
+      assert.ok(prompt.length < 1400, `prompt should stay bounded, got ${prompt.length}`);
+      assert.equal(prompt.includes(longLine), false, "full minified/base64-like line must not reach the prompt");
+      return { ok: true, data: { edges: [] } };
+    }
+  };
+
+  await buildChangeMapInsights({
+    provider,
+    providerName: "ai-sdk",
+    edges: [{ importer: "src/importer.ts", imported: "src/imported.ts" }],
+    areas: [{ name: "src", paths: ["src/importer.ts", "src/imported.ts"] }],
+    diff,
+    redactSecrets: true,
+    remotePrivacyBlocked: false
+  });
+});
+
 test("review-surfaces.CHANGE_MAP.2 the mermaid emitter renders flowchart LR with cluster subgraphs, lens classDefs, and explicit overflow nodes — never silent truncation", () => {
   const manyFiles = Array.from({ length: 30 }, (_, index) => file(`src/core/file${String(index).padStart(2, "0")}.ts`));
   const sections = buildChangeGraphSections({
@@ -170,7 +297,7 @@ test("review-surfaces.CHANGE_MAP.2 the mermaid emitter renders flowchart LR with
   assert.equal(renderChangeMapMermaid({ nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } }), undefined);
 });
 
-test("review-surfaces.CHANGE_MAP.2 halo nodes render dashed with a cap and explicit overflow", () => {
+test("review-surfaces.CHANGE_MAP.2 halo nodes stay in the model but do not render as human-map cards", () => {
   const sections = buildChangeGraphSections({
     files: Array.from({ length: 12 }, (_, index) => file(`src/core/mod${String(index).padStart(2, "0")}.ts`)),
     edges: [],
@@ -183,9 +310,9 @@ test("review-surfaces.CHANGE_MAP.2 halo nodes render dashed with a cap and expli
   });
   assert.equal(sections.change_graph.halo_nodes.length, 12);
   const body = renderChangeMapMermaid(sections.change_graph) as string;
-  assert.match(body, /blast radius \(unchanged importers\)/);
-  assert.match(body, /\+ 2 more files/); // 12 halo - cap 10
-  assert.match(body, /stroke-dasharray/);
+  assert.doesNotMatch(body, /unchanged files using changes/);
+  assert.doesNotMatch(body, /src\/halo/);
+  assert.doesNotMatch(body, /stroke-dasharray/);
 });
 
 test("review-surfaces.CHANGE_MAP.3 the map embeds on renderHumanPrComment and the sticky as collapsed details, and the old narrative-path Change impact embed is retired", () => {
@@ -224,6 +351,27 @@ test("review-surfaces.CHANGE_MAP.4 labels pass the shared sanitizer, the fence-c
   });
   const body = renderChangeMapMermaid(sections.change_graph) as string;
   assert.doesNotMatch(body, /evil"\]/);
+  const edgeLabelGraph: ChangeGraph = {
+    nodes: [
+      { path: "src/importer.ts", churn_added: 1, churn_removed: 0, status: "modified", cluster: "src" },
+      { path: "src/imported.ts", churn_added: 1, churn_removed: 0, status: "modified", cluster: "src" }
+    ],
+    halo_nodes: [],
+    edges: [{ from: "src/importer.ts", to: "src/imported.ts", kind: "new", summary: "uses | config pipe", insight_source: "provider" }],
+    clusters: [{ name: "src", paths: ["src/imported.ts", "src/importer.ts"] }],
+    overview: {
+      groups: [
+        { name: "src", file_count: 1, cluster_count: 1, churn_added: 1, churn_removed: 0, summary: "imports", insight_source: "provider", queue_count: 0 },
+        { name: "docs", file_count: 1, cluster_count: 1, churn_added: 1, churn_removed: 0, summary: "explains", insight_source: "provider", queue_count: 0 }
+      ],
+      halo_count: 0,
+      edges: [{ from: "docs", to: "src", weight: 1, has_new: true, has_removed: false, summary: "explains | source", insight_source: "provider" }]
+    }
+  };
+  assert.match(renderChangeMapMermaid(edgeLabelGraph) as string, /\|"uses \/ config pipe"\|/);
+  assert.doesNotMatch(renderChangeMapMermaid(edgeLabelGraph) as string, /\|"uses \| config pipe"\|/);
+  assert.match(renderChangeMapOverviewMermaid(edgeLabelGraph.overview) as string, /\|"explains \/ source"\|/);
+  assert.doesNotMatch(renderChangeMapOverviewMermaid(edgeLabelGraph.overview) as string, /\|"explains \| source"\|/);
   const prChangeDiagramSource = fs.readFileSync(path.join(process.cwd(), "src", "diagrams", "pr-change-diagram.ts"), "utf8");
   assert.doesNotMatch(prChangeDiagramSource, /function diagramLabel/);
   // Fence-close guard at the embed point: a graph whose rendered body would
@@ -233,7 +381,7 @@ test("review-surfaces.CHANGE_MAP.4 labels pass the shared sanitizer, the fence-c
     halo_nodes: [],
     edges: [],
     clusters: [{ name: "```", paths: ["```\nplain.ts"] }],
-    overview: { groups: [{ name: "```", file_count: 1, cluster_count: 1, churn_added: 1, churn_removed: 0, queue_count: 0 }], halo_count: 0, edges: [] }
+    overview: { groups: [{ name: "```", file_count: 1, cluster_count: 1, churn_added: 1, churn_removed: 0, summary: "fixture", insight_source: "fallback", queue_count: 0 }], halo_count: 0, edges: [] }
   };
   // diagramLabel collapses newlines, so a hostile label can never reach a line
   // start; the fence guard is the body-level backstop. Either the block is
@@ -328,6 +476,9 @@ test("review-surfaces.MAP_SCALE.1 change_graph grows a schema-visible overview: 
   assert.equal(src.churn_added, 70 * 7);
   assert.equal(src.churn_removed, 70 * 3);
   assert.equal(src.queue_count, 1);
+  assert.match(src.summary, /Updates implementation code across 70 files/);
+  assert.equal(src.insight_source, "fallback");
+  assert.ok((src.topics ?? []).some((topic) => topic.label === "Core changes"));
   // Dominant lens: security_privacy cites 2 src files vs api_contract's 1.
   assert.equal(src.lens, "security_privacy");
   // Count tie in tests group breaks by lens rank (test_evidence rank 3 < reviewer_ux rank 4).
@@ -335,6 +486,8 @@ test("review-surfaces.MAP_SCALE.1 change_graph grows a schema-visible overview: 
   assert.ok(tests);
   assert.equal(tests.lens, "test_evidence");
   assert.equal(tests.queue_count, 1);
+  assert.match(tests.summary, /Updates test coverage across 8 files/);
+  assert.deepEqual((tests.topics ?? []).map((topic) => topic.label), ["Other tests"]);
   const root = overview.groups.find((group) => group.name === "(root)");
   assert.ok(root);
   assert.equal(root.file_count, 2);
@@ -345,14 +498,181 @@ test("review-surfaces.MAP_SCALE.1 change_graph grows a schema-visible overview: 
   // Aggregated inter-group edges: tests->src carries weight 3 (two existing +
   // one removed) with has_removed; bin->src weight 1 with has_new. Intra-src
   // edges do NOT surface here.
-  assert.deepEqual(overview.edges, [
+  assert.deepEqual(overview.edges.map((edge) => ({ from: edge.from, to: edge.to, weight: edge.weight, has_new: edge.has_new, has_removed: edge.has_removed })), [
     { from: "bin", to: "src", weight: 1, has_new: true, has_removed: false },
     { from: "tests", to: "src", weight: 3, has_new: false, has_removed: true }
   ]);
+  assert.match(overview.edges[1].summary, /tests use src:/);
+  assert.equal(overview.edges[1].insight_source, "fallback");
   // The full model with the overview validates against the strict schema.
   const schema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "human_review.schema.json"), "utf8"));
   const result = validateJsonSchema(schema, model(graph, sections.reading_order.legs));
   assert.ok(result.valid, JSON.stringify(result));
+});
+
+test("review-surfaces.MAP_SCALE.8 overview summaries and detail topics are reviewer-facing, provider-bounded, and fallback-stable", () => {
+  const files = [
+    file("src/cli/index.ts", "M", 12, 2),
+    file("src/human/change-graph.ts", "M", 20, 4),
+    file("src/human/render-svg-map.ts", "M", 18, 3)
+  ];
+  const fallbackGraph = buildChangeGraphSections({
+    files,
+    edges: [],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: []
+  }).change_graph;
+  const fallbackSrc = fallbackGraph.overview.groups.find((group) => group.name === "src");
+  assert.ok(fallbackSrc);
+  assert.match(fallbackSrc.summary, /Updates implementation code across 3 files/);
+  assert.deepEqual((fallbackSrc.topics ?? []).map((topic) => topic.label), ["Cli changes", "Human changes"]);
+  assert.deepEqual((fallbackSrc.topics ?? []).flatMap((topic) => topic.paths).sort(), files.map((entry) => entry.path).sort());
+
+  const providerGraph = buildChangeGraphSections({
+    files,
+    edges: [],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: [],
+    areaInsights: [
+      {
+        name: "src",
+        summary: "Review map UI now explains area purpose and topic grouping.",
+        source: "provider",
+        topics: [
+          {
+            label: "Map storytelling",
+            summary: "Files that make the visual map understandable to reviewers.",
+            paths: ["src/human/render-svg-map.ts", "fabricated.ts"],
+            source: "provider"
+          }
+        ]
+      }
+    ]
+  }).change_graph;
+  const providerSrc = providerGraph.overview.groups.find((group) => group.name === "src");
+  assert.ok(providerSrc);
+  assert.equal(providerSrc.summary, "Review map UI now explains area purpose and topic grouping.");
+  assert.equal(providerSrc.insight_source, "provider");
+  assert.deepEqual((providerSrc.topics ?? []).map((topic) => topic.label), ["Map storytelling", "Cli changes", "Human changes"]);
+  assert.deepEqual(providerSrc.topics?.[0].paths, ["src/human/render-svg-map.ts"]);
+  assert.ok((providerSrc.topics ?? []).every((topic) => !topic.paths.includes("fabricated.ts")));
+  const srcDetail = buildGroupDetailViews(providerGraph).find((view) => view.group === "src");
+  assert.ok(srcDetail);
+  assert.deepEqual(detailViewSubGraph(providerGraph, srcDetail).clusters.map((cluster) => cluster.name), ["Map storytelling", "Cli changes", "Human changes"]);
+
+  const collidingProviderSummary = "Provider only grouped one human renderer file.";
+  const collisionGraph = buildChangeGraphSections({
+    files,
+    edges: [],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: [],
+    areaInsights: [
+      {
+        name: "src",
+        summary: "Provider area summary.",
+        source: "provider",
+        topics: [
+          {
+            label: "Human changes",
+            summary: collidingProviderSummary,
+            paths: ["src/human/render-svg-map.ts"],
+            source: "provider"
+          }
+        ]
+      }
+    ]
+  }).change_graph;
+  const collisionSrc = collisionGraph.overview.groups.find((group) => group.name === "src");
+  const humanTopic = collisionSrc?.topics?.find((topic) => topic.label === "Human changes");
+  assert.ok(humanTopic);
+  assert.deepEqual(humanTopic.paths, ["src/human/change-graph.ts", "src/human/render-svg-map.ts"]);
+  assert.equal(humanTopic.insight_source, "fallback");
+  assert.notEqual(humanTopic.summary, collidingProviderSummary);
+  assert.match(humanTopic.summary, /Human changes: 2 changed files/);
+});
+
+test("review-surfaces.MAP_SCALE.8 SVG detail maps draw exact file relationships only, route row-spanning lines through row gaps, and bound long single-token labels", () => {
+  const routed = buildChangeGraphSections({
+    files: [
+      file("src/core/a.ts"),
+      file("src/core/b.ts"),
+      file("src/core/c.ts"),
+      file("src/render/use-c.ts")
+    ],
+    edges: [{ importer: "src/render/use-c.ts", imported: "src/core/c.ts" }],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: [],
+    edgeInsights: [
+      {
+        from: "src/render/use-c.ts",
+        to: "src/core/c.ts",
+        summary: "Renderer uses the new core helper.",
+        source: "provider"
+      }
+    ]
+  }).change_graph;
+  const routedSvg = renderChangeMapSvg(routed)?.svg ?? "";
+  const points = routedSvg.match(/<polyline points="([^"]+)"/)?.[1];
+  assert.ok(points);
+  const yValues = points.split(" ").map((point) => Number(point.split(",")[1]));
+  const interveningRowCenter = SVG_PADDING + SVG_HEADER_HEIGHT + (SVG_NODE_HEIGHT + SVG_ROW_GAP) + SVG_NODE_HEIGHT / 2;
+  const rowGapLane = SVG_PADDING + SVG_HEADER_HEIGHT + (SVG_NODE_HEIGHT + SVG_ROW_GAP) + SVG_NODE_HEIGHT + SVG_ROW_GAP / 2;
+  assert.ok(yValues.includes(rowGapLane), `relationship should route through row gap y=${rowGapLane}: ${points}`);
+  assert.ok(!yValues.includes(interveningRowCenter), `relationship must not route through intervening row center y=${interveningRowCenter}: ${points}`);
+
+  const stubOnly = buildChangeGraphSections({
+    files: [file("src/core/a.ts"), file("tests/a.test.ts")],
+    edges: [{ importer: "tests/a.test.ts", imported: "src/core/a.ts" }],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: [],
+    edgeInsights: [
+      {
+        from: "tests/a.test.ts",
+        to: "src/core/a.ts",
+        summary: "Tests exercise the provider-described behavior.",
+        source: "provider"
+      }
+    ]
+  }).change_graph;
+  const srcView = buildGroupDetailViews(stubOnly).find((view) => view.group === "src");
+  assert.ok(srcView);
+  const stubSvg = renderChangeMapSvg(detailViewSubGraph(stubOnly, srcView), { stubs: srcView.stubs })?.svg ?? "";
+  assert.doesNotMatch(stubSvg, /<polyline/);
+  assert.doesNotMatch(stubSvg, /Tests exercise the provider-described behavior/);
+
+  const longToken = "ProviderSummaryTokenThatIsFarTooLongToFitInOneMapTextLine";
+  const longLabelGraph = buildChangeGraphSections({
+    files: [file("src/human/render-svg-map.ts")],
+    edges: [],
+    usedBy: [],
+    lensFindings: [],
+    reviewQueue: [],
+    areaInsights: [
+      {
+        name: "src",
+        summary: "Provider area summary.",
+        source: "provider",
+        topics: [
+          {
+            label: "Map storytelling",
+            summary: longToken,
+            paths: ["src/human/render-svg-map.ts"],
+            source: "provider"
+          }
+        ]
+      }
+    ]
+  }).change_graph;
+  const longLabelView = buildGroupDetailViews(longLabelGraph).find((view) => view.group === "src");
+  assert.ok(longLabelView);
+  const longLabelSvg = renderChangeMapSvg(detailViewSubGraph(longLabelGraph, longLabelView))?.svg ?? "";
+  assert.doesNotMatch(longLabelSvg, new RegExp(longToken));
+  assert.match(longLabelSvg, new RegExp(`${longToken.slice(0, 33)}\\.\\.\\.`));
 });
 
 test("review-surfaces.MAP_SCALE.2 the legibility budget decides per surface: the overview leads everywhere on the wide fixture and the small-diff file-level map is unchanged", () => {
@@ -363,7 +683,7 @@ test("review-surfaces.MAP_SCALE.2 the legibility budget decides per surface: the
   // human_review.md: honest lead-in plus the overview mermaid, not 99 file nodes.
   const markdown = renderHumanReviewMarkdown(fixture);
   assert.match(markdown, /Overview — 99 changed file\(s\) across 10 group\(s\)/);
-  assert.match(markdown, /70 file\(s\) · 14 cluster\(s\)/);
+  assert.match(markdown, /70 file\(s\) · 14 topic\(s\)/);
   // The LEAD diagram is the overview (no per-file subgraphs); the per-group
   // detail blocks below it carry the file-level subgraphs (MAP_SCALE.6).
   const leadFence = markdown.split("## Change map")[1].split("```mermaid\n")[1].split("\n```")[0];
@@ -376,14 +696,12 @@ test("review-surfaces.MAP_SCALE.2 the legibility budget decides per surface: the
   // PR comment surface: same decision, same title.
   const prComment = renderHumanPrComment(fixture).markdown;
   assert.match(prComment, /<details><summary>Change map \(overview\)<\/summary>/);
-  // The overview mermaid carries weighted edges with flags, dashed halo, and
-  // dominant-lens classes.
+  // The overview mermaid carries dominant-lens classes but suppresses generic
+  // fallback routes such as tests -> src and the blast-radius halo card.
   const body = renderChangeMapOverviewMermaid(wide.change_graph.overview) as string;
-  assert.match(body, /×3 · removed/);
-  assert.match(body, /×1 · new/);
-  assert.match(body, /blast radius<br\/>2 unchanged importer\(s\)/);
+  assert.doesNotMatch(body, /×3|×1|tests use src|unchanged files using changes/);
   assert.match(body, /classDef lens_security_privacy/);
-  // Small diff (4 columns incl. halo): the file-level map still leads with
+  // Small diff: the file-level map still leads with
   // today's structure on every surface.
   const small = buildChangeGraphSections({
     files: [file("src/core/a.ts"), file("src/render/b.ts"), file("tests/a.test.ts")],
@@ -425,10 +743,15 @@ test("review-surfaces.MAP_SCALE.3 the overview is honest by construction: group 
   const viewBox = rendered.svg.match(/viewBox="0 0 (\d+) (\d+)"/);
   assert.ok(viewBox);
   assert.ok(Number(viewBox[1]) <= COCKPIT_WIDTH_PX, `overview width ${viewBox[1]} must fit the ${COCKPIT_WIDTH_PX}px budget`);
-  // Groups carry the zoom hook and an explicit aggregate halo card.
+  // Groups carry the zoom hook, while generic fallback routes and the aggregate
+  // halo card stay out of the human-facing overview.
   assert.match(rendered.svg, /data-map-group="src"/);
-  assert.match(rendered.svg, /blast radius/);
-  assert.match(rendered.svg, /2 unchanged importer\(s\)/);
+  assert.doesNotMatch(rendered.svg, /unchanged files using changes/);
+  assert.doesNotMatch(rendered.svg, /2 file\(s\) outside the diff/);
+  assert.doesNotMatch(rendered.svg, /<polyline/);
+  assert.doesNotMatch(rendered.svg, /Why files are linked/);
+  assert.doesNotMatch(rendered.svg, /tests\/t0\.test\.ts uses src\/core\/f0\.ts/);
+  assert.doesNotMatch(rendered.svg, /<path d="M /);
   // Empty overview renders nothing rather than an empty diagram.
   assert.equal(renderChangeMapOverviewSvg({ groups: [], halo_count: 0, edges: [] }), undefined);
   assert.equal(renderChangeMapOverviewMermaid({ groups: [], halo_count: 0, edges: [] }), undefined);
@@ -468,26 +791,30 @@ test("review-surfaces.MAP_SCALE.4 every overview group expands to a detail view 
   const src = views.find((view) => view.group === "src");
   assert.ok(src);
   assert.equal(src.edges.length, 2);
-  assert.deepEqual(src.stubs, [
+  assert.deepEqual(src.stubs.map((stub) => ({ other: stub.other, direction: stub.direction, weight: stub.weight, has_new: stub.has_new, has_removed: stub.has_removed })), [
     { other: "bin", direction: "out", weight: 1, has_new: true, has_removed: false },
     { other: "tests", direction: "out", weight: 3, has_new: false, has_removed: true }
   ]);
+  assert.match(src.stubs[1].summary, /tests use src:/);
+  assert.equal(src.stubs[1].insight_source, "fallback");
   const tests = views.find((view) => view.group === "tests");
   assert.ok(tests);
-  assert.deepEqual(tests.stubs, [{ other: "src", direction: "in", weight: 3, has_new: false, has_removed: true }]);
+  assert.deepEqual(tests.topics.map((topic) => topic.label), ["Other tests"]);
+  assert.deepEqual(detailViewSubGraph(graph, tests).clusters.map((cluster) => cluster.name), ["Other tests"]);
+  assert.deepEqual(tests.stubs.map((stub) => ({ other: stub.other, direction: stub.direction, weight: stub.weight, has_new: stub.has_new, has_removed: stub.has_removed })), [{ other: "src", direction: "in", weight: 3, has_new: false, has_removed: true }]);
   // Halo share: the two unchanged importers of src/core/f0.ts appear only in
   // the src view, imports restricted to that group's files.
   assert.deepEqual(src.halo_nodes.map((node) => node.path), ["src/unchanged/u0.ts", "src/unchanged/u1.ts"]);
   assert.deepEqual(src.halo_nodes[0].imports, ["src/core/f0.ts"]);
   assert.ok(views.filter((view) => view.group !== "src").every((view) => view.halo_nodes.length === 0));
-  // The detail sub-graph renders with the file-level emitter: per-view cap,
-  // cluster subgraphs, and the stub subgraph.
+  // The detail sub-graph renders with the file-level emitter and per-view cap,
+  // but generic cross-group stubs are not promoted into the human map.
   const body = renderChangeMapMermaid(detailViewSubGraph(graph, src), { stubs: src.stubs }) as string;
-  assert.match(body, /subgraph c0\["src\/cli"\]/);
-  assert.match(body, /subgraph stubs\["cross-group"\]/);
-  assert.match(body, /→ tests ×3/);
+  assert.match(body, /subgraph c0\["Cli changes"\]/);
+  assert.doesNotMatch(body, /subgraph stubs\["cross-group"\]/);
+  assert.doesNotMatch(body, /tests use src|→ tests ×3/);
   assert.match(body, /\+ \d+ more files/); // 70 files, per-view cap 25 -> explicit overflow
-  assert.match(body, /classDef stub stroke-dasharray: 3 3/);
+  assert.doesNotMatch(body, /classDef stub stroke-dasharray/);
 });
 
 test("review-surfaces.MAP_SCALE.6 human_review.md renders one collapsed detail block per group in model order, the sticky stays overview-only, and the PR comment stays overview-only", () => {
@@ -495,16 +822,16 @@ test("review-surfaces.MAP_SCALE.6 human_review.md renders one collapsed detail b
   const fixture = model(sections.change_graph, sections.reading_order.legs);
   const markdown = renderHumanReviewMarkdown(fixture);
   // One <details> block per group with an honest summary, in group order.
-  const summaries = [...markdown.matchAll(/<details><summary>([^<]+) — (\d+) file\(s\) · (\d+) cluster\(s\)<\/summary>/g)].map((match) => match[1]);
+  const summaries = [...markdown.matchAll(/<details><summary>([^<]+) — (\d+) file\(s\) · (\d+) topic\(s\)<\/summary>/g)].map((match) => match[1]);
   assert.deepEqual(summaries, sections.change_graph.overview.groups.map((group) => group.name));
-  assert.match(markdown, /<details><summary>src — 70 file\(s\) · 14 cluster\(s\)<\/summary>/);
+  assert.match(markdown, /<details><summary>src — 70 file\(s\) · 14 topic\(s\)<\/summary>/);
   // Each block carries its own mermaid fence (per-block embed guard).
   const detailFences = markdown.split("## Change map")[1].split("\n## ")[0].match(/```mermaid/g) ?? [];
   assert.equal(detailFences.length, 1 + sections.change_graph.overview.groups.length);
   // The sticky comment stays overview-only: one map block, no group details.
   const sticky = renderStickySummary(fixture);
   assert.match(sticky.markdown, /<details><summary>Change map \(overview\)<\/summary>/);
-  assert.doesNotMatch(sticky.markdown, /file\(s\) · \d+ cluster\(s\)<\/summary>/);
+  assert.doesNotMatch(sticky.markdown, /file\(s\) · \d+ topic\(s\)<\/summary>/);
   const stickyFences = sticky.markdown.match(/```mermaid/g) ?? [];
   assert.equal(stickyFences.length, 1);
   // The PR comment surface stays overview-only too.

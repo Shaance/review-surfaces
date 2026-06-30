@@ -141,8 +141,18 @@ test("review-surfaces.RISK.2 treats successful command transcripts as direct or 
         exit_code: 1,
         truncated: false,
         source_path: ".review-surfaces/commands/local.json"
+      },
+      {
+        id: "CMD-006",
+        command: "./scripts/full-check.sh",
+        status: "passed",
+        exit_code: 0,
+        head_sha: "abc123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/local.json"
       }
-    ]
+    ],
+    commandRules: [{ id: "full-check", match: "exact", command: "./scripts/full-check.sh", classification: "broad_test" }]
   } as unknown as CollectionResult;
   const evaluation: EvaluationModel = {
     summary: "no results",
@@ -158,6 +168,7 @@ test("review-surfaces.RISK.2 treats successful command transcripts as direct or 
   assert.equal(risks.test_evidence[2].kind, "indirect");
   assert.equal(risks.test_evidence[3].kind, "missing");
   assert.equal(risks.test_evidence[4].kind, "missing");
+  assert.equal(risks.test_evidence[5].kind, "direct");
   assert.equal(risks.test_evidence[0].evidence?.[0].path, ".review-surfaces/inputs/commands.json");
   assert.equal(risks.test_evidence[0].evidence?.[0].sha, "abc123");
 });

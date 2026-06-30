@@ -12,7 +12,6 @@ import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import { computeSemanticChangeFacts, SemanticDiffSources } from "../src/risks/semantic-diff";
 import { clusterOfPath, detectImplementationRoots } from "../src/core/source-roots";
 import { buildChangeGraphSections } from "../src/human/change-graph";
-import { baselineStem } from "../src/human/human-review";
 import { createEvalFixture } from "./helpers/eval-fixture";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
@@ -279,19 +278,4 @@ test("review-surfaces.COLD_START.5 spec-less mode suppresses Acai-shaped noise b
   } finally {
     fixture.cleanup();
   }
-});
-
-// review-surfaces.COLLECTOR.8 / HUMAN_REVIEW.28 — cold-start impl<->test matching
-// reduces the plural Swift test conventions to the implementation stem so a changed
-// `Greeter.swift` is recognized as having a connected test change from
-// `GreeterTests.swift` (singular Test/Spec already worked; plural was the gap).
-test("review-surfaces.COLLECTOR.8 baselineStem reduces plural Swift test suffixes to the impl stem", () => {
-  assert.equal(baselineStem("Sources/App/Greeter.swift"), "greeter");
-  assert.equal(baselineStem("Tests/AppTests/GreeterTests.swift"), "greeter");
-  assert.equal(baselineStem("UITests/LoginUITests.swift"), "login");
-  assert.equal(baselineStem("SnapshotTests/ViewSnapshotTests.swift"), "view");
-  assert.equal(baselineStem("Tests/WidgetTest.swift"), "widget");
-  // lowercase words that merely END in "test"/"spec" keep their stem (case-sensitive guard).
-  assert.equal(baselineStem("Sources/latest.swift"), "latest");
-  assert.equal(baselineStem("Sources/contest.swift"), "contest");
 });

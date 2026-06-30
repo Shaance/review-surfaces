@@ -1,7 +1,6 @@
 import { CollectionResult } from "../collector/collect";
-import { CommandRule, commandLooksLikeLocalValidationCommand, commandLooksLikeTestCommand, isInformationalXcodebuildCommand, normalizeCommand } from "../commands/classify";
+import { commandLooksLikeLocalValidationCommand, commandLooksLikeTestCommand, normalizeCommand, type CommandRule } from "../commands/classify";
 import { COMMAND_TRANSCRIPT_OUTPUT_PATH, CommandTranscript } from "../commands/transcripts";
-import { formatAppleTestSummary, parseAppleTestSummary } from "../tests-evidence/apple-test-summary";
 import { stripUndefined } from "../core/guards";
 import { commandEvidence, EvidenceRef, feedbackEvidence, missingEvidence, specEvidence } from "../evidence/evidence";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
@@ -189,9 +188,10 @@ export function analyzeRisks(
   const parsedTestEvidence = validationEvidenceFromTestResults(collection.testResults);
   const testEvidence = validationEvidenceFromCommandTranscripts(collection);
   const transcriptCommands = new Set((collection.commandTranscripts ?? []).map((transcript) => normalizeCommand(transcript.command)));
+  const commandRules = collection.commandRules ?? [];
   const feedbackEvidence = validationEvidenceFromFeedback(collection, transcriptCommands);
   const claimedCommandEvidence = commands
-    .filter((command) => commandLooksLikeLocalValidationCommand(command, collection.commandRules ?? []))
+    .filter((command) => commandLooksLikeLocalValidationCommand(command, commandRules))
     .filter((command) => !transcriptCommands.has(normalizeCommand(command)))
     .map((command, index) => ({
       id: `TEST-CMD-${String(index + 1).padStart(3, "0")}`,
@@ -464,13 +464,6 @@ function validationEvidenceFromCommandTranscripts(collection: CollectionResult):
   const evidencePath = collection.commandTranscriptOutputPath ?? COMMAND_TRANSCRIPT_OUTPUT_PATH;
   const commandRules = collection.commandRules ?? [];
   for (const transcript of collection.commandTranscripts ?? []) {
-    // review-surfaces.COLLECTOR.9: an informational/setup-only xcodebuild command
-    // (`-list`, `-license`, `-runFirstLaunch`, `test ... -dry-run`, `-enumerate-tests`)
-    // ran but validated nothing — it must not appear as indirect "passed command"
-    // validation evidence that trust/handoff surfaces could read as validation.
-    if (isInformationalXcodebuildCommand(transcript.command)) {
-      continue;
-    }
     entries.push({
       id: `TEST-TR-${String(entries.length + 1).padStart(3, "0")}`,
       kind: testEvidenceKindForTranscript(transcript, commandRules),
@@ -513,13 +506,7 @@ function testEvidenceKindForTranscript(
 
 function commandTranscriptSummary(transcript: CommandTranscript): string {
   const exit = transcript.exit_code === undefined ? "unknown exit" : `exit ${transcript.exit_code}`;
-  const base = `Command transcript ${transcript.id} records ${exit}: ${transcript.command}`;
-  // review-surfaces.COLLECTOR.9: enrich with a bounded XCTest/Swift Testing summary
-  // when one is present in the captured excerpt (advisory counts; the exit code
-  // above stays the trust source). undefined for non-Apple output, so TS/JS
-  // transcripts are byte-stable.
-  const apple = parseAppleTestSummary(transcript.stdout_excerpt) ?? parseAppleTestSummary(transcript.stderr_excerpt);
-  return apple ? `${base} [${formatAppleTestSummary(apple)}]` : base;
+  return `Command transcript ${transcript.id} records ${exit}: ${transcript.command}`;
 }
 
 function suggestedTestFor(result: RequirementResult): string {

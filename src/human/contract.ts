@@ -496,7 +496,7 @@ export interface ReviewPlan {
 }
 
 // review-surfaces.CHANGE_MAP.1: the change-graph model — changed files as
-// nodes (churn, dominant lens, status), a dashed halo of top unchanged
+// nodes (churn, dominant lens, status), a bounded halo list of top unchanged
 // importers from blast-radius facts, import edges among changed files, and
 // top-level-directory clusters. Built from buildImportGraph() output restricted
 // to changed files; every list sorted so renders are byte-deterministic. The
@@ -524,6 +524,7 @@ export interface ChangeGraphHaloNode {
 }
 
 export type ChangeGraphEdgeKind = "existing" | "new" | "removed";
+export type ChangeGraphInsightSource = "fallback" | "provider";
 
 export interface ChangeGraphEdge {
   // Importer -> imported, per CHANGE_MAP.1. Renderers that want dependencies
@@ -531,11 +532,29 @@ export interface ChangeGraphEdge {
   from: string;
   to: string;
   kind: ChangeGraphEdgeKind;
+  // Human-facing explanation of why this relationship exists or matters.
+  // Provider text is optional enrichment; fallback text is deterministic.
+  summary: string;
+  detail?: string;
+  insight_source: ChangeGraphInsightSource;
 }
 
 export interface ChangeGraphCluster {
   name: string;
   paths: string[];
+  // Optional reviewer-facing label/summary used by detail renderers. The
+  // stable `name` remains the model key; provider text may only decorate paths
+  // that already exist in the graph.
+  label?: string;
+  summary?: string;
+  insight_source?: ChangeGraphInsightSource;
+}
+
+export interface ChangeGraphTopicGroup {
+  label: string;
+  summary: string;
+  paths: string[];
+  insight_source: ChangeGraphInsightSource;
 }
 
 // review-surfaces.MAP_SCALE.1: the overview level — model clusters merged by
@@ -549,11 +568,18 @@ export interface ChangeGraphOverviewGroup {
   cluster_count: number;
   churn_added: number;
   churn_removed: number;
+  summary: string;
+  detail?: string;
+  insight_source: ChangeGraphInsightSource;
   // Review-queue items whose path resolves to a file in this group.
   queue_count: number;
   // Dominant risk lens among the group's files: most frequent node lens,
   // ties broken by lens rank then lens name — deterministic.
   lens?: RiskLens;
+  // Semantic topic groups used by the zoomed detail view. These partition the
+  // group's changed files when present; renderers fall back to path clusters
+  // when absent.
+  topics?: ChangeGraphTopicGroup[];
 }
 
 export interface ChangeGraphOverviewEdge {
@@ -565,14 +591,17 @@ export interface ChangeGraphOverviewEdge {
   weight: number;
   has_new: boolean;
   has_removed: boolean;
+  summary: string;
+  detail?: string;
+  insight_source: ChangeGraphInsightSource;
 }
 
 export interface ChangeGraphOverview {
   // Group array order is the render order (first appearance among clusters,
   // which is itself tour order).
   groups: ChangeGraphOverviewGroup[];
-  // The single aggregate dashed halo entry: how many unchanged importers the
-  // file-level halo carries.
+  // Aggregate count of unchanged importers the model carries for risk/blast
+  // radius analysis. Human map renderers may suppress it when it is not useful.
   halo_count: number;
   edges: ChangeGraphOverviewEdge[];
 }

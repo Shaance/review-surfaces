@@ -21,10 +21,21 @@ export const DEFAULT_NON_IMPLEMENTATION_PREFIXES = [
   ".agents/",
   ".review-surfaces/"
 ] as const;
-// review-surfaces.config.yaml carries staged ACIDs in quality_gate.allow_missing;
-// treating it as implementation would let allowlisting a requirement count as
-// shipping it, hiding "missing" from the strict self-dogfood gate.
-export const DEFAULT_NON_IMPLEMENTATION_EXACT = ["AGENTS.md", "CLAUDE.md", "review-surfaces.config.yaml"] as const;
+// review-surfaces.config.yaml and package manager/build config files can carry
+// staged ACIDs in metadata; treating them as implementation would let config
+// churn count as shipping behavior, hiding "missing" from strict dogfood gates.
+export const DEFAULT_NON_IMPLEMENTATION_EXACT = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  "review-surfaces.config.yaml",
+  "package.json",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lockb",
+  "tsconfig.json",
+  "tsconfig.build.json"
+] as const;
 // README* matched by the prefix "README" (no slash) — preserves the existing
 // startsWith semantics (README.md, README, README.rst all match).
 export const DEFAULT_NON_IMPLEMENTATION_STARTS_WITH = ["README"] as const;

@@ -5,7 +5,6 @@ import {
   commandLooksLikeFocusedTestCommand,
   commandLooksLikeLocalValidationCommand,
   commandLooksLikeTestCommand,
-  isInformationalXcodebuildCommand,
   matchCommandRule,
   normalizeCommand
 } from "../src/commands/classify";
@@ -474,149 +473,35 @@ test("review-surfaces.COLLECTOR.7 cross-ecosystem no-exec aliases and inline car
   assert.equal(commandLooksLikeFocusedTestCommand("cargo test -p mycrate"), true);
 });
 
-test("review-surfaces.COLLECTOR.9 swift test focus selectors", () => {
-  assert.equal(commandLooksLikeTestCommand("swift test"), true);
-  assert.equal(commandLooksLikeBroadTestCommand("swift test"), true);
-  assert.equal(commandLooksLikeFocusedTestCommand("swift test --filter LoginTests"), true);
-  // swift test list / --list-tests is inspection, not a run.
-  assert.equal(commandLooksLikeTestCommand("swift test list"), false);
-  assert.equal(commandLooksLikeTestCommand("swift test --list-tests"), false);
-});
-
-test("review-surfaces.COLLECTOR.9 dedicated xcodebuild classifier: test vs build vs informational", () => {
-  // Test actions are test runs.
-  assert.equal(
-    commandLooksLikeBroadTestCommand(
-      "xcodebuild test -project Example.xcodeproj -scheme Example -destination 'platform=iOS Simulator,name=iPhone 17 Pro'"
-    ),
-    true
-  );
-  assert.equal(commandLooksLikeBroadTestCommand("xcodebuild test-without-building -scheme App"), true);
-  assert.equal(commandLooksLikeTestCommand("xcodebuild test -scheme App -testPlan UnitTests"), true);
-
-  // Focused selectors narrow the run.
-  assert.equal(
-    commandLooksLikeFocusedTestCommand("xcodebuild test -scheme App -only-testing:AppTests/FooTests"),
-    true
-  );
-  assert.equal(commandLooksLikeFocusedTestCommand("xcodebuild test -scheme App -skip-testing:AppTests/SlowTests"), true);
-  // xcodebuild(1) also accepts the space-separated selector form.
-  assert.equal(
-    commandLooksLikeFocusedTestCommand("xcodebuild test -scheme App -only-testing AppTests/FooTests/testFoo"),
-    true
-  );
-  assert.equal(commandLooksLikeFocusedTestCommand("xcodebuild test -scheme App -skip-testing AppTests/SlowTests"), true);
-  // Test-plan configuration filters narrow the run -> focused, not a broad suite.
-  assert.equal(commandLooksLikeFocusedTestCommand("xcodebuild test -scheme App -only-test-configuration Smoke"), true);
-  assert.equal(commandLooksLikeFocusedTestCommand("xcodebuild test -scheme App -skip-test-configuration Flaky"), true);
-
-  // `-enumerate-tests` LISTS the tests instead of running them — never a test run.
-  assert.equal(commandLooksLikeTestCommand("xcodebuild test -scheme App -enumerate-tests"), false);
-  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild test -scheme App -enumerate-tests"), false);
-
-  // `clean` alone removes build products and compiles nothing — recognized, but not
-  // local-validation evidence; combined with a build/test action it keeps that role.
-  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild clean"), false);
-  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild clean -scheme App"), false);
-  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild clean build -scheme App"), true);
-  assert.equal(commandLooksLikeBroadTestCommand("xcodebuild clean test -scheme App"), true);
-
-  // build / build-for-testing are validation, NEVER a test run.
-  assert.equal(commandLooksLikeTestCommand("xcodebuild build-for-testing -scheme App"), false);
-  assert.equal(commandLooksLikeBroadTestCommand("xcodebuild build-for-testing -scheme App"), false);
-  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild build-for-testing -scheme App"), true);
-  assert.equal(commandLooksLikeTestCommand("xcodebuild build -scheme App"), false);
-  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild build -scheme App"), true);
-  // No action defaults to build -> validation, not a test.
-  assert.equal(commandLooksLikeTestCommand("xcodebuild -scheme App -destination 'platform=iOS Simulator,name=iPhone 17'"), false);
-  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild -scheme App"), true);
-
-  // A value operand that happens to be an action word is not read as the action.
-  assert.equal(commandLooksLikeTestCommand("xcodebuild build-for-testing -scheme App -testProductsPath test"), false);
-  assert.equal(
-    commandLooksLikeLocalValidationCommand("xcodebuild build-for-testing -scheme App -testProductsPath test"),
-    true // build-for-testing is still local validation; it is just not a TEST run
-  );
-
-  // Informational / setup-only: prints, lists, or installs — never test/validation evidence.
-  assert.equal(commandLooksLikeTestCommand("xcodebuild -list"), false);
-  assert.equal(commandLooksLikeTestCommand("xcodebuild -version"), false);
-  assert.equal(commandLooksLikeTestCommand("xcodebuild -showBuildSettings -scheme App"), false);
-  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild -license"), false);
-  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild -runFirstLaunch"), false);
-  // `-dry-run` does everything except run the commands -> no execution, never a test run.
-  assert.equal(commandLooksLikeTestCommand("xcodebuild test -scheme App -dry-run"), false);
-  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild test -scheme App -dry-run"), false);
-  // A path value option that takes an action-word operand is skipped, not read as action.
-  assert.equal(commandLooksLikeTestCommand("xcodebuild build -clonedSourcePackagesDirPath test"), false);
-  // Export-only and no-compile actions validate nothing on the current head.
-  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild -exportArchive -archivePath App.xcarchive -exportPath out"), false);
-  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild -exportNotarizedApp -archivePath App.xcarchive"), false);
-  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild installsrc"), false);
-  // ...but a clean PAIRED with a real build keeps its validation role.
-  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild clean installsrc"), false);
-  assert.equal(commandLooksLikeLocalValidationCommand("xcodebuild installsrc build -scheme App"), true);
-  // A scheme literally named with an action word is not read as the action.
-  assert.equal(commandLooksLikeTestCommand("xcodebuild -scheme build"), false);
-});
-
-test("review-surfaces.COLLECTOR.9 validated wrapper command rules classify repository wrappers (built-ins win)", () => {
+test("review-surfaces.COLLECTOR.9 validated wrapper command rules classify repository wrappers", () => {
   const rules = [
-    { id: "ios-full", match: "exact" as const, command: "./scripts/check-ios.sh", classification: "broad_test" as const },
-    { id: "ios-unit-only", match: "exact" as const, command: "./scripts/check-ios.sh --quick", classification: "focused_test" as const },
-    { id: "ios-build-lint", match: "exact" as const, command: "./scripts/harness.sh ios-quick", classification: "validation" as const },
-    { id: "full-handoff", match: "exact" as const, command: "./scripts/harness.sh full", classification: "broad_test" as const }
+    { id: "full", match: "exact" as const, command: "./scripts/full-check.sh", classification: "broad_test" as const },
+    { id: "quick", match: "exact" as const, command: "./scripts/full-check.sh --quick", classification: "focused_test" as const },
+    { id: "build", match: "exact" as const, command: "./scripts/build-check.sh", classification: "validation" as const }
   ];
-  assert.equal(commandLooksLikeBroadTestCommand("./scripts/check-ios.sh", rules), true);
-  assert.equal(commandLooksLikeFocusedTestCommand("./scripts/check-ios.sh", rules), false);
-  assert.equal(commandLooksLikeFocusedTestCommand("./scripts/check-ios.sh --quick", rules), true);
-  assert.equal(commandLooksLikeBroadTestCommand("./scripts/check-ios.sh --quick", rules), false);
-  assert.equal(commandLooksLikeTestCommand("./scripts/harness.sh ios-quick", rules), false);
-  assert.equal(commandLooksLikeLocalValidationCommand("./scripts/harness.sh ios-quick", rules), true);
-  assert.equal(commandLooksLikeBroadTestCommand("./scripts/harness.sh full", rules), true);
 
-  // Leading env assignments are stripped before wrapper matching, just like the
-  // built-in classifiers — `CI=1 ./scripts/check-ios.sh` still resolves its rule
-  // instead of being downgraded to unrecognized.
-  assert.equal(commandLooksLikeBroadTestCommand("CI=1 ./scripts/check-ios.sh", rules), true);
-  assert.equal(
-    commandLooksLikeFocusedTestCommand("CI=1 SWIFT_DETERMINISTIC=1 ./scripts/check-ios.sh --quick", rules),
-    true
-  );
-  assert.equal(matchCommandRule("CI=1 ./scripts/check-ios.sh", rules)?.id, "ios-full");
+  assert.equal(commandLooksLikeBroadTestCommand("./scripts/full-check.sh", rules), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("./scripts/full-check.sh", rules), false);
+  assert.equal(commandLooksLikeFocusedTestCommand("./scripts/full-check.sh --quick", rules), true);
+  assert.equal(commandLooksLikeBroadTestCommand("./scripts/full-check.sh --quick", rules), false);
+  assert.equal(commandLooksLikeTestCommand("./scripts/build-check.sh", rules), false);
+  assert.equal(commandLooksLikeLocalValidationCommand("./scripts/build-check.sh", rules), true);
 
-  // A broad_test PREFIX wrapper rule wins over generic focus heuristics even when the
-  // wrapper carries a path-like argument that hasFocusedTestTarget() would flag.
+  assert.equal(commandLooksLikeBroadTestCommand("CI=1 ./scripts/full-check.sh", rules), true);
+  assert.equal(matchCommandRule("CI=1 ./scripts/full-check.sh", rules)?.id, "full");
+
   const prefixRules = [
-    { id: "ios-prefix", match: "prefix" as const, command: "./scripts/check-ios.sh", classification: "broad_test" as const }
+    { id: "full-prefix", match: "prefix" as const, command: "./scripts/full-check.sh", classification: "broad_test" as const }
   ];
-  assert.equal(commandLooksLikeBroadTestCommand("./scripts/check-ios.sh --report tests/results.json", prefixRules), true);
-  assert.equal(commandLooksLikeFocusedTestCommand("./scripts/check-ios.sh --report tests/results.json", prefixRules), false);
+  assert.equal(commandLooksLikeBroadTestCommand("./scripts/full-check.sh --report tests/results.json", prefixRules), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("./scripts/full-check.sh --report tests/results.json", prefixRules), false);
 
-  // No rule -> a bare wrapper is unrecognized (no fabricated test evidence).
-  assert.equal(commandLooksLikeTestCommand("./scripts/check-ios.sh"), false);
-  assert.equal(commandLooksLikeLocalValidationCommand("./scripts/check-ios.sh"), false);
+  assert.equal(commandLooksLikeTestCommand("./scripts/full-check.sh"), false);
+  assert.equal(commandLooksLikeLocalValidationCommand("./scripts/full-check.sh"), false);
 
-  // A rule can NEVER reclassify a direct built-in command (built-ins win).
-  const badRule = [{ id: "evil", match: "prefix" as const, command: "xcodebuild build", classification: "broad_test" as const }];
-  assert.equal(commandLooksLikeBroadTestCommand("xcodebuild build -scheme App", badRule), false);
-});
-
-test("review-surfaces.COLLECTOR.9 isInformationalXcodebuildCommand recognizes print/setup/dry-run xcodebuild commands", () => {
-  for (const cmd of [
-    "xcodebuild -list",
-    "xcodebuild -license",
-    "xcodebuild -runFirstLaunch",
-    "xcodebuild test -scheme App -enumerate-tests",
-    "xcodebuild test -scheme App -dry-run",
-    "CI=1 xcodebuild -list" // env-prefix stripped before classifying
-  ]) {
-    assert.equal(isInformationalXcodebuildCommand(cmd), true, `${cmd} is informational`);
-  }
-  // A real test/build run is NOT informational.
-  assert.equal(isInformationalXcodebuildCommand("xcodebuild test -scheme App"), false);
-  assert.equal(isInformationalXcodebuildCommand("xcodebuild build -scheme App"), false);
-  assert.equal(isInformationalXcodebuildCommand("pnpm test"), false);
+  const badRule = [{ id: "evil", match: "prefix" as const, command: "pnpm run test", classification: "focused_test" as const }];
+  assert.equal(commandLooksLikeBroadTestCommand("pnpm run test", badRule), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("pnpm run test", badRule), false);
 });
 
 test("review-surfaces.COLLECTOR.9 wrapper rule prefix matching is token-bounded and most-specific-wins", () => {
@@ -624,9 +509,8 @@ test("review-surfaces.COLLECTOR.9 wrapper rule prefix matching is token-bounded 
     { id: "broad", match: "prefix" as const, command: "./run.sh", classification: "broad_test" as const },
     { id: "focused", match: "exact" as const, command: "./run.sh --one", classification: "focused_test" as const }
   ];
-  // exact (more specific) wins over the broader prefix for the same command.
+
   assert.equal(commandLooksLikeFocusedTestCommand("./run.sh --one", rules), true);
   assert.equal(commandLooksLikeBroadTestCommand("./run.sh --all", rules), true);
-  // a token boundary is required so ./run.shadow does not match the ./run.sh prefix.
   assert.equal(commandLooksLikeTestCommand("./run.shadow", rules), false);
 });

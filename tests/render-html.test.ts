@@ -19,7 +19,7 @@ function model(over: Partial<HumanReviewModel> = {}): HumanReviewModel {
         { id: "C2", text: "Improves performance.", trust: "claimed", anchors: [], invalid_anchors: ["bogus"] }
       ]
     },
-    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [], swift_declaration_changes: [] },
+    semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
     change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
     reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
@@ -74,6 +74,12 @@ test("review-surfaces.RENDER.9 the HTML cockpit is one self-contained offline fi
   assert.doesNotMatch(html, /<script[^>]+src=|<link[^>]+href=|https?:\/\/cdn|@import/);
   assert.match(html, /<style>/);
   assert.match(html, /<script>/);
+  // DESIGN.md/Cursor-inspired cockpit tokens: warm page, compact cards, orange
+  // accent rather than the old GitHub-like white/blue default.
+  assert.match(html, /--bg:#f7f7f4/);
+  assert.match(html, /--chrome:#f2f1ed/);
+  assert.match(html, /--accent:#f54e00/);
+  assert.doesNotMatch(html, /--accent:#0b5fff|background:#f6f8fa/);
   // Strictly model-sourced sections: verdict, narrative trust marks, queue spine
   // with the ranking reason, plan, coverage honest-negative, cards, trust.
   assert.match(html, /Reviewable with attention/);

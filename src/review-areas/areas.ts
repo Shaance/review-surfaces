@@ -25,6 +25,7 @@ export type ReviewAreaMatchPurpose = "review_surface" | "requirement_proof";
 
 export interface ReviewAreaMatchOptions {
   purpose: ReviewAreaMatchPurpose;
+  testPath?: boolean;
 }
 
 export interface ReviewAreaPathMatch {
@@ -162,7 +163,7 @@ function explainPathForAreas(
 ): ReviewAreaPathDiagnostic {
   const matches: ReviewAreaPathMatch[] = [];
   const groups: string[] = [];
-  const context = createMatchContext(filePath);
+  const context = createMatchContext(filePath, options);
   for (const area of areas) {
     for (const prefix of area.prefixes) {
       if (matchesPrefixForPurpose(filePath, prefix, options.purpose)) {
@@ -188,27 +189,26 @@ function explainPathForAreas(
 }
 
 function collectGroupsForPath(filePath: string, areas: ReviewArea[], options: ReviewAreaMatchOptions): string[] {
-  const context = createMatchContext(filePath);
-  // Exact-file precedence (requirement_proof only): when an area declares this EXACT
-  // path as a prefix (e.g. a dedicated release area listing `CHANGELOG.md`,
-  // `package.json`, `src/core/version.ts`), it is requirement PROOF for that file and
-  // wins over broader directory/area mappings (`src/core/`, the package.json CLI/QUALITY
-  // areas). Routing (review_surface) still collects every area so the change map keeps
-  // full context.
   if (options.purpose === "requirement_proof") {
-    const exact: string[] = [];
-    for (const area of areas) {
-      if (area.prefixes.some((prefix) => !prefix.endsWith("/") && prefix !== ROOT_PREFIX && prefix === filePath)) {
-        addUnique(exact, area.groupKey);
-      }
-    }
+    const exact = exactFileGroupsForPath(filePath, areas);
     if (exact.length > 0) {
       return exact;
     }
   }
   const groups: string[] = [];
+  const context = createMatchContext(filePath, options);
   for (const area of areas) {
     if (areaMatchesPathForPurpose(filePath, area, options, context)) {
+      addUnique(groups, area.groupKey);
+    }
+  }
+  return groups;
+}
+
+function exactFileGroupsForPath(filePath: string, areas: ReviewArea[]): string[] {
+  const groups: string[] = [];
+  for (const area of areas) {
+    if (area.prefixes.some((prefix) => !prefix.endsWith("/") && prefix !== ROOT_PREFIX && prefix === filePath)) {
       addUnique(groups, area.groupKey);
     }
   }
@@ -230,8 +230,8 @@ function areaMatchesPathForPurpose(
   );
 }
 
-function createMatchContext(filePath: string): ReviewAreaMatchContext {
-  const testPath = filePath.startsWith("tests/");
+function createMatchContext(filePath: string, options: ReviewAreaMatchOptions): ReviewAreaMatchContext {
+  const testPath = options.testPath ?? filePath.startsWith("tests/");
   return {
     testPath,
     testTokens: testPath ? pathTokenList(filePath) : undefined

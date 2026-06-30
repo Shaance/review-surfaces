@@ -40,18 +40,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Stage head-bound command evidence (download + validate, never execute PR code)
-        # The unprivileged ci.yml (plain pull_request — no secrets, no write token)
-        # records typecheck/tests THROUGH the tool and uploads them as
-        # `command-evidence-<head sha>`. Here we DOWNLOAD that artifact, VALIDATE every
-        # transcript is stamped with THIS PR's head sha (a stale/forged head sha is
-        # rejected, never staged), and drop the survivors into the subject's command
-        # dir so the trusted action ingests verified, head-bound test evidence. The
-        # tests ran in the unprivileged context; this privileged job only validates and
-        # renders — it never runs PR-controlled install/build/test code to obtain proof.
-        #
-        # Best-effort + bounded wait: both workflows trigger on the same push, so the
-        # evidence may not be uploaded yet. Absence is the honest "tests not yet
-        # verified at this head" state (the comment still renders), never an error.
+        # The unprivileged ci.yml records typecheck/tests through the tool and
+        # uploads `command-evidence-<head sha>`. This privileged job only downloads
+        # and validates transcripts stamped for the current head before rendering.
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

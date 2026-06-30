@@ -14,7 +14,7 @@ import { commandLooksLikeBroadTestCommand } from "../commands/classify";
 import { ConversationEvent } from "../conversation/events";
 import { EvidenceRef } from "../evidence/evidence";
 import { ConfigFact, ConfigFactKind } from "../risks/config-facts";
-import { emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
+import { SemanticChangeFacts } from "../risks/semantic-diff";
 import { isTestPath } from "../scope/pr-scope";
 import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
 import { WorkflowFinding } from "./methodology";
@@ -52,11 +52,7 @@ const SECURITY_CONFIG_KINDS = new Set<ConfigFactKind>([
   "ci_new_secret_reference",
   "ci_pull_request_target_added",
   "docker_curl_pipe_shell",
-  "sql_destructive_statement",
-  // review-surfaces.CONFIG_FACTS.4: an iOS privacy/capability change or an ATS
-  // broadening is security-relevant, so it fires/promotes risky_no_security too.
-  "ios_privacy_capability_change",
-  "ios_ats_broadened"
+  "sql_destructive_statement"
 ]);
 
 function basename(filePath: string): string {
@@ -71,16 +67,14 @@ function basename(filePath: string): string {
 function fileStem(filePath: string): string {
   const raw = basename(filePath).replace(/\.[^.]+$/, ""); // strip extension, keep case
   let name = raw.toLowerCase();
-  name = name.replace(/\.(?:tests?|specs?)$/, ""); // uploader.test -> uploader
-  name = name.replace(/^(?:tests?|specs?)[._-]/, ""); // test_uploader -> uploader
-  name = name.replace(/[._-](?:tests?|specs?)$/, ""); // uploader_test -> uploader
-  // PascalCase suffix (Java/Scala `UploaderTest`, plus the plural Swift conventions
-  // `GreeterTests`/`AppUITests`/`FooSnapshotTests`): strip a trailing Test(s)/Spec(s)
-  // ONLY when the ORIGINAL name used the capitalized convention, so an ordinary word
-  // like `contest`/`protest`/`latest` keeps its stem (Codex P2). Mirrors the cold-start
-  // baselineStem so Swift impl<->test correlation agrees across both surfaces.
-  if (/(?:UI|Snapshot)?(?:Test|Spec)s?$/.test(raw)) {
-    name = name.replace(/(?:ui|snapshot)?(?:test|spec)s?$/, "");
+  name = name.replace(/\.(?:test|spec)$/, ""); // uploader.test -> uploader
+  name = name.replace(/^(?:test|spec)[._-]/, ""); // test_uploader -> uploader
+  name = name.replace(/[._-](?:test|spec)$/, ""); // uploader_test -> uploader
+  // PascalCase suffix (Java/Scala `UploaderTest(s)`/`UploaderSpec(s)`): strip a trailing
+  // Test(s)/Spec(s) ONLY when the ORIGINAL name actually used the capitalized convention,
+  // so an ordinary word like `contest`/`protest`/`latest` keeps its stem (Codex P2).
+  if (/(?:Tests?|Specs?)$/.test(raw)) {
+    name = name.replace(/(?:tests?|specs?)$/, "");
   }
   // Drop a trailing test qualifier so a multipart test name still correlates with
   // its impl (`payments.integration` -> `payments`) — Codex P2.
@@ -265,10 +259,7 @@ function hasBreakingSemanticChange(facts: SemanticChangeFacts): boolean {
       change.type_changes.length > 0 ||
       change.enum_changes.some((enumChange) => enumChange.removed.length > 0)
   );
-  // A breaking Swift declaration change (removed public decl, narrowed access, changed
-  // signature/effects/requirements) is a backward-incompatible API change too.
-  const swiftBreaking = (facts.swift_declaration_changes ?? []).some((change) => change.breaking);
-  return apiBreaking || schemaBreaking || swiftBreaking;
+  return apiBreaking || schemaBreaking;
 }
 
 // review-surfaces.METHODOLOGY.8: compute the four deterministic cross-reference
@@ -282,7 +273,7 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
   }
   const haystack = conversationHaystack(events);
   const secretPaths = new Set((collection.privacy?.secret_findings ?? []).map((finding) => finding.path));
-  const facts: SemanticChangeFacts = collection.semanticChangeFacts ?? emptySemanticChangeFacts();
+  const facts: SemanticChangeFacts = collection.semanticChangeFacts ?? { schema_changes: [], api_changes: [], test_weakening: [] };
   const dependencyFacts = collection.dependencyFacts ?? [];
   const configFacts: ConfigFact[] = collection.configFacts ?? [];
   const securityConfig = configFacts.filter((fact) => SECURITY_CONFIG_KINDS.has(fact.kind));
@@ -340,7 +331,7 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
         transcript.exit_code === 0 &&
         transcript.head_sha === headSha &&
         typeof transcript.command === "string" &&
-        commandLooksLikeBroadTestCommand(transcript.command, collection.commandRules ?? [])
+        commandLooksLikeBroadTestCommand(transcript.command)
     );
   // Stems shared by more than one impl file (e.g. two `index.ts`) are AMBIGUOUS: a
   // "tests for index" mention cannot be attributed to one of them, so a stem-correlated
@@ -398,13 +389,7 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
   // structural fact, so it must be its own TRIGGER, not just a promotion flag —
   // Codex P2). Promoted by a backward-INCOMPATIBLE structural change or any
   // removed/renamed surface.
-  const apiFactPaths = [
-    ...facts.api_changes.map((change) => change.path),
-    ...facts.schema_changes.map((change) => change.path),
-    // A breaking Swift declaration change is an API-surface compat trigger too (a
-    // non-breaking Swift addition is compatible, so it does not trigger).
-    ...(facts.swift_declaration_changes ?? []).filter((change) => change.breaking).map((change) => change.path)
-  ];
+  const apiFactPaths = [...facts.api_changes.map((change) => change.path), ...facts.schema_changes.map((change) => change.path)];
   const removedSurfacePaths = changed.flatMap((file) => {
     if (file.status === "D" && isPublicSurfacePath(file.path)) {
       return [file.path];

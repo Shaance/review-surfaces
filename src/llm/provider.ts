@@ -60,16 +60,12 @@ const OPENAI_DEFAULT_MODEL = "gpt-4o-mini";
 // AbortController timeout and a bounded output budget. These only affect the
 // live ai-sdk branch (never mock/offline), so golden fixtures are unaffected.
 const AI_DEFAULT_TIMEOUT_MS = 60_000;
-// Output budget for a live generateObject call. Raised from the original 2_048: a
-// reasoning model (notably the default `gemini-2.5-flash`, which thinks by default) spends a
-// large, variable share of this budget on reasoning tokens BEFORE the JSON, so a 2_048 cap
-// truncated the structured response mid-object (`finishReason: "length"`) and the whole
-// enrichment silently fell back to deterministic (live iOS dogfood finding). 8_192 leaves
-// ample room for reasoning + the bounded enrichment JSON; override with
-// REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS for unusually large packets.
+// Output budget for a live generateObject call. Reasoning models can spend a
+// large share of this budget before emitting JSON, so keep the default high and
+// allow operators to tune it for unusually large packets.
 const AI_DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
 
-export interface ResolvedModel {
+interface ResolvedModel {
   provider: "anthropic" | "google" | "openai";
   modelId: string;
 }
@@ -267,25 +263,11 @@ function aiTimeoutMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : AI_DEFAULT_TIMEOUT_MS;
 }
 
-/**
- * Output-token budget for a live generateObject call. Reads
- * REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS once and falls back to
- * AI_DEFAULT_MAX_OUTPUT_TOKENS for absent/invalid values. The budget must cover a
- * reasoning model's thinking tokens AND the structured JSON, or the response truncates.
- */
 export function aiMaxOutputTokens(): number {
   const raw = Number(process.env.REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS);
-  // Token budgets are integer counts in the provider APIs; a positive non-integer (8192.5) is
-  // a malformed override and must fall back, not be forwarded as a fractional request value.
   return Number.isInteger(raw) && raw > 0 ? raw : AI_DEFAULT_MAX_OUTPUT_TOKENS;
 }
 
-// Hard max-output-token limit for a model, used to clamp the configured budget DOWN so the
-// raised 8_192 default (or a higher override) never exceeds a lower-limit model's API cap and
-// turns a valid run into a request error (Codex BENCH.2 round-4). Only the original Claude 3
-// family (haiku/sonnet/opus — NOT 3.5+) caps below 8_192 (documented 4_096 max output);
-// gemini-2.5-* and gpt-4o* comfortably exceed it. An unknown model is not clamped — an
-// explicit non-default model choice plus REVIEW_SURFACES_AI_MAX_OUTPUT_TOKENS is the lever.
 export function modelOutputCeiling(resolved: ResolvedModel): number {
   if (resolved.provider === "anthropic" && /(^|[:/-])claude-3-(haiku|sonnet|opus)-/.test(resolved.modelId.toLowerCase())) {
     return 4_096;

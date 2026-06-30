@@ -10,7 +10,7 @@ import { buildPrNarrative } from "../llm/pr-narrative";
 import { buildPrChangeDiagram } from "../diagrams/pr-change-diagram";
 import { buildPrRiskCandidates } from "../risks/pr-risks";
 import { createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
-import { buildPrScope, isTestPath } from "../scope/pr-scope";
+import { buildPrScope, isExecutableTestPath } from "../scope/pr-scope";
 import { PrReviewSurfaceModel, PR_SURFACE_SCHEMA_VERSION, PrSurfaceBlockedReason, StructuredDiff } from "../pr/contract";
 
 // ---------------------------------------------------------------------------
@@ -61,28 +61,9 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     baseEvaluation: input.baseEvaluation
   });
 
-  // Areas that have ANY test file in the repository (changed or not). Mapped with
-  // the same review_surface matcher buildPrScope uses for changed files, so the
-  // untested rule's "an existing test was not run at head" vs "no test exists"
-  // distinction is computed over the same area space the diff is scoped into.
-  //
-  // Source = the SAME test classifier the scope/methodology use (isTestPath: tests/,
-  // *.test.*, *.spec.*, Swift tests) over every repository file, UNIONED with the
-  // config-glob-indexed collection.tests. Deriving from collection.tests alone would
-  // miss colocated src/foo.test.ts, *.spec.ts, and non-JS tests the scope still
-  // recognizes — wrongly pushing those files into the "no test exists / add a test"
-  // branch when an existing test is in fact mapped (Codex P2).
-  const repositoryTestAreas = new Set<string>();
-  const repoTestMatcher = createReviewAreaMatcher(input.reviewAreas);
-  const repositoryTestPaths = new Set<string>([
-    ...input.collection.repositoryFiles.filter(isTestPath),
-    ...input.collection.tests.map((test) => test.path)
-  ]);
-  for (const testPath of repositoryTestPaths) {
-    for (const area of repoTestMatcher.groupsForPath(testPath, { purpose: "review_surface" })) {
-      repositoryTestAreas.add(area);
-    }
-  }
+  const repositoryTestAreas = scope.changed_files.some((file) => file.role === "implementation")
+    ? collectRepositoryTestAreas(input)
+    : new Set<string>();
 
   const risks = buildPrRiskCandidates({
     specMode: input.intent.spec_mode,
@@ -146,4 +127,28 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     narrative: narrativeResult.narrative,
     llm: narrativeResult.meta
   };
+}
+
+function collectRepositoryTestAreas(input: AssemblePrSurfaceInput): Set<string> {
+  const repositoryTestAreas = new Set<string>();
+  const testMatcher = createReviewAreaMatcher(input.reviewAreas);
+  const repositoryTestPaths = new Set<string>([
+    ...input.collection.tests.map((test) => test.path),
+    ...input.collection.repositoryFiles.filter(isRepositoryExecutableTestPath)
+  ]);
+  for (const testPath of repositoryTestPaths) {
+    for (const area of testMatcher.groupsForPath(testPath, { purpose: "review_surface", testPath: true })) {
+      repositoryTestAreas.add(area);
+    }
+  }
+  return repositoryTestAreas;
+}
+
+const REPOSITORY_TEST_CODE_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m|sh|bash|zsh)$/i;
+
+function isRepositoryExecutableTestPath(filePath: string): boolean {
+  if (isExecutableTestPath(filePath)) {
+    return true;
+  }
+  return /(^|\/)(tests?|__tests__|spec)\//i.test(filePath) && REPOSITORY_TEST_CODE_EXT.test(filePath) && !/\.d\.ts$/i.test(filePath);
 }
