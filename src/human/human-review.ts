@@ -24,6 +24,8 @@ import { PrRiskCandidate, PrReviewSurfaceModel, StructuredDiff, StructuredDiffFi
 import { PR_RISK_RULE_METADATA } from "../pr/risk-metadata";
 import { ReviewPacket } from "../render/packet";
 import { looksLikeRecordedCiSecretBoundaryManualCheck } from "../risks/manual-checks";
+import { notAssessedConversationAnalysis, type ConversationAnalysis } from "../conversation/analysis";
+import type { ReviewerInsight } from "../conversation/review";
 import { RisksModel } from "../risks/risks";
 import { classifyRole, isTestPath } from "../scope/pr-scope";
 import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-contract";
@@ -79,6 +81,10 @@ export interface BuildHumanReviewInput {
   // built through the provider boundary. Stored read-only; it NEVER influences
   // the verdict, blockers, or coverage. Absent -> no narrative section.
   narrative?: ChangeNarrative;
+  // Optional explicit values for callers building without a fresh PR surface.
+  // Normal PR builds inherit both from prSurface.
+  conversationAnalysis?: ConversationAnalysis;
+  reviewInsights?: ReviewerInsight[];
   // review-surfaces.SEMANTIC_DIFF.1-4: deterministic semantic facts computed in
   // the pipeline (it needs git access to base file content). Absent -> empty.
   semanticFacts?: SemanticChangeFacts;
@@ -428,6 +434,14 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     sinceLastReview,
     testPlan
   });
+  // Resolve advisory AI output only after verdicts, blockers, queues, and trust
+  // facts are complete, keeping it outside every merge-readiness calculation.
+  const conversationAnalysis = input.conversationAnalysis ?? input.prSurface?.conversation_analysis ??
+    notAssessedConversationAnalysis(
+      input.prSurface?.llm.provider ?? narrative.provider,
+      "No conversation analysis was supplied with this review; conversation intent was not assessed."
+    );
+  const reviewInsights = input.reviewInsights ?? input.prSurface?.review_insights ?? [];
 
   return stripUndefined({
     schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
@@ -438,6 +452,8 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     // review-surfaces.NARRATIVE.4: the narrative is stored read-only AFTER the
     // verdict/blockers/coverage are computed, so it can never influence them.
     narrative,
+    conversation_analysis: conversationAnalysis,
+    review_insights: reviewInsights,
     semantic_facts: semanticFacts,
     review_queue: reviewQueue,
     blockers,
@@ -613,7 +629,14 @@ export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): str
 }
 
 function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["generated_from"] {
-  const manifest = input.packet.manifest as { base_ref?: unknown; base_sha?: unknown; head_ref?: unknown; head_sha?: unknown; uncommitted_files?: unknown };
+  const manifest = input.packet.manifest as {
+    base_ref?: unknown;
+    base_sha?: unknown;
+    head_ref?: unknown;
+    head_sha?: unknown;
+    signature?: unknown;
+    uncommitted_files?: unknown;
+  };
   const prScope = input.prSurface?.scope;
   const baseSha = prScope?.base_sha ?? stringOr(manifest.base_sha, "");
   return {
@@ -625,6 +648,7 @@ function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["gen
     ...(baseSha ? { base_sha: baseSha } : {}),
     head_ref: prScope?.head_ref ?? stringOr(manifest.head_ref, "HEAD"),
     head_sha: prScope?.head_sha ?? stringOr(manifest.head_sha, "unknown"),
+    ...(typeof manifest.signature === "string" ? { packet_signature: manifest.signature } : {}),
     // COLD_START.7: working-tree files absorbed into this review (0 on clean or
     // pinned-head runs); every human surface announces a nonzero count.
     uncommitted_files: typeof manifest.uncommitted_files === "number" ? manifest.uncommitted_files : 0,

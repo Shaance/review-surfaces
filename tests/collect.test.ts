@@ -492,3 +492,32 @@ test("review-surfaces.PRIVACY.7 a conversation tool_result secret folds into rem
   assert.ok(escapedFinding);
   assert.ok(!escapedFinding.path.startsWith("/") && !escapedFinding.path.includes(".."), `locus must not escape: ${escapedFinding.path}`);
 });
+
+test("review-surfaces.PRIVACY.2 a blocked command transcript folds into the collection remote-provider gate", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-command-priv-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, ".review-surfaces", "commands"), { recursive: true });
+  fs.copyFileSync(
+    path.join(process.cwd(), "tests", "fixtures", "minimal-repo", "features", "example.feature.yaml"),
+    path.join(tmp, "features", "example.feature.yaml")
+  );
+  fs.writeFileSync(
+    path.join(tmp, ".review-surfaces", "commands", "secret.json"),
+    JSON.stringify({
+      commands: [{ command: "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456 pnpm test", exit_code: 0 }]
+    })
+  );
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const result = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+
+  assert.equal(result.commandTranscripts[0].secret_blocked, true);
+  assert.equal(result.privacy.remote_provider_blocked, true);
+  assert.doesNotMatch(result.commandTranscripts[0].command, /sk-proj-/);
+});

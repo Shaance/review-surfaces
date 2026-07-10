@@ -5,6 +5,7 @@ import { buildHumanReview } from "../src/human/human-review";
 import { renderHumanReviewHtml } from "../src/human/render-html";
 import { HumanReviewModel, HUMAN_REVIEW_SCHEMA_VERSION, RoundsLedgerEntry } from "../src/human/contract";
 import { minimalReviewPacket } from "./helpers/review-packet";
+import { notAssessedConversationAnalysis } from "../src/conversation/analysis";
 
 function entry(round: number, overrides: Partial<RoundsLedgerEntry> = {}): RoundsLedgerEntry {
   return {
@@ -26,6 +27,8 @@ function model(rounds: RoundsLedgerEntry[] | undefined): HumanReviewModel {
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Rounds fixture.",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
+    conversation_analysis: notAssessedConversationAnalysis("mock"),
+    review_insights: [],
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
     review_queue: [],
     blockers: [],

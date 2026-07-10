@@ -18,6 +18,7 @@ import {
 } from "../src/human/render";
 import { renderHumanReviewHtml } from "../src/human/render-html";
 import { renderStickySummary } from "../src/render/sticky-summary";
+import { notAssessedConversationAnalysis } from "../src/conversation/analysis";
 
 function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
   return {
@@ -30,6 +31,8 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
     reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Two files changed; one impl file lacks a focused test.",
+    conversation_analysis: notAssessedConversationAnalysis("mock"),
+    review_insights: [],
     review_queue: [],
     blockers: [],
     questions: [],
@@ -95,6 +98,170 @@ function queueItem(overrides: Partial<HumanReviewModel["review_queue"][number]>)
     ...overrides
   };
 }
+
+function analyzedConversation(): NonNullable<HumanReviewModel["conversation_analysis"]> {
+  return {
+    status: "analyzed",
+    provider: "ai-sdk",
+    summary: "The author refined the goal from a broad redesign to a focused reviewer workflow.",
+    intent: [{ text: "Give reviewers clear, conversation-aware findings.", event_ids: ["evt-2"] }],
+    refinements: [],
+    decisions: [],
+    constraints: [],
+    non_goals: [],
+    rejected_alternatives: [],
+    claims: [],
+    validation_claims: [],
+    known_gaps: [],
+    quality_flags: []
+  };
+}
+
+function conversationInsight(index: number): NonNullable<HumanReviewModel["review_insights"]>[number] {
+  return {
+    id: `CONV-INSIGHT-${index}`,
+    category: "intent_mismatch",
+    title: `Conversation finding ${index}`,
+    summary: `The reviewed change diverges from refinement ${index}.`,
+    why_it_matters: "A reviewer could approve behavior the author explicitly narrowed.",
+    reviewer_action: `Check the cited change ${index}.`,
+    priority: index === 1 ? "high" : "medium",
+    evidence_state: index === 1 ? "contradicted" : "unverified",
+    basis: index === 1 ? "validated_anchors" : "ai_reconciliation",
+    conversation_event_ids: [`evt-${index}`],
+    paths: [`src/finding-${index}.ts`],
+    requirement_ids: [],
+    risk_ids: [],
+    command_ids: [],
+    evidence: []
+  };
+}
+
+test("review-surfaces.CONVERSATION_REVIEW.4 conversation-aware insights lead the reviewer surface, stay capped, and expose evidence state without changing verdict", () => {
+  const review = model({
+    conversation_analysis: analyzedConversation(),
+    review_insights: [1, 2, 3, 4].map(conversationInsight)
+  });
+  const markdown = renderHumanReviewMarkdown(review);
+  const html = renderHumanReviewHtml(review);
+
+  assert.ok(markdown.indexOf("## Verdict") < markdown.indexOf("## Conversation-aware insights"));
+  assert.ok(markdown.indexOf("## Conversation-aware insights") < markdown.indexOf("## Reading order"));
+  assert.match(markdown, /\*\*Analyzed\.\*\*/);
+  assert.match(markdown, /AI synopsis: The author refined the goal/);
+  assert.match(markdown, /\[Conflicts with intent · high\] Conversation finding 1/);
+  assert.match(markdown, /Stated goal.*Give reviewers clear, conversation-aware findings/);
+  assert.match(markdown, /Why it matters: A reviewer could approve behavior/);
+  assert.match(markdown, /Review: Check the cited change 1\./);
+  assert.match(markdown, /events `evt-1`; paths `src\/finding-1\.ts`/);
+  assert.match(markdown, /Conversation finding 3/);
+  assert.doesNotMatch(markdown, /Conversation finding 4/);
+
+  assert.ok(html.indexOf('id="conversation-insights"') < html.indexOf('id="reading-order"'));
+  assert.match(html, /AI synopsis: The author refined the goal/);
+  assert.match(html, /badge contradicted[^>]*>Conflicts with intent</);
+  assert.match(html, /<strong>Why it matters:<\/strong> A reviewer could approve behavior/);
+  assert.match(html, /<strong>Review:<\/strong> Check the cited change 1\./);
+  assert.doesNotMatch(html, /Conversation finding 4/);
+  assert.equal(review.verdict.decision, "reviewable_with_attention");
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.4 missing conversation analysis is an honest not-assessed state, not a clean result", () => {
+  const markdown = renderHumanReviewMarkdown(model());
+  assert.match(markdown, /\*\*Not assessed\.\*\*/);
+  assert.match(markdown, /not evidence that the change is clean/);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.4 legacy human v1 artifacts render without conversation fields", () => {
+  const legacy = model();
+  delete legacy.conversation_analysis;
+  delete legacy.review_insights;
+
+  const markdown = renderHumanReviewMarkdown(legacy);
+  const html = renderHumanReviewHtml(legacy);
+  const sticky = renderStickySummary(legacy).markdown;
+
+  assert.match(markdown, /\*\*Not assessed\.\*\* No conversation analysis is present/);
+  assert.match(html, /Not assessed[^]*No conversation analysis is present/);
+  assert.match(html, /No conversation-grounded conclusions are available/);
+  assert.match(sticky, /\*\*Not assessed\.\*\* No conversation analysis is present/);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.4 Markdown and HTML share non-analyzed status, summary, and empty-result meaning", () => {
+  const cases: Array<{
+    analysis: NonNullable<HumanReviewModel["conversation_analysis"]>;
+    label: RegExp;
+    summary: RegExp;
+  }> = [
+    {
+      analysis: {
+        ...notAssessedConversationAnalysis("mock"),
+        summary: "The supplied log had no usable reviewer context."
+      },
+      label: /Not assessed/,
+      summary: /The supplied log had no usable reviewer context/
+    },
+    {
+      analysis: {
+        ...notAssessedConversationAnalysis("ai-sdk"),
+        status: "degraded",
+        summary: "The provider timed out before analysis completed.",
+        quality_flags: ["conversation_analysis_unavailable"]
+      },
+      label: /Degraded — incomplete/,
+      summary: /The provider timed out before analysis completed/
+    }
+  ];
+
+  for (const item of cases) {
+    const review = model({ conversation_analysis: item.analysis, review_insights: [] });
+    const markdown = renderHumanReviewMarkdown(review);
+    const html = renderHumanReviewHtml(review);
+    assert.match(markdown, item.label);
+    assert.match(html, item.label);
+    assert.match(markdown, item.summary);
+    assert.match(html, item.summary);
+    assert.match(markdown, /No conversation-grounded conclusions are available/);
+    assert.match(html, /No conversation-grounded conclusions are available/);
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.4 incomplete reconciliation is visible instead of looking like a clean analysis", () => {
+  const review = model({
+    conversation_analysis: {
+      ...analyzedConversation(),
+      quality_flags: [
+        "conversation_review_unavailable",
+        "conversation_review_diff_truncated",
+        "conversation_review_commands_truncated",
+        "conversation_review_requirements_truncated",
+        "conversation_review_risks_truncated",
+        "conversation_review_risk_paths_truncated",
+        "conversation_review_coverage_truncated"
+      ]
+    },
+    review_insights: []
+  });
+  const markdown = renderHumanReviewMarkdown(review);
+  const html = renderHumanReviewHtml(review);
+
+  assert.match(markdown, /\*\*Analyzed — partial\.\*\*/);
+  assert.match(markdown, /Diff reconciliation did not complete/);
+  assert.match(markdown, /bounded subset of changed lines/);
+  assert.match(markdown, /Command transcript context was bounded/);
+  assert.match(markdown, /Requirement context was bounded/);
+  assert.match(markdown, /Deterministic risk context was bounded/);
+  assert.match(markdown, /Deterministic risk-path context was bounded/);
+  assert.match(markdown, /Coverage-delta context was bounded/);
+  assert.doesNotMatch(markdown, /No conversation-grounded insight survived reconciliation/);
+  assert.match(html, /Analyzed — partial/);
+  assert.match(html, /Diff reconciliation did not complete/);
+  assert.match(html, /Command transcript context was bounded/);
+  assert.match(html, /Requirement context was bounded/);
+  assert.match(html, /Deterministic risk context was bounded/);
+  assert.match(html, /Deterministic risk-path context was bounded/);
+  assert.match(html, /Coverage-delta context was bounded/);
+});
 
 test("review-surfaces.RANKING.4 an aggregate-rollup packet risk renders at file level with a short title, never a borrowed 'precise' anchor", () => {
   const packet = minimalReviewPacket() as unknown as ReviewPacket;

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -8,15 +9,20 @@ import { indexCommandTranscriptFiles, indexCommandTranscripts } from "../src/com
 import { recordCommandTranscript } from "../src/commands/runner";
 import { SECRET_PATTERN_SOURCES, redactSecrets } from "../src/privacy/secrets";
 
-// Extract bin/review-surfaces.js's standalone redact() so we can compare its
-// ACTUAL output to redactSecrets() — bin is the no-dist `run` fallback and
-// cannot require dist, so it carries a hand-mirrored copy of the patterns.
 function loadBinRedact(): (value: string | undefined) => string | undefined {
-  const binSource = fs.readFileSync(path.join(process.cwd(), "bin", "review-surfaces.js"), "utf8");
-  const match = binSource.match(/function redact\(value\) \{[\s\S]*?\n\}/);
-  assert.ok(match, "could not extract redact() from bin/review-surfaces.js");
-  // eslint-disable-next-line no-new-func
-  return new Function(`return (${match[0]});`)() as (value: string | undefined) => string | undefined;
+  const runtime = require(path.join(process.cwd(), "bin", "privacy-runtime.js")) as {
+    redact(value: string | undefined): string | undefined;
+  };
+  return runtime.redact;
+}
+
+function copyNoDistBin(tmp: string): string {
+  const fallbackBinDir = path.join(tmp, "package", "bin");
+  fs.mkdirSync(fallbackBinDir, { recursive: true });
+  for (const file of ["review-surfaces.js", "privacy-runtime.js", "bounded-stream-capture.js"]) {
+    fs.copyFileSync(path.join(process.cwd(), "bin", file), path.join(fallbackBinDir, file));
+  }
+  return path.join(fallbackBinDir, "review-surfaces.js");
 }
 
 function sequenceNow(...dates: string[]): () => Date {
@@ -84,6 +90,104 @@ test("review-surfaces.PRIVACY.2 redacts and bounds transcript output captured by
   assert.match(result.transcript.stdout_excerpt ?? "", /\[REDACTED:/);
 });
 
+test("review-surfaces.PRIVACY.2 a blocked secret after the retained output cap still blocks remote use", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-late-secret-"));
+  const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";
+  const result = await recordCommandTranscript({
+    cwd: tmp,
+    args: [process.execPath, "-e", `process.stdout.write('${"x".repeat(7000)} ${secret}')`],
+    id: "CMD-RUN-LATE-SECRET",
+    streamOutput: false,
+    now: sequenceNow("2026-05-28T12:00:00.000Z", "2026-05-28T12:00:00.001Z")
+  });
+
+  assert.equal(result.transcript.truncated, true);
+  assert.equal(result.transcript.secret_blocked, true);
+  assert.doesNotMatch(result.transcript.stdout_excerpt ?? "", /sk-proj-/);
+});
+
+test("review-surfaces.PRIVACY.2 an unmatched PEM opener is redacted through the retained capture", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-open-pem-"));
+  const result = await recordCommandTranscript({
+    cwd: tmp,
+    args: [
+      process.execPath,
+      "-e",
+      "process.stdout.write('-'.repeat(5) + 'BEGIN PRIVATE KEY' + '-'.repeat(5) + '\\nMII-UNTERMINATED-KEY-MATERIAL\\n' + 'X'.repeat(6000))"
+    ],
+    id: "CMD-RUN-OPEN-PEM",
+    streamOutput: false,
+    now: sequenceNow("2026-05-28T12:00:00.000Z", "2026-05-28T12:00:00.001Z")
+  });
+
+  const excerpt = result.transcript.stdout_excerpt ?? "";
+  assert.equal(result.transcript.truncated, true);
+  assert.equal(result.transcript.secret_blocked, true);
+  assert.match(excerpt, /\[REDACTED:private_key\]/);
+  assert.doesNotMatch(excerpt, /BEGIN PRIVATE KEY|MII-UNTERMINATED/);
+});
+
+test("review-surfaces.PRIVACY.2 an unmatched PEM in the command field is blocked and redacted", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-command-pem-"));
+  const result = await recordCommandTranscript({
+    cwd: tmp,
+    args: [
+      process.execPath,
+      "-e",
+      "console.log('safe-output') // -----BEGIN PRIVATE KEY----- MII-COMMAND-KEY-PREFIX"
+    ],
+    id: "CMD-RUN-COMMAND-PEM",
+    streamOutput: false,
+    now: sequenceNow("2026-05-28T12:00:00.000Z", "2026-05-28T12:00:00.001Z")
+  });
+
+  assert.equal(result.transcript.secret_blocked, true);
+  assert.match(result.transcript.command, /\[REDACTED:private_key\]/);
+  assert.doesNotMatch(result.transcript.command, /BEGIN PRIVATE KEY|MII-COMMAND/);
+});
+
+test("review-surfaces.PRIVACY.2 a PEM closing beyond the raw cap cannot persist its header or key prefix", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-capped-pem-"));
+  const output = `safe-prefix\n-----BEGIN PRIVATE KEY-----\nMII-CAPPED-KEY-PREFIX\n${"A".repeat(6000)}\n-----END PRIVATE KEY-----`;
+  const result = await recordCommandTranscript({
+    cwd: tmp,
+    args: [
+      process.execPath,
+      "-e",
+      `process.stdout.write('safe-prefix\\n' + '-'.repeat(5) + 'BEGIN PRIVATE KEY' + '-'.repeat(5) + '\\nMII-CAPPED-KEY-PREFIX\\n' + 'A'.repeat(6000) + '\\n' + '-'.repeat(5) + 'END PRIVATE KEY' + '-'.repeat(5))`
+    ],
+    id: "CMD-RUN-CAPPED-PEM",
+    streamOutput: false,
+    now: sequenceNow("2026-05-28T12:00:00.000Z", "2026-05-28T12:00:00.001Z")
+  });
+
+  const excerpt = result.transcript.stdout_excerpt ?? "";
+  assert.equal(result.transcript.truncated, true);
+  assert.equal(result.transcript.secret_blocked, true);
+  assert.match(excerpt, /safe-prefix/);
+  assert.match(excerpt, /\[REDACTED:private_key\]/);
+  assert.doesNotMatch(excerpt, /BEGIN PRIVATE KEY|MII-CAPPED-KEY-PREFIX/);
+  assert.equal(
+    result.transcript.stdout_hash,
+    crypto.createHash("sha256").update(output).digest("hex"),
+    "the digest still covers the complete stream beyond the retained raw cap"
+  );
+});
+
+test("review-surfaces.PRIVACY.2 the compiled runner wires capture blocking into persisted transcripts", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-jwt-"));
+  const result = await recordCommandTranscript({
+    cwd: tmp,
+    args: [process.execPath, "-e", "process.stdout.write('eyJ' + 'a'.repeat(5000) + '.' + 'b'.repeat(5000) + '.c')"],
+    id: "CMD-RUN-JWT",
+    streamOutput: false,
+    now: sequenceNow("2026-05-28T12:00:00.000Z", "2026-05-28T12:00:00.001Z")
+  });
+
+  assert.equal(result.transcript.truncated, true);
+  assert.equal(result.transcript.secret_blocked, true);
+});
+
 test("review-surfaces.CLI.7 run command writes transcripts from the CLI", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-cli-"));
   const cli = path.join(process.cwd(), "dist", "src", "cli", "index.js");
@@ -112,6 +216,77 @@ test("review-surfaces.CLI.7 run command writes transcripts from the CLI", () => 
   const parsed = JSON.parse(fs.readFileSync(transcriptPath, "utf8"));
   assert.equal(parsed.commands[0].id, "CMD-CLI-001");
   assert.equal(parsed.commands[0].status, "passed");
+});
+
+test("review-surfaces.PRIVACY.2 no-dist run fallback detects secrets after its raw cap", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-fallback-secret-"));
+  const fallbackBin = copyNoDistBin(tmp);
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      fallbackBin,
+      "run",
+      "--id",
+      "CMD-FALLBACK-LATE-SECRET",
+      "--command-transcripts",
+      "commands",
+      "--",
+      process.execPath,
+      "-e",
+      "process.stdout.write('x'.repeat(7000) + ' ' + ['sk', '-proj-', 'abcdefghijklmnopqrstuvwxyz123456'].join(''))"
+    ],
+    { cwd: tmp, encoding: "utf8" }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const transcript = JSON.parse(
+    fs.readFileSync(path.join(tmp, "commands", "CMD-FALLBACK-LATE-SECRET.json"), "utf8")
+  ).commands[0];
+  const output = `${"x".repeat(7000)} sk-proj-abcdefghijklmnopqrstuvwxyz123456`;
+  assert.equal(transcript.truncated, true);
+  assert.equal(transcript.secret_blocked, true);
+  assert.doesNotMatch(transcript.stdout_excerpt ?? "", /sk-proj-/);
+  assert.equal(
+    transcript.stdout_hash,
+    crypto.createHash("sha256").update(output).digest("hex"),
+    "the no-dist wiring hashes the full stream beyond its retained excerpt"
+  );
+});
+
+test("review-surfaces.PRIVACY.2 no-dist run fallback does not block long secret-free output", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-fallback-clean-"));
+  const fallbackBin = copyNoDistBin(tmp);
+  const outputLength = 2 * 1024 * 1024;
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      fallbackBin,
+      "run",
+      "--id",
+      "CMD-FALLBACK-LONG-CLEAN",
+      "--command-transcripts",
+      "commands",
+      "--",
+      process.execPath,
+      "-e",
+      `process.stdout.write("z".repeat(${outputLength}))`
+    ],
+    { cwd: tmp, encoding: "utf8", maxBuffer: outputLength + 1024 * 1024 }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const transcript = JSON.parse(
+    fs.readFileSync(path.join(tmp, "commands", "CMD-FALLBACK-LONG-CLEAN.json"), "utf8")
+  ).commands[0];
+  assert.equal(transcript.truncated, true);
+  assert.equal(transcript.secret_blocked, undefined);
+  assert.equal(
+    transcript.stdout_hash,
+    crypto.createHash("sha256").update("z".repeat(outputLength)).digest("hex"),
+    "the fallback digest still covers clean output beyond the retained raw cap"
+  );
 });
 
 test("review-surfaces.CLI.7 run respects --out when no transcript directory is supplied", () => {
@@ -201,28 +376,19 @@ test("review-surfaces.PRIVACY.2 redacts a secret straddling the 1200 excerpt bou
   assert.equal(result.transcript.truncated, true);
 });
 
-// R4.5: bin/review-surfaces.js carries a CJS duplicate of the secret patterns
-// (it is the no-dist `run` fallback and cannot require dist). Pin it to the
-// canonical SECRET_PATTERN_SOURCES so a pattern added to secrets.ts but forgotten
-// in bin fails this test loudly. Only ONE such parity test should exist.
-test("review-surfaces.PRIVACY.2 bin/review-surfaces.js redact() mirrors secrets.ts patterns", () => {
-  const binPath = path.join(process.cwd(), "bin", "review-surfaces.js");
-  const binSource = fs.readFileSync(binPath, "utf8");
-  // (1) Presence guard: every canonical pattern source appears in bin, so a
-  // pattern added to secrets.ts but forgotten in bin fails loudly.
-  for (const source of SECRET_PATTERN_SOURCES) {
-    assert.ok(
-      binSource.includes(source),
-      `bin/review-surfaces.js is missing the secret pattern: ${source}`
-    );
-  }
-  // (2) BEHAVIORAL parity: bin's redact() must produce BYTE-IDENTICAL output to
-  // redactSecrets().text over a battery covering every kind (incl. a repeated
-  // secret to catch a dropped /g flag and an assignment to catch apply-order
-  // drift). Substring presence alone would miss a flag/order/value-class change.
+// R4.5: compiled TypeScript and the no-dist bin shim consume the same packaged
+// CommonJS runtime. Pin its exported sources and behavior through both entry
+// points so the build cannot silently ship a stale copy.
+test("review-surfaces.PRIVACY.2 shared bin privacy runtime matches the TypeScript wrapper", () => {
+  const runtimePath = path.join(process.cwd(), "bin", "privacy-runtime.js");
+  const runtime = require(runtimePath) as { SECRET_PATTERN_SOURCES: string[] };
+  assert.deepEqual(runtime.SECRET_PATTERN_SOURCES, SECRET_PATTERN_SOURCES);
+  // Runtime redaction stays byte-identical through the typed wrapper over a
+  // battery covering every kind, repeated matches, and ordering behavior.
   const binRedact = loadBinRedact();
   const battery = [
     "-----BEGIN PRIVATE KEY-----\nMIIabcDEF0123\n-----END PRIVATE KEY-----",
+    "-----BEGIN RSA PRIVATE KEY-----\nMIIabcDEF0123",
     "aws_key=AKIAIOSFODNN7EXAMPLE",
     "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
     "auth ghp_0123456789012345678901234567890123456",

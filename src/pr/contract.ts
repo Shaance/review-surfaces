@@ -1,6 +1,8 @@
 import { EvidenceRef } from "../evidence/evidence";
 import { ProviderName } from "../llm/provider";
 import { PacketRequirementStatus, PacketRiskCategory, PacketSeverity } from "../schema/review-packet-contract";
+import type { ConversationAnalysis } from "../conversation/analysis";
+import type { ReviewerInsight } from "../conversation/review-contract";
 
 // ---------------------------------------------------------------------------
 // PR review surface contract (review-surfaces.pr_surface.v1).
@@ -269,6 +271,10 @@ export interface PrReviewSurfaceModel {
   scope: PrScopeModel;
   coverage: PrScopedCoverageModel;
   risks: PrRiskModel;
+  // Advisory, conversation-derived reviewer context. Optional so persisted PR
+  // surfaces from before this feature remain readable; new builds emit both.
+  conversation_analysis?: ConversationAnalysis;
+  review_insights?: ReviewerInsight[];
   diagram?: PrChangeDiagramModel;
   narrative?: PrNarrativeModel;
   llm: PrNarrativeLlmMeta;

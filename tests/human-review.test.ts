@@ -45,8 +45,11 @@ import {
   PACKET_SEVERITIES,
   PACKET_VALIDATION_STATUSES
 } from "../src/schema/review-packet-contract";
+import { CONVERSATION_ANALYSIS_STATUSES } from "../src/conversation/analysis";
+import { REVIEWER_INSIGHT_CATEGORIES, REVIEWER_INSIGHT_EVIDENCE_STATES } from "../src/conversation/review";
 
 const schema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "human_review.schema.json"), "utf8"));
+const prSurfaceSchema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "pr_review_surface.schema.json"), "utf8"));
 
 function packetFixture(): ReviewPacket {
   const packet = minimalReviewPacket() as unknown as ReviewPacket;
@@ -3498,6 +3501,12 @@ test("human review schema enums stay aligned with runtime contract constants", (
   assert.deepEqual(schema.$defs.confidence.enum, [...PACKET_CONFIDENCE_LEVELS]);
   assert.deepEqual(schema.$defs.severity.enum, [...PACKET_SEVERITIES]);
   assert.deepEqual(schema.$defs.evidenceRef.properties.kind.enum, [...PACKET_EVIDENCE_KINDS]);
+  assert.deepEqual(schema.$defs.conversationAnalysis.properties.status.enum, [...CONVERSATION_ANALYSIS_STATUSES]);
+  assert.deepEqual(schema.$defs.reviewerInsight.properties.category.enum, [...REVIEWER_INSIGHT_CATEGORIES]);
+  assert.deepEqual(schema.$defs.reviewerInsight.properties.evidence_state.enum, [...REVIEWER_INSIGHT_EVIDENCE_STATES]);
+  assert.deepEqual(prSurfaceSchema.$defs.conversationAnalysis.properties.status.enum, [...CONVERSATION_ANALYSIS_STATUSES]);
+  assert.deepEqual(prSurfaceSchema.$defs.reviewerInsight.properties.category.enum, [...REVIEWER_INSIGHT_CATEGORIES]);
+  assert.deepEqual(prSurfaceSchema.$defs.reviewerInsight.properties.evidence_state.enum, [...REVIEWER_INSIGHT_EVIDENCE_STATES]);
   assert.deepEqual(schema.$defs.evidenceRef.properties.validation_status.enum, [...PACKET_VALIDATION_STATUSES]);
 });
 
@@ -5103,4 +5112,49 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: a doc with a test-shaped basen
   if (retry) {
     assert.equal(retry.estimated_review_effort, "quick", "test/retry.ts is still recognized as a test");
   }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.4 human review copies advisory conversation output without changing the verdict", () => {
+  const packet = packetFixture();
+  const baseline = buildHumanReview({ packet });
+  const model = buildHumanReview({
+    packet,
+    conversationAnalysis: {
+      status: "analyzed",
+      provider: "ai-sdk",
+      summary: "The final intent preserves retry behavior.",
+      intent: [{ text: "Preserve retries.", event_ids: ["u-final"] }],
+      refinements: [],
+      decisions: [],
+      constraints: [{ text: "Retries must remain.", event_ids: ["u-final"] }],
+      non_goals: [],
+      rejected_alternatives: [],
+      claims: [],
+      validation_claims: [],
+      known_gaps: [],
+      quality_flags: []
+    },
+    reviewInsights: [{
+      id: "CONV-INSIGHT-001",
+      category: "intent_mismatch",
+      title: "Retry behavior was removed",
+      summary: "The diff conflicts with the final instruction.",
+      why_it_matters: "Requests can now fail without retry.",
+      reviewer_action: "Restore retries or confirm the scope change.",
+      priority: "high",
+      evidence_state: "contradicted",
+      basis: "validated_anchors",
+      conversation_event_ids: ["u-final"],
+      paths: ["src/retry.ts"],
+      requirement_ids: [],
+      risk_ids: [],
+      command_ids: [],
+      evidence: []
+    }]
+  });
+
+  assert.deepEqual(model.verdict, baseline.verdict);
+  assert.equal(model.conversation_analysis?.status, "analyzed");
+  assert.equal(model.review_insights?.length, 1);
+  assert.equal(model.review_insights?.[0].evidence_state, "contradicted");
 });

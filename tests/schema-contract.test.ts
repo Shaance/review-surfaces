@@ -30,6 +30,10 @@ import {
 } from "../src/schema/review-packet-contract";
 import { RISK_LENSES } from "../src/human/contract";
 import { PR_SURFACE_SCHEMA_VERSION } from "../src/pr/contract";
+import {
+  MAX_VISIBLE_CONVERSATION_INSIGHTS,
+  REVIEWER_INSIGHT_EVIDENCE_STATES
+} from "../src/conversation/review";
 import { VERSION } from "../src/core/version";
 import { fullyPopulatedReviewPacket, minimalReviewPacket } from "./helpers/review-packet";
 
@@ -38,12 +42,27 @@ const humanReviewSchema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "s
 const prSurfaceSchema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "pr_review_surface.schema.json"), "utf8"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as { version: string };
 
-// review-surfaces.SCHEMA.3: the strict human schema requires every field the
-// current model emits. These slice fixtures exercise one feature at a time, so
-// fill the remaining required fields with empty defaults; the slice under test
-// is preserved (spread last) and the test stays focused on that slice.
+// The current writer emits these defaults even where the v1 read schema keeps a
+// field optional for backward compatibility. Slice fixtures start complete so
+// each schema test remains focused on its one mutation.
 const HUMAN_REQUIRED_DEFAULTS = {
   narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
+  conversation_analysis: {
+    status: "not_assessed",
+    provider: "mock",
+    summary: "No conversation log was supplied; conversation intent was not assessed.",
+    intent: [],
+    refinements: [],
+    decisions: [],
+    constraints: [],
+    non_goals: [],
+    rejected_alternatives: [],
+    claims: [],
+    validation_claims: [],
+    known_gaps: [],
+    quality_flags: ["conversation_log_missing"]
+  },
+  review_insights: [],
   semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
   risk_lens_findings: [],
   methodology_audit: { quality_flags: [], considered: [], research: [], workflow_findings: [] },
@@ -320,6 +339,18 @@ test("review-surfaces.SCHEMA.3 human review schema requires the narrative field"
   const result = validateJsonSchema(humanReviewSchema, withoutNarrative);
   assert.equal(result.valid, false);
   assert.ok(result.issues.some((issue) => /narrative/.test(issue.message)));
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.4 pre-conversation human v1 artifacts remain valid", () => {
+  const legacy = validHumanReview();
+  delete legacy.conversation_analysis;
+  delete legacy.review_insights;
+
+  const result = validateJsonSchema(humanReviewSchema, legacy);
+
+  assert.equal(result.valid, true, JSON.stringify(result.issues));
+  assert.equal(humanReviewSchema.required.includes("conversation_analysis"), false);
+  assert.equal(humanReviewSchema.required.includes("review_insights"), false);
 });
 
 test("human review schema validates since-last-review comparison slices", () => {
@@ -1279,6 +1310,37 @@ test("review-surfaces.SCHEMA.6 human evidence-kind and validation-status enums m
   assert.deepEqual(
     schemaAt(humanReviewSchema, ["$defs", "evidenceRef", "properties", "validation_status", "enum"]),
     [...PACKET_VALIDATION_STATUSES]
+  );
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.3 persisted conversation schemas stay fully aligned", () => {
+  for (const property of ["conversation_analysis", "review_insights"]) {
+    assert.deepEqual(
+      schemaAt(humanReviewSchema, ["properties", property]),
+      schemaAt(prSurfaceSchema, ["properties", property]),
+      `${property} must have one persisted shape across human and PR surfaces`
+    );
+  }
+  for (const definition of [
+    "conversationAnalysisItem",
+    "conversationAnalysisItems",
+    "conversationAnalysis",
+    "insightStringArray",
+    "reviewerInsight"
+  ]) {
+    assert.deepEqual(
+      schemaAt(humanReviewSchema, ["$defs", definition]),
+      schemaAt(prSurfaceSchema, ["$defs", definition]),
+      `${definition} must have one persisted shape across human and PR surfaces`
+    );
+  }
+  assert.equal(
+    schemaAt(humanReviewSchema, ["properties", "review_insights", "maxItems"]),
+    MAX_VISIBLE_CONVERSATION_INSIGHTS
+  );
+  assert.deepEqual(
+    schemaAt(humanReviewSchema, ["$defs", "reviewerInsight", "properties", "evidence_state", "enum"]),
+    [...REVIEWER_INSIGHT_EVIDENCE_STATES]
   );
 });
 

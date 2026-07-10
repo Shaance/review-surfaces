@@ -3,6 +3,11 @@ const { spawn, spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");
 const { existsSync, mkdirSync, writeFileSync } = require("node:fs");
 const { dirname, join, relative, resolve, sep } = require("node:path");
+const {
+  containsBlockingSecretMaterial,
+  redact
+} = require("./privacy-runtime.js");
+const { BoundedStreamCapture } = require("./bounded-stream-capture.js");
 
 const root = resolve(dirname(__filename), "..");
 const compiledEntry = resolve(root, "dist/src/cli/index.js");
@@ -110,11 +115,15 @@ function transcriptDirFromOut(parsed) {
 
 function recordCommandTranscript(options) {
   const started = new Date();
-  const stdout = new BoundedStreamCapture();
-  const stderr = new BoundedStreamCapture();
+  const stdout = new BoundedStreamCapture(RAW_EXCERPT_CAP);
+  const stderr = new BoundedStreamCapture(RAW_EXCERPT_CAP);
   return runChildCommand(options, stdout, stderr).then((childResult) => {
     const completed = new Date();
     const id = options.id ?? defaultTranscriptId(options.args);
+    const stdoutSecretBlocked = stdout.finishAndCheckBlockedSecret();
+    const stderrSecretBlocked = stderr.finishAndCheckBlockedSecret();
+    const secretBlocked = containsBlockingSecretMaterial(shellCommandString(options.args)) ||
+      stdoutSecretBlocked || stderrSecretBlocked;
     const transcript = stripUndefined({
       id,
       command: redact(shellCommandString(options.args)),
@@ -124,11 +133,12 @@ function recordCommandTranscript(options) {
       duration_ms: Math.max(0, completed.getTime() - started.getTime()),
       started_at: started.toISOString(),
       completed_at: completed.toISOString(),
-      stdout_excerpt: boundExcerpt(stdout),
-      stderr_excerpt: boundExcerpt(stderr),
+      stdout_excerpt: stdout.redactedExcerpt(COMMAND_TRANSCRIPT_EXCERPT_LIMIT),
+      stderr_excerpt: stderr.redactedExcerpt(COMMAND_TRANSCRIPT_EXCERPT_LIMIT),
       stdout_hash: stdout.hash(),
       stderr_hash: stderr.hash(),
-      truncated: stdout.truncated || stderr.truncated
+      truncated: stdout.truncated || stderr.truncated,
+      secret_blocked: secretBlocked || undefined
     });
 
     const transcriptPath = writeTranscriptFile(options.cwd, options.transcriptDir, id, transcript);
@@ -196,62 +206,6 @@ function writeTranscriptFile(cwd, transcriptDir, id, transcript) {
 // final excerpt limit. The sha256 digest still hashes the FULL raw stream.
 const RAW_EXCERPT_CAP = COMMAND_TRANSCRIPT_EXCERPT_LIMIT * 4;
 
-class BoundedStreamCapture {
-  constructor() {
-    this.digest = crypto.createHash("sha256");
-    this.chunks = [];
-    this.rawLength = 0;
-    this.sawContent = false;
-    this.truncated = false;
-  }
-
-  write(chunk) {
-    this.sawContent = true;
-    this.digest.update(chunk);
-    if (this.rawLength >= RAW_EXCERPT_CAP) {
-      this.truncated = true;
-      return;
-    }
-
-    const text = chunk.toString("utf8");
-    const available = RAW_EXCERPT_CAP - this.rawLength;
-    const captured = text.slice(0, available);
-    this.chunks.push(captured);
-    this.rawLength += captured.length;
-    if (text.length > available) {
-      this.truncated = true;
-    }
-  }
-
-  rawExcerpt() {
-    return this.sawContent ? this.chunks.join("") : undefined;
-  }
-
-  markTruncated() {
-    this.truncated = true;
-  }
-
-  hash() {
-    return this.sawContent ? this.digest.copy().digest("hex") : undefined;
-  }
-}
-
-// Redact the captured raw stream, THEN bound to the excerpt limit (mirrors
-// boundExcerpt in src/commands/runner.ts). Slicing AFTER redaction prevents a
-// secret straddling the limit from leaking an unredacted prefix.
-function boundExcerpt(capture) {
-  const raw = capture.rawExcerpt();
-  if (raw === undefined) {
-    return undefined;
-  }
-  const redacted = redact(raw);
-  if (redacted.length <= COMMAND_TRANSCRIPT_EXCERPT_LIMIT) {
-    return redacted;
-  }
-  capture.markTruncated();
-  return redacted.slice(0, COMMAND_TRANSCRIPT_EXCERPT_LIMIT);
-}
-
 function defaultTranscriptId(args) {
   const hash = crypto.createHash("sha1").update(args.join("\0")).digest("hex").slice(0, 12).toUpperCase();
   return `CMD-${hash}`;
@@ -278,31 +232,6 @@ function teeChunk(chunk, capture, destination, source) {
       source.resume?.();
     });
   }
-}
-
-// CJS duplicate of src/privacy/secrets.ts. bin is the no-dist `run` fallback and
-// cannot require dist, so the pattern set is duplicated here in the SAME ORDER
-// (private_key, AKIA, aws_secret, github, slack, openai, stripe, ya29, jwt, AIza,
-// token_assignment) and pinned to secrets.ts by a parity test
-// (tests/command-runner.test.ts via SECRET_PATTERN_SOURCES).
-function redact(value) {
-  if (value === undefined) {
-    return undefined;
-  }
-  return value
-    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED:private_key]")
-    .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED:aws_access_key_id]")
-    .replace(/\b(AWS_SECRET_ACCESS_KEY\s*[:=]\s*["']?)([A-Za-z0-9/+=]{40})/g, (_m, prefix) => `${prefix}[REDACTED:aws_secret]`)
-    .replace(/\b(?:ghp|gho|ghs|ghu)_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{22,}\b/g, "[REDACTED:github_token]")
-    .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, "[REDACTED:slack_token]")
-    .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g, "[REDACTED:openai_key]")
-    .replace(/\b(?:sk|rk)_live_[A-Za-z0-9]{20,}\b/g, "[REDACTED:stripe_key]")
-    .replace(/\bya29\.[A-Za-z0-9_-]{20,}\b/g, "[REDACTED:google_oauth_token]")
-    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED:jwt]")
-    .replace(/AIza[0-9A-Za-z_-]{20,}/g, "[REDACTED:google_api_key]")
-    // (?!\[REDACTED:) keeps this generic pass from re-claiming a marker a
-    // specific pattern already inserted (mirrors secrets.ts).
-    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PRIVATE[_-]?KEY)[A-Za-z0-9_]*\s*[:=]\s*["']?)(?!\[REDACTED:)([^\s"',;]{8,})/gi, (_match, prefix) => `${prefix}[REDACTED:secret]`);
 }
 
 function stripUndefined(value) {

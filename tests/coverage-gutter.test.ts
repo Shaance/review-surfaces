@@ -6,6 +6,7 @@ import { renderHumanReviewMarkdown } from "../src/human/render";
 import { renderHumanReviewHtml } from "../src/human/render-html";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import { HumanReviewModel, HUMAN_REVIEW_SCHEMA_VERSION } from "../src/human/contract";
+import { notAssessedConversationAnalysis } from "../src/conversation/analysis";
 
 const DIFF = `diff --git a/src/a.ts b/src/a.ts
 index 0000000..1111111 100644
@@ -32,6 +33,8 @@ function modelWithCoverage(): HumanReviewModel {
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Coverage gutter fixture.",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
+    conversation_analysis: notAssessedConversationAnalysis("mock"),
+    review_insights: [],
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
     review_queue: [
       {

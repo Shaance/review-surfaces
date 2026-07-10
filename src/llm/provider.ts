@@ -3,7 +3,7 @@ import { fileExists, readText, writeJson, writeText } from "../core/files";
 import { errorMessage, isRecord, uniqueTruthy } from "../core/guards";
 import { parseYaml } from "../core/simple-yaml";
 import { comparisonRiskKey } from "../dogfood/compare";
-import { redactSecrets } from "../privacy/secrets";
+import { inspectAndRedactSecrets, redactSecrets } from "../privacy/secrets";
 import { ReviewPacket } from "../render/packet";
 import { RiskItem } from "../risks/risks";
 
@@ -89,9 +89,10 @@ export const mockProvider: ReasoningProvider = {
  */
 export function agentFileProvider(options: ProviderFactoryOptions): ReasoningProvider {
   const cwd = options.cwd ?? process.cwd();
+  let parsedInput: Promise<unknown> | undefined;
   return {
     name: "agent-file",
-    async generateStructured(): Promise<StructuredResult> {
+    async generateStructured(stage): Promise<StructuredResult> {
       if (!options.agentInput) {
         return { ok: false, reason: "missing_agent_input" };
       }
@@ -100,9 +101,19 @@ export function agentFileProvider(options: ProviderFactoryOptions): ReasoningPro
         return { ok: false, reason: "agent_input_not_found" };
       }
       try {
-        const parsed = await readStructuredFile(inputPath);
+        // The stage-envelope input is immutable for one provider run. Conversation
+        // analysis can request several chunks plus a reducer and reconciliation;
+        // parse the shared envelope once instead of rereading it for every stage.
+        parsedInput ??= readStructuredFile(inputPath);
+        const parsed = await parsedInput;
         if (!isRecord(parsed)) {
           return { ok: false, reason: "agent_input_not_object" };
+        }
+        // A stage envelope lets one offline file serve several distinct strict
+        // schemas (for example conversation analysis, reconciliation, and PR
+        // narrative). Legacy flat files remain the fallback for existing users.
+        if (isRecord(parsed.stages) && Object.prototype.hasOwnProperty.call(parsed.stages, stage)) {
+          return { ok: true, data: parsed.stages[stage] };
         }
         return { ok: true, data: parsed };
       } catch (error) {
@@ -142,7 +153,7 @@ export function aiSdkProvider(options: ProviderFactoryOptions): ReasoningProvide
       // The high-severity BLOCK (e.g. PEM private keys, provider tokens) ALWAYS
       // runs before a remote call, even when redactSecrets is disabled: only the
       // lower-severity substitution of the outgoing prompt is skipped.
-      const redacted = redactSecrets(prompt);
+      const redacted = inspectAndRedactSecrets(prompt);
       if (redacted.blocked) {
         return { ok: false, reason: "privacy_block" };
       }

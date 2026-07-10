@@ -10,7 +10,23 @@
 // timestamps), opens from disk offline, printable.
 import { resolveStructuredExcerpt, ExcerptRedactionState } from "./hunk-excerpt";
 import { containsBlockedRedaction } from "../privacy/secrets";
-import { decisionLabel, formatQueueLocation, HumanRenderContext, rankingReasonsAreDefaultOnly, collapseReadingOrderWhy } from "./render";
+import {
+  collapseReadingOrderWhy,
+  decisionLabel,
+  formatQueueLocation,
+  HumanRenderContext,
+  rankingReasonsAreDefaultOnly
+} from "./render";
+import {
+  conversationAnalysisCaveats,
+  conversationAnalysisContextRows,
+  conversationAnalysisForRender,
+  conversationEvidenceStateLabel,
+  conversationInsightBasisLabel,
+  conversationInsightCitationGroups,
+  conversationInsightsForRender,
+  conversationReviewPresentation
+} from "./conversation-review-presentation";
 import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
 import { renderChangeMapOverviewSvg, renderChangeMapSvg, SVG_LENS_FILLS } from "./render-svg-map";
 import { changeMapLeadLevel } from "./legibility-budget";
@@ -21,6 +37,8 @@ import { esc } from "./esc";
 import { RISK_LENS_METADATA } from "./contract";
 import type { CoverageEvidenceHunk, HumanReviewModel, ReviewQueueItem } from "./contract";
 import type { EvidenceRef } from "../evidence/evidence";
+import type { ConversationAnalysis } from "../conversation/analysis";
+import type { ReviewerInsight } from "../conversation/review";
 
 export function renderHumanReviewHtml(model: HumanReviewModel, context: HumanRenderContext = {}): string {
   const lenses = [...new Set(model.review_queue.flatMap((item) => lensesForItem(model, item)))].sort();
@@ -74,6 +92,9 @@ a:hover { text-decoration-color: var(--accent); }
 .badge.blocker, .badge.high, .badge.block_before_merge { color:var(--bad); border-color:rgba(207,45,86,.38); background:rgba(207,45,86,.07); }
 .badge.medium, .badge.needs_author_clarification, .badge.reviewable_with_attention { color:var(--warn); border-color:rgba(192,133,50,.42); background:rgba(192,133,50,.09); }
 .badge.low, .badge.probably_safe, .badge.covered { color:var(--ok); border-color:rgba(31,138,101,.34); background:rgba(31,138,101,.08); }
+.badge.contradicted, .badge.degraded { color:var(--bad); border-color:rgba(207,45,86,.38); background:rgba(207,45,86,.07); }
+.badge.unverified, .badge.not_assessed { color:var(--warn); border-color:rgba(192,133,50,.42); background:rgba(192,133,50,.09); }
+.badge.supported, .badge.analyzed { color:var(--ok); border-color:rgba(31,138,101,.34); background:rgba(31,138,101,.08); }
 #strip, .three-questions { background: var(--chrome); border:1px solid var(--line); border-radius:4px; padding: 12px 14px; margin: 12px 0 16px; box-shadow: var(--shadow); }
 .item { background: var(--card); border:1px solid var(--line); border-radius:4px; padding: 12px 14px; margin: 10px 0; box-shadow: var(--shadow); }
 .item.done { opacity:.62; }
@@ -112,6 +133,7 @@ th { color:var(--muted); font-weight:600; }
 <h2 id="verdict">Verdict</h2>
 <p><span class="badge ${esc(model.verdict.decision)}">${esc(decisionLabel(model.verdict.decision))}</span> <span class="muted">confidence: ${esc(model.verdict.confidence)}</span></p>
 <p>${esc(model.summary)}</p>
+${renderConversationInsights(model)}
 ${renderHeaderStrip(model, lenses)}
 ${renderThreeQuestions(model)}
 <h2 id="reading-order">Reading order</h2>
@@ -277,6 +299,52 @@ function lensesForItem(model: HumanReviewModel, item: ReviewQueueItem): string[]
       .filter((finding) => finding.risk_ids.some((id) => item.risk_ids.includes(id)) || finding.paths.includes(item.path))
       .map((finding) => finding.lens)
   )];
+}
+
+function renderConversationInsights(model: HumanReviewModel): string {
+  const analysis = conversationAnalysisForRender(model);
+  const insights = conversationInsightsForRender(model);
+  const presentation = conversationReviewPresentation(analysis);
+  const caveats = conversationAnalysisCaveats(analysis);
+  const cards = insights.length === 0
+    ? `<p class="muted">${esc(presentation.emptyMessage)}</p>`
+    : insights.map((insight) => {
+      const citations = conversationInsightCitationsHtml(insight);
+      return `<article class="item insight" id="insight-${esc(insight.id)}">
+<header><strong>${esc(insight.title)}</strong><span class="badge ${esc(insight.evidence_state)}">${esc(conversationEvidenceStateLabel(insight.evidence_state))}</span><span class="badge ${esc(insight.priority)}">${esc(insight.priority)}</span></header>
+<p><strong>What changed:</strong> ${esc(insight.summary)}</p>
+<p><strong>Why it matters:</strong> ${esc(insight.why_it_matters)}</p>
+<p><strong>Review:</strong> ${esc(insight.reviewer_action)}</p>
+<p class="muted"><strong>Grounding:</strong> ${esc(conversationInsightBasisLabel(insight.basis))}</p>
+${citations ? `<p class="muted">Evidence: ${citations}</p>` : ""}
+</article>`;
+    }).join("\n");
+  return `<h2 id="conversation-insights">Conversation-aware insights</h2>
+<p><span class="badge ${esc(presentation.status)}">${esc(presentation.statusLabel)}</span> ${presentation.summaryIsSynopsis ? "AI synopsis: " : ""}${esc(presentation.summary)}</p>
+${renderConversationContextHtml(analysis)}
+${caveats.length > 0 ? `<p class="muted"><strong>Caveat:</strong> ${esc(caveats.join(" "))}</p>` : ""}
+${cards}`;
+}
+
+function renderConversationContextHtml(analysis: ConversationAnalysis | undefined): string {
+  const rows = conversationAnalysisContextRows(analysis).map((row) =>
+    `<li><strong>${esc(row.label)}:</strong> ${row.items.map((item) =>
+      `${esc(item.text)} (${compactHtmlCitations(item.eventIds)})`
+    ).join("; ")}</li>`
+  );
+  return rows.length > 0 ? `<ul class="compact">${rows.join("")}</ul>` : "";
+}
+
+function conversationInsightCitationsHtml(insight: ReviewerInsight): string {
+  return conversationInsightCitationGroups(insight)
+    .map((group) => `${group.label} ${compactHtmlCitations(group.values)}`)
+    .join("; ");
+}
+
+function compactHtmlCitations(values: string[]): string {
+  const shown = values.slice(0, 3).map((value) => `<code>${esc(value)}</code>`).join(", ");
+  const omitted = values.length - Math.min(values.length, 3);
+  return shown ? `${shown}${omitted > 0 ? ` (+${esc(omitted)})` : ""}` : "";
 }
 
 // review-surfaces.RENDER.12: the at-a-glance header strip, rendered purely from
@@ -464,7 +532,7 @@ function renderNarrative(model: HumanReviewModel): string {
       return `<li>${claim.trust === "verified" ? "✓" : "~"} ${esc(claim.text)}${anchors}${invalid}</li>`;
     })
     .join("");
-  return `<ul>${claims}</ul>`;
+  return `<p class="muted">✓ anchored means the citations were validated; it does not independently prove the prose. ~ claimed has missing or invalid anchors.</p><ul>${claims}</ul>`;
 }
 
 // review-surfaces.READING_ORDER.2: the guided tour renders as the section

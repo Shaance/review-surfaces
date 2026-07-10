@@ -18,6 +18,7 @@ import type {
   TestPlanItem
 } from "../src/human/contract";
 import { HUMAN_REVIEW_SCHEMA_VERSION } from "../src/human/contract";
+import { notAssessedConversationAnalysis } from "../src/conversation/analysis";
 
 // ---------------------------------------------------------------------------
 // review-surfaces.HUMAN_REVIEW.19 / .20 / .21 — density, inline hunks, and
@@ -30,6 +31,8 @@ function baseModel(overrides: Partial<HumanReviewModel>): HumanReviewModel {
     mode: "repo",
     spec_mode: "acai",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
+    conversation_analysis: notAssessedConversationAnalysis("mock"),
+    review_insights: [],
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
     change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
     reading_order: { legs: [] },

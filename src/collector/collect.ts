@@ -222,6 +222,10 @@ export interface CollectOptions {
   // provider/model swap is a cache miss. Absent => omitted from the fingerprint.
   provider?: string;
   model?: string;
+  // Effective prompt-redaction policy. A CLI override can differ while every
+  // file/provider/model input stays the same, so it must participate in the
+  // cache key or provider-authored artifacts could be reused across policies.
+  redactSecrets?: boolean;
   // review-surfaces.QUALITY_GATE.2 (Codex round-4 finding 2): the run's EFFECTIVE
   // gate provider — the one the privacy/quality gate is applied with. Distinct
   // from `provider` above (the SIGNATURE provider), which is forced to "mock" in
@@ -542,7 +546,8 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     ignore_patterns: ignore.patterns,
     ignored_changed_files: ignoredChangedFiles,
     diff_redactions: redactedDiff.redactions,
-    remote_provider_blocked: redactedDiff.blocked || conversationBlockedKinds.length > 0,
+    remote_provider_blocked: redactedDiff.blocked || conversationBlockedKinds.length > 0 ||
+      commandTranscripts.some((transcript) => transcript.secret_blocked === true),
     // Diff secrets ONLY here (the secret_in_diff risk consumes this); transcript
     // secrets are exposed separately so they are not flagged as committed secrets.
     secret_findings: collectSecretFindings(filteredDiff),
@@ -656,6 +661,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     headSha: git.head_sha,
     provider: options.provider,
     model: options.model,
+    redactSecrets: options.redactSecrets,
     runMode,
     milestone,
     inputHashes,
@@ -1113,6 +1119,7 @@ interface SignatureInput {
   headSha: string;
   provider?: string;
   model?: string;
+  redactSecrets?: boolean;
   // run_mode (local|dogfood|...) and the dogfood milestone fold into the
   // fingerprint so a dogfood run never collides with a non-dogfood cached
   // signature (which would restore a packet missing dogfood/agent_handoff).
@@ -1134,6 +1141,7 @@ function computeSignature(input: SignatureInput): string {
     head_sha: input.headSha,
     provider: input.provider ?? null,
     model: input.model ?? null,
+    redact_secrets: input.redactSecrets ?? null,
     // run_mode + milestone are part of the key so a dogfood --cache run NEVER
     // matches a non-dogfood cached signature: the cached local-mode packet would
     // be missing the schema-required dogfood + agent_handoff sections.

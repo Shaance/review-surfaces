@@ -133,3 +133,126 @@ test("PR surface existing-test guidance honors configured, named, and directory-
   assert.ok(testDirectoryRisk);
   assert.match(testDirectoryRisk.summary, /test is mapped to FOO/);
 });
+
+test("review-surfaces.CONVERSATION_REVIEW.4 PR assembly protects the postability-critical narrative call, then persists conversation review", async () => {
+  const stages: string[] = [];
+  const provider: ReasoningProvider = {
+    name: "ai-sdk",
+    async generateStructured(stage): Promise<StructuredResult> {
+      stages.push(stage);
+      if (stage === "conversation_analysis") {
+        return {
+          ok: true,
+          data: {
+            summary: "The user asked to retain the widget guard.",
+            intent: [{ text: "Retain the widget guard.", event_ids: ["u-final"] }],
+            refinements: [],
+            decisions: [],
+            constraints: [{ text: "The guard must remain.", event_ids: ["u-final"] }],
+            non_goals: [],
+            rejected_alternatives: [],
+            claims: [],
+            validation_claims: [],
+            known_gaps: []
+          }
+        };
+      }
+      if (stage === "conversation_review_insights") {
+        return {
+          ok: true,
+          data: {
+            insights: [{
+              root_cause_key: "widget-guard",
+              category: "intent_mismatch",
+              title: "Widget guard was removed",
+              summary: "The diff removes the guard the user retained.",
+              why_it_matters: "The widget may now be enabled unexpectedly.",
+              reviewer_action: "Restore the guard or confirm the scope change.",
+              priority: "high",
+              evidence_state: "contradicted",
+              conversation_event_ids: ["u-final"],
+              paths: ["src/foo/widget.ts"],
+              requirement_ids: [],
+              risk_ids: [],
+              command_ids: [],
+              diff_anchors: [{ path: "src/foo/widget.ts", line_kind: "delete", line: 1, contains: "widgetGuard" }]
+            }]
+          }
+        };
+      }
+      return {
+        ok: true,
+        data: {
+          summary: "src/foo/widget.ts changed.",
+          what_changed: [{ text: "src/foo/widget.ts changed.", paths: ["src/foo/widget.ts"] }],
+          why_it_matters: [{ text: "Review src/foo/widget.ts.", paths: ["src/foo/widget.ts"] }],
+          review_first: [{ text: "Review src/foo/widget.ts first.", paths: ["src/foo/widget.ts"] }],
+          risk_narratives: []
+        }
+      };
+    }
+  };
+  const diff: StructuredDiff = {
+    files: [{
+      path: "src/foo/widget.ts",
+      status: "M",
+      hunks: [{
+        old_start: 1,
+        old_lines: 1,
+        new_start: 1,
+        new_lines: 0,
+        lines: [{ kind: "delete", text: "if (widgetGuard) return;", old_line: 1 }]
+      }]
+    }]
+  };
+
+  const model = await assemblePrReviewSurface({
+    collection: collection({
+      conversationEvents: [{ id: "u-final", actor: "user", kind: "decision", summary: "Keep the widget guard.", raw_index: 0 }]
+    }),
+    intent: INTENT,
+    evaluation: EVALUATION,
+    reviewAreas: AREAS,
+    provider,
+    providerName: "ai-sdk",
+    redactSecrets: true,
+    diff
+  });
+
+  assert.deepEqual(stages, ["pr_narrative", "conversation_analysis", "conversation_review_insights"]);
+  assert.equal(model.conversation_analysis?.status, "analyzed");
+  assert.equal(model.review_insights?.length, 1);
+  assert.equal(model.review_insights?.[0].evidence_state, "contradicted");
+  assert.equal(model.status, "ready");
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.2 a no-diff PR skips every AI call and stays explicitly not assessed", async () => {
+  let calls = 0;
+  const provider: ReasoningProvider = {
+    name: "ai-sdk",
+    async generateStructured(): Promise<StructuredResult> {
+      calls += 1;
+      return { ok: false, reason: "must_not_run" };
+    }
+  };
+
+  const model = await assemblePrReviewSurface({
+    collection: collection({
+      changedFiles: [],
+      conversationEvents: [{ id: "u1", actor: "user", kind: "message", summary: "Review this.", raw_index: 0 }]
+    }),
+    intent: INTENT,
+    evaluation: EVALUATION,
+    reviewAreas: AREAS,
+    provider,
+    providerName: "ai-sdk",
+    redactSecrets: true,
+    diff: { files: [] }
+  });
+
+  assert.equal(calls, 0);
+  assert.equal(model.status, "blocked");
+  assert.equal(model.conversation_analysis?.status, "not_assessed");
+  assert.ok(model.conversation_analysis?.quality_flags.includes("conversation_review_no_diff"));
+  assert.deepEqual(model.review_insights, []);
+});

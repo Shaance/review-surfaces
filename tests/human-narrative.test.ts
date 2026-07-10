@@ -108,7 +108,7 @@ test("review-surfaces.NARRATIVE.3 marks the trust state of every claim", () => {
   // The verified claim is marked ✓ and the claimed claim ~ — distinct markers.
   assert.match(section, /- ✓ A verified claim\./, "verified claims get the ✓ marker");
   assert.match(section, /- ~ A claimed claim\./, "claimed claims get the ~ marker");
-  assert.match(section, /✓ verified, ~ claimed/, "the legend explains both trust markers");
+  assert.match(section, /✓ anchored .*~ claimed/, "the legend explains anchor validation without claiming independent proof");
 });
 
 // review-surfaces.NARRATIVE.2: a fabricated CMD- transcript id in the PROSE

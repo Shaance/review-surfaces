@@ -4,7 +4,7 @@ import path from "node:path";
 import { relativePath } from "../core/files";
 import { isRecord, stripUndefined } from "../core/guards";
 import { redactForArtifact } from "../privacy/redact";
-import { redactSecrets } from "../privacy/secrets";
+import { containsBlockingSecretMaterial, redactSecrets } from "../privacy/secrets";
 
 export const COMMAND_TRANSCRIPT_OUTPUT_PATH = ".review-surfaces/inputs/commands.json";
 export const COMMAND_TRANSCRIPT_INPUT_FILENAME = "commands.json";
@@ -29,6 +29,8 @@ export interface CommandTranscript {
   stderr_hash?: string;
   truncated: boolean;
   source_path: string;
+  /** True when a blocked secret existed before the persisted fields were redacted. */
+  secret_blocked?: boolean;
 }
 
 export const COMMAND_TRANSCRIPT_EXCERPT_LIMIT = 1200;
@@ -126,7 +128,8 @@ async function readTranscriptFile(cwd: string, transcriptPath: string, includeSo
 
 function normalizeTranscript(sourcePath: string, value: unknown, index: number): CommandTranscript {
   const record = isRecord(value) ? value : {};
-  const command = redactRequiredText(stringValue(record.command, "unknown"));
+  const commandSource = stringValue(record.command, "unknown");
+  const command = redactRequiredText(commandSource);
   const exitCode = numberValue(record.exit_code ?? record.exitCode);
   const stdoutRaw = optionalString(record.stdout);
   const stderrRaw = optionalString(record.stderr);
@@ -136,6 +139,10 @@ function normalizeTranscript(sourcePath: string, value: unknown, index: number):
   // an unredacted prefix (the truncate-then-redact bug this chokepoint fixes).
   const stdout = redactForArtifact(stdoutSource, COMMAND_TRANSCRIPT_EXCERPT_LIMIT);
   const stderr = redactForArtifact(stderrSource, COMMAND_TRANSCRIPT_EXCERPT_LIMIT);
+  const secretBlocked = record.secret_blocked === true ||
+    [commandSource, stdoutRaw ?? stdoutSource, stderrRaw ?? stderrSource].some((text) =>
+      typeof text === "string" && containsBlockingSecretMaterial(text)
+    );
 
   return stripUndefined({
     id: stringValue(record.id, `CMD-${String(index).padStart(3, "0")}`),
@@ -151,7 +158,8 @@ function normalizeTranscript(sourcePath: string, value: unknown, index: number):
     stdout_hash: hashFromRecord(record.stdout_hash, stdoutRaw ?? stdoutSource),
     stderr_hash: hashFromRecord(record.stderr_hash, stderrRaw ?? stderrSource),
     truncated: booleanValue(record.truncated) || stdout.truncated || stderr.truncated || outputTooLarge(stdoutRaw) || outputTooLarge(stderrRaw),
-    source_path: sourcePath
+    source_path: sourcePath,
+    secret_blocked: secretBlocked || undefined
   });
 }
 

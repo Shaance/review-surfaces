@@ -4,6 +4,7 @@ import { HUMAN_REVIEW_SCHEMA_VERSION } from "../src/human/contract";
 import type { HumanReviewModel, SinceLastReview } from "../src/human/contract";
 import { renderStickySummary, stickyQueueItemKey } from "../src/render/sticky-summary";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
+import { notAssessedConversationAnalysis } from "../src/conversation/analysis";
 
 function emptySince(): SinceLastReview {
   return {
@@ -35,6 +36,8 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
     reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Two files changed; one impl file lacks a focused test.",
+    conversation_analysis: notAssessedConversationAnalysis("mock"),
+    review_insights: [],
     review_queue: [
       {
         id: "REVIEW-001",
@@ -99,6 +102,84 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
   };
 }
 
+function stickyInsight(index: number): NonNullable<HumanReviewModel["review_insights"]>[number] {
+  return {
+    id: `CONV-${index}`,
+    category: "validation_gap",
+    title: `Reviewer insight ${index}`,
+    summary: `Claim ${index} is not established by the captured validation.`,
+    why_it_matters: "The conversation promises stronger behavior than the evidence proves.",
+    reviewer_action: `Inspect validation path ${index}.`,
+    priority: index === 1 ? "high" : "medium",
+    evidence_state: index === 1 ? "contradicted" : "unverified",
+    basis: index === 1 ? "validated_anchors" : "ai_reconciliation",
+    conversation_event_ids: [`evt-${index}`],
+    paths: [`src/validation-${index}.ts`],
+    requirement_ids: [],
+    risk_ids: [],
+    command_ids: [],
+    evidence: []
+  };
+}
+
+test("sticky leads with at most three conversation-aware insights and compact citations", () => {
+  const review = model({
+    conversation_analysis: {
+      ...notAssessedConversationAnalysis("ai-sdk"),
+      status: "analyzed",
+      summary: "The final request prioritizes evidence-backed reviewer value.",
+      intent: [{ text: "Keep the reviewer summary compact.", event_ids: ["evt-goal"] }],
+      refinements: [{ text: "Keep every finding accessible.", event_ids: ["evt-refinement"] }],
+      quality_flags: ["conversation_review_commands_truncated"]
+    },
+    review_insights: [1, 2, 3, 4].map(stickyInsight)
+  });
+  const { markdown } = renderStickySummary(review);
+  assert.ok(markdown.indexOf("### Conversation-aware insights") < markdown.indexOf("### Review first"));
+  assert.match(markdown, /\*\*Analyzed — partial\.\*\*/);
+  assert.match(markdown, /Command transcript context was bounded/);
+  assert.match(markdown, /\[Conflicts with intent · high\] Reviewer insight 1/);
+  assert.match(markdown, /Why it matters: The conversation promises stronger behavior/);
+  assert.match(markdown, /events `evt-1`; paths `src\/validation-1\.ts`/);
+  const topIdx = markdown.indexOf("Reviewer insight 1");
+  const detailsIdx = markdown.indexOf("<summary>Conversation context, grounding and 2 more insights</summary>");
+  const contextIdx = markdown.indexOf("Stated goal:");
+  const secondIdx = markdown.indexOf("Reviewer insight 2");
+  assert.ok(topIdx > -1 && topIdx < detailsIdx, "the top insight stays in the immediate scan path");
+  assert.ok(contextIdx > detailsIdx, "conversation context is accessible inside the disclosure");
+  assert.ok(secondIdx > detailsIdx, "remaining insights are accessible inside the disclosure");
+  assert.match(markdown, /Reviewer insight 3/);
+  assert.doesNotMatch(markdown, /Reviewer insight 4/);
+  assert.equal(review.verdict.decision, "reviewable_with_attention");
+});
+
+test("review-surfaces.PR_SURFACE.4 compact conversation rendering preserves sticky secret blocking", () => {
+  const leak = "ghp_" + "c".repeat(36);
+  const review = model({
+    conversation_analysis: {
+      ...notAssessedConversationAnalysis("ai-sdk"),
+      status: "analyzed",
+      summary: `Conversation synopsis contained ${leak}.`,
+      quality_flags: []
+    }
+  });
+
+  const { markdown, blocked } = renderStickySummary(review);
+  assert.doesNotMatch(markdown, /ghp_c{36}/);
+  assert.match(markdown, /\[REDACTED:github_token\]/);
+  assert.equal(blocked, true);
+});
+
+test("compact conversation rendering stays below the working-tree warning", () => {
+  const review = model();
+  review.generated_from.uncommitted_files = 2;
+  const { markdown } = renderStickySummary(review);
+  assert.ok(
+    markdown.indexOf("includes 2 uncommitted file(s)") < markdown.indexOf("### Conversation-aware insights"),
+    "working-tree provenance remains directly below the verdict"
+  );
+});
+
 test("review-surfaces.PR_SURFACE.2 sticky renders verdict, top queue items, trust counts and artifact link from the human model", () => {
   const { markdown, blocked } = renderStickySummary(model(), { artifactName: "review-surfaces-pr-7" });
   assert.equal(blocked, false);
@@ -150,8 +231,10 @@ test("review-surfaces.PR_SURFACE.5 sticky leads with the since-last-review delta
   const { markdown } = renderStickySummary(model({ since_last_review: since }));
   // The delta section leads (appears before the full review).
   const deltaIdx = markdown.indexOf("### Since your last review");
+  const conversationIdx = markdown.indexOf("### Conversation-aware insights");
   const fullIdx = markdown.indexOf("<summary>Full review");
   assert.ok(deltaIdx > -1, "delta section present");
+  assert.ok(conversationIdx > deltaIdx, "conversation review preserves the re-review delta lead");
   assert.ok(fullIdx > deltaIdx, "full review collapsed AFTER the delta");
   assert.match(markdown, /✅ Resolved risks: Null-deref risk resolved/);
   assert.match(markdown, /⚠️ Regressed: RENDER\.3 regressed to partial/);

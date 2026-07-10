@@ -5,6 +5,7 @@ import { changeMapLeadLevel, COCKPIT_WIDTH_PX } from "../src/human/legibility-bu
 import { renderHumanReviewHtml } from "../src/human/render-html";
 import { buildChangeGraphSections } from "../src/human/change-graph";
 import { HumanReviewModel, HUMAN_REVIEW_SCHEMA_VERSION, ReviewQueueItem } from "../src/human/contract";
+import { notAssessedConversationAnalysis } from "../src/conversation/analysis";
 
 function file(filePath: string, status = "M") {
   return { path: filePath, status, added: 12, removed: 3 };
@@ -64,6 +65,8 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Cockpit visuals fixture.",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
+    conversation_analysis: notAssessedConversationAnalysis("mock"),
+    review_insights: [],
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
     review_queue: [queueItem("Q-1", "src/core/a.ts", 1), queueItem("Q-2", "src/render/b.ts", 2)],
     blockers: [],

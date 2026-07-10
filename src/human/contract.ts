@@ -2,6 +2,8 @@ import type { EvidenceRef } from "../evidence/evidence";
 import type { ProviderName } from "../llm/provider";
 import type { SemanticChangeFacts } from "../risks/semantic-diff";
 import type { PacketConfidence, PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
+import type { ConversationAnalysis } from "../conversation/analysis";
+import type { ReviewerInsight } from "../conversation/review";
 
 export type { SemanticChangeFacts };
 
@@ -715,6 +717,12 @@ export interface HumanReviewModel {
   // schema, so a stale artifact lacking it fails validation and is rebuilt rather
   // than rendering an empty section (SCHEMA.3 strictness for new fields).
   narrative: ChangeNarrative;
+  // Advisory conversation interpretation and reconciled reviewer insights.
+  // Writers emit both fields, but they remain optional in the v1 read contract
+  // so artifacts created before conversation review was introduced still load.
+  // These never participate in verdict, blocker, or coverage computation.
+  conversation_analysis?: ConversationAnalysis;
+  review_insights?: ReviewerInsight[];
   // review-surfaces.SEMANTIC_DIFF.1-4: deterministic facts about what the change
   // means (schema contract changes, exported API surface changes, test-weakening
   // signals). Always present (empty when nothing applies).
@@ -755,6 +763,9 @@ export interface HumanReviewModel {
     base_sha?: string;
     head_ref: string;
     head_sha: string;
+    // Producing packet signature; artifact-only rebuilds retain advisory
+    // provider output only when every packet input is unchanged.
+    packet_signature?: string;
     // COLD_START.7: working-tree files absorbed into this review. 0 on a clean
     // or pinned-head run; a nonzero count renders on every human surface.
     uncommitted_files: number;

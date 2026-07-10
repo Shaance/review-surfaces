@@ -142,6 +142,44 @@ test("agent-file provider returns structured data from a local file", async () =
   assert.deepEqual((result as { ok: true; data: any }).data, { review_focus: ["Check evaluator"] });
 });
 
+test("agent-file provider supports stage-specific envelopes while preserving the flat-file fallback", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-agentfile-stages-"));
+  fs.writeFileSync(path.join(tmp, "agent.json"), JSON.stringify({
+    stages: {
+      conversation_analysis: { summary: "analysis" },
+      conversation_review_insights: { insights: [] }
+    },
+    review_focus: ["legacy fallback"]
+  }));
+  const provider = agentFileProvider({ cwd: tmp, agentInput: "agent.json" });
+
+  const analysis = await provider.generateStructured("conversation_analysis", "prompt", SCHEMA);
+  const insights = await provider.generateStructured("conversation_review_insights", "prompt", SCHEMA);
+  const legacy = await provider.generateStructured("enrichment", "prompt", SCHEMA);
+
+  assert.deepEqual(analysis, { ok: true, data: { summary: "analysis" } });
+  assert.deepEqual(insights, { ok: true, data: { insights: [] } });
+  assert.equal(legacy.ok, true);
+  assert.deepEqual((legacy as { ok: true; data: any }).data.review_focus, ["legacy fallback"]);
+});
+
+test("agent-file provider parses its immutable stage envelope once", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-agentfile-cache-"));
+  const inputPath = path.join(tmp, "agent.json");
+  fs.writeFileSync(inputPath, JSON.stringify({ stages: { first: { value: 1 }, second: { value: 2 } } }));
+  const provider = agentFileProvider({ cwd: tmp, agentInput: "agent.json" });
+
+  assert.deepEqual(await provider.generateStructured("first", "prompt", SCHEMA), {
+    ok: true,
+    data: { value: 1 }
+  });
+  fs.writeFileSync(inputPath, "{ malformed after the provider run started");
+  assert.deepEqual(await provider.generateStructured("second", "prompt", SCHEMA), {
+    ok: true,
+    data: { value: 2 }
+  });
+});
+
 test("agent-file provider skips when input is missing", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-agentfile-"));
   const noInput = await agentFileProvider({ cwd: tmp }).generateStructured("s", "p", SCHEMA);

@@ -3,6 +3,8 @@ import { writeJson, writeText } from "../core/files";
 import { EvidenceRef } from "../evidence/evidence";
 import { redactSecrets } from "../privacy/secrets";
 import { StructuredDiff } from "../pr/contract";
+import type { ConversationAnalysis } from "../conversation/analysis";
+import { MAX_VISIBLE_CONVERSATION_INSIGHTS, type ReviewerInsight } from "../conversation/review";
 import { formatEnumChanges, formatTypeChanges } from "../risks/semantic-diff";
 import { renderHunkExcerpt } from "./hunk-excerpt";
 import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
@@ -11,6 +13,16 @@ import { esc } from "./esc";
 import { renderDependencyTreeText } from "../diagrams/dep-tree";
 import { extractAcids, fillAcidTemplate, normalizeAcidTemplate, RollupGroup, rollupBy } from "./rollup";
 import { RISK_LENS_METADATA } from "./contract";
+import {
+  conversationAnalysisCaveats,
+  conversationAnalysisContextRows,
+  conversationAnalysisForRender,
+  conversationEvidenceStateLabel,
+  conversationInsightBasisLabel,
+  conversationInsightCitationGroups,
+  conversationInsightsForRender,
+  conversationReviewPresentation
+} from "./conversation-review-presentation";
 import type {
   ChangeNarrative,
   EvidenceCard,
@@ -33,6 +45,26 @@ import type {
   TestPlanItem,
   TrustAudit
 } from "./contract";
+
+export {
+  conversationAnalysisCaveats,
+  conversationAnalysisContextRows,
+  conversationAnalysisForRender,
+  conversationEvidenceStateLabel,
+  conversationInsightBasisLabel,
+  conversationInsightCitationGroups,
+  conversationInsightsForRender,
+  conversationReviewPresentation
+};
+export {
+  conversationAnalysisIsPartial,
+  conversationReconciliationIncomplete
+} from "./conversation-review-presentation";
+export type {
+  ConversationCitationGroup,
+  ConversationContextRow,
+  ConversationReviewPresentation
+} from "./conversation-review-presentation";
 
 const MAX_SUMMARY_CHARS = 600;
 const MAX_FIELD_CHARS = 300;
@@ -170,6 +202,10 @@ Confidence: ${model.verdict.confidence}.
 Reasons:
 ${bullets(model.verdict.reasons.slice(0, MAX_BLOCKERS).map((reason) => `${reason.summary}${reason.required_action ? ` Required action: ${reason.required_action}` : ""} (${reason.id}; ${reason.severity})`), "No readiness reasons recorded.")}
 
+## Conversation-aware insights
+
+${renderConversationInsightsMarkdown(model)}
+
 ## Reading order
 
 ${renderReadingOrderSection(model.reading_order)}
@@ -262,6 +298,180 @@ ${renderFeedbackEffects(model.feedback_effects ?? [])}
 
 ${bullets(evidencePointers(model), "No evidence pointers recorded.")}
 `;
+}
+
+/**
+ * Reviewer guidance from conversation reconciliation. It is intentionally
+ * rendered beside, but never folded into, the deterministic merge verdict.
+ */
+export function renderConversationInsightsMarkdown(model: HumanReviewModel): string {
+  const analysis = conversationAnalysisForRender(model);
+  const insights = conversationInsightsForRender(model);
+  return renderConversationReviewMarkdown(analysis, insights);
+}
+
+export function renderConversationReviewMarkdown(
+  analysis: ConversationAnalysis | undefined,
+  insights: ReviewerInsight[] | undefined
+): string {
+  const visibleInsights = Array.isArray(insights) ? insights.slice(0, MAX_VISIBLE_CONVERSATION_INSIGHTS) : [];
+  const status = conversationAnalysisStatusLine(analysis);
+  const context = conversationAnalysisContextMarkdown(analysis);
+  const caveats = conversationAnalysisCaveats(analysis);
+  const header = [status, context, caveats.length > 0 ? `**Caveat:** ${caveats.join(" ")}` : ""]
+    .filter(Boolean)
+    .join("\n\n");
+  if (visibleInsights.length === 0) {
+    return `${header}\n\n${conversationReviewPresentation(analysis).emptyMessage}`;
+  }
+
+  const lines = visibleInsights.map((insight, index) => {
+    const evidence = conversationInsightCitations(insight);
+    return `${index + 1}. **[${conversationEvidenceStateLabel(insight.evidence_state)} · ${field(insight.priority, 40)}] ${field(insight.title, 180)}**
+   - What changed: ${field(insight.summary)}
+   - Why it matters: ${field(insight.why_it_matters)}
+   - Review: ${field(insight.reviewer_action)}
+   - Grounding: ${conversationInsightBasisLabel(insight.basis)}${evidence ? ` Evidence: ${evidence}.` : ""}`;
+  });
+  return `${header}\n\n${lines.join("\n\n")}`;
+}
+
+type ConversationMarkdownField = (value: string, max?: number) => string;
+
+export interface CompactConversationReviewMarkdownOptions {
+  /** Render-boundary sanitizer; sticky comments use this to preserve their block signal. */
+  renderField?: ConversationMarkdownField;
+}
+
+/**
+ * Compact comment-mode rendering: keep the top finding in the scan path while
+ * retaining the bounded conversation context, grounding, and remaining
+ * findings in a disclosure. The full cockpit renderers deliberately do not use
+ * this mode.
+ */
+export function renderCompactConversationReviewMarkdown(
+  analysis: ConversationAnalysis | undefined,
+  insights: ReviewerInsight[] | undefined,
+  options: CompactConversationReviewMarkdownOptions = {}
+): string {
+  const renderField = options.renderField ?? field;
+  const visibleInsights = Array.isArray(insights) ? insights.slice(0, MAX_VISIBLE_CONVERSATION_INSIGHTS) : [];
+  const status = conversationAnalysisStatusLineWithField(analysis, renderField, MAX_FIELD_CHARS);
+  const caveats = conversationAnalysisCaveats(analysis);
+  const lead = [
+    status,
+    caveats.length > 0 ? `**Caveat:** ${renderField(caveats.join(" "), 900)}` : ""
+  ].filter(Boolean);
+  const context = conversationAnalysisContextMarkdownWithField(analysis, renderField);
+
+  if (visibleInsights.length === 0) {
+    const details = context
+      ? conversationReviewDetails("Conversation context", context)
+      : "";
+    return [...lead, conversationReviewPresentation(analysis).emptyMessage, details].filter(Boolean).join("\n\n");
+  }
+
+  const [topInsight, ...remainingInsights] = visibleInsights;
+  const top = renderCompactConversationInsight(topInsight, 1, renderField, false);
+  const detailsBody = [
+    context ? `#### Conversation context\n\n${context}` : "",
+    `#### Grounding for insight 1\n\n${renderConversationInsightGrounding(topInsight, renderField)}`,
+    remainingInsights.length > 0
+      ? `#### More conversation insights\n\n${remainingInsights
+          .map((insight, index) => renderCompactConversationInsight(insight, index + 2, renderField, true))
+          .join("\n\n")}`
+      : ""
+  ].filter(Boolean).join("\n\n");
+  const remainingLabel = remainingInsights.length > 0
+    ? ` and ${remainingInsights.length} more insight${remainingInsights.length === 1 ? "" : "s"}`
+    : "";
+  const details = conversationReviewDetails(`Conversation context, grounding${remainingLabel}`, detailsBody);
+  return [...lead, top, details].join("\n\n");
+}
+
+function renderCompactConversationInsight(
+  insight: ReviewerInsight,
+  number: number,
+  renderField: ConversationMarkdownField,
+  includeGrounding: boolean
+): string {
+  return `${number}. **[${conversationEvidenceStateLabel(insight.evidence_state)} · ${renderField(insight.priority, 40)}] ${renderField(insight.title, 180)}** — ${renderField(insight.summary)}
+   - Why it matters: ${renderField(insight.why_it_matters)}
+   - Review: ${renderField(insight.reviewer_action)}${includeGrounding ? `\n   - Grounding: ${renderConversationInsightGrounding(insight, renderField)}` : ""}`;
+}
+
+function renderConversationInsightGrounding(
+  insight: ReviewerInsight,
+  renderField: ConversationMarkdownField
+): string {
+  const citations = conversationInsightCitationsWithField(insight, renderField, 2);
+  return `${conversationInsightBasisLabel(insight.basis)}${citations ? ` Evidence: ${citations}.` : ""}`;
+}
+
+function conversationReviewDetails(summary: string, body: string): string {
+  return `<details>
+<summary>${summary}</summary>
+
+${body}
+
+</details>`;
+}
+
+export function conversationAnalysisStatusLine(analysis: ConversationAnalysis | undefined): string {
+  return conversationAnalysisStatusLineWithField(analysis, field, MAX_SUMMARY_CHARS);
+}
+
+function conversationAnalysisStatusLineWithField(
+  analysis: ConversationAnalysis | undefined,
+  renderField: ConversationMarkdownField,
+  summaryLimit: number
+): string {
+  const presentation = conversationReviewPresentation(analysis);
+  const summary = renderField(presentation.summary, summaryLimit);
+  return `**${presentation.statusLabel}.** ${presentation.summaryIsSynopsis ? `AI synopsis: ${summary}` : summary}`;
+}
+
+export function conversationInsightCitations(insight: ReviewerInsight): string {
+  return conversationInsightCitationsWithField(insight, field, 3);
+}
+
+function conversationInsightCitationsWithField(
+  insight: ReviewerInsight,
+  renderField: ConversationMarkdownField,
+  limit: number
+): string {
+  return conversationInsightCitationGroups(insight)
+    .map((group) => `${group.label} ${compactCitationValuesWithField(group.values, renderField, limit)}`)
+    .join("; ");
+}
+
+function conversationAnalysisContextMarkdown(analysis: ConversationAnalysis | undefined): string {
+  return conversationAnalysisContextMarkdownWithField(analysis, field);
+}
+
+function conversationAnalysisContextMarkdownWithField(
+  analysis: ConversationAnalysis | undefined,
+  renderField: ConversationMarkdownField
+): string {
+  return conversationAnalysisContextRows(analysis).map((row) =>
+    `- **${row.label}:** ${row.items.map((item) =>
+      `${renderField(item.text)} (${compactCitationValuesWithField(item.eventIds, renderField, 3)})`
+    ).join("; ")}`
+  ).join("\n");
+}
+
+function compactCitationValuesWithField(
+  values: string[],
+  renderField: ConversationMarkdownField,
+  limit: number
+): string {
+  const shown = values.slice(0, limit).map((value) => inlineCodeWithField(value, renderField)).join(", ");
+  const omitted = values.length - Math.min(values.length, limit);
+  return shown ? `${shown}${omitted > 0 ? ` (+${omitted})` : ""}` : "";
+}
+
+function inlineCodeWithField(value: string, renderField: ConversationMarkdownField): string {
+  return `\`${renderField(value).replace(/`/g, "'")}\``;
 }
 
 export function renderReviewQueueMarkdown(model: HumanReviewModel, context: HumanRenderContext = {}): string {
@@ -802,14 +1012,14 @@ function formatSignedDelta(value: number): string {
 }
 
 // review-surfaces.NARRATIVE.1/.3: render the grounded narrative with a per-claim
-// trust marker — `✓` for verified (all anchors valid) and `~` for claimed
+// trust marker — `✓` for anchored (all citations valid) and `~` for claimed
 // (demoted; an anchor is missing/invalid). Each line leads with the claim text
 // (reviewer-language); anchors and any invalid anchors trail as metadata.
 function renderNarrativeSection(narrative: ChangeNarrative | undefined): string {
   if (!narrative || narrative.claims.length === 0) {
     return "- No grounded narrative available; rely on the verdict and review queue below.";
   }
-  const header = `_Source: ${narrative.source} (${narrative.provider}); validated at \`${field(narrative.validated_at_head)}\`. ✓ verified, ~ claimed (unverified anchor)._`;
+  const header = `_Source: ${narrative.source} (${narrative.provider}); validated at \`${field(narrative.validated_at_head)}\`. ✓ anchored (citations validated, claim not independently proven), ~ claimed (unverified anchor)._`;
   const lines = narrative.claims.map((claim) => renderNarrativeClaim(claim));
   return `${header}\n${lines.join("\n")}`;
 }

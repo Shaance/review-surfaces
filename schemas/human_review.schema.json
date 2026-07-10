@@ -74,6 +74,16 @@
     "narrative": {
       "$ref": "#/$defs/changeNarrative"
     },
+    "conversation_analysis": {
+      "$ref": "#/$defs/conversationAnalysis"
+    },
+    "review_insights": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "$ref": "#/$defs/reviewerInsight"
+      }
+    },
     "semantic_facts": {
       "$ref": "#/$defs/semanticChangeFacts"
     },
@@ -479,6 +489,7 @@
         "base_sha": { "type": "string" },
         "head_ref": { "type": "string" },
         "head_sha": { "type": "string" },
+        "packet_signature": { "type": "string", "maxLength": 128 },
         "uncommitted_files": { "type": "integer", "minimum": 0 },
         "human_review_config_signature": { "type": "string" }
       }
@@ -487,6 +498,130 @@
   "$defs": {
     "confidence": {
       "enum": ["high", "medium", "low", "unknown"]
+    },
+    "conversationAnalysisItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "event_ids"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "event_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 180 }
+        }
+      }
+    },
+    "conversationAnalysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "provider",
+        "summary",
+        "intent",
+        "refinements",
+        "decisions",
+        "constraints",
+        "non_goals",
+        "rejected_alternatives",
+        "claims",
+        "validation_claims",
+        "known_gaps",
+        "quality_flags"
+      ],
+      "properties": {
+        "status": { "enum": ["analyzed", "not_assessed", "degraded"] },
+        "provider": { "enum": ["mock", "ai-sdk", "agent-file"] },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 900 },
+        "intent": { "$ref": "#/$defs/conversationAnalysisItems" },
+        "refinements": { "$ref": "#/$defs/conversationAnalysisItems" },
+        "decisions": { "$ref": "#/$defs/conversationAnalysisItems" },
+        "constraints": { "$ref": "#/$defs/conversationAnalysisItems" },
+        "non_goals": { "$ref": "#/$defs/conversationAnalysisItems" },
+        "rejected_alternatives": { "$ref": "#/$defs/conversationAnalysisItems" },
+        "claims": { "$ref": "#/$defs/conversationAnalysisItems" },
+        "validation_claims": { "$ref": "#/$defs/conversationAnalysisItems" },
+        "known_gaps": { "$ref": "#/$defs/conversationAnalysisItems" },
+        "quality_flags": {
+          "type": "array",
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+        }
+      }
+    },
+    "conversationAnalysisItems": {
+      "type": "array",
+      "maxItems": 12,
+      "items": { "$ref": "#/$defs/conversationAnalysisItem" }
+    },
+    "reviewerInsight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "category",
+        "title",
+        "summary",
+        "why_it_matters",
+        "reviewer_action",
+        "priority",
+        "evidence_state",
+        "basis",
+        "conversation_event_ids",
+        "paths",
+        "requirement_ids",
+        "risk_ids",
+        "command_ids",
+        "evidence"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "category": {
+          "enum": [
+            "intent_mismatch",
+            "scope_surprise",
+            "superseded_decision",
+            "validation_gap",
+            "test_weakening",
+            "unresolved_assumption",
+            "intentional_change"
+          ]
+        },
+        "title": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 700 },
+        "why_it_matters": { "type": "string", "minLength": 1, "maxLength": 700 },
+        "reviewer_action": { "type": "string", "minLength": 1, "maxLength": 700 },
+        "priority": { "$ref": "#/$defs/severity" },
+        "evidence_state": { "enum": ["supported", "contradicted", "unverified"] },
+        "basis": { "enum": ["validated_anchors", "ai_reconciliation"] },
+        "conversation_event_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+        },
+        "paths": { "$ref": "#/$defs/insightStringArray" },
+        "requirement_ids": { "$ref": "#/$defs/insightStringArray" },
+        "risk_ids": { "$ref": "#/$defs/insightStringArray" },
+        "command_ids": { "$ref": "#/$defs/insightStringArray" },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 18,
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        }
+      }
+    },
+    "insightStringArray": {
+      "type": "array",
+      "maxItems": 12,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 300 }
     },
     "riskLens": {
       "enum": [

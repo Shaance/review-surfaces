@@ -7,12 +7,15 @@
     "rootDir": ".",
     "strict": true,
     "noImplicitAny": true,
+    "allowJs": true,
     "types": ["node"],
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
   "include": [
+    "bin/bounded-stream-capture.js",
+    "bin/privacy-runtime.js",
     "src/**/*.ts",
     "tests/**/*.ts"
   ]

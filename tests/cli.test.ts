@@ -508,7 +508,9 @@ test("review-surfaces.CLI.4 rejects unknown top-level flags", () => {
 test("review-surfaces.CLI.7 bin run records bootstrap build failures without dist", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-bin-bootstrap-"));
   fs.mkdirSync(path.join(tmp, "bin"), { recursive: true });
-  fs.copyFileSync(path.join(process.cwd(), "bin", "review-surfaces.js"), path.join(tmp, "bin", "review-surfaces.js"));
+  for (const file of ["review-surfaces.js", "privacy-runtime.js", "bounded-stream-capture.js"]) {
+    fs.copyFileSync(path.join(process.cwd(), "bin", file), path.join(tmp, "bin", file));
+  }
   assert.equal(fs.existsSync(path.join(tmp, "dist", "src", "cli", "index.js")), false);
 
   const result = spawnSync(

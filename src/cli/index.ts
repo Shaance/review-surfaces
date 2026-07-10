@@ -33,8 +33,16 @@ import { buildDogfood, DogfoodComparisonInput } from "../dogfood/dogfood";
 import { comparePackets, loadPreviousPacket, resolvePreviousPacketPath } from "../dogfood/compare";
 import { EvaluationModel } from "../evaluation/evaluate";
 import { buildIntent, IntentModel } from "../intent/intent";
-import { effectiveModelId, enrichPacket, parseProviderName, providerFor, ProviderName } from "../llm/provider";
+import {
+  effectiveModelId,
+  enrichPacket,
+  parseProviderName,
+  providerFor,
+  type ProviderName,
+  type ReasoningProvider
+} from "../llm/provider";
 import { CONVERSATION_FORMATS, ConversationFormat } from "../conversation/events";
+import { buildConversationReview, type ConversationReviewResult } from "../conversation/review";
 import { buildMethodology } from "../methodology/methodology";
 import { buildReviewAreas } from "../review-areas/areas";
 import { RisksModel } from "../risks/risks";
@@ -372,6 +380,7 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
     // requested provider, so the packet must record the privacy condition for it.
     gateProvider: provider,
     model: signatureModel(parsed, runConfig, signatureProvider),
+    redactSecrets: redactSecretsFlag(parsed, runConfig),
     conversationPath: stringFlag(parsed, "conversation"),
     conversationFormat: conversationFormatFlag(parsed),
     conversationDiscovery: !booleanFlag(parsed, "no-conversation-discovery"),
@@ -534,6 +543,26 @@ interface PrSurfaceCacheReuse {
   surface?: PrReviewSurfaceModel;
 }
 
+interface CachedHumanReviewReuse {
+  narrative?: ChangeNarrative;
+  changeMapInsights?: ChangeMapInsights;
+  conversationReview?: ConversationReviewResult;
+}
+
+interface HumanEnrichmentContext {
+  provider: ReasoningProvider;
+  providerName: ProviderName;
+  model?: string;
+  redactSecrets: boolean;
+  remotePrivacyBlocked: boolean;
+}
+
+interface BuiltHumanReviewContext {
+  outputDir: string;
+  model: HumanReviewModel;
+  diff?: StructuredDiff;
+}
+
 interface HumanReviewArtifactInputs {
   packet?: ReviewPacket;
   prSurface?: PrReviewSurfaceModel;
@@ -542,6 +571,7 @@ interface HumanReviewArtifactInputs {
   // overwritten by the deterministic fallback (review-surfaces.NARRATIVE.1).
   narrative?: ChangeNarrative;
   changeMapInsights?: ChangeMapInsights;
+  conversationReview?: ConversationReviewResult;
 }
 
 // Resolve the EFFECTIVE output dir with the SAME precedence collectInputs uses
@@ -664,7 +694,20 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // when a surface for the CURRENT head already exists; otherwise fall through to a
   // full regenerate so the PR block runs and (re)writes it.
   const cacheHit = cacheSnapshot ? isCacheHit(cacheSnapshot, collection.manifest.signature) : false;
-  const prSurfaceReuse = cacheHit ? prSurfaceCacheReuse(parsed, collection, config) : undefined;
+  // Narrative, graph enrichment, and repo conversation review all come from the
+  // same cached human artifact. Parse and validate it once before deciding
+  // whether the cache is complete enough to reuse.
+  const cachedHumanReuse = cacheHit && config.human_review.enabled
+    ? readCachedHumanReviewReuse(
+        cwd,
+        collection.outputDir,
+        String(collection.manifest.head_sha ?? ""),
+        String(collection.manifest.signature ?? "")
+      )
+    : undefined;
+  const prSurfaceReuse = cacheHit
+    ? prSurfaceCacheReuse(parsed, collection, config, cachedHumanReuse?.conversationReview)
+    : undefined;
   if (cacheSnapshot && cacheHit && prSurfaceReuse?.reusable) {
     const strict = booleanFlag(parsed, "strict");
     const evaluation = loadEvaluation(collection.outputDir);
@@ -685,18 +728,21 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // fresh ai-sdk call (which could now fail and clobber good cached prose with
       // the fallback). When no prior narrative exists, buildHumanReview renders
       // the deterministic fallback.
-      const cachedNarrative = config.human_review.enabled
-        ? readCachedNarrative(collection.outputDir, String(collection.manifest.head_sha ?? ""))
-        : undefined;
-      const cachedChangeMapInsights = config.human_review.enabled
-        ? readCachedChangeMapInsights(collection.outputDir, String(collection.manifest.head_sha ?? ""))
+      const cachedNarrative = cachedHumanReuse?.narrative;
+      const cachedChangeMapInsights = cachedHumanReuse?.changeMapInsights;
+      const cachedConversationReview = config.human_review.enabled
+        ? conversationReviewFromFields(
+            prSurfaceReuse.surface?.conversation_analysis,
+            prSurfaceReuse.surface?.review_insights ?? []
+          ) ?? cachedHumanReuse?.conversationReview
         : undefined;
       const cachedHumanInputs: HumanReviewArtifactInputs = {
         packet: cacheSnapshot.packet,
         prSurface: prSurfaceReuse.surface,
         feedback: collection.feedback,
         narrative: cachedNarrative,
-        changeMapInsights: cachedChangeMapInsights
+        changeMapInsights: cachedChangeMapInsights,
+        conversationReview: cachedConversationReview
       };
       // Round 6: a cache hit must match a normal run's gate behavior. Run
       // applyGate on the cached evaluation so a cached packet with a
@@ -743,13 +789,14 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   const provider = providerFlag(parsed, config);
   const requestedModel = stringFlag(parsed, "model") ?? config.llm.model ?? undefined;
   const isPrScope = reviewScope(parsed) === "pr";
-  // PR-mode contract: scope/coverage/risks are DETERMINISTIC and the LLM authors
-  // ONLY the diff-scoped narrative. So in pr mode the whole-repo packet (a side
+  // PR-mode contract: scope/coverage/risks are DETERMINISTIC and the live provider
+  // contributes only diff-scoped narrative plus advisory conversation review. So
+  // in pr mode the whole-repo packet (a side
   // artifact here) is built with `mock`: the live provider is NOT spent on
   // whole-repo reasoning/enrichment (no wasted remote calls, no whole-repo context
   // leak) and the intent/evaluation the PR surface is derived from stay byte-stable
-  // regardless of model output. The live provider is reserved for the PR narrative
-  // step below. In repo mode this is exactly the requested provider (unchanged).
+  // regardless of model output. The live provider is reserved for PR-scoped calls
+  // below. In repo mode this is exactly the requested provider (unchanged).
   const wholeRepoProvider: ProviderName = isPrScope ? "mock" : provider;
   debug(parsed, `provider=${provider} wholeRepo=${wholeRepoProvider} model=${requestedModel ?? "(default)"}`);
   const reviewAreas = buildReviewAreas({ config, repoIndex: collection.repoIndex });
@@ -773,6 +820,13 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     agentInput: stringFlag(parsed, "agent-input")
   });
   const redactSecrets = redactSecretsFlag(parsed, config);
+  const humanEnrichment = resolveHumanEnrichmentContext(
+    cwd,
+    parsed,
+    config,
+    collection,
+    redactSecrets
+  );
   const reasoningOptions = {
     redactSecrets,
     remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
@@ -854,9 +908,13 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // artifact (pr_review_surface.json) that the PR comment renders from. Requires
   // an LLM provider; a blocked surface is written (never a whole-repo fallback).
   let persistedSurface: PrReviewSurfaceModel | undefined;
-  let humanReviewDiff: StructuredDiff | undefined;
+  // Parse the collected patch once. Every downstream human-enrichment and render
+  // stage receives this same immutable model, including the honest undefined
+  // result when the collected patch has no changed files.
+  const humanReviewDiff = isPrScope || config.human_review.enabled
+    ? readHumanReviewDiff(collection.outputDir)
+    : undefined;
   if (isPrScope) {
-    humanReviewDiff = readHumanReviewDiff(collection.outputDir);
     // Evaluate the base ref in a throwaway worktree for the coverage delta
     // (best-effort: degrades to current-status when the base can't be evaluated).
     const baseEvaluation = await evaluateBaseline({
@@ -867,29 +925,19 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       config,
       specFlag: stringFlag(parsed, "spec")
     });
-    // The narrative is the ONLY LLM step in pr mode: build a fresh provider with
-    // the REQUESTED (live) provider/model here, separate from the deterministic
-    // whole-repo `reasoningProvider`. intent/evaluation come from the mock-built
-    // packet above, so the diff-scoped facts are deterministic per the contract.
-    // Record the EFFECTIVE model (incl. REVIEW_SURFACES_AI_MODEL env), not the raw
-    // CLI/config value, so surface reuse can tell an env-only model swap apart.
-    const narrativeModel = effectiveNarrativeModel(parsed, config);
-    const narrativeProvider = providerFor(provider, {
-      model: narrativeModel,
-      cwd,
-      remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
-      agentInput: stringFlag(parsed, "agent-input")
-    });
+    // The PR sidecar and later human enrichments share one provider instance.
+    // assemblePrReviewSurface still invokes its postability-critical narrative
+    // before optional conversation enrichment.
     const surface = await assemblePrReviewSurface({
       collection,
       intent: packet.intent,
       evaluation: packet.evaluation,
       baseEvaluation,
       reviewAreas: reviewAreas.areas,
-      provider: narrativeProvider,
-      providerName: provider,
-      model: narrativeModel,
-      redactSecrets,
+      provider: humanEnrichment.provider,
+      providerName: humanEnrichment.providerName,
+      model: humanEnrichment.model,
+      redactSecrets: humanEnrichment.redactSecrets,
       diff: humanReviewDiff
     });
     persistedSurface = jsonSerializable(surface);
@@ -906,17 +954,43 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       console.warn(`PR review surface blocked (${persistedSurface.blocked_reason}); see pr_review_surface.json`);
     }
   }
-  // review-surfaces.NARRATIVE.1: build the grounded narrative through the
-  // requested provider (offline for mock/agent-file). It is anchor-validated here
-  // and passed read-only into the human review build, never affecting the verdict.
-  const narrative = config.human_review.enabled
-    ? await buildHumanNarrativeForAll(cwd, parsed, config, writtenPacket, persistedSurface, humanReviewDiff, collection)
-    : undefined;
-  const changeMapInsights = config.human_review.enabled
-    ? await buildChangeMapInsightsForAll(cwd, parsed, config, writtenPacket, humanReviewDiff, collection)
-    : undefined;
+  let narrative: ChangeNarrative | undefined;
+  let changeMapInsights: ChangeMapInsights | undefined;
+  let conversationReview: ConversationReviewResult | undefined;
+  if (config.human_review.enabled) {
+    if (isPrScope) {
+      // Preserve PR ordering: the sidecar's required narrative and conversation
+      // work completed above before these secondary cockpit enrichments.
+      narrative = await buildHumanNarrativeForAll(
+        cwd, config, writtenPacket, persistedSurface, humanReviewDiff, collection, humanEnrichment
+      );
+      changeMapInsights = await buildChangeMapInsightsForAll(
+        cwd, writtenPacket, humanReviewDiff, humanEnrichment
+      );
+      conversationReview = conversationReviewFromFields(
+        persistedSurface?.conversation_analysis,
+        persistedSurface?.review_insights ?? []
+      ) ?? await buildConversationReviewForAll(
+            writtenPacket, humanReviewDiff, collection, humanEnrichment
+          );
+    } else {
+      // Repo enrichments are independent read-only projections over the same
+      // packet/diff/provider input, so their latency need not be additive.
+      [narrative, changeMapInsights, conversationReview] = await Promise.all([
+        buildHumanNarrativeForAll(
+          cwd, config, writtenPacket, undefined, humanReviewDiff, collection, humanEnrichment
+        ),
+        buildChangeMapInsightsForAll(
+          cwd, writtenPacket, humanReviewDiff, humanEnrichment
+        ),
+        buildConversationReviewForAll(
+          writtenPacket, humanReviewDiff, collection, humanEnrichment
+        )
+      ]);
+    }
+  }
   const humanReview = config.human_review.enabled
-    ? await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff, collection.feedback, config, narrative, changeMapInsights)
+    ? await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff, collection.feedback, config, narrative, changeMapInsights, conversationReview)
     : undefined;
   if (!config.human_review.enabled) {
     removeHumanReviewArtifacts(collection.outputDir);
@@ -928,7 +1002,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   if (humanReview) {
     await writeText(
       path.join(collection.outputDir, "human_review.html"),
-      renderHumanReviewHtml(humanReview, { diff: readHumanReviewDiff(collection.outputDir) })
+      renderHumanReviewHtml(humanReview, { diff: humanReviewDiff })
     );
   }
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
@@ -1015,70 +1089,97 @@ function effectiveNarrativeModel(parsed: ParsedArgs, config: ReviewSurfacesConfi
   return stringFlag(parsed, "model") ?? config.llm.model ?? process.env.REVIEW_SURFACES_AI_MODEL ?? undefined;
 }
 
+function resolveHumanEnrichmentContext(
+  cwd: string,
+  parsed: ParsedArgs,
+  config: ReviewSurfacesConfig,
+  collection: CollectionResult,
+  redactSecrets: boolean
+): HumanEnrichmentContext {
+  const providerName = providerFlag(parsed, config);
+  const model = effectiveNarrativeModel(parsed, config);
+  const remotePrivacyBlocked = collection.privacy.remote_provider_blocked;
+  return {
+    providerName,
+    model,
+    redactSecrets,
+    remotePrivacyBlocked,
+    provider: providerFor(providerName, {
+      model,
+      cwd,
+      remotePrivacyBlocked,
+      agentInput: stringFlag(parsed, "agent-input")
+    })
+  };
+}
+
 // review-surfaces.NARRATIVE.1: build the human-surface change narrative through
 // the requested provider (mock/agent-file are offline; ai-sdk only with a key
 // and after privacy filtering). The result is anchor-validated inside
 // buildChangeNarrative and returned read-only.
 async function buildHumanNarrativeForAll(
   cwd: string,
-  parsed: ParsedArgs,
   config: ReviewSurfacesConfig,
   packet: ReviewPacket,
   prSurface: PrReviewSurfaceModel | undefined,
   diff: StructuredDiff | undefined,
-  collection: CollectionResult
+  collection: CollectionResult,
+  enrichment: HumanEnrichmentContext
 ): Promise<ChangeNarrative> {
-  const providerName = providerFlag(parsed, config);
-  const provider = providerFor(providerName, {
-    model: effectiveNarrativeModel(parsed, config),
-    cwd,
-    remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
-    agentInput: stringFlag(parsed, "agent-input")
-  });
   return buildChangeNarrative({
-    provider,
-    providerName,
+    provider: enrichment.provider,
+    providerName: enrichment.providerName,
     packet,
     prSurface,
-    // In repo scope the caller's diff is undefined (it is only parsed eagerly for
-    // PR scope), so read the collected, redacted diff from the output dir — the
-    // same source the human-review queue uses — to populate the anchor allowlist.
-    diff: diff ?? readHumanReviewDiff(collection.outputDir),
+    diff,
     headSha: String(collection.manifest.head_sha ?? ""),
     maxClaims: config.human_review.narrative_max_claims,
-    redactSecrets: redactSecretsFlag(parsed, config),
-    remotePrivacyBlocked: collection.privacy.remote_provider_blocked
+    redactSecrets: enrichment.redactSecrets,
+    remotePrivacyBlocked: enrichment.remotePrivacyBlocked
   });
 }
 
 async function buildChangeMapInsightsForAll(
   cwd: string,
-  parsed: ParsedArgs,
-  config: ReviewSurfacesConfig,
   packet: ReviewPacket,
   diff: StructuredDiff | undefined,
-  collection: CollectionResult
+  enrichment: HumanEnrichmentContext
 ): Promise<ChangeMapInsights> {
-  const resolvedDiff = diff ?? readHumanReviewDiff(collection.outputDir);
-  const readers = buildFactReaders(cwd, packet, resolvedDiff);
-  const edges = computeChangedImportEdgesForPacket(cwd, resolvedDiff, readers);
+  const readers = buildFactReaders(cwd, packet, diff);
+  const edges = computeChangedImportEdgesForPacket(cwd, diff, readers);
   const implementationRoots = readers ? detectRootsForPacket(cwd, readers) : DEFAULT_IMPLEMENTATION_ROOTS;
-  const areas = changeMapAreasForInsights(resolvedDiff, implementationRoots);
-  const providerName = providerFlag(parsed, config);
-  const provider = providerFor(providerName, {
-    model: effectiveNarrativeModel(parsed, config),
-    cwd,
-    remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
-    agentInput: stringFlag(parsed, "agent-input")
-  });
+  const areas = changeMapAreasForInsights(diff, implementationRoots);
   return buildChangeMapInsights({
-    provider,
-    providerName,
+    provider: enrichment.provider,
+    providerName: enrichment.providerName,
     edges,
     areas,
-    diff: resolvedDiff,
-    redactSecrets: redactSecretsFlag(parsed, config),
-    remotePrivacyBlocked: collection.privacy.remote_provider_blocked
+    diff,
+    redactSecrets: enrichment.redactSecrets,
+    remotePrivacyBlocked: enrichment.remotePrivacyBlocked
+  });
+}
+
+async function buildConversationReviewForAll(
+  packet: ReviewPacket,
+  diff: StructuredDiff | undefined,
+  collection: CollectionResult,
+  enrichment: HumanEnrichmentContext
+): Promise<ConversationReviewResult> {
+  const requirementIds = packet.evaluation.results.flatMap((result) => [
+    result.requirement_id,
+    ...(result.acai_id ? [result.acai_id] : [])
+  ]);
+  return buildConversationReview({
+    provider: enrichment.provider,
+    providerName: enrichment.providerName,
+    events: collection.conversationEvents,
+    diff,
+    commandTranscripts: collection.commandTranscripts,
+    requirementIds,
+    headSha: String(collection.manifest.head_sha ?? ""),
+    redactSecrets: enrichment.redactSecrets,
+    remotePrivacyBlocked: enrichment.remotePrivacyBlocked
   });
 }
 
@@ -1098,9 +1199,16 @@ function changeMapAreasForInsights(diff: StructuredDiff | undefined, roots: read
     .map(([name, paths]) => ({ name, paths: [...new Set(paths)].sort() }));
 }
 
-function prSurfaceCacheReuse(parsed: ParsedArgs, collection: CollectionResult, config: ReviewSurfacesConfig): PrSurfaceCacheReuse {
+function prSurfaceCacheReuse(
+  parsed: ParsedArgs,
+  collection: CollectionResult,
+  config: ReviewSurfacesConfig,
+  repoConversationReview?: ConversationReviewResult
+): PrSurfaceCacheReuse {
   if (reviewScope(parsed) !== "pr") {
-    return { reusable: true };
+    return {
+      reusable: !config.human_review.enabled || conversationReviewIsReusable(repoConversationReview)
+    };
   }
   const surfacePath = path.join(collection.outputDir, "pr_review_surface.json");
   try {
@@ -1116,7 +1224,11 @@ function prSurfaceCacheReuse(parsed: ParsedArgs, collection: CollectionResult, c
       surface.scope?.base_sha === collection.git.base_sha &&
       surface.scope?.base_ref === collection.git.base_ref &&
       surface.llm?.provider === providerFlag(parsed, config) &&
-      (surface.llm?.model ?? undefined) === requestedModel
+      (surface.llm?.model ?? undefined) === requestedModel &&
+      conversationReviewIsReusable(conversationReviewFromFields(
+        surface.conversation_analysis,
+        surface.review_insights
+      ))
     );
     return { reusable, surface: reusable ? surface : undefined };
   } catch {
@@ -1407,16 +1519,14 @@ async function runHumanStage(parsed: ParsedArgs): Promise<void> {
     console.log(`Human review disabled by config; removed generated human review artifacts from ${displayPath(cwd, outDir)}`);
     return;
   }
-  await writeHumanReviewFromArtifacts(cwd, outDir, reviewScope(parsed), config);
+  const context = await writeHumanReviewFromArtifacts(cwd, outDir, reviewScope(parsed), config);
   // review-surfaces.RENDER.9: `human --format html` ALSO writes the single-file
   // offline cockpit, rendered from the same freshly-built model (a strict
   // sibling of the markdown renderer, with the same diff context for excerpts).
   const humanFormat = stringFlag(parsed, "format") ?? "markdown";
   if (humanFormat === "html") {
-    const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
-    const model = (await readJson(path.join(outputDir, "human_review.json"))) as HumanReviewModel;
-    const html = renderHumanReviewHtml(model, { diff: readHumanReviewDiff(outputDir) });
-    const htmlPath = path.join(outputDir, "human_review.html");
+    const html = renderHumanReviewHtml(context.model, { diff: context.diff });
+    const htmlPath = path.join(context.outputDir, "human_review.html");
     await writeText(htmlPath, html);
     console.log(`Human review (HTML): ${displayPath(cwd, htmlPath)}`);
   } else if (humanFormat !== "markdown") {
@@ -1623,13 +1733,16 @@ async function writeAndMaybeSummarizeHumanReviewFromArtifacts(
     removeHumanReviewArtifacts(outDir);
     return;
   }
-  const humanReview = await writeHumanReviewFromArtifacts(cwd, outDir, scope, config, inputs);
+  const context = await writeHumanReviewFromArtifacts(cwd, outDir, scope, config, inputs);
   // review-surfaces.DISTRIBUTION.7: the cache-hit path writes the cockpit from
   // the same freshly-rebuilt model, like the main `all` path.
   const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
-  await writeText(path.join(outputDir, "human_review.html"), renderHumanReviewHtml(humanReview, { diff: readHumanReviewDiff(outputDir) }));
+  await writeText(
+    path.join(outputDir, "human_review.html"),
+    renderHumanReviewHtml(context.model, { diff: context.diff })
+  );
   if (config.human_review.default_entrypoint) {
-    printHumanReviewTerminalSummary(cwd, outDir, humanReview);
+    printHumanReviewTerminalSummary(cwd, outDir, context.model);
   }
 }
 
@@ -1647,10 +1760,10 @@ async function writeHumanReviewFromArtifacts(
   scope: ReviewScope,
   config?: ReviewSurfacesConfig,
   inputs?: HumanReviewArtifactInputs
-): Promise<HumanReviewModel> {
+): Promise<BuiltHumanReviewContext> {
   const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config, inputs);
-  await writeHumanReviewArtifacts(context.outputDir, context.model, humanRenderContext(context.outputDir));
-  return context.model;
+  await writeHumanReviewArtifacts(context.outputDir, context.model, { diff: context.diff });
+  return context;
 }
 
 function printHumanReviewTerminalSummary(cwd: string, outDir: string, humanReview: HumanReviewModel): void {
@@ -1731,8 +1844,9 @@ async function buildHumanReviewFromArtifacts(
   scope: ReviewScope,
   config?: ReviewSurfacesConfig,
   inputs?: HumanReviewArtifactInputs
-): Promise<{ outputDir: string; model: HumanReviewModel }> {
+): Promise<BuiltHumanReviewContext> {
   const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
+  const diff = readHumanReviewDiff(outputDir);
   const packetPath = path.join(outputDir, "review_packet.json");
   if (inputs?.packet === undefined && !fileExists(packetPath)) {
     throw missingPacketError(cwd, outDir);
@@ -1744,6 +1858,15 @@ async function buildHumanReviewFromArtifacts(
     : inputs?.prSurface ?? (fileExists(surfacePath)
       ? readPrSurfaceArtifact(cwd, surfacePath)
       : undefined);
+  const repoConversationReview = scope === "repo" && inputs?.conversationReview === undefined
+    ? readCachedHumanReviewReuse(
+        cwd,
+        outputDir,
+        String((packet.manifest as { head_sha?: unknown }).head_sha ?? ""),
+        String((packet.manifest as { signature?: unknown }).signature ?? "")
+      )?.conversationReview
+    : undefined;
+  const conversationReview = inputs?.conversationReview ?? repoConversationReview;
   if (surface) {
     if (!prSurfaceMatchesPacketManifest(packet, surface)) {
       console.warn(
@@ -1751,32 +1874,36 @@ async function buildHumanReviewFromArtifacts(
       );
       return {
         outputDir,
+        diff,
         model: buildHumanReviewForPacket(
           cwd,
           outputDir,
           packet,
           undefined,
-          undefined,
+          diff,
           inputs?.feedback ?? readHumanReviewFeedback(outputDir),
           config,
           inputs?.narrative,
-          inputs?.changeMapInsights
+          inputs?.changeMapInsights,
+          conversationReview
         )
       };
     }
   }
   return {
     outputDir,
+    diff,
     model: buildHumanReviewForPacket(
       cwd,
       outputDir,
       packet,
       surface,
-      undefined,
+      diff,
       inputs?.feedback ?? readHumanReviewFeedback(outputDir),
       config,
       inputs?.narrative,
-      inputs?.changeMapInsights
+      inputs?.changeMapInsights,
+      conversationReview
     )
   };
 }
@@ -1790,9 +1917,10 @@ function buildHumanReviewForPacket(
   feedback?: FeedbackFile[],
   config?: ReviewSurfacesConfig,
   narrative?: ChangeNarrative,
-  changeMapInsights?: ChangeMapInsights
+  changeMapInsights?: ChangeMapInsights,
+  conversationReview?: ConversationReviewResult
 ): HumanReviewModel {
-  const resolvedDiff = diff ?? readHumanReviewDiff(outDir);
+  const resolvedDiff = diff;
   const factReaders = buildFactReaders(cwd, packet, resolvedDiff);
   // review-surfaces.POLICY.1: a malformed committed policy fails LOUDLY.
   let policy: ReviewPolicy | undefined;
@@ -1828,6 +1956,8 @@ function buildHumanReviewForPacket(
     feedback,
     config: effectiveConfig?.human_review,
     narrative,
+    conversationAnalysis: conversationReview?.analysis,
+    reviewInsights: conversationReview?.insights,
     policy,
     policyNowIso: typeof (packet.manifest as { created_at?: unknown }).created_at === "string" ? (packet.manifest as { created_at: string }).created_at : "",
     // review-surfaces.SEMANTIC_DIFF.1-4: computed here (sync git access) so the
@@ -2364,86 +2494,120 @@ function readHumanReviewDiff(outDir: string): StructuredDiff | undefined {
   }
 }
 
-// review-surfaces.NARRATIVE.1: read the narrative from a previously written
-// human_review.json so a cache hit can reuse it without re-invoking the provider.
-// Only reuse it when it was validated against the CURRENT head — a stale artifact
-// (older than the packet, e.g. after a stage command rewrote review_packet.json,
-// or an interrupted run) is not reused, so claims validated against another
-// head/diff are never rendered as current verified prose. Returns undefined when
-// the artifact is absent/unreadable, carries no narrative, or is stale (the
-// caller then renders the deterministic fallback against the current packet).
-function readCachedNarrative(outDir: string, headSha: string): ChangeNarrative | undefined {
+// Load the cached human artifact once, validate its v1 contract, and extract all
+// provider-authored sections that a cache-hit rebuild can safely retain.
+function readCachedHumanReviewReuse(
+  cwd: string,
+  outDir: string,
+  headSha: string,
+  packetSignature: string
+): CachedHumanReviewReuse | undefined {
   const humanReviewPath = path.join(outDir.endsWith(".json") ? path.dirname(outDir) : outDir, "human_review.json");
   try {
-    const model = JSON.parse(fs.readFileSync(humanReviewPath, "utf8")) as { narrative?: ChangeNarrative };
-    if (model.narrative && headSha && model.narrative.validated_at_head === headSha) {
-      return model.narrative;
+    const loaded = JSON.parse(fs.readFileSync(humanReviewPath, "utf8")) as unknown;
+    if (humanReviewIssues(cwd, loaded).length > 0) {
+      return undefined;
     }
-    return undefined;
+    const model = loaded as HumanReviewModel;
+    const narrative = headSha && model.narrative.validated_at_head === headSha
+      ? model.narrative
+      : undefined;
+    const changeMapInsights = cachedChangeMapInsights(model, headSha);
+    const conversationReview = model.mode === "repo" &&
+      headSha && model.generated_from.head_sha === headSha &&
+      packetSignature && model.generated_from.packet_signature === packetSignature
+      ? conversationReviewFromFields(model.conversation_analysis, model.review_insights)
+      : undefined;
+    return {
+      narrative,
+      changeMapInsights,
+      conversationReview: conversationReviewIsReusable(conversationReview)
+        ? conversationReview
+        : undefined
+    };
   } catch {
     return undefined;
   }
 }
 
-function readCachedChangeMapInsights(outDir: string, headSha: string): ChangeMapInsights | undefined {
-  const humanReviewPath = path.join(outDir.endsWith(".json") ? path.dirname(outDir) : outDir, "human_review.json");
-  try {
-    const model = JSON.parse(fs.readFileSync(humanReviewPath, "utf8")) as unknown;
-    if (!isRecord(model) || !isRecord(model.generated_from) || model.generated_from.head_sha !== headSha || !isRecord(model.change_graph)) {
-      return undefined;
+function cachedChangeMapInsights(model: HumanReviewModel, headSha: string): ChangeMapInsights | undefined {
+  if (!headSha || model.generated_from.head_sha !== headSha) {
+    return undefined;
+  }
+  const edgeInsights: ChangeGraphEdgeInsight[] = [];
+  for (const edge of model.change_graph.edges) {
+    if (edge.insight_source === "provider") {
+      edgeInsights.push({
+        from: edge.from,
+        to: edge.to,
+        summary: edge.summary,
+        ...(edge.detail ? { detail: edge.detail } : {}),
+        source: "provider"
+      });
     }
-    const graph = model.change_graph;
-    const edgeInsights: ChangeGraphEdgeInsight[] = [];
-    for (const edge of Array.isArray(graph.edges) ? graph.edges : []) {
-      if (
-        isRecord(edge) &&
-        edge.insight_source === "provider" &&
-        typeof edge.from === "string" &&
-        typeof edge.to === "string" &&
-        typeof edge.summary === "string"
-      ) {
-        edgeInsights.push({
-          from: edge.from,
-          to: edge.to,
-          summary: edge.summary,
-          ...(typeof edge.detail === "string" ? { detail: edge.detail } : {}),
+  }
+  const areaInsights: ChangeGraphAreaInsight[] = [];
+  for (const group of model.change_graph.overview.groups) {
+    if (group.insight_source !== "provider") {
+      continue;
+    }
+    const topics: NonNullable<ChangeGraphAreaInsight["topics"]> = [];
+    for (const topic of group.topics ?? []) {
+      if (topic.insight_source === "provider" && topic.paths.length > 0) {
+        topics.push({
+          label: topic.label,
+          summary: topic.summary,
+          paths: topic.paths,
           source: "provider"
         });
       }
     }
-    const areaInsights: ChangeGraphAreaInsight[] = [];
-    const groups = isRecord(graph.overview) && Array.isArray(graph.overview.groups) ? graph.overview.groups : [];
-    for (const group of groups) {
-      if (!isRecord(group) || group.insight_source !== "provider" || typeof group.name !== "string" || typeof group.summary !== "string") {
-        continue;
-      }
-      const topics: NonNullable<ChangeGraphAreaInsight["topics"]> = [];
-      for (const topic of Array.isArray(group.topics) ? group.topics : []) {
-        if (
-          isRecord(topic) &&
-          topic.insight_source === "provider" &&
-          typeof topic.label === "string" &&
-          typeof topic.summary === "string" &&
-          Array.isArray(topic.paths)
-        ) {
-          const paths = topic.paths.filter((filePath): filePath is string => typeof filePath === "string");
-          if (paths.length > 0) {
-            topics.push({ label: topic.label, summary: topic.summary, paths, source: "provider" });
-          }
-        }
-      }
-      areaInsights.push({
-        name: group.name,
-        summary: group.summary,
-        ...(typeof group.detail === "string" ? { detail: group.detail } : {}),
-        ...(topics.length > 0 ? { topics } : {}),
-        source: "provider"
-      });
-    }
-    return edgeInsights.length > 0 || areaInsights.length > 0 ? { edgeInsights, areaInsights } : undefined;
-  } catch {
-    return undefined;
+    areaInsights.push({
+      name: group.name,
+      summary: group.summary,
+      ...(group.detail ? { detail: group.detail } : {}),
+      ...(topics.length > 0 ? { topics } : {}),
+      source: "provider"
+    });
   }
+  return edgeInsights.length > 0 || areaInsights.length > 0 ? { edgeInsights, areaInsights } : undefined;
+}
+
+const NON_REUSABLE_CONVERSATION_FLAGS = new Set([
+  "conversation_analysis_unavailable",
+  "conversation_analysis_invalid_payload",
+  "conversation_analysis_partial",
+  "conversation_review_unavailable",
+  "conversation_review_invalid_payload"
+]);
+
+function conversationReviewFromFields(
+  analysis: ConversationReviewResult["analysis"] | undefined,
+  insights: ConversationReviewResult["insights"] | undefined
+): ConversationReviewResult | undefined {
+  return analysis && Array.isArray(insights) ? { analysis, insights } : undefined;
+}
+
+function conversationReviewIsReusable(
+  review: ConversationReviewResult | undefined
+): review is ConversationReviewResult {
+  if (!review) {
+    return false;
+  }
+  // Mock and agent-file outcomes are deterministic for a fixed cache signature:
+  // retrying them cannot recover until their inputs change, which already forces
+  // a signature miss. Only the remote provider can recover from an unchanged-input
+  // timeout, missing runtime credential, or other transient provider failure.
+  if (review.analysis.provider !== "ai-sdk") {
+    return true;
+  }
+  if (review.analysis.quality_flags.includes("conversation_analysis_privacy_blocked")) {
+    return true;
+  }
+  if (review.analysis.status !== "analyzed" && review.analysis.status !== "not_assessed") {
+    return false;
+  }
+  return !review.analysis.quality_flags.some((flag) => NON_REUSABLE_CONVERSATION_FLAGS.has(flag));
 }
 
 // review-surfaces.HUMAN_REVIEW.20: the render context carries the collected diff
@@ -2522,10 +2686,11 @@ async function writeHumanReviewForPacket(
   feedback?: FeedbackFile[],
   config?: ReviewSurfacesConfig,
   narrative?: ChangeNarrative,
-  changeMapInsights?: ChangeMapInsights
+  changeMapInsights?: ChangeMapInsights,
+  conversationReview?: ConversationReviewResult
 ): Promise<HumanReviewModel> {
-  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface, diff, feedback, config, narrative, changeMapInsights);
-  await writeHumanReviewArtifacts(outDir, humanReview, humanRenderContext(outDir, diff));
+  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface, diff, feedback, config, narrative, changeMapInsights, conversationReview);
+  await writeHumanReviewArtifacts(outDir, humanReview, { diff });
   return humanReview;
 }
 
@@ -3138,7 +3303,7 @@ async function loadCurrentHumanReviewForPrComment(
       `Refreshing stale human_review.json for the current human_review config before rendering the PR comment.`
     );
     const context = await buildHumanReviewFromArtifacts(cwd, outputDir, "pr", config);
-    await writeHumanReviewArtifacts(context.outputDir, context.model, humanRenderContext(context.outputDir));
+    await writeHumanReviewArtifacts(context.outputDir, context.model, { diff: context.diff });
     return context.model;
   }
   if (!humanReviewJsonSatisfiesPrComment(humanReview)) {
@@ -3146,7 +3311,7 @@ async function loadCurrentHumanReviewForPrComment(
       `Refreshing stale human_review.json for the current human review artifact set before rendering the PR comment.`
     );
     const context = await buildHumanReviewFromArtifacts(cwd, outputDir, "pr", config);
-    await writeHumanReviewArtifacts(context.outputDir, context.model, humanRenderContext(context.outputDir));
+    await writeHumanReviewArtifacts(context.outputDir, context.model, { diff: context.diff });
     return context.model;
   }
   return humanReview;
@@ -3170,6 +3335,8 @@ function humanReviewMatchesPrSurface(
     baseShaMatches &&
     generatedFrom.head_ref === surface.scope.head_ref &&
     generatedFrom.head_sha === surface.scope.head_sha &&
+    JSON.stringify(candidate.conversation_analysis) === JSON.stringify(surface.conversation_analysis) &&
+    JSON.stringify(candidate.review_insights) === JSON.stringify(surface.review_insights ?? []) &&
     artifactPathMatches(cwd, outputDir, generatedFrom.pr_surface_path, "pr_review_surface.json")
   );
 }

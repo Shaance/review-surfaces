@@ -4,6 +4,7 @@ import { HUMAN_REVIEW_SCHEMA_VERSION } from "../src/human/contract";
 import type { HumanReviewModel } from "../src/human/contract";
 import { renderHumanReviewHtml } from "../src/human/render-html";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
+import { notAssessedConversationAnalysis } from "../src/conversation/analysis";
 
 function model(over: Partial<HumanReviewModel> = {}): HumanReviewModel {
   return {
@@ -24,6 +25,8 @@ function model(over: Partial<HumanReviewModel> = {}): HumanReviewModel {
     reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "One renderer file changed.",
+    conversation_analysis: notAssessedConversationAnalysis("mock"),
+    review_insights: [],
     review_queue: [
       {
         id: "REVIEW-001",

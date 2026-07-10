@@ -9,14 +9,17 @@ import { ProviderName, ReasoningProvider } from "../llm/provider";
 import { buildPrNarrative } from "../llm/pr-narrative";
 import { buildPrChangeDiagram } from "../diagrams/pr-change-diagram";
 import { buildPrRiskCandidates } from "../risks/pr-risks";
+import { notAssessedConversationAnalysis } from "../conversation/analysis";
+import { buildConversationReview } from "../conversation/review";
 import { createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
 import { buildPrScope, isExecutableTestPath } from "../scope/pr-scope";
 import { PrReviewSurfaceModel, PR_SURFACE_SCHEMA_VERSION, PrSurfaceBlockedReason, StructuredDiff } from "../pr/contract";
 
 // ---------------------------------------------------------------------------
 // PR review surface assembly. Runs the deterministic diff-scoped facts
-// (scope -> coverage delta -> risks -> change diagram) then the LLM narrative,
-// and packages them into a PrReviewSurfaceModel. PR mode REQUIRES the narrative:
+// (scope -> coverage delta -> risks -> change diagram), then the required LLM
+// narrative and advisory conversation review, and packages them into a
+// PrReviewSurfaceModel. PR mode REQUIRES the narrative:
 // a blocked surface (no narrative) is returned rather than ever falling back to
 // the whole-repo comment. The caller (CLI/renderer) decides whether to post.
 // ---------------------------------------------------------------------------
@@ -83,6 +86,10 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
   // No changed files -> nothing to review. Block (don't post an empty surface),
   // skip the LLM call entirely.
   if (scope.changed_files.length === 0) {
+    const conversationAnalysis = notAssessedConversationAnalysis(
+      input.providerName,
+      "No changed diff was available; conversation intent was not assessed."
+    );
     return {
       schema_version: PR_SURFACE_SCHEMA_VERSION,
       mode: "pr",
@@ -92,11 +99,22 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
       scope,
       coverage,
       risks,
+      conversation_analysis: {
+        ...conversationAnalysis,
+        quality_flags: [
+          ...(input.collection.conversationEvents?.length ? [] : conversationAnalysis.quality_flags),
+          "conversation_review_no_diff"
+        ]
+      },
+      review_insights: [],
       diagram,
       llm: { required: true, provider: input.providerName, model: input.model, status: "blocked", validation_errors: ["no_diff"] }
     };
   }
 
+  // Preserve the existing postability-critical narrative call ahead of optional
+  // conversation enrichment so a long transcript cannot consume the provider
+  // budget and cause an otherwise-ready PR surface to fail afterwards.
   const narrativeResult = await buildPrNarrative({
     specMode: input.intent.spec_mode,
     provider: input.provider,
@@ -112,6 +130,20 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     remotePrivacyBlocked: input.collection.privacy.remote_provider_blocked
   });
 
+  const conversationReview = await buildConversationReview({
+    provider: input.provider,
+    providerName: input.providerName,
+    events: input.collection.conversationEvents,
+    diff,
+    scope,
+    coverage,
+    risks,
+    commandTranscripts: input.collection.commandTranscripts,
+    headSha: scope.head_sha,
+    redactSecrets: input.redactSecrets,
+    remotePrivacyBlocked: input.collection.privacy.remote_provider_blocked
+  });
+
   const blockedReason: PrSurfaceBlockedReason | undefined = narrativeResult.narrative ? undefined : narrativeResult.blocked_reason ?? "llm_unavailable";
 
   return {
@@ -123,6 +155,8 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     scope,
     coverage,
     risks,
+    conversation_analysis: conversationReview.analysis,
+    review_insights: conversationReview.insights,
     diagram,
     narrative: narrativeResult.narrative,
     llm: narrativeResult.meta
