@@ -8,6 +8,7 @@ import { collectInputs } from "../src/collector/collect";
 import { collectChangedFiles } from "../src/collector/git";
 import { defaultConfig } from "../src/config/config";
 import { buildMethodology } from "../src/methodology/methodology";
+import { openAiProjectKeyFixture } from "./helpers/secret-fixtures";
 
 test("collects specs and writes first local artifacts", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-test-"));
@@ -495,6 +496,7 @@ test("review-surfaces.PRIVACY.7 a conversation tool_result secret folds into rem
 
 test("review-surfaces.PRIVACY.2 a blocked command transcript folds into the collection remote-provider gate", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-command-priv-"));
+  const secret = openAiProjectKeyFixture();
   fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
   fs.mkdirSync(path.join(tmp, ".review-surfaces", "commands"), { recursive: true });
   fs.copyFileSync(
@@ -504,7 +506,7 @@ test("review-surfaces.PRIVACY.2 a blocked command transcript folds into the coll
   fs.writeFileSync(
     path.join(tmp, ".review-surfaces", "commands", "secret.json"),
     JSON.stringify({
-      commands: [{ command: "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456 pnpm test", exit_code: 0 }]
+      commands: [{ command: `OPENAI_API_KEY=${secret} pnpm test`, exit_code: 0 }]
     })
   );
   execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });

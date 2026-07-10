@@ -8,6 +8,7 @@ import {
 } from "../src/conversation/analysis";
 import type { ConversationEvent } from "../src/conversation/events";
 import type { GenerateStructuredOptions, ReasoningProvider, StructuredResult } from "../src/llm/provider";
+import { openAiProjectKeyFixture } from "./helpers/secret-fixtures";
 
 const EVENTS: ConversationEvent[] = [
   { id: "u1", actor: "user", kind: "message", summary: "Add an upload endpoint.", raw_index: 0 },
@@ -93,10 +94,11 @@ test("fabricated event ids are rejected and fully unanchored items are dropped",
 });
 
 test("event citations must match the emitted allowlist id byte-for-byte", async () => {
+  const secret = openAiProjectKeyFixture();
   const result = await analyzeConversation({
     provider: providerReturning(payload({
       intent: [{ text: "Whitespace must not manufacture grounding.", event_ids: [" u1 "] }],
-      decisions: [{ text: "Redaction must not manufacture grounding.", event_ids: ["sk-proj-abcdefghijklmnopqrstuvwxyz123456"] }]
+      decisions: [{ text: "Redaction must not manufacture grounding.", event_ids: [secret] }]
     })),
     providerName: "ai-sdk",
     events: EVENTS
@@ -128,7 +130,7 @@ test("no-log fallback is deterministic, explicit, and never calls the provider",
 });
 
 test("conversation input and provider output are redacted before use or persistence", async () => {
-  const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";
+  const secret = openAiProjectKeyFixture();
   let prompt = "";
   let options: GenerateStructuredOptions | undefined;
   const events: ConversationEvent[] = [

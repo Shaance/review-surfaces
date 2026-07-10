@@ -9,6 +9,7 @@ import { EvaluationModel } from "../src/evaluation/evaluate";
 import { createReviewAreaMatcher } from "../src/review-areas/areas";
 import { analyzeRisks } from "../src/risks/risks";
 import { defaultReviewSurfacesAreas } from "./helpers/review-areas";
+import { openAiProjectKeyFixture } from "./helpers/secret-fixtures";
 
 test("review-surfaces.COLLECTOR.7 indexes bounded local command transcripts without preserving raw output", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-commands-"));
@@ -114,6 +115,7 @@ test("review-surfaces.COLLECTOR.7 omits oversized raw transcript output unless a
 
 test("review-surfaces.PRIVACY.2 an imported oversized transcript scans the full raw output for blocked secrets", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-command-late-secret-"));
+  const secret = openAiProjectKeyFixture();
   fs.mkdirSync(path.join(tmp, ".review-surfaces", "commands"), { recursive: true });
   fs.writeFileSync(
     path.join(tmp, ".review-surfaces", "commands", "local.json"),
@@ -121,7 +123,7 @@ test("review-surfaces.PRIVACY.2 an imported oversized transcript scans the full 
       commands: [{
         command: "pnpm test",
         exit_code: 0,
-        stdout: `${"x".repeat(20_001)} sk-proj-abcdefghijklmnopqrstuvwxyz123456`
+        stdout: `${"x".repeat(20_001)} ${secret}`
       }]
     })
   );

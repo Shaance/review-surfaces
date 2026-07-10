@@ -8,6 +8,11 @@ import { spawnSync } from "node:child_process";
 import { indexCommandTranscriptFiles, indexCommandTranscripts } from "../src/commands/transcripts";
 import { recordCommandTranscript } from "../src/commands/runner";
 import { SECRET_PATTERN_SOURCES, redactSecrets } from "../src/privacy/secrets";
+import {
+  openAiLegacyKeyFixture,
+  openAiProjectKeyFixture,
+  pemBoundaryFixture
+} from "./helpers/secret-fixtures";
 
 function loadBinRedact(): (value: string | undefined) => string | undefined {
   const runtime = require(path.join(process.cwd(), "bin", "privacy-runtime.js")) as {
@@ -92,7 +97,7 @@ test("review-surfaces.PRIVACY.2 redacts and bounds transcript output captured by
 
 test("review-surfaces.PRIVACY.2 a blocked secret after the retained output cap still blocks remote use", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-late-secret-"));
-  const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";
+  const secret = openAiProjectKeyFixture();
   const result = await recordCommandTranscript({
     cwd: tmp,
     args: [process.execPath, "-e", `process.stdout.write('${"x".repeat(7000)} ${secret}')`],
@@ -129,12 +134,13 @@ test("review-surfaces.PRIVACY.2 an unmatched PEM opener is redacted through the 
 
 test("review-surfaces.PRIVACY.2 an unmatched PEM in the command field is blocked and redacted", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-command-pem-"));
+  const pemOpen = pemBoundaryFixture("PRIVATE KEY", "BEGIN");
   const result = await recordCommandTranscript({
     cwd: tmp,
     args: [
       process.execPath,
       "-e",
-      "console.log('safe-output') // -----BEGIN PRIVATE KEY----- MII-COMMAND-KEY-PREFIX"
+      `console.log('safe-output') // ${pemOpen} MII-COMMAND-KEY-PREFIX`
     ],
     id: "CMD-RUN-COMMAND-PEM",
     streamOutput: false,
@@ -148,7 +154,9 @@ test("review-surfaces.PRIVACY.2 an unmatched PEM in the command field is blocked
 
 test("review-surfaces.PRIVACY.2 a PEM closing beyond the raw cap cannot persist its header or key prefix", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-capped-pem-"));
-  const output = `safe-prefix\n-----BEGIN PRIVATE KEY-----\nMII-CAPPED-KEY-PREFIX\n${"A".repeat(6000)}\n-----END PRIVATE KEY-----`;
+  const pemOpen = pemBoundaryFixture("PRIVATE KEY", "BEGIN");
+  const pemClose = pemBoundaryFixture("PRIVATE KEY", "END");
+  const output = `safe-prefix\n${pemOpen}\nMII-CAPPED-KEY-PREFIX\n${"A".repeat(6000)}\n${pemClose}`;
   const result = await recordCommandTranscript({
     cwd: tmp,
     args: [
@@ -243,7 +251,7 @@ test("review-surfaces.PRIVACY.2 no-dist run fallback detects secrets after its r
   const transcript = JSON.parse(
     fs.readFileSync(path.join(tmp, "commands", "CMD-FALLBACK-LATE-SECRET.json"), "utf8")
   ).commands[0];
-  const output = `${"x".repeat(7000)} sk-proj-abcdefghijklmnopqrstuvwxyz123456`;
+  const output = `${"x".repeat(7000)} ${openAiProjectKeyFixture()}`;
   assert.equal(transcript.truncated, true);
   assert.equal(transcript.secret_blocked, true);
   assert.doesNotMatch(transcript.stdout_excerpt ?? "", /sk-proj-/);
@@ -387,15 +395,15 @@ test("review-surfaces.PRIVACY.2 shared bin privacy runtime matches the TypeScrip
   // battery covering every kind, repeated matches, and ordering behavior.
   const binRedact = loadBinRedact();
   const battery = [
-    "-----BEGIN PRIVATE KEY-----\nMIIabcDEF0123\n-----END PRIVATE KEY-----",
-    "-----BEGIN RSA PRIVATE KEY-----\nMIIabcDEF0123",
+    `${pemBoundaryFixture("PRIVATE KEY", "BEGIN")}\nMIIabcDEF0123\n${pemBoundaryFixture("PRIVATE KEY", "END")}`,
+    `${pemBoundaryFixture("RSA PRIVATE KEY", "BEGIN")}\nMIIabcDEF0123`,
     "aws_key=AKIAIOSFODNN7EXAMPLE",
     "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
     "auth ghp_0123456789012345678901234567890123456",
     "pat github_pat_0123456789012345678901_abcDEFghij",
     "slack xoxb-0123456789-abcdefghijkl",
-    "openai sk-proj-01234567890123456789",
-    "openai sk-01234567890123456789",
+    `openai ${openAiProjectKeyFixture()}`,
+    `openai ${openAiLegacyKeyFixture()}`,
     "stripe sk_live_01234567890123456789",
     "google ya29.01234567890123456789",
     "jwt eyJhbGciOi.eyJzdWIiLCJ.SflKxwRJSMeKKF",

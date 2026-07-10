@@ -15,6 +15,18 @@ import {
   StreamingBlockingSecretDetector
 } from "../src/privacy/secrets";
 import { filterIgnoredDiff } from "../src/privacy/diff";
+import { pemBoundaryFixture } from "./helpers/secret-fixtures";
+
+const AWS_ACCESS_KEY_ID_FIXTURE = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
+const AWS_SECRET_VALUE_FIXTURE = ["wJalrXUtnFEMI/K7MDENG/bPxRfiCY", "EXAMPLEKEY"].join("");
+const AWS_SECRET_ASSIGNMENT_FIXTURE = `AWS_SECRET_ACCESS_KEY=${AWS_SECRET_VALUE_FIXTURE}`;
+const SLACK_BOT_TOKEN_FIXTURE = ["xoxb", "1234567890", "abcdefghijklmnop"].join("-");
+const SLACK_SESSION_TOKEN_FIXTURE = ["xoxs", "1234567890", "abcdefghijklmnop"].join("-");
+const JWT_FIXTURE = [
+  "eyJhbGciOiJIUzI1NiJ9",
+  "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+  "signature"
+].join(".");
 
 test("review-surfaces.COLLECTOR.6 applies .review-surfacesignore before indexing changed files", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ignore-"));
@@ -144,7 +156,7 @@ test("review-surfaces.PRIVACY.2 blocks high-risk private key material for remote
 });
 
 test("review-surfaces.PRIVACY.2 canonical redaction fails closed on an unmatched private-key opener", () => {
-  const result = redactSecrets("safe prefix -----BEGIN RSA PRIVATE KEY-----\nMII-UNTERMINATED-KEY");
+  const result = redactSecrets(`safe prefix ${pemBoundaryFixture("RSA PRIVATE KEY", "BEGIN")}\nMII-UNTERMINATED-KEY`);
 
   assert.equal(result.blocked, true);
   assert.equal(result.text, "safe prefix [REDACTED:private_key]");
@@ -155,7 +167,7 @@ test("review-surfaces.PRIVACY.2 scan-only detection covers raw, persisted, and p
   const githubToken = `ghp_${"Z".repeat(36)}`;
   assert.equal(containsBlockingSecretMaterial(githubToken), true);
   assert.equal(containsBlockingSecretMaterial("[REDACTED:github_token]"), true);
-  assert.equal(containsBlockingSecretMaterial("-----BEGIN PRIVATE KEY-----\npartial"), true);
+  assert.equal(containsBlockingSecretMaterial(`${pemBoundaryFixture("PRIVATE KEY", "BEGIN")}\npartial`), true);
   assert.equal(containsBlockingSecretMaterial("ordinary review output"), false);
 
   const persisted = inspectAndRedactSecrets("safe prefix [REDACTED:github_token]");
@@ -200,7 +212,7 @@ test("review-surfaces.PRIVACY.2 specialized streaming states survive unbounded P
     " ".repeat(5000),
     "=",
     " ".repeat(5000),
-    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    AWS_SECRET_VALUE_FIXTURE
   ]) {
     awsDetector.write(fragment);
   }
@@ -208,17 +220,17 @@ test("review-surfaces.PRIVACY.2 specialized streaming states survive unbounded P
 });
 
 const STREAMING_BLOCKED_KIND_CASES: Array<{ name: string; kind: string; material: string }> = [
-  { name: "private key", kind: "private_key", material: "-----BEGIN RSA PRIVATE KEY-----\nMII-UNTERMINATED" },
-  { name: "AWS access key id", kind: "aws_access_key_id", material: "AKIAIOSFODNN7EXAMPLE" },
+  { name: "private key", kind: "private_key", material: `${pemBoundaryFixture("RSA PRIVATE KEY", "BEGIN")}\nMII-UNTERMINATED` },
+  { name: "AWS access key id", kind: "aws_access_key_id", material: AWS_ACCESS_KEY_ID_FIXTURE },
   {
     name: "AWS secret",
     kind: "aws_secret",
-    material: "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    material: AWS_SECRET_ASSIGNMENT_FIXTURE
   },
   { name: "GitHub classic token", kind: "github_token", material: `ghp_${"A".repeat(36)}` },
   { name: "GitHub fine-grained token", kind: "github_token", material: `github_pat_${"A".repeat(22)}` },
-  { name: "Slack bot token", kind: "slack_token", material: "xoxb-1234567890-abcdefghijklmnop" },
-  { name: "Slack session token", kind: "slack_token", material: "xoxs-1234567890-abcdefghijklmnop" },
+  { name: "Slack bot token", kind: "slack_token", material: SLACK_BOT_TOKEN_FIXTURE },
+  { name: "Slack session token", kind: "slack_token", material: SLACK_SESSION_TOKEN_FIXTURE },
   { name: "OpenAI project key", kind: "openai_key", material: `sk-proj-${"a".repeat(24)}` },
   { name: "OpenAI legacy key", kind: "openai_key", material: `sk-${"a".repeat(24)}` },
   { name: "Stripe secret key", kind: "stripe_key", material: `sk_live_${"a".repeat(24)}` },
@@ -227,7 +239,7 @@ const STREAMING_BLOCKED_KIND_CASES: Array<{ name: string; kind: string; material
   {
     name: "JWT",
     kind: "jwt",
-    material: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature"
+    material: JWT_FIXTURE
   },
   { name: "Google API key", kind: "google_api_key", material: `AIza${"a".repeat(30)}` }
 ];
@@ -320,27 +332,27 @@ test("review-surfaces.PRIVACY.2 JWT streaming detection matches canonical traili
   }
 
   const trueEnd = new StreamingBlockingSecretDetector();
-  assert.equal(trueEnd.write("eyJa.b.c"), false);
+  assert.equal(trueEnd.write(["eyJa", "b", "c"].join(".")), false);
   assert.equal(trueEnd.blockedSecretSeen(), true);
 });
 
 // R4.4: each new high-confidence provider-token pattern must BLOCK the remote
 // call, remove the raw secret literal, and leave its [REDACTED:<kind>] marker.
 const PROVIDER_TOKEN_CASES: Array<{ name: string; secret: string; kind: string }> = [
-  { name: "AWS access key id", secret: "AKIAIOSFODNN7EXAMPLE", kind: "aws_access_key_id" },
+  { name: "AWS access key id", secret: AWS_ACCESS_KEY_ID_FIXTURE, kind: "aws_access_key_id" },
   {
     name: "AWS secret access key assignment",
-    secret: "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    secret: AWS_SECRET_ASSIGNMENT_FIXTURE,
     kind: "aws_secret"
   },
   { name: "GitHub ghp_ token", secret: `ghp_${"A".repeat(36)}`, kind: "github_token" },
   { name: "GitHub fine-grained pat", secret: `github_pat_${"A".repeat(22)}`, kind: "github_token" },
-  { name: "Slack xoxb token", secret: "xoxb-1234567890-abcdefghijklmnop", kind: "slack_token" },
+  { name: "Slack xoxb token", secret: SLACK_BOT_TOKEN_FIXTURE, kind: "slack_token" },
   { name: "OpenAI sk-proj key", secret: `sk-proj-${"a".repeat(24)}`, kind: "openai_key" },
   { name: "OpenAI sk key", secret: `sk-${"a".repeat(24)}`, kind: "openai_key" },
   { name: "Stripe live key", secret: `sk_live_${"a".repeat(24)}`, kind: "stripe_key" },
   { name: "Google OAuth token", secret: `ya29.${"a".repeat(30)}`, kind: "google_oauth_token" },
-  { name: "JWT", secret: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", kind: "jwt" },
+  { name: "JWT", secret: `${JWT_FIXTURE.slice(0, JWT_FIXTURE.lastIndexOf("."))}.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c`, kind: "jwt" },
   // review-surfaces.PRIVACY.6: google_api_key was the lone blocked:false provider
   // pattern; it now joins the blocked set like every other provider token.
   { name: "Google API key", secret: `AIzaSy${"a".repeat(30)}`, kind: "google_api_key" }

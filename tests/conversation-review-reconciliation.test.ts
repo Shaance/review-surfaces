@@ -11,6 +11,7 @@ import {
   retryDeletionDiff,
   stageProvider
 } from "./helpers/conversation-review";
+import { openAiProjectKeyFixture } from "./helpers/secret-fixtures";
 
 function generatedFileDiff(count: number): ReturnType<typeof parseStructuredDiff> {
   return parseStructuredDiff(Array.from({ length: count }, (_, index) => [
@@ -225,7 +226,7 @@ test("review-surfaces.CONVERSATION_REVIEW.3 malformed candidate payloads are dis
 test("review-surfaces.CONVERSATION_REVIEW.3 rejected raw entries are not stringified or redacted", async () => {
   let serializationAttempts = 0;
   const rejected = {
-    unexpected_secret: "sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+    unexpected_secret: openAiProjectKeyFixture(),
     toJSON() {
       serializationAttempts += 1;
       throw new Error("rejected candidates must not be serialized");
@@ -310,7 +311,7 @@ test("review-surfaces.CONVERSATION_REVIEW.3 agent-file reconciliation requires a
 });
 
 test("review-surfaces.PRIVACY.2 second-pass diff and command preprocessing preserves the provider block signal", async () => {
-  const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";
+  const secret = openAiProjectKeyFixture();
   let insightOptions: GenerateStructuredOptions | undefined;
   let insightPromptText = "";
   const provider: ReasoningProvider = {

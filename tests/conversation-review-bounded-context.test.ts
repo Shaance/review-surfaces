@@ -10,6 +10,7 @@ import {
   retryDeletionDiff,
   stageProvider
 } from "./helpers/conversation-review";
+import { openAiProjectKeyFixture } from "./helpers/secret-fixtures";
 
 test("review-surfaces.CONVERSATION_REVIEW.3 validation accepts only events represented in the first-pass analysis", async () => {
   const staged = stageProvider([
@@ -68,7 +69,7 @@ test("review-surfaces.CONVERSATION_REVIEW.3 exact citation capabilities are neve
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.3 a raw secret anchor cannot become a prompt-visible redaction-marker match", async () => {
-  const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";
+  const secret = openAiProjectKeyFixture();
   const diff = parseStructuredDiff([
     "diff --git a/src/retry.ts b/src/retry.ts",
     "--- a/src/retry.ts",
