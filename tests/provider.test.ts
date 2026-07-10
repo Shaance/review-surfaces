@@ -133,6 +133,47 @@ test("review-surfaces.PRIVACY.5 ai-sdk provider blocks on secret material in the
   });
 });
 
+test("review-surfaces.PRIVACY.5 disabling substitution never disables the hard prompt-secret block", async () => {
+  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
+    let loaderCalled = false;
+    const provider = aiSdkProvider({
+      aiModuleLoader: async () => {
+        loaderCalled = true;
+        throw new Error("must not load the remote SDK");
+      }
+    });
+    const pemLabel = "PRIVATE KEY";
+    const prompt = `-----BEGIN ${pemLabel}-----\nabc\n-----END ${pemLabel}-----`;
+    const result = await provider.generateStructured("enrichment", prompt, SCHEMA, {
+      redactSecrets: false
+    });
+
+    assert.deepEqual(result, { ok: false, reason: "privacy_block" });
+    assert.equal(loaderCalled, false);
+  });
+});
+
+test("review-surfaces.PRIVACY.5 persisted blocked markers stop before the remote SDK boundary", async () => {
+  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
+    let loaderCalled = false;
+    const provider = aiSdkProvider({
+      aiModuleLoader: async () => {
+        loaderCalled = true;
+        throw new Error("must not load the remote SDK");
+      }
+    });
+    const markerKind = ["github", "token"].join("_");
+    const prompt = `Previously sanitized input: [REDACTED:${markerKind}]`;
+
+    const result = await provider.generateStructured("enrichment", prompt, SCHEMA, {
+      redactSecrets: false
+    });
+
+    assert.deepEqual(result, { ok: false, reason: "privacy_block" });
+    assert.equal(loaderCalled, false);
+  });
+});
+
 test("agent-file provider returns structured data from a local file", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-agentfile-"));
   fs.writeFileSync(path.join(tmp, "agent.json"), JSON.stringify({ review_focus: ["Check evaluator"] }));
@@ -140,6 +181,102 @@ test("agent-file provider returns structured data from a local file", async () =
   const result = await provider.generateStructured("enrichment", "prompt", SCHEMA);
   assert.equal(result.ok, true);
   assert.deepEqual((result as { ok: true; data: any }).data, { review_focus: ["Check evaluator"] });
+});
+
+test("agent-file provider supports stage-specific envelopes while preserving the flat-file fallback", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-agentfile-stages-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(tmp, "agent.json"), JSON.stringify({
+    stages: {
+      conversation_analysis: { summary: "analysis" },
+      conversation_review_insights: { insights: [] }
+    },
+    review_focus: ["legacy fallback"]
+  }));
+  const provider = agentFileProvider({ cwd: tmp, agentInput: "agent.json" });
+
+  const analysis = await provider.generateStructured("conversation_analysis", "prompt", SCHEMA);
+  const insights = await provider.generateStructured("conversation_review_insights", "prompt", SCHEMA);
+  const legacy = await provider.generateStructured("enrichment", "prompt", SCHEMA);
+
+  assert.deepEqual(analysis, { ok: true, data: { summary: "analysis" } });
+  assert.deepEqual(insights, { ok: true, data: { insights: [] } });
+  assert.equal(legacy.ok, true);
+  assert.deepEqual((legacy as { ok: true; data: any }).data.review_focus, ["legacy fallback"]);
+});
+
+test("agent-file provider supplies explicit repeated-stage payloads in invocation order and fails on exhaustion", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-agentfile-sequences-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(tmp, "agent.json"), JSON.stringify({
+    stage_sequences: {
+      conversation_analysis_chunk: [
+        { summary: "window one" },
+        { summary: "window two" },
+        { summary: "window three" }
+      ]
+    },
+    stages: {
+      conversation_analysis: { summary: "reduced analysis" }
+    },
+    review_focus: ["legacy fallback"]
+  }));
+  const provider = agentFileProvider({ cwd: tmp, agentInput: "agent.json" });
+
+  const chunks = await Promise.all([1, 2, 3].map(() =>
+    provider.generateStructured("conversation_analysis_chunk", "prompt", SCHEMA)
+  ));
+
+  assert.deepEqual(chunks, [
+    { ok: true, data: { summary: "window one" } },
+    { ok: true, data: { summary: "window two" } },
+    { ok: true, data: { summary: "window three" } }
+  ]);
+  assert.deepEqual(
+    await provider.generateStructured("conversation_analysis_chunk", "prompt", SCHEMA),
+    { ok: false, reason: "agent_input_stage_sequence_exhausted:conversation_analysis_chunk" }
+  );
+  assert.deepEqual(await provider.generateStructured("conversation_analysis", "prompt", SCHEMA), {
+    ok: true,
+    data: { summary: "reduced analysis" }
+  });
+  const legacy = await provider.generateStructured("enrichment", "prompt", SCHEMA);
+  assert.equal(legacy.ok, true);
+  assert.deepEqual((legacy as { ok: true; data: any }).data.review_focus, ["legacy fallback"]);
+});
+
+test("agent-file provider rejects a malformed repeated-stage sequence explicitly", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-agentfile-bad-sequence-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(tmp, "agent.json"), JSON.stringify({
+    stage_sequences: { conversation_analysis_chunk: { summary: "not an array" } }
+  }));
+
+  const result = await agentFileProvider({ cwd: tmp, agentInput: "agent.json" })
+    .generateStructured("conversation_analysis_chunk", "prompt", SCHEMA);
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: "agent_input_stage_sequence_not_array:conversation_analysis_chunk"
+  });
+});
+
+test("agent-file provider parses its immutable stage envelope once", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-agentfile-cache-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const inputPath = path.join(tmp, "agent.json");
+  fs.writeFileSync(inputPath, JSON.stringify({ stages: { first: { value: 1 }, second: { value: 2 } } }));
+  const provider = agentFileProvider({ cwd: tmp, agentInput: "agent.json" });
+
+  assert.deepEqual(await provider.generateStructured("first", "prompt", SCHEMA), {
+    ok: true,
+    data: { value: 1 }
+  });
+  fs.writeFileSync(inputPath, "{ malformed after the provider run started");
+  assert.deepEqual(await provider.generateStructured("second", "prompt", SCHEMA), {
+    ok: true,
+    data: { value: 2 }
+  });
 });
 
 test("agent-file provider skips when input is missing", async () => {
@@ -352,6 +489,37 @@ function fakeAiLoader(generateObject: (args: any) => Promise<any>): (moduleName:
     throw new Error(`unexpected module ${moduleName}`);
   };
 }
+
+test("ai-sdk live branch applies prompt substitution only when requested", async () => {
+  await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {
+    const assignmentName = ["SERVICE", "TOKEN"].join("_");
+    const assignmentValue = ["local", "fixture", "credential", "12345"].join("-");
+    const rawPrompt = `Review this configuration: ${assignmentName}=${assignmentValue}`;
+    const observedPrompts: string[] = [];
+    const provider = aiSdkProvider({
+      aiModuleLoader: fakeAiLoader(async (args) => {
+        observedPrompts.push(args.prompt);
+        return { object: { review_focus: ["X"] } };
+      })
+    });
+
+    const redacted = await provider.generateStructured("enrichment", rawPrompt, SCHEMA, {
+      redactSecrets: true
+    });
+    const unredacted = await provider.generateStructured("enrichment", rawPrompt, SCHEMA, {
+      redactSecrets: false
+    });
+
+    assert.deepEqual(redacted, { ok: true, data: { review_focus: ["X"] } });
+    assert.deepEqual(unredacted, { ok: true, data: { review_focus: ["X"] } });
+    assert.deepEqual(observedPrompts, [
+      `Review this configuration: ${assignmentName}=[REDACTED:secret]`,
+      rawPrompt
+    ]);
+    assert.doesNotMatch(observedPrompts[0], new RegExp(assignmentValue));
+    assert.match(observedPrompts[1], new RegExp(assignmentValue));
+  });
+});
 
 test("ai-sdk live branch applies enrichment when generateObject resolves an object", async () => {
   await withEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key", async () => {

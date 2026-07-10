@@ -1,7 +1,8 @@
 import { SPEC_NONE_NOTE } from "../evaluation/status";
-import { redactSecrets } from "../privacy/secrets";
+import { inspectAndRedactSecrets, redactSecrets } from "../privacy/secrets";
 import { changeMapMermaidEmbed, changeMapTitle, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
 import { firstTourLegSnippet } from "./tour-snippet";
+import { renderCompactConversationReviewMarkdown } from "../human/render";
 import type {
   HumanReviewModel,
   ReviewBlocker,
@@ -135,6 +136,9 @@ export function renderPrComment(surface: PrReviewSurfaceModel, options: RenderPr
         "",
         field(hint),
         "",
+        "### Conversation-aware insights",
+        renderCompactConversationReviewMarkdown(surface.conversation_analysis, surface.review_insights),
+        "",
         // review-surfaces.COLD_START.5: spec-less surfaces never count requirements.
         surface.spec_mode === "none"
           ? `Deterministic scope: ${surface.scope.changed_files.length} changed file(s), ${surface.risks.candidates.length} PR risk(s). See \`${surfacePath}\`.`
@@ -162,6 +166,9 @@ export function renderPrComment(surface: PrReviewSurfaceModel, options: RenderPr
     sections.push("", summary);
   }
   sections.push(
+    "",
+    "### Conversation-aware insights",
+    renderCompactConversationReviewMarkdown(surface.conversation_analysis, surface.review_insights),
     "",
     "### What changed",
     bullets(narrative.what_changed.slice(0, MAX_WHAT_CHANGED), "No change narrative."),
@@ -232,6 +239,9 @@ export function renderHumanPrComment(model: HumanReviewModel, options: RenderHum
       : []),
     field(model.summary),
     "",
+    "### Conversation-aware insights",
+    renderCompactConversationReviewMarkdown(model.conversation_analysis, model.review_insights),
+    "",
     "### Review first",
     renderHumanReviewFirst(model.review_queue.slice(0, MAX_REVIEW_FIRST)),
     "",
@@ -253,9 +263,10 @@ export function renderHumanPrComment(model: HumanReviewModel, options: RenderHum
     `Human review JSON: \`${field(humanReviewJsonPath)}\`.`,
     `Lower-level PR facts: \`${field(surfacePath)}\`.`
   ];
+  const rendered = inspectAndRedactSecrets(clampTotal(`${sections.join("\n")}\n`, humanReviewPath));
   return {
-    markdown: clampTotal(`${sections.join("\n")}\n`, humanReviewPath),
-    blocked: mapEmbed.blocked || depTree.blocked || tourLeg.blocked
+    markdown: rendered.text,
+    blocked: mapEmbed.blocked || depTree.blocked || tourLeg.blocked || rendered.blocked
   };
 }
 

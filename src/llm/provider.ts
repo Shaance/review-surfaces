@@ -1,44 +1,24 @@
 import path from "node:path";
+import type {
+  GenerateStructuredOptions,
+  ProviderName,
+  ReasoningProvider,
+  StructuredResult
+} from "../contracts/provider";
 import { fileExists, readText, writeJson, writeText } from "../core/files";
 import { errorMessage, isRecord, uniqueTruthy } from "../core/guards";
 import { parseYaml } from "../core/simple-yaml";
 import { comparisonRiskKey } from "../dogfood/compare";
-import { redactSecrets } from "../privacy/secrets";
+import { inspectAndRedactSecrets, redactSecrets } from "../privacy/secrets";
 import { ReviewPacket } from "../render/packet";
 import { RiskItem } from "../risks/risks";
 
-export type ProviderName = "mock" | "ai-sdk" | "agent-file";
-
-/**
- * Structured reasoning result. A non-ok result means "no LLM contribution":
- * Phase 3-2 reasoning stages treat it as a skip and keep the deterministic
- * result, so the offline pipeline stays byte-stable.
- */
-export type StructuredResult =
-  | { ok: true; data: unknown }
-  | { ok: false; reason: string };
-
-export interface GenerateStructuredOptions {
-  /** When false, skip deterministic prompt redaction before a real call. */
-  redactSecrets?: boolean;
-  /** Hard privacy block: never send the prompt to a remote provider. */
-  remotePrivacyBlocked?: boolean;
-}
-
-/**
- * Schema-bound reasoning provider. Implementations MUST return a non-ok result
- * (never throw) when they cannot contribute, so callers can fall back to the
- * deterministic packet. `schema` is a JSON Schema object the output is bound to.
- */
-export interface ReasoningProvider {
-  name: ProviderName;
-  generateStructured(
-    stage: string,
-    prompt: string,
-    schema: object,
-    opts?: GenerateStructuredOptions
-  ): Promise<StructuredResult>;
-}
+export type {
+  GenerateStructuredOptions,
+  ProviderName,
+  ReasoningProvider,
+  StructuredResult
+} from "../contracts/provider";
 
 export interface ProviderFactoryOptions {
   model?: string;
@@ -89,9 +69,11 @@ export const mockProvider: ReasoningProvider = {
  */
 export function agentFileProvider(options: ProviderFactoryOptions): ReasoningProvider {
   const cwd = options.cwd ?? process.cwd();
+  let parsedInput: Promise<unknown> | undefined;
+  const stageSequenceCursors = new Map<string, number>();
   return {
     name: "agent-file",
-    async generateStructured(): Promise<StructuredResult> {
+    async generateStructured(stage): Promise<StructuredResult> {
       if (!options.agentInput) {
         return { ok: false, reason: "missing_agent_input" };
       }
@@ -100,9 +82,37 @@ export function agentFileProvider(options: ProviderFactoryOptions): ReasoningPro
         return { ok: false, reason: "agent_input_not_found" };
       }
       try {
-        const parsed = await readStructuredFile(inputPath);
+        // The stage-envelope input is immutable for one provider run. Conversation
+        // analysis can request several chunks plus a reducer and reconciliation;
+        // parse the shared envelope once instead of rereading it for every stage.
+        parsedInput ??= readStructuredFile(inputPath);
+        const parsed = await parsedInput;
         if (!isRecord(parsed)) {
           return { ok: false, reason: "agent_input_not_object" };
+        }
+        // Repeated stages (notably chronological conversation-analysis chunks)
+        // need one offline payload per invocation. Keep this explicit and
+        // separate from `stages` so an ordinary stage payload is never mistaken
+        // for a sequence. Calls awaiting the same parsed-input promise resume in
+        // registration order, matching the caller's deterministic chunk order.
+        if (isRecord(parsed.stage_sequences) &&
+          Object.prototype.hasOwnProperty.call(parsed.stage_sequences, stage)) {
+          const sequence = parsed.stage_sequences[stage];
+          if (!Array.isArray(sequence)) {
+            return { ok: false, reason: `agent_input_stage_sequence_not_array:${stage}` };
+          }
+          const cursor = stageSequenceCursors.get(stage) ?? 0;
+          if (cursor >= sequence.length) {
+            return { ok: false, reason: `agent_input_stage_sequence_exhausted:${stage}` };
+          }
+          stageSequenceCursors.set(stage, cursor + 1);
+          return { ok: true, data: sequence[cursor] };
+        }
+        // A stage envelope lets one offline file serve several distinct strict
+        // schemas (for example conversation analysis, reconciliation, and PR
+        // narrative). Legacy flat files remain the fallback for existing users.
+        if (isRecord(parsed.stages) && Object.prototype.hasOwnProperty.call(parsed.stages, stage)) {
+          return { ok: true, data: parsed.stages[stage] };
         }
         return { ok: true, data: parsed };
       } catch (error) {
@@ -142,7 +152,7 @@ export function aiSdkProvider(options: ProviderFactoryOptions): ReasoningProvide
       // The high-severity BLOCK (e.g. PEM private keys, provider tokens) ALWAYS
       // runs before a remote call, even when redactSecrets is disabled: only the
       // lower-severity substitution of the outgoing prompt is skipped.
-      const redacted = redactSecrets(prompt);
+      const redacted = inspectAndRedactSecrets(prompt);
       if (redacted.blocked) {
         return { ok: false, reason: "privacy_block" };
       }

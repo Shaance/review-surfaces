@@ -7,8 +7,26 @@ import { execFileSync } from "node:child_process";
 import { collectInputs } from "../src/collector/collect";
 import { defaultConfig } from "../src/config/config";
 import { loadPrivacyIgnore, loadPrivacyIgnoreSync } from "../src/privacy/ignore";
-import { redactSecrets } from "../src/privacy/secrets";
+import {
+  BLOCKED_REDACTION_KINDS,
+  containsBlockingSecretMaterial,
+  inspectAndRedactSecrets,
+  redactSecrets,
+  StreamingBlockingSecretDetector
+} from "../src/privacy/secrets";
 import { filterIgnoredDiff } from "../src/privacy/diff";
+import { pemBoundaryFixture } from "./helpers/secret-fixtures";
+
+const AWS_ACCESS_KEY_ID_FIXTURE = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
+const AWS_SECRET_VALUE_FIXTURE = ["wJalrXUtnFEMI/K7MDENG/bPxRfiCY", "EXAMPLEKEY"].join("");
+const AWS_SECRET_ASSIGNMENT_FIXTURE = `AWS_SECRET_ACCESS_KEY=${AWS_SECRET_VALUE_FIXTURE}`;
+const SLACK_BOT_TOKEN_FIXTURE = ["xoxb", "1234567890", "abcdefghijklmnop"].join("-");
+const SLACK_SESSION_TOKEN_FIXTURE = ["xoxs", "1234567890", "abcdefghijklmnop"].join("-");
+const JWT_FIXTURE = [
+  "eyJhbGciOiJIUzI1NiJ9",
+  "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+  "signature"
+].join(".");
 
 test("review-surfaces.COLLECTOR.6 applies .review-surfacesignore before indexing changed files", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-ignore-"));
@@ -137,23 +155,204 @@ test("review-surfaces.PRIVACY.2 blocks high-risk private key material for remote
   assert.doesNotMatch(result.text, /BEGIN PRIVATE KEY/);
 });
 
+test("review-surfaces.PRIVACY.2 canonical redaction fails closed on an unmatched private-key opener", () => {
+  const result = redactSecrets(`safe prefix ${pemBoundaryFixture("RSA PRIVATE KEY", "BEGIN")}\nMII-UNTERMINATED-KEY`);
+
+  assert.equal(result.blocked, true);
+  assert.equal(result.text, "safe prefix [REDACTED:private_key]");
+  assert.doesNotMatch(result.text, /BEGIN RSA PRIVATE KEY|MII-UNTERMINATED/);
+});
+
+test("review-surfaces.PRIVACY.2 scan-only detection covers raw, persisted, and partial blocked material", () => {
+  const githubToken = `ghp_${"Z".repeat(36)}`;
+  assert.equal(containsBlockingSecretMaterial(githubToken), true);
+  assert.equal(containsBlockingSecretMaterial("[REDACTED:github_token]"), true);
+  assert.equal(containsBlockingSecretMaterial(`${pemBoundaryFixture("PRIVATE KEY", "BEGIN")}\npartial`), true);
+  assert.equal(containsBlockingSecretMaterial("ordinary review output"), false);
+
+  const persisted = inspectAndRedactSecrets("safe prefix [REDACTED:github_token]");
+  assert.equal(persisted.blocked, true);
+  assert.equal(persisted.redactions.length, 0);
+});
+
+test("review-surfaces.PRIVACY.2 streaming detection survives arbitrarily long fragmented token bodies", () => {
+  const jwtDetector = new StreamingBlockingSecretDetector();
+  for (const fragment of ["eyJ", "a".repeat(5000), ".", "b".repeat(5000), "."]) {
+    assert.equal(jwtDetector.write(fragment), false);
+  }
+  assert.equal(jwtDetector.write("c"), false, "a chunk edge is not the canonical trailing boundary");
+  assert.equal(jwtDetector.blockedSecretSeen(), true, "a word-ending JWT blocks when the stream is finalized");
+
+  const tokenDetector = new StreamingBlockingSecretDetector();
+  const token = `ghp_${"Z".repeat(2000)}`;
+  for (const character of token) {
+    tokenDetector.write(character);
+  }
+  assert.equal(tokenDetector.blockedSecretSeen(), true, "one-character token fragments must retain prefix state");
+});
+
+test("review-surfaces.PRIVACY.2 streaming detection recognizes a fragmented PEM opener", () => {
+  const detector = new StreamingBlockingSecretDetector();
+  for (const fragment of ["---", "--BE", "GIN RSA ", "PRIVATE ", "KEY--", "---"]) {
+    detector.write(fragment);
+  }
+  assert.equal(detector.blockedSecretSeen(), true);
+});
+
+test("review-surfaces.PRIVACY.2 specialized streaming states survive unbounded PEM labels and AWS whitespace", () => {
+  const pemDetector = new StreamingBlockingSecretDetector();
+  for (const fragment of ["-----BEGIN ", "A".repeat(5000), " PRIVATE KEY", "-----"]) {
+    pemDetector.write(fragment);
+  }
+  assert.equal(pemDetector.blockedSecretSeen(), true, "PEM label can exceed the bounded overlap");
+
+  const awsDetector = new StreamingBlockingSecretDetector();
+  for (const fragment of [
+    "AWS_SECRET_ACCESS_KEY",
+    " ".repeat(5000),
+    "=",
+    " ".repeat(5000),
+    AWS_SECRET_VALUE_FIXTURE
+  ]) {
+    awsDetector.write(fragment);
+  }
+  assert.equal(awsDetector.blockedSecretSeen(), true, "AWS assignment whitespace can exceed the overlap");
+});
+
+const STREAMING_BLOCKED_KIND_CASES: Array<{ name: string; kind: string; material: string }> = [
+  { name: "private key", kind: "private_key", material: `${pemBoundaryFixture("RSA PRIVATE KEY", "BEGIN")}\nMII-UNTERMINATED` },
+  { name: "AWS access key id", kind: "aws_access_key_id", material: AWS_ACCESS_KEY_ID_FIXTURE },
+  {
+    name: "AWS secret",
+    kind: "aws_secret",
+    material: AWS_SECRET_ASSIGNMENT_FIXTURE
+  },
+  { name: "GitHub classic token", kind: "github_token", material: `ghp_${"A".repeat(36)}` },
+  { name: "GitHub fine-grained token", kind: "github_token", material: `github_pat_${"A".repeat(22)}` },
+  { name: "Slack bot token", kind: "slack_token", material: SLACK_BOT_TOKEN_FIXTURE },
+  { name: "Slack session token", kind: "slack_token", material: SLACK_SESSION_TOKEN_FIXTURE },
+  { name: "OpenAI project key", kind: "openai_key", material: `sk-proj-${"a".repeat(24)}` },
+  { name: "OpenAI legacy key", kind: "openai_key", material: `sk-${"a".repeat(24)}` },
+  { name: "Stripe secret key", kind: "stripe_key", material: `sk_live_${"a".repeat(24)}` },
+  { name: "Stripe restricted key", kind: "stripe_key", material: `rk_live_${"a".repeat(24)}` },
+  { name: "Google OAuth token", kind: "google_oauth_token", material: `ya29.${"a".repeat(30)}` },
+  {
+    name: "JWT",
+    kind: "jwt",
+    material: JWT_FIXTURE
+  },
+  { name: "Google API key", kind: "google_api_key", material: `AIza${"a".repeat(30)}` }
+];
+
+test("review-surfaces.PRIVACY.2 representative streaming cases cover every blocked secret kind", () => {
+  assert.deepEqual(
+    [...new Set(STREAMING_BLOCKED_KIND_CASES.map((testCase) => testCase.kind))].sort(),
+    [...BLOCKED_REDACTION_KINDS].sort()
+  );
+});
+
+for (const testCase of STREAMING_BLOCKED_KIND_CASES) {
+  test(`review-surfaces.PRIVACY.2 streaming detection has every split-boundary parity for ${testCase.name}`, () => {
+    const material = `safe ${testCase.material} tail`;
+    assert.equal(containsBlockingSecretMaterial(material), true, "canonical direct detection blocks");
+    for (let split = 1; split < material.length; split += 1) {
+      const detector = new StreamingBlockingSecretDetector();
+      detector.write(material.slice(0, split));
+      detector.write(material.slice(split));
+      assert.equal(detector.blockedSecretSeen(), true, `missed split at ${split}`);
+    }
+
+    const oneCharacterDetector = new StreamingBlockingSecretDetector();
+    for (const character of material) {
+      oneCharacterDetector.write(character);
+    }
+    assert.equal(oneCharacterDetector.blockedSecretSeen(), true, "missed one-character fragmentation");
+  });
+}
+
+test("review-surfaces.PRIVACY.2 persisted blocked markers have every split-boundary parity", () => {
+  for (const kind of BLOCKED_REDACTION_KINDS) {
+    const marker = `[REDACTED:${kind}]`;
+    for (let split = 1; split < marker.length; split += 1) {
+      const detector = new StreamingBlockingSecretDetector();
+      detector.write(marker.slice(0, split));
+      detector.write(marker.slice(split));
+      assert.equal(detector.blockedSecretSeen(), true, `${kind} marker missed split at ${split}`);
+    }
+  }
+});
+
+test("review-surfaces.PRIVACY.2 streaming detection leaves long secret-free output unblocked", () => {
+  const detector = new StreamingBlockingSecretDetector();
+  const chunk = "ordinary build output 1234567890\n".repeat(4096);
+  for (let index = 0; index < 40; index += 1) {
+    assert.equal(detector.write(chunk), false);
+  }
+  assert.equal(detector.blockedSecretSeen(), false);
+});
+
+test("review-surfaces.PRIVACY.2 streaming detection waits for canonical trailing boundaries", () => {
+  const nearMisses = [
+    `AKIA${"A".repeat(16)}Q`,
+    `ghp_${"A".repeat(36)}_`,
+    `xoxb-${"A".repeat(10)}_`,
+    `sk_live_${"A".repeat(20)}_`
+  ];
+
+  for (const material of nearMisses) {
+    assert.equal(containsBlockingSecretMaterial(material), false, `${material.slice(0, 8)} is a canonical near miss`);
+    for (let split = 1; split < material.length; split += 1) {
+      const detector = new StreamingBlockingSecretDetector();
+      assert.equal(detector.write(material.slice(0, split)), false);
+      assert.equal(detector.write(material.slice(split)), false);
+      assert.equal(detector.blockedSecretSeen(), false, `false positive at split ${split}`);
+    }
+  }
+
+  const delayedBoundary = new StreamingBlockingSecretDetector();
+  assert.equal(delayedBoundary.write(`AKIA${"A".repeat(16)}`), false, "a chunk edge is not a stream boundary");
+  assert.equal(delayedBoundary.write("Q"), false);
+  assert.equal(delayedBoundary.blockedSecretSeen(), false);
+
+  const trueEnd = new StreamingBlockingSecretDetector();
+  assert.equal(trueEnd.write(`AKIA${"A".repeat(16)}`), false);
+  assert.equal(trueEnd.blockedSecretSeen(), true, "stream finalization supplies the real trailing boundary");
+});
+
+test("review-surfaces.PRIVACY.2 JWT streaming detection matches canonical trailing-boundary near misses", () => {
+  const nearMisses = ["eyJa.b.-!", "eyJa.b.-", "xeyJa.b.c"];
+  for (const material of nearMisses) {
+    assert.equal(containsBlockingSecretMaterial(material), false, `${material} is a canonical near miss`);
+    for (let split = 1; split < material.length; split += 1) {
+      const detector = new StreamingBlockingSecretDetector();
+      assert.equal(detector.write(material.slice(0, split)), false);
+      assert.equal(detector.write(material.slice(split)), false);
+      assert.equal(detector.blockedSecretSeen(), false, `${material} false-positive at split ${split}`);
+    }
+  }
+
+  const trueEnd = new StreamingBlockingSecretDetector();
+  assert.equal(trueEnd.write(["eyJa", "b", "c"].join(".")), false);
+  assert.equal(trueEnd.blockedSecretSeen(), true);
+});
+
 // R4.4: each new high-confidence provider-token pattern must BLOCK the remote
 // call, remove the raw secret literal, and leave its [REDACTED:<kind>] marker.
 const PROVIDER_TOKEN_CASES: Array<{ name: string; secret: string; kind: string }> = [
-  { name: "AWS access key id", secret: "AKIAIOSFODNN7EXAMPLE", kind: "aws_access_key_id" },
+  { name: "AWS access key id", secret: AWS_ACCESS_KEY_ID_FIXTURE, kind: "aws_access_key_id" },
   {
     name: "AWS secret access key assignment",
-    secret: "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    secret: AWS_SECRET_ASSIGNMENT_FIXTURE,
     kind: "aws_secret"
   },
   { name: "GitHub ghp_ token", secret: `ghp_${"A".repeat(36)}`, kind: "github_token" },
   { name: "GitHub fine-grained pat", secret: `github_pat_${"A".repeat(22)}`, kind: "github_token" },
-  { name: "Slack xoxb token", secret: "xoxb-1234567890-abcdefghijklmnop", kind: "slack_token" },
+  { name: "Slack xoxb token", secret: SLACK_BOT_TOKEN_FIXTURE, kind: "slack_token" },
   { name: "OpenAI sk-proj key", secret: `sk-proj-${"a".repeat(24)}`, kind: "openai_key" },
   { name: "OpenAI sk key", secret: `sk-${"a".repeat(24)}`, kind: "openai_key" },
   { name: "Stripe live key", secret: `sk_live_${"a".repeat(24)}`, kind: "stripe_key" },
   { name: "Google OAuth token", secret: `ya29.${"a".repeat(30)}`, kind: "google_oauth_token" },
-  { name: "JWT", secret: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", kind: "jwt" },
+  { name: "JWT", secret: `${JWT_FIXTURE.slice(0, JWT_FIXTURE.lastIndexOf("."))}.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c`, kind: "jwt" },
   // review-surfaces.PRIVACY.6: google_api_key was the lone blocked:false provider
   // pattern; it now joins the blocked set like every other provider token.
   { name: "Google API key", secret: `AIzaSy${"a".repeat(30)}`, kind: "google_api_key" }

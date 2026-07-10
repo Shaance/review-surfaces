@@ -1,55 +1,18 @@
 import type {
-  PacketConfidence,
-  PacketEvidenceKind,
-  PacketSourceKind,
-  PacketValidationStatus
-} from "../schema/review-packet-contract";
+  Confidence,
+  EvidenceKind,
+  EvidenceRef,
+  SourceRef,
+  ValidationStatus
+} from "../contracts/evidence";
 
-export type EvidenceKind = PacketEvidenceKind;
-export type Confidence = PacketConfidence;
-export type ValidationStatus = PacketValidationStatus;
-
-export interface EvidenceRef {
-  kind: EvidenceKind;
-  path?: string;
-  line_start?: number;
-  line_end?: number;
-  sha?: string;
-  url?: string;
-  acai_id?: string;
-  event_id?: string;
-  test_name?: string;
-  command?: string;
-  excerpt_hash?: string;
-  note?: string;
-  confidence: Confidence;
-  validation_status?: ValidationStatus;
-  /**
-   * True when this evidence was proposed by an LLM/agent reasoning stage rather
-   * than discovered deterministically. Verified deterministic evidence never
-   * sets this. The renderer uses it to visibly distinguish hypotheses from proof
-   * (review-surfaces.EVIDENCE.6).
-   */
-  llm_proposed?: boolean;
-  /**
-   * True when this evidence is a PASSING parsed test case that the deterministic
-   * verification loop accepted as proof a requirement is satisfied (VERIFICATION
-   * LOOP #2). It is only ever set on `kind: "test"` evidence whose
-   * validation_status is "valid" and whose test_name is the REAL parsed case
-   * name. It makes the basis of a partial->satisfied promotion transparent in the
-   * packet. Never set by the LLM word alone: the test had to deterministically
-   * map (ACID/group) to the requirement, the LLM-pinpointed path additionally
-   * requires group corroboration.
-   */
-  verified?: boolean;
-}
-
-export interface SourceRef {
-  kind: PacketSourceKind;
-  ref: string;
-  title?: string;
-  evidence?: EvidenceRef[];
-}
+export type {
+  Confidence,
+  EvidenceKind,
+  EvidenceRef,
+  SourceRef,
+  ValidationStatus
+} from "../contracts/evidence";
 
 export function specEvidence(path: string, acaiId?: string, note?: string): EvidenceRef {
   return {

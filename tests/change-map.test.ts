@@ -15,6 +15,7 @@ import { ChangeGraph, HumanReviewModel, HUMAN_REVIEW_SCHEMA_VERSION, ReviewQueue
 import type { ReasoningProvider, StructuredResult } from "../src/llm/provider";
 import type { StructuredDiff } from "../src/pr/contract";
 import { validateJsonSchema } from "../src/schema/json-schema";
+import { notAssessedConversationAnalysis } from "../src/conversation/analysis";
 
 function file(filePath: string, status = "M", added = 10, removed = 2) {
   return { path: filePath, status, added, removed };
@@ -62,6 +63,8 @@ function model(graph: ChangeGraph, legs: HumanReviewModel["reading_order"]["legs
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Change map fixture.",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
+    conversation_analysis: notAssessedConversationAnalysis("mock"),
+    review_insights: [],
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
     review_queue: [],
     blockers: [],

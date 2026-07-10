@@ -6,6 +6,19 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { validateJsonSchema } from "../src/schema/json-schema";
 import { HUMAN_STANDALONE_ARTIFACTS } from "../src/human/render";
+import { ExitCodes } from "../src/core/exit-codes";
+import {
+  HOSTILE_CONVERSATION_RAW_CONTROLS,
+  HOSTILE_CONVERSATION_NEUTRALIZED_ENTITIES,
+  HOSTILE_CONVERSATION_TRAILING_BACKSLASH_MARKERS,
+  ORDINARY_CONVERSATION_VALUE,
+  hostileConversationBackslashRun,
+  hostileConversationControlSurvives,
+  hostileConversationDisclosureClosesBeforeHeading,
+  hostileConversationAnalysis,
+  hostileConversationInsight,
+  hostileConversationTitleClosesEmphasis
+} from "./helpers/conversation-review";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
 const CHANGED = "src/render/comment.ts";
@@ -22,7 +35,8 @@ function setupChangedRepo(): string {
       return (
         rel !== ".git" && !rel.startsWith(`.git${path.sep}`) &&
         rel !== ".review-surfaces" && !rel.startsWith(`.review-surfaces${path.sep}`) &&
-        rel !== "dist" && !rel.startsWith(`dist${path.sep}`)
+        rel !== "dist" && !rel.startsWith(`dist${path.sep}`) &&
+        rel !== "node_modules" && !rel.startsWith(`node_modules${path.sep}`)
       );
     }
   });
@@ -37,6 +51,63 @@ function setupChangedRepo(): string {
 function runCli(cwd: string, args: string[]): { status: number | null; stdout: string; stderr: string } {
   const r = spawnSync("node", [CLI, ...args], { cwd, encoding: "utf8" });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+const PROVIDER_STAGE_PREFIX = "__review_surfaces_provider_stage__:";
+
+function countingProviderPreload(directory: string, conversationEventId: string): string {
+  const preloadPath = path.join(directory, "counting-provider.cjs");
+  const providerModulePath = path.join(process.cwd(), "dist", "src", "llm", "provider.js");
+  const responses: Record<string, unknown> = {
+    pr_narrative: {
+      summary: `${CHANGED} changed.`,
+      what_changed: [{ text: `${CHANGED} changed.`, paths: [CHANGED] }],
+      why_it_matters: [{ text: `Review ${CHANGED}.`, paths: [CHANGED] }],
+      review_first: [{ text: `Review ${CHANGED} first.`, paths: [CHANGED] }],
+      risk_narratives: []
+    },
+    conversation_analysis: {
+      summary: "The user asked to preserve the reviewer-facing renderer behavior.",
+      intent: [{ text: "Preserve the reviewer-facing renderer behavior.", event_ids: [conversationEventId] }],
+      refinements: [],
+      decisions: [],
+      constraints: [],
+      non_goals: [],
+      rejected_alternatives: [],
+      claims: [],
+      validation_claims: [],
+      known_gaps: []
+    },
+    conversation_review_insights: { insights: [] }
+  };
+  const preload = [
+    '"use strict";',
+    `const providerModule = require(${JSON.stringify(providerModulePath)});`,
+    "const originalProviderFor = providerModule.providerFor;",
+    `const responses = ${JSON.stringify(responses)};`,
+    "const countingProvider = {",
+    '  name: "ai-sdk",',
+    "  async generateStructured(stage) {",
+    `    process.stderr.write(${JSON.stringify(PROVIDER_STAGE_PREFIX)} + stage + "\\n");`,
+    "    if (Object.prototype.hasOwnProperty.call(responses, stage)) {",
+    "      return { ok: true, data: responses[stage] };",
+    "    }",
+    '    return { ok: false, reason: "test_no_contribution" };',
+    "  }",
+    "};",
+    "providerModule.providerFor = (name, options) =>",
+    '  name === "ai-sdk" ? countingProvider : originalProviderFor(name, options);',
+    ""
+  ].join("\n");
+  fs.writeFileSync(preloadPath, preload);
+  return preloadPath;
+}
+
+function countedProviderStages(stderr: string): string[] {
+  return stderr
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith(PROVIDER_STAGE_PREFIX))
+    .map((line) => line.slice(PROVIDER_STAGE_PREFIX.length));
 }
 
 const ALL_PR = ["all", "--review-scope", "pr", "--base", "HEAD", "--head", "HEAD", "--spec", "features/review-surfaces.feature.yaml", "--out", ".review-surfaces"];
@@ -816,6 +887,287 @@ test("review-surfaces.PROVIDERS.6 PR comment workflow is base-controlled and use
   assert.doesNotMatch(workflow, /--surface-mode pr/);
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.4 PR ai-sdk identity drives sidecar reuse and transient retries", () => {
+  const tmp = setupChangedRepo();
+  const preloadDir = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-counting-provider-"));
+  try {
+    const conversationEventId = "user-final";
+    fs.writeFileSync(
+      path.join(tmp, "conversation.jsonl"),
+      `${JSON.stringify({
+        id: conversationEventId,
+        actor: "user",
+        kind: "message",
+        summary: "Preserve the reviewer-facing renderer behavior.",
+        raw_index: 0
+      })}\n`
+    );
+    const preload = countingProviderPreload(preloadDir, conversationEventId);
+    const args = [
+      "--require",
+      preload,
+      CLI,
+      ...ALL_PR,
+      "--cache",
+      "--provider",
+      "ai-sdk",
+      "--conversation",
+      "conversation.jsonl",
+      "--conversation-format",
+      "normalized",
+      "--no-conversation-discovery"
+    ];
+    const runCounted = () => spawnSync("node", args, { cwd: tmp, encoding: "utf8" });
+    const run = runCounted();
+
+    assert.equal(run.status, 0, run.stderr);
+    const stages = countedProviderStages(run.stderr);
+    const count = (stage: string): number => stages.filter((candidate) => candidate === stage).length;
+    assert.equal(count("pr_narrative"), 1, `expected one PR narrative call; saw ${JSON.stringify(stages)}`);
+    assert.equal(count("conversation_analysis_chunk"), 0, `one-event input must not chunk; saw ${JSON.stringify(stages)}`);
+    assert.equal(
+      count("conversation_analysis"),
+      1,
+      `PR assembly analysis must be reused by human orchestration; saw ${JSON.stringify(stages)}`
+    );
+    assert.equal(
+      count("conversation_review_insights"),
+      1,
+      `PR assembly reconciliation must be reused by human orchestration; saw ${JSON.stringify(stages)}`
+    );
+    assert.deepEqual(
+      stages.filter((stage) => [
+        "pr_narrative",
+        "conversation_analysis_chunk",
+        "conversation_analysis",
+        "conversation_review_insights"
+      ].includes(stage)),
+      ["pr_narrative", "conversation_analysis", "conversation_review_insights"]
+    );
+
+    // Artifact assertions prove the reuse branch had populated sidecars; the
+    // provider counts above are the regression guard against recomputing them.
+    const surfacePath = path.join(tmp, ".review-surfaces", "pr_review_surface.json");
+    const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
+    const human = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    assert.equal(surface.status, "ready");
+    assert.equal(surface.conversation_analysis.status, "analyzed");
+    assert.equal(surface.conversation_analysis.provider, "ai-sdk");
+    assert.equal(surface.conversation_analysis.provider, surface.llm.provider);
+    assert.deepEqual(surface.review_insights, []);
+    assert.deepEqual(human.conversation_analysis, surface.conversation_analysis);
+    assert.deepEqual(human.review_insights, surface.review_insights);
+
+    const successfulSurface = fs.readFileSync(surfacePath, "utf8");
+    const hit = runCounted();
+    assert.equal(hit.status, 0, hit.stderr);
+    assert.match(hit.stdout, /inputs unchanged \(signature match\)/);
+    assert.deepEqual(countedProviderStages(hit.stderr), [], "a reusable successful PR sidecar must not call the provider");
+    assert.equal(fs.readFileSync(surfacePath, "utf8"), successfulSurface);
+
+    const retryCases = [
+      { status: "degraded", flag: "conversation_analysis_unavailable" },
+      { status: "analyzed", flag: "conversation_review_unavailable" }
+    ] as const;
+    for (const { status, flag } of retryCases) {
+      const incomplete = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
+      incomplete.conversation_analysis.status = status;
+      incomplete.conversation_analysis.summary = `Temporary ${flag}.`;
+      incomplete.conversation_analysis.quality_flags = [flag];
+      incomplete.review_insights = [];
+      fs.writeFileSync(surfacePath, `${JSON.stringify(incomplete, null, 2)}\n`);
+
+      const retry = runCounted();
+      assert.equal(retry.status, 0, retry.stderr);
+      assert.doesNotMatch(retry.stdout, /inputs unchanged \(signature match\)/);
+      const retryStages = countedProviderStages(retry.stderr);
+      assert.equal(
+        retryStages.filter((stage) => stage === "conversation_analysis").length,
+        1,
+        `${flag} must rerun PR conversation analysis; saw ${JSON.stringify(retryStages)}`
+      );
+      assert.equal(
+        retryStages.filter((stage) => stage === "conversation_review_insights").length,
+        1,
+        `${flag} must rerun PR conversation reconciliation; saw ${JSON.stringify(retryStages)}`
+      );
+      const refreshed = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
+      assert.equal(refreshed.conversation_analysis.status, "analyzed");
+      assert.equal(refreshed.conversation_analysis.provider, "ai-sdk");
+      assert.equal(refreshed.conversation_analysis.provider, refreshed.llm.provider);
+      assert.ok(!refreshed.conversation_analysis.quality_flags.includes(flag));
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(preloadDir, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.PR_SURFACE.4 persisted conversation redaction markers fail strict postability for both PR comment renderers", () => {
+  const tmp = setupChangedRepo();
+  const preloadDir = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-marker-provider-"));
+  try {
+    const conversationEventId = "user-final";
+    fs.writeFileSync(
+      path.join(tmp, "conversation.jsonl"),
+      `${JSON.stringify({
+        id: conversationEventId,
+        actor: "user",
+        kind: "message",
+        summary: "Preserve the reviewer-facing renderer behavior.",
+        raw_index: 0
+      })}\n`
+    );
+    const preload = countingProviderPreload(preloadDir, conversationEventId);
+    const prime = spawnSync("node", [
+      "--require",
+      preload,
+      CLI,
+      ...ALL_PR,
+      "--provider",
+      "ai-sdk",
+      "--conversation",
+      "conversation.jsonl",
+      "--conversation-format",
+      "normalized",
+      "--no-conversation-discovery"
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.equal(prime.status, 0, prime.stderr);
+
+    const marker = "[REDACTED:github_token]";
+    for (const artifactName of ["pr_review_surface.json", "human_review.json"]) {
+      const artifactPath = path.join(tmp, ".review-surfaces", artifactName);
+      const artifact = JSON.parse(fs.readFileSync(artifactPath, "utf8"));
+      artifact.conversation_analysis.summary = `Provider output included ${marker}.`;
+      artifact.conversation_analysis.quality_flags = ["conversation_analysis_output_redacted"];
+      fs.writeFileSync(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
+    }
+
+    const sticky = runCli(tmp, [
+      "comment",
+      "--format",
+      "sticky",
+      "--review-scope",
+      "pr",
+      "--strict-postability",
+      "--out",
+      ".review-surfaces"
+    ]);
+    assert.equal(sticky.status, ExitCodes.privacyBlocked, sticky.stderr);
+    assert.match(sticky.stdout, /\[REDACTED:github_token\]/);
+    assert.match(sticky.stderr, /Sticky comment blocked: redaction flagged a high-confidence secret/);
+
+    const prComment = runCli(tmp, [
+      "comment",
+      "--review-scope",
+      "pr",
+      "--strict-postability",
+      "--out",
+      ".review-surfaces"
+    ]);
+    assert.equal(prComment.status, ExitCodes.privacyBlocked, prComment.stderr);
+    assert.match(prComment.stdout, /\[REDACTED:github_token\]/);
+    assert.match(prComment.stderr, /PR comment render blocked a high-confidence secret/);
+
+    // Force the low-level pr_review_surface.json renderer. Its public renderer
+    // returns markdown only, so the CLI's final inspectAndRedactSecrets pass is
+    // the sole surviving block signal for an already-persisted marker.
+    fs.rmSync(path.join(tmp, ".review-surfaces", "human_review.json"));
+    const fallbackComment = runCli(tmp, [
+      "comment",
+      "--review-scope",
+      "pr",
+      "--strict-postability",
+      "--out",
+      ".review-surfaces"
+    ]);
+    assert.equal(fallbackComment.status, ExitCodes.privacyBlocked, fallbackComment.stderr);
+    assert.match(fallbackComment.stdout, /### What changed/);
+    assert.match(fallbackComment.stdout, /\[REDACTED:github_token\]/);
+    assert.match(fallbackComment.stderr, /PR comment render blocked a high-confidence secret/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(preloadDir, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.PR_SURFACE.4 strict low-level PR fallback neutralizes hostile conversation markup without privacy-blocking", () => {
+  const tmp = setupChangedRepo();
+  const preloadDir = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-hostile-markdown-provider-"));
+  try {
+    const conversationEventId = "user-final";
+    fs.writeFileSync(
+      path.join(tmp, "conversation.jsonl"),
+      `${JSON.stringify({
+        id: conversationEventId,
+        actor: "user",
+        kind: "message",
+        summary: "Preserve the reviewer-facing renderer behavior.",
+        raw_index: 0
+      })}\n`
+    );
+    const preload = countingProviderPreload(preloadDir, conversationEventId);
+    const prime = spawnSync("node", [
+      "--require",
+      preload,
+      CLI,
+      ...ALL_PR,
+      "--provider",
+      "ai-sdk",
+      "--conversation",
+      "conversation.jsonl",
+      "--conversation-format",
+      "normalized",
+      "--no-conversation-discovery"
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.equal(prime.status, 0, prime.stderr);
+
+    const surfacePath = path.join(tmp, ".review-surfaces", "pr_review_surface.json");
+    const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
+    surface.conversation_analysis = hostileConversationAnalysis();
+    surface.review_insights = [hostileConversationInsight()];
+    fs.writeFileSync(surfacePath, `${JSON.stringify(surface, null, 2)}\n`);
+    fs.rmSync(path.join(tmp, ".review-surfaces", "human_review.json"));
+
+    const comment = runCli(tmp, [
+      "comment",
+      "--review-scope",
+      "pr",
+      "--strict-postability",
+      "--out",
+      ".review-surfaces"
+    ]);
+
+    assert.equal(comment.status, ExitCodes.success, comment.stderr);
+    for (const rawControl of HOSTILE_CONVERSATION_RAW_CONTROLS) {
+      assert.equal(hostileConversationControlSurvives(comment.stdout, rawControl), false, `raw provider control survived: ${rawControl}`);
+    }
+    for (const entity of HOSTILE_CONVERSATION_NEUTRALIZED_ENTITIES) {
+      assert.ok(comment.stdout.includes(entity), `neutralized provider text must remain readable: ${entity}`);
+    }
+    for (const marker of HOSTILE_CONVERSATION_TRAILING_BACKSLASH_MARKERS) {
+      assert.equal(
+        hostileConversationBackslashRun(comment.stdout, marker),
+        2,
+        `provider trailing backslash must be doubled at ${marker}`
+      );
+    }
+    assert.equal(hostileConversationTitleClosesEmphasis(comment.stdout), true, "renderer-owned title emphasis must close after the neutralized backslash");
+    assert.equal(
+      hostileConversationDisclosureClosesBeforeHeading(comment.stdout, "### What changed"),
+      true,
+      "strict fallback conversation details must close before the next deterministic section"
+    );
+    assert.match(comment.stdout, new RegExp(ORDINARY_CONVERSATION_VALUE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(comment.stdout, /\n### What changed\n/);
+    assert.match(comment.stdout, /### PR risks/);
+    assert.doesNotMatch(comment.stderr, /blocked a high-confidence secret/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(preloadDir, { recursive: true, force: true });
+  }
+});
+
 test("comment --review-scope pr renders agent-file narratives locally but does not mark them postable", () => {
   const tmp = setupChangedRepo();
   try {
@@ -853,6 +1205,241 @@ test("comment --review-scope pr renders agent-file narratives locally but does n
   }
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.4 PR comment rejects a same-head stale human artifact and preserves sidecar conversation value", () => {
+  const tmp = setupChangedRepo();
+  try {
+    const narrative = {
+      summary: "Adjusts the comment renderer.",
+      what_changed: [{ text: "Tweaked the sticky comment renderer", paths: [CHANGED] }],
+      why_it_matters: [{ text: "Affects reviewer-facing output", paths: [CHANGED] }],
+      review_first: [{ text: "Confirm the rendered comment", paths: [CHANGED] }],
+      risk_narratives: []
+    };
+    fs.writeFileSync(path.join(tmp, "narrative.json"), JSON.stringify(narrative));
+    const prime = runCli(tmp, [...ALL_PR, "--provider", "agent-file", "--agent-input", "narrative.json"]);
+    assert.equal(prime.status, 0, prime.stderr);
+
+    const surfacePath = path.join(tmp, ".review-surfaces", "pr_review_surface.json");
+    const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
+    surface.conversation_analysis = {
+      status: "analyzed",
+      provider: "agent-file",
+      summary: "The final request preserves the sticky marker.",
+      intent: [{ text: "Preserve the sticky marker.", event_ids: ["evt-final"] }],
+      refinements: [],
+      decisions: [],
+      constraints: [],
+      non_goals: [],
+      rejected_alternatives: [],
+      claims: [],
+      validation_claims: [],
+      known_gaps: [],
+      quality_flags: []
+    };
+    surface.review_insights = [{
+      id: "CONV-INSIGHT-001",
+      category: "intent_mismatch",
+      title: "Same-head conversation insight refreshed",
+      summary: "The new sidecar carries updated conversation context.",
+      why_it_matters: "A stale human artifact would hide the latest reviewer guidance.",
+      reviewer_action: "Review the updated conversation finding.",
+      priority: "high",
+      evidence_state: "unverified",
+      basis: "ai_reconciliation",
+      conversation_event_ids: ["evt-final"],
+      paths: [CHANGED],
+      requirement_ids: [],
+      risk_ids: [],
+      command_ids: [],
+      evidence: [{ kind: "conversation", event_id: "evt-final", confidence: "low", validation_status: "valid", llm_proposed: true }]
+    }];
+    fs.writeFileSync(surfacePath, JSON.stringify(surface, null, 2));
+
+    const comment = runCli(tmp, ["comment", "--mode", "pr", "--out", ".review-surfaces"]);
+
+    assert.equal(comment.status, 0, comment.stderr);
+    assert.match(comment.stderr, /Ignoring stale or non-PR human_review\.json/);
+    assert.match(comment.stdout, /Same-head conversation insight refreshed/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.4 repo review wires deterministic packet risks and survives human rebuild", () => {
+  const tmp = setupChangedRepo();
+  try {
+    const conversationEventId = "repo-user-final";
+    const insightTitle = "Repo conversation insight survives rebuild";
+    const riskFixtureSpec = "features/repo-risk-fixture.feature.yaml";
+    fs.writeFileSync(path.join(tmp, riskFixtureSpec), [
+      "feature:",
+      "  name: repo-risk-fixture",
+      "  product: review-surfaces",
+      "  version: 0.0.1",
+      "  draft: true",
+      "components:",
+      "  UNRELATED:",
+      "    name: Unrelated fixture component",
+      "    requirements:",
+      "      1:",
+      "        requirement: The fixture intentionally leaves renderer changes unmapped.",
+      ""
+    ].join("\n"));
+    const repoArgs = [
+      "all",
+      "--review-scope",
+      "repo",
+      "--base",
+      "HEAD",
+      "--head",
+      "HEAD",
+      "--spec",
+      riskFixtureSpec,
+      "--out",
+      ".review-surfaces",
+      "--conversation",
+      "conversation.jsonl",
+      "--conversation-format",
+      "normalized",
+      "--no-conversation-discovery"
+    ];
+    fs.writeFileSync(
+      path.join(tmp, "conversation.jsonl"),
+      `${JSON.stringify({
+        id: conversationEventId,
+        actor: "user",
+        kind: "message",
+        summary: "Keep the reviewer-facing marker and explain why it matters."
+      })}\n`
+    );
+
+    const prime = runCli(tmp, [...repoArgs, "--provider", "mock"]);
+    assert.equal(prime.status, 0, prime.stderr);
+    const primePacket = JSON.parse(fs.readFileSync(
+      path.join(tmp, ".review-surfaces", "review_packet.json"),
+      "utf8"
+    ));
+    const deterministicRisk = primePacket.risks.items.find((risk: {
+      id: string;
+      evidence?: Array<{ path?: string; llm_proposed?: boolean }>;
+    }) => {
+      const refs = risk.evidence ?? [];
+      return refs.some((ref) => ref.path === CHANGED) &&
+        !(refs.length > 0 && refs.every((ref) => ref.llm_proposed === true));
+    });
+    assert.ok(
+      deterministicRisk,
+      `repo fixture should produce a deterministic packet risk anchored to ${CHANGED}`
+    );
+
+    fs.writeFileSync(
+      path.join(tmp, "agent-stages.json"),
+      JSON.stringify({
+        stages: {
+          conversation_analysis: {
+            summary: "The final request preserves the reviewer-facing marker.",
+            intent: [{
+              text: "Keep the reviewer-facing marker and explain its value.",
+              event_ids: [conversationEventId]
+            }],
+            refinements: [],
+            decisions: [],
+            constraints: [],
+            non_goals: [],
+            rejected_alternatives: [],
+            claims: [],
+            validation_claims: [],
+            known_gaps: []
+          },
+          conversation_review_insights: {
+            insights: [{
+              root_cause_key: "repo-conversation-durability",
+              category: "intent_mismatch",
+              title: insightTitle,
+              summary: "The changed renderer should retain the requested reviewer-facing behavior.",
+              why_it_matters: "Losing this context would make a later artifact rebuild less useful to the reviewer.",
+              reviewer_action: "Confirm the renderer change still communicates the requested value.",
+              priority: "high",
+              evidence_state: "contradicted",
+              conversation_event_ids: [conversationEventId],
+              paths: [CHANGED],
+              requirement_ids: [],
+              risk_ids: [deterministicRisk.id],
+              command_ids: [],
+              diff_anchors: []
+            }]
+          }
+        }
+      })
+    );
+
+    const allRun = runCli(tmp, [
+      ...repoArgs,
+      "--provider",
+      "agent-file",
+      "--agent-input",
+      "agent-stages.json"
+    ]);
+    assert.equal(allRun.status, 0, allRun.stderr);
+
+    const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
+    const packetPath = path.join(tmp, ".review-surfaces", "review_packet.json");
+    const before = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    const packet = JSON.parse(fs.readFileSync(packetPath, "utf8"));
+    assert.equal(before.mode, "repo");
+    assert.equal(before.conversation_analysis.status, "analyzed");
+    assert.equal(before.review_insights[0]?.title, insightTitle);
+    assert.equal(before.review_insights[0]?.evidence_state, "contradicted");
+    assert.equal(before.review_insights[0]?.basis, "validated_anchors");
+    assert.deepEqual(
+      before.review_insights[0]?.risk_ids,
+      [deterministicRisk.id],
+      "repo conversation reconciliation should receive deterministic packet risk ids"
+    );
+    assert.equal(before.generated_from.packet_signature, packet.manifest.signature);
+
+    const humanRun = runCli(tmp, ["human", "--review-scope", "repo", "--out", ".review-surfaces"]);
+    assert.equal(humanRun.status, 0, humanRun.stderr);
+
+    const after = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    assert.equal(validateJsonSchema(HUMAN_REVIEW_SCHEMA, after).valid, true);
+    assert.deepEqual(after.conversation_analysis, before.conversation_analysis);
+    assert.deepEqual(after.review_insights, before.review_insights);
+    assert.equal(after.generated_from.packet_signature, packet.manifest.signature);
+
+    // The signature can also match a PR-mode human artifact because PR runs use
+    // the same whole-repo packet. Repo rebuilds must not import PR-sidecar
+    // conversation conclusions merely because head/signature happen to match.
+    const crossScopeSentinel = "PR-scoped conversation value must not enter repo mode";
+    after.mode = "pr";
+    after.review_insights[0].title = crossScopeSentinel;
+    fs.writeFileSync(humanPath, JSON.stringify(after, null, 2));
+
+    const crossScopeRun = runCli(tmp, ["human", "--review-scope", "repo", "--out", ".review-surfaces"]);
+    assert.equal(crossScopeRun.status, 0, crossScopeRun.stderr);
+    const crossScopeRebuild = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    assert.equal(crossScopeRebuild.mode, "repo");
+    assert.equal(crossScopeRebuild.conversation_analysis.status, "not_assessed");
+    assert.equal(crossScopeRebuild.review_insights.length, 0);
+    assert.doesNotMatch(JSON.stringify(crossScopeRebuild), new RegExp(crossScopeSentinel));
+
+    const staleSignatureSentinel = "Stale-signature conversation value must not survive";
+    after.mode = "repo";
+    after.generated_from.packet_signature = "stale-packet-signature";
+    after.review_insights[0].title = staleSignatureSentinel;
+    fs.writeFileSync(humanPath, JSON.stringify(after, null, 2));
+
+    const staleSignatureRun = runCli(tmp, ["human", "--review-scope", "repo", "--out", ".review-surfaces"]);
+    assert.equal(staleSignatureRun.status, 0, staleSignatureRun.stderr);
+    const staleSignatureRebuild = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    assert.equal(staleSignatureRebuild.conversation_analysis.status, "not_assessed");
+    assert.equal(staleSignatureRebuild.review_insights.length, 0);
+    assert.doesNotMatch(JSON.stringify(staleSignatureRebuild), new RegExp(staleSignatureSentinel));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("all --review-scope pr --cache reuses a ready PR surface while keeping human review PR-scoped", () => {
   const tmp = setupChangedRepo();
   try {
@@ -884,6 +1471,228 @@ test("all --review-scope pr --cache reuses a ready PR surface while keeping huma
     assert.ok(changedQueueItem, "cache-hit human review should still be built from the PR surface and diff");
     assert.match(changedQueueItem.hunk_header, /^@@ -\d+,\d+ \+\d+,\d+ @@$/);
     assert.ok(changedQueueItem.line_start > 0, "cache-hit human review should preserve diff-derived hunk anchors");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.4 cache does not reuse a legacy PR sidecar missing conversation fields", () => {
+  const tmp = setupChangedRepo();
+  try {
+    const narrative = {
+      summary: "Adjusts the comment renderer.",
+      what_changed: [{ text: "Tweaked the sticky comment renderer", paths: [CHANGED] }],
+      why_it_matters: [{ text: "Affects reviewer-facing output", paths: [CHANGED] }],
+      review_first: [{ text: "Confirm the rendered comment", paths: [CHANGED] }],
+      risk_narratives: []
+    };
+    fs.writeFileSync(path.join(tmp, "narrative.json"), JSON.stringify(narrative));
+    const args = [...ALL_PR, "--cache", "--provider", "agent-file", "--agent-input", "narrative.json"];
+    const prime = runCli(tmp, args);
+    assert.equal(prime.status, 0, prime.stderr);
+
+    const surfacePath = path.join(tmp, ".review-surfaces", "pr_review_surface.json");
+    const legacy = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
+    delete legacy.conversation_analysis;
+    delete legacy.review_insights;
+    fs.writeFileSync(surfacePath, JSON.stringify(legacy, null, 2));
+
+    const rerun = runCli(tmp, args);
+
+    assert.equal(rerun.status, 0, rerun.stderr);
+    assert.doesNotMatch(rerun.stdout, /inputs unchanged \(signature match\)/);
+    const refreshed = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
+    assert.ok(refreshed.conversation_analysis);
+    assert.ok(Array.isArray(refreshed.review_insights));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.4 cache reuses a deterministic agent-file conversation result", () => {
+  const tmp = setupChangedRepo();
+  try {
+    const narrative = {
+      summary: "Adjusts the comment renderer.",
+      what_changed: [{ text: "Tweaked the sticky comment renderer", paths: [CHANGED] }],
+      why_it_matters: [{ text: "Affects reviewer-facing output", paths: [CHANGED] }],
+      review_first: [{ text: "Confirm the rendered comment", paths: [CHANGED] }],
+      risk_narratives: []
+    };
+    fs.writeFileSync(path.join(tmp, "narrative.json"), JSON.stringify(narrative));
+    const args = [...ALL_PR, "--cache", "--provider", "agent-file", "--agent-input", "narrative.json"];
+    const prime = runCli(tmp, args);
+    assert.equal(prime.status, 0, prime.stderr);
+
+    const surfacePath = path.join(tmp, ".review-surfaces", "pr_review_surface.json");
+    const degraded = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
+    degraded.conversation_analysis.status = "degraded";
+    degraded.conversation_analysis.summary = "Temporary provider failure.";
+    degraded.conversation_analysis.quality_flags = ["conversation_analysis_unavailable"];
+    fs.writeFileSync(surfacePath, JSON.stringify(degraded, null, 2));
+
+    const rerun = runCli(tmp, args);
+
+    assert.equal(rerun.status, 0, rerun.stderr);
+    assert.match(rerun.stdout, /inputs unchanged \(signature match\)/);
+    const reused = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
+    assert.equal(reused.conversation_analysis.status, "degraded");
+    assert.ok(reused.conversation_analysis.quality_flags.includes("conversation_analysis_unavailable"));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.4 repo cache reuses a successful ai-sdk conversation review", () => {
+  const tmp = setupChangedRepo();
+  try {
+    fs.writeFileSync(
+      path.join(tmp, "conversation.jsonl"),
+      `${JSON.stringify({ id: "user-1", actor: "user", kind: "message", summary: "Keep the renderer behavior.", raw_index: 0 })}\n`
+    );
+    const args = [
+      "all",
+      "--review-scope",
+      "repo",
+      "--base",
+      "HEAD",
+      "--head",
+      "HEAD",
+      "--spec",
+      "features/review-surfaces.feature.yaml",
+      "--out",
+      ".review-surfaces",
+      "--cache",
+      "--provider",
+      "ai-sdk",
+      "--conversation",
+      "conversation.jsonl",
+      "--conversation-format",
+      "normalized",
+      "--no-conversation-discovery"
+    ];
+    const env = { ...process.env };
+    delete env.ANTHROPIC_API_KEY;
+    delete env.GOOGLE_GENERATIVE_AI_API_KEY;
+    delete env.OPENAI_API_KEY;
+    const runWithoutCredentials = (): { status: number | null; stdout: string; stderr: string } => {
+      const result = spawnSync("node", [CLI, ...args], { cwd: tmp, encoding: "utf8", env });
+      return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+    };
+
+    const prime = runWithoutCredentials();
+    assert.equal(prime.status, 0, prime.stderr);
+
+    const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
+    const successful = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    successful.conversation_analysis.status = "analyzed";
+    successful.conversation_analysis.summary = "The final request keeps the renderer behavior.";
+    successful.conversation_analysis.intent = [{
+      text: "Keep the renderer behavior.",
+      event_ids: ["user-1"]
+    }];
+    successful.conversation_analysis.quality_flags = [];
+    successful.review_insights = [];
+    assert.equal(validateJsonSchema(HUMAN_REVIEW_SCHEMA, successful).valid, true);
+    fs.writeFileSync(humanPath, `${JSON.stringify(successful, null, 2)}\n`);
+    const before = fs.readFileSync(humanPath, "utf8");
+
+    const hit = runWithoutCredentials();
+
+    assert.equal(hit.status, 0, hit.stderr);
+    assert.match(hit.stdout, /inputs unchanged \(signature match\)/);
+    assert.equal(fs.readFileSync(humanPath, "utf8"), before);
+    const reused = JSON.parse(before);
+    assert.equal(reused.conversation_analysis.provider, "ai-sdk");
+    assert.equal(reused.conversation_analysis.status, "analyzed");
+    assert.deepEqual(reused.conversation_analysis.quality_flags, []);
+    assert.deepEqual(reused.conversation_analysis.intent[0].event_ids, ["user-1"]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.4 repo cache retries incomplete remote conversation results", () => {
+  const tmp = setupChangedRepo();
+  try {
+    fs.writeFileSync(
+      path.join(tmp, "conversation.jsonl"),
+      `${JSON.stringify({ id: "user-1", actor: "user", kind: "message", summary: "Keep the renderer behavior.", raw_index: 0 })}\n`
+    );
+    const args = [
+      "all",
+      "--review-scope",
+      "repo",
+      "--base",
+      "HEAD",
+      "--head",
+      "HEAD",
+      "--spec",
+      "features/review-surfaces.feature.yaml",
+      "--out",
+      ".review-surfaces",
+      "--cache",
+      "--provider",
+      "ai-sdk",
+      "--conversation",
+      "conversation.jsonl",
+      "--conversation-format",
+      "normalized",
+      "--no-conversation-discovery"
+    ];
+    const env = { ...process.env };
+    delete env.ANTHROPIC_API_KEY;
+    delete env.GOOGLE_GENERATIVE_AI_API_KEY;
+    delete env.OPENAI_API_KEY;
+    const runWithoutCredentials = (): { status: number | null; stdout: string; stderr: string } => {
+      const result = spawnSync("node", [CLI, ...args], { cwd: tmp, encoding: "utf8", env });
+      return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+    };
+    const prime = runWithoutCredentials();
+    assert.equal(prime.status, 0, prime.stderr);
+
+    const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
+    const unavailable = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    assert.equal(unavailable.conversation_analysis.status, "degraded");
+    assert.ok(unavailable.conversation_analysis.quality_flags.includes("conversation_analysis_unavailable"));
+
+    const retryCases = [
+      { status: "degraded", flag: "conversation_analysis_unavailable" },
+      { status: "analyzed", flag: "conversation_review_unavailable" },
+      { status: "analyzed", flag: "conversation_analysis_partial" },
+      { status: "analyzed", flag: "conversation_review_invalid_payload" }
+    ] as const;
+
+    for (const { status, flag } of retryCases) {
+      const cached = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+      const sentinel = `Cache sentinel for ${flag}.`;
+      cached.conversation_analysis.status = status;
+      cached.conversation_analysis.summary = sentinel;
+      cached.conversation_analysis.intent = status === "analyzed"
+        ? [{ text: "Keep the renderer behavior.", event_ids: ["user-1"] }]
+        : [];
+      cached.conversation_analysis.quality_flags = [flag];
+      cached.review_insights = [];
+      assert.equal(
+        validateJsonSchema(HUMAN_REVIEW_SCHEMA, cached).valid,
+        true,
+        `${flag} fixture must be schema-valid so only retry policy can cause the miss`
+      );
+      fs.writeFileSync(humanPath, `${JSON.stringify(cached, null, 2)}\n`);
+
+      const retry = runWithoutCredentials();
+
+      assert.equal(retry.status, 0, retry.stderr);
+      assert.doesNotMatch(retry.stdout, /inputs unchanged \(signature match\)/, `${flag} must bypass cache reuse`);
+      const regenerated = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+      assert.equal(regenerated.conversation_analysis.status, "degraded");
+      assert.ok(regenerated.conversation_analysis.quality_flags.includes("conversation_analysis_unavailable"));
+      assert.notEqual(
+        regenerated.conversation_analysis.summary,
+        sentinel,
+        `${flag} must trigger regeneration rather than silent cached reuse`
+      );
+    }
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

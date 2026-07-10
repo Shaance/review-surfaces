@@ -5,19 +5,25 @@ answers the three questions a human actually has when reviewing a change an
 agent produced:
 
 1. **Did the agent overreach its instructions?** — a change-impact map, guided
-   reading order, and semantic change facts (schema/API contract diffs, new
-   dependencies, architecture drift) make the real scope of the diff concrete.
+   reading order, semantic change facts (schema/API contract diffs, new
+   dependencies, architecture drift), and optional conversation-aware insights
+   reconcile the user's final intent with the real scope of the diff.
 2. **Did the agent weaken tests to make them pass?** — test-weakening detection
    flags deleted tests, newly skipped tests, removed assertions, and regenerated
    snapshots as a first-class risk.
 3. **Did the agent claim things it didn't do?** — a trust audit and
-   per-sentence narrative trust markers separate verified claims from unbacked
-   prose. *"The agent says the tests passed; no transcript backs it"* is a
+   per-sentence narrative trust markers separate citation-anchored claims from
+   unbacked prose without pretending a valid citation independently proves the
+   sentence. *"The agent says the tests passed; no transcript backs it"* is a
    headline no generic review bot produces.
 
-Every answer is grounded in local evidence — files, diffs, command transcripts,
-coverage reports — never hidden chat context. Everything runs offline; the
-default provider is deterministic and needs no API key.
+Every answer is grounded in visible local evidence — files, diffs, command
+transcripts, coverage reports, and, when enabled, cited events from the locally
+discovered or explicitly supplied agent conversation. The deterministic default
+provider needs no API key; without a log the conversation layer is `not assessed`,
+and with a log but no reasoning provider it is visibly `degraded`. A configured
+AI provider adds the conversation-first layer without being allowed to change
+blockers, coverage, or the merge verdict.
 
 **Read a packet before installing:** [`docs/example/`](https://github.com/Shaance/review-surfaces/blob/main/docs/example/README.md)
 holds the unedited output of a real run on a repository this tool had never
@@ -43,14 +49,33 @@ a hard error with the fix in the message — never a silently wrong review.
 > `git clone https://github.com/Shaance/review-surfaces && cd review-surfaces && pnpm install --frozen-lockfile && pnpm run build`,
 > then `node /path/to/review-surfaces/bin/review-surfaces.js all` inside your repo.
 
-That one command produces a merge-readiness verdict, a ranked review-first
-queue with inline diff excerpts and "why ranked here" lines, a guided reading
-order for the diff, a change-impact map, a trust audit, reviewer questions, a
-concrete test plan, and suggested review comments — all under
+That one command produces a merge-readiness verdict, up to three
+conversation-aware reviewer insights when a conversation and AI provider are
+available, a ranked review-first queue with inline diff excerpts and "why ranked
+here" lines, a guided reading order for the diff, a change-impact map, a trust
+audit, reviewer questions, a concrete test plan, and suggested review comments — all under
 `.review-surfaces/`, all validated against checked-in schemas
 (`npx review-surfaces validate .review-surfaces --surface all`).
 
 ## What you get
+
+### Conversation-aware insights
+
+The product first reconstructs the conversation chronologically — active intent,
+later refinements, decisions, constraints, rejected alternatives, claims, and
+known gaps — with every interpretation tied to exact event IDs. Long logs are
+read in chronological windows and reduced so a late user correction is not lost.
+
+A second pass reconciles that model against the exact bounded evidence it was
+shown: line-numbered diff lines, changed paths, scoped requirements, related
+deterministic risks, and captured command transcripts. Validation cannot accept
+an event, line, risk, requirement, or command hidden outside that prompt. The
+cockpit shows at most three root-cause-level insights as **aligned with intent**,
+**conflicts with intent**, or **needs verification**, while stating that the
+semantic relationship remains AI-inferred even when its citations validate. A
+green broad test command is not treated as proof when the relevant assertion was
+deleted. Missing logs, unavailable AI, or partial reconciliation are shown as
+`not assessed`/`degraded`/`partial`, never as “no problems found.”
 
 ### The HTML cockpit
 
@@ -251,7 +276,11 @@ review plan), `--previous-packet <path>` (round-over-round deltas).
 - **`mock`** (default): fully deterministic, offline. Everything in the tour
   above works in this mode.
 - **`agent-file`**: a coding agent contributes bounded, schema-checked
-  hypotheses via `--agent-input <json-or-yaml>` — no network.
+  hypotheses via `--agent-input <json-or-yaml>` — no network. A single file can
+  provide strict per-stage payloads under `stages.<stage-name>`; legacy flat
+  payloads remain supported. For a stage invoked repeatedly, provide ordered
+  payloads under `stage_sequences.<stage-name>`; each call consumes one entry
+  and an exhausted sequence fails explicitly instead of reusing stale output.
 - **`ai-sdk`**: optional live LLM enrichment (narrative prose over the
   deterministic facts). Privacy filtering and secret redaction run before any
   remote call; credentials live in a local `.env.local`, never committed.

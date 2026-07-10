@@ -347,7 +347,7 @@ test("review-surfaces.DISTRIBUTION.13 a first run hints once (stderr) to gitigno
 // compiled test files the runtime never loads, and the README sells the action
 // and --strict for CI without a usage snippet or an exit-code table.
 
-test("review-surfaces.DISTRIBUTION.14 the pack allowlist ships dist/src only, never compiled tests", () => {
+test("review-surfaces.DISTRIBUTION.14 the pack allowlist ships runtime files only, never compiled tests", () => {
   // The load-bearing check runs the REAL pack manifest — npm's packlist applies
   // rules beyond package.json `files`, so inspecting `files` alone can miss what
   // actually ships. `--ignore-scripts` is required: it skips the `prepack` build
@@ -383,15 +383,36 @@ test("review-surfaces.DISTRIBUTION.14 the pack allowlist ships dist/src only, ne
     packedPaths.some((p) => p.startsWith("dist/src/")),
     "the tarball ships the compiled runtime under dist/src"
   );
+  assert.ok(
+    packedPaths.includes("dist/bin/privacy-runtime.js"),
+    "the tarball ships the shared privacy runtime used by compiled code"
+  );
+  assert.ok(
+    packedPaths.includes("dist/bin/bounded-stream-capture.js"),
+    "the tarball ships the shared bounded stream capture used by compiled code"
+  );
 
   // Belt and suspenders: the structural allowlist matches the manifest — no bare
-  // `dist` entry (which would carry dist/tests), and dist is scoped to dist/src.
+  // `dist` entry (which would carry dist/tests), and dist is scoped to runtime files.
   const manifest = JSON.parse(read("package.json")) as { files?: string[]; bin?: Record<string, string> };
   const files = manifest.files ?? [];
   assert.ok(!files.includes("dist"), "the bare `dist` entry (which would carry dist/tests) is gone");
   assert.ok(files.includes("dist/src"), "the package ships the compiled runtime under dist/src");
   assert.ok(
-    files.every((entry) => !entry.startsWith("dist") || entry.startsWith("dist/src")),
+    files.includes("dist/bin/privacy-runtime.js"),
+    "the package ships the compiled shared privacy runtime"
+  );
+  assert.ok(
+    files.includes("dist/bin/bounded-stream-capture.js"),
+    "the package ships the compiled shared bounded stream capture"
+  );
+  assert.ok(
+    files.every((entry) =>
+      !entry.startsWith("dist") ||
+      entry.startsWith("dist/src") ||
+      entry === "dist/bin/privacy-runtime.js" ||
+      entry === "dist/bin/bounded-stream-capture.js"
+    ),
     `no files entry may include dist/tests; got ${JSON.stringify(files)}`
   );
   // The bin's runtime path is covered by a files glob, so an install can run it.

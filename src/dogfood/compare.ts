@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { RISK_CATEGORIES as REVIEW_RISK_CATEGORIES } from "../contracts/review";
 import { fileExists } from "../core/files";
 import { isRecord } from "../core/guards";
 import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
@@ -362,18 +363,7 @@ function normalizeRisks(value: unknown): Pick<RisksModel, "items"> {
   return { items };
 }
 
-const RISK_CATEGORIES = new Set<string>([
-  "correctness",
-  "security",
-  "privacy",
-  "maintainability",
-  "architecture",
-  "testing",
-  "workflow",
-  "release",
-  "performance",
-  "unknown"
-]);
+const RISK_CATEGORIES = new Set<string>(REVIEW_RISK_CATEGORIES);
 
 function isRiskCategory(value: unknown): value is RisksModel["items"][number]["category"] {
   return typeof value === "string" && RISK_CATEGORIES.has(value);

@@ -8,11 +8,19 @@
 // only posting gate it carries is a hard secret-block check: if redaction blocks
 // a high-confidence secret, the result is marked blocked and the caller must not
 // post it.
-import { redactSecrets } from "../privacy/secrets";
+import { inspectAndRedactSecrets } from "../privacy/secrets";
 import { compareStrings } from "../core/compare";
 import { StructuredDiff } from "../pr/contract";
 import { renderHunkExcerpt } from "../human/hunk-excerpt";
-import { decisionLabel, formatQueueLocation } from "../human/render";
+import {
+  decisionLabel,
+  formatQueueLocation,
+  renderCompactConversationReviewMarkdown
+} from "../human/render";
+import {
+  conversationAnalysisForRender,
+  conversationInsightsForRender
+} from "../human/conversation-review-presentation";
 import type { HumanReviewModel, ReviewQueueItem, SinceLastReview, SinceLastReviewItem } from "../human/contract";
 import { STICKY_MARKER } from "./comment";
 import { changeMapMermaidEmbed, changeMapTitle, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
@@ -74,7 +82,12 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   const queueBlock = renderQueue(model.review_queue.slice(0, topN), options.diff, state);
   const trustBlock = renderTrustCounts(model);
 
-  const sections: string[] = [STICKY_MARKER, "## review-surfaces", "", verdict];
+  const sections: string[] = [
+    STICKY_MARKER,
+    "## review-surfaces",
+    "",
+    verdict
+  ];
 
   // COLD_START.7: a literal-HEAD review that absorbed working-tree files says
   // so right under the verdict; clean and pinned-head runs add nothing.
@@ -86,6 +99,11 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
     // review-surfaces.PR_SURFACE.5: on a re-review, LEAD with the delta and
     // collapse the unchanged full review under a <details> block.
     sections.push("", renderSinceSection(since, state));
+  }
+
+  sections.push("", "### Conversation-aware insights", "", renderConversationInsights(model, state));
+
+  if (hasPriorReview) {
     sections.push(
       "",
       "<details>",
@@ -156,8 +174,16 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   // Final whole-body redaction pass: field-level redaction already ran on prose
   // fields, but this catches anything not field-redacted (e.g. diff excerpts) and
   // contributes to the block gate alongside the field-level signal.
-  const redaction = redactSecrets(body);
+  const redaction = inspectAndRedactSecrets(body);
   return { markdown: redaction.text, blocked: state.blocked || redaction.blocked };
+}
+
+function renderConversationInsights(model: HumanReviewModel, state: RedactionState): string {
+  const analysis = conversationAnalysisForRender(model);
+  const insights = conversationInsightsForRender(model);
+  return renderCompactConversationReviewMarkdown(analysis, insights, {
+    renderField: (value, max) => field(value, state, max)
+  });
 }
 
 const MAX_ROUNDS_ROWS = 8;
@@ -369,7 +395,7 @@ function sinceLastReviewIsAvailable(since: SinceLastReview | undefined): since i
 // and leave it unmatched. A blocked secret is recorded on `state` because the
 // replacement hides it from the final whole-body pass.
 function field(value: string, state: RedactionState, max = MAX_FIELD_CHARS): string {
-  const redaction = redactSecrets(value);
+  const redaction = inspectAndRedactSecrets(value);
   if (redaction.blocked) {
     state.blocked = true;
   }

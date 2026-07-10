@@ -1,6 +1,7 @@
 import { compareStrings } from "../core/compare";
 import { commandLooksLikeBroadTestCommand, commandLooksLikeFocusedTestCommand, commandLooksLikeTestCommand } from "../commands/classify";
 import { stripUndefined } from "../core/guards";
+import { REVIEW_SEVERITIES_BY_PRIORITY } from "../contracts/review";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
 
 import type { CollectionResult } from "../collector/collect";
@@ -757,12 +758,11 @@ function summarize(candidates: PrRiskCandidate[]): string {
   if (candidates.length === 0) {
     return "No PR risk candidates.";
   }
-  const order: PacketSeverity[] = ["critical", "high", "medium", "low", "unknown"];
   const counts = new Map<PacketSeverity, number>();
   for (const candidate of candidates) {
     counts.set(candidate.severity, (counts.get(candidate.severity) ?? 0) + 1);
   }
-  const parts = order
+  const parts = REVIEW_SEVERITIES_BY_PRIORITY
     .filter((severity) => (counts.get(severity) ?? 0) > 0)
     .map((severity) => `${counts.get(severity)} ${severity}`);
   return `${candidates.length} PR risk candidate(s): ${parts.join(", ")}.`;

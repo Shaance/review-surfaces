@@ -4,6 +4,7 @@ import { HUMAN_REVIEW_SCHEMA_VERSION } from "../src/human/contract";
 import type { HumanReviewModel } from "../src/human/contract";
 import { renderHumanReviewHtml } from "../src/human/render-html";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
+import { notAssessedConversationAnalysis } from "../src/conversation/analysis";
 
 function model(over: Partial<HumanReviewModel> = {}): HumanReviewModel {
   return {
@@ -24,6 +25,8 @@ function model(over: Partial<HumanReviewModel> = {}): HumanReviewModel {
     reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "One renderer file changed.",
+    conversation_analysis: notAssessedConversationAnalysis("mock"),
+    review_insights: [],
     review_queue: [
       {
         id: "REVIEW-001",
@@ -104,6 +107,87 @@ test("review-surfaces.RENDER.10 every interpolation is escaped and redaction re-
   // Redaction ran before escaping: the raw token never appears.
   assert.doesNotMatch(html, /ghp_a{36}/);
   assert.match(html, /\[REDACTED:github_token\]/);
+});
+
+test("review-surfaces.RENDER.10 conversation analysis, insights, and citations cannot inject HTML", () => {
+  const hostileInsightId = `conversation-id" data-conversation-id-xss="true`;
+  const hostile = model({
+    conversation_analysis: {
+      status: "analyzed",
+      provider: "ai-sdk",
+      summary: "Summary <conversation-analysis-summary-xss>unsafe</conversation-analysis-summary-xss>",
+      intent: [{
+        text: "Intent <conversation-analysis-item-xss>unsafe</conversation-analysis-item-xss>",
+        event_ids: ["event-<conversation-analysis-event-xss>unsafe</conversation-analysis-event-xss>"]
+      }],
+      refinements: [],
+      decisions: [],
+      constraints: [],
+      non_goals: [],
+      rejected_alternatives: [],
+      claims: [],
+      validation_claims: [],
+      known_gaps: [],
+      quality_flags: []
+    },
+    review_insights: [{
+      id: hostileInsightId,
+      category: "intent_mismatch",
+      title: "Title <conversation-insight-title-xss>unsafe</conversation-insight-title-xss>",
+      summary: "Change <conversation-insight-summary-xss>unsafe</conversation-insight-summary-xss>",
+      why_it_matters: "Why <conversation-insight-why-xss>unsafe</conversation-insight-why-xss>",
+      reviewer_action: "Review <conversation-insight-action-xss>unsafe</conversation-insight-action-xss>",
+      priority: "high",
+      evidence_state: "contradicted",
+      basis: "validated_anchors",
+      conversation_event_ids: ["event-<conversation-citation-event-xss>unsafe</conversation-citation-event-xss>"],
+      paths: ["src/<conversation-citation-path-xss>unsafe</conversation-citation-path-xss>.ts"],
+      requirement_ids: ["<conversation-citation-requirement-xss>unsafe</conversation-citation-requirement-xss>"],
+      risk_ids: ["<conversation-citation-risk-xss>unsafe</conversation-citation-risk-xss>"],
+      command_ids: ["<conversation-citation-command-xss>unsafe</conversation-citation-command-xss>"],
+      evidence: [{
+        kind: "diff",
+        path: "src/<conversation-citation-diff-xss>unsafe</conversation-citation-diff-xss>.ts",
+        line_start: 7,
+        confidence: "high",
+        validation_status: "valid"
+      }]
+    }]
+  });
+
+  const html = renderHumanReviewHtml(hostile);
+  const hostileTagNames = [
+    "conversation-analysis-summary-xss",
+    "conversation-analysis-item-xss",
+    "conversation-analysis-event-xss",
+    "conversation-insight-title-xss",
+    "conversation-insight-summary-xss",
+    "conversation-insight-why-xss",
+    "conversation-insight-action-xss",
+    "conversation-citation-event-xss",
+    "conversation-citation-path-xss",
+    "conversation-citation-requirement-xss",
+    "conversation-citation-risk-xss",
+    "conversation-citation-command-xss",
+    "conversation-citation-diff-xss"
+  ];
+  for (const tagName of hostileTagNames) {
+    assert.ok(!html.includes(`<${tagName}>`), `${tagName} must not survive as live markup`);
+    assert.ok(
+      html.includes(`&lt;${tagName}&gt;unsafe&lt;/${tagName}&gt;`),
+      `${tagName} must remain visible as escaped reviewer text`
+    );
+  }
+
+  assert.ok(
+    !html.includes(`id="insight-${hostileInsightId}"`),
+    "the insight id must not break out of its id attribute"
+  );
+  assert.ok(
+    html.includes('id="insight-conversation-id&quot; data-conversation-id-xss=&quot;true"'),
+    "the hostile insight id must remain inside the escaped id attribute"
+  );
+  assert.match(html, /Evidence: events .*; diff .*; paths .*; requirements .*; risks .*; commands /);
 });
 
 test("review-surfaces.RENDER.10 output is byte-deterministic with no timestamps; checkboxes persist per head sha", () => {

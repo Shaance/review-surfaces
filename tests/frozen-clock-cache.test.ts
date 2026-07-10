@@ -212,6 +212,72 @@ test("review-surfaces signature: changes with provider/model and with base/head"
   }
 });
 
+test("review-surfaces signature: tracks the effective prompt-redaction policy", () => {
+  const tmp = setupRepo("review-surfaces-signature-redaction-");
+  try {
+    assert.equal(runAll(tmp).status, 0);
+    const defaultSignature = signatureOf(tmp);
+
+    assert.equal(runAll(tmp, ["--redact-secrets", "true"]).status, 0);
+    assert.equal(
+      signatureOf(tmp),
+      defaultSignature,
+      "the default true policy and an explicit true override are equivalent"
+    );
+
+    assert.equal(runAll(tmp, ["--redact-secrets", "false"]).status, 0);
+    const disabledSignature = signatureOf(tmp);
+    assert.notEqual(disabledSignature, defaultSignature, "disabling prompt redaction changes the cache key");
+
+    assert.equal(runAll(tmp, ["--no-redact-secrets"]).status, 0);
+    assert.equal(
+      signatureOf(tmp),
+      disabledSignature,
+      "--no-redact-secrets and --redact-secrets false are equivalent"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces --cache: prompt-redaction toggles regenerate in both directions for repo and PR scope", () => {
+  for (const scope of ["repo", "pr"] as const) {
+    const tmp = setupRepo(`review-surfaces-cache-redaction-${scope}-`);
+    try {
+      const common = ["--now", FROZEN, "--cache", "--review-scope", scope];
+      const prime = runAll(tmp, [...common, "--redact-secrets", "true"]);
+      assert.equal(prime.status, 0, prime.stderr);
+      const enabledSignature = signatureOf(tmp);
+
+      const sentinelTimestamp = "1999-12-31T23:59:59.000Z";
+      const addSentinel = (): void => {
+        const packet = JSON.parse(read(tmp, "review_packet.json"));
+        packet.manifest.created_at = sentinelTimestamp;
+        fs.writeFileSync(
+          path.join(tmp, ".review-surfaces", "review_packet.json"),
+          `${JSON.stringify(packet, null, 2)}\n`
+        );
+      };
+
+      addSentinel();
+      const disabled = runAll(tmp, [...common, "--redact-secrets", "false"]);
+      assert.equal(disabled.status, 0, disabled.stderr);
+      assert.doesNotMatch(disabled.stdout, /inputs unchanged/, `${scope}: true -> false must miss cache`);
+      assert.equal(JSON.parse(read(tmp, "review_packet.json")).manifest.created_at, FROZEN);
+      assert.notEqual(signatureOf(tmp), enabledSignature);
+
+      addSentinel();
+      const enabledAgain = runAll(tmp, [...common, "--redact-secrets", "true"]);
+      assert.equal(enabledAgain.status, 0, enabledAgain.stderr);
+      assert.doesNotMatch(enabledAgain.stdout, /inputs unchanged/, `${scope}: false -> true must miss cache`);
+      assert.equal(JSON.parse(read(tmp, "review_packet.json")).manifest.created_at, FROZEN);
+      assert.equal(signatureOf(tmp), enabledSignature, `${scope}: returning to true restores the original key`);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+});
+
 // FINDING B (round 3): under --provider ai-sdk, the EFFECTIVE model can come
 // from REVIEW_SURFACES_AI_MODEL (no --model, no config.llm.model). Before the
 // fix the signature recorded model=undefined, so a re-run with a DIFFERENT env
@@ -318,6 +384,29 @@ test("review-surfaces --cache: reuses on signature match, regenerates on mismatc
     const regenerated = read(tmp, "review_packet.json");
     assert.doesNotMatch(regenerated, /\[cache-sentinel\]/, "cache miss must regenerate the packet");
     assert.match(regenerated, /review-surfaces\.packet\.v1/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces --cache: default mock analysis of a provided conversation is reusable", () => {
+  const tmp = setupRepo("review-surfaces-cache-mock-conversation-");
+  try {
+    fs.writeFileSync(
+      path.join(tmp, "conversation.txt"),
+      "user: Keep the source marker stable.\nassistant: I will inspect and preserve it.\n"
+    );
+    const args = ["--now", FROZEN, "--cache", "--conversation", "conversation.txt"];
+    const prime = runAll(tmp, args);
+    assert.equal(prime.status, 0, prime.stderr);
+    const firstHuman = JSON.parse(read(tmp, "human_review.json"));
+    assert.equal(firstHuman.conversation_analysis.provider, "mock");
+    assert.equal(firstHuman.conversation_analysis.status, "degraded");
+    assert.ok(firstHuman.conversation_analysis.quality_flags.includes("conversation_analysis_unavailable"));
+
+    const hit = runAll(tmp, args);
+    assert.equal(hit.status, 0, hit.stderr);
+    assert.match(hit.stdout, /inputs unchanged \(signature match\); reusing existing packet/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

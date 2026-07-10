@@ -42,6 +42,8 @@
   },
   "files": [
     "bin",
+    "dist/bin/bounded-stream-capture.js",
+    "dist/bin/privacy-runtime.js",
     "dist/src",
     "schemas",
     "docs/example",

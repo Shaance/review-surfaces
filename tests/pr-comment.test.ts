@@ -4,6 +4,19 @@ import { HUMAN_REVIEW_SCHEMA_VERSION } from "../src/human/contract";
 import type { HumanReviewModel } from "../src/human/contract";
 import { renderHumanPrComment, renderPrComment } from "../src/render/pr-comment";
 import { PrReviewSurfaceModel, PR_SURFACE_SCHEMA_VERSION } from "../src/pr/contract";
+import { notAssessedConversationAnalysis } from "../src/conversation/analysis";
+import {
+  HOSTILE_CONVERSATION_RAW_CONTROLS,
+  HOSTILE_CONVERSATION_NEUTRALIZED_ENTITIES,
+  HOSTILE_CONVERSATION_TRAILING_BACKSLASH_MARKERS,
+  ORDINARY_CONVERSATION_VALUE,
+  hostileConversationBackslashRun,
+  hostileConversationControlSurvives,
+  hostileConversationDisclosureClosesBeforeHeading,
+  hostileConversationAnalysis,
+  hostileConversationInsight,
+  hostileConversationTitleClosesEmphasis
+} from "./helpers/conversation-review";
 
 function baseScope(): PrReviewSurfaceModel["scope"] {
   return {
@@ -84,6 +97,8 @@ function humanModel(): HumanReviewModel {
       ]
     },
     summary: "The PR is reviewable, but approval should wait for a schema compatibility answer.",
+    conversation_analysis: notAssessedConversationAnalysis("mock"),
+    review_insights: [],
     review_queue: [
       {
         id: "REVIEW-001",
@@ -209,6 +224,70 @@ test("renderPrComment renders a PR-SPECIFIC surface (what changed / coverage del
   assert.doesNotMatch(md, /Start with missing and partial requirement results/);
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.4 lower-level PR fallback still renders conversation reviewer value", () => {
+  const surface = readySurface();
+  surface.conversation_analysis = {
+    ...notAssessedConversationAnalysis("ai-sdk"),
+    status: "analyzed",
+    summary: "The final request keeps the sticky marker stable.",
+    intent: [{ text: "Keep the sticky marker stable.", event_ids: ["evt-final"] }],
+    quality_flags: []
+  };
+  surface.review_insights = [{
+    id: "CONV-INSIGHT-001",
+    category: "intent_mismatch",
+    title: "Sticky marker changed",
+    summary: "The diff changes the marker the final request retained.",
+    why_it_matters: "The update workflow may stop finding its existing comment.",
+    reviewer_action: "Compare the marker with the final conversation constraint.",
+    priority: "high",
+    evidence_state: "contradicted",
+    basis: "validated_anchors",
+    conversation_event_ids: ["evt-final"],
+    paths: ["src/render/comment.ts"],
+    requirement_ids: [],
+    risk_ids: [],
+    command_ids: [],
+    evidence: [{
+      kind: "diff",
+      path: "src/render/comment.ts",
+      line_start: 42,
+      line_end: 42,
+      confidence: "high",
+      validation_status: "valid",
+      llm_proposed: true
+    }]
+  }, {
+    id: "CONV-INSIGHT-002",
+    category: "validation_gap",
+    title: "Marker migration is unverified",
+    summary: "The conversation does not establish a migration path.",
+    why_it_matters: "Existing comments may need an explicit compatibility check.",
+    reviewer_action: "Verify the update path against an existing comment.",
+    priority: "medium",
+    evidence_state: "unverified",
+    basis: "ai_reconciliation",
+    conversation_event_ids: ["evt-final"],
+    paths: ["src/render/comment.ts"],
+    requirement_ids: [],
+    risk_ids: [],
+    command_ids: [],
+    evidence: []
+  }];
+
+  const md = renderPrComment(surface);
+
+  assert.ok(md.indexOf("### Conversation-aware insights") < md.indexOf("### What changed"));
+  const topIdx = md.indexOf("Sticky marker changed");
+  const detailsIdx = md.indexOf("<summary>Conversation context, grounding and 1 more insight</summary>");
+  assert.ok(topIdx > -1 && topIdx < detailsIdx, "the top insight renders before the disclosure");
+  assert.ok(md.indexOf("Marker migration is unverified") > detailsIdx, "the remaining insight stays accessible");
+  assert.ok(md.indexOf("Stated goal") > detailsIdx, "conversation context moves into the disclosure");
+  assert.match(md, /Stated goal.*Keep the sticky marker stable/);
+  assert.match(md, /Why it matters: The update workflow may stop finding its existing comment/);
+  assert.match(md, /diff `src\/render\/comment\.ts:L42`/);
+});
+
 test("renderPrComment shows a clear blocked message (no whole-repo fallback) when the narrative is unavailable", () => {
   const blocked: PrReviewSurfaceModel = { ...readySurface(), status: "blocked", blocked_reason: "llm_unavailable", narrative: undefined, llm: { required: true, provider: "mock", status: "blocked" } };
   const md = renderPrComment(blocked);
@@ -276,6 +355,124 @@ test("renderHumanPrComment renders the compact PR comment from human_review.json
   assert.match(md, /Lower-level PR facts: `custom-out\/pr_review_surface\.json`/);
   assert.doesNotMatch(md, /### Affected coverage/);
   assert.doesNotMatch(md, /### What changed/);
+});
+
+test("renderHumanPrComment puts conversation-aware reviewer value before the queue", () => {
+  const review = humanModel();
+  review.conversation_analysis = {
+    ...notAssessedConversationAnalysis("ai-sdk"),
+    status: "analyzed",
+    summary: "The final conversation narrowed the compatibility promise.",
+    intent: [{ text: "Keep compatibility narrow.", event_ids: ["evt-final"] }],
+    quality_flags: []
+  };
+  review.review_insights = [{
+    id: "CONV-INSIGHT-001",
+    category: "scope_surprise",
+    title: "Compatibility scope expanded",
+    summary: "The diff broadens a contract the conversation explicitly narrowed.",
+    why_it_matters: "Reviewers need to confirm the wider compatibility burden.",
+    reviewer_action: "Compare the schema change with the final author refinement.",
+    priority: "high",
+    evidence_state: "contradicted",
+    basis: "validated_anchors",
+    conversation_event_ids: ["evt-final"],
+    paths: ["schemas/human_review.schema.json"],
+    requirement_ids: [],
+    risk_ids: [],
+    command_ids: [],
+    evidence: []
+  }, {
+    id: "CONV-INSIGHT-002",
+    category: "validation_gap",
+    title: "Compatibility proof is missing",
+    summary: "The final scope has no focused compatibility transcript.",
+    why_it_matters: "The reviewer cannot confirm the narrowed promise.",
+    reviewer_action: "Run the focused compatibility check.",
+    priority: "medium",
+    evidence_state: "unverified",
+    basis: "ai_reconciliation",
+    conversation_event_ids: ["evt-final"],
+    paths: ["schemas/human_review.schema.json"],
+    requirement_ids: [],
+    risk_ids: [],
+    command_ids: [],
+    evidence: []
+  }];
+
+  const md = renderHumanPrComment(review).markdown;
+  assert.ok(md.indexOf("### Conversation-aware insights") < md.indexOf("### Review first"));
+  const topIdx = md.indexOf("Compatibility scope expanded");
+  const detailsIdx = md.indexOf("<summary>Conversation context, grounding and 1 more insight</summary>");
+  assert.ok(topIdx > -1 && topIdx < detailsIdx, "the human PR comment leads with the top insight");
+  assert.ok(md.indexOf("Compatibility proof is missing") > detailsIdx, "the second insight remains accessible");
+  assert.ok(md.indexOf("Stated goal") > detailsIdx, "fuller conversation context remains accessible");
+  assert.match(md, /\[Conflicts with intent · high\] Compatibility scope expanded/);
+  assert.match(md, /Why it matters: Reviewers need to confirm the wider compatibility burden/);
+  assert.match(md, /events `evt-final`; paths `schemas\/human_review\.schema\.json`/);
+  assert.equal(review.verdict.decision, "needs_author_clarification");
+});
+
+test("review-surfaces.PR_SURFACE.4 both PR Markdown renderers neutralize hostile conversation prose and keep deterministic sections visible", () => {
+  const human = humanModel();
+  human.conversation_analysis = hostileConversationAnalysis();
+  human.review_insights = [hostileConversationInsight("schemas/human_review.schema.json")];
+  const humanRendered = renderHumanPrComment(human);
+
+  const surface = readySurface();
+  surface.conversation_analysis = hostileConversationAnalysis();
+  surface.review_insights = [hostileConversationInsight()];
+  const lowLevelMarkdown = renderPrComment(surface);
+
+  for (const rendered of [humanRendered.markdown, lowLevelMarkdown]) {
+    for (const rawControl of HOSTILE_CONVERSATION_RAW_CONTROLS) {
+      assert.equal(hostileConversationControlSurvives(rendered, rawControl), false, `raw provider control survived: ${rawControl}`);
+    }
+    for (const entity of HOSTILE_CONVERSATION_NEUTRALIZED_ENTITIES) {
+      assert.ok(rendered.includes(entity), `neutralized provider text must remain readable: ${entity}`);
+    }
+    for (const marker of HOSTILE_CONVERSATION_TRAILING_BACKSLASH_MARKERS) {
+      assert.equal(
+        hostileConversationBackslashRun(rendered, marker),
+        2,
+        `provider trailing backslash must be doubled at ${marker}`
+      );
+    }
+    assert.equal(hostileConversationTitleClosesEmphasis(rendered), true, "renderer-owned title emphasis must close after the neutralized backslash");
+    assert.match(rendered, new RegExp(ORDINARY_CONVERSATION_VALUE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(rendered, /&lt;\\!--HOSTILE_SUMMARY--&gt;/);
+  }
+  assert.equal(
+    hostileConversationDisclosureClosesBeforeHeading(humanRendered.markdown, "### Review first"),
+    true,
+    "human PR conversation details must close before the next deterministic section"
+  );
+  assert.match(humanRendered.markdown, /\n### Review first\n/);
+  assert.match(humanRendered.markdown, /### Blockers/);
+  assert.equal(humanRendered.blocked, false, "markup neutralization alone must not trip strict postability");
+  assert.equal(
+    hostileConversationDisclosureClosesBeforeHeading(lowLevelMarkdown, "### What changed"),
+    true,
+    "low-level PR conversation details must close before the next deterministic section"
+  );
+  assert.match(lowLevelMarkdown, /\n### What changed\n/);
+  assert.match(lowLevelMarkdown, /### PR risks/);
+});
+
+test("review-surfaces.PR_SURFACE.4 a persisted high-confidence redaction marker blocks the human PR comment", () => {
+  const review = humanModel();
+  review.conversation_analysis = {
+    ...notAssessedConversationAnalysis("ai-sdk"),
+    status: "analyzed",
+    summary: "Provider output included [REDACTED:github_token].",
+    intent: [{ text: "Preserve the reviewer-facing behavior.", event_ids: ["evt-final"] }],
+    quality_flags: ["conversation_analysis_output_redacted"]
+  };
+
+  const rendered = renderHumanPrComment(review);
+
+  assert.match(rendered.markdown, /\[REDACTED:github_token\]/);
+  assert.equal(rendered.blocked, true);
 });
 
 test("renderHumanPrComment is byte-deterministic for the same model", () => {

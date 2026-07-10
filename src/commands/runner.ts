@@ -2,30 +2,31 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
 import { resolveGitRefSha } from "../collector/git";
+import type { CommandTranscript } from "../contracts/command-transcript";
 import { ensureDir, relativePath, writeJson } from "../core/files";
 import { stripUndefined } from "../core/guards";
-import { redactForArtifact } from "../privacy/redact";
-import { redactSecrets } from "../privacy/secrets";
+import {
+  containsBlockingSecretMaterial,
+  redactSecrets
+} from "../privacy/secrets";
+import {
+  BoundedStreamCapture,
+  COMMAND_RAW_EXCERPT_CAP
+} from "./bounded-stream-capture";
 import {
   COMMAND_TRANSCRIPT_EXCERPT_LIMIT,
   COMMAND_TRANSCRIPT_SCHEMA_VERSION,
   DEFAULT_COMMAND_TRANSCRIPT_DIR
 } from "./transcripts";
 
-export interface RecordedCommandTranscript {
-  id: string;
-  command: string;
-  status: "passed" | "failed";
-  exit_code?: number;
-  head_sha?: string;
+export interface RecordedCommandTranscript extends Omit<
+  CommandTranscript,
+  "source_path" | "status" | "duration_ms" | "started_at" | "completed_at"
+> {
+  status: Exclude<CommandTranscript["status"], "unknown">;
   duration_ms: number;
   started_at: string;
   completed_at: string;
-  stdout_excerpt?: string;
-  stderr_excerpt?: string;
-  stdout_hash?: string;
-  stderr_hash?: string;
-  truncated: boolean;
 }
 
 export interface RecordCommandOptions {
@@ -53,17 +54,21 @@ export async function recordCommandTranscript(options: RecordCommandOptions): Pr
 
   const now = options.now ?? (() => new Date());
   const started = now();
-  const stdout = new BoundedStreamCapture();
-  const stderr = new BoundedStreamCapture();
+  const stdout = new BoundedStreamCapture(COMMAND_RAW_EXCERPT_CAP);
+  const stderr = new BoundedStreamCapture(COMMAND_RAW_EXCERPT_CAP);
   const command = shellCommandString(options.args);
   const childResult = await runChildCommand(options, stdout, stderr);
   const completed = now();
   const id = options.id ?? defaultTranscriptId(options.args);
-  // boundExcerpt() redacts-then-bounds AND marks the capture truncated as a side
-  // effect, so compute both excerpts BEFORE reading `.truncated` rather than
-  // relying on object-literal property evaluation order.
-  const stdoutExcerpt = boundExcerpt(stdout);
-  const stderrExcerpt = boundExcerpt(stderr);
+  // Finalize the full-stream detectors before materializing retained excerpts.
+  // A blocked token can start inside the raw cap and finish after it; excerpt
+  // redaction needs the finalized block state to replace that incomplete prefix.
+  const stdoutSecretBlocked = stdout.finishAndCheckBlockedSecret();
+  const stderrSecretBlocked = stderr.finishAndCheckBlockedSecret();
+  const stdoutExcerpt = stdout.redactedExcerpt(COMMAND_TRANSCRIPT_EXCERPT_LIMIT);
+  const stderrExcerpt = stderr.redactedExcerpt(COMMAND_TRANSCRIPT_EXCERPT_LIMIT);
+  const secretBlocked = containsBlockingSecretMaterial(command) ||
+    stdoutSecretBlocked || stderrSecretBlocked;
   const transcript: RecordedCommandTranscript = stripUndefined({
     id,
     command: redact(command) ?? "",
@@ -77,7 +82,8 @@ export async function recordCommandTranscript(options: RecordCommandOptions): Pr
     stderr_excerpt: stderrExcerpt,
     stdout_hash: stdout.hash(),
     stderr_hash: stderr.hash(),
-    truncated: stdout.truncated || stderr.truncated
+    truncated: stdout.truncated || stderr.truncated,
+    secret_blocked: secretBlocked || undefined
   });
 
   const transcriptPath = await writeTranscriptFile(options.cwd, options.transcriptDir, id, transcript);
@@ -139,66 +145,6 @@ async function writeTranscriptFile(
     commands: [transcript]
   });
   return relativePath(cwd, absolutePath);
-}
-
-// Raw capture cap: bound memory while giving redaction enough context to catch a
-// secret that straddles the final excerpt limit. Redaction + the final bound to
-// COMMAND_TRANSCRIPT_EXCERPT_LIMIT happen at read time in boundExcerpt(), NOT on
-// each write, so a secret split across two chunks (or across the limit) is still
-// removed before slicing. The sha256 digest keeps hashing the FULL raw stream.
-const RAW_EXCERPT_CAP = COMMAND_TRANSCRIPT_EXCERPT_LIMIT * 4;
-
-class BoundedStreamCapture {
-  private readonly digest = crypto.createHash("sha256");
-  private readonly chunks: string[] = [];
-  private rawLength = 0;
-  private sawContent = false;
-  truncated = false;
-
-  write(chunk: Buffer): void {
-    this.sawContent = true;
-    this.digest.update(chunk);
-    if (this.rawLength >= RAW_EXCERPT_CAP) {
-      this.truncated = true;
-      return;
-    }
-
-    const text = chunk.toString("utf8");
-    const available = RAW_EXCERPT_CAP - this.rawLength;
-    const captured = text.slice(0, available);
-    this.chunks.push(captured);
-    this.rawLength += captured.length;
-    if (text.length > available) {
-      this.truncated = true;
-    }
-  }
-
-  rawExcerpt(): string | undefined {
-    return this.sawContent ? this.chunks.join("") : undefined;
-  }
-
-  markTruncated(): void {
-    this.truncated = true;
-  }
-
-  hash(): string | undefined {
-    return this.sawContent ? this.digest.copy().digest("hex") : undefined;
-  }
-}
-
-// Redact the captured raw stream, THEN bound to the excerpt limit. Setting
-// truncated here keeps the flag reflecting BOTH a raw-cap overflow and the
-// post-redaction bound (the redacted text can be longer or shorter than raw).
-function boundExcerpt(capture: BoundedStreamCapture): string | undefined {
-  const raw = capture.rawExcerpt();
-  if (raw === undefined) {
-    return undefined;
-  }
-  const { excerpt, truncated } = redactForArtifact(raw, COMMAND_TRANSCRIPT_EXCERPT_LIMIT);
-  if (truncated) {
-    capture.markTruncated();
-  }
-  return excerpt;
 }
 
 function defaultTranscriptId(args: string[]): string {

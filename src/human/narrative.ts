@@ -4,7 +4,8 @@
 // The narrative is prose over deterministic facts produced through the provider
 // boundary (mock / agent-file / ai-sdk). Every claim is validated against a
 // deterministic anchor allowlist (changed files, ACIDs, command transcripts):
-//   - all anchors valid (and the prose names nothing off-allowlist) -> `verified`
+//   - all anchors valid (and the prose names nothing off-allowlist) -> internal
+//     `verified` compatibility value, rendered to users as `anchored`
 //   - any anchor missing/invalid -> `claimed` (DEMOTED and visibly marked with
 //     the offending tokens, never dropped silently or rendered as fact).
 // It never creates/clears blockers or alters the verdict — the builder only
@@ -193,7 +194,8 @@ function validateClaims(value: unknown, allowlist: NarrativeAllowlist, maxClaims
       continue;
     }
     const { anchors, invalid } = classifyAnchors(raw, allowlist, text);
-    // Verified only when the claim is backed by at least one valid anchor AND
+    // The internal `verified` value means citation-anchored only: at least one
+    // valid anchor AND
     // cites nothing off-allowlist (structured or in prose); otherwise DEMOTE to
     // claimed and surface the offending tokens.
     const trust: NarrativeClaimTrust = invalid.length === 0 && anchors.length > 0 ? "verified" : "claimed";

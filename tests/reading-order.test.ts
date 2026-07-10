@@ -5,6 +5,7 @@ import { renderHumanReviewMarkdown } from "../src/human/render";
 import { renderHumanReviewHtml } from "../src/human/render-html";
 import { renderStickySummary } from "../src/render/sticky-summary";
 import { ChangeGraph, HumanReviewModel, HUMAN_REVIEW_SCHEMA_VERSION, ReadingOrder, ReviewQueueItem } from "../src/human/contract";
+import { notAssessedConversationAnalysis } from "../src/conversation/analysis";
 
 function file(filePath: string, status = "M") {
   return { path: filePath, status, added: 1, removed: 1 };
@@ -35,6 +36,8 @@ function model(graph: ChangeGraph, order: ReadingOrder): HumanReviewModel {
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     summary: "Reading order fixture.",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
+    conversation_analysis: notAssessedConversationAnalysis("mock"),
+    review_insights: [],
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
     review_queue: [],
     blockers: [],

@@ -6,8 +6,11 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { collectInputs } from "../src/collector/collect";
 import { collectChangedFiles } from "../src/collector/git";
+import { recordCommandTranscript } from "../src/commands/runner";
+import { indexCommandTranscripts } from "../src/commands/transcripts";
 import { defaultConfig } from "../src/config/config";
 import { buildMethodology } from "../src/methodology/methodology";
+import { openAiProjectKeyFixture } from "./helpers/secret-fixtures";
 
 test("collects specs and writes first local artifacts", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-test-"));
@@ -491,4 +494,155 @@ test("review-surfaces.PRIVACY.7 a conversation tool_result secret folds into rem
   const escapedFinding = (escaped.privacy.conversation_secret_findings ?? []).find((finding) => finding.path.includes("conversation.normalized"));
   assert.ok(escapedFinding);
   assert.ok(!escapedFinding.path.startsWith("/") && !escapedFinding.path.includes(".."), `locus must not escape: ${escapedFinding.path}`);
+});
+
+test("review-surfaces.PRIVACY.2 writer block signals survive indexing and close the collection remote-provider gate", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-command-priv-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const secret = openAiProjectKeyFixture();
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.copyFileSync(
+    path.join(process.cwd(), "tests", "fixtures", "minimal-repo", "features", "example.feature.yaml"),
+    path.join(tmp, "features", "example.feature.yaml")
+  );
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const childScripts = {
+    "CMD-LATE-STDOUT": "process.stdout.write('x'.repeat(7000) + ' ' + ['sk', '-proj-', 'abcdefghijklmnopqrstuvwxyz123456'].join(''))",
+    "CMD-LATE-STDERR": "process.stderr.write('x'.repeat(7000) + ' ' + ['sk', '-proj-', 'abcdefghijklmnopqrstuvwxyz123456'].join(''))"
+  } as const;
+  const written = await Promise.all(Object.entries(childScripts).map(([id, script]) =>
+    recordCommandTranscript({
+      cwd: tmp,
+      args: [process.execPath, "-e", script],
+      id,
+      streamOutput: false
+    })
+  ));
+
+  for (const artifact of written) {
+    const persisted = fs.readFileSync(path.join(tmp, artifact.transcriptPath), "utf8");
+    const transcript = JSON.parse(persisted).commands[0];
+    const excerpt = artifact.transcript.id === "CMD-LATE-STDOUT"
+      ? transcript.stdout_excerpt
+      : transcript.stderr_excerpt;
+    assert.equal(transcript.secret_blocked, true);
+    assert.ok(typeof excerpt === "string" && excerpt.length <= 1200);
+    assert.doesNotMatch(excerpt, new RegExp(secret));
+    assert.doesNotMatch(excerpt, /\[REDACTED:/);
+    assert.doesNotMatch(persisted, new RegExp(secret));
+    assert.doesNotMatch(persisted, /\[REDACTED:/);
+  }
+
+  const indexed = await indexCommandTranscripts(tmp, written.map((artifact) => artifact.transcriptPath));
+  assert.deepEqual(indexed.map((transcript) => transcript.id).sort(), ["CMD-LATE-STDERR", "CMD-LATE-STDOUT"]);
+  for (const transcript of indexed) {
+    assert.equal(transcript.secret_blocked, true);
+    assert.doesNotMatch(JSON.stringify(transcript), new RegExp(secret));
+    assert.doesNotMatch(JSON.stringify(transcript), /\[REDACTED:/);
+  }
+
+  const result = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+
+  assert.deepEqual(
+    result.commandTranscripts.map((transcript) => transcript.id).sort(),
+    ["CMD-LATE-STDERR", "CMD-LATE-STDOUT"]
+  );
+  assert.ok(result.commandTranscripts.every((transcript) => transcript.secret_blocked === true));
+  assert.equal(result.privacy.remote_provider_blocked, true);
+  const collectedArtifact = fs.readFileSync(path.join(tmp, ".review-surfaces", "inputs", "commands.json"), "utf8");
+  assert.doesNotMatch(collectedArtifact, new RegExp(secret));
+  assert.doesNotMatch(collectedArtifact, /\[REDACTED:/);
+});
+
+test("review-surfaces.PRIVACY.2 marker-only legacy command excerpts close the collection remote-provider gate", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-command-marker-compat-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const marker = "[REDACTED:github_token]";
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, ".review-surfaces", "commands"), { recursive: true });
+  fs.copyFileSync(
+    path.join(process.cwd(), "tests", "fixtures", "minimal-repo", "features", "example.feature.yaml"),
+    path.join(tmp, "features", "example.feature.yaml")
+  );
+  const legacyCommands = [
+    {
+      id: "CMD-LEGACY-STDOUT-MARKER",
+      command: "pnpm run test",
+      exit_code: 0,
+      stdout_excerpt: `legacy stdout retained only as ${marker}`
+    },
+    {
+      id: "CMD-LEGACY-STDERR-MARKER",
+      command: "pnpm run test",
+      exit_code: 1,
+      stderr_excerpt: `third-party stderr retained only as ${marker}`
+    }
+  ];
+  const sourcePath = path.join(tmp, ".review-surfaces", "commands", "legacy.json");
+  fs.writeFileSync(sourcePath, JSON.stringify({ commands: legacyCommands }));
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  for (const command of legacyCommands) {
+    assert.equal("stdout" in command, false);
+    assert.equal("stderr" in command, false);
+    assert.equal("secret_blocked" in command, false);
+  }
+
+  const indexed = await indexCommandTranscripts(tmp, [".review-surfaces/commands/legacy.json"]);
+  assert.deepEqual(
+    indexed.map((transcript) => ({ id: transcript.id, secretBlocked: transcript.secret_blocked })),
+    [
+      { id: "CMD-LEGACY-STDOUT-MARKER", secretBlocked: true },
+      { id: "CMD-LEGACY-STDERR-MARKER", secretBlocked: true }
+    ]
+  );
+
+  const result = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+
+  assert.equal(result.privacy.remote_provider_blocked, true);
+  assert.ok(result.commandTranscripts.every((transcript) => transcript.secret_blocked === true));
+  const collected = JSON.parse(
+    fs.readFileSync(path.join(tmp, ".review-surfaces", "inputs", "commands.json"), "utf8")
+  ) as { transcripts: Array<Record<string, unknown>> };
+  assert.deepEqual(
+    collected.transcripts.map((command) => ({
+      id: command.id,
+      stdoutExcerpt: command.stdout_excerpt,
+      stderrExcerpt: command.stderr_excerpt,
+      secretBlocked: command.secret_blocked,
+      hasRawStdout: Object.prototype.hasOwnProperty.call(command, "stdout"),
+      hasRawStderr: Object.prototype.hasOwnProperty.call(command, "stderr")
+    })),
+    [
+      {
+        id: "CMD-LEGACY-STDOUT-MARKER",
+        stdoutExcerpt: `legacy stdout retained only as ${marker}`,
+        stderrExcerpt: undefined,
+        secretBlocked: true,
+        hasRawStdout: false,
+        hasRawStderr: false
+      },
+      {
+        id: "CMD-LEGACY-STDERR-MARKER",
+        stdoutExcerpt: undefined,
+        stderrExcerpt: `third-party stderr retained only as ${marker}`,
+        secretBlocked: true,
+        hasRawStdout: false,
+        hasRawStderr: false
+      }
+    ]
+  );
 });

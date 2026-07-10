@@ -9,6 +9,7 @@ import { EvaluationModel } from "../src/evaluation/evaluate";
 import { createReviewAreaMatcher } from "../src/review-areas/areas";
 import { analyzeRisks } from "../src/risks/risks";
 import { defaultReviewSurfacesAreas } from "./helpers/review-areas";
+import { openAiProjectKeyFixture } from "./helpers/secret-fixtures";
 
 test("review-surfaces.COLLECTOR.7 indexes bounded local command transcripts without preserving raw output", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-commands-"));
@@ -65,6 +66,22 @@ test("review-surfaces.PRIVACY.2 redacts command transcript command and excerpt t
   // bare TOKEN=value is a generic assignment (token_assignment catch-all).
   assert.match(transcripts[0].command, /\[REDACTED:google_api_key\]/);
   assert.match(transcripts[0].stdout_excerpt ?? "", /\[REDACTED:secret\]/);
+  assert.equal(transcripts[0].secret_blocked, true);
+});
+
+test("review-surfaces.PRIVACY.2 preserves the block signal from an already-redacted command marker", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-command-block-marker-"));
+  fs.mkdirSync(path.join(tmp, ".review-surfaces", "commands"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, ".review-surfaces", "commands", "local.json"),
+    JSON.stringify({
+      commands: [{ command: "OPENAI_API_KEY=[REDACTED:openai_key] pnpm test", exit_code: 0 }]
+    })
+  );
+
+  const transcripts = await indexCommandTranscripts(tmp, [".review-surfaces/commands/local.json"]);
+
+  assert.equal(transcripts[0].secret_blocked, true);
 });
 
 test("review-surfaces.COLLECTOR.7 omits oversized raw transcript output unless a bounded excerpt is supplied", async () => {
@@ -94,6 +111,51 @@ test("review-surfaces.COLLECTOR.7 omits oversized raw transcript output unless a
   assert.equal(transcripts[1].stdout_excerpt, "bounded test output");
   assert.equal(transcripts[1].stdout_hash, "provided-hash");
   assert.equal(transcripts[1].truncated, true);
+});
+
+test("review-surfaces.PRIVACY.2 an imported oversized transcript scans the full raw output for blocked secrets", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-command-late-secret-"));
+  const secret = openAiProjectKeyFixture();
+  fs.mkdirSync(path.join(tmp, ".review-surfaces", "commands"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, ".review-surfaces", "commands", "local.json"),
+    JSON.stringify({
+      commands: [{
+        command: "pnpm test",
+        exit_code: 0,
+        stdout: `${"x".repeat(20_001)} ${secret}`
+      }]
+    })
+  );
+
+  const transcripts = await indexCommandTranscripts(tmp, [".review-surfaces/commands/local.json"]);
+
+  assert.equal(transcripts[0].secret_blocked, true);
+  assert.doesNotMatch(transcripts[0].stdout_excerpt ?? "", /sk-proj-/);
+});
+
+test("review-surfaces.PRIVACY.2 an imported oversized transcript scans full raw stderr for blocked secrets", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-command-late-stderr-secret-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const secret = openAiProjectKeyFixture();
+  fs.mkdirSync(path.join(tmp, ".review-surfaces", "commands"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, ".review-surfaces", "commands", "local.json"),
+    JSON.stringify({
+      commands: [{
+        command: "pnpm test",
+        exit_code: 0,
+        stderr: `${"x".repeat(20_001)} ${secret}`
+      }]
+    })
+  );
+
+  const transcripts = await indexCommandTranscripts(tmp, [".review-surfaces/commands/local.json"]);
+
+  assert.equal(transcripts[0].truncated, true);
+  assert.equal(transcripts[0].secret_blocked, true);
+  assert.doesNotMatch(transcripts[0].stderr_excerpt ?? "", /sk-proj-/);
+  assert.doesNotMatch(JSON.stringify(transcripts[0]), new RegExp(secret));
 });
 
 test("review-surfaces.RISK.2 treats successful command transcripts as direct or indirect evidence", () => {
