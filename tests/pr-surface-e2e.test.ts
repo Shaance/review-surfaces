@@ -35,7 +35,8 @@ function setupChangedRepo(): string {
       return (
         rel !== ".git" && !rel.startsWith(`.git${path.sep}`) &&
         rel !== ".review-surfaces" && !rel.startsWith(`.review-surfaces${path.sep}`) &&
-        rel !== "dist" && !rel.startsWith(`dist${path.sep}`)
+        rel !== "dist" && !rel.startsWith(`dist${path.sep}`) &&
+        rel !== "node_modules" && !rel.startsWith(`node_modules${path.sep}`)
       );
     }
   });
@@ -1264,11 +1265,44 @@ test("review-surfaces.CONVERSATION_REVIEW.4 PR comment rejects a same-head stale
   }
 });
 
-test("review-surfaces.CONVERSATION_REVIEW.4 repo human rebuild preserves current-packet staged conversation intelligence", () => {
+test("review-surfaces.CONVERSATION_REVIEW.4 repo review wires deterministic packet risks and survives human rebuild", () => {
   const tmp = setupChangedRepo();
   try {
     const conversationEventId = "repo-user-final";
     const insightTitle = "Repo conversation insight survives rebuild";
+    const riskFixtureSpec = "features/repo-risk-fixture.feature.yaml";
+    fs.writeFileSync(path.join(tmp, riskFixtureSpec), [
+      "feature:",
+      "  name: repo-risk-fixture",
+      "  product: review-surfaces",
+      "  version: 0.0.1",
+      "  draft: true",
+      "components:",
+      "  UNRELATED:",
+      "    name: Unrelated fixture component",
+      "    requirements:",
+      "      1:",
+      "        requirement: The fixture intentionally leaves renderer changes unmapped.",
+      ""
+    ].join("\n"));
+    const repoArgs = [
+      "all",
+      "--review-scope",
+      "repo",
+      "--base",
+      "HEAD",
+      "--head",
+      "HEAD",
+      "--spec",
+      riskFixtureSpec,
+      "--out",
+      ".review-surfaces",
+      "--conversation",
+      "conversation.jsonl",
+      "--conversation-format",
+      "normalized",
+      "--no-conversation-discovery"
+    ];
     fs.writeFileSync(
       path.join(tmp, "conversation.jsonl"),
       `${JSON.stringify({
@@ -1278,6 +1312,26 @@ test("review-surfaces.CONVERSATION_REVIEW.4 repo human rebuild preserves current
         summary: "Keep the reviewer-facing marker and explain why it matters."
       })}\n`
     );
+
+    const prime = runCli(tmp, [...repoArgs, "--provider", "mock"]);
+    assert.equal(prime.status, 0, prime.stderr);
+    const primePacket = JSON.parse(fs.readFileSync(
+      path.join(tmp, ".review-surfaces", "review_packet.json"),
+      "utf8"
+    ));
+    const deterministicRisk = primePacket.risks.items.find((risk: {
+      id: string;
+      evidence?: Array<{ path?: string; llm_proposed?: boolean }>;
+    }) => {
+      const refs = risk.evidence ?? [];
+      return refs.some((ref) => ref.path === CHANGED) &&
+        !(refs.length > 0 && refs.every((ref) => ref.llm_proposed === true));
+    });
+    assert.ok(
+      deterministicRisk,
+      `repo fixture should produce a deterministic packet risk anchored to ${CHANGED}`
+    );
+
     fs.writeFileSync(
       path.join(tmp, "agent-stages.json"),
       JSON.stringify({
@@ -1306,11 +1360,11 @@ test("review-surfaces.CONVERSATION_REVIEW.4 repo human rebuild preserves current
               why_it_matters: "Losing this context would make a later artifact rebuild less useful to the reviewer.",
               reviewer_action: "Confirm the renderer change still communicates the requested value.",
               priority: "high",
-              evidence_state: "unverified",
+              evidence_state: "contradicted",
               conversation_event_ids: [conversationEventId],
               paths: [CHANGED],
               requirement_ids: [],
-              risk_ids: [],
+              risk_ids: [deterministicRisk.id],
               command_ids: [],
               diff_anchors: []
             }]
@@ -1320,26 +1374,11 @@ test("review-surfaces.CONVERSATION_REVIEW.4 repo human rebuild preserves current
     );
 
     const allRun = runCli(tmp, [
-      "all",
-      "--review-scope",
-      "repo",
-      "--base",
-      "HEAD",
-      "--head",
-      "HEAD",
-      "--spec",
-      "features/review-surfaces.feature.yaml",
-      "--out",
-      ".review-surfaces",
+      ...repoArgs,
       "--provider",
       "agent-file",
       "--agent-input",
-      "agent-stages.json",
-      "--conversation",
-      "conversation.jsonl",
-      "--conversation-format",
-      "normalized",
-      "--no-conversation-discovery"
+      "agent-stages.json"
     ]);
     assert.equal(allRun.status, 0, allRun.stderr);
 
@@ -1350,6 +1389,13 @@ test("review-surfaces.CONVERSATION_REVIEW.4 repo human rebuild preserves current
     assert.equal(before.mode, "repo");
     assert.equal(before.conversation_analysis.status, "analyzed");
     assert.equal(before.review_insights[0]?.title, insightTitle);
+    assert.equal(before.review_insights[0]?.evidence_state, "contradicted");
+    assert.equal(before.review_insights[0]?.basis, "validated_anchors");
+    assert.deepEqual(
+      before.review_insights[0]?.risk_ids,
+      [deterministicRisk.id],
+      "repo conversation reconciliation should receive deterministic packet risk ids"
+    );
     assert.equal(before.generated_from.packet_signature, packet.manifest.signature);
 
     const humanRun = runCli(tmp, ["human", "--review-scope", "repo", "--out", ".review-surfaces"]);

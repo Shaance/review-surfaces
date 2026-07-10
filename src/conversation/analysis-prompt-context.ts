@@ -60,13 +60,19 @@ export function prepareConversationEvents(events: ConversationEvent[]): Prepared
       continue;
     }
     seenIds.add(id.text);
+    const commandAlreadyInSummary = Boolean(
+      event.command &&
+      event.summary.includes(event.command) &&
+      command?.text &&
+      summary.text.includes(command.text)
+    );
     safeEvents.push({
       id: id.text,
       actor: actor.text || "unknown",
       kind: kind.text || "message",
       summary: summary.text,
       ...(tool?.text ? { tool: tool.text } : {}),
-      ...(command?.text ? { command: command.text } : {}),
+      ...(command?.text && !commandAlreadyInSummary ? { command: command.text } : {}),
       ...(file?.text ? { file: file.text } : {}),
       raw_index: Number.isFinite(event.raw_index) ? event.raw_index : 0
     });

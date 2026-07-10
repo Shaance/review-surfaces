@@ -2,6 +2,7 @@ import { isRecord } from "../core/guards";
 import {
   buildNotAssessedConversationAnalysis,
   CONVERSATION_ANALYSIS_SECTIONS,
+  emptyConversationAnalysisSections,
   NOT_ASSESSED_CONVERSATION_SUMMARIES,
   type ConversationAnalysis,
   type ConversationAnalysisItem,
@@ -193,15 +194,7 @@ function emptyAnalysis(
     status,
     provider: providerName,
     summary,
-    intent: [],
-    refinements: [],
-    decisions: [],
-    constraints: [],
-    non_goals: [],
-    rejected_alternatives: [],
-    claims: [],
-    validation_claims: [],
-    known_gaps: [],
+    ...emptyConversationAnalysisSections(),
     quality_flags: [...new Set(qualityFlags)]
   };
 }

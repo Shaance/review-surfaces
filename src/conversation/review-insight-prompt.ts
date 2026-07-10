@@ -46,6 +46,7 @@ export function buildConversationReviewPrompt(
     deterministic_risks: risks,
     command_transcripts: transcripts,
     evidence_completeness: {
+      diff_context_truncated: evidence.diff.truncated,
       command_transcripts_included: evidence.commands.length,
       command_transcripts_total: evidence.commandContextTotal,
       command_context_truncated: evidence.commandContextTruncated,
@@ -79,6 +80,7 @@ Rules:
 - A deterministic risk is tied to a changed path only when that exact path appears in the risk's prompt-visible paths array. Never infer or invent hidden risk evidence paths.
 - "supported" must cite at least one user-grounded positive-intent event id. A non-goal or rejected-alternative citation alone can never establish support.
 - "contradicted" must cite at least one user-grounded positive-intent or prohibition event id. Assistant-only decisions, claims, and tool calls cannot establish user intent.
+- When diff_context_truncated is true, do not infer absent implementation, tests, scope, or assumptions from the visible prefix. Label validation-gap, test-weakening, scope-surprise, and unresolved-assumption conclusions that depend on omitted diff context "unverified".
 - When command_context_truncated is true, do not infer a validation gap from the absence of a command transcript; label any such absence-based conclusion "unverified".
 - When requirement_context_truncated, risk_context_truncated, risk_path_context_truncated, or coverage_delta_context_truncated is true, do not infer that an omitted requirement, risk, risk path, or coverage delta does not exist. Label scope-surprise, validation-gap, or unresolved-assumption conclusions that depend on such absence "unverified".
 - Every diff anchor must copy the visible path, line kind, line number, and an exact distinctive substring from that one added/deleted line.

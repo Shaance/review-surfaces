@@ -50,9 +50,58 @@ test("review-surfaces.PRIVACY.2 command capture scans bytes beyond its retained 
 
   const complete = Buffer.concat(fragments);
   assert.equal(capture.truncated, true);
-  assert.equal(capture.redactedExcerpt(cap)?.length, cap);
   assert.equal(capture.finishAndCheckBlockedSecret(), true);
+  assert.equal(
+    capture.redactedExcerpt(cap),
+    "[redacted-blocked]",
+    "a blocked stream with no complete retained token must not persist its retained prefix"
+  );
   assert.equal(capture.hash(), crypto.createHash("sha256").update(complete).digest("hex"));
+});
+
+test("review-surfaces.PRIVACY.2 command capture removes a JWT prefix that crosses its retained raw cap", () => {
+  const cap = 64;
+  const jwt = `eyJ${"a".repeat(20)}.${"b".repeat(100)}.c`;
+  const capture = new BoundedStreamCapture(cap);
+  capture.write(Buffer.from(jwt));
+
+  assert.equal(capture.finishAndCheckBlockedSecret(), true);
+  const excerpt = capture.redactedExcerpt(cap) ?? "";
+  assert.equal(excerpt, "[redacted-blocked]");
+  assert.doesNotMatch(excerpt, /eyJ|bbbb/);
+  assert.equal(capture.hash(), crypto.createHash("sha256").update(jwt).digest("hex"));
+});
+
+test("review-surfaces.PRIVACY.2 an earlier retained secret marker cannot mask a later cross-cap JWT prefix", () => {
+  const cap = 96;
+  const githubToken = `ghp_${"A".repeat(36)}`;
+  const jwt = `eyJ${"a".repeat(20)}.${"b".repeat(100)}.c`;
+  const output = `${githubToken} safe ${jwt}`;
+  const capture = new BoundedStreamCapture(cap);
+  capture.write(Buffer.from(output));
+
+  assert.equal(capture.finishAndCheckBlockedSecret(), true);
+  assert.equal(capture.truncated, true);
+  const excerpt = capture.redactedExcerpt(cap) ?? "";
+  assert.equal(excerpt, "[redacted-blocked]");
+  assert.doesNotMatch(excerpt, /REDACTED:github_token|eyJ|bbbb/);
+  assert.equal(capture.hash(), crypto.createHash("sha256").update(output).digest("hex"));
+});
+
+test("review-surfaces.PRIVACY.2 display bounding does not masquerade as raw capture truncation", () => {
+  const githubToken = `ghp_${"A".repeat(36)}`;
+  const output = `safe ${githubToken} tail`;
+  const capture = new BoundedStreamCapture(256);
+  capture.write(Buffer.from(output));
+
+  const bounded = capture.redactedExcerpt(12) ?? "";
+  assert.equal(capture.truncated, true, "the first display excerpt is bounded");
+  assert.equal(bounded.length, 12);
+  assert.equal(
+    capture.redactedExcerpt(256),
+    "safe [REDACTED:github_token] tail",
+    "a later read still knows that the raw capture itself was complete"
+  );
 });
 
 test("review-surfaces.PRIVACY.2 command capture finalization is explicit, terminal, and idempotent", () => {

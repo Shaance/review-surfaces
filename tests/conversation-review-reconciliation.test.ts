@@ -43,6 +43,128 @@ test("review-surfaces.CONVERSATION_REVIEW.3 assistant-only citations cannot earn
   assert.equal(result.insights[0].basis, "ai_reconciliation");
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.3 user decisions ground positive intent while assistant-only decisions remain advisory", async () => {
+  const cases = [
+    { actor: "user", expectedState: "supported", expectedPositiveIds: '["decision-event"]' },
+    { actor: "assistant", expectedState: "unverified", expectedPositiveIds: "[]" }
+  ] as const;
+
+  for (const { actor, expectedState, expectedPositiveIds } of cases) {
+    const events: ConversationEvent[] = [{
+      id: "decision-event",
+      actor,
+      kind: "decision",
+      summary: "Keep retry behavior while simplifying the implementation.",
+      raw_index: 0
+    }];
+    const analysis = analysisPayload({
+      intent: [],
+      refinements: [],
+      decisions: [{ text: "Keep retry behavior.", event_ids: ["decision-event"] }],
+      constraints: [],
+      non_goals: [],
+      rejected_alternatives: []
+    });
+    const staged = stageProvider([candidate({
+      root_cause_key: `${actor}-decision`,
+      category: "intentional_change",
+      title: `${actor} decision grounding`,
+      evidence_state: "supported",
+      conversation_event_ids: ["decision-event"],
+      paths: ["src/retry.ts"],
+      diff_anchors: [{
+        path: "src/retry.ts",
+        line_kind: "delete",
+        line: 10,
+        contains: "retryWithBackoff(send)"
+      }]
+    })], analysis);
+
+    const result = await buildConversationReview({
+      provider: staged.provider,
+      providerName: "ai-sdk",
+      events,
+      diff: retryDeletionDiff()
+    });
+
+    assert.equal(result.insights[0].evidence_state, expectedState);
+    assert.equal(
+      result.insights[0].basis,
+      actor === "user" ? "validated_anchors" : "ai_reconciliation"
+    );
+    assert.ok(
+      (staged.prompts.get("conversation_review_insights") ?? "")
+        .includes(`"user_grounded_positive_intent_event_ids":${expectedPositiveIds}`)
+    );
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.3 renamed-file anchors use the path for the cited diff side", async () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/src/old.ts b/src/new.ts",
+    "similarity index 75%",
+    "rename from src/old.ts",
+    "rename to src/new.ts",
+    "--- a/src/old.ts",
+    "+++ b/src/new.ts",
+    "@@ -1 +1 @@",
+    '-export const value = "old";',
+    '+export const value = "new";'
+  ].join("\n"));
+  const cases = [
+    {
+      name: "added line on new path",
+      anchor: { path: "src/new.ts", line_kind: "add" as const, line: 1, contains: 'value = "new"' },
+      expectedState: "contradicted",
+      expectedDiffPath: "src/new.ts",
+      citationsRejected: false
+    },
+    {
+      name: "added line on old path",
+      anchor: { path: "src/old.ts", line_kind: "add" as const, line: 1, contains: 'value = "new"' },
+      expectedState: "unverified",
+      expectedDiffPath: undefined,
+      citationsRejected: true
+    },
+    {
+      name: "deleted line on old path",
+      anchor: { path: "src/old.ts", line_kind: "delete" as const, line: 1, contains: 'value = "old"' },
+      expectedState: "contradicted",
+      expectedDiffPath: "src/old.ts",
+      citationsRejected: false
+    }
+  ] as const;
+
+  for (const testCase of cases) {
+    const staged = stageProvider([candidate({
+      root_cause_key: testCase.name,
+      title: testCase.name,
+      paths: ["src/new.ts"],
+      diff_anchors: [testCase.anchor]
+    })]);
+    const result = await buildConversationReview({
+      provider: staged.provider,
+      providerName: "ai-sdk",
+      events: EVENTS,
+      diff
+    });
+    const insight = result.insights[0];
+    const diffEvidence = insight.evidence.filter((ref) => ref.kind === "diff");
+
+    assert.equal(insight.evidence_state, testCase.expectedState, testCase.name);
+    assert.deepEqual(
+      diffEvidence.map((ref) => ref.path),
+      testCase.expectedDiffPath ? [testCase.expectedDiffPath] : [],
+      testCase.name
+    );
+    assert.equal(
+      result.analysis.quality_flags.includes("conversation_review_citations_rejected"),
+      testCase.citationsRejected,
+      testCase.name
+    );
+  }
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.3 prohibition-only citations can prove conflict but cannot prove support", async () => {
   const events: ConversationEvent[] = [{
     id: "user-prohibition",

@@ -1,16 +1,21 @@
 import type { CommandTranscript } from "../contracts/command-transcript";
-import type { ConversationAnalysis } from "../contracts/conversation-review";
+import {
+  CONVERSATION_ANALYSIS_SECTIONS,
+  type ConversationAnalysis,
+  type ConversationReviewRiskCandidate,
+  type ConversationReviewRiskModel
+} from "../contracts/conversation-review";
 import { compareStrings } from "../core/compare";
 import { uniqueTruthy } from "../core/guards";
 import type { EvidenceRef } from "../contracts/evidence";
 import type {
-  PrRiskModel,
   PrScopeModel,
   PrScopedCoverageModel,
   StructuredDiff,
   StructuredDiffLine
 } from "../contracts/pr-review";
 import type { ProviderName, ReasoningProvider } from "../contracts/provider";
+import { reviewSeverityRank } from "../contracts/review";
 import {
   containsBlockingSecretMaterial,
   inspectAndRedactSecrets
@@ -21,8 +26,7 @@ import {
 } from "./analysis-prompt-context";
 import type { ConversationEvent } from "./events";
 import {
-  MAX_CONVERSATION_REVIEW_DIFF_LINE_TEXT,
-  conversationReviewSeverityRank
+  MAX_CONVERSATION_REVIEW_DIFF_LINE_TEXT
 } from "./review-candidate-contract";
 
 export interface BuildConversationReviewInput {
@@ -32,7 +36,7 @@ export interface BuildConversationReviewInput {
   diff?: StructuredDiff;
   scope?: PrScopeModel;
   coverage?: PrScopedCoverageModel;
-  risks?: PrRiskModel;
+  risks?: ConversationReviewRiskModel;
   commandTranscripts?: CommandTranscript[];
   requirementIds?: readonly string[];
   headSha?: string;
@@ -57,7 +61,7 @@ export interface ConversationReviewVisibleDiffLine {
 }
 
 export interface ConversationReviewPromptRiskContext {
-  candidate: PrRiskModel["candidates"][number];
+  candidate: ConversationReviewRiskCandidate;
   paths: string[];
   visibleEvidence: EvidenceRef[];
   pathContextTruncated: boolean;
@@ -233,7 +237,7 @@ export function buildConversationReviewEvidenceContext(
     .map((risk, index) => ({ risk, index }))
     .filter(({ risk }) => promptExactConversationReviewText(risk.id, 300) === risk.id)
     .sort((left, right) =>
-      conversationReviewSeverityRank(left.risk.severity) - conversationReviewSeverityRank(right.risk.severity) ||
+      reviewSeverityRank(left.risk.severity) - reviewSeverityRank(right.risk.severity) ||
       compareStrings(left.risk.id, right.risk.id) ||
       left.index - right.index
     )
@@ -327,9 +331,12 @@ export function buildConversationReviewEvidenceContext(
 }
 
 function buildPromptRiskContext(
-  candidate: PrRiskModel["candidates"][number]
+  candidate: ConversationReviewRiskCandidate
 ): ConversationReviewPromptRiskContext {
-  const allPaths = uniqueTruthy(candidate.evidence.flatMap((ref) =>
+  const deterministicEvidence = candidate.evidence.filter((ref) =>
+    ref.llm_proposed !== true && ref.validation_status !== "invalid"
+  );
+  const allPaths = uniqueTruthy(deterministicEvidence.flatMap((ref) =>
     typeof ref.path === "string" ? [ref.path] : []
   )).sort(compareStrings);
   const paths = allPaths
@@ -339,7 +346,7 @@ function buildPromptRiskContext(
   return {
     candidate,
     paths,
-    visibleEvidence: candidate.evidence.filter((ref) =>
+    visibleEvidence: deterministicEvidence.filter((ref) =>
       typeof ref.path !== "string" || visiblePaths.has(ref.path)
     ),
     pathContextTruncated: paths.length < allPaths.length,
@@ -391,23 +398,16 @@ function knownRequirementIds(input: BuildConversationReviewInput): string[] {
 }
 
 function conversationAnalysisEventIds(analysis: ConversationAnalysis): string[] {
-  return uniqueTruthy([
-    ...analysis.intent,
-    ...analysis.refinements,
-    ...analysis.decisions,
-    ...analysis.constraints,
-    ...analysis.non_goals,
-    ...analysis.rejected_alternatives,
-    ...analysis.claims,
-    ...analysis.validation_claims,
-    ...analysis.known_gaps
-  ].flatMap((item) => item.event_ids));
+  return uniqueTruthy(CONVERSATION_ANALYSIS_SECTIONS
+    .flatMap((section) => analysis[section])
+    .flatMap((item) => item.event_ids));
 }
 
 function conversationPositiveIntentEventIds(analysis: ConversationAnalysis): string[] {
   return uniqueTruthy([
     ...analysis.intent,
     ...analysis.refinements,
+    ...analysis.decisions,
     ...analysis.constraints
   ].flatMap((item) => item.event_ids));
 }

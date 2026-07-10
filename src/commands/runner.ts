@@ -60,13 +60,13 @@ export async function recordCommandTranscript(options: RecordCommandOptions): Pr
   const childResult = await runChildCommand(options, stdout, stderr);
   const completed = now();
   const id = options.id ?? defaultTranscriptId(options.args);
-  // boundExcerpt() redacts-then-bounds AND marks the capture truncated as a side
-  // effect, so compute both excerpts BEFORE reading `.truncated` rather than
-  // relying on object-literal property evaluation order.
-  const stdoutExcerpt = stdout.redactedExcerpt(COMMAND_TRANSCRIPT_EXCERPT_LIMIT);
-  const stderrExcerpt = stderr.redactedExcerpt(COMMAND_TRANSCRIPT_EXCERPT_LIMIT);
+  // Finalize the full-stream detectors before materializing retained excerpts.
+  // A blocked token can start inside the raw cap and finish after it; excerpt
+  // redaction needs the finalized block state to replace that incomplete prefix.
   const stdoutSecretBlocked = stdout.finishAndCheckBlockedSecret();
   const stderrSecretBlocked = stderr.finishAndCheckBlockedSecret();
+  const stdoutExcerpt = stdout.redactedExcerpt(COMMAND_TRANSCRIPT_EXCERPT_LIMIT);
+  const stderrExcerpt = stderr.redactedExcerpt(COMMAND_TRANSCRIPT_EXCERPT_LIMIT);
   const secretBlocked = containsBlockingSecretMaterial(command) ||
     stdoutSecretBlocked || stderrSecretBlocked;
   const transcript: RecordedCommandTranscript = stripUndefined({

@@ -28,6 +28,19 @@ export interface ConversationAnalysisItem {
   event_ids: string[];
 }
 
+export type ConversationAnalysisSections = {
+  [Section in ConversationAnalysisSection]: ConversationAnalysisItem[];
+};
+
+/** Fresh empty arrays for every persisted conversation-analysis section. */
+export function emptyConversationAnalysisSections(): ConversationAnalysisSections {
+  const sections = {} as ConversationAnalysisSections;
+  for (const section of CONVERSATION_ANALYSIS_SECTIONS) {
+    sections[section] = [];
+  }
+  return sections;
+}
+
 export interface ConversationAnalysis {
   status: ConversationAnalysisStatus;
   provider: ProviderName;
@@ -91,6 +104,19 @@ export interface ConversationReviewResult {
   insights: ReviewerInsight[];
 }
 
+/** Minimal deterministic-risk shape consumed by conversation reconciliation. */
+export interface ConversationReviewRiskCandidate {
+  id: string;
+  rule: string;
+  severity: ReviewSeverity;
+  summary: string;
+  evidence: EvidenceRef[];
+}
+
+export interface ConversationReviewRiskModel {
+  candidates: ConversationReviewRiskCandidate[];
+}
+
 export const NOT_ASSESSED_CONVERSATION_SUMMARIES = {
   missing_log: "No conversation log was supplied; conversation intent was not assessed.",
   missing_review: "No conversation analysis was supplied with this review; conversation intent was not assessed.",
@@ -108,15 +134,7 @@ export function buildNotAssessedConversationAnalysis(
     status: "not_assessed",
     provider,
     summary: NOT_ASSESSED_CONVERSATION_SUMMARIES[reason],
-    intent: [],
-    refinements: [],
-    decisions: [],
-    constraints: [],
-    non_goals: [],
-    rejected_alternatives: [],
-    claims: [],
-    validation_claims: [],
-    known_gaps: [],
+    ...emptyConversationAnalysisSections(),
     quality_flags: ["conversation_log_missing"]
   };
 }

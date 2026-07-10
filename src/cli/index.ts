@@ -43,7 +43,11 @@ import {
   type ReasoningProvider
 } from "../llm/provider";
 import { CONVERSATION_FORMATS, ConversationFormat } from "../conversation/events";
-import { buildConversationReview, type ConversationReviewResult } from "../conversation/review";
+import {
+  buildConversationReview,
+  type ConversationReviewResult
+} from "../conversation/review";
+import { conversationReviewRisksFromPacket } from "./conversation-review-risks";
 import { buildMethodology } from "../methodology/methodology";
 import { buildReviewAreas } from "../review-areas/areas";
 import { RisksModel } from "../risks/risks";
@@ -963,7 +967,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // Preserve PR ordering: the sidecar's required narrative and conversation
       // work completed above before these secondary cockpit enrichments.
       narrative = await buildHumanNarrativeForAll(
-        cwd, config, writtenPacket, persistedSurface, humanReviewDiff, collection, humanEnrichment
+        config, writtenPacket, persistedSurface, humanReviewDiff, collection, humanEnrichment
       );
       changeMapInsights = await buildChangeMapInsightsForAll(
         cwd, writtenPacket, humanReviewDiff, humanEnrichment
@@ -979,7 +983,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // packet/diff/provider input, so their latency need not be additive.
       [narrative, changeMapInsights, conversationReview] = await Promise.all([
         buildHumanNarrativeForAll(
-          cwd, config, writtenPacket, undefined, humanReviewDiff, collection, humanEnrichment
+          config, writtenPacket, undefined, humanReviewDiff, collection, humanEnrichment
         ),
         buildChangeMapInsightsForAll(
           cwd, writtenPacket, humanReviewDiff, humanEnrichment
@@ -1119,7 +1123,6 @@ function resolveHumanEnrichmentContext(
 // and after privacy filtering). The result is anchor-validated inside
 // buildChangeNarrative and returned read-only.
 async function buildHumanNarrativeForAll(
-  cwd: string,
   config: ReviewSurfacesConfig,
   packet: ReviewPacket,
   prSurface: PrReviewSurfaceModel | undefined,
@@ -1176,6 +1179,7 @@ async function buildConversationReviewForAll(
     providerName: enrichment.providerName,
     events: collection.conversationEvents,
     diff,
+    risks: conversationReviewRisksFromPacket(packet.risks),
     commandTranscripts: collection.commandTranscripts,
     requirementIds,
     headSha: String(collection.manifest.head_sha ?? ""),

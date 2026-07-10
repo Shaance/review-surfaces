@@ -4,7 +4,7 @@ import {
   type ReviewerInsight,
   type ReviewerInsightEvidenceState
 } from "../contracts/conversation-review";
-import { conversationReviewSeverityRank } from "./review-candidate-contract";
+import { reviewSeverityRank } from "../contracts/review";
 import type { GroundedConversationReviewInsight } from "./review-candidate-grounding";
 
 export function rankDedupeAndCapConversationReviewInsights(
@@ -12,7 +12,7 @@ export function rankDedupeAndCapConversationReviewInsights(
 ): ReviewerInsight[] {
   const sorted = [...values].sort((left, right) =>
     evidenceStateRank(left.evidence_state) - evidenceStateRank(right.evidence_state) ||
-    conversationReviewSeverityRank(left.priority) - conversationReviewSeverityRank(right.priority) ||
+    reviewSeverityRank(left.priority) - reviewSeverityRank(right.priority) ||
     compareStrings(left.title, right.title)
   );
   const kept: GroundedConversationReviewInsight[] = [];

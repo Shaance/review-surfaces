@@ -447,10 +447,6 @@ function conversationInsightCitationsWithField(
     .join("; ");
 }
 
-function conversationAnalysisContextMarkdown(analysis: ConversationAnalysis | undefined): string {
-  return conversationAnalysisContextMarkdownWithField(analysis, conversationMarkdownField(field));
-}
-
 function conversationMarkdownField(renderField: ConversationMarkdownField): ConversationMarkdownField {
   return (value, max) => neutralizeConversationMarkdown(renderField(value, max));
 }

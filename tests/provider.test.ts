@@ -205,6 +205,62 @@ test("agent-file provider supports stage-specific envelopes while preserving the
   assert.deepEqual((legacy as { ok: true; data: any }).data.review_focus, ["legacy fallback"]);
 });
 
+test("agent-file provider supplies explicit repeated-stage payloads in invocation order and fails on exhaustion", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-agentfile-sequences-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(tmp, "agent.json"), JSON.stringify({
+    stage_sequences: {
+      conversation_analysis_chunk: [
+        { summary: "window one" },
+        { summary: "window two" },
+        { summary: "window three" }
+      ]
+    },
+    stages: {
+      conversation_analysis: { summary: "reduced analysis" }
+    },
+    review_focus: ["legacy fallback"]
+  }));
+  const provider = agentFileProvider({ cwd: tmp, agentInput: "agent.json" });
+
+  const chunks = await Promise.all([1, 2, 3].map(() =>
+    provider.generateStructured("conversation_analysis_chunk", "prompt", SCHEMA)
+  ));
+
+  assert.deepEqual(chunks, [
+    { ok: true, data: { summary: "window one" } },
+    { ok: true, data: { summary: "window two" } },
+    { ok: true, data: { summary: "window three" } }
+  ]);
+  assert.deepEqual(
+    await provider.generateStructured("conversation_analysis_chunk", "prompt", SCHEMA),
+    { ok: false, reason: "agent_input_stage_sequence_exhausted:conversation_analysis_chunk" }
+  );
+  assert.deepEqual(await provider.generateStructured("conversation_analysis", "prompt", SCHEMA), {
+    ok: true,
+    data: { summary: "reduced analysis" }
+  });
+  const legacy = await provider.generateStructured("enrichment", "prompt", SCHEMA);
+  assert.equal(legacy.ok, true);
+  assert.deepEqual((legacy as { ok: true; data: any }).data.review_focus, ["legacy fallback"]);
+});
+
+test("agent-file provider rejects a malformed repeated-stage sequence explicitly", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-agentfile-bad-sequence-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(tmp, "agent.json"), JSON.stringify({
+    stage_sequences: { conversation_analysis_chunk: { summary: "not an array" } }
+  }));
+
+  const result = await agentFileProvider({ cwd: tmp, agentInput: "agent.json" })
+    .generateStructured("conversation_analysis_chunk", "prompt", SCHEMA);
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: "agent_input_stage_sequence_not_array:conversation_analysis_chunk"
+  });
+});
+
 test("agent-file provider parses its immutable stage envelope once", async (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-agentfile-cache-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));

@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import type { CommandTranscript } from "../src/commands/transcripts";
-import { buildConversationReview } from "../src/conversation/review";
-import type { PrRiskModel } from "../src/pr/contract";
+import {
+  buildConversationReview,
+  type ConversationReviewRiskCandidate
+} from "../src/conversation/review";
 import {
   EVENTS,
   candidate,
@@ -154,6 +156,48 @@ test("review-surfaces.CONVERSATION_REVIEW.3 diff truncation detects omitted line
   const prompt = staged.prompts.get("conversation_review_insights") ?? "";
   assert.ok(result.analysis.quality_flags.includes("conversation_review_diff_truncated"));
   assert.doesNotMatch(prompt, /omitted-line-221/);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.3 partial diffs demote absence-sensitive conclusions despite a visible exact anchor", async () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/src/retry.ts b/src/retry.ts",
+    "--- a/src/retry.ts",
+    "+++ b/src/retry.ts",
+    "@@ -10,1 +10,0 @@ export async function request() {",
+    "-  return retryWithBackoff(send);",
+    "diff --git a/tests/retry.test.ts b/tests/retry.test.ts",
+    "--- /dev/null",
+    "+++ b/tests/retry.test.ts",
+    "@@ -0,0 +1,220 @@",
+    ...Array.from({ length: 219 }, (_, index) => `+filler-${index + 1}`),
+    '+test("replacement retry coverage", () => preservesRetryBehavior());'
+  ].join("\n"));
+  const staged = stageProvider([candidate({
+    root_cause_key: "partial-test-weakening",
+    category: "test_weakening",
+    evidence_state: "contradicted",
+    diff_anchors: [{
+      path: "src/retry.ts",
+      line_kind: "delete",
+      line: 10,
+      contains: "retryWithBackoff(send)"
+    }]
+  })]);
+
+  const result = await buildConversationReview({
+    provider: staged.provider,
+    providerName: "ai-sdk",
+    events: EVENTS,
+    diff
+  });
+
+  assert.equal(result.insights[0].evidence_state, "unverified");
+  assert.equal(result.insights[0].basis, "ai_reconciliation");
+  assert.ok(result.analysis.quality_flags.includes("conversation_review_diff_truncated"));
+  const prompt = staged.prompts.get("conversation_review_insights") ?? "";
+  assert.match(prompt, /"diff_context_truncated":true/);
+  assert.match(prompt, /When diff_context_truncated is true/);
+  assert.doesNotMatch(prompt, /replacement retry coverage/);
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.3 an exactly full visible diff is not mislabeled truncated", async () => {
@@ -370,23 +414,19 @@ test("review-surfaces.CONVERSATION_REVIEW.3 truncated command context demotes ab
 
 test("review-surfaces.CONVERSATION_REVIEW.3 bounded requirements, risks, and coverage are explicit and demote only absence-sensitive categories", async () => {
   const requirementIds = Array.from({ length: 201 }, (_, index) => `req-${String(index).padStart(3, "0")}`);
-  const riskCandidates: PrRiskModel["candidates"] = Array.from({ length: 60 }, (_, index) => ({
+  const riskCandidates: ConversationReviewRiskCandidate[] = Array.from({ length: 60 }, (_, index) => ({
     id: `risk-low-${String(index).padStart(3, "0")}`,
     rule: "large_diff" as const,
-    category: "maintainability" as const,
     severity: "low" as const,
     summary: `Low risk ${index}`,
-    evidence: [],
-    suggested_checks: []
+    evidence: []
   }));
   riskCandidates.push({
     id: "critical-last",
     rule: "large_diff",
-    category: "maintainability",
     severity: "critical",
     summary: "Critical risk supplied last",
-    evidence: [],
-    suggested_checks: []
+    evidence: []
   });
   const coverageDeltas = Array.from({ length: 41 }, (_, index) => ({
     requirement_id: requirementIds[index],
@@ -440,7 +480,6 @@ test("review-surfaces.CONVERSATION_REVIEW.3 bounded requirements, risks, and cov
       out_of_scope_changed_files: []
     },
     risks: {
-      summary: "Bounded deterministic risks.",
       candidates: riskCandidates
     },
     coverage: {
@@ -489,21 +528,105 @@ test("review-surfaces.CONVERSATION_REVIEW.3 an unrelated deterministic risk cann
     events: EVENTS,
     diff: retryDeletionDiff(),
     risks: {
-      summary: "One unrelated risk.",
       candidates: [{
         id: "PR-RISK-001",
         rule: "large_diff",
-        category: "maintainability",
         severity: "medium",
         summary: "A different file makes the overall diff large.",
-        evidence: [{ kind: "diff", path: "src/other.ts", confidence: "high", validation_status: "valid" }],
-        suggested_checks: []
+        evidence: [{ kind: "diff", path: "src/other.ts", confidence: "high", validation_status: "valid" }]
       }]
     }
   });
 
   assert.equal(result.insights[0].evidence_state, "unverified");
   assert.equal(result.insights[0].basis, "ai_reconciliation");
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.3 mixed risk evidence cannot use AI-proposed or invalid paths as deterministic corroboration", async () => {
+  const staged = stageProvider([
+    candidate({ evidence_state: "contradicted", risk_ids: ["RISK-MIXED"] })
+  ]);
+  const result = await buildConversationReview({
+    provider: staged.provider,
+    providerName: "ai-sdk",
+    events: EVENTS,
+    diff: retryDeletionDiff(),
+    risks: {
+      candidates: [{
+        id: "RISK-MIXED",
+        rule: "packet:correctness",
+        severity: "high",
+        summary: "One deterministic ref and two untrusted path refs.",
+        evidence: [{
+          kind: "diff",
+          path: "src/other.ts",
+          confidence: "high",
+          validation_status: "valid"
+        }, {
+          kind: "file",
+          path: "src/retry.ts",
+          confidence: "low",
+          validation_status: "not_checked",
+          llm_proposed: true
+        }, {
+          kind: "diff",
+          path: "src/retry.ts",
+          confidence: "low",
+          validation_status: "invalid"
+        }]
+      }]
+    }
+  });
+
+  assert.equal(result.insights[0].evidence_state, "unverified");
+  assert.equal(result.insights[0].basis, "ai_reconciliation");
+  assert.ok(
+    result.insights[0].evidence.every((ref) => ref.path !== "src/retry.ts"),
+    "untrusted risk refs must not survive as reviewer evidence"
+  );
+
+  const prompt = staged.prompts.get("conversation_review_insights") ?? "";
+  const riskContext = prompt.slice(
+    prompt.indexOf('"deterministic_risks"'),
+    prompt.indexOf(',"command_transcripts"')
+  );
+  assert.match(riskContext, /src\/other\.ts/);
+  assert.doesNotMatch(riskContext, /src\/retry\.ts/);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.3 strong multi-path risk grounding emits the ref that earned the label", async () => {
+  const staged = stageProvider([
+    candidate({ evidence_state: "contradicted", risk_ids: ["RISK-MULTI-PATH"] })
+  ]);
+  const result = await buildConversationReview({
+    provider: staged.provider,
+    providerName: "ai-sdk",
+    events: EVENTS,
+    diff: retryDeletionDiff(),
+    risks: {
+      candidates: [{
+        id: "RISK-MULTI-PATH",
+        rule: "packet:correctness",
+        severity: "high",
+        summary: "The matching path follows two unrelated evidence refs.",
+        evidence: ["src/first.ts", "src/second.ts", "src/retry.ts"].map((path) => ({
+          kind: "file" as const,
+          path,
+          confidence: "high" as const,
+          validation_status: "valid" as const
+        }))
+      }]
+    }
+  });
+
+  const insight = result.insights[0];
+  assert.equal(insight.evidence_state, "contradicted");
+  assert.equal(insight.basis, "validated_anchors");
+  assert.equal(
+    insight.evidence.find((ref) => ref.kind === "file")?.path,
+    "src/retry.ts",
+    "the first persisted risk ref should substantiate the intersecting path"
+  );
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.3 deterministic risks corroborate only their exact prompt-visible bounded paths", async () => {
@@ -539,11 +662,9 @@ test("review-surfaces.CONVERSATION_REVIEW.3 deterministic risks corroborate only
     events: EVENTS,
     diff,
     risks: {
-      summary: "One risk with bounded path evidence.",
       candidates: [{
         id: "PR-RISK-BOUND",
         rule: "large_diff",
-        category: "maintainability",
         severity: "high",
         summary: "The changed files share one deterministic risk.",
         evidence: riskPaths.map((path) => ({
@@ -551,8 +672,7 @@ test("review-surfaces.CONVERSATION_REVIEW.3 deterministic risks corroborate only
           path,
           confidence: "high" as const,
           validation_status: "valid" as const
-        })),
-        suggested_checks: []
+        }))
       }]
     }
   });

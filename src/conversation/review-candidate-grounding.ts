@@ -111,6 +111,7 @@ export function validateConversationReviewCandidates(
         : candidate.evidence_state;
     const evidence = insightEvidence({
       events,
+      paths,
       matchedDiff,
       requirements,
       riskIds: uniqueTruthy([...relatedRiskIds, ...riskIds]),
@@ -150,6 +151,14 @@ function findingMayDependOnOmittedContext(
   category: ReviewerInsightCategory,
   evidence: ConversationReviewPromptEvidenceContext
 ): boolean {
+  if (evidence.diff.truncated && (
+    category === "validation_gap" ||
+    category === "test_weakening" ||
+    category === "scope_surprise" ||
+    category === "unresolved_assumption"
+  )) {
+    return true;
+  }
   if (category === "validation_gap") {
     return evidence.commandContextTruncated ||
       evidence.requirementContextTruncated ||
@@ -177,8 +186,9 @@ function matchDiffAnchors(
   for (const anchor of anchors) {
     const visible = visibleLines.find(
       (candidate) =>
-        (candidate.path === anchor.path || candidate.oldPath === anchor.path) &&
         candidate.line.kind === anchor.line_kind &&
+        (candidate.path === anchor.path ||
+          (anchor.line_kind === "delete" && candidate.oldPath === anchor.path)) &&
         candidate.lineNumber === anchor.line &&
         candidate.text.includes(anchor.contains)
     );
@@ -202,6 +212,7 @@ function riskTouchesPaths(
 
 function insightEvidence(input: {
   events: string[];
+  paths: string[];
   matchedDiff: MatchedConversationReviewDiffAnchor[];
   requirements: string[];
   riskIds: string[];
@@ -227,9 +238,13 @@ function insightEvidence(input: {
     });
   }
   const riskEvidence: EvidenceRef[] = [];
+  const insightPaths = new Set(input.paths);
   for (const riskId of input.riskIds) {
     const risk = input.risksById.get(riskId);
-    riskEvidence.push(...(risk?.visibleEvidence ?? []).slice(0, 2));
+    const visible = risk?.visibleEvidence ?? [];
+    const matching = visible.filter((ref) => typeof ref.path === "string" && insightPaths.has(ref.path));
+    const remaining = visible.filter((ref) => typeof ref.path !== "string" || !insightPaths.has(ref.path));
+    riskEvidence.push(...[...matching, ...remaining].slice(0, 2));
   }
   const commandEvidence: EvidenceRef[] = [];
   for (const commandId of input.commandIds) {

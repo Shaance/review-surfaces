@@ -141,7 +141,7 @@ test("review-surfaces.PRIVACY.2 a blocked secret after the retained stderr cap s
   );
 });
 
-test("review-surfaces.PRIVACY.2 an unmatched PEM opener is redacted through the retained capture", async () => {
+test("review-surfaces.PRIVACY.2 an unmatched PEM opener collapses a raw-truncated capture", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-open-pem-"));
   const result = await recordCommandTranscript({
     cwd: tmp,
@@ -158,7 +158,7 @@ test("review-surfaces.PRIVACY.2 an unmatched PEM opener is redacted through the 
   const excerpt = result.transcript.stdout_excerpt ?? "";
   assert.equal(result.transcript.truncated, true);
   assert.equal(result.transcript.secret_blocked, true);
-  assert.match(excerpt, /\[REDACTED:private_key\]/);
+  assert.equal(excerpt, "[redacted-blocked]");
   assert.doesNotMatch(excerpt, /BEGIN PRIVATE KEY|MII-UNTERMINATED/);
 });
 
@@ -202,8 +202,7 @@ test("review-surfaces.PRIVACY.2 a PEM closing beyond the raw cap cannot persist 
   const excerpt = result.transcript.stdout_excerpt ?? "";
   assert.equal(result.transcript.truncated, true);
   assert.equal(result.transcript.secret_blocked, true);
-  assert.match(excerpt, /safe-prefix/);
-  assert.match(excerpt, /\[REDACTED:private_key\]/);
+  assert.equal(excerpt, "[redacted-blocked]");
   assert.doesNotMatch(excerpt, /BEGIN PRIVATE KEY|MII-CAPPED-KEY-PREFIX/);
   assert.equal(
     result.transcript.stdout_hash,
@@ -212,11 +211,12 @@ test("review-surfaces.PRIVACY.2 a PEM closing beyond the raw cap cannot persist 
   );
 });
 
-test("review-surfaces.PRIVACY.2 the compiled runner wires capture blocking into persisted transcripts", async () => {
+test("review-surfaces.PRIVACY.2 the compiled runner removes a JWT prefix that crosses the raw cap", async (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-jwt-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const result = await recordCommandTranscript({
     cwd: tmp,
-    args: [process.execPath, "-e", "process.stdout.write('eyJ' + 'a'.repeat(5000) + '.' + 'b'.repeat(5000) + '.c')"],
+    args: [process.execPath, "-e", "process.stdout.write(String.fromCharCode(101, 121, 74) + 'a'.repeat(20) + '.' + 'b'.repeat(5000) + '.c')"],
     id: "CMD-RUN-JWT",
     streamOutput: false,
     now: sequenceNow("2026-05-28T12:00:00.000Z", "2026-05-28T12:00:00.001Z")
@@ -224,6 +224,9 @@ test("review-surfaces.PRIVACY.2 the compiled runner wires capture blocking into 
 
   assert.equal(result.transcript.truncated, true);
   assert.equal(result.transcript.secret_blocked, true);
+  assert.equal(result.transcript.stdout_excerpt, "[redacted-blocked]");
+  assert.doesNotMatch(JSON.stringify(result.transcript), /eyJ|bbbb/);
+  assert.doesNotMatch(fs.readFileSync(path.join(tmp, result.transcriptPath), "utf8"), /eyJ|bbbb/);
 });
 
 test("review-surfaces.CLI.7 run command writes transcripts from the CLI", () => {
@@ -290,6 +293,38 @@ test("review-surfaces.PRIVACY.2 no-dist run fallback detects secrets after its r
     crypto.createHash("sha256").update(output).digest("hex"),
     "the no-dist wiring hashes the full stream beyond its retained excerpt"
   );
+});
+
+test("review-surfaces.PRIVACY.2 no-dist run fallback removes a JWT prefix that crosses the raw cap", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-fallback-jwt-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const fallbackBin = copyNoDistBin(tmp);
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      fallbackBin,
+      "run",
+      "--id",
+      "CMD-FALLBACK-CROSS-CAP-JWT",
+      "--command-transcripts",
+      "commands",
+      "--",
+      process.execPath,
+      "-e",
+      "process.stdout.write(String.fromCharCode(101, 121, 74) + 'a'.repeat(20) + '.' + 'b'.repeat(5000) + '.c')"
+    ],
+    { cwd: tmp, encoding: "utf8" }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const transcriptPath = path.join(tmp, "commands", "CMD-FALLBACK-CROSS-CAP-JWT.json");
+  const persisted = fs.readFileSync(transcriptPath, "utf8");
+  const transcript = JSON.parse(persisted).commands[0];
+  assert.equal(transcript.truncated, true);
+  assert.equal(transcript.secret_blocked, true);
+  assert.equal(transcript.stdout_excerpt, "[redacted-blocked]");
+  assert.doesNotMatch(persisted, /eyJ|bbbb/);
 });
 
 test("review-surfaces.PRIVACY.2 no-dist run fallback detects stderr secrets after its raw cap", (t) => {

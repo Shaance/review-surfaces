@@ -1,34 +1,32 @@
 import { uniqueTruthy } from "../core/guards";
+import type { ConversationReviewResult } from "../contracts/conversation-review";
 import { analyzeConversation, type ConversationAnalysis } from "./analysis";
 import { CONVERSATION_REVIEW_INSIGHT_SCHEMA } from "./review-candidate-contract";
 import {
-  type ConversationReviewResult
-} from "./review-contract";
-import {
   buildConversationReviewDiffContext,
   buildConversationReviewEvidenceContext,
-  buildConversationReviewPrompt,
   conversationReviewContextQualityFlags,
   type BuildConversationReviewInput
-} from "./review-evidence-context";
-import {
-  isStrictConversationReviewInsightEnvelope,
-  rankDedupeAndCapConversationReviewInsights,
-  validateConversationReviewCandidates
-} from "./review-candidate-reconciliation";
+} from "./review-evidence-context-builder";
+import { buildConversationReviewPrompt } from "./review-insight-prompt";
+import { isStrictConversationReviewInsightEnvelope } from "./review-candidate-payload";
+import { validateConversationReviewCandidates } from "./review-candidate-grounding";
+import { rankDedupeAndCapConversationReviewInsights } from "./review-insight-ranking";
 
 export {
   MAX_VISIBLE_CONVERSATION_INSIGHTS,
   REVIEWER_INSIGHT_CATEGORIES,
   REVIEWER_INSIGHT_EVIDENCE_STATES
-} from "./review-contract";
+} from "../contracts/conversation-review";
 export type {
   ConversationReviewResult,
+  ConversationReviewRiskCandidate,
+  ConversationReviewRiskModel,
   ReviewerInsight,
   ReviewerInsightCategory,
   ReviewerInsightEvidenceState
-} from "./review-contract";
-export type { BuildConversationReviewInput } from "./review-evidence-context";
+} from "../contracts/conversation-review";
+export type { BuildConversationReviewInput } from "./review-evidence-context-builder";
 
 /**
  * Two-pass conversation review: first reconstruct what the conversation meant,

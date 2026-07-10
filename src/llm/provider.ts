@@ -70,6 +70,7 @@ export const mockProvider: ReasoningProvider = {
 export function agentFileProvider(options: ProviderFactoryOptions): ReasoningProvider {
   const cwd = options.cwd ?? process.cwd();
   let parsedInput: Promise<unknown> | undefined;
+  const stageSequenceCursors = new Map<string, number>();
   return {
     name: "agent-file",
     async generateStructured(stage): Promise<StructuredResult> {
@@ -88,6 +89,24 @@ export function agentFileProvider(options: ProviderFactoryOptions): ReasoningPro
         const parsed = await parsedInput;
         if (!isRecord(parsed)) {
           return { ok: false, reason: "agent_input_not_object" };
+        }
+        // Repeated stages (notably chronological conversation-analysis chunks)
+        // need one offline payload per invocation. Keep this explicit and
+        // separate from `stages` so an ordinary stage payload is never mistaken
+        // for a sequence. Calls awaiting the same parsed-input promise resume in
+        // registration order, matching the caller's deterministic chunk order.
+        if (isRecord(parsed.stage_sequences) &&
+          Object.prototype.hasOwnProperty.call(parsed.stage_sequences, stage)) {
+          const sequence = parsed.stage_sequences[stage];
+          if (!Array.isArray(sequence)) {
+            return { ok: false, reason: `agent_input_stage_sequence_not_array:${stage}` };
+          }
+          const cursor = stageSequenceCursors.get(stage) ?? 0;
+          if (cursor >= sequence.length) {
+            return { ok: false, reason: `agent_input_stage_sequence_exhausted:${stage}` };
+          }
+          stageSequenceCursors.set(stage, cursor + 1);
+          return { ok: true, data: sequence[cursor] };
         }
         // A stage envelope lets one offline file serve several distinct strict
         // schemas (for example conversation analysis, reconciliation, and PR

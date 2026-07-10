@@ -36,10 +36,6 @@ export const MAX_CONVERSATION_REVIEW_TITLE = 180;
 export const MAX_CONVERSATION_REVIEW_ANCHORS = 12;
 export const MAX_CONVERSATION_REVIEW_DIFF_LINE_TEXT = 260;
 
-export function conversationReviewSeverityRank(value: ReviewSeverity): number {
-  return { critical: 0, high: 1, medium: 2, low: 3, unknown: 4 }[value];
-}
-
 function conversationReviewStringArraySchema(): object {
   return {
     type: "array",

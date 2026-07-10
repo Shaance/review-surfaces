@@ -1,7 +1,13 @@
 "use strict";
 
 const crypto = require("node:crypto");
-const { StreamingBlockingSecretDetector, redact } = require("./privacy-runtime.js");
+const {
+  StreamingBlockingSecretDetector,
+  containsBlockedRedaction,
+  redact
+} = require("./privacy-runtime.js");
+
+const GENERIC_BLOCKED_SECRET_MARKER = "[redacted-blocked]";
 
 /**
  * Bounded raw-output capture shared by the compiled runner and the no-dist
@@ -21,6 +27,7 @@ class BoundedStreamCapture {
     this.sawContent = false;
     this.finished = false;
     this.secretBlocked = false;
+    this.rawTruncated = false;
     this.truncated = false;
   }
 
@@ -33,6 +40,7 @@ class BoundedStreamCapture {
     const text = chunk.toString("utf8");
     this.secretDetector.write(text);
     if (this.rawLength >= this.rawExcerptCap) {
+      this.rawTruncated = true;
       this.truncated = true;
       return;
     }
@@ -42,6 +50,7 @@ class BoundedStreamCapture {
     this.chunks.push(captured);
     this.rawLength += captured.length;
     if (text.length > available) {
+      this.rawTruncated = true;
       this.truncated = true;
     }
   }
@@ -50,15 +59,28 @@ class BoundedStreamCapture {
     if (!Number.isInteger(limit) || limit <= 0) {
       throw new Error("excerpt limit must be a positive integer.");
     }
+    const rawCaptureTruncated = this.rawTruncated;
+    // Excerpt materialization is terminal: the full-stream detector must decide
+    // whether retained bytes are safe before any of them can be persisted.
+    this.finishAndCheckBlockedSecret();
     if (!this.sawContent) {
       return undefined;
     }
     const redacted = redact(this.chunks.join(""));
-    if (redacted.length <= limit) {
-      return redacted;
+    // A token can begin in retained bytes and finish after rawExcerptCap. The
+    // streaming detector sees the complete token, while canonical redaction sees
+    // only an incomplete prefix. An earlier complete token may also have emitted
+    // a marker, so marker presence alone cannot make a truncated capture safe.
+    // Preserve precise markers and context only when the raw capture was complete.
+    const safeExcerpt = this.secretBlocked &&
+      (rawCaptureTruncated || !containsBlockedRedaction(redacted))
+      ? GENERIC_BLOCKED_SECRET_MARKER
+      : redacted;
+    if (safeExcerpt.length <= limit) {
+      return safeExcerpt;
     }
     this.truncated = true;
-    return redacted.slice(0, limit);
+    return safeExcerpt.slice(0, limit);
   }
 
   /** Finalize pending boundary-sensitive matches. Call once after stream end. */

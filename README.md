@@ -278,7 +278,9 @@ review plan), `--previous-packet <path>` (round-over-round deltas).
 - **`agent-file`**: a coding agent contributes bounded, schema-checked
   hypotheses via `--agent-input <json-or-yaml>` — no network. A single file can
   provide strict per-stage payloads under `stages.<stage-name>`; legacy flat
-  payloads remain supported.
+  payloads remain supported. For a stage invoked repeatedly, provide ordered
+  payloads under `stage_sequences.<stage-name>`; each call consumes one entry
+  and an exhausted sequence fails explicitly instead of reusing stale output.
 - **`ai-sdk`**: optional live LLM enrichment (narrative prose over the
   deterministic facts). Privacy filtering and secret redaction run before any
   remote call; credentials live in a local `.env.local`, never committed.
