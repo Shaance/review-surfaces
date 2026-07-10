@@ -174,6 +174,47 @@ test("review-surfaces.CONVERSATION_REVIEW.3 an exactly full visible diff is not 
   assert.ok(!result.analysis.quality_flags.includes("conversation_review_diff_truncated"));
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.3 diff context includes at most 40 file records", async () => {
+  const diffWithFiles = (count: number) => parseStructuredDiff(
+    Array.from({ length: count }, (_, index) => {
+      const number = index + 1;
+      const file = `src/file-${String(number).padStart(2, "0")}.ts`;
+      return [
+        `diff --git a/${file} b/${file}`,
+        `--- a/${file}`,
+        `+++ b/${file}`,
+        "@@ -0,0 +1,1 @@",
+        `+visible-file-${number}`
+      ].join("\n");
+    }).join("\n")
+  );
+
+  const exactProvider = stageProvider([]);
+  const exact = await buildConversationReview({
+    provider: exactProvider.provider,
+    providerName: "ai-sdk",
+    events: EVENTS,
+    diff: diffWithFiles(40)
+  });
+  const exactPrompt = exactProvider.prompts.get("conversation_review_insights") ?? "";
+
+  assert.match(exactPrompt, /"path":"src\/file-40\.ts"/);
+  assert.ok(!exact.analysis.quality_flags.includes("conversation_review_diff_truncated"));
+
+  const overflowProvider = stageProvider([]);
+  const overflow = await buildConversationReview({
+    provider: overflowProvider.provider,
+    providerName: "ai-sdk",
+    events: EVENTS,
+    diff: diffWithFiles(41)
+  });
+  const overflowPrompt = overflowProvider.prompts.get("conversation_review_insights") ?? "";
+
+  assert.match(overflowPrompt, /"path":"src\/file-40\.ts"/);
+  assert.doesNotMatch(overflowPrompt, /src\/file-41\.ts|visible-file-41/);
+  assert.ok(overflow.analysis.quality_flags.includes("conversation_review_diff_truncated"));
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.3 a bounded long diff line is disclosed as partial review context", async () => {
   const staged = stageProvider([]);
   const result = await buildConversationReview({

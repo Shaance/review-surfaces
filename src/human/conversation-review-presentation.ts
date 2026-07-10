@@ -1,8 +1,8 @@
-import type { ConversationAnalysis } from "../conversation/analysis";
 import {
   MAX_VISIBLE_CONVERSATION_INSIGHTS,
+  type ConversationAnalysis,
   type ReviewerInsight
-} from "../conversation/review-contract";
+} from "../contracts/conversation-review";
 import { uniqueTruthy } from "../core/guards";
 import type { HumanReviewModel } from "./contract";
 
@@ -11,8 +11,7 @@ export function conversationAnalysisForRender(model: HumanReviewModel): Conversa
 }
 
 export function conversationInsightsForRender(model: HumanReviewModel): ReviewerInsight[] {
-  const insights = model.review_insights;
-  return Array.isArray(insights) ? insights.slice(0, MAX_VISIBLE_CONVERSATION_INSIGHTS) : [];
+  return visibleConversationInsights(model.conversation_analysis, model.review_insights);
 }
 
 export interface ConversationReviewPresentation {
@@ -196,4 +195,18 @@ export function conversationReconciliationIncomplete(analysis: ConversationAnaly
   return analysis?.quality_flags.some((flag) =>
     flag === "conversation_review_unavailable" || flag === "conversation_review_invalid_payload"
   ) === true;
+}
+
+export function visibleConversationInsights(
+  analysis: ConversationAnalysis | undefined,
+  insights: ReviewerInsight[] | undefined
+): ReviewerInsight[] {
+  if (
+    analysis?.status !== "analyzed" ||
+    conversationReconciliationIncomplete(analysis) ||
+    !Array.isArray(insights)
+  ) {
+    return [];
+  }
+  return insights.slice(0, MAX_VISIBLE_CONVERSATION_INSIGHTS);
 }

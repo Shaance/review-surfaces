@@ -5,6 +5,18 @@ import type { HumanReviewModel, SinceLastReview } from "../src/human/contract";
 import { renderStickySummary, stickyQueueItemKey } from "../src/render/sticky-summary";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import { notAssessedConversationAnalysis } from "../src/conversation/analysis";
+import {
+  HOSTILE_CONVERSATION_RAW_CONTROLS,
+  HOSTILE_CONVERSATION_NEUTRALIZED_ENTITIES,
+  HOSTILE_CONVERSATION_TRAILING_BACKSLASH_MARKERS,
+  ORDINARY_CONVERSATION_VALUE,
+  hostileConversationBackslashRun,
+  hostileConversationControlSurvives,
+  hostileConversationDisclosureClosesBeforeHeading,
+  hostileConversationAnalysis,
+  hostileConversationInsight,
+  hostileConversationTitleClosesEmphasis
+} from "./helpers/conversation-review";
 
 function emptySince(): SinceLastReview {
   return {
@@ -153,6 +165,39 @@ test("sticky leads with at most three conversation-aware insights and compact ci
   assert.equal(review.verdict.decision, "reviewable_with_attention");
 });
 
+test("review-surfaces.PR_SURFACE.4 Action sticky neutralizes hostile conversation Markdown while retaining its deterministic sections", () => {
+  const { markdown, blocked } = renderStickySummary(model({
+    conversation_analysis: hostileConversationAnalysis(),
+    review_insights: [hostileConversationInsight("src/cli/index.ts")]
+  }));
+
+  for (const rawControl of HOSTILE_CONVERSATION_RAW_CONTROLS) {
+    assert.equal(hostileConversationControlSurvives(markdown, rawControl), false, `raw provider control survived: ${rawControl}`);
+  }
+  for (const entity of HOSTILE_CONVERSATION_NEUTRALIZED_ENTITIES) {
+    assert.ok(markdown.includes(entity), `neutralized provider text must remain readable: ${entity}`);
+  }
+  for (const marker of HOSTILE_CONVERSATION_TRAILING_BACKSLASH_MARKERS) {
+    assert.equal(
+      hostileConversationBackslashRun(markdown, marker),
+      2,
+      `provider trailing backslash must be doubled at ${marker}`
+    );
+  }
+  assert.equal(hostileConversationTitleClosesEmphasis(markdown), true, "renderer-owned title emphasis must close after the neutralized backslash");
+  assert.equal(
+    hostileConversationDisclosureClosesBeforeHeading(markdown, "### Review first"),
+    true,
+    "Action sticky conversation details must close before the next deterministic section"
+  );
+  assert.match(markdown, new RegExp(ORDINARY_CONVERSATION_VALUE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(markdown, /&lt;\\!--HOSTILE_SUMMARY--&gt;/);
+  assert.match(markdown, /\n### Review first\n/);
+  assert.match(markdown, /### Trust/);
+  assert.match(markdown, /<!-- review-surfaces:fingerprint head=deadbeef/);
+  assert.equal(blocked, false, "markup neutralization alone must not trip strict postability");
+});
+
 test("review-surfaces.PR_SURFACE.4 compact conversation rendering preserves sticky secret blocking", () => {
   const leak = "ghp_" + "c".repeat(36);
   const review = model({
@@ -166,6 +211,23 @@ test("review-surfaces.PR_SURFACE.4 compact conversation rendering preserves stic
 
   const { markdown, blocked } = renderStickySummary(review);
   assert.doesNotMatch(markdown, /ghp_c{36}/);
+  assert.match(markdown, /\[REDACTED:github_token\]/);
+  assert.equal(blocked, true);
+});
+
+test("review-surfaces.PR_SURFACE.4 a persisted high-confidence redaction marker keeps the sticky blocked", () => {
+  const review = model({
+    conversation_analysis: {
+      ...notAssessedConversationAnalysis("ai-sdk"),
+      status: "analyzed",
+      summary: "Provider output included [REDACTED:github_token].",
+      intent: [{ text: "Preserve the reviewer-facing behavior.", event_ids: ["evt-final"] }],
+      quality_flags: ["conversation_analysis_output_redacted"]
+    }
+  });
+
+  const { markdown, blocked } = renderStickySummary(review);
+
   assert.match(markdown, /\[REDACTED:github_token\]/);
   assert.equal(blocked, true);
 });

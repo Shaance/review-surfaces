@@ -20,12 +20,15 @@ import { EvidenceRef, feedbackEvidence, fileEvidence, missingEvidence } from "..
 import { normalizeEvidencePath } from "../evidence/validate";
 import { ACID_PATTERN } from "../evaluation/evidence-rules";
 import type { FeedbackFile } from "../feedback/feedback";
+import {
+  buildNotAssessedConversationAnalysis,
+  type ConversationAnalysis,
+  type ReviewerInsight
+} from "../contracts/conversation-review";
 import { PrRiskCandidate, PrReviewSurfaceModel, StructuredDiff, StructuredDiffFile, StructuredDiffHunk } from "../pr/contract";
 import { PR_RISK_RULE_METADATA } from "../pr/risk-metadata";
 import { ReviewPacket } from "../render/packet";
 import { looksLikeRecordedCiSecretBoundaryManualCheck } from "../risks/manual-checks";
-import { notAssessedConversationAnalysis, type ConversationAnalysis } from "../conversation/analysis";
-import type { ReviewerInsight } from "../conversation/review";
 import { RisksModel } from "../risks/risks";
 import { classifyRole, isTestPath } from "../scope/pr-scope";
 import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-contract";
@@ -437,9 +440,9 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   // Resolve advisory AI output only after verdicts, blockers, queues, and trust
   // facts are complete, keeping it outside every merge-readiness calculation.
   const conversationAnalysis = input.conversationAnalysis ?? input.prSurface?.conversation_analysis ??
-    notAssessedConversationAnalysis(
+    buildNotAssessedConversationAnalysis(
       input.prSurface?.llm.provider ?? narrative.provider,
-      "No conversation analysis was supplied with this review; conversation intent was not assessed."
+      "missing_review"
     );
   const reviewInsights = input.reviewInsights ?? input.prSurface?.review_insights ?? [];
 

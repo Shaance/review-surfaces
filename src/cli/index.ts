@@ -19,6 +19,7 @@ import { buildImportGraph, findSymbolImporters } from "../collector/import-graph
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { loadPrivacyIgnoreSync } from "../privacy/ignore";
+import { inspectAndRedactSecrets } from "../privacy/secrets";
 import { errorMessage, stripUndefined } from "../core/guards";
 import type { CoverageEvidence } from "../human/contract";
 import { PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
@@ -3219,11 +3220,13 @@ async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArg
   const humanRendered = humanCommentModel
     ? renderHumanPrComment(humanCommentModel, { surfacePath: siblingSurfacePath })
     : undefined;
-  const markdown = humanRendered ? humanRendered.markdown : renderPrComment(surface, { surfacePath: siblingSurfacePath });
+  const renderedMarkdown = humanRendered ? humanRendered.markdown : renderPrComment(surface, { surfacePath: siblingSurfacePath });
+  const inspectedMarkdown = inspectAndRedactSecrets(renderedMarkdown);
+  const markdown = inspectedMarkdown.text;
   // review-surfaces.CHANGE_MAP.4: a redaction BLOCK inside the embedded map or
   // tour snippet must trip the privacy gate — the rendered body only carries
   // the placeholder, so this flag is the surviving signal.
-  const renderBlocked = humanRendered?.blocked ?? false;
+  const renderBlocked = (humanRendered?.blocked ?? false) || inspectedMarkdown.blocked;
   const commentPath = path.join(path.dirname(surfacePath), "comment.md");
   await writeText(commentPath, markdown);
   process.stdout.write(markdown);

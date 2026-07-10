@@ -134,6 +134,30 @@ test("review-surfaces.PRIVACY.2 an imported oversized transcript scans the full 
   assert.doesNotMatch(transcripts[0].stdout_excerpt ?? "", /sk-proj-/);
 });
 
+test("review-surfaces.PRIVACY.2 an imported oversized transcript scans full raw stderr for blocked secrets", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-command-late-stderr-secret-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const secret = openAiProjectKeyFixture();
+  fs.mkdirSync(path.join(tmp, ".review-surfaces", "commands"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, ".review-surfaces", "commands", "local.json"),
+    JSON.stringify({
+      commands: [{
+        command: "pnpm test",
+        exit_code: 0,
+        stderr: `${"x".repeat(20_001)} ${secret}`
+      }]
+    })
+  );
+
+  const transcripts = await indexCommandTranscripts(tmp, [".review-surfaces/commands/local.json"]);
+
+  assert.equal(transcripts[0].truncated, true);
+  assert.equal(transcripts[0].secret_blocked, true);
+  assert.doesNotMatch(transcripts[0].stderr_excerpt ?? "", /sk-proj-/);
+  assert.doesNotMatch(JSON.stringify(transcripts[0]), new RegExp(secret));
+});
+
 test("review-surfaces.RISK.2 treats successful command transcripts as direct or indirect evidence", () => {
   const collection = {
     changedFiles: [],

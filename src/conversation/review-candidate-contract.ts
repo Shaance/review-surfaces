@@ -1,10 +1,10 @@
-import { PACKET_SEVERITIES, type PacketSeverity } from "../schema/review-packet-contract";
+import { REVIEW_SEVERITIES, type ReviewSeverity } from "../contracts/review";
 import {
   REVIEWER_INSIGHT_CATEGORIES,
   REVIEWER_INSIGHT_EVIDENCE_STATES,
   type ReviewerInsightCategory,
   type ReviewerInsightEvidenceState
-} from "./review-contract";
+} from "../contracts/conversation-review";
 
 export interface ConversationReviewCandidateDiffAnchor {
   path: string;
@@ -20,7 +20,7 @@ export interface ConversationReviewCandidateInsight {
   summary: string;
   why_it_matters: string;
   reviewer_action: string;
-  priority: PacketSeverity;
+  priority: ReviewSeverity;
   evidence_state: ReviewerInsightEvidenceState;
   conversation_event_ids: string[];
   paths: string[];
@@ -36,7 +36,7 @@ export const MAX_CONVERSATION_REVIEW_TITLE = 180;
 export const MAX_CONVERSATION_REVIEW_ANCHORS = 12;
 export const MAX_CONVERSATION_REVIEW_DIFF_LINE_TEXT = 260;
 
-export function conversationReviewSeverityRank(value: PacketSeverity): number {
+export function conversationReviewSeverityRank(value: ReviewSeverity): number {
   return { critical: 0, high: 1, medium: 2, low: 3, unknown: 4 }[value];
 }
 
@@ -66,7 +66,7 @@ export const CONVERSATION_REVIEW_INSIGHT_SCHEMA = {
           summary: { type: "string", minLength: 1, maxLength: MAX_CONVERSATION_REVIEW_TEXT },
           why_it_matters: { type: "string", minLength: 1, maxLength: MAX_CONVERSATION_REVIEW_TEXT },
           reviewer_action: { type: "string", minLength: 1, maxLength: MAX_CONVERSATION_REVIEW_TEXT },
-          priority: { enum: PACKET_SEVERITIES },
+          priority: { enum: REVIEW_SEVERITIES },
           evidence_state: { enum: REVIEWER_INSIGHT_EVIDENCE_STATES },
           conversation_event_ids: conversationReviewStringArraySchema(),
           paths: conversationReviewStringArraySchema(),

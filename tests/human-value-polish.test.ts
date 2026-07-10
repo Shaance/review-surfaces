@@ -19,6 +19,17 @@ import {
 import { renderHumanReviewHtml } from "../src/human/render-html";
 import { renderStickySummary } from "../src/render/sticky-summary";
 import { notAssessedConversationAnalysis } from "../src/conversation/analysis";
+import {
+  HOSTILE_CONVERSATION_RAW_CONTROLS,
+  HOSTILE_CONVERSATION_NEUTRALIZED_ENTITIES,
+  HOSTILE_CONVERSATION_TRAILING_BACKSLASH_MARKERS,
+  ORDINARY_CONVERSATION_VALUE,
+  hostileConversationBackslashRun,
+  hostileConversationControlSurvives,
+  hostileConversationAnalysis,
+  hostileConversationInsight,
+  hostileConversationTitleClosesEmphasis
+} from "./helpers/conversation-review";
 
 function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
   return {
@@ -166,6 +177,39 @@ test("review-surfaces.CONVERSATION_REVIEW.4 conversation-aware insights lead the
   assert.equal(review.verdict.decision, "reviewable_with_attention");
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.4 full human Markdown neutralizes provider-authored controls without hiding deterministic review content", () => {
+  const markdown = renderHumanReviewMarkdown(model({
+    conversation_analysis: hostileConversationAnalysis(),
+    review_insights: [hostileConversationInsight()]
+  }));
+
+  for (const rawControl of HOSTILE_CONVERSATION_RAW_CONTROLS) {
+    assert.equal(hostileConversationControlSurvives(markdown, rawControl), false, `raw provider control survived: ${rawControl}`);
+  }
+  for (const entity of HOSTILE_CONVERSATION_NEUTRALIZED_ENTITIES) {
+    assert.ok(markdown.includes(entity), `neutralized provider text must remain readable: ${entity}`);
+  }
+  for (const marker of HOSTILE_CONVERSATION_TRAILING_BACKSLASH_MARKERS) {
+    assert.equal(
+      hostileConversationBackslashRun(markdown, marker),
+      2,
+      `provider trailing backslash must be doubled at ${marker}`
+    );
+  }
+  assert.equal(hostileConversationTitleClosesEmphasis(markdown), true, "renderer-owned title emphasis must close after the neutralized backslash");
+  assert.match(markdown, new RegExp(ORDINARY_CONVERSATION_VALUE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(markdown, /&lt;\\!--HOSTILE_SUMMARY--&gt;/);
+  assert.match(markdown, /\\\[hostile-title-link\\\]\\\(https&#58;\/\/attacker\.invalid\/title\\\)/);
+  assert.match(markdown, /\n## Reading order\n/);
+  assert.match(markdown, /\n## Review first\n/);
+
+  const markerReview = model({ conversation_analysis: {
+    ...hostileConversationAnalysis(),
+    summary: "Provider output included [REDACTED:github_token]."
+  } });
+  assert.match(renderHumanReviewMarkdown(markerReview), /\[REDACTED:github_token\]/);
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.4 missing conversation analysis is an honest not-assessed state, not a clean result", () => {
   const markdown = renderHumanReviewMarkdown(model());
   assert.match(markdown, /\*\*Not assessed\.\*\*/);
@@ -223,6 +267,46 @@ test("review-surfaces.CONVERSATION_REVIEW.4 Markdown and HTML share non-analyzed
     assert.match(html, item.summary);
     assert.match(markdown, /No conversation-grounded conclusions are available/);
     assert.match(html, /No conversation-grounded conclusions are available/);
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.4 stale insights stay hidden unless analysis and reconciliation completed", () => {
+  const cases: Array<HumanReviewModel["conversation_analysis"]> = [
+    undefined,
+    notAssessedConversationAnalysis("mock"),
+    {
+      ...notAssessedConversationAnalysis("ai-sdk"),
+      status: "degraded",
+      summary: "Conversation analysis failed before a trustworthy result was available.",
+      quality_flags: ["conversation_analysis_unavailable"]
+    },
+    {
+      ...analyzedConversation(),
+      quality_flags: ["conversation_review_unavailable"]
+    },
+    {
+      ...analyzedConversation(),
+      quality_flags: ["conversation_review_invalid_payload"]
+    }
+  ];
+
+  for (const analysis of cases) {
+    const review = model({
+      conversation_analysis: analysis,
+      review_insights: [conversationInsight(99)]
+    });
+    if (analysis === undefined) {
+      delete review.conversation_analysis;
+    }
+    const markdown = renderHumanReviewMarkdown(review);
+    const html = renderHumanReviewHtml(review);
+    const sticky = renderStickySummary(review).markdown;
+
+    for (const rendered of [markdown, html, sticky]) {
+      assert.doesNotMatch(rendered, /Conversation finding 99|Conflicts with intent/);
+    }
+    assert.match(markdown, /no conversation-grounded conclusion|Diff reconciliation did not complete/i);
+    assert.match(html, /no conversation-grounded conclusion|Diff reconciliation did not complete/i);
   }
 });
 

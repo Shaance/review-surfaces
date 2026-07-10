@@ -3,8 +3,7 @@ import { writeJson, writeText } from "../core/files";
 import { EvidenceRef } from "../evidence/evidence";
 import { redactSecrets } from "../privacy/secrets";
 import { StructuredDiff } from "../pr/contract";
-import type { ConversationAnalysis } from "../conversation/analysis";
-import { MAX_VISIBLE_CONVERSATION_INSIGHTS, type ReviewerInsight } from "../conversation/review";
+import type { ConversationAnalysis, ReviewerInsight } from "../contracts/conversation-review";
 import { formatEnumChanges, formatTypeChanges } from "../risks/semantic-diff";
 import { renderHunkExcerpt } from "./hunk-excerpt";
 import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
@@ -21,7 +20,8 @@ import {
   conversationInsightBasisLabel,
   conversationInsightCitationGroups,
   conversationInsightsForRender,
-  conversationReviewPresentation
+  conversationReviewPresentation,
+  visibleConversationInsights
 } from "./conversation-review-presentation";
 import type {
   ChangeNarrative,
@@ -68,6 +68,7 @@ export type {
 
 const MAX_SUMMARY_CHARS = 600;
 const MAX_FIELD_CHARS = 300;
+const CONVERSATION_MARKDOWN_CONTROLS = new Set(["\\", "`", "*", "[", "]", "(", ")", "#", "!", "|", "~"]);
 const MAX_REVIEW_FIRST = 7;
 const MAX_BLOCKERS = 6;
 const MAX_QUESTIONS = 8;
@@ -314,9 +315,10 @@ export function renderConversationReviewMarkdown(
   analysis: ConversationAnalysis | undefined,
   insights: ReviewerInsight[] | undefined
 ): string {
-  const visibleInsights = Array.isArray(insights) ? insights.slice(0, MAX_VISIBLE_CONVERSATION_INSIGHTS) : [];
-  const status = conversationAnalysisStatusLine(analysis);
-  const context = conversationAnalysisContextMarkdown(analysis);
+  const renderField = conversationMarkdownField(field);
+  const visibleInsights = visibleConversationInsights(analysis, insights);
+  const status = conversationAnalysisStatusLineWithField(analysis, renderField, MAX_SUMMARY_CHARS);
+  const context = conversationAnalysisContextMarkdownWithField(analysis, renderField);
   const caveats = conversationAnalysisCaveats(analysis);
   const header = [status, context, caveats.length > 0 ? `**Caveat:** ${caveats.join(" ")}` : ""]
     .filter(Boolean)
@@ -326,11 +328,11 @@ export function renderConversationReviewMarkdown(
   }
 
   const lines = visibleInsights.map((insight, index) => {
-    const evidence = conversationInsightCitations(insight);
-    return `${index + 1}. **[${conversationEvidenceStateLabel(insight.evidence_state)} · ${field(insight.priority, 40)}] ${field(insight.title, 180)}**
-   - What changed: ${field(insight.summary)}
-   - Why it matters: ${field(insight.why_it_matters)}
-   - Review: ${field(insight.reviewer_action)}
+    const evidence = conversationInsightCitationsWithField(insight, renderField, 3);
+    return `${index + 1}. **[${conversationEvidenceStateLabel(insight.evidence_state)} · ${renderField(insight.priority, 40)}] ${renderField(insight.title, 180)}**
+   - What changed: ${renderField(insight.summary)}
+   - Why it matters: ${renderField(insight.why_it_matters)}
+   - Review: ${renderField(insight.reviewer_action)}
    - Grounding: ${conversationInsightBasisLabel(insight.basis)}${evidence ? ` Evidence: ${evidence}.` : ""}`;
   });
   return `${header}\n\n${lines.join("\n\n")}`;
@@ -354,8 +356,8 @@ export function renderCompactConversationReviewMarkdown(
   insights: ReviewerInsight[] | undefined,
   options: CompactConversationReviewMarkdownOptions = {}
 ): string {
-  const renderField = options.renderField ?? field;
-  const visibleInsights = Array.isArray(insights) ? insights.slice(0, MAX_VISIBLE_CONVERSATION_INSIGHTS) : [];
+  const renderField = conversationMarkdownField(options.renderField ?? field);
+  const visibleInsights = visibleConversationInsights(analysis, insights);
   const status = conversationAnalysisStatusLineWithField(analysis, renderField, MAX_FIELD_CHARS);
   const caveats = conversationAnalysisCaveats(analysis);
   const lead = [
@@ -418,7 +420,7 @@ ${body}
 }
 
 export function conversationAnalysisStatusLine(analysis: ConversationAnalysis | undefined): string {
-  return conversationAnalysisStatusLineWithField(analysis, field, MAX_SUMMARY_CHARS);
+  return conversationAnalysisStatusLineWithField(analysis, conversationMarkdownField(field), MAX_SUMMARY_CHARS);
 }
 
 function conversationAnalysisStatusLineWithField(
@@ -432,7 +434,7 @@ function conversationAnalysisStatusLineWithField(
 }
 
 export function conversationInsightCitations(insight: ReviewerInsight): string {
-  return conversationInsightCitationsWithField(insight, field, 3);
+  return conversationInsightCitationsWithField(insight, conversationMarkdownField(field), 3);
 }
 
 function conversationInsightCitationsWithField(
@@ -446,7 +448,31 @@ function conversationInsightCitationsWithField(
 }
 
 function conversationAnalysisContextMarkdown(analysis: ConversationAnalysis | undefined): string {
-  return conversationAnalysisContextMarkdownWithField(analysis, field);
+  return conversationAnalysisContextMarkdownWithField(analysis, conversationMarkdownField(field));
+}
+
+function conversationMarkdownField(renderField: ConversationMarkdownField): ConversationMarkdownField {
+  return (value, max) => neutralizeConversationMarkdown(renderField(value, max));
+}
+
+function neutralizeConversationMarkdown(value: string): string {
+  const markerPattern = /(\[REDACTED:[a-z_]+\])/g;
+  return value.split(markerPattern).map((part) => {
+    if (/^\[REDACTED:[a-z_]+\]$/.test(part)) {
+      return part;
+    }
+    const htmlSafe = part
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    const markdownSafe = [...htmlSafe]
+      .map((character) => CONVERSATION_MARKDOWN_CONTROLS.has(character) ? `\\${character}` : character)
+      .join("");
+    return markdownSafe
+      .replace(/\b(https?|ftp|mailto):/gi, "$1&#58;")
+      .replace(/\bwww\./gi, "www&#46;")
+      .replace(/@/g, "&#64;");
+  }).join("");
 }
 
 function conversationAnalysisContextMarkdownWithField(

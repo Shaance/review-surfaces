@@ -353,6 +353,95 @@ test("review-surfaces.CONVERSATION_REVIEW.4 pre-conversation human v1 artifacts 
   assert.equal(humanReviewSchema.required.includes("review_insights"), false);
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.4 persisted insights require completed analyzed conversation state", () => {
+  const analyzed = {
+    ...HUMAN_REQUIRED_DEFAULTS.conversation_analysis,
+    status: "analyzed",
+    provider: "ai-sdk",
+    summary: "The final request preserves the reviewer-facing behavior.",
+    intent: [{ text: "Preserve the reviewer-facing behavior.", event_ids: ["user-final"] }],
+    quality_flags: []
+  };
+  const insight = {
+    id: "CONV-INSIGHT-001",
+    category: "intent_mismatch",
+    title: "The change conflicts with the final request",
+    summary: "The renderer behavior was removed.",
+    why_it_matters: "The reviewer could approve behavior the user rejected.",
+    reviewer_action: "Restore the behavior or confirm the scope change.",
+    priority: "high",
+    evidence_state: "contradicted",
+    basis: "validated_anchors",
+    conversation_event_ids: ["user-final"],
+    paths: ["src/human/render.ts"],
+    requirement_ids: [],
+    risk_ids: [],
+    command_ids: [],
+    evidence: [{ kind: "conversation", event_id: "user-final", confidence: "high", validation_status: "valid" }]
+  };
+  const human = validHumanReview();
+  human.conversation_analysis = analyzed;
+  human.review_insights = [insight];
+  const prSurface: Record<string, unknown> = {
+    schema_version: "review-surfaces.pr_surface.v1",
+    mode: "pr",
+    spec_mode: "none",
+    status: "ready",
+    scope: {
+      base_ref: "main",
+      head_ref: "HEAD",
+      head_sha: "abc123",
+      diff_source: "range",
+      changed_files: [],
+      affected_areas: [],
+      affected_requirements: [],
+      out_of_scope_changed_files: []
+    },
+    coverage: {
+      base_available: false,
+      summary: "No requirements in scope.",
+      in_scope_count: 0,
+      deltas: [],
+      counts: {}
+    },
+    risks: { summary: "No deterministic risks.", candidates: [] },
+    llm: { required: true, provider: "ai-sdk", status: "applied" },
+    narrative: {
+      summary: "Reviewer-facing renderer behavior changed.",
+      what_changed: [],
+      why_it_matters: [],
+      review_first: [],
+      risk_narratives: []
+    },
+    conversation_analysis: analyzed,
+    review_insights: [insight]
+  };
+
+  for (const { name, schemaValue, artifact } of [
+    { name: "human", schemaValue: humanReviewSchema, artifact: human },
+    { name: "PR", schemaValue: prSurfaceSchema, artifact: prSurface }
+  ]) {
+    assert.equal(validateJsonSchema(schemaValue, artifact).valid, true, `${name} analyzed fixture must be valid`);
+
+    for (const analysis of [
+      undefined,
+      { ...analyzed, status: "not_assessed" },
+      { ...analyzed, status: "degraded" },
+      { ...analyzed, quality_flags: ["conversation_review_unavailable"] },
+      { ...analyzed, quality_flags: ["conversation_review_invalid_payload"] }
+    ]) {
+      const invalid = structuredClone(artifact);
+      if (analysis === undefined) {
+        delete invalid.conversation_analysis;
+      } else {
+        invalid.conversation_analysis = analysis;
+      }
+      const result = validateJsonSchema(schemaValue, invalid);
+      assert.equal(result.valid, false, `${name} must reject insights without completed analysis: ${JSON.stringify(analysis)}`);
+    }
+  }
+});
+
 test("human review schema validates since-last-review comparison slices", () => {
   const humanReview = {
     schema_version: "review-surfaces.human_review.v1",
@@ -1314,6 +1403,13 @@ test("review-surfaces.SCHEMA.6 human evidence-kind and validation-status enums m
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.3 persisted conversation schemas stay fully aligned", () => {
+  const humanCrossFieldRules = schemaAt(humanReviewSchema, ["allOf"]) as unknown[];
+  const prCrossFieldRules = schemaAt(prSurfaceSchema, ["allOf"]) as unknown[];
+  assert.deepEqual(
+    humanCrossFieldRules[0],
+    prCrossFieldRules.at(-1),
+    "conversation cross-field invariants must match across human and PR surfaces"
+  );
   for (const property of ["conversation_analysis", "review_insights"]) {
     assert.deepEqual(
       schemaAt(humanReviewSchema, ["properties", property]),

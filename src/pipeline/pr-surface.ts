@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CollectionResult } from "../collector/collect";
+import { buildNotAssessedConversationAnalysis } from "../contracts/conversation-review";
 import { parseStructuredDiff } from "../collector/diff-hunks";
 import { EvaluationModel } from "../evaluation/evaluate";
 import { buildPrScopedCoverage } from "../evaluation/scoped-coverage";
@@ -9,7 +10,6 @@ import { ProviderName, ReasoningProvider } from "../llm/provider";
 import { buildPrNarrative } from "../llm/pr-narrative";
 import { buildPrChangeDiagram } from "../diagrams/pr-change-diagram";
 import { buildPrRiskCandidates } from "../risks/pr-risks";
-import { notAssessedConversationAnalysis } from "../conversation/analysis";
 import { buildConversationReview } from "../conversation/review";
 import { createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
 import { buildPrScope, isExecutableTestPath } from "../scope/pr-scope";
@@ -86,10 +86,7 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
   // No changed files -> nothing to review. Block (don't post an empty surface),
   // skip the LLM call entirely.
   if (scope.changed_files.length === 0) {
-    const conversationAnalysis = notAssessedConversationAnalysis(
-      input.providerName,
-      "No changed diff was available; conversation intent was not assessed."
-    );
+    const conversationAnalysis = buildNotAssessedConversationAnalysis(input.providerName, "no_diff");
     return {
       schema_version: PR_SURFACE_SCHEMA_VERSION,
       mode: "pr",

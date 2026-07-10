@@ -1,36 +1,28 @@
+import {
+  EVIDENCE_CONFIDENCE_LEVELS,
+  EVIDENCE_KINDS,
+  EVIDENCE_SOURCE_KINDS,
+  EVIDENCE_VALIDATION_STATUSES
+} from "../contracts/evidence";
+import {
+  REQUIREMENT_STATUSES,
+  REVIEW_SEVERITIES,
+  RISK_CATEGORIES
+} from "../contracts/review";
+
 export const PACKET_SCHEMA_VERSION = "review-surfaces.packet.v1" as const;
 
 export const PACKET_RUN_MODES = ["local", "dogfood", "ci", "provider", "unknown"] as const;
 
-export const PACKET_SOURCE_KINDS = ["spec", "doc", "file", "conversation", "feedback", "unknown"] as const;
+export const PACKET_SOURCE_KINDS = EVIDENCE_SOURCE_KINDS;
 
-export const PACKET_EVIDENCE_KINDS = [
-  "file",
-  "diff",
-  "test",
-  "ci",
-  "doc",
-  "spec",
-  "conversation",
-  "command",
-  "feedback",
-  "agent_instruction",
-  "url",
-  "unknown"
-] as const;
+export const PACKET_EVIDENCE_KINDS = EVIDENCE_KINDS;
 
-export const PACKET_CONFIDENCE_LEVELS = ["high", "medium", "low", "unknown"] as const;
+export const PACKET_CONFIDENCE_LEVELS = EVIDENCE_CONFIDENCE_LEVELS;
 
-export const PACKET_VALIDATION_STATUSES = ["valid", "invalid", "not_checked", "unknown"] as const;
+export const PACKET_VALIDATION_STATUSES = EVIDENCE_VALIDATION_STATUSES;
 
-export const PACKET_REQUIREMENT_STATUSES = [
-  "satisfied",
-  "partial",
-  "missing",
-  "unknown",
-  "overreach",
-  "invalid_evidence"
-] as const;
+export const PACKET_REQUIREMENT_STATUSES = REQUIREMENT_STATUSES;
 
 export const PACKET_PARTIAL_REASONS = [
   "impl_no_test",
@@ -45,20 +37,9 @@ export const PACKET_DIAGRAM_STATUSES = ["valid", "invalid"] as const;
 
 export const PACKET_DIAGRAM_TYPES = ["flowchart", "sequenceDiagram", "unknown"] as const;
 
-export const PACKET_SEVERITIES = ["low", "medium", "high", "critical", "unknown"] as const;
+export const PACKET_SEVERITIES = REVIEW_SEVERITIES;
 
-export const PACKET_RISK_CATEGORIES = [
-  "correctness",
-  "security",
-  "privacy",
-  "maintainability",
-  "architecture",
-  "testing",
-  "workflow",
-  "release",
-  "performance",
-  "unknown"
-] as const;
+export const PACKET_RISK_CATEGORIES = RISK_CATEGORIES;
 
 export const PACKET_RISK_SEVERITIES = PACKET_SEVERITIES;
 

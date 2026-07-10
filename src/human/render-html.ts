@@ -37,8 +37,10 @@ import { esc } from "./esc";
 import { RISK_LENS_METADATA } from "./contract";
 import type { CoverageEvidenceHunk, HumanReviewModel, ReviewQueueItem } from "./contract";
 import type { EvidenceRef } from "../evidence/evidence";
-import type { ConversationAnalysis } from "../conversation/analysis";
-import type { ReviewerInsight } from "../conversation/review";
+import type {
+  ConversationAnalysis,
+  ReviewerInsight
+} from "../contracts/conversation-review";
 
 export function renderHumanReviewHtml(model: HumanReviewModel, context: HumanRenderContext = {}): string {
   const lenses = [...new Set(model.review_queue.flatMap((item) => lensesForItem(model, item)))].sort();

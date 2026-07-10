@@ -3,7 +3,7 @@ import {
   StructuredDiffFile,
   StructuredDiffHunk,
   StructuredDiffLine
-} from "../pr/contract";
+} from "../contracts/pr-review";
 
 // ---------------------------------------------------------------------------
 // Unified-diff parser -> StructuredDiff (review-surfaces.pr_surface.v1).

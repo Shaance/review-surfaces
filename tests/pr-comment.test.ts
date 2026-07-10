@@ -5,6 +5,18 @@ import type { HumanReviewModel } from "../src/human/contract";
 import { renderHumanPrComment, renderPrComment } from "../src/render/pr-comment";
 import { PrReviewSurfaceModel, PR_SURFACE_SCHEMA_VERSION } from "../src/pr/contract";
 import { notAssessedConversationAnalysis } from "../src/conversation/analysis";
+import {
+  HOSTILE_CONVERSATION_RAW_CONTROLS,
+  HOSTILE_CONVERSATION_NEUTRALIZED_ENTITIES,
+  HOSTILE_CONVERSATION_TRAILING_BACKSLASH_MARKERS,
+  ORDINARY_CONVERSATION_VALUE,
+  hostileConversationBackslashRun,
+  hostileConversationControlSurvives,
+  hostileConversationDisclosureClosesBeforeHeading,
+  hostileConversationAnalysis,
+  hostileConversationInsight,
+  hostileConversationTitleClosesEmphasis
+} from "./helpers/conversation-review";
 
 function baseScope(): PrReviewSurfaceModel["scope"] {
   return {
@@ -399,6 +411,68 @@ test("renderHumanPrComment puts conversation-aware reviewer value before the que
   assert.match(md, /Why it matters: Reviewers need to confirm the wider compatibility burden/);
   assert.match(md, /events `evt-final`; paths `schemas\/human_review\.schema\.json`/);
   assert.equal(review.verdict.decision, "needs_author_clarification");
+});
+
+test("review-surfaces.PR_SURFACE.4 both PR Markdown renderers neutralize hostile conversation prose and keep deterministic sections visible", () => {
+  const human = humanModel();
+  human.conversation_analysis = hostileConversationAnalysis();
+  human.review_insights = [hostileConversationInsight("schemas/human_review.schema.json")];
+  const humanRendered = renderHumanPrComment(human);
+
+  const surface = readySurface();
+  surface.conversation_analysis = hostileConversationAnalysis();
+  surface.review_insights = [hostileConversationInsight()];
+  const lowLevelMarkdown = renderPrComment(surface);
+
+  for (const rendered of [humanRendered.markdown, lowLevelMarkdown]) {
+    for (const rawControl of HOSTILE_CONVERSATION_RAW_CONTROLS) {
+      assert.equal(hostileConversationControlSurvives(rendered, rawControl), false, `raw provider control survived: ${rawControl}`);
+    }
+    for (const entity of HOSTILE_CONVERSATION_NEUTRALIZED_ENTITIES) {
+      assert.ok(rendered.includes(entity), `neutralized provider text must remain readable: ${entity}`);
+    }
+    for (const marker of HOSTILE_CONVERSATION_TRAILING_BACKSLASH_MARKERS) {
+      assert.equal(
+        hostileConversationBackslashRun(rendered, marker),
+        2,
+        `provider trailing backslash must be doubled at ${marker}`
+      );
+    }
+    assert.equal(hostileConversationTitleClosesEmphasis(rendered), true, "renderer-owned title emphasis must close after the neutralized backslash");
+    assert.match(rendered, new RegExp(ORDINARY_CONVERSATION_VALUE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(rendered, /&lt;\\!--HOSTILE_SUMMARY--&gt;/);
+  }
+  assert.equal(
+    hostileConversationDisclosureClosesBeforeHeading(humanRendered.markdown, "### Review first"),
+    true,
+    "human PR conversation details must close before the next deterministic section"
+  );
+  assert.match(humanRendered.markdown, /\n### Review first\n/);
+  assert.match(humanRendered.markdown, /### Blockers/);
+  assert.equal(humanRendered.blocked, false, "markup neutralization alone must not trip strict postability");
+  assert.equal(
+    hostileConversationDisclosureClosesBeforeHeading(lowLevelMarkdown, "### What changed"),
+    true,
+    "low-level PR conversation details must close before the next deterministic section"
+  );
+  assert.match(lowLevelMarkdown, /\n### What changed\n/);
+  assert.match(lowLevelMarkdown, /### PR risks/);
+});
+
+test("review-surfaces.PR_SURFACE.4 a persisted high-confidence redaction marker blocks the human PR comment", () => {
+  const review = humanModel();
+  review.conversation_analysis = {
+    ...notAssessedConversationAnalysis("ai-sdk"),
+    status: "analyzed",
+    summary: "Provider output included [REDACTED:github_token].",
+    intent: [{ text: "Preserve the reviewer-facing behavior.", event_ids: ["evt-final"] }],
+    quality_flags: ["conversation_analysis_output_redacted"]
+  };
+
+  const rendered = renderHumanPrComment(review);
+
+  assert.match(rendered.markdown, /\[REDACTED:github_token\]/);
+  assert.equal(rendered.blocked, true);
 });
 
 test("renderHumanPrComment is byte-deterministic for the same model", () => {

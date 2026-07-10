@@ -350,6 +350,37 @@
       "then": {
         "required": ["blocked_reason"]
       }
+    },
+    {
+      "if": {
+        "required": ["review_insights"],
+        "properties": {
+          "review_insights": { "minItems": 1 }
+        }
+      },
+      "then": {
+        "required": ["conversation_analysis"],
+        "properties": {
+          "conversation_analysis": {
+            "allOf": [
+              {
+                "properties": { "status": { "const": "analyzed" } }
+              },
+              {
+                "properties": {
+                  "quality_flags": {
+                    "not": {
+                      "contains": {
+                        "enum": ["conversation_review_unavailable", "conversation_review_invalid_payload"]
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
     }
   ]
 }

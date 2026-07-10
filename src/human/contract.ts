@@ -1,9 +1,11 @@
-import type { EvidenceRef } from "../evidence/evidence";
-import type { ProviderName } from "../llm/provider";
+import type {
+  ConversationAnalysis,
+  ReviewerInsight
+} from "../contracts/conversation-review";
+import type { EvidenceRef } from "../contracts/evidence";
+import type { ProviderName } from "../contracts/provider";
 import type { SemanticChangeFacts } from "../risks/semantic-diff";
 import type { PacketConfidence, PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
-import type { ConversationAnalysis } from "../conversation/analysis";
-import type { ReviewerInsight } from "../conversation/review";
 
 export type { SemanticChangeFacts };
 

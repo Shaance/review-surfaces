@@ -32,6 +32,39 @@
     "feedback_effects",
     "generated_from"
   ],
+  "allOf": [
+    {
+      "if": {
+        "required": ["review_insights"],
+        "properties": {
+          "review_insights": { "minItems": 1 }
+        }
+      },
+      "then": {
+        "required": ["conversation_analysis"],
+        "properties": {
+          "conversation_analysis": {
+            "allOf": [
+              {
+                "properties": { "status": { "const": "analyzed" } }
+              },
+              {
+                "properties": {
+                  "quality_flags": {
+                    "not": {
+                      "contains": {
+                        "enum": ["conversation_review_unavailable", "conversation_review_invalid_payload"]
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "schema_version": {
       "const": "review-surfaces.human_review.v1"

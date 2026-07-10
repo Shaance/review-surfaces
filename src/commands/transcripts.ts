@@ -1,37 +1,19 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { CommandTranscript, CommandTranscriptStatus } from "../contracts/command-transcript";
 import { relativePath } from "../core/files";
 import { isRecord, stripUndefined } from "../core/guards";
 import { redactForArtifact } from "../privacy/redact";
 import { containsBlockingSecretMaterial, redactSecrets } from "../privacy/secrets";
+
+export type { CommandTranscript, CommandTranscriptStatus } from "../contracts/command-transcript";
 
 export const COMMAND_TRANSCRIPT_OUTPUT_PATH = ".review-surfaces/inputs/commands.json";
 export const COMMAND_TRANSCRIPT_INPUT_FILENAME = "commands.json";
 export const COMMAND_TRANSCRIPT_SCHEMA_VERSION = "review-surfaces.command_transcripts.v1";
 export const COMMAND_TRANSCRIPT_DIRNAME = "commands";
 export const DEFAULT_COMMAND_TRANSCRIPT_DIR = ".review-surfaces/commands";
-
-export type CommandTranscriptStatus = "passed" | "failed" | "unknown";
-
-export interface CommandTranscript {
-  id: string;
-  command: string;
-  status: CommandTranscriptStatus;
-  exit_code?: number;
-  head_sha?: string;
-  duration_ms?: number;
-  started_at?: string;
-  completed_at?: string;
-  stdout_excerpt?: string;
-  stderr_excerpt?: string;
-  stdout_hash?: string;
-  stderr_hash?: string;
-  truncated: boolean;
-  source_path: string;
-  /** True when a blocked secret existed before the persisted fields were redacted. */
-  secret_blocked?: boolean;
-}
 
 export const COMMAND_TRANSCRIPT_EXCERPT_LIMIT = 1200;
 const MAX_TRANSCRIPT_FILE_BYTES = 1_000_000;

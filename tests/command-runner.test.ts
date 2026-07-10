@@ -95,8 +95,9 @@ test("review-surfaces.PRIVACY.2 redacts and bounds transcript output captured by
   assert.match(result.transcript.stdout_excerpt ?? "", /\[REDACTED:/);
 });
 
-test("review-surfaces.PRIVACY.2 a blocked secret after the retained output cap still blocks remote use", async () => {
+test("review-surfaces.PRIVACY.2 a blocked secret after the retained output cap still blocks remote use", async (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-late-secret-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const secret = openAiProjectKeyFixture();
   const result = await recordCommandTranscript({
     cwd: tmp,
@@ -109,6 +110,35 @@ test("review-surfaces.PRIVACY.2 a blocked secret after the retained output cap s
   assert.equal(result.transcript.truncated, true);
   assert.equal(result.transcript.secret_blocked, true);
   assert.doesNotMatch(result.transcript.stdout_excerpt ?? "", /sk-proj-/);
+});
+
+test("review-surfaces.PRIVACY.2 a blocked secret after the retained stderr cap still blocks remote use", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-late-stderr-secret-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const secret = openAiProjectKeyFixture();
+  const output = `${"x".repeat(7000)} ${secret}`;
+  const result = await recordCommandTranscript({
+    cwd: tmp,
+    args: [
+      process.execPath,
+      "-e",
+      "process.stderr.write('x'.repeat(7000) + ' ' + ['sk', '-proj-', 'abcdefghijklmnopqrstuvwxyz123456'].join(''))"
+    ],
+    id: "CMD-RUN-LATE-STDERR-SECRET",
+    streamOutput: false,
+    now: sequenceNow("2026-05-28T12:00:00.000Z", "2026-05-28T12:00:00.001Z")
+  });
+
+  assert.equal(result.transcript.truncated, true);
+  assert.equal(result.transcript.secret_blocked, true);
+  assert.doesNotMatch(result.transcript.stderr_excerpt ?? "", /sk-proj-/);
+  assert.doesNotMatch(JSON.stringify(result.transcript), new RegExp(secret));
+  assert.doesNotMatch(fs.readFileSync(path.join(tmp, result.transcriptPath), "utf8"), new RegExp(secret));
+  assert.equal(
+    result.transcript.stderr_hash,
+    crypto.createHash("sha256").update(output).digest("hex"),
+    "the stderr digest still covers the complete stream beyond the retained excerpt"
+  );
 });
 
 test("review-surfaces.PRIVACY.2 an unmatched PEM opener is redacted through the retained capture", async () => {
@@ -259,6 +289,45 @@ test("review-surfaces.PRIVACY.2 no-dist run fallback detects secrets after its r
     transcript.stdout_hash,
     crypto.createHash("sha256").update(output).digest("hex"),
     "the no-dist wiring hashes the full stream beyond its retained excerpt"
+  );
+});
+
+test("review-surfaces.PRIVACY.2 no-dist run fallback detects stderr secrets after its raw cap", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-fallback-stderr-secret-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const fallbackBin = copyNoDistBin(tmp);
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      fallbackBin,
+      "run",
+      "--id",
+      "CMD-FALLBACK-LATE-STDERR-SECRET",
+      "--command-transcripts",
+      "commands",
+      "--",
+      process.execPath,
+      "-e",
+      "process.stderr.write('x'.repeat(7000) + ' ' + ['sk', '-proj-', 'abcdefghijklmnopqrstuvwxyz123456'].join(''))"
+    ],
+    { cwd: tmp, encoding: "utf8" }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const transcriptPath = path.join(tmp, "commands", "CMD-FALLBACK-LATE-STDERR-SECRET.json");
+  const persisted = fs.readFileSync(transcriptPath, "utf8");
+  const transcript = JSON.parse(persisted).commands[0];
+  const secret = openAiProjectKeyFixture();
+  const output = `${"x".repeat(7000)} ${secret}`;
+  assert.equal(transcript.truncated, true);
+  assert.equal(transcript.secret_blocked, true);
+  assert.doesNotMatch(transcript.stderr_excerpt ?? "", /sk-proj-/);
+  assert.doesNotMatch(persisted, new RegExp(secret));
+  assert.equal(
+    transcript.stderr_hash,
+    crypto.createHash("sha256").update(output).digest("hex"),
+    "the no-dist wiring hashes complete stderr beyond its retained excerpt"
   );
 });
 

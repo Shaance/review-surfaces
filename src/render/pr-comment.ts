@@ -1,5 +1,5 @@
 import { SPEC_NONE_NOTE } from "../evaluation/status";
-import { redactSecrets } from "../privacy/secrets";
+import { inspectAndRedactSecrets, redactSecrets } from "../privacy/secrets";
 import { changeMapMermaidEmbed, changeMapTitle, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
 import { firstTourLegSnippet } from "./tour-snippet";
 import { renderCompactConversationReviewMarkdown } from "../human/render";
@@ -263,9 +263,10 @@ export function renderHumanPrComment(model: HumanReviewModel, options: RenderHum
     `Human review JSON: \`${field(humanReviewJsonPath)}\`.`,
     `Lower-level PR facts: \`${field(surfacePath)}\`.`
   ];
+  const rendered = inspectAndRedactSecrets(clampTotal(`${sections.join("\n")}\n`, humanReviewPath));
   return {
-    markdown: clampTotal(`${sections.join("\n")}\n`, humanReviewPath),
-    blocked: mapEmbed.blocked || depTree.blocked || tourLeg.blocked
+    markdown: rendered.text,
+    blocked: mapEmbed.blocked || depTree.blocked || tourLeg.blocked || rendered.blocked
   };
 }
 

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
 import { resolveGitRefSha } from "../collector/git";
+import type { CommandTranscript } from "../contracts/command-transcript";
 import { ensureDir, relativePath, writeJson } from "../core/files";
 import { stripUndefined } from "../core/guards";
 import {
@@ -18,21 +19,14 @@ import {
   DEFAULT_COMMAND_TRANSCRIPT_DIR
 } from "./transcripts";
 
-export interface RecordedCommandTranscript {
-  id: string;
-  command: string;
-  status: "passed" | "failed";
-  exit_code?: number;
-  head_sha?: string;
+export interface RecordedCommandTranscript extends Omit<
+  CommandTranscript,
+  "source_path" | "status" | "duration_ms" | "started_at" | "completed_at"
+> {
+  status: Exclude<CommandTranscript["status"], "unknown">;
   duration_ms: number;
   started_at: string;
   completed_at: string;
-  stdout_excerpt?: string;
-  stderr_excerpt?: string;
-  stdout_hash?: string;
-  stderr_hash?: string;
-  truncated: boolean;
-  secret_blocked?: boolean;
 }
 
 export interface RecordCommandOptions {

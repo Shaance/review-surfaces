@@ -8,7 +8,7 @@
 // only posting gate it carries is a hard secret-block check: if redaction blocks
 // a high-confidence secret, the result is marked blocked and the caller must not
 // post it.
-import { redactSecrets } from "../privacy/secrets";
+import { inspectAndRedactSecrets } from "../privacy/secrets";
 import { compareStrings } from "../core/compare";
 import { StructuredDiff } from "../pr/contract";
 import { renderHunkExcerpt } from "../human/hunk-excerpt";
@@ -174,7 +174,7 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   // Final whole-body redaction pass: field-level redaction already ran on prose
   // fields, but this catches anything not field-redacted (e.g. diff excerpts) and
   // contributes to the block gate alongside the field-level signal.
-  const redaction = redactSecrets(body);
+  const redaction = inspectAndRedactSecrets(body);
   return { markdown: redaction.text, blocked: state.blocked || redaction.blocked };
 }
 
@@ -395,7 +395,7 @@ function sinceLastReviewIsAvailable(since: SinceLastReview | undefined): since i
 // and leave it unmatched. A blocked secret is recorded on `state` because the
 // replacement hides it from the final whole-body pass.
 function field(value: string, state: RedactionState, max = MAX_FIELD_CHARS): string {
-  const redaction = redactSecrets(value);
+  const redaction = inspectAndRedactSecrets(value);
   if (redaction.blocked) {
     state.blocked = true;
   }

@@ -48,6 +48,62 @@ test("review-surfaces.CONVERSATION_REVIEW.2 a missing conversation is explicitly
   assert.deepEqual(result.insights, []);
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.3 a second-pass outage preserves analyzed intent and stays retryable", async () => {
+  const stages: string[] = [];
+  const provider: ReasoningProvider = {
+    name: "ai-sdk",
+    async generateStructured(stage): Promise<StructuredResult> {
+      stages.push(stage);
+      return stage === "conversation_analysis"
+        ? { ok: true, data: analysisPayload() }
+        : { ok: false, reason: "temporary_reconciliation_outage" };
+    }
+  };
+
+  const result = await buildConversationReview({
+    provider,
+    providerName: "ai-sdk",
+    events: EVENTS,
+    diff: retryDeletionDiff()
+  });
+
+  assert.deepEqual(stages, ["conversation_analysis", "conversation_review_insights"]);
+  assert.equal(result.analysis.status, "analyzed");
+  assert.match(result.analysis.summary, /final intent is to simplify without removing retry behavior/i);
+  assert.ok(result.analysis.quality_flags.includes("conversation_review_unavailable"));
+  assert.deepEqual(result.insights, []);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.3 disabled substitution reaches both stages without disabling privacy options", async () => {
+  const calls: Array<{ stage: string; redactSecrets: boolean | undefined; remotePrivacyBlocked: boolean | undefined }> = [];
+  const provider: ReasoningProvider = {
+    name: "ai-sdk",
+    async generateStructured(stage, _prompt, _schema, options): Promise<StructuredResult> {
+      calls.push({
+        stage,
+        redactSecrets: options?.redactSecrets,
+        remotePrivacyBlocked: options?.remotePrivacyBlocked
+      });
+      return stage === "conversation_analysis"
+        ? { ok: true, data: analysisPayload() }
+        : { ok: true, data: { insights: [] } };
+    }
+  };
+
+  await buildConversationReview({
+    provider,
+    providerName: "ai-sdk",
+    events: EVENTS,
+    diff: retryDeletionDiff(),
+    redactSecrets: false
+  });
+
+  assert.deepEqual(calls, [
+    { stage: "conversation_analysis", redactSecrets: false, remotePrivacyBlocked: false },
+    { stage: "conversation_review_insights", redactSecrets: false, remotePrivacyBlocked: false }
+  ]);
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.3 final conversation intent plus an exact delete-line anchor yields a validated contradiction", async () => {
   const staged = stageProvider([
     candidate({
@@ -65,6 +121,10 @@ test("review-surfaces.CONVERSATION_REVIEW.3 final conversation intent plus an ex
   assert.deepEqual(staged.stages, ["conversation_analysis", "conversation_review_insights"]);
   const reconciliationPrompt = staged.prompts.get("conversation_review_insights") ?? "";
   assert.match(reconciliationPrompt, /later user message explicitly preserves retries/i);
+  assert.match(reconciliationPrompt, /Group one root cause across implementation, tests, docs, and specs into ONE insight/);
+  assert.match(reconciliationPrompt, /assistant proposal rejected by a later user message as rejected, never as active intent/);
+  assert.match(reconciliationPrompt, /passing broad command proves only that the captured suite passed/);
+  assert.match(reconciliationPrompt, /does not prove behavior whose assertion was removed/);
   assert.match(reconciliationPrompt, /BEGIN UNTRUSTED VALIDATED CONVERSATION ANALYSIS JSON/);
   assert.match(reconciliationPrompt, /END UNTRUSTED VALIDATED CONVERSATION ANALYSIS JSON/);
   assert.equal(result.insights.length, 1);

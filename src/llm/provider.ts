@@ -1,4 +1,10 @@
 import path from "node:path";
+import type {
+  GenerateStructuredOptions,
+  ProviderName,
+  ReasoningProvider,
+  StructuredResult
+} from "../contracts/provider";
 import { fileExists, readText, writeJson, writeText } from "../core/files";
 import { errorMessage, isRecord, uniqueTruthy } from "../core/guards";
 import { parseYaml } from "../core/simple-yaml";
@@ -7,38 +13,12 @@ import { inspectAndRedactSecrets, redactSecrets } from "../privacy/secrets";
 import { ReviewPacket } from "../render/packet";
 import { RiskItem } from "../risks/risks";
 
-export type ProviderName = "mock" | "ai-sdk" | "agent-file";
-
-/**
- * Structured reasoning result. A non-ok result means "no LLM contribution":
- * Phase 3-2 reasoning stages treat it as a skip and keep the deterministic
- * result, so the offline pipeline stays byte-stable.
- */
-export type StructuredResult =
-  | { ok: true; data: unknown }
-  | { ok: false; reason: string };
-
-export interface GenerateStructuredOptions {
-  /** When false, skip deterministic prompt redaction before a real call. */
-  redactSecrets?: boolean;
-  /** Hard privacy block: never send the prompt to a remote provider. */
-  remotePrivacyBlocked?: boolean;
-}
-
-/**
- * Schema-bound reasoning provider. Implementations MUST return a non-ok result
- * (never throw) when they cannot contribute, so callers can fall back to the
- * deterministic packet. `schema` is a JSON Schema object the output is bound to.
- */
-export interface ReasoningProvider {
-  name: ProviderName;
-  generateStructured(
-    stage: string,
-    prompt: string,
-    schema: object,
-    opts?: GenerateStructuredOptions
-  ): Promise<StructuredResult>;
-}
+export type {
+  GenerateStructuredOptions,
+  ProviderName,
+  ReasoningProvider,
+  StructuredResult
+} from "../contracts/provider";
 
 export interface ProviderFactoryOptions {
   model?: string;
