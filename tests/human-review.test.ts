@@ -544,6 +544,69 @@ test("review-surfaces.REVIEWER_VALUE.3 enum additions clarify while enum removal
   assert.equal(build([], ["approve"]).blockers.some((blocker) => blocker.id === "BLOCK-SCHEMA-001"), true);
 });
 
+test("review-surfaces.REVIEWER_VALUE.3 blocker comments are reserved before demoted semantic drafts", () => {
+  const schemaChanges = Array.from({ length: 10 }, (_, index) => ({
+    path: `schemas/contract-${index}.schema.json`,
+    properties_added: [],
+    properties_removed: [],
+    required_added: [`field_${index}`],
+    required_removed: [],
+    type_changes: [],
+    enum_changes: []
+  }));
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    semanticFacts: { schema_changes: schemaChanges, api_changes: [], test_weakening: [] },
+    config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_suggested_comments: 2 }
+  });
+
+  assert.equal(model.blockers.filter((blocker) => blocker.id.startsWith("BLOCK-SCHEMA-")).length, 2);
+  assert.equal(model.suggested_comments.length, 2);
+  assert.equal(model.suggested_comments.every((comment) => comment.severity === "blocking"), true);
+});
+
+test("review-surfaces.REVIEWER_VALUE.3 coverage blockers survive the global blocker cap", () => {
+  const packet = packetFixture();
+  packet.risks.items = Array.from({ length: 3 }, (_, index) => ({
+    id: `RISK-CRITICAL-${index}`,
+    category: "correctness" as const,
+    severity: "critical" as const,
+    summary: `Critical risk ${index}`,
+    evidence: [fileEvidence(`src/critical-${index}.ts`, "Critical risk evidence.")],
+    suggested_checks: ["Resolve the critical risk."],
+    manual_review: true
+  }));
+  const surface = prSurfaceFixture();
+  surface.status = "blocked";
+  surface.blocked_reason = "privacy_block";
+  surface.risks.candidates = [
+    prRiskFixture("coverage_regression"),
+    { ...prRiskFixture("coverage_regression"), id: "PR-RISK-COVERAGE-SECOND" },
+    prRiskFixture("ci_secret_boundary_change")
+  ];
+  const breakingSchemas = ["one", "two"].map((name) => ({
+    path: `schemas/${name}.schema.json`,
+    properties_added: [],
+    properties_removed: [],
+    required_added: ["required_field"],
+    required_removed: [],
+    type_changes: [],
+    enum_changes: []
+  }));
+
+  const model = buildHumanReview({
+    packet,
+    prSurface: surface,
+    semanticFacts: { schema_changes: breakingSchemas, api_changes: [], test_weakening: [] }
+  });
+
+  assert.equal(model.blockers.length, 8);
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-PR-RISK-COVERAGE"), true);
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-PR-RISK-COVERAGE-SECOND"), false);
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-SCHEMA-001"), true);
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-SCHEMA-002"), true);
+});
+
 test("human review model is schema-valid and starts with deterministic readiness signals", () => {
   const model = buildHumanReview({
     packet: packetFixture(),
@@ -4538,7 +4601,7 @@ test("review-surfaces.METHODOLOGY.7 the audit prefers provider-derived considere
   assert.ok(model.methodology_audit.considered.includes("LLM-proposed: the grounded alternative"), "the provider entry survives the cap");
 });
 
-test("review-surfaces.METHODOLOGY.8 a PROMOTED (non-advisory) workflow finding becomes a BLOCKING question, not advisory", () => {
+test("review-surfaces.METHODOLOGY.8 a corroborated workflow finding stays clarifying and cannot create a blocker", () => {
   const packet = packetFixture();
   packet.methodology.workflow_findings = [
     {
@@ -4555,8 +4618,10 @@ test("review-surfaces.METHODOLOGY.8 a PROMOTED (non-advisory) workflow finding b
   const model = buildHumanReview({ packet });
   const question = model.questions.find((q) => /api no compat/.test(q.question));
   assert.ok(question, "the corroborated finding surfaces as a question");
-  assert.equal(question.severity, "blocking", "promotion moves reviewer gating (blocking, not advisory)");
+  assert.equal(question.severity, "clarifying");
   assert.match(question.reason, /corroborated/, "the reason reflects deterministic corroboration, not 'advisory'");
+  assert.doesNotMatch(`${question.question} ${question.reason}`, /before approval|resolve it/i);
+  assert.equal(model.blockers.length, 0);
 });
 
 test("review-surfaces.METHODOLOGY.8 a PROMOTED workflow finding survives the question cap over earlier advisory ones (Codex P2)", () => {
@@ -4571,15 +4636,15 @@ test("review-surfaces.METHODOLOGY.8 a PROMOTED workflow finding survives the que
   ];
 
   const model = buildHumanReview({ packet });
-  const blocking = model.questions.find((q) => /corroborated breaking change/.test(q.question));
-  assert.ok(blocking, "the promoted finding reaches the surface despite being emitted last");
-  assert.equal(blocking.severity, "blocking");
+  const corroborated = model.questions.find((q) => /corroborated breaking change/.test(q.question));
+  assert.ok(corroborated, "the promoted finding reaches the surface despite being emitted last");
+  assert.equal(corroborated.severity, "clarifying");
 });
 
 test("review-surfaces.METHODOLOGY.8 a corroborated workflow question survives the GLOBAL cap behind other questions (#109)", () => {
   const packet = packetFixture();
   const anchor = (path: string) => [{ kind: "file" as const, path, confidence: "medium" as const, validation_status: "valid" as const }];
-  // A single corroborated (blocking) D6 finding — appended AFTER the blocker/risk/gap
+  // A single corroborated D6 finding — appended AFTER the blocker/risk/gap
   // questions packetFixture produces. With a cap of 1, the within-workflow ordering is
   // not enough: the GLOBAL cap must still preserve this deterministic-backed question.
   packet.methodology.workflow_findings = [
@@ -4596,16 +4661,15 @@ test("review-surfaces.METHODOLOGY.8 a corroborated workflow question survives th
   const capped2 = buildHumanReview({ packet, config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_questions: 2 } });
   assert.equal(capped2.questions.length, 2, "the cap is honored");
   assert.ok(
-    capped2.questions.some((q) => /globally-capped corroborated change/.test(q.question) && q.severity === "blocking"),
+    capped2.questions.some((q) => /globally-capped corroborated change/.test(q.question) && q.severity === "clarifying"),
     "the corroborated D6 question is preserved through the global cap"
   );
   assert.ok(!capped2.questions.some((q) => /needs tests/.test(q.reason)), "the non-preserved filler was evicted, not the corroborated D6 question");
 
-  // Cap=1: when only one preserved question fits, the BLOCKING corroborated workflow
-  // question wins the slot over the lower-severity intent-mismatch question (Codex #110).
+  // Cap=1: stable preserved ordering keeps the corroborated workflow question.
   const capped1 = buildHumanReview({ packet, config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_questions: 1 } });
   assert.equal(capped1.questions.length, 1);
-  assert.match(capped1.questions[0].question, /globally-capped corroborated change/, "the blocking corroborated question is prioritized over the intent question");
+  assert.match(capped1.questions[0].question, /globally-capped corroborated change/, "the corroborated question is prioritized over the intent question");
 });
 
 function coldStartDiff() {

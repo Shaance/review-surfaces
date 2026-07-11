@@ -54,6 +54,8 @@ test("review-surfaces.LOCAL_LOOP.2 local-gate.sh runs lint, typecheck, full test
   assert.match(localGate, /pnpm run lint/);
   assert.match(localGate, /pnpm run test/);
   assert.match(localGate, /pnpm run determinism-check/);
+  assert.match(localGate, /pnpm store path/, "pack smoke discovers the store primed by the checkout install");
+  assert.match(localGate, /--store-dir "\$PNPM_STORE_ROOT"/, "offline install reuses the discovered store");
   // The strict empty-diff self-dogfood: the documented red-main footgun guard.
   assert.match(localGate, /--base HEAD/);
   assert.match(localGate, /--head HEAD/);

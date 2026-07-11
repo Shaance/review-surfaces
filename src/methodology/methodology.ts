@@ -40,8 +40,8 @@ export interface MethodologyModel {
 }
 
 interface TranscriptCommandEvidence {
-  passed: Set<string>;
-  failed: Set<string>;
+  passed: Map<string, string[]>;
+  failed: Map<string, string[]>;
 }
 
 export async function buildMethodology(
@@ -106,8 +106,16 @@ export async function buildMethodology(
 
   const transcriptCommandEvidence = buildTranscriptCommandEvidence(collection);
   const validationClaims = pickValidationClaims(events);
-  const verifiedClaims = validationClaims.filter((claim) => claimHasCommandEvidence(claim, transcriptCommandEvidence));
-  const claimsWithoutEvidence = validationClaims.filter((claim) => !claimHasCommandEvidence(claim, transcriptCommandEvidence));
+  const verifiedClaims: string[] = [];
+  const claimsWithoutEvidence: string[] = [];
+  for (const claim of validationClaims) {
+    const transcriptIds = claimCommandEvidenceIds(claim.evidenceText, transcriptCommandEvidence);
+    if (transcriptIds) {
+      verifiedClaims.push(withCommandEvidenceReference(claim.persistedText, transcriptIds));
+    } else {
+      claimsWithoutEvidence.push(claim.persistedText);
+    }
+  }
   const qualityFlags = [
     ...(claimsWithoutEvidence.length > 0 ? ["test_claims_without_command_evidence"] : []),
     ...(verifiedClaims.length > 0 ? ["test_claims_verified_by_command_transcripts"] : []),
@@ -269,14 +277,22 @@ function pick(events: ConversationEvent[], keywords: string[]): string[] {
   return result;
 }
 
-function pickValidationClaims(events: ConversationEvent[]): string[] {
-  const result: string[] = [];
+interface ValidationClaimCandidate {
+  evidenceText: string;
+  persistedText: string;
+}
+
+function pickValidationClaims(events: ConversationEvent[]): ValidationClaimCandidate[] {
+  const result: ValidationClaimCandidate[] = [];
   for (const event of events) {
     if (!isValidationClaimEvent(event)) {
       continue;
     }
     if (isValidationSuccessClaim(event.summary) || isValidationFailureClaim(event.summary)) {
-      result.push(boundedEventEntry(event, event.summary, CLAIM_TEXT_LIMIT));
+      result.push({
+        evidenceText: event.summary,
+        persistedText: boundedEventEntry(event, event.summary, CLAIM_TEXT_LIMIT)
+      });
     }
   }
   return result;
@@ -330,32 +346,61 @@ function isValidationFailureClaim(summary: string): boolean {
 
 function buildTranscriptCommandEvidence(collection: CollectionResult): TranscriptCommandEvidence {
   const evidence: TranscriptCommandEvidence = {
-    passed: new Set(),
-    failed: new Set()
+    passed: new Map(),
+    failed: new Map()
   };
   for (const transcript of collection.commandTranscripts ?? []) {
     const command = normalizeCommand(transcript.command);
     if (transcript.status === "passed" && transcript.exit_code === 0) {
-      evidence.passed.add(command);
+      appendCommandTranscriptId(evidence.passed, command, transcript.id);
     } else if (transcript.status === "failed" || (typeof transcript.exit_code === "number" && transcript.exit_code !== 0)) {
-      evidence.failed.add(command);
+      appendCommandTranscriptId(evidence.failed, command, transcript.id);
     }
   }
   return evidence;
 }
 
-function claimHasCommandEvidence(claim: string, transcriptCommands: TranscriptCommandEvidence): boolean {
+function appendCommandTranscriptId(index: Map<string, string[]>, command: string, transcriptId: string): void {
+  const existing = index.get(command);
+  if (existing) {
+    existing.push(transcriptId);
+  } else {
+    index.set(command, [transcriptId]);
+  }
+}
+
+function claimCommandEvidenceIds(claim: string, transcriptCommands: TranscriptCommandEvidence): string[] | undefined {
   const claimedCommands = extractClaimedCommands(claim);
   if (claimedCommands.length === 0) {
-    return false;
+    return undefined;
   }
+  let evidenceIndex: Map<string, string[]> | undefined;
   if (isValidationSuccessClaim(claim)) {
-    return claimedCommands.every((command) => transcriptCommands.passed.has(command));
+    evidenceIndex = transcriptCommands.passed;
+  } else if (isValidationFailureClaim(claim)) {
+    evidenceIndex = transcriptCommands.failed;
   }
-  if (isValidationFailureClaim(claim)) {
-    return claimedCommands.every((command) => transcriptCommands.failed.has(command));
+  if (!evidenceIndex || !claimedCommands.every((command) => evidenceIndex.has(command))) {
+    return undefined;
   }
-  return false;
+  const transcriptIds = new Set<string>();
+  for (const command of claimedCommands) {
+    for (const transcriptId of evidenceIndex.get(command) ?? []) {
+      transcriptIds.add(transcriptId);
+      if (transcriptIds.size === 5) {
+        return [...transcriptIds];
+      }
+    }
+  }
+  return [...transcriptIds];
+}
+
+function withCommandEvidenceReference(claim: string, transcriptIds: string[]): string {
+  const references = transcriptIds.slice(0, 5).map((id) => id.slice(0, EVENT_ID_LIMIT)).join(", ");
+  const suffix = ` [command transcript: ${references}]`;
+  const available = Math.max(0, CLAIM_TEXT_LIMIT - suffix.length - 1);
+  const boundedClaim = claim.length <= available ? claim : `${claim.slice(0, available).trimEnd()}…`;
+  return `${boundedClaim}${suffix}`;
 }
 
 function normalizeCommand(command: string): string {

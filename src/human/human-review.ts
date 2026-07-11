@@ -266,7 +266,7 @@ const INTENT_MISMATCH_QUESTION_REASON = "The intent-mismatch surface found chang
 // A corroborated (advisory===false) D6 workflow finding: a deterministic check backs
 // it, so its question must survive the global cap even when appended after the
 // blocker/risk/gap questions (Codex P2, #109).
-const CORROBORATED_WORKFLOW_QUESTION_REASON = "The methodology audit's deterministic cross-reference check corroborated this; resolve it before approval.";
+const CORROBORATED_WORKFLOW_QUESTION_REASON = "The methodology audit's deterministic cross-reference check corroborated this; consider whether it was intentional during review.";
 const FEEDBACK_ACTION_DOWNGRADE_TO_LOW = "downgrade_to_low";
 const FEEDBACK_ACTION_RETAIN_LOW_PRIORITY = "retain_low_priority";
 const FEEDBACK_ACTION_PRIORITIZE_REVIEW_FOCUS = "prioritize_review_focus";
@@ -2086,7 +2086,7 @@ function buildBlockers(
   // secret, semantic-breaking, or failed-validation evidence below.
   for (const risk of (prSurface?.risks.candidates ?? [])
     .filter((candidate) => candidate.rule === "coverage_regression")
-    .slice(0, 2)) {
+    .slice(0, 1)) {
     const disposition = prRiskReviewDisposition(input, risk);
     if (disposition?.severity !== "blocking") {
       continue;
@@ -2107,19 +2107,6 @@ function buildBlockers(
       summary: schemaChangeReason(change),
       evidence: [fileEvidence(change.path, "Deterministic breaking schema change.")],
       required_action: "Version the persisted contract or prove existing artifacts are migrated before merge."
-    });
-  }
-
-  for (const [index, finding] of (input.packet.methodology.workflow_findings ?? [])
-    .filter((candidate) => candidate.advisory === false && workflowFindingHasValidatedAnchor(candidate))
-    .slice(0, 3)
-    .entries()) {
-    blockers.push({
-      id: `BLOCK-METHODOLOGY-${String(index + 1).padStart(3, "0")}`,
-      severity: isElevatedSeverity(finding.severity) ? finding.severity as "critical" | "high" : "high",
-      summary: CORROBORATED_WORKFLOW_QUESTION_REASON,
-      evidence: finding.evidence,
-      required_action: `Resolve or explicitly accept the corroborated workflow finding: ${finding.summary}`
     });
   }
 
@@ -2155,8 +2142,8 @@ function blockerPriority(blocker: ReviewBlocker): number {
   if (blocker.id === "BLOCK-PRIVACY-001" || blocker.id === "BLOCK-TESTS-001") return 0;
   if (blocker.severity === "critical") return 1;
   if (blocker.id === "BLOCK-CI-SECRET-001" || blocker.id.startsWith("BLOCK-FEEDBACK-")) return 2;
-  if (blocker.id.startsWith("BLOCK-SCHEMA-")) return 3;
-  if (blocker.id.startsWith("BLOCK-METHODOLOGY-")) return 4;
+  if (blocker.id.startsWith("BLOCK-PR-RISK-")) return 3;
+  if (blocker.id.startsWith("BLOCK-SCHEMA-")) return 4;
   return 5;
 }
 
@@ -4308,15 +4295,11 @@ function buildQuestions(
   // review-surfaces.METHODOLOGY.7/.8 (D5/D6): surface the methodology audit's item-4
   // findings as reviewer questions — only the ones whose anchor was VALIDATED
   // against a real event id / changed path (so the demoted / unanchored ones never
-  // add noise). A finding stays a CLARIFYING/advisory question UNLESS it was PROMOTED
-  // (advisory === false) — i.e. an independent deterministic cross-reference check
-  // (Phase 3a: a secret finding, a breaking API/schema change, a test-weakening, a
-  // moved lockfile) corroborated it — in which case it becomes a BLOCKING question so
-  // the promotion bit actually moves reviewer gating (Codex P2). Under the mock
-  // default workflow_findings is empty, so this is a no-op on the offline path.
-  // Order PROMOTED (non-advisory, corroborated) findings first so the cap never drops
-  // a blocking D6 signal in favor of earlier advisory ones (Codex P2). Stable within
-  // each group (producer order preserved).
+  // add noise). A promoted finding (advisory === false) names its independent
+  // deterministic corroboration, but stays clarifying: conversation-derived output
+  // can focus review and must never create a blocker or alter merge readiness.
+  // Order corroborated findings first so the cap preserves the stronger reviewer
+  // question. Stable within each group (producer order preserved).
   const orderedWorkflowFindings = (input.packet.methodology.workflow_findings ?? [])
     .filter(workflowFindingHasValidatedAnchor)
     .map((finding, index) => ({ finding, index }))
@@ -4326,13 +4309,13 @@ function buildQuestions(
     const corroborated = finding.advisory === false;
     questions.push({
       id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
-      severity: corroborated ? "blocking" : "clarifying",
+      severity: "clarifying",
       question: corroborated
-        ? `A deterministic check corroborated this (${finding.signal_kind.replace(/_/g, " ")}): ${forQuestionTail(finding.summary)}. Confirm it was intended before approval.`
+        ? `A deterministic check corroborated this (${finding.signal_kind.replace(/_/g, " ")}): ${forQuestionTail(finding.summary)}. Consider whether it was intentional during review.`
         : `Did the agent's workflow account for this (${finding.signal_kind.replace(/_/g, " ")}): ${forQuestionTail(finding.summary)}?`,
       reason: corroborated
         ? CORROBORATED_WORKFLOW_QUESTION_REASON
-        : "The methodology audit of the agent conversation flagged this as advisory; confirm it before approval.",
+        : "The methodology audit of the agent conversation flagged this as advisory context for the reviewer.",
       evidence: finding.evidence,
       maps_to_risks: [],
       maps_to_requirements: []
@@ -4381,8 +4364,8 @@ function buildMethodologyAudit(input: BuildHumanReviewInput): MethodologyAudit {
     research: providerFirst(methodology.research ?? []),
     workflow_findings: (methodology.workflow_findings ?? [])
       .filter(workflowFindingHasValidatedAnchor)
-      // Promoted (corroborated, advisory===false) findings first so the cap never
-      // drops a blocking D6 signal for earlier advisory ones (Codex P2).
+      // Corroborated (advisory===false) findings first so the cap never drops the
+      // stronger D6 signal for earlier advisory ones (Codex P2).
       .map((finding, index) => ({ finding, index }))
       .sort((a, b) => Number(a.finding.advisory !== false) - Number(b.finding.advisory !== false) || a.index - b.index)
       .map((entry) => entry.finding)
@@ -4409,9 +4392,8 @@ function capQuestionsPreservingIntent(questions: ReviewerQuestion[], limit: numb
   const selected = questions.slice(0, limit);
   // Questions the head-cap must not silently drop just because they were appended late:
   // the FIRST intent-mismatch question (matching the prior single-preserve behavior),
-  // plus EVERY corroborated (blocking) D6 workflow question. Process them HIGHEST
-  // severity first so a blocking corroborated question wins a scarce slot over a
-  // lower-severity intent question; swap each in over the LAST selected question of
+  // plus EVERY corroborated D6 workflow question. Process them HIGHEST severity
+  // first and swap each in over the LAST selected question of
   // equal-or-lower severity that is not itself preserved (Codex P2, #109).
   const firstIntent = questions.find(isIntentMismatchQuestion);
   const preserved = questions.filter((question) => question.reason === CORROBORATED_WORKFLOW_QUESTION_REASON);
@@ -4425,9 +4407,8 @@ function capQuestionsPreservingIntent(questions: ReviewerQuestion[], limit: numb
     }
     const priorityRank = questionSeverityRank(priority.severity);
     // Evict the last selected question of equal-or-lower severity that is either not
-    // preserved, or is a STRICTLY lower-severity preserved one — so a blocking
-    // corroborated question can take a scarce slot from a clarifying intent question,
-    // but two equal-severity preserved questions never thrash (Codex #110).
+    // preserved, or is a STRICTLY lower-severity preserved one. Two equal-severity
+    // preserved questions never thrash (Codex #110).
     const replacementIndex = findLastQuestionIndex(
       selected,
       (question) =>
@@ -4638,15 +4619,16 @@ function buildSuggestedComments(
     });
   }
 
-  for (const candidate of candidates.sort(compareSuggestedCommentCandidates)) {
+  const coherentCandidates = candidates.map((candidate) =>
+    candidate.sourceRank === 0 || candidate.draft.severity !== "blocking"
+      ? candidate
+      : { ...candidate, draft: { ...candidate.draft, severity: "clarifying" as const } }
+  );
+  for (const candidate of coherentCandidates.sort(compareSuggestedCommentCandidates)) {
     // Blocking drafts are projections of actual blockers, never an independent
-    // severity channel that can contradict the verdict/header count.
-    appendSuggestedComment(
-      comments,
-      candidate.sourceRank === 0 || candidate.draft.severity !== "blocking"
-        ? candidate.draft
-        : { ...candidate.draft, severity: "clarifying" }
-    );
+    // severity channel that can contradict the verdict/header count. Normalize
+    // before sorting so demoted drafts cannot consume the blocker comment budget.
+    appendSuggestedComment(comments, candidate.draft);
   }
 
   return comments.slice(0, Math.min(MAX_COMMENTS, config.max_suggested_comments));

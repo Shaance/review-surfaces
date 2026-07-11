@@ -94,6 +94,39 @@ test("review-surfaces.METHODOLOGY.2 separates transcript-backed claims from unve
   assert.ok(methodology.evidence.some((evidence) => evidence.kind === "command" && evidence.event_id === "CMD-PNPM-TEST"));
 });
 
+test("review-surfaces.REVIEWER_VALUE.1 evidence matching uses the full claim before persistence bounding", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  const methodology = await buildMethodology(
+    tmp,
+    collectionFixture(tmp, {
+      conversationEvents: [{
+        id: "late-command",
+        actor: "assistant",
+        kind: "message",
+        summary: `Validation passed after detailed analysis. ${"context ".repeat(300)} pnpm run test passed.`,
+        raw_index: 0
+      }],
+      commandTranscripts: [{
+        id: "CMD-PNPM-TEST",
+        command: "pnpm run test",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "abc123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-PNPM-TEST.json"
+      }]
+    }),
+    undefined,
+    []
+  );
+
+  assert.equal(methodology.claims_without_evidence.length, 0);
+  assert.equal(methodology.verified_claims.length, 1);
+  assert.ok(methodology.verified_claims[0].startsWith("late-command:"));
+  assert.match(methodology.verified_claims[0], /command transcript: CMD-PNPM-TEST/);
+  assert.ok(methodology.verified_claims[0].length <= 1200);
+});
+
 test("review-surfaces.METHODOLOGY.2 does not verify claims with failed command transcripts", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
   const logPath = path.join(tmp, "conversation.md");
