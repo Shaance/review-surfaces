@@ -8,6 +8,7 @@ import { renderComment, type DiagramEmbed } from "../src/render/comment";
 import type { ReviewPacket } from "../src/render/packet";
 import { readQueueIds, renderRunSummaryFromPacketFile } from "../src/render/summary-json";
 import { minimalReviewPacket } from "./helpers/review-packet";
+import { isLocalRuntimeArtifactPath } from "./helpers/cli-repo";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
 
@@ -22,6 +23,7 @@ function setupFixture(prefix: string): string {
       const relative = path.relative(process.cwd(), source);
       return relative !== ".git"
         && !relative.startsWith(`.git${path.sep}`)
+        && !isLocalRuntimeArtifactPath(relative)
         && relative !== ".review-surfaces"
         && !relative.startsWith(`.review-surfaces${path.sep}`)
         && relative !== "dist"

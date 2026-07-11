@@ -12,6 +12,7 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+PNPM_STORE_ROOT="$(dirname "$(pnpm store path)")"
 
 # lint is the repo's typecheck alias (package.json), so one run covers both
 # gate steps; test cleans, builds, and runs the full suite.
@@ -37,7 +38,7 @@ TARBALL="$(ls "$PACK_TMP"/review-surfaces-*.tgz)"
 printf '{"name":"pack-smoke","private":true}\n' > "$PACK_TMP/package.json"
 # --offline: the smoke must prove the no-registry path; the repo's own install
 # primes the pnpm store with every runtime dependency.
-(cd "$PACK_TMP" && pnpm add "./$(basename "$TARBALL")" --offline --silent)
+(cd "$PACK_TMP" && pnpm add "./$(basename "$TARBALL")" --offline --silent --store-dir "$PNPM_STORE_ROOT")
 SMOKE_REPO="$PACK_TMP/smoke-repo"
 mkdir -p "$SMOKE_REPO"
 (

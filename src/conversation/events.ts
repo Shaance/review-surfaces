@@ -26,6 +26,30 @@ export interface ConversationEvent {
   raw_index: number;
 }
 
+const TOOL_CALL_EVENT_KINDS = new Set(["tool_call", "custom_tool_call"]);
+const TOOL_OUTPUT_EVENT_KINDS = new Set(["tool_result", "custom_tool_call_output"]);
+const NON_HUMAN_EVENT_ACTORS = new Set(["system", "developer", "tool"]);
+
+function normalizedEventField(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+export function isConversationToolCall(event: ConversationEvent): boolean {
+  return TOOL_CALL_EVENT_KINDS.has(normalizedEventField(event.kind));
+}
+
+export function isConversationToolOutput(event: ConversationEvent): boolean {
+  return TOOL_OUTPUT_EVENT_KINDS.has(normalizedEventField(event.kind));
+}
+
+export function isConversationToolEvent(event: ConversationEvent): boolean {
+  return isConversationToolCall(event) || isConversationToolOutput(event);
+}
+
+export function hasNonHumanConversationActor(event: ConversationEvent): boolean {
+  return NON_HUMAN_EVENT_ACTORS.has(normalizedEventField(event.actor));
+}
+
 // In-memory bound for a raw tool_use input / tool_result output / Cursor
 // code-edit body. These are the high-exposure, potentially huge fields (D8); we
 // redact-before-bound them so the in-memory event stream stays manageable and a

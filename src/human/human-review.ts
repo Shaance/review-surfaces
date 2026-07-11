@@ -266,7 +266,7 @@ const INTENT_MISMATCH_QUESTION_REASON = "The intent-mismatch surface found chang
 // A corroborated (advisory===false) D6 workflow finding: a deterministic check backs
 // it, so its question must survive the global cap even when appended after the
 // blocker/risk/gap questions (Codex P2, #109).
-const CORROBORATED_WORKFLOW_QUESTION_REASON = "The methodology audit's deterministic cross-reference check corroborated this; resolve it before approval.";
+const CORROBORATED_WORKFLOW_QUESTION_REASON = "The methodology audit's deterministic cross-reference check corroborated this; consider whether it was intentional during review.";
 const FEEDBACK_ACTION_DOWNGRADE_TO_LOW = "downgrade_to_low";
 const FEEDBACK_ACTION_RETAIN_LOW_PRIORITY = "retain_low_priority";
 const FEEDBACK_ACTION_PRIORITIZE_REVIEW_FOCUS = "prioritize_review_focus";
@@ -372,7 +372,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     });
   }
   const riskLensFindings = buildRiskLensFindings(input, config, semanticFacts);
-  const blockers = buildBlockers(input, feedbackEffects);
+  const blockers = buildBlockers(input, feedbackEffects, semanticFacts);
   const reviewQueue = buildReviewQueue(input, feedbackEffects, config, semanticFacts);
   const intentMismatch = buildIntentMismatch(input, specMode);
   const questions = buildQuestions(input, blockers, feedbackEffects, riskLensFindings, intentMismatch, config);
@@ -2041,7 +2041,11 @@ function buildVerdict(input: BuildHumanReviewInput, blockers: ReviewBlocker[], t
   };
 }
 
-function buildBlockers(input: BuildHumanReviewInput, feedbackEffects: FeedbackPolicyEffect[]): ReviewBlocker[] {
+function buildBlockers(
+  input: BuildHumanReviewInput,
+  feedbackEffects: FeedbackPolicyEffect[],
+  semanticFacts: SemanticChangeFacts
+): ReviewBlocker[] {
   const blockers: ReviewBlocker[] = [];
   const prSurface = input.prSurface;
 
@@ -2076,6 +2080,36 @@ function buildBlockers(input: BuildHumanReviewInput, feedbackEffects: FeedbackPo
     });
   }
 
+  // Coverage regression is the one non-critical path-risk rule whose
+  // deterministic result independently gates merge. Path-only privacy/schema
+  // sensitivity and skipped-test hints remain questions until corroborated by
+  // secret, semantic-breaking, or failed-validation evidence below.
+  for (const risk of (prSurface?.risks.candidates ?? [])
+    .filter((candidate) => candidate.rule === "coverage_regression")
+    .slice(0, 1)) {
+    const disposition = prRiskReviewDisposition(input, risk);
+    if (disposition?.severity !== "blocking") {
+      continue;
+    }
+    blockers.push({
+      id: `BLOCK-${risk.id}`,
+      severity: isElevatedSeverity(risk.severity) ? risk.severity as "critical" | "high" : "high",
+      summary: risk.summary,
+      evidence: evidenceOrMissing(risk.evidence, risk.summary),
+      required_action: disposition.body
+    });
+  }
+
+  for (const [index, change] of semanticFacts.schema_changes.filter(isBreakingSchemaChange).slice(0, 2).entries()) {
+    blockers.push({
+      id: `BLOCK-SCHEMA-${String(index + 1).padStart(3, "0")}`,
+      severity: "high",
+      summary: schemaChangeReason(change),
+      evidence: [fileEvidence(change.path, "Deterministic breaking schema change.")],
+      required_action: "Version the persisted contract or prove existing artifacts are migrated before merge."
+    });
+  }
+
   const secretBoundary = prSurface?.risks.candidates.find((risk) => risk.rule === "ci_secret_boundary_change");
   if (secretBoundary && !hasRecordedCiSecretBoundaryManualCheck(input)) {
     blockers.push({
@@ -2097,7 +2131,20 @@ function buildBlockers(input: BuildHumanReviewInput, feedbackEffects: FeedbackPo
     });
   }
 
-  return dedupeById(blockers).slice(0, MAX_BLOCKERS);
+  return dedupeById(blockers).sort(compareBlockers).slice(0, MAX_BLOCKERS);
+}
+
+function compareBlockers(left: ReviewBlocker, right: ReviewBlocker): number {
+  return blockerPriority(left) - blockerPriority(right) || compareStrings(left.id, right.id);
+}
+
+function blockerPriority(blocker: ReviewBlocker): number {
+  if (blocker.id === "BLOCK-PRIVACY-001" || blocker.id === "BLOCK-TESTS-001") return 0;
+  if (blocker.severity === "critical") return 1;
+  if (blocker.id === "BLOCK-CI-SECRET-001" || blocker.id.startsWith("BLOCK-FEEDBACK-")) return 2;
+  if (blocker.id.startsWith("BLOCK-PR-RISK-")) return 3;
+  if (blocker.id.startsWith("BLOCK-SCHEMA-")) return 4;
+  return 5;
 }
 
 function buildReviewQueue(
@@ -2503,7 +2550,7 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
     }));
   }
   for (const [index, change] of facts.schema_changes.entries()) {
-    const breaking = change.required_added.length > 0 || change.properties_removed.length > 0 || change.type_changes.length > 0;
+    const breaking = isBreakingSchemaChange(change);
     drafts.push(semanticDraft(diffIndex, {
       title: "Schema contract change",
       path: change.path,
@@ -2593,6 +2640,13 @@ function schemaChangeReason(change: SchemaContractChange): string {
     parts.push(`enum change(s): ${formatEnumChanges(change.enum_changes)}`);
   }
   return `\`${change.path}\` contract changed: ${parts.join("; ")}.`;
+}
+
+function isBreakingSchemaChange(change: SchemaContractChange): boolean {
+  return change.required_added.length > 0 ||
+    change.properties_removed.length > 0 ||
+    change.type_changes.length > 0 ||
+    change.enum_changes.some((enumChange) => enumChange.removed.length > 0);
 }
 
 function apiChangeReason(change: ApiSurfaceChange): string {
@@ -4113,7 +4167,7 @@ function buildQuestions(
 
   const schemaRisk = input.prSurface?.risks.candidates.find((risk) => risk.rule === "schema_contract_change");
   if (schemaRisk) {
-    questions.push(questionFromPrRisk(questions.length + 1, "blocking", schemaRisk, "Is the schema or persisted artifact contract change additive-only, and where is the compatibility fixture?"));
+    questions.push(questionFromPrRisk(questions.length + 1, "clarifying", schemaRisk, "Is the schema or persisted artifact contract change additive-only, and where is the compatibility fixture?"));
   }
 
   if (input.prSurface && !input.prSurface.coverage.base_available) {
@@ -4241,15 +4295,11 @@ function buildQuestions(
   // review-surfaces.METHODOLOGY.7/.8 (D5/D6): surface the methodology audit's item-4
   // findings as reviewer questions — only the ones whose anchor was VALIDATED
   // against a real event id / changed path (so the demoted / unanchored ones never
-  // add noise). A finding stays a CLARIFYING/advisory question UNLESS it was PROMOTED
-  // (advisory === false) — i.e. an independent deterministic cross-reference check
-  // (Phase 3a: a secret finding, a breaking API/schema change, a test-weakening, a
-  // moved lockfile) corroborated it — in which case it becomes a BLOCKING question so
-  // the promotion bit actually moves reviewer gating (Codex P2). Under the mock
-  // default workflow_findings is empty, so this is a no-op on the offline path.
-  // Order PROMOTED (non-advisory, corroborated) findings first so the cap never drops
-  // a blocking D6 signal in favor of earlier advisory ones (Codex P2). Stable within
-  // each group (producer order preserved).
+  // add noise). A promoted finding (advisory === false) names its independent
+  // deterministic corroboration, but stays clarifying: conversation-derived output
+  // can focus review and must never create a blocker or alter merge readiness.
+  // Order corroborated findings first so the cap preserves the stronger reviewer
+  // question. Stable within each group (producer order preserved).
   const orderedWorkflowFindings = (input.packet.methodology.workflow_findings ?? [])
     .filter(workflowFindingHasValidatedAnchor)
     .map((finding, index) => ({ finding, index }))
@@ -4259,20 +4309,26 @@ function buildQuestions(
     const corroborated = finding.advisory === false;
     questions.push({
       id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
-      severity: corroborated ? "blocking" : "clarifying",
+      severity: "clarifying",
       question: corroborated
-        ? `A deterministic check corroborated this (${finding.signal_kind.replace(/_/g, " ")}): ${forQuestionTail(finding.summary)}. Confirm it was intended before approval.`
+        ? `A deterministic check corroborated this (${finding.signal_kind.replace(/_/g, " ")}): ${forQuestionTail(finding.summary)}. Consider whether it was intentional during review.`
         : `Did the agent's workflow account for this (${finding.signal_kind.replace(/_/g, " ")}): ${forQuestionTail(finding.summary)}?`,
       reason: corroborated
         ? CORROBORATED_WORKFLOW_QUESTION_REASON
-        : "The methodology audit of the agent conversation flagged this as advisory; confirm it before approval.",
+        : "The methodology audit of the agent conversation flagged this as advisory context for the reviewer.",
       evidence: finding.evidence,
       maps_to_risks: [],
       maps_to_requirements: []
     });
   }
 
-  return capQuestionsPreservingIntent(dedupeQuestions(questions), Math.min(MAX_QUESTIONS, config.max_questions));
+  const blockerReasons = new Set(blockers.map((blocker) => blocker.summary));
+  const coherentQuestions = questions.map((question) =>
+    question.severity === "blocking" && !blockerReasons.has(question.reason)
+      ? { ...question, severity: "clarifying" as const }
+      : question
+  );
+  return capQuestionsPreservingIntent(dedupeQuestions(coherentQuestions), Math.min(MAX_QUESTIONS, config.max_questions));
 }
 
 // A methodology workflow finding is worth a reviewer question only when the leaf
@@ -4308,8 +4364,8 @@ function buildMethodologyAudit(input: BuildHumanReviewInput): MethodologyAudit {
     research: providerFirst(methodology.research ?? []),
     workflow_findings: (methodology.workflow_findings ?? [])
       .filter(workflowFindingHasValidatedAnchor)
-      // Promoted (corroborated, advisory===false) findings first so the cap never
-      // drops a blocking D6 signal for earlier advisory ones (Codex P2).
+      // Corroborated (advisory===false) findings first so the cap never drops the
+      // stronger D6 signal for earlier advisory ones (Codex P2).
       .map((finding, index) => ({ finding, index }))
       .sort((a, b) => Number(a.finding.advisory !== false) - Number(b.finding.advisory !== false) || a.index - b.index)
       .map((entry) => entry.finding)
@@ -4336,9 +4392,8 @@ function capQuestionsPreservingIntent(questions: ReviewerQuestion[], limit: numb
   const selected = questions.slice(0, limit);
   // Questions the head-cap must not silently drop just because they were appended late:
   // the FIRST intent-mismatch question (matching the prior single-preserve behavior),
-  // plus EVERY corroborated (blocking) D6 workflow question. Process them HIGHEST
-  // severity first so a blocking corroborated question wins a scarce slot over a
-  // lower-severity intent question; swap each in over the LAST selected question of
+  // plus EVERY corroborated D6 workflow question. Process them HIGHEST severity
+  // first and swap each in over the LAST selected question of
   // equal-or-lower severity that is not itself preserved (Codex P2, #109).
   const firstIntent = questions.find(isIntentMismatchQuestion);
   const preserved = questions.filter((question) => question.reason === CORROBORATED_WORKFLOW_QUESTION_REASON);
@@ -4352,9 +4407,8 @@ function capQuestionsPreservingIntent(questions: ReviewerQuestion[], limit: numb
     }
     const priorityRank = questionSeverityRank(priority.severity);
     // Evict the last selected question of equal-or-lower severity that is either not
-    // preserved, or is a STRICTLY lower-severity preserved one — so a blocking
-    // corroborated question can take a scarce slot from a clarifying intent question,
-    // but two equal-severity preserved questions never thrash (Codex #110).
+    // preserved, or is a STRICTLY lower-severity preserved one. Two equal-severity
+    // preserved questions never thrash (Codex #110).
     const replacementIndex = findLastQuestionIndex(
       selected,
       (question) =>
@@ -4565,7 +4619,15 @@ function buildSuggestedComments(
     });
   }
 
-  for (const candidate of candidates.sort(compareSuggestedCommentCandidates)) {
+  const coherentCandidates = candidates.map((candidate) =>
+    candidate.sourceRank === 0 || candidate.draft.severity !== "blocking"
+      ? candidate
+      : { ...candidate, draft: { ...candidate.draft, severity: "clarifying" as const } }
+  );
+  for (const candidate of coherentCandidates.sort(compareSuggestedCommentCandidates)) {
+    // Blocking drafts are projections of actual blockers, never an independent
+    // severity channel that can contradict the verdict/header count. Normalize
+    // before sorting so demoted drafts cannot consume the blocker comment budget.
     appendSuggestedComment(comments, candidate.draft);
   }
 
@@ -4594,10 +4656,18 @@ function semanticCommentCandidates(facts: SemanticChangeFacts): SuggestedComment
     });
   };
   for (const signal of facts.test_weakening) {
-    add("blocking", signal.path, `${signal.detail} (${signal.kind.replace(/_/g, " ")})`, `semantic-test:${signal.kind}:${signal.path}`);
+    add("clarifying", signal.path, `${signal.detail} (${signal.kind.replace(/_/g, " ")})`, `semantic-test:${signal.kind}:${signal.path}`);
   }
   for (const change of facts.schema_changes) {
-    add("blocking", change.path, `${schemaChangeReason(change)} Please version the contract or migrate existing artifacts.`, `semantic-schema:${change.path}`);
+    const breaking = isBreakingSchemaChange(change);
+    add(
+      breaking ? "blocking" : "clarifying",
+      change.path,
+      breaking
+        ? `${schemaChangeReason(change)} Please version the contract or migrate existing artifacts.`
+        : `${schemaChangeReason(change)} Please confirm existing artifacts remain compatible.`,
+      `semantic-schema:${change.path}`
+    );
   }
   for (const change of facts.api_changes) {
     add("clarifying", change.path, `${apiChangeReason(change)}${apiCallerCallToAction(change)}`, `semantic-api:${change.path}`);
@@ -5584,36 +5654,46 @@ function questionFromPrRisk(
   };
 }
 
-function commentDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandidate): SuggestedCommentDraft[] {
+interface PrRiskReviewDisposition {
+  severity: SuggestedReviewComment["severity"];
+  body: string;
+}
+
+function prRiskReviewDisposition(input: BuildHumanReviewInput, risk: PrRiskCandidate): PrRiskReviewDisposition | undefined {
   const path = firstPathEvidence(risk.evidence)?.path;
   switch (risk.rule) {
     case "coverage_regression":
-      return [commentDraftFromPrRisk(input, "blocking", risk, "Coverage regressed for this PR. Can you add or point to validation that restores the regressed requirement coverage before approval?")];
+      return { severity: "blocking", body: "Coverage regressed for this PR. Can you add or point to validation that restores the regressed requirement coverage before approval?" };
     case "untested_changed_impl":
-      return [commentDraftFromPrRisk(input, "clarifying", risk, `What test or existing fixture covers the behavior changed in ${path ?? "this implementation file"}?`)];
+      return { severity: "clarifying", body: `What test or existing fixture covers the behavior changed in ${path ?? "this implementation file"}?` };
     case "unmapped_change":
-      return [commentDraftFromPrRisk(input, "clarifying", risk, "This change is outside the mapped review areas. Can you confirm whether it is intentional and add a review-area mapping or explicit deferral if needed?")];
+      return { severity: "clarifying", body: "This change is outside the mapped review areas. Can you confirm whether it is intentional and add a review-area mapping or explicit deferral if needed?" };
     case "privacy_sensitive_change":
-      return [commentDraftFromPrRisk(input, "blocking", risk, "This touches privacy, provider, redaction, secret, or token-handling code. Can you add or point to sensitive-input validation before approval?")];
+      return { severity: "clarifying", body: "This touches privacy, provider, redaction, secret, or token-handling code. Can you add or point to sensitive-input validation before approval?" };
     case "secret_in_diff":
-      return [commentDraftFromPrRisk(input, "blocking", risk, `An added line in ${path ?? "this change"} matches a high-confidence secret pattern. Please remove it and rotate the credential — a committed secret must be treated as leaked.`)];
+      return { severity: "blocking", body: `An added line in ${path ?? "this change"} matches a high-confidence secret pattern. Please remove it and rotate the credential — a committed secret must be treated as leaked.` };
     case "comment_surface_change":
-      return [commentDraftFromPrRisk(input, "non_blocking", risk, "Please include or inspect a rendered comment/human surface fixture so reviewers can verify the Markdown output directly.")];
+      return { severity: "non_blocking", body: "Please include or inspect a rendered comment/human surface fixture so reviewers can verify the Markdown output directly." };
     case "ci_secret_boundary_change":
       // The merge-readiness blocker is the canonical suggested comment for this manual-check gate.
-      return [];
+      return undefined;
     case "schema_contract_change":
-      return [commentDraftFromPrRisk(input, "blocking", risk, "This changes a persisted schema or artifact contract. Can you add a compatibility fixture for an existing generated artifact, or explicitly version this as a breaking change?")];
+      return { severity: "clarifying", body: "This changes a persisted schema or artifact contract. Can you add a compatibility fixture for an existing generated artifact, or explicitly version this as a breaking change?" };
     case "deleted_or_renamed_surface":
-      return [commentDraftFromPrRisk(input, "clarifying", risk, "This deletes or renames a generated or reviewer-facing surface. Can you confirm no stale imports, generated references, or reviewer links still point to the old path?")];
+      return { severity: "clarifying", body: "This deletes or renames a generated or reviewer-facing surface. Can you confirm no stale imports, generated references, or reviewer links still point to the old path?" };
     case "failed_or_skipped_test":
       if (failedValidationEvidence(input).length > 0 && prRiskMentionsFailedTests(risk)) {
-        return [];
+        return undefined;
       }
-      return [commentDraftFromPrRisk(input, "blocking", risk, "Validation evidence indicates failed or skipped tests. Can you fix the failures or record why the skipped tests are intentional before approval?")];
+      return { severity: "clarifying", body: "Validation evidence indicates failed or skipped tests. Can you fix the failures or record why the skipped tests are intentional before approval?" };
     case "large_diff":
-      return [commentDraftFromPrRisk(input, "non_blocking", risk, "This is a large diff. Consider splitting it or listing the areas that received deeper owner review.")];
+      return { severity: "non_blocking", body: "This is a large diff. Consider splitting it or listing the areas that received deeper owner review." };
   }
+}
+
+function commentDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandidate): SuggestedCommentDraft[] {
+  const disposition = prRiskReviewDisposition(input, risk);
+  return disposition ? [commentDraftFromPrRisk(input, disposition.severity, risk, disposition.body)] : [];
 }
 
 function commentDraftFromPrRisk(

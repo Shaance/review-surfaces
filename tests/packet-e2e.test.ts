@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { validateJsonFile } from "../src/schema/json-schema";
+import { isLocalRuntimeArtifactPath } from "./helpers/cli-repo";
 
 function copyRepoFixture(targetDir: string): void {
   fs.cpSync(process.cwd(), targetDir, {
@@ -13,6 +14,7 @@ function copyRepoFixture(targetDir: string): void {
       const relative = path.relative(process.cwd(), source);
       return relative !== ".git"
         && !relative.startsWith(`.git${path.sep}`)
+        && !isLocalRuntimeArtifactPath(relative)
         && relative !== path.join(".review-surfaces", "commands")
         && !relative.startsWith(`${path.join(".review-surfaces", "commands")}${path.sep}`)
         && relative !== "dist"

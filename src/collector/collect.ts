@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { AcaiSpecIndex, indexAcaiSpecs } from "../acai/acai";
+import { REVIEW_SURFACES_ROOT_ARTIFACT_FILES } from "../artifacts/inventory";
 import type { CommandRule } from "../commands/classify";
 import { CommandTranscript, commandTranscriptInputDir, commandTranscriptOutputPath, indexCommandTranscriptFiles } from "../commands/transcripts";
 import { ReviewSurfacesConfig } from "../config/config";
@@ -287,36 +288,6 @@ const ROOT_ARTIFACT_PATH_PATTERNS = [
   /^commands\/[^/]+\.json$/,
   /^prompts\/agent-enrichment\.(md|schema\.json)$/
 ];
-const ROOT_ARTIFACT_FILES = new Set([
-  "manifest.json",
-  "review_packet.json",
-  "review_packet.md",
-  "intent.yaml",
-  "evaluation.yaml",
-  "methodology.yaml",
-  "risks.yaml",
-  "architecture.md",
-  "dogfood.yaml",
-  "agent_handoff.md",
-  "human_review.json",
-  "human_review.md",
-  "human_review.html",
-  "review_queue.md",
-  "suggested_comments.md",
-  "trust_audit.md",
-  "risk_lenses.md",
-  "intent_mismatch.md",
-  "review_routes.md",
-  "evidence_cards.md",
-  "since_last_review.md",
-  "test_plan.md",
-  "comment.md",
-  "review.sarif",
-  "pending_review.json",
-  "pr_review_surface.json",
-  "eval_scoreboard.json"
-]);
-
 export async function collectInputs(options: CollectOptions): Promise<CollectionResult> {
   const outputDir = path.resolve(options.cwd, options.outputDir ?? options.config.output_dir);
   const inputsDir = path.join(outputDir, "inputs");
@@ -367,7 +338,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     artifactDirPrefixes.some((prefix) => filePath.startsWith(prefix)) ||
     (rootOutputDir &&
       (ROOT_ARTIFACT_PATH_PATTERNS.some((pattern) => pattern.test(filePath)) ||
-        ROOT_ARTIFACT_FILES.has(filePath)));
+        REVIEW_SURFACES_ROOT_ARTIFACT_FILES.has(filePath)));
   const feedbackPaths = filterPathsByPatterns(repositoryFiles, [feedbackGlob]);
   const commandTranscriptDir = normalizeRelativeDir(options.commandTranscriptDir ?? commandTranscriptInputDir(options.cwd, outputDir));
   const commandTranscriptPaths = filterPathsByPatterns(repositoryFiles, [`${commandTranscriptDir}/*.json`]);

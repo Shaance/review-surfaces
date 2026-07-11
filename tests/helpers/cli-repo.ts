@@ -9,6 +9,21 @@ import { execFileSync, spawnSync } from "node:child_process";
 // resolves the same way the existing review-areas/review-packet helpers do.
 export const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
 
+const LOCAL_RUNTIME_ARTIFACT_ROOTS = [
+  "node_modules",
+  ".claude",
+  ".codex",
+  ".pnpm-store",
+  "bench/.cache",
+  "tmp"
+];
+
+export function isLocalRuntimeArtifactPath(relativePath: string): boolean {
+  const normalized = relativePath.split(path.sep).join("/");
+  return normalized === ".env.local" || normalized === ".DS_Store" ||
+    LOCAL_RUNTIME_ARTIFACT_ROOTS.some((root) => normalized === root || normalized.startsWith(`${root}/`));
+}
+
 export function initGitRepo(cwd: string): void {
   execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
   execFileSync("git", ["add", "-A"], { cwd, stdio: "ignore" });

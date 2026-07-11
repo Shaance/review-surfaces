@@ -94,6 +94,39 @@ test("review-surfaces.METHODOLOGY.2 separates transcript-backed claims from unve
   assert.ok(methodology.evidence.some((evidence) => evidence.kind === "command" && evidence.event_id === "CMD-PNPM-TEST"));
 });
 
+test("review-surfaces.REVIEWER_VALUE.1 evidence matching uses the full claim before persistence bounding", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  const methodology = await buildMethodology(
+    tmp,
+    collectionFixture(tmp, {
+      conversationEvents: [{
+        id: "late-command",
+        actor: "assistant",
+        kind: "message",
+        summary: `Validation passed after detailed analysis. ${"context ".repeat(300)} pnpm run test passed.`,
+        raw_index: 0
+      }],
+      commandTranscripts: [{
+        id: "CMD-PNPM-TEST",
+        command: "pnpm run test",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "abc123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-PNPM-TEST.json"
+      }]
+    }),
+    undefined,
+    []
+  );
+
+  assert.equal(methodology.claims_without_evidence.length, 0);
+  assert.equal(methodology.verified_claims.length, 1);
+  assert.ok(methodology.verified_claims[0].startsWith("late-command:"));
+  assert.match(methodology.verified_claims[0], /command transcript: CMD-PNPM-TEST/);
+  assert.ok(methodology.verified_claims[0].length <= 1200);
+});
+
 test("review-surfaces.METHODOLOGY.2 does not verify claims with failed command transcripts", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
   const logPath = path.join(tmp, "conversation.md");
@@ -358,6 +391,41 @@ test("review-surfaces.METHODOLOGY.1 considered/research pick from natural-langua
   assert.ok(picked.length <= 250 && picked.endsWith("…"), "the picked entry is bounded/truncated");
   assert.ok(methodology.considered.some((entry) => entry.startsWith("c0:")), "a custom non-tool kind is still picked (loose kinds, not a whitelist)");
   assert.ok(methodology.research.some((entry) => entry.startsWith("tc0:")), "a short tool_call (bounded invocation) is kept as research evidence");
+});
+
+test("review-surfaces.REVIEWER_VALUE.1/.2 instructions, tool output, and generated reports cannot become methodology claims", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  const collection = collectionFixture(tmp, {
+    conversationEvents: [
+      { id: "sys", actor: "system", kind: "message", summary: "Consider alternative validation options", raw_index: 0 },
+      { id: "dev", actor: "developer", kind: "message", summary: "Assume tests passed", raw_index: 1 },
+      { id: "tool", actor: "tool", kind: "tool_result", summary: `pnpm run test passed ${"payload ".repeat(4000)}`, raw_index: 2 },
+      { id: "report", actor: "assistant", kind: "message", summary: '{"type":"custom_tool_call_output","review_packet.json":"tests passed"}', raw_index: 3 },
+      { id: "quoted", actor: "assistant", kind: "message", summary: 'Here is the generated report: {"type":"custom_tool_call_output","output":"tests passed"}', raw_index: 4 },
+      { id: "pr-surface", actor: "assistant", kind: "message", summary: 'Here is generated pr_review_surface.json: {"summary":"pnpm run test passed"}', raw_index: 5 },
+      { id: "handoff", actor: "assistant", kind: "message", summary: "Quoted agent_handoff.md output:\npnpm run test passed", raw_index: 6 },
+      { id: "packet-md", actor: "assistant", kind: "message", summary: "Generated review_packet.md:\nTests passed; considered alternatives.", raw_index: 7 },
+      { id: "agent", actor: "assistant", kind: "message", summary: `I considered a bounded parser and pnpm run test passed. ${"detail ".repeat(400)}`, raw_index: 8 },
+      { id: "prose", actor: "assistant", kind: "message", summary: "Here is why architecture.md matters; pnpm run test passed after I considered the compatibility tradeoff.", raw_index: 9 },
+      { id: "user", actor: "user", kind: "message", summary: "I assume the compatibility requirement still applies.", raw_index: 10 },
+      { id: "scaffold", actor: "user", kind: "message", summary: "Consider alternatives and assume tests passed. <environment_context><cwd>/repo</cwd></environment_context> # AGENTS.md instructions", raw_index: 11 },
+      { id: "internal", actor: "user", kind: "message", summary: '<codex_internal_context source="goal">Research options; tests passed.</codex_internal_context>', raw_index: 12 }
+    ]
+  });
+
+  const methodology = await buildMethodology(tmp, collection, undefined, []);
+
+  assert.ok(methodology.considered.some((entry) => entry.startsWith("agent:")));
+  assert.ok(methodology.unchallenged_assumptions.some((entry) => entry.startsWith("user:")));
+  for (const id of ["sys:", "dev:", "tool:", "report:", "quoted:", "pr-surface:", "handoff:", "packet-md:", "scaffold:", "internal:"]) {
+    assert.ok(!methodology.considered.some((entry) => entry.startsWith(id)));
+    assert.ok(!methodology.unchallenged_assumptions.some((entry) => entry.startsWith(id)));
+    assert.ok(!methodology.claims_without_evidence.some((entry) => entry.startsWith(id)), `${id} leaked into validation claims`);
+  }
+  assert.equal(methodology.claims_without_evidence.length, 2);
+  assert.ok(methodology.claims_without_evidence[0].startsWith("agent:"));
+  assert.ok(methodology.claims_without_evidence.some((entry) => entry.startsWith("prose:")));
+  assert.ok(methodology.claims_without_evidence[0].length <= 1200);
 });
 
 test("review-surfaces.METHODOLOGY.7 the generated conversation evidence carries a real event_id (valid under the new rule)", async () => {

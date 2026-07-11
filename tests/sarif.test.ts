@@ -6,6 +6,7 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { renderSarif } from "../src/render/sarif";
 import type { ReviewPacket } from "../src/render/packet";
+import { isLocalRuntimeArtifactPath } from "./helpers/cli-repo";
 
 // ---------------------------------------------------------------------------
 // Phase 6b (PROVIDERS.2; M6): SARIF 2.1.0 exporter coverage. This file pins the
@@ -29,6 +30,7 @@ function setupFixture(prefix: string): string {
       const relative = path.relative(process.cwd(), source);
       return relative !== ".git"
         && !relative.startsWith(`.git${path.sep}`)
+        && !isLocalRuntimeArtifactPath(relative)
         && relative !== ".review-surfaces"
         && !relative.startsWith(`.review-surfaces${path.sep}`)
         && relative !== "dist"
