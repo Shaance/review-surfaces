@@ -14,12 +14,19 @@ export interface CommandChain {
   operators: CommandOperator[];
 }
 
+interface CommandAnalysis extends CommandChain {
+  outer_group_body?: string;
+  outer_group_redirected?: boolean;
+}
+
 interface SubstitutionFrame {
   close: ")" | "}" | "`";
   quote?: "'" | '"';
   escaped: boolean;
   comment: boolean;
 }
+
+const MAX_COMMAND_ANALYSIS_CHARS = 4_000;
 
 function startsSubstitution(source: string, index: number): ")" | "}" | undefined {
   const character = source[index];
@@ -35,13 +42,18 @@ function isCommentBoundary(source: string, index: number, closedGroupingAt: numb
     previous === "&" || previous === "(" || closedGroupingAt === index - 1;
 }
 
-export function commandChain(command: string): CommandChain {
+function analyzeCommand(command: string): CommandAnalysis {
+  if (command.length > MAX_COMMAND_ANALYSIS_CHARS) return { segments: [], operators: [] };
   const source = stripHeredocBodies(command);
   const segmentRanges: Array<[number, number]> = [];
   const commentRanges: Array<[number, number]> = [];
   const operators: CommandOperator[] = [];
   const substitutions: SubstitutionFrame[] = [];
-  const groupingClosers: Array<{ close: ")" | "}"; grouping: boolean }> = [];
+  const groupingClosers: Array<{ close: ")" | "}"; grouping: boolean; open: number; kind: "(" | "{" }> = [];
+  const groupPairs = new Map<number, { close: number; kind: "(" | "{" }>();
+  const firstNonWhitespace = source.search(/\S/);
+  let rootGroup: { open: number; close?: number; kind: "(" | "{" } | undefined;
+  let groupingDepth = 0;
   let start = 0;
   let closedGroupingAt = -1;
   let quote: "'" | '"' | undefined;
@@ -126,10 +138,24 @@ export function commandChain(command: string): CommandChain {
       const grouping = (character === "(" || next === undefined || /\s/.test(next)) &&
         (previous === undefined || /\s/.test(previous) || previous === ";" || previous === "|" ||
           previous === "&" || previous === "(" || previous === "{");
-      groupingClosers.push({ close: character === "(" ? ")" : "}", grouping });
+      groupingClosers.push({
+        close: character === "(" ? ")" : "}",
+        grouping,
+        open: index,
+        kind: character
+      });
+      if (grouping && groupingDepth === 0 && index === firstNonWhitespace) {
+        rootGroup = { open: index, kind: character };
+      }
+      if (grouping) groupingDepth += 1;
     } else if (character === ")" || character === "}") {
       const opener = groupingClosers.pop();
-      if (opener?.close === character && opener.grouping) closedGroupingAt = index;
+      if (opener?.grouping) groupingDepth -= 1;
+      if (opener?.close === character && opener.grouping) {
+        groupPairs.set(opener.open, { close: index, kind: opener.kind });
+        closedGroupingAt = index;
+        if (groupingDepth === 0 && rootGroup && rootGroup.close === undefined) rootGroup.close = index;
+      }
     }
     if (character === "#" && isCommentBoundary(source, index, closedGroupingAt)) {
       const commentStart = index;
@@ -138,6 +164,7 @@ export function commandChain(command: string): CommandChain {
       index -= 1;
       continue;
     }
+    if (groupingDepth > 0) continue;
 
     const pipeBoth = source.startsWith("|&", index);
     const background = character === "&" && source[index - 1] !== ">" && source[index - 1] !== "<" &&
@@ -177,31 +204,109 @@ export function commandChain(command: string): CommandChain {
     segments.splice(0, leadingSeparators);
     operators.splice(0, leadingSeparators);
   }
+  const rootSuffix = rootGroup?.close === undefined
+    ? undefined
+    : visible.slice(rootGroup.close + 1).join("").trim();
+  const neutralSuffix = rootSuffix !== undefined && isStatusNeutralGroupSuffix(rootSuffix);
+  let outerGroupBody: string | undefined;
+  let outerGroupRedirected = rootSuffix !== undefined && isRedirectionGroupSuffix(rootSuffix);
+  if (rootGroup?.close !== undefined && neutralSuffix) {
+    let bodyStart = rootGroup.open + 1;
+    let bodyEnd = rootGroup.close;
+    const trimBody = (): void => {
+      while (bodyStart < bodyEnd && /\s/.test(source[bodyStart] ?? "")) bodyStart += 1;
+      while (bodyEnd > bodyStart && /\s/.test(source[bodyEnd - 1] ?? "")) bodyEnd -= 1;
+    };
+    let kind = rootGroup.kind;
+    while (true) {
+      trimBody();
+      if (kind === "{" && source[bodyEnd - 1] === ";") {
+        bodyEnd -= 1;
+        trimBody();
+      }
+      const nested = groupPairs.get(bodyStart);
+      const nestedSuffix = nested && nested.close < bodyEnd
+        ? visible.slice(nested.close + 1, bodyEnd).join("").trim()
+        : undefined;
+      if (!nested || nestedSuffix === undefined || !isStatusNeutralGroupSuffix(nestedSuffix)) break;
+      outerGroupRedirected ||= isRedirectionGroupSuffix(nestedSuffix);
+      bodyStart += 1;
+      bodyEnd = nested.close;
+      kind = nested.kind;
+    }
+    outerGroupBody = source.slice(bodyStart, bodyEnd);
+  }
+  return {
+    segments,
+    operators,
+    outer_group_body: outerGroupBody,
+    outer_group_redirected: outerGroupBody === undefined ? undefined : outerGroupRedirected
+  };
+}
+
+function isStatusNeutralGroupSuffix(suffix: string): boolean {
+  return suffix === "" || suffix === ";" || isRedirectionGroupSuffix(suffix);
+}
+
+function isRedirectionGroupSuffix(suffix: string): boolean {
+  return /^(?:(?:\d+|&)?(?:>>?|<<?|<>|>\||<&|>&)\s*(?:[^\s;|&<>'"\\]|\\.|'[^']*'|"(?:\\.|[^"])*")+\s*)+;?$/.test(suffix);
+}
+
+export function commandChain(command: string): CommandChain {
+  const { segments, operators } = analyzeCommand(command);
   return { segments, operators };
 }
 
 export function commandSegments(command: string): string[] {
-  return commandChain(command).segments;
+  const pending = [command];
+  const result: string[] = [];
+  while (pending.length > 0) {
+    const current = pending.pop() ?? "";
+    const analysis = analyzeCommand(current);
+    if (analysis.outer_group_body !== undefined) {
+      pending.push(analysis.outer_group_body);
+    } else if (analysis.segments.length > 1) {
+      pending.push(...[...analysis.segments].reverse());
+    } else {
+      result.push(...analysis.segments);
+    }
+  }
+  return result;
 }
 
 export function statusBearingCommandSegments(
   command: string,
   status: "passed" | "failed" | "unknown"
 ): string[] {
-  const chain = commandChain(command);
-  if (chain.segments.length <= 1 || status === "unknown") return chain.segments;
-  if (chain.operators.includes("&")) return [];
-  if (chain.operators.every((operator) => operator === "&&")) {
-    return status === "passed" ? chain.segments : [];
+  if (status === "unknown") return commandSegments(command);
+  const pending = [command];
+  const result: string[] = [];
+  while (pending.length > 0) {
+    const current = pending.pop() ?? "";
+    const analysis = analyzeCommand(current);
+    if (analysis.outer_group_body !== undefined) {
+      if (status === "failed" && analysis.outer_group_redirected) continue;
+      pending.push(analysis.outer_group_body);
+      continue;
+    }
+    if (analysis.segments.length <= 1) {
+      result.push(...analysis.segments);
+      continue;
+    }
+    if (analysis.operators.includes("&")) continue;
+    let supported: string[];
+    if (analysis.operators.every((operator) => operator === "&&")) {
+      supported = status === "passed" ? analysis.segments : [];
+    } else if (analysis.operators.every((operator) => operator === "||")) {
+      supported = status === "failed" ? analysis.segments : [];
+    } else if (analysis.operators.every((operator) => operator === "|")) {
+      supported = status === "passed" ? [analysis.segments.at(-1) ?? ""] : [];
+    } else if (analysis.operators.every((operator) => operator === ";" || operator === "newline")) {
+      supported = [analysis.segments.at(-1) ?? ""];
+    } else {
+      supported = [];
+    }
+    pending.push(...[...supported].reverse());
   }
-  if (chain.operators.every((operator) => operator === "||")) {
-    return status === "failed" ? chain.segments : [];
-  }
-  if (chain.operators.every((operator) => operator === "|")) {
-    return status === "passed" ? [chain.segments.at(-1) ?? ""] : [];
-  }
-  if (chain.operators.every((operator) => operator === ";" || operator === "newline")) {
-    return [chain.segments.at(-1) ?? ""];
-  }
-  return [];
+  return result;
 }

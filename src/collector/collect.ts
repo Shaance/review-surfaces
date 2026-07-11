@@ -476,7 +476,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
           headSha: git.head_sha,
           rangeCommitShas: collectHeadCommits(options.cwd, options.baseRef, options.headRef).map((commit) => commit.sha),
           headCommittedAt: git.head_sha !== "unknown" ? commitTimeAtRef(options.cwd, git.head_sha) : undefined,
-          workingTreeDirty: (workingTreeSnapshot?.paths.length ?? 0) > 0
+          workingTreeDirty: changedFiles.some((file) => file.source === "working_tree")
         })
       : undefined;
   // review-surfaces.CONVERSATION_REVIEW.7: weak path mentions, read-only audits,

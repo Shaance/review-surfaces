@@ -69,7 +69,7 @@ test("review-surfaces.CONVERSATION_REVIEW.3 a second-pass outage preserves analy
 
   assert.deepEqual(stages, ["conversation_analysis", "conversation_review_insights"]);
   assert.equal(result.analysis.status, "analyzed");
-  assert.match(result.analysis.summary, /deterministic conversation brief: keep the retry behavior while simplifying/i);
+  assert.match(result.analysis.summary, /deterministic conversation brief: do not remove retries; preserve the behavior/i);
   assert.ok(result.analysis.quality_flags.includes("conversation_review_unavailable"));
   assert.deepEqual(result.insights, []);
 });

@@ -800,6 +800,36 @@ test("review-surfaces.METHODOLOGY.4 collect() auto-discovers the session and anc
   }
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.7 ignored dirty files do not relax committed-head timing", async () => {
+  const tmp = initRepo();
+  const store = freshStore();
+  try {
+    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: tmp });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: tmp });
+    execFileSync("git", ["add", "README.md"], { cwd: tmp });
+    execFileSync("git", ["commit", "-m", "base"], { cwd: tmp, stdio: "ignore" });
+    fs.writeFileSync(path.join(tmp, "README.md"), "# Reviewed change\n");
+    execFileSync("git", ["add", "README.md"], { cwd: tmp });
+    execFileSync("git", ["commit", "-m", "head"], { cwd: tmp, stdio: "ignore" });
+    fs.writeFileSync(path.join(tmp, ".env"), "IGNORED=dirty\n");
+    writeSession(store, claudeCodeProjectSlug(tmp), "after-head.jsonl", [
+      claudeToolLine("2030-01-01T00:00:00.000Z", "Edit", {
+        file_path: path.join(tmp, "README.md"),
+        old_string: "Fixture",
+        new_string: "Reviewed change"
+      })
+    ]);
+
+    const result = await collectInputs(collectOptions(tmp, store, { baseRef: "HEAD^" }));
+
+    assert.equal(result.conversationDiscovery?.status, "rejected");
+    assert.ok(result.conversationDiscovery?.reason_codes.includes("mutation_after_head_commit"));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.METHODOLOGY.4 an explicit --conversation wins over auto-discovery", async () => {
   const tmp = initRepo();
   const store = freshStore();

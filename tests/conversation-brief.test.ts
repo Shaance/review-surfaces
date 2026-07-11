@@ -137,14 +137,36 @@ test("review-surfaces.CONVERSATION_REVIEW.5 preserves a Codex request embedded a
     id: "scaffolded-user",
     actor: "user",
     kind: "message",
-    summary: "<environment_context>generated metadata</environment_context>\n## My request for Codex:\nAudit the reviewer report and preserve citations.",
+    summary: "<environment_context>generated instructions: actually you must not edit</environment_context>\n## My request for Codex:\nDo not edit; audit the reviewer report and preserve citations.",
     raw_index: 0
   }], "mock");
 
   assert.deepEqual(brief.intent, [{
-    text: "Audit the reviewer report and preserve citations.",
+    text: "Do not edit; audit the reviewer report and preserve citations.",
     event_ids: ["scaffolded-user"]
   }]);
+  assert.deepEqual(brief.non_goals, [{
+    text: "Do not edit; audit the reviewer report and preserve citations.",
+    event_ids: ["scaffolded-user"]
+  }]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.5 summarizes the latest normal refinement", () => {
+  const brief = buildDeterministicConversationBrief([{
+    id: "initial",
+    actor: "user",
+    kind: "message",
+    summary: "Add upload retries.",
+    raw_index: 0
+  }, {
+    id: "refinement",
+    actor: "user",
+    kind: "message",
+    summary: "Also add retry metrics.",
+    raw_index: 1
+  }], "mock");
+
+  assert.match(brief.summary, /Also add retry metrics/);
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.6 recognizes validation commands with bare environment assignments", () => {
@@ -324,7 +346,8 @@ test("review-surfaces.CONVERSATION_REVIEW.6 explicit agent claims stay distinct 
   const brief = buildDeterministicConversationBrief(EVENTS, "mock");
 
   assert.deepEqual(brief.claims, [
-    { text: "I updated the upload route.", event_ids: ["assistant-claim"] }
+    { text: "I updated the upload route.", event_ids: ["assistant-claim"] },
+    { text: "I implemented streaming. Tests passed.", event_ids: ["assistant-validation-claim"] }
   ]);
   assert.deepEqual(brief.validation_claims, [
     { text: "I implemented streaming. Tests passed.", event_ids: ["assistant-validation-claim"] }
@@ -502,6 +525,81 @@ test("review-surfaces.CONVERSATION_REVIEW.6 preserves status-dependent validatio
     "trailing-separator-8",
     "trailing-separator-9"
   ]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 preserves validation wrapped in shell groups", () => {
+  const commands = [
+    "(pnpm test)",
+    "{ pnpm test; }",
+    "(pnpm test) > results.log",
+    "(pnpm test) > 'review results.log'",
+    "(pnpm test) > review\\ results.log",
+    "(pnpm test) # verified",
+    "(pnpm test);",
+    "{ pnpm test; }; # verified",
+    "(pnpm test) && echo done",
+    "echo setup && (pnpm test)",
+    "generate | (pnpm test)",
+    "(echo setup); (pnpm test)"
+  ];
+  const result = buildDeterministicConversationBrief(commands.map((command, raw_index) => ({
+    id: `grouped-${raw_index}`,
+    actor: "tool",
+    kind: "tool_result",
+    summary: "group passed",
+    command,
+    result_status: "passed" as const,
+    raw_index
+  })), "mock");
+
+  assert.deepEqual(result.validation_observations?.map((observation) => observation.event_ids[0]),
+    commands.map((_, index) => `grouped-${index}`));
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 composes grouped redirection with a terminal separator", () => {
+  const commands = ["(pnpm test) > results.log;", "{ pnpm test; } 2>&1;"];
+  const result = buildDeterministicConversationBrief(commands.map((command, raw_index) => ({
+    id: `grouped-redirection-${raw_index}`,
+    actor: "tool",
+    kind: "tool_result",
+    summary: "group passed",
+    command,
+    result_status: "passed" as const,
+    raw_index
+  })), "mock");
+
+  assert.deepEqual(result.validation_observations?.map((observation) => observation.event_ids[0]), [
+    "grouped-redirection-0",
+    "grouped-redirection-1"
+  ]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 does not blame grouped validation for a redirection failure", () => {
+  const result = buildDeterministicConversationBrief([{
+    id: "failed-group-redirection",
+    actor: "tool",
+    kind: "tool_result",
+    summary: "redirection failed",
+    command: "(pnpm test) > /missing/results.log",
+    result_status: "failed",
+    raw_index: 0
+  }], "mock");
+
+  assert.deepEqual(result.validation_observations, []);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 fails closed when a command exceeds the analysis budget", () => {
+  const result = buildDeterministicConversationBrief([{
+    id: "oversized-command",
+    actor: "tool",
+    kind: "tool_result",
+    summary: "command passed",
+    command: `${"(true) && ".repeat(400)}pnpm test`,
+    result_status: "passed",
+    raw_index: 0
+  }], "mock");
+
+  assert.deepEqual(result.validation_observations, []);
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.6 does not infer a failed pipeline tail without shell options", () => {

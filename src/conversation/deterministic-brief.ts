@@ -42,16 +42,19 @@ export function buildDeterministicConversationBrief(
 
   for (const [index, event] of userEvents.entries()) {
     const item = itemFromEvent(event);
+    const text = reviewerText(event.summary).trim();
     if (index === 0) intent.push(item);
-    if (CORRECTION.test(event.summary)) intent.push(item);
+    if (CORRECTION.test(text)) intent.push(item);
     if (index > 0) refinements.push(item);
-    if (CONSTRAINT.test(event.summary)) constraints.push(item);
-    if (NON_GOAL.test(event.summary)) nonGoals.push(item);
+    if (CONSTRAINT.test(text)) constraints.push(item);
+    if (NON_GOAL.test(text)) nonGoals.push(item);
   }
   for (const event of assistantEvents) {
-    if (VALIDATION_OUTCOME.test(event.summary) && looksLikeValidationClaim(event.summary, commandRules)) {
+    const text = reviewerText(event.summary).trim();
+    if (VALIDATION_OUTCOME.test(text) && looksLikeValidationClaim(text, commandRules)) {
       validationClaims.push(itemFromEvent(event));
-    } else if (AGENT_CLAIM.test(event.summary) || SUBJECTLESS_AGENT_CLAIM.test(event.summary)) {
+    }
+    if (AGENT_CLAIM.test(text) || SUBJECTLESS_AGENT_CLAIM.test(text)) {
       claims.push(itemFromEvent(event));
     }
   }
@@ -60,7 +63,7 @@ export function buildDeterministicConversationBrief(
     if (observation) observations.push(observation);
   }
 
-  const latestIntent = intent.at(-1) ?? refinements.at(-1);
+  const latestIntent = refinements.at(-1) ?? intent.at(-1);
   const hasDeterministicContent = intent.length > 0 || refinements.length > 0 ||
     constraints.length > 0 || nonGoals.length > 0 || claims.length > 0 ||
     validationClaims.length > 0 || observations.length > 0;
