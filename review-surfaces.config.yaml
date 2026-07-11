@@ -120,6 +120,18 @@ areas:
     test_keywords:
       - method
       - methodology
+  - id: SUB-CONVERSATION
+    name: Conversation review intelligence
+    group_key: CONVERSATION_REVIEW
+    prefixes:
+      - src/conversation/
+      - src/contracts/conversation-review.ts
+      - src/human/conversation-review-presentation.ts
+      - docs/conversation-auditing.md
+    purpose: Reconstruct cited intent, validate tool outcomes, and select producer transcripts safely.
+    pattern: provenance-aware conversation analysis
+    test_keywords:
+      - conversation
   - id: SUB-LLM
     name: Optional enrichment
     group_key: EVIDENCE
