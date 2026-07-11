@@ -415,6 +415,109 @@ test("review-surfaces.CONVERSATION_REVIEW.6 ignores validation runners inside qu
   assert.deepEqual(result.validation_observations, []);
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.6 does not promote masked validation statuses", () => {
+  const commands = [
+    "pnpm test | tee results.log",
+    "pnpm test || true",
+    "pnpm test; echo done",
+    "pnpm test &",
+    "pnpm test & true",
+    "pnpm test & wait",
+    "echo done # | pnpm test",
+    "echo done;# && pytest",
+    "(echo done)# | pnpm test",
+    "{ echo done; }# | pnpm test",
+    "echo $(false | pnpm test)",
+    "echo `false | pnpm test`",
+    "cat <(false | pnpm test)",
+    "cat =(false | pnpm test)",
+    "echo ${VALUE:-ignored|pnpm test }",
+    "echo $(echo hi # )\npnpm test )"
+  ];
+  const events: ConversationEvent[] = commands.map((command, raw_index) => ({
+    id: `masked-${raw_index}`,
+    actor: "tool",
+    kind: "tool_result",
+    summary: "shell command exited successfully",
+    command,
+    result_status: "passed",
+    raw_index
+  }));
+  const result = buildDeterministicConversationBrief(events, "mock");
+
+  assert.deepEqual(result.validation_observations, []);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 preserves status-dependent validation observations", () => {
+  const events: ConversationEvent[] = [{
+    id: "and-chain",
+    actor: "tool",
+    kind: "tool_result",
+    summary: "all commands passed",
+    command: "pnpm test && echo done",
+    result_status: "passed",
+    raw_index: 0
+  }, {
+    id: "pipeline-tail-pass",
+    actor: "tool",
+    kind: "tool_result",
+    summary: "pipeline passed",
+    command: "generate-fixture | pnpm test",
+    result_status: "passed",
+    raw_index: 1
+  }, ...[
+    "pnpm test;",
+    "pnpm test\n",
+    "pnpm test\r\n",
+    "generate-fixture |& pnpm test",
+    "pnpm test <&3",
+    "echo $(date)#tag | pnpm test",
+    "echo ${VALUE}#tag | pnpm test",
+    "echo ${x:-foo # bar} | pnpm test",
+    "echo value}#literal | pnpm test",
+    "echo {a,b}#tag | pnpm test"
+  ]
+    .map((command, index): ConversationEvent => ({
+    id: `trailing-separator-${index}`,
+    actor: "tool",
+    kind: "tool_result",
+    summary: "command passed",
+    command,
+    result_status: "passed",
+    raw_index: index + 2
+  }))];
+  const result = buildDeterministicConversationBrief(events, "mock");
+
+  assert.deepEqual((result.validation_observations ?? []).map((observation) => observation.event_ids[0]), [
+    "and-chain",
+    "pipeline-tail-pass",
+    "trailing-separator-0",
+    "trailing-separator-1",
+    "trailing-separator-2",
+    "trailing-separator-3",
+    "trailing-separator-4",
+    "trailing-separator-5",
+    "trailing-separator-6",
+    "trailing-separator-7",
+    "trailing-separator-8",
+    "trailing-separator-9"
+  ]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 does not infer a failed pipeline tail without shell options", () => {
+  const result = buildDeterministicConversationBrief([{
+    id: "pipefail-ambiguous",
+    actor: "tool",
+    kind: "tool_result",
+    summary: "pipeline failed",
+    command: "false | pnpm test",
+    result_status: "failed",
+    raw_index: 0
+  }], "mock");
+
+  assert.deepEqual(result.validation_observations, []);
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.6 preserves terse subjectless implementation claims", () => {
   const brief = buildDeterministicConversationBrief([{
     id: "implemented",
@@ -442,7 +545,7 @@ test("review-surfaces.CONVERSATION_REVIEW.6 honors configured validation wrapper
       actor: "tool",
       kind: "tool_result",
       summary: "Repository verification passed.",
-    command: "./scripts/full-check.sh | tee results.log",
+    command: "./scripts/full-check.sh && echo done",
       result_status: "passed",
       exit_code: 0,
       raw_index: 0
@@ -456,7 +559,28 @@ test("review-surfaces.CONVERSATION_REVIEW.6 honors configured validation wrapper
   });
 
   assert.deepEqual(result.validation_observations?.map((item) => item.command), [
-    "./scripts/full-check.sh | tee results.log"
+    "./scripts/full-check.sh && echo done"
+  ]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 honors exact configured wrappers with trailing comments", () => {
+  const result = buildDeterministicConversationBrief([{
+    id: "commented-wrapper",
+    actor: "tool",
+    kind: "tool_result",
+    summary: "Repository verification passed.",
+    command: "./scripts/full-check.sh # repository validation",
+    result_status: "passed",
+    raw_index: 0
+  }], "mock", [], [{
+    id: "full-check",
+    match: "exact",
+    command: "./scripts/full-check.sh",
+    classification: "validation"
+  }]);
+
+  assert.deepEqual(result.validation_observations?.map((observation) => observation.event_ids[0]), [
+    "commented-wrapper"
   ]);
 });
 

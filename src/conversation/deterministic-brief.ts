@@ -5,7 +5,7 @@ import type {
 } from "../contracts/conversation-review";
 import type { ProviderName } from "../contracts/provider";
 import { commandLooksLikeLocalValidationCommand, type CommandRule } from "../core/command-classify";
-import { commandSegments } from "../core/command-segments";
+import { commandSegments, statusBearingCommandSegments } from "../core/command-segments";
 import { compareStrings } from "../core/compare";
 import type { SanitizedConversationEvent } from "./analysis-prompt-context";
 import { conversationEventLooksLikeGeneratedPayload } from "./generated-payload";
@@ -155,7 +155,9 @@ function validationObservation(
     return undefined;
   }
   if (!event.result_status) return undefined;
-  if (!event.command || !looksLikeValidationCommand(event.command, commandRules)) return undefined;
+  if (!event.command || !statusBearingCommandSegments(event.command, event.result_status).some((segment) =>
+    commandLooksLikeLocalValidationCommand(segment, commandRules)
+  )) return undefined;
   const text = bound(event.summary, MAX_TEXT) ||
     bound(`${event.command} completed with structured status ${event.result_status}.`, MAX_TEXT);
   return {
