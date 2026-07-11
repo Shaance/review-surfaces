@@ -60,35 +60,44 @@ artifacts contain only `[REDACTED:…]` markers.
 
 ## Zero-config discovery
 
-With **no flags**, a run auto-discovers the single harness session that produced
-`base..head` and audits it. Discovery spans two stores:
+With **no flags**, a run searches for the single harness session that produced
+`base..head`. Exact changed-path mutations from structured edit/apply-patch calls
+outrank reads, quoted diffs, report output, path mentions, reviewed-SHA text, and
+recency. A read-only/audit session, recency-only candidate, or ambiguous producer
+tie is rejected before transcript normalization, privacy folding, caching, or
+reviewer analysis. Discovery spans two stores:
 
 | Harness | Store | How a session is matched |
 |---|---|---|
-| **Claude Code** | `~/.claude/projects/<repo-slug>/*.jsonl` | The slug directory *is* the repo match; among that repo's sessions, the one that references the changed files wins, falling back to recency. |
-| **Codex** | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | A **single global store** across every repo, so a rollout is scoped to this repo by its recorded `session_meta.cwd` (the Codex analogue of the Claude slug — a generic changed path like `README.md` would otherwise false-match other repos' sessions). Among this repo's rollouts the one referencing the changed files wins, falling back to recency. The scan is bounded to the most-recent rollouts. |
+| **Claude Code** | `~/.claude/projects/<repo-slug>/*.jsonl` | The slug directory *is* the repo match; structured mutations of reviewed paths establish producer provenance. |
+| **Codex** | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | A **single global store** across every repo, so a rollout is first scoped by its recorded `session_meta.cwd`; structured apply-patch/edit evidence then establishes producer provenance. The scan is bounded to the most-recent rollouts. |
 
-Selection is one deterministic total order across both stores: **most changed-files
-referenced**, then **most recent in-session event**, then **greatest path**. The picked
-session's absolute path is announced on **stderr only**; the persisted evidence anchor is
-the gitignored repo-relative normalized log.
+Selection is one deterministic total order across both stores. For a dirty range,
+the most recent exact mutation wins before mutation count so an old broad session
+cannot beat the current narrower producer; committed ranges use exact mutation count,
+commit/timing corroboration, weak reads/mentions, in-session recency, and finally path.
+Discovery retains only the two strongest candidates per store and bounds work to
+32 MiB per transcript and 512 MiB per store. A budget-limited scan is disclosed with
+`discovery_work_budget_exhausted`; when no producer was established it is rejected as
+ambiguous. Use `--conversation <path>` to select an oversized or older transcript.
+The picked session's absolute path is announced on **stderr only**;
+the persisted evidence anchor is the gitignored repo-relative normalized log.
 
-### "Why this transcript?" and the stale/wrong-session warning
+### "Why this transcript?" and producer-confidence admission
 
 Every discovery announces its basis on stderr, e.g.:
 
 ```
-Auto-discovered conversation session: /Users/me/.codex/sessions/.../rollout-….jsonl (adapter codex; matched 3 changed file(s) in the reviewed range)
+Auto-discovered conversation session: /Users/me/.codex/sessions/.../rollout-….jsonl (adapter codex; confidence high; mutated 3 changed file(s); weak matches 0; reasons exact_changed_path_mutation,reviewed_commit_observed)
 ```
 
-If the only session that could be found references **none** of the reviewed range, that
-is a **hard warning**, not a silent pick — it is likely the wrong or a stale session:
+If the best candidate has only weak evidence, or producer-grade candidates are tied,
+it is rejected rather than audited:
 
 ```
-WARNING: auto-discovered conversation session … does NOT reference any file in the
-reviewed range — picked by recency alone, so it may be the wrong or a stale session.
-Pass --conversation <path> to select the right transcript, or
---no-conversation-discovery to skip auto-discovery.
+WARNING: rejected auto-discovered conversation session … before ingestion
+(confidence low; reasons audit_or_read_only_session). No transcript was normalized,
+cached, or audited. Pass --conversation <path> to explicitly select it.
 ```
 
 ## Cursor (explicit `--conversation`)

@@ -21,8 +21,8 @@ function evtId(index: number): string {
 
 // Carry the optional tool/command/file fields through when an already-normalized
 // record supplies them (redacted as defense-in-depth).
-function toolFields(record: Record<string, unknown>): { tool?: string; command?: string; file?: string } {
-  const fields: { tool?: string; command?: string; file?: string } = {};
+function toolFields(record: Record<string, unknown>): Pick<ConversationEvent, "tool" | "command" | "file" | "call_id" | "result_status" | "exit_code"> {
+  const fields: Pick<ConversationEvent, "tool" | "command" | "file" | "call_id" | "result_status" | "exit_code"> = {};
   if (typeof record.tool === "string") {
     fields.tool = redactText(record.tool);
   }
@@ -31,6 +31,15 @@ function toolFields(record: Record<string, unknown>): { tool?: string; command?:
   }
   if (typeof record.file === "string") {
     fields.file = redactText(record.file);
+  }
+  if (typeof record.call_id === "string") {
+    fields.call_id = redactText(record.call_id);
+  }
+  if (record.result_status === "passed" || record.result_status === "failed" || record.result_status === "unknown") {
+    fields.result_status = record.result_status;
+  }
+  if (typeof record.exit_code === "number" && Number.isInteger(record.exit_code)) {
+    fields.exit_code = record.exit_code;
   }
   return fields;
 }

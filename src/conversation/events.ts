@@ -22,6 +22,12 @@ export interface ConversationEvent {
   command?: string;
   /** Touched file path for a tool_call/tool_result (D8). */
   file?: string;
+  /** Harness call identifier used to join a tool result to its invocation. */
+  call_id?: string;
+  /** Adapter-owned outcome metadata. Never inferred from result prose. */
+  result_status?: "passed" | "failed" | "unknown";
+  /** Structured process exit code when the source transcript exposes one. */
+  exit_code?: number;
   /** Positional ordering key / deterministic fallback id source. */
   raw_index: number;
 }

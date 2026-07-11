@@ -1,10 +1,10 @@
-import { findReviewSurfacesArtifactName } from "../artifacts/inventory";
 import { CollectionResult } from "../collector/collect";
 import { ConversationEvent, ConversationFormat, isConversationToolCall, isConversationToolOutput } from "../conversation/events";
 import { loadConversationEvents, writeNormalizedConversation } from "../conversation/ingest";
 import { commandEvidence, EvidenceRef, missingEvidence } from "../evidence/evidence";
 import { computeCrossReferenceSignals } from "./cross-reference";
 import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
+import { conversationEventLooksLikeGeneratedPayload } from "../conversation/generated-payload";
 
 // review-surfaces.METHODOLOGY.7/.8: a validated item-4 workflow finding produced
 // by the methodology leaf (unchallenged assumption, skipped step, workflow
@@ -38,6 +38,7 @@ export interface MethodologyModel {
   // The harness adapter label (claude-code|codex|cursor|normalized) when a
   // conversation was ingested; omitted otherwise / on the degraded path.
   conversation_source?: string;
+  conversation_discovery?: NonNullable<CollectionResult["conversationDiscovery"]>;
 }
 
 interface TranscriptCommandEvidence {
@@ -101,7 +102,8 @@ export async function buildMethodology(
       // METHODOLOGY.8 (D6): the deterministic cross-reference signals are diff-based,
       // so they still fire when no conversation is available (the empty transcript IS
       // maximal "no discussion") — the deterministic shell works without the leaf.
-      workflow_findings: computeCrossReferenceSignals(collection, [])
+      workflow_findings: computeCrossReferenceSignals(collection, []),
+      ...(collection.conversationDiscovery ? { conversation_discovery: collection.conversationDiscovery } : {})
     };
   }
 
@@ -179,7 +181,8 @@ export async function buildMethodology(
     // fire here (offline), so they are present even under the mock provider; a
     // running LLM leaf APPENDS its proposed findings on top (runMethodologyAuditStage).
     workflow_findings: computeCrossReferenceSignals(collection, events),
-    ...(source !== undefined ? { conversation_source: source } : {})
+    ...(source !== undefined ? { conversation_source: source } : {}),
+    ...(collection.conversationDiscovery ? { conversation_discovery: collection.conversationDiscovery } : {})
   };
 }
 
@@ -224,33 +227,7 @@ function isPickableEvent(event: ConversationEvent): boolean {
   if (isToolCallEvent(event)) {
     return event.summary.length <= PICK_TEXT_LIMIT && !isEditOrWriteToolCall(event);
   }
-  return !looksLikeGeneratedReviewPayload(event.summary);
-}
-
-function looksLikeGeneratedReviewPayload(summary: string): boolean {
-  const trimmed = summary.trimStart();
-  if (/<(?:environment_context|permissions instructions|skills_instructions|apps_instructions|plugins_instructions|recommended_plugins)>|<codex_internal_context\b/i.test(summary) ||
-    /# AGENTS\.md instructions/i.test(summary)) {
-    return true;
-  }
-  const transportMarker = /(?:custom_tool_call_output|internal_chat_message_metadata_passthrough)/.exec(summary);
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    return transportMarker !== null || findReviewSurfacesArtifactName(summary) !== undefined;
-  }
-  if (transportMarker) {
-    const prefix = summary.slice(Math.max(0, transportMarker.index - 240), transportMarker.index);
-    return /(?:here (?:is|'s)|quoted|generated|report|payload|output)[^\n]{0,120}[{[]/i.test(prefix) ||
-      /(?:\{|\[)\s*["\\].{0,120}$/.test(prefix);
-  }
-  const artifact = findReviewSurfacesArtifactName(summary);
-  if (!artifact) {
-    return false;
-  }
-  const prefix = summary.slice(Math.max(0, artifact.index - 240), artifact.index);
-  const suffix = summary.slice(artifact.index + artifact.name.length, artifact.index + artifact.name.length + 240);
-  const introducedAsPayload = /(?:here (?:is|'s)|quoted|generated|report|payload|output|contents?(?: of)?)[^\n]{0,120}$/i.test(prefix);
-  const hasPayloadBoundary = /^\s*(?:(?:output|contents?)\s*)?:\s*(?:\n|```|---|[{[])/i.test(suffix);
-  return introducedAsPayload && hasPayloadBoundary;
+  return !conversationEventLooksLikeGeneratedPayload(event.summary);
 }
 
 // Bound the kept text to PICK_TEXT_LIMIT, keeping the window around the FIRST keyword
@@ -313,7 +290,7 @@ function isValidationClaimEvent(event: ConversationEvent): boolean {
   }
   return !isToolCallEvent(event) &&
     !isToolOutputEvent(event) &&
-    !looksLikeGeneratedReviewPayload(event.summary);
+    !conversationEventLooksLikeGeneratedPayload(event.summary);
 }
 
 function isToolCallEvent(event: ConversationEvent): boolean {

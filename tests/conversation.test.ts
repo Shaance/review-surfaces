@@ -295,6 +295,71 @@ test("review-surfaces.METHODOLOGY.6 a Codex function_call and its output get dis
   assert.equal(new Set(ids).size, ids.length, `ids must be unique: ${ids.join(", ")}`);
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.6 Codex correlates distinct response item ids by shared call_id", () => {
+  const text = [
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        id: "response-call-item",
+        type: "custom_tool_call",
+        call_id: "shared-call",
+        name: "exec_command",
+        input: JSON.stringify({ cmd: "pnpm test" })
+      }
+    }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        id: "response-output-item",
+        type: "custom_tool_call_output",
+        call_id: "shared-call",
+        output: JSON.stringify({ exit_code: 0, output: "passed" })
+      }
+    })
+  ].join("\n");
+  const result = normalizeConversation(buildAdapterInput("codex.jsonl", text));
+  const output = result?.events.find((event) => event.kind === "tool_result");
+
+  assert.ok(result);
+  assert.equal(result.adapter, "codex");
+  assert.equal(output?.command, "pnpm test");
+  assert.equal(output?.tool, "exec_command");
+  assert.equal(output?.result_status, "passed");
+  assert.equal(new Set(result.events.map((event) => event.id)).size, result.events.length);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 nested Codex sibling blocks correlate by call_id without id collisions", () => {
+  const text = JSON.stringify({
+    type: "response_item",
+    payload: {
+      id: "message-envelope",
+      type: "message",
+      role: "assistant",
+      content: [{
+        id: "nested-call-item",
+        type: "function_call",
+        call_id: "nested-shared-call",
+        name: "shell",
+        arguments: JSON.stringify({ command: "pnpm run test" })
+      }, {
+        id: "nested-output-item",
+        type: "function_call_output",
+        call_id: "nested-shared-call",
+        output: JSON.stringify({ exit_code: 1, output: "failed" })
+      }]
+    }
+  });
+  const result = normalizeConversation(buildAdapterInput("codex.jsonl", text));
+  const output = result?.events.find((event) => event.kind === "tool_result");
+
+  assert.ok(result);
+  assert.equal(result.adapter, "codex");
+  assert.equal(output?.command, "pnpm run test");
+  assert.equal(output?.tool, "shell");
+  assert.equal(output?.result_status, "failed");
+  assert.equal(new Set(result.events.map((event) => event.id)).size, result.events.length);
+});
+
 test("review-surfaces.METHODOLOGY.6 a raw JSONL transcript with a leading banner still routes to its harness adapter", () => {
   const text = [
     "=== Claude Code session 2026-06-16 (banner) ===",

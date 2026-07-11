@@ -300,8 +300,8 @@ test("review-surfaces.CONVERSATION_REVIEW.3 unordered duplicate ids use the same
 
   const prompt = staged.prompts.get("conversation_review_insights") ?? "";
   assert.match(prompt, /"user_grounded_positive_intent_event_ids":\["other-user"\]/);
-  assert.equal(result.insights[0].evidence_state, "unverified");
-  assert.equal(result.insights[0].basis, "ai_reconciliation");
+  assert.deepEqual(result.insights, [], "the earliest assistant-owned duplicate is not an eligible intent citation");
+  assert.ok(result.analysis.quality_flags.includes("conversation_review_citations_rejected"));
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.3 merged provider path sets remain within the persisted schema cap", async () => {

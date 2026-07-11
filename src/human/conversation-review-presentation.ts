@@ -77,6 +77,9 @@ export function conversationAnalysisCaveats(analysis: ConversationAnalysis | und
   if (flags.has("conversation_analysis_partial")) {
     messages.push("One or more conversation windows could not be analyzed.");
   }
+  if (flags.has("conversation_enrichment_unavailable")) {
+    messages.push("Provider enrichment was unavailable; this brief contains the deterministic local baseline only.");
+  }
   if (flags.has("conversation_review_diff_truncated")) {
     messages.push("Reconciliation used a bounded subset of changed lines.");
   }
@@ -138,7 +141,19 @@ export function conversationAnalysisContextRows(
   appendConversationContextRow(rows, "Stated goal", analysis.intent, 2);
   appendConversationContextRow(rows, "Later refinement", analysis.refinements, 2);
   appendConversationContextRow(rows, "Constraint", analysis.constraints, 2);
+  appendConversationContextRow(rows, "Explicit non-goal", analysis.non_goals, 1);
   appendConversationContextRow(rows, "Rejected direction", analysis.rejected_alternatives, 1);
+  appendConversationContextRow(rows, "Agent claim", analysis.claims, 1);
+  appendConversationContextRow(rows, "Claimed validation", analysis.validation_claims, 2);
+  appendConversationContextRow(
+    rows,
+    "Observed validation",
+    (analysis.validation_observations ?? []).map((item) => ({
+      text: `${item.status}: ${item.text}`,
+      event_ids: item.event_ids
+    })),
+    2
+  );
   appendConversationContextRow(rows, "Known gap", analysis.known_gaps, 1);
   return rows;
 }
@@ -180,6 +195,7 @@ export function conversationAnalysisIsPartial(analysis: ConversationAnalysis): b
   return analysis.quality_flags.some((flag) =>
     flag === "conversation_input_truncated" ||
     flag === "conversation_analysis_partial" ||
+    flag === "conversation_enrichment_unavailable" ||
     flag === "conversation_review_diff_truncated" ||
     flag === "conversation_review_commands_truncated" ||
     flag === "conversation_review_requirements_truncated" ||

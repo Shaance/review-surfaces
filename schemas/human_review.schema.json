@@ -642,6 +642,11 @@
         "rejected_alternatives": { "$ref": "#/$defs/conversationAnalysisItems" },
         "claims": { "$ref": "#/$defs/conversationAnalysisItems" },
         "validation_claims": { "$ref": "#/$defs/conversationAnalysisItems" },
+        "validation_observations": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "$ref": "#/$defs/conversationValidationObservation" }
+        },
         "known_gaps": { "$ref": "#/$defs/conversationAnalysisItems" },
         "quality_flags": {
           "type": "array",
@@ -655,6 +660,24 @@
       "type": "array",
       "maxItems": 12,
       "items": { "$ref": "#/$defs/conversationAnalysisItem" }
+    },
+    "conversationValidationObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "event_ids", "status"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "event_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 180 }
+        },
+        "status": { "enum": ["passed", "failed", "unknown"] },
+        "tool": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "command": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
     },
     "reviewerInsight": {
       "type": "object",

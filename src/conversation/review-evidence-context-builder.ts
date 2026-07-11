@@ -404,12 +404,13 @@ function conversationAnalysisEventIds(analysis: ConversationAnalysis): string[] 
 }
 
 function conversationPositiveIntentEventIds(analysis: ConversationAnalysis): string[] {
+  const prohibited = new Set(conversationProhibitionEventIds(analysis));
   return uniqueTruthy([
     ...analysis.intent,
     ...analysis.refinements,
     ...analysis.decisions,
     ...analysis.constraints
-  ].flatMap((item) => item.event_ids));
+  ].flatMap((item) => item.event_ids)).filter((eventId) => !prohibited.has(eventId));
 }
 
 function conversationProhibitionEventIds(analysis: ConversationAnalysis): string[] {

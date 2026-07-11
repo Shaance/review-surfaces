@@ -7,6 +7,8 @@ import { execFileSync } from "node:child_process";
 import { claudeCodeProjectSlug, discoverConversationSession } from "../src/conversation/discovery";
 import { collectInputs, CollectOptions } from "../src/collector/collect";
 import { defaultConfig } from "../src/config/config";
+import { buildMethodology } from "../src/methodology/methodology";
+import { buildAdapterInput, normalizeConversation } from "../src/conversation/registry";
 
 // A minimal but adapter-VALID Claude Code session line (nested message envelope with
 // a Claude block type), carrying a top-level ISO-UTC timestamp for the D7 tie-break.
@@ -16,6 +18,15 @@ function line(timestamp: string, text: string): Record<string, unknown> {
     timestamp,
     uuid: `u-${timestamp}`,
     message: { role: "user", content: [{ type: "text", text }] }
+  };
+}
+
+function claudeToolLine(timestamp: string, name: string, input: Record<string, unknown>): Record<string, unknown> {
+  return {
+    type: "assistant",
+    timestamp,
+    uuid: `tool-${timestamp}-${name}`,
+    message: { role: "assistant", content: [{ type: "tool_use", name, input }] }
   };
 }
 
@@ -41,6 +52,14 @@ function codexMeta(cwd: string, timestamp: string): Record<string, unknown> {
 // item with a Codex item type and a top-level ISO-UTC timestamp.
 function codexLine(timestamp: string, text: string): Record<string, unknown> {
   return { timestamp, type: "response_item", payload: { type: "output_text", text } };
+}
+
+function codexToolLine(timestamp: string, name: string, input: unknown): Record<string, unknown> {
+  return {
+    timestamp,
+    type: "response_item",
+    payload: { type: "custom_tool_call", call_id: `call-${timestamp}`, name, input }
+  };
 }
 
 // Codex rollouts live in a SINGLE GLOBAL store: <root>/.codex/sessions/YYYY/MM/DD/
@@ -131,6 +150,296 @@ test("review-surfaces.METHODOLOGY.4 a session referencing the changed files beat
     assert.equal(discovered.path, onTopic, "the diff-referencing session wins despite being older");
     assert.equal(discovered.matchedChangedFiles, 1, "the match basis reflects the changed-file reference");
     assert.ok(discovered.hash.length === 64, "a sha256 content hash is returned for the cache signature");
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 exact mutation provenance beats a newer audit that quotes the range", () => {
+  const store = freshStore();
+  try {
+    const producer = writeSession(store, "-repo-app", "producer.jsonl", [
+      claudeToolLine("2026-06-17T08:00:00.000Z", "Edit", { file_path: "/repo/app/src/uploader.ts", old_string: "a", new_string: "b" })
+    ]);
+    writeSession(store, "-repo-app", "audit.jsonl", [
+      line("2026-06-17T12:00:00.000Z", "@codex review: src/uploader.ts at reviewed commit abcdef1")
+    ]);
+    const discovered = discoverConversationSession({
+      storeRoot: store,
+      cwd: "/repo/app",
+      changedFiles: ["src/uploader.ts"],
+      headSha: "abcdef1234567890"
+    });
+    assert.ok(discovered);
+    assert.equal(discovered.path, producer);
+    assert.equal(discovered.mutatedChangedFiles, 1);
+    assert.equal(discovered.confidence, "medium");
+    assert.deepEqual(discovered.reasonCodes, ["exact_changed_path_mutation"]);
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 an explicitly failed Claude edit is not producer provenance", () => {
+  const store = freshStore();
+  try {
+    writeSession(store, "-repo-app", "failed-edit.jsonl", [{
+      type: "assistant",
+      timestamp: "2026-06-17T09:00:00.000Z",
+      uuid: "call-envelope",
+      message: {
+        role: "assistant",
+        content: [{
+          type: "tool_use",
+          id: "edit-call",
+          name: "Edit",
+          input: { file_path: "/repo/app/src/uploader.ts", old_string: "a", new_string: "b" }
+        }]
+      }
+    }, {
+      type: "user",
+      timestamp: "2026-06-17T09:00:01.000Z",
+      uuid: "result-envelope",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "edit-call", is_error: true, content: "Edit failed." }]
+      }
+    }]);
+    const discovered = discoverConversationSession({
+      storeRoot: store,
+      cwd: "/repo/app",
+      changedFiles: ["src/uploader.ts"]
+    });
+    assert.equal(discovered?.mutatedChangedFiles, 0);
+    assert.equal(discovered?.confidence, "low");
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 path substrings and backup names are weak non-matches", () => {
+  const store = freshStore();
+  try {
+    writeSession(store, "-repo-app", "audit.jsonl", [
+      line("2026-06-17T12:00:00.000Z", "reviewed src/uploader.ts.bak and mysrc/uploader.ts")
+    ]);
+    const discovered = discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: ["src/uploader.ts"] });
+    assert.ok(discovered);
+    assert.equal(discovered.matchedChangedFiles, 0);
+    assert.equal(discovered.confidence, "low");
+    assert.deepEqual(discovered.reasonCodes, ["recency_only"]);
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 reviewed-SHA text without mutation is not producer proof", () => {
+  const store = freshStore();
+  try {
+    writeSession(store, "-repo-app", "review.jsonl", [
+      line("2026-06-17T12:00:00.000Z", "@codex review src/uploader.ts: reviewed commit abcdef1; all good")
+    ]);
+    const discovered = discoverConversationSession({
+      storeRoot: store,
+      cwd: "/repo/app",
+      changedFiles: ["src/uploader.ts"],
+      headSha: "abcdef1234567890"
+    });
+    assert.ok(discovered);
+    assert.equal(discovered.confidence, "low");
+    assert.equal(discovered.mutatedChangedFiles, 0);
+    assert.ok(discovered.reasonCodes.includes("reviewed_commit_observed"));
+    assert.ok(discovered.reasonCodes.includes("exact_changed_path_mention"));
+    assert.ok(discovered.reasonCodes.includes("audit_or_read_only_session"));
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 Codex apply_patch headers are exact mutation provenance", () => {
+  const store = freshStore();
+  try {
+    const producer = writeCodexSession(store, "2026/06/17", "rollout-2026-06-17T09-00-00-producing.jsonl", [
+      codexMeta("/repo/app", "2026-06-17T09:00:00.000Z"),
+      codexToolLine("2026-06-17T09:00:01.000Z", "apply_patch", "*** Begin Patch\n*** Update File: src/uploader.ts\n@@\n-old\n+new\n*** End Patch")
+    ]);
+    const discovered = discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: ["src/uploader.ts"] });
+    assert.ok(discovered);
+    assert.equal(discovered.path, producer);
+    assert.equal(discovered.mutatedChangedFiles, 1);
+    assert.equal(discovered.confidence, "medium");
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 a correlated failed Codex mutation is not producer provenance", () => {
+  const store = freshStore();
+  try {
+    writeCodexSession(store, "2026/06/17", "rollout-2026-06-17T09-00-00-failed-call.jsonl", [
+      codexMeta("/repo/app", "2026-06-17T09:00:00.000Z"),
+      {
+        timestamp: "2026-06-17T09:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          call_id: "failed-mutation",
+          name: "apply_patch",
+          input: "*** Begin Patch\n*** Update File: src/uploader.ts\n@@\n-old\n+new\n*** End Patch"
+        }
+      },
+      {
+        timestamp: "2026-06-17T09:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          call_id: "failed-mutation",
+          output: JSON.stringify({ exit_code: 1, output: "Patch rejected." })
+        }
+      }
+    ]);
+    const discovered = discoverConversationSession({
+      storeRoot: store,
+      cwd: "/repo/app",
+      changedFiles: ["src/uploader.ts"]
+    });
+    assert.equal(discovered?.mutatedChangedFiles, 0);
+    assert.equal(discovered?.confidence, "low");
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 Codex patch_apply_end status and mutation provenance agree", () => {
+  const store = freshStore();
+  try {
+    const success = writeCodexSession(store, "2026/06/17", "rollout-2026-06-17T09-00-00-success.jsonl", [
+      codexMeta("/repo/app", "2026-06-17T09:00:00.000Z"),
+      codexLine("2026-06-17T09:00:00.500Z", "Applying the uploader patch."),
+      {
+        timestamp: "2026-06-17T09:00:01.000Z",
+        type: "event_msg",
+        payload: { id: "patch-success", type: "patch_apply_end", success: true, changes: { "src/uploader.ts": { kind: "update" } } }
+      }
+    ]);
+    const failed = writeCodexSession(store, "2026/06/17", "rollout-2026-06-17T10-00-00-failed.jsonl", [
+      codexMeta("/repo/app", "2026-06-17T10:00:00.000Z"),
+      codexLine("2026-06-17T10:00:00.500Z", "A later patch attempt failed."),
+      {
+        timestamp: "2026-06-17T10:00:01.000Z",
+        type: "event_msg",
+        payload: { id: "patch-failed", type: "patch_apply_end", status: "failed", changes: { "src/uploader.ts": { kind: "update" } } }
+      }
+    ]);
+    const discovered = discoverConversationSession({
+      storeRoot: store,
+      cwd: "/repo/app",
+      changedFiles: ["src/uploader.ts"]
+    });
+    const normalizedSuccess = normalizeConversation(buildAdapterInput(success, fs.readFileSync(success, "utf8")));
+    const normalizedFailure = normalizeConversation(buildAdapterInput(failed, fs.readFileSync(failed, "utf8")));
+
+    assert.equal(discovered?.path, success, "a failed patch result is not mutation provenance");
+    assert.equal(discovered?.mutatedChangedFiles, 1);
+    assert.equal(normalizedSuccess?.events.find((event) => event.id === "patch-success")?.result_status, "passed");
+    assert.equal(normalizedFailure?.events.find((event) => event.id === "patch-failed")?.result_status, "failed");
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 an incomplete work-budget scan rejects its retained winner", () => {
+  const store = freshStore();
+  try {
+    const producer = writeSession(store, "-repo-app", "producer.jsonl", [
+      claudeToolLine("2026-06-17T09:00:00.000Z", "Edit", { file_path: "/repo/app/src/uploader.ts", old_string: "a", new_string: "b" })
+    ]);
+    const oversized = writeSession(store, "-repo-app", "oversized.jsonl", [
+      line("2026-06-17T10:00:00.000Z", "newer session")
+    ]);
+    fs.truncateSync(oversized, (32 * 1024 * 1024) + 1);
+
+    const discovered = discoverConversationSession({
+      storeRoot: store,
+      cwd: "/repo/app",
+      changedFiles: ["src/uploader.ts"]
+    });
+
+    assert.equal(discovered?.path, producer);
+    assert.equal(discovered?.confidence, "low");
+    assert.equal(discovered?.ambiguous, true);
+    assert.ok(discovered?.reasonCodes.includes("discovery_work_budget_exhausted"));
+    assert.ok(discovered?.reasonCodes.includes("ambiguous_producer_candidates"));
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 equally supported producers are ambiguous", () => {
+  const store = freshStore();
+  try {
+    for (const [name, timestamp] of [["first.jsonl", "2026-06-17T09:00:00.000Z"], ["second.jsonl", "2026-06-17T10:00:00.000Z"]] as const) {
+      writeSession(store, "-repo-app", name, [
+        claudeToolLine(timestamp, "Edit", { file_path: "/repo/app/src/uploader.ts", old_string: "a", new_string: "b" })
+      ]);
+    }
+    const discovered = discoverConversationSession({ storeRoot: store, cwd: "/repo/app", changedFiles: ["src/uploader.ts"] });
+    assert.ok(discovered);
+    assert.equal(discovered.ambiguous, true);
+    assert.equal(discovered.confidence, "low");
+    assert.ok(discovered.reasonCodes.includes("ambiguous_producer_candidates"));
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 mutation timing breaks a producer tie before recency", () => {
+  const store = freshStore();
+  try {
+    const beforeHead = writeSession(store, "-repo-app", "before-head.jsonl", [
+      claudeToolLine("2026-06-17T09:00:00.000Z", "Edit", { file_path: "/repo/app/src/uploader.ts", old_string: "a", new_string: "b" })
+    ]);
+    writeSession(store, "-repo-app", "after-head.jsonl", [
+      claudeToolLine("2026-06-17T12:00:00.000Z", "Edit", { file_path: "/repo/app/src/uploader.ts", old_string: "b", new_string: "c" })
+    ]);
+    const discovered = discoverConversationSession({
+      storeRoot: store,
+      cwd: "/repo/app",
+      changedFiles: ["src/uploader.ts"],
+      headCommittedAt: "2026-06-17T10:00:00.000Z",
+      workingTreeDirty: false
+    });
+    assert.ok(discovered);
+    assert.equal(discovered.path, beforeHead);
+    assert.equal(discovered.ambiguous, false);
+    assert.ok(discovered.reasonCodes.includes("mutation_not_after_head_commit"));
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 a newer narrow dirty-worktree producer beats an older broad producer", () => {
+  const store = freshStore();
+  try {
+    writeSession(store, "-repo-app", "older-broad.jsonl", [
+      claudeToolLine("2026-06-17T08:00:00.000Z", "Edit", { file_path: "/repo/app/src/uploader.ts", old_string: "a", new_string: "b" }),
+      claudeToolLine("2026-06-17T08:01:00.000Z", "Edit", { file_path: "/repo/app/src/retry.ts", old_string: "a", new_string: "b" })
+    ]);
+    const current = writeSession(store, "-repo-app", "current-narrow.jsonl", [
+      claudeToolLine("2026-06-17T12:00:00.000Z", "Edit", { file_path: "/repo/app/src/uploader.ts", old_string: "b", new_string: "c" })
+    ]);
+    const discovered = discoverConversationSession({
+      storeRoot: store,
+      cwd: "/repo/app",
+      changedFiles: ["src/uploader.ts", "src/retry.ts"],
+      workingTreeDirty: true
+    });
+
+    assert.ok(discovered);
+    assert.equal(discovered.path, current);
+    assert.equal(discovered.mutatedChangedFiles, 1);
+    assert.equal(discovered.ambiguous, false);
+    assert.equal(discovered.confidence, "medium");
   } finally {
     fs.rmSync(store, { recursive: true, force: true });
   }
@@ -328,11 +637,21 @@ test("review-surfaces.METHODOLOGY.4 collect() auto-discovers the session and anc
   const store = freshStore();
   try {
     const session = writeSession(store, claudeCodeProjectSlug(tmp), "live.jsonl", [
-      line("2026-06-17T10:00:00.000Z", "implement the uploader")
+      claudeToolLine("2026-06-17T10:00:00.000Z", "Edit", { file_path: path.join(tmp, "README.md"), old_string: "Fixture", new_string: "Updated" })
     ]);
     const result = await collectInputs(collectOptions(tmp, store));
     assert.ok((result.conversationEvents ?? []).length > 0, "discovered events populate the collection");
     assert.equal(result.conversationSource, "claude-code");
+    assert.deepEqual(result.conversationDiscovery, {
+      status: "admitted",
+      confidence: "medium",
+      ambiguous: false,
+      mutated_changed_files: 1,
+      weak_matched_files: 0,
+      reason_codes: ["exact_changed_path_mutation"]
+    });
+    const methodology = await buildMethodology(tmp, result, undefined, []);
+    assert.deepEqual(methodology.conversation_discovery, result.conversationDiscovery, "safe selection provenance persists into the packet methodology surface");
     const anchor = result.conversationEvidencePath ?? "";
     assert.ok(anchor.endsWith("inputs/conversation.normalized.jsonl"), "the persisted anchor is the normalized log");
     assert.ok(!anchor.startsWith("/") && !anchor.includes(".claude"), "the anchor is repo-relative, never the absolute home-dir path");
@@ -371,6 +690,7 @@ test("review-surfaces.METHODOLOGY.4 --no-conversation-discovery suppresses disco
     const result = await collectInputs(collectOptions(tmp, store, { conversationDiscovery: false }));
     assert.equal(result.conversationEvents, undefined, "discovery is off: no events ingested");
     assert.equal(result.conversationEvidencePath, undefined);
+    assert.equal(result.conversationDiscovery, undefined);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.rmSync(store, { recursive: true, force: true });
@@ -382,7 +702,9 @@ test("review-surfaces.PRIVACY.1 a discovered session with an outside-repo --out 
   const store = freshStore();
   const externalOut = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-extout-"));
   try {
-    writeSession(store, claudeCodeProjectSlug(tmp), "live.jsonl", [line("2026-06-17T10:00:00.000Z", "work")]);
+    writeSession(store, claudeCodeProjectSlug(tmp), "live.jsonl", [
+      claudeToolLine("2026-06-17T10:00:00.000Z", "Edit", { file_path: path.join(tmp, "README.md"), old_string: "Fixture", new_string: "Updated" })
+    ]);
     const result = await collectInputs(collectOptions(tmp, store, { outputDir: externalOut }));
     assert.ok((result.conversationEvents ?? []).length > 0, "discovery still ingests events");
     // The normalized log is written OUTSIDE the repo, so no repo-relative path
@@ -395,20 +717,46 @@ test("review-surfaces.PRIVACY.1 a discovered session with an outside-repo --out 
   }
 });
 
-// METHODOLOGY.9: when the picked session references NONE of the reviewed range it was
-// chosen by recency alone, which is a HARD warning (it may be the wrong/stale session),
-// not a silent pick. HEAD..HEAD has no changed files, so the same-repo Claude session
-// matches 0 and the warning must fire while the audit still proceeds.
-test("review-surfaces.METHODOLOGY.9 a recency-only discovery emits a hard 'does not reference the range' warning", async () => {
+test("review-surfaces.CONVERSATION_REVIEW.7 a recency-only discovery is rejected before ingestion", async () => {
   const tmp = initRepo();
   const store = freshStore();
   try {
     writeSession(store, claudeCodeProjectSlug(tmp), "live.jsonl", [line("2026-06-17T10:00:00.000Z", "some work")]);
     const result = await collectInputs(collectOptions(tmp, store));
-    assert.ok((result.conversationEvents ?? []).length > 0, "the session is still ingested (warning, not a hard fail)");
-    const warning = result.diagnostics.find((entry) => /WARNING/.test(entry) && /does NOT reference/.test(entry));
-    assert.ok(warning, "a hard warning names the unreferenced range and points at --conversation");
+    assert.equal(result.conversationEvents, undefined, "a low-confidence session never reaches normalization");
+    assert.equal(result.conversationSource, undefined);
+    assert.equal(result.conversationDiscovery?.status, "rejected");
+    assert.equal(result.conversationDiscovery?.confidence, "low");
+    assert.equal(result.conversationDiscovery?.ambiguous, false);
+    assert.ok(result.conversationDiscovery?.reason_codes.includes("recency_only"));
+    assert.equal(result.conversationEvidencePath, undefined);
+    const warning = result.diagnostics.find((entry) => /WARNING/.test(entry) && /rejected auto-discovered/.test(entry));
+    assert.ok(warning, "a hard warning explains that the candidate was rejected before ingestion");
+    assert.match(warning, /No transcript was normalized, cached, or audited/);
     assert.match(warning, /--conversation/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 ambiguous producers are rejected before ingestion", async () => {
+  const tmp = initRepo();
+  const store = freshStore();
+  try {
+    for (const [name, timestamp] of [["first.jsonl", "2026-06-17T09:00:00.000Z"], ["second.jsonl", "2026-06-17T10:00:00.000Z"]] as const) {
+      writeSession(store, claudeCodeProjectSlug(tmp), name, [
+        claudeToolLine(timestamp, "Edit", { file_path: path.join(tmp, "README.md"), old_string: "Fixture", new_string: "Updated" })
+      ]);
+    }
+    const result = await collectInputs(collectOptions(tmp, store));
+    assert.equal(result.conversationEvents, undefined);
+    assert.equal(result.conversationSource, undefined);
+    assert.equal(result.conversationDiscovery?.status, "rejected");
+    assert.equal(result.conversationDiscovery?.ambiguous, true);
+    assert.ok(result.diagnostics.some((entry) =>
+      /rejected auto-discovered/.test(entry) && /ambiguous_producer_candidates/.test(entry)
+    ));
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.rmSync(store, { recursive: true, force: true });

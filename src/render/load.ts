@@ -111,7 +111,17 @@ export function loadMethodology(outputDir: string): MethodologyModel | null {
     quality_flags: asStringArray(parsed.quality_flags),
     evidence: asArray(parsed.evidence).map(normalizeEvidenceRef),
     workflow_findings: asArray(parsed.workflow_findings).map(normalizeWorkflowFinding),
-    ...(typeof parsed.conversation_source === "string" ? { conversation_source: parsed.conversation_source } : {})
+    ...(typeof parsed.conversation_source === "string" ? { conversation_source: parsed.conversation_source } : {}),
+    ...(isRecord(parsed.conversation_discovery) ? {
+      conversation_discovery: {
+        status: parsed.conversation_discovery.status === "admitted" ? "admitted" : "rejected",
+        confidence: parsed.conversation_discovery.confidence === "high" || parsed.conversation_discovery.confidence === "medium" ? parsed.conversation_discovery.confidence : "low",
+        ambiguous: parsed.conversation_discovery.ambiguous === true,
+        mutated_changed_files: Number(parsed.conversation_discovery.mutated_changed_files) || 0,
+        weak_matched_files: Number(parsed.conversation_discovery.weak_matched_files) || 0,
+        reason_codes: asStringArray(parsed.conversation_discovery.reason_codes)
+      }
+    } : {})
   };
 }
 

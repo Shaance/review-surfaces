@@ -13,11 +13,14 @@ import {
 } from "./analysis-prompt-context";
 import {
   CONVERSATION_ANALYSIS_SCHEMA,
-  degradedConversationAnalysis,
   groundConversationAnalysisResult,
   notAssessedConversationAnalysis
 } from "./analysis-result-grounding";
 import type { ConversationEvent } from "./events";
+import {
+  buildDeterministicConversationBrief,
+  mergeConversationAnalysis
+} from "./deterministic-brief";
 
 export { CONVERSATION_ANALYSIS_STATUSES } from "../contracts/conversation-review";
 export type {
@@ -70,6 +73,17 @@ export async function analyzeConversation(input: AnalyzeConversationInput): Prom
     ...(safe.truncated ? ["conversation_input_truncated"] : []),
     ...(safe.redacted ? ["conversation_input_redacted"] : [])
   ];
+  const baseline = buildDeterministicConversationBrief(
+    safe.events,
+    input.providerName,
+    baseQualityFlags
+  );
+  if (input.providerName === "mock") {
+    return {
+      ...baseline,
+      quality_flags: [...baseline.quality_flags, "conversation_enrichment_not_requested"]
+    };
+  }
 
   if (safe.events.length <= ANALYSIS_CHUNK_SIZE) {
     const result = await input.provider.generateStructured(
@@ -78,7 +92,10 @@ export async function analyzeConversation(input: AnalyzeConversationInput): Prom
       CONVERSATION_ANALYSIS_SCHEMA,
       providerOptions
     );
-    return groundConversationAnalysisResult(result, safe.events, input.providerName, baseQualityFlags);
+    return mergeConversationAnalysis(
+      baseline,
+      groundConversationAnalysisResult(result, safe.events, input.providerName, baseQualityFlags)
+    );
   }
 
   // Long conversations are read in chronological windows, then reduced in a
@@ -126,12 +143,27 @@ export async function analyzeConversation(input: AnalyzeConversationInput): Prom
   }
   if (partials.length === 0) {
     const privacyBlocked = privacyBlockedChunks === chunks.length;
-    return degradedConversationAnalysis(input.providerName, privacyBlocked
-      ? "Conversation analysis was blocked because the log contained high-risk secret material."
-      : "Conversation analysis was unavailable from the configured provider.", [
-      privacyBlocked ? "conversation_analysis_privacy_blocked" : "conversation_analysis_unavailable",
-      ...baseQualityFlags
-    ]);
+    return mergeConversationAnalysis(baseline, {
+      ...baseline,
+      status: "degraded",
+      summary: privacyBlocked
+        ? "Conversation analysis enrichment was blocked because the log contained high-risk secret material."
+        : "Conversation analysis enrichment was unavailable from the configured provider.",
+      intent: [],
+      refinements: [],
+      decisions: [],
+      constraints: [],
+      non_goals: [],
+      rejected_alternatives: [],
+      claims: [],
+      validation_claims: [],
+      validation_observations: [],
+      known_gaps: [],
+      quality_flags: [
+        privacyBlocked ? "conversation_analysis_privacy_blocked" : "conversation_analysis_unavailable",
+        ...baseQualityFlags
+      ]
+    });
   }
 
   const reducerEvents = safe.events.filter((event) => successfulEventIds.has(event.id));
@@ -147,9 +179,12 @@ export async function analyzeConversation(input: AnalyzeConversationInput): Prom
     CONVERSATION_ANALYSIS_SCHEMA,
     providerOptions
   );
-  return groundConversationAnalysisResult(reduced, reducerEvents, input.providerName, [
-    ...baseQualityFlags,
-    ...chunkQualityFlags,
-    ...(failedChunks > 0 ? ["conversation_analysis_partial"] : [])
-  ]);
+  return mergeConversationAnalysis(
+    baseline,
+    groundConversationAnalysisResult(reduced, reducerEvents, input.providerName, [
+      ...baseQualityFlags,
+      ...chunkQualityFlags,
+      ...(failedChunks > 0 ? ["conversation_analysis_partial"] : [])
+    ])
+  );
 }

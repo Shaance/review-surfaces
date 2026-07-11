@@ -2582,6 +2582,7 @@ const NON_REUSABLE_CONVERSATION_FLAGS = new Set([
   "conversation_analysis_unavailable",
   "conversation_analysis_invalid_payload",
   "conversation_analysis_partial",
+  "conversation_enrichment_unavailable",
   "conversation_review_unavailable",
   "conversation_review_invalid_payload"
 ]);
