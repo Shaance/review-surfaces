@@ -216,6 +216,14 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeBroadTestCommand("pnpm run build"), false);
   assert.equal(commandLooksLikeFocusedTestCommand("pnpm run build"), false);
   assert.equal(commandLooksLikeLocalValidationCommand("pnpm run build"), true);
+  assert.equal(commandLooksLikeLocalValidationCommand("CI=1 pnpm test"), true);
+  assert.equal(commandLooksLikeLocalValidationCommand("NODE_OPTIONS='--trace-warnings --no-warnings' pnpm test"), true);
+  assert.equal(commandLooksLikeLocalValidationCommand("rtk /usr/bin/env PATH=/bin /opt/homebrew/bin/pnpm run test"), true);
+  assert.equal(commandLooksLikeLocalValidationCommand("pnpm run check"), true);
+  assert.equal(commandLooksLikeLocalValidationCommand("cargo check"), true);
+  assert.equal(commandLooksLikeLocalValidationCommand("cargo clippy --all-targets"), true);
+  assert.equal(commandLooksLikeLocalValidationCommand("cargo check --help"), false);
+  assert.equal(commandLooksLikeLocalValidationCommand("cargo clippy -h"), false);
   assert.equal(commandLooksLikeLocalValidationCommand("pnpm run build:fast"), true);
   assert.equal(commandLooksLikeLocalValidationCommand("pnpm run lint:fix"), true);
   assert.equal(commandLooksLikeLocalValidationCommand("pnpm run typecheck:ci"), true);

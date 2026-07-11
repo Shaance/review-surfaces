@@ -9,6 +9,7 @@ import { collectInputs, CollectOptions } from "../src/collector/collect";
 import { defaultConfig } from "../src/config/config";
 import { buildMethodology } from "../src/methodology/methodology";
 import { buildAdapterInput, normalizeConversation } from "../src/conversation/registry";
+import { codexProvenance } from "../src/conversation/adapters/codex";
 
 // A minimal but adapter-VALID Claude Code session line (nested message envelope with
 // a Claude block type), carrying a top-level ISO-UTC timestamp for the D7 tie-break.
@@ -348,6 +349,32 @@ test("review-surfaces.CONVERSATION_REVIEW.7 Codex patch_apply_end status and mut
   }
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.7 explicit patch failure overrides completed status", () => {
+  const text = [
+    codexMeta("/repo/app", "2026-06-17T09:00:00.000Z"),
+    {
+      timestamp: "2026-06-17T09:00:01.000Z",
+      type: "event_msg",
+      payload: {
+        id: "contradictory-patch",
+        type: "patch_apply_end",
+        success: false,
+        status: "completed",
+        changes: { "src/uploader.ts": { kind: "update" } }
+      }
+    }
+  ].map((entry) => typeof entry === "string" ? entry : JSON.stringify(entry)).join("\n");
+
+  const provenance = codexProvenance(buildAdapterInput("desktop.jsonl", text), {
+    cwd: "/repo/app",
+    changedFiles: ["src/uploader.ts"]
+  });
+  const normalized = normalizeConversation(buildAdapterInput("desktop.jsonl", text));
+
+  assert.deepEqual(provenance.mutatedPaths, []);
+  assert.equal(normalized?.events.find((event) => event.id === "contradictory-patch")?.result_status, "failed");
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.7 patch_apply_end alone selects the Codex adapter", () => {
   const text = [
     JSON.stringify({ type: "session_meta", payload: { cwd: "/repo/app" } }),
@@ -386,6 +413,28 @@ test("review-surfaces.CONVERSATION_REVIEW.7 an incomplete work-budget scan rejec
     assert.equal(discovered?.ambiguous, true);
     assert.ok(discovered?.reasonCodes.includes("discovery_work_budget_exhausted"));
     assert.ok(discovered?.reasonCodes.includes("ambiguous_producer_candidates"));
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 reports work-budget exhaustion when every candidate is skipped", () => {
+  const store = freshStore();
+  try {
+    const oversized = writeSession(store, "-repo-app", "oversized.jsonl", [
+      line("2026-06-17T10:00:00.000Z", "oversized producing session")
+    ]);
+    fs.truncateSync(oversized, (32 * 1024 * 1024) + 1);
+
+    const discovered = discoverConversationSession({
+      storeRoot: store,
+      cwd: "/repo/app",
+      changedFiles: ["src/uploader.ts"]
+    });
+
+    assert.equal(discovered?.confidence, "low");
+    assert.equal(discovered?.ambiguous, false);
+    assert.ok(discovered?.reasonCodes.includes("discovery_work_budget_exhausted"));
   } finally {
     fs.rmSync(store, { recursive: true, force: true });
   }

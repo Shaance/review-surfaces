@@ -36,6 +36,7 @@ import { AdapterInput } from "./events";
 import type { ConversationProvenance } from "./provenance";
 
 export interface DiscoveredSession {
+  kind: "session";
   // Absolute path to the picked session file. Announced on stderr ONLY; never
   // persisted into a public artifact (it is a username-bearing home-dir path).
   path: string;
@@ -58,6 +59,22 @@ export interface DiscoveredSession {
   ambiguous: boolean;
   reasonCodes: string[];
 }
+
+export interface RejectedDiscovery {
+  kind: "rejected";
+  path?: undefined;
+  adapter?: undefined;
+  content?: undefined;
+  hash?: undefined;
+  matchedChangedFiles: 0;
+  mutatedChangedFiles: 0;
+  weakMatchedFiles: 0;
+  confidence: "low";
+  ambiguous: false;
+  reasonCodes: string[];
+}
+
+export type DiscoveryResult = DiscoveredSession | RejectedDiscovery;
 
 export interface DiscoveryOptions {
   // The home/root under which harness session stores live. Injected so tests point
@@ -423,7 +440,7 @@ function codexCandidates(options: DiscoveryOptions): CandidateScan {
 // winner's bytes are snapshotted ONCE here so parsing and the cache-signature hash
 // see identical content. No store / no candidate -> undefined (caller degrades
 // non-fatally, METHODOLOGY.4).
-export function discoverConversationSession(options: DiscoveryOptions): DiscoveredSession | undefined {
+export function discoverConversationSession(options: DiscoveryOptions): DiscoveryResult | undefined {
   const claude = claudeCandidates(options);
   const codex = codexCandidates(options);
   const candidates = [...claude.candidates, ...codex.candidates];
@@ -435,6 +452,21 @@ export function discoverConversationSession(options: DiscoveryOptions): Discover
     }
   }
   if (best === undefined) {
+    if (scanIncomplete) {
+      // A bounded scan that skipped every candidate is materially different from
+      // an absent store. Return a rejection-only sentinel so the caller persists
+      // the safe reason code and directs the user to --conversation. Its bytes are
+      // never normalized because low-confidence discoveries are rejected first.
+      return {
+        kind: "rejected",
+        matchedChangedFiles: 0,
+        mutatedChangedFiles: 0,
+        weakMatchedFiles: 0,
+        confidence: "low",
+        ambiguous: false,
+        reasonCodes: ["discovery_work_budget_exhausted"]
+      };
+    }
     return undefined;
   }
   const runnerUp = candidates.filter((candidate) => candidate !== best).sort((left, right) =>
@@ -459,6 +491,7 @@ export function discoverConversationSession(options: DiscoveryOptions): Discover
     !best.provenance.mutatedPaths.includes(file)
   ));
   return {
+    kind: "session",
     path: best.path,
     adapter: best.adapter,
     content: best.content,

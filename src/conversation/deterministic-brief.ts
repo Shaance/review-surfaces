@@ -4,6 +4,7 @@ import type {
   ConversationValidationObservation
 } from "../contracts/conversation-review";
 import type { ProviderName } from "../contracts/provider";
+import { commandLooksLikeLocalValidationCommand } from "../core/command-classify";
 import { compareStrings } from "../core/compare";
 import type { SanitizedConversationEvent } from "./analysis-prompt-context";
 import { conversationEventLooksLikeGeneratedPayload } from "./generated-payload";
@@ -172,7 +173,7 @@ function reviewerText(summary: string): string {
 
 function looksLikeValidationCommand(command: string): boolean {
   return command.split(/&&|\|\||;|\n/).some((segment) =>
-    /^(?:rtk\s+)?(?:(?:\/usr\/bin\/env|env)\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)?(?:(?:\S*\/)?(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?(?:test|lint|typecheck|build|check)(?::[\w.-]+)?|(?:\S*\/)?node\s+--test|(?:\S*\/)?tsc|(?:\S*\/)?cargo\s+(?:test|check|clippy)|(?:\S*\/)?go\s+test|(?:\S*\/)?pytest)(?:\s|$)/i.test(segment.trim())
+    commandLooksLikeLocalValidationCommand(segment.trim())
   );
 }
 
@@ -185,7 +186,8 @@ function mergeItems(
   baseline: readonly ConversationAnalysisItem[],
   enrichment: readonly ConversationAnalysisItem[]
 ): ConversationAnalysisItem[] {
-  const result = [...baseline];
+  const result = cap(baseline);
+  if (result.length >= MAX_ITEMS) return result;
   const seen = new Set(result.map(itemKey));
   for (const item of enrichment) {
     const key = itemKey(item);

@@ -147,6 +147,85 @@ test("review-surfaces.CONVERSATION_REVIEW.5 preserves a Codex request embedded a
   }]);
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.6 recognizes validation commands with bare environment assignments", () => {
+  const brief = buildDeterministicConversationBrief([{
+    id: "bare-env-result",
+    actor: "tool",
+    kind: "tool_result",
+    summary: "Tests passed.",
+    command: "NODE_OPTIONS='--max-old-space-size=4096 --trace-warnings' CI=1 pnpm test",
+    result_status: "passed",
+    exit_code: 0,
+    raw_index: 0
+  }], "mock");
+
+  assert.equal(brief.validation_observations?.length, 1);
+  assert.equal(brief.validation_observations?.[0]?.event_ids[0], "bare-env-result");
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 preserves non-test Cargo validation observations", () => {
+  const brief = buildDeterministicConversationBrief(["cargo check", "cargo clippy --all-targets"].map((command, index) => ({
+    id: `cargo-validation-${index}`,
+    actor: "tool",
+    kind: "tool_result",
+    summary: `${command} passed.`,
+    command,
+    result_status: "passed" as const,
+    exit_code: 0,
+    raw_index: index
+  })), "mock");
+
+  assert.deepEqual(brief.validation_observations?.map((item) => item.command), [
+    "cargo check",
+    "cargo clippy --all-targets"
+  ]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 excludes informational Cargo commands from validation evidence", () => {
+  const brief = buildDeterministicConversationBrief(["cargo check --help", "cargo clippy -h"].map((command, index) => ({
+    id: `cargo-help-${index}`,
+    actor: "tool",
+    kind: "tool_result",
+    summary: `${command} exited successfully.`,
+    command,
+    result_status: "passed" as const,
+    exit_code: 0,
+    raw_index: index
+  })), "mock");
+
+  assert.deepEqual(brief.validation_observations, []);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 shares cross-ecosystem execution semantics with command classification", () => {
+  const commands = [
+    ["dotnet test", "passed"],
+    ["swift test", "passed"],
+    ["mvn test", "passed"],
+    ["gradle test", "passed"],
+    ["cargo test --no-run", "passed"],
+    ["go test -c", "passed"],
+    ["go test -list .", "passed"],
+    ["pytest --collect-only", "passed"]
+  ] as const;
+  const brief = buildDeterministicConversationBrief(commands.map(([command, result_status], index) => ({
+    id: `cross-ecosystem-${index}`,
+    actor: "tool",
+    kind: "tool_result",
+    summary: `${command} exited successfully.`,
+    command,
+    result_status,
+    exit_code: 0,
+    raw_index: index
+  })), "mock");
+
+  assert.deepEqual(brief.validation_observations?.map((item) => item.command), [
+    "dotnet test",
+    "swift test",
+    "mvn test",
+    "gradle test"
+  ]);
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.6 real Claude and Codex result shapes drive only structured observations", async () => {
   const cases = [{
     name: "claude-code",
@@ -323,6 +402,26 @@ test("review-surfaces.CONVERSATION_REVIEW.5 successful enrichment preserves ever
   assert.ok(result.decisions.some((item) => item.text === "Provider decision context."));
   assert.ok(result.rejected_alternatives.some((item) => item.text === "Provider rejected direction."));
   assert.ok(result.known_gaps.some((item) => item.text === "Provider-known gap."));
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.5 enriched sections never exceed their schema cap", async () => {
+  const events = Array.from({ length: 12 }, (_, index): ConversationEvent => ({
+    id: `claim-${index}`,
+    actor: "assistant",
+    kind: "message",
+    summary: `I implemented reviewer improvement ${index}.`,
+    raw_index: index
+  }));
+  const provider: ReasoningProvider = {
+    name: "ai-sdk",
+    async generateStructured(): Promise<StructuredResult> {
+      return { ok: true, data: { claims: [{ text: "A thirteenth provider claim.", event_ids: ["claim-0"] }] } };
+    }
+  };
+
+  const result = await analyzeConversation({ provider, providerName: "ai-sdk", events });
+  assert.equal(result.claims.length, 12);
+  assert.ok(!result.claims.some((item) => item.text === "A thirteenth provider claim."));
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.5 bounded briefs retain the original goal and latest corrections", () => {

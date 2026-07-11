@@ -63,6 +63,11 @@ function filePathOf(parsed: Record<string, unknown> | undefined): string | undef
   return undefined;
 }
 
+function patchApplySucceeded(item: Record<string, unknown>): boolean {
+  if (item.success === false || item.status === "failed") return false;
+  return item.success === true || item.status === "completed";
+}
+
 // Codex stores raw `function_call.arguments` (a JSON string like
 // `{"command":"pnpm run test"}` or `{"command":["bash","-lc","pnpm test"]}`).
 // Extract the inner shell command so downstream classifiers see `pnpm test`, not a
@@ -108,7 +113,7 @@ export function codexProvenance(
     if (looksLikeReviewCommand(rawLine)) result.sawReviewCommand = true;
     for (const file of exactMentionedPaths(rawLine, context)) result.mentionedPaths.add(file);
     const item = itemOf(record);
-    const patchSucceeded = item.success === true || item.status === "completed";
+    const patchSucceeded = patchApplySucceeded(item);
     if (item.type === "patch_apply_end" && patchSucceeded && isRecord(item.changes)) {
       let recordedMutation = false;
       for (const changedPath of Object.keys(item.changes)) {
@@ -230,7 +235,7 @@ export const codexAdapter: ConversationAdapter = {
         return;
       }
       if (type === "patch_apply_end") {
-        const succeeded = item.success === true || item.status === "completed";
+        const succeeded = patchApplySucceeded(item);
         events.push({
           id,
           actor: "tool",

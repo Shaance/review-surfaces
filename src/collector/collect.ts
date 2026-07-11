@@ -28,7 +28,7 @@ import {
   TEST_RESULTS_SCHEMA_VERSION,
   TestResults
 } from "../tests-evidence/junit";
-import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, collectWorkingTreeSnapshot, commitTimeAtRef, gitInfoDiagnostics, GitInfo, isCurrentStateHeadRequest, readFileAtRef, readFileBytesAtRef, resolveMergeBaseSha } from "./git";
+import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, collectHeadCommits, collectWorkingTreeSnapshot, commitTimeAtRef, gitInfoDiagnostics, GitInfo, isCurrentStateHeadRequest, readFileAtRef, readFileBytesAtRef, resolveMergeBaseSha } from "./git";
 import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { computeDependencyFacts, DependencyFact } from "../risks/dependency-facts";
 import { computeConfigFacts, ConfigFact } from "../risks/config-facts";
@@ -474,7 +474,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
           cwd: options.cwd,
           changedFiles: [...new Set(changedFiles.flatMap((file) => [file.path, file.old_path].filter((value): value is string => Boolean(value))))],
           headSha: git.head_sha,
-          rangeCommitShas: commits.map((commit) => commit.sha),
+          rangeCommitShas: collectHeadCommits(options.cwd, options.baseRef, options.headRef).map((commit) => commit.sha),
           headCommittedAt: git.head_sha !== "unknown" ? commitTimeAtRef(options.cwd, git.head_sha) : undefined,
           workingTreeDirty: (workingTreeSnapshot?.paths.length ?? 0) > 0
         })
@@ -483,7 +483,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // recency fallbacks, and tied producer candidates are not transcript provenance.
   // Reject them before normalization so they cannot affect privacy, cache input,
   // methodology, or provider analysis. An explicit path remains the user override.
-  const discovered = discoveredCandidate?.confidence !== "low" && discoveredCandidate?.ambiguous !== true
+  const discovered = discoveredCandidate?.kind === "session" && discoveredCandidate.confidence !== "low" && discoveredCandidate.ambiguous !== true
     ? discoveredCandidate
     : undefined;
   const conversationDiscovery = discoveredCandidate ? {
@@ -495,8 +495,11 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     reason_codes: discoveredCandidate.reasonCodes
   } : undefined;
   if (discoveredCandidate && !discovered) {
+    const candidateLabel = discoveredCandidate.kind === "session"
+      ? `conversation session ${discoveredCandidate.path}`
+      : "conversation store scan";
     diagnostics.push(
-      `WARNING: rejected auto-discovered conversation session ${discoveredCandidate.path} before ingestion ` +
+      `WARNING: rejected auto-discovered ${candidateLabel} before ingestion ` +
       `(confidence ${discoveredCandidate.confidence}; reasons ${discoveredCandidate.reasonCodes.join(",")}). ` +
       "No transcript was normalized, cached, or audited. Pass --conversation <path> to explicitly select it."
     );
