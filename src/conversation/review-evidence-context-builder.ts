@@ -6,6 +6,7 @@ import {
   type ConversationReviewRiskModel
 } from "../contracts/conversation-review";
 import { compareStrings } from "../core/compare";
+import type { CommandRule } from "../core/command-classify";
 import { uniqueTruthy } from "../core/guards";
 import type { EvidenceRef } from "../contracts/evidence";
 import type {
@@ -38,6 +39,7 @@ export interface BuildConversationReviewInput {
   coverage?: PrScopedCoverageModel;
   risks?: ConversationReviewRiskModel;
   commandTranscripts?: CommandTranscript[];
+  commandRules?: readonly CommandRule[];
   requirementIds?: readonly string[];
   headSha?: string;
   redactSecrets?: boolean;

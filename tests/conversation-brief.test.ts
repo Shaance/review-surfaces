@@ -350,6 +350,133 @@ test("review-surfaces.CONVERSATION_REVIEW.6 explicit agent claims stay distinct 
   });
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.6 preserves non-JS validation claims without promoting them to observations", () => {
+  const brief = buildDeterministicConversationBrief([
+    ["I ran pytest and it passed", "pytest-claim"],
+    ["`rspec` failed", "rspec-claim"],
+    ["cargo clippy passed", "clippy-claim"]
+  ].map(([summary, id], raw_index) => ({
+    id,
+    actor: "assistant",
+    kind: "message",
+    summary,
+    raw_index
+  })), "mock");
+
+  assert.deepEqual(brief.validation_claims.map((item) => item.event_ids[0]), [
+    "pytest-claim",
+    "rspec-claim",
+    "clippy-claim"
+  ]);
+  assert.deepEqual(brief.validation_observations, []);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 recognizes outcome-first validation claims", () => {
+  const events: ConversationEvent[] = [{
+    id: "outcome-first",
+    actor: "assistant",
+    kind: "message",
+    summary: "Verified: pytest passed.",
+    raw_index: 0
+  }, {
+    id: "configured-outcome-first",
+    actor: "assistant",
+    kind: "message",
+    summary: "Verified by running ./scripts/verify-repo.sh.",
+    raw_index: 1
+  }];
+  const result = buildDeterministicConversationBrief(events, "mock", [], [
+    {
+      id: "verify-repo",
+      match: "exact",
+      command: "./scripts/verify-repo.sh",
+      classification: "validation"
+    }
+  ]);
+
+  assert.deepEqual(result.validation_claims.map((claim) => claim.event_ids[0]), [
+    "outcome-first",
+    "configured-outcome-first"
+  ]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 ignores validation runners inside quoted command arguments", () => {
+  const events: ConversationEvent[] = [{
+    id: "quoted-pipe",
+    actor: "tool",
+    kind: "tool_result",
+    summary: "command completed",
+    command: 'echo "not run | pytest -q"',
+    result_status: "passed",
+    raw_index: 0
+  }];
+  const result = buildDeterministicConversationBrief(events, "mock");
+
+  assert.deepEqual(result.validation_observations, []);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 preserves terse subjectless implementation claims", () => {
+  const brief = buildDeterministicConversationBrief([{
+    id: "implemented",
+    actor: "assistant",
+    kind: "message",
+    summary: "Implemented local conversation evidence.",
+    raw_index: 0
+  }, {
+    id: "updated-bullet",
+    actor: "assistant",
+    kind: "message",
+    summary: "- **Updated** the reviewer hierarchy.",
+    raw_index: 1
+  }], "mock");
+
+  assert.deepEqual(brief.claims.map((item) => item.event_ids[0]), ["implemented", "updated-bullet"]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 honors configured validation wrappers", async () => {
+  const result = await analyzeConversation({
+    provider: mockProvider,
+    providerName: "mock",
+    events: [{
+      id: "wrapper-result",
+      actor: "tool",
+      kind: "tool_result",
+      summary: "Repository verification passed.",
+    command: "./scripts/full-check.sh | tee results.log",
+      result_status: "passed",
+      exit_code: 0,
+      raw_index: 0
+    }],
+    commandRules: [{
+      id: "full-check",
+      match: "exact",
+      command: "./scripts/full-check.sh",
+      classification: "validation"
+    }]
+  });
+
+  assert.deepEqual(result.validation_observations?.map((item) => item.command), [
+    "./scripts/full-check.sh | tee results.log"
+  ]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 recognizes configured wrappers inside validation claims", () => {
+  const brief = buildDeterministicConversationBrief([{
+    id: "wrapper-claim",
+    actor: "assistant",
+    kind: "message",
+    summary: "I ran `./scripts/verify-repo.sh` and it passed.",
+    raw_index: 0
+  }], "mock", [], [{
+    id: "verify-repo",
+    match: "exact",
+    command: "./scripts/verify-repo.sh",
+    classification: "validation"
+  }]);
+
+  assert.deepEqual(brief.validation_claims.map((item) => item.event_ids[0]), ["wrapper-claim"]);
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.5 provider failure preserves the deterministic cited brief", async () => {
   const baseline = buildDeterministicConversationBrief(EVENTS, "ai-sdk");
   const result = await analyzeConversation({

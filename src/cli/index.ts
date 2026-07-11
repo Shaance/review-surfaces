@@ -1181,6 +1181,7 @@ async function buildConversationReviewForAll(
     diff,
     risks: conversationReviewRisksFromPacket(packet.risks),
     commandTranscripts: collection.commandTranscripts,
+    commandRules: collection.commandRules,
     requirementIds,
     headSha: String(collection.manifest.head_sha ?? ""),
     redactSecrets: enrichment.redactSecrets,

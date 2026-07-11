@@ -3,6 +3,7 @@ import {
   type ConversationAnalysis
 } from "../contracts/conversation-review";
 import type { ProviderName, ReasoningProvider } from "../contracts/provider";
+import type { CommandRule } from "../core/command-classify";
 import {
   ANALYSIS_CHUNK_SIZE,
   buildConversationAnalysisChunkPrompt,
@@ -44,6 +45,7 @@ export interface AnalyzeConversationInput {
   events?: ConversationEvent[];
   redactSecrets?: boolean;
   remotePrivacyBlocked?: boolean;
+  commandRules?: readonly CommandRule[];
 }
 
 /**
@@ -76,7 +78,8 @@ export async function analyzeConversation(input: AnalyzeConversationInput): Prom
   const baseline = buildDeterministicConversationBrief(
     safe.events,
     input.providerName,
-    baseQualityFlags
+    baseQualityFlags,
+    input.commandRules
   );
   if (input.providerName === "mock") {
     return {

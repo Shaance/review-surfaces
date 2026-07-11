@@ -4,7 +4,8 @@ import type {
   ConversationValidationObservation
 } from "../contracts/conversation-review";
 import type { ProviderName } from "../contracts/provider";
-import { commandLooksLikeLocalValidationCommand } from "../core/command-classify";
+import { commandLooksLikeLocalValidationCommand, type CommandRule } from "../core/command-classify";
+import { commandSegments } from "../core/command-segments";
 import { compareStrings } from "../core/compare";
 import type { SanitizedConversationEvent } from "./analysis-prompt-context";
 import { conversationEventLooksLikeGeneratedPayload } from "./generated-payload";
@@ -17,12 +18,14 @@ const CORRECTION = /^(?:no\b|actually\b|correction\b|instead\b|change\b|final co
 const CONSTRAINT = /\b(?:must|must not|need to|required|only|without|preserve|keep|do not|don't|never)\b/i;
 const NON_GOAL = /^(?:do not|don't)\b|\b(?:non[- ]goal|out of scope|not in scope|no need to|do not include|don't include|exclude from scope|skip (?:support for|adding))\b/i;
 const AGENT_CLAIM = /\b(?:i|we)\s+(?:added|changed|chose|completed|created|fixed|implemented|kept|preserved|removed|updated|used|wired)\b/i;
+const SUBJECTLESS_AGENT_CLAIM = /(?:^|\n)\s*(?:[-*]\s*)?(?:\*{1,2}|_{1,2})?(?:added|changed|chose|completed|created|fixed|implemented|kept|preserved|removed|updated|used|wired)(?:\*{1,2}|_{1,2})?(?=\s|[.:,;!?]|$)/i;
 const VALIDATION_MENTION = /\b(?:tests?|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test|tsc)\b/i;
 const VALIDATION_OUTCOME = /\b(?:pass(?:ed|es|ing)?|fail(?:ed|ing)?|green|succeed(?:ed)?|successful|validated|verified|errored|errors?)\b/i;
 export function buildDeterministicConversationBrief(
   events: readonly SanitizedConversationEvent[],
   provider: ProviderName,
-  qualityFlags: readonly string[] = []
+  qualityFlags: readonly string[] = [],
+  commandRules: readonly CommandRule[] = []
 ): ConversationAnalysis {
   const ordered = [...events].sort((left, right) =>
     left.raw_index - right.raw_index || compareStrings(left.id, right.id)
@@ -46,14 +49,14 @@ export function buildDeterministicConversationBrief(
     if (NON_GOAL.test(event.summary)) nonGoals.push(item);
   }
   for (const event of assistantEvents) {
-    if (VALIDATION_MENTION.test(event.summary) && VALIDATION_OUTCOME.test(event.summary)) {
+    if (VALIDATION_OUTCOME.test(event.summary) && looksLikeValidationClaim(event.summary, commandRules)) {
       validationClaims.push(itemFromEvent(event));
-    } else if (AGENT_CLAIM.test(event.summary)) {
+    } else if (AGENT_CLAIM.test(event.summary) || SUBJECTLESS_AGENT_CLAIM.test(event.summary)) {
       claims.push(itemFromEvent(event));
     }
   }
   for (const event of ordered) {
-    const observation = validationObservation(event);
+    const observation = validationObservation(event, commandRules);
     if (observation) observations.push(observation);
   }
 
@@ -142,14 +145,17 @@ function isNaturalLanguageEvent(event: SanitizedConversationEvent): boolean {
     !conversationEventLooksLikeGeneratedPayload(text);
 }
 
-function validationObservation(event: SanitizedConversationEvent): ConversationValidationObservation | undefined {
+function validationObservation(
+  event: SanitizedConversationEvent,
+  commandRules: readonly CommandRule[]
+): ConversationValidationObservation | undefined {
   const actor = event.actor.trim().toLowerCase();
   const kind = event.kind.trim().toLowerCase();
   if (actor !== "tool" || (kind !== "tool_result" && kind !== "custom_tool_call_output" && kind !== "function_call_output")) {
     return undefined;
   }
-  if (!event.command || !looksLikeValidationCommand(event.command)) return undefined;
   if (!event.result_status) return undefined;
+  if (!event.command || !looksLikeValidationCommand(event.command, commandRules)) return undefined;
   const text = bound(event.summary, MAX_TEXT) ||
     bound(`${event.command} completed with structured status ${event.result_status}.`, MAX_TEXT);
   return {
@@ -171,9 +177,30 @@ function reviewerText(summary: string): string {
   return requestIndex >= 0 ? summary.slice(requestIndex + marker.length) : summary;
 }
 
-function looksLikeValidationCommand(command: string): boolean {
-  return command.split(/&&|\|\||;|\n/).some((segment) =>
-    commandLooksLikeLocalValidationCommand(segment.trim())
+function looksLikeValidationClaim(text: string, commandRules: readonly CommandRule[]): boolean {
+  if (VALIDATION_MENTION.test(text)) return true;
+  return validationClaimCommandCandidates(text).some((candidate) =>
+    looksLikeValidationCommand(candidate, commandRules)
+  );
+}
+
+function validationClaimCommandCandidates(text: string): string[] {
+  const plain = text.replace(/`([^`\n]+)`/g, "$1").trim();
+  const withoutOutcome = plain
+    .replace(/^\s*(?:verified|validated)(?:\s+by)?(?:\s+running)?\s*:?\s*/i, "")
+    .replace(/\s+(?:pass(?:ed|es|ing)?|fail(?:ed|ing)?|green|succeed(?:ed)?|successful|validated|verified|errored|errors?)[.:;!?]*\s*$/i, "")
+    .trim();
+  const withoutNarration = withoutOutcome
+    .replace(/^\s*(?:[-*]\s*)?(?:(?:i|we)\s+)?(?:ran|run|executed|invoked)\s+/i, "")
+    .replace(/\s+and\s+(?:it|they|the\s+(?:command|suite))\s*$/i, "")
+    .replace(/[,:;.!?]+\s*$/, "")
+    .trim();
+  return [...new Set([withoutNarration, withoutOutcome, plain].filter(Boolean))];
+}
+
+function looksLikeValidationCommand(command: string, commandRules: readonly CommandRule[]): boolean {
+  return commandSegments(command).some((segment) =>
+    commandLooksLikeLocalValidationCommand(segment.trim(), commandRules)
   );
 }
 
