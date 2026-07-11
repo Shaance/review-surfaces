@@ -3,6 +3,14 @@ import { inspectAndRedactSecrets, redactSecrets } from "../privacy/secrets";
 import { changeMapMermaidEmbed, changeMapTitle, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
 import { firstTourLegSnippet } from "./tour-snippet";
 import { renderCompactConversationReviewMarkdown } from "../human/render";
+import {
+  compactDecisionSupportingText,
+  decisionIntentSourceLabel,
+  EMPTY_DECISION_FINDINGS_TEXT,
+  incompleteReviewScopeText,
+  STALE_DECISION_PROJECTION_TEXT,
+  UNAVAILABLE_DECISION_FINDINGS_TEXT
+} from "../human/decision-projection-presentation";
 import type {
   HumanReviewModel,
   ReviewBlocker,
@@ -237,7 +245,12 @@ export function renderHumanPrComment(model: HumanReviewModel, options: RenderHum
     ...(model.generated_from.uncommitted_files > 0
       ? [`_includes ${model.generated_from.uncommitted_files} uncommitted file(s) (working tree)_`, ""]
       : []),
+    ...(incompleteReviewScopeText(model.generated_from.omitted_untracked_files ?? 0)
+      ? [`**${incompleteReviewScopeText(model.generated_from.omitted_untracked_files ?? 0)}**`, ""]
+      : []),
     field(model.summary),
+    "",
+    renderDecisionProjection(model),
     "",
     "### Conversation-aware insights",
     renderCompactConversationReviewMarkdown(model.conversation_analysis, model.review_insights),
@@ -268,6 +281,22 @@ export function renderHumanPrComment(model: HumanReviewModel, options: RenderHum
     markdown: rendered.text,
     blocked: mapEmbed.blocked || depTree.blocked || tourLeg.blocked || rendered.blocked
   };
+}
+
+function renderDecisionProjection(model: HumanReviewModel): string {
+  const projection = model.decision_projection;
+  if (!projection) {
+    return `### Active intent\n${STALE_DECISION_PROJECTION_TEXT}\n\n### Decision findings\n- ${UNAVAILABLE_DECISION_FINDINGS_TEXT}`;
+  }
+  const source = decisionIntentSourceLabel(projection.active_intent.source);
+  const findings = projection.findings.length === 0
+    ? `- ${EMPTY_DECISION_FINDINGS_TEXT}`
+    : projection.findings.map((finding, index) => {
+      const location = finding.path ? ` \`${field(finding.path)}\`` : "";
+      return `${index + 1}. **${field(finding.title)}**${location} - ${field(finding.reason)} Action: ${field(finding.reviewer_action)} (${finding.priority}).`;
+    }).join("\n");
+  const counts = projection.supporting_detail_counts;
+  return `### Active intent\n${field(projection.active_intent.summary)}\n\n_Source: ${source}._\n\n### Decision findings\n${findings}\n\n_${compactDecisionSupportingText(counts)}_`;
 }
 
 function decisionLabel(decision: HumanReviewModel["verdict"]["decision"]): string {

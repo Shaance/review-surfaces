@@ -315,11 +315,22 @@ function structuredDiffFixture() {
   ].join("\n"));
 }
 
+function structuredDiffForPaths(paths: string[]) {
+  return parseStructuredDiff(paths.map((filePath) => [
+    `diff --git a/${filePath} b/${filePath}`,
+    `--- a/${filePath}`,
+    `+++ b/${filePath}`,
+    "@@ -1 +1 @@",
+    "-old",
+    "+new"
+  ].join("\n")).join("\n"));
+}
+
 test("review-surfaces.COVERAGE.3 a current report feeds ranking reasons and emits uncovered/partial evidence cards", () => {
   const model = buildHumanReview({
     packet: packetFixture(),
     prSurface: prSurfaceFixture(),
-    diff: structuredDiffFixture(),
+    diff: structuredDiffForPaths(["schemas/external.schema.json"]),
     coverageEvidence: {
       status: "report",
       source_path: "coverage/lcov.info",
@@ -347,7 +358,7 @@ test("review-surfaces.COVERAGE.2 a stale report (predates head) is recorded but 
   const model = buildHumanReview({
     packet: packetFixture(),
     prSurface: prSurfaceFixture(),
-    diff: structuredDiffFixture(),
+    diff: structuredDiffForPaths(["schemas/external.schema.json"]),
     coverageEvidence: {
       status: "report",
       source_path: "coverage/lcov.info",
@@ -503,10 +514,10 @@ test("review-surfaces.REVIEWER_VALUE.3 additive schema changes stay clarifying a
 test("review-surfaces.REVIEWER_VALUE.3 deterministically breaking schemas create one coherent blocking path", () => {
   const model = buildHumanReview({
     packet: packetFixture(),
-    diff: structuredDiffFixture(),
+    diff: structuredDiffForPaths(["schemas/external.schema.json"]),
     semanticFacts: {
       schema_changes: [{
-        path: "schemas/human_review.schema.json",
+        path: "schemas/external.schema.json",
         properties_added: [],
         properties_removed: [],
         required_added: ["review_insights"],
@@ -526,7 +537,7 @@ test("review-surfaces.REVIEWER_VALUE.3 deterministically breaking schemas create
 
 test("review-surfaces.REVIEWER_VALUE.3 enum additions clarify while enum removals block", () => {
   const schemaChange = (added: string[], removed: string[]) => ({
-    path: "schemas/human_review.schema.json",
+    path: "schemas/external.schema.json",
     properties_added: [],
     properties_removed: [],
     required_added: [],
@@ -536,12 +547,57 @@ test("review-surfaces.REVIEWER_VALUE.3 enum additions clarify while enum removal
   });
   const build = (added: string[], removed: string[]) => buildHumanReview({
     packet: packetFixture(),
-    diff: structuredDiffFixture(),
+    diff: structuredDiffForPaths(["schemas/external.schema.json"]),
     semanticFacts: { schema_changes: [schemaChange(added, removed)], api_changes: [], test_weakening: [] }
   });
 
   assert.equal(build(["defer"], []).blockers.length, 0);
   assert.equal(build([], ["approve"]).blockers.some((blocker) => blocker.id === "BLOCK-SCHEMA-001"), true);
+});
+
+test("review-surfaces.REVIEWER_VALUE.3 strict human-review schema additions remain breaking without explicit migration evidence", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    diff: structuredDiffForPaths(["schemas/human_review.schema.json"]),
+    semanticFacts: {
+      schema_changes: [{
+        path: "schemas/human_review.schema.json",
+        properties_added: ["decision_projection"],
+        properties_removed: [],
+        required_added: ["decision_projection"],
+        required_removed: [],
+        type_changes: [],
+        enum_changes: []
+      }],
+      api_changes: [],
+      test_weakening: []
+    }
+  });
+  assert.ok(model.blockers.some((blocker) => blocker.id.startsWith("BLOCK-SCHEMA-")));
+  assert.ok(model.suggested_comments.some((comment) => comment.severity === "blocking"));
+  assert.ok(model.review_queue.some((item) => item.path === "schemas/human_review.schema.json" && item.priority === "high"));
+});
+
+test("review-surfaces.REVIEWER_VALUE.3 destructive human-review schema changes still block", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    diff: structuredDiffForPaths(["schemas/human_review.schema.json"]),
+    semanticFacts: {
+      schema_changes: [{
+        path: "schemas/human_review.schema.json",
+        properties_added: [],
+        properties_removed: ["legacy_field"],
+        required_added: [],
+        required_removed: [],
+        type_changes: [],
+        enum_changes: []
+      }],
+      api_changes: [],
+      test_weakening: []
+    }
+  });
+  assert.ok(model.blockers.some((blocker) => blocker.id === "BLOCK-SCHEMA-001"));
+  assert.ok(model.suggested_comments.some((comment) => comment.severity === "blocking"));
 });
 
 test("review-surfaces.REVIEWER_VALUE.3 blocker comments are reserved before demoted semantic drafts", () => {
@@ -556,6 +612,7 @@ test("review-surfaces.REVIEWER_VALUE.3 blocker comments are reserved before demo
   }));
   const model = buildHumanReview({
     packet: packetFixture(),
+    diff: structuredDiffForPaths(schemaChanges.map((change) => change.path)),
     semanticFacts: { schema_changes: schemaChanges, api_changes: [], test_weakening: [] },
     config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_suggested_comments: 2 }
   });
@@ -577,6 +634,18 @@ test("review-surfaces.REVIEWER_VALUE.3 coverage blockers survive the global bloc
     manual_review: true
   }));
   const surface = prSurfaceFixture();
+  surface.scope.changed_files.push(...Array.from({ length: 3 }, (_, index) => ({
+    path: `src/critical-${index}.ts`,
+    status: "M",
+    areas: ["REVIEWER_VALUE"],
+    role: "implementation" as const
+  })));
+  surface.scope.changed_files.push(...["one", "two"].map((name) => ({
+    path: `schemas/${name}.schema.json`,
+    status: "M",
+    areas: ["REVIEWER_VALUE"],
+    role: "spec" as const
+  })));
   surface.status = "blocked";
   surface.blocked_reason = "privacy_block";
   surface.risks.candidates = [
@@ -2289,7 +2358,7 @@ test("nonzero validation command evidence blocks merge readiness", () => {
           "pnpm test",
           "Command transcript CMD-PNPM-TEST recorded exit_code=1 and status=failed.",
           "medium",
-          { validationStatus: "valid" }
+          { sha: "abc123", validationStatus: "valid" }
         )
       ]
     }
@@ -3777,7 +3846,7 @@ test("human suggested comments do not duplicate failed-test blocker comments", (
     id: "TEST-FAILED",
     kind: "missing",
     summary: "Parsed test results report one failed test.",
-    evidence: [missingEvidence("Test totals: 1 failed out of 100 cases.")]
+    evidence: [commandEvidence("pnpm test", "Test totals: 1 failed out of 100 cases.", "high", { sha: "abc123", validationStatus: "invalid" })]
   });
 
   const surface = prSurfaceFixture();
@@ -4448,7 +4517,7 @@ function prRiskFixture(rule: PrRiskRule): PrReviewSurfaceModel["risks"]["candida
       category: "security",
       severity: "high",
       summary: "CI secret boundary changed.",
-      evidence: [fileEvidence(".github/workflows/review-surfaces-pr.yml", "Workflow changed.")],
+      evidence: [fileEvidence(".github/workflows/pr-review-comment.yml", "Workflow changed.")],
       suggested_checks: ["Record manual check."]
     },
     schema_contract_change: {

@@ -193,6 +193,43 @@ export interface HumanReviewVerdict {
   reasons: HumanReviewVerdictReason[];
 }
 
+export type DecisionIntentSource = "affected_requirements" | "packet" | "conversation_advisory";
+
+export interface DecisionActiveIntent {
+  summary: string;
+  source: DecisionIntentSource;
+  requirement_ids: string[];
+  event_ids: string[];
+}
+
+export interface DecisionFinding {
+  id: string;
+  root_cause: string;
+  title: string;
+  path?: string;
+  priority: HumanReviewPriority;
+  reason: string;
+  reviewer_action: string;
+  evidence: EvidenceRef[];
+  requirement_ids: string[];
+  risk_ids: string[];
+  source_queue_ids: string[];
+}
+
+export interface DecisionSupportingDetailCounts {
+  total_queue_items: number;
+  projected_queue_items: number;
+  supporting_queue_items: number;
+  affected_requirement_count: number;
+  supporting_requirement_count: number;
+}
+
+export interface DecisionProjection {
+  active_intent: DecisionActiveIntent;
+  findings: DecisionFinding[];
+  supporting_detail_counts: DecisionSupportingDetailCounts;
+}
+
 export interface ReviewQueueItem {
   id: string;
   rank: number;
@@ -713,6 +750,11 @@ export interface HumanReviewModel {
   // every surface inherits the spec-less suppressions (COLD_START.5).
   spec_mode: "acai" | "none";
   verdict: HumanReviewVerdict;
+  // review-surfaces.REVIEWER_VALUE.4-.6: the compact, PR-scoped decision path.
+  // Writers always emit it and the strict schema requires it. Optional in the
+  // TypeScript read contract so renderers can explain a pre-M2 artifact instead
+  // of throwing before the schema validator reports that it is stale.
+  decision_projection?: DecisionProjection;
   summary: string;
   // review-surfaces.NARRATIVE.1: grounded narrative that opens the surface. Always
   // emitted (provider-built or the deterministic fallback) and required by the
@@ -771,6 +813,7 @@ export interface HumanReviewModel {
     // COLD_START.7: working-tree files absorbed into this review. 0 on a clean
     // or pinned-head run; a nonzero count renders on every human surface.
     uncommitted_files: number;
+    omitted_untracked_files?: number;
     human_review_config_signature?: string;
   };
 }

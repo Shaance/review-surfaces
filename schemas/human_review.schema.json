@@ -100,6 +100,9 @@
         }
       }
     },
+    "decision_projection": {
+      "$ref": "#/$defs/decisionProjection"
+    },
     "summary": {
       "type": "string",
       "maxLength": 2000
@@ -524,6 +527,7 @@
         "head_sha": { "type": "string" },
         "packet_signature": { "type": "string", "maxLength": 128 },
         "uncommitted_files": { "type": "integer", "minimum": 0 },
+        "omitted_untracked_files": { "type": "integer", "minimum": 0 },
         "human_review_config_signature": { "type": "string" }
       }
     }
@@ -531,6 +535,67 @@
   "$defs": {
     "confidence": {
       "enum": ["high", "medium", "low", "unknown"]
+    },
+    "decisionProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active_intent", "findings", "supporting_detail_counts"],
+      "properties": {
+        "active_intent": { "$ref": "#/$defs/decisionActiveIntent" },
+        "findings": {
+          "type": "array",
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/decisionFinding" }
+        },
+        "supporting_detail_counts": { "$ref": "#/$defs/decisionSupportingDetailCounts" }
+      }
+    },
+    "decisionActiveIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "source", "requirement_ids", "event_ids"],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "source": { "enum": ["affected_requirements", "packet", "conversation_advisory"] },
+        "requirement_ids": { "$ref": "#/$defs/decisionStringArray" },
+        "event_ids": { "$ref": "#/$defs/decisionStringArray" }
+      }
+    },
+    "decisionFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "root_cause", "title", "priority", "reason", "reviewer_action", "evidence", "requirement_ids", "risk_ids", "source_queue_ids"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "root_cause": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "path": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "priority": { "enum": ["blocker", "high", "medium", "low"] },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "reviewer_action": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "evidence": { "type": "array", "minItems": 1, "maxItems": 6, "items": { "$ref": "#/$defs/evidenceRef" } },
+        "requirement_ids": { "$ref": "#/$defs/decisionStringArray" },
+        "risk_ids": { "$ref": "#/$defs/decisionStringArray" },
+        "source_queue_ids": { "$ref": "#/$defs/decisionStringArray" }
+      }
+    },
+    "decisionSupportingDetailCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total_queue_items", "projected_queue_items", "supporting_queue_items", "affected_requirement_count", "supporting_requirement_count"],
+      "properties": {
+        "total_queue_items": { "type": "integer", "minimum": 0 },
+        "projected_queue_items": { "type": "integer", "minimum": 0 },
+        "supporting_queue_items": { "type": "integer", "minimum": 0 },
+        "affected_requirement_count": { "type": "integer", "minimum": 0 },
+        "supporting_requirement_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "decisionStringArray": {
+      "type": "array",
+      "maxItems": 24,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
     },
     "conversationAnalysisItem": {
       "type": "object",

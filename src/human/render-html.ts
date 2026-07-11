@@ -35,6 +35,14 @@ import { buildGroupDetailViews, detailViewSubGraph } from "./change-graph";
 // (lifted to esc.ts so the SVG emitter uses the same one — RENDER.11).
 import { esc } from "./esc";
 import { RISK_LENS_METADATA } from "./contract";
+import {
+  decisionIntentSourceLabel,
+  EMPTY_DECISION_FINDINGS_TEXT,
+  fullDecisionSupportingText,
+  incompleteReviewScopeText,
+  STALE_DECISION_PROJECTION_TEXT,
+  UNAVAILABLE_DECISION_FINDINGS_TEXT
+} from "./decision-projection-presentation";
 import type { CoverageEvidenceHunk, HumanReviewModel, ReviewQueueItem } from "./contract";
 import type { EvidenceRef } from "../evidence/evidence";
 import type {
@@ -131,10 +139,12 @@ th { color:var(--muted); font-weight:600; }
 <body>
 <h1>Human review</h1>
 <p class="muted">Generated from <code>${esc(model.generated_from.packet_path)}</code> · <code>${esc(model.generated_from.base_ref)}</code> → <code>${esc(model.generated_from.head_ref)}</code> @ <code>${esc(model.generated_from.head_sha)}</code>${model.generated_from.uncommitted_files > 0 ? ` · includes ${model.generated_from.uncommitted_files} uncommitted file(s) (working tree)` : ""}</p>
+${incompleteReviewScopeText(model.generated_from.omitted_untracked_files ?? 0) ? `<p class="callout"><strong>${esc(incompleteReviewScopeText(model.generated_from.omitted_untracked_files ?? 0)!)}</strong></p>` : ""}
 
 <h2 id="verdict">Verdict</h2>
 <p><span class="badge ${esc(model.verdict.decision)}">${esc(decisionLabel(model.verdict.decision))}</span> <span class="muted">confidence: ${esc(model.verdict.confidence)}</span></p>
 <p>${esc(model.summary)}</p>
+${renderDecisionProjection(model)}
 ${renderConversationInsights(model)}
 ${renderHeaderStrip(model, lenses)}
 ${renderThreeQuestions(model)}
@@ -291,6 +301,19 @@ ${renderScoreboardFooter(model)}
   }
   const notice = `<p class="muted" data-excerpt-redaction="blocked">⚠ A high-confidence secret was redacted from this review.</p>`;
   return body.replace("<h1>Human review</h1>", `<h1>Human review</h1>\n${notice}`);
+}
+
+function renderDecisionProjection(model: HumanReviewModel): string {
+  const projection = model.decision_projection;
+  if (!projection) {
+    return `<h2 id="active-intent">Active intent</h2><p class="muted">${esc(STALE_DECISION_PROJECTION_TEXT)}</p><h2 id="decision-findings">Decision findings</h2><p class="muted">${esc(UNAVAILABLE_DECISION_FINDINGS_TEXT)}</p>`;
+  }
+  const source = decisionIntentSourceLabel(projection.active_intent.source);
+  const findings = projection.findings.length === 0
+    ? `<p class="muted">${esc(EMPTY_DECISION_FINDINGS_TEXT)}</p>`
+    : `<ol>${projection.findings.map((finding) => `<li><strong>${esc(finding.title)}</strong>${finding.path ? ` <code>${esc(finding.path)}</code>` : ""} — ${esc(finding.reason)}<br><span class="muted">Action: ${esc(finding.reviewer_action)} (${esc(finding.priority)}; ${esc(finding.root_cause)})</span></li>`).join("")}</ol>`;
+  const counts = projection.supporting_detail_counts;
+  return `<h2 id="active-intent">Active intent</h2><p>${esc(projection.active_intent.summary)}</p><p class="muted">Source: ${esc(source)}.</p><h2 id="decision-findings">Decision findings</h2>${findings}<p class="muted">${esc(fullDecisionSupportingText(counts))}</p>`;
 }
 
 function lensesForItem(model: HumanReviewModel, item: ReviewQueueItem): string[] {

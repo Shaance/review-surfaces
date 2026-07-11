@@ -111,6 +111,10 @@
           "type": "integer",
           "minimum": 0
         },
+        "omitted_untracked_files": {
+          "type": "integer",
+          "minimum": 0
+        },
         "gate_remote_blocked": {
           "type": "boolean"
         },

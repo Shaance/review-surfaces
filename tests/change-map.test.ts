@@ -61,6 +61,17 @@ function model(graph: ChangeGraph, legs: HumanReviewModel["reading_order"]["legs
     mode: "repo",
     spec_mode: "acai",
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
+    decision_projection: {
+      active_intent: { summary: "Change map fixture intent.", source: "packet", requirement_ids: [], event_ids: [] },
+      findings: [],
+      supporting_detail_counts: {
+        total_queue_items: 0,
+        projected_queue_items: 0,
+        supporting_queue_items: 0,
+        affected_requirement_count: 0,
+        supporting_requirement_count: 0
+      }
+    },
     summary: "Change map fixture.",
     narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
     conversation_analysis: notAssessedConversationAnalysis("mock"),

@@ -102,6 +102,16 @@ export function missingEvidence(note: string): EvidenceRef {
   };
 }
 
+export function uniqueEvidenceRefs(values: readonly EvidenceRef[]): EvidenceRef[] {
+  const seen = new Set<string>();
+  return values.filter((ref) => {
+    const key = JSON.stringify(ref);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 const LLM_PROPOSED_PREFIX = "LLM-proposed:";
 
 /**

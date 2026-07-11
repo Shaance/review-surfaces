@@ -30,6 +30,7 @@ import {
   hostileConversationInsight,
   hostileConversationTitleClosesEmphasis
 } from "./helpers/conversation-review";
+import { decisionSurface } from "./helpers/decision-projection";
 
 function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
   return {
@@ -437,12 +438,22 @@ test("review-surfaces.HUMAN_TRUST.6 the verdict surfaces the top in-diff risk co
   packet.risks.missing_manual_checks = [
     {
       id: "MANUAL-001",
-      acai_id: "review-surfaces.CLI.1",
-      summary: "Missing manual review check for review-surfaces.CLI.1.",
-      manual_check: "Inspect the CLI before trusting coverage."
+      acai_id: "review-surfaces.REVIEWER_VALUE.4",
+      summary: "Missing manual review check for review-surfaces.REVIEWER_VALUE.4.",
+      manual_check: "Inspect the reviewer decision surface before trusting coverage."
     }
   ] as unknown as ReviewPacket["risks"]["missing_manual_checks"];
-  const built = buildHumanReview({ packet });
+  const diff = parseStructuredDiff(
+    [
+      "diff --git a/schemas/human_review.schema.json b/schemas/human_review.schema.json",
+      "--- a/schemas/human_review.schema.json",
+      "+++ b/schemas/human_review.schema.json",
+      "@@ -1 +1 @@",
+      "-{}",
+      "+{\"changed\":true}"
+    ].join("\n") + "\n"
+  );
+  const built = buildHumanReview({ packet, diff, prSurface: decisionSurface(["schemas/human_review.schema.json"]) });
   const reasonIds = built.verdict.reasons.map((reason) => reason.id);
   assert.ok(reasonIds.includes("READY-MISSING-EVIDENCE"), "the soft missing-evidence reason is present");
   const riskReason = built.verdict.reasons.find((reason) => reason.id === "READY-RISKS-PRESENT");
@@ -530,7 +541,17 @@ test("review-surfaces.HUMAN_TRUST.6 the reviewable_with_attention verdict (no mi
     { id: "RISK-LOW", category: "release", severity: "low", summary: "A low unrelated risk.", evidence: [{ kind: "file", path: "docs/unrelated.md", confidence: "low" }], suggested_checks: ["Skim it."] },
     { id: "RISK-MED", category: "testing", severity: "medium", summary: "A medium schema-contract risk.", evidence: [{ kind: "file", path: "schemas/x.json", confidence: "high" }], suggested_checks: ["Version it."] }
   ] as unknown as ReviewPacket["risks"]["items"];
-  const built = buildHumanReview({ packet });
+  const diff = parseStructuredDiff(
+    [
+      "diff --git a/schemas/x.json b/schemas/x.json",
+      "--- a/schemas/x.json",
+      "+++ b/schemas/x.json",
+      "@@ -1 +1 @@",
+      "-{}",
+      "+{\"changed\":true}"
+    ].join("\n") + "\n"
+  );
+  const built = buildHumanReview({ packet, diff });
   assert.equal(built.verdict.decision, "reviewable_with_attention", "no missing evidence + a medium risk => reviewable_with_attention");
   const riskReason = built.verdict.reasons.find((reason) => reason.id === "READY-RISKS-PRESENT");
   assert.ok(riskReason, "the risk reason is present");

@@ -5,6 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { CLI, runCli } from "./helpers/cli-repo";
+import { MAX_UNTRACKED_REVIEW_BYTES } from "../src/collector/git";
+import type { HumanReviewModel } from "../src/human/contract";
+import { renderHumanPrComment } from "../src/render/pr-comment";
+import { renderStickySummary } from "../src/render/sticky-summary";
 
 // Release quick-wins uplift Phase 1 (QUICK_WINS_UPLIFT_GOAL.md): range truth.
 // COLD_START.6 — base auto-resolution with a hard error replacing the silent
@@ -357,6 +361,9 @@ test("review-surfaces.COLD_START.7 a HEAD review with a dirty tree announces the
     const manifest = readManifest(tmp);
     assert.equal(manifest.uncommitted_files, 2, "the manifest must persist the uncommitted count");
 
+    const patch = fs.readFileSync(path.join(tmp, ".review-surfaces", "inputs", "diff.patch"), "utf8");
+    assert.match(patch, /diff --git a\/c\.txt b\/c\.txt/, "the structured diff must include untracked files it counts as reviewed");
+
     const md = fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.md"), "utf8");
     assert.match(md, /includes 2 uncommitted file\(s\) \(working tree\)/, "human_review.md must carry the line");
     // PR #79 round 4: the warning belongs in the HEADER — a reviewer must see
@@ -365,6 +372,7 @@ test("review-surfaces.COLD_START.7 a HEAD review with a dirty tree announces the
       md.indexOf("includes 2 uncommitted file(s)") < md.indexOf("## Verdict"),
       "the uncommitted line must appear in the header before the verdict"
     );
+    assert.match(md, /`c\.txt`/, "the human review must not count an untracked file while omitting it from reviewer scope");
     const html = fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.html"), "utf8");
     assert.match(html, /includes 2 uncommitted file\(s\) \(working tree\)/, "the cockpit must carry the line");
 
@@ -378,6 +386,39 @@ test("review-surfaces.COLD_START.7 a HEAD review with a dirty tree announces the
     assert.equal(legacy.status, 0, legacy.stderr);
     const legacyComment = fs.readFileSync(path.join(tmp, ".review-surfaces", "comment.md"), "utf8");
     assert.match(legacyComment, /includes 2 uncommitted file\(s\) \(working tree\)/, "the default comment must carry the line");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.REVIEWER_VALUE.5 omitted untracked scope survives the full local report workflow", () => {
+  const tmp = makeRepo("main");
+  try {
+    commitFile(tmp, "README.md", "# repo\n", "init");
+    fs.writeFileSync(path.join(tmp, "reviewable.ts"), "export const reviewed = true;\n");
+    fs.writeFileSync(path.join(tmp, "oversized.bin"), Buffer.alloc(MAX_UNTRACKED_REVIEW_BYTES + 1));
+    const result = runCli(tmp, ["all", "--provider", "mock", "--base", "HEAD", "--head", "HEAD"]);
+    assert.equal(result.status, 0, result.stderr);
+
+    const manifest = readManifest(tmp);
+    const packet = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "review_packet.json"), "utf8")) as { manifest: Record<string, unknown> };
+    const model = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8")) as HumanReviewModel;
+    assert.equal(manifest.uncommitted_files, 1);
+    assert.equal(manifest.omitted_untracked_files, 1);
+    assert.equal(packet.manifest.omitted_untracked_files, 1);
+    assert.notEqual(model.verdict.decision, "probably_safe");
+
+    const surfaces = [
+      fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.md"), "utf8"),
+      fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.html"), "utf8"),
+      renderStickySummary(model).markdown,
+      renderHumanPrComment(model).markdown
+    ];
+    for (const surface of surfaces) {
+      assert.match(surface, /Review scope incomplete/);
+      assert.match(surface, /1 untracked file\(s\).*omitted/);
+      assert.doesNotMatch(surface, /includes 2 uncommitted/);
+    }
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

@@ -1,5 +1,6 @@
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
 import { isRegularFile } from "../core/files";
 import { compareStrings } from "../core/compare";
 
@@ -37,6 +38,26 @@ export interface DiffResult {
   text: string;
   diffSource: DiffSource;
   diagnostics: string[];
+}
+
+export interface WorkingTreeSnapshot {
+  status: string | undefined;
+  paths: string[];
+  untracked: { paths: string[]; omitted: number; omitted_entries: string[] };
+}
+
+export const MAX_UNTRACKED_REVIEW_FILES = 200;
+export const MAX_UNTRACKED_REVIEW_BYTES = 10 * 1024 * 1024;
+
+export function collectWorkingTreeSnapshot(
+  cwd: string,
+  isExcludedWorkingTreePath?: (filePath: string) => boolean
+): WorkingTreeSnapshot {
+  const status = git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  const paths = status
+    ? parsePorcelainStatusOutput(status).map((entry) => entry.filePath).filter(Boolean).sort(compareStrings)
+    : [];
+  return { status, paths, untracked: selectUntrackedFiles(cwd, status, isExcludedWorkingTreePath) };
 }
 
 export function collectGitInfo(cwd: string, baseRef: string, headRef: string): GitInfo {
@@ -180,7 +201,8 @@ export function collectChangedFiles(
   // COLD_START.7: pure working-tree entries matching this predicate (the
   // tool's own artifact locations) are not reviewed changes. Range entries are
   // never filtered — a committed change to a tracked artifact stays reviewable.
-  isExcludedWorkingTreePath?: (filePath: string) => boolean
+  isExcludedWorkingTreePath?: (filePath: string) => boolean,
+  workingTreeSnapshot?: WorkingTreeSnapshot
 ): ChangedFilesResult {
   const diagnostics: string[] = [];
   const byPath = new Map<string, ChangedFile>();
@@ -205,10 +227,23 @@ export function collectChangedFiles(
     }
   }
 
-  const statusOutput = includeWorkingTree ? git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]) : undefined;
+  const snapshot = includeWorkingTree
+    ? workingTreeSnapshot ?? collectWorkingTreeSnapshot(cwd, isExcludedWorkingTreePath)
+    : undefined;
+  const statusOutput = snapshot?.status;
+  const untrackedSelection = snapshot?.untracked ?? { paths: [], omitted: 0, omitted_entries: [] };
+  const selectedUntracked = new Set(untrackedSelection.paths);
+  if (untrackedSelection.omitted > 0) {
+    diagnostics.push(
+      `omitted ${untrackedSelection.omitted} untracked file(s) beyond the ${MAX_UNTRACKED_REVIEW_FILES}-file / ${MAX_UNTRACKED_REVIEW_BYTES}-byte review budget`
+    );
+  }
   if (statusOutput) {
     for (const { status, filePath, oldPath } of parsePorcelainStatusOutput(statusOutput)) {
       if (!filePath || filePath.endsWith("/") || filePath === ".DS_Store") {
+        continue;
+      }
+      if (status === "??" && !selectedUntracked.has(filePath)) {
         continue;
       }
       const existing = byPath.get(filePath);
@@ -299,7 +334,9 @@ export function collectDiff(
   cwd: string,
   baseRef: string,
   headRef: string,
-  includeWorkingTree: boolean = isCurrentStateHeadRequest(cwd, headRef)
+  includeWorkingTree: boolean = isCurrentStateHeadRequest(cwd, headRef),
+  isExcludedWorkingTreePath?: (filePath: string) => boolean,
+  workingTreeSnapshot?: WorkingTreeSnapshot
 ): DiffResult {
   const diagnostics: string[] = [];
   const rangeDiff = git(cwd, ["diff", `${baseRef}...${headRef}`]);
@@ -312,11 +349,66 @@ export function collectDiff(
   // literal-HEAD review; a pinned head gets the pure range diff. For the
   // literal-HEAD case, text is computed identically to before (same parts, same
   // Boolean filter, same join) so inputs/diff.patch bytes are unchanged.
+  const untrackedSelection = includeWorkingTree
+    ? (workingTreeSnapshot ?? collectWorkingTreeSnapshot(cwd, isExcludedWorkingTreePath)).untracked
+    : { paths: [], omitted: 0, omitted_entries: [] };
+  if (untrackedSelection.omitted > 0 && workingTreeSnapshot === undefined) {
+    diagnostics.push(
+      `omitted ${untrackedSelection.omitted} untracked file(s) beyond the ${MAX_UNTRACKED_REVIEW_FILES}-file / ${MAX_UNTRACKED_REVIEW_BYTES}-byte review budget`
+    );
+  }
+  const untrackedDiffs = untrackedSelection.paths.map((filePath) => gitUntrackedDiff(cwd, filePath));
   const parts = [
     rangeDiff,
-    ...(includeWorkingTree ? [git(cwd, ["diff", "--cached"]), git(cwd, ["diff"])] : [])
+    ...(includeWorkingTree ? [git(cwd, ["diff", "--cached"]), git(cwd, ["diff"]), ...untrackedDiffs] : [])
   ].filter((part): part is string => Boolean(part));
   return { text: parts.join("\n"), diffSource, diagnostics };
+}
+
+function selectUntrackedFiles(
+  cwd: string,
+  status: string | undefined,
+  isExcluded?: (filePath: string) => boolean
+): { paths: string[]; omitted: number; omitted_entries: string[] } {
+  if (!status) return { paths: [], omitted: 0, omitted_entries: [] };
+  const candidates = parsePorcelainStatusOutput(status)
+    .filter((entry) => entry.status === "??" && !isExcluded?.(entry.filePath))
+    .map((entry) => entry.filePath)
+    .sort(compareStrings);
+  const paths: string[] = [];
+  let bytes = 0;
+  const omittedEntries: string[] = [];
+  for (const filePath of candidates) {
+    try {
+      const stat = fs.statSync(path.resolve(cwd, filePath));
+      if (!stat.isFile()) continue;
+      if (paths.length >= MAX_UNTRACKED_REVIEW_FILES || bytes + stat.size > MAX_UNTRACKED_REVIEW_BYTES) {
+        omittedEntries.push(`${filePath}:${stat.size}`);
+        continue;
+      }
+      paths.push(filePath);
+      bytes += stat.size;
+    } catch {
+      continue;
+    }
+  }
+  return { paths, omitted: omittedEntries.length, omitted_entries: omittedEntries };
+}
+
+// `git diff --no-index` exits 1 when it successfully found a difference, so it
+// cannot use the ordinary git() helper (which treats every nonzero status as a
+// failure). Its output is the same parseable unified patch shape as tracked
+// changes, including a binary marker instead of reading binary bytes as text.
+function gitUntrackedDiff(cwd: string, filePath: string): string {
+  const result = spawnSync(
+    "git",
+    ["diff", "--no-index", "--no-ext-diff", "--", "/dev/null", filePath],
+    { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 20 * 1024 * 1024 }
+  );
+  if ((result.status !== 0 && result.status !== 1) || typeof result.stdout !== "string") {
+    throw new Error(`could not generate a review patch for untracked file ${filePath}`);
+  }
+  return result.stdout.trimEnd();
 }
 
 export function collectCommits(cwd: string, baseRef: string, headRef: string): Array<Record<string, string>> {

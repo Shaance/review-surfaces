@@ -65,6 +65,17 @@ export function emptySemanticChangeFacts(): SemanticChangeFacts {
   return { schema_changes: [], api_changes: [], test_weakening: [] };
 }
 
+export function isBreakingSchemaChange(change: SchemaContractChange): boolean {
+  return change.properties_removed.length > 0 ||
+    change.required_added.length > 0 ||
+    change.type_changes.length > 0 ||
+    change.enum_changes.some((entry) => entry.removed.length > 0);
+}
+
+export function isBreakingApiChange(change: ApiSurfaceChange): boolean {
+  return change.exports_removed.length > 0 || change.signatures_changed.length > 0;
+}
+
 // Shared, surface-agnostic renderings of the two compound schema-change fields,
 // so the queue/comment prose (human-review.ts) and the rendered facts section
 // (render.ts) cannot drift on the same data shape.

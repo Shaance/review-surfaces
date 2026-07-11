@@ -97,6 +97,24 @@ Exit criteria:
 - internal exports and ordinary layer edges are not treated as public breakage;
 - a large real PR remains useful above the fold and within explicit density budgets.
 
+Implementation status (2026-07-11):
+
+- added a schema-backed decision projection with authoritative active intent,
+  at most five bounded root-cause findings, and explicit supporting-ledger counts;
+- made verdict, blockers, trust, validation, and projection share one reviewed-range
+  admission policy, including clean-worktree/current-head validation provenance;
+- canonicalized public/persisted contract removals and kept internal exports and
+  ordinary import edges outside the approval-changing projection;
+- made untracked working-tree review bounded and consistent across changed-file and
+  diff artifacts, with privacy-aware selection and an explicit incomplete-scope
+  warning when files are omitted;
+- rendered verdict → intent → findings before supporting machinery on Markdown,
+  HTML, sticky, and PR-comment surfaces;
+- decomposed admission, projection, presentation, and focused regression suites;
+- explicitly deferred batching the bounded per-untracked-file Git diff subprocesses:
+  the current 200-file / 10 MiB cap is correct and deterministic, while an in-process
+  patch emitter would add path-quoting and binary-diff risk without reviewer-value gain.
+
 ## Milestone 3 — local-first conversation intelligence
 
 **Goal:** A correct, useful conversation brief exists without a remote provider,
@@ -192,4 +210,3 @@ Every PR must also pass:
 - 2026-07-10: real-session validity and reviewer-value metrics are release gates.
 - 2026-07-10: iterative simplification stops only after two consecutive audits
   produce no actionable P0/P1 findings.
-
