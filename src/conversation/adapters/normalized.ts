@@ -13,6 +13,7 @@ import { isRecord } from "../../core/guards";
 import { parseYaml } from "../../core/simple-yaml";
 import { AdapterInput, ConversationAdapter, ConversationEvent } from "../events";
 import { redactText } from "../field";
+import { isCodexItemType, isCodexRecord } from "./codex-shapes";
 
 function evtId(index: number): string {
   return `evt_${String(index + 1).padStart(4, "0")}`;
@@ -74,11 +75,7 @@ function hasRawTranscriptLine(text: string): boolean {
     }
     const message = isRecord(record.message) ? record.message : record;
     const isClaudeEnvelope = typeof message.role === "string" && (Array.isArray(message.content) || typeof message.content === "string");
-    const item = isRecord(record.payload) ? record.payload : record;
-    const isCodexItem =
-      (typeof item.type === "string" && /^(input_text|output_text|function_call|function_call_output)$/.test(item.type)) ||
-      typeof item.call_id === "string";
-    if (isClaudeEnvelope || isCodexItem) {
+    if (isClaudeEnvelope || isCodexRecord(record)) {
       return true;
     }
   }
@@ -91,10 +88,14 @@ function looksNormalizedJsonl(record: Record<string, unknown>): boolean {
   if (Array.isArray(record.content) || isRecord(record.message)) {
     return false;
   }
-  if (typeof record.type === "string" && /^(input_text|output_text|function_call|function_call_output)$/.test(record.type)) {
+  if (isCodexItemType(record.type)) {
     return false;
   }
   return "actor" in record || "summary" in record || "kind" in record;
+}
+
+function isDefinitiveNormalizedJsonl(record: Record<string, unknown>): boolean {
+  return looksNormalizedJsonl(record) && ("actor" in record || "kind" in record);
 }
 
 export const normalizedAdapter: ConversationAdapter = {
@@ -112,7 +113,8 @@ export const normalizedAdapter: ConversationAdapter = {
       // `{type:"summary", summary:...}` meta line has a `summary` field), decline
       // if a real Claude/Codex envelope appears later — let that adapter, which
       // handles meta lines, claim the file instead of losing its tool structure.
-      return looksNormalizedJsonl(firstRecord) && !hasRawTranscriptLine(input.text);
+      return looksNormalizedJsonl(firstRecord) &&
+        (isDefinitiveNormalizedJsonl(firstRecord) || !hasRawTranscriptLine(input.text));
     }
     // Plain text: a non-JSON first line. A leading `{`/`[`, or a raw harness
     // transcript line hiding behind a banner/header, means a raw adapter should

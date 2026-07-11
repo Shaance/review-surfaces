@@ -10,34 +10,14 @@
 import { isRecord } from "../../core/guards";
 import { AdapterInput, ConversationAdapter, ConversationEvent } from "../events";
 import { redactBoundedBody, redactPath, redactText, stringify } from "../field";
-
-const CODEX_ITEM_TYPES = new Set([
-  "input_text",
-  "output_text",
-  "function_call",
-  "function_call_output",
-  "custom_tool_call",
-  "custom_tool_call_output",
-  "agent_message",
-  "user_message"
-]);
+import { CODEX_ITEM_TYPES, isCodexRecord } from "./codex-shapes";
 
 function itemOf(record: Record<string, unknown>): Record<string, unknown> {
   return isRecord(record.payload) ? record.payload : record;
 }
 
 function isCodexItem(record: Record<string, unknown>): boolean {
-  const item = itemOf(record);
-  if (typeof item.type === "string" && CODEX_ITEM_TYPES.has(item.type)) {
-    return true;
-  }
-  if (typeof item.call_id === "string") {
-    return true;
-  }
-  if (item.type === "message" && Array.isArray(item.content)) {
-    return item.content.some((block) => isRecord(block) && typeof block.type === "string" && CODEX_ITEM_TYPES.has(block.type));
-  }
-  return false;
+  return isCodexRecord(record);
 }
 
 function recordOfToolInput(args: unknown): Record<string, unknown> | undefined {

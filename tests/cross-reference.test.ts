@@ -88,6 +88,34 @@ test("review-surfaces.METHODOLOGY.8 a tool turn naming the changed file does NOT
   assert.ok(signal(findings, "risky_no_security"), "tool path text must not suppress the signal");
 });
 
+test("review-surfaces.REVIEWER_VALUE.2 runtime metadata cannot suppress discussion-gap signals", () => {
+  const metadata: ConversationEvent[] = [{
+    id: "meta",
+    actor: "system",
+    kind: "metadata",
+    summary: "security tests compatibility migration reviewed",
+    raw_index: 0
+  }, {
+    id: "custom-tool",
+    actor: "Assistant",
+    kind: "CUSTOM_TOOL_CALL_OUTPUT",
+    summary: "security tests compatibility migration reviewed",
+    raw_index: 1
+  }, {
+    id: "developer",
+    actor: "Developer",
+    kind: "message",
+    summary: "security tests compatibility migration reviewed",
+    raw_index: 2
+  }];
+  const changed = [file("src/auth/login.ts"), file("schemas/public.schema.json", "D")];
+  const findings = computeCrossReferenceSignals(collection(changed), metadata);
+
+  assert.ok(signal(findings, "risky_no_security"));
+  assert.ok(signal(findings, "impl_no_test"));
+  assert.ok(signal(findings, "api_no_compat"));
+});
+
 test("review-surfaces.METHODOLOGY.8 impl_no_test fires when impl changed with no test change/run/talk", () => {
   const sig = signal(computeCrossReferenceSignals(collection([file("src/uploader.ts")]), talk("implemented the retry")), "impl_no_test");
   assert.ok(sig);

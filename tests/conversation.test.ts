@@ -134,6 +134,31 @@ test("review-surfaces.REVIEWER_VALUE.2 Codex event-message-only rollouts auto-de
   assert.deepEqual(result?.events.map((event) => event.actor), ["user", "assistant"]);
 });
 
+test("review-surfaces.REVIEWER_VALUE.2 bannered Codex event-message rollouts bypass normalized plain text", () => {
+  const result = normalizeConversation(textInput("rollout.jsonl", [
+    "Codex rollout export",
+    JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "Please audit the report." } }),
+    JSON.stringify({ type: "event_msg", payload: { type: "agent_message", message: "I reviewed the report." } })
+  ].join("\n")));
+
+  assert.equal(result?.adapter, "codex");
+  assert.deepEqual(result?.events.map((event) => event.actor), ["user", "assistant"]);
+});
+
+test("review-surfaces.REVIEWER_VALUE.2 bannered nested Codex message envelopes bypass normalized plain text", () => {
+  const result = normalizeConversation(textInput("rollout.jsonl", [
+    "Codex rollout export",
+    JSON.stringify({
+      type: "response_item",
+      payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Review complete." }] }
+    })
+  ].join("\n")));
+
+  assert.equal(result?.adapter, "codex");
+  assert.equal(result?.events[0]?.actor, "assistant");
+  assert.equal(result?.events[0]?.summary, "Review complete.");
+});
+
 test("review-surfaces.REVIEWER_VALUE.1 normalized event ids are bounded and collision-safe", () => {
   const prefix = "event-" + "x".repeat(300);
   const result = normalizeConversation(textInput("rollout.jsonl", [

@@ -11,7 +11,7 @@
 // the risk-lens findings).
 import { CollectionResult } from "../collector/collect";
 import { commandLooksLikeBroadTestCommand } from "../commands/classify";
-import { ConversationEvent } from "../conversation/events";
+import { ConversationEvent, hasNonHumanConversationActor, isConversationToolEvent } from "../conversation/events";
 import { EvidenceRef } from "../evidence/evidence";
 import { ConfigFact, ConfigFactKind } from "../risks/config-facts";
 import { SemanticChangeFacts } from "../risks/semantic-diff";
@@ -185,18 +185,16 @@ function isDepOrConfigFile(filePath: string): boolean {
   );
 }
 
-// Tool turns carry a file path in their summary/command (`Edit(src/auth/login.ts)`),
-// so counting them as discussion would let merely TOUCHING a file suppress the very
-// signal it should raise (Codex P2). EVERY OTHER kind is natural language — message,
-// decision, heading, and any tolerant/unknown kind a normalized log carries — and
-// MUST be scanned, so a `kind: "decision"` summary saying "reviewed security" counts.
-const TOOL_KINDS = new Set(["tool_call", "tool_result"]);
-
+// Tool and runtime-metadata turns carry paths, policies, counters, or other payloads,
+// so counting them as discussion would let merely TOUCHING a file (or a session_meta
+// field saying "security") suppress the very signal it should raise. Keep loose
+// natural-language kinds and unknown legacy actors, but exclude known non-human
+// actors and the explicit metadata kind.
 // The lowercased text the discussion checks scan: every NON-tool turn's summary. The
 // events are already redacted (Phase 1).
 function conversationHaystack(events: ConversationEvent[]): string {
   return events
-    .filter((event) => !TOOL_KINDS.has(event.kind))
+    .filter((event) => !isConversationToolEvent(event) && event.kind.trim().toLowerCase() !== "metadata" && !hasNonHumanConversationActor(event))
     .map((event) => event.summary ?? "")
     .join("\n")
     .toLowerCase();

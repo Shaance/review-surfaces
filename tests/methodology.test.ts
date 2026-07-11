@@ -402,10 +402,14 @@ test("review-surfaces.REVIEWER_VALUE.1/.2 instructions, tool output, and generat
       { id: "tool", actor: "tool", kind: "tool_result", summary: `pnpm run test passed ${"payload ".repeat(4000)}`, raw_index: 2 },
       { id: "report", actor: "assistant", kind: "message", summary: '{"type":"custom_tool_call_output","review_packet.json":"tests passed"}', raw_index: 3 },
       { id: "quoted", actor: "assistant", kind: "message", summary: 'Here is the generated report: {"type":"custom_tool_call_output","output":"tests passed"}', raw_index: 4 },
-      { id: "agent", actor: "assistant", kind: "message", summary: `I considered a bounded parser and pnpm run test passed. ${"detail ".repeat(400)}`, raw_index: 5 },
-      { id: "user", actor: "user", kind: "message", summary: "I assume the compatibility requirement still applies.", raw_index: 6 },
-      { id: "scaffold", actor: "user", kind: "message", summary: "Consider alternatives and assume tests passed. <environment_context><cwd>/repo</cwd></environment_context> # AGENTS.md instructions", raw_index: 7 },
-      { id: "internal", actor: "user", kind: "message", summary: '<codex_internal_context source="goal">Research options; tests passed.</codex_internal_context>', raw_index: 8 }
+      { id: "pr-surface", actor: "assistant", kind: "message", summary: 'Here is generated pr_review_surface.json: {"summary":"pnpm run test passed"}', raw_index: 5 },
+      { id: "handoff", actor: "assistant", kind: "message", summary: "Quoted agent_handoff.md output:\npnpm run test passed", raw_index: 6 },
+      { id: "packet-md", actor: "assistant", kind: "message", summary: "Generated review_packet.md:\nTests passed; considered alternatives.", raw_index: 7 },
+      { id: "agent", actor: "assistant", kind: "message", summary: `I considered a bounded parser and pnpm run test passed. ${"detail ".repeat(400)}`, raw_index: 8 },
+      { id: "prose", actor: "assistant", kind: "message", summary: "Here is why architecture.md matters; pnpm run test passed after I considered the compatibility tradeoff.", raw_index: 9 },
+      { id: "user", actor: "user", kind: "message", summary: "I assume the compatibility requirement still applies.", raw_index: 10 },
+      { id: "scaffold", actor: "user", kind: "message", summary: "Consider alternatives and assume tests passed. <environment_context><cwd>/repo</cwd></environment_context> # AGENTS.md instructions", raw_index: 11 },
+      { id: "internal", actor: "user", kind: "message", summary: '<codex_internal_context source="goal">Research options; tests passed.</codex_internal_context>', raw_index: 12 }
     ]
   });
 
@@ -413,13 +417,14 @@ test("review-surfaces.REVIEWER_VALUE.1/.2 instructions, tool output, and generat
 
   assert.ok(methodology.considered.some((entry) => entry.startsWith("agent:")));
   assert.ok(methodology.unchallenged_assumptions.some((entry) => entry.startsWith("user:")));
-  for (const id of ["sys:", "dev:", "tool:", "report:", "quoted:", "scaffold:", "internal:"]) {
+  for (const id of ["sys:", "dev:", "tool:", "report:", "quoted:", "pr-surface:", "handoff:", "packet-md:", "scaffold:", "internal:"]) {
     assert.ok(!methodology.considered.some((entry) => entry.startsWith(id)));
     assert.ok(!methodology.unchallenged_assumptions.some((entry) => entry.startsWith(id)));
-    assert.ok(!methodology.claims_without_evidence.some((entry) => entry.startsWith(id)));
+    assert.ok(!methodology.claims_without_evidence.some((entry) => entry.startsWith(id)), `${id} leaked into validation claims`);
   }
-  assert.equal(methodology.claims_without_evidence.length, 1);
+  assert.equal(methodology.claims_without_evidence.length, 2);
   assert.ok(methodology.claims_without_evidence[0].startsWith("agent:"));
+  assert.ok(methodology.claims_without_evidence.some((entry) => entry.startsWith("prose:")));
   assert.ok(methodology.claims_without_evidence[0].length <= 1200);
 });
 
