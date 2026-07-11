@@ -185,7 +185,7 @@ export function analyzeRisks(
   // Parsed JUnit results carry REAL per-test names + pass/fail and are STRONGER
   // than coarse command-transcript evidence, so they lead. Transcripts are kept
   // too (a "test exited 0" signal remains useful when no parsed results exist).
-  const parsedTestEvidence = validationEvidenceFromTestResults(collection.testResults);
+  const parsedTestEvidence = validationEvidenceFromTestResults(collection.testResults, collection.git?.head_sha);
   const testEvidence = validationEvidenceFromCommandTranscripts(collection);
   const transcriptCommands = new Set((collection.commandTranscripts ?? []).map((transcript) => normalizeCommand(transcript.command)));
   const commandRules = collection.commandRules ?? [];
@@ -361,7 +361,7 @@ function feedbackAppliesToHead(feedbackFile: CollectionResult["feedback"][number
 // the note); a FAILING case becomes "missing" evidence (the test ran but did not
 // prove the behavior). Skipped cases are recorded as "claimed" so they are
 // visible without being treated as proof.
-function validationEvidenceFromTestResults(testResults: TestResults | undefined): RisksModel["test_evidence"] {
+function validationEvidenceFromTestResults(testResults: TestResults | undefined, headSha?: string): RisksModel["test_evidence"] {
   const entries: RisksModel["test_evidence"] = [];
   if (!testResults || testResults.cases.length === 0) {
     return entries;
@@ -382,7 +382,7 @@ function validationEvidenceFromTestResults(testResults: TestResults | undefined)
       kind: parsedTestEvidenceKind(testCase),
       summary: parsedTestCaseSummary(testCase),
       requirement_ids: [],
-      evidence: [parsedTestCaseEvidence(testCase)]
+      evidence: [parsedTestCaseEvidence(testCase, headSha)]
     });
   }
   return entries;
@@ -430,7 +430,7 @@ function parsedTestCaseSummary(testCase: NormalizedTestCase): string {
   return `Parsed test skipped: ${testCase.name}${where}`;
 }
 
-function parsedTestCaseEvidence(testCase: NormalizedTestCase): EvidenceRef {
+function parsedTestCaseEvidence(testCase: NormalizedTestCase, headSha?: string): EvidenceRef {
   const context = parsedTestContext(testCase);
   const note =
     testCase.status === "failed" && testCase.failure_message
@@ -439,6 +439,7 @@ function parsedTestCaseEvidence(testCase: NormalizedTestCase): EvidenceRef {
   return stripUndefinedEvidence({
     kind: "test",
     test_name: testCase.name,
+    sha: headSha,
     note,
     confidence: testCase.status === "passed" ? "high" : testCase.status === "failed" ? "medium" : "low",
     validation_status: testCase.status === "passed" ? "valid" : testCase.status === "failed" ? "invalid" : "not_checked"

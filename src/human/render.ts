@@ -13,6 +13,14 @@ import { renderDependencyTreeText } from "../diagrams/dep-tree";
 import { extractAcids, fillAcidTemplate, normalizeAcidTemplate, RollupGroup, rollupBy } from "./rollup";
 import { RISK_LENS_METADATA } from "./contract";
 import {
+  decisionIntentSourceLabel,
+  EMPTY_DECISION_FINDINGS_TEXT,
+  fullDecisionSupportingText,
+  incompleteReviewScopeText,
+  STALE_DECISION_PROJECTION_TEXT,
+  UNAVAILABLE_DECISION_FINDINGS_TEXT
+} from "./decision-projection-presentation";
+import {
   conversationAnalysisCaveats,
   conversationAnalysisContextRows,
   conversationAnalysisForRender,
@@ -191,7 +199,7 @@ export function renderHumanReviewMarkdown(model: HumanReviewModel, context: Huma
   return `# Human Review
 
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
-${model.generated_from.uncommitted_files > 0 ? `\n**includes ${model.generated_from.uncommitted_files} uncommitted file(s) (working tree)**\n` : ""}
+${model.generated_from.uncommitted_files > 0 ? `\n**includes ${model.generated_from.uncommitted_files} uncommitted file(s) (working tree)**\n` : ""}${incompleteReviewScopeText(model.generated_from.omitted_untracked_files ?? 0) ? `\n**${incompleteReviewScopeText(model.generated_from.omitted_untracked_files ?? 0)}**\n` : ""}
 ## Verdict
 
 **${decisionLabel(model.verdict.decision)}.**
@@ -202,6 +210,8 @@ Confidence: ${model.verdict.confidence}.
 
 Reasons:
 ${bullets(model.verdict.reasons.slice(0, MAX_BLOCKERS).map((reason) => `${reason.summary}${reason.required_action ? ` Required action: ${reason.required_action}` : ""} (${reason.id}; ${reason.severity})`), "No readiness reasons recorded.")}
+
+${renderDecisionProjectionMarkdown(model)}
 
 ## Conversation-aware insights
 
@@ -299,6 +309,32 @@ ${renderFeedbackEffects(model.feedback_effects ?? [])}
 
 ${bullets(evidencePointers(model), "No evidence pointers recorded.")}
 `;
+}
+
+export function renderDecisionProjectionMarkdown(model: HumanReviewModel): string {
+  const projection = model.decision_projection;
+  if (!projection) {
+    return `## Active intent\n\n_${STALE_DECISION_PROJECTION_TEXT}_\n\n## Decision findings\n\n- ${UNAVAILABLE_DECISION_FINDINGS_TEXT}`;
+  }
+  const source = decisionIntentSourceLabel(projection.active_intent.source);
+  const findings = projection.findings.length === 0
+    ? `- ${EMPTY_DECISION_FINDINGS_TEXT}`
+    : projection.findings.map((finding, index) => {
+      const location = finding.path ? ` \`${field(finding.path)}\`` : "";
+      return `${index + 1}. **${field(finding.title)}**${location} — ${field(finding.reason)}\n   - Action: ${field(finding.reviewer_action)} (${finding.priority}; ${field(finding.root_cause)})`;
+    }).join("\n");
+  const counts = projection.supporting_detail_counts;
+  return `## Active intent
+
+${field(projection.active_intent.summary, MAX_SUMMARY_CHARS)}
+
+Source: ${source}.
+
+## Decision findings
+
+${findings}
+
+_${fullDecisionSupportingText(counts)}_`;
 }
 
 /**

@@ -3,6 +3,7 @@ import { commandLooksLikeBroadTestCommand, commandLooksLikeFocusedTestCommand, c
 import { stripUndefined } from "../core/guards";
 import { REVIEW_SEVERITIES_BY_PRIORITY } from "../contracts/review";
 import { EvidenceRef, fileEvidence, missingEvidence } from "../evidence/evidence";
+import { isExplicitContractSurfacePath } from "./contract-surface";
 
 import type { CollectionResult } from "../collector/collect";
 import type { CommandRule } from "../commands/classify";
@@ -642,32 +643,46 @@ function pushSchemaContractChange(drafts: DraftCandidate[], input: BuildPrRiskIn
   });
 }
 
-// --- Rule: deleted_or_renamed_surface (maintainability, low) ---------------
-// scope.changed_files whose status starts with 'D' or 'R' in impl/test roles.
+// --- Rule: deleted_or_renamed_surface ---------------------------------------
+// Deleted/renamed implementation, test, or explicit contract surfaces.
 function pushDeletedOrRenamedSurface(drafts: DraftCandidate[], input: BuildPrRiskInput): void {
   const affected = input.scope.changed_files
     .filter(
-      (file) =>
-        (file.role === "implementation" || file.role === "test") &&
-        (file.status.startsWith("D") || file.status.startsWith("R"))
+      (file) => {
+        if (!file.status.startsWith("D") && !file.status.startsWith("R")) return false;
+        const removedPath = file.status.startsWith("R") && file.old_path ? file.old_path : file.path;
+        return file.role === "implementation" || file.role === "test" || isExplicitContractSurfacePath(removedPath);
+      }
     )
     .sort((left, right) => compareStrings(left.path, right.path));
   if (affected.length === 0) {
     return;
   }
+  const orderedAffected = [...affected].sort((left, right) => {
+    const leftPath = left.status.startsWith("R") && left.old_path ? left.old_path : left.path;
+    const rightPath = right.status.startsWith("R") && right.old_path ? right.old_path : right.path;
+    return Number(isExplicitContractSurfacePath(rightPath)) - Number(isExplicitContractSurfacePath(leftPath)) ||
+      compareStrings(leftPath, rightPath);
+  });
+  const explicitContractRemoved = orderedAffected.some((file) =>
+    isExplicitContractSurfacePath(file.status.startsWith("R") && file.old_path ? file.old_path : file.path)
+  );
   drafts.push({
     rule: "deleted_or_renamed_surface",
     category: "maintainability",
-    severity: "low",
-    summary: `${affected.length} implementation/test file(s) were deleted or renamed.`,
-    evidence: affected
+    severity: explicitContractRemoved ? "high" : "low",
+    summary: `${affected.length} review surface(s) were deleted or renamed.`,
+    evidence: orderedAffected
       .slice(0, MAX_RULE_EVIDENCE)
-      .map((file) => fileEvidence(file.path, `${file.status.startsWith("D") ? "Deleted" : "Renamed"} ${file.role} surface.`)),
+      .map((file) => fileEvidence(
+        file.status.startsWith("R") && file.old_path ? file.old_path : file.path,
+        `${file.status.startsWith("D") ? "Deleted" : "Renamed"} ${file.role} surface.`
+      )),
     suggested_checks: [
       "Confirm deleted/renamed surfaces have no remaining references.",
       "Verify removed behavior was intentionally dropped and not regressed."
     ],
-    sortPath: affected[0]?.path ?? ""
+    sortPath: orderedAffected[0]?.path ?? ""
   });
 }
 

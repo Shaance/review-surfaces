@@ -21,6 +21,14 @@ import {
   conversationAnalysisForRender,
   conversationInsightsForRender
 } from "../human/conversation-review-presentation";
+import {
+  compactDecisionSupportingText,
+  decisionIntentSourceLabel,
+  EMPTY_DECISION_FINDINGS_TEXT,
+  incompleteReviewScopeText,
+  STALE_DECISION_PROJECTION_TEXT,
+  UNAVAILABLE_DECISION_FINDINGS_TEXT
+} from "../human/decision-projection-presentation";
 import type { HumanReviewModel, ReviewQueueItem, SinceLastReview, SinceLastReviewItem } from "../human/contract";
 import { STICKY_MARKER } from "./comment";
 import { changeMapMermaidEmbed, changeMapTitle, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
@@ -94,6 +102,10 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   if (model.generated_from.uncommitted_files > 0) {
     sections.push("", `_includes ${model.generated_from.uncommitted_files} uncommitted file(s) (working tree)_`);
   }
+  const scopeWarning = incompleteReviewScopeText(model.generated_from.omitted_untracked_files ?? 0);
+  if (scopeWarning) {
+    sections.push("", `**${scopeWarning}**`);
+  }
 
   if (hasPriorReview) {
     // review-surfaces.PR_SURFACE.5: on a re-review, LEAD with the delta and
@@ -101,6 +113,7 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
     sections.push("", renderSinceSection(since, state));
   }
 
+  sections.push("", renderDecisionProjection(model, state));
   sections.push("", "### Conversation-aware insights", "", renderConversationInsights(model, state));
 
   if (hasPriorReview) {
@@ -176,6 +189,22 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   // contributes to the block gate alongside the field-level signal.
   const redaction = inspectAndRedactSecrets(body);
   return { markdown: redaction.text, blocked: state.blocked || redaction.blocked };
+}
+
+function renderDecisionProjection(model: HumanReviewModel, state: RedactionState): string {
+  const projection = model.decision_projection;
+  if (!projection) {
+    return `### Active intent\n\n_${STALE_DECISION_PROJECTION_TEXT}_\n\n### Decision findings\n\n- ${UNAVAILABLE_DECISION_FINDINGS_TEXT}`;
+  }
+  const source = decisionIntentSourceLabel(projection.active_intent.source);
+  const findings = projection.findings.length === 0
+    ? `- ${EMPTY_DECISION_FINDINGS_TEXT}`
+    : projection.findings.map((finding, index) => {
+      const location = finding.path ? ` \`${field(finding.path, state)}\`` : "";
+      return `${index + 1}. **${field(finding.title, state)}**${location} — ${field(finding.reason, state)}\n   - Action: ${field(finding.reviewer_action, state)} (${finding.priority})`;
+    }).join("\n");
+  const counts = projection.supporting_detail_counts;
+  return `### Active intent\n\n${field(projection.active_intent.summary, state, MAX_SUMMARY_CHARS)}\n\n_Source: ${source}._\n\n### Decision findings\n\n${findings}\n\n_${compactDecisionSupportingText(counts)}_`;
 }
 
 function renderConversationInsights(model: HumanReviewModel, state: RedactionState): string {

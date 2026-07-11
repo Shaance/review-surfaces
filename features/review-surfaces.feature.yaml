@@ -197,6 +197,18 @@ components:
       3:
         requirement: Reviewer severity must be coherent across verdict, blockers, questions, suggested comments, and counts; an additive optional schema property or internal export cannot create a blocking ready-to-post comment without deterministic evidence that the change breaks an existing public or persisted contract.
         note: "Reviewer decision uplift M1. Two additive optional schema fields generated blocking migration comments while the cockpit reported zero blockers."
+      4:
+        requirement: >-
+          The human review model must expose a deterministic decision projection containing the active source-backed intent and at most five approval-changing findings; Markdown, HTML, sticky, and PR-comment surfaces must render verdict, active intent, and those findings before reading order, change maps, repository-compliance ledgers, and other supporting detail, while the exhaustive queue remains available outside the primary decision path.
+        note: "Reviewer decision uplift M2. Live dogfood placed an 80-file tour and change map before the ranked queue, forcing reviewers to reconstruct the decision from supporting machinery."
+      5:
+        requirement: >-
+          Whole-repository requirement coverage and aggregate partial or missing counts are supporting evidence only: they cannot enter the decision projection or change the verdict unless the reviewed range deterministically affects the cited requirement or changed-path evidence; the projection must state how many exhaustive queue and compliance items were moved to supporting detail rather than silently dropping them.
+        note: "Reviewer decision uplift M2. A 145-partial whole-repo count dominated a PR review even though it did not describe an approval-changing fact in the reviewed range."
+      6:
+        requirement: >-
+          Decision findings must collapse duplicate path/root-cause signals and distinguish public or persisted contracts from internal implementation facts: ordinary TypeScript exports and mechanical import or layer edges stay supporting detail unless the path is deterministically public, persisted, explicitly policy-forbidden, or independently breaking; each surviving finding names one root cause, carries validated changed-range evidence, and occupies only one top slot.
+        note: "Reviewer decision uplift M2. Mechanical export/import facts and repeated manifestations of one cause consumed scarce reviewer attention as if they were separate public breakages."
   RISK:
     name: Risk and test-gap analysis
     description: Compute review risk, tested areas, untested areas, and manual/automatic checks.

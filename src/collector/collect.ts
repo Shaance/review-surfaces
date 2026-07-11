@@ -28,7 +28,7 @@ import {
   TEST_RESULTS_SCHEMA_VERSION,
   TestResults
 } from "../tests-evidence/junit";
-import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, commitTimeAtRef, gitInfoDiagnostics, GitInfo, isCurrentStateHeadRequest, readFileAtRef, readFileBytesAtRef, resolveMergeBaseSha } from "./git";
+import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, collectWorkingTreeSnapshot, commitTimeAtRef, gitInfoDiagnostics, GitInfo, isCurrentStateHeadRequest, readFileAtRef, readFileBytesAtRef, resolveMergeBaseSha } from "./git";
 import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { computeDependencyFacts, DependencyFact } from "../risks/dependency-facts";
 import { computeConfigFacts, ConfigFact } from "../risks/config-facts";
@@ -86,6 +86,7 @@ export interface RunManifest {
   // Always present (0 on a clean or pinned-head run) so renderers can announce
   // a dirty literal-HEAD review on every human surface.
   uncommitted_files: number;
+  omitted_untracked_files?: number;
   // review-surfaces.QUALITY_GATE.2 (Codex round-4 finding 2): the PRECOMPUTED
   // privacy condition gateDecision uses (provider-adjusted): true iff the run's
   // EFFECTIVE provider makes a remote call AND the redacted diff was flagged
@@ -363,7 +364,12 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // COLD_START.7: working-tree/untracked files merge into the changed set only
   // for a literal-HEAD review; an explicitly pinned head gets the pure range.
   const includeWorkingTree = isCurrentStateHeadRequest(options.cwd, options.headRef);
-  const changedFilesResult = collectChangedFiles(options.cwd, options.baseRef, options.headRef, includeWorkingTree, isArtifactPath);
+  const isExcludedWorkingTreePath = (filePath: string): boolean =>
+    isArtifactPath(filePath) || ignore.isIgnored(filePath);
+  const workingTreeSnapshot = includeWorkingTree
+    ? collectWorkingTreeSnapshot(options.cwd, isExcludedWorkingTreePath)
+    : undefined;
+  const changedFilesResult = collectChangedFiles(options.cwd, options.baseRef, options.headRef, includeWorkingTree, isExcludedWorkingTreePath, workingTreeSnapshot);
   diagnostics.push(...changedFilesResult.diagnostics);
   const allChangedFiles = changedFilesResult.files;
   const changedFiles = allChangedFiles
@@ -372,8 +378,11 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     // leak the ignored old_path into changed_files.json or any onward surface — drop
     // it before it is persisted (Codex P2).
     .map((file) => (file.old_path !== undefined && ignore.isIgnored(file.old_path) ? { ...file, old_path: undefined } : file));
-  const ignoredChangedFiles = allChangedFiles.filter((file) => ignore.isIgnored(file.path)).map((file) => file.path);
-  const diffResult = collectDiff(options.cwd, options.baseRef, options.headRef, includeWorkingTree);
+  const ignoredChangedFiles = [...new Set([
+    ...allChangedFiles.filter((file) => ignore.isIgnored(file.path)).map((file) => file.path),
+    ...(workingTreeSnapshot?.paths ?? []).filter(ignore.isIgnored)
+  ])].sort(compareStrings);
+  const diffResult = collectDiff(options.cwd, options.baseRef, options.headRef, includeWorkingTree, isExcludedWorkingTreePath, workingTreeSnapshot);
   diagnostics.push(...diffResult.diagnostics);
   // COLD_START.7: keep diff.patch consistent with the changed-file set — drop
   // hunks for artifact paths that are not reviewed changes (pure working-tree
@@ -618,6 +627,15 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
       hash: String(aiMaxOutputTokens())
     });
   }
+  if ((workingTreeSnapshot?.untracked.omitted ?? 0) > 0) {
+    const omittedScope = workingTreeSnapshot!.untracked.omitted_entries.join("\n");
+    flagInputHashes.push({
+      kind: "working-tree-scope",
+      path: "omitted-untracked",
+      algorithm: "sha256",
+      hash: crypto.createHash("sha256").update(omittedScope).digest("hex")
+    });
+  }
 
   // Resolve run_mode/milestone ONCE so the same values feed both the signature
   // and the manifest. They are part of the fingerprint so a dogfood --cache run
@@ -658,6 +676,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     base_sha: git.base_sha,
     head_sha: git.head_sha,
     uncommitted_files: changedFiles.filter((file) => file.source === "working_tree").length,
+    omitted_untracked_files: workingTreeSnapshot?.untracked.omitted ?? 0,
     gate_remote_blocked: gateRemoteBlocked,
     run_mode: runMode,
     milestone,

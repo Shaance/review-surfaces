@@ -784,6 +784,48 @@ test("failed_or_skipped_test fires from parsed test totals", () => {
   assert.ok(candidate.summary.includes("1 skipped"));
 });
 
+test("deleted_or_renamed_surface elevates a removed public declaration path", () => {
+  const model = buildPrRiskCandidates(buildInput({
+    scope: scope({
+      changed_files: [changedFile({
+        path: "src/internal/new-home.ts",
+        old_path: "types/public.d.ts",
+        status: "R100",
+        role: "implementation"
+      })]
+    })
+  }));
+  const candidate = model.candidates.find((item) => item.rule === "deleted_or_renamed_surface");
+  assert.equal(candidate?.severity, "high");
+  assert.equal(candidate?.evidence[0].path, "types/public.d.ts");
+});
+
+test("deleted_or_renamed_surface prioritizes explicit contracts before bounded internal evidence", () => {
+  const internal = Array.from({ length: 8 }, (_, index) => changedFile({
+    path: `src/internal-${index}.ts`, status: "D", role: "implementation"
+  }));
+  const model = buildPrRiskCandidates(buildInput({
+    scope: scope({ changed_files: [...internal, changedFile({ path: "types/z-public.d.ts", status: "D", role: "implementation" })] })
+  }));
+  const candidate = model.candidates.find((item) => item.rule === "deleted_or_renamed_surface");
+  assert.equal(candidate?.severity, "high");
+  assert.equal(candidate?.evidence[0].path, "types/z-public.d.ts");
+});
+
+test("deleted_or_renamed_surface includes a persisted schema rename regardless of config role", () => {
+  const model = buildPrRiskCandidates(buildInput({
+    scope: scope({ changed_files: [changedFile({
+      path: "archive/public.json",
+      old_path: "schemas/public.schema.json",
+      status: "R100",
+      role: "config"
+    })] })
+  }));
+  const candidate = model.candidates.find((item) => item.rule === "deleted_or_renamed_surface");
+  assert.equal(candidate?.severity, "high");
+  assert.equal(candidate?.evidence[0].path, "schemas/public.schema.json");
+});
+
 test("large_diff fires on the file cap and respects config overrides", () => {
   const manyFiles = Array.from({ length: 5 }, (_, i) =>
     changedFile({ path: `src/mod/file-${String(i).padStart(2, "0")}.ts`, role: "implementation" })

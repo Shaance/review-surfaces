@@ -14,6 +14,7 @@ import { commandLooksLikeBroadTestCommand } from "../commands/classify";
 import { ConversationEvent, hasNonHumanConversationActor, isConversationToolEvent } from "../conversation/events";
 import { EvidenceRef } from "../evidence/evidence";
 import { ConfigFact, ConfigFactKind } from "../risks/config-facts";
+import { isExplicitContractSurfacePath } from "../risks/contract-surface";
 import { SemanticChangeFacts } from "../risks/semantic-diff";
 import { isTestPath } from "../scope/pr-scope";
 import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
@@ -85,14 +86,6 @@ function fileStem(filePath: string): string {
 // A public-contract surface whose removal/rename is inherently breaking even when
 // the structural diff produced no schema/api fact (a pure delete/rename has no
 // property-level diff): a JSON schema, a schemas/ file, or a type declaration.
-function isPublicSurfacePath(filePath: string): boolean {
-  return (
-    filePath.endsWith(".d.ts") ||
-    /(^|\/)schemas?\//.test(filePath) ||
-    (filePath.endsWith(".json") && /schema/i.test(basename(filePath)))
-  );
-}
-
 function isLockfile(filePath: string): boolean {
   return LOCKFILES.has(basename(filePath));
 }
@@ -389,7 +382,7 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
   // removed/renamed surface.
   const apiFactPaths = [...facts.api_changes.map((change) => change.path), ...facts.schema_changes.map((change) => change.path)];
   const removedSurfacePaths = changed.flatMap((file) => {
-    if (file.status === "D" && isPublicSurfacePath(file.path)) {
+    if (file.status === "D" && isExplicitContractSurfacePath(file.path)) {
       return [file.path];
     }
     if (file.status.startsWith("R")) {
@@ -401,7 +394,7 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
       // ignored source, and in BOTH cases a public NEW path signals a rename INTO
       // public scope (an ADD, not a removal). Using it would false-fire a breaking
       // api_no_compat on `archive/old.txt -> schemas/public.schema.json` (#103 round-6).
-      return file.old_path !== undefined && isPublicSurfacePath(file.old_path) ? [file.old_path] : [];
+      return file.old_path !== undefined && isExplicitContractSurfacePath(file.old_path) ? [file.old_path] : [];
     }
     return [];
   });

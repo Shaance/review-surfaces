@@ -1,7 +1,8 @@
 import { EvidenceRef } from "../evidence/evidence";
 import { IntentRequirement } from "../intent/intent";
+import { ACID_PATTERN } from "../core/acai";
 
-export const ACID_PATTERN = /[a-z0-9_-]+\.[A-Z0-9_]+\.[0-9]+(?:-[0-9]+)?/g;
+export { ACID_PATTERN };
 
 export function groupFromAcid(acaiId: string | undefined): string | undefined {
   return acaiId?.split(".")[1];

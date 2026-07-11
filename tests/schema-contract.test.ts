@@ -46,6 +46,17 @@ const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package
 // field optional for backward compatibility. Slice fixtures start complete so
 // each schema test remains focused on its one mutation.
 const HUMAN_REQUIRED_DEFAULTS = {
+  decision_projection: {
+    active_intent: { summary: "Fixture intent.", source: "packet", requirement_ids: [], event_ids: [] },
+    findings: [],
+    supporting_detail_counts: {
+      total_queue_items: 0,
+      projected_queue_items: 0,
+      supporting_queue_items: 0,
+      affected_requirement_count: 0,
+      supporting_requirement_count: 0
+    }
+  },
   narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
   conversation_analysis: {
     status: "not_assessed",
@@ -339,6 +350,14 @@ test("review-surfaces.SCHEMA.3 human review schema requires the narrative field"
   const result = validateJsonSchema(humanReviewSchema, withoutNarrative);
   assert.equal(result.valid, false);
   assert.ok(result.issues.some((issue) => /narrative/.test(issue.message)));
+});
+
+test("review-surfaces.REVIEWER_VALUE.4 legacy human review artifacts may omit the additive decision projection", () => {
+  assert.ok(!humanReviewSchema.required.includes("decision_projection"));
+  const stale = validHumanReview();
+  delete stale.decision_projection;
+  const result = validateJsonSchema(humanReviewSchema, stale);
+  assert.equal(result.valid, true, result.issues.map((issue) => issue.message).join("; "));
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.4 pre-conversation human v1 artifacts remain valid", () => {
