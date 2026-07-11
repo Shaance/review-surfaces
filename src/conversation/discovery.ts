@@ -160,6 +160,12 @@ function retainBestCandidates(candidates: Candidate[], candidate: Candidate): vo
 // corroboration, weak reads/mentions, recency, and path. This keeps any number of
 // audit mentions below one real mutation while retaining a total deterministic order.
 function isBetter(candidate: Candidate, best: Candidate): boolean {
+  // A mutation after the reviewed commit cannot have produced that commit.
+  // Exclude that temporal contradiction before path breadth is considered.
+  if (candidate.temporalRank !== best.temporalRank &&
+      (candidate.temporalRank === 0 || best.temporalRank === 0)) {
+    return candidate.temporalRank > best.temporalRank;
+  }
   // An uncommitted review range has no head timestamp to anchor against. Among
   // producer sessions, prefer the one that most recently mutated the range so a
   // stale broad session cannot beat the current narrower implementation merely
@@ -215,9 +221,13 @@ function candidateReasonCodes(candidate: Candidate): string[] {
   return reasons;
 }
 
-function sameProducerRank(left: Candidate, right: Candidate): boolean {
+function sameProducerRank(left: Candidate, right: Candidate, options: DiscoveryOptions): boolean {
   const leftCommit = left.provenance.mutatedPaths.length > 0 && left.provenance.observedCommitShas.length > 0;
   const rightCommit = right.provenance.mutatedPaths.length > 0 && right.provenance.observedCommitShas.length > 0;
+  if (options.workingTreeDirty &&
+      left.provenance.lastMutationTimestamp !== right.provenance.lastMutationTimestamp) {
+    return false;
+  }
   return left.provenance.mutatedPaths.length > 0 &&
     left.provenance.mutatedPaths.length === right.provenance.mutatedPaths.length &&
     leftCommit === rightCommit &&
@@ -433,9 +443,9 @@ export function discoverConversationSession(options: DiscoveryOptions): Discover
   // A skipped candidate was never ranked and could be the true producer. Never
   // ingest a stale retained winner from a known-incomplete scan; explicit path
   // selection is the honest escape hatch for oversized/older transcripts.
-  const ambiguous = scanIncomplete || (runnerUp !== undefined && sameProducerRank(best, runnerUp));
+  const ambiguous = scanIncomplete || (runnerUp !== undefined && sameProducerRank(best, runnerUp, options));
   const mutationCount = best.provenance.mutatedPaths.length;
-  const confidence = ambiguous || mutationCount === 0
+  const confidence = ambiguous || mutationCount === 0 || best.temporalRank === 0
     ? "low"
     : mutationCount >= 2 || best.provenance.observedCommitShas.length > 0
       ? "high"

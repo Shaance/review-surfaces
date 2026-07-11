@@ -652,6 +652,17 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // public artifact). Explicit --conversation files are already hashed above.
   if (discovered !== undefined) {
     flagInputHashes.push({ kind: "conversation", path: discovered.path, algorithm: "sha256", hash: discovered.hash });
+  } else if (conversationDiscovery !== undefined) {
+    // Rejected discovery still changes reviewer-visible methodology. Fold only
+    // its safe persisted provenance into the cache key (never the private path
+    // or raw transcript) so adding/removing/changing a rejection cannot reuse a
+    // packet with a stale or missing warning.
+    flagInputHashes.push({
+      kind: "conversation-discovery",
+      path: "rejected",
+      algorithm: "sha256",
+      hash: crypto.createHash("sha256").update(JSON.stringify(conversationDiscovery)).digest("hex")
+    });
   }
   if (options.provider === "ai-sdk" || options.gateProvider === "ai-sdk") {
     flagInputHashes.push({

@@ -5,6 +5,7 @@ export const CODEX_ITEM_TYPES = new Set([
   "function_call_output",
   "custom_tool_call",
   "custom_tool_call_output",
+  "patch_apply_end",
   "agent_message",
   "user_message"
 ]);

@@ -348,6 +348,22 @@ test("review-surfaces.CONVERSATION_REVIEW.7 Codex patch_apply_end status and mut
   }
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.7 patch_apply_end alone selects the Codex adapter", () => {
+  const text = [
+    JSON.stringify({ type: "session_meta", payload: { cwd: "/repo/app" } }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "patch_apply_end", success: true, changes: { "src/uploader.ts": { kind: "update" } } }
+    })
+  ].join("\n");
+  const normalized = normalizeConversation(buildAdapterInput("desktop.jsonl", text));
+  const patchResult = normalized?.events.find((event) => event.result_status === "passed");
+
+  assert.equal(normalized?.adapter, "codex");
+  assert.equal(patchResult?.tool, "apply_patch");
+  assert.equal(patchResult?.result_status, "passed");
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.7 an incomplete work-budget scan rejects its retained winner", () => {
   const store = freshStore();
   try {
@@ -440,6 +456,76 @@ test("review-surfaces.CONVERSATION_REVIEW.7 a newer narrow dirty-worktree produc
     assert.equal(discovered.mutatedChangedFiles, 1);
     assert.equal(discovered.ambiguous, false);
     assert.equal(discovered.confidence, "medium");
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 an after-head broad session cannot beat the real narrower producer", () => {
+  const store = freshStore();
+  try {
+    const beforeHead = writeSession(store, "-repo-app", "before-head-narrow.jsonl", [
+      claudeToolLine("2026-06-17T09:00:00.000Z", "Edit", { file_path: "/repo/app/src/uploader.ts", old_string: "a", new_string: "b" })
+    ]);
+    writeSession(store, "-repo-app", "after-head-broad.jsonl", [
+      claudeToolLine("2026-06-17T12:00:00.000Z", "Edit", { file_path: "/repo/app/src/uploader.ts", old_string: "b", new_string: "c" }),
+      claudeToolLine("2026-06-17T12:01:00.000Z", "Edit", { file_path: "/repo/app/src/retry.ts", old_string: "a", new_string: "b" })
+    ]);
+    const discovered = discoverConversationSession({
+      storeRoot: store,
+      cwd: "/repo/app",
+      changedFiles: ["src/uploader.ts", "src/retry.ts"],
+      headCommittedAt: "2026-06-17T10:00:00.000Z",
+      workingTreeDirty: false
+    });
+
+    assert.equal(discovered?.path, beforeHead);
+    assert.ok(discovered?.reasonCodes.includes("mutation_not_after_head_commit"));
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 a lone after-head producer is rejected", () => {
+  const store = freshStore();
+  try {
+    writeSession(store, "-repo-app", "after-head-only.jsonl", [
+      claudeToolLine("2026-06-17T12:00:00.000Z", "Edit", { file_path: "/repo/app/src/uploader.ts", old_string: "a", new_string: "b" })
+    ]);
+    const discovered = discoverConversationSession({
+      storeRoot: store,
+      cwd: "/repo/app",
+      changedFiles: ["src/uploader.ts"],
+      headCommittedAt: "2026-06-17T10:00:00.000Z",
+      workingTreeDirty: false
+    });
+
+    assert.equal(discovered?.confidence, "low");
+    assert.ok(discovered?.reasonCodes.includes("mutation_after_head_commit"));
+  } finally {
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 dirty-worktree recency breaks equal-path producer ties", () => {
+  const store = freshStore();
+  try {
+    writeSession(store, "-repo-app", "older-equal.jsonl", [
+      claudeToolLine("2026-06-17T08:00:00.000Z", "Edit", { file_path: "/repo/app/src/uploader.ts", old_string: "a", new_string: "b" })
+    ]);
+    const current = writeSession(store, "-repo-app", "current-equal.jsonl", [
+      claudeToolLine("2026-06-17T12:00:00.000Z", "Edit", { file_path: "/repo/app/src/uploader.ts", old_string: "b", new_string: "c" })
+    ]);
+    const discovered = discoverConversationSession({
+      storeRoot: store,
+      cwd: "/repo/app",
+      changedFiles: ["src/uploader.ts"],
+      workingTreeDirty: true
+    });
+
+    assert.equal(discovered?.path, current);
+    assert.equal(discovered?.ambiguous, false);
+    assert.equal(discovered?.confidence, "medium");
   } finally {
     fs.rmSync(store, { recursive: true, force: true });
   }
@@ -740,16 +826,40 @@ test("review-surfaces.CONVERSATION_REVIEW.7 a recency-only discovery is rejected
   }
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.7 rejected discovery provenance invalidates the collection cache signature", async () => {
+  const tmp = initRepo();
+  const store = freshStore();
+  try {
+    const absent = await collectInputs(collectOptions(tmp, store));
+    writeSession(store, claudeCodeProjectSlug(tmp), "rejected.jsonl", [
+      line("2026-06-17T10:00:00.000Z", "some unrelated work")
+    ]);
+    const rejected = await collectInputs(collectOptions(tmp, store));
+
+    assert.equal(absent.conversationDiscovery, undefined);
+    assert.equal(rejected.conversationDiscovery?.status, "rejected");
+    assert.notEqual(rejected.manifest.signature, absent.manifest.signature);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.7 ambiguous producers are rejected before ingestion", async () => {
   const tmp = initRepo();
   const store = freshStore();
   try {
+    execFileSync("git", ["add", "README.md"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "fixture"], { cwd: tmp, stdio: "ignore" });
+    fs.writeFileSync(path.join(tmp, "README.md"), "# Updated fixture\n");
+    execFileSync("git", ["add", "README.md"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "update fixture"], { cwd: tmp, stdio: "ignore" });
     for (const [name, timestamp] of [["first.jsonl", "2026-06-17T09:00:00.000Z"], ["second.jsonl", "2026-06-17T10:00:00.000Z"]] as const) {
       writeSession(store, claudeCodeProjectSlug(tmp), name, [
         claudeToolLine(timestamp, "Edit", { file_path: path.join(tmp, "README.md"), old_string: "Fixture", new_string: "Updated" })
       ]);
     }
-    const result = await collectInputs(collectOptions(tmp, store));
+    const result = await collectInputs(collectOptions(tmp, store, { baseRef: "HEAD~1" }));
     assert.equal(result.conversationEvents, undefined);
     assert.equal(result.conversationSource, undefined);
     assert.equal(result.conversationDiscovery?.status, "rejected");

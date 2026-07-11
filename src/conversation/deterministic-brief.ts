@@ -134,10 +134,11 @@ function isEligibleAssistantMessage(event: SanitizedConversationEvent): boolean 
 
 function isNaturalLanguageEvent(event: SanitizedConversationEvent): boolean {
   const kind = event.kind.trim().toLowerCase();
+  const text = reviewerText(event.summary);
   return kind !== "tool_call" && kind !== "custom_tool_call" &&
     kind !== "tool_result" && kind !== "custom_tool_call_output" &&
     kind !== "function_call" && kind !== "function_call_output" &&
-    !conversationEventLooksLikeGeneratedPayload(event.summary);
+    !conversationEventLooksLikeGeneratedPayload(text);
 }
 
 function validationObservation(event: SanitizedConversationEvent): ConversationValidationObservation | undefined {

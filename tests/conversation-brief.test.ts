@@ -132,6 +132,21 @@ test("review-surfaces.CONVERSATION_REVIEW.5/.6 preserves do-not goals, drops emp
   assert.ok((brief.validation_observations?.[0].text.length ?? 0) > 0);
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.5 preserves a Codex request embedded after generated scaffold context", () => {
+  const brief = buildDeterministicConversationBrief([{
+    id: "scaffolded-user",
+    actor: "user",
+    kind: "message",
+    summary: "<environment_context>generated metadata</environment_context>\n## My request for Codex:\nAudit the reviewer report and preserve citations.",
+    raw_index: 0
+  }], "mock");
+
+  assert.deepEqual(brief.intent, [{
+    text: "Audit the reviewer report and preserve citations.",
+    event_ids: ["scaffolded-user"]
+  }]);
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.6 real Claude and Codex result shapes drive only structured observations", async () => {
   const cases = [{
     name: "claude-code",
