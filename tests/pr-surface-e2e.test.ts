@@ -19,6 +19,7 @@ import {
   hostileConversationInsight,
   hostileConversationTitleClosesEmphasis
 } from "./helpers/conversation-review";
+import { isLocalRuntimeArtifactPath } from "./helpers/cli-repo";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
 const CHANGED = "src/render/comment.ts";
@@ -34,9 +35,9 @@ function setupChangedRepo(): string {
       const rel = path.relative(process.cwd(), source);
       return (
         rel !== ".git" && !rel.startsWith(`.git${path.sep}`) &&
+        !isLocalRuntimeArtifactPath(rel) &&
         rel !== ".review-surfaces" && !rel.startsWith(`.review-surfaces${path.sep}`) &&
-        rel !== "dist" && !rel.startsWith(`dist${path.sep}`) &&
-        rel !== "node_modules" && !rel.startsWith(`node_modules${path.sep}`)
+        rel !== "dist" && !rel.startsWith(`dist${path.sep}`)
       );
     }
   });

@@ -7,6 +7,7 @@
 // then falls through to its harness adapter. An unmatched/rotted shape returns
 // undefined → the caller degrades to `conversation_log_missing` (non-fatal),
 // never a wrong-adapter mis-normalization.
+import crypto from "node:crypto";
 import { claudeCodeAdapter } from "./adapters/claude-code";
 import { codexAdapter } from "./adapters/codex";
 import { cursorAdapter } from "./adapters/cursor";
@@ -62,12 +63,22 @@ export function normalizeConversation(input: AdapterInput, forced?: Conversation
   return {
     events: events.map((event) => ({
       ...event,
-      id: redactText(event.id),
+      id: boundedEventId(redactText(event.id)),
       actor: redactText(event.actor),
       kind: redactText(event.kind)
     })),
     adapter: adapter.name
   };
+}
+
+const EVENT_ID_LIMIT = 200;
+
+function boundedEventId(id: string): string {
+  if (id.length <= EVENT_ID_LIMIT) {
+    return id;
+  }
+  const digest = crypto.createHash("sha256").update(id).digest("hex").slice(0, 16);
+  return `${id.slice(0, EVENT_ID_LIMIT - digest.length - 1)}~${digest}`;
 }
 
 function safeDetect(adapter: ConversationAdapter, input: AdapterInput): boolean {

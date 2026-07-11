@@ -360,6 +360,36 @@ test("review-surfaces.METHODOLOGY.1 considered/research pick from natural-langua
   assert.ok(methodology.research.some((entry) => entry.startsWith("tc0:")), "a short tool_call (bounded invocation) is kept as research evidence");
 });
 
+test("review-surfaces.REVIEWER_VALUE.1/.2 instructions, tool output, and generated reports cannot become methodology claims", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  const collection = collectionFixture(tmp, {
+    conversationEvents: [
+      { id: "sys", actor: "system", kind: "message", summary: "Consider alternative validation options", raw_index: 0 },
+      { id: "dev", actor: "developer", kind: "message", summary: "Assume tests passed", raw_index: 1 },
+      { id: "tool", actor: "tool", kind: "tool_result", summary: `pnpm run test passed ${"payload ".repeat(4000)}`, raw_index: 2 },
+      { id: "report", actor: "assistant", kind: "message", summary: '{"type":"custom_tool_call_output","review_packet.json":"tests passed"}', raw_index: 3 },
+      { id: "quoted", actor: "assistant", kind: "message", summary: 'Here is the generated report: {"type":"custom_tool_call_output","output":"tests passed"}', raw_index: 4 },
+      { id: "agent", actor: "assistant", kind: "message", summary: `I considered a bounded parser and pnpm run test passed. ${"detail ".repeat(400)}`, raw_index: 5 },
+      { id: "user", actor: "user", kind: "message", summary: "I assume the compatibility requirement still applies.", raw_index: 6 },
+      { id: "scaffold", actor: "user", kind: "message", summary: "Consider alternatives and assume tests passed. <environment_context><cwd>/repo</cwd></environment_context> # AGENTS.md instructions", raw_index: 7 },
+      { id: "internal", actor: "user", kind: "message", summary: '<codex_internal_context source="goal">Research options; tests passed.</codex_internal_context>', raw_index: 8 }
+    ]
+  });
+
+  const methodology = await buildMethodology(tmp, collection, undefined, []);
+
+  assert.ok(methodology.considered.some((entry) => entry.startsWith("agent:")));
+  assert.ok(methodology.unchallenged_assumptions.some((entry) => entry.startsWith("user:")));
+  for (const id of ["sys:", "dev:", "tool:", "report:", "quoted:", "scaffold:", "internal:"]) {
+    assert.ok(!methodology.considered.some((entry) => entry.startsWith(id)));
+    assert.ok(!methodology.unchallenged_assumptions.some((entry) => entry.startsWith(id)));
+    assert.ok(!methodology.claims_without_evidence.some((entry) => entry.startsWith(id)));
+  }
+  assert.equal(methodology.claims_without_evidence.length, 1);
+  assert.ok(methodology.claims_without_evidence[0].startsWith("agent:"));
+  assert.ok(methodology.claims_without_evidence[0].length <= 1200);
+});
+
 test("review-surfaces.METHODOLOGY.7 the generated conversation evidence carries a real event_id (valid under the new rule)", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
   fs.writeFileSync(path.join(tmp, "conversation.md"), "user: add a retry\nassistant: done\n");

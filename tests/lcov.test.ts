@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { isLocalRuntimeArtifactPath } from "./helpers/cli-repo";
 import { looksLikeLcov, parseLcov, intersectCoverageWithDiff } from "../src/tests-evidence/lcov";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
 
@@ -87,7 +88,7 @@ test("review-surfaces.COVERAGE.1/.2 e2e: --coverage lcov is ingested with manife
       recursive: true,
       filter: (source) => {
         const rel = path.relative(process.cwd(), source);
-        return rel !== ".git" && !rel.startsWith(`.git${path.sep}`) && rel !== "dist" && !rel.startsWith(`dist${path.sep}`) && rel !== ".review-surfaces" && !rel.startsWith(`.review-surfaces${path.sep}`);
+        return rel !== ".git" && !rel.startsWith(`.git${path.sep}`) && !isLocalRuntimeArtifactPath(rel) && rel !== "dist" && !rel.startsWith(`dist${path.sep}`) && rel !== ".review-surfaces" && !rel.startsWith(`.review-surfaces${path.sep}`);
       }
     });
     execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });

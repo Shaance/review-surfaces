@@ -7,6 +7,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { validateJsonSchema } from "../src/schema/json-schema";
 import { ExitCodes } from "../src/core/exit-codes";
 import { COMMANDS } from "../src/cli/index";
+import { isLocalRuntimeArtifactPath } from "./helpers/cli-repo";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
 const PACKET_SCHEMA = JSON.parse(
@@ -21,6 +22,7 @@ function setupComposeFixture(prefix: string): string {
       const relative = path.relative(process.cwd(), source);
       return relative !== ".git"
         && !relative.startsWith(`.git${path.sep}`)
+        && !isLocalRuntimeArtifactPath(relative)
         && relative !== ".review-surfaces"
         && !relative.startsWith(`.review-surfaces${path.sep}`)
         && relative !== "dist"
@@ -684,6 +686,46 @@ test("review-surfaces.CLI.8 validate --surface covers packet, human, and all sur
     assert.match(stale.stderr, /review_routes/);
     // --surface all also surfaces the human failure.
     assert.equal(human(["validate", "--surface", "all"]).status, ExitCodes.schemaValidationFailed);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.REVIEWER_VALUE.1 live Codex tool output stays bounded through all + validate --surface all", () => {
+  const tmp = setupMinimalRepo("review-surfaces-live-codex-bounds-");
+  try {
+    const conversationPath = path.join(tmp, "codex-rollout.jsonl");
+    const generatedReport = JSON.stringify({
+      type: "custom_tool_call_output",
+      call_id: "call-live-1",
+      content: `tests passed; generated review_packet.json ${"x".repeat(30_000)}`
+    });
+    fs.writeFileSync(conversationPath, [
+      JSON.stringify({ type: "input_text", id: "first-" + "q".repeat(30_000), text: "Audit the reviewer report and keep evidence bounded." }),
+      JSON.stringify({ type: "custom_tool_call", call_id: "call-live-1", name: "exec_command", input: { command: "pnpm run test" } }),
+      generatedReport,
+      JSON.stringify({ type: "output_text", id: "event-" + "z".repeat(30_000), text: "I considered a bounded parser alternative." }),
+      JSON.stringify({ type: "output_text", text: `pnpm run test passed. ${"y".repeat(5_000)}` })
+    ].join("\n"));
+
+    const generate = spawnSync(
+      "node",
+      [CLI, "all", "--base", "HEAD", "--head", "HEAD", "--provider", "mock", "--out", ".review-surfaces", "--conversation", conversationPath],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(generate.status, ExitCodes.success, generate.stderr);
+    const validate = spawnSync(
+      "node",
+      [CLI, "validate", "--surface", "all", "--out", ".review-surfaces"],
+      { cwd: tmp, encoding: "utf8" }
+    );
+    assert.equal(validate.status, ExitCodes.success, validate.stderr);
+
+    const packet = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "review_packet.json"), "utf8"));
+    const claims = [...packet.methodology.verified_claims, ...packet.methodology.claims_without_evidence] as string[];
+    assert.ok(claims.every((claim) => claim.length <= 1_200));
+    assert.ok(claims.every((claim) => !claim.includes("generated review_packet.json")));
+    assert.ok((packet.methodology.considered as string[]).every((entry) => entry.length <= 500));
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

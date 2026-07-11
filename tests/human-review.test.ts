@@ -475,6 +475,75 @@ test("review-surfaces.SEMANTIC_DIFF.4 facts carry concrete language into the que
   );
 });
 
+test("review-surfaces.REVIEWER_VALUE.3 additive schema changes stay clarifying and blocking surfaces agree with blockers", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    diff: structuredDiffFixture(),
+    semanticFacts: {
+      schema_changes: [{
+        path: "schemas/human_review.schema.json",
+        properties_added: ["review_insights"],
+        properties_removed: [],
+        required_added: [],
+        required_removed: [],
+        type_changes: [],
+        enum_changes: []
+      }],
+      api_changes: [],
+      test_weakening: []
+    }
+  });
+
+  assert.equal(model.blockers.length, 0);
+  assert.ok(model.questions.every((question) => question.severity !== "blocking"));
+  assert.ok(model.suggested_comments.every((comment) => comment.severity !== "blocking"));
+  assert.ok(model.suggested_comments.some((comment) => /existing artifacts remain compatible/.test(comment.body)));
+});
+
+test("review-surfaces.REVIEWER_VALUE.3 deterministically breaking schemas create one coherent blocking path", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    diff: structuredDiffFixture(),
+    semanticFacts: {
+      schema_changes: [{
+        path: "schemas/human_review.schema.json",
+        properties_added: [],
+        properties_removed: [],
+        required_added: ["review_insights"],
+        required_removed: [],
+        type_changes: [],
+        enum_changes: []
+      }],
+      api_changes: [],
+      test_weakening: []
+    }
+  });
+
+  assert.equal(model.blockers.length, 1);
+  assert.ok(model.questions.some((question) => question.severity === "blocking"));
+  assert.ok(model.suggested_comments.some((comment) => comment.severity === "blocking"));
+});
+
+test("review-surfaces.REVIEWER_VALUE.3 enum additions clarify while enum removals block", () => {
+  const schemaChange = (added: string[], removed: string[]) => ({
+    path: "schemas/human_review.schema.json",
+    properties_added: [],
+    properties_removed: [],
+    required_added: [],
+    required_removed: [],
+    type_changes: [],
+    enum_changes: [{ field: "decision", added, removed }]
+  });
+  const build = (added: string[], removed: string[]) => buildHumanReview({
+    packet: packetFixture(),
+    diff: structuredDiffFixture(),
+    semanticFacts: { schema_changes: [schemaChange(added, removed)], api_changes: [], test_weakening: [] }
+  });
+
+  assert.equal(build(["defer"], []).blockers.length, 0);
+  assert.equal(build([], ["approve"]).blockers.some((blocker) => blocker.id === "BLOCK-SCHEMA-001"), true);
+});
+
 test("human review model is schema-valid and starts with deterministic readiness signals", () => {
   const model = buildHumanReview({
     packet: packetFixture(),
@@ -3681,7 +3750,23 @@ test("human suggested comments keep skipped-only test risk drafts", () => {
 
   assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-TESTS-001"), false);
   assert.equal(model.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-TEST")), true);
-  assert.equal(model.suggested_comments.find((comment) => comment.risk_ids.includes("PR-RISK-TEST"))?.severity, "blocking");
+  assert.equal(model.suggested_comments.find((comment) => comment.risk_ids.includes("PR-RISK-TEST"))?.severity, "clarifying");
+});
+
+test("review-surfaces.REVIEWER_VALUE.3 a path-only privacy-sensitive change asks but does not block", () => {
+  const packet = packetFixture();
+  packet.risks.items = [];
+  packet.risks.test_evidence = [];
+  packet.risks.missing_automatic_tests = [];
+  packet.risks.missing_manual_checks = [];
+  const surface = prSurfaceFixture();
+  surface.risks.candidates = [prRiskFixture("privacy_sensitive_change")];
+
+  const model = buildHumanReview({ packet, prSurface: surface });
+  const privacyComment = model.suggested_comments.find((comment) => comment.risk_ids.includes("PR-RISK-PRIVACY"));
+
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-PR-RISK-PRIVACY"), false);
+  assert.equal(privacyComment?.severity, "clarifying");
 });
 
 test("blocking suggested comments stay visible when non-blocking risk drafts exceed the cap", () => {
@@ -3699,14 +3784,14 @@ test("blocking suggested comments stay visible when non-blocking risk drafts exc
       id: `PR-RISK-LARGE-${String(index + 1).padStart(3, "0")}`,
       evidence: [fileEvidence(`src/human/large-${index + 1}.ts`, "Large diff risk.")]
     })),
-    prRiskFixture("privacy_sensitive_change")
+    prRiskFixture("coverage_regression")
   ];
 
   const model = buildHumanReview({ packet, prSurface: surface });
 
   assert.equal(model.suggested_comments.length, 10);
-  assert.ok(model.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-PRIVACY")));
-  assert.equal(model.suggested_comments.find((comment) => comment.risk_ids.includes("PR-RISK-PRIVACY"))?.severity, "blocking");
+  assert.ok(model.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-COVERAGE")));
+  assert.equal(model.suggested_comments.find((comment) => comment.risk_ids.includes("PR-RISK-COVERAGE"))?.severity, "blocking");
   assert.equal(model.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-LARGE-010")), false);
 });
 

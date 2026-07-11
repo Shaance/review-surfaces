@@ -182,6 +182,9 @@ export async function buildMethodology(
 // dogfooding the live session). Each kept entry is bounded so even a long message
 // stays scannable.
 const PICK_TEXT_LIMIT = 200;
+const CLAIM_TEXT_LIMIT = 1200;
+const EVENT_ID_LIMIT = 200;
+const PICK_ENTRY_LIMIT = 500;
 
 // An EDIT/WRITE tool-call — identified by its tool name OR (for adapters like Cursor
 // that put `edit <file>: <body>` in the summary without a tool field) the summary's
@@ -203,13 +206,34 @@ function isEditOrWriteToolCall(event: ConversationEvent): boolean {
 // an edit/write payload (any length) is the noise dogfooding caught. Every other
 // (loose) kind is natural language and kept (no whitelist — Codex P2).
 function isPickableEvent(event: ConversationEvent): boolean {
-  if (event.kind === "tool_result") {
+  if (event.actor === "system" || event.actor === "developer" || event.actor === "tool") {
     return false;
   }
-  if (event.kind === "tool_call") {
+  if (isToolOutputEvent(event)) {
+    return false;
+  }
+  if (isToolCallEvent(event)) {
     return event.summary.length <= PICK_TEXT_LIMIT && !isEditOrWriteToolCall(event);
   }
-  return true;
+  return !looksLikeGeneratedReviewPayload(event.summary);
+}
+
+function looksLikeGeneratedReviewPayload(summary: string): boolean {
+  const trimmed = summary.trimStart();
+  if (/<(?:environment_context|permissions instructions|skills_instructions|apps_instructions|plugins_instructions|recommended_plugins)>|<codex_internal_context\b/i.test(summary) ||
+    /# AGENTS\.md instructions/i.test(summary)) {
+    return true;
+  }
+  const marker = /(?:custom_tool_call_output|review_packet\.json|human_review\.json|internal_chat_message_metadata_passthrough)/.exec(summary);
+  if (!marker) {
+    return false;
+  }
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    return true;
+  }
+  const prefix = summary.slice(Math.max(0, marker.index - 240), marker.index);
+  return /(?:here (?:is|'s)|quoted|generated|report|payload|output)[^\n]{0,120}[{[]/i.test(prefix) ||
+    /(?:\{|\[)\s*["\\].{0,120}$/.test(prefix);
 }
 
 // Bound the kept text to PICK_TEXT_LIMIT, keeping the window around the FIRST keyword
@@ -239,7 +263,7 @@ function pick(events: ConversationEvent[], keywords: string[]): string[] {
     }
     const lower = event.summary.toLowerCase();
     if (keywords.some((keyword) => lower.includes(keyword))) {
-      result.push(`${event.id}: ${boundPickText(event.summary, keywords)}`);
+      result.push(boundedEventEntry(event, boundPickText(event.summary, keywords), PICK_ENTRY_LIMIT));
     }
   }
   return result;
@@ -248,11 +272,40 @@ function pick(events: ConversationEvent[], keywords: string[]): string[] {
 function pickValidationClaims(events: ConversationEvent[]): string[] {
   const result: string[] = [];
   for (const event of events) {
+    if (!isValidationClaimEvent(event)) {
+      continue;
+    }
     if (isValidationSuccessClaim(event.summary) || isValidationFailureClaim(event.summary)) {
-      result.push(`${event.id}: ${event.summary}`);
+      result.push(boundedEventEntry(event, event.summary, CLAIM_TEXT_LIMIT));
     }
   }
   return result;
+}
+
+function isValidationClaimEvent(event: ConversationEvent): boolean {
+  if (event.actor !== "assistant" && event.actor !== "agent") {
+    return false;
+  }
+  return !isToolCallEvent(event) &&
+    !isToolOutputEvent(event) &&
+    !looksLikeGeneratedReviewPayload(event.summary);
+}
+
+function isToolCallEvent(event: ConversationEvent): boolean {
+  return event.kind === "tool_call" || event.kind === "custom_tool_call";
+}
+
+function isToolOutputEvent(event: ConversationEvent): boolean {
+  return event.kind === "tool_result" || event.kind === "custom_tool_call_output";
+}
+
+function boundedEventEntry(event: ConversationEvent, summary: string, limit: number): string {
+  const id = event.id.slice(0, EVENT_ID_LIMIT);
+  const prefix = `${id}: `;
+  const available = Math.max(0, limit - prefix.length - 1);
+  return summary.length <= available
+    ? `${prefix}${summary}`
+    : `${prefix}${summary.slice(0, available).trimEnd()}…`;
 }
 
 function isValidationSuccessClaim(summary: string): boolean {

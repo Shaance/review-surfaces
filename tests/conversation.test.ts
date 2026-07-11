@@ -69,6 +69,83 @@ test("review-surfaces.METHODOLOGY.6 each adapter normalizes its harness shape an
   assert.equal(codexShell.command, "pnpm run test", "the inner shell command is extracted from the JSON arguments wrapper");
 });
 
+test("review-surfaces.REVIEWER_VALUE.1/.2 current Codex custom tool events normalize as bounded tool evidence", () => {
+  const oversized = `tests passed ${"payload ".repeat(1000)}`;
+  const text = [
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        call_id: "call-live",
+        name: "exec",
+        input: JSON.stringify({ cmd: "pnpm run test" })
+      }
+    }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call_output",
+        call_id: "call-live",
+        output: [{ type: "input_text", text: oversized }]
+      }
+    })
+  ].join("\n");
+
+  const result = normalizeConversation(textInput("codex.jsonl", text));
+
+  assert.equal(result?.adapter, "codex");
+  assert.equal(result?.events[0].kind, "tool_call");
+  assert.equal(result?.events[0].command, "pnpm run test");
+  assert.equal(result?.events[1].actor, "tool");
+  assert.equal(result?.events[1].kind, "tool_result");
+  assert.ok((result?.events[1].summary.length ?? Infinity) <= 1200);
+});
+
+test("review-surfaces.REVIEWER_VALUE.2 Codex rollout metadata cannot masquerade as assistant claims", () => {
+  const assistantMessage = "pnpm run test passed after the bounded fix.";
+  const text = [
+    JSON.stringify({ type: "session_meta", payload: { id: "session-1", instructions: "system says tests passed" } }),
+    JSON.stringify({ type: "turn_context", payload: { policy: "developer says tests passed" } }),
+    JSON.stringify({ type: "event_msg", payload: { type: "token_count", info: { total: 42 }, message: "tests passed" } }),
+    JSON.stringify({ type: "event_msg", payload: { type: "task_complete", last_agent_message: "tests passed" } }),
+    JSON.stringify({ type: "event_msg", payload: { type: "agent_message", message: assistantMessage } }),
+    JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: assistantMessage }] } }),
+    JSON.stringify({ type: "response_item", payload: { type: "message", role: "developer", content: [{ type: "input_text", text: "tests passed" }] } }),
+    JSON.stringify({ type: "event_msg", payload: { type: "agent_message", message: assistantMessage } })
+  ].join("\n");
+
+  const result = normalizeConversation(textInput("rollout.jsonl", text));
+
+  assert.equal(result?.adapter, "codex");
+  assert.equal(result?.events.filter((event) => event.actor === "assistant" && event.summary === assistantMessage).length, 2);
+  assert.ok(result?.events.some((event) => event.actor === "system" && event.kind === "metadata"));
+  assert.ok(result?.events.some((event) => event.actor === "developer"));
+  assert.equal(result?.events.some((event) => event.actor === "assistant" && /token_count|task_complete|system says/.test(event.summary)), false);
+  assert.ok(eachEventWellFormed(result?.events ?? []));
+});
+
+test("review-surfaces.REVIEWER_VALUE.2 Codex event-message-only rollouts auto-detect", () => {
+  const result = normalizeConversation(textInput("rollout.jsonl", [
+    JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "Please audit the report." } }),
+    JSON.stringify({ type: "event_msg", payload: { type: "agent_message", message: "I reviewed the report." } })
+  ].join("\n")));
+
+  assert.equal(result?.adapter, "codex");
+  assert.deepEqual(result?.events.map((event) => event.actor), ["user", "assistant"]);
+});
+
+test("review-surfaces.REVIEWER_VALUE.1 normalized event ids are bounded and collision-safe", () => {
+  const prefix = "event-" + "x".repeat(300);
+  const result = normalizeConversation(textInput("rollout.jsonl", [
+    JSON.stringify({ type: "input_text", id: `${prefix}a`, text: "first" }),
+    JSON.stringify({ type: "input_text", id: `${prefix}b`, text: "second" })
+  ].join("\n")));
+  const ids = result?.events.map((event) => event.id) ?? [];
+
+  assert.equal(ids.every((id) => id.length <= 200), true);
+  assert.equal(new Set(ids).size, 2);
+});
+
 test("review-surfaces.METHODOLOGY.6 auto-detects by content shape and honors a --conversation-format override", () => {
   // Auto-detect by shape (not extension): all three could be .jsonl/.json.
   assert.equal(normalizeConversation(fixtureInput("claude-code.jsonl"))?.adapter, "claude-code");

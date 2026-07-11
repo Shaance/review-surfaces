@@ -183,6 +183,20 @@ components:
       4:
         requirement: Conversation-aware insights must render before the generic review queue on the human Markdown, HTML, sticky, and both PR-comment fallback surfaces (while preserving higher-priority working-tree and since-last-review notices), exposing the cited stated goal, later refinements, constraints, incompleteness caveats, evidence state, priority, why-it-matters, reviewer action, grounding basis, and compact exact-line citations; unavailable or partial reconciliation must remain visibly inconclusive, and conversation-derived output must never create or clear blockers, change coverage, or alter the merge-readiness verdict.
 
+  REVIEWER_VALUE:
+    name: Reviewer decision quality uplift
+    description: Turn the evidence-rich packet into a bounded decision surface whose top content changes reviewer judgment instead of repeating mechanically detectable facts.
+    requirements:
+      1:
+        requirement: Every artifact produced from supported live Claude, Codex, Cursor, normalized, tool-call, and tool-result event shapes must satisfy its configured schema bounds; producer code must bound agent-influenceable text before persistence, and a real CLI generation followed by validate --surface all must regression-test the live event shape that previously exceeded methodology claim maxLength.
+        note: "Reviewer decision uplift M1. Live Codex dogfood produced review_packet.json that immediately failed its own 20,000-character methodology claim limit while 124 focused tests passed."
+      2:
+        requirement: >-
+          Deterministic methodology and validation-claim extraction must use an explicit actor/event eligibility contract: system/developer instructions, tool results, custom tool output, generated review artifacts, and quoted report payloads cannot become agent intent, considered alternatives, research, decisions, assumptions, or validation claims; every persisted pick and claim is bounded and cites its eligible event.
+        note: "Reviewer decision uplift M1. Keyword fallback classified sandbox instructions, skill catalogs, schema dumps, and the report's own output as reviewer methodology."
+      3:
+        requirement: Reviewer severity must be coherent across verdict, blockers, questions, suggested comments, and counts; an additive optional schema property or internal export cannot create a blocking ready-to-post comment without deterministic evidence that the change breaks an existing public or persisted contract.
+        note: "Reviewer decision uplift M1. Two additive optional schema fields generated blocking migration comments while the cockpit reported zero blockers."
   RISK:
     name: Risk and test-gap analysis
     description: Compute review risk, tested areas, untested areas, and manual/automatic checks.
