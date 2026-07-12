@@ -5,6 +5,13 @@ import { commandEvidence, EvidenceRef, missingEvidence } from "../evidence/evide
 import { computeCrossReferenceSignals } from "./cross-reference";
 import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
 import { conversationEventLooksLikeGeneratedPayload, conversationReviewerText } from "../conversation/generated-payload";
+import { compareStrings } from "../core/compare";
+import {
+  validationOutcomeIsHypothetical,
+  validationTextActualOutcomeKind,
+  validationTextHasExactlyOneOutcome,
+  validationTextStartsWithOutcome,
+} from "../core/command-classify";
 
 // review-surfaces.METHODOLOGY.7/.8: a validated item-4 workflow finding produced
 // by the methodology leaf (unchallenged assumption, skipped step, workflow
@@ -42,8 +49,9 @@ export interface MethodologyModel {
 }
 
 interface TranscriptCommandEvidence {
-  passed: Map<string, string[]>;
-  failed: Map<string, string[]>;
+  readonly passed: Map<string, string[]>;
+  readonly failed: Map<string, string[]>;
+  readonly candidates: readonly string[];
 }
 
 export async function buildMethodology(
@@ -288,7 +296,7 @@ function pickValidationClaims(events: ConversationEvent[]): ValidationClaimCandi
     if (!isValidationClaimEvent(event)) {
       continue;
     }
-    if (isValidationSuccessClaim(event.summary) || isValidationFailureClaim(event.summary)) {
+    if (isValidationClaim(event.summary)) {
       result.push({
         evidenceText: event.summary,
         persistedText: boundedEventEntry(event, event.summary, CLAIM_TEXT_LIMIT)
@@ -324,40 +332,32 @@ function boundedEventEntry(event: ConversationEvent, summary: string, limit: num
     : `${prefix}${summary.slice(0, available).trimEnd()}…`;
 }
 
-function isValidationSuccessClaim(summary: string): boolean {
+function isValidationClaim(summary: string): boolean {
   const lower = summary.toLowerCase();
   const mentionsValidation = /\b(?:tests?|tested|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test|tsc)\b/.test(lower);
-  const claimsSuccess = /\b(?:tested|pass|passed|passes|passing|green|succeeded|successful|success|validated|verified)\b/.test(lower);
-  if (!mentionsValidation || !claimsSuccess) {
-    return false;
-  }
-  return !/\b(?:missing|needs?|add|todo|skipped|skip|not run|could not|cannot|can't|gap|uncovered)\b|\b(?:should|could|would|might|may|will|expect(?:ed)? to)\s+(?:pass|passed|passes|green|succeed|succeeded|successful|validate|validated|verify|verified)\b|\bnot\s+(?:pass|passed|passing|green|successful|validated|verified)\b/.test(lower);
-}
-
-function isValidationFailureClaim(summary: string): boolean {
-  const lower = summary.toLowerCase();
-  const mentionsValidation = /\b(?:tests?|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test|tsc)\b/.test(lower);
-  const claimsFailure = /\b(?:fail|failed|failing|errored|error)\b/.test(lower);
-  if (!mentionsValidation || !claimsFailure) {
-    return false;
-  }
-  return !/\b(?:needs?|add|todo|skipped|skip|not run|could not|cannot|can't|gap|uncovered)\b|\b(?:should|could|would|might|may|will|expect(?:ed)? to)\s+(?:fail|failed|failing|error|errored)\b/.test(lower);
+  if (!mentionsValidation) return false;
+  const claimsOutcome = validationTextActualOutcomeKind(lower) !== undefined ||
+    (/\b(?:is|was)\s+(?:a\s+)?success\b/.test(lower) && !validationOutcomeIsHypothetical(lower));
+  if (!claimsOutcome) return false;
+  return !/\b(?:missing|needs?|add|todo|skipped|skip|could not|cannot|can't|gap|uncovered)\b/.test(lower);
 }
 
 function buildTranscriptCommandEvidence(collection: CollectionResult): TranscriptCommandEvidence {
-  const evidence: TranscriptCommandEvidence = {
-    passed: new Map(),
-    failed: new Map()
-  };
+  const passed = new Map<string, string[]>();
+  const failed = new Map<string, string[]>();
   for (const transcript of collection.commandTranscripts ?? []) {
     const command = normalizeCommand(transcript.command);
     if (transcript.status === "passed" && transcript.exit_code === 0) {
-      appendCommandTranscriptId(evidence.passed, command, transcript.id);
+      appendCommandTranscriptId(passed, command, transcript.id);
     } else if (transcript.status === "failed" || (typeof transcript.exit_code === "number" && transcript.exit_code !== 0)) {
-      appendCommandTranscriptId(evidence.failed, command, transcript.id);
+      appendCommandTranscriptId(failed, command, transcript.id);
     }
   }
-  return evidence;
+  return {
+    passed,
+    failed,
+    candidates: sortedCommandCandidates(new Set([...passed.keys(), ...failed.keys()]))
+  };
 }
 
 function appendCommandTranscriptId(index: Map<string, string[]>, command: string, transcriptId: string): void {
@@ -370,26 +370,17 @@ function appendCommandTranscriptId(index: Map<string, string[]>, command: string
 }
 
 function claimCommandEvidenceIds(claim: string, transcriptCommands: TranscriptCommandEvidence): string[] | undefined {
-  const claimedCommands = extractClaimedCommands(claim);
-  if (claimedCommands.length === 0) {
-    return undefined;
-  }
-  let evidenceIndex: Map<string, string[]> | undefined;
-  if (isValidationSuccessClaim(claim)) {
-    evidenceIndex = transcriptCommands.passed;
-  } else if (isValidationFailureClaim(claim)) {
-    evidenceIndex = transcriptCommands.failed;
-  }
-  if (!evidenceIndex || !claimedCommands.every((command) => evidenceIndex.has(command))) {
-    return undefined;
-  }
+  const claimedCommands = extractClaimedCommands(claim, transcriptCommands.candidates);
+  if (claimedCommands.length === 0) return undefined;
   const transcriptIds = new Set<string>();
-  for (const command of claimedCommands) {
-    for (const transcriptId of evidenceIndex.get(command) ?? []) {
-      transcriptIds.add(transcriptId);
-      if (transcriptIds.size === 5) {
-        return [...transcriptIds];
-      }
+  for (const { command, resultText } of claimedCommands) {
+    const outcome = validationTextActualOutcomeKind(resultText);
+    if (!outcome || outcome === "mixed") return undefined;
+    const evidenceIndex = outcome === "success" ? transcriptCommands.passed : transcriptCommands.failed;
+    const ids = evidenceIndex.get(command);
+    if (!ids) return undefined;
+    for (const transcriptId of ids) {
+      if (transcriptIds.size < 5) transcriptIds.add(transcriptId);
     }
   }
   return [...transcriptIds];
@@ -407,30 +398,128 @@ function normalizeCommand(command: string): string {
   return command.toLowerCase().trim().replace(/\s+/g, " ");
 }
 
-function extractClaimedCommands(claim: string): string[] {
-  const commands: string[] = [];
+function sortedCommandCandidates(commands: Iterable<string>): string[] {
+  return [...commands].sort((left, right) => right.length - left.length || compareStrings(left, right));
+}
+
+function extractClaimedCommands(
+  claim: string,
+  candidates: readonly string[]
+): Array<{ command: string; resultText: string }> {
   const normalizedClaim = normalizeCommand(claim);
-  const commandStarts = [...normalizedClaim.matchAll(/\b(?:pnpm|npm|yarn|bun|node|tsc)\b/g)];
+  const commandStarts = commandStartMatches(normalizedClaim, candidates);
+  if (commandStarts.length === 0) return [];
+  const commands: Array<{ command: string; resultText: string }> = [];
   for (let index = 0; index < commandStarts.length; index += 1) {
-    const start = commandStarts[index].index ?? 0;
+    const start = commandStarts[index].index;
     const end = commandStarts[index + 1]?.index ?? normalizedClaim.length;
-    const command = cleanClaimedCommand(normalizedClaim.slice(start, end));
-    if (command && commandLooksSupported(command)) {
-      commands.push(command);
-    }
+    const segment = normalizedClaim.slice(start, end);
+    const command = commandStarts[index].candidate;
+    if (!command || !commandCandidateMatchesClaimSegment(command, segment, commandStarts.length > 1)) return [];
+    const remainder = stripCommandResultSeparator(segment.slice(command.length)).trim();
+    commands.push({ command, resultText: remainder || segment });
   }
-  return [...new Set(commands)];
+  return commands;
 }
 
-function cleanClaimedCommand(value: string): string {
-  return normalizeCommand(value)
-    .replace(/\s+\b(?:passed|passes|passing|green|succeeded|successful|success|validated|verified|tested|fail|failed|failing|errored|error|after|before|because|so|while|when)\b.*$/i, "")
-    .replace(/\s+\b(?:and|then)\s*$/i, "")
-    .replace(/\s*(?:,|;|&&|\|\|)\s*$/i, "")
-    .replace(/[`'")\]]+$/g, "")
-    .trim();
+const PACKAGE_RUNNER_SOURCE = String.raw`(?:pnpm|npm|yarn|bun)`;
+const COMMAND_RUNNER_SOURCE = String.raw`(?:${PACKAGE_RUNNER_SOURCE}|node|tsc)`;
+const COMMAND_RUNNER_AT_INDEX = new RegExp(String.raw`${COMMAND_RUNNER_SOURCE}\b`, "y");
+const COMMAND_CLAUSE_CONNECTOR_AT_INDEX = /(?:and|then|but)\b/y;
+const CANDIDATELESS_VALIDATION_COMMAND_AT_INDEX = new RegExp(
+  String.raw`(?:${PACKAGE_RUNNER_SOURCE}\s+(?:(?:run|exec)\s+\S+|test\b|lint\b|typecheck\b|check\b|build\b)|node\s+--test\b|tsc(?:\s+(?:--\S+|-p\b))?)`,
+  "y"
+);
+
+interface CommandStartMatch {
+  index: number;
+  candidate?: string;
 }
 
-function commandLooksSupported(command: string): boolean {
-  return /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+[\w:.-]+|exec\s+[\w:.-]+|test(?::[\w.-]+)?|lint|typecheck|build)(?:\s+[^\s,;]+)*|node\s+--test(?:\s+[^\s,;]+)*|tsc(?:\s+[^\s,;]+)*)$/.test(command);
+function commandStartMatches(text: string, candidates: readonly string[]): CommandStartMatch[] {
+  const starts: CommandStartMatch[] = [];
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  let boundarySincePreviousCommand = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote && !(quote === "'" && apostropheIsEmbedded(text, index))) quote = undefined;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      if (character === "'" && apostropheIsEmbedded(text, index)) continue;
+      quote = character;
+      continue;
+    }
+    if (starts.length > 0) {
+      if (character === ";" || character === "," ||
+        (character === "&" && text[index + 1] === "&") ||
+        (character === "|" && text[index + 1] === "|")) {
+        boundarySincePreviousCommand = true;
+      } else if ((index === 0 || !isWordCharacter(text[index - 1]))) {
+        COMMAND_CLAUSE_CONNECTOR_AT_INDEX.lastIndex = index;
+        if (COMMAND_CLAUSE_CONNECTOR_AT_INDEX.test(text)) boundarySincePreviousCommand = true;
+      }
+    }
+    if (index > 0 && isWordCharacter(text[index - 1])) continue;
+    COMMAND_RUNNER_AT_INDEX.lastIndex = index;
+    const match = COMMAND_RUNNER_AT_INDEX.exec(text);
+    if (!match) continue;
+    if (starts.length > 0 && !boundarySincePreviousCommand) continue;
+    const candidate = candidates.find((command) => text.startsWith(command, index));
+    if (!candidate) {
+      if (starts.length === 0) continue;
+      CANDIDATELESS_VALIDATION_COMMAND_AT_INDEX.lastIndex = index;
+      if (!CANDIDATELESS_VALIDATION_COMMAND_AT_INDEX.test(text)) continue;
+    }
+    starts.push({ index, ...(candidate ? { candidate } : {}) });
+    boundarySincePreviousCommand = false;
+    index += (candidate?.length ?? match[0].length) - 1;
+  }
+  return starts;
+}
+
+function apostropheIsEmbedded(text: string, index: number): boolean {
+  return index > 0 && index + 1 < text.length &&
+    isWordCharacter(text[index - 1]) && isWordCharacter(text[index + 1]);
+}
+
+function isWordCharacter(character: string): boolean {
+  const code = character.charCodeAt(0);
+  return (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    code === 95 ||
+    (code >= 97 && code <= 122);
+}
+
+function commandCandidateMatchesClaimSegment(candidate: string, segment: string, requireOutcome: boolean): boolean {
+  if (segment === candidate) return true;
+  if (!segment.startsWith(candidate)) return false;
+  const rawRemainder = segment.slice(candidate.length);
+  if (hasOnlyCommandResultSeparator(rawRemainder)) return !requireOutcome;
+  const remainder = stripCommandResultSeparator(rawRemainder);
+  if (!validationTextStartsWithOutcome(remainder)) return false;
+  const hasPotentiallyMultiwordValue = /(?:^|\s)(?:--filter|--grep|-t|--test-name-pattern|--testNamePattern)(?:=|\s)/i.test(candidate);
+  return !hasPotentiallyMultiwordValue || validationTextHasExactlyOneOutcome(remainder);
+}
+
+const COMMAND_RESULT_SEPARATOR_SOURCE = String.raw`[\s\x60'"),;.!?]+`;
+const LEADING_COMMAND_RESULT_SEPARATOR = new RegExp(String.raw`^${COMMAND_RESULT_SEPARATOR_SOURCE}`);
+const ONLY_COMMAND_RESULT_SEPARATOR = new RegExp(String.raw`^${COMMAND_RESULT_SEPARATOR_SOURCE}$`);
+
+function stripCommandResultSeparator(text: string): string {
+  return text.replace(LEADING_COMMAND_RESULT_SEPARATOR, "");
+}
+
+function hasOnlyCommandResultSeparator(text: string): boolean {
+  return ONLY_COMMAND_RESULT_SEPARATOR.test(text);
 }

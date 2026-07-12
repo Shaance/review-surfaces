@@ -373,6 +373,242 @@ test("review-surfaces.CONVERSATION_REVIEW.6 explicit agent claims stay distinct 
   });
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.5 an initial change request is not duplicated as a correction", () => {
+  const brief = buildDeterministicConversationBrief([{
+    id: "initial-change",
+    actor: "user",
+    kind: "message",
+    summary: "Change the retry behavior to preserve backoff.",
+    raw_index: 0
+  }], "mock");
+
+  assert.deepEqual(brief.intent, [{
+    text: "Change the retry behavior to preserve backoff.",
+    event_ids: ["initial-change"]
+  }]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 hypothetical validation outcomes are not claims", () => {
+  const brief = buildDeterministicConversationBrief([
+    "The tests should pass after this change.",
+    "Lint is expected to be green.",
+    "The build might fail on Windows.",
+    "I expect tests to pass.",
+    "Tests should now pass.",
+    "This should make the tests pass.",
+    "Tests are likely to pass.",
+    "I expected tests to pass.",
+    "It was expected that tests pass.",
+    "I expected, after the refactor, tests to pass.",
+    "Tests should, in theory, pass.",
+    "I expected lint and tests to pass.",
+    "Tests should build and pass.",
+    "Tests should pass and be green.",
+    "I expected tests to compile and pass.",
+    "The build may fail and error.",
+    "Tests should build and still pass.",
+    "Tests should compile and successfully pass.",
+    "The build may fail and then pass.",
+    "Tests should run and now pass.",
+    "Tests should pass but still be successful.",
+    "Tests could fail but be validated in CI.",
+    "Tests may pass but error on Windows.",
+    "Tests passing is expected after this change.",
+    "Green tests are expected after the refactor.",
+    "Tests passing would be ideal.",
+    "Tests should build and consistently pass.",
+    "Tests should compile and reliably pass.",
+    "The build may fail and ultimately pass.",
+    "Tests should build and, in theory, pass.",
+    "Tests should compile and, ideally, pass.",
+    "Tests should build and, under the new runner, pass.",
+    "Tests should compile and, at least in CI, pass.",
+    "Tests passing is still expected after this change.",
+    "Green tests are generally expected after the refactor.",
+    "Tests passing was always expected.",
+    "Tests are unlikely to pass after this change.",
+    "The build is unlikely to fail on Windows.",
+    "Tests passing is not expected after this change.",
+    "Green tests are never expected after the refactor.",
+    "Tests passing is no longer expected.",
+    "Tests passing isn't expected after this change.",
+    "Tests passing isn’t expected after this change.",
+    "Green tests aren't expected after the refactor.",
+    "Green tests aren’t expected after the refactor.",
+    "Tests passing wasn't expected.",
+    "Tests passing wasn’t expected.",
+    "Although tests should, in theory, pass, lint may fail.",
+    "Though the build may, after retries, pass, lint could fail.",
+    "While tests are expected, after retries, to pass, lint may fail.",
+    "The CLI should be manually tested.",
+    "Tests should be tested.",
+    "Validation should be a success.",
+    "Build success criteria are documented.",
+    "The test success metric changed.",
+    "We discussed build success rates."
+  ].map((summary, raw_index) => ({
+    id: `hypothetical-${raw_index}`,
+    actor: "assistant",
+    kind: "message",
+    summary,
+    raw_index
+  })), "mock");
+
+  assert.deepEqual(brief.validation_claims, []);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 actual outcomes survive nearby hypothetical clauses", () => {
+  const brief = buildDeterministicConversationBrief([
+    "The old build would fail, but the new build passed.",
+    "Tests should cover retries, and all 20 tests passed.",
+    "The old build would fail and the new build passed.",
+    "Tests passed and may fail on Windows.",
+    "The old build would fail and CI passed.",
+    "Tests should cover retries and CI passed.",
+    "Tests should pass but failed.",
+    "The build may be green but errored.",
+    "Tests should pass, yet failed.",
+    "Tests should pass, however, they failed.",
+    "As expected, all tests passed."
+  ].map((summary, raw_index) => ({
+    id: `actual-${raw_index}`,
+    actor: "assistant",
+    kind: "message",
+    summary,
+    raw_index
+  })), "mock");
+
+  assert.deepEqual(brief.validation_claims.map((claim) => claim.event_ids[0]), [
+    "actual-0",
+    "actual-1",
+    "actual-2",
+    "actual-3",
+    "actual-4",
+    "actual-5",
+    "actual-6",
+    "actual-7",
+    "actual-8",
+    "actual-9",
+    "actual-10"
+  ]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 subordinate expectations do not erase actual outcomes", () => {
+  const brief = buildDeterministicConversationBrief([
+    "Tests passed, which we expected.",
+    "Tests passed because we expected them to.",
+    "Tests passed although we expected failures.",
+    "Tests passed, though we expected them to fail.",
+    "Tests passed when they were expected to fail.",
+    "Tests passed since they were expected to.",
+    "Tests passed as they were expected to.",
+    "Tests passed while lint being green is expected.",
+    "Tests passed although a green build is expected.",
+    "Tests passed, while a green build is expected."
+  ].map((summary, raw_index) => ({
+    id: `subordinate-actual-${raw_index}`,
+    actor: "assistant",
+    kind: "message",
+    summary,
+    raw_index
+  })), "mock");
+
+  assert.deepEqual(brief.validation_claims.map((claim) => claim.event_ids[0]), [
+    "subordinate-actual-0",
+    "subordinate-actual-1",
+    "subordinate-actual-2",
+    "subordinate-actual-3",
+    "subordinate-actual-4",
+    "subordinate-actual-5",
+    "subordinate-actual-6",
+    "subordinate-actual-7",
+    "subordinate-actual-8",
+    "subordinate-actual-9"
+  ]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 contrastive clauses evaluate their own outcomes", () => {
+  const brief = buildDeterministicConversationBrief([
+    "Tests should pass although lint failed.",
+    "Tests are expected to pass while lint failed.",
+    "Tests passing is expected, although lint failed.",
+    "Tests may pass whereas the build failed.",
+    "Although tests should pass, lint failed.",
+    "While tests are expected to pass, lint failed.",
+    "Though tests may pass, the build failed.",
+    "Whereas tests should pass, lint failed.",
+    "Lint fails.",
+    "The build fails on Windows.",
+    "Tests should pass although lint fails."
+  ].map((summary, raw_index) => ({
+    id: `contrastive-actual-${raw_index}`,
+    actor: "assistant",
+    kind: "message",
+    summary,
+    raw_index
+  })), "mock");
+
+  assert.deepEqual(brief.validation_claims.map((claim) => claim.event_ids[0]), [
+    "contrastive-actual-0",
+    "contrastive-actual-1",
+    "contrastive-actual-2",
+    "contrastive-actual-3",
+    "contrastive-actual-4",
+    "contrastive-actual-5",
+    "contrastive-actual-6",
+    "contrastive-actual-7",
+    "contrastive-actual-8",
+    "contrastive-actual-9",
+    "contrastive-actual-10"
+  ]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 leading-clause boundaries preserve main-clause outcomes", () => {
+  const brief = buildDeterministicConversationBrief([
+    "Although tests should pass, in practice, lint failed.",
+    "Though the build may pass, on CI, lint failed.",
+    "While tests are expected to pass, after startup, the build failed.",
+    "The build should pass but fails.",
+    "The build should fail but succeeds.",
+    "The build should pass yet errors."
+  ].map((summary, raw_index) => ({
+    id: `clause-boundary-${raw_index}`,
+    actor: "assistant",
+    kind: "message",
+    summary,
+    raw_index
+  })), "mock");
+
+  assert.deepEqual(brief.validation_claims.map((claim) => claim.event_ids[0]), [
+    "clause-boundary-0",
+    "clause-boundary-1",
+    "clause-boundary-2",
+    "clause-boundary-3",
+    "clause-boundary-4",
+    "clause-boundary-5"
+  ]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 present-tense outcomes are validation claims", () => {
+  const brief = buildDeterministicConversationBrief([
+    "Tests succeed.",
+    "The build succeeds.",
+    "Tests are succeeding now."
+  ].map((summary, raw_index) => ({
+    id: `present-success-${raw_index}`,
+    actor: "assistant",
+    kind: "message",
+    summary,
+    raw_index
+  })), "mock");
+
+  assert.deepEqual(brief.validation_claims.map((claim) => claim.event_ids[0]), [
+    "present-success-0",
+    "present-success-1",
+    "present-success-2"
+  ]);
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.6 preserves non-JS validation claims without promoting them to observations", () => {
   const brief = buildDeterministicConversationBrief([
     ["I ran pytest and it passed", "pytest-claim"],

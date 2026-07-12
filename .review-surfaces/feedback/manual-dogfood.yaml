@@ -129,6 +129,12 @@ findings:
     affected_section: Requirement coverage
     finding: Next-value Phase 0 promotes brainstorm ideas 1-12 into 33 new ACIDs (PR_SURFACE, RANKING, COVERAGE, BUDGET, EVAL_HARNESS, DEP_FACTS, BLAST_RADIUS, CONFIG_FACTS, POLICY families plus RENDER.9-10 and INTENT.6-7) and stages them all in quality_gate.allow_missing. As a spec-only promotion phase it intentionally does not change the rendered human_review.md surface; the dogfood run confirms the strict gate still passes (exit 0) with the new not-yet-implemented requirements allowlisted, and the 33 new ACIDs evaluate as partial (doc-anchored) rather than tripping the gate.
     desired_change: No surface change is expected until Phase 1 ships PR_SURFACE; each later phase removes its ACIDs from the allowlist as it lands, returning the gate to allow_missing [] when the final phase merges.
+  - id: FB-2026-07-11-001
+    category: review_value
+    severity: high
+    affected_section: Architecture decision findings
+    finding: M3 real-diff dogfood reported directory-aggregate import cycles as concrete module cycles. Moving core/gate.ts to gate/gate.ts did not resolve the signal; it produced two different high-severity cycles from type-only and unrelated sibling-module edges and also marked the moved file as overreach. The generated action therefore sends a reviewer toward architecture churn without proving a runtime module cycle.
+    desired_change: In the M4 real-session usefulness evaluation, make cycle findings module-accurate and runtime-aware, ignore type-only edges, cite the concrete import chain, and suppress directory-aggregate cycles that cannot be reproduced in the module graph.
 validation:
   updated_at: 2026-06-09T11:28:15Z
   passed:

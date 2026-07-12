@@ -4,7 +4,13 @@ import type {
   ConversationValidationObservation
 } from "../contracts/conversation-review";
 import type { ProviderName } from "../contracts/provider";
-import { commandLooksLikeLocalValidationCommand, type CommandRule } from "../core/command-classify";
+import {
+  commandLooksLikeLocalValidationCommand,
+  stripTrailingValidationOutcome,
+  validationOutcomeIsHypothetical,
+  validationTextHasOutcome,
+  type CommandRule
+} from "../core/command-classify";
 import { commandSegments, statusBearingCommandSegments } from "../core/command-segments";
 import { compareStrings } from "../core/compare";
 import type { SanitizedConversationEvent } from "./analysis-prompt-context";
@@ -20,7 +26,6 @@ const NON_GOAL = /^(?:do not|don't)\b|\b(?:non[- ]goal|out of scope|not in scope
 const AGENT_CLAIM = /\b(?:i|we)\s+(?:added|changed|chose|completed|created|fixed|implemented|kept|preserved|removed|updated|used|wired)\b/i;
 const SUBJECTLESS_AGENT_CLAIM = /(?:^|\n)\s*(?:[-*]\s*)?(?:\*{1,2}|_{1,2})?(?:added|changed|chose|completed|created|fixed|implemented|kept|preserved|removed|updated|used|wired)(?:\*{1,2}|_{1,2})?(?=\s|[.:,;!?]|$)/i;
 const VALIDATION_MENTION = /\b(?:tests?|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test|tsc)\b/i;
-const VALIDATION_OUTCOME = /\b(?:pass(?:ed|es|ing)?|fail(?:ed|ing)?|green|succeed(?:ed)?|successful|validated|verified|errored|errors?)\b/i;
 export function buildDeterministicConversationBrief(
   events: readonly SanitizedConversationEvent[],
   provider: ProviderName,
@@ -44,14 +49,15 @@ export function buildDeterministicConversationBrief(
     const item = itemFromEvent(event);
     const text = conversationReviewerText(event.summary).trim();
     if (index === 0) intent.push(item);
-    if (CORRECTION.test(text)) intent.push(item);
+    if (index > 0 && CORRECTION.test(text)) intent.push(item);
     if (index > 0) refinements.push(item);
     if (CONSTRAINT.test(text)) constraints.push(item);
     if (NON_GOAL.test(text)) nonGoals.push(item);
   }
   for (const event of assistantEvents) {
     const text = conversationReviewerText(event.summary).trim();
-    if (VALIDATION_OUTCOME.test(text) && looksLikeValidationClaim(text, commandRules)) {
+    if (validationTextHasOutcome(text) && !validationOutcomeIsHypothetical(text) &&
+      looksLikeValidationClaim(text, commandRules)) {
       validationClaims.push(itemFromEvent(event));
     }
     if (AGENT_CLAIM.test(text) || SUBJECTLESS_AGENT_CLAIM.test(text)) {
@@ -185,10 +191,8 @@ function looksLikeValidationClaim(text: string, commandRules: readonly CommandRu
 
 function validationClaimCommandCandidates(text: string): string[] {
   const plain = text.replace(/`([^`\n]+)`/g, "$1").trim();
-  const withoutOutcome = plain
-    .replace(/^\s*(?:verified|validated)(?:\s+by)?(?:\s+running)?\s*:?\s*/i, "")
-    .replace(/\s+(?:pass(?:ed|es|ing)?|fail(?:ed|ing)?|green|succeed(?:ed)?|successful|validated|verified|errored|errors?)[.:;!?]*\s*$/i, "")
-    .trim();
+  const withoutOutcome = stripTrailingValidationOutcome(plain
+    .replace(/^\s*(?:verified|validated)(?:\s+by)?(?:\s+running)?\s*:?\s*/i, ""));
   const withoutNarration = withoutOutcome
     .replace(/^\s*(?:[-*]\s*)?(?:(?:i|we)\s+)?(?:ran|run|executed|invoked)\s+/i, "")
     .replace(/\s+and\s+(?:it|they|the\s+(?:command|suite))\s*$/i, "")

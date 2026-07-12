@@ -364,6 +364,48 @@ test("review-surfaces.CONVERSATION_REVIEW.7 patch-looking text in a non-mutation
   assert.deepEqual(provenance.mutatedPaths, []);
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.7 patch-looking edit content cannot claim another mutation path", () => {
+  const text = [
+    codexMeta("/repo/app", "2026-06-17T09:00:00.000Z"),
+    codexToolLine(
+      "2026-06-17T09:00:01.000Z",
+      "edit",
+      {
+        file_path: "src/other.ts",
+        new_string: "Quoted example:\n*** Begin Patch\n*** Update File: src/uploader.ts\n*** End Patch"
+      }
+    )
+  ].map((entry) => JSON.stringify(entry)).join("\n");
+  const provenance = codexProvenance(buildAdapterInput("desktop.jsonl", text), {
+    cwd: "/repo/app",
+    changedFiles: ["src/uploader.ts"]
+  });
+
+  assert.deepEqual(provenance.mutatedPaths, []);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 tool-name suffixes cannot masquerade as apply_patch", () => {
+  const text = [
+    codexMeta("/repo/app", "2026-06-17T09:00:00.000Z"),
+    codexToolLine(
+      "2026-06-17T09:00:01.000Z",
+      "fakeapply_patch",
+      "*** Begin Patch\n*** Update File: src/uploader.ts\n*** End Patch"
+    ),
+    codexToolLine(
+      "2026-06-17T09:00:02.000Z",
+      "not_apply_patch",
+      "*** Begin Patch\n*** Update File: src/uploader.ts\n*** End Patch"
+    )
+  ].map((entry) => JSON.stringify(entry)).join("\n");
+  const provenance = codexProvenance(buildAdapterInput("desktop.jsonl", text), {
+    cwd: "/repo/app",
+    changedFiles: ["src/uploader.ts"]
+  });
+
+  assert.deepEqual(provenance.mutatedPaths, []);
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.7 JSON-encoded Codex patch arguments retain mutation provenance", () => {
   const text = [
     codexMeta("/repo/app", "2026-06-17T09:00:00.000Z"),

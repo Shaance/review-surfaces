@@ -1,7 +1,8 @@
-import { CollectionResult } from "../collector/collect";
-import { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
+import type { CollectionResult } from "../collector/collect";
+import type { EvaluationModel, RequirementResult } from "../evaluation/evaluate";
 import { isHypothesisOnly } from "../evidence/evidence";
-import { ProviderName, providerMakesRemoteCall } from "../llm/provider";
+import { providerMakesRemoteCall } from "../llm/provider";
+import type { ProviderName } from "../llm/provider";
 import type { RiskItem } from "../risks/risks";
 import { ExitCodes } from "./exit-codes";
 

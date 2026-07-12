@@ -54,8 +54,71 @@ test("review-surfaces.METHODOLOGY.2 separates transcript-backed claims from unve
       "assistant: tests are green for the workflow.",
       "assistant: all tests pass after the fix.",
       "assistant: failing tests are now green.",
+      "assistant: lint fails on Windows.",
+      "assistant: tests succeed on Linux.",
+      "assistant: the build succeeds locally.",
+      "assistant: tests are succeeding now.",
       "assistant: manually tested the CLI.",
       "assistant: the tests should pass after this change.",
+      "assistant: the tests should now be passing after this change.",
+      "assistant: lint is expected to be green.",
+      "assistant: I expected tests to pass.",
+      "assistant: It was expected that tests pass.",
+      "assistant: I expected, after the refactor, tests to pass.",
+      "assistant: Tests should, in theory, pass.",
+      "assistant: The CLI should be manually tested.",
+      "assistant: Tests should be tested.",
+      "assistant: Validation should be a success.",
+      "assistant: tests are not succeeding.",
+      "assistant: tests aren't passing.",
+      "assistant: tests aren’t passing.",
+      "assistant: tests haven't passed.",
+      "assistant: tests have not consistently passed.",
+      "assistant: tests no longer reliably pass.",
+      "assistant: tests are not always passing.",
+      "assistant: tests are not quite passing.",
+      "assistant: tests did not fail.",
+      "assistant: tests didn't fail.",
+      "assistant: tests didn’t fail.",
+      "assistant: tests aren't failing.",
+      "assistant: Old tests didn't pass, but new tests passed.",
+      "assistant: Old tests never failed, but new tests failed.",
+      "assistant: Tests did not pass. After the fix tests passed.",
+      "assistant: Tests did not, despite retries, pass.",
+      "assistant: Tests were not, in fact, passing.",
+      "assistant: Tests did not (despite retries) pass.",
+      "assistant: Tests did not — despite retries — pass.",
+      "assistant: No tests passed.",
+      "assistant: Zero tests passed.",
+      "assistant: None of the tests passed.",
+      "assistant: No integration tests passed.",
+      "assistant: None of the integration tests passed.",
+      "assistant: Tests completed without any errors.",
+      "assistant: Tests had no lint errors.",
+      "assistant: Tests had no typecheck errors.",
+      "assistant: Tests did not error or fail.",
+      "assistant: Tests did not pass or succeed.",
+      "assistant: Tests should pass, but did not pass.",
+      "assistant: Tests might fail, but did not fail.",
+      "assistant: Tests did not run because lint checks passed.",
+      "assistant: Tests did not run because lint failed.",
+      "assistant: None of the slow integration test cases passed.",
+      "assistant: No doubt tests passed.",
+      "assistant: There is no question tests passed.",
+      "assistant: Tests: none passed.",
+      "assistant: There is no chance tests passed.",
+      "assistant: There is no chance tests errored.",
+      "assistant: Tests are not so reliably passing.",
+      "assistant: The build is not so green.",
+      "assistant: Tests did not pass, or succeed.",
+      "assistant: Neither tests passed nor checks passed.",
+      "assistant: Neither lint nor tests passed.",
+      "assistant: Tests did not pass initially then passed.",
+      "assistant: Tests had no errors.",
+      "assistant: Tests completed with zero errors.",
+      "assistant: Tests passed without errors.",
+      "assistant: The old build would fail, but the new build passed.",
+      "assistant: The old build would fail and the new build passed.",
       "assistant: add tests for this gap.",
       "assistant: test coverage is missing for the workflow.",
       "assistant: Decision: keep local artifacts first."
@@ -85,8 +148,71 @@ test("review-surfaces.METHODOLOGY.2 separates transcript-backed claims from unve
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("tests are green")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("all tests pass")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("failing tests are now green")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("lint fails on Windows")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("tests succeed on Linux")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("build succeeds locally")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("tests are succeeding now")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("manually tested the CLI")));
   assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("should pass")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("should now be passing")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("expected to be green")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("I expected tests to pass")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("expected that tests pass")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("expected, after the refactor")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("should, in theory")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("should be manually tested")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("Tests should be tested")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("should be a success")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("not succeeding")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("aren't passing")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("aren’t passing")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("haven't passed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("not consistently passed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("no longer reliably pass")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("not always passing")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("not quite passing")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("did not fail")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("didn't fail")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("didn’t fail")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("aren't failing")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("new tests passed")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("new tests failed")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("After the fix tests passed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("despite retries")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("in fact")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("(despite retries)")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("— despite retries —")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("No tests passed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("Zero tests passed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("None of the tests passed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("No integration tests passed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("None of the integration tests passed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("without any errors")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("no lint errors")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("no typecheck errors")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("did not error or fail")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("did not pass or succeed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("should pass, but did not pass")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("might fail, but did not fail")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("because lint checks passed")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("because lint failed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("slow integration test cases passed")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("No doubt tests passed")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("no question tests passed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("none passed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("no chance tests passed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("no chance tests errored")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("not so reliably passing")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("not so green")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("did not pass, or succeed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("Neither tests passed nor checks passed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("Neither lint nor tests passed")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("initially then passed")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("had no errors")));
+  assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("zero errors")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("passed without errors")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("old build would fail, but the new build passed")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("old build would fail and the new build passed")));
   assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("add tests for this gap")));
   assert.ok(!methodology.claims_without_evidence.some((claim) => claim.includes("coverage is missing")));
   assert.ok(methodology.quality_flags.includes("test_claims_verified_by_command_transcripts"));
@@ -205,7 +331,19 @@ test("review-surfaces.METHODOLOGY.2 requires exact command matches for verified 
       "assistant: node --test dist/tests/*.test.js passed after the implementation.",
       "assistant: pnpm run lint and pnpm run test passed after the implementation.",
       "assistant: pnpm run lint, pnpm run test passed after the implementation.",
-      "assistant: pnpm run lint && pnpm run test passed after the implementation."
+      "assistant: pnpm run lint && pnpm run test passed after the implementation.",
+      "assistant: pnpm run lint passed and pnpm run test passed.",
+      "assistant: pnpm run lint failed and pnpm run test passed.",
+      "assistant: pnpm run lint passed and pnpm run test:coverage passed.",
+      "assistant: pnpm run lint passed, npm run smoke passed.",
+      "assistant: pnpm run lint passed and also npm run smoke passed.",
+      "assistant: pnpm test --grep old failed in CI passed",
+      "assistant: Tests should pass, but pnpm run test failed.",
+      "assistant: Tests might fail, but pnpm run test passed.",
+      "assistant: Today's pnpm run test passed.",
+      "assistant: I couldn't run this earlier; pnpm run test passed.",
+      "assistant: pnpm run lint failed; it didn't block pnpm run test passed.",
+      "assistant: On Node 22, pnpm run test passed."
     ].join("\n")
   );
 
@@ -221,6 +359,60 @@ test("review-surfaces.METHODOLOGY.2 requires exact command matches for verified 
           stdout_hash: "abc123",
           truncated: false,
           source_path: ".review-surfaces/commands/CMD-PNPM-TEST.json"
+        },
+        {
+          id: "CMD-PNPM-TEST-FAILED",
+          command: "pnpm run test",
+          status: "failed",
+          exit_code: 1,
+          stderr_hash: "failed123",
+          truncated: false,
+          source_path: ".review-surfaces/commands/CMD-PNPM-TEST-FAILED.json"
+        },
+        {
+          id: "CMD-PNPM-LINT",
+          command: "pnpm run lint",
+          status: "passed",
+          exit_code: 0,
+          stdout_hash: "lint123",
+          truncated: false,
+          source_path: ".review-surfaces/commands/CMD-PNPM-LINT.json"
+        },
+        ...Array.from({ length: 4 }, (_value, index) => ({
+          id: `CMD-PNPM-LINT-${index + 2}`,
+          command: "pnpm run lint",
+          status: "passed" as const,
+          exit_code: 0,
+          stdout_hash: `lint${index + 2}`,
+          truncated: false,
+          source_path: `.review-surfaces/commands/CMD-PNPM-LINT-${index + 2}.json`
+        })),
+        {
+          id: "CMD-PNPM-LINT-FAILED",
+          command: "pnpm run lint",
+          status: "failed",
+          exit_code: 1,
+          stderr_hash: "lintfailed123",
+          truncated: false,
+          source_path: ".review-surfaces/commands/CMD-PNPM-LINT-FAILED.json"
+        },
+        {
+          id: "CMD-PNPM-GREP-OLD",
+          command: "pnpm test --grep old",
+          status: "passed",
+          exit_code: 0,
+          stdout_hash: "old123",
+          truncated: false,
+          source_path: ".review-surfaces/commands/CMD-PNPM-GREP-OLD.json"
+        },
+        {
+          id: "CMD-PNPM-COVERAGE-FAILED",
+          command: "pnpm run test:coverage",
+          status: "failed",
+          exit_code: 1,
+          stderr_hash: "coveragefailed123",
+          truncated: false,
+          source_path: ".review-surfaces/commands/CMD-PNPM-COVERAGE-FAILED.json"
         },
         {
           id: "CMD-PNPM-TEST-RUNINBAND",
@@ -280,18 +472,246 @@ test("review-surfaces.METHODOLOGY.2 requires exact command matches for verified 
   assert.ok(methodology.verified_claims.some((claim) => claim.includes("tsc --noEmit passed")));
   assert.ok(methodology.verified_claims.some((claim) => claim.includes("tsc -p tsconfig.json --noEmit passed")));
   assert.ok(methodology.verified_claims.some((claim) => claim.includes("node --test dist/tests/*.test.js passed")));
-  assert.ok(!methodology.verified_claims.some((claim) => claim.includes("pnpm run test failed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm run test failed after the implementation")));
   assert.ok(!methodology.verified_claims.some((claim) => claim.includes("test:coverage")));
   assert.ok(!methodology.verified_claims.some((claim) => claim.includes("npm run test passed") && !claim.includes("pnpm run")));
   assert.ok(!methodology.verified_claims.some((claim) => claim.includes("pnpm run lint and pnpm run test passed")));
   assert.ok(!methodology.verified_claims.some((claim) => claim.includes("pnpm run lint, pnpm run test passed")));
   assert.ok(!methodology.verified_claims.some((claim) => claim.includes("pnpm run lint && pnpm run test passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm run lint passed and pnpm run test passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm run lint failed and pnpm run test passed")));
+  assert.ok(!methodology.verified_claims.some((claim) => claim.includes("pnpm run lint passed and pnpm run test:coverage passed")));
+  assert.ok(!methodology.verified_claims.some((claim) => claim.includes("pnpm run lint passed, npm run smoke passed")));
+  assert.ok(!methodology.verified_claims.some((claim) => claim.includes("pnpm run lint passed and also npm run smoke passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("Tests should pass, but pnpm run test failed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("Tests might fail, but pnpm run test passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("Today's pnpm run test passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("couldn't run this earlier; pnpm run test passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm run lint failed; it didn't block pnpm run test passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("On Node 22, pnpm run test passed")));
+  assert.ok(!methodology.verified_claims.some((claim) => claim.includes("pnpm test --grep old failed in CI passed")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run test:coverage passed")));
-  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run test failed")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("npm run test passed")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run lint and pnpm run test passed")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run lint, pnpm run test passed")));
   assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run lint && pnpm run test passed")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm test --grep old failed in CI passed")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run lint passed and pnpm run test:coverage passed")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run lint passed, npm run smoke passed")));
+  assert.ok(methodology.claims_without_evidence.some((claim) => claim.includes("pnpm run lint passed and also npm run smoke passed")));
+});
+
+test("review-surfaces.METHODOLOGY.2 preserves command arguments and strips result narratives", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-method-"));
+  const logPath = path.join(tmp, "conversation.md");
+  fs.writeFileSync(logPath, [
+    "assistant: pnpm test --filter success passed",
+    "assistant: pnpm test passed with 20 tests",
+    "assistant: pnpm test passed in 2s",
+    "assistant: pnpm test passed without failures",
+    "assistant: pnpm test passed successfully",
+    "assistant: pnpm test --grep runs in CI passed",
+    "assistant: pnpm test --filter with passed",
+    "assistant: pnpm test --grep without cache passed",
+    "assistant: npm run tested",
+    "assistant: npm run tested passed",
+    "assistant: npm run tested.",
+    "assistant: pnpm run validated!",
+    "assistant: pnpm test --grep failed in CI passed",
+    "assistant: pnpm test --grep passing without cache passed",
+    "assistant: pnpm test --grep \"failed in CI\" passed",
+    "assistant: pnpm test --grep \"node works\" passed",
+    "assistant: node --test tests/node.test.js passed",
+    "assistant: pnpm test packages/node/foo.test.js passed",
+    "assistant: `pnpm test --grep node` passed",
+    "assistant: pnpm test passed on Node 22",
+    "assistant: pnpm test passed under npm 10",
+    "assistant: pnpm test passed, on Node 22",
+    "assistant: pnpm test passed; Node 22 was used",
+    "assistant: pnpm test passed on Node and npm 10",
+    "assistant: pnpm test --grep old failed in CI passed",
+    "assistant: pnpm test --test-name-pattern old passing without cache passed",
+    "assistant: pnpm test passed with no errors",
+    "assistant: pnpm test passed with zero errors",
+    "assistant: pnpm test failed with 2 errors",
+    "assistant: pnpm test passed with all checks passing"
+  ].join("\n"));
+
+  const methodology = await buildMethodology(
+    tmp,
+    collectionFixture(tmp, {
+      commandTranscripts: [{
+        id: "CMD-FILTER-SUCCESS",
+        command: "pnpm test --filter success",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "abc123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-FILTER-SUCCESS.json"
+      }, {
+        id: "CMD-PNPM-TEST",
+        command: "pnpm test",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "def456",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-PNPM-TEST.json"
+      }, {
+        id: "CMD-GREP-CI",
+        command: "pnpm test --grep runs in CI",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "ghi789",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-GREP-CI.json"
+      }, {
+        id: "CMD-PNPM-TEST-FAILED",
+        command: "pnpm test",
+        status: "failed",
+        exit_code: 1,
+        stdout_hash: "failed123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-PNPM-TEST-FAILED.json"
+      }, {
+        id: "CMD-FILTER-WITH",
+        command: "pnpm test --filter with",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "jkl012",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-FILTER-WITH.json"
+      }, {
+        id: "CMD-GREP-WITHOUT",
+        command: "pnpm test --grep without cache",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "mno345",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-GREP-WITHOUT.json"
+      }, {
+        id: "CMD-NPM-TESTED",
+        command: "npm run tested",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "pqr678",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-NPM-TESTED.json"
+      }, {
+        id: "CMD-PNPM-VALIDATED",
+        command: "pnpm run validated",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "stu901",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-PNPM-VALIDATED.json"
+      }, {
+        id: "CMD-GREP-FAILED-CI",
+        command: "pnpm test --grep failed in CI",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "vwx234",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-GREP-FAILED-CI.json"
+      }, {
+        id: "CMD-GREP-PASSING-CACHE",
+        command: "pnpm test --grep passing without cache",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "yz5678",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-GREP-PASSING-CACHE.json"
+      }, {
+        id: "CMD-GREP-QUOTED-FAILED-CI",
+        command: "pnpm test --grep \"failed in CI\"",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "quoted123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-GREP-QUOTED-FAILED-CI.json"
+      }, {
+        id: "CMD-GREP-QUOTED-NODE",
+        command: "pnpm test --grep \"node works\"",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "quotednode123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-GREP-QUOTED-NODE.json"
+      }, {
+        id: "CMD-NODE-PATH",
+        command: "node --test tests/node.test.js",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "nodepath123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-NODE-PATH.json"
+      }, {
+        id: "CMD-PNPM-NODE-PATH",
+        command: "pnpm test packages/node/foo.test.js",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "pnpmpath123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-PNPM-NODE-PATH.json"
+      }, {
+        id: "CMD-GREP-NODE",
+        command: "pnpm test --grep node",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "grepnode123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-GREP-NODE.json"
+      }, {
+        id: "CMD-GREP-OLD-FAILED-CI",
+        command: "pnpm test --grep old failed in CI",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "oldfail123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-GREP-OLD-FAILED-CI.json"
+      }, {
+        id: "CMD-NAME-OLD-PASSING-CACHE",
+        command: "pnpm test --test-name-pattern old passing without cache",
+        status: "passed",
+        exit_code: 0,
+        stdout_hash: "oldpass123",
+        truncated: false,
+        source_path: ".review-surfaces/commands/CMD-NAME-OLD-PASSING-CACHE.json"
+      }]
+    }),
+    "conversation.md",
+    []
+  );
+
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test --filter success passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test passed with 20 tests")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test passed in 2s")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test passed without failures")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test passed successfully")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test --grep runs in CI passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test --filter with passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test --grep without cache passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("npm run tested")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("npm run tested.")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm run validated!")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test --grep failed in CI passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test --grep passing without cache passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes('pnpm test --grep "failed in CI" passed')));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes('pnpm test --grep "node works" passed')));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("node --test tests/node.test.js passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test packages/node/foo.test.js passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("`pnpm test --grep node` passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test passed on Node 22")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test passed under npm 10")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test passed, on Node 22")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test passed; Node 22 was used")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test passed on Node and npm 10")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test --grep old failed in CI passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test --test-name-pattern old passing without cache passed")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test passed with no errors")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test passed with zero errors")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test failed with 2 errors")));
+  assert.ok(methodology.verified_claims.some((claim) => claim.includes("pnpm test passed with all checks passing")));
+  assert.equal(methodology.claims_without_evidence.length, 0);
 });
 
 test("review-surfaces.METHODOLOGY.2 scans all validation claims and redacts conversation secrets", async () => {

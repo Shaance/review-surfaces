@@ -1,5 +1,301 @@
 import { normalizeValidationCommand, normalizedCommandLooksLikeStandaloneValidation } from "./validation-command";
 
+const VALIDATION_SUCCESS_OUTCOME_SOURCE = String.raw`\b(?:pass(?:ed|es|ing)?|green|succeed(?:s|ed|ing)?|successful|tested|validated|verified)\b`;
+const VALIDATION_FAILURE_OUTCOME_SOURCE = String.raw`\b(?:fail(?:ed|s|ing)?|errored|errors?)\b`;
+const VALIDATION_OUTCOME_SOURCE = String.raw`(?:${VALIDATION_SUCCESS_OUTCOME_SOURCE}|${VALIDATION_FAILURE_OUTCOME_SOURCE})`;
+const VALIDATION_OUTCOME_WORD = new RegExp(VALIDATION_OUTCOME_SOURCE, "i");
+const LEADING_VALIDATION_OUTCOME = new RegExp(String.raw`^${VALIDATION_OUTCOME_SOURCE}`, "i");
+const VALIDATION_OUTCOME_WORDS = new RegExp(VALIDATION_OUTCOME_SOURCE, "gi");
+const VALIDATION_SUCCESS_OUTCOME_WORD = new RegExp(VALIDATION_SUCCESS_OUTCOME_SOURCE, "i");
+const VALIDATION_ADVERB_SOURCE = String.raw`(?:also|always|now|still|then|[a-z]+ly)`;
+const CONTRASTIVE_CONNECTOR_SOURCE = String.raw`(?:although|though|while|whereas|but|yet|however)`;
+const VALIDATION_CONNECTOR_SOURCE = String.raw`(?:and|or|${CONTRASTIVE_CONNECTOR_SOURCE})`;
+const VALIDATION_NEGATOR_SOURCE = String.raw`(?:not|never|no\s+longer|(?:isn|aren|wasn|weren|hasn|haven|hadn|don|doesn|didn|couldn|wouldn|shouldn|won)['’]t|can['’]t)`;
+const VALIDATION_FAILURE_NEGATOR_SOURCE = String.raw`(?:${VALIDATION_NEGATOR_SOURCE}|without)`;
+const VALIDATION_NEGATION_BRIDGE_SOURCE = String.raw`(?:[a-z][\w-]*)`;
+const MAX_NEGATION_BRIDGE_WORDS = 8;
+const NEGATED_VALIDATION_SUCCESS_OUTCOME = negatedValidationOutcomePattern(VALIDATION_SUCCESS_OUTCOME_SOURCE);
+const NEGATED_VALIDATION_FAILURE_OUTCOME = negatedValidationOutcomePattern(
+  VALIDATION_FAILURE_OUTCOME_SOURCE,
+  VALIDATION_FAILURE_NEGATOR_SOURCE
+);
+const VALIDATION_NEGATION_BOUNDARY = new RegExp(
+  String.raw`(?:[.!?;\n]|\b(?:${VALIDATION_CONNECTOR_SOURCE}|then|because|when|after|before|since)\b|\bso\b(?=\s+(?:the\s+)?(?:tests?|checks?|lint|build|validation)\b))`,
+  "gi"
+);
+const MAX_NEGATION_CONTEXT_LENGTH = 160;
+const TRAILING_BARE_VALIDATION_OUTCOME = new RegExp(
+  String.raw`${VALIDATION_OUTCOME_SOURCE}[.:;!?]*\s*$`,
+  "i"
+);
+const HYPOTHETICAL_VALIDATION_CUE_SOURCE = String.raw`\b(?:should|could|would|might|may|will|expect(?:s|ed|ing)?|unlikely|likely|probably|hopefully)\b`;
+const HYPOTHETICAL_VALIDATION_CUE = new RegExp(HYPOTHETICAL_VALIDATION_CUE_SOURCE, "i");
+const VALIDATION_COPULAR_MODIFIER_SOURCE = String.raw`(?:not|never|no\s+longer|${VALIDATION_ADVERB_SOURCE})`;
+const VALIDATION_LANGUAGE_TOKEN = new RegExp(
+  String.raw`(?<asExpected>\bas\s+expected\b)|(?<boundary>[.!?;\n])|(?<connector>(?:^|[\s,])${VALIDATION_CONNECTOR_SOURCE}(?:\s*,\s*|\s+))|(?<comma>,)|(?<cue>${HYPOTHETICAL_VALIDATION_CUE_SOURCE})|(?<outcome>${VALIDATION_OUTCOME_SOURCE})`,
+  "gi"
+);
+const COORDINATED_PREDICATE_PREFIX = new RegExp(
+  String.raw`^(?:${VALIDATION_ADVERB_SOURCE}\s+)*(?:${VALIDATION_ADVERB_SOURCE}|be|being|remain(?:ing)?|to)?$`,
+  "i"
+);
+const CONTRASTIVE_CONNECTOR = new RegExp(String.raw`\b${CONTRASTIVE_CONNECTOR_SOURCE}\b`, "i");
+const OBSERVED_VALIDATION_OUTCOME = /^(?:passes|passed|fails|failed|errors|errored|succeeds|succeeded|validated|verified)$/i;
+const MODAL_INFINITIVE_PREFIX = /(?:^|\s)(?:be|being|remain(?:ing)?|to)$/i;
+const VALIDATION_SUBJECT_SOURCE = String.raw`(?:tests?|checks?|build|lint|suite|ci|validation)`;
+const COPULA_SOURCE = String.raw`(?:is|are|was|were|isn['’]t|aren['’]t|wasn['’]t|weren['’]t)`;
+const POSTPOSED_CUE_BRIDGE = new RegExp(
+  String.raw`^\s*(?:(?:(?:the|all)\s+)?${VALIDATION_SUBJECT_SOURCE}(?:\s+${VALIDATION_SUBJECT_SOURCE})*\s+)?(?:${COPULA_SOURCE}(?:\s+${VALIDATION_COPULAR_MODIFIER_SOURCE})*)?\s*$`,
+  "i"
+);
+const MAX_PARENTHETICAL_LENGTH = 80;
+const BOUNDED_COMMA_PARENTHETICAL = new RegExp(
+  String.raw`,\s*[^,\n]{1,${MAX_PARENTHETICAL_LENGTH}},`,
+  "g"
+);
+const BOUNDED_ROUND_PARENTHETICAL = new RegExp(
+  String.raw`\([^()\n]{1,${MAX_PARENTHETICAL_LENGTH}}\)`,
+  "g"
+);
+const BOUNDED_DASH_PARENTHETICAL = new RegExp(
+  String.raw`—[^—\n]{1,${MAX_PARENTHETICAL_LENGTH}}—`,
+  "g"
+);
+const COORDINATED_NEGATED_OUTCOME = new RegExp(
+  String.raw`${VALIDATION_OUTCOME_SOURCE}\s*,?\s*(?:and|or)\s+(?=(?:${VALIDATION_ADVERB_SOURCE}\s+)*${VALIDATION_OUTCOME_SOURCE}\s*$)`,
+  "i"
+);
+const PARENTHETICAL_PREDICATE_MODIFIER = new RegExp(
+  String.raw`^[^,;.!?\n]{1,${MAX_PARENTHETICAL_LENGTH}},$`
+);
+
+export function validationTextHasOutcome(text: string): boolean {
+  return VALIDATION_OUTCOME_WORD.test(text);
+}
+
+export function validationTextStartsWithOutcome(text: string): boolean {
+  return LEADING_VALIDATION_OUTCOME.test(text);
+}
+
+export function validationTextHasExactlyOneOutcome(text: string): boolean {
+  let count = 0;
+  VALIDATION_OUTCOME_WORDS.lastIndex = 0;
+  for (const _match of text.matchAll(VALIDATION_OUTCOME_WORDS)) {
+    count += 1;
+    if (count === 2) return false;
+  }
+  return count === 1;
+}
+
+export function validationTextActualOutcomeKind(
+  text: string
+): "success" | "failure" | "mixed" | undefined {
+  const outcomes = classifyValidationOutcomes(text);
+  if (outcomes.actualSuccess && outcomes.actualFailure) return "mixed";
+  if (outcomes.actualSuccess) return "success";
+  if (outcomes.actualFailure) return "failure";
+  return undefined;
+}
+
+export function stripTrailingValidationOutcome(text: string): string {
+  const bare = text.match(TRAILING_BARE_VALIDATION_OUTCOME);
+  if (bare?.index !== undefined) return text.slice(0, bare.index).trim();
+  return text.trim();
+}
+
+function negatedValidationOutcomePattern(
+  outcomeSource: string,
+  negatorSource = VALIDATION_NEGATOR_SOURCE
+): RegExp {
+  const bridge = String.raw`(?:\s+${VALIDATION_NEGATION_BRIDGE_SOURCE}){0,${MAX_NEGATION_BRIDGE_WORDS}}`;
+  const quantified = String.raw`(?:no|zero)(?!\s+(?:doubt|question)\b)${bridge}\s+${outcomeSource}|none(?:\s+of${bridge})?\s+${outcomeSource}|neither${bridge}(?:\s+nor${bridge})?\s+${outcomeSource}`;
+  return new RegExp(
+    String.raw`\b(?:${negatorSource}${bridge}\s+${outcomeSource}|${quantified})`,
+    "i"
+  );
+}
+
+function validationOutcomeIsNegated(text: string, index: number, length: number, negated: RegExp): boolean {
+  const windowStart = Math.max(0, index - MAX_NEGATION_CONTEXT_LENGTH);
+  const context = normalizeNegationContext(text.slice(windowStart, index + length));
+  let localStart = 0;
+  VALIDATION_NEGATION_BOUNDARY.lastIndex = 0;
+  for (const boundary of context.matchAll(VALIDATION_NEGATION_BOUNDARY)) {
+    localStart = boundary.index + boundary[0].length;
+  }
+  return negated.test(context.slice(localStart));
+}
+
+function normalizeNegationContext(local: string): string {
+  return local
+    .replace(BOUNDED_COMMA_PARENTHETICAL, " ")
+    .replace(BOUNDED_ROUND_PARENTHETICAL, " ")
+    .replace(BOUNDED_DASH_PARENTHETICAL, " ")
+    .replace(COORDINATED_NEGATED_OUTCOME, "");
+}
+
+export function validationOutcomeIsHypothetical(
+  text: string
+): boolean {
+  const outcomes = classifyValidationOutcomes(text);
+  return outcomes.sawOutcome && !outcomes.sawNonHypothetical;
+}
+
+interface ClassifiedValidationOutcome {
+  index: number;
+  length: number;
+  kind: "success" | "failure";
+  hypothetical: boolean;
+}
+
+interface ValidationOutcomeSummary {
+  sawOutcome: boolean;
+  sawNonHypothetical: boolean;
+  actualSuccess: boolean;
+  actualFailure: boolean;
+}
+
+function classifyValidationOutcomes(text: string): ValidationOutcomeSummary {
+  const summary: ValidationOutcomeSummary = {
+    sawOutcome: false,
+    sawNonHypothetical: false,
+    actualSuccess: false,
+    actualFailure: false
+  };
+  let pendingOutcome: ClassifiedValidationOutcome | undefined;
+  const finalizePendingOutcome = (): void => {
+    if (!pendingOutcome) return;
+    summary.sawOutcome = true;
+    if (!pendingOutcome.hypothetical) {
+      summary.sawNonHypothetical = true;
+      const negated = pendingOutcome.kind === "success"
+        ? NEGATED_VALIDATION_SUCCESS_OUTCOME
+        : NEGATED_VALIDATION_FAILURE_OUTCOME;
+      if (!validationOutcomeIsNegated(text, pendingOutcome.index, pendingOutcome.length, negated)) {
+        if (pendingOutcome.kind === "success") summary.actualSuccess = true;
+        else summary.actualFailure = true;
+      }
+    }
+    pendingOutcome = undefined;
+  };
+  let hypothetical = false;
+  let postposedBridge: { cursor: number; local: boolean } | undefined;
+  let pendingConnector: { end: number; contrastive: boolean; trailingComma: boolean } | undefined;
+  let leadingContrastiveClause = false;
+  let leadingParentheticalOpen = false;
+  let sentenceStart = 0;
+  let canStartLeadingConnector = true;
+  VALIDATION_LANGUAGE_TOKEN.lastIndex = 0;
+  for (const token of text.matchAll(VALIDATION_LANGUAGE_TOKEN)) {
+    const groups = token.groups;
+    if (!groups) continue;
+    if (groups.asExpected) continue; // Describes an observed result, not a modal.
+    if (groups.boundary) {
+      finalizePendingOutcome();
+      hypothetical = false;
+      postposedBridge = undefined;
+      pendingConnector = undefined;
+      leadingContrastiveClause = false;
+      leadingParentheticalOpen = false;
+      sentenceStart = token.index + token[0].length;
+      canStartLeadingConnector = true;
+      continue;
+    }
+    if (groups.connector) {
+      finalizePendingOutcome();
+      postposedBridge = undefined;
+      const contrastive = CONTRASTIVE_CONNECTOR.test(groups.connector);
+      leadingContrastiveClause = contrastive && canStartLeadingConnector &&
+        text.slice(sentenceStart, token.index).trim() === "";
+      leadingParentheticalOpen = false;
+      canStartLeadingConnector = false;
+      pendingConnector = {
+        end: token.index + token[0].length,
+        contrastive,
+        trailingComma: /,\s*$/.test(groups.connector)
+      };
+      continue;
+    }
+    if (groups.comma) {
+      if (!leadingContrastiveClause) continue;
+      if (leadingParentheticalOpen) {
+        leadingParentheticalOpen = false;
+        continue;
+      }
+      if (!postposedBridge && commaStartsBoundedParenthetical(text, token.index + token[0].length)) {
+        leadingParentheticalOpen = true;
+        continue;
+      }
+      finalizePendingOutcome();
+      hypothetical = false;
+      postposedBridge = undefined;
+      pendingConnector = undefined;
+      leadingContrastiveClause = false;
+      leadingParentheticalOpen = false;
+      canStartLeadingConnector = false;
+      continue;
+    }
+    if (groups.cue) {
+      canStartLeadingConnector = false;
+      // An explicit modal after a connector starts the new predicate's context.
+      if (pendingConnector) hypothetical = false;
+      hypothetical = true;
+      // `passing is expected` and `green would be ideal` apply the modal after
+      // the outcome, but still within the same local clause.
+      if (postposedBridge) {
+        postposedBridge.local = postposedBridge.local &&
+          POSTPOSED_CUE_BRIDGE.test(text.slice(postposedBridge.cursor, token.index));
+        postposedBridge.cursor = token.index + token[0].length;
+        if (postposedBridge.local && pendingOutcome) {
+          pendingOutcome.hypothetical = true;
+        }
+      }
+      pendingConnector = undefined;
+      continue;
+    }
+    if (!groups.outcome) continue;
+
+    finalizePendingOutcome();
+    canStartLeadingConnector = false;
+    postposedBridge = { cursor: token.index + token[0].length, local: true };
+    if (pendingConnector) {
+      let prefix = text.slice(pendingConnector.end, token.index)
+        .replace(/\bas\s+expected\b/gi, "")
+        .trim();
+      if (pendingConnector.trailingComma && PARENTHETICAL_PREDICATE_MODIFIER.test(prefix)) {
+        prefix = "";
+      }
+      // `and pass` / `and be green` shares the existing modal; a fresh subject
+      // (`and CI passed`) starts an independent, potentially observed clause.
+      if ((pendingConnector.contrastive && OBSERVED_VALIDATION_OUTCOME.test(groups.outcome) &&
+        !MODAL_INFINITIVE_PREFIX.test(prefix)) ||
+        (!COORDINATED_PREDICATE_PREFIX.test(prefix) && !/\bto$/i.test(prefix))) {
+        hypothetical = false;
+      }
+      pendingConnector = undefined;
+    }
+    pendingOutcome = {
+      index: token.index,
+      length: token[0].length,
+      kind: VALIDATION_SUCCESS_OUTCOME_WORD.test(groups.outcome) ? "success" : "failure",
+      hypothetical
+    };
+  }
+  finalizePendingOutcome();
+  return summary;
+}
+
+function commaStartsBoundedParenthetical(text: string, start: number): boolean {
+  const window = text.slice(start, start + MAX_PARENTHETICAL_LENGTH + 1);
+  const end = window.indexOf(",");
+  if (end < 0) return false;
+  const candidate = window.slice(0, end);
+  return candidate.trim().length > 0 &&
+    !/[.!?;\n]/.test(candidate) &&
+    !VALIDATION_OUTCOME_WORD.test(candidate) &&
+    !HYPOTHETICAL_VALIDATION_CUE.test(candidate);
+}
+
 const FOCUSED_TEST_TARGET_PATTERN = /(?:^|\s)(?:(?:dist\/)?tests|test|src|lib|app|packages)\/\S+|(?:^|\s)\S+\.(?:test|spec)\.[cm]?[jt]sx?(?:\s|$)/;
 const TEST_NAME_FILTER_PATTERN = /(?:^|\s)(?:--test-name-pattern|--testNamePattern|--grep|-t)(?:=|\s)/;
 const TEST_PATH_FILTER_PATTERN = /(?:^|\s)--testPathPatterns?(?:=|\s)/;

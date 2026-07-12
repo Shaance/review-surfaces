@@ -133,10 +133,14 @@ export function mutationPathsForTool(
   structuredInput: unknown,
   context: ConversationProvenanceContext
 ): string[] | undefined {
-  if (!looksLikeMutationTool(name)) return undefined;
+  const kind = mutationToolKind(name);
+  if (!kind) return undefined;
+  const patchPaths = kind === "patch"
+    ? patchMutationPaths(structuredText(structuredInput), context)
+    : [];
   return [...new Set([
     ...(directPath ? [directPath] : []),
-    ...patchMutationPaths(structuredText(structuredInput), context)
+    ...patchPaths
   ])].sort();
 }
 
@@ -168,7 +172,13 @@ function hasShaToken(text: string, sha: string): boolean {
 }
 
 export function looksLikeMutationTool(name: string): boolean {
-  return /(?:^|__|\.)?(?:apply_patch|edit|write|multiedit|notebookedit)$/i.test(name);
+  return mutationToolKind(name) !== undefined;
+}
+
+function mutationToolKind(name: string): "patch" | "direct" | undefined {
+  const leaf = /(?:^|__|\.)(apply_patch|edit|write|multiedit|notebookedit)$/i.exec(name)?.[1];
+  if (!leaf) return undefined;
+  return leaf.toLowerCase() === "apply_patch" ? "patch" : "direct";
 }
 
 export function looksLikeReadTool(name: string): boolean {
