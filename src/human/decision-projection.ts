@@ -5,7 +5,6 @@ import { uniqueEvidenceRefs } from "../evidence/evidence";
 import type { PrReviewSurfaceModel, PrRiskCandidate } from "../contracts/pr-review";
 import type { ReviewPacket } from "../render/packet";
 import { isBreakingSchemaChange, type SemanticChangeFacts } from "../risks/semantic-diff";
-import { isExplicitContractSurfacePath } from "../risks/contract-surface";
 import type {
   DecisionFinding,
   DecisionProjection,
@@ -13,7 +12,7 @@ import type {
   ReviewBlocker,
   ReviewQueueItem
 } from "./contract";
-import { currentValidationRunState, decisionRootForRisk, isDecisionRelevantApiChange, isDecisionScopedEvidenceRef, type DecisionScope } from "./decision-admission";
+import { currentValidationRunState, decisionRootForApiChange, decisionRootForRisk, isDecisionScopedEvidenceRef, type DecisionScope } from "./decision-admission";
 
 const MAX_DECISION_FINDINGS = 5;
 const MAX_DECISION_STRING_ITEMS = 24;
@@ -206,10 +205,8 @@ function queueRoot(input: BuildDecisionProjectionInput, item: ReviewQueueItem): 
   if (schema && isBreakingSchemaChange(schema)) return `persisted_contract:${item.path}`;
 
   const api = input.semanticFacts.api_changes.find((change) => change.path === item.path);
-  if (api && isDecisionRelevantApiChange(api)) {
-    if (isExplicitContractSurfacePath(api.path)) return `public_contract:${item.path}`;
-    if ((api.used_by?.count ?? 0) > 0) return `caller_break:${item.path}`;
-  }
+  const apiRoot = api ? decisionRootForApiChange(api) : undefined;
+  if (apiRoot) return apiRoot;
 
   const weakening = input.semanticFacts.test_weakening.find((signal) => signal.path === item.path);
   if (weakening) return `test_integrity:${item.path}`;

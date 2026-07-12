@@ -542,6 +542,29 @@ test("reviewer usefulness warns that a non-empty truncated importer set is incom
   assert.match(item.reviewer_action, /broader importer search/);
 });
 
+test("reviewer usefulness treats an empty truncated importer set as unknown, not caller-free", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    semanticFacts: {
+      schema_changes: [],
+      api_changes: [{
+        path: "src/internal/helper.ts",
+        exports_added: [],
+        exports_removed: ["legacyExport"],
+        signatures_changed: [],
+        used_by: { count: 0, top: [], truncated: true }
+      }],
+      test_weakening: []
+    }
+  });
+  const item = model.review_queue.find((candidate) => candidate.path === "src/internal/helper.ts");
+
+  assert.ok(item);
+  assert.match(item.reason, /count unknown|graph truncated/i);
+  assert.match(item.reviewer_action, /blast radius is incomplete|remaining importer set/i);
+  assert.doesNotMatch(`${item.reason} ${item.reviewer_action}`, /identified in-repo consumer|No in-repo importer/i);
+});
+
 test("architecture cycle lenses anchor comments to changed importers while retaining the full chain as queue evidence", () => {
   const model = buildHumanReview({
     packet: packetFixture(),

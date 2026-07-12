@@ -15,9 +15,15 @@ export interface DecisionScope {
 }
 
 export function isDecisionRelevantApiChange(change: ApiSurfaceChange): boolean {
-  return isBreakingApiChange(change) && (
-    isExplicitContractSurfacePath(change.path) || (change.used_by?.count ?? 0) > 0
-  );
+  return decisionRootForApiChange(change) !== undefined;
+}
+
+export function decisionRootForApiChange(change: ApiSurfaceChange): string | undefined {
+  if (!isBreakingApiChange(change)) return undefined;
+  if (isExplicitContractSurfacePath(change.path)) return `public_contract:${change.path}`;
+  if ((change.used_by?.count ?? 0) > 0) return `caller_break:${change.path}`;
+  if (change.used_by?.truncated) return `api_blast_radius_unknown:${change.path}`;
+  return undefined;
 }
 
 export function buildDecisionScope(input: {

@@ -92,6 +92,32 @@ test("review-surfaces.REVIEWER_VALUE.6 admits a breaking internal export when co
   ));
 });
 
+test("review-surfaces.REVIEWER_VALUE.6 admits an internal API when its blast radius is truncated and unknown", () => {
+  const internalPath = "src/internal/helper.ts";
+  const model = buildHumanReview({
+    packet: packet(),
+    prSurface: surface([internalPath]),
+    semanticFacts: {
+      ...emptySemanticFacts,
+      api_changes: [{
+        path: internalPath,
+        exports_added: [],
+        exports_removed: ["legacyHelper"],
+        signatures_changed: [],
+        used_by: { count: 0, top: [], truncated: true }
+      }]
+    }
+  });
+
+  assert.ok(model.review_queue.some((item) => item.path === internalPath));
+  assert.ok(model.decision_projection?.findings.some((finding) =>
+    finding.root_cause === `api_blast_radius_unknown:${internalPath}`
+  ));
+  assert.ok(!model.decision_projection?.findings.some((finding) =>
+    finding.root_cause === `caller_break:${internalPath}`
+  ));
+});
+
 test("review-surfaces.REVIEWER_VALUE.6 public deletion manifestations share one high-priority root", () => {
   const publicPath = "types/public.d.ts";
   const deletionRisk = risk("PR-RISK-DELETE", "deleted_or_renamed_surface", publicPath, "low");

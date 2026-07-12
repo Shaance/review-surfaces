@@ -46,13 +46,15 @@ export function conversationReviewPresentation(
     : status === "analyzed"
       ? "No conversation-grounded insight survived reconciliation. This is not evidence that the change is clean."
       : "No conversation-grounded conclusions are available. This is not evidence that the change is clean.";
+  const summaryIsLocal = analysis?.quality_flags.includes("conversation_deterministic_baseline") === true &&
+    !analysis.quality_flags.includes("conversation_no_eligible_baseline_events");
   return {
     status,
     statusLabel,
     summary,
     summaryIsSynopsis: status === "analyzed" && suppliedSummary !== undefined,
     ...(status === "analyzed" && suppliedSummary !== undefined
-      ? { summaryLabel: analysis?.quality_flags.includes("conversation_deterministic_baseline") ? "Local synopsis" as const : "AI synopsis" as const }
+      ? { summaryLabel: summaryIsLocal ? "Local synopsis" as const : "AI synopsis" as const }
       : {}),
     emptyMessage
   };

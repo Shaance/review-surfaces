@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { analyzeConversation } from "../src/conversation/analysis";
-import { buildDeterministicConversationBrief } from "../src/conversation/deterministic-brief";
+import { buildDeterministicConversationBrief, mergeConversationAnalysis } from "../src/conversation/deterministic-brief";
 import type { ConversationEvent } from "../src/conversation/events";
 import { mockProvider, type ReasoningProvider, type StructuredResult } from "../src/llm/provider";
-import { conversationAnalysisContextRows } from "../src/human/conversation-review-presentation";
+import { conversationAnalysisContextRows, conversationReviewPresentation } from "../src/human/conversation-review-presentation";
 import { buildAdapterInput, normalizeConversation } from "../src/conversation/registry";
 
 const EVENTS: ConversationEvent[] = [
@@ -1240,4 +1240,28 @@ test("review-surfaces.CONVERSATION_REVIEW.5 transport payloads are excluded with
     event_ids: ["real-goal"]
   }]);
   assert.ok(!JSON.stringify(brief).includes("transport"));
+});
+
+test("provider-only conversation summaries are labeled as AI, not local", () => {
+  const baseline = buildDeterministicConversationBrief([{
+    id: "assistant-only",
+    actor: "assistant",
+    kind: "message",
+    summary: "I can inspect that next.",
+    raw_index: 0
+  }], "ai-sdk");
+  const merged = mergeConversationAnalysis(baseline, {
+    ...baseline,
+    status: "analyzed",
+    provider: "ai-sdk",
+    summary: "Provider-derived conversation synopsis.",
+    quality_flags: []
+  });
+
+  assert.ok(merged.quality_flags.includes("conversation_no_eligible_baseline_events"));
+  assert.equal(conversationReviewPresentation(merged).summaryLabel, "AI synopsis");
+  assert.equal(conversationReviewPresentation({
+    ...merged,
+    quality_flags: ["conversation_deterministic_baseline"]
+  }).summaryLabel, "Local synopsis");
 });
