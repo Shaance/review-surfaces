@@ -120,11 +120,24 @@ function exactPathMatchers(context: ConversationProvenanceContext): ExactPathMat
 export function patchMutationPaths(text: unknown, context: ConversationProvenanceContext): string[] {
   if (typeof text !== "string") return [];
   const paths: string[] = [];
-  for (const match of text.matchAll(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/gm)) {
+  for (const match of text.matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to):\s*(.+?)\s*$/gm)) {
     const reviewed = reviewedPath(match[1], context);
     if (reviewed) paths.push(reviewed);
   }
   return [...new Set(paths)].sort();
+}
+
+export function mutationPathsForTool(
+  name: string,
+  directPath: string | undefined,
+  structuredInput: unknown,
+  context: ConversationProvenanceContext
+): string[] | undefined {
+  if (!looksLikeMutationTool(name)) return undefined;
+  return [...new Set([
+    ...(directPath ? [directPath] : []),
+    ...patchMutationPaths(structuredText(structuredInput), context)
+  ])].sort();
 }
 
 export function structuredText(value: unknown): string {

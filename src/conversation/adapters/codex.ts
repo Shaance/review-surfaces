@@ -15,10 +15,9 @@ import {
   emptyConversationProvenance,
   exactMentionedPaths,
   finishConversationProvenance,
-  looksLikeMutationTool,
   looksLikeReadTool,
   looksLikeReviewCommand,
-  patchMutationPaths,
+  mutationPathsForTool,
   recordCommitReferences,
   recordMutationTimestamp,
   recordTimestamp,
@@ -146,11 +145,14 @@ export function codexProvenance(
       const rawInput = "arguments" in toolItem ? toolItem.arguments : toolItem.input;
       const parsedInput = recordOfToolInput(rawInput);
       const directPath = reviewedPath(filePathOf(parsedInput), context);
-      const mutationTool = looksLikeMutationTool(name);
-      const patchPaths = mutationTool ? patchMutationPaths(structuredText(rawInput), context) : [];
-      const mutationPaths = directPath ? [directPath, ...patchPaths] : patchPaths;
-      if (mutationTool) {
-        const paths = [...new Set(mutationPaths)];
+      const mutationPaths = mutationPathsForTool(
+        name,
+        directPath,
+        parsedInput ?? rawInput,
+        context
+      );
+      if (mutationPaths) {
+        const paths = mutationPaths;
         const callId = typeof toolItem.call_id === "string" ? toolItem.call_id : undefined;
         if (paths.length > 0 && callId) pendingMutations.set(callId, { paths, timestamp });
         else {

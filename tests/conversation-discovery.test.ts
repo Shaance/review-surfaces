@@ -10,6 +10,7 @@ import { defaultConfig } from "../src/config/config";
 import { buildMethodology } from "../src/methodology/methodology";
 import { buildAdapterInput, normalizeConversation } from "../src/conversation/registry";
 import { codexProvenance } from "../src/conversation/adapters/codex";
+import { claudeCodeProvenance } from "../src/conversation/adapters/claude-code";
 
 // A minimal but adapter-VALID Claude Code session line (nested message envelope with
 // a Claude block type), carrying a top-level ISO-UTC timestamp for the D7 tie-break.
@@ -361,6 +362,61 @@ test("review-surfaces.CONVERSATION_REVIEW.7 patch-looking text in a non-mutation
   });
 
   assert.deepEqual(provenance.mutatedPaths, []);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 JSON-encoded Codex patch arguments retain mutation provenance", () => {
+  const text = [
+    codexMeta("/repo/app", "2026-06-17T09:00:00.000Z"),
+    {
+      timestamp: "2026-06-17T09:00:01.000Z",
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        call_id: "encoded-patch",
+        name: "apply_patch",
+        arguments: JSON.stringify({
+          patch: "*** Begin Patch\n*** Update File: src/uploader.ts\n@@\n-old\n+new\n*** End Patch"
+        })
+      }
+    }
+  ].map((entry) => JSON.stringify(entry)).join("\n");
+  const provenance = codexProvenance(buildAdapterInput("desktop.jsonl", text), {
+    cwd: "/repo/app",
+    changedFiles: ["src/uploader.ts"]
+  });
+
+  assert.deepEqual(provenance.mutatedPaths, ["src/uploader.ts"]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 patch-looking text in a Claude Bash tool is not producer provenance", () => {
+  const text = JSON.stringify(claudeToolLine(
+    "2026-06-17T09:00:01.000Z",
+    "Bash",
+    { command: "printf '%s' '*** Begin Patch\\n*** Update File: src/uploader.ts\\n*** End Patch'" }
+  ));
+  const provenance = claudeCodeProvenance(buildAdapterInput("claude.jsonl", text), {
+    cwd: "/repo/app",
+    changedFiles: ["src/uploader.ts"]
+  });
+
+  assert.deepEqual(provenance.mutatedPaths, []);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 apply-patch move headers identify the renamed target", () => {
+  const text = [
+    codexMeta("/repo/app", "2026-06-17T09:00:00.000Z"),
+    codexToolLine(
+      "2026-06-17T09:00:01.000Z",
+      "apply_patch",
+      "*** Begin Patch\n*** Update File: src/old-uploader.ts\n*** Move to: src/uploader.ts\n@@\n-old\n+new\n*** End Patch"
+    )
+  ].map((entry) => JSON.stringify(entry)).join("\n");
+  const provenance = codexProvenance(buildAdapterInput("desktop.jsonl", text), {
+    cwd: "/repo/app",
+    changedFiles: ["src/uploader.ts"]
+  });
+
+  assert.deepEqual(provenance.mutatedPaths, ["src/uploader.ts"]);
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.7 Codex patch_apply_end status and mutation provenance agree", () => {

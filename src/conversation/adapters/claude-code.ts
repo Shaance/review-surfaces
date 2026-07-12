@@ -12,10 +12,9 @@ import {
   emptyConversationProvenance,
   exactMentionedPaths,
   finishConversationProvenance,
-  looksLikeMutationTool,
   looksLikeReadTool,
   looksLikeReviewCommand,
-  patchMutationPaths,
+  mutationPathsForTool,
   recordCommitReferences,
   recordMutationTimestamp,
   recordTimestamp,
@@ -135,10 +134,9 @@ export function claudeCodeProvenance(
       const toolInput = isRecord(block.input) ? block.input : undefined;
       const directPath = reviewedPath(filePathOf(toolInput), context);
       const serialized = structuredText(block.input);
-      const patchPaths = patchMutationPaths(serialized, context);
-      const mutationPaths = directPath ? [directPath, ...patchPaths] : patchPaths;
-      if (looksLikeMutationTool(name) || patchPaths.length > 0) {
-        const paths = [...new Set(mutationPaths)];
+      const mutationPaths = mutationPathsForTool(name, directPath, serialized, context);
+      if (mutationPaths) {
+        const paths = mutationPaths;
         if (paths.length > 0 && typeof block.id === "string") {
           pendingMutations.set(block.id, { paths, timestamp });
         } else {
