@@ -106,8 +106,9 @@ function interfaceShape(signature: string, expectedName: string): {
   members: Array<{ text: string; optional: boolean }>;
 } | undefined {
   const source = ts.createSourceFile("contract.ts", signature, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const localName = expectedName.split(".").at(-1) ?? expectedName;
   const declaration = source.statements.find((statement): statement is ts.InterfaceDeclaration =>
-    ts.isInterfaceDeclaration(statement) && statement.name.text === expectedName
+    ts.isInterfaceDeclaration(statement) && statement.name.text === localName
   );
   if (!declaration) return undefined;
   const header = [

@@ -16,6 +16,7 @@ import { computeDependencyFacts } from "../risks/dependency-facts";
 import { loadReviewPolicy, POLICY_FILE, ReviewPolicy } from "../feedback/policy";
 import { computeConfigFacts } from "../risks/config-facts";
 import { buildImportGraph, findSymbolImporters, importGraphWouldTruncate, resolveRuntimeRelativeImports } from "../collector/import-graph";
+import { createRuntimeImportResolver } from "../collector/compiler-options";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { loadPrivacyIgnoreSync } from "../privacy/ignore";
@@ -78,7 +79,6 @@ import { postStickyComment } from "../render/post-comment";
 import { writeJson, writeText } from "../core/files";
 import { compareStrings } from "../core/compare";
 import { PACKET_SCHEMA_VERSION, PACKET_SEVERITIES } from "../schema/review-packet-contract";
-import ts from "typescript";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { packagedSchemaPath } from "../schema/packaged-schemas";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
@@ -2160,10 +2160,8 @@ function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined
   // import (the same module edge often already exists via another file), so
   // both trees are parsed once with the shared bounded import graph.
   const existsBase = (filePath: string): boolean => readers.baseReadRef !== "" && blobExistsAtRef(cwd, readers.baseReadRef, filePath);
-  const baseCompilerOptions = readCompilerOptions(readers.readBase, cwd);
-  const headCompilerOptions = readCompilerOptions(readers.readHead, cwd);
-  const resolveBaseImports = memoizedRuntimeResolver(baseCompilerOptions);
-  const resolveHeadImports = memoizedRuntimeResolver(headCompilerOptions);
+  const resolveBaseImports = createRuntimeImportResolver(readers.readBase, cwd);
+  const resolveHeadImports = createRuntimeImportResolver(readers.readHead, cwd);
   const changedOnly = computeArchDriftFacts({
     changedFiles: diff.files.map((file) => ({ path: file.path, ...(file.old_path ? { old_path: file.old_path } : {}), status: file.status })),
     readBase: readers.readBase,
@@ -2269,43 +2267,6 @@ function treeArchitectureGraph(
     }
   }
   return { moduleEdgeKeys: keys, dependencies: graph.dependencies };
-}
-
-function readCompilerOptions(read: (filePath: string) => string | undefined, cwd: string): ts.CompilerOptions {
-  const visit = (configPath: string, seen: Set<string>): Record<string, unknown> => {
-    if (seen.has(configPath)) return {};
-    seen.add(configPath);
-    const raw = read(configPath);
-    if (!raw) return {};
-    try {
-      const parsed = ts.parseConfigFileTextToJson(configPath, raw);
-      if (parsed.error || !parsed.config) return {};
-      const config = parsed.config as { extends?: unknown; compilerOptions?: unknown };
-      let inherited: Record<string, unknown> = {};
-      if (typeof config.extends === "string" && config.extends.startsWith(".")) {
-        const base = path.posix.normalize(path.posix.join(path.posix.dirname(configPath), config.extends));
-        inherited = visit(base.endsWith(".json") ? base : `${base}.json`, seen);
-      }
-      const own = config.compilerOptions && typeof config.compilerOptions === "object"
-        ? config.compilerOptions as Record<string, unknown>
-        : {};
-      return { ...inherited, ...own };
-    } catch {
-      return {};
-    }
-  };
-  return ts.convertCompilerOptionsFromJson(visit("tsconfig.json", new Set()), cwd).options;
-}
-
-function memoizedRuntimeResolver(compilerOptions: ts.CompilerOptions): typeof resolveRuntimeRelativeImports {
-  const cache = new Map<string, string[]>();
-  return (sourcePath, content, exists): string[] => {
-    const cached = cache.get(sourcePath);
-    if (cached) return cached;
-    const imports = resolveRuntimeRelativeImports(sourcePath, content, exists, compilerOptions);
-    cache.set(sourcePath, imports);
-    return imports;
-  };
 }
 
 // review-surfaces.TREND.1: read the prior ledger from the previous packet's

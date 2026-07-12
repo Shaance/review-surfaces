@@ -106,9 +106,9 @@ export function buildDeterministicConversationBrief(
 function looksLikeDirective(text: string): boolean {
   const normalized = text.trim();
   if (/^(?:i authorize\b|yes,?\s+let's\b|let's\b|go ahead\b|make sure\b|ensure\b)/i.test(normalized)) return true;
-  const action = "(?:use|update|fix|add|remove|run|open|merge|keep|work on|audit|review|build|change)";
-  return normalized.split(/[.;]\s+/).some((clause) =>
-    new RegExp(`^(?:also\\s+|please\\s+)?${action}\\b`, "i").test(clause) ||
+  const action = "(?:use|update|fix|add|remove|run|open|merge|keep|work on|audit|review|build|change|implement|address|resolve|complete|finish|handle|correct|refactor|rename|document|test|ship)";
+  return normalized.split(/(?<=[.;?])\s+/).some((clause) =>
+    (!clause.trim().endsWith("?") && new RegExp(`^(?:also\\s+|please\\s+)?${action}\\b`, "i").test(clause)) ||
     new RegExp(`^(?:can|could|would)\\s+you\\s+${action}\\b`, "i").test(clause)
   );
 }

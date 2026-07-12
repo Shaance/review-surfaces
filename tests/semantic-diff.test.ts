@@ -36,6 +36,19 @@ test("review-surfaces.REVIEWER_VALUE.7 optional interface additions remain suppo
   }
 });
 
+test("review-surfaces.REVIEWER_VALUE.7 optional additions to namespaced interfaces remain supporting", () => {
+  assert.equal(isBreakingApiChange({
+    path: "types/public.d.ts",
+    exports_added: [],
+    exports_removed: [],
+    signatures_changed: [{
+      name: "N.Value",
+      from: "export interface Value { required: string; }",
+      to: "export interface Value { required: string; optional?: number; }"
+    }]
+  }), false);
+});
+
 // ---------------------------------------------------------------------------
 // review-surfaces.SEMANTIC_DIFF.1-3 — semantic facts from the meaning of the diff.
 // ---------------------------------------------------------------------------

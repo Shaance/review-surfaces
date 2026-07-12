@@ -226,6 +226,26 @@ test("review-surfaces.REVIEWER_VALUE.8 retains real-session corrections and make
   assert.match(brief.summary, /Make sure that you divide/);
 });
 
+test("review-surfaces.REVIEWER_VALUE.8 retains common implement and address directives", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "goal", actor: "user", kind: "message", summary: "Audit the report.", raw_index: 0 },
+    { id: "tests", actor: "user", kind: "message", summary: "Please implement the remaining tests.", raw_index: 1 },
+    { id: "validation", actor: "user", kind: "message", summary: "Address the failing validation.", raw_index: 2 }
+  ], "mock");
+
+  assert.deepEqual(brief.refinements.map((item) => item.event_ids[0]), ["tests", "validation"]);
+});
+
+test("review-surfaces.REVIEWER_VALUE.8 does not treat terse status questions as directives", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "goal", actor: "user", kind: "message", summary: "Audit the report.", raw_index: 0 },
+    { id: "test-status", actor: "user", kind: "message", summary: "Test status? It has been a while.", raw_index: 1 },
+    { id: "complete", actor: "user", kind: "message", summary: "Complete?", raw_index: 2 }
+  ], "mock");
+
+  assert.deepEqual(brief.refinements, []);
+});
+
 test("review-surfaces.REVIEWER_VALUE.8 strips an inline attachment path without deleting surrounding intent", () => {
   const brief = buildDeterministicConversationBrief([{
     id: "inline-attachment",
