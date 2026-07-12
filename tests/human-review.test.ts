@@ -451,7 +451,7 @@ test("review-surfaces.SEMANTIC_DIFF.4 facts carry concrete language into the que
       }
     ],
     api_changes: [
-      { path: "src/api.ts", exports_added: [], exports_removed: ["legacyExport"], signatures_changed: [] }
+      { path: "types/public.d.ts", exports_added: [], exports_removed: ["legacyExport"], signatures_changed: [] }
     ],
     test_weakening: []
   };
@@ -481,12 +481,65 @@ test("review-surfaces.SEMANTIC_DIFF.4 facts carry concrete language into the que
   const apiLens = model.risk_lens_findings.find((finding) => finding.lens === "api_contract");
   assert.ok(apiLens, "an api_contract lens finding is produced from the facts");
   assert.ok(
-    apiLens!.paths.includes("src/api.ts") || apiLens!.paths.includes("schemas/human_review.schema.json"),
+    apiLens!.paths.includes("types/public.d.ts") || apiLens!.paths.includes("schemas/human_review.schema.json"),
     "the lens carries the changed contract paths from the facts"
   );
 });
 
-test("review-surfaces.REVIEWER_VALUE.3 additive schema changes stay clarifying and blocking surfaces agree with blockers", () => {
+test("reviewer usefulness keeps additive schemas and internal exports out of ready-to-post comments", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    semanticFacts: {
+      schema_changes: [{
+        path: "schemas/human_review.schema.json",
+        properties_added: ["optional_note"],
+        properties_removed: [],
+        required_added: [],
+        required_removed: [],
+        type_changes: [],
+        enum_changes: []
+      }],
+      api_changes: [{
+        path: "src/internal/helper.ts",
+        exports_added: ["newHelper"],
+        exports_removed: [],
+        signatures_changed: []
+      }],
+      test_weakening: []
+    }
+  });
+
+  assert.ok(model.semantic_facts.schema_changes.length > 0, "additive facts remain available as supporting detail");
+  assert.ok(model.semantic_facts.api_changes.length > 0, "internal export facts remain available as supporting detail");
+  assert.ok(!model.review_queue.some((item) =>
+    item.path === "schemas/human_review.schema.json" || item.path === "src/internal/helper.ts"
+  ));
+  assert.ok(!model.suggested_comments.some((comment) => /optional_note|newHelper|exported API changed/i.test(comment.body)));
+  assert.ok(!model.suggested_comments.some((comment) => /confirm callers are updated/i.test(comment.body)));
+  assert.ok(!model.suggested_comments.some((comment) => /compatibility fixture/i.test(comment.body)));
+});
+
+test("review-surfaces.REVIEWER_VALUE.7 keeps benign architecture edges out of comments and questions", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    archDrift: {
+      facts: [{
+        kind: "module_edge_added",
+        from_module: "src/conversation",
+        to_module: "src/core",
+        files: ["src/conversation/brief.ts"],
+        detail: "new dependency edge: src/conversation -> src/core"
+      }],
+      file_edges: { added: [], removed: [] }
+    }
+  });
+
+  assert.ok(model.risk_lens_findings.some((finding) => finding.lens === "architecture"));
+  assert.ok(!model.suggested_comments.some((comment) => /module-boundary dependency edge/i.test(comment.body)));
+  assert.ok(!model.questions.some((question) => /module-boundary dependency edge/i.test(question.question)));
+});
+
+test("review-surfaces.REVIEWER_VALUE.3 additive schema changes stay nonblocking without a mechanical compatibility comment", () => {
   const model = buildHumanReview({
     packet: packetFixture(),
     diff: structuredDiffFixture(),
@@ -508,7 +561,7 @@ test("review-surfaces.REVIEWER_VALUE.3 additive schema changes stay clarifying a
   assert.equal(model.blockers.length, 0);
   assert.ok(model.questions.every((question) => question.severity !== "blocking"));
   assert.ok(model.suggested_comments.every((comment) => comment.severity !== "blocking"));
-  assert.ok(model.suggested_comments.some((comment) => /existing artifacts remain compatible/.test(comment.body)));
+  assert.ok(!model.suggested_comments.some((comment) => /review_insights|existing artifacts remain compatible/.test(comment.body)));
 });
 
 test("review-surfaces.REVIEWER_VALUE.3 deterministically breaking schemas create one coherent blocking path", () => {
@@ -4055,6 +4108,23 @@ test("human trust audit ignores claimed artifact-generation commands but keeps c
   assert.doesNotMatch(claims, /review-surfaces all/);
   assert.match(claims, /pnpm run test:fast/);
   assert.match(claims, /Skipped test result/);
+});
+
+test("human trust audit prioritizes current explicit validation claims and cites their conversation events", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence = [];
+  packet.methodology.claims_without_evidence = [
+    ...Array.from({ length: 12 }, (_, index) => `evt-${index}: I am still inspecting implementation area ${index}.`),
+    "evt-current: The current-head focused tests passed: 117/117."
+  ];
+
+  const model = buildHumanReview({ packet });
+  assert.equal(model.trust_audit.claimed_not_verified.length, 10);
+  assert.match(model.trust_audit.claimed_not_verified[0]?.claim ?? "", /117\/117/);
+  assert.equal(model.trust_audit.claimed_not_verified[0]?.evidence[0]?.event_id, "evt-current");
+  assert.ok(model.trust_audit.claimed_not_verified.every((claim) =>
+    claim.evidence.every((evidence) => evidence.kind === "conversation" && evidence.event_id)
+  ));
 });
 
 test("required PR risk checks stay visible when the test plan is capped", () => {

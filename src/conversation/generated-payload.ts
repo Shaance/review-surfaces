@@ -3,7 +3,16 @@ import { findReviewSurfacesArtifactName } from "../artifacts/inventory";
 export function conversationReviewerText(summary: string): string {
   const marker = "## My request for Codex:";
   const requestIndex = summary.indexOf(marker);
-  return requestIndex >= 0 ? summary.slice(requestIndex + marker.length) : summary;
+  const reviewerText = requestIndex >= 0 ? summary.slice(requestIndex + marker.length) : summary;
+  return reviewerText
+    // Codex desktop may normalize an attached image as separate user events
+    // (`<image ...>` and `</image>`) or keep the tags beside the request. The
+    // transport path and tags are not user intent; retain any prose around them.
+    .replace(/<image\b[^>]*>[\s\S]*?<\/image>/gi, " ")
+    .replace(/<\/?image\b[^>]*>/gi, " ")
+    .replace(/!\[[^\]]*]\((?:file:|\/tmp\/codex-remote-attachments\/)[^)]+\)/gi, " ")
+    .replace(/(?:file:\/\/)?\/tmp\/codex-remote-attachments\/[^\s)'\"<>]+/gi, " ")
+    .replace(/[ \t]{2,}/g, " ");
 }
 
 /** True only for transport/scaffolding or an artifact introduced as payload data. */

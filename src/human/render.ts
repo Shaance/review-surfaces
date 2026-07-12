@@ -466,7 +466,7 @@ function conversationAnalysisStatusLineWithField(
 ): string {
   const presentation = conversationReviewPresentation(analysis);
   const summary = renderField(presentation.summary, summaryLimit);
-  return `**${presentation.statusLabel}.** ${presentation.summaryIsSynopsis ? `AI synopsis: ${summary}` : summary}`;
+  return `**${presentation.statusLabel}.** ${presentation.summaryLabel ? `${presentation.summaryLabel}: ${summary}` : summary}`;
 }
 
 export function conversationInsightCitations(insight: ReviewerInsight): string {

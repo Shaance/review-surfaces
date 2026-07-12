@@ -61,24 +61,33 @@ export function buildDecisionProjection(input: BuildDecisionProjectionInput): De
 }
 
 function activeIntent(input: BuildDecisionProjectionInput): DecisionProjection["active_intent"] {
+  // review-surfaces.REVIEWER_VALUE.9: real-session decision quality starts from
+  // the cited local goal; provider enrichment and mechanical supporting facts
+  // cannot replace the reviewer-facing intent or independently move approval.
   const affected = affectedRequirements(input);
+  const conversationIntent = input.conversationAnalysis?.status === "analyzed"
+    ? input.conversationAnalysis.intent[0]
+    : undefined;
+  if (conversationIntent) {
+    const latestRefinement = input.conversationAnalysis?.refinements.at(-1);
+    return {
+      summary: summarizeConversationIntent(conversationIntent, latestRefinement, affected),
+      source: "conversation_advisory",
+      requirement_ids: uniqueStrings(affected.flatMap((requirement) =>
+        [requirement.id, requirement.acai_id].filter((id): id is string => Boolean(id))
+      )),
+      event_ids: uniqueStrings([
+        ...conversationIntent.event_ids,
+        ...(latestRefinement?.event_ids ?? [])
+      ])
+    };
+  }
   if (affected.length > 0) {
     return {
-      summary: boundedText(affected.slice(0, 3).map((requirement) => requirement.requirement).join(" "), 2000, "Affected requirement intent."),
+      summary: summarizeAffectedIntent(affected),
       source: "affected_requirements",
       requirement_ids: uniqueStrings(affected.flatMap((requirement) => [requirement.id, requirement.acai_id].filter((id): id is string => Boolean(id)))),
       event_ids: []
-    };
-  }
-  const conversationIntent = input.conversationAnalysis?.status === "analyzed"
-    ? input.conversationAnalysis.intent.at(-1)
-    : undefined;
-  if (conversationIntent) {
-    return {
-      summary: boundedText(conversationIntent.text, 2000, "Conversation intent."),
-      source: "conversation_advisory",
-      requirement_ids: [],
-      event_ids: uniqueStrings(conversationIntent.event_ids)
     };
   }
   return {
@@ -280,7 +289,37 @@ function uniqueStrings(values: readonly string[]): string[] {
 
 function boundedText(value: string, maxLength: number, fallback: string): string {
   const normalized = value.trim() || fallback;
-  return normalized.slice(0, maxLength);
+  if (normalized.length <= maxLength) return normalized;
+  const candidate = normalized.slice(0, maxLength - 1);
+  const wordBoundary = candidate.lastIndexOf(" ");
+  return `${wordBoundary >= Math.floor(maxLength * 0.6) ? candidate.slice(0, wordBoundary) : candidate}…`;
+}
+
+function summarizeAffectedIntent(requirements: ReviewPacket["intent"]["requirements"]): string {
+  const visible = requirements.slice(0, 3).map((requirement) => {
+    const text = boundedText(requirement.requirement.replace(/\s+/gu, " "), 500, "Affected requirement intent.");
+    const id = requirement.acai_id ?? requirement.id;
+    return `${text.replace(/[.!?]+$/u, "")} [${id}]`;
+  });
+  const omitted = requirements.length - visible.length;
+  const suffix = omitted > 0 ? ` (+${omitted} more affected requirement${omitted === 1 ? "" : "s"})` : "";
+  return boundedText(`${visible.join("; ")}${suffix}`, 2000, "Affected requirement intent.");
+}
+
+function summarizeConversationIntent(
+  statedGoal: NonNullable<ConversationAnalysis>["intent"][number],
+  latestRefinement: NonNullable<ConversationAnalysis>["refinements"][number] | undefined,
+  affected: ReviewPacket["intent"]["requirements"]
+): string {
+  const goal = boundedText(statedGoal.text, 360, "Conversation goal.");
+  const refinement = latestRefinement && latestRefinement.text.trim() !== statedGoal.text.trim()
+    ? ` Latest direction: ${boundedText(latestRefinement.text, 220, "Conversation refinement.")}`
+    : "";
+  const acids = uniqueStrings(affected.map((requirement) => requirement.acai_id ?? requirement.id));
+  const requirementContext = acids.length > 0
+    ? ` Affected requirements: ${acids.slice(0, 3).join(", ")}${acids.length > 3 ? ` (+${acids.length - 3} more)` : ""}.`
+    : "";
+  return boundedText(`Reviewer goal: ${goal}${refinement}${requirementContext}`, 900, "Conversation-backed active intent.");
 }
 
 function boundedRootCause(value: string): string {

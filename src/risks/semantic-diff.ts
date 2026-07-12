@@ -73,7 +73,55 @@ export function isBreakingSchemaChange(change: SchemaContractChange): boolean {
 }
 
 export function isBreakingApiChange(change: ApiSurfaceChange): boolean {
-  return change.exports_removed.length > 0 || change.signatures_changed.length > 0;
+  return change.exports_removed.length > 0 || change.signatures_changed.some(signatureChangeIsBreaking);
+}
+
+function signatureChangeIsBreaking(change: ApiSurfaceChange["signatures_changed"][number]): boolean {
+  const before = interfaceShape(change.from, change.name);
+  const after = interfaceShape(change.to, change.name);
+  if (!before || !after) {
+    return true;
+  }
+  if (before.header !== after.header) return true;
+  const remaining = new Map<string, { count: number; optional: boolean }>();
+  for (const member of after.members) {
+    const entry = remaining.get(member.text);
+    remaining.set(member.text, { count: (entry?.count ?? 0) + 1, optional: member.optional });
+  }
+  for (const oldMember of before.members) {
+    const entry = remaining.get(oldMember.text);
+    if (!entry) return true;
+    if (entry.count === 1) remaining.delete(oldMember.text);
+    else entry.count -= 1;
+  }
+  return [...remaining.values()].some((member) => !member.optional);
+}
+
+// Interface signatures are emitted as valid TypeScript by the semantic
+// extractor. Adding optional members is backward-compatible for both callers
+// and implementers, so it remains a supporting fact instead of review work.
+// Any removed/changed member or newly required member stays conservative.
+function interfaceShape(signature: string, expectedName: string): {
+  header: string;
+  members: Array<{ text: string; optional: boolean }>;
+} | undefined {
+  const source = ts.createSourceFile("contract.ts", signature, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const declaration = source.statements.find((statement): statement is ts.InterfaceDeclaration =>
+    ts.isInterfaceDeclaration(statement) && statement.name.text === expectedName
+  );
+  if (!declaration) return undefined;
+  const header = [
+    declaration.typeParameters?.map((parameter) => parameter.getText(source).replace(/\s+/gu, " ").trim()).join(",") ?? "",
+    declaration.heritageClauses?.map((clause) => clause.getText(source).replace(/\s+/gu, " ").trim()).join(" ") ?? ""
+  ].join("|");
+  const members: Array<{ text: string; optional: boolean }> = [];
+  for (const member of declaration.members) {
+    const optional = Boolean(member.questionToken);
+    const normalized = member.getText(source).replace(/\s+/gu, " ").trim();
+    if (!normalized) return undefined;
+    members.push({ text: normalized, optional });
+  }
+  return { header, members };
 }
 
 // Shared, surface-agnostic renderings of the two compound schema-change fields,

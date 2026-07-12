@@ -1595,7 +1595,7 @@ test("review-surfaces.CONVERSATION_REVIEW.4 repo cache reuses a successful ai-sd
     successful.conversation_analysis.quality_flags = [];
     successful.review_insights = [];
     successful.decision_projection.active_intent = {
-      summary: "Keep the renderer behavior.",
+      summary: "Reviewer goal: Keep the renderer behavior.",
       source: "conversation_advisory",
       requirement_ids: [],
       event_ids: ["user-1"]

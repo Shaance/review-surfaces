@@ -12,6 +12,14 @@
 import path from "node:path";
 import ts from "typescript";
 
+const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"] as const;
+const INDEX_SOURCE_SUFFIXES = SOURCE_EXTENSIONS.map((extension) => `/index${extension}`);
+
+function isSourcePath(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  return SOURCE_EXTENSIONS.some((extension) => lower.endsWith(extension));
+}
+
 // Resolve the relative import / re-export / require / dynamic-import specifiers
 // of one source file to repo-relative module paths that actually exist. `exists`
 // answers whether a repo-relative path is a real file (the caller supplies a
@@ -21,11 +29,25 @@ export function resolveRelativeImports(
   content: string,
   exists: (repoRelativePath: string) => boolean
 ): string[] {
+  return resolveImports(sourcePath, content, exists);
+}
+
+function resolveImports(
+  sourcePath: string,
+  content: string,
+  exists: (repoRelativePath: string) => boolean
+): string[] {
   const source = ts.createSourceFile(sourcePath, content, ts.ScriptTarget.Latest, false);
   const specifiers = new Set<string>();
   const visit = (node: ts.Node): void => {
-    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
       specifiers.add(node.moduleSpecifier.text);
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+      specifiers.add(node.moduleSpecifier.text);
+    } else if (ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      node.moduleReference.expression && ts.isStringLiteral(node.moduleReference.expression)) {
+      specifiers.add(node.moduleReference.expression.text);
     } else if (ts.isCallExpression(node)) {
       const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require";
       const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
@@ -38,19 +60,36 @@ export function resolveRelativeImports(
   visit(source);
 
   const fromDir = path.posix.dirname(toPosix(sourcePath));
-  const targets = new Set<string>();
-  for (const specifier of specifiers) {
-    // Skip bare specifiers (node_modules) and path aliases — only same-repo
-    // relative imports map a test to its subject.
-    if (!specifier.startsWith(".")) {
-      continue;
-    }
-    const resolved = resolveSpecifier(fromDir, specifier, exists);
-    if (resolved) {
-      targets.add(resolved);
-    }
+  return [...new Set([...specifiers]
+    // Bare specifiers and path aliases are outside the bounded local graph.
+    .filter((specifier) => specifier.startsWith("."))
+    .map((specifier) => resolveSpecifier(fromDir, specifier, exists))
+    .filter((target): target is string => Boolean(target)))].sort();
+}
+
+// Architecture-cycle claims are runtime claims, so resolve the emitted module
+// using the reviewed tree's compiler options. This respects type erasure and
+// `verbatimModuleSyntax` instead of guessing from source syntax alone.
+export function resolveRuntimeRelativeImports(
+  sourcePath: string,
+  content: string,
+  exists: (repoRelativePath: string) => boolean,
+  compilerOptions: ts.CompilerOptions = {}
+): string[] {
+  if (!isSourcePath(sourcePath)) {
+    return [];
   }
-  return [...targets].sort();
+  const emitted = ts.transpileModule(content, {
+    fileName: sourcePath,
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.Node16,
+      jsx: ts.JsxEmit.ReactJSX,
+      ...compilerOptions
+    },
+    reportDiagnostics: false
+  }).outputText;
+  return resolveImports(sourcePath, emitted, exists);
 }
 
 function resolveSpecifier(fromDir: string, specifier: string, exists: (p: string) => boolean): string | undefined {
@@ -61,7 +100,11 @@ function resolveSpecifier(fromDir: string, specifier: string, exists: (p: string
     return exact;
   }
   const base = exact.replace(/\.(js|jsx|mjs|cjs)$/i, "");
-  const candidates = [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}/index.ts`, `${base}/index.tsx`, `${base}/index.js`];
+  const candidates = [
+    base,
+    ...SOURCE_EXTENSIONS.map((extension) => `${base}${extension}`),
+    ...INDEX_SOURCE_SUFFIXES.map((suffix) => `${base}${suffix}`)
+  ];
   for (const candidate of candidates) {
     if (candidate && exists(candidate)) {
       return candidate;
@@ -81,6 +124,10 @@ function toPosix(p: string): string {
 export interface ImportGraph {
   // repo-relative module path -> sorted importer file paths.
   importers: Map<string, string[]>;
+  // repo-relative importer path -> sorted imported module paths. This forward
+  // view lets architecture drift prove a concrete file return path instead of
+  // inferring a cycle from unrelated directory-aggregate edges.
+  dependencies: Map<string, string[]>;
   // True when the file cap stopped the build before every file was parsed.
   truncated: boolean;
   // File contents read during the build, so findSymbolImporters does not re-read
@@ -89,6 +136,17 @@ export interface ImportGraph {
 }
 
 export const DEFAULT_IMPORT_GRAPH_FILE_CAP = 4000;
+
+export function importGraphWouldTruncate(
+  files: readonly string[],
+  fileCap = DEFAULT_IMPORT_GRAPH_FILE_CAP
+): boolean {
+  let count = 0;
+  for (const file of files) {
+    if (isSourcePath(file) && ++count > fileCap) return true;
+  }
+  return false;
+}
 
 // review-surfaces.PERF.1: wrap an existence probe in a per-build memo so each
 // distinct repo-relative path triggers at most ONE underlying lookup for the
@@ -118,22 +176,27 @@ export function buildImportGraph(options: {
   read: (filePath: string) => string | undefined;
   exists: (filePath: string) => boolean;
   fileCap?: number;
+  resolveImports?: typeof resolveRelativeImports;
+  retainContents?: boolean;
 }): ImportGraph {
   const cap = options.fileCap ?? DEFAULT_IMPORT_GRAPH_FILE_CAP;
   // review-surfaces.PERF.1: one memo shared by every resolveRelativeImports call
   // in this build, so a path probed across many files hits the cache once.
   const exists = memoizeExists(options.exists);
-  const sources = options.files.filter((file) => /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(file)).sort();
+  const sources = options.files.filter(isSourcePath).sort();
   const truncated = sources.length > cap;
   const importersByModule = new Map<string, Set<string>>();
+  const dependencies = new Map<string, string[]>();
   const contents = new Map<string, string>();
   for (const file of sources.slice(0, cap)) {
     const content = options.read(file);
     if (!content) {
       continue;
     }
-    contents.set(file, content);
-    for (const target of resolveRelativeImports(file, content, exists)) {
+    if (options.retainContents !== false) contents.set(file, content);
+    const targets = (options.resolveImports ?? resolveRelativeImports)(file, content, exists);
+    dependencies.set(file, targets);
+    for (const target of targets) {
       let bucket = importersByModule.get(target);
       if (!bucket) {
         bucket = new Set();
@@ -146,7 +209,7 @@ export function buildImportGraph(options: {
   for (const [module, bucket] of importersByModule) {
     importers.set(module, [...bucket].sort());
   }
-  return { importers, truncated, contents };
+  return { importers, dependencies, truncated, contents };
 }
 
 // BLAST_RADIUS.2: the importers of `modulePath` that actually reference one of

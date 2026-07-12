@@ -169,6 +169,124 @@ test("review-surfaces.CONVERSATION_REVIEW.5 summarizes the latest normal refinem
   assert.match(brief.summary, /Also add retry metrics/);
 });
 
+test("review-surfaces.REVIEWER_VALUE.8 keeps reasserted instructions and excludes status questions from direction", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "goal", actor: "user", kind: "message", summary: "Use X.", raw_index: 0 },
+    { id: "correction", actor: "user", kind: "message", summary: "Actually, don't use X.", raw_index: 1 },
+    { id: "reassertion", actor: "user", kind: "message", summary: "Use X.", raw_index: 2 },
+    { id: "status", actor: "user", kind: "message", summary: "Why hasn't it merged yet?", raw_index: 3 }
+  ], "mock");
+  assert.deepEqual(brief.refinements.map((item) => item.event_ids[0]), ["correction", "reassertion"]);
+  assert.equal(brief.summary, "Stated goal: Use X.");
+  assert.doesNotMatch(brief.summary, /merged yet/);
+});
+
+test("review-surfaces.REVIEWER_VALUE.8 history questions are not reviewer direction", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "goal", actor: "user", kind: "message", summary: "Audit the report.", raw_index: 0 },
+    { id: "used", actor: "user", kind: "message", summary: "Did you use the latest head?", raw_index: 1 },
+    { id: "why", actor: "user", kind: "message", summary: "Can you tell me why it failed?", raw_index: 2 },
+    { id: "merged", actor: "user", kind: "message", summary: "Was the fix merged?", raw_index: 3 }
+  ], "mock");
+  assert.deepEqual(brief.refinements, []);
+  assert.equal(brief.summary, "Stated goal: Audit the report.");
+});
+
+test("review-surfaces.REVIEWER_VALUE.8 retains real-session corrections and make-sure directives", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "goal", actor: "user", kind: "message", summary: "Audit the report.", raw_index: 0 },
+    { id: "wrong", actor: "user", kind: "message", summary: "That's wrong. You missed those findings.", raw_index: 1 },
+    { id: "divide", actor: "user", kind: "message", summary: "Make sure that you divide the work between milestones.", raw_index: 2 }
+  ], "mock");
+  assert.deepEqual(brief.refinements.map((item) => item.event_ids[0]), ["wrong", "divide"]);
+  assert.match(brief.summary, /Make sure that you divide/);
+});
+
+test("review-surfaces.REVIEWER_VALUE.8 strips an inline attachment path without deleting surrounding intent", () => {
+  const brief = buildDeterministicConversationBrief([{
+    id: "inline-attachment",
+    actor: "user",
+    kind: "message",
+    summary: "Use this proof /tmp/codex-remote-attachments/session/proof.jpg and update the reviewer summary.",
+    raw_index: 0
+  }], "mock");
+  assert.equal(brief.intent[0]?.text, "Use this proof and update the reviewer summary.");
+  assert.doesNotMatch(JSON.stringify(brief), /codex-remote-attachments/);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.5 review-surfaces.REVIEWER_VALUE.9 real app envelopes preserve the stated goal without duplicate or attachment intent", () => {
+  const brief = buildDeterministicConversationBrief([{
+    id: "initial-audit",
+    actor: "user",
+    kind: "message",
+    summary: "Audit the report and make it genuinely useful for a reviewer.",
+    raw_index: 0
+  }, {
+    id: "app-envelope",
+    actor: "user",
+    kind: "message",
+    summary: "The PR was already approved; update the autoland skill.",
+    raw_index: 1
+  }, {
+    id: "image-open",
+    actor: "user",
+    kind: "message",
+    summary: '<image name="Pasted Image 1" path="/tmp/codex-remote-attachments/session/screenshot.jpg">',
+    raw_index: 2
+  }, {
+    id: "image-close",
+    actor: "user",
+    kind: "message",
+    summary: "</image>",
+    raw_index: 3
+  }, {
+    id: "canonical-envelope-copy",
+    actor: "user",
+    kind: "message",
+    summary: "The PR was already approved; update the autoland skill.",
+    raw_index: 4
+  }, {
+    id: "mixed-attachment",
+    actor: "user",
+    kind: "message",
+    summary: 'Keep the reviewer decision first. <image name="proof" path="/tmp/codex-remote-attachments/session/proof.jpg"></image>',
+    raw_index: 5
+  }], "mock");
+
+  assert.match(brief.summary, /^Stated goal: Audit the report and make it genuinely useful for a reviewer\./);
+  assert.match(brief.summary, /Latest refinement: Keep the reviewer decision first\./);
+  assert.deepEqual(brief.refinements, [{
+    text: "The PR was already approved; update the autoland skill.",
+    event_ids: ["app-envelope"]
+  }, {
+    text: "Keep the reviewer decision first.",
+    event_ids: ["mixed-attachment"]
+  }]);
+  assert.doesNotMatch(JSON.stringify(brief), /codex-remote-attachments|<\/?image/i);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 bounded observations retain the latest structured current validation", () => {
+  const brief = buildDeterministicConversationBrief(Array.from({ length: 15 }, (_, raw_index): ConversationEvent => ({
+    id: `validation-${raw_index}`,
+    actor: "tool",
+    kind: "tool_result",
+    summary: raw_index === 14 ? "The exact-head local gate passed." : `Focused validation ${raw_index} passed.`,
+    command: raw_index === 14 ? "pnpm run local-gate" : `pnpm test --filter area-${raw_index}`,
+    result_status: "passed",
+    exit_code: 0,
+    raw_index
+  })), "mock");
+
+  assert.equal(brief.validation_observations?.length, 12);
+  assert.equal(brief.validation_observations?.[0]?.event_ids[0], "validation-0");
+  assert.deepEqual(brief.validation_observations?.at(-1), {
+    text: "The exact-head local gate passed.",
+    event_ids: ["validation-14"],
+    status: "passed",
+    command: "pnpm run local-gate"
+  });
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.6 recognizes validation commands with bare environment assignments", () => {
   const brief = buildDeterministicConversationBrief([{
     id: "bare-env-result",
@@ -993,7 +1111,7 @@ test("review-surfaces.CONVERSATION_REVIEW.5 successful enrichment preserves ever
   };
   const result = await analyzeConversation({ provider, providerName: "ai-sdk", events: EVENTS });
 
-  assert.deepEqual(result.intent.slice(-baseline.intent.length), baseline.intent);
+  assert.deepEqual(result.intent.slice(0, baseline.intent.length), baseline.intent);
   for (const section of ["refinements", "constraints", "non_goals", "claims", "validation_claims"] as const) {
     assert.deepEqual(result[section].slice(0, baseline[section].length), baseline[section], `${section} keeps the deterministic prefix`);
   }

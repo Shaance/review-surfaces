@@ -351,17 +351,16 @@ test("review-surfaces.EVAL_HARNESS.3 a format-only change does not rank high or 
   }
 });
 
-// review-surfaces.EVAL_HARNESS.5: seeded architecture-drift fixture — a benign
-// change plus a NEW cross-module import edge must rank in the top N.
-test("review-surfaces.EVAL_HARNESS.5 a seeded cross-module import (architecture drift) ranks in the top N", () => {
+// review-surfaces.EVAL_HARNESS.5: only a new runtime edge that closes a
+// concrete file cycle is approval-changing and must rank in the top N.
+test("review-surfaces.EVAL_HARNESS.5 a seeded concrete runtime cycle ranks once in the top N", () => {
   const fixture = createEvalFixture("arch-drift");
   try {
-    // Base: two modules with no edge between them.
-    fixture.write("src/core/util.ts", `export function clamp(value: number): number {\n  return Math.max(0, value);\n}\n`);
+    // Base: core depends on render, but no cycle exists yet.
     fixture.write("src/render/view.ts", `export function view(): string {\n  return "ok";\n}\n`);
+    fixture.write("src/core/util.ts", `import { view } from "../render/view";\n\nexport function clamp(value: number): number {\n  view();\n  return Math.max(0, value);\n}\n`);
     fixture.commit("add modules");
-    // Mutation: a benign tweak plus a new cross-module import edge
-    // (src/render -> src/core), the drift the detector must surface.
+    // Mutation: render -> core closes the concrete runtime file cycle.
     fixture.write("src/calc.ts", `export function add(left: number, right: number): number {\n  return right + left;\n}\n`);
     fixture.write(
       "src/render/view.ts",
@@ -374,17 +373,35 @@ test("review-surfaces.EVAL_HARNESS.5 a seeded cross-module import (architecture 
     const model = fixture.run(["--base", "HEAD~1"]);
     record("arch_drift", () => {
       assert.ok(
-        inTopQueue(model, (item) => item.path === "src/render/view.ts" && /module dependency edge|dependency edge/i.test(item.title)),
-        `expected the new module edge to rank in the top ${TOP_N}; got: ${topQueue(model)
+        inTopQueue(model, (item) => item.path === "src/render/view.ts" && /import cycle created/i.test(item.title)),
+        `expected the runtime cycle to rank in the top ${TOP_N}; got: ${topQueue(model)
           .map((item) => `${item.title} (${item.path})`)
           .join(" | ")}`
       );
       // The architecture lens carries the drift fact.
       assert.ok(model.risk_lens_findings.some((finding) => finding.lens === "architecture"));
-      // The change map only draws edges between CHANGED files; with --base
-      // HEAD~1 the imported module is unchanged, so the drift is carried by
-      // the queue item + architecture lens asserted above.
+      assert.equal(model.review_queue.filter((item) => /import cycle created/i.test(item.title)).length, 1);
     });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("review-surfaces.EVAL_HARNESS.5 a benign cross-module edge remains supporting detail", () => {
+  const fixture = createEvalFixture("arch-drift-supporting");
+  try {
+    fixture.write("src/core/util.ts", `export function clamp(value: number): number {\n  return Math.max(0, value);\n}\n`);
+    fixture.write("src/render/view.ts", `export function view(): string {\n  return "ok";\n}\n`);
+    fixture.commit("add independent modules");
+    fixture.write(
+      "src/render/view.ts",
+      `import { clamp } from "../core/util";\n\nexport function view(): string {\n  return String(clamp(1));\n}\n`
+    );
+    fixture.commit("add benign one-way edge");
+    const model = fixture.run(["--base", "HEAD~1"]);
+    assert.ok(model.risk_lens_findings.some((finding) => finding.lens === "architecture"));
+    assert.ok(!model.review_queue.some((item) => /module dependency edge|import cycle created/i.test(item.title)));
+    assert.ok(!model.decision_projection?.findings.some((finding) => finding.root_cause.includes("architecture")));
   } finally {
     fixture.cleanup();
   }

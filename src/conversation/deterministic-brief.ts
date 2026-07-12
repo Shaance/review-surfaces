@@ -9,6 +9,7 @@ import {
   stripTrailingValidationOutcome,
   validationOutcomeIsHypothetical,
   validationTextHasOutcome,
+  validationTextMentionsTooling,
   type CommandRule
 } from "../core/command-classify";
 import { commandSegments, statusBearingCommandSegments } from "../core/command-segments";
@@ -20,12 +21,11 @@ const MAX_ITEMS = 12;
 const MAX_TEXT = 500;
 const MAX_SUMMARY = 900;
 
-const CORRECTION = /^(?:no\b|actually\b|correction\b|instead\b|change\b|final correction\b)|\b(?:rather than|not that|supersedes?)\b/i;
+const CORRECTION = /^(?:no\b|actually\b|correction\b|instead\b|change\b|final correction\b|(?:that|this)(?:'s| is) wrong\b|you missed\b)|\b(?:rather than|not that|supersedes?)\b/i;
 const CONSTRAINT = /\b(?:must|must not|need to|required|only|without|preserve|keep|do not|don't|never)\b/i;
 const NON_GOAL = /^(?:do not|don't)\b|\b(?:non[- ]goal|out of scope|not in scope|no need to|do not include|don't include|exclude from scope|skip (?:support for|adding))\b/i;
 const AGENT_CLAIM = /\b(?:i|we)\s+(?:added|changed|chose|completed|created|fixed|implemented|kept|preserved|removed|updated|used|wired)\b/i;
 const SUBJECTLESS_AGENT_CLAIM = /(?:^|\n)\s*(?:[-*]\s*)?(?:\*{1,2}|_{1,2})?(?:added|changed|chose|completed|created|fixed|implemented|kept|preserved|removed|updated|used|wired)(?:\*{1,2}|_{1,2})?(?=\s|[.:,;!?]|$)/i;
-const VALIDATION_MENTION = /\b(?:tests?|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test|tsc)\b/i;
 export function buildDeterministicConversationBrief(
   events: readonly SanitizedConversationEvent[],
   provider: ProviderName,
@@ -35,7 +35,7 @@ export function buildDeterministicConversationBrief(
   const ordered = [...events].sort((left, right) =>
     left.raw_index - right.raw_index || compareStrings(left.id, right.id)
   );
-  const userEvents = ordered.filter(isEligibleUserMessage);
+  const userEvents = uniqueUserMessages(ordered.filter(isEligibleUserMessage));
   const assistantEvents = ordered.filter(isEligibleAssistantMessage);
   const intent: ConversationAnalysisItem[] = [];
   const refinements: ConversationAnalysisItem[] = [];
@@ -50,7 +50,7 @@ export function buildDeterministicConversationBrief(
     const text = conversationReviewerText(event.summary).trim();
     if (index === 0) intent.push(item);
     if (index > 0 && CORRECTION.test(text)) intent.push(item);
-    if (index > 0) refinements.push(item);
+    if (index > 0 && (CORRECTION.test(text) || CONSTRAINT.test(text) || looksLikeDirective(text))) refinements.push(item);
     if (CONSTRAINT.test(text)) constraints.push(item);
     if (NON_GOAL.test(text)) nonGoals.push(item);
   }
@@ -69,12 +69,15 @@ export function buildDeterministicConversationBrief(
     if (observation) observations.push(observation);
   }
 
+  const originalIntent = intent[0];
   const latestIntent = refinements.at(-1) ?? intent.at(-1);
   const hasDeterministicContent = intent.length > 0 || refinements.length > 0 ||
     constraints.length > 0 || nonGoals.length > 0 || claims.length > 0 ||
     validationClaims.length > 0 || observations.length > 0;
-  const summary = latestIntent
-    ? `Deterministic conversation brief: ${latestIntent.text}`
+  const summary = originalIntent
+    ? latestIntent && latestIntent.text !== originalIntent.text
+      ? `Stated goal: ${bound(originalIntent.text, 420)} Latest refinement: ${bound(latestIntent.text, 240)}`
+      : `Stated goal: ${bound(originalIntent.text, 600)}`
     : observations.length > 0 || claims.length > 0 || validationClaims.length > 0
       ? "Deterministic conversation brief recovered agent claims and observed validation outcomes; active user intent was not explicit."
       : "Deterministic conversation brief found no eligible explicit intent or claims."
@@ -98,6 +101,16 @@ export function buildDeterministicConversationBrief(
       ...(!hasDeterministicContent ? ["conversation_no_eligible_baseline_events"] : [])
     ])].slice(0, 20)
   };
+}
+
+function looksLikeDirective(text: string): boolean {
+  const normalized = text.trim();
+  if (/^(?:i authorize\b|yes,?\s+let's\b|let's\b|go ahead\b|make sure\b|ensure\b)/i.test(normalized)) return true;
+  const action = "(?:use|update|fix|add|remove|run|open|merge|keep|work on|audit|review|build|change)";
+  return normalized.split(/[.;]\s+/).some((clause) =>
+    new RegExp(`^(?:also\\s+|please\\s+)?${action}\\b`, "i").test(clause) ||
+    new RegExp(`^(?:can|could|would)\\s+you\\s+${action}\\b`, "i").test(clause)
+  );
 }
 
 export function mergeConversationAnalysis(
@@ -137,6 +150,25 @@ export function mergeConversationAnalysis(
 function isEligibleUserMessage(event: SanitizedConversationEvent): boolean {
   return event.actor.trim().toLowerCase() === "user" && isNaturalLanguageEvent(event) &&
     conversationReviewerText(event.summary).trim().length > 0;
+}
+
+/**
+ * Codex desktop can expose one user turn twice: once as an app envelope and
+ * once as the canonical user message, with attachment events between them.
+ * The reviewer needs one interpretation of that turn, not transport-shaped
+ * repetition. Collapse only adjacent copies: the same instruction may be
+ * legitimately reasserted after an intervening correction.
+ */
+function uniqueUserMessages(events: readonly SanitizedConversationEvent[]): SanitizedConversationEvent[] {
+  const unique: SanitizedConversationEvent[] = [];
+  let previousKey = "";
+  for (const event of events) {
+    const key = conversationReviewerText(event.summary).replace(/\s+/g, " ").trim().toLowerCase();
+    if (!key || key === previousKey) continue;
+    unique.push(event);
+    previousKey = key;
+  }
+  return unique;
 }
 
 function isEligibleAssistantMessage(event: SanitizedConversationEvent): boolean {
@@ -183,7 +215,7 @@ function itemFromEvent(event: SanitizedConversationEvent): ConversationAnalysisI
 }
 
 function looksLikeValidationClaim(text: string, commandRules: readonly CommandRule[]): boolean {
-  if (VALIDATION_MENTION.test(text)) return true;
+  if (validationTextMentionsTooling(text)) return true;
   return validationClaimCommandCandidates(text).some((candidate) =>
     looksLikeValidationCommand(candidate, commandRules)
   );
@@ -238,9 +270,9 @@ function mergeIntent(
   const additions = enrichment
     .filter((item) => !baselineKeys.has(itemKey(item)))
     .slice(0, Math.max(0, MAX_ITEMS - baseline.length));
-  // Provider context may precede the canonical local sequence, but it can never
-  // trail it and accidentally become the active `.at(-1)` intent.
-  return [...additions, ...baseline];
+  // The cited local sequence remains authoritative and first because reviewer
+  // projections intentionally treat intent[0] as the stated user goal.
+  return [...baseline, ...additions];
 }
 
 function itemKey(item: ConversationAnalysisItem): string {
@@ -249,5 +281,8 @@ function itemKey(item: ConversationAnalysisItem): string {
 
 function bound(value: string, limit: number): string {
   const normalized = value.replace(/\s+/g, " ").trim();
-  return normalized.length <= limit ? normalized : normalized.slice(0, limit);
+  if (normalized.length <= limit) return normalized;
+  const candidate = normalized.slice(0, Math.max(1, limit - 1));
+  const wordBoundary = candidate.lastIndexOf(" ");
+  return `${wordBoundary >= Math.floor(limit * 0.6) ? candidate.slice(0, wordBoundary) : candidate}…`;
 }

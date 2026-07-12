@@ -15,7 +15,7 @@ import { parseBudgetDuration } from "../human/budget";
 import { computeDependencyFacts } from "../risks/dependency-facts";
 import { loadReviewPolicy, POLICY_FILE, ReviewPolicy } from "../feedback/policy";
 import { computeConfigFacts } from "../risks/config-facts";
-import { buildImportGraph, findSymbolImporters } from "../collector/import-graph";
+import { buildImportGraph, findSymbolImporters, importGraphWouldTruncate, resolveRuntimeRelativeImports } from "../collector/import-graph";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { loadPrivacyIgnoreSync } from "../privacy/ignore";
@@ -78,6 +78,7 @@ import { postStickyComment } from "../render/post-comment";
 import { writeJson, writeText } from "../core/files";
 import { compareStrings } from "../core/compare";
 import { PACKET_SCHEMA_VERSION, PACKET_SEVERITIES } from "../schema/review-packet-contract";
+import ts from "typescript";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { packagedSchemaPath } from "../schema/packaged-schemas";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
@@ -2159,24 +2160,60 @@ function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined
   // import (the same module edge often already exists via another file), so
   // both trees are parsed once with the shared bounded import graph.
   const existsBase = (filePath: string): boolean => readers.baseReadRef !== "" && blobExistsAtRef(cwd, readers.baseReadRef, filePath);
-  const baseModuleEdgeKeys = treeModuleEdgeKeys(cwd, readers.baseReadRef || undefined, readers.readBase, existsBase, implementationRoots);
-  const headModuleEdgeKeys = treeModuleEdgeKeys(cwd, readers.headIsWorktree ? "WORKTREE" : readers.headSha, readers.readHead, existsHead, implementationRoots);
+  const baseCompilerOptions = readCompilerOptions(readers.readBase, cwd);
+  const headCompilerOptions = readCompilerOptions(readers.readHead, cwd);
+  const resolveBaseImports = memoizedRuntimeResolver(baseCompilerOptions);
+  const resolveHeadImports = memoizedRuntimeResolver(headCompilerOptions);
+  const changedOnly = computeArchDriftFacts({
+    changedFiles: diff.files.map((file) => ({ path: file.path, ...(file.old_path ? { old_path: file.old_path } : {}), status: file.status })),
+    readBase: readers.readBase,
+    readHead: readers.readHead,
+    existsBase,
+    existsHead,
+    resolveBaseImports,
+    resolveHeadImports,
+    implementationRoots,
+    fileEdgesOnly: true
+  });
+  if (changedOnly.file_edges.added.length === 0 && changedOnly.file_edges.removed.length === 0) {
+    return changedOnly;
+  }
+  const baseGraph = treeArchitectureGraph(cwd, readers.baseReadRef || undefined, readers.readBase, existsBase, implementationRoots, resolveBaseImports);
+  const headGraph = treeArchitectureGraph(cwd, readers.headIsWorktree ? "WORKTREE" : readers.headSha, readers.readHead, existsHead, implementationRoots, resolveHeadImports);
   const result = computeArchDriftFacts({
     changedFiles: diff.files.map((file) => ({ path: file.path, ...(file.old_path ? { old_path: file.old_path } : {}), status: file.status })),
     readBase: readers.readBase,
     readHead: readers.readHead,
     existsBase,
     existsHead,
-    ...(baseModuleEdgeKeys instanceof Set ? { baseModuleEdgeKeys } : {}),
-    ...(headModuleEdgeKeys instanceof Set ? { headModuleEdgeKeys } : {}),
+    resolveBaseImports,
+    resolveHeadImports,
+    ...(baseGraph && baseGraph !== "truncated" ? { baseModuleEdgeKeys: baseGraph.moduleEdgeKeys } : {}),
+    ...(headGraph && headGraph !== "truncated" ? {
+      headModuleEdgeKeys: headGraph.moduleEdgeKeys,
+      headFileDependencies: headGraph.dependencies
+    } : {}),
     implementationRoots
   });
   // A truncated tree graph makes module-edge novelty UNKNOWN: suppress the
   // facts ("no import existed at the base" cannot be asserted) but keep the
   // file-level edge deltas — they come from the changed files alone and stay
   // exact for the map renderers.
-  if (baseModuleEdgeKeys === "truncated" || headModuleEdgeKeys === "truncated") {
-    return { facts: [], file_edges: result.file_edges };
+  if (baseGraph === "truncated" || headGraph === "truncated") {
+    const exactChanged = computeArchDriftFacts({
+      changedFiles: diff.files.map((file) => ({ path: file.path, ...(file.old_path ? { old_path: file.old_path } : {}), status: file.status })),
+      readBase: readers.readBase,
+      readHead: readers.readHead,
+      existsBase,
+      existsHead,
+      resolveBaseImports,
+      resolveHeadImports,
+      implementationRoots
+    });
+    return {
+      facts: exactChanged.facts.filter((fact) => fact.kind === "import_cycle_created"),
+      file_edges: result.file_edges
+    };
   }
   return result;
 }
@@ -2185,13 +2222,19 @@ function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined
 // rules (the same enumeration as the blast-radius graph). Returns undefined
 // when the tree cannot be listed (the detector then falls back to its weaker
 // changed-files-only bound rather than guessing).
-function treeModuleEdgeKeys(
+interface TreeArchitectureGraph {
+  moduleEdgeKeys: Set<string>;
+  dependencies: Map<string, string[]>;
+}
+
+function treeArchitectureGraph(
   cwd: string,
   treeRef: string | undefined,
   read: (filePath: string) => string | undefined,
   exists: (filePath: string) => boolean,
-  implementationRoots: readonly string[]
-): Set<string> | "truncated" | undefined {
+  implementationRoots: readonly string[],
+  resolveImports: typeof resolveRuntimeRelativeImports
+): TreeArchitectureGraph | "truncated" | undefined {
   if (!treeRef) {
     return undefined;
   }
@@ -2209,7 +2252,10 @@ function treeModuleEdgeKeys(
   }
   const ignore = loadPrivacyIgnoreSync(cwd);
   tracked = tracked.filter((filePath) => !ignore.isIgnored(filePath));
-  const graph = buildImportGraph({ files: tracked, read, exists });
+  if (importGraphWouldTruncate(tracked)) {
+    return "truncated";
+  }
+  const graph = buildImportGraph({ files: tracked, read, exists, resolveImports, retainContents: false });
   // A truncated graph is PARTIAL evidence: treating it as the whole tree would
   // report pre-existing edges beyond the cap as new — and the changed-files
   // fallback bound would be just as misleading. Signal "truncated" so the
@@ -2227,7 +2273,44 @@ function treeModuleEdgeKeys(
       }
     }
   }
-  return keys;
+  return { moduleEdgeKeys: keys, dependencies: graph.dependencies };
+}
+
+function readCompilerOptions(read: (filePath: string) => string | undefined, cwd: string): ts.CompilerOptions {
+  const visit = (configPath: string, seen: Set<string>): Record<string, unknown> => {
+    if (seen.has(configPath)) return {};
+    seen.add(configPath);
+    const raw = read(configPath);
+    if (!raw) return {};
+    try {
+      const parsed = ts.parseConfigFileTextToJson(configPath, raw);
+      if (parsed.error || !parsed.config) return {};
+      const config = parsed.config as { extends?: unknown; compilerOptions?: unknown };
+      let inherited: Record<string, unknown> = {};
+      if (typeof config.extends === "string" && config.extends.startsWith(".")) {
+        const base = path.posix.normalize(path.posix.join(path.posix.dirname(configPath), config.extends));
+        inherited = visit(base.endsWith(".json") ? base : `${base}.json`, seen);
+      }
+      const own = config.compilerOptions && typeof config.compilerOptions === "object"
+        ? config.compilerOptions as Record<string, unknown>
+        : {};
+      return { ...inherited, ...own };
+    } catch {
+      return {};
+    }
+  };
+  return ts.convertCompilerOptionsFromJson(visit("tsconfig.json", new Set()), cwd).options;
+}
+
+function memoizedRuntimeResolver(compilerOptions: ts.CompilerOptions): typeof resolveRuntimeRelativeImports {
+  const cache = new Map<string, string[]>();
+  return (sourcePath, content, exists): string[] => {
+    const cached = cache.get(sourcePath);
+    if (cached) return cached;
+    const imports = resolveRuntimeRelativeImports(sourcePath, content, exists, compilerOptions);
+    cache.set(sourcePath, imports);
+    return imports;
+  };
 }
 
 // review-surfaces.TREND.1: read the prior ledger from the previous packet's

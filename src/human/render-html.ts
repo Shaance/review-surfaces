@@ -345,7 +345,7 @@ ${citations ? `<p class="muted">Evidence: ${citations}</p>` : ""}
 </article>`;
     }).join("\n");
   return `<h2 id="conversation-insights">Conversation-aware insights</h2>
-<p><span class="badge ${esc(presentation.status)}">${esc(presentation.statusLabel)}</span> ${presentation.summaryIsSynopsis ? "AI synopsis: " : ""}${esc(presentation.summary)}</p>
+<p><span class="badge ${esc(presentation.status)}">${esc(presentation.statusLabel)}</span> ${presentation.summaryLabel ? `${esc(presentation.summaryLabel)}: ` : ""}${esc(presentation.summary)}</p>
 ${renderConversationContextHtml(analysis)}
 ${caveats.length > 0 ? `<p class="muted"><strong>Caveat:</strong> ${esc(caveats.join(" "))}</p>` : ""}
 ${cards}`;

@@ -1,12 +1,18 @@
 import crypto from "node:crypto";
 import { SPEC_NONE_NOTE } from "../evaluation/status";
-import { commandLooksLikeLocalValidationCommand } from "../commands/classify";
+import {
+  commandLooksLikeLocalValidationCommand,
+  validationOutcomeIsHypothetical,
+  validationTextActualOutcomeKind,
+  validationTextMentionsTooling
+} from "../commands/classify";
 import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
 import { formatHunkHeader, hunkOverlapsRange } from "../collector/diff-hunks";
 import { buildFallbackNarrative } from "./narrative";
 import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTypeChanges, isBreakingApiChange, isBreakingSchemaChange, SchemaContractChange, SemanticChangeFacts, TestWeakeningSignal } from "../risks/semantic-diff";
+import { isExplicitContractSurfacePath } from "../risks/contract-surface";
 import { emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { buildReviewPlan } from "./budget";
 import { buildChangeGraphSections, ChangedFileFacts, ChangedImportEdge, ChangeGraphAreaInsight, ChangeGraphEdgeInsight } from "./change-graph";
@@ -550,23 +556,26 @@ function buildRoundsLedger(input: BuildHumanReviewInput, verdict: HumanReviewVer
 // review-surfaces.ARCH_DRIFT.2: drift facts rank as concrete queue items via
 // the risk register plumbing — cycle creation outranks a plain new edge.
 function archDriftQueueDrafts(facts: ArchDriftFact[], diffIndex: DiffIndex | undefined): QueueDraft[] {
-  const ordered = [...facts].sort(
-    (a, b) =>
-      (a.kind === "import_cycle_created" ? 0 : 1) - (b.kind === "import_cycle_created" ? 0 : 1) ||
-      compareStrings(a.from_module, b.from_module) ||
-      compareStrings(a.to_module, b.to_module)
-  );
-  return ordered.slice(0, 6).map((fact, index) =>
-    semanticDraft(diffIndex, {
+  // REVIEWER_VALUE.6 / ARCH_DRIFT.2: ordinary module edges are useful map and
+  // lens context, but are not independently approval-changing. Only cycles
+  // proven on the concrete runtime file graph enter the primary queue.
+  const ordered = facts
+    .filter((fact) => fact.kind === "import_cycle_created" && (fact.cycle?.length ?? 0) > 2)
+    .sort((a, b) => compareStrings(a.cycle?.join(" -> ") ?? "", b.cycle?.join(" -> ") ?? ""));
+  return ordered.slice(0, 6).map((fact, index) => {
+    const draft = semanticDraft(diffIndex, {
       title: archDriftTitle(fact.kind),
       path: fact.files[0] ?? fact.from_module,
       reason: `${fact.detail}.`,
-      reviewer_action: "Confirm the module-boundary import change is an intentional architecture decision, not an agent shortcut across layers.",
-      priority: fact.kind === "import_cycle_created" ? "high" : "medium",
-      score: (fact.kind === "import_cycle_created" ? 200 : 160) - index,
-      sortKey: `arch_drift:${fact.kind}:${fact.from_module}:${fact.to_module}`
-    })
-  );
+      reviewer_action: "Inspect the cited runtime import chain and remove or intentionally isolate the cycle before approval.",
+      priority: "high",
+      score: 200 - index,
+      sortKey: `arch_drift:${fact.kind}:${fact.cycle?.join("->") ?? `${fact.from_module}->${fact.to_module}`}`
+    });
+    draft.evidence = [...new Set(fact.cycle?.slice(0, -1) ?? fact.files)]
+      .map((filePath) => fileEvidence(filePath, "Concrete runtime import-cycle chain.", "high"));
+    return draft;
+  });
 }
 
 function archDriftTitle(kind: ArchDriftFact["kind"]): string {
@@ -2551,6 +2560,7 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
   }
   for (const [index, change] of facts.schema_changes.entries()) {
     const breaking = isBreakingSchemaChange(change);
+    if (!breaking) continue;
     drafts.push(semanticDraft(diffIndex, {
       title: "Schema contract change",
       path: change.path,
@@ -2563,11 +2573,12 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
   }
   for (const [index, change] of facts.api_changes.entries()) {
     const breaking = isBreakingApiChange(change);
+    if (!breaking) continue;
     drafts.push(semanticDraft(diffIndex, {
       title: "Exported API surface change",
       path: change.path,
       reason: apiChangeReason(change),
-      reviewer_action: "Confirm callers of the changed exports are updated.",
+      reviewer_action: apiQueueReviewerAction(change),
       priority: breaking ? "high" : "medium",
       // review-surfaces.BLAST_RADIUS.2: a removed/changed export with many
       // importers outranks one with none (bounded so blast radius cannot lift
@@ -2577,6 +2588,16 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
     }));
   }
   return drafts;
+}
+
+function apiQueueReviewerAction(change: ApiSurfaceChange): string {
+  if (change.used_by?.count) {
+    return `Inspect the ${change.used_by.count} identified in-repo consumer${change.used_by.count === 1 ? "" : "s"}; preserve compatibility or update their focused tests.`;
+  }
+  if (change.used_by?.truncated) {
+    return "Resolve the truncated importer set before deciding whether the changed API is compatible.";
+  }
+  return "Determine whether the changed export is a supported external surface; if so, preserve compatibility or document the migration.";
 }
 
 function semanticDraft(
@@ -3224,7 +3245,17 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
 
   // review-surfaces.ARCH_DRIFT.2: drift facts feed the architecture lens.
   for (const fact of input.archDrift?.facts ?? []) {
-    addSignal("architecture", fact.kind === "import_cycle_created" ? "high" : "medium", [fileEvidence(fact.files[0] ?? fact.from_module, fact.detail)], [], [], fact.files);
+    const evidencePaths = fact.kind === "import_cycle_created"
+      ? [...new Set(fact.cycle?.slice(0, -1) ?? fact.files)]
+      : fact.files;
+    addSignal(
+      "architecture",
+      fact.kind === "import_cycle_created" ? "high" : "medium",
+      evidencePaths.map((filePath) => fileEvidence(filePath, fact.detail, fact.kind === "import_cycle_created" ? "high" : "medium")),
+      [],
+      [],
+      evidencePaths
+    );
   }
 
   for (const signal of semanticFacts.test_weakening) {
@@ -3315,11 +3346,14 @@ function compactRiskLenses(values: Array<RiskLens | undefined>): RiskLens[] {
 function isApiContractLensPath(filePath: string, role: PrChangedFile["role"]): boolean {
   return (
     role === "spec" ||
-    /^src\/cli\//.test(filePath) ||
-    isVersionedArtifactContractPath(filePath) ||
-    filePath === "review-surfaces.config.yaml" ||
-    /^features\/.*\.feature\.yaml$/.test(filePath)
+    isCliConfigOrFeatureContractPath(filePath) ||
+    isVersionedArtifactContractPath(filePath)
   );
+}
+
+function isCliConfigOrFeatureContractPath(filePath: string): boolean {
+  return /^src\/cli\//.test(filePath) || filePath === "review-surfaces.config.yaml" ||
+    /^features\/.*\.feature\.yaml$/.test(filePath);
 }
 
 function isPersistedSchemaContractPath(filePath: string): boolean {
@@ -4185,7 +4219,10 @@ function buildQuestions(
     });
   }
 
-  for (const finding of riskLensFindings.filter(isPathOnlyRiskLensFinding).slice(0, 3)) {
+  const semanticFacts = input.semanticFacts ?? emptySemanticChangeFacts();
+  for (const finding of riskLensFindings
+    .filter((candidate) => isPathOnlyRiskLensFinding(candidate) && pathOnlyLensNeedsReviewerAction(candidate, semanticFacts))
+    .slice(0, 3)) {
     questions.push({
       id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
       severity: riskLensQuestionSeverity(finding),
@@ -4469,6 +4506,31 @@ function isPathOnlyRiskLensFinding(finding: RiskLensFinding): boolean {
   return finding.risk_ids.length === 0;
 }
 
+function pathOnlyLensNeedsReviewerAction(
+  finding: RiskLensFinding,
+  semanticFacts: SemanticChangeFacts
+): boolean {
+  if (finding.lens === "architecture") {
+    return finding.severity === "high";
+  }
+  if (finding.lens !== "api_contract") {
+    return true;
+  }
+  const paths = new Set(finding.paths.map(normalizeEvidencePath));
+  const hasBreakingSchema = semanticFacts.schema_changes.some((change) =>
+    paths.has(normalizeEvidencePath(change.path)) && isBreakingSchemaChange(change)
+  );
+  const hasBreakingPublicApi = semanticFacts.api_changes.some((change) =>
+    paths.has(normalizeEvidencePath(change.path)) &&
+    isBreakingApiChange(change) &&
+    isExplicitContractSurfacePath(change.path)
+  );
+  const hasNonSchemaPublicPath = finding.paths.some((filePath) =>
+    isCliConfigOrFeatureContractPath(normalizeEvidencePath(filePath))
+  );
+  return hasBreakingSchema || hasBreakingPublicApi || hasNonSchemaPublicPath;
+}
+
 function riskLensQuestionText(finding: RiskLensFinding): string {
   switch (finding.lens) {
     case "api_contract":
@@ -4550,7 +4612,9 @@ function buildSuggestedComments(
     }
   }
 
-  for (const finding of riskLensFindings.filter(isPathOnlyRiskLensFinding)) {
+  for (const finding of riskLensFindings.filter((candidate) =>
+    isPathOnlyRiskLensFinding(candidate) && pathOnlyLensNeedsReviewerAction(candidate, semanticFacts)
+  )) {
     // review-surfaces.SEMANTIC_DIFF.5: only the lenses a semantic-fact comment
     // actually duplicates may be deduped against it — the api/schema-contract lens
     // (schema_changes/api_changes) and the test-evidence lens (test_weakening). A
@@ -4639,16 +4703,16 @@ function semanticCommentCandidates(facts: SemanticChangeFacts): SuggestedComment
   }
   for (const change of facts.schema_changes) {
     const breaking = isBreakingSchemaChange(change);
+    if (!breaking) continue;
     add(
-      breaking ? "blocking" : "clarifying",
+      "blocking",
       change.path,
-      breaking
-        ? `${schemaChangeReason(change)} Please version the contract or migrate existing artifacts.`
-        : `${schemaChangeReason(change)} Please confirm existing artifacts remain compatible.`,
+      `${schemaChangeReason(change)} Please version the contract or migrate existing artifacts.`,
       `semantic-schema:${change.path}`
     );
   }
   for (const change of facts.api_changes) {
+    if (!isBreakingApiChange(change) || !isExplicitContractSurfacePath(change.path)) continue;
     add("clarifying", change.path, `${apiChangeReason(change)}${apiCallerCallToAction(change)}`, `semantic-api:${change.path}`);
   }
   return candidates;
@@ -4661,9 +4725,12 @@ function semanticCommentCandidates(facts: SemanticChangeFacts): SuggestedComment
 function apiCallerCallToAction(change: ApiSurfaceChange): string {
   const usedBy = change.used_by;
   if (usedBy && usedBy.count === 0 && !usedBy.truncated) {
-    return " Confirm there are no external or runtime consumers (downstream packages, the CLI, persisted callers) before treating this as safe.";
+    return " Version this public contract change or document the downstream migration before merge.";
   }
-  return " Please confirm callers are updated.";
+  if (usedBy?.truncated) {
+    return " Resolve the truncated importer blast radius, then update affected consumers or preserve compatibility before merge.";
+  }
+  return " Update the identified consumers or preserve compatibility before merge.";
 }
 
 function commentDraftWithoutId(comment: SuggestedReviewComment): SuggestedCommentDraft {
@@ -4708,15 +4775,17 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
     ...positiveEvidenceFacts.slice(0, Math.max(0, MAX_TRUST_ITEMS - prFacts.length))
   ]);
 
-  const claimed = [
-    ...input.packet.methodology.claims_without_evidence.map((claim, index) => ({
+  const methodologyClaims = input.packet.methodology.claims_without_evidence
+    .map((claim, index) => ({ claim, index, validation: reviewerClaimLooksLikeValidation(claim) }))
+    .sort((left, right) => Number(right.validation) - Number(left.validation) || right.index - left.index)
+    .map(({ claim }, index) => ({
       id: `TRUST-CLAIM-${String(index + 1).padStart(3, "0")}`,
       claim,
       status: "unverified" as const,
       missing_evidence: "No command transcript or parsed test artifact verifies this claim.",
-      evidence: input.packet.methodology.evidence.length ? input.packet.methodology.evidence.slice(0, 3) : [missingEvidence("Methodology claim lacks evidence.")]
-    })),
-    ...input.packet.risks.test_evidence
+      evidence: [methodologyClaimEvidence(claim)]
+    }));
+  const validationClaims = input.packet.risks.test_evidence
       .filter(isClaimedValidationEvidence)
       .map((item, index) => ({
         id: `TRUST-CLAIM-TEST-${String(index + 1).padStart(3, "0")}`,
@@ -4724,7 +4793,10 @@ function buildTrustAudit(input: BuildHumanReviewInput): TrustAudit {
         status: "unverified" as const,
         missing_evidence: "The command or test is claimed but not backed by direct parsed output or transcript evidence.",
         evidence: item.evidence ?? [missingEvidence(item.summary)]
-      }))
+      }));
+  const claimed = [
+    ...validationClaims,
+    ...methodologyClaims
   ].slice(0, MAX_TRUST_ITEMS);
 
   const missing = missingEvidenceSummaries(input);
@@ -4776,6 +4848,28 @@ function isClaimedValidationEvidence(item: RisksModel["test_evidence"][number]):
     return true;
   }
   return commands.some((command) => commandLooksLikeLocalValidationCommand(command));
+}
+
+function reviewerClaimLooksLikeValidation(claim: string): boolean {
+  const text = claim.replace(/^[^:\s]+:\s*/u, "");
+  if (!validationTextMentionsTooling(text)) {
+    return false;
+  }
+  return validationTextActualOutcomeKind(text) !== undefined && !validationOutcomeIsHypothetical(text);
+}
+
+function methodologyClaimEvidence(claim: string): EvidenceRef {
+  const match = /^([^:\s]+):\s*/u.exec(claim);
+  if (match?.[1]) {
+    return {
+      kind: "conversation",
+      event_id: match[1],
+      note: "Conversation event contains an unverified methodology claim.",
+      confidence: "medium",
+      validation_status: "not_checked"
+    };
+  }
+  return missingEvidence("Methodology claim lacks an event citation and validation evidence.");
 }
 
 // review-surfaces.HUMAN_REVIEW.21: each focused-requirement test item's "Expected"

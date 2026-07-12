@@ -19,6 +19,7 @@ export interface ConversationReviewPresentation {
   statusLabel: string;
   summary: string;
   summaryIsSynopsis: boolean;
+  summaryLabel?: "AI synopsis" | "Local synopsis";
   emptyMessage: string;
 }
 
@@ -50,6 +51,9 @@ export function conversationReviewPresentation(
     statusLabel,
     summary,
     summaryIsSynopsis: status === "analyzed" && suppliedSummary !== undefined,
+    ...(status === "analyzed" && suppliedSummary !== undefined
+      ? { summaryLabel: analysis?.quality_flags.includes("conversation_deterministic_baseline") ? "Local synopsis" as const : "AI synopsis" as const }
+      : {}),
     emptyMessage
   };
 }
