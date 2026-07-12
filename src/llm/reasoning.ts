@@ -1,6 +1,7 @@
 import { CollectionResult } from "../collector/collect";
 import { commandLooksLikeTestCommand } from "../commands/classify";
 import { ConversationEvent } from "../conversation/events";
+import { commandSegments } from "../core/command-segments";
 import { isRecord, uniqueTruthy } from "../core/guards";
 import { EvidenceRef, llmProposedEvidence } from "../evidence/evidence";
 import { EvidenceValidationContext, validateEvidenceRef } from "../evidence/validate";
@@ -1715,8 +1716,6 @@ function isTestExecutionEvent(event: ConversationEvent): boolean {
   return commandRunsTest(event.command ?? "");
 }
 
-const LEADING_ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
-
 // True when ANY executed segment of a (possibly chained) shell command runs a
 // test. Splitting on `&&`/`||`/`|`/`;` and stripping leading `VAR=value`
 // assignments lets a test that is not the first command count
@@ -1731,37 +1730,6 @@ function commandRunsTest(command: string): boolean {
     return false;
   }
   return commandSegments(command).some((segment) => commandLooksLikeTestCommand(segment));
-}
-
-// Conservatively drop ALL heredoc BODIES (`<<MARKER ... \nMARKER`) before command
-// segmentation. A heredoc body is ambiguous — inert input to `cat`/`tee`, stdin to
-// a script (`bash run.sh <<EOF`), or executed by a bare interpreter (`bash <<EOF`,
-// `cat <<EOF | bash`). Rather than parse the shell precisely (an unbounded
-// edge-case surface), the ADVISORY reconciliation note errs toward NOT firing: a
-// test command that appears only inside a heredoc body is not counted as an executed
-// test run. The body lines are removed so they never segment into commands (Codex P2).
-function stripHeredocBodies(command: string): string {
-  // The heredoc BODY starts on the NEXT line after the opener, so keep the rest of
-  // the opener line ($3) — a chained real command there (`cat <<EOF && pnpm test`)
-  // must survive — and drop only the body, up to its terminator (CRLF-aware) OR, for
-  // a TRUNCATED heredoc with no terminator (tool bodies bounded to
-  // MAX_TOOL_BODY_LENGTH), to end-of-command (Codex P2).
-  return command.replace(
-    /<<-?\s*(['"]?)([A-Za-z_]\w*)\1([^\n]*)(?:\r?\n[\s\S]*?\r?\n[ \t]*\2[ \t]*(?=\r?\n|$)|\r?\n[\s\S]*$)?/g,
-    "<<$2$3"
-  );
-}
-
-function commandSegments(command: string): string[] {
-  // Newlines are shell command separators too, so a multi-line tool command
-  // (`cd api\npnpm test`) splits into its real commands (Codex P2).
-  return stripHeredocBodies(command).split(/&&|\|\||[|;\n\r]/).map((segment) => {
-    let seg = segment.trim();
-    while (LEADING_ENV_ASSIGNMENT.test(seg)) {
-      seg = seg.replace(LEADING_ENV_ASSIGNMENT, "");
-    }
-    return seg;
-  });
 }
 
 // Select up to `budget` events by salience (desc), tie-broken by raw_index (asc)

@@ -20,6 +20,9 @@ export interface SanitizedConversationEvent {
   tool?: string;
   command?: string;
   file?: string;
+  call_id?: string;
+  result_status?: "passed" | "failed" | "unknown";
+  exit_code?: number;
   raw_index: number;
 }
 
@@ -49,7 +52,8 @@ export function prepareConversationEvents(events: ConversationEvent[]): Prepared
     const tool = optionalSafeField(event.tool, MAX_EVENT_FIELD_CHARS);
     const command = optionalSafeField(event.command, MAX_EVENT_TEXT_CHARS);
     const file = optionalSafeField(event.file, MAX_EVENT_FIELD_CHARS);
-    const fields = [id, actor, kind, summary, tool, command, file].filter(
+    const callId = optionalSafeField(event.call_id, MAX_EVENT_FIELD_CHARS);
+    const fields = [id, actor, kind, summary, tool, command, file, callId].filter(
       (field): field is SafeField => field !== undefined
     );
     redacted ||= fields.some((field) => field.redacted);
@@ -60,20 +64,17 @@ export function prepareConversationEvents(events: ConversationEvent[]): Prepared
       continue;
     }
     seenIds.add(id.text);
-    const commandAlreadyInSummary = Boolean(
-      event.command &&
-      event.summary.includes(event.command) &&
-      command?.text &&
-      summary.text.includes(command.text)
-    );
     safeEvents.push({
       id: id.text,
       actor: actor.text || "unknown",
       kind: kind.text || "message",
       summary: summary.text,
       ...(tool?.text ? { tool: tool.text } : {}),
-      ...(command?.text && !commandAlreadyInSummary ? { command: command.text } : {}),
+      ...(command?.text ? { command: command.text } : {}),
       ...(file?.text ? { file: file.text } : {}),
+      ...(callId?.text ? { call_id: callId.text } : {}),
+      ...(event.result_status ? { result_status: event.result_status } : {}),
+      ...(Number.isInteger(event.exit_code) ? { exit_code: event.exit_code } : {}),
       raw_index: Number.isFinite(event.raw_index) ? event.raw_index : 0
     });
   }
@@ -171,13 +172,29 @@ function selectChronologicalWindows(events: ConversationEvent[]): ConversationEv
   if (events.length <= MAX_EVENTS) {
     return events;
   }
-  const windowSize = Math.floor(MAX_EVENTS / 3);
+  const selected = new Set<number>();
+  const userIndexes = events.flatMap((event, index) =>
+    event.actor.trim().toLowerCase() === "user" && event.kind.trim().toLowerCase() === "message" ? [index] : []
+  );
+  const userBudget = Math.min(120, userIndexes.length);
+  const priorityUsers = userIndexes.length <= userBudget
+    ? userIndexes
+    : [...userIndexes.slice(0, 40), ...userIndexes.slice(-(userBudget - 40))];
+  for (const index of priorityUsers) selected.add(index);
+
+  const remaining = MAX_EVENTS - selected.size;
+  const windowSize = Math.floor(remaining / 3);
   const middleStart = Math.max(windowSize, Math.floor((events.length - windowSize) / 2));
-  return [
-    ...events.slice(0, windowSize),
-    ...events.slice(middleStart, middleStart + windowSize),
-    ...events.slice(-windowSize)
-  ];
+  for (const index of [
+    ...Array.from({ length: windowSize }, (_, offset) => offset),
+    ...Array.from({ length: windowSize }, (_, offset) => middleStart + offset),
+    ...Array.from({ length: remaining - (windowSize * 2) }, (_, offset) => events.length - (remaining - (windowSize * 2)) + offset)
+  ]) selected.add(index);
+
+  // Window overlap with priority turns can leave capacity. Fill deterministically
+  // from the tail because the active request and latest outcomes are most useful.
+  for (let index = events.length - 1; selected.size < MAX_EVENTS && index >= 0; index -= 1) selected.add(index);
+  return [...selected].sort((left, right) => left - right).map((index) => events[index]);
 }
 
 interface SafeField {

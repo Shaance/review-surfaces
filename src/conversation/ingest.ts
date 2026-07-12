@@ -52,6 +52,9 @@ interface PersistedEvent {
   tool?: string;
   command?: string;
   file?: string;
+  call_id?: string;
+  result_status?: "passed" | "failed" | "unknown";
+  exit_code?: number;
   raw_index: number;
   // Hash of the bounded redacted text for any field that HELD blocked material,
   // so a downstream consumer of this gitignored log / the content-hash cache can
@@ -104,6 +107,15 @@ function toPersisted(event: ConversationEvent): PersistedEvent {
   }
   if (event.file !== undefined) {
     persisted.file = persistField("file", event.file);
+  }
+  if (event.call_id !== undefined) {
+    persisted.call_id = persistField("call_id", event.call_id);
+  }
+  if (event.result_status !== undefined) {
+    persisted.result_status = event.result_status;
+  }
+  if (Number.isInteger(event.exit_code)) {
+    persisted.exit_code = event.exit_code;
   }
   const blockedCount = Object.keys(blockedHashes).length;
   if (blockedCount > 0) {

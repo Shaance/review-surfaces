@@ -28,7 +28,7 @@ import {
   TEST_RESULTS_SCHEMA_VERSION,
   TestResults
 } from "../tests-evidence/junit";
-import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, collectWorkingTreeSnapshot, commitTimeAtRef, gitInfoDiagnostics, GitInfo, isCurrentStateHeadRequest, readFileAtRef, readFileBytesAtRef, resolveMergeBaseSha } from "./git";
+import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, collectHeadCommits, collectWorkingTreeSnapshot, commitTimeAtRef, gitInfoDiagnostics, GitInfo, isCurrentStateHeadRequest, readFileAtRef, readFileBytesAtRef, resolveMergeBaseSha } from "./git";
 import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { computeDependencyFacts, DependencyFact } from "../risks/dependency-facts";
 import { computeConfigFacts, ConfigFact } from "../risks/config-facts";
@@ -196,6 +196,16 @@ export interface CollectionResult {
   // artifact, so the methodology evidence points at the gitignored normalized log
   // instead. Absent for an explicit --conversation path (its path is used as-is).
   conversationEvidencePath?: string;
+  // Safe persisted explanation of zero-config transcript selection. Absolute
+  // session paths and raw transcript text are deliberately excluded.
+  conversationDiscovery?: {
+    status: "admitted" | "rejected";
+    confidence: "high" | "medium" | "low";
+    ambiguous: boolean;
+    mutated_changed_files: number;
+    weak_matched_files: number;
+    reason_codes: string[];
+  };
   // Phase 3a (METHODOLOGY.8): the deterministic semantic/dependency/config facts,
   // computed once here (sync git access) so the deterministic cross-reference audit
   // in buildMethodology can PROMOTE its four signals with real facts instead of path
@@ -457,14 +467,43 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // a persisted artifact, so when it is used we persist the repo-relative
   // normalized-log path as the evidence anchor and announce the absolute path on
   // stderr only (PRIVACY.1).
-  const discovered =
+  const discoveredCandidate =
     options.conversationPath === undefined && options.conversationDiscovery !== false
       ? discoverConversationSession({
           storeRoot: options.conversationStoreRoot ?? os.homedir(),
           cwd: options.cwd,
-          changedFiles: changedFiles.map((file) => file.path)
+          changedFiles: [...new Set(changedFiles.flatMap((file) => [file.path, file.old_path].filter((value): value is string => Boolean(value))))],
+          headSha: git.head_sha,
+          rangeCommitShas: collectHeadCommits(options.cwd, options.baseRef, options.headRef).map((commit) => commit.sha),
+          headCommittedAt: git.head_sha !== "unknown" ? commitTimeAtRef(options.cwd, git.head_sha) : undefined,
+          workingTreeDirty: changedFiles.some((file) => file.source === "working_tree")
         })
       : undefined;
+  // review-surfaces.CONVERSATION_REVIEW.7: weak path mentions, read-only audits,
+  // recency fallbacks, and tied producer candidates are not transcript provenance.
+  // Reject them before normalization so they cannot affect privacy, cache input,
+  // methodology, or provider analysis. An explicit path remains the user override.
+  const discovered = discoveredCandidate?.kind === "session" && discoveredCandidate.confidence !== "low" && discoveredCandidate.ambiguous !== true
+    ? discoveredCandidate
+    : undefined;
+  const conversationDiscovery = discoveredCandidate ? {
+    status: discovered ? "admitted" as const : "rejected" as const,
+    confidence: discoveredCandidate.confidence,
+    ambiguous: discoveredCandidate.ambiguous,
+    mutated_changed_files: discoveredCandidate.mutatedChangedFiles,
+    weak_matched_files: discoveredCandidate.weakMatchedFiles,
+    reason_codes: discoveredCandidate.reasonCodes
+  } : undefined;
+  if (discoveredCandidate && !discovered) {
+    const candidateLabel = discoveredCandidate.kind === "session"
+      ? `conversation session ${discoveredCandidate.path}`
+      : "conversation store scan";
+    diagnostics.push(
+      `WARNING: rejected auto-discovered ${candidateLabel} before ingestion ` +
+      `(confidence ${discoveredCandidate.confidence}; reasons ${discoveredCandidate.reasonCodes.join(",")}). ` +
+      "No transcript was normalized, cached, or audited. Pass --conversation <path> to explicitly select it."
+    );
+  }
   const resolvedConversationPath = options.conversationPath ?? discovered?.path;
   if (resolvedConversationPath !== undefined) {
     // A discovered session is parsed from its discovery-time SNAPSHOT (never a
@@ -493,13 +532,11 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
       // or a stale session.
       if (!discovered) {
         diagnostics.push(`Conversation adapter: ${loaded.adapter} (${resolvedConversationPath})`);
-      } else if (discovered.matchedChangedFiles > 0) {
-        diagnostics.push(
-          `Auto-discovered conversation session: ${discovered.path} (adapter ${loaded.adapter}; matched ${discovered.matchedChangedFiles} changed file(s) in the reviewed range)`
-        );
       } else {
         diagnostics.push(
-          `WARNING: auto-discovered conversation session ${discovered.path} (adapter ${loaded.adapter}) does NOT reference any file in the reviewed range — picked by recency alone, so it may be the wrong or a stale session. Pass --conversation <path> to select the right transcript, or --no-conversation-discovery to skip auto-discovery.`
+          `Auto-discovered conversation session: ${discovered.path} ` +
+          `(adapter ${loaded.adapter}; confidence ${discovered.confidence}; mutated ${discovered.mutatedChangedFiles} changed file(s); ` +
+          `weak matches ${discovered.weakMatchedFiles}; reasons ${discovered.reasonCodes.join(",")})`
         );
       }
     } else {
@@ -618,6 +655,17 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // public artifact). Explicit --conversation files are already hashed above.
   if (discovered !== undefined) {
     flagInputHashes.push({ kind: "conversation", path: discovered.path, algorithm: "sha256", hash: discovered.hash });
+  } else if (conversationDiscovery !== undefined) {
+    // Rejected discovery still changes reviewer-visible methodology. Fold only
+    // its safe persisted provenance into the cache key (never the private path
+    // or raw transcript) so adding/removing/changing a rejection cannot reuse a
+    // packet with a stale or missing warning.
+    flagInputHashes.push({
+      kind: "conversation-discovery",
+      path: "rejected",
+      algorithm: "sha256",
+      hash: crypto.createHash("sha256").update(JSON.stringify(conversationDiscovery)).digest("hex")
+    });
   }
   if (options.provider === "ai-sdk" || options.gateProvider === "ai-sdk") {
     flagInputHashes.push({
@@ -798,6 +846,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     conversationEvents,
     conversationSource,
     conversationEvidencePath,
+    conversationDiscovery,
     semanticChangeFacts,
     dependencyFacts,
     configFacts
@@ -922,10 +971,8 @@ function collectConversationBlockedKinds(events: ConversationEvent[] | undefined
   }
   const kinds = new Set<string>();
   for (const event of events) {
-    for (const field of [event.summary, event.command, event.file, event.id, event.tool]) {
-      if (field === undefined) {
-        continue;
-      }
+    for (const field of Object.values(event)) {
+      if (typeof field !== "string") continue;
       for (const kind of BLOCKED_REDACTION_KINDS) {
         if (field.includes(`[REDACTED:${kind}]`)) {
           kinds.add(kind);

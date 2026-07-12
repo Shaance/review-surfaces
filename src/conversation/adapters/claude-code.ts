@@ -8,6 +8,21 @@
 import { isRecord } from "../../core/guards";
 import { AdapterInput, ConversationAdapter, ConversationEvent } from "../events";
 import { redactBoundedBody, redactPath, redactText, stringify } from "../field";
+import {
+  emptyConversationProvenance,
+  exactMentionedPaths,
+  finishConversationProvenance,
+  looksLikeReadTool,
+  looksLikeReviewCommand,
+  mutationPathsForTool,
+  recordCommitReferences,
+  recordMutationTimestamp,
+  recordTimestamp,
+  reviewedPath,
+  structuredText,
+  type ConversationProvenance,
+  type ConversationProvenanceContext
+} from "../provenance";
 
 interface Envelope {
   role: string;
@@ -79,6 +94,69 @@ function commandOf(input: unknown): string {
   return redactBoundedBody(input);
 }
 
+export function claudeCodeProvenance(
+  input: AdapterInput,
+  context: ConversationProvenanceContext
+): ConversationProvenance {
+  const result = emptyConversationProvenance();
+  const pendingMutations = new Map<string, { paths: string[]; timestamp: unknown }>();
+  for (const rawLine of input.text.split("\n")) {
+    let record: Record<string, unknown> | undefined;
+    try {
+      const parsed: unknown = JSON.parse(rawLine);
+      record = isRecord(parsed) ? parsed : undefined;
+    } catch {
+      record = undefined;
+    }
+    if (!record) continue;
+    const timestamp = record.timestamp;
+    recordTimestamp(result, timestamp);
+    recordCommitReferences(result, rawLine, context);
+    if (looksLikeReviewCommand(rawLine)) result.sawReviewCommand = true;
+    for (const file of exactMentionedPaths(rawLine, context)) result.mentionedPaths.add(file);
+    const envelope = readEnvelope(record);
+    const blocks = envelope && Array.isArray(envelope.content) ? envelope.content : [];
+    for (const block of blocks) {
+      if (!isRecord(block)) continue;
+      if (block.type === "tool_result") {
+        const callId = typeof block.tool_use_id === "string" ? block.tool_use_id : undefined;
+        const pending = callId ? pendingMutations.get(callId) : undefined;
+        if (!pending || typeof block.is_error !== "boolean") continue;
+        if (!block.is_error) {
+          for (const file of pending.paths) result.mutatedPaths.add(file);
+          recordMutationTimestamp(result, timestamp);
+        }
+        pendingMutations.delete(callId as string);
+        continue;
+      }
+      if (block.type !== "tool_use") continue;
+      const name = typeof block.name === "string" ? block.name : "";
+      const toolInput = isRecord(block.input) ? block.input : undefined;
+      const directPath = reviewedPath(filePathOf(toolInput), context);
+      const serialized = structuredText(block.input);
+      const mutationPaths = mutationPathsForTool(name, directPath, serialized, context);
+      if (mutationPaths) {
+        const paths = mutationPaths;
+        if (paths.length > 0 && typeof block.id === "string") {
+          pendingMutations.set(block.id, { paths, timestamp });
+        } else {
+          for (const file of paths) result.mutatedPaths.add(file);
+          if (paths.length > 0) recordMutationTimestamp(result, timestamp);
+        }
+      } else if (directPath && looksLikeReadTool(name)) {
+        result.readPaths.add(directPath);
+        result.sawReadTool = true;
+      }
+      if (looksLikeReviewCommand(serialized)) result.sawReviewCommand = true;
+    }
+  }
+  for (const pending of pendingMutations.values()) {
+    for (const file of pending.paths) result.mutatedPaths.add(file);
+    recordMutationTimestamp(result, pending.timestamp);
+  }
+  return finishConversationProvenance(result);
+}
+
 export const claudeCodeAdapter: ConversationAdapter = {
   name: "claude-code",
   detect(input: AdapterInput): boolean {
@@ -126,7 +204,7 @@ export const claudeCodeAdapter: ConversationAdapter = {
         rawIndex += 1;
       });
     }
-    return events;
+    return linkClaudeToolResults(events);
   }
 };
 
@@ -147,6 +225,7 @@ function blockToEvent(block: unknown, role: string, id: string, rawIndex: number
       tool,
       command,
       file: redactPath(filePathOf(block.input)),
+      call_id: typeof block.id === "string" ? block.id : id,
       raw_index: rawIndex
     };
   }
@@ -158,6 +237,10 @@ function blockToEvent(block: unknown, role: string, id: string, rawIndex: number
       kind: "tool_result",
       summary: redactBoundedBody(body),
       file: redactPath(filePathOf(block)),
+      call_id: typeof block.tool_use_id === "string" ? block.tool_use_id : id,
+      ...(typeof block.is_error === "boolean"
+        ? { result_status: block.is_error ? "failed" as const : "passed" as const }
+        : {}),
       raw_index: rawIndex
     };
   }
@@ -166,4 +249,21 @@ function blockToEvent(block: unknown, role: string, id: string, rawIndex: number
   }
   // Unknown block type — degrade to a message summary, never throw.
   return { id, actor: role, kind: "message", summary: redactText(stringify(block)), raw_index: rawIndex };
+}
+
+function linkClaudeToolResults(events: ConversationEvent[]): ConversationEvent[] {
+  const calls = new Map(events
+    .filter((event) => event.kind === "tool_call" && event.call_id)
+    .map((event) => [event.call_id as string, event]));
+  return events.map((event) => {
+    if (event.kind !== "tool_result" || !event.call_id) return event;
+    const call = calls.get(event.call_id);
+    if (!call) return event;
+    return {
+      ...event,
+      ...(call.tool ? { tool: call.tool } : {}),
+      ...(call.command ? { command: call.command } : {}),
+      ...(call.file ? { file: call.file } : {})
+    };
+  });
 }

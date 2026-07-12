@@ -147,6 +147,22 @@ Exit criteria:
 - a later audit session mentioning every path cannot outrank the producing session;
 - weak discovery renders an explicit inconclusive state.
 
+Implementation status (2026-07-11): complete locally, pending PR/autoland.
+
+- Added a deterministic, cited offline brief that preserves original intent,
+  later corrections, constraints, non-goals, claims, and structured validation
+  outcomes across provider failure and additive enrichment.
+- Kept assistant validation claims separate from observations; observations now
+  require adapter-owned process status joined to a recognized validation command,
+  so invocations and result prose cannot manufacture proof.
+- Replaced path-reference selection with exact producer provenance across Claude,
+  Codex CLI, and Codex desktop `patch_apply_end` records; low-confidence or
+  ambiguous candidates are rejected before normalization and their safe reasons
+  persist into methodology artifacts.
+- Real-diff dogfood selected this task's Codex producer with high confidence,
+  retained the original audit goal plus the milestone/autoland refinement, and
+  no longer classified shell startup prose as passing validation.
+
 ## Milestone 4 — usefulness evaluation
 
 **Goal:** CI and dogfood catch reviewer-hostile output even when structural tests pass.

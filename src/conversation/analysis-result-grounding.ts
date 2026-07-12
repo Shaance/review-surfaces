@@ -16,6 +16,7 @@ import {
   MAX_CONVERSATION_EVENT_ID_CHARS,
   type SanitizedConversationEvent
 } from "./analysis-prompt-context";
+import { conversationEventLooksLikeGeneratedPayload, conversationReviewerText } from "./generated-payload";
 
 const MAX_SUMMARY_CHARS = 900;
 const MAX_ITEM_TEXT_CHARS = 500;
@@ -121,12 +122,10 @@ export function groundConversationAnalysisResult(
       return [section, sanitized.items];
     })
   ) as Record<SectionName, ConversationAnalysisItem[]>;
-  for (const section of CONVERSATION_ANALYSIS_SECTIONS.filter(sectionRequiresUserCitation)) {
-    const before = sections[section].length;
-    sections[section] = sections[section].filter((item) =>
-      item.event_ids.some((eventId) => eventsById.get(eventId)?.actor.toLowerCase() === "user")
-    );
-    rejectedRoleCount += before - sections[section].length;
+  for (const section of CONVERSATION_ANALYSIS_SECTIONS) {
+    const sanitized = retainRoleCompatibleCitations(sections[section], section, eventsById);
+    sections[section] = sanitized.items;
+    rejectedRoleCount += sanitized.rejected;
   }
   const safeSummary = boundedRedactedWithSignal(payload.summary, MAX_SUMMARY_CHARS);
   outputRedacted ||= safeSummary.redacted;
@@ -300,6 +299,51 @@ function sectionRequiresUserCitation(section: SectionName): boolean {
     section === "constraints" ||
     section === "non_goals" ||
     section === "rejected_alternatives";
+}
+
+function retainRoleCompatibleCitations(
+  items: ConversationAnalysisItem[],
+  section: SectionName,
+  eventsById: ReadonlyMap<string, SanitizedConversationEvent>
+): { items: ConversationAnalysisItem[]; rejected: number } {
+  let rejected = 0;
+  const compatible = items.flatMap((item) => {
+    const eventIds = item.event_ids.filter((eventId) => {
+      const event = eventsById.get(eventId);
+      const eligible = event !== undefined && citationRoleIsCompatible(section, event);
+      if (!eligible) rejected += 1;
+      return eligible;
+    });
+    if (sectionRequiresUserCitation(section) && !eventIds.some((eventId) =>
+      eventsById.get(eventId)?.actor.trim().toLowerCase() === "user"
+    )) {
+      rejected += eventIds.length > 0 ? 1 : 0;
+      return [];
+    }
+    return eventIds.length > 0 ? [{ ...item, event_ids: eventIds }] : [];
+  });
+  return { items: compatible, rejected };
+}
+
+function citationRoleIsCompatible(
+  section: SectionName,
+  event: SanitizedConversationEvent
+): boolean {
+  const actor = event.actor.trim().toLowerCase();
+  const kind = event.kind.trim().toLowerCase();
+  const natural = kind !== "tool_call" && kind !== "custom_tool_call" &&
+    kind !== "tool_result" && kind !== "custom_tool_call_output" &&
+    kind !== "function_call" && kind !== "function_call_output";
+  const reviewerText = conversationReviewerText(event.summary);
+  if (!natural || reviewerText.trim().length === 0 || conversationEventLooksLikeGeneratedPayload(reviewerText)) return false;
+  if (sectionRequiresUserCitation(section)) {
+    return actor === "user" ||
+      (section === "rejected_alternatives" && (actor === "assistant" || actor === "agent"));
+  }
+  if (section === "claims" || section === "validation_claims") {
+    return actor === "assistant" || actor === "agent";
+  }
+  return actor === "user" || actor === "assistant" || actor === "agent";
 }
 
 interface SafeCitation {

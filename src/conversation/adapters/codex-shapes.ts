@@ -1,3 +1,7 @@
+import { isRecord } from "../../core/guards";
+
+// review-surfaces.CONVERSATION_REVIEW.7: producer-provenance shapes used by
+// zero-config Codex transcript discovery and normalization.
 export const CODEX_ITEM_TYPES = new Set([
   "input_text",
   "output_text",
@@ -5,6 +9,7 @@ export const CODEX_ITEM_TYPES = new Set([
   "function_call_output",
   "custom_tool_call",
   "custom_tool_call_output",
+  "patch_apply_end",
   "agent_message",
   "user_message"
 ]);
@@ -21,4 +26,3 @@ export function isCodexRecord(record: Record<string, unknown>): boolean {
   return item.type === "message" && Array.isArray(item.content) &&
     item.content.some((block) => isRecord(block) && isCodexItemType(block.type));
 }
-import { isRecord } from "../../core/guards";

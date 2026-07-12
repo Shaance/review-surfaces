@@ -1660,11 +1660,13 @@ test("review-surfaces.CONVERSATION_REVIEW.4 repo cache retries incomplete remote
 
     const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
     const unavailable = JSON.parse(fs.readFileSync(humanPath, "utf8"));
-    assert.equal(unavailable.conversation_analysis.status, "degraded");
+    assert.equal(unavailable.conversation_analysis.status, "analyzed");
     assert.ok(unavailable.conversation_analysis.quality_flags.includes("conversation_analysis_unavailable"));
+    assert.ok(unavailable.conversation_analysis.quality_flags.includes("conversation_enrichment_unavailable"));
 
     const retryCases = [
       { status: "degraded", flag: "conversation_analysis_unavailable" },
+      { status: "analyzed", flag: "conversation_enrichment_unavailable" },
       { status: "analyzed", flag: "conversation_review_unavailable" },
       { status: "analyzed", flag: "conversation_analysis_partial" },
       { status: "analyzed", flag: "conversation_review_invalid_payload" }
@@ -1692,8 +1694,9 @@ test("review-surfaces.CONVERSATION_REVIEW.4 repo cache retries incomplete remote
       assert.equal(retry.status, 0, retry.stderr);
       assert.doesNotMatch(retry.stdout, /inputs unchanged \(signature match\)/, `${flag} must bypass cache reuse`);
       const regenerated = JSON.parse(fs.readFileSync(humanPath, "utf8"));
-      assert.equal(regenerated.conversation_analysis.status, "degraded");
+      assert.equal(regenerated.conversation_analysis.status, "analyzed");
       assert.ok(regenerated.conversation_analysis.quality_flags.includes("conversation_analysis_unavailable"));
+      assert.ok(regenerated.conversation_analysis.quality_flags.includes("conversation_enrichment_unavailable"));
       assert.notEqual(
         regenerated.conversation_analysis.summary,
         sentinel,

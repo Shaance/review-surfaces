@@ -856,6 +856,24 @@
           "type": "string",
           "maxLength": 200
         },
+        "conversation_discovery": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "confidence", "ambiguous", "mutated_changed_files", "weak_matched_files", "reason_codes"],
+          "properties": {
+            "status": { "enum": ["admitted", "rejected"] },
+            "confidence": { "enum": ["high", "medium", "low"] },
+            "ambiguous": { "type": "boolean" },
+            "mutated_changed_files": { "type": "integer", "minimum": 0 },
+            "weak_matched_files": { "type": "integer", "minimum": 0 },
+            "reason_codes": {
+              "type": "array",
+              "maxItems": 12,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+            }
+          }
+        },
         "workflow_findings": {
           "type": "array",
           "maxItems": 1000,

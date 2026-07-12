@@ -99,6 +99,72 @@ test("review-surfaces.CONVERSATION_REVIEW.3 user decisions ground positive inten
   }
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.3 mixed intent and prohibition keeps its positive citation", async () => {
+  const events: ConversationEvent[] = [{
+    id: "mixed-request",
+    actor: "user",
+    kind: "message",
+    summary: "Simplify retry handling, but do not remove retries.",
+    raw_index: 0
+  }];
+  const analysis = analysisPayload({
+    intent: [{ text: "Simplify retry handling.", event_ids: ["mixed-request"] }],
+    refinements: [],
+    decisions: [],
+    constraints: [],
+    non_goals: [{ text: "Do not remove retries.", event_ids: ["mixed-request"] }],
+    rejected_alternatives: []
+  });
+  const staged = stageProvider([candidate({
+    root_cause_key: "mixed-request",
+    category: "intentional_change",
+    evidence_state: "supported",
+    conversation_event_ids: ["mixed-request"],
+    diff_anchors: [{ path: "src/retry.ts", line_kind: "delete", line: 10, contains: "retryWithBackoff(send)" }]
+  })], analysis);
+
+  const result = await buildConversationReview({
+    provider: staged.provider,
+    providerName: "ai-sdk",
+    events,
+    diff: retryDeletionDiff()
+  });
+
+  assert.equal(result.insights[0].evidence_state, "supported");
+  assert.ok((staged.prompts.get("conversation_review_insights") ?? "")
+    .includes('\"user_grounded_positive_intent_event_ids\":[\"mixed-request\"]'));
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 observed validation ids are valid second-pass citations", async () => {
+  const events: ConversationEvent[] = [{
+    id: "validation-result",
+    actor: "tool",
+    kind: "tool_result",
+    summary: "Tests passed.",
+    command: "pnpm test",
+    result_status: "passed",
+    exit_code: 0,
+    raw_index: 0
+  }];
+  const staged = stageProvider([candidate({
+    root_cause_key: "observed-validation",
+    conversation_event_ids: ["validation-result"],
+    diff_anchors: [{ path: "src/retry.ts", line_kind: "delete", line: 10, contains: "retryWithBackoff(send)" }]
+  })], analysisPayload({
+    intent: [], refinements: [], decisions: [], constraints: [], non_goals: [], rejected_alternatives: []
+  }));
+
+  const result = await buildConversationReview({
+    provider: staged.provider,
+    providerName: "ai-sdk",
+    events,
+    diff: retryDeletionDiff()
+  });
+
+  assert.ok((staged.prompts.get("conversation_review_insights") ?? "").includes("validation-result"));
+  assert.ok(!result.analysis.quality_flags.includes("conversation_review_citations_rejected"));
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.3 renamed-file anchors use the path for the cited diff side", async () => {
   const diff = parseStructuredDiff([
     "diff --git a/src/old.ts b/src/new.ts",
@@ -300,8 +366,8 @@ test("review-surfaces.CONVERSATION_REVIEW.3 unordered duplicate ids use the same
 
   const prompt = staged.prompts.get("conversation_review_insights") ?? "";
   assert.match(prompt, /"user_grounded_positive_intent_event_ids":\["other-user"\]/);
-  assert.equal(result.insights[0].evidence_state, "unverified");
-  assert.equal(result.insights[0].basis, "ai_reconciliation");
+  assert.deepEqual(result.insights, [], "the earliest assistant-owned duplicate is not an eligible intent citation");
+  assert.ok(result.analysis.quality_flags.includes("conversation_review_citations_rejected"));
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.3 merged provider path sets remain within the persisted schema cap", async () => {

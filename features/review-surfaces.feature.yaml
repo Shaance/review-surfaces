@@ -182,6 +182,18 @@ components:
         requirement: A second provider pass must reconcile the validated conversation analysis against a bounded evidence context of changed paths, line-numbered diff lines, scoped requirements, deterministic risks, and captured command transcripts; runtime validation must use that exact prompt-visible context (never broader raw inputs), strong supported/contradicted labels require a validated exact-line anchor or a path-related deterministic risk while remaining explicitly AI-inferred, a passing broad suite must not prove behavior whose assertion was removed, duplicate root causes must collapse, and at most three ranked reviewer insights may survive.
       4:
         requirement: Conversation-aware insights must render before the generic review queue on the human Markdown, HTML, sticky, and both PR-comment fallback surfaces (while preserving higher-priority working-tree and since-last-review notices), exposing the cited stated goal, later refinements, constraints, incompleteness caveats, evidence state, priority, why-it-matters, reviewer action, grounding basis, and compact exact-line citations; unavailable or partial reconciliation must remain visibly inconclusive, and conversation-derived output must never create or clear blockers, change coverage, or alter the merge-readiness verdict.
+      5:
+        requirement: >-
+          A usable deterministic conversation brief must be produced from eligible normalized events without a remote provider, preserving chronological user intent, later corrections, constraints, explicit non-goals, agent claims, and observed tool outcomes with exact event citations; provider enrichment is additive only, cannot remove or reorder the deterministic baseline, and provider failure preserves the baseline with an explicit enrichment caveat.
+        note: "Reviewer decision uplift M3. Offline/mock analysis and provider failures previously replaced a usable local transcript with an empty degraded card."
+      6:
+        requirement: >-
+          Conversation validation claims and observed tool outcomes must remain distinct: tool invocation is not a validation claim, assistant prose is not observed proof, and pass/fail status may be derived only from explicit normalized tool-result metadata or unambiguous structured exit state; conflicting claims and observations remain visible to the reviewer.
+        note: "Reviewer decision uplift M3. Provider-owned analysis could cite a tool invocation as validation and had no deterministic channel for the actual result."
+      7:
+        requirement: >-
+          Zero-config session discovery must rank exact changed-path mutation provenance above reads, quoted diffs, report output, raw path mentions, recency, and reviewed-SHA text; selection must expose deterministic confidence and safe reason codes, and low-confidence or ambiguous auto-discovery must be rejected before transcript normalization, privacy folding, caching, or reviewer analysis while an explicit --conversation path remains an allowed override.
+        note: "Reviewer decision uplift M3. A later audit session mentioning every changed path could outrank and contaminate the session that produced the change."
 
   REVIEWER_VALUE:
     name: Reviewer decision quality uplift

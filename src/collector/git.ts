@@ -413,6 +413,18 @@ function gitUntrackedDiff(cwd: string, filePath: string): string {
 
 export function collectCommits(cwd: string, baseRef: string, headRef: string): Array<Record<string, string>> {
   const output = git(cwd, ["log", "--format=%H%x09%s", `${baseRef}...${headRef}`]);
+  return parseCommitLog(output);
+}
+
+// Producer corroboration must only use commits reachable from the reviewed head
+// and absent from the base. A symmetric range also contains base-only commits
+// after the target branch falls behind, which cannot have produced the review diff.
+export function collectHeadCommits(cwd: string, baseRef: string, headRef: string): Array<Record<string, string>> {
+  const output = git(cwd, ["log", "--format=%H%x09%s", `${baseRef}..${headRef}`]);
+  return parseCommitLog(output);
+}
+
+function parseCommitLog(output: string | undefined): Array<Record<string, string>> {
   if (!output) {
     return [];
   }

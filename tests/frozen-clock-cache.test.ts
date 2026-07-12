@@ -401,8 +401,9 @@ test("review-surfaces --cache: default mock analysis of a provided conversation 
     assert.equal(prime.status, 0, prime.stderr);
     const firstHuman = JSON.parse(read(tmp, "human_review.json"));
     assert.equal(firstHuman.conversation_analysis.provider, "mock");
-    assert.equal(firstHuman.conversation_analysis.status, "degraded");
-    assert.ok(firstHuman.conversation_analysis.quality_flags.includes("conversation_analysis_unavailable"));
+    assert.equal(firstHuman.conversation_analysis.status, "analyzed");
+    assert.ok(firstHuman.conversation_analysis.quality_flags.includes("conversation_deterministic_baseline"));
+    assert.ok(!firstHuman.conversation_analysis.quality_flags.includes("conversation_analysis_unavailable"));
 
     const hit = runAll(tmp, args);
     assert.equal(hit.status, 0, hit.stderr);

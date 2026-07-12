@@ -145,6 +145,24 @@ test("configured review areas map methodology tests to METHODOLOGY", async () =>
   );
 });
 
+test("configured review areas map conversation intelligence to CONVERSATION_REVIEW", async () => {
+  const areas = await defaultReviewSurfacesAreas();
+  const matcher = createReviewAreaMatcher(areas);
+
+  for (const filePath of [
+    "src/conversation/adapters/codex-shapes.ts",
+    "src/contracts/conversation-review.ts",
+    "src/human/conversation-review-presentation.ts",
+    "docs/conversation-auditing.md",
+    "tests/conversation-discovery.test.ts"
+  ]) {
+    assert.ok(
+      matcher.groupsForPath(filePath, { purpose: "review_surface" }).includes("CONVERSATION_REVIEW"),
+      `${filePath} should map to CONVERSATION_REVIEW`
+    );
+  }
+});
+
 test("configured review areas preserve compound test keyword matches", async () => {
   const areas = await defaultReviewSurfacesAreas();
   const matcher = createReviewAreaMatcher(areas);

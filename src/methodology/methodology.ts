@@ -1,10 +1,17 @@
-import { findReviewSurfacesArtifactName } from "../artifacts/inventory";
 import { CollectionResult } from "../collector/collect";
 import { ConversationEvent, ConversationFormat, isConversationToolCall, isConversationToolOutput } from "../conversation/events";
 import { loadConversationEvents, writeNormalizedConversation } from "../conversation/ingest";
 import { commandEvidence, EvidenceRef, missingEvidence } from "../evidence/evidence";
 import { computeCrossReferenceSignals } from "./cross-reference";
 import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
+import { conversationEventLooksLikeGeneratedPayload, conversationReviewerText } from "../conversation/generated-payload";
+import { compareStrings } from "../core/compare";
+import {
+  validationOutcomeIsHypothetical,
+  validationTextActualOutcomeKind,
+  validationTextHasExactlyOneOutcome,
+  validationTextStartsWithOutcome,
+} from "../core/command-classify";
 
 // review-surfaces.METHODOLOGY.7/.8: a validated item-4 workflow finding produced
 // by the methodology leaf (unchallenged assumption, skipped step, workflow
@@ -38,11 +45,13 @@ export interface MethodologyModel {
   // The harness adapter label (claude-code|codex|cursor|normalized) when a
   // conversation was ingested; omitted otherwise / on the degraded path.
   conversation_source?: string;
+  conversation_discovery?: NonNullable<CollectionResult["conversationDiscovery"]>;
 }
 
 interface TranscriptCommandEvidence {
-  passed: Map<string, string[]>;
-  failed: Map<string, string[]>;
+  readonly passed: Map<string, string[]>;
+  readonly failed: Map<string, string[]>;
+  readonly candidates: readonly string[];
 }
 
 export async function buildMethodology(
@@ -101,12 +110,14 @@ export async function buildMethodology(
       // METHODOLOGY.8 (D6): the deterministic cross-reference signals are diff-based,
       // so they still fire when no conversation is available (the empty transcript IS
       // maximal "no discussion") — the deterministic shell works without the leaf.
-      workflow_findings: computeCrossReferenceSignals(collection, [])
+      workflow_findings: computeCrossReferenceSignals(collection, []),
+      ...(collection.conversationDiscovery ? { conversation_discovery: collection.conversationDiscovery } : {})
     };
   }
 
   const transcriptCommandEvidence = buildTranscriptCommandEvidence(collection);
   const validationClaims = pickValidationClaims(events);
+  const pickableEvents = preparePickableEvents(events);
   const verifiedClaims: string[] = [];
   const claimsWithoutEvidence: string[] = [];
   for (const claim of validationClaims) {
@@ -132,12 +143,12 @@ export async function buildMethodology(
   return {
     summary: `Methodology extracted ${events.length} event(s) from ${sourceLabel}.`,
     missing_logs: false,
-    considered: pick(events, ["option", "considered", "alternative"]),
-    research: pick(events, ["research", "inspect", "read", "context", "reference"]),
-    decisions: pick(events, ["decide", "decision", "chose", "choose"]),
-    unchallenged_assumptions: pick(events, ["assume", "assumption"]),
+    considered: pick(pickableEvents, ["option", "considered", "alternative"]),
+    research: pick(pickableEvents, ["research", "inspect", "read", "context", "reference"]),
+    decisions: pick(pickableEvents, ["decide", "decision", "chose", "choose"]),
+    unchallenged_assumptions: pick(pickableEvents, ["assume", "assumption"]),
     skipped_checks: [
-      ...pick(events, ["skip", "skipped", "not run", "could not"]),
+      ...pick(pickableEvents, ["skip", "skipped", "not run", "could not"]),
       ...commands.filter((command) => command.includes("ai-sdk skipped"))
     ],
     claims_without_evidence: claimsWithoutEvidence,
@@ -179,7 +190,8 @@ export async function buildMethodology(
     // fire here (offline), so they are present even under the mock provider; a
     // running LLM leaf APPENDS its proposed findings on top (runMethodologyAuditStage).
     workflow_findings: computeCrossReferenceSignals(collection, events),
-    ...(source !== undefined ? { conversation_source: source } : {})
+    ...(source !== undefined ? { conversation_source: source } : {}),
+    ...(collection.conversationDiscovery ? { conversation_discovery: collection.conversationDiscovery } : {})
   };
 }
 
@@ -214,54 +226,45 @@ function isEditOrWriteToolCall(event: ConversationEvent): boolean {
 // invocation — a bounded `Read(docs/goal.md)` IS research evidence (Codex P2), while
 // an edit/write payload (any length) is the noise dogfooding caught. Every other
 // (loose) kind is natural language and kept (no whitelist — Codex P2).
-function isPickableEvent(event: ConversationEvent): boolean {
+function pickableText(event: ConversationEvent): string | undefined {
   if (event.actor === "system" || event.actor === "developer" || event.actor === "tool") {
-    return false;
+    return undefined;
   }
   if (isToolOutputEvent(event)) {
-    return false;
+    return undefined;
   }
   if (isToolCallEvent(event)) {
-    return event.summary.length <= PICK_TEXT_LIMIT && !isEditOrWriteToolCall(event);
+    return event.summary.length <= PICK_TEXT_LIMIT && !isEditOrWriteToolCall(event)
+      ? event.summary
+      : undefined;
   }
-  return !looksLikeGeneratedReviewPayload(event.summary);
+  const text = conversationReviewerText(event.summary).trim();
+  return text.length > 0 && !conversationEventLooksLikeGeneratedPayload(text) ? text : undefined;
 }
 
-function looksLikeGeneratedReviewPayload(summary: string): boolean {
-  const trimmed = summary.trimStart();
-  if (/<(?:environment_context|permissions instructions|skills_instructions|apps_instructions|plugins_instructions|recommended_plugins)>|<codex_internal_context\b/i.test(summary) ||
-    /# AGENTS\.md instructions/i.test(summary)) {
-    return true;
+interface PickableEvent {
+  event: ConversationEvent;
+  text: string;
+  lowerText: string;
+}
+
+function preparePickableEvents(events: ConversationEvent[]): PickableEvent[] {
+  const result: PickableEvent[] = [];
+  for (const event of events) {
+    const text = pickableText(event);
+    if (text !== undefined) result.push({ event, text, lowerText: text.toLowerCase() });
   }
-  const transportMarker = /(?:custom_tool_call_output|internal_chat_message_metadata_passthrough)/.exec(summary);
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    return transportMarker !== null || findReviewSurfacesArtifactName(summary) !== undefined;
-  }
-  if (transportMarker) {
-    const prefix = summary.slice(Math.max(0, transportMarker.index - 240), transportMarker.index);
-    return /(?:here (?:is|'s)|quoted|generated|report|payload|output)[^\n]{0,120}[{[]/i.test(prefix) ||
-      /(?:\{|\[)\s*["\\].{0,120}$/.test(prefix);
-  }
-  const artifact = findReviewSurfacesArtifactName(summary);
-  if (!artifact) {
-    return false;
-  }
-  const prefix = summary.slice(Math.max(0, artifact.index - 240), artifact.index);
-  const suffix = summary.slice(artifact.index + artifact.name.length, artifact.index + artifact.name.length + 240);
-  const introducedAsPayload = /(?:here (?:is|'s)|quoted|generated|report|payload|output|contents?(?: of)?)[^\n]{0,120}$/i.test(prefix);
-  const hasPayloadBoundary = /^\s*(?:(?:output|contents?)\s*)?:\s*(?:\n|```|---|[{[])/i.test(suffix);
-  return introducedAsPayload && hasPayloadBoundary;
+  return result;
 }
 
 // Bound the kept text to PICK_TEXT_LIMIT, keeping the window around the FIRST keyword
 // match so the truncation still shows WHY the entry was picked (Codex P3).
-function boundPickText(summary: string, keywords: string[]): string {
+function boundPickText(summary: string, lowerSummary: string, keywords: string[]): string {
   if (summary.length <= PICK_TEXT_LIMIT) {
     return summary;
   }
-  const lower = summary.toLowerCase();
   const matchIndex = keywords
-    .map((keyword) => lower.indexOf(keyword))
+    .map((keyword) => lowerSummary.indexOf(keyword))
     .filter((index) => index >= 0)
     .sort((a, b) => a - b)[0];
   const start = matchIndex === undefined ? 0 : Math.max(0, matchIndex - 40);
@@ -269,18 +272,14 @@ function boundPickText(summary: string, keywords: string[]): string {
   return `${start > 0 ? "…" : ""}${slice}…`;
 }
 
-function pick(events: ConversationEvent[], keywords: string[]): string[] {
+function pick(events: PickableEvent[], keywords: string[]): string[] {
   const result: string[] = [];
-  for (const event of events) {
+  for (const { event, text, lowerText } of events) {
     if (result.length >= 12) {
       break;
     }
-    if (!isPickableEvent(event)) {
-      continue;
-    }
-    const lower = event.summary.toLowerCase();
-    if (keywords.some((keyword) => lower.includes(keyword))) {
-      result.push(boundedEventEntry(event, boundPickText(event.summary, keywords), PICK_ENTRY_LIMIT));
+    if (keywords.some((keyword) => lowerText.includes(keyword))) {
+      result.push(boundedEventEntry(event, boundPickText(text, lowerText, keywords), PICK_ENTRY_LIMIT));
     }
   }
   return result;
@@ -297,7 +296,7 @@ function pickValidationClaims(events: ConversationEvent[]): ValidationClaimCandi
     if (!isValidationClaimEvent(event)) {
       continue;
     }
-    if (isValidationSuccessClaim(event.summary) || isValidationFailureClaim(event.summary)) {
+    if (isValidationClaim(event.summary)) {
       result.push({
         evidenceText: event.summary,
         persistedText: boundedEventEntry(event, event.summary, CLAIM_TEXT_LIMIT)
@@ -313,7 +312,7 @@ function isValidationClaimEvent(event: ConversationEvent): boolean {
   }
   return !isToolCallEvent(event) &&
     !isToolOutputEvent(event) &&
-    !looksLikeGeneratedReviewPayload(event.summary);
+    !conversationEventLooksLikeGeneratedPayload(event.summary);
 }
 
 function isToolCallEvent(event: ConversationEvent): boolean {
@@ -333,40 +332,32 @@ function boundedEventEntry(event: ConversationEvent, summary: string, limit: num
     : `${prefix}${summary.slice(0, available).trimEnd()}…`;
 }
 
-function isValidationSuccessClaim(summary: string): boolean {
+function isValidationClaim(summary: string): boolean {
   const lower = summary.toLowerCase();
   const mentionsValidation = /\b(?:tests?|tested|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test|tsc)\b/.test(lower);
-  const claimsSuccess = /\b(?:tested|pass|passed|passes|passing|green|succeeded|successful|success|validated|verified)\b/.test(lower);
-  if (!mentionsValidation || !claimsSuccess) {
-    return false;
-  }
-  return !/\b(?:missing|needs?|add|todo|skipped|skip|not run|could not|cannot|can't|gap|uncovered)\b|\b(?:should|could|would|might|may|will|expect(?:ed)? to)\s+(?:pass|passed|passes|green|succeed|succeeded|successful|validate|validated|verify|verified)\b|\bnot\s+(?:pass|passed|passing|green|successful|validated|verified)\b/.test(lower);
-}
-
-function isValidationFailureClaim(summary: string): boolean {
-  const lower = summary.toLowerCase();
-  const mentionsValidation = /\b(?:tests?|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test|tsc)\b/.test(lower);
-  const claimsFailure = /\b(?:fail|failed|failing|errored|error)\b/.test(lower);
-  if (!mentionsValidation || !claimsFailure) {
-    return false;
-  }
-  return !/\b(?:needs?|add|todo|skipped|skip|not run|could not|cannot|can't|gap|uncovered)\b|\b(?:should|could|would|might|may|will|expect(?:ed)? to)\s+(?:fail|failed|failing|error|errored)\b/.test(lower);
+  if (!mentionsValidation) return false;
+  const claimsOutcome = validationTextActualOutcomeKind(lower) !== undefined ||
+    (/\b(?:is|was)\s+(?:a\s+)?success\b/.test(lower) && !validationOutcomeIsHypothetical(lower));
+  if (!claimsOutcome) return false;
+  return !/\b(?:missing|needs?|add|todo|skipped|skip|could not|cannot|can't|gap|uncovered)\b/.test(lower);
 }
 
 function buildTranscriptCommandEvidence(collection: CollectionResult): TranscriptCommandEvidence {
-  const evidence: TranscriptCommandEvidence = {
-    passed: new Map(),
-    failed: new Map()
-  };
+  const passed = new Map<string, string[]>();
+  const failed = new Map<string, string[]>();
   for (const transcript of collection.commandTranscripts ?? []) {
     const command = normalizeCommand(transcript.command);
     if (transcript.status === "passed" && transcript.exit_code === 0) {
-      appendCommandTranscriptId(evidence.passed, command, transcript.id);
+      appendCommandTranscriptId(passed, command, transcript.id);
     } else if (transcript.status === "failed" || (typeof transcript.exit_code === "number" && transcript.exit_code !== 0)) {
-      appendCommandTranscriptId(evidence.failed, command, transcript.id);
+      appendCommandTranscriptId(failed, command, transcript.id);
     }
   }
-  return evidence;
+  return {
+    passed,
+    failed,
+    candidates: sortedCommandCandidates(new Set([...passed.keys(), ...failed.keys()]))
+  };
 }
 
 function appendCommandTranscriptId(index: Map<string, string[]>, command: string, transcriptId: string): void {
@@ -379,26 +370,17 @@ function appendCommandTranscriptId(index: Map<string, string[]>, command: string
 }
 
 function claimCommandEvidenceIds(claim: string, transcriptCommands: TranscriptCommandEvidence): string[] | undefined {
-  const claimedCommands = extractClaimedCommands(claim);
-  if (claimedCommands.length === 0) {
-    return undefined;
-  }
-  let evidenceIndex: Map<string, string[]> | undefined;
-  if (isValidationSuccessClaim(claim)) {
-    evidenceIndex = transcriptCommands.passed;
-  } else if (isValidationFailureClaim(claim)) {
-    evidenceIndex = transcriptCommands.failed;
-  }
-  if (!evidenceIndex || !claimedCommands.every((command) => evidenceIndex.has(command))) {
-    return undefined;
-  }
+  const claimedCommands = extractClaimedCommands(claim, transcriptCommands.candidates);
+  if (claimedCommands.length === 0) return undefined;
   const transcriptIds = new Set<string>();
-  for (const command of claimedCommands) {
-    for (const transcriptId of evidenceIndex.get(command) ?? []) {
-      transcriptIds.add(transcriptId);
-      if (transcriptIds.size === 5) {
-        return [...transcriptIds];
-      }
+  for (const { command, resultText } of claimedCommands) {
+    const outcome = validationTextActualOutcomeKind(resultText);
+    if (!outcome || outcome === "mixed") return undefined;
+    const evidenceIndex = outcome === "success" ? transcriptCommands.passed : transcriptCommands.failed;
+    const ids = evidenceIndex.get(command);
+    if (!ids) return undefined;
+    for (const transcriptId of ids) {
+      if (transcriptIds.size < 5) transcriptIds.add(transcriptId);
     }
   }
   return [...transcriptIds];
@@ -416,30 +398,128 @@ function normalizeCommand(command: string): string {
   return command.toLowerCase().trim().replace(/\s+/g, " ");
 }
 
-function extractClaimedCommands(claim: string): string[] {
-  const commands: string[] = [];
+function sortedCommandCandidates(commands: Iterable<string>): string[] {
+  return [...commands].sort((left, right) => right.length - left.length || compareStrings(left, right));
+}
+
+function extractClaimedCommands(
+  claim: string,
+  candidates: readonly string[]
+): Array<{ command: string; resultText: string }> {
   const normalizedClaim = normalizeCommand(claim);
-  const commandStarts = [...normalizedClaim.matchAll(/\b(?:pnpm|npm|yarn|bun|node|tsc)\b/g)];
+  const commandStarts = commandStartMatches(normalizedClaim, candidates);
+  if (commandStarts.length === 0) return [];
+  const commands: Array<{ command: string; resultText: string }> = [];
   for (let index = 0; index < commandStarts.length; index += 1) {
-    const start = commandStarts[index].index ?? 0;
+    const start = commandStarts[index].index;
     const end = commandStarts[index + 1]?.index ?? normalizedClaim.length;
-    const command = cleanClaimedCommand(normalizedClaim.slice(start, end));
-    if (command && commandLooksSupported(command)) {
-      commands.push(command);
-    }
+    const segment = normalizedClaim.slice(start, end);
+    const command = commandStarts[index].candidate;
+    if (!command || !commandCandidateMatchesClaimSegment(command, segment, commandStarts.length > 1)) return [];
+    const remainder = stripCommandResultSeparator(segment.slice(command.length)).trim();
+    commands.push({ command, resultText: remainder || segment });
   }
-  return [...new Set(commands)];
+  return commands;
 }
 
-function cleanClaimedCommand(value: string): string {
-  return normalizeCommand(value)
-    .replace(/\s+\b(?:passed|passes|passing|green|succeeded|successful|success|validated|verified|tested|fail|failed|failing|errored|error|after|before|because|so|while|when)\b.*$/i, "")
-    .replace(/\s+\b(?:and|then)\s*$/i, "")
-    .replace(/\s*(?:,|;|&&|\|\|)\s*$/i, "")
-    .replace(/[`'")\]]+$/g, "")
-    .trim();
+const PACKAGE_RUNNER_SOURCE = String.raw`(?:pnpm|npm|yarn|bun)`;
+const COMMAND_RUNNER_SOURCE = String.raw`(?:${PACKAGE_RUNNER_SOURCE}|node|tsc)`;
+const COMMAND_RUNNER_AT_INDEX = new RegExp(String.raw`${COMMAND_RUNNER_SOURCE}\b`, "y");
+const COMMAND_CLAUSE_CONNECTOR_AT_INDEX = /(?:and|then|but)\b/y;
+const CANDIDATELESS_VALIDATION_COMMAND_AT_INDEX = new RegExp(
+  String.raw`(?:${PACKAGE_RUNNER_SOURCE}\s+(?:(?:run|exec)\s+\S+|test\b|lint\b|typecheck\b|check\b|build\b)|node\s+--test\b|tsc(?:\s+(?:--\S+|-p\b))?)`,
+  "y"
+);
+
+interface CommandStartMatch {
+  index: number;
+  candidate?: string;
 }
 
-function commandLooksSupported(command: string): boolean {
-  return /^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+[\w:.-]+|exec\s+[\w:.-]+|test(?::[\w.-]+)?|lint|typecheck|build)(?:\s+[^\s,;]+)*|node\s+--test(?:\s+[^\s,;]+)*|tsc(?:\s+[^\s,;]+)*)$/.test(command);
+function commandStartMatches(text: string, candidates: readonly string[]): CommandStartMatch[] {
+  const starts: CommandStartMatch[] = [];
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  let boundarySincePreviousCommand = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote && !(quote === "'" && apostropheIsEmbedded(text, index))) quote = undefined;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      if (character === "'" && apostropheIsEmbedded(text, index)) continue;
+      quote = character;
+      continue;
+    }
+    if (starts.length > 0) {
+      if (character === ";" || character === "," ||
+        (character === "&" && text[index + 1] === "&") ||
+        (character === "|" && text[index + 1] === "|")) {
+        boundarySincePreviousCommand = true;
+      } else if ((index === 0 || !isWordCharacter(text[index - 1]))) {
+        COMMAND_CLAUSE_CONNECTOR_AT_INDEX.lastIndex = index;
+        if (COMMAND_CLAUSE_CONNECTOR_AT_INDEX.test(text)) boundarySincePreviousCommand = true;
+      }
+    }
+    if (index > 0 && isWordCharacter(text[index - 1])) continue;
+    COMMAND_RUNNER_AT_INDEX.lastIndex = index;
+    const match = COMMAND_RUNNER_AT_INDEX.exec(text);
+    if (!match) continue;
+    if (starts.length > 0 && !boundarySincePreviousCommand) continue;
+    const candidate = candidates.find((command) => text.startsWith(command, index));
+    if (!candidate) {
+      if (starts.length === 0) continue;
+      CANDIDATELESS_VALIDATION_COMMAND_AT_INDEX.lastIndex = index;
+      if (!CANDIDATELESS_VALIDATION_COMMAND_AT_INDEX.test(text)) continue;
+    }
+    starts.push({ index, ...(candidate ? { candidate } : {}) });
+    boundarySincePreviousCommand = false;
+    index += (candidate?.length ?? match[0].length) - 1;
+  }
+  return starts;
+}
+
+function apostropheIsEmbedded(text: string, index: number): boolean {
+  return index > 0 && index + 1 < text.length &&
+    isWordCharacter(text[index - 1]) && isWordCharacter(text[index + 1]);
+}
+
+function isWordCharacter(character: string): boolean {
+  const code = character.charCodeAt(0);
+  return (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    code === 95 ||
+    (code >= 97 && code <= 122);
+}
+
+function commandCandidateMatchesClaimSegment(candidate: string, segment: string, requireOutcome: boolean): boolean {
+  if (segment === candidate) return true;
+  if (!segment.startsWith(candidate)) return false;
+  const rawRemainder = segment.slice(candidate.length);
+  if (hasOnlyCommandResultSeparator(rawRemainder)) return !requireOutcome;
+  const remainder = stripCommandResultSeparator(rawRemainder);
+  if (!validationTextStartsWithOutcome(remainder)) return false;
+  const hasPotentiallyMultiwordValue = /(?:^|\s)(?:--filter|--grep|-t|--test-name-pattern|--testNamePattern)(?:=|\s)/i.test(candidate);
+  return !hasPotentiallyMultiwordValue || validationTextHasExactlyOneOutcome(remainder);
+}
+
+const COMMAND_RESULT_SEPARATOR_SOURCE = String.raw`[\s\x60'"),;.!?]+`;
+const LEADING_COMMAND_RESULT_SEPARATOR = new RegExp(String.raw`^${COMMAND_RESULT_SEPARATOR_SOURCE}`);
+const ONLY_COMMAND_RESULT_SEPARATOR = new RegExp(String.raw`^${COMMAND_RESULT_SEPARATOR_SOURCE}$`);
+
+function stripCommandResultSeparator(text: string): string {
+  return text.replace(LEADING_COMMAND_RESULT_SEPARATOR, "");
+}
+
+function hasOnlyCommandResultSeparator(text: string): boolean {
+  return ONLY_COMMAND_RESULT_SEPARATOR.test(text);
 }

@@ -6,6 +6,7 @@ import {
   type ConversationReviewRiskModel
 } from "../contracts/conversation-review";
 import { compareStrings } from "../core/compare";
+import type { CommandRule } from "../core/command-classify";
 import { uniqueTruthy } from "../core/guards";
 import type { EvidenceRef } from "../contracts/evidence";
 import type {
@@ -38,6 +39,7 @@ export interface BuildConversationReviewInput {
   coverage?: PrScopedCoverageModel;
   risks?: ConversationReviewRiskModel;
   commandTranscripts?: CommandTranscript[];
+  commandRules?: readonly CommandRule[];
   requirementIds?: readonly string[];
   headSha?: string;
   redactSecrets?: boolean;
@@ -398,18 +400,31 @@ function knownRequirementIds(input: BuildConversationReviewInput): string[] {
 }
 
 function conversationAnalysisEventIds(analysis: ConversationAnalysis): string[] {
-  return uniqueTruthy(CONVERSATION_ANALYSIS_SECTIONS
-    .flatMap((section) => analysis[section])
-    .flatMap((item) => item.event_ids));
+  return uniqueTruthy([
+    ...CONVERSATION_ANALYSIS_SECTIONS
+      .flatMap((section) => analysis[section])
+      .flatMap((item) => item.event_ids),
+    ...(analysis.validation_observations ?? []).flatMap((item) => item.event_ids)
+  ]);
 }
 
 function conversationPositiveIntentEventIds(analysis: ConversationAnalysis): string[] {
-  return uniqueTruthy([
+  const positiveItems = [
     ...analysis.intent,
     ...analysis.refinements,
     ...analysis.decisions,
     ...analysis.constraints
-  ].flatMap((item) => item.event_ids));
+  ];
+  const prohibited = new Set(conversationProhibitionEventIds(analysis));
+  return uniqueTruthy(positiveItems.flatMap((item) => item.event_ids)).filter((eventId) => {
+    if (!prohibited.has(eventId)) return true;
+    // A mixed request can legitimately support both a positive action and a
+    // prohibition. Exclude only a simple prohibition-only utterance; section
+    // membership alone cannot distinguish the mixed case because deterministic
+    // analysis intentionally preserves the original request in both sections.
+    return positiveItems.some((item) => item.event_ids.includes(eventId) &&
+      !/^(?:do not|don't)\b[^;,]*[.!]?$/i.test(item.text.trim()));
+  });
 }
 
 function conversationProhibitionEventIds(analysis: ConversationAnalysis): string[] {

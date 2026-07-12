@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { CLI, runCli } from "./helpers/cli-repo";
-import { MAX_UNTRACKED_REVIEW_BYTES } from "../src/collector/git";
+import { collectHeadCommits, MAX_UNTRACKED_REVIEW_BYTES } from "../src/collector/git";
 import type { HumanReviewModel } from "../src/human/contract";
 import { renderHumanPrComment } from "../src/render/pr-comment";
 import { renderStickySummary } from "../src/render/sticky-summary";
@@ -56,6 +56,22 @@ function changedFilePaths(cwd: string, outDir = ".review-surfaces"): string[] {
   ) as { files: Array<{ path: string }> };
   return parsed.files.map((file) => file.path);
 }
+
+test("review-surfaces.CONVERSATION_REVIEW.7 producer commit evidence excludes base-only commits", () => {
+  const tmp = makeRepo("main");
+  try {
+    commitFile(tmp, "README.md", "# repo\n", "init");
+    git(tmp, ["checkout", "-b", "feature"]);
+    const featureSha = commitFile(tmp, "feature.txt", "feature\n", "feature work");
+    git(tmp, ["checkout", "main"]);
+    commitFile(tmp, "base.txt", "base advance\n", "base-only work");
+
+    const commits = collectHeadCommits(tmp, "main", "feature");
+    assert.deepEqual(commits.map((commit) => commit.sha), [featureSha]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // COLD_START.6 — base resolution

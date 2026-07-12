@@ -136,6 +136,7 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     coverage,
     risks,
     commandTranscripts: input.collection.commandTranscripts,
+    commandRules: input.collection.commandRules,
     headSha: scope.head_sha,
     redactSecrets: input.redactSecrets,
     remotePrivacyBlocked: input.collection.privacy.remote_provider_blocked

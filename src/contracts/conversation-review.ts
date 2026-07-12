@@ -28,6 +28,17 @@ export interface ConversationAnalysisItem {
   event_ids: string[];
 }
 
+export const CONVERSATION_VALIDATION_OBSERVATION_STATUSES = ["passed", "failed", "unknown"] as const;
+export type ConversationValidationObservationStatus =
+  (typeof CONVERSATION_VALIDATION_OBSERVATION_STATUSES)[number];
+
+/** A deterministic tool-result fact, kept separate from assistant claims. */
+export interface ConversationValidationObservation extends ConversationAnalysisItem {
+  status: ConversationValidationObservationStatus;
+  tool?: string;
+  command?: string;
+}
+
 export type ConversationAnalysisSections = {
   [Section in ConversationAnalysisSection]: ConversationAnalysisItem[];
 };
@@ -53,6 +64,8 @@ export interface ConversationAnalysis {
   rejected_alternatives: ConversationAnalysisItem[];
   claims: ConversationAnalysisItem[];
   validation_claims: ConversationAnalysisItem[];
+  /** Additive for legacy artifacts; new deterministic analyses always emit it. */
+  validation_observations?: ConversationValidationObservation[];
   known_gaps: ConversationAnalysisItem[];
   quality_flags: string[];
 }

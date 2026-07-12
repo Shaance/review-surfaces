@@ -65,7 +65,8 @@ export function normalizeConversation(input: AdapterInput, forced?: Conversation
       ...event,
       id: boundedEventId(redactText(event.id)),
       actor: redactText(event.actor),
-      kind: redactText(event.kind)
+      kind: redactText(event.kind),
+      ...(event.call_id === undefined ? {} : { call_id: boundedEventId(redactText(event.call_id)) })
     })),
     adapter: adapter.name
   };

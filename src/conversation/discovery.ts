@@ -30,11 +30,13 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { isRecord } from "../core/guards";
-import { claudeCodeAdapter } from "./adapters/claude-code";
-import { codexAdapter } from "./adapters/codex";
+import { claudeCodeAdapter, claudeCodeProvenance } from "./adapters/claude-code";
+import { codexAdapter, codexProvenance } from "./adapters/codex";
 import { AdapterInput } from "./events";
+import type { ConversationProvenance } from "./provenance";
 
 export interface DiscoveredSession {
+  kind: "session";
   // Absolute path to the picked session file. Announced on stderr ONLY; never
   // persisted into a public artifact (it is a username-bearing home-dir path).
   path: string;
@@ -48,13 +50,31 @@ export interface DiscoveredSession {
   // sha256 of `content`, folded into the cache signature (matches core/files
   // hashFile of the same bytes).
   hash: string;
-  // How many base..head changed files this session references — the diff
-  // discriminator (D7). 0 means it was picked by recency ALONE (the repo's session that
-  // produced this diff could not be identified), which the caller surfaces as a HARD
-  // warning so the user can correct an ambiguous/stale match with --conversation (Codex
-  // P2). Applies to either store — a cwd-matched Codex pick can be recency-only too.
+  // Compatibility summary across exact structured mutations plus weak reads/mentions.
+  // Admission is based on the producer fields below, never this aggregate count.
   matchedChangedFiles: number;
+  mutatedChangedFiles: number;
+  weakMatchedFiles: number;
+  confidence: "high" | "medium" | "low";
+  ambiguous: boolean;
+  reasonCodes: string[];
 }
+
+export interface RejectedDiscovery {
+  kind: "rejected";
+  path?: undefined;
+  adapter?: undefined;
+  content?: undefined;
+  hash?: undefined;
+  matchedChangedFiles: 0;
+  mutatedChangedFiles: 0;
+  weakMatchedFiles: 0;
+  confidence: "low";
+  ambiguous: false;
+  reasonCodes: string[];
+}
+
+export type DiscoveryResult = DiscoveredSession | RejectedDiscovery;
 
 export interface DiscoveryOptions {
   // The home/root under which harness session stores live. Injected so tests point
@@ -67,10 +87,13 @@ export interface DiscoveryOptions {
   cwd: string;
   // The base..head changed-file paths. Within a repo's sessions (the Claude slug dir, or
   // the cwd-scoped Codex rollouts) the same repo holds EVERY session across branches/
-  // tasks, so latest-timestamp alone can pick a newer UNRELATED session; we prefer the
-  // session that references the changed files (it produced the diff under review) and
-  // fall back to recency only when none does.
+  // tasks, so latest-timestamp alone can pick a newer unrelated audit session. These
+  // paths are matched exactly against structured mutations, reads, and bounded mentions.
   changedFiles: string[];
+  headSha?: string;
+  rangeCommitShas?: string[];
+  headCommittedAt?: string;
+  workingTreeDirty?: boolean;
 }
 
 // The cwd probe is a cheap head read, so the cost bound is on the PROBE, not the match count:
@@ -79,10 +102,12 @@ export interface DiscoveryOptions {
 // rollout — a non-match costs only a head read (Codex #113 r1) — and (b) there is no match cap
 // that could skip this repo's producing session when many newer SAME-repo sessions exist
 // (Codex #113 r2): all this repo's matches within the window are ranked by changed-file
-// reference then recency. The producing session is virtually always within the newest few
+// producer provenance then recency. The producing session is virtually always within the newest few
 // hundred global rollouts; one beyond the (generous) ceiling needs --conversation. Worst case
 // — every probed rollout belongs to this repo — is CODEX_PROBE_LIMIT full reads, still bounded.
 const CODEX_PROBE_LIMIT = 600;
+const DISCOVERY_FILE_BYTE_LIMIT = 32 * 1024 * 1024;
+const DISCOVERY_TOTAL_BYTE_LIMIT = 512 * 1024 * 1024;
 // Bytes read from the head of a rollout to extract `session_meta.cwd`. The meta is the
 // first line and carries `cwd` near its start (before the large base_instructions blob),
 // so a small head read is enough; the value is regex-extracted to tolerate a first line
@@ -124,19 +149,6 @@ function latestTimestamp(text: string): string {
   return max;
 }
 
-// How many of the base..head changed files this session references — its tie to the
-// current review range. A session that produced the diff edits/mentions the changed
-// files (their repo-relative paths appear in tool inputs and text).
-function changedFileReferenceScore(content: string, changedFiles: string[]): number {
-  let score = 0;
-  for (const file of changedFiles) {
-    if (file !== "" && content.includes(file)) {
-      score += 1;
-    }
-  }
-  return score;
-}
-
 function adapterInput(filePath: string, text: string): AdapterInput {
   return { path: filePath, text, firstLines: text.split("\n").slice(0, 5) };
 }
@@ -145,17 +157,57 @@ interface Candidate {
   path: string;
   content: string;
   timestamp: string;
-  score: number;
   adapter: string;
+  provenance: ConversationProvenance;
+  temporalRank: number;
 }
 
-// A candidate is preferred when it references MORE changed files (diff-tied), then
-// when its latest in-session event is more recent, then by greatest path — a total,
-// deterministic order independent of filesystem enumeration AND independent of which
-// store (Claude vs Codex) a candidate came from.
+interface CandidateScan {
+  candidates: Candidate[];
+  incomplete: boolean;
+}
+
+function retainBestCandidates(candidates: Candidate[], candidate: Candidate): void {
+  candidates.push(candidate);
+  candidates.sort((left, right) => isBetter(left, right) ? -1 : isBetter(right, left) ? 1 : 0);
+  if (candidates.length > 2) candidates.length = 2;
+}
+
+// Producer provenance is lexicographic: exact mutations first, then commit/timing
+// corroboration, weak reads/mentions, recency, and path. This keeps any number of
+// audit mentions below one real mutation while retaining a total deterministic order.
 function isBetter(candidate: Candidate, best: Candidate): boolean {
-  if (candidate.score !== best.score) {
-    return candidate.score > best.score;
+  // A mutation after the reviewed commit cannot have produced that commit.
+  // Exclude that temporal contradiction before path breadth is considered.
+  if (candidate.temporalRank !== best.temporalRank &&
+      (candidate.temporalRank === 0 || best.temporalRank === 0)) {
+    return candidate.temporalRank > best.temporalRank;
+  }
+  // An uncommitted review range has no head timestamp to anchor against. Among
+  // producer sessions, prefer the one that most recently mutated the range so a
+  // stale broad session cannot beat the current narrower implementation merely
+  // because it touched more of the same paths months ago.
+  if (candidate.provenance.mutatedPaths.length > 0 && best.provenance.mutatedPaths.length > 0 &&
+      candidate.temporalRank === 1 && best.temporalRank === 1 &&
+      candidate.provenance.lastMutationTimestamp !== best.provenance.lastMutationTimestamp) {
+    return (candidate.provenance.lastMutationTimestamp ?? "") > (best.provenance.lastMutationTimestamp ?? "");
+  }
+  if (candidate.provenance.mutatedPaths.length !== best.provenance.mutatedPaths.length) {
+    return candidate.provenance.mutatedPaths.length > best.provenance.mutatedPaths.length;
+  }
+  const candidateCommit = candidate.provenance.mutatedPaths.length > 0 && candidate.provenance.observedCommitShas.length > 0;
+  const bestCommit = best.provenance.mutatedPaths.length > 0 && best.provenance.observedCommitShas.length > 0;
+  if (candidateCommit !== bestCommit) {
+    return candidateCommit;
+  }
+  if (candidate.temporalRank !== best.temporalRank) {
+    return candidate.temporalRank > best.temporalRank;
+  }
+  if (candidate.provenance.readPaths.length !== best.provenance.readPaths.length) {
+    return candidate.provenance.readPaths.length > best.provenance.readPaths.length;
+  }
+  if (candidate.provenance.mentionedPaths.length !== best.provenance.mentionedPaths.length) {
+    return candidate.provenance.mentionedPaths.length > best.provenance.mentionedPaths.length;
   }
   if (candidate.timestamp !== best.timestamp) {
     return candidate.timestamp > best.timestamp;
@@ -163,21 +215,77 @@ function isBetter(candidate: Candidate, best: Candidate): boolean {
   return candidate.path > best.path;
 }
 
+function temporalRank(provenance: ConversationProvenance, options: DiscoveryOptions): number {
+  if (provenance.mutatedPaths.length === 0) return 0;
+  if (options.workingTreeDirty || !options.headCommittedAt || !provenance.lastMutationTimestamp) return 1;
+  const mutationTime = Date.parse(provenance.lastMutationTimestamp);
+  const headTime = Date.parse(options.headCommittedAt);
+  if (!Number.isFinite(mutationTime) || !Number.isFinite(headTime)) return 1;
+  return mutationTime <= headTime ? 2 : 0;
+}
+
+function candidateReasonCodes(candidate: Candidate): string[] {
+  const reasons: string[] = [];
+  const mutated = new Set(candidate.provenance.mutatedPaths);
+  if (candidate.provenance.mutatedPaths.length > 0) reasons.push("exact_changed_path_mutation");
+  if (candidate.provenance.observedCommitShas.length > 0) reasons.push("reviewed_commit_observed");
+  if (candidate.temporalRank === 2) reasons.push("mutation_not_after_head_commit");
+  if (candidate.temporalRank === 0 && candidate.provenance.mutatedPaths.length > 0) reasons.push("mutation_after_head_commit");
+  if (candidate.provenance.readPaths.some((file) => !mutated.has(file))) reasons.push("exact_changed_path_read");
+  if (candidate.provenance.mentionedPaths.some((file) => !mutated.has(file))) reasons.push("exact_changed_path_mention");
+  if (candidate.provenance.auditOnly) reasons.push("audit_or_read_only_session");
+  if (reasons.length === 0) reasons.push("recency_only");
+  return reasons;
+}
+
+function sameProducerRank(left: Candidate, right: Candidate, options: DiscoveryOptions): boolean {
+  const leftCommit = left.provenance.mutatedPaths.length > 0 && left.provenance.observedCommitShas.length > 0;
+  const rightCommit = right.provenance.mutatedPaths.length > 0 && right.provenance.observedCommitShas.length > 0;
+  if (options.workingTreeDirty &&
+      left.provenance.lastMutationTimestamp !== right.provenance.lastMutationTimestamp) {
+    return false;
+  }
+  return left.provenance.mutatedPaths.length > 0 &&
+    left.provenance.mutatedPaths.length === right.provenance.mutatedPaths.length &&
+    leftCommit === rightCommit &&
+    left.temporalRank === right.temporalRank;
+}
+
 // Claude Code candidates: every readable, adapter-valid `*.jsonl` under the repo's
-// project-slug dir. The slug name IS the repo match, so a candidate is eligible
-// regardless of score (recency is an acceptable fallback within a same-repo store).
-function claudeCandidates(options: DiscoveryOptions): Candidate[] {
+// project-slug dir. The slug name establishes repo eligibility; producer-confidence
+// admission happens after all candidates are ranked.
+function claudeCandidates(options: DiscoveryOptions): CandidateScan {
   const slug = claudeCodeProjectSlug(options.cwd);
   const dir = path.join(options.storeRoot, ".claude", "projects", slug);
   let names: string[];
   try {
     names = fs.readdirSync(dir).filter((name) => name.endsWith(".jsonl"));
   } catch {
-    return []; // No slug directory for this repo -> no Claude candidates (non-fatal).
+    return { candidates: [], incomplete: false }; // No slug directory for this repo -> non-fatal.
   }
   const candidates: Candidate[] = [];
-  for (const name of [...names].sort()) {
+  let remainingBytes = DISCOVERY_TOTAL_BYTE_LIMIT;
+  let incomplete = false;
+  const orderedNames = names.map((name) => {
+    try {
+      return { name, mtimeMs: fs.statSync(path.join(dir, name)).mtimeMs };
+    } catch {
+      return { name, mtimeMs: 0 };
+    }
+  }).sort((left, right) => right.mtimeMs - left.mtimeMs || (left.name < right.name ? 1 : -1));
+  for (const { name } of orderedNames) {
     const full = path.join(dir, name);
+    let size: number;
+    try {
+      size = fs.statSync(full).size;
+    } catch {
+      continue;
+    }
+    if (size > DISCOVERY_FILE_BYTE_LIMIT || size > remainingBytes) {
+      incomplete = true;
+      continue;
+    }
+    remainingBytes -= size;
     let text: string;
     try {
       text = fs.readFileSync(full, "utf8");
@@ -187,15 +295,18 @@ function claudeCandidates(options: DiscoveryOptions): Candidate[] {
     if (!claudeCodeAdapter.detect(adapterInput(full, text))) {
       continue;
     }
-    candidates.push({
+    const input = adapterInput(full, text);
+    const provenance = claudeCodeProvenance(input, options);
+    retainBestCandidates(candidates, {
       path: full,
       content: text,
       timestamp: latestTimestamp(text),
-      score: changedFileReferenceScore(text, options.changedFiles),
-      adapter: claudeCodeAdapter.name
+      adapter: claudeCodeAdapter.name,
+      provenance,
+      temporalRank: temporalRank(provenance, options)
     });
   }
-  return candidates;
+  return { candidates, incomplete };
 }
 
 // The most-recent Codex rollout `*.jsonl` paths under <root>/.codex/sessions, newest
@@ -277,15 +388,27 @@ function codexSessionCwd(filePath: string): string | undefined {
 // project slug). No match-count cap — a burst of unrelated newer sessions from other repos
 // only costs head reads (Codex #113 r1), and this repo's producing session is not skipped
 // even when many newer same-repo sessions exist (Codex #113 r2). cwd-scoping — not a bare
-// path-substring match — is what ties a global-store session to this repo, so eligibility
-// does NOT require a changed-file reference: a cwd-matched session ranks by reference then
-// recency exactly like a same-repo Claude session.
-function codexCandidates(options: DiscoveryOptions): Candidate[] {
+// path-substring match — is what ties a global-store session to this repo. Producer
+// provenance then ranks exact mutations above weak reads/mentions across both stores.
+function codexCandidates(options: DiscoveryOptions): CandidateScan {
   const candidates: Candidate[] = [];
+  let remainingBytes = DISCOVERY_TOTAL_BYTE_LIMIT;
+  let incomplete = false;
   for (const full of codexRolloutPaths(options.storeRoot, CODEX_PROBE_LIMIT)) {
     if (codexSessionCwd(full) !== options.cwd) {
       continue; // a different repo's session (the Codex store is global) — not a match.
     }
+    let size: number;
+    try {
+      size = fs.statSync(full).size;
+    } catch {
+      continue;
+    }
+    if (size > DISCOVERY_FILE_BYTE_LIMIT || size > remainingBytes) {
+      incomplete = true;
+      continue;
+    }
+    remainingBytes -= size;
     let text: string;
     try {
       text = fs.readFileSync(full, "utf8");
@@ -295,27 +418,33 @@ function codexCandidates(options: DiscoveryOptions): Candidate[] {
     if (!codexAdapter.detect(adapterInput(full, text))) {
       continue;
     }
-    candidates.push({
+    const input = adapterInput(full, text);
+    const provenance = codexProvenance(input, options);
+    retainBestCandidates(candidates, {
       path: full,
       content: text,
       timestamp: latestTimestamp(text),
-      score: changedFileReferenceScore(text, options.changedFiles),
-      adapter: codexAdapter.name
+      adapter: codexAdapter.name,
+      provenance,
+      temporalRank: temporalRank(provenance, options)
     });
   }
-  return candidates;
+  return { candidates, incomplete };
 }
 
 // review-surfaces D4 + D7 / METHODOLOGY.9: discover the SINGLE best session for this
 // review across the Claude Code store (repo-slug-matched) AND the Codex rollout store
 // (global, range-referenced only). Single-select (D7 — never stitch sessions) by the
-// diff-reference score (ties to the current review range), then the LATEST in-session
-// event timestamp, then the greatest path — one total order over both stores. The
+// exact mutation provenance, commit/timing corroboration, weak references, then the
+// latest in-session timestamp and greatest path — one total order over both stores. The
 // winner's bytes are snapshotted ONCE here so parsing and the cache-signature hash
 // see identical content. No store / no candidate -> undefined (caller degrades
 // non-fatally, METHODOLOGY.4).
-export function discoverConversationSession(options: DiscoveryOptions): DiscoveredSession | undefined {
-  const candidates = [...claudeCandidates(options), ...codexCandidates(options)];
+export function discoverConversationSession(options: DiscoveryOptions): DiscoveryResult | undefined {
+  const claude = claudeCandidates(options);
+  const codex = codexCandidates(options);
+  const candidates = [...claude.candidates, ...codex.candidates];
+  const scanIncomplete = claude.incomplete || codex.incomplete;
   let best: Candidate | undefined;
   for (const candidate of candidates) {
     if (best === undefined || isBetter(candidate, best)) {
@@ -323,13 +452,59 @@ export function discoverConversationSession(options: DiscoveryOptions): Discover
     }
   }
   if (best === undefined) {
+    if (scanIncomplete) {
+      // A bounded scan that skipped every candidate is materially different from
+      // an absent store. Return a rejection-only sentinel so the caller persists
+      // the safe reason code and directs the user to --conversation. Its bytes are
+      // never normalized because low-confidence discoveries are rejected first.
+      return {
+        kind: "rejected",
+        matchedChangedFiles: 0,
+        mutatedChangedFiles: 0,
+        weakMatchedFiles: 0,
+        confidence: "low",
+        ambiguous: false,
+        reasonCodes: ["discovery_work_budget_exhausted"]
+      };
+    }
     return undefined;
   }
+  const runnerUp = candidates.filter((candidate) => candidate !== best).sort((left, right) =>
+    isBetter(left, right) ? -1 : isBetter(right, left) ? 1 : 0
+  )[0];
+  // A skipped candidate was never ranked and could be the true producer. Never
+  // ingest a stale retained winner from a known-incomplete scan; explicit path
+  // selection is the honest escape hatch for oversized/older transcripts.
+  const ambiguous = scanIncomplete || (runnerUp !== undefined && sameProducerRank(best, runnerUp, options));
+  const mutationCount = best.provenance.mutatedPaths.length;
+  const confidence = ambiguous || mutationCount === 0 || best.temporalRank === 0
+    ? "low"
+    : mutationCount >= 2 || best.provenance.observedCommitShas.length > 0
+      ? "high"
+      : "medium";
+  const matched = new Set([
+    ...best.provenance.mutatedPaths,
+    ...best.provenance.readPaths,
+    ...best.provenance.mentionedPaths
+  ]);
+  const weak = new Set([...best.provenance.readPaths, ...best.provenance.mentionedPaths].filter((file) =>
+    !best.provenance.mutatedPaths.includes(file)
+  ));
   return {
+    kind: "session",
     path: best.path,
     adapter: best.adapter,
     content: best.content,
     hash: crypto.createHash("sha256").update(best.content).digest("hex"),
-    matchedChangedFiles: best.score
+    matchedChangedFiles: matched.size,
+    mutatedChangedFiles: mutationCount,
+    weakMatchedFiles: weak.size,
+    confidence,
+    ambiguous,
+    reasonCodes: [
+      ...candidateReasonCodes(best),
+      ...(scanIncomplete ? ["discovery_work_budget_exhausted"] : []),
+      ...(ambiguous ? ["ambiguous_producer_candidates"] : [])
+    ]
   };
 }

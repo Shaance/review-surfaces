@@ -41,7 +41,8 @@ export async function buildConversationReview(
     providerName: input.providerName,
     events: input.events,
     redactSecrets: input.redactSecrets,
-    remotePrivacyBlocked: input.remotePrivacyBlocked
+    remotePrivacyBlocked: input.remotePrivacyBlocked,
+    commandRules: input.commandRules
   });
 
   if (analysis.status !== "analyzed") {
