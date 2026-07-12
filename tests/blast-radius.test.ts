@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildImportGraph, findSymbolImporters } from "../src/collector/import-graph";
+import { buildImportGraph, findSymbolImporters, resolveRuntimeRelativeImports } from "../src/collector/import-graph";
 
 const FILES: Record<string, string> = {
   "src/core.ts": "export function widely(): number { return 1; }\nexport function unused(): number { return 2; }",
@@ -34,4 +34,42 @@ test("review-surfaces.BLAST_RADIUS.3 the build is bounded by a file cap and repo
   // Determinism: same inputs, same graph.
   const again = buildImportGraph({ files: Object.keys(FILES), read, exists, fileCap: 2 });
   assert.deepEqual([...graph.importers.entries()], [...again.importers.entries()]);
+});
+
+test("review-surfaces.BLAST_RADIUS.2 namespaced API members match only real qualified consumers", () => {
+  const files: Record<string, string> = {
+    "src/types.ts": "export namespace N { export interface Value { id: string } export interface Other { id: string } }",
+    "src/direct.ts": 'import { N } from "./types"; export const value: N.Value = { id: "x" };',
+    "src/aliased.ts": 'import { N as Models } from "./types"; export const value: Models.Value = { id: "x" };',
+    "src/namespace.ts": 'import * as api from "./types"; export const value: api.N.Value = { id: "x" };',
+    "src/import-equals.ts": 'import api = require("./types"); export const value: api.N.Value = { id: "x" };',
+    "src/other.ts": 'import { N } from "./types"; export const other: N.Other = { id: "x" };',
+    "src/decoy.ts": 'import { N } from "./types"; export const other: N.Other = { id: "x" }; // N.Value\nexport const text = "N.Value";',
+    "src/barrel.ts": 'export { N } from "./types";'
+  };
+  const read = (filePath: string): string | undefined => files[filePath];
+  const graph = buildImportGraph({ files: Object.keys(files), read, exists: (filePath) => filePath in files });
+
+  assert.deepEqual(
+    findSymbolImporters({ graph, modulePath: "src/types.ts", symbols: ["N.Value"], read }),
+    ["src/aliased.ts", "src/barrel.ts", "src/direct.ts", "src/import-equals.ts", "src/namespace.ts"]
+  );
+  assert.deepEqual(
+    findSymbolImporters({ graph, modulePath: "src/types.ts", symbols: ["namespace:N"], read }),
+    ["src/aliased.ts", "src/barrel.ts", "src/decoy.ts", "src/direct.ts", "src/import-equals.ts", "src/namespace.ts", "src/other.ts"]
+  );
+  assert.deepEqual(
+    findSymbolImporters({ graph, modulePath: "src/types.ts", symbols: ["export="], read }),
+    ["src/import-equals.ts"]
+  );
+});
+
+test("review-surfaces.ARCH_DRIFT.1 declaration files never enter runtime emit analysis", () => {
+  for (const filePath of ["types/public.d.ts", "types/public.d.mts", "types/public.d.cts"]) {
+    assert.deepEqual(
+      resolveRuntimeRelativeImports(filePath, 'import { Value } from "./value"; export interface Public extends Value {}', () => true),
+      [],
+      `${filePath} is declaration-only`
+    );
+  }
 });

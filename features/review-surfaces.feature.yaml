@@ -221,6 +221,18 @@ components:
         requirement: >-
           Decision findings must collapse duplicate path/root-cause signals and distinguish public or persisted contracts from internal implementation facts: ordinary TypeScript exports and mechanical import or layer edges stay supporting detail unless the path is deterministically public, persisted, explicitly policy-forbidden, or independently breaking; each surviving finding names one root cause, carries validated changed-range evidence, and occupies only one top slot.
         note: "Reviewer decision uplift M2. Mechanical export/import facts and repeated manifestations of one cause consumed scarce reviewer attention as if they were separate public breakages."
+      7:
+        requirement: >-
+          Suggested comments must represent a concrete unresolved reviewer action, not a mechanical restatement that an internal export or optional schema field changed: additive/internal semantic facts remain supporting detail, generic requests to "confirm callers" are never ready to post, and a semantic comment may be ready only when deterministic evidence identifies a breaking public or persisted contract, a concrete affected caller, or test weakening.
+        note: "Real-session usefulness M4. The merged conversation-intelligence review proposed ten high-confidence ready-to-post comments that merely asked the author to confirm ordinary internal callers."
+      8:
+        requirement: >-
+          The primary active-intent and conversation synopsis must be reviewer-scannable: preserve the original stated goal, show later refinements separately, avoid raw attachment markup and duplicate turns, bound each displayed clause at a word boundary, and summarize omitted affected requirements instead of concatenating long requirement prose into a clipped paragraph.
+        note: "Real-session usefulness M4. Live dogfood summarized the whole milestone as a typo'd final autoland question and clipped three long requirements into a mechanical active-intent wall."
+      9:
+        requirement: >-
+          A real-session usefulness regression must run the deterministic reviewer model over a representative large conversation/change fixture and assert decision quality as well as schema validity: no unproven aggregate architecture cycle may change the verdict, internal additive facts may not create ready comments, the original goal remains visible, raw image attachment markup is excluded, and current validation evidence outranks stale progress commentary.
+        note: "Real-session usefulness M4. Structural validation and 1,563 passing tests coexisted with a false approval-changing finding and low-value reviewer output."
   RISK:
     name: Risk and test-gap analysis
     description: Compute review risk, tested areas, untested areas, and manual/automatic checks.
@@ -561,7 +573,7 @@ components:
       4:
         requirement: The harness must emit a compact eval_scoreboard.json recording cases passed over total per fact class, and no ranking tuning beyond Phase 2 may land without this gate in place.
       5:
-        requirement: The eval harness must include a seeded architecture-drift fixture — a benign change plus a new cross-module import — asserted to rank in the top N of the queue, landing in the same phase that ships the drift detector.
+        requirement: The eval harness must include a seeded architecture-drift fixture whose newly added runtime import closes a concrete file-level cycle — asserted once in the top N of the queue — plus a benign new cross-module edge that remains supporting detail and does not change the verdict, landing in the same phase that ships the drift detector.
         note: Visual uplift M11 (brainstorm idea 5), following the established one-seeded-case-per-fact-class discipline.
       6:
         requirement: The eval scoreboard must be surfaced twice — a generated, marker-delimited README block (idempotently regenerated from eval_scoreboard.json like the sticky comment's marker upsert, never hand-edited inside the markers) citing cases passed over total per fact class, and one HTML cockpit footer line citing the score — with the local gate asserting the README block is current.
@@ -696,14 +708,14 @@ components:
     name: Architecture-drift facts
     description: >-
       Visual uplift Phase 4 / milestone M11 (brainstorm idea 5). Deterministic
-      facts for module-boundary import edges added or removed and import cycles
-      created by a change, computed by diffing base-side and head-side resolved
-      import sets for changed files only.
+      facts for module-boundary import edges added or removed and concrete runtime
+      import cycles created by a change, computed by diffing base-side and
+      head-side resolved import sets and proving cycles on the file graph.
     requirements:
       1:
-        requirement: For each changed or deleted file the tool must parse the base content (read via readFileAtRef) with the same import extraction the import graph already uses, diff the resolved import sets per file, aggregate to module altitude (top-level directory under src/), and emit module_edge_added, module_edge_removed, and import_cycle_created facts following the existing semantic-diff detector shape.
+        requirement: For each changed or deleted file the tool must parse the base content (read via readFileAtRef) with the same import extraction the import graph already uses, diff the resolved import sets per file, and emit module_edge_added and module_edge_removed facts at module altitude; import_cycle_created requires a concrete newly added runtime file edge plus a complete runtime return path in the head tree, excludes type-only imports, and records the proven file chain before any module aggregation.
       2:
-        requirement: Architecture-drift facts must route into the existing risk register as queue items, carry an architecture lens tag, and set kind new or removed on the matching change_graph edges so both the mermaid and SVG map renderers pick the drift up without extra work.
+        requirement: Architecture-drift facts must carry an architecture lens tag and set kind new or removed on matching change_graph edges so both map renderers pick the drift up; ordinary module edges remain supporting detail, while only a proven concrete runtime cycle or explicit policy violation may enter the review queue and decision projection, and one canonical cycle may occupy at most one slot.
       3:
         requirement: Drift detection must respect rename detection (a moved file re-creating its old edges from a new path is not drift), and imports the resolver cannot resolve (such as tsconfig path aliases) must count as unknown, never as removed, with resolver bounds documented like the import graph's existing bounds.
 

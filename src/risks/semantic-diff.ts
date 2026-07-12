@@ -73,7 +73,54 @@ export function isBreakingSchemaChange(change: SchemaContractChange): boolean {
 }
 
 export function isBreakingApiChange(change: ApiSurfaceChange): boolean {
-  return change.exports_removed.length > 0 || change.signatures_changed.length > 0;
+  return change.exports_removed.length > 0 || change.signatures_changed.some(signatureChangeIsBreaking);
+}
+
+function signatureChangeIsBreaking(change: ApiSurfaceChange["signatures_changed"][number]): boolean {
+  const before = objectContractShape(change.from, change.name);
+  const after = objectContractShape(change.to, change.name);
+  if (!before || !after) {
+    return true;
+  }
+  if (before.header !== after.header) return true;
+  if (after.members.length < before.members.length) return true;
+  if (before.members.some((member, index) => member.text !== after.members[index]?.text)) return true;
+  return after.members.slice(before.members.length).some((member) => !member.optional);
+}
+
+// Object-contract signatures are emitted as valid TypeScript by the semantic
+// extractor. Only appended optional members are treated as compatible: member
+// order can affect overload resolution, so reordering or insertion stays
+// conservative. Direct object type aliases follow the same compatibility rule.
+function objectContractShape(signature: string, expectedName: string): {
+  header: string;
+  members: Array<{ text: string; optional: boolean }>;
+} | undefined {
+  const source = ts.createSourceFile("contract.ts", signature, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const localName = expectedName.split(".").at(-1) ?? expectedName;
+  const declaration = source.statements.find((statement): statement is ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
+    (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) && statement.name.text === localName
+  );
+  if (!declaration) return undefined;
+  const typeLiteral = ts.isTypeAliasDeclaration(declaration) && ts.isTypeLiteralNode(declaration.type)
+    ? declaration.type
+    : undefined;
+  if (ts.isTypeAliasDeclaration(declaration) && !typeLiteral) return undefined;
+  const header = [
+    ts.isInterfaceDeclaration(declaration) ? "interface" : "type",
+    declaration.typeParameters?.map((parameter) => parameter.getText(source).replace(/\s+/gu, " ").trim()).join(",") ?? "",
+    ts.isInterfaceDeclaration(declaration)
+      ? declaration.heritageClauses?.map((clause) => clause.getText(source).replace(/\s+/gu, " ").trim()).join(" ") ?? ""
+      : ""
+  ].join("|");
+  const members: Array<{ text: string; optional: boolean }> = [];
+  for (const member of ts.isInterfaceDeclaration(declaration) ? declaration.members : typeLiteral?.members ?? []) {
+    const optional = Boolean(member.questionToken);
+    const normalized = member.getText(source).replace(/\s+/gu, " ").trim().replace(/[;,]$/u, "");
+    if (!normalized) return undefined;
+    members.push({ text: normalized, optional });
+  }
+  return { header, members };
 }
 
 // Shared, surface-agnostic renderings of the two compound schema-change fields,

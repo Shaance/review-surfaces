@@ -359,8 +359,22 @@ const NON_REVIEW_CLASSIFICATIONS = new Set<FileClassification>(["lockfile", "gen
 
 function detectOverreach(index: EvidenceIndex, requirements: IntentRequirement[]): RequirementResult[] {
   const knownGroups = new Set(requirements.map((requirement) => groupFromAcid(requirement.acai_id)).filter(Boolean) as string[]);
+  // Exact requirement evidence is a stronger intent mapping than directory
+  // configuration. A legitimate file move must not become "overreach" merely
+  // because its new prefix has not yet been added to the review-area map.
+  const exactlyMappedChangedPaths = new Set<string>();
+  const changedPaths = new Set(index.allChangedFiles);
+  for (const requirement of requirements) {
+    if (!requirement.acai_id) continue;
+    for (const evidence of index.implementationByAcid.get(requirement.acai_id) ?? []) {
+      if (evidence.path && changedPaths.has(evidence.path)) {
+        exactlyMappedChangedPaths.add(evidence.path);
+      }
+    }
+  }
   const unmapped = index.allChangedFiles.filter(
     (filePath) =>
+      !exactlyMappedChangedPaths.has(filePath) &&
       !NON_REVIEW_CLASSIFICATIONS.has(index.classificationByPath.get(filePath) ?? "unknown") &&
       index.matcher.groupsForPath(filePath, { purpose: "review_surface" }).every((group) => !knownGroups.has(group))
   );

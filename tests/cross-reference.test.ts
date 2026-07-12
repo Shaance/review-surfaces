@@ -186,6 +186,28 @@ test("review-surfaces.METHODOLOGY.8 api_no_compat is PROMOTED by a backward-inco
   assert.equal(sig.advisory, false, "a removed export is backward-incompatible");
 });
 
+test("review-surfaces.METHODOLOGY.8 api_no_compat shares optional-member compatibility semantics", () => {
+  const finding = (to: string) => signal(
+    computeCrossReferenceSignals(
+      collection([file("src/api.ts")], {
+        semanticFacts: {
+          api_changes: [{
+            path: "src/api.ts",
+            exports_added: [],
+            exports_removed: [],
+            signatures_changed: [{ name: "Value", from: "export interface Value { id: string; }", to }]
+          }]
+        }
+      }),
+      talk("changed the value shape")
+    ),
+    "api_no_compat"
+  );
+
+  assert.equal(finding("export interface Value { id: string; note?: string; }")?.advisory, true);
+  assert.equal(finding("export interface Value { id: string; note: string; }")?.advisory, false);
+});
+
 test("review-surfaces.METHODOLOGY.8 deps_no_rationale fires for a config change with no rationale", () => {
   const sig = signal(computeCrossReferenceSignals(collection([file(".github/workflows/ci.yml")]), talk("tweaked the pipeline")), "deps_no_rationale");
   assert.ok(sig);

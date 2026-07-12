@@ -15,7 +15,8 @@ import { parseBudgetDuration } from "../human/budget";
 import { computeDependencyFacts } from "../risks/dependency-facts";
 import { loadReviewPolicy, POLICY_FILE, ReviewPolicy } from "../feedback/policy";
 import { computeConfigFacts } from "../risks/config-facts";
-import { buildImportGraph, findSymbolImporters } from "../collector/import-graph";
+import { buildImportGraph, findSymbolImporters, importGraphWouldTruncate, resolveRelativeImports, resolveRuntimeRelativeImports } from "../collector/import-graph";
+import { createRuntimeImportResolver } from "../collector/compiler-options";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { loadPrivacyIgnoreSync } from "../privacy/ignore";
@@ -83,7 +84,7 @@ import { packagedSchemaPath } from "../schema/packaged-schemas";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
 import { ChangedImportEdge, ChangeGraphAreaInsight, ChangeGraphEdgeInsight, computeChangedImportEdges } from "../human/change-graph";
 import { buildChangeMapInsights, ChangeMapInsights } from "../human/change-map-insights";
-import { ArchDriftResult, computeArchDriftFacts, moduleOf } from "../risks/arch-drift";
+import { ArchDriftResult, boundArchDriftByGraphCompleteness, computeArchDriftFacts, moduleOf } from "../risks/arch-drift";
 import { clusterOfPath, detectImplementationRoots, DEFAULT_IMPLEMENTATION_ROOTS } from "../core/source-roots";
 import { EvalScoreboardSummary, HUMAN_REVIEW_DECISIONS, RoundsLedgerEntry } from "../human/contract";
 import { buildChangeNarrative } from "../human/narrative";
@@ -2159,24 +2160,72 @@ function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined
   // import (the same module edge often already exists via another file), so
   // both trees are parsed once with the shared bounded import graph.
   const existsBase = (filePath: string): boolean => readers.baseReadRef !== "" && blobExistsAtRef(cwd, readers.baseReadRef, filePath);
-  const baseModuleEdgeKeys = treeModuleEdgeKeys(cwd, readers.baseReadRef || undefined, readers.readBase, existsBase, implementationRoots);
-  const headModuleEdgeKeys = treeModuleEdgeKeys(cwd, readers.headIsWorktree ? "WORKTREE" : readers.headSha, readers.readHead, existsHead, implementationRoots);
+  const ignore = loadPrivacyIgnoreSync(cwd);
+  const worktreeTracked = readers.headIsWorktree ? trackedWorktreePaths(cwd) : undefined;
+  if (readers.headIsWorktree && !worktreeTracked) return undefined;
+  const isIgnored = (filePath: string): boolean => ignore.isIgnored(filePath);
+  const reviewedWorktreePaths = worktreeTracked
+    ? new Set([
+        ...worktreeTracked,
+        ...diff.files.filter((file) => file.status !== "D").map((file) => file.path)
+      ].filter((filePath) => !isIgnored(filePath)))
+    : undefined;
+  // Committed readers are intrinsically tree-scoped. A live worktree reader is
+  // additionally restricted to tracked config files plus untracked paths that
+  // are explicitly in this review, so local installs and unrelated configs
+  // cannot alter evidence while new reviewed package configs still apply.
+  const resolveBaseImports = createRuntimeImportResolver(readers.readBase, cwd, { isIgnored });
+  const resolveHeadImports = createRuntimeImportResolver(readers.readHead, cwd, {
+    ...(reviewedWorktreePaths ? { reviewedPaths: reviewedWorktreePaths } : {}),
+    isIgnored
+  });
+  const changedOnly = computeArchDriftFacts({
+    changedFiles: diff.files.map((file) => ({ path: file.path, ...(file.old_path ? { old_path: file.old_path } : {}), status: file.status })),
+    readBase: readers.readBase,
+    readHead: readers.readHead,
+    existsBase,
+    existsHead,
+    resolveBaseImports,
+    resolveHeadImports,
+    implementationRoots,
+    fileEdgesOnly: true
+  });
+  if (changedOnly.file_edges.added.length === 0 && changedOnly.file_edges.removed.length === 0) {
+    return changedOnly;
+  }
+  const baseTracked = architectureTreePaths(cwd, readers.baseReadRef)?.filter((filePath) => !isIgnored(filePath));
+  const headTracked = architectureTreePaths(cwd, readers.headIsWorktree ? "WORKTREE" : readers.headSha)?.filter((filePath) => !isIgnored(filePath));
+  if (!baseTracked || !headTracked) return undefined;
+  const baseGraph = treeArchitectureGraph(baseTracked, readers.readBase, existsBase, implementationRoots, resolveBaseImports);
+  const headGraph = treeArchitectureGraph(headTracked, readers.readHead, existsHead, implementationRoots, resolveHeadImports);
   const result = computeArchDriftFacts({
     changedFiles: diff.files.map((file) => ({ path: file.path, ...(file.old_path ? { old_path: file.old_path } : {}), status: file.status })),
     readBase: readers.readBase,
     readHead: readers.readHead,
     existsBase,
     existsHead,
-    ...(baseModuleEdgeKeys instanceof Set ? { baseModuleEdgeKeys } : {}),
-    ...(headModuleEdgeKeys instanceof Set ? { headModuleEdgeKeys } : {}),
+    resolveBaseImports,
+    resolveHeadImports,
+    ...(baseGraph && baseGraph !== "truncated" ? {
+      baseModuleEdgeKeys: baseGraph.moduleEdgeKeys,
+      baseFileDependencies: baseGraph.dependencies
+    } : {}),
+    ...(headGraph && headGraph !== "truncated" ? {
+      headModuleEdgeKeys: headGraph.moduleEdgeKeys,
+      headFileDependencies: headGraph.dependencies
+    } : {}),
     implementationRoots
   });
   // A truncated tree graph makes module-edge novelty UNKNOWN: suppress the
   // facts ("no import existed at the base" cannot be asserted) but keep the
   // file-level edge deltas — they come from the changed files alone and stay
-  // exact for the map renderers.
-  if (baseModuleEdgeKeys === "truncated" || headModuleEdgeKeys === "truncated") {
-    return { facts: [], file_edges: result.file_edges };
+  // exact for the map renderers. Cycle CREATION also needs a complete base SCC
+  // graph; a complete head alone proves presence, not novelty.
+  if (baseGraph === "truncated" || headGraph === "truncated") {
+    return boundArchDriftByGraphCompleteness(result, {
+      baseTruncated: baseGraph === "truncated",
+      headTruncated: headGraph === "truncated"
+    });
   }
   return result;
 }
@@ -2185,19 +2234,14 @@ function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined
 // rules (the same enumeration as the blast-radius graph). Returns undefined
 // when the tree cannot be listed (the detector then falls back to its weaker
 // changed-files-only bound rather than guessing).
-function treeModuleEdgeKeys(
-  cwd: string,
-  treeRef: string | undefined,
-  read: (filePath: string) => string | undefined,
-  exists: (filePath: string) => boolean,
-  implementationRoots: readonly string[]
-): Set<string> | "truncated" | undefined {
-  if (!treeRef) {
-    return undefined;
-  }
-  let tracked: string[];
+interface TreeArchitectureGraph {
+  moduleEdgeKeys: Set<string>;
+  dependencies: Map<string, string[]>;
+}
+
+function architectureTreePaths(cwd: string, treeRef: string): string[] | undefined {
   try {
-    tracked = execFileSync(
+    return execFileSync(
       "git",
       treeRef === "WORKTREE" ? ["ls-files", "--cached", "--others", "--exclude-standard"] : ["ls-tree", "-r", "--name-only", treeRef],
       { cwd, encoding: "utf8" }
@@ -2207,9 +2251,29 @@ function treeModuleEdgeKeys(
   } catch {
     return undefined;
   }
-  const ignore = loadPrivacyIgnoreSync(cwd);
-  tracked = tracked.filter((filePath) => !ignore.isIgnored(filePath));
-  const graph = buildImportGraph({ files: tracked, read, exists });
+}
+
+function trackedWorktreePaths(cwd: string): string[] | undefined {
+  try {
+    return execFileSync("git", ["ls-files", "--cached"], { cwd, encoding: "utf8" })
+      .split("\n")
+      .filter(Boolean);
+  } catch {
+    return undefined;
+  }
+}
+
+function treeArchitectureGraph(
+  treePaths: readonly string[],
+  read: (filePath: string) => string | undefined,
+  exists: (filePath: string) => boolean,
+  implementationRoots: readonly string[],
+  resolveImports: typeof resolveRuntimeRelativeImports
+): TreeArchitectureGraph | "truncated" | undefined {
+  if (importGraphWouldTruncate(treePaths)) {
+    return "truncated";
+  }
+  const graph = buildImportGraph({ files: [...treePaths], read, exists, resolveImports, retainContents: false });
   // A truncated graph is PARTIAL evidence: treating it as the whole tree would
   // report pre-existing edges beyond the cap as new — and the changed-files
   // fallback bound would be just as misleading. Signal "truncated" so the
@@ -2227,7 +2291,7 @@ function treeModuleEdgeKeys(
       }
     }
   }
-  return keys;
+  return { moduleEdgeKeys: keys, dependencies: graph.dependencies };
 }
 
 // review-surfaces.TREND.1: read the prior ledger from the previous packet's
@@ -2393,26 +2457,53 @@ function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactR
   } catch {
     return facts;
   }
+  const headPaths = new Set(tracked);
   // Honor the existing privacy/generated exclusions: an ignored tree must not
   // contribute importers to the blast radius.
   const ignore = loadPrivacyIgnoreSync(cwd);
   tracked = tracked.filter((filePath) => !ignore.isIgnored(filePath));
+  // Deleted API modules are absent from the head tree, but surviving head-side
+  // callers can still import them. Treat those exact reviewed targets as
+  // tombstones during resolution so the broken callers remain visible without
+  // resurrecting deleted files as graph sources.
+  const existsCache = new Map<string, boolean>();
+  const headExists = (filePath: string): boolean => {
+    const cached = existsCache.get(filePath);
+    if (cached !== undefined) return cached;
+    let present: boolean;
+    if (readers.headIsWorktree) {
+      try {
+        present = fs.statSync(path.resolve(cwd, filePath)).isFile();
+      } catch {
+        present = false;
+      }
+    } else {
+      present = headPaths.has(filePath);
+    }
+    existsCache.set(filePath, present);
+    return present;
+  };
+  const deletedTargets = new Set(targets
+    .filter((change) => !headExists(change.path))
+    .map((change) => change.path));
+  const deletedTargetExists = (filePath: string): boolean => deletedTargets.has(filePath);
   const graph = buildImportGraph({
     files: tracked,
     read: readers.readHead,
-    exists: readers.headIsWorktree
-      ? (filePath) => {
-          try {
-            return fs.statSync(path.resolve(cwd, filePath)).isFile();
-          } catch {
-            return false;
-          }
-        }
-      : (filePath) => blobExistsAtRef(cwd, readers.headSha, filePath)
+    exists: headExists,
+    resolveImports: (sourcePath, content, exists) =>
+      resolveRelativeImports(sourcePath, content, exists, deletedTargetExists)
   });
   for (const change of targets) {
     const symbols = [...change.exports_removed, ...change.signatures_changed.map((sig) => sig.name)];
-    const importers = findSymbolImporters({ graph, modulePath: change.path, symbols, read: readers.readHead });
+    const importers = findSymbolImporters({
+      graph,
+      modulePath: change.path,
+      symbols,
+      read: readers.readHead,
+      exists: headExists,
+      fallbackExists: deletedTargetExists
+    });
     change.used_by = {
       count: importers.length,
       top: importers.slice(0, 5),

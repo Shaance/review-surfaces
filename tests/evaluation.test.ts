@@ -731,6 +731,43 @@ constraints:
   assert.equal(evaluation.overreach.length, 0);
 });
 
+test("review-surfaces.EVAL.5 exact changed-file ACID evidence outranks stale area prefixes for overreach", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-exact-acid-overreach-"));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "src", "gate"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "features", "example.feature.yaml"),
+    `feature:\n  name: example\ncomponents:\n  QUALITY_GATE:\n    requirements:\n      1: Implement the quality gate.\n`
+  );
+  fs.writeFileSync(path.join(tmp, "src", "gate", "gate.ts"), "// example.QUALITY_GATE.1\nexport const gate = true;\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const collection = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [] },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false
+  });
+  collection.changedFiles = [{ path: "src/gate/gate.ts", status: "A", source: "working_tree" }];
+
+  const intent = await buildIntent(tmp, collection);
+  const evaluation = await evaluateIntent(tmp, collection, intent, {
+    areas: [{
+      id: "QUALITY-GATE-OLD-PREFIX",
+      name: "Quality gate",
+      groupKey: "QUALITY_GATE",
+      prefixes: ["src/core/"],
+      purpose: "Gate review quality",
+      pattern: "quality gate",
+      testKeywords: ["gate"]
+    }]
+  });
+
+  assert.equal(evaluation.overreach.length, 0);
+  assert.ok(evaluation.results[0]?.evidence.some((evidence) => evidence.path === "src/gate/gate.ts"));
+});
+
 test("review-surfaces.EVIDENCE.4 turns invalid evidence references into invalid_evidence", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-invalid-evidence-"));
   fs.mkdirSync(path.join(tmp, "features"), { recursive: true });

@@ -69,6 +69,55 @@ test("review-surfaces.REVIEWER_VALUE.6 admits explicit contracts but keeps inter
   assert.ok(model.semantic_facts.api_changes.some((change) => change.path === internalPath), "internal fact remains in supporting ledger");
 });
 
+test("review-surfaces.REVIEWER_VALUE.6 admits a breaking internal export when concrete callers are identified", () => {
+  const internalPath = "src/internal/helper.ts";
+  const model = buildHumanReview({
+    packet: packet(),
+    prSurface: surface([internalPath]),
+    semanticFacts: {
+      ...emptySemanticFacts,
+      api_changes: [{
+        path: internalPath,
+        exports_added: [],
+        exports_removed: ["legacyHelper"],
+        signatures_changed: [],
+        used_by: { count: 2, top: ["src/a.ts", "src/b.ts"] }
+      }]
+    }
+  });
+
+  assert.ok(model.review_queue.some((item) => item.path === internalPath));
+  assert.ok(model.decision_projection?.findings.some((finding) =>
+    finding.root_cause === `caller_break:${internalPath}`
+  ));
+});
+
+test("review-surfaces.REVIEWER_VALUE.6 admits an internal API when its blast radius is truncated and unknown", () => {
+  const internalPath = "src/internal/helper.ts";
+  const model = buildHumanReview({
+    packet: packet(),
+    prSurface: surface([internalPath]),
+    semanticFacts: {
+      ...emptySemanticFacts,
+      api_changes: [{
+        path: internalPath,
+        exports_added: [],
+        exports_removed: ["legacyHelper"],
+        signatures_changed: [],
+        used_by: { count: 0, top: [], truncated: true }
+      }]
+    }
+  });
+
+  assert.ok(model.review_queue.some((item) => item.path === internalPath));
+  assert.ok(model.decision_projection?.findings.some((finding) =>
+    finding.root_cause === `api_blast_radius_unknown:${internalPath}`
+  ));
+  assert.ok(!model.decision_projection?.findings.some((finding) =>
+    finding.root_cause === `caller_break:${internalPath}`
+  ));
+});
+
 test("review-surfaces.REVIEWER_VALUE.6 public deletion manifestations share one high-priority root", () => {
   const publicPath = "types/public.d.ts";
   const deletionRisk = risk("PR-RISK-DELETE", "deleted_or_renamed_surface", publicPath, "low");
@@ -285,7 +334,7 @@ test("review-surfaces.REVIEWER_VALUE.4 deduplicates before the stable five-findi
   assert.equal(counts?.total_queue_items, (counts?.projected_queue_items ?? 0) + (counts?.supporting_queue_items ?? 0));
 });
 
-test("review-surfaces.REVIEWER_VALUE.4 uses authoritative affected intent before advisory conversation intent", () => {
+test("review-surfaces.REVIEWER_VALUE.8 leads with the reviewer goal and retains affected requirement anchors", () => {
   const conversationAnalysis: ConversationAnalysis = {
     status: "analyzed",
     provider: "agent-file",
@@ -295,16 +344,37 @@ test("review-surfaces.REVIEWER_VALUE.4 uses authoritative affected intent before
     claims: [], validation_claims: [], known_gaps: [], quality_flags: []
   };
   const authoritative = buildHumanReview({ packet: packet(), prSurface: surface(["src/reviewer.ts"]), conversationAnalysis });
-  assert.equal(authoritative.decision_projection?.active_intent.source, "affected_requirements");
-  assert.match(authoritative.decision_projection?.active_intent.summary ?? "", /REQ-DECISION/);
+  assert.equal(authoritative.decision_projection?.active_intent.source, "conversation_advisory");
+  assert.match(authoritative.decision_projection?.active_intent.summary ?? "", /Reviewer goal: An advisory interpretation/);
+  assert.ok(authoritative.decision_projection?.active_intent.requirement_ids.includes("REQ-DECISION"));
 
   const advisory = buildHumanReview({ packet: packet(), prSurface: surface(["src/reviewer.ts"], [], false), conversationAnalysis });
   assert.deepEqual(advisory.decision_projection?.active_intent, {
-    summary: "An advisory interpretation.",
+    summary: "Reviewer goal: An advisory interpretation.",
     source: "conversation_advisory",
     requirement_ids: [],
     event_ids: ["EVT-2"]
   });
+});
+
+test("reviewer usefulness summarizes affected intent without mid-word clipping and reports omitted requirements", () => {
+  const value = packet();
+  value.intent.requirements = Array.from({ length: 5 }, (_, index) => ({
+    ...requirement(`REQ-${index}`),
+    requirement: `${`Reviewer-visible requirement ${index} `.repeat(40)}finishes cleanly.`
+  }));
+  const pr = surface(["src/reviewer.ts"]);
+  pr.scope.affected_requirements = value.intent.requirements.map((entry) => ({
+    requirement_id: entry.id,
+    acai_id: entry.acai_id,
+    reasons: [{ rule: "changed_path_requirement_group", confidence: "high", path: "src/reviewer.ts" }]
+  }));
+
+  const summary = buildHumanReview({ packet: value, prSurface: pr }).decision_projection?.active_intent.summary ?? "";
+  assert.match(summary, /\[review-surfaces\.REQ-0\.1\]/);
+  assert.match(summary, /\(\+2 more affected requirements\)$/);
+  assert.ok(!/requirem… \[/u.test(summary), "each visible requirement ends at a word boundary before its id");
+  assert.ok(summary.length <= 2000);
 });
 
 test("review-surfaces.REVIEWER_VALUE.4 repo mode derives active intent from changed requirement text", () => {

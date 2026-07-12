@@ -12,6 +12,14 @@
 import path from "node:path";
 import ts from "typescript";
 
+const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"] as const;
+const INDEX_SOURCE_SUFFIXES = SOURCE_EXTENSIONS.map((extension) => `/index${extension}`);
+
+function isSourcePath(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  return SOURCE_EXTENSIONS.some((extension) => lower.endsWith(extension));
+}
+
 // Resolve the relative import / re-export / require / dynamic-import specifiers
 // of one source file to repo-relative module paths that actually exist. `exists`
 // answers whether a repo-relative path is a real file (the caller supplies a
@@ -19,13 +27,29 @@ import ts from "typescript";
 export function resolveRelativeImports(
   sourcePath: string,
   content: string,
-  exists: (repoRelativePath: string) => boolean
+  exists: (repoRelativePath: string) => boolean,
+  fallbackExists?: (repoRelativePath: string) => boolean
+): string[] {
+  return resolveImports(sourcePath, content, exists, fallbackExists);
+}
+
+function resolveImports(
+  sourcePath: string,
+  content: string,
+  exists: (repoRelativePath: string) => boolean,
+  fallbackExists?: (repoRelativePath: string) => boolean
 ): string[] {
   const source = ts.createSourceFile(sourcePath, content, ts.ScriptTarget.Latest, false);
   const specifiers = new Set<string>();
   const visit = (node: ts.Node): void => {
-    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
       specifiers.add(node.moduleSpecifier.text);
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+      specifiers.add(node.moduleSpecifier.text);
+    } else if (ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      node.moduleReference.expression && ts.isStringLiteral(node.moduleReference.expression)) {
+      specifiers.add(node.moduleReference.expression.text);
     } else if (ts.isCallExpression(node)) {
       const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require";
       const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
@@ -38,30 +62,59 @@ export function resolveRelativeImports(
   visit(source);
 
   const fromDir = path.posix.dirname(toPosix(sourcePath));
-  const targets = new Set<string>();
-  for (const specifier of specifiers) {
-    // Skip bare specifiers (node_modules) and path aliases — only same-repo
-    // relative imports map a test to its subject.
-    if (!specifier.startsWith(".")) {
-      continue;
-    }
-    const resolved = resolveSpecifier(fromDir, specifier, exists);
-    if (resolved) {
-      targets.add(resolved);
-    }
+  return [...new Set([...specifiers]
+    // Bare specifiers and path aliases are outside the bounded local graph.
+    .filter((specifier) => specifier.startsWith("."))
+    .map((specifier) => resolveSpecifierWithFallback(fromDir, specifier, exists, fallbackExists))
+    .filter((target): target is string => Boolean(target)))].sort();
+}
+
+// Architecture-cycle claims are runtime claims, so resolve the emitted module
+// using the reviewed tree's compiler options. This respects type erasure and
+// `verbatimModuleSyntax` instead of guessing from source syntax alone.
+export function resolveRuntimeRelativeImports(
+  sourcePath: string,
+  content: string,
+  exists: (repoRelativePath: string) => boolean,
+  compilerOptions: ts.CompilerOptions = {}
+): string[] {
+  if (!isSourcePath(sourcePath) || /\.d\.(?:ts|mts|cts)$/i.test(sourcePath)) {
+    return [];
   }
-  return [...targets].sort();
+  const emitted = ts.transpileModule(content, {
+    fileName: sourcePath,
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.Node16,
+      jsx: ts.JsxEmit.ReactJSX,
+      ...compilerOptions
+    },
+    reportDiagnostics: false
+  }).outputText;
+  return resolveImports(sourcePath, emitted, exists);
 }
 
 function resolveSpecifier(fromDir: string, specifier: string, exists: (p: string) => boolean): string | undefined {
   const exact = normalize(path.posix.join(fromDir, specifier));
+  const explicitJsSuffix = exact.match(/\.(js|jsx|mjs|cjs)$/i)?.[1]?.toLowerCase();
   // An import naming an existing JS file is that file — only fall back to the
   // "./x.js means ./x.ts" TS convention when the exact target does not exist.
   if (/\.(js|jsx|mjs|cjs)$/i.test(exact) && exists(exact)) {
     return exact;
   }
   const base = exact.replace(/\.(js|jsx|mjs|cjs)$/i, "");
-  const candidates = [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}/index.ts`, `${base}/index.tsx`, `${base}/index.js`];
+  const mappedExtensions = explicitJsSuffix === "mjs" ? [".mts"]
+    : explicitJsSuffix === "cjs" ? [".cts"]
+      : explicitJsSuffix === "jsx" ? [".tsx"]
+        : explicitJsSuffix === "js" ? [".ts", ".tsx"]
+          : undefined;
+  const candidates = mappedExtensions
+    ? mappedExtensions.map((extension) => `${base}${extension}`)
+    : [
+        base,
+        ...SOURCE_EXTENSIONS.map((extension) => `${base}${extension}`),
+        ...INDEX_SOURCE_SUFFIXES.map((suffix) => `${base}${suffix}`)
+      ];
   for (const candidate of candidates) {
     if (candidate && exists(candidate)) {
       return candidate;
@@ -81,6 +134,10 @@ function toPosix(p: string): string {
 export interface ImportGraph {
   // repo-relative module path -> sorted importer file paths.
   importers: Map<string, string[]>;
+  // repo-relative importer path -> sorted imported module paths. This forward
+  // view lets architecture drift prove a concrete file return path instead of
+  // inferring a cycle from unrelated directory-aggregate edges.
+  dependencies: Map<string, string[]>;
   // True when the file cap stopped the build before every file was parsed.
   truncated: boolean;
   // File contents read during the build, so findSymbolImporters does not re-read
@@ -89,6 +146,17 @@ export interface ImportGraph {
 }
 
 export const DEFAULT_IMPORT_GRAPH_FILE_CAP = 4000;
+
+export function importGraphWouldTruncate(
+  files: readonly string[],
+  fileCap = DEFAULT_IMPORT_GRAPH_FILE_CAP
+): boolean {
+  let count = 0;
+  for (const file of files) {
+    if (isSourcePath(file) && ++count > fileCap) return true;
+  }
+  return false;
+}
 
 // review-surfaces.PERF.1: wrap an existence probe in a per-build memo so each
 // distinct repo-relative path triggers at most ONE underlying lookup for the
@@ -118,22 +186,31 @@ export function buildImportGraph(options: {
   read: (filePath: string) => string | undefined;
   exists: (filePath: string) => boolean;
   fileCap?: number;
+  resolveImports?: (
+    sourcePath: string,
+    content: string,
+    exists: (repoRelativePath: string) => boolean
+  ) => string[];
+  retainContents?: boolean;
 }): ImportGraph {
   const cap = options.fileCap ?? DEFAULT_IMPORT_GRAPH_FILE_CAP;
   // review-surfaces.PERF.1: one memo shared by every resolveRelativeImports call
   // in this build, so a path probed across many files hits the cache once.
   const exists = memoizeExists(options.exists);
-  const sources = options.files.filter((file) => /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(file)).sort();
+  const sources = options.files.filter(isSourcePath).sort();
   const truncated = sources.length > cap;
   const importersByModule = new Map<string, Set<string>>();
+  const dependencies = new Map<string, string[]>();
   const contents = new Map<string, string>();
   for (const file of sources.slice(0, cap)) {
     const content = options.read(file);
     if (!content) {
       continue;
     }
-    contents.set(file, content);
-    for (const target of resolveRelativeImports(file, content, exists)) {
+    if (options.retainContents !== false) contents.set(file, content);
+    const targets = (options.resolveImports ?? resolveRelativeImports)(file, content, exists);
+    dependencies.set(file, targets);
+    for (const target of targets) {
       let bucket = importersByModule.get(target);
       if (!bucket) {
         bucket = new Set();
@@ -146,7 +223,7 @@ export function buildImportGraph(options: {
   for (const [module, bucket] of importersByModule) {
     importers.set(module, [...bucket].sort());
   }
-  return { importers, truncated, contents };
+  return { importers, dependencies, truncated, contents };
 }
 
 // BLAST_RADIUS.2: the importers of `modulePath` that actually reference one of
@@ -154,9 +231,12 @@ export function buildImportGraph(options: {
 // resolving to the module, or a namespace import of the module whose
 // `ns.symbol` appears in the body. An identically-named symbol imported from a
 // DIFFERENT module never counts. Returns sorted unique paths.
-// Matches import declarations AND re-export barrels (`export { x } from "..."`).
-// Captures: 1 = default binding, 2 = namespace alias, 3 = named list, 4 = spec.
-const IMPORT_DECL = /(?:import|export)\s+(?:type\s+)?(?:([A-Za-z_$][\w$]*)\s*,?\s*)?(?:\*\s+as\s+([A-Za-z_$][\w$]*)|\{([^}]*)\})?\s*from\s*["']([^"']+)["']/g;
+interface ImporterSyntax {
+  source: ts.SourceFile;
+  qualifiedReferences?: Set<string>;
+}
+
+const importerSyntaxByGraph = new WeakMap<ImportGraph, Map<string, ImporterSyntax>>();
 
 export function findSymbolImporters(options: {
   graph: ImportGraph;
@@ -164,6 +244,7 @@ export function findSymbolImporters(options: {
   symbols: string[];
   read: (filePath: string) => string | undefined;
   exists?: (filePath: string) => boolean;
+  fallbackExists?: (filePath: string) => boolean;
 }): string[] {
   const importerPaths = options.graph.importers.get(options.modulePath) ?? [];
   if (importerPaths.length === 0 || options.symbols.length === 0) {
@@ -176,6 +257,17 @@ export function findSymbolImporters(options: {
   const readCached = (filePath: string): string | undefined =>
     options.graph.contents.get(filePath) ?? options.read(filePath);
   const symbolSet = new Set(options.symbols);
+  const symbolPaths = options.symbols.map((symbol) =>
+    (symbol.startsWith("namespace:") ? symbol.slice("namespace:".length) : symbol).split(".").filter(Boolean)
+  );
+  const symbolPathsByRoot = new Map<string, string[][]>();
+  for (const symbolPath of symbolPaths) {
+    const root = symbolPath[0];
+    if (!root) continue;
+    const paths = symbolPathsByRoot.get(root) ?? [];
+    paths.push(symbolPath);
+    symbolPathsByRoot.set(root, paths);
+  }
   const result: string[] = [];
   for (const importer of importerPaths) {
     const content = readCached(importer);
@@ -183,28 +275,79 @@ export function findSymbolImporters(options: {
       continue;
     }
     const fromDir = path.posix.dirname(toPosix(importer));
+    let syntaxCache = importerSyntaxByGraph.get(options.graph);
+    if (!syntaxCache) {
+      syntaxCache = new Map();
+      importerSyntaxByGraph.set(options.graph, syntaxCache);
+    }
+    let syntax = syntaxCache.get(importer);
+    if (!syntax) {
+      syntax = { source: ts.createSourceFile(importer, content, ts.ScriptTarget.Latest, false) };
+      syntaxCache.set(importer, syntax);
+    }
+    const qualifiedReferences = (): Set<string> => {
+      syntax!.qualifiedReferences ??= collectQualifiedReferenceKeys(syntax!.source);
+      return syntax!.qualifiedReferences;
+    };
+    const resolvesReviewedModule = (specifier: string): boolean =>
+      specifier.startsWith(".") &&
+      resolveSpecifierWithFallback(fromDir, specifier, exists, options.fallbackExists) === options.modulePath;
     let references = false;
-    for (const decl of content.matchAll(IMPORT_DECL)) {
-      const [, defaultBinding, nsAlias, named, specifier] = decl;
-      if (!specifier.startsWith(".")) {
+    for (const statement of syntax.source.statements) {
+      if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+        if (!resolvesReviewedModule(statement.moduleSpecifier.text)) {
+          continue;
+        }
+        const clause = statement.importClause;
+        if (!clause) continue;
+        if (clause.name && symbolSet.has("default")) {
+          references = true;
+          break;
+        }
+        const bindings = clause.namedBindings;
+        if (bindings && ts.isNamedImports(bindings)) {
+          const namedMatch = bindings.elements.some((element) => {
+            const imported = (element.propertyName ?? element.name).text;
+            const matchingPaths = symbolPathsByRoot.get(imported);
+            if (!matchingPaths) return false;
+            if (matchingPaths.some((symbolPath) => symbolPath.length === 1)) return true;
+            return matchingPaths.some((symbolPath) =>
+              qualifiedReferences().has([element.name.text, ...symbolPath.slice(1)].join("."))
+            );
+          });
+          if (namedMatch) {
+            references = true;
+            break;
+          }
+        } else if (bindings && ts.isNamespaceImport(bindings) && symbolPaths.some((symbolPath) =>
+          qualifiedReferences().has([bindings.name.text, ...symbolPath].join(".")))) {
+          references = true;
+          break;
+        }
         continue;
       }
-      const resolved = resolveSpecifier(fromDir, specifier, exists);
-      if (resolved !== options.modulePath) {
+      if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+        if (!resolvesReviewedModule(statement.moduleSpecifier.text)) {
+          continue;
+        }
+        if (!statement.exportClause || ts.isNamespaceExport(statement.exportClause)) {
+          references = true;
+          break;
+        }
+        if (statement.exportClause.elements.some((element) =>
+          symbolPathsByRoot.has((element.propertyName ?? element.name).text))) {
+          references = true;
+          break;
+        }
         continue;
       }
-      // `import Foo from "./module"` consumes the default export.
-      if (defaultBinding && symbolSet.has("default")) {
-        references = true;
-        break;
-      }
-      if (named && named.split(",").some((entry) => symbolSet.has(entry.replace(/\s+as\s+.*/, "").replace(/^type\s+/, "").trim()))) {
-        references = true;
-        break;
-      }
-      if (nsAlias) {
-        const used = [...symbolSet].some((symbol) => new RegExp(`\\b${escapeRegExp(nsAlias)}\\.${escapeRegExp(symbol)}\\b`).test(content));
-        if (used) {
+      if (ts.isImportEqualsDeclaration(statement) &&
+        ts.isExternalModuleReference(statement.moduleReference) &&
+        statement.moduleReference.expression &&
+        ts.isStringLiteral(statement.moduleReference.expression) &&
+        resolvesReviewedModule(statement.moduleReference.expression.text)) {
+        if (symbolSet.has("export=") || symbolPaths.some((symbolPath) =>
+          qualifiedReferences().has([statement.name.text, ...symbolPath].join(".")))) {
           references = true;
           break;
         }
@@ -217,6 +360,37 @@ export function findSymbolImporters(options: {
   return result;
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function collectQualifiedReferenceKeys(source: ts.SourceFile): Set<string> {
+  const keys = new Set<string>();
+  const parts = (node: ts.Node): string[] | undefined => {
+    if (ts.isIdentifier(node)) return [node.text];
+    if (ts.isPropertyAccessExpression(node)) {
+      const prefix = parts(node.expression);
+      return prefix ? [...prefix, node.name.text] : undefined;
+    }
+    if (ts.isQualifiedName(node)) {
+      const prefix = parts(node.left);
+      return prefix ? [...prefix, node.right.text] : undefined;
+    }
+    return undefined;
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isPropertyAccessExpression(node) || ts.isQualifiedName(node)) {
+      const pathParts = parts(node);
+      if (pathParts) keys.add(pathParts.join("."));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return keys;
+}
+
+function resolveSpecifierWithFallback(
+  fromDir: string,
+  specifier: string,
+  exists: (path: string) => boolean,
+  fallbackExists?: (path: string) => boolean
+): string | undefined {
+  return resolveSpecifier(fromDir, specifier, exists) ??
+    (fallbackExists ? resolveSpecifier(fromDir, specifier, fallbackExists) : undefined);
 }

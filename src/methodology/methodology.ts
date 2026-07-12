@@ -10,6 +10,7 @@ import {
   validationOutcomeIsHypothetical,
   validationTextActualOutcomeKind,
   validationTextHasExactlyOneOutcome,
+  validationTextMentionsTooling,
   validationTextStartsWithOutcome,
 } from "../core/command-classify";
 
@@ -334,7 +335,7 @@ function boundedEventEntry(event: ConversationEvent, summary: string, limit: num
 
 function isValidationClaim(summary: string): boolean {
   const lower = summary.toLowerCase();
-  const mentionsValidation = /\b(?:tests?|tested|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test|tsc)\b/.test(lower);
+  const mentionsValidation = validationTextMentionsTooling(lower) || /\btested\b/.test(lower);
   if (!mentionsValidation) return false;
   const claimsOutcome = validationTextActualOutcomeKind(lower) !== undefined ||
     (/\b(?:is|was)\s+(?:a\s+)?success\b/.test(lower) && !validationOutcomeIsHypothetical(lower));

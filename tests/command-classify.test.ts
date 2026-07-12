@@ -227,6 +227,9 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeLocalValidationCommand("pnpm run build:fast"), true);
   assert.equal(commandLooksLikeLocalValidationCommand("pnpm run lint:fix"), true);
   assert.equal(commandLooksLikeLocalValidationCommand("pnpm run typecheck:ci"), true);
+  assert.equal(commandLooksLikeLocalValidationCommand("pnpm run local-gate"), true);
+  assert.equal(commandLooksLikeLocalValidationCommand("npm run quality-gate:ci"), true);
+  assert.equal(commandLooksLikeLocalValidationCommand("pnpm run validate"), true);
   assert.equal(commandLooksLikeLocalValidationCommand("npm run-script build"), true);
   assert.equal(commandLooksLikeLocalValidationCommand("npm run-script --if-present lint"), true);
   assert.equal(commandLooksLikeLocalValidationCommand("npm run-script typecheck"), true);

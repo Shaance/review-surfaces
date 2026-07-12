@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildImportGraph, resolveRelativeImports } from "../src/collector/import-graph";
+import ts from "typescript";
+import { buildImportGraph, importGraphWouldTruncate, resolveRelativeImports, resolveRuntimeRelativeImports } from "../src/collector/import-graph";
 
 // review-surfaces.PERF.1: buildImportGraph memoizes the injected existence probe
 // so each distinct repo-relative path triggers AT MOST ONE underlying lookup per
@@ -58,4 +59,51 @@ test("review-surfaces.PERF.1 buildImportGraph memoizes the existence probe: the 
   // set, proving the memo changed only the call count, not the resolution.
   const targetsA = resolveRelativeImports("src/a.ts", contents["src/a.ts"], (p) => realFiles.has(p));
   assert.deepEqual(targetsA, ["src/shared.ts"]);
+});
+
+test("review-surfaces.ARCH_DRIFT.1 runtime imports include value import-equals but exclude type-only import-equals", () => {
+  const files = new Set(["src/value.ts", "src/type.ts"]);
+  const imports = resolveRuntimeRelativeImports("src/main.ts", [
+    `import value = require("./value");`,
+    `import type TypeOnly = require("./type");`,
+    `console.log(value);`
+  ].join("\n"), (filePath) => files.has(filePath));
+  assert.deepEqual(imports, ["src/value.ts"]);
+  assert.deepEqual(resolveRelativeImports("src/main.ts", `import type TypeOnly = require("./type");`,
+    (filePath) => files.has(filePath)), ["src/type.ts"]);
+});
+
+test("review-surfaces.ARCH_DRIFT.1 runtime imports honor verbatimModuleSyntax", () => {
+  const exists = (filePath: string): boolean => filePath === "src/types.ts";
+  const source = `import { Options } from "./types";\nexport type Config = Options;`;
+  assert.deepEqual(resolveRuntimeRelativeImports("src/main.ts", source, exists), []);
+  assert.deepEqual(resolveRuntimeRelativeImports("src/main.ts", source, exists, {
+    verbatimModuleSyntax: true,
+    module: ts.ModuleKind.ESNext
+  }), ["src/types.ts"]);
+});
+
+test("review-surfaces.ARCH_DRIFT.1 import graph source policy includes modern TypeScript module extensions", () => {
+  const contents = {
+    "src/a.mts": `import { b } from "./b";`,
+    "src/b.cts": `export const b = 1;`
+  };
+  const graph = buildImportGraph({
+    files: Object.keys(contents),
+    read: (filePath) => contents[filePath as keyof typeof contents],
+    exists: (filePath) => filePath in contents
+  });
+  assert.deepEqual(graph.dependencies.get("src/a.mts"), ["src/b.cts"]);
+  assert.equal(importGraphWouldTruncate(Object.keys(contents), 1), true);
+});
+
+test("review-surfaces.ARCH_DRIFT.1 explicit JS-family suffixes only map to matching TypeScript module kinds", () => {
+  const files = new Set(["src/foo.ts", "src/only-mts.mts", "src/only-cts.cts"]);
+  const exists = (filePath: string): boolean => files.has(filePath);
+
+  assert.deepEqual(resolveRelativeImports("src/main.ts", 'import "./foo.js";', exists), ["src/foo.ts"]);
+  assert.deepEqual(resolveRelativeImports("src/main.ts", 'import "./only-mts.js";', exists), []);
+  assert.deepEqual(resolveRelativeImports("src/main.ts", 'import "./only-cts.mjs";', exists), []);
+  assert.deepEqual(resolveRelativeImports("src/main.ts", 'import "./only-mts.mjs";', exists), ["src/only-mts.mts"]);
+  assert.deepEqual(resolveRelativeImports("src/main.ts", 'import "./only-cts.cjs";', exists), ["src/only-cts.cts"]);
 });

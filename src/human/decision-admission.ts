@@ -2,6 +2,7 @@ import type { EvidenceRef } from "../contracts/evidence";
 import type { PrReviewSurfaceModel, PrRiskCandidate, StructuredDiff } from "../contracts/pr-review";
 import type { ReviewPacket } from "../render/packet";
 import { isExplicitContractSurfacePath, isPersistedSchemaPath } from "../risks/contract-surface";
+import { isBreakingApiChange, type ApiSurfaceChange } from "../risks/semantic-diff";
 import { classifyValidationRunState, type ValidationRunState } from "../risks/validation-state";
 import { affectedRequirementKeysForRange } from "./intent-scope";
 
@@ -11,6 +12,18 @@ export interface DecisionScope {
   affected_requirement_ids: ReadonlySet<string>;
   head_sha: string;
   working_tree_dirty: boolean;
+}
+
+export function isDecisionRelevantApiChange(change: ApiSurfaceChange): boolean {
+  return decisionRootForApiChange(change) !== undefined;
+}
+
+export function decisionRootForApiChange(change: ApiSurfaceChange): string | undefined {
+  if (!isBreakingApiChange(change)) return undefined;
+  if (isExplicitContractSurfacePath(change.path)) return `public_contract:${change.path}`;
+  if ((change.used_by?.count ?? 0) > 0) return `caller_break:${change.path}`;
+  if (change.used_by?.truncated) return `api_blast_radius_unknown:${change.path}`;
+  return undefined;
 }
 
 export function buildDecisionScope(input: {

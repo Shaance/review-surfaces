@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { analyzeConversation } from "../src/conversation/analysis";
-import { buildDeterministicConversationBrief } from "../src/conversation/deterministic-brief";
+import { buildDeterministicConversationBrief, mergeConversationAnalysis } from "../src/conversation/deterministic-brief";
 import type { ConversationEvent } from "../src/conversation/events";
 import { mockProvider, type ReasoningProvider, type StructuredResult } from "../src/llm/provider";
-import { conversationAnalysisContextRows } from "../src/human/conversation-review-presentation";
+import { conversationAnalysisContextRows, conversationReviewPresentation } from "../src/human/conversation-review-presentation";
 import { buildAdapterInput, normalizeConversation } from "../src/conversation/registry";
 
 const EVENTS: ConversationEvent[] = [
@@ -167,6 +167,168 @@ test("review-surfaces.CONVERSATION_REVIEW.5 summarizes the latest normal refinem
   }], "mock");
 
   assert.match(brief.summary, /Also add retry metrics/);
+});
+
+test("review-surfaces.REVIEWER_VALUE.8 keeps reasserted instructions and excludes status questions from direction", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "goal", actor: "user", kind: "message", summary: "Use X.", raw_index: 0 },
+    { id: "correction", actor: "user", kind: "message", summary: "Actually, don't use X.", raw_index: 1 },
+    { id: "reassertion", actor: "user", kind: "message", summary: "Use X.", raw_index: 2 },
+    { id: "status", actor: "user", kind: "message", summary: "Why hasn't it merged yet?", raw_index: 3 }
+  ], "mock");
+  assert.deepEqual(brief.refinements.map((item) => item.event_ids[0]), ["correction", "reassertion"]);
+  assert.equal(brief.summary, "Stated goal: Use X.");
+  assert.doesNotMatch(brief.summary, /merged yet/);
+});
+
+test("review-surfaces.REVIEWER_VALUE.8 preserves an identical instruction reasserted after an assistant turn", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "first", actor: "user", kind: "message", summary: "Use X.", raw_index: 0 },
+    { id: "response", actor: "assistant", kind: "message", summary: "I will use X.", raw_index: 1 },
+    { id: "reasserted", actor: "user", kind: "message", summary: "Use X.", raw_index: 2 }
+  ], "mock");
+
+  assert.deepEqual(brief.intent.map((item) => item.event_ids[0]), ["first"]);
+  assert.deepEqual(brief.refinements.map((item) => item.event_ids[0]), ["reasserted"]);
+});
+
+test("review-surfaces.REVIEWER_VALUE.9 collapses transport copies across system metadata but not tool work", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "app-copy", actor: "user", kind: "message", summary: "Use X.", raw_index: 0 },
+    { id: "metadata", actor: "system", kind: "message", summary: "attachment metadata", raw_index: 1 },
+    { id: "canonical-copy", actor: "user", kind: "message", summary: "Use X.", raw_index: 2 },
+    { id: "tool-work", actor: "tool", kind: "tool_result", summary: "command completed", raw_index: 3 },
+    { id: "after-tool", actor: "user", kind: "message", summary: "Use X.", raw_index: 4 }
+  ], "mock");
+
+  assert.deepEqual(brief.intent.map((item) => item.event_ids[0]), ["app-copy"]);
+  assert.deepEqual(brief.refinements.map((item) => item.event_ids[0]), ["after-tool"]);
+});
+
+test("review-surfaces.REVIEWER_VALUE.8 history questions are not reviewer direction", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "goal", actor: "user", kind: "message", summary: "Audit the report.", raw_index: 0 },
+    { id: "used", actor: "user", kind: "message", summary: "Did you use the latest head?", raw_index: 1 },
+    { id: "why", actor: "user", kind: "message", summary: "Can you tell me why it failed?", raw_index: 2 },
+    { id: "merged", actor: "user", kind: "message", summary: "Was the fix merged?", raw_index: 3 }
+  ], "mock");
+  assert.deepEqual(brief.refinements, []);
+  assert.equal(brief.summary, "Stated goal: Audit the report.");
+});
+
+test("review-surfaces.REVIEWER_VALUE.8 retains real-session corrections and make-sure directives", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "goal", actor: "user", kind: "message", summary: "Audit the report.", raw_index: 0 },
+    { id: "wrong", actor: "user", kind: "message", summary: "That's wrong. You missed those findings.", raw_index: 1 },
+    { id: "divide", actor: "user", kind: "message", summary: "Make sure that you divide the work between milestones.", raw_index: 2 }
+  ], "mock");
+  assert.deepEqual(brief.refinements.map((item) => item.event_ids[0]), ["wrong", "divide"]);
+  assert.match(brief.summary, /Make sure that you divide/);
+});
+
+test("review-surfaces.REVIEWER_VALUE.8 retains common implement and address directives", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "goal", actor: "user", kind: "message", summary: "Audit the report.", raw_index: 0 },
+    { id: "tests", actor: "user", kind: "message", summary: "Please implement the remaining tests.", raw_index: 1 },
+    { id: "validation", actor: "user", kind: "message", summary: "Address the failing validation.", raw_index: 2 }
+  ], "mock");
+
+  assert.deepEqual(brief.refinements.map((item) => item.event_ids[0]), ["tests", "validation"]);
+});
+
+test("review-surfaces.REVIEWER_VALUE.8 does not treat terse status questions as directives", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "goal", actor: "user", kind: "message", summary: "Audit the report.", raw_index: 0 },
+    { id: "test-status", actor: "user", kind: "message", summary: "Test status? It has been a while.", raw_index: 1 },
+    { id: "complete", actor: "user", kind: "message", summary: "Complete?", raw_index: 2 }
+  ], "mock");
+
+  assert.deepEqual(brief.refinements, []);
+});
+
+test("review-surfaces.REVIEWER_VALUE.8 strips an inline attachment path without deleting surrounding intent", () => {
+  const brief = buildDeterministicConversationBrief([{
+    id: "inline-attachment",
+    actor: "user",
+    kind: "message",
+    summary: "Use this proof /tmp/codex-remote-attachments/session/proof.jpg and update the reviewer summary.",
+    raw_index: 0
+  }], "mock");
+  assert.equal(brief.intent[0]?.text, "Use this proof and update the reviewer summary.");
+  assert.doesNotMatch(JSON.stringify(brief), /codex-remote-attachments/);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.5 review-surfaces.REVIEWER_VALUE.9 real app envelopes preserve the stated goal without duplicate or attachment intent", () => {
+  const brief = buildDeterministicConversationBrief([{
+    id: "initial-audit",
+    actor: "user",
+    kind: "message",
+    summary: "Audit the report and make it genuinely useful for a reviewer.",
+    raw_index: 0
+  }, {
+    id: "app-envelope",
+    actor: "user",
+    kind: "message",
+    summary: "The PR was already approved; update the autoland skill.",
+    raw_index: 1
+  }, {
+    id: "image-open",
+    actor: "user",
+    kind: "message",
+    summary: '<image name="Pasted Image 1" path="/tmp/codex-remote-attachments/session/screenshot.jpg">',
+    raw_index: 2
+  }, {
+    id: "image-close",
+    actor: "user",
+    kind: "message",
+    summary: "</image>",
+    raw_index: 3
+  }, {
+    id: "canonical-envelope-copy",
+    actor: "user",
+    kind: "message",
+    summary: "The PR was already approved; update the autoland skill.",
+    raw_index: 4
+  }, {
+    id: "mixed-attachment",
+    actor: "user",
+    kind: "message",
+    summary: 'Keep the reviewer decision first. <image name="proof" path="/tmp/codex-remote-attachments/session/proof.jpg"></image>',
+    raw_index: 5
+  }], "mock");
+
+  assert.match(brief.summary, /^Stated goal: Audit the report and make it genuinely useful for a reviewer\./);
+  assert.match(brief.summary, /Latest refinement: Keep the reviewer decision first\./);
+  assert.deepEqual(brief.refinements, [{
+    text: "The PR was already approved; update the autoland skill.",
+    event_ids: ["app-envelope"]
+  }, {
+    text: "Keep the reviewer decision first.",
+    event_ids: ["mixed-attachment"]
+  }]);
+  assert.doesNotMatch(JSON.stringify(brief), /codex-remote-attachments|<\/?image/i);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 bounded observations retain the latest structured current validation", () => {
+  const brief = buildDeterministicConversationBrief(Array.from({ length: 15 }, (_, raw_index): ConversationEvent => ({
+    id: `validation-${raw_index}`,
+    actor: "tool",
+    kind: "tool_result",
+    summary: raw_index === 14 ? "The exact-head local gate passed." : `Focused validation ${raw_index} passed.`,
+    command: raw_index === 14 ? "pnpm run local-gate" : `pnpm test --filter area-${raw_index}`,
+    result_status: "passed",
+    exit_code: 0,
+    raw_index
+  })), "mock");
+
+  assert.equal(brief.validation_observations?.length, 12);
+  assert.equal(brief.validation_observations?.[0]?.event_ids[0], "validation-0");
+  assert.deepEqual(brief.validation_observations?.at(-1), {
+    text: "The exact-head local gate passed.",
+    event_ids: ["validation-14"],
+    status: "passed",
+    command: "pnpm run local-gate"
+  });
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.6 recognizes validation commands with bare environment assignments", () => {
@@ -491,6 +653,15 @@ test("review-surfaces.CONVERSATION_REVIEW.6 actual outcomes survive nearby hypot
     "actual-9",
     "actual-10"
   ]);
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.6 recognizes local-gate and quality-gate shorthand claims", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "local", actor: "assistant", kind: "message", summary: "local-gate PASS", raw_index: 0 },
+    { id: "quality", actor: "assistant", kind: "message", summary: "quality-gate passed", raw_index: 1 }
+  ], "mock");
+
+  assert.deepEqual(brief.validation_claims.map((item) => item.event_ids[0]), ["local", "quality"]);
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.6 subordinate expectations do not erase actual outcomes", () => {
@@ -993,7 +1164,7 @@ test("review-surfaces.CONVERSATION_REVIEW.5 successful enrichment preserves ever
   };
   const result = await analyzeConversation({ provider, providerName: "ai-sdk", events: EVENTS });
 
-  assert.deepEqual(result.intent.slice(-baseline.intent.length), baseline.intent);
+  assert.deepEqual(result.intent.slice(0, baseline.intent.length), baseline.intent);
   for (const section of ["refinements", "constraints", "non_goals", "claims", "validation_claims"] as const) {
     assert.deepEqual(result[section].slice(0, baseline[section].length), baseline[section], `${section} keeps the deterministic prefix`);
   }
@@ -1069,4 +1240,28 @@ test("review-surfaces.CONVERSATION_REVIEW.5 transport payloads are excluded with
     event_ids: ["real-goal"]
   }]);
   assert.ok(!JSON.stringify(brief).includes("transport"));
+});
+
+test("provider-only conversation summaries are labeled as AI, not local", () => {
+  const baseline = buildDeterministicConversationBrief([{
+    id: "assistant-only",
+    actor: "assistant",
+    kind: "message",
+    summary: "I can inspect that next.",
+    raw_index: 0
+  }], "ai-sdk");
+  const merged = mergeConversationAnalysis(baseline, {
+    ...baseline,
+    status: "analyzed",
+    provider: "ai-sdk",
+    summary: "Provider-derived conversation synopsis.",
+    quality_flags: []
+  });
+
+  assert.ok(merged.quality_flags.includes("conversation_no_eligible_baseline_events"));
+  assert.equal(conversationReviewPresentation(merged).summaryLabel, "AI synopsis");
+  assert.equal(conversationReviewPresentation({
+    ...merged,
+    quality_flags: ["conversation_deterministic_baseline"]
+  }).summaryLabel, "Local synopsis");
 });

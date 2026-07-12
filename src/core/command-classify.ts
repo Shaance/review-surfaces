@@ -1,6 +1,11 @@
 import { normalizeValidationCommand, normalizedCommandLooksLikeStandaloneValidation } from "./validation-command";
 
 const VALIDATION_SUCCESS_OUTCOME_SOURCE = String.raw`\b(?:pass(?:ed|es|ing)?|green|succeed(?:s|ed|ing)?|successful|tested|validated|verified)\b`;
+const VALIDATION_TOOLING = /\b(?:tests?|test suite|lint|typecheck|type check|build|validation|checks?|local[- ]gate|quality[- ]gate|pnpm|npm|yarn|bun|node --test|tsc)\b/i;
+
+export function validationTextMentionsTooling(text: string): boolean {
+  return VALIDATION_TOOLING.test(text);
+}
 const VALIDATION_FAILURE_OUTCOME_SOURCE = String.raw`\b(?:fail(?:ed|s|ing)?|errored|errors?)\b`;
 const VALIDATION_OUTCOME_SOURCE = String.raw`(?:${VALIDATION_SUCCESS_OUTCOME_SOURCE}|${VALIDATION_FAILURE_OUTCOME_SOURCE})`;
 const VALIDATION_OUTCOME_WORD = new RegExp(VALIDATION_OUTCOME_SOURCE, "i");
@@ -765,7 +770,9 @@ function packageRunScriptLooksLikeTest(body: string): boolean {
 }
 
 function packageRunScriptLooksLikeLocalValidation(body: string): boolean {
-  return /^(?:lint|typecheck|build|check)(?::[\w.:-]+)?$/.test(packageRunScriptToken(body) ?? "");
+  const script = packageRunScriptToken(body) ?? "";
+  return /^(?:lint|typecheck|build|check|validate|verify)(?::[\w.:-]+)?$/.test(script) ||
+    /^(?:[\w.-]+-)?gate(?::[\w.:-]+)?$/.test(script);
 }
 
 function packageTestScriptAlias(body: string): string | undefined {

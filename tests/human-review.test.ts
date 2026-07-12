@@ -451,7 +451,7 @@ test("review-surfaces.SEMANTIC_DIFF.4 facts carry concrete language into the que
       }
     ],
     api_changes: [
-      { path: "src/api.ts", exports_added: [], exports_removed: ["legacyExport"], signatures_changed: [] }
+      { path: "types/public.d.ts", exports_added: [], exports_removed: ["legacyExport"], signatures_changed: [] }
     ],
     test_weakening: []
   };
@@ -481,12 +481,188 @@ test("review-surfaces.SEMANTIC_DIFF.4 facts carry concrete language into the que
   const apiLens = model.risk_lens_findings.find((finding) => finding.lens === "api_contract");
   assert.ok(apiLens, "an api_contract lens finding is produced from the facts");
   assert.ok(
-    apiLens!.paths.includes("src/api.ts") || apiLens!.paths.includes("schemas/human_review.schema.json"),
+    apiLens!.paths.includes("types/public.d.ts") || apiLens!.paths.includes("schemas/human_review.schema.json"),
     "the lens carries the changed contract paths from the facts"
   );
 });
 
-test("review-surfaces.REVIEWER_VALUE.3 additive schema changes stay clarifying and blocking surfaces agree with blockers", () => {
+test("reviewer usefulness keeps additive schemas and internal exports out of ready-to-post comments", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    semanticFacts: {
+      schema_changes: [{
+        path: "schemas/human_review.schema.json",
+        properties_added: ["optional_note"],
+        properties_removed: [],
+        required_added: [],
+        required_removed: [],
+        type_changes: [],
+        enum_changes: []
+      }],
+      api_changes: [{
+        path: "src/internal/helper.ts",
+        exports_added: ["newHelper"],
+        exports_removed: ["legacyHelper"],
+        signatures_changed: []
+      }],
+      test_weakening: []
+    }
+  });
+
+  assert.ok(model.semantic_facts.schema_changes.length > 0, "additive facts remain available as supporting detail");
+  assert.ok(model.semantic_facts.api_changes.length > 0, "internal export facts remain available as supporting detail");
+  assert.ok(!model.review_queue.some((item) =>
+    item.path === "schemas/human_review.schema.json" || item.path === "src/internal/helper.ts"
+  ));
+  assert.ok(!model.suggested_comments.some((comment) => /optional_note|newHelper|exported API changed/i.test(comment.body)));
+  assert.ok(!model.suggested_comments.some((comment) => /confirm callers are updated/i.test(comment.body)));
+  assert.ok(!model.suggested_comments.some((comment) => /compatibility fixture/i.test(comment.body)));
+});
+
+test("reviewer usefulness warns that a non-empty truncated importer set is incomplete", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    semanticFacts: {
+      schema_changes: [],
+      api_changes: [{
+        path: "types/public.d.ts",
+        exports_added: [],
+        exports_removed: ["legacyExport"],
+        signatures_changed: [],
+        used_by: { count: 2, top: ["src/a.ts", "src/b.ts"], truncated: true }
+      }],
+      test_weakening: []
+    }
+  });
+  const item = model.review_queue.find((candidate) => candidate.path === "types/public.d.ts");
+
+  assert.ok(item);
+  assert.match(item.reviewer_action, /graph is truncated|blast radius is incomplete/i);
+  assert.match(item.reviewer_action, /2 identified in-repo consumers/);
+  assert.match(item.reviewer_action, /broader importer search/);
+});
+
+test("reviewer usefulness treats an empty truncated importer set as unknown, not caller-free", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    semanticFacts: {
+      schema_changes: [],
+      api_changes: [{
+        path: "src/internal/helper.ts",
+        exports_added: [],
+        exports_removed: ["legacyExport"],
+        signatures_changed: [],
+        used_by: { count: 0, top: [], truncated: true }
+      }],
+      test_weakening: []
+    }
+  });
+  const item = model.review_queue.find((candidate) => candidate.path === "src/internal/helper.ts");
+
+  assert.ok(item);
+  assert.match(item.reason, /count unknown|graph truncated/i);
+  assert.match(item.reviewer_action, /blast radius is incomplete|remaining importer set/i);
+  assert.doesNotMatch(`${item.reason} ${item.reviewer_action}`, /identified in-repo consumer|No in-repo importer/i);
+});
+
+test("reviewer usefulness does not claim identified consumers when blast-radius evidence is absent", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    semanticFacts: {
+      schema_changes: [],
+      api_changes: [{
+        path: "types/public.d.ts",
+        exports_added: [],
+        exports_removed: ["legacyExport"],
+        signatures_changed: []
+      }],
+      test_weakening: []
+    }
+  });
+  const comment = model.suggested_comments.find((candidate) => candidate.path === "types/public.d.ts");
+
+  assert.ok(comment);
+  assert.match(comment.body, /determine the downstream consumer set/i);
+  assert.doesNotMatch(comment.body, /identified consumers/i);
+});
+
+test("architecture cycle lenses anchor comments to changed importers while retaining the full chain as queue evidence", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    archDrift: {
+      facts: [{
+        kind: "import_cycle_created",
+        from_module: "src/a",
+        to_module: "src/z",
+        files: ["src/z/changed.ts"],
+        detail: "runtime import cycle created: src/a/unchanged.ts -> src/z/changed.ts -> src/a/unchanged.ts",
+        cycle: ["src/a/unchanged.ts", "src/z/changed.ts", "src/a/unchanged.ts"]
+      }],
+      file_edges: { added: [], removed: [] }
+    }
+  });
+  const lens = model.risk_lens_findings.find((finding) => finding.lens === "architecture");
+  const queue = model.review_queue.find((item) => /Import cycle created/.test(item.title));
+
+  assert.deepEqual(lens?.paths, ["src/z/changed.ts"]);
+  assert.equal(lens?.suggested_comments.every((comment) => comment.path === "src/z/changed.ts"), true);
+  assert.deepEqual(queue?.evidence.map((item) => item.path), ["src/a/unchanged.ts", "src/z/changed.ts"]);
+});
+
+test("a concrete runtime self-import cycle reaches the primary queue and decision projection", () => {
+  const path = "src/self.ts";
+  const diff = parseStructuredDiff([
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    "@@ -1,1 +1,2 @@",
+    " export const value = 1;",
+    `+import { value } from "./self";`,
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    diff,
+    archDrift: {
+      facts: [{
+        kind: "import_cycle_created",
+        from_module: "src",
+        to_module: "src",
+        files: [path],
+        detail: `runtime import cycle created: ${path} -> ${path}`,
+        cycle: [path, path]
+      }],
+      file_edges: { added: [{ importer: path, imported: path }], removed: [] }
+    }
+  });
+
+  assert.ok(model.review_queue.some((item) => /Import cycle created/.test(item.title)));
+  assert.ok(model.decision_projection?.findings.some((finding) =>
+    finding.root_cause === `architecture_cycle:${path}`
+  ));
+});
+
+test("review-surfaces.REVIEWER_VALUE.7 keeps benign architecture edges out of comments and questions", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    archDrift: {
+      facts: [{
+        kind: "module_edge_added",
+        from_module: "src/conversation",
+        to_module: "src/core",
+        files: ["src/conversation/brief.ts"],
+        detail: "new dependency edge: src/conversation -> src/core"
+      }],
+      file_edges: { added: [], removed: [] }
+    }
+  });
+
+  assert.ok(model.risk_lens_findings.some((finding) => finding.lens === "architecture"));
+  assert.ok(!model.suggested_comments.some((comment) => /module-boundary dependency edge/i.test(comment.body)));
+  assert.ok(!model.questions.some((question) => /module-boundary dependency edge/i.test(question.question)));
+});
+
+test("review-surfaces.REVIEWER_VALUE.3 additive schema changes stay nonblocking without a mechanical compatibility comment", () => {
   const model = buildHumanReview({
     packet: packetFixture(),
     diff: structuredDiffFixture(),
@@ -508,7 +684,7 @@ test("review-surfaces.REVIEWER_VALUE.3 additive schema changes stay clarifying a
   assert.equal(model.blockers.length, 0);
   assert.ok(model.questions.every((question) => question.severity !== "blocking"));
   assert.ok(model.suggested_comments.every((comment) => comment.severity !== "blocking"));
-  assert.ok(model.suggested_comments.some((comment) => /existing artifacts remain compatible/.test(comment.body)));
+  assert.ok(!model.suggested_comments.some((comment) => /review_insights|existing artifacts remain compatible/.test(comment.body)));
 });
 
 test("review-surfaces.REVIEWER_VALUE.3 deterministically breaking schemas create one coherent blocking path", () => {
@@ -552,7 +728,9 @@ test("review-surfaces.REVIEWER_VALUE.3 enum additions clarify while enum removal
   });
 
   assert.equal(build(["defer"], []).blockers.length, 0);
-  assert.equal(build([], ["approve"]).blockers.some((blocker) => blocker.id === "BLOCK-SCHEMA-001"), true);
+  const removal = build([], ["approve"]);
+  assert.equal(removal.blockers.some((blocker) => blocker.id === "BLOCK-SCHEMA-001"), true);
+  assert.equal(removal.risk_lens_findings.find((finding) => finding.lens === "api_contract")?.severity, "high");
 });
 
 test("review-surfaces.REVIEWER_VALUE.3 strict human-review schema additions remain breaking without explicit migration evidence", () => {
@@ -4055,6 +4233,35 @@ test("human trust audit ignores claimed artifact-generation commands but keeps c
   assert.doesNotMatch(claims, /review-surfaces all/);
   assert.match(claims, /pnpm run test:fast/);
   assert.match(claims, /Skipped test result/);
+});
+
+test("human trust audit prioritizes current explicit validation claims and cites their conversation events", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence = [];
+  packet.methodology.claims_without_evidence = [
+    ...Array.from({ length: 12 }, (_, index) => `evt-${index}: I am still inspecting implementation area ${index}.`),
+    "evt-current: The current-head focused tests passed: 117/117."
+  ];
+
+  const model = buildHumanReview({ packet });
+  assert.equal(model.trust_audit.claimed_not_verified.length, 10);
+  assert.match(model.trust_audit.claimed_not_verified[0]?.claim ?? "", /117\/117/);
+  assert.equal(model.trust_audit.claimed_not_verified[0]?.evidence[0]?.event_id, "evt-current");
+  assert.ok(model.trust_audit.claimed_not_verified.every((claim) =>
+    claim.evidence.every((evidence) => evidence.kind === "conversation" && evidence.event_id)
+  ));
+});
+
+test("human trust audit preserves colon-bearing conversation event ids", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence = [];
+  packet.methodology.claims_without_evidence = [
+    "codex:turn:evt-current: The current-head focused tests passed: 117/117."
+  ];
+
+  const model = buildHumanReview({ packet });
+  assert.equal(model.trust_audit.claimed_not_verified[0]?.evidence[0]?.event_id, "codex:turn:evt-current");
+  assert.match(model.trust_audit.claimed_not_verified[0]?.claim ?? "", /117\/117/);
 });
 
 test("required PR risk checks stay visible when the test plan is capped", () => {

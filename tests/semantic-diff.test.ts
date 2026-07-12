@@ -1,7 +1,107 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
-import { computeSemanticChangeFacts, SemanticDiffSources } from "../src/risks/semantic-diff";
+import { computeSemanticChangeFacts, isBreakingApiChange, SemanticDiffSources } from "../src/risks/semantic-diff";
+
+test("review-surfaces.REVIEWER_VALUE.7 optional interface additions remain supporting API facts", () => {
+  assert.equal(isBreakingApiChange({
+    path: "src/contracts/value.ts",
+    exports_added: [],
+    exports_removed: [],
+    signatures_changed: [{
+      name: "Value",
+      from: "export interface Value { id: string; }",
+      to: "export interface Value { id: string; note?: string; }"
+    }]
+  }), false);
+  assert.equal(isBreakingApiChange({
+    path: "src/contracts/value.ts",
+    exports_added: [],
+    exports_removed: [],
+    signatures_changed: [{
+      name: "Value",
+      from: "export interface Value { id: string; }",
+      to: "export interface Value { id: string; note: string; }"
+    }]
+  }), true);
+  for (const [from, to] of [
+    ["export interface Value extends A { id: string; }", "export interface Value extends B { id: string; }"],
+    ["export interface Value<T> { id: T; }", "export interface Value<T, U> { id: T; }"],
+    ["export interface Value { get(id: string): string; get(id: number): string; }", "export interface Value { get(id: number): string; }" ]
+  ]) {
+    assert.equal(isBreakingApiChange({
+      path: "src/contracts/value.ts", exports_added: [], exports_removed: [],
+      signatures_changed: [{ name: "Value", from, to }]
+    }), true);
+  }
+});
+
+test("review-surfaces.REVIEWER_VALUE.7 optional additions to namespaced interfaces remain supporting", () => {
+  assert.equal(isBreakingApiChange({
+    path: "types/public.d.ts",
+    exports_added: [],
+    exports_removed: [],
+    signatures_changed: [{
+      name: "N.Value",
+      from: "export interface Value { required: string; }",
+      to: "export interface Value { required: string; optional?: number; }"
+    }]
+  }), false);
+  assert.equal(isBreakingApiChange({
+    path: "types/public.d.ts",
+    exports_added: [],
+    exports_removed: [],
+    signatures_changed: [{
+      name: "N.Value",
+      from: "export interface Value { required: string }",
+      to: "export interface Value { required: string; optional?: number; }"
+    }]
+  }), false, "format-only semicolons on existing members do not make an optional addition breaking");
+  assert.equal(isBreakingApiChange({
+    path: "types/public.d.ts",
+    exports_added: [],
+    exports_removed: [],
+    signatures_changed: [{
+      name: "N.Value",
+      from: "export interface Value { required: string, }",
+      to: "export interface Value { required: string; optional?: number; }"
+    }]
+  }), false, "format-only member delimiter changes do not make an optional addition breaking");
+});
+
+test("review-surfaces.REVIEWER_VALUE.7 only appended optional object members are compatible", () => {
+  const breaking = (from: string, to: string): boolean => isBreakingApiChange({
+    path: "types/public.d.ts",
+    exports_added: [],
+    exports_removed: [],
+    signatures_changed: [{ name: "Value", from, to }]
+  });
+
+  assert.equal(breaking(
+    "export interface Value { call(value: string): string; call(value: number): number; }",
+    "export interface Value { call(value: number): number; call(value: string): string; }"
+  ), true, "overload order affects resolution");
+  assert.equal(breaking(
+    "export interface Value { first: string; second: string; }",
+    "export interface Value { second: string; first: string; }"
+  ), true, "existing member order is preserved");
+  assert.equal(breaking(
+    "export interface Value { first: string; second: string; }",
+    "export interface Value { first: string; optional?: number; second: string; }"
+  ), true, "optional members must be appended, not inserted");
+  assert.equal(breaking(
+    "export type Value = { id: string }",
+    "export type Value = { id: string; note?: string }"
+  ), false, "optional object-type members are additive");
+  assert.equal(breaking(
+    "export type Value = { id: string }",
+    "export type Value = { id: string; note: string }"
+  ), true, "required object-type members are breaking");
+  assert.equal(breaking(
+    "export type Value = string",
+    "export type Value = string | number"
+  ), true, "unsupported aliases remain conservative");
+});
 
 // ---------------------------------------------------------------------------
 // review-surfaces.SEMANTIC_DIFF.1-3 — semantic facts from the meaning of the diff.

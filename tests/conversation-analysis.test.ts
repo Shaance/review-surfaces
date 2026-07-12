@@ -476,8 +476,9 @@ test("agent-file stage sequences supply distinct chronological windows to a long
   });
 
   assert.equal(result.status, "analyzed");
-  assert.deepEqual(result.intent.at(-1)?.event_ids, ["agent-window-240"]);
-  assert.match(result.intent.at(-1)?.text ?? "", /final correction: preserve the retry boundary/i);
+  const citedCorrection = result.intent.find((item) => /final correction: preserve the retry boundary/i.test(item.text));
+  assert.deepEqual(citedCorrection?.event_ids, ["agent-window-240"]);
+  assert.match(citedCorrection?.text ?? "", /final correction: preserve the retry boundary/i);
   assert.ok(!result.quality_flags.includes("conversation_analysis_partial"));
   assert.ok(!result.quality_flags.includes("conversation_analysis_unavailable"));
 });
@@ -559,7 +560,7 @@ test("review-surfaces.CONVERSATION_REVIEW.2 active intent cannot be grounded onl
   assert.ok(result.quality_flags.includes("conversation_role_citations_rejected"));
 });
 
-test("provider active-intent prose is additive but cannot replace or trail deterministic intent", async () => {
+test("provider active-intent prose is additive but cannot replace or precede deterministic intent", async () => {
   const result = await analyzeConversation({
     provider: providerReturning(payload({
       intent: [
@@ -577,10 +578,10 @@ test("provider active-intent prose is additive but cannot replace or trail deter
 
   assert.equal(result.status, "analyzed");
   assert.deepEqual(result.intent, [{
-    text: "Keep the upload endpoint.",
+    text: "Add an upload endpoint.",
     event_ids: ["u1"]
   }, {
-    text: "Add an upload endpoint.",
+    text: "Keep the upload endpoint.",
     event_ids: ["u1"]
   }]);
   assert.ok(result.quality_flags.includes("conversation_role_citations_rejected"));
