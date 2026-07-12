@@ -16,7 +16,7 @@ import {
   MAX_CONVERSATION_EVENT_ID_CHARS,
   type SanitizedConversationEvent
 } from "./analysis-prompt-context";
-import { conversationEventLooksLikeGeneratedPayload } from "./generated-payload";
+import { conversationEventLooksLikeGeneratedPayload, conversationReviewerText } from "./generated-payload";
 
 const MAX_SUMMARY_CHARS = 900;
 const MAX_ITEM_TEXT_CHARS = 500;
@@ -334,7 +334,8 @@ function citationRoleIsCompatible(
   const natural = kind !== "tool_call" && kind !== "custom_tool_call" &&
     kind !== "tool_result" && kind !== "custom_tool_call_output" &&
     kind !== "function_call" && kind !== "function_call_output";
-  if (!natural || conversationEventLooksLikeGeneratedPayload(event.summary)) return false;
+  const reviewerText = conversationReviewerText(event.summary);
+  if (!natural || reviewerText.trim().length === 0 || conversationEventLooksLikeGeneratedPayload(reviewerText)) return false;
   if (sectionRequiresUserCitation(section)) {
     return actor === "user" ||
       (section === "rejected_alternatives" && (actor === "assistant" || actor === "agent"));

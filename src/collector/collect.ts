@@ -971,10 +971,8 @@ function collectConversationBlockedKinds(events: ConversationEvent[] | undefined
   }
   const kinds = new Set<string>();
   for (const event of events) {
-    for (const field of [event.summary, event.command, event.file, event.id, event.tool]) {
-      if (field === undefined) {
-        continue;
-      }
+    for (const field of Object.values(event)) {
+      if (typeof field !== "string") continue;
       for (const kind of BLOCKED_REDACTION_KINDS) {
         if (field.includes(`[REDACTED:${kind}]`)) {
           kinds.add(kind);

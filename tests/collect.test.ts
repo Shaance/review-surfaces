@@ -496,6 +496,76 @@ test("review-surfaces.PRIVACY.7 a conversation tool_result secret folds into rem
   assert.ok(!escapedFinding.path.startsWith("/") && !escapedFinding.path.includes(".."), `locus must not escape: ${escapedFinding.path}`);
 });
 
+test("review-surfaces.PRIVACY.7 every secret-shaped normalized event field folds into conversation privacy findings", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-call-id-priv-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.copyFileSync(
+    path.join(process.cwd(), "tests", "fixtures", "minimal-repo", "features", "example.feature.yaml"),
+    path.join(tmp, "features", "example.feature.yaml")
+  );
+  const secret = openAiProjectKeyFixture();
+  fs.writeFileSync(path.join(tmp, "session.jsonl"), [
+    { id: "safe-call-id", actor: "assistant", kind: "tool_call", summary: "Run validation", call_id: secret, raw_index: 0 },
+    { id: "safe-actor", actor: secret, kind: "message", summary: "Actor field", raw_index: 1 },
+    { id: "safe-kind", actor: "assistant", kind: secret, summary: "Kind field", raw_index: 2 }
+  ].map((event) => JSON.stringify(event)).join("\n") + "\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const result = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false,
+    conversationPath: "session.jsonl",
+    conversationFormat: "normalized"
+  });
+
+  assert.equal(result.privacy.remote_provider_blocked, true);
+  assert.ok(result.privacy.conversation_secret_findings?.some((finding) => finding.kinds.includes("openai_key")));
+  assert.ok(!JSON.stringify(result.conversationEvents).includes(secret));
+});
+
+test("review-surfaces.PRIVACY.7 raw adapter call_ids are redacted before the collection privacy fold", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-raw-call-id-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(tmp, "features"), { recursive: true });
+  fs.copyFileSync(
+    path.join(process.cwd(), "tests", "fixtures", "minimal-repo", "features", "example.feature.yaml"),
+    path.join(tmp, "features", "example.feature.yaml")
+  );
+  const secret = openAiProjectKeyFixture();
+  fs.writeFileSync(path.join(tmp, "session.jsonl"), [
+    {
+      type: "assistant",
+      uuid: "safe-call-event",
+      message: { role: "assistant", content: [{ type: "tool_use", id: secret, name: "Bash", input: { command: "pnpm test" } }] }
+    },
+    {
+      type: "user",
+      uuid: "safe-result-event",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: secret, content: "done" }] }
+    }
+  ].map((record) => JSON.stringify(record)).join("\n") + "\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const result = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: ["features/**/*.feature.yaml"], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false,
+    conversationPath: "session.jsonl",
+    conversationFormat: "claude-code"
+  });
+
+  assert.equal(result.privacy.remote_provider_blocked, true);
+  assert.ok(result.privacy.conversation_secret_findings?.some((finding) => finding.kinds.includes("openai_key")));
+  assert.ok(!JSON.stringify(result.conversationEvents).includes(secret));
+  assert.ok(result.conversationEvents?.some((event) => event.call_id?.includes("[REDACTED:openai_key]")));
+});
+
 test("review-surfaces.PRIVACY.2 writer block signals survive indexing and close the collection remote-provider gate", async (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-command-priv-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));

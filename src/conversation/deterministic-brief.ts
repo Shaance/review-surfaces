@@ -8,7 +8,7 @@ import { commandLooksLikeLocalValidationCommand, type CommandRule } from "../cor
 import { commandSegments, statusBearingCommandSegments } from "../core/command-segments";
 import { compareStrings } from "../core/compare";
 import type { SanitizedConversationEvent } from "./analysis-prompt-context";
-import { conversationEventLooksLikeGeneratedPayload } from "./generated-payload";
+import { conversationEventLooksLikeGeneratedPayload, conversationReviewerText } from "./generated-payload";
 
 const MAX_ITEMS = 12;
 const MAX_TEXT = 500;
@@ -42,7 +42,7 @@ export function buildDeterministicConversationBrief(
 
   for (const [index, event] of userEvents.entries()) {
     const item = itemFromEvent(event);
-    const text = reviewerText(event.summary).trim();
+    const text = conversationReviewerText(event.summary).trim();
     if (index === 0) intent.push(item);
     if (CORRECTION.test(text)) intent.push(item);
     if (index > 0) refinements.push(item);
@@ -50,7 +50,7 @@ export function buildDeterministicConversationBrief(
     if (NON_GOAL.test(text)) nonGoals.push(item);
   }
   for (const event of assistantEvents) {
-    const text = reviewerText(event.summary).trim();
+    const text = conversationReviewerText(event.summary).trim();
     if (VALIDATION_OUTCOME.test(text) && looksLikeValidationClaim(text, commandRules)) {
       validationClaims.push(itemFromEvent(event));
     }
@@ -130,18 +130,18 @@ export function mergeConversationAnalysis(
 
 function isEligibleUserMessage(event: SanitizedConversationEvent): boolean {
   return event.actor.trim().toLowerCase() === "user" && isNaturalLanguageEvent(event) &&
-    reviewerText(event.summary).trim().length > 0;
+    conversationReviewerText(event.summary).trim().length > 0;
 }
 
 function isEligibleAssistantMessage(event: SanitizedConversationEvent): boolean {
   const actor = event.actor.trim().toLowerCase();
   return (actor === "assistant" || actor === "agent") && isNaturalLanguageEvent(event) &&
-    reviewerText(event.summary).trim().length > 0;
+    conversationReviewerText(event.summary).trim().length > 0;
 }
 
 function isNaturalLanguageEvent(event: SanitizedConversationEvent): boolean {
   const kind = event.kind.trim().toLowerCase();
-  const text = reviewerText(event.summary);
+  const text = conversationReviewerText(event.summary);
   return kind !== "tool_call" && kind !== "custom_tool_call" &&
     kind !== "tool_result" && kind !== "custom_tool_call_output" &&
     kind !== "function_call" && kind !== "function_call_output" &&
@@ -173,13 +173,7 @@ function validationObservation(
 }
 
 function itemFromEvent(event: SanitizedConversationEvent): ConversationAnalysisItem {
-  return { text: bound(reviewerText(event.summary), MAX_TEXT), event_ids: [event.id] };
-}
-
-function reviewerText(summary: string): string {
-  const marker = "## My request for Codex:";
-  const requestIndex = summary.indexOf(marker);
-  return requestIndex >= 0 ? summary.slice(requestIndex + marker.length) : summary;
+  return { text: bound(conversationReviewerText(event.summary), MAX_TEXT), event_ids: [event.id] };
 }
 
 function looksLikeValidationClaim(text: string, commandRules: readonly CommandRule[]): boolean {

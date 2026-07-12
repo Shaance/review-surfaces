@@ -170,6 +170,50 @@ test("event citations must match the emitted allowlist id byte-for-byte", async 
   assert.ok(result.quality_flags.includes("conversation_citations_rejected"));
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.5 scaffolded Codex requests remain valid provider citations", async () => {
+  const event: ConversationEvent = {
+    id: "scaffolded-user",
+    actor: "user",
+    kind: "message",
+    summary: "<environment_context>generated metadata</environment_context>\n## My request for Codex:\nAudit the renderer and preserve citations.",
+    raw_index: 0
+  };
+  const result = await analyzeConversation({
+    provider: providerReturning(payload({
+      intent: [{ text: "Audit the renderer.", event_ids: [event.id] }],
+      refinements: [],
+      constraints: [{ text: "Citations must remain intact.", event_ids: [event.id] }]
+    })),
+    providerName: "ai-sdk",
+    events: [event]
+  });
+
+  assert.ok(result.intent.some((item) => item.text === "Audit the renderer."));
+  assert.ok(result.constraints.some((item) => item.text === "Citations must remain intact."));
+  assert.ok(!result.quality_flags.includes("conversation_role_citations_rejected"));
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.5 an empty scaffold request cannot ground provider intent", async () => {
+  const result = await analyzeConversation({
+    provider: providerReturning(payload({
+      intent: [{ text: "Fabricated intent.", event_ids: ["empty-scaffold"] }],
+      refinements: [],
+      constraints: []
+    })),
+    providerName: "ai-sdk",
+    events: [{
+      id: "empty-scaffold",
+      actor: "user",
+      kind: "message",
+      summary: "<environment_context>generated metadata</environment_context>\n## My request for Codex:   \n",
+      raw_index: 0
+    }]
+  });
+
+  assert.ok(!result.intent.some((item) => item.text === "Fabricated intent."));
+  assert.ok(result.quality_flags.includes("conversation_role_citations_rejected"));
+});
+
 test("no-log fallback is deterministic, explicit, and never calls the provider", async () => {
   let calls = 0;
   const provider: ReasoningProvider = {

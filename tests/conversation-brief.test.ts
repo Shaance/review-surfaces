@@ -588,6 +588,20 @@ test("review-surfaces.CONVERSATION_REVIEW.6 does not blame grouped validation fo
   assert.deepEqual(result.validation_observations, []);
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.6 does not blame leaf validation for a redirection failure", () => {
+  const result = buildDeterministicConversationBrief([{
+    id: "failed-leaf-redirection",
+    actor: "tool",
+    kind: "tool_result",
+    summary: "redirection failed",
+    command: "pnpm test > /missing/results.log",
+    result_status: "failed",
+    raw_index: 0
+  }], "mock");
+
+  assert.deepEqual(result.validation_observations, []);
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.6 fails closed when a command exceeds the analysis budget", () => {
   const result = buildDeterministicConversationBrief([{
     id: "oversized-command",

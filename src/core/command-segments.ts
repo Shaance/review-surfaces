@@ -17,6 +17,7 @@ export interface CommandChain {
 interface CommandAnalysis extends CommandChain {
   outer_group_body?: string;
   outer_group_redirected?: boolean;
+  has_redirection?: boolean;
 }
 
 interface SubstitutionFrame {
@@ -58,6 +59,7 @@ function analyzeCommand(command: string): CommandAnalysis {
   let closedGroupingAt = -1;
   let quote: "'" | '"' | undefined;
   let escaped = false;
+  let hasRedirection = false;
 
   for (let index = 0; index < source.length; index += 1) {
     const character = source[index];
@@ -165,6 +167,7 @@ function analyzeCommand(command: string): CommandAnalysis {
       continue;
     }
     if (groupingDepth > 0) continue;
+    if (character === "<" || character === ">") hasRedirection = true;
 
     const pipeBoth = source.startsWith("|&", index);
     const background = character === "&" && source[index - 1] !== ">" && source[index - 1] !== "<" &&
@@ -240,7 +243,8 @@ function analyzeCommand(command: string): CommandAnalysis {
     segments,
     operators,
     outer_group_body: outerGroupBody,
-    outer_group_redirected: outerGroupBody === undefined ? undefined : outerGroupRedirected
+    outer_group_redirected: outerGroupBody === undefined ? undefined : outerGroupRedirected,
+    has_redirection: hasRedirection
   };
 }
 
@@ -290,6 +294,7 @@ export function statusBearingCommandSegments(
       continue;
     }
     if (analysis.segments.length <= 1) {
+      if (status === "failed" && analysis.has_redirection) continue;
       result.push(...analysis.segments);
       continue;
     }

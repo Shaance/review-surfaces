@@ -1,5 +1,11 @@
 import { findReviewSurfacesArtifactName } from "../artifacts/inventory";
 
+export function conversationReviewerText(summary: string): string {
+  const marker = "## My request for Codex:";
+  const requestIndex = summary.indexOf(marker);
+  return requestIndex >= 0 ? summary.slice(requestIndex + marker.length) : summary;
+}
+
 /** True only for transport/scaffolding or an artifact introduced as payload data. */
 export function conversationEventLooksLikeGeneratedPayload(summary: string): boolean {
   const trimmed = summary.trimStart();
