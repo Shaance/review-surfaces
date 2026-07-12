@@ -565,6 +565,27 @@ test("reviewer usefulness treats an empty truncated importer set as unknown, not
   assert.doesNotMatch(`${item.reason} ${item.reviewer_action}`, /identified in-repo consumer|No in-repo importer/i);
 });
 
+test("reviewer usefulness does not claim identified consumers when blast-radius evidence is absent", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    semanticFacts: {
+      schema_changes: [],
+      api_changes: [{
+        path: "types/public.d.ts",
+        exports_added: [],
+        exports_removed: ["legacyExport"],
+        signatures_changed: []
+      }],
+      test_weakening: []
+    }
+  });
+  const comment = model.suggested_comments.find((candidate) => candidate.path === "types/public.d.ts");
+
+  assert.ok(comment);
+  assert.match(comment.body, /determine the downstream consumer set/i);
+  assert.doesNotMatch(comment.body, /identified consumers/i);
+});
+
 test("architecture cycle lenses anchor comments to changed importers while retaining the full chain as queue evidence", () => {
   const model = buildHumanReview({
     packet: packetFixture(),
@@ -707,7 +728,9 @@ test("review-surfaces.REVIEWER_VALUE.3 enum additions clarify while enum removal
   });
 
   assert.equal(build(["defer"], []).blockers.length, 0);
-  assert.equal(build([], ["approve"]).blockers.some((blocker) => blocker.id === "BLOCK-SCHEMA-001"), true);
+  const removal = build([], ["approve"]);
+  assert.equal(removal.blockers.some((blocker) => blocker.id === "BLOCK-SCHEMA-001"), true);
+  assert.equal(removal.risk_lens_findings.find((finding) => finding.lens === "api_contract")?.severity, "high");
 });
 
 test("review-surfaces.REVIEWER_VALUE.3 strict human-review schema additions remain breaking without explicit migration evidence", () => {

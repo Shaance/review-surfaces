@@ -35,3 +35,25 @@ test("review-surfaces.BLAST_RADIUS.3 the build is bounded by a file cap and repo
   const again = buildImportGraph({ files: Object.keys(FILES), read, exists, fileCap: 2 });
   assert.deepEqual([...graph.importers.entries()], [...again.importers.entries()]);
 });
+
+test("review-surfaces.BLAST_RADIUS.2 namespaced API members match only real qualified consumers", () => {
+  const files: Record<string, string> = {
+    "src/types.ts": "export namespace N { export interface Value { id: string } export interface Other { id: string } }",
+    "src/direct.ts": 'import { N } from "./types"; export const value: N.Value = { id: "x" };',
+    "src/aliased.ts": 'import { N as Models } from "./types"; export const value: Models.Value = { id: "x" };',
+    "src/namespace.ts": 'import * as api from "./types"; export const value: api.N.Value = { id: "x" };',
+    "src/other.ts": 'import { N } from "./types"; export const other: N.Other = { id: "x" };',
+    "src/barrel.ts": 'export { N } from "./types";'
+  };
+  const read = (filePath: string): string | undefined => files[filePath];
+  const graph = buildImportGraph({ files: Object.keys(files), read, exists: (filePath) => filePath in files });
+
+  assert.deepEqual(
+    findSymbolImporters({ graph, modulePath: "src/types.ts", symbols: ["N.Value"], read }),
+    ["src/aliased.ts", "src/barrel.ts", "src/direct.ts", "src/namespace.ts"]
+  );
+  assert.deepEqual(
+    findSymbolImporters({ graph, modulePath: "src/types.ts", symbols: ["namespace:N"], read }),
+    ["src/aliased.ts", "src/barrel.ts", "src/direct.ts", "src/namespace.ts", "src/other.ts"]
+  );
+});

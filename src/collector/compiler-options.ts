@@ -4,7 +4,11 @@ import { resolveRuntimeRelativeImports } from "./import-graph";
 
 export function createRuntimeImportResolver(
   read: (filePath: string) => string | undefined,
-  cwd: string
+  cwd: string,
+  options: {
+    reviewedPaths?: ReadonlySet<string>;
+    isIgnored?: (filePath: string) => boolean;
+  } = {}
 ): typeof resolveRuntimeRelativeImports {
   const importCache = new Map<string, string[]>();
   const directoryOptions = new Map<string, ts.CompilerOptions>();
@@ -14,7 +18,9 @@ export function createRuntimeImportResolver(
 
   const rawConfig = (configPath: string): string | undefined => {
     if (rawConfigs.has(configPath)) return rawConfigs.get(configPath);
-    const raw = read(configPath);
+    const raw = options.isIgnored?.(configPath) || (options.reviewedPaths && !options.reviewedPaths.has(configPath))
+      ? undefined
+      : read(configPath);
     rawConfigs.set(configPath, raw);
     return raw;
   };

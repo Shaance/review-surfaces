@@ -3229,7 +3229,7 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
   // signature-level detail rather than generic path-touch findings. Evidence is
   // anchored to the (allowlisted) changed file path.
   for (const change of semanticFacts.schema_changes) {
-    const breaking = change.required_added.length > 0 || change.properties_removed.length > 0 || change.type_changes.length > 0;
+    const breaking = isBreakingSchemaChange(change);
     addSignal("api_contract", breaking ? "high" : "medium", [fileEvidence(change.path, schemaChangeReason(change))], [], [], [change.path]);
   }
   for (const change of semanticFacts.api_changes) {
@@ -4730,7 +4730,10 @@ function semanticCommentCandidates(facts: SemanticChangeFacts): SuggestedComment
 // ask about external/runtime consumers instead.
 function apiCallerCallToAction(change: ApiSurfaceChange): string {
   const usedBy = change.used_by;
-  if (usedBy && usedBy.count === 0 && !usedBy.truncated) {
+  if (!usedBy) {
+    return " Determine the downstream consumer set, then preserve compatibility or document the migration before merge.";
+  }
+  if (usedBy.count === 0 && !usedBy.truncated) {
     return " Version this public contract change or document the downstream migration before merge.";
   }
   if (usedBy?.truncated) {

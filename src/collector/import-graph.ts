@@ -254,6 +254,17 @@ export function findSymbolImporters(options: {
   const readCached = (filePath: string): string | undefined =>
     options.graph.contents.get(filePath) ?? options.read(filePath);
   const symbolSet = new Set(options.symbols);
+  const symbolPaths = options.symbols.map((symbol) =>
+    (symbol.startsWith("namespace:") ? symbol.slice("namespace:".length) : symbol).split(".").filter(Boolean)
+  );
+  const symbolPathsByRoot = new Map<string, string[][]>();
+  for (const symbolPath of symbolPaths) {
+    const root = symbolPath[0];
+    if (!root) continue;
+    const paths = symbolPathsByRoot.get(root) ?? [];
+    paths.push(symbolPath);
+    symbolPathsByRoot.set(root, paths);
+  }
   const result: string[] = [];
   for (const importer of importerPaths) {
     const content = readCached(importer);
@@ -276,12 +287,29 @@ export function findSymbolImporters(options: {
         references = true;
         break;
       }
-      if (named && named.split(",").some((entry) => symbolSet.has(entry.replace(/\s+as\s+.*/, "").replace(/^type\s+/, "").trim()))) {
-        references = true;
-        break;
+      if (named) {
+        const reexport = decl[0].trimStart().startsWith("export");
+        const bindings = named.split(",").map((entry) => {
+          const [imported = "", local] = entry.replace(/^\s*type\s+/, "").trim().split(/\s+as\s+/u);
+          return { imported, local: local ?? imported };
+        });
+        const namedMatch = bindings.some((binding) => {
+          const matchingPaths = symbolPathsByRoot.get(binding.imported);
+          if (!matchingPaths) return false;
+          if (reexport || matchingPaths.some((symbolPath) => symbolPath.length === 1)) return true;
+          return matchingPaths.some((symbolPath) =>
+            new RegExp(`\\b${escapeRegExp(binding.local)}\\.${symbolPath.slice(1).map(escapeRegExp).join("\\.")}\\b`).test(content)
+          );
+        });
+        if (namedMatch) {
+          references = true;
+          break;
+        }
       }
       if (nsAlias) {
-        const used = [...symbolSet].some((symbol) => new RegExp(`\\b${escapeRegExp(nsAlias)}\\.${escapeRegExp(symbol)}\\b`).test(content));
+        const used = symbolPaths.some((symbolPath) =>
+          new RegExp(`\\b${escapeRegExp(nsAlias)}\\.${symbolPath.map(escapeRegExp).join("\\.")}\\b`).test(content)
+        );
         if (used) {
           references = true;
           break;
