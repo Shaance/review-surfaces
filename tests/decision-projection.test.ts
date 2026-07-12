@@ -69,6 +69,29 @@ test("review-surfaces.REVIEWER_VALUE.6 admits explicit contracts but keeps inter
   assert.ok(model.semantic_facts.api_changes.some((change) => change.path === internalPath), "internal fact remains in supporting ledger");
 });
 
+test("review-surfaces.REVIEWER_VALUE.6 admits a breaking internal export when concrete callers are identified", () => {
+  const internalPath = "src/internal/helper.ts";
+  const model = buildHumanReview({
+    packet: packet(),
+    prSurface: surface([internalPath]),
+    semanticFacts: {
+      ...emptySemanticFacts,
+      api_changes: [{
+        path: internalPath,
+        exports_added: [],
+        exports_removed: ["legacyHelper"],
+        signatures_changed: [],
+        used_by: { count: 2, top: ["src/a.ts", "src/b.ts"] }
+      }]
+    }
+  });
+
+  assert.ok(model.review_queue.some((item) => item.path === internalPath));
+  assert.ok(model.decision_projection?.findings.some((finding) =>
+    finding.root_cause === `caller_break:${internalPath}`
+  ));
+});
+
 test("review-surfaces.REVIEWER_VALUE.6 public deletion manifestations share one high-priority root", () => {
   const publicPath = "types/public.d.ts";
   const deletionRisk = risk("PR-RISK-DELETE", "deleted_or_renamed_surface", publicPath, "low");

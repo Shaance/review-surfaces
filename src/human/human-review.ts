@@ -84,6 +84,7 @@ import {
 import {
   buildDecisionScope,
   currentValidationRunState,
+  isDecisionRelevantApiChange,
   decisionRootForRisk,
   isCurrentValidationEvidence,
   isDecisionScopedSignal,
@@ -2572,15 +2573,13 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
     }));
   }
   for (const [index, change] of facts.api_changes.entries()) {
-    const breaking = isBreakingApiChange(change);
-    const hasConcreteCallers = (change.used_by?.count ?? 0) > 0;
-    if (!breaking || (!isExplicitContractSurfacePath(change.path) && !hasConcreteCallers)) continue;
+    if (!isDecisionRelevantApiChange(change)) continue;
     drafts.push(semanticDraft(diffIndex, {
       title: "Exported API surface change",
       path: change.path,
       reason: apiChangeReason(change),
       reviewer_action: apiQueueReviewerAction(change),
-      priority: breaking ? "high" : "medium",
+      priority: "high",
       // review-surfaces.BLAST_RADIUS.2: a removed/changed export with many
       // importers outranks one with none (bounded so blast radius cannot lift
       // an API change above test-weakening signals).
