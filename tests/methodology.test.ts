@@ -409,14 +409,25 @@ test("review-surfaces.REVIEWER_VALUE.1/.2 instructions, tool output, and generat
       { id: "prose", actor: "assistant", kind: "message", summary: "Here is why architecture.md matters; pnpm run test passed after I considered the compatibility tradeoff.", raw_index: 9 },
       { id: "user", actor: "user", kind: "message", summary: "I assume the compatibility requirement still applies.", raw_index: 10 },
       { id: "scaffold", actor: "user", kind: "message", summary: "Consider alternatives and assume tests passed. <environment_context><cwd>/repo</cwd></environment_context> # AGENTS.md instructions", raw_index: 11 },
-      { id: "internal", actor: "user", kind: "message", summary: '<codex_internal_context source="goal">Research options; tests passed.</codex_internal_context>', raw_index: 12 }
+      { id: "internal", actor: "user", kind: "message", summary: '<codex_internal_context source="goal">Research options; tests passed.</codex_internal_context>', raw_index: 12 },
+      {
+        id: "scaffolded-request",
+        actor: "user",
+        kind: "message",
+        summary: "<environment_context><cwd>/repo</cwd></environment_context>\n## My request for Codex:\nI considered preserving retries and assume the current contract still applies.",
+        raw_index: 13
+      }
     ]
   });
 
   const methodology = await buildMethodology(tmp, collection, undefined, []);
 
   assert.ok(methodology.considered.some((entry) => entry.startsWith("agent:")));
+  const scaffoldedRequest = methodology.considered.find((entry) => entry.startsWith("scaffolded-request:"));
+  assert.ok(scaffoldedRequest, "the request after generated scaffolding remains reviewer evidence");
+  assert.ok(!scaffoldedRequest.includes("environment_context"), "generated scaffolding is stripped before persistence");
   assert.ok(methodology.unchallenged_assumptions.some((entry) => entry.startsWith("user:")));
+  assert.ok(methodology.unchallenged_assumptions.some((entry) => entry.startsWith("scaffolded-request:")));
   for (const id of ["sys:", "dev:", "tool:", "report:", "quoted:", "pr-surface:", "handoff:", "packet-md:", "scaffold:", "internal:"]) {
     assert.ok(!methodology.considered.some((entry) => entry.startsWith(id)));
     assert.ok(!methodology.unchallenged_assumptions.some((entry) => entry.startsWith(id)));

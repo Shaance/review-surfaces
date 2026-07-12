@@ -311,6 +311,58 @@ test("review-surfaces.CONVERSATION_REVIEW.7 a correlated failed Codex mutation i
   }
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.7 an explicitly failed Codex output is not producer provenance", () => {
+  const text = [
+    codexMeta("/repo/app", "2026-06-17T09:00:00.000Z"),
+    {
+      timestamp: "2026-06-17T09:00:01.000Z",
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        call_id: "failed-status-mutation",
+        name: "apply_patch",
+        input: "*** Begin Patch\n*** Update File: src/uploader.ts\n@@\n-old\n+new\n*** End Patch"
+      }
+    },
+    {
+      timestamp: "2026-06-17T09:00:02.000Z",
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call_output",
+        call_id: "failed-status-mutation",
+        status: "failed",
+        output: "Patch rejected."
+      }
+    }
+  ].map((entry) => JSON.stringify(entry)).join("\n");
+  const input = buildAdapterInput("desktop.jsonl", text);
+  const provenance = codexProvenance(input, {
+    cwd: "/repo/app",
+    changedFiles: ["src/uploader.ts"]
+  });
+  const normalized = normalizeConversation(input);
+
+  assert.deepEqual(provenance.mutatedPaths, []);
+  assert.equal(normalized?.events.find((event) => event.call_id === "failed-status-mutation" && event.kind === "tool_result")?.result_status, "failed");
+});
+
+test("review-surfaces.CONVERSATION_REVIEW.7 patch-looking text in a non-mutation tool is not producer provenance", () => {
+  const text = [
+    codexMeta("/repo/app", "2026-06-17T09:00:00.000Z"),
+    codexToolLine(
+      "2026-06-17T09:00:01.000Z",
+      "exec_command",
+      { cmd: "printf '%s' '*** Begin Patch\\n*** Update File: src/uploader.ts\\n*** End Patch'" }
+    )
+  ].map((entry) => JSON.stringify(entry)).join("\n");
+  const provenance = codexProvenance(buildAdapterInput("desktop.jsonl", text), {
+    cwd: "/repo/app",
+    changedFiles: ["src/uploader.ts"]
+  });
+
+  assert.deepEqual(provenance.mutatedPaths, []);
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.7 Codex patch_apply_end status and mutation provenance agree", () => {
   const store = freshStore();
   try {

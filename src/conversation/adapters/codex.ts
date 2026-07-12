@@ -131,7 +131,7 @@ export function codexProvenance(
         const pending = callId ? pendingMutations.get(callId) : undefined;
         if (!pending) continue;
         const output = "output" in toolItem ? toolItem.output : toolItem.content;
-        const status = structuredToolOutcome(output).result_status;
+        const status = structuredToolOutcome(output, toolItem).result_status;
         if (status === "failed") {
           pendingMutations.delete(callId as string);
         } else if (status === "passed") {
@@ -146,9 +146,10 @@ export function codexProvenance(
       const rawInput = "arguments" in toolItem ? toolItem.arguments : toolItem.input;
       const parsedInput = recordOfToolInput(rawInput);
       const directPath = reviewedPath(filePathOf(parsedInput), context);
-      const patchPaths = patchMutationPaths(structuredText(rawInput), context);
+      const mutationTool = looksLikeMutationTool(name);
+      const patchPaths = mutationTool ? patchMutationPaths(structuredText(rawInput), context) : [];
       const mutationPaths = directPath ? [directPath, ...patchPaths] : patchPaths;
-      if (looksLikeMutationTool(name) || patchPaths.length > 0) {
+      if (mutationTool) {
         const paths = [...new Set(mutationPaths)];
         const callId = typeof toolItem.call_id === "string" ? toolItem.call_id : undefined;
         if (paths.length > 0 && callId) pendingMutations.set(callId, { paths, timestamp });
@@ -356,7 +357,7 @@ function functionOutputEvent(item: Record<string, unknown>, id: string, rawIndex
   // suffix the output id to keep the tool invocation and its result distinct
   // events that an anchor can point at unambiguously (Codex P2).
   const output = "output" in item ? item.output : item.content;
-  const outcome = structuredToolOutcome(output);
+  const outcome = structuredToolOutcome(output, item);
   return {
     id: `${id}-output`,
     actor: "tool",
@@ -368,7 +369,15 @@ function functionOutputEvent(item: Record<string, unknown>, id: string, rawIndex
   };
 }
 
-function structuredToolOutcome(value: unknown): Pick<ConversationEvent, "result_status" | "exit_code"> {
+function structuredToolOutcome(
+  value: unknown,
+  item?: Record<string, unknown>
+): Pick<ConversationEvent, "result_status" | "exit_code"> {
+  const explicitStatus = typeof item?.status === "string" ? item.status.toLowerCase() : undefined;
+  if (item?.success === false || explicitStatus === "failed" || explicitStatus === "error" ||
+    explicitStatus === "cancelled" || explicitStatus === "canceled") {
+    return { result_status: "failed" };
+  }
   let parsed = value;
   if (typeof parsed === "string") {
     try {

@@ -4,7 +4,7 @@ import { loadConversationEvents, writeNormalizedConversation } from "../conversa
 import { commandEvidence, EvidenceRef, missingEvidence } from "../evidence/evidence";
 import { computeCrossReferenceSignals } from "./cross-reference";
 import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
-import { conversationEventLooksLikeGeneratedPayload } from "../conversation/generated-payload";
+import { conversationEventLooksLikeGeneratedPayload, conversationReviewerText } from "../conversation/generated-payload";
 
 // review-surfaces.METHODOLOGY.7/.8: a validated item-4 workflow finding produced
 // by the methodology leaf (unchallenged assumption, skipped step, workflow
@@ -109,6 +109,7 @@ export async function buildMethodology(
 
   const transcriptCommandEvidence = buildTranscriptCommandEvidence(collection);
   const validationClaims = pickValidationClaims(events);
+  const pickableEvents = preparePickableEvents(events);
   const verifiedClaims: string[] = [];
   const claimsWithoutEvidence: string[] = [];
   for (const claim of validationClaims) {
@@ -134,12 +135,12 @@ export async function buildMethodology(
   return {
     summary: `Methodology extracted ${events.length} event(s) from ${sourceLabel}.`,
     missing_logs: false,
-    considered: pick(events, ["option", "considered", "alternative"]),
-    research: pick(events, ["research", "inspect", "read", "context", "reference"]),
-    decisions: pick(events, ["decide", "decision", "chose", "choose"]),
-    unchallenged_assumptions: pick(events, ["assume", "assumption"]),
+    considered: pick(pickableEvents, ["option", "considered", "alternative"]),
+    research: pick(pickableEvents, ["research", "inspect", "read", "context", "reference"]),
+    decisions: pick(pickableEvents, ["decide", "decision", "chose", "choose"]),
+    unchallenged_assumptions: pick(pickableEvents, ["assume", "assumption"]),
     skipped_checks: [
-      ...pick(events, ["skip", "skipped", "not run", "could not"]),
+      ...pick(pickableEvents, ["skip", "skipped", "not run", "could not"]),
       ...commands.filter((command) => command.includes("ai-sdk skipped"))
     ],
     claims_without_evidence: claimsWithoutEvidence,
@@ -217,28 +218,45 @@ function isEditOrWriteToolCall(event: ConversationEvent): boolean {
 // invocation — a bounded `Read(docs/goal.md)` IS research evidence (Codex P2), while
 // an edit/write payload (any length) is the noise dogfooding caught. Every other
 // (loose) kind is natural language and kept (no whitelist — Codex P2).
-function isPickableEvent(event: ConversationEvent): boolean {
+function pickableText(event: ConversationEvent): string | undefined {
   if (event.actor === "system" || event.actor === "developer" || event.actor === "tool") {
-    return false;
+    return undefined;
   }
   if (isToolOutputEvent(event)) {
-    return false;
+    return undefined;
   }
   if (isToolCallEvent(event)) {
-    return event.summary.length <= PICK_TEXT_LIMIT && !isEditOrWriteToolCall(event);
+    return event.summary.length <= PICK_TEXT_LIMIT && !isEditOrWriteToolCall(event)
+      ? event.summary
+      : undefined;
   }
-  return !conversationEventLooksLikeGeneratedPayload(event.summary);
+  const text = conversationReviewerText(event.summary).trim();
+  return text.length > 0 && !conversationEventLooksLikeGeneratedPayload(text) ? text : undefined;
+}
+
+interface PickableEvent {
+  event: ConversationEvent;
+  text: string;
+  lowerText: string;
+}
+
+function preparePickableEvents(events: ConversationEvent[]): PickableEvent[] {
+  const result: PickableEvent[] = [];
+  for (const event of events) {
+    const text = pickableText(event);
+    if (text !== undefined) result.push({ event, text, lowerText: text.toLowerCase() });
+  }
+  return result;
 }
 
 // Bound the kept text to PICK_TEXT_LIMIT, keeping the window around the FIRST keyword
 // match so the truncation still shows WHY the entry was picked (Codex P3).
-function boundPickText(summary: string, keywords: string[]): string {
+function boundPickText(summary: string, lowerSummary: string, keywords: string[]): string {
   if (summary.length <= PICK_TEXT_LIMIT) {
     return summary;
   }
-  const lower = summary.toLowerCase();
   const matchIndex = keywords
-    .map((keyword) => lower.indexOf(keyword))
+    .map((keyword) => lowerSummary.indexOf(keyword))
     .filter((index) => index >= 0)
     .sort((a, b) => a - b)[0];
   const start = matchIndex === undefined ? 0 : Math.max(0, matchIndex - 40);
@@ -246,18 +264,14 @@ function boundPickText(summary: string, keywords: string[]): string {
   return `${start > 0 ? "…" : ""}${slice}…`;
 }
 
-function pick(events: ConversationEvent[], keywords: string[]): string[] {
+function pick(events: PickableEvent[], keywords: string[]): string[] {
   const result: string[] = [];
-  for (const event of events) {
+  for (const { event, text, lowerText } of events) {
     if (result.length >= 12) {
       break;
     }
-    if (!isPickableEvent(event)) {
-      continue;
-    }
-    const lower = event.summary.toLowerCase();
-    if (keywords.some((keyword) => lower.includes(keyword))) {
-      result.push(boundedEventEntry(event, boundPickText(event.summary, keywords), PICK_ENTRY_LIMIT));
+    if (keywords.some((keyword) => lowerText.includes(keyword))) {
+      result.push(boundedEventEntry(event, boundPickText(text, lowerText, keywords), PICK_ENTRY_LIMIT));
     }
   }
   return result;
