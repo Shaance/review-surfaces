@@ -27,15 +27,17 @@ function isSourcePath(filePath: string): boolean {
 export function resolveRelativeImports(
   sourcePath: string,
   content: string,
-  exists: (repoRelativePath: string) => boolean
+  exists: (repoRelativePath: string) => boolean,
+  fallbackExists?: (repoRelativePath: string) => boolean
 ): string[] {
-  return resolveImports(sourcePath, content, exists);
+  return resolveImports(sourcePath, content, exists, fallbackExists);
 }
 
 function resolveImports(
   sourcePath: string,
   content: string,
-  exists: (repoRelativePath: string) => boolean
+  exists: (repoRelativePath: string) => boolean,
+  fallbackExists?: (repoRelativePath: string) => boolean
 ): string[] {
   const source = ts.createSourceFile(sourcePath, content, ts.ScriptTarget.Latest, false);
   const specifiers = new Set<string>();
@@ -63,7 +65,7 @@ function resolveImports(
   return [...new Set([...specifiers]
     // Bare specifiers and path aliases are outside the bounded local graph.
     .filter((specifier) => specifier.startsWith("."))
-    .map((specifier) => resolveSpecifier(fromDir, specifier, exists))
+    .map((specifier) => resolveSpecifierWithFallback(fromDir, specifier, exists, fallbackExists))
     .filter((target): target is string => Boolean(target)))].sort();
 }
 
@@ -184,7 +186,11 @@ export function buildImportGraph(options: {
   read: (filePath: string) => string | undefined;
   exists: (filePath: string) => boolean;
   fileCap?: number;
-  resolveImports?: typeof resolveRelativeImports;
+  resolveImports?: (
+    sourcePath: string,
+    content: string,
+    exists: (repoRelativePath: string) => boolean
+  ) => string[];
   retainContents?: boolean;
 }): ImportGraph {
   const cap = options.fileCap ?? DEFAULT_IMPORT_GRAPH_FILE_CAP;
@@ -235,6 +241,7 @@ export function findSymbolImporters(options: {
   symbols: string[];
   read: (filePath: string) => string | undefined;
   exists?: (filePath: string) => boolean;
+  fallbackExists?: (filePath: string) => boolean;
 }): string[] {
   const importerPaths = options.graph.importers.get(options.modulePath) ?? [];
   if (importerPaths.length === 0 || options.symbols.length === 0) {
@@ -260,7 +267,7 @@ export function findSymbolImporters(options: {
       if (!specifier.startsWith(".")) {
         continue;
       }
-      const resolved = resolveSpecifier(fromDir, specifier, exists);
+      const resolved = resolveSpecifierWithFallback(fromDir, specifier, exists, options.fallbackExists);
       if (resolved !== options.modulePath) {
         continue;
       }
@@ -286,6 +293,16 @@ export function findSymbolImporters(options: {
     }
   }
   return result;
+}
+
+function resolveSpecifierWithFallback(
+  fromDir: string,
+  specifier: string,
+  exists: (path: string) => boolean,
+  fallbackExists?: (path: string) => boolean
+): string | undefined {
+  return resolveSpecifier(fromDir, specifier, exists) ??
+    (fallbackExists ? resolveSpecifier(fromDir, specifier, fallbackExists) : undefined);
 }
 
 function escapeRegExp(value: string): string {

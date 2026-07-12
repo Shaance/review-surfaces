@@ -15,7 +15,7 @@ import { parseBudgetDuration } from "../human/budget";
 import { computeDependencyFacts } from "../risks/dependency-facts";
 import { loadReviewPolicy, POLICY_FILE, ReviewPolicy } from "../feedback/policy";
 import { computeConfigFacts } from "../risks/config-facts";
-import { buildImportGraph, findSymbolImporters, importGraphWouldTruncate, resolveRuntimeRelativeImports } from "../collector/import-graph";
+import { buildImportGraph, findSymbolImporters, importGraphWouldTruncate, resolveRelativeImports, resolveRuntimeRelativeImports } from "../collector/import-graph";
 import { createRuntimeImportResolver } from "../collector/compiler-options";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -2431,26 +2431,53 @@ function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactR
   } catch {
     return facts;
   }
+  const headPaths = new Set(tracked);
   // Honor the existing privacy/generated exclusions: an ignored tree must not
   // contribute importers to the blast radius.
   const ignore = loadPrivacyIgnoreSync(cwd);
   tracked = tracked.filter((filePath) => !ignore.isIgnored(filePath));
+  // Deleted API modules are absent from the head tree, but surviving head-side
+  // callers can still import them. Treat those exact reviewed targets as
+  // tombstones during resolution so the broken callers remain visible without
+  // resurrecting deleted files as graph sources.
+  const existsCache = new Map<string, boolean>();
+  const headExists = (filePath: string): boolean => {
+    const cached = existsCache.get(filePath);
+    if (cached !== undefined) return cached;
+    let present: boolean;
+    if (readers.headIsWorktree) {
+      try {
+        present = fs.statSync(path.resolve(cwd, filePath)).isFile();
+      } catch {
+        present = false;
+      }
+    } else {
+      present = headPaths.has(filePath);
+    }
+    existsCache.set(filePath, present);
+    return present;
+  };
+  const deletedTargets = new Set(targets
+    .filter((change) => !headExists(change.path))
+    .map((change) => change.path));
+  const deletedTargetExists = (filePath: string): boolean => deletedTargets.has(filePath);
   const graph = buildImportGraph({
     files: tracked,
     read: readers.readHead,
-    exists: readers.headIsWorktree
-      ? (filePath) => {
-          try {
-            return fs.statSync(path.resolve(cwd, filePath)).isFile();
-          } catch {
-            return false;
-          }
-        }
-      : (filePath) => blobExistsAtRef(cwd, readers.headSha, filePath)
+    exists: headExists,
+    resolveImports: (sourcePath, content, exists) =>
+      resolveRelativeImports(sourcePath, content, exists, deletedTargetExists)
   });
   for (const change of targets) {
     const symbols = [...change.exports_removed, ...change.signatures_changed.map((sig) => sig.name)];
-    const importers = findSymbolImporters({ graph, modulePath: change.path, symbols, read: readers.readHead });
+    const importers = findSymbolImporters({
+      graph,
+      modulePath: change.path,
+      symbols,
+      read: readers.readHead,
+      exists: headExists,
+      fallbackExists: deletedTargetExists
+    });
     change.used_by = {
       count: importers.length,
       top: importers.slice(0, 5),

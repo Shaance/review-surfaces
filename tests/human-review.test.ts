@@ -4206,6 +4206,18 @@ test("human trust audit prioritizes current explicit validation claims and cites
   ));
 });
 
+test("human trust audit preserves colon-bearing conversation event ids", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence = [];
+  packet.methodology.claims_without_evidence = [
+    "codex:turn:evt-current: The current-head focused tests passed: 117/117."
+  ];
+
+  const model = buildHumanReview({ packet });
+  assert.equal(model.trust_audit.claimed_not_verified[0]?.evidence[0]?.event_id, "codex:turn:evt-current");
+  assert.match(model.trust_audit.claimed_not_verified[0]?.claim ?? "", /117\/117/);
+});
+
 test("required PR risk checks stay visible when the test plan is capped", () => {
   const packet = packetFixture();
   packet.evaluation.results = [];

@@ -256,6 +256,54 @@ test("review-surfaces.EVAL_HARNESS.2 a breaking API change with call sites carri
   }
 });
 
+test("review-surfaces.EVAL_HARNESS.2 a deleted internal API keeps surviving callers visible (BLAST_RADIUS)", () => {
+  const fixture = createEvalFixture("deleted-api-blast");
+  try {
+    fixture.write("src/internal.ts", "export function internalValue(): number { return 1; }\n");
+    fixture.write("src/internal-caller.ts", "import { internalValue } from \"./internal\";\nexport const value = internalValue();\n");
+    fixture.commit("add internal api and caller");
+    fixture.remove("src/internal.ts");
+    fixture.commit("delete internal api");
+    record("blast_radius", () => {
+      const model = fixture.run(["--base", "HEAD~1"]);
+      const item = topQueue(model).find((entry) => entry.path === "src/internal.ts" && /API|export/i.test(entry.title));
+      assert.ok(item, "the deleted internal API must stay in the primary queue while a caller survives");
+      assert.match(item.reason, /Used by 1 file\(s\)/);
+      assert.match(item.reason, /internal-caller\.ts/);
+      assert.ok(model.decision_projection?.findings.some((finding) =>
+        finding.root_cause === "caller_break:src/internal.ts"
+      ));
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("review-surfaces.EVAL_HARNESS.2 a deleted-module tombstone does not shadow a live index module (BLAST_RADIUS)", () => {
+  const fixture = createEvalFixture("deleted-api-shadow");
+  try {
+    fixture.write("src/internal.ts", "export function internalValue(): number { return 1; }\n");
+    fixture.write("src/internal/index.ts", "export function internalValue(): number { return 2; }\n");
+    fixture.write("src/internal-caller.ts", "import { internalValue } from \"./internal\";\nexport const value = internalValue();\n");
+    fixture.commit("add file and index modules");
+    fixture.remove("src/internal.ts");
+    fixture.commit("delete file module");
+    record("blast_radius", () => {
+      const model = fixture.run(["--base", "HEAD~1"]);
+      assert.equal(
+        topQueue(model).some((entry) => entry.path === "src/internal.ts" && /API|export/i.test(entry.title)),
+        false,
+        "the live index module must win before the deleted-file tombstone fallback"
+      );
+      assert.equal(model.decision_projection?.findings.some((finding) =>
+        finding.root_cause === "caller_break:src/internal.ts"
+      ), false);
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("review-surfaces.EVAL_HARNESS.2 a destructive migration ranks in the top N (CONFIG_FACTS)", () => {
   const fixture = createEvalFixture("migration");
   try {

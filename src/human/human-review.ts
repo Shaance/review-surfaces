@@ -4857,7 +4857,7 @@ function isClaimedValidationEvidence(item: RisksModel["test_evidence"][number]):
 }
 
 function reviewerClaimLooksLikeValidation(claim: string): boolean {
-  const text = claim.replace(/^[^:\s]+:\s*/u, "");
+  const text = parseMethodologyClaim(claim)?.text ?? claim;
   if (!validationTextMentionsTooling(text)) {
     return false;
   }
@@ -4865,17 +4865,23 @@ function reviewerClaimLooksLikeValidation(claim: string): boolean {
 }
 
 function methodologyClaimEvidence(claim: string): EvidenceRef {
-  const match = /^([^:\s]+):\s*/u.exec(claim);
-  if (match?.[1]) {
+  const parsed = parseMethodologyClaim(claim);
+  if (parsed) {
     return {
       kind: "conversation",
-      event_id: match[1],
+      event_id: parsed.eventId,
       note: "Conversation event contains an unverified methodology claim.",
       confidence: "medium",
       validation_status: "not_checked"
     };
   }
   return missingEvidence("Methodology claim lacks an event citation and validation evidence.");
+}
+
+function parseMethodologyClaim(claim: string): { eventId: string; text: string } | undefined {
+  const separator = claim.indexOf(": ");
+  if (separator <= 0) return undefined;
+  return { eventId: claim.slice(0, separator), text: claim.slice(separator + 2) };
 }
 
 // review-surfaces.HUMAN_REVIEW.21: each focused-requirement test item's "Expected"

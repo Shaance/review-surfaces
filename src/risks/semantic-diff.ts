@@ -77,46 +77,44 @@ export function isBreakingApiChange(change: ApiSurfaceChange): boolean {
 }
 
 function signatureChangeIsBreaking(change: ApiSurfaceChange["signatures_changed"][number]): boolean {
-  const before = interfaceShape(change.from, change.name);
-  const after = interfaceShape(change.to, change.name);
+  const before = objectContractShape(change.from, change.name);
+  const after = objectContractShape(change.to, change.name);
   if (!before || !after) {
     return true;
   }
   if (before.header !== after.header) return true;
-  const remaining = new Map<string, { count: number; optional: boolean }>();
-  for (const member of after.members) {
-    const entry = remaining.get(member.text);
-    remaining.set(member.text, { count: (entry?.count ?? 0) + 1, optional: member.optional });
-  }
-  for (const oldMember of before.members) {
-    const entry = remaining.get(oldMember.text);
-    if (!entry) return true;
-    if (entry.count === 1) remaining.delete(oldMember.text);
-    else entry.count -= 1;
-  }
-  return [...remaining.values()].some((member) => !member.optional);
+  if (after.members.length < before.members.length) return true;
+  if (before.members.some((member, index) => member.text !== after.members[index]?.text)) return true;
+  return after.members.slice(before.members.length).some((member) => !member.optional);
 }
 
-// Interface signatures are emitted as valid TypeScript by the semantic
-// extractor. Adding optional members is backward-compatible for both callers
-// and implementers, so it remains a supporting fact instead of review work.
-// Any removed/changed member or newly required member stays conservative.
-function interfaceShape(signature: string, expectedName: string): {
+// Object-contract signatures are emitted as valid TypeScript by the semantic
+// extractor. Only appended optional members are treated as compatible: member
+// order can affect overload resolution, so reordering or insertion stays
+// conservative. Direct object type aliases follow the same compatibility rule.
+function objectContractShape(signature: string, expectedName: string): {
   header: string;
   members: Array<{ text: string; optional: boolean }>;
 } | undefined {
   const source = ts.createSourceFile("contract.ts", signature, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const localName = expectedName.split(".").at(-1) ?? expectedName;
-  const declaration = source.statements.find((statement): statement is ts.InterfaceDeclaration =>
-    ts.isInterfaceDeclaration(statement) && statement.name.text === localName
+  const declaration = source.statements.find((statement): statement is ts.InterfaceDeclaration | ts.TypeAliasDeclaration =>
+    (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) && statement.name.text === localName
   );
   if (!declaration) return undefined;
+  const typeLiteral = ts.isTypeAliasDeclaration(declaration) && ts.isTypeLiteralNode(declaration.type)
+    ? declaration.type
+    : undefined;
+  if (ts.isTypeAliasDeclaration(declaration) && !typeLiteral) return undefined;
   const header = [
+    ts.isInterfaceDeclaration(declaration) ? "interface" : "type",
     declaration.typeParameters?.map((parameter) => parameter.getText(source).replace(/\s+/gu, " ").trim()).join(",") ?? "",
-    declaration.heritageClauses?.map((clause) => clause.getText(source).replace(/\s+/gu, " ").trim()).join(" ") ?? ""
+    ts.isInterfaceDeclaration(declaration)
+      ? declaration.heritageClauses?.map((clause) => clause.getText(source).replace(/\s+/gu, " ").trim()).join(" ") ?? ""
+      : ""
   ].join("|");
   const members: Array<{ text: string; optional: boolean }> = [];
-  for (const member of declaration.members) {
+  for (const member of ts.isInterfaceDeclaration(declaration) ? declaration.members : typeLiteral?.members ?? []) {
     const optional = Boolean(member.questionToken);
     const normalized = member.getText(source).replace(/\s+/gu, " ").trim().replace(/[;,]$/u, "");
     if (!normalized) return undefined;

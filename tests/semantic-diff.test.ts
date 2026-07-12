@@ -69,6 +69,40 @@ test("review-surfaces.REVIEWER_VALUE.7 optional additions to namespaced interfac
   }), false, "format-only member delimiter changes do not make an optional addition breaking");
 });
 
+test("review-surfaces.REVIEWER_VALUE.7 only appended optional object members are compatible", () => {
+  const breaking = (from: string, to: string): boolean => isBreakingApiChange({
+    path: "types/public.d.ts",
+    exports_added: [],
+    exports_removed: [],
+    signatures_changed: [{ name: "Value", from, to }]
+  });
+
+  assert.equal(breaking(
+    "export interface Value { call(value: string): string; call(value: number): number; }",
+    "export interface Value { call(value: number): number; call(value: string): string; }"
+  ), true, "overload order affects resolution");
+  assert.equal(breaking(
+    "export interface Value { first: string; second: string; }",
+    "export interface Value { second: string; first: string; }"
+  ), true, "existing member order is preserved");
+  assert.equal(breaking(
+    "export interface Value { first: string; second: string; }",
+    "export interface Value { first: string; optional?: number; second: string; }"
+  ), true, "optional members must be appended, not inserted");
+  assert.equal(breaking(
+    "export type Value = { id: string }",
+    "export type Value = { id: string; note?: string }"
+  ), false, "optional object-type members are additive");
+  assert.equal(breaking(
+    "export type Value = { id: string }",
+    "export type Value = { id: string; note: string }"
+  ), true, "required object-type members are breaking");
+  assert.equal(breaking(
+    "export type Value = string",
+    "export type Value = string | number"
+  ), true, "unsupported aliases remain conservative");
+});
+
 // ---------------------------------------------------------------------------
 // review-surfaces.SEMANTIC_DIFF.1-3 — semantic facts from the meaning of the diff.
 // ---------------------------------------------------------------------------
