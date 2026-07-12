@@ -502,7 +502,7 @@ test("reviewer usefulness keeps additive schemas and internal exports out of rea
       api_changes: [{
         path: "src/internal/helper.ts",
         exports_added: ["newHelper"],
-        exports_removed: [],
+        exports_removed: ["legacyHelper"],
         signatures_changed: []
       }],
       test_weakening: []
@@ -517,6 +517,52 @@ test("reviewer usefulness keeps additive schemas and internal exports out of rea
   assert.ok(!model.suggested_comments.some((comment) => /optional_note|newHelper|exported API changed/i.test(comment.body)));
   assert.ok(!model.suggested_comments.some((comment) => /confirm callers are updated/i.test(comment.body)));
   assert.ok(!model.suggested_comments.some((comment) => /compatibility fixture/i.test(comment.body)));
+});
+
+test("reviewer usefulness warns that a non-empty truncated importer set is incomplete", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    semanticFacts: {
+      schema_changes: [],
+      api_changes: [{
+        path: "types/public.d.ts",
+        exports_added: [],
+        exports_removed: ["legacyExport"],
+        signatures_changed: [],
+        used_by: { count: 2, top: ["src/a.ts", "src/b.ts"], truncated: true }
+      }],
+      test_weakening: []
+    }
+  });
+  const item = model.review_queue.find((candidate) => candidate.path === "types/public.d.ts");
+
+  assert.ok(item);
+  assert.match(item.reviewer_action, /graph is truncated|blast radius is incomplete/i);
+  assert.match(item.reviewer_action, /2 identified in-repo consumers/);
+  assert.match(item.reviewer_action, /broader importer search/);
+});
+
+test("architecture cycle lenses anchor comments to changed importers while retaining the full chain as queue evidence", () => {
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    archDrift: {
+      facts: [{
+        kind: "import_cycle_created",
+        from_module: "src/a",
+        to_module: "src/z",
+        files: ["src/z/changed.ts"],
+        detail: "runtime import cycle created: src/a/unchanged.ts -> src/z/changed.ts -> src/a/unchanged.ts",
+        cycle: ["src/a/unchanged.ts", "src/z/changed.ts", "src/a/unchanged.ts"]
+      }],
+      file_edges: { added: [], removed: [] }
+    }
+  });
+  const lens = model.risk_lens_findings.find((finding) => finding.lens === "architecture");
+  const queue = model.review_queue.find((item) => /Import cycle created/.test(item.title));
+
+  assert.deepEqual(lens?.paths, ["src/z/changed.ts"]);
+  assert.equal(lens?.suggested_comments.every((comment) => comment.path === "src/z/changed.ts"), true);
+  assert.deepEqual(queue?.evidence.map((item) => item.path), ["src/a/unchanged.ts", "src/z/changed.ts"]);
 });
 
 test("review-surfaces.REVIEWER_VALUE.7 keeps benign architecture edges out of comments and questions", () => {

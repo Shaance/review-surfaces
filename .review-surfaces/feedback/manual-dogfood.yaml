@@ -150,7 +150,6 @@ validation:
     - node bin/review-surfaces.js run --id CMD-PNPM-TEST-FAST --command-transcripts .review-surfaces/commands -- pnpm run test:fast
     - node bin/review-surfaces.js all --review-scope pr --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
     - pnpm test
-    - node bin/review-surfaces.js all --provider mock --dogfood --base 54119b2 --head 2076964 --spec features/review-surfaces.feature.yaml --conversation <known-producing-codex-session> --out /tmp/review-surfaces-m4-final
     - node bin/review-surfaces.js validate /tmp/review-surfaces-m4-final
     - node bin/review-surfaces.js validate .review-surfaces
     - node --test dist/tests/command-classify.test.js dist/tests/pr-risks.test.js dist/tests/risks.test.js dist/tests/pr-surface-e2e.test.js
@@ -158,6 +157,7 @@ validation:
     - node bin/review-surfaces.js all --review-scope pr --provider mock --base origin/main --head HEAD --spec features/review-surfaces.feature.yaml --dogfood --out .review-surfaces
   failed: []
   notes:
+    - The historical real-session replay used an explicit known-producing Codex transcript; its absolute home-directory path is intentionally withheld from committed command evidence, so the replay invocation is not listed as an exact passed command.
     - The dogfood run used provider=mock and did not require network access.
     - The previous slice added bounded command transcript ingestion, .review-surfaces/inputs/commands.json, manifest hashes for transcript inputs, and direct test evidence from exit_code=0 test transcripts.
     - This slice adds review-surfaces.CLI.7, a run helper that captures bounded local command transcripts for validation commands without hand-written JSON.

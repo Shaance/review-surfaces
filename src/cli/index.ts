@@ -2188,7 +2188,10 @@ function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined
     existsHead,
     resolveBaseImports,
     resolveHeadImports,
-    ...(baseGraph && baseGraph !== "truncated" ? { baseModuleEdgeKeys: baseGraph.moduleEdgeKeys } : {}),
+    ...(baseGraph && baseGraph !== "truncated" ? {
+      baseModuleEdgeKeys: baseGraph.moduleEdgeKeys,
+      baseFileDependencies: baseGraph.dependencies
+    } : {}),
     ...(headGraph && headGraph !== "truncated" ? {
       headModuleEdgeKeys: headGraph.moduleEdgeKeys,
       headFileDependencies: headGraph.dependencies
@@ -2198,20 +2201,12 @@ function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined
   // A truncated tree graph makes module-edge novelty UNKNOWN: suppress the
   // facts ("no import existed at the base" cannot be asserted) but keep the
   // file-level edge deltas — they come from the changed files alone and stay
-  // exact for the map renderers.
+  // exact for the map renderers. A complete head graph still proves a cycle
+  // containing an exact newly added changed-file edge even when the bounded
+  // base graph cannot establish whether those endpoints shared an older SCC.
   if (baseGraph === "truncated" || headGraph === "truncated") {
-    const exactChanged = computeArchDriftFacts({
-      changedFiles: diff.files.map((file) => ({ path: file.path, ...(file.old_path ? { old_path: file.old_path } : {}), status: file.status })),
-      readBase: readers.readBase,
-      readHead: readers.readHead,
-      existsBase,
-      existsHead,
-      resolveBaseImports,
-      resolveHeadImports,
-      implementationRoots
-    });
     return {
-      facts: exactChanged.facts.filter((fact) => fact.kind === "import_cycle_created"),
+      facts: result.facts.filter((fact) => fact.kind === "import_cycle_created"),
       file_edges: result.file_edges
     };
   }

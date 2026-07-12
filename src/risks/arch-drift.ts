@@ -61,6 +61,7 @@ export interface ComputeArchDriftInput {
   // Whole-head runtime file graph (importer -> imported files). When present,
   // every cycle must be reproduced on this graph; directory aggregates alone
   // are never sufficient proof.
+  baseFileDependencies?: Map<string, string[]>;
   headFileDependencies?: Map<string, string[]>;
   // review-surfaces.COLD_START.2: detected implementation roots so module
   // altitude agrees with the change-map clusters on any repository layout.
@@ -80,6 +81,9 @@ export function computeArchDriftFacts(input: ComputeArchDriftInput): ArchDriftRe
   const empty: ArchDriftResult = { facts: [], file_edges: { added: [], removed: [] } };
   const modOf = (filePath: string): string => moduleOf(filePath, input.implementationRoots);
   const files = [...input.changedFiles].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const baseIdentityByHead = new Map(files
+    .filter((file) => (file.status || "M").toUpperCase()[0] === "R" && file.old_path)
+    .map((file) => [file.path, file.old_path as string]));
   if (files.length === 0) {
     return empty;
   }
@@ -111,6 +115,10 @@ export function computeArchDriftFacts(input: ComputeArchDriftInput): ArchDriftRe
     const headImports = headPath
       ? new Set((input.resolveHeadImports ?? resolveRuntimeRelativeImports)(headPath, input.readHead(headPath) ?? "", input.existsHead))
       : new Set<string>();
+    const headImportsByBaseIdentity = new Map([...headImports].map((imported) => [
+      baseIdentityByHead.get(imported) ?? imported,
+      imported
+    ]));
 
     if (headPath) {
       changedHeadDependencies.set(headPath, [...headImports].sort());
@@ -135,17 +143,18 @@ export function computeArchDriftFacts(input: ComputeArchDriftInput): ArchDriftRe
       }
     }
 
-    // File-level set difference on resolved targets (rename-safe: both sides
-    // are RESOLVED repo-relative module paths, so a pure move keeps them equal).
+    // File-level set difference on resolved targets. Translate renamed HEAD
+    // targets to their BASE identity so a pure target move is not a new edge.
     for (const imported of headImports) {
-      if (!baseImports.has(imported)) {
+      const baseIdentity = baseIdentityByHead.get(imported) ?? imported;
+      if (!baseImports.has(baseIdentity)) {
         addedFileEdges.push({ importer: file.path, imported });
         recordModuleDelta(addedModuleEdges, headModule, modOf(imported), file.path);
       }
     }
     const baseModule = modOf(basePath ?? file.path);
     for (const imported of baseImports) {
-      if (!headImports.has(imported)) {
+      if (!headImportsByBaseIdentity.has(imported)) {
         removedFileEdges.push({ importer: file.path, imported });
         recordModuleDelta(removedModuleEdges, baseModule, modOf(imported), file.path);
       }
@@ -196,12 +205,28 @@ export function computeArchDriftFacts(input: ComputeArchDriftInput): ArchDriftRe
   // module edges), then canonicalize rotations so one cycle occupies one slot.
   const cycleEdges = input.headFileDependencies ?? changedHeadDependencies;
   const componentByFile = stronglyConnectedComponents(cycleEdges);
+  const cycleCandidates = addedFileEdges.filter((edge) =>
+    componentByFile.get(edge.imported) === componentByFile.get(edge.importer)
+  );
+  if (cycleCandidates.length === 0) {
+    return { facts, file_edges: { added: addedFileEdges, removed: removedFileEdges } };
+  }
+  const baseComponentByFile = input.baseFileDependencies
+    ? stronglyConnectedComponents(input.baseFileDependencies)
+    : undefined;
   const reverseCycleEdges = reverseEdges(cycleEdges);
   const cycles = new Map<string, ArchDriftFact>();
   let currentImporter = "";
   let currentPaths = new Map<string, string>();
-  for (const edge of addedFileEdges) {
-    if (componentByFile.get(edge.imported) !== componentByFile.get(edge.importer)) continue;
+  for (const edge of cycleCandidates) {
+    const baseImporter = baseIdentityByHead.get(edge.importer) ?? edge.importer;
+    const baseImported = baseIdentityByHead.get(edge.imported) ?? edge.imported;
+    const baseImporterComponent = baseComponentByFile?.get(baseImporter);
+    const baseAlreadyCyclic = baseImporter === baseImported
+      ? input.baseFileDependencies?.get(baseImporter)?.includes(baseImported) === true
+      : baseImporterComponent !== undefined &&
+        baseComponentByFile?.get(baseImported) === baseImporterComponent;
+    if (baseAlreadyCyclic) continue;
     if (edge.importer !== currentImporter) {
       currentImporter = edge.importer;
       currentPaths = pathsToGoal(edge.importer, reverseCycleEdges);

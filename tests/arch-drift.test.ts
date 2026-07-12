@@ -131,6 +131,122 @@ test("review-surfaces.ARCH_DRIFT.1 proves a concrete cycle through unchanged run
   );
 });
 
+test("review-surfaces.ARCH_DRIFT.1 does not call an added edge a new cycle when both endpoints were already cyclic", () => {
+  const base = readerFor({
+    "src/a.ts": `import { c } from "./c";\nexport const a = c;`,
+    "src/b.ts": `import { a } from "./a";\nexport const b = a;`,
+    "src/c.ts": `import { b } from "./b";\nexport const c = b;`
+  });
+  const head = readerFor({
+    ...Object.fromEntries(["src/b.ts", "src/c.ts"].map((filePath) => [filePath, base.read(filePath) as string])),
+    "src/a.ts": `import { b } from "./b";\nimport { c } from "./c";\nexport const a = b + c;`
+  });
+  const dependencies = (files: Record<string, string[]>): Map<string, string[]> => new Map(Object.entries(files));
+  const result = computeArchDriftFacts({
+    changedFiles: [{ path: "src/a.ts", status: "M" }],
+    readBase: base.read,
+    readHead: head.read,
+    existsBase: base.exists,
+    existsHead: head.exists,
+    baseFileDependencies: dependencies({
+      "src/a.ts": ["src/c.ts"],
+      "src/b.ts": ["src/a.ts"],
+      "src/c.ts": ["src/b.ts"]
+    }),
+    headFileDependencies: dependencies({
+      "src/a.ts": ["src/b.ts", "src/c.ts"],
+      "src/b.ts": ["src/a.ts"],
+      "src/c.ts": ["src/b.ts"]
+    })
+  });
+
+  assert.equal(result.facts.some((fact) => fact.kind === "import_cycle_created"), false);
+});
+
+test("review-surfaces.ARCH_DRIFT.1 reports a new self-import unless that self-edge already existed", () => {
+  const base = readerFor({ "src/self.ts": "export const value = 1;" });
+  const head = readerFor({
+    "src/self.ts": `import { value } from "./self";\nexport const next = value;`
+  });
+  const result = computeArchDriftFacts({
+    changedFiles: [{ path: "src/self.ts", status: "M" }],
+    readBase: base.read,
+    readHead: head.read,
+    existsBase: base.exists,
+    existsHead: head.exists,
+    resolveBaseImports: () => [],
+    resolveHeadImports: () => ["src/self.ts"],
+    baseFileDependencies: new Map([["src/self.ts", []]]),
+    headFileDependencies: new Map([["src/self.ts", ["src/self.ts"]]])
+  });
+
+  assert.deepEqual(
+    result.facts.find((fact) => fact.kind === "import_cycle_created")?.cycle,
+    ["src/self.ts", "src/self.ts"]
+  );
+});
+
+test("review-surfaces.ARCH_DRIFT.1 maps renamed head paths back to the base SCC before judging cycle creation", () => {
+  const base = readerFor({
+    "src/old.ts": `import { peer } from "./peer";\nexport const old = peer;`,
+    "src/peer.ts": `import { old } from "./old";\nexport const peer = old;`
+  });
+  const head = readerFor({
+    "src/new.ts": `import { peer } from "./peer";\nexport const renamed = peer;`,
+    "src/peer.ts": `import { renamed } from "./new";\nexport const peer = renamed;`
+  });
+  const result = computeArchDriftFacts({
+    changedFiles: [
+      { path: "src/new.ts", old_path: "src/old.ts", status: "R" },
+      { path: "src/peer.ts", status: "M" }
+    ],
+    readBase: base.read,
+    readHead: head.read,
+    existsBase: base.exists,
+    existsHead: head.exists,
+    baseFileDependencies: new Map([
+      ["src/old.ts", ["src/peer.ts"]],
+      ["src/peer.ts", ["src/old.ts"]]
+    ]),
+    headFileDependencies: new Map([
+      ["src/new.ts", ["src/peer.ts"]],
+      ["src/peer.ts", ["src/new.ts"]]
+    ])
+  });
+
+  assert.equal(result.facts.some((fact) => fact.kind === "import_cycle_created"), false);
+});
+
+test("review-surfaces.ARCH_DRIFT.1 does not invent an added cycle edge when only an imported target was renamed", () => {
+  const base = readerFor({
+    "src/old.ts": `import { peer } from "./peer";\nexport const old = peer;`,
+    "src/peer.ts": `import { old } from "./old";\nexport const peer = old;`
+  });
+  const head = readerFor({
+    "src/new.ts": `import { peer } from "./peer";\nexport const renamed = peer;`,
+    "src/peer.ts": `import { renamed } from "./new";\nexport const peer = renamed;`
+  });
+  const result = computeArchDriftFacts({
+    changedFiles: [
+      { path: "src/new.ts", old_path: "src/old.ts", status: "R" },
+      { path: "src/peer.ts", status: "M" }
+    ],
+    readBase: base.read,
+    readHead: head.read,
+    existsBase: base.exists,
+    existsHead: head.exists,
+    // No base graph: this exercises the same evidence bound as base-tree
+    // truncation while retaining the complete head graph.
+    headFileDependencies: new Map([
+      ["src/new.ts", ["src/peer.ts"]],
+      ["src/peer.ts", ["src/new.ts"]]
+    ])
+  });
+
+  assert.deepEqual(result.file_edges, { added: [], removed: [] });
+  assert.equal(result.facts.some((fact) => fact.kind === "import_cycle_created"), false);
+});
+
 test("review-surfaces.ARCH_DRIFT.2 drift edge deltas set kind new/removed on change_graph edges (and removed edges never enter the tour topology)", () => {
   const sections = buildChangeGraphSections({
     files: [

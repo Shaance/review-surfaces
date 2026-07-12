@@ -35,7 +35,7 @@ export function buildDeterministicConversationBrief(
   const ordered = [...events].sort((left, right) =>
     left.raw_index - right.raw_index || compareStrings(left.id, right.id)
   );
-  const userEvents = uniqueUserMessages(ordered.filter(isEligibleUserMessage));
+  const userEvents = uniqueUserMessages(ordered);
   const assistantEvents = ordered.filter(isEligibleAssistantMessage);
   const intent: ConversationAnalysisItem[] = [];
   const refinements: ConversationAnalysisItem[] = [];
@@ -163,6 +163,15 @@ function uniqueUserMessages(events: readonly SanitizedConversationEvent[]): Sani
   const unique: SanitizedConversationEvent[] = [];
   let previousKey = "";
   for (const event of events) {
+    if (!isEligibleUserMessage(event)) {
+      // Attachment-only user envelopes and system/developer metadata are
+      // transport noise between the app copy and canonical copy of one turn.
+      // An assistant or tool event means the agent acted in between, so an
+      // identical later instruction is a genuine reassertion.
+      const actor = event.actor.trim().toLowerCase();
+      if (actor === "assistant" || actor === "agent" || actor === "tool") previousKey = "";
+      continue;
+    }
     const key = conversationReviewerText(event.summary).replace(/\s+/g, " ").trim().toLowerCase();
     if (!key || key === previousKey) continue;
     unique.push(event);

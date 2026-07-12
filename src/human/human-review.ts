@@ -2573,7 +2573,8 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
   }
   for (const [index, change] of facts.api_changes.entries()) {
     const breaking = isBreakingApiChange(change);
-    if (!breaking) continue;
+    const hasConcreteCallers = (change.used_by?.count ?? 0) > 0;
+    if (!breaking || (!isExplicitContractSurfacePath(change.path) && !hasConcreteCallers)) continue;
     drafts.push(semanticDraft(diffIndex, {
       title: "Exported API surface change",
       path: change.path,
@@ -2591,11 +2592,14 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
 }
 
 function apiQueueReviewerAction(change: ApiSurfaceChange): string {
+  if (change.used_by?.truncated) {
+    const bounded = change.used_by.count > 0
+      ? ` Inspect the ${change.used_by.count} identified in-repo consumer${change.used_by.count === 1 ? "" : "s"}, then run a broader importer search.`
+      : "";
+    return `The importer graph is truncated, so the blast radius is incomplete.${bounded} Resolve the remaining importer set before deciding whether the changed API is compatible.`;
+  }
   if (change.used_by?.count) {
     return `Inspect the ${change.used_by.count} identified in-repo consumer${change.used_by.count === 1 ? "" : "s"}; preserve compatibility or update their focused tests.`;
-  }
-  if (change.used_by?.truncated) {
-    return "Resolve the truncated importer set before deciding whether the changed API is compatible.";
   }
   return "Determine whether the changed export is a supported external surface; if so, preserve compatibility or document the migration.";
 }
@@ -3245,9 +3249,7 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
 
   // review-surfaces.ARCH_DRIFT.2: drift facts feed the architecture lens.
   for (const fact of input.archDrift?.facts ?? []) {
-    const evidencePaths = fact.kind === "import_cycle_created"
-      ? [...new Set(fact.cycle?.slice(0, -1) ?? fact.files)]
-      : fact.files;
+    const evidencePaths = fact.files;
     addSignal(
       "architecture",
       fact.kind === "import_cycle_created" ? "high" : "medium",
@@ -4526,7 +4528,12 @@ function pathOnlyLensNeedsReviewerAction(
     isExplicitContractSurfacePath(change.path)
   );
   const hasNonSchemaPublicPath = finding.paths.some((filePath) =>
-    isCliConfigOrFeatureContractPath(normalizeEvidencePath(filePath))
+    isCliConfigOrFeatureContractPath(normalizeEvidencePath(filePath)) || (
+      hasVersionedArtifactContractPath([normalizeEvidencePath(filePath)]) &&
+      !semanticFacts.schema_changes.some((change) =>
+        normalizeEvidencePath(change.path) === normalizeEvidencePath(filePath)
+      )
+    )
   );
   return hasBreakingSchema || hasBreakingPublicApi || hasNonSchemaPublicPath;
 }

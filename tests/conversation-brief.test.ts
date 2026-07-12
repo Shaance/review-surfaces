@@ -181,6 +181,30 @@ test("review-surfaces.REVIEWER_VALUE.8 keeps reasserted instructions and exclude
   assert.doesNotMatch(brief.summary, /merged yet/);
 });
 
+test("review-surfaces.REVIEWER_VALUE.8 preserves an identical instruction reasserted after an assistant turn", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "first", actor: "user", kind: "message", summary: "Use X.", raw_index: 0 },
+    { id: "response", actor: "assistant", kind: "message", summary: "I will use X.", raw_index: 1 },
+    { id: "reasserted", actor: "user", kind: "message", summary: "Use X.", raw_index: 2 }
+  ], "mock");
+
+  assert.deepEqual(brief.intent.map((item) => item.event_ids[0]), ["first"]);
+  assert.deepEqual(brief.refinements.map((item) => item.event_ids[0]), ["reasserted"]);
+});
+
+test("review-surfaces.REVIEWER_VALUE.9 collapses transport copies across system metadata but not tool work", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "app-copy", actor: "user", kind: "message", summary: "Use X.", raw_index: 0 },
+    { id: "metadata", actor: "system", kind: "message", summary: "attachment metadata", raw_index: 1 },
+    { id: "canonical-copy", actor: "user", kind: "message", summary: "Use X.", raw_index: 2 },
+    { id: "tool-work", actor: "tool", kind: "tool_result", summary: "command completed", raw_index: 3 },
+    { id: "after-tool", actor: "user", kind: "message", summary: "Use X.", raw_index: 4 }
+  ], "mock");
+
+  assert.deepEqual(brief.intent.map((item) => item.event_ids[0]), ["app-copy"]);
+  assert.deepEqual(brief.refinements.map((item) => item.event_ids[0]), ["after-tool"]);
+});
+
 test("review-surfaces.REVIEWER_VALUE.8 history questions are not reviewer direction", () => {
   const brief = buildDeterministicConversationBrief([
     { id: "goal", actor: "user", kind: "message", summary: "Audit the report.", raw_index: 0 },
