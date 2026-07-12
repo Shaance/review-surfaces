@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { computeArchDriftFacts } from "../src/risks/arch-drift";
+import { boundArchDriftByGraphCompleteness, computeArchDriftFacts } from "../src/risks/arch-drift";
 import { buildChangeGraphSections } from "../src/human/change-graph";
 
 function readerFor(files: Record<string, string>): { read: (filePath: string) => string | undefined; exists: (filePath: string) => boolean } {
@@ -245,6 +245,44 @@ test("review-surfaces.ARCH_DRIFT.1 does not invent an added cycle edge when only
 
   assert.deepEqual(result.file_edges, { added: [], removed: [] });
   assert.equal(result.facts.some((fact) => fact.kind === "import_cycle_created"), false);
+});
+
+test("review-surfaces.ARCH_DRIFT.1 graph completeness bounds approval-changing facts", () => {
+  const cycle = {
+    kind: "import_cycle_created" as const,
+    from_module: "src/a",
+    to_module: "src/b",
+    files: ["src/a.ts"],
+    detail: "runtime import cycle created",
+    cycle: ["src/a.ts", "src/b.ts", "src/a.ts"]
+  };
+  const edge = {
+    kind: "module_edge_added" as const,
+    from_module: "src/a",
+    to_module: "src/b",
+    files: ["src/a.ts"],
+    detail: "new dependency edge"
+  };
+  const result = {
+    facts: [edge, cycle],
+    file_edges: {
+      added: [{ importer: "src/a.ts", imported: "src/b.ts" }],
+      removed: [{ importer: "src/a.ts", imported: "src/old.ts" }]
+    }
+  };
+
+  assert.deepEqual(
+    boundArchDriftByGraphCompleteness(result, { baseTruncated: true, headTruncated: false }),
+    { facts: [], file_edges: result.file_edges }
+  );
+  assert.deepEqual(
+    boundArchDriftByGraphCompleteness(result, { baseTruncated: false, headTruncated: true }),
+    { facts: [cycle], file_edges: result.file_edges }
+  );
+  assert.equal(
+    boundArchDriftByGraphCompleteness(result, { baseTruncated: false, headTruncated: false }),
+    result
+  );
 });
 
 test("review-surfaces.ARCH_DRIFT.2 drift edge deltas set kind new/removed on change_graph edges (and removed edges never enter the tour topology)", () => {

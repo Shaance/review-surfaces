@@ -1,7 +1,7 @@
 import { normalizeValidationCommand, normalizedCommandLooksLikeStandaloneValidation } from "./validation-command";
 
 const VALIDATION_SUCCESS_OUTCOME_SOURCE = String.raw`\b(?:pass(?:ed|es|ing)?|green|succeed(?:s|ed|ing)?|successful|tested|validated|verified)\b`;
-const VALIDATION_TOOLING = /\b(?:tests?|test suite|lint|typecheck|type check|build|validation|checks?|pnpm|npm|yarn|bun|node --test|tsc)\b/i;
+const VALIDATION_TOOLING = /\b(?:tests?|test suite|lint|typecheck|type check|build|validation|checks?|local[- ]gate|quality[- ]gate|pnpm|npm|yarn|bun|node --test|tsc)\b/i;
 
 export function validationTextMentionsTooling(text: string): boolean {
   return VALIDATION_TOOLING.test(text);

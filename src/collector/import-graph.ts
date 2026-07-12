@@ -94,17 +94,25 @@ export function resolveRuntimeRelativeImports(
 
 function resolveSpecifier(fromDir: string, specifier: string, exists: (p: string) => boolean): string | undefined {
   const exact = normalize(path.posix.join(fromDir, specifier));
+  const explicitJsSuffix = exact.match(/\.(js|jsx|mjs|cjs)$/i)?.[1]?.toLowerCase();
   // An import naming an existing JS file is that file — only fall back to the
   // "./x.js means ./x.ts" TS convention when the exact target does not exist.
   if (/\.(js|jsx|mjs|cjs)$/i.test(exact) && exists(exact)) {
     return exact;
   }
   const base = exact.replace(/\.(js|jsx|mjs|cjs)$/i, "");
-  const candidates = [
-    base,
-    ...SOURCE_EXTENSIONS.map((extension) => `${base}${extension}`),
-    ...INDEX_SOURCE_SUFFIXES.map((suffix) => `${base}${suffix}`)
-  ];
+  const mappedExtensions = explicitJsSuffix === "mjs" ? [".mts"]
+    : explicitJsSuffix === "cjs" ? [".cts"]
+      : explicitJsSuffix === "jsx" ? [".tsx"]
+        : explicitJsSuffix === "js" ? [".ts", ".tsx"]
+          : undefined;
+  const candidates = mappedExtensions
+    ? mappedExtensions.map((extension) => `${base}${extension}`)
+    : [
+        base,
+        ...SOURCE_EXTENSIONS.map((extension) => `${base}${extension}`),
+        ...INDEX_SOURCE_SUFFIXES.map((suffix) => `${base}${suffix}`)
+      ];
   for (const candidate of candidates) {
     if (candidate && exists(candidate)) {
       return candidate;

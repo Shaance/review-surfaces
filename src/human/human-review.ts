@@ -561,7 +561,7 @@ function archDriftQueueDrafts(facts: ArchDriftFact[], diffIndex: DiffIndex | und
   // lens context, but are not independently approval-changing. Only cycles
   // proven on the concrete runtime file graph enter the primary queue.
   const ordered = facts
-    .filter((fact) => fact.kind === "import_cycle_created" && (fact.cycle?.length ?? 0) > 2)
+    .filter((fact) => fact.kind === "import_cycle_created" && (fact.cycle?.length ?? 0) >= 2)
     .sort((a, b) => compareStrings(a.cycle?.join(" -> ") ?? "", b.cycle?.join(" -> ") ?? ""));
   return ordered.slice(0, 6).map((fact, index) => {
     const draft = semanticDraft(diffIndex, {

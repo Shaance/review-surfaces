@@ -47,6 +47,26 @@ test("review-surfaces.REVIEWER_VALUE.7 optional additions to namespaced interfac
       to: "export interface Value { required: string; optional?: number; }"
     }]
   }), false);
+  assert.equal(isBreakingApiChange({
+    path: "types/public.d.ts",
+    exports_added: [],
+    exports_removed: [],
+    signatures_changed: [{
+      name: "N.Value",
+      from: "export interface Value { required: string }",
+      to: "export interface Value { required: string; optional?: number; }"
+    }]
+  }), false, "format-only semicolons on existing members do not make an optional addition breaking");
+  assert.equal(isBreakingApiChange({
+    path: "types/public.d.ts",
+    exports_added: [],
+    exports_removed: [],
+    signatures_changed: [{
+      name: "N.Value",
+      from: "export interface Value { required: string, }",
+      to: "export interface Value { required: string; optional?: number; }"
+    }]
+  }), false, "format-only member delimiter changes do not make an optional addition breaking");
 });
 
 // ---------------------------------------------------------------------------

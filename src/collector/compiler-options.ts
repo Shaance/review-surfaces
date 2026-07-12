@@ -42,7 +42,7 @@ export function createRuntimeImportResolver(
         const base = path.posix.normalize(path.posix.join(path.posix.dirname(configPath), entry));
         inherited = {
           ...inherited,
-          ...resolveConfig(base.endsWith(".json") ? base : `${base}.json`, seen)
+          ...resolveConfig(base.endsWith(".json") ? base : `${base}.json`, new Set(seen))
         };
       }
       const own = config.compilerOptions && typeof config.compilerOptions === "object"

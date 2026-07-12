@@ -43,6 +43,20 @@ export interface ArchDriftResult {
   file_edges: ArchDriftFileEdges;
 }
 
+export function boundArchDriftByGraphCompleteness(
+  result: ArchDriftResult,
+  graph: { baseTruncated: boolean; headTruncated: boolean }
+): ArchDriftResult {
+  if (graph.baseTruncated) return { facts: [], file_edges: result.file_edges };
+  if (graph.headTruncated) {
+    return {
+      facts: result.facts.filter((fact) => fact.kind === "import_cycle_created"),
+      file_edges: result.file_edges
+    };
+  }
+  return result;
+}
+
 export interface ComputeArchDriftInput {
   changedFiles: Array<{ path: string; old_path?: string; status: string }>;
   readBase: (filePath: string) => string | undefined;

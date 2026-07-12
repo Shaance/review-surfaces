@@ -118,7 +118,7 @@ function interfaceShape(signature: string, expectedName: string): {
   const members: Array<{ text: string; optional: boolean }> = [];
   for (const member of declaration.members) {
     const optional = Boolean(member.questionToken);
-    const normalized = member.getText(source).replace(/\s+/gu, " ").trim();
+    const normalized = member.getText(source).replace(/\s+/gu, " ").trim().replace(/[;,]$/u, "");
     if (!normalized) return undefined;
     members.push({ text: normalized, optional });
   }

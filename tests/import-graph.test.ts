@@ -96,3 +96,14 @@ test("review-surfaces.ARCH_DRIFT.1 import graph source policy includes modern Ty
   assert.deepEqual(graph.dependencies.get("src/a.mts"), ["src/b.cts"]);
   assert.equal(importGraphWouldTruncate(Object.keys(contents), 1), true);
 });
+
+test("review-surfaces.ARCH_DRIFT.1 explicit JS-family suffixes only map to matching TypeScript module kinds", () => {
+  const files = new Set(["src/foo.ts", "src/only-mts.mts", "src/only-cts.cts"]);
+  const exists = (filePath: string): boolean => files.has(filePath);
+
+  assert.deepEqual(resolveRelativeImports("src/main.ts", 'import "./foo.js";', exists), ["src/foo.ts"]);
+  assert.deepEqual(resolveRelativeImports("src/main.ts", 'import "./only-mts.js";', exists), []);
+  assert.deepEqual(resolveRelativeImports("src/main.ts", 'import "./only-cts.mjs";', exists), []);
+  assert.deepEqual(resolveRelativeImports("src/main.ts", 'import "./only-mts.mjs";', exists), ["src/only-mts.mts"]);
+  assert.deepEqual(resolveRelativeImports("src/main.ts", 'import "./only-cts.cjs";', exists), ["src/only-cts.cts"]);
+});

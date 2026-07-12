@@ -84,7 +84,7 @@ import { packagedSchemaPath } from "../schema/packaged-schemas";
 import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
 import { ChangedImportEdge, ChangeGraphAreaInsight, ChangeGraphEdgeInsight, computeChangedImportEdges } from "../human/change-graph";
 import { buildChangeMapInsights, ChangeMapInsights } from "../human/change-map-insights";
-import { ArchDriftResult, computeArchDriftFacts, moduleOf } from "../risks/arch-drift";
+import { ArchDriftResult, boundArchDriftByGraphCompleteness, computeArchDriftFacts, moduleOf } from "../risks/arch-drift";
 import { clusterOfPath, detectImplementationRoots, DEFAULT_IMPLEMENTATION_ROOTS } from "../core/source-roots";
 import { EvalScoreboardSummary, HUMAN_REVIEW_DECISIONS, RoundsLedgerEntry } from "../human/contract";
 import { buildChangeNarrative } from "../human/narrative";
@@ -2199,14 +2199,13 @@ function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined
   // A truncated tree graph makes module-edge novelty UNKNOWN: suppress the
   // facts ("no import existed at the base" cannot be asserted) but keep the
   // file-level edge deltas — they come from the changed files alone and stay
-  // exact for the map renderers. A complete head graph still proves a cycle
-  // containing an exact newly added changed-file edge even when the bounded
-  // base graph cannot establish whether those endpoints shared an older SCC.
+  // exact for the map renderers. Cycle CREATION also needs a complete base SCC
+  // graph; a complete head alone proves presence, not novelty.
   if (baseGraph === "truncated" || headGraph === "truncated") {
-    return {
-      facts: result.facts.filter((fact) => fact.kind === "import_cycle_created"),
-      file_edges: result.file_edges
-    };
+    return boundArchDriftByGraphCompleteness(result, {
+      baseTruncated: baseGraph === "truncated",
+      headTruncated: headGraph === "truncated"
+    });
   }
   return result;
 }

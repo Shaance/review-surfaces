@@ -565,6 +565,39 @@ test("architecture cycle lenses anchor comments to changed importers while retai
   assert.deepEqual(queue?.evidence.map((item) => item.path), ["src/a/unchanged.ts", "src/z/changed.ts"]);
 });
 
+test("a concrete runtime self-import cycle reaches the primary queue and decision projection", () => {
+  const path = "src/self.ts";
+  const diff = parseStructuredDiff([
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    "@@ -1,1 +1,2 @@",
+    " export const value = 1;",
+    `+import { value } from "./self";`,
+    ""
+  ].join("\n"));
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    diff,
+    archDrift: {
+      facts: [{
+        kind: "import_cycle_created",
+        from_module: "src",
+        to_module: "src",
+        files: [path],
+        detail: `runtime import cycle created: ${path} -> ${path}`,
+        cycle: [path, path]
+      }],
+      file_edges: { added: [{ importer: path, imported: path }], removed: [] }
+    }
+  });
+
+  assert.ok(model.review_queue.some((item) => /Import cycle created/.test(item.title)));
+  assert.ok(model.decision_projection?.findings.some((finding) =>
+    finding.root_cause === `architecture_cycle:${path}`
+  ));
+});
+
 test("review-surfaces.REVIEWER_VALUE.7 keeps benign architecture edges out of comments and questions", () => {
   const model = buildHumanReview({
     packet: packetFixture(),

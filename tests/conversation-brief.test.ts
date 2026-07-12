@@ -655,6 +655,15 @@ test("review-surfaces.CONVERSATION_REVIEW.6 actual outcomes survive nearby hypot
   ]);
 });
 
+test("review-surfaces.CONVERSATION_REVIEW.6 recognizes local-gate and quality-gate shorthand claims", () => {
+  const brief = buildDeterministicConversationBrief([
+    { id: "local", actor: "assistant", kind: "message", summary: "local-gate PASS", raw_index: 0 },
+    { id: "quality", actor: "assistant", kind: "message", summary: "quality-gate passed", raw_index: 1 }
+  ], "mock");
+
+  assert.deepEqual(brief.validation_claims.map((item) => item.event_ids[0]), ["local", "quality"]);
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.6 subordinate expectations do not erase actual outcomes", () => {
   const brief = buildDeterministicConversationBrief([
     "Tests passed, which we expected.",
