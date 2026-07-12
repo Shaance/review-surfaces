@@ -11,6 +11,10 @@ docs:
   - .agents/skills/**/SKILL.md
 tests:
   - tests/**/*.test.ts
+contract_surfaces:
+  # Package exports/entries and declaration files are discovered automatically.
+  # Add documented extension or public API modules here; ordinary TS exports stay internal.
+  paths: []
 areas:
   - id: SUB-CLI
     name: CLI orchestration
@@ -238,6 +242,20 @@ areas:
       - human
       - review
       - evidence
+  - id: SUB-REVIEWER-VALUE
+    name: Reviewer usefulness evaluation
+    group_key: REVIEWER_VALUE
+    prefixes:
+      - bench/
+      - src/bench/
+      - tests/bench.test.ts
+      - tests/bench-usefulness.test.ts
+      - docs/agent/execplans/simplification-usefulness-program.md
+    purpose: Measure finding precision, comment actionability, density, and reviewer reconstruction cost.
+    pattern: curated usefulness gate
+    test_keywords:
+      - bench
+      - usefulness
   - id: SUB-QUALITY
     name: Tests and fixtures
     group_key: QUALITY
@@ -284,7 +302,7 @@ render:
   include_evidence_appendix: true
 dogfood:
   enabled: true
-  milestone: M5
+  milestone: usefulness-M1
 quality_gate:
   # The human review value uplift (docs/history/human-review-value-uplift-proposal.md)
   # landed its spec entries ahead of their phased implementation, so each phase's

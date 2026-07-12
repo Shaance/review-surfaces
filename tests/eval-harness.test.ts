@@ -94,6 +94,7 @@ test.skip("app.CORE.1 add sums two numbers", () => {
 test("review-surfaces.EVAL_HARNESS.2 breaking API change ranks in the top N", () => {
   const fixture = createEvalFixture("api-break");
   try {
+    fixture.write("package.json", JSON.stringify({ exports: { "./calc": "./src/calc.ts" } }, null, 2));
     fixture.write(
       "src/calc.ts",
       `export function add(left: number, right: number, base: number): number {
@@ -236,6 +237,7 @@ test("review-surfaces.EVAL_HARNESS.2 a sneaky new dependency with an install scr
 test("review-surfaces.EVAL_HARNESS.2 a breaking API change with call sites carries its blast radius (BLAST_RADIUS)", () => {
   const fixture = createEvalFixture("blast");
   try {
+    fixture.write("package.json", JSON.stringify({ exports: { "./calc": "./src/calc.ts" } }, null, 2));
     fixture.write("src/caller1.ts", `import { add } from "./calc";\nexport const one = add(1, 2);\n`);
     fixture.write("src/caller2.ts", `import { add } from "./calc";\nexport const two = add(2, 3);\n`);
     fixture.commit("add callers");
@@ -256,7 +258,7 @@ test("review-surfaces.EVAL_HARNESS.2 a breaking API change with call sites carri
   }
 });
 
-test("review-surfaces.EVAL_HARNESS.2 a deleted internal API keeps surviving callers visible (BLAST_RADIUS)", () => {
+test("review-surfaces.EVAL_HARNESS.2 a deleted internal API keeps caller evidence without becoming a public-contract finding (BLAST_RADIUS)", () => {
   const fixture = createEvalFixture("deleted-api-blast");
   try {
     fixture.write("src/internal.ts", "export function internalValue(): number { return 1; }\n");
@@ -266,13 +268,13 @@ test("review-surfaces.EVAL_HARNESS.2 a deleted internal API keeps surviving call
     fixture.commit("delete internal api");
     record("blast_radius", () => {
       const model = fixture.run(["--base", "HEAD~1"]);
-      const item = topQueue(model).find((entry) => entry.path === "src/internal.ts" && /API|export/i.test(entry.title));
-      assert.ok(item, "the deleted internal API must stay in the primary queue while a caller survives");
-      assert.match(item.reason, /Used by 1 file\(s\)/);
-      assert.match(item.reason, /internal-caller\.ts/);
-      assert.ok(model.decision_projection?.findings.some((finding) =>
+      const fact = model.semantic_facts.api_changes.find((entry) => entry.path === "src/internal.ts");
+      assert.equal(fact?.used_by?.count, 1, "the supporting semantic fact retains the surviving caller");
+      assert.deepEqual(fact?.used_by?.top, ["src/internal-caller.ts"]);
+      assert.equal(fact?.contract_surface, undefined, "an ordinary internal export is not classified as a supported contract");
+      assert.ok(!model.decision_projection?.findings.some((finding) =>
         finding.root_cause === "caller_break:src/internal.ts"
-      ));
+      ), "an internal module does not become a public-contract approval finding");
     });
   } finally {
     fixture.cleanup();

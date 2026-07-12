@@ -14,7 +14,7 @@ import type {
 } from "./contract";
 import { currentValidationRunState, decisionRootForApiChange, decisionRootForRisk, isDecisionScopedEvidenceRef, type DecisionScope } from "./decision-admission";
 
-const MAX_DECISION_FINDINGS = 5;
+const MAX_DECISION_FINDINGS = 3;
 const MAX_DECISION_STRING_ITEMS = 24;
 const MAX_DECISION_ID_LENGTH = 1000;
 
@@ -296,14 +296,26 @@ function boundedText(value: string, maxLength: number, fallback: string): string
 }
 
 function summarizeAffectedIntent(requirements: ReviewPacket["intent"]["requirements"]): string {
-  const visible = requirements.slice(0, 3).map((requirement) => {
+  if (requirements.length === 1) {
+    const requirement = requirements[0];
     const text = boundedText(requirement.requirement.replace(/\s+/gu, " "), 500, "Affected requirement intent.");
-    const id = requirement.acai_id ?? requirement.id;
-    return `${text.replace(/[.!?]+$/u, "")} [${id}]`;
-  });
-  const omitted = requirements.length - visible.length;
-  const suffix = omitted > 0 ? ` (+${omitted} more affected requirement${omitted === 1 ? "" : "s"})` : "";
-  return boundedText(`${visible.join("; ")}${suffix}`, 2000, "Affected requirement intent.");
+    const id = boundedText(requirement.acai_id ?? requirement.id, MAX_DECISION_ID_LENGTH, "unknown");
+    return boundedText(`${text.replace(/[.!?]+$/u, "")} [${id}]`, 2000, "Affected requirement intent.");
+  }
+  const areas = [...new Map(requirements.map((requirement) => {
+    const acid = requirement.acai_id ?? requirement.id;
+    const group = acid.replace(/\.\d+$/u, "");
+    const title = requirement.title?.trim() || group;
+    return [group, `${title} (${group})`];
+  })).values()];
+  const visible = areas.slice(0, 3);
+  const omitted = areas.length - visible.length;
+  const suffix = omitted > 0 ? ` (+${omitted} more area${omitted === 1 ? "" : "s"})` : "";
+  return boundedText(
+    `Reviewed change affects ${requirements.length} requirement(s) across ${visible.join(", ")}${suffix}.`,
+    900,
+    "Affected requirement intent."
+  );
 }
 
 function summarizeConversationIntent(

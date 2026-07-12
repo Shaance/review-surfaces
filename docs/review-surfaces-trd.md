@@ -801,6 +801,10 @@ docs:
   - docs/**/*.md
   - AGENTS.md
   - .agents/skills/**/SKILL.md
+contract_surfaces:
+  # Package exports/entries and declaration files are automatic. Add documented
+  # extension APIs or other supported public modules with * / ** globs.
+  paths: []
 privacy:
   ignore_file: .review-surfacesignore
   redact_secrets: true

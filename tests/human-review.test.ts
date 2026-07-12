@@ -548,7 +548,7 @@ test("reviewer usefulness treats an empty truncated importer set as unknown, not
     semanticFacts: {
       schema_changes: [],
       api_changes: [{
-        path: "src/internal/helper.ts",
+        path: "types/public.d.ts",
         exports_added: [],
         exports_removed: ["legacyExport"],
         signatures_changed: [],
@@ -557,7 +557,7 @@ test("reviewer usefulness treats an empty truncated importer set as unknown, not
       test_weakening: []
     }
   });
-  const item = model.review_queue.find((candidate) => candidate.path === "src/internal/helper.ts");
+  const item = model.review_queue.find((candidate) => candidate.path === "types/public.d.ts");
 
   assert.ok(item);
   assert.match(item.reason, /count unknown|graph truncated/i);
@@ -2164,6 +2164,18 @@ test("review-surfaces.HUMAN_REVIEW.17 required manual checks participate in the 
   );
 });
 
+test("review-surfaces.REVIEWER_VALUE.11 contract paths participate in the cached human-review signature", () => {
+  assert.notEqual(
+    humanReviewConfigSignature(DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, ["src/public/**"]),
+    humanReviewConfigSignature(DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, ["src/internal/**"])
+  );
+  assert.equal(
+    humanReviewConfigSignature(DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, ["b/**", "a/**", "a/**"]),
+    humanReviewConfigSignature(DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, ["a/**", "b/**"]),
+    "equivalent contract path sets have a stable normalized signature"
+  );
+});
+
 test("review-surfaces.NARRATIVE.1 narrative_max_claims participates in the config signature", () => {
   // A config-only change to the narrative cap must bust the cache / trigger a
   // standalone rebuild so the requested cap is actually applied.
@@ -2513,13 +2525,15 @@ test("PR-scoped packet risks include renamed old paths in the changed-file scope
   assert.equal(item?.path, "src/human/old-review.ts");
 });
 
-test("repo-mode human review promotes focused human gaps into actions", () => {
+test("repo-mode human review keeps focused human gaps as questions and checks, not generic postable comments", () => {
   const model = buildHumanReview({ packet: packetFixture() });
 
   assert.equal(model.mode, "repo");
   assert.equal(model.questions[0].maps_to_requirements.includes("review-surfaces.HUMAN_REVIEW.1"), true);
   assert.match(model.questions[0].question, /validation evidence/);
-  assert.equal(model.suggested_comments[0].requirement_ids.includes("review-surfaces.HUMAN_REVIEW.1"), true);
+  assert.equal(model.suggested_comments.some((comment) =>
+    comment.requirement_ids.includes("review-surfaces.HUMAN_REVIEW.1") && /validation evidence/i.test(comment.body)
+  ), false);
   assert.equal(model.test_plan[0].maps_to_requirements.includes("review-surfaces.HUMAN_REVIEW.1"), true);
   assert.equal(model.test_plan[0].suggested_file, "tests/human-review.test.ts");
 });
@@ -5210,7 +5224,7 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: an exported surface is detecte
   const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
   const item = model.review_queue.find((entry) => entry.path === "src/api.ts");
   assert.ok(item, "the impl file is queued");
-  assert.match(item.reason, /exported\/public surface/);
+  assert.match(item.reason, /changed exported declarations/);
 });
 
 test("review-surfaces.HUMAN_REVIEW.28 cold-start: same-basename impls are not all marked connected by one shared-stem test (Codex #112 round-2)", () => {
@@ -5298,7 +5312,7 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: a .d.ts declaration file is tr
   const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
   const item = model.review_queue.find((entry) => entry.path === "types/index.d.ts");
   assert.ok(item, "the declaration file is queued");
-  assert.match(item.reason, /exported\/public surface/, "a .d.ts is recognized as exported public surface from the diff");
+  assert.match(item.reason, /changed exported declarations/, "a .d.ts export remains a review-focus signal without conflating every export with public API");
 });
 
 test("review-surfaces.HUMAN_REVIEW.28 cold-start: a DELETED test does not count as a connected test (Codex #112 round-4)", () => {
@@ -5417,7 +5431,7 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: a Go receiver method is recogn
   const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
   const item = model.review_queue.find((entry) => entry.path === "client.go");
   assert.ok(item, "the Go file is queued");
-  assert.match(item.reason, /exported\/public surface/, "a Go receiver method is detected as exported public surface");
+  assert.match(item.reason, /changed exported declarations/, "a Go receiver method remains an export signal without claiming contract status");
 });
 
 test("review-surfaces.HUMAN_REVIEW.28 cold-start: extension completeness — .mts is impl, doc exts and binaries are excluded (Codex #112 round-5)", () => {
@@ -5442,7 +5456,7 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start: extension completeness — .mt
   const model = buildHumanReview({ packet: minimalReviewPacket() as unknown as ReviewPacket, diff });
   const mts = model.review_queue.find((entry) => entry.path === "src/api.mts");
   assert.ok(mts, "a .mts module is treated as implementation and queued");
-  assert.match(mts.reason, /exported\/public surface/, ".mts impl gets the public-surface signal");
+  assert.match(mts.reason, /changed exported declarations/, ".mts impl gets the export-declaration signal");
   assert.ok(!model.review_queue.some((entry) => entry.path === "README.mdx"), "a .mdx doc outside docs/ is excluded");
   assert.ok(!model.review_queue.some((entry) => entry.path === "fixtures/app.jar"), "a .jar binary artifact is not a review-focus item");
 });

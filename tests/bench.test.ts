@@ -25,9 +25,19 @@ test("review-surfaces.BENCH.1 the effectiveness benchmark ships a runnable harne
     langs.add(c.lang);
   }
   assert.ok(langs.size >= 4, "the seed set spans multiple languages");
+  const usefulnessCases = manifest.cases.filter((c: { usefulness?: unknown }) => c.usefulness);
+  assert.ok(usefulnessCases.length > 0, "review-surfaces.REVIEWER_VALUE.10 keeps at least one curated usefulness case");
+  for (const c of usefulnessCases) {
+    assert.ok(Array.isArray(c.usefulness.findings), `case ${c.id} carries curated finding judgments`);
+    assert.ok(typeof c.usefulness.max_first_action_line === "number", `case ${c.id} carries a first-action budget`);
+    assert.ok(typeof c.usefulness.reviewer_value_rating === "number", `case ${c.id} carries an explicit human reviewer-value rating`);
+  }
 
   const runnerSrc = fs.readFileSync(runner, "utf8");
   assert.match(runnerSrc, /--no-conversation-discovery/, "benchmark runs stay hermetic (no auto-discovery of the runner's own sessions)");
   assert.match(runnerSrc, /--config/, "benchmark forces a neutral config so a target repo's own config can't change the result");
+  assert.match(runnerSrc, /scoreReviewerUsefulness/, "benchmark scores reviewer usefulness separately from structural validity");
+  assert.match(runnerSrc, /first concrete action line \(worst curated case\)/, "benchmark reports its reviewer-density evidence, not only pass/fail");
+  assert.match(runnerSrc, /duplicate decision roots \(curated cases\)/, "benchmark reports duplicate-root evidence");
   assert.ok(fs.existsSync(path.join(root, "bench", "neutral.config.yaml")), "the neutral benchmark config ships");
 });

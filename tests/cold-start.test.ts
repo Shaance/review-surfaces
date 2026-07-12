@@ -10,7 +10,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import { computeSemanticChangeFacts, SemanticDiffSources } from "../src/risks/semantic-diff";
-import { clusterOfPath, detectImplementationRoots } from "../src/core/source-roots";
+import { clusterOfPath, detectContractSourceRoots, detectImplementationRoots } from "../src/core/source-roots";
 import { buildChangeGraphSections } from "../src/human/change-graph";
 import { createEvalFixture } from "./helpers/eval-fixture";
 
@@ -73,6 +73,11 @@ test("review-surfaces.COLD_START.2 detects implementation roots from tsconfig, p
   assert.ok(!roots.includes("dist"), "build output must never become an implementation root");
   assert.ok(!roots.includes("test"), "test trees must never become an implementation root");
   assert.ok(!roots.includes("documentation"), "docs dirs must not qualify via the majority fallback");
+  assert.deepEqual(
+    detectContractSourceRoots({ files, read: (filePath) => contents[filePath] }),
+    ["source"],
+    "explicit tsconfig source roots avoid ambiguous package-target fan-out"
+  );
 
   // Majority fallback alone (no tsconfig/package signals): a packages-style
   // top-level dir of mostly .ts files qualifies; a docs dir does not.
@@ -117,6 +122,20 @@ test("review-surfaces.COLD_START.2 end-to-end: a source/-rooted repo gets implem
     const leg = human.reading_order.legs.find((candidate) => candidate.steps.some((step) => step.path === "source/core/engine.ts"));
     assert.ok(leg, "the new source file is in the tour");
     assert.equal(leg?.title, "Implementation", "detected source/ root classifies as implementation end-to-end");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 untracked source roots participate in worktree contract classification", () => {
+  const fixture = createEvalFixture("untracked-contract-root");
+  try {
+    fixture.write("package.json", JSON.stringify({ main: "dist/index.js" }));
+    fixture.write("tsconfig.json", JSON.stringify({ compilerOptions: { rootDir: "source" } }));
+    fixture.write("source/index.ts", "export const value: number = 1;\n");
+    const model = fixture.run();
+    const change = model.semantic_facts.api_changes.find((entry) => entry.path === "source/index.ts");
+    assert.equal(change?.contract_surface?.kind, "package_entry");
   } finally {
     fixture.cleanup();
   }

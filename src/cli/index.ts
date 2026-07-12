@@ -85,7 +85,7 @@ import { buildHumanReview, humanReviewConfigSignature } from "../human/human-rev
 import { ChangedImportEdge, ChangeGraphAreaInsight, ChangeGraphEdgeInsight, computeChangedImportEdges } from "../human/change-graph";
 import { buildChangeMapInsights, ChangeMapInsights } from "../human/change-map-insights";
 import { ArchDriftResult, boundArchDriftByGraphCompleteness, computeArchDriftFacts, moduleOf } from "../risks/arch-drift";
-import { clusterOfPath, detectImplementationRoots, DEFAULT_IMPLEMENTATION_ROOTS } from "../core/source-roots";
+import { clusterOfPath, detectContractSourceRoots, detectImplementationRoots, DEFAULT_IMPLEMENTATION_ROOTS } from "../core/source-roots";
 import { EvalScoreboardSummary, HUMAN_REVIEW_DECISIONS, RoundsLedgerEntry } from "../human/contract";
 import { buildChangeNarrative } from "../human/narrative";
 import { ChangeNarrative, HumanReviewModel, ReviewQueueItem } from "../human/contract";
@@ -1831,7 +1831,10 @@ async function loadOrBuildHumanReviewJson(
 }
 
 function humanReviewJsonMatchesConfig(model: HumanReviewModel, config?: ReviewSurfacesConfig): boolean {
-  return model.generated_from.human_review_config_signature === humanReviewConfigSignature(config?.human_review);
+  return model.generated_from.human_review_config_signature === humanReviewConfigSignature(
+    config?.human_review,
+    config?.contract_surfaces.paths
+  );
 }
 
 function humanReviewJsonSatisfiesStandaloneCommand(model: HumanReviewModel, command: string | undefined): boolean {
@@ -1956,12 +1959,14 @@ function buildHumanReviewForPacket(
   // from committed signals; the change map, tour, and drift facts all consume
   // the same value so they cannot disagree on what counts as implementation.
   const implementationRoots = detectRootsForPacket(cwd, factReaders);
+  const contractSourceRoots = detectContractRootsForPacket(cwd, factReaders);
   const humanReview = buildHumanReview({
     packet,
     prSurface,
     diff: resolvedDiff,
     feedback,
     config: effectiveConfig?.human_review,
+    contractPaths: effectiveConfig?.contract_surfaces.paths,
     narrative,
     conversationAnalysis: conversationReview?.analysis,
     reviewInsights: conversationReview?.insights,
@@ -1969,7 +1974,11 @@ function buildHumanReviewForPacket(
     policyNowIso: typeof (packet.manifest as { created_at?: unknown }).created_at === "string" ? (packet.manifest as { created_at: string }).created_at : "",
     // review-surfaces.SEMANTIC_DIFF.1-4: computed here (sync git access) so the
     // facts are present uniformly on every build path — main, cache, standalone.
-    semanticFacts: withBlastRadius(cwd, computeSemanticFactsForPacket(resolvedDiff, factReaders), factReaders),
+    semanticFacts: withBlastRadius(
+      cwd,
+      computeSemanticFactsForPacket(resolvedDiff, factReaders, effectiveConfig?.contract_surfaces.paths, contractSourceRoots),
+      factReaders
+    ),
     // review-surfaces.RANKING.1: per-changed-impl-path evidence (changed test ->
     // impl import map) computed here so it is uniform on every build path.
     rankingEvidence: computeRankingEvidenceForPacket(cwd, packet, resolvedDiff),
@@ -2010,14 +2019,22 @@ function buildHumanReviewForPacket(
 // review-surfaces.SEMANTIC_DIFF.1-4: compute the semantic change facts from the
 // collected diff plus the shared base/head readers (merge-base for the OLD side,
 // worktree-or-committed-blob for the NEW side — see buildFactReaders).
-function computeSemanticFactsForPacket(diff: StructuredDiff | undefined, readers: FactReaders | undefined): SemanticChangeFacts {
+function computeSemanticFactsForPacket(
+  diff: StructuredDiff | undefined,
+  readers: FactReaders | undefined,
+  contractPaths: readonly string[] = [],
+  sourceRoots: { base: readonly string[]; head: readonly string[] } = { base: [], head: [] }
+): SemanticChangeFacts {
   if (!diff || diff.files.length === 0 || !readers) {
     return emptySemanticChangeFacts();
   }
   return computeSemanticChangeFacts({
     diff,
     readBase: readers.readBase,
-    readHead: readers.readHead
+    readHead: readers.readHead,
+    contractPaths,
+    baseSourceRoots: sourceRoots.base,
+    headSourceRoots: sourceRoots.head
   });
 }
 
@@ -2097,7 +2114,7 @@ function detectRootsForPacket(cwd: string, readers: FactReaders | undefined): st
   try {
     files = execFileSync(
       "git",
-      readers.headIsWorktree ? ["ls-files", "--cached"] : ["ls-tree", "-r", "--name-only", readers.headSha],
+      readers.headIsWorktree ? ["ls-files", "--cached", "--others", "--exclude-standard"] : ["ls-tree", "-r", "--name-only", readers.headSha],
       { cwd, encoding: "utf8" }
     )
       .split("\n")
@@ -2106,6 +2123,30 @@ function detectRootsForPacket(cwd: string, readers: FactReaders | undefined): st
     return [...DEFAULT_IMPLEMENTATION_ROOTS];
   }
   return detectImplementationRoots({ files, read: readers.readHead });
+}
+
+function detectContractRootsForPacket(
+  cwd: string,
+  readers: FactReaders | undefined
+): { base: string[]; head: string[] } {
+  if (!readers) return { base: [], head: [] };
+  const detect = (args: string[], read: (path: string) => string | undefined): string[] => {
+    try {
+      const files = execFileSync("git", args, { cwd, encoding: "utf8" }).split("\n").filter(Boolean);
+      return detectContractSourceRoots({ files, read });
+    } catch {
+      return [];
+    }
+  };
+  return {
+    head: detect(
+      readers.headIsWorktree ? ["ls-files", "--cached", "--others", "--exclude-standard"] : ["ls-tree", "-r", "--name-only", readers.headSha],
+      readers.readHead
+    ),
+    base: readers.baseReadRef
+      ? detect(["ls-tree", "-r", "--name-only", readers.baseReadRef], readers.readBase)
+      : []
+  };
 }
 
 // review-surfaces.CHANGE_MAP.1: importer->imported edges among the changed

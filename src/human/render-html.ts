@@ -49,15 +49,25 @@ import type {
   ConversationAnalysis,
   ReviewerInsight
 } from "../contracts/conversation-review";
+import { partitionPrimary } from "./primary-surface-policy";
 
 export function renderHumanReviewHtml(model: HumanReviewModel, context: HumanRenderContext = {}): string {
   const lenses = [...new Set(model.review_queue.flatMap((item) => lensesForItem(model, item)))].sort();
   // review-surfaces.PRIVACY.6: render the queue first with a redaction sink so a
   // high-confidence secret in any diff excerpt is observed, not silently dropped.
   const excerptRedaction: ExcerptRedactionState = { blocked: false };
-  const queueHtml = model.review_queue.length === 0
+  const renderedQueue = model.review_queue.map((item, index) =>
+    renderQueueItem(model, item, index === 0 ? context : {}, excerptRedaction)
+  );
+  const queueItems = partitionPrimary(renderedQueue);
+  const queueHtml = renderedQueue.length === 0
     ? `<p class="muted">No path-backed review queue items.</p>`
-    : model.review_queue.map((item) => renderQueueItem(model, item, context, excerptRedaction)).join("\n");
+    : [
+        ...queueItems.primary,
+        queueItems.supporting.length > 0
+          ? `<details data-supporting-queue><summary>+${esc(queueItems.supporting.length)} supporting queue item(s)</summary>${queueItems.supporting.join("\n")}</details>`
+          : ""
+      ].filter(Boolean).join("\n");
   const body = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -145,9 +155,26 @@ ${incompleteReviewScopeText(model.generated_from.omitted_untracked_files ?? 0) ?
 <p><span class="badge ${esc(model.verdict.decision)}">${esc(decisionLabel(model.verdict.decision))}</span> <span class="muted">confidence: ${esc(model.verdict.confidence)}</span></p>
 <p>${esc(model.summary)}</p>
 ${renderDecisionProjection(model)}
-${renderConversationInsights(model)}
+
+<h2 id="queue">Review queue</h2>
+<p class="filters" id="file-filter-note" hidden>Filtered to <code id="file-filter-path"></code> <button data-clear-file-filter>show all</button></p>
+${queueHtml}
+
 ${renderHeaderStrip(model, lenses)}
 ${renderThreeQuestions(model)}
+
+${renderBlockers(model)}
+
+<h2 id="questions">Questions for the author</h2>
+${renderPrimaryQuestions(model)}
+
+<h2 id="required-checks">Required checks</h2>
+${renderRequiredChecks(model)}
+
+<h2 id="trust-summary">Trust summary</h2>
+${renderTrustSummary(model)}
+
+${renderConversationInsights(model)}
 <h2 id="reading-order">Reading order</h2>
 ${renderReadingOrder(model)}
 
@@ -155,11 +182,6 @@ ${renderReadingOrder(model)}
 ${renderSvgMapSection(model)}
 
 ${renderNarrative(model)}
-${renderBlockers(model)}
-
-<h2 id="queue">Review queue</h2>
-<p class="filters" id="file-filter-note" hidden>Filtered to <code id="file-filter-path"></code> <button data-clear-file-filter>show all</button></p>
-${queueHtml}
 
 <h2 id="plan">Review plan</h2>
 ${renderPlan(model)}
@@ -181,9 +203,6 @@ ${renderTrust(model)}
 
 <h2 id="methodology">Agent workflow audit</h2>
 ${renderMethodologyAudit(model)}
-
-<h2 id="questions">Questions for the author</h2>
-${model.questions.length === 0 ? `<p class="muted">No reviewer questions generated.</p>` : `<ul>${model.questions.map((question) => `<li><span class="badge ${esc(question.severity)}">${esc(question.severity)}</span> ${esc(question.question)} <span class="muted">(${esc(question.id)})</span></li>`).join("")}</ul>`}
 
 ${renderScoreboardFooter(model)}
 <script>
@@ -218,6 +237,19 @@ ${renderScoreboardFooter(model)}
       var itemPath = item.getAttribute("data-path");
       var fileOk = !activeFile || itemPath === activeFile || item.getAttribute("data-path-old") === activeFile || (activeFileOld && itemPath === activeFileOld);
       item.style.display = lensOk && fileOk ? "" : "none";
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-supporting-queue]"), function (details) {
+      var visibleMatch = false;
+      Array.prototype.forEach.call(details.querySelectorAll("[data-lenses]"), function (item) {
+        if (item.style.display !== "none") { visibleMatch = true; }
+      });
+      if ((activeFile || activeLens) && visibleMatch) {
+        if (!details.open) { details.setAttribute("data-filter-opened", "true"); }
+        details.open = true;
+      } else if (details.getAttribute("data-filter-opened") === "true") {
+        details.open = false;
+        details.removeAttribute("data-filter-opened");
+      }
     });
     if (fileNote && filePathEl) {
       fileNote.hidden = !activeFile;
@@ -604,6 +636,27 @@ function renderBlockers(model: HumanReviewModel): string {
     .join("")}</ul>`;
 }
 
+function renderPrimaryQuestions(model: HumanReviewModel): string {
+  if (model.questions.length === 0) return `<p class="muted">No reviewer questions generated.</p>`;
+  const renderQuestion = (question: HumanReviewModel["questions"][number]): string =>
+    `<li><span class="badge ${esc(question.severity)}">${esc(question.severity)}</span> ${esc(question.question)} <span class="muted">(${esc(question.id)})</span></li>`;
+  const questionItems = partitionPrimary(model.questions);
+  const primary = questionItems.primary.map(renderQuestion).join("");
+  const supporting = questionItems.supporting;
+  return `<ul>${primary}</ul>${supporting.length > 0 ? `<details><summary>+${esc(supporting.length)} supporting question(s)</summary><ul>${supporting.map(renderQuestion).join("")}</ul></details>` : ""}`;
+}
+
+function renderRequiredChecks(model: HumanReviewModel): string {
+  const required = model.test_plan.filter((item) => item.priority === "required");
+  if (required.length === 0) return `<p class="muted">No required checks were generated.</p>`;
+  const renderCheck = (item: HumanReviewModel["test_plan"][number]): string =>
+    `<li>${esc(item.scenario)} <span class="muted">Expected: ${esc(item.expected_result)}</span></li>`;
+  const checkItems = partitionPrimary(required);
+  const primary = checkItems.primary.map(renderCheck).join("");
+  const supporting = checkItems.supporting;
+  return `<ul>${primary}</ul>${supporting.length > 0 ? `<details><summary>+${esc(supporting.length)} supporting required check(s)</summary><ul>${supporting.map(renderCheck).join("")}</ul></details>` : ""}`;
+}
+
 function renderPlan(model: HumanReviewModel): string {
   const plan = model.review_plan;
   if (!plan || !plan.enabled) {
@@ -657,6 +710,11 @@ function renderTrust(model: HumanReviewModel): string {
     section("Missing evidence", trust.missing_evidence.map((item) => esc(item.summary))),
     section("Invalid evidence", trust.invalid_evidence.map((item) => esc(item.summary)))
   ].join("");
+}
+
+function renderTrustSummary(model: HumanReviewModel): string {
+  const trust = model.trust_audit;
+  return `<p>${esc(trust.verified_facts.length)} verified fact(s); ${esc(trust.claimed_not_verified.length)} unverified claim(s); ${esc(trust.missing_evidence.length)} missing-evidence item(s); ${esc(trust.invalid_evidence.length)} invalid-evidence item(s). <span class="muted">${esc(trust.confidence_summary)}</span></p>`;
 }
 
 // review-surfaces.METHODOLOGY.7/.8 (Phase 4): the agent-workflow audit card —

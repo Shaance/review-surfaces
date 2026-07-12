@@ -233,6 +233,18 @@ components:
         requirement: >-
           A real-session usefulness regression must run the deterministic reviewer model over a representative large conversation/change fixture and assert decision quality as well as schema validity: no unproven aggregate architecture cycle may change the verdict, internal additive facts may not create ready comments, the original goal remains visible, raw image attachment markup is excluded, and current validation evidence outranks stale progress commentary.
         note: "Real-session usefulness M4. Structural validation and 1,563 passing tests coexisted with a false approval-changing finding and low-value reviewer output."
+      10:
+        requirement: >-
+          The usefulness benchmark must support curated human judgments for actionable findings, false positives, duplicate root causes, and comments a reviewer would actually post, and must report finding precision, actionable-comment precision, time or Markdown lines before the first concrete review action, and an explicit reviewer-value rating separately from structural validity metrics.
+        note: "Simplification-and-usefulness M1. The 22-case benchmark proved non-empty queues and focus recall but could not fail a 527-line report whose first queue action appeared at line 233."
+      11:
+        requirement: >-
+          Exported TypeScript syntax and in-repository importers are supporting facts, not proof of a public contract or broken caller: approval-changing API findings require an explicitly classified package export or entry point, declaration contract, configured contract path, persisted schema, or independent evidence that a concrete caller is incompatible; a bounded or truncated importer graph alone cannot promote an internal export.
+        note: "Simplification-and-usefulness M1. The exact 2076964..171b414 report promoted src/collector/import-graph.ts and src/human/conversation-review-presentation.ts because normal internal consumers imported them."
+      12:
+        requirement: >-
+          The default human Markdown and HTML surfaces must place the top review actions immediately after verdict, active intent, and at most three decision findings, before reading order, change maps, narratives, semantic ledgers, and exhaustive routes; the first concrete action should appear within roughly 30 Markdown lines, the primary decision surface should stay around 100 lines, and queue items beyond the top three must remain available as explicitly collapsed or standalone supporting detail.
+        note: "Simplification-and-usefulness M1. Support machinery occupied lines 37-232 before the ranked queue in the reproduced merged-range report."
   RISK:
     name: Risk and test-gap analysis
     description: Compute review risk, tested areas, untested areas, and manual/automatic checks.

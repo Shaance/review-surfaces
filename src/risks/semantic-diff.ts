@@ -15,6 +15,7 @@
 import * as ts from "typescript";
 import { StructuredDiff, StructuredDiffFile } from "../pr/contract";
 import { isTestPath } from "../scope/pr-scope";
+import { createApiContractSurfaceClassifier, isExplicitContractSurfacePath, listPackageContractEntries, type ApiContractSurface, type PackageContractEntry } from "./contract-surface";
 
 export interface SchemaContractChange {
   path: string;
@@ -37,6 +38,13 @@ export interface ApiSurfaceChange {
   // symbols, with the top paths (alphabetical, bounded). Absent when the import
   // graph was not computed; truncated graphs carry the note instead of "0".
   used_by?: { count: number; top: string[]; truncated?: boolean };
+  /** Deterministic evidence that this module is an externally supported contract. */
+  contract_surface?: ApiContractSurface;
+  /** Base-side supported contract moved away without a matching head-side contract. */
+  contract_removed?: boolean;
+  contract_target_changed?: boolean;
+  contract_name?: string;
+  renamed_from?: string;
 }
 
 export type TestWeakeningKind = "deleted_test_file" | "skipped_test" | "removed_assertion" | "regenerated_snapshot";
@@ -59,6 +67,12 @@ export interface SemanticDiffSources {
   readBase: (path: string) => string | undefined;
   /** Read the NEW (head) content of a path, or undefined when deleted. */
   readHead: (path: string) => string | undefined;
+  /** Optional explicit contract globs from review-surfaces config. */
+  contractPaths?: readonly string[];
+  /** Target-repository implementation roots used to map compiled package entries to source. */
+  sourceRoots?: readonly string[];
+  baseSourceRoots?: readonly string[];
+  headSourceRoots?: readonly string[];
 }
 
 export function emptySemanticChangeFacts(): SemanticChangeFacts {
@@ -73,7 +87,15 @@ export function isBreakingSchemaChange(change: SchemaContractChange): boolean {
 }
 
 export function isBreakingApiChange(change: ApiSurfaceChange): boolean {
-  return change.exports_removed.length > 0 || change.signatures_changed.some(signatureChangeIsBreaking);
+  return change.contract_removed === true || change.contract_target_changed === true || change.exports_removed.length > 0 || change.signatures_changed.some(signatureChangeIsBreaking);
+}
+
+export function isExplicitApiContractChange(change: ApiSurfaceChange): boolean {
+  return change.contract_surface !== undefined;
+}
+
+export function isSupportedApiContractChange(change: ApiSurfaceChange): boolean {
+  return isExplicitApiContractChange(change) || isExplicitContractSurfacePath(change.path);
 }
 
 function signatureChangeIsBreaking(change: ApiSurfaceChange["signatures_changed"][number]): boolean {
@@ -137,8 +159,43 @@ export function formatEnumChanges(changes: SchemaContractChange["enum_changes"])
 }
 
 export function computeSemanticChangeFacts(sources: SemanticDiffSources): SemanticChangeFacts {
+  sources = {
+    ...sources,
+    readBase: memoizeFileReader(sources.readBase),
+    readHead: memoizeFileReader(sources.readHead)
+  };
   const schema_changes: SchemaContractChange[] = [];
   const api_changes: ApiSurfaceChange[] = [];
+  const headPackageJson = sources.readHead("package.json");
+  const basePackageJson = sources.readBase("package.json");
+  const baseEntries = listPackageContractEntries(basePackageJson, sources.baseSourceRoots ?? sources.sourceRoots ?? []);
+  const headEntries = listPackageContractEntries(headPackageJson, sources.headSourceRoots ?? sources.sourceRoots ?? []);
+  const headPackageSurfaces = headEntries.map((entry) => entry.surface);
+  const headPackageIdentities = new Set(headPackageSurfaces.map((surface) => surface.identity).filter((identity): identity is string => Boolean(identity)));
+  const headPackageSourceKeys = new Set(headPackageSurfaces
+    .filter((surface): surface is ApiContractSurface & { identity: string } => surface.identity !== undefined)
+    .map((surface) => `${surface.identity}\0${surface.source}`));
+  const basePackageSurfaces = [...new Map(
+    baseEntries.map(({ surface }) => [surface.identity ?? surface.source, surface])
+  ).values()];
+  const removedPackageSurfaces = basePackageSurfaces
+    .filter((surface) => surface.identity !== undefined && !headPackageIdentities.has(surface.identity));
+  const removedPackageIdentities = new Set(removedPackageSurfaces.map((surface) => surface.identity as string));
+  const representedRemovedIdentities = new Set<string>();
+  const baseChangedPathByIdentity = new Map<string, string>();
+  const headChangedPathByIdentity = new Map<string, string>();
+  const baseChangedSurfaceByIdentity = new Map<string, ApiContractSurface>();
+  const headChangedSurfaceByIdentity = new Map<string, ApiContractSurface>();
+  const headContractSurface = createApiContractSurfaceClassifier({
+    packageJson: headPackageJson,
+    configuredPaths: sources.contractPaths,
+    sourceRoots: sources.headSourceRoots ?? sources.sourceRoots
+  });
+  const baseContractSurface = createApiContractSurfaceClassifier({
+    packageJson: basePackageJson,
+    configuredPaths: sources.contractPaths,
+    sourceRoots: sources.baseSourceRoots ?? sources.sourceRoots
+  });
   for (const file of sources.diff.files) {
     if (isJsonSchemaPath(file.path)) {
       const change = diffSchemaFile(file, sources);
@@ -146,10 +203,144 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
         schema_changes.push(change);
       }
     } else if (isTypeScriptSourcePath(file.path)) {
-      const change = diffApiSurfaceFile(file, sources);
+      const headExists = sources.readHead(file.path) !== undefined;
+      const headSurface = headExists ? headContractSurface(file.path) : undefined;
+      const oldPath = baseReadPath(file);
+      const baseSurface = baseContractSurface(oldPath);
+      if (baseSurface?.identity) {
+        const identity = baseSurface.binding ?? baseSurface.identity;
+        baseChangedPathByIdentity.set(identity, oldPath);
+        baseChangedSurfaceByIdentity.set(identity, baseSurface);
+      }
+      if (headSurface?.identity) {
+        const identity = headSurface.binding ?? headSurface.identity;
+        headChangedPathByIdentity.set(identity, file.path);
+        headChangedSurfaceByIdentity.set(identity, headSurface);
+      }
+      const packageTargetUnchanged = baseSurface?.identity !== undefined &&
+        headPackageSourceKeys.has(`${baseSurface.identity}\0${baseSurface.source}`);
+      const packageContractRemoved = baseSurface?.identity !== undefined && (
+        removedPackageIdentities.has(baseSurface.identity) ||
+        (packageTargetUnchanged && !headSurface && (!headExists || oldPath !== file.path))
+      );
+      const pathContractRemoved = baseSurface?.identity === undefined && Boolean(baseSurface && !headSurface && (!headExists || file.old_path));
+      const contractRemoved = packageContractRemoved || pathContractRemoved;
+      const change = diffApiSurfaceFile(file, sources) ?? (
+        contractRemoved
+          ? {
+              path: file.path,
+              exports_added: [],
+              exports_removed: [],
+              signatures_changed: [],
+              contract_removed: true,
+              ...(oldPath !== file.path ? { renamed_from: oldPath } : {}),
+              ...(baseSurface?.identity ? { contract_name: baseSurface.identity } : {})
+            }
+          : undefined
+      );
       if (change) {
+        if (contractRemoved) {
+          change.contract_removed = true;
+          if (oldPath !== file.path) change.renamed_from = oldPath;
+          if (baseSurface?.identity) {
+            change.contract_name = baseSurface.identity;
+            representedRemovedIdentities.add(baseSurface.identity);
+          }
+        }
+        const baseSurfaceStillApplies = baseSurface?.identity === undefined ||
+          removedPackageIdentities.has(baseSurface.identity) ||
+          packageTargetUnchanged;
+        const contractSurface = headSurface ?? (baseSurfaceStillApplies ? baseSurface : undefined);
+        if (contractSurface) change.contract_surface = contractSurface;
         api_changes.push(change);
       }
+    }
+  }
+  const reconciledPairs = new Set<string>();
+  const packageChanged = sources.diff.files.some((file) => file.path === "package.json");
+  for (const [identity, basePath] of baseChangedPathByIdentity) {
+    const headPath = headChangedPathByIdentity.get(identity);
+    const baseSurface = baseChangedSurfaceByIdentity.get(identity);
+    const headSurface = headChangedSurfaceByIdentity.get(identity);
+    if (!headPath || !baseSurface || !headSurface || baseSurface.source === headSurface.source) continue;
+    const pairKey = `${basePath}\0${headPath}`;
+    if (reconciledPairs.has(pairKey)) continue;
+    reconciledPairs.add(pairKey);
+    const alreadyCorrelated = sources.diff.files.some((file) => file.path === headPath && baseReadPath(file) === basePath);
+    if (alreadyCorrelated) continue;
+    const crossTargetChange = diffApiSurfaceTexts(
+      headPath,
+      sources.readBase(basePath),
+      sources.readHead(headPath),
+      basePath
+    );
+    removeReconciledPathFacts(api_changes, identity, basePath, headPath, sources.readBase, sources.readHead);
+    if (crossTargetChange) {
+      crossTargetChange.contract_surface = headSurface;
+      api_changes.push(crossTargetChange);
+    }
+  }
+  const baseEntriesByIdentity = groupPackageEntriesByIdentity(baseEntries);
+  const headEntriesByIdentity = groupPackageEntriesByIdentity(headEntries);
+  for (const { group, surface } of changedPackagePriorityGroups(baseEntries, headEntries)) {
+    if (packageChanged) api_changes.push(unresolvedPackageTargetChange(group, surface));
+  }
+  for (const [identity, baseGroup] of baseEntriesByIdentity) {
+    const headGroup = headEntriesByIdentity.get(identity);
+    if (!headGroup) continue;
+    const sharedPriorityChanged = sharedPackageEntryPriorityChanged(baseGroup, headGroup);
+    if (sharedPriorityChanged) {
+      if (packageChanged) api_changes.push(unresolvedPackageTargetChange(identity, headGroup[0].surface));
+      continue;
+    }
+    const unmatchedHead = [...headGroup];
+    const unmatchedBase = baseGroup.filter((baseEntry) => {
+      const unchangedIndex = unmatchedHead.findIndex((headEntry) => headEntry.surface.source === baseEntry.surface.source);
+      if (unchangedIndex < 0) return true;
+      unmatchedHead.splice(unchangedIndex, 1);
+      return false;
+    });
+    const baseSources = baseGroup.map((entry) => entry.surface.source);
+    const headSources = headGroup.map((entry) => entry.surface.source);
+    if (unmatchedBase.length === 0) {
+      const onlyAppended = baseSources.every((source, index) => headSources[index] === source);
+      if (!onlyAppended && packageChanged) api_changes.push(unresolvedPackageTargetChange(identity, headGroup[0].surface));
+      continue;
+    }
+    if (unmatchedBase.length === 1 && unmatchedHead.length === 1) {
+      const baseEntry = unmatchedBase[0];
+      const headEntry = unmatchedHead[0];
+      const basePath = resolvePackageEntryPath(baseEntry, sources.readBase);
+      const headPath = resolvePackageEntryPath(headEntry, sources.readHead);
+      if (!basePath || !headPath) {
+        if (packageChanged) api_changes.push(unresolvedPackageTargetChange(identity, headEntry.surface));
+        continue;
+      }
+      const pairKey = `${basePath}\0${headPath}`;
+      if (reconciledPairs.has(pairKey)) continue;
+      reconciledPairs.add(pairKey);
+      const crossTargetChange = diffApiSurfaceTexts(headPath, sources.readBase(basePath), sources.readHead(headPath), basePath);
+      removeReconciledPathFacts(api_changes, identity, basePath, headPath, sources.readBase, sources.readHead);
+      if (crossTargetChange) {
+        crossTargetChange.contract_surface = headEntry.surface;
+        api_changes.push(crossTargetChange);
+      }
+    } else if (packageChanged) {
+      api_changes.push(unresolvedPackageTargetChange(identity, headGroup[0].surface));
+    }
+  }
+  if (packageChanged) {
+    for (const surface of removedPackageSurfaces) {
+      if (surface.identity === undefined || representedRemovedIdentities.has(surface.identity)) continue;
+      api_changes.push({
+        path: "package.json",
+        exports_added: [],
+        exports_removed: [],
+        signatures_changed: [],
+        contract_removed: true,
+        contract_name: surface.identity,
+        contract_surface: surface
+      });
     }
   }
   return {
@@ -157,6 +348,109 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
     api_changes,
     test_weakening: detectTestWeakening(sources.diff)
   };
+}
+
+function sharedPackageEntryPriorityChanged(
+  baseEntries: readonly PackageContractEntry[],
+  headEntries: readonly PackageContractEntry[]
+): boolean {
+  const remainingHeadIndexes = new Map<string, number[]>();
+  headEntries.forEach((entry, index) => {
+    const indexes = remainingHeadIndexes.get(entry.surface.source) ?? [];
+    indexes.push(index);
+    remainingHeadIndexes.set(entry.surface.source, indexes);
+  });
+  return baseEntries.some((entry, baseIndex) => {
+    const indexes = remainingHeadIndexes.get(entry.surface.source);
+    const headIndex = indexes?.shift();
+    return headIndex !== undefined && headIndex !== baseIndex;
+  });
+}
+
+function groupPackageEntriesByIdentity(entries: readonly PackageContractEntry[]): Map<string, PackageContractEntry[]> {
+  const groups = new Map<string, PackageContractEntry[]>();
+  for (const entry of entries) {
+    const identity = entry.surface.identity;
+    if (!identity) continue;
+    const group = groups.get(identity) ?? [];
+    group.push(entry);
+    groups.set(identity, group);
+  }
+  return groups;
+}
+
+function changedPackagePriorityGroups(
+  baseEntries: readonly PackageContractEntry[],
+  headEntries: readonly PackageContractEntry[]
+): Array<{ group: string; surface: ApiContractSurface }> {
+  const grouped = (entries: readonly PackageContractEntry[]): Map<string, PackageContractEntry[]> => {
+    const groups = new Map<string, PackageContractEntry[]>();
+    for (const entry of entries) {
+      if (!entry.priority_group) continue;
+      const group = groups.get(entry.priority_group) ?? [];
+      group.push(entry);
+      groups.set(entry.priority_group, group);
+    }
+    return groups;
+  };
+  const baseGroups = grouped(baseEntries);
+  const headGroups = grouped(headEntries);
+  const changes: Array<{ group: string; surface: ApiContractSurface }> = [];
+  for (const [group, baseGroup] of baseGroups) {
+    const headGroup = headGroups.get(group);
+    if (!headGroup) continue;
+    const baseOrder = [...new Set(baseGroup.map((entry) => entry.surface.identity).filter((value): value is string => Boolean(value)))];
+    const headOrder = [...new Set(headGroup.map((entry) => entry.surface.identity).filter((value): value is string => Boolean(value)))];
+    if (baseOrder.some((identity) => !headOrder.includes(identity))) continue;
+    const onlyAppended = baseOrder.every((identity, index) => headOrder[index] === identity);
+    if (!onlyAppended) changes.push({ group, surface: headGroup[0].surface });
+  }
+  return changes;
+}
+
+function removeReconciledPathFacts(
+  changes: ApiSurfaceChange[],
+  identity: string,
+  basePath: string,
+  headPath: string,
+  readBase: (path: string) => string | undefined,
+  readHead: (path: string) => string | undefined
+): void {
+  for (let index = changes.length - 1; index >= 0; index -= 1) {
+    const change = changes[index];
+    const changeIdentity = change.contract_surface?.binding ?? change.contract_surface?.identity;
+    const oneSidedArtifact = changeIdentity === undefined && (readBase(change.path) === undefined || readHead(change.path) === undefined);
+    if ((oneSidedArtifact || changeIdentity === identity) && (change.path === basePath || change.path === headPath)) {
+      changes.splice(index, 1);
+    }
+  }
+}
+
+function unresolvedPackageTargetChange(identity: string, surface: ApiContractSurface): ApiSurfaceChange {
+  return {
+    path: "package.json",
+    exports_added: [],
+    exports_removed: [],
+    signatures_changed: [],
+    contract_target_changed: true,
+    contract_name: identity,
+    contract_surface: surface
+  };
+}
+
+function memoizeFileReader(read: (path: string) => string | undefined): (path: string) => string | undefined {
+  const cache = new Map<string, string | undefined>();
+  return (path) => {
+    if (!cache.has(path)) cache.set(path, read(path));
+    return cache.get(path);
+  };
+}
+
+function resolvePackageEntryPath(
+  entry: PackageContractEntry,
+  read: (path: string) => string | undefined
+): string | undefined {
+  return entry.patterns.find((pattern) => !/[*?[\]{}!]/u.test(pattern) && read(pattern) !== undefined);
 }
 
 // --- .1 semantic JSON-schema diff ------------------------------------------
@@ -368,7 +662,7 @@ function isSnapshotPath(path: string): boolean {
 // excluding tests. `.d.ts` content is parsed the same way; its `export declare`
 // forms are ordinary exported declarations to the TS parser.
 function isTypeScriptSourcePath(path: string): boolean {
-  return /\.tsx?$/.test(path) && !isTestPath(path);
+  return /\.(?:ts|tsx|mts|cts)$/u.test(path) && !isTestPath(path);
 }
 
 function diffApiSurfaceFile(file: StructuredDiffFile, sources: SemanticDiffSources): ApiSurfaceChange | undefined {
@@ -381,6 +675,15 @@ function diffApiSurfaceFile(file: StructuredDiffFile, sources: SemanticDiffSourc
   // would be noise. Only symbol-level adds/removes/signature changes are facts here.
   const oldText = sources.readBase(baseReadPath(file));
   const newText = sources.readHead(path);
+  return diffApiSurfaceTexts(path, oldText, newText, baseReadPath(file));
+}
+
+function diffApiSurfaceTexts(
+  path: string,
+  oldText: string | undefined,
+  newText: string | undefined,
+  oldPath = path
+): ApiSurfaceChange | undefined {
   // A file present on neither side is not analyzable.
   if (oldText === undefined && newText === undefined) {
     return undefined;
@@ -389,7 +692,7 @@ function diffApiSurfaceFile(file: StructuredDiffFile, sources: SemanticDiffSourc
   // module (no head) removes all of its exports. Both are concrete add/remove
   // facts SEMANTIC_DIFF.2 should surface, so treat the missing side as no
   // exports rather than skipping the file.
-  const oldExports = oldText === undefined ? new Map<string, string>() : extractExports(oldText, baseReadPath(file));
+  const oldExports = oldText === undefined ? new Map<string, string>() : extractExports(oldText, oldPath);
   const newExports = newText === undefined ? new Map<string, string>() : extractExports(newText, path);
   const change: ApiSurfaceChange = { path, exports_added: [], exports_removed: [], signatures_changed: [] };
   for (const [name, signature] of newExports) {

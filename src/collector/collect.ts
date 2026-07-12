@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -34,6 +35,7 @@ import { computeDependencyFacts, DependencyFact } from "../risks/dependency-fact
 import { computeConfigFacts, ConfigFact } from "../risks/config-facts";
 import { LcovCoverage, looksLikeLcov, parseLcov } from "../tests-evidence/lcov";
 import { parseStructuredDiff } from "./diff-hunks";
+import { detectContractSourceRoots } from "../core/source-roots";
 
 export const REPO_INDEX_SCHEMA_VERSION = "review-surfaces.repo.index.v1";
 
@@ -428,9 +430,30 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
         }
       }
     : (filePath: string): string | undefined => readFileAtRef(options.cwd, git.head_sha, filePath);
+  const contractRoots = (files: string[], read: (path: string) => string | undefined): string[] =>
+    detectContractSourceRoots({ files, read });
+  const filesAtRef = (ref: string): string[] => {
+    if (!/^[0-9a-f]{7,40}$/iu.test(ref)) return [];
+    try {
+      return execFileSync("git", ["ls-tree", "-r", "--name-only", ref], { cwd: options.cwd, encoding: "utf8" })
+        .split("\n")
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
+  const headContractFiles = includeWorkingTree ? repositoryFiles : filesAtRef(git.head_sha);
+  const baseContractFiles = filesAtRef(baseReadRef);
   const semanticChangeFacts =
     structuredFactDiff.files.length > 0
-      ? computeSemanticChangeFacts({ diff: structuredFactDiff, readBase: readBaseFact, readHead: readHeadFact })
+      ? computeSemanticChangeFacts({
+          diff: structuredFactDiff,
+          readBase: readBaseFact,
+          readHead: readHeadFact,
+          contractPaths: options.config.contract_surfaces.paths,
+          headSourceRoots: contractRoots(headContractFiles, readHeadFact),
+          baseSourceRoots: contractRoots(baseContractFiles, readBaseFact)
+        })
       : emptySemanticChangeFacts();
   const dependencyFacts = computeDependencyFacts({
     changedFiles: structuredFactDiff.files.map((file) => ({ path: file.path, old_path: file.old_path })),

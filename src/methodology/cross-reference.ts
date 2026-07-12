@@ -15,7 +15,7 @@ import { ConversationEvent, hasNonHumanConversationActor, isConversationToolEven
 import { EvidenceRef } from "../evidence/evidence";
 import { ConfigFact, ConfigFactKind } from "../risks/config-facts";
 import { isExplicitContractSurfacePath } from "../risks/contract-surface";
-import { isBreakingApiChange, isBreakingSchemaChange, SemanticChangeFacts } from "../risks/semantic-diff";
+import { isBreakingApiChange, isBreakingSchemaChange, isSupportedApiContractChange, SemanticChangeFacts } from "../risks/semantic-diff";
 import { isTestPath } from "../scope/pr-scope";
 import { PacketSeverity, PacketWorkflowSignalKind } from "../schema/review-packet-contract";
 import { WorkflowFinding } from "./methodology";
@@ -240,7 +240,8 @@ function fileList(paths: string[]): string {
 // removed/now-required schema property, a type change, or a removed enum member.
 // (Pure additions are compatible and do not promote.)
 function hasBreakingSemanticChange(facts: SemanticChangeFacts): boolean {
-  return facts.api_changes.some(isBreakingApiChange) || facts.schema_changes.some(isBreakingSchemaChange);
+  return facts.api_changes.some((change) => isSupportedApiContractChange(change) && isBreakingApiChange(change)) ||
+    facts.schema_changes.some(isBreakingSchemaChange);
 }
 
 // review-surfaces.METHODOLOGY.8: compute the four deterministic cross-reference
@@ -370,7 +371,10 @@ export function computeCrossReferenceSignals(collection: CollectionResult, event
   // structural fact, so it must be its own TRIGGER, not just a promotion flag —
   // Codex P2). Promoted by a backward-INCOMPATIBLE structural change or any
   // removed/renamed surface.
-  const apiFactPaths = [...facts.api_changes.map((change) => change.path), ...facts.schema_changes.map((change) => change.path)];
+  const apiFactPaths = [
+    ...facts.api_changes.filter(isSupportedApiContractChange).map((change) => change.path),
+    ...facts.schema_changes.map((change) => change.path)
+  ];
   const removedSurfacePaths = changed.flatMap((file) => {
     if (file.status === "D" && isExplicitContractSurfacePath(file.path)) {
       return [file.path];

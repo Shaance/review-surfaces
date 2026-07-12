@@ -108,6 +108,43 @@ function templatedTestItem(index: number, acid: string): TestPlanItem {
   };
 }
 
+test("review-surfaces.REVIEWER_VALUE.12 puts three actions before bounded supporting detail", () => {
+  const queue: ReviewQueueItem[] = Array.from({ length: 5 }, (_unused, index) => ({
+    id: `REVIEW-${index + 1}`,
+    rank: index + 1,
+    title: `Review action ${index + 1}`,
+    path: `src/action-${index + 1}.ts`,
+    reviewer_action: `Inspect action ${index + 1}.`,
+    reason: `Concrete reason ${index + 1}.`,
+    evidence: [fileEvidence(`src/action-${index + 1}.ts`)],
+    requirement_ids: [],
+    risk_ids: [],
+    ranking_reasons: [],
+    confidence: "high",
+    priority: "medium"
+  }));
+  const model = baseModel({ review_queue: queue });
+  const markdown = renderHumanReviewMarkdown(model);
+  const lines = markdown.split("\n");
+  const queueLine = lines.findIndex((line) => line === "## Review first") + 1;
+  const supportingLine = lines.findIndex((line) => line === "## Reading order") + 1;
+  assert.ok(queueLine > 0 && queueLine <= 30, `first review-action section must begin within roughly 30 lines, got ${queueLine}`);
+  assert.ok(supportingLine > queueLine && supportingLine <= 100, `supporting machinery must begin within the bounded primary surface, got ${supportingLine}`);
+  const primary = markdown.split("## Review first")[1].split("\n## Blockers")[0];
+  assert.match(primary, /src\/action-3\.ts/);
+  assert.doesNotMatch(primary, /src\/action-4\.ts/, "only the top three queue items belong on the primary Markdown surface");
+  assert.match(primary, /2 additional queue item\(s\) remain/);
+
+  const html = renderHumanReviewHtml(model);
+  assert.ok(html.indexOf('id="queue"') < html.indexOf('id="reading-order"'));
+  assert.ok(html.indexOf('id="queue"') < html.indexOf('id="strip"'), "HTML leads with reviewer actions before support controls");
+  assert.match(html, /<details data-supporting-queue><summary>\+2 supporting queue item\(s\)<\/summary>/);
+  assert.ok(html.indexOf('id="trust-summary"') < html.indexOf('id="reading-order"'), "HTML exposes the compact trust summary on the primary surface");
+  assert.match(html, /details\.open = true/, "map filtering opens a matching supporting queue container");
+  assert.match(html, /activeFile \|\| activeLens/, "lens filtering also opens matching supporting queue items");
+  assert.match(html, /data-filter-opened/, "clearing the map filter restores an auto-opened supporting queue container");
+});
+
 // review-surfaces.HUMAN_REVIEW.19: N templated test-plan items that differ only
 // by ACID render as a single rollup listing all N ACIDs and item IDs.
 test("review-surfaces.HUMAN_REVIEW.19 rolls up templated test-plan items into one block", () => {

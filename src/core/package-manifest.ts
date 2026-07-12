@@ -1,0 +1,85 @@
+import { compareStrings } from "./compare";
+
+export type PackageManifestTargetKind = "export" | "entry" | "file";
+
+export interface PackageManifestTarget {
+  kind: PackageManifestTargetKind;
+  field: string;
+  target: string;
+  /** Stable consumer-facing slot, distinct from the build target path. */
+  identity: string;
+  /** Consumer subpath whose condition order participates in resolution priority. */
+  priority_group?: string;
+}
+
+export function parsePackageManifest(value: string | undefined): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Deterministically collect package entry targets shared by source-root and contract analysis. */
+export function collectPackageManifestTargets(manifest: Record<string, unknown>): PackageManifestTarget[] {
+  const targets: PackageManifestTarget[] = [];
+  for (const entry of collectExportTargets(manifest.exports)) {
+    targets.push({ kind: "export", field: "exports", target: entry.target, identity: entry.identity, priority_group: entry.priority_group });
+  }
+  for (const field of ["main", "module", "types", "typings"] as const) {
+    const target = manifest[field];
+    if (typeof target === "string") targets.push({ kind: "entry", field, target, identity: `entry:${field}` });
+  }
+  const bin = manifest.bin;
+  const binTargets: Array<{ key: string; target: unknown }> = typeof bin === "string"
+    ? [{ key: "bin", target: bin }]
+    : bin && typeof bin === "object" && !Array.isArray(bin)
+      ? Object.keys(bin as Record<string, unknown>)
+          .sort(compareStrings)
+          .map((key) => ({ key, target: (bin as Record<string, unknown>)[key] }))
+      : [];
+  for (const { key, target } of binTargets) {
+    if (typeof target === "string") targets.push({ kind: "entry", field: "bin", target, identity: `bin:${key}` });
+  }
+  for (const target of stringArray(manifest.files)) {
+    targets.push({ kind: "file", field: "files", target, identity: `file:${target}` });
+  }
+  return targets;
+}
+
+function collectExportTargets(value: unknown, subpath = ".", conditions: string[] = []): Array<{ identity: string; target: string; priority_group: string }> {
+  const encodedSubpath = encodeSubpathIdentityPart(subpath);
+  const identity = `export:${encodedSubpath}${conditions.length > 0 ? `:${conditions.map(encodeConditionIdentityPart).join(".")}` : ""}`;
+  if (typeof value === "string") return [{ identity, target: value, priority_group: `export:${encodedSubpath}` }];
+  if (Array.isArray(value)) return value.flatMap((entry) => collectExportTargets(entry, subpath, conditions));
+  if (!value || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  const insertionKeys = Object.keys(record);
+  const subpathMap = insertionKeys.some((key) => key.startsWith("."));
+  // Subpath key order is not priority, so keep deterministic sorting there.
+  // Condition key order is runtime-significant and must remain authored order.
+  const keys = subpathMap ? [...insertionKeys].sort(compareStrings) : insertionKeys;
+  return keys.flatMap((key) => subpathMap && key.startsWith(".")
+    ? collectExportTargets(record[key], key, [])
+    : collectExportTargets(record[key], subpath, [...conditions, key]));
+}
+
+function encodeSubpathIdentityPart(value: string): string {
+  return value.replaceAll("%", "%25").replaceAll(":", "%3A");
+}
+
+function encodeConditionIdentityPart(value: string): string {
+  return value
+    .replaceAll("%", "%25")
+    .replaceAll(".", "%2E")
+    .replaceAll(":", "%3A")
+    .replaceAll("*", "%2A");
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}

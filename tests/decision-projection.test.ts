@@ -41,20 +41,22 @@ test("review-surfaces.REVIEWER_VALUE.6 merges detector manifestations by root wi
 test("review-surfaces.REVIEWER_VALUE.6 admits explicit contracts but keeps internal exports supporting", () => {
   const internalPath = "src/human/private-helper.ts";
   const publicPath = "types/public.d.ts";
+  const packagePath = "src/public-entry.ts";
   const internalCliPath = "src/cli/private-helper.ts";
   const binPath = "bin/review-surfaces.js";
   const semanticFacts: SemanticChangeFacts = {
     ...emptySemanticFacts,
-    api_changes: [internalPath, publicPath, internalCliPath, binPath].map((path) => ({
+    api_changes: [internalPath, publicPath, packagePath, internalCliPath, binPath].map((path) => ({
       path,
       exports_added: [],
       exports_removed: ["removedExport"],
-      signatures_changed: []
+      signatures_changed: [],
+      ...(path === packagePath ? { contract_surface: { kind: "package_export" as const, source: "package.json#exports:./dist/src/public-entry.js" } } : {})
     }))
   };
   const model = buildHumanReview({
     packet: packet(),
-    prSurface: surface([internalPath, publicPath, internalCliPath, binPath], [
+    prSurface: surface([internalPath, publicPath, packagePath, internalCliPath, binPath], [
       risk("PR-RISK-INTERNAL-CONTRACT", "schema_contract_change", internalPath),
       risk("PR-RISK-INTERNAL-DELETE", "deleted_or_renamed_surface", internalPath, "low"),
       risk("PR-RISK-PUBLIC-DELETE", "deleted_or_renamed_surface", publicPath, "low")
@@ -63,13 +65,14 @@ test("review-surfaces.REVIEWER_VALUE.6 admits explicit contracts but keeps inter
   });
   const findings = model.decision_projection?.findings ?? [];
   assert.ok(findings.some((finding) => finding.root_cause === `public_contract:${publicPath}`));
+  assert.ok(findings.some((finding) => finding.root_cause === `public_contract:${packagePath}`));
   assert.ok(!findings.some((finding) => finding.path === binPath));
   assert.ok(!findings.some((finding) => finding.path === internalPath));
   assert.ok(!findings.some((finding) => finding.path === internalCliPath));
   assert.ok(model.semantic_facts.api_changes.some((change) => change.path === internalPath), "internal fact remains in supporting ledger");
 });
 
-test("review-surfaces.REVIEWER_VALUE.6 admits a breaking internal export when concrete callers are identified", () => {
+test("review-surfaces.REVIEWER_VALUE.11 keeps internal importers as supporting evidence", () => {
   const internalPath = "src/internal/helper.ts";
   const model = buildHumanReview({
     packet: packet(),
@@ -86,13 +89,12 @@ test("review-surfaces.REVIEWER_VALUE.6 admits a breaking internal export when co
     }
   });
 
-  assert.ok(model.review_queue.some((item) => item.path === internalPath));
-  assert.ok(model.decision_projection?.findings.some((finding) =>
-    finding.root_cause === `caller_break:${internalPath}`
-  ));
+  assert.ok(!model.review_queue.some((item) => item.title === "Exported API surface change" && item.path === internalPath));
+  assert.ok(!model.decision_projection?.findings.some((finding) => finding.path === internalPath));
+  assert.equal(model.semantic_facts.api_changes[0].used_by?.count, 2, "importers remain available in the supporting semantic ledger");
 });
 
-test("review-surfaces.REVIEWER_VALUE.6 admits an internal API when its blast radius is truncated and unknown", () => {
+test("review-surfaces.REVIEWER_VALUE.11 a truncated importer graph cannot promote an internal export", () => {
   const internalPath = "src/internal/helper.ts";
   const model = buildHumanReview({
     packet: packet(),
@@ -109,13 +111,9 @@ test("review-surfaces.REVIEWER_VALUE.6 admits an internal API when its blast rad
     }
   });
 
-  assert.ok(model.review_queue.some((item) => item.path === internalPath));
-  assert.ok(model.decision_projection?.findings.some((finding) =>
-    finding.root_cause === `api_blast_radius_unknown:${internalPath}`
-  ));
-  assert.ok(!model.decision_projection?.findings.some((finding) =>
-    finding.root_cause === `caller_break:${internalPath}`
-  ));
+  assert.ok(!model.review_queue.some((item) => item.title === "Exported API surface change" && item.path === internalPath));
+  assert.ok(!model.decision_projection?.findings.some((finding) => finding.path === internalPath));
+  assert.equal(model.semantic_facts.api_changes[0].used_by?.truncated, true);
 });
 
 test("review-surfaces.REVIEWER_VALUE.6 public deletion manifestations share one high-priority root", () => {
@@ -133,6 +131,32 @@ test("review-surfaces.REVIEWER_VALUE.6 public deletion manifestations share one 
   assert.equal(roots.length, 1);
   assert.equal(roots[0].priority, "high");
   assert.equal(model.verdict.decision, "reviewable_with_attention");
+});
+
+test("review-surfaces.REVIEWER_VALUE.6 a renamed declaration contract keeps one old-path root", () => {
+  const oldPath = "types/public.d.ts";
+  const newPath = "src/public.ts";
+  const pr = surface([newPath], [risk("PR-RISK-RENAME", "deleted_or_renamed_surface", oldPath, "low")]);
+  pr.scope.changed_files[0].old_path = oldPath;
+  pr.scope.changed_files[0].status = "R";
+  const model = buildHumanReview({
+    packet: packet(),
+    prSurface: pr,
+    semanticFacts: {
+      ...emptySemanticFacts,
+      api_changes: [{
+        path: newPath,
+        renamed_from: oldPath,
+        contract_removed: true,
+        contract_surface: { kind: "declaration", source: oldPath },
+        exports_added: [],
+        exports_removed: [],
+        signatures_changed: []
+      }]
+    }
+  });
+  const roots = model.decision_projection?.findings.filter((finding) => finding.root_cause === `public_contract:${oldPath}`) ?? [];
+  assert.equal(roots.length, 1);
 });
 
 test("review-surfaces.REVIEWER_VALUE.6 internal contract heuristics cannot change the verdict", () => {
@@ -306,7 +330,17 @@ test("review-surfaces.REVIEWER_VALUE.4 bounds decision prose from schema-valid p
   assert.equal(validateJsonSchema(schema, idsModel).valid, true);
 });
 
-test("review-surfaces.REVIEWER_VALUE.4 deduplicates before the stable five-finding cap", () => {
+test("review-surfaces.REVIEWER_VALUE.8 bounds the complete single-requirement intent summary", () => {
+  const value = packet();
+  const longId = `review-surfaces.${"LONG".repeat(800)}`;
+  value.intent.requirements = [{ ...requirement("REQ-LONG"), id: longId, acai_id: longId }];
+  const model = buildHumanReview({ packet: value });
+  assert.ok((model.decision_projection?.active_intent.summary.length ?? 0) <= 2000);
+  const schema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "human_review.schema.json"), "utf8"));
+  assert.equal(validateJsonSchema(schema, model).valid, true);
+});
+
+test("review-surfaces.REVIEWER_VALUE.12 deduplicates before the stable three-finding cap", () => {
   const contractPath = "schemas/public.schema.json";
   const paths = [contractPath, ...Array.from({ length: 5 }, (_, index) => `src/area-${index}.ts`)];
   const risks = [
@@ -326,10 +360,11 @@ test("review-surfaces.REVIEWER_VALUE.4 deduplicates before the stable five-findi
   };
   const first = buildHumanReview(input);
   const second = buildHumanReview(input);
-  assert.equal(first.decision_projection?.findings.length, 5);
+  assert.equal(first.decision_projection?.findings.length, 3);
   assert.equal(first.decision_projection?.findings.filter((finding) => finding.root_cause === `persisted_contract:${contractPath}`).length, 1);
   assert.deepEqual(first.decision_projection, second.decision_projection);
-  assert.equal(first.decision_projection?.supporting_detail_counts.projected_queue_items, 6);
+  assert.equal(first.decision_projection?.supporting_detail_counts.projected_queue_items, 4);
+  assert.ok((first.decision_projection?.supporting_detail_counts.supporting_queue_items ?? 0) > 0);
   const counts = first.decision_projection?.supporting_detail_counts;
   assert.equal(counts?.total_queue_items, (counts?.projected_queue_items ?? 0) + (counts?.supporting_queue_items ?? 0));
 });
@@ -357,7 +392,7 @@ test("review-surfaces.REVIEWER_VALUE.8 leads with the reviewer goal and retains 
   });
 });
 
-test("reviewer usefulness summarizes affected intent without mid-word clipping and reports omitted requirements", () => {
+test("review-surfaces.REVIEWER_VALUE.8 summarizes broad affected intent as areas instead of a requirement wall", () => {
   const value = packet();
   value.intent.requirements = Array.from({ length: 5 }, (_, index) => ({
     ...requirement(`REQ-${index}`),
@@ -371,10 +406,45 @@ test("reviewer usefulness summarizes affected intent without mid-word clipping a
   }));
 
   const summary = buildHumanReview({ packet: value, prSurface: pr }).decision_projection?.active_intent.summary ?? "";
-  assert.match(summary, /\[review-surfaces\.REQ-0\.1\]/);
-  assert.match(summary, /\(\+2 more affected requirements\)$/);
-  assert.ok(!/requirem… \[/u.test(summary), "each visible requirement ends at a word boundary before its id");
-  assert.ok(summary.length <= 2000);
+  assert.match(summary, /^Reviewed change affects 5 requirement\(s\) across/);
+  assert.match(summary, /REQ-0 \(review-surfaces\.REQ-0\)/);
+  assert.match(summary, /\(\+2 more areas\)\.$/);
+  assert.doesNotMatch(summary, /Reviewer-visible requirement/, "long requirement prose stays out of the primary intent summary");
+  assert.ok(summary.length <= 900);
+});
+
+test("review-surfaces.REVIEWER_VALUE.8 keeps distinct requirement groups that share a display title", () => {
+  const value = packet();
+  value.intent.requirements = [
+    { ...requirement("ALPHA-1"), acai_id: "review-surfaces.ALPHA.1", title: "Shared reviewer title" },
+    { ...requirement("BETA-1"), acai_id: "review-surfaces.BETA.1", title: "Shared reviewer title" }
+  ];
+  const pr = surface(["src/reviewer.ts"]);
+  pr.scope.affected_requirements = value.intent.requirements.map((entry) => ({
+    requirement_id: entry.id,
+    acai_id: entry.acai_id,
+    reasons: [{ rule: "changed_path_requirement_group", confidence: "high", path: "src/reviewer.ts" }]
+  }));
+  const summary = buildHumanReview({ packet: value, prSurface: pr }).decision_projection?.active_intent.summary ?? "";
+  assert.match(summary, /Shared reviewer title \(review-surfaces\.ALPHA\)/);
+  assert.match(summary, /Shared reviewer title \(review-surfaces\.BETA\)/);
+});
+
+test("review-surfaces.REVIEWER_VALUE.10 keeps generic requirement gaps as questions, not postable comments", () => {
+  const value = packet();
+  value.evaluation.results = [{
+    requirement_id: "REQ-DECISION",
+    acai_id: "review-surfaces.HUMAN_TRUST.2",
+    status: "partial",
+    summary: "Implementation exists but proof is incomplete.",
+    evidence: [fileEvidence("src/reviewer.ts")],
+    missing_evidence: [missingEvidence("Focused behavioral proof is missing.")],
+    review_focus: "Check the behavior.",
+    confidence: "medium"
+  }];
+  const model = buildHumanReview({ packet: value, prSurface: surface(["src/reviewer.ts"]) });
+  assert.ok(model.questions.some((question) => question.question.includes("validation evidence or explicit deferral")));
+  assert.ok(!model.suggested_comments.some((comment) => comment.body.includes("validation evidence or explicit deferral")));
 });
 
 test("review-surfaces.REVIEWER_VALUE.4 repo mode derives active intent from changed requirement text", () => {

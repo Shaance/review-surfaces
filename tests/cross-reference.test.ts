@@ -162,22 +162,22 @@ test("review-surfaces.METHODOLOGY.8 impl_no_test is PROMOTED by a test-weakening
   assert.equal(sig.advisory, false, "the test-weakening fact promotes the signal");
 });
 
-test("review-surfaces.METHODOLOGY.8 api_no_compat fires from a SOURCE export change (not only .d.ts/schema) (Codex P2)", () => {
+test("review-surfaces.METHODOLOGY.8 api_no_compat fires from an explicit source contract change", () => {
   const sig = signal(
     computeCrossReferenceSignals(
-      collection([file("src/api.ts")], { semanticFacts: { api_changes: [{ path: "src/api.ts", exports_added: ["newThing"], exports_removed: [], signatures_changed: [] }] } }),
+      collection([file("src/api.ts")], { semanticFacts: { api_changes: [{ path: "src/api.ts", exports_added: ["newThing"], exports_removed: [], signatures_changed: [], contract_surface: { kind: "package_export", source: "package.json#exports:./src/api.ts" } }] } }),
       talk("added a helper")
     ),
     "api_no_compat"
   );
-  assert.ok(sig, "an exported-symbol change in ordinary source emits the signal");
+  assert.ok(sig, "an explicitly supported source contract emits the signal");
   assert.equal(sig.advisory, true, "a pure addition is compatible (advisory)");
 });
 
 test("review-surfaces.METHODOLOGY.8 api_no_compat is PROMOTED by a backward-incompatible export removal", () => {
   const sig = signal(
     computeCrossReferenceSignals(
-      collection([file("src/api.ts")], { semanticFacts: { api_changes: [{ path: "src/api.ts", exports_added: [], exports_removed: ["oldThing"], signatures_changed: [] }] } }),
+      collection([file("src/api.ts")], { semanticFacts: { api_changes: [{ path: "src/api.ts", exports_added: [], exports_removed: ["oldThing"], signatures_changed: [], contract_surface: { kind: "package_export", source: "package.json#exports:./src/api.ts" } }] } }),
       talk("cleaned up")
     ),
     "api_no_compat"
@@ -195,7 +195,8 @@ test("review-surfaces.METHODOLOGY.8 api_no_compat shares optional-member compati
             path: "src/api.ts",
             exports_added: [],
             exports_removed: [],
-            signatures_changed: [{ name: "Value", from: "export interface Value { id: string; }", to }]
+            signatures_changed: [{ name: "Value", from: "export interface Value { id: string; }", to }],
+            contract_surface: { kind: "package_export", source: "package.json#exports:./src/api.ts" }
           }]
         }
       }),
@@ -206,6 +207,16 @@ test("review-surfaces.METHODOLOGY.8 api_no_compat shares optional-member compati
 
   assert.equal(finding("export interface Value { id: string; note?: string; }")?.advisory, true);
   assert.equal(finding("export interface Value { id: string; note: string; }")?.advisory, false);
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 internal exports do not create compatibility methodology actions", () => {
+  const findings = computeCrossReferenceSignals(
+    collection([file("src/internal.ts")], {
+      semanticFacts: { api_changes: [{ path: "src/internal.ts", exports_added: [], exports_removed: ["oldThing"], signatures_changed: [] }] }
+    }),
+    talk("cleaned up an internal helper")
+  );
+  assert.equal(signal(findings, "api_no_compat"), undefined);
 });
 
 test("review-surfaces.METHODOLOGY.8 deps_no_rationale fires for a config change with no rationale", () => {

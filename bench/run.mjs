@@ -23,7 +23,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const BENCH_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.dirname(BENCH_DIR);
@@ -105,7 +105,7 @@ function classify(p) {
   return "other";
 }
 
-function scoreCase(c, model) {
+function scoreCase(c, model, markdown, scoreReviewerUsefulness) {
   const queue = model.review_queue ?? [];
   const blockers = model.blockers ?? [];
   const top5 = queue.slice(0, 5).map((q) => q.path).filter(Boolean);
@@ -120,18 +120,21 @@ function scoreCase(c, model) {
     const hit = c.expected_focus.filter((f) => top5.includes(f)).length;
     focusRecall = hit / c.expected_focus.length;
   }
-  return { id: c.id, lang: c.lang, queue_size: queue.length, blockers: blockers.length, top: queue[0]?.path ?? null, topRole, top5, substantiveCase, blockerEligible, emptyQueue, falseBlocker, irrelevantTop, focusRecall };
+  const usefulness = scoreReviewerUsefulness(model, markdown, c.usefulness);
+  return { id: c.id, lang: c.lang, queue_size: queue.length, blockers: blockers.length, top: queue[0]?.path ?? null, topRole, top5, substantiveCase, blockerEligible, emptyQueue, falseBlocker, irrelevantTop, focusRecall, usefulness, hasUsefulnessExpectations: Boolean(c.usefulness) };
 }
 
 function pct(n, d) {
   return d === 0 ? "n/a" : `${Math.round((100 * n) / d)}% (${n}/${d})`;
 }
 
-function main() {
+async function main() {
   if (!fs.existsSync(CLI)) {
     console.error(`bench: ${CLI} not found — run \`pnpm run build\` first.`);
     process.exit(2);
   }
+  const scorerUrl = pathToFileURL(path.join(REPO_ROOT, "dist", "src", "bench", "usefulness.js")).href;
+  const { scoreReviewerUsefulness } = await import(scorerUrl);
   const cases = JSON.parse(fs.readFileSync(MANIFEST, "utf8")).cases;
   const outRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rs-bench-out-"));
   const results = [];
@@ -149,7 +152,8 @@ function main() {
       // --no-conversation-discovery keeps the run from folding the runner's own sessions in.
       sh("node", [CLI, "all", "--provider", "mock", "--config", NEUTRAL_CONFIG, "--no-conversation-discovery", "--base", c.base, "--head", c.head, "--out", out], repoDir);
       const model = JSON.parse(fs.readFileSync(path.join(out, "human_review.json"), "utf8"));
-      const r = scoreCase(c, model);
+      const markdown = fs.readFileSync(path.join(out, "human_review.md"), "utf8");
+      const r = scoreCase(c, model, markdown, scoreReviewerUsefulness);
       results.push(r);
       process.stderr.write(`queue=${r.queue_size} blockers=${r.blockers} top=${r.topRole ?? "-"}\n`);
     } catch (err) {
@@ -170,6 +174,19 @@ function main() {
   const codeTopN = ok.filter((r) => r.topRole === "code").length;
   const irrelevantN = ok.filter((r) => r.irrelevantTop).length;
   const recallMean = annotated.length ? annotated.reduce((s, r) => s + r.focusRecall, 0) / annotated.length : null;
+  const usefulnessCases = ok.filter((r) => r.hasUsefulnessExpectations);
+  const judgedFindings = usefulnessCases.reduce((sum, r) => sum + r.usefulness.judged_findings, 0);
+  const actionableFindings = usefulnessCases.reduce((sum, r) => sum + r.usefulness.actionable_findings, 0);
+  const missingActionableFindings = usefulnessCases.reduce((sum, r) => sum + r.usefulness.missing_actionable_findings, 0);
+  const judgedComments = usefulnessCases.reduce((sum, r) => sum + r.usefulness.judged_comments, 0);
+  const postableComments = usefulnessCases.reduce((sum, r) => sum + r.usefulness.postable_comments, 0);
+  const missingPostableComments = usefulnessCases.reduce((sum, r) => sum + r.usefulness.missing_postable_comments, 0);
+  const usefulnessFailureN = usefulnessCases.filter((r) => r.usefulness.failures.length > 0).length;
+  const ratings = usefulnessCases.map((r) => r.usefulness.reviewer_value_rating).filter((value) => value !== null && value !== undefined);
+  const ratingMean = ratings.length > 0 ? ratings.reduce((sum, value) => sum + value, 0) / ratings.length : null;
+  const firstActionLines = usefulnessCases.map((r) => r.usefulness.first_action_line).filter((value) => value !== null);
+  const primarySurfaceLines = usefulnessCases.map((r) => r.usefulness.primary_surface_lines).filter((value) => value !== null);
+  const duplicateRoots = usefulnessCases.reduce((sum, r) => sum + r.usefulness.duplicate_root_causes, 0);
 
   const lines = [];
   lines.push("# review-surfaces effectiveness scorecard");
@@ -183,18 +200,27 @@ function main() {
   lines.push(`| top item is code/impl | ${pct(codeTopN, ok.length)} | high |`);
   lines.push(`| irrelevant (doc/generated/lock/binary) in top-5 | ${pct(irrelevantN, ok.length)} | 0% |`);
   lines.push(`| focus recall@5 (annotated) | ${recallMean === null ? "n/a" : `${Math.round(100 * recallMean)}%`} | high |`);
+  lines.push(`| curated finding precision | ${judgedFindings === 0 ? "n/a" : pct(actionableFindings, judgedFindings)} | high |`);
+  lines.push(`| curated suggested-comment precision | ${judgedComments === 0 ? "n/a" : pct(postableComments, judgedComments)} | high |`);
+  lines.push(`| curated actionable finding recall | ${pct(actionableFindings, actionableFindings + missingActionableFindings)} | 100% |`);
+  lines.push(`| curated postable-comment recall | ${pct(postableComments, postableComments + missingPostableComments)} | 100% |`);
+  lines.push(`| first concrete action line (worst curated case) | ${firstActionLines.length > 0 ? Math.max(...firstActionLines) : "n/a"} | within case budget |`);
+  lines.push(`| primary surface line (worst curated case) | ${primarySurfaceLines.length > 0 ? Math.max(...primarySurfaceLines) : "n/a"} | within case budget |`);
+  lines.push(`| duplicate decision roots (curated cases) | ${duplicateRoots} | 0 |`);
+  lines.push(`| usefulness cases failing density/actionability gates | ${usefulnessFailureN}/${usefulnessCases.length} | 0 |`);
+  lines.push(`| manual reviewer-value rating | ${ratingMean === null ? "n/a" : `${ratingMean.toFixed(1)}/5 (${ratings.length} rated)`} | ≥4/5 |`);
   lines.push("");
   lines.push("## Per-case");
   lines.push("");
-  lines.push("| id | lang | queue | blockers | top item | top role | empty? | false-blocker? | recall@5 |");
-  lines.push("|---|---|---|---|---|---|---|---|---|");
+  lines.push("| id | lang | queue | blockers | top item | top role | empty? | false-blocker? | recall@5 | usefulness |");
+  lines.push("|---|---|---|---|---|---|---|---|---|---|");
   for (const r of results) {
     if (r.error) {
-      lines.push(`| ${r.id} | ${r.lang} | — | — | _error_ | — | — | — | — |`);
+      lines.push(`| ${r.id} | ${r.lang} | — | — | _error_ | — | — | — | — | — |`);
       continue;
     }
     lines.push(
-      `| ${r.id} | ${r.lang} | ${r.queue_size} | ${r.blockers} | \`${r.top ?? "—"}\` | ${r.topRole ?? "—"} | ${r.emptyQueue ? "**YES**" : "no"} | ${r.falseBlocker ? "**YES**" : "no"} | ${r.focusRecall === null || r.focusRecall === undefined ? "—" : `${Math.round(100 * r.focusRecall)}%`} |`
+      `| ${r.id} | ${r.lang} | ${r.queue_size} | ${r.blockers} | \`${r.top ?? "—"}\` | ${r.topRole ?? "—"} | ${r.emptyQueue ? "**YES**" : "no"} | ${r.falseBlocker ? "**YES**" : "no"} | ${r.focusRecall === null || r.focusRecall === undefined ? "—" : `${Math.round(100 * r.focusRecall)}%`} | ${r.hasUsefulnessExpectations ? `${r.usefulness.failures.length === 0 ? "pass" : `**FAIL (${r.usefulness.failures.length})**`} · action ${r.usefulness.first_action_line ?? "—"} · primary ${r.usefulness.primary_surface_lines ?? "—"} · dup ${r.usefulness.duplicate_root_causes}` : "—"} |`
     );
   }
   lines.push("");
@@ -205,10 +231,13 @@ function main() {
   // Non-zero exit if a core failure mode is present OR any case errored — a benchmark that
   // silently skips a case it could not run (missing dist/, clone failure, CLI crash) would
   // over-report coverage (Codex BENCH.1).
-  if (emptyN > 0 || blockerN > 0 || erroredN > 0) {
-    process.stderr.write(`\nbench: FAIL — ${erroredN} errored, ${emptyN} empty-queue, ${blockerN} false-blocker case(s).\n`);
+  if (emptyN > 0 || blockerN > 0 || usefulnessFailureN > 0 || erroredN > 0) {
+    process.stderr.write(`\nbench: FAIL — ${erroredN} errored, ${emptyN} empty-queue, ${blockerN} false-blocker, ${usefulnessFailureN} reviewer-usefulness case(s).\n`);
     process.exit(1);
   }
 }
 
-main();
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});

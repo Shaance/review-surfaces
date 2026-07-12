@@ -11,8 +11,7 @@ import { globToRegExp } from "../core/glob";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
 import { formatHunkHeader, hunkOverlapsRange } from "../collector/diff-hunks";
 import { buildFallbackNarrative } from "./narrative";
-import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTypeChanges, isBreakingApiChange, isBreakingSchemaChange, SchemaContractChange, SemanticChangeFacts, TestWeakeningSignal } from "../risks/semantic-diff";
-import { isExplicitContractSurfacePath } from "../risks/contract-surface";
+import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTypeChanges, isBreakingApiChange, isBreakingSchemaChange, isSupportedApiContractChange, SchemaContractChange, SemanticChangeFacts, TestWeakeningSignal } from "../risks/semantic-diff";
 import { emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { buildReviewPlan } from "./budget";
 import { buildChangeGraphSections, ChangedFileFacts, ChangedImportEdge, ChangeGraphAreaInsight, ChangeGraphEdgeInsight } from "./change-graph";
@@ -97,6 +96,8 @@ export interface BuildHumanReviewInput {
   diff?: StructuredDiff;
   feedback?: FeedbackFile[];
   config?: HumanReviewBuildConfig;
+  /** Semantic-fact config that must participate in cached model validity. */
+  contractPaths?: readonly string[];
   packetPath?: string;
   prSurfacePath?: string;
   // review-surfaces.NARRATIVE.1-4: an already-anchor-validated change narrative
@@ -636,7 +637,10 @@ function humanReviewBuildConfig(input: BuildHumanReviewInput): HumanReviewBuildC
   };
 }
 
-export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): string {
+export function humanReviewConfigSignature(
+  config?: HumanReviewBuildConfig,
+  contractPaths: readonly string[] = []
+): string {
   const resolved = {
     ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
     ...config,
@@ -662,6 +666,7 @@ export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): str
       path_patterns: check.path_patterns,
       prompt: check.prompt
     })),
+    contract_paths: [...new Set(contractPaths)].sort(compareStrings),
     risk_lenses: RISK_LENSES.map((lens) => [lens, resolved.risk_lenses[lens]])
   };
   return crypto.createHash("sha256").update(JSON.stringify(fingerprint)).digest("hex");
@@ -693,7 +698,7 @@ function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["gen
     // pinned-head runs); every human surface announces a nonzero count.
     uncommitted_files: typeof manifest.uncommitted_files === "number" ? manifest.uncommitted_files : 0,
     omitted_untracked_files: typeof manifest.omitted_untracked_files === "number" ? manifest.omitted_untracked_files : 0,
-    human_review_config_signature: humanReviewConfigSignature(input.config)
+    human_review_config_signature: humanReviewConfigSignature(input.config, input.contractPaths)
   };
 }
 
@@ -2600,7 +2605,8 @@ function apiQueueReviewerAction(change: ApiSurfaceChange): string {
   if (change.used_by?.count) {
     return `Inspect the ${change.used_by.count} identified in-repo consumer${change.used_by.count === 1 ? "" : "s"}; preserve compatibility or update their focused tests.`;
   }
-  return "Determine whether the changed export is a supported external surface; if so, preserve compatibility or document the migration.";
+  const source = change.contract_surface?.source ? ` (${change.contract_surface.source})` : "";
+  return `This is an explicitly supported contract${source}; preserve compatibility or document the downstream migration before merge.`;
 }
 
 function semanticDraft(
@@ -2668,6 +2674,13 @@ function schemaChangeReason(change: SchemaContractChange): string {
 
 function apiChangeReason(change: ApiSurfaceChange): string {
   const parts: string[] = [];
+  if (change.contract_removed) {
+    const contract = change.contract_name ?? change.renamed_from ?? change.contract_surface?.source ?? change.path;
+    parts.push(`supported contract \`${contract}\` was removed without a matching head-side contract`);
+  }
+  if (change.contract_target_changed) {
+    parts.push(`supported contract \`${change.contract_name ?? change.contract_surface?.source ?? change.path}\` resolves to a different target whose compatibility could not be compared`);
+  }
   if (change.signatures_changed.length > 0) {
     parts.push(`signature change(s): ${change.signatures_changed.map((s) => `\`${s.name}\``).join(", ")}`);
   }
@@ -2743,12 +2756,12 @@ function changedFileQueueDrafts(
 // NOT on content-authoring words (author/authors/authorId) (Codex #112 round-6).
 const BASELINE_SENSITIVE =
   /\b(async|await|abort|signal|retry|catch|throw|reject|error|timeout|auth(?!or(?!iz))|login|logout|session|token|permission|oauth|password|fetch|request|http|url|socket|persist|database|migrat|cache|transaction|lifecycle|useeffect|dispose|cleanup)[a-z]*/i;
-// Exported/public surface added or removed in the diff itself (HUMAN_REVIEW.28 round-2):
+// Export-declaration signal added or removed in the diff itself (HUMAN_REVIEW.28 round-2):
 // in the spec-less cold-start path `semanticFacts.api_changes` is empty, so the only way
 // to see a public-surface change is the changed lines. Cross-language: TS/JS `export`/
 // CommonJS `module.exports`, Rust `pub`, Java/Kotlin/C#/PHP `public`, Go exported
 // `func Name` / receiver method `func (r T) Name` / `type Name`, Python `__all__`. This is
-// an advisory boost, not an exhaustive surface parser — rarer public-declaration forms
+// an advisory review-focus boost, not proof of a supported public contract — rarer declaration forms
 // (Kotlin top-level `fun`, Scala, Swift `open`) are intentionally NOT chased (Codex #112 r4).
 const BASELINE_EXPORT =
   /\bexport\b|\bmodule\.exports\b|\bexports\.|\bpub(\s|\()|\bpublic\s+(class|interface|function|fun|static|final|abstract|async|void|[A-Z])|\bfunc\s+(\([^)]*\)\s*)?[A-Z]|\btype\s+[A-Z]\w*\s+(struct|interface)\b|\b__all__\b/;
@@ -2957,7 +2970,7 @@ function baselineReviewFocusDrafts(
       if (sensitive) score += 10;
 
       const reasons: string[] = [];
-      if (exported) reasons.push("changes an exported/public surface");
+      if (exported) reasons.push("contains changed exported declarations");
       if (isImpl && !hasConnectedTest && churn > 0) reasons.push("an implementation change with no connected test change");
       if (sensitive) reasons.push("touches error/async/auth/network/persistence paths");
       if (churn >= 50) reasons.push(`high churn (+${added}/-${removed})`);
@@ -3233,6 +3246,7 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
     addSignal("api_contract", breaking ? "high" : "medium", [fileEvidence(change.path, schemaChangeReason(change))], [], [], [change.path]);
   }
   for (const change of semanticFacts.api_changes) {
+    if (!isSupportedApiContractChange(change)) continue;
     const breaking = isBreakingApiChange(change);
     addSignal("api_contract", breaking ? "high" : "medium", [fileEvidence(change.path, apiChangeReason(change))], [], [], [change.path]);
   }
@@ -4524,7 +4538,7 @@ function pathOnlyLensNeedsReviewerAction(
   const hasBreakingPublicApi = semanticFacts.api_changes.some((change) =>
     paths.has(normalizeEvidencePath(change.path)) &&
     isBreakingApiChange(change) &&
-    isExplicitContractSurfacePath(change.path)
+    isSupportedApiContractChange(change)
   );
   const hasNonSchemaPublicPath = finding.paths.some((filePath) =>
     isCliConfigOrFeatureContractPath(normalizeEvidencePath(filePath)) || (
@@ -4571,7 +4585,6 @@ function buildSuggestedComments(
 ): SuggestedReviewComment[] {
   const comments: SuggestedReviewComment[] = [];
   const candidates: SuggestedCommentCandidate[] = [];
-  const focusedGaps = focusedRequirementGaps(input);
 
   // review-surfaces.SEMANTIC_DIFF.1/.4: suggested comments naming the concrete
   // contract change (e.g. the field that became required), ranked first.
@@ -4651,23 +4664,6 @@ function buildSuggestedComments(
     });
   }
 
-  const focusedGap = focusedGaps[0];
-  if (focusedGap) {
-    candidates.push({
-      sourceRank: 4,
-      sortKey: focusedGap.acai_id ?? focusedGap.requirement_id,
-      draft: {
-        severity: focusedGap.status === "missing" || focusedGap.status === "invalid_evidence" ? "blocking" : "clarifying",
-        body: `Can you point to the validation evidence or explicit deferral for ${focusedGap.acai_id ?? focusedGap.requirement_id}? The human review surface currently marks it as ${focusedGap.status}.`,
-        evidence: requirementGapEvidence(focusedGap),
-        risk_ids: [],
-        requirement_ids: compactStrings([focusedGap.acai_id, focusedGap.requirement_id]),
-        confidence: "medium",
-        ready_to_post: true
-      }
-    });
-  }
-
   const coherentCandidates = candidates.map((candidate) =>
     candidate.sourceRank === 0 || candidate.draft.severity !== "blocking"
       ? candidate
@@ -4718,7 +4714,7 @@ function semanticCommentCandidates(facts: SemanticChangeFacts): SuggestedComment
     );
   }
   for (const change of facts.api_changes) {
-    if (!isBreakingApiChange(change) || !isExplicitContractSurfacePath(change.path)) continue;
+    if (!isBreakingApiChange(change) || !isSupportedApiContractChange(change)) continue;
     add("clarifying", change.path, `${apiChangeReason(change)}${apiCallerCallToAction(change)}`, `semantic-api:${change.path}`);
   }
   return candidates;

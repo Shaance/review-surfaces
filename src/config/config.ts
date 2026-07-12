@@ -30,6 +30,10 @@ export interface ReviewSurfacesConfig {
   specs: string[];
   docs: string[];
   tests: string[];
+  contract_surfaces: {
+    /** Repo-relative `*`/`**` globs for documented extension or public APIs. */
+    paths: string[];
+  };
   areas?: ReviewAreaConfig[];
   privacy: {
     ignore_file: string;
@@ -73,6 +77,9 @@ export const defaultConfig: ReviewSurfacesConfig = {
   specs: ["features/**/*.feature.yaml"],
   docs: ["README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md", "docs/**/*.md", ".agents/skills/**/SKILL.md"],
   tests: ["tests/**/*.test.ts", "tests/**/*.test.js"],
+  contract_surfaces: {
+    paths: []
+  },
   privacy: {
     ignore_file: ".review-surfacesignore",
     redact_secrets: true
@@ -137,6 +144,9 @@ export function normalizeConfig(raw: Record<string, unknown>): ReviewSurfacesCon
     specs: stringArray(raw.specs, defaultConfig.specs),
     docs: stringArray(raw.docs, defaultConfig.docs),
     tests: stringArray(raw.tests, defaultConfig.tests),
+    contract_surfaces: {
+      paths: uniqueStrings(stringArray(readRecord(raw.contract_surfaces).paths, defaultConfig.contract_surfaces.paths))
+    },
     ...(areas ? { areas } : {}),
     privacy: {
       ignore_file: stringValue(readRecord(raw.privacy).ignore_file, defaultConfig.privacy.ignore_file),

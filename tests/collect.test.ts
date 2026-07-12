@@ -96,6 +96,7 @@ components:
       specs: ["features/**/*.feature.yaml"],
       docs: [],
       tests: [],
+      contract_surfaces: { paths: [] },
       output_dir: ".review-surfaces"
     },
     baseRef: "HEAD",
@@ -389,6 +390,7 @@ test("review-surfaces.CLI.7 collection defaults command transcripts to the outpu
       specs: ["features/**/*.feature.yaml"],
       docs: [],
       tests: [],
+      contract_surfaces: { paths: [] },
       privacy: { ignore_file: ".review-surfacesignore", redact_secrets: true },
       llm: { provider: "mock", model: null, require_json_schema: true },
       diagrams: { format: "mermaid" },

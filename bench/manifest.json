@@ -219,6 +219,38 @@
       "expect_no_blockers": true,
       "expected_focus": ["lib/sinatra/version.rb"],
       "note": "version source + CHANGELOG.md + VERSION file (both excluded)"
+    },
+    {
+      "id": "review-surfaces-real-session",
+      "lang": "ts",
+      "repo": "https://github.com/Shaance/review-surfaces.git",
+      "base": "20769646f349f2b741f087b44cea2acf176d454e",
+      "head": "171b4141b9b0c030cd67157d304e9bbb900f6768",
+      "expect_no_blockers": true,
+      "expected_focus": [
+        "src/human/human-review.ts",
+        "src/cli/index.ts",
+        "src/human/decision-projection.ts"
+      ],
+      "usefulness": {
+        "findings": [
+          { "path": "src/human/human-review.ts", "title": "Review-focus: src/human/human-review.ts", "actionable": true },
+          { "path": "src/cli/index.ts", "title": "Review-focus: src/cli/index.ts", "actionable": true },
+          { "path": "src/human/decision-projection.ts", "title": "Review-focus: src/human/decision-projection.ts", "actionable": true },
+          { "path": "src/collector/import-graph.ts", "title": "Exported API surface change", "actionable": false },
+          { "path": "src/human/conversation-review-presentation.ts", "title": "Exported API surface change", "actionable": false }
+        ],
+        "comments": [
+          { "path": "", "body_contains": "I do not see direct validation evidence", "actionable": true },
+          { "path": "", "body_contains": "validation evidence or explicit deferral for review-surfaces", "actionable": false }
+        ],
+        "max_first_action_line": 35,
+        "max_primary_surface_lines": 100,
+        "max_duplicate_root_causes": 0,
+        "reviewer_value_rating": 4,
+        "minimum_reviewer_value_rating": 4
+      },
+      "note": "Curated self-review case from the post-uplift audit: internal exports are supporting facts and reviewer actions must lead the report. Manual rating refreshed after inspecting the M1 output."
     }
   ]
 }

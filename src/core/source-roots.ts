@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { compareStrings } from "./compare";
+import { collectPackageManifestTargets, parsePackageManifest } from "./package-manifest";
 
 // review-surfaces.COLD_START.2: derive a target repository's implementation
 // roots from its OWN signals instead of a hardcoded src|bin|lib list (the
@@ -90,29 +91,10 @@ export function detectImplementationRoots(signals: SourceRootSignals): string[] 
   // `main: dist/index.js` must not make generated output an implementation root.
   const packageText = signals.read("package.json");
   if (packageText !== undefined) {
-    let manifest: Record<string, unknown> | undefined;
-    try {
-      manifest = JSON.parse(packageText) as Record<string, unknown>;
-    } catch {
-      manifest = undefined;
-    }
+    const manifest = parsePackageManifest(packageText);
     if (manifest) {
-      for (const field of ["main", "module", "types", "typings"]) {
-        if (typeof manifest[field] === "string") {
-          addCandidate(topSegment(manifest[field] as string));
-        }
-      }
-      const bin = manifest.bin;
-      for (const entry of typeof bin === "string" ? [bin] : Object.values(bin && typeof bin === "object" ? bin : {})) {
-        if (typeof entry === "string") {
-          addCandidate(topSegment(entry));
-        }
-      }
-      for (const value of collectStrings(manifest.exports)) {
-        addCandidate(topSegment(value));
-      }
-      for (const value of stringArray(manifest.files)) {
-        addCandidate(topSegment(value));
+      for (const { target } of collectPackageManifestTargets(manifest)) {
+        addCandidate(topSegment(target));
       }
     }
   }
@@ -142,6 +124,30 @@ export function detectImplementationRoots(signals: SourceRootSignals): string[] 
   return [...roots].sort(compareStrings);
 }
 
+/** Source roots safe for compiled package-entry projection; explicit tsconfig roots win. */
+export function detectContractSourceRoots(signals: SourceRootSignals): string[] {
+  const files = [...signals.files].sort(compareStrings);
+  const topDirs = new Set(files.flatMap((filePath) => {
+    const slash = filePath.indexOf("/");
+    return slash > 0 ? [filePath.slice(0, slash)] : [];
+  }));
+  const explicit = new Set<string>();
+  const tsconfigText = signals.read("tsconfig.json");
+  if (tsconfigText !== undefined) {
+    const parsed = ts.parseConfigFileTextToJson("tsconfig.json", tsconfigText).config as
+      | { compilerOptions?: { rootDir?: unknown; rootDirs?: unknown } }
+      | undefined;
+    const rootDir = topSegment(parsed?.compilerOptions?.rootDir);
+    if (rootDir && topDirs.has(rootDir)) explicit.add(rootDir);
+    for (const value of stringArray(parsed?.compilerOptions?.rootDirs)) {
+      const root = topSegment(value);
+      if (root && topDirs.has(root)) explicit.add(root);
+    }
+  }
+  if (explicit.size > 0) return [...explicit].sort(compareStrings);
+  return detectImplementationRoots({ files, read: signals.read }).filter((root) => topDirs.has(root));
+}
+
 // The first path segment of an entry-point or include pattern, stopping at the
 // first glob character ("source/**" -> "source", "./dist/index.js" -> "dist").
 function topSegment(value: unknown): string | undefined {
@@ -158,23 +164,6 @@ function topSegment(value: unknown): string | undefined {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
-}
-
-// All string leaves of a package.json `exports` value (string, array, or
-// arbitrarily nested condition objects), in deterministic key order.
-function collectStrings(value: unknown): string[] {
-  if (typeof value === "string") {
-    return [value];
-  }
-  if (Array.isArray(value)) {
-    return value.flatMap((entry) => collectStrings(entry));
-  }
-  if (value && typeof value === "object") {
-    return Object.keys(value)
-      .sort(compareStrings)
-      .flatMap((key) => collectStrings((value as Record<string, unknown>)[key]));
-  }
-  return [];
 }
 
 // review-surfaces.COLD_START.2: the shared cluster rule for the change map and
