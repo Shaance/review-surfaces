@@ -478,6 +478,7 @@ test("agent-file stage sequences supply distinct chronological windows to a long
   assert.equal(result.status, "analyzed");
   const citedCorrection = result.intent.find((item) => /final correction: preserve the retry boundary/i.test(item.text));
   assert.deepEqual(citedCorrection?.event_ids, ["agent-window-240"]);
+  assert.match(citedCorrection?.text ?? "", /final correction: preserve the retry boundary/i);
   assert.ok(!result.quality_flags.includes("conversation_analysis_partial"));
   assert.ok(!result.quality_flags.includes("conversation_analysis_unavailable"));
 });
