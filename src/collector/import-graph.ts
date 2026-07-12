@@ -78,7 +78,7 @@ export function resolveRuntimeRelativeImports(
   exists: (repoRelativePath: string) => boolean,
   compilerOptions: ts.CompilerOptions = {}
 ): string[] {
-  if (!isSourcePath(sourcePath)) {
+  if (!isSourcePath(sourcePath) || /\.d\.(?:ts|mts|cts)$/i.test(sourcePath)) {
     return [];
   }
   const emitted = ts.transpileModule(content, {
@@ -231,9 +231,12 @@ export function buildImportGraph(options: {
 // resolving to the module, or a namespace import of the module whose
 // `ns.symbol` appears in the body. An identically-named symbol imported from a
 // DIFFERENT module never counts. Returns sorted unique paths.
-// Matches import declarations AND re-export barrels (`export { x } from "..."`).
-// Captures: 1 = default binding, 2 = namespace alias, 3 = named list, 4 = spec.
-const IMPORT_DECL = /(?:import|export)\s+(?:type\s+)?(?:([A-Za-z_$][\w$]*)\s*,?\s*)?(?:\*\s+as\s+([A-Za-z_$][\w$]*)|\{([^}]*)\})?\s*from\s*["']([^"']+)["']/g;
+interface ImporterSyntax {
+  source: ts.SourceFile;
+  qualifiedReferences?: Set<string>;
+}
+
+const importerSyntaxByGraph = new WeakMap<ImportGraph, Map<string, ImporterSyntax>>();
 
 export function findSymbolImporters(options: {
   graph: ImportGraph;
@@ -272,45 +275,79 @@ export function findSymbolImporters(options: {
       continue;
     }
     const fromDir = path.posix.dirname(toPosix(importer));
+    let syntaxCache = importerSyntaxByGraph.get(options.graph);
+    if (!syntaxCache) {
+      syntaxCache = new Map();
+      importerSyntaxByGraph.set(options.graph, syntaxCache);
+    }
+    let syntax = syntaxCache.get(importer);
+    if (!syntax) {
+      syntax = { source: ts.createSourceFile(importer, content, ts.ScriptTarget.Latest, false) };
+      syntaxCache.set(importer, syntax);
+    }
+    const qualifiedReferences = (): Set<string> => {
+      syntax!.qualifiedReferences ??= collectQualifiedReferenceKeys(syntax!.source);
+      return syntax!.qualifiedReferences;
+    };
+    const resolvesReviewedModule = (specifier: string): boolean =>
+      specifier.startsWith(".") &&
+      resolveSpecifierWithFallback(fromDir, specifier, exists, options.fallbackExists) === options.modulePath;
     let references = false;
-    for (const decl of content.matchAll(IMPORT_DECL)) {
-      const [, defaultBinding, nsAlias, named, specifier] = decl;
-      if (!specifier.startsWith(".")) {
-        continue;
-      }
-      const resolved = resolveSpecifierWithFallback(fromDir, specifier, exists, options.fallbackExists);
-      if (resolved !== options.modulePath) {
-        continue;
-      }
-      // `import Foo from "./module"` consumes the default export.
-      if (defaultBinding && symbolSet.has("default")) {
-        references = true;
-        break;
-      }
-      if (named) {
-        const reexport = decl[0].trimStart().startsWith("export");
-        const bindings = named.split(",").map((entry) => {
-          const [imported = "", local] = entry.replace(/^\s*type\s+/, "").trim().split(/\s+as\s+/u);
-          return { imported, local: local ?? imported };
-        });
-        const namedMatch = bindings.some((binding) => {
-          const matchingPaths = symbolPathsByRoot.get(binding.imported);
-          if (!matchingPaths) return false;
-          if (reexport || matchingPaths.some((symbolPath) => symbolPath.length === 1)) return true;
-          return matchingPaths.some((symbolPath) =>
-            new RegExp(`\\b${escapeRegExp(binding.local)}\\.${symbolPath.slice(1).map(escapeRegExp).join("\\.")}\\b`).test(content)
-          );
-        });
-        if (namedMatch) {
+    for (const statement of syntax.source.statements) {
+      if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+        if (!resolvesReviewedModule(statement.moduleSpecifier.text)) {
+          continue;
+        }
+        const clause = statement.importClause;
+        if (!clause) continue;
+        if (clause.name && symbolSet.has("default")) {
           references = true;
           break;
         }
+        const bindings = clause.namedBindings;
+        if (bindings && ts.isNamedImports(bindings)) {
+          const namedMatch = bindings.elements.some((element) => {
+            const imported = (element.propertyName ?? element.name).text;
+            const matchingPaths = symbolPathsByRoot.get(imported);
+            if (!matchingPaths) return false;
+            if (matchingPaths.some((symbolPath) => symbolPath.length === 1)) return true;
+            return matchingPaths.some((symbolPath) =>
+              qualifiedReferences().has([element.name.text, ...symbolPath.slice(1)].join("."))
+            );
+          });
+          if (namedMatch) {
+            references = true;
+            break;
+          }
+        } else if (bindings && ts.isNamespaceImport(bindings) && symbolPaths.some((symbolPath) =>
+          qualifiedReferences().has([bindings.name.text, ...symbolPath].join(".")))) {
+          references = true;
+          break;
+        }
+        continue;
       }
-      if (nsAlias) {
-        const used = symbolPaths.some((symbolPath) =>
-          new RegExp(`\\b${escapeRegExp(nsAlias)}\\.${symbolPath.map(escapeRegExp).join("\\.")}\\b`).test(content)
-        );
-        if (used) {
+      if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+        if (!resolvesReviewedModule(statement.moduleSpecifier.text)) {
+          continue;
+        }
+        if (!statement.exportClause || ts.isNamespaceExport(statement.exportClause)) {
+          references = true;
+          break;
+        }
+        if (statement.exportClause.elements.some((element) =>
+          symbolPathsByRoot.has((element.propertyName ?? element.name).text))) {
+          references = true;
+          break;
+        }
+        continue;
+      }
+      if (ts.isImportEqualsDeclaration(statement) &&
+        ts.isExternalModuleReference(statement.moduleReference) &&
+        statement.moduleReference.expression &&
+        ts.isStringLiteral(statement.moduleReference.expression) &&
+        resolvesReviewedModule(statement.moduleReference.expression.text)) {
+        if (symbolSet.has("export=") || symbolPaths.some((symbolPath) =>
+          qualifiedReferences().has([statement.name.text, ...symbolPath].join(".")))) {
           references = true;
           break;
         }
@@ -323,6 +360,31 @@ export function findSymbolImporters(options: {
   return result;
 }
 
+function collectQualifiedReferenceKeys(source: ts.SourceFile): Set<string> {
+  const keys = new Set<string>();
+  const parts = (node: ts.Node): string[] | undefined => {
+    if (ts.isIdentifier(node)) return [node.text];
+    if (ts.isPropertyAccessExpression(node)) {
+      const prefix = parts(node.expression);
+      return prefix ? [...prefix, node.name.text] : undefined;
+    }
+    if (ts.isQualifiedName(node)) {
+      const prefix = parts(node.left);
+      return prefix ? [...prefix, node.right.text] : undefined;
+    }
+    return undefined;
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isPropertyAccessExpression(node) || ts.isQualifiedName(node)) {
+      const pathParts = parts(node);
+      if (pathParts) keys.add(pathParts.join("."));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return keys;
+}
+
 function resolveSpecifierWithFallback(
   fromDir: string,
   specifier: string,
@@ -331,8 +393,4 @@ function resolveSpecifierWithFallback(
 ): string | undefined {
   return resolveSpecifier(fromDir, specifier, exists) ??
     (fallbackExists ? resolveSpecifier(fromDir, specifier, fallbackExists) : undefined);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
