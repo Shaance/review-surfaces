@@ -14,6 +14,13 @@ export interface PackageManifestTarget {
   consumer_path?: string;
 }
 
+/** Stable key for source projections that distinguishes consumer contracts sharing one build target. */
+export function packageManifestTargetProjectionKey(
+  target: Pick<PackageManifestTarget, "identity" | "target">
+): string {
+  return `${target.identity}\0${target.target}`;
+}
+
 export function packageTargetPrefersRootSource(
   target: Pick<PackageManifestTarget, "kind" | "field" | "consumer_path">
 ): boolean {
@@ -147,6 +154,19 @@ export function collectPackageExportExclusions(manifest: Record<string, unknown>
     .sort(compareStrings);
 }
 
+export interface PackageExportConditionExclusion {
+  identity: string;
+  consumer_path: string;
+  priority_group: string;
+}
+
+/** Effective conditional null branches that block a previously available later fallback. */
+export function collectPackageExportConditionExclusions(
+  manifest: Record<string, unknown>
+): PackageExportConditionExclusion[] {
+  return collectExportResolution(manifest.exports).conditionalExclusions;
+}
+
 function isNullOnlyTargetTree(value: unknown): boolean {
   if (value === null) return true;
   if (Array.isArray(value)) return value.length > 0 && value.every(isNullOnlyTargetTree);
@@ -155,27 +175,117 @@ function isNullOnlyTargetTree(value: unknown): boolean {
   return values.length > 0 && values.every(isNullOnlyTargetTree);
 }
 
-function collectExportTargets(value: unknown, subpath = ".", conditions: string[] = []): Array<{ identity: string; target: string; priority_group: string; consumer_path: string }> {
+type CollectedExportTarget = { identity: string; target: string; priority_group: string; consumer_path: string };
+
+function collectExportTargets(value: unknown, subpath = ".", conditions: string[] = []): CollectedExportTarget[] {
+  return collectExportResolution(value, subpath, conditions).targets;
+}
+
+function collectExportResolution(
+  value: unknown,
+  subpath = ".",
+  conditions: string[] = []
+): { targets: CollectedExportTarget[]; conditionalExclusions: PackageExportConditionExclusion[] } {
   const encodedSubpath = encodeSubpathIdentityPart(subpath);
   const identity = `${packageExportSubpathIdentity(subpath)}${conditions.length > 0 ? `:${conditions.map(encodeConditionIdentityPart).join(".")}` : ""}`;
   // Node package exports accept only package-relative targets. Invalid entries
   // in fallback arrays are skipped during resolution and must not become the
   // apparent selected contract target.
-  if (typeof value === "string") return validPackageExportTarget(value)
-    ? [{ identity, target: value, priority_group: `export:${encodedSubpath}`, consumer_path: subpath }]
-    : [];
-  if (Array.isArray(value)) return value.flatMap((entry) => collectExportTargets(entry, subpath, conditions));
-  if (!value || typeof value !== "object") return [];
+  if (typeof value === "string") return {
+    targets: validPackageExportTarget(value)
+      ? [{ identity, target: value, priority_group: `export:${encodedSubpath}`, consumer_path: subpath }]
+      : [],
+    conditionalExclusions: []
+  };
+  if (Array.isArray(value)) {
+    const entries = value.filter((entry) => entry !== null).map((entry) => collectExportResolution(entry, subpath, conditions));
+    const exclusionsByIdentity = new Map<string, PackageExportConditionExclusion>();
+    for (const exclusion of entries.flatMap((entry) => entry.conditionalExclusions)) {
+      exclusionsByIdentity.set(`${exclusion.consumer_path}\0${exclusion.identity}`, exclusion);
+    }
+    const conditionalExclusions = [...exclusionsByIdentity.values()].filter((exclusion) =>
+      !entries.some((entry) => entryResolvesExcludedCondition(entry, exclusion))
+    );
+    return {
+      targets: entries.flatMap((entry) => entry.targets),
+      conditionalExclusions
+    };
+  }
+  if (!value || typeof value !== "object") return { targets: [], conditionalExclusions: [] };
   const record = value as Record<string, unknown>;
   const insertionKeys = Object.keys(record);
   const subpathMap = insertionKeys.some((key) => key.startsWith("."));
   // Subpath key order is not priority, so keep deterministic sorting there.
   // Condition key order is runtime-significant and must remain authored order.
-  const keys = subpathMap ? [...insertionKeys].sort(compareStrings) : insertionKeys;
+  const orderedKeys = subpathMap ? [...insertionKeys].sort(compareStrings) : insertionKeys;
+  const defaultIndex = subpathMap ? -1 : orderedKeys.indexOf("default");
+  const keys = defaultIndex >= 0 ? orderedKeys.slice(0, defaultIndex + 1) : orderedKeys;
   const soleDefault = !subpathMap && keys.length === 1 && keys[0] === "default";
-  return keys.flatMap((key) => subpathMap && key.startsWith(".")
-    ? collectExportTargets(record[key], key, [])
-    : collectExportTargets(record[key], subpath, soleDefault ? conditions : [...conditions, key]));
+  const branches = keys.map((key) => subpathMap && key.startsWith(".")
+    ? collectExportResolution(record[key], key, [])
+    : collectExportResolution(record[key], subpath, soleDefault ? conditions : [...conditions, key]));
+  const conditionalExclusions = branches.flatMap((branch) => branch.conditionalExclusions);
+  if (!subpathMap) {
+    let laterTargetAvailable = false;
+    for (let index = branches.length - 1; index >= 0; index -= 1) {
+      const key = keys[index];
+      if (record[key] === null && laterTargetAvailable) {
+        const branchConditions = [...conditions, key];
+        conditionalExclusions.push({
+          identity: `${packageExportSubpathIdentity(subpath)}:${branchConditions.map(encodeConditionIdentityPart).join(".")}`,
+          consumer_path: subpath,
+          priority_group: `export:${encodedSubpath}`
+        });
+      }
+      if (branches[index].targets.length > 0) laterTargetAvailable = true;
+    }
+  }
+  const targetBranches = branches.filter((branch, index) => branch.targets.length > 0 || record[keys[index]] !== null);
+  if (!subpathMap && keys.length > 1 && defaultIndex >= 0 && targetBranches.every((branch) => branch.targets.length > 0)) {
+    const effectiveTargets = targetBranches.map((branch) => uniformEffectiveTarget(branch.targets));
+    const target = effectiveTargets[0];
+    if (target && effectiveTargets.every((candidate) => candidate === target)) {
+      return {
+        targets: [{ identity, target, priority_group: `export:${encodedSubpath}`, consumer_path: subpath }],
+        conditionalExclusions
+      };
+    }
+  }
+  return { targets: branches.flatMap((branch) => branch.targets), conditionalExclusions };
+}
+
+function entryResolvesExcludedCondition(
+  entry: { targets: readonly CollectedExportTarget[]; conditionalExclusions: readonly PackageExportConditionExclusion[] },
+  requested: PackageExportConditionExclusion
+): boolean {
+  if (entry.conditionalExclusions.length > 0) return false;
+  return entry.targets.some((target) => targetCoversConditionalExclusion(target.identity, requested));
+}
+
+function targetCoversConditionalExclusion(
+  targetIdentity: string,
+  exclusion: PackageExportConditionExclusion
+): boolean {
+  const baseIdentity = packageExportSubpathIdentity(exclusion.consumer_path);
+  if (targetIdentity === baseIdentity) return true;
+  if (!targetIdentity.startsWith(`${baseIdentity}:`) || !exclusion.identity.startsWith(`${baseIdentity}:`)) return false;
+  const targetConditions = targetIdentity.slice(baseIdentity.length + 1).split(".");
+  const excludedConditions = exclusion.identity.slice(baseIdentity.length + 1).split(".");
+  const targetIsPrefix = targetConditions.every((condition, index) => condition === excludedConditions[index]);
+  if (targetIsPrefix) return true;
+  return targetConditions.at(-1) === "default" &&
+    targetConditions.slice(0, -1).every((condition, index) => condition === excludedConditions[index]);
+}
+
+function uniformEffectiveTarget(
+  entries: readonly { identity: string; target: string }[]
+): string | undefined {
+  const selected = new Map<string, string>();
+  for (const entry of entries) {
+    if (!selected.has(entry.identity)) selected.set(entry.identity, entry.target);
+  }
+  const targets = new Set(selected.values());
+  return targets.size === 1 ? targets.values().next().value : undefined;
 }
 
 function validPackageExportTarget(target: string): boolean {

@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { compareStrings } from "./compare";
-import { collectPackageManifestTargets, compilePackageTargetPathMatcher, packageTargetPrefersRootSource, packageTargetSourceVariants, parseCompiledPackageTarget, parsePackageManifest } from "./package-manifest";
+import { collectPackageManifestTargets, compilePackageTargetPathMatcher, packageManifestTargetProjectionKey, packageTargetPrefersRootSource, packageTargetSourceVariants, parseCompiledPackageTarget, parsePackageManifest } from "./package-manifest";
 
 // review-surfaces.COLD_START.2: derive a target repository's implementation
 // roots from its OWN signals instead of a hardcoded src|bin|lib list (the
@@ -50,7 +50,7 @@ export interface SourceRootSignals {
 
 export interface ContractSourceProjection {
   roots: string[];
-  sourcePatternsByTarget: ReadonlyMap<string, readonly string[]>;
+  sourcePatternsByContract: ReadonlyMap<string, readonly string[]>;
 }
 
 export function detectImplementationRoots(signals: SourceRootSignals): string[] {
@@ -163,12 +163,12 @@ export function detectContractSourceProjection(signals: SourceRootSignals): Cont
       }
     }
   }
-  if (explicit.size > 0) return { roots: [...explicit].sort(compareStrings), sourcePatternsByTarget: new Map() };
+  if (explicit.size > 0) return { roots: [...explicit].sort(compareStrings), sourcePatternsByContract: new Map() };
   const packageProjection = compiledPackageSourceProjection(files, read("package.json"), topDirs);
   if (packageProjection.roots.length > 0) return packageProjection;
   return {
     roots: detectImplementationRoots({ files, read }).filter((root) => topDirs.has(root)),
-    sourcePatternsByTarget: new Map()
+    sourcePatternsByContract: new Map()
   };
 }
 
@@ -183,13 +183,13 @@ function compiledPackageSourceProjection(
   topDirs: ReadonlySet<string>
 ): ContractSourceProjection {
   const manifest = parsePackageManifest(packageText);
-  if (!manifest) return { roots: [], sourcePatternsByTarget: new Map() };
+  if (!manifest) return { roots: [], sourcePatternsByContract: new Map() };
   const compiledTargets = collectPackageManifestTargets(manifest).flatMap((target) => {
     if (target.kind === "file") return [];
     const compiled = parseCompiledPackageTarget(target.target);
     return compiled ? [{ ...target, compiled }] : [];
   });
-  if (compiledTargets.length === 0) return { roots: [], sourcePatternsByTarget: new Map() };
+  if (compiledTargets.length === 0) return { roots: [], sourcePatternsByContract: new Map() };
   const eligibleRoots = new Set([".", ...topDirs].filter((root) => !NON_ROOT_DIRS.has(root)));
   const sourceCandidatesByRelativePath = new Map<string, Array<{ root: string; sourcePath: string }>>();
   for (const sourcePath of files) {
@@ -207,8 +207,9 @@ function compiledPackageSourceProjection(
     }
   }
   const roots = new Set<string>();
-  const sourcePatternsByTarget = new Map<string, readonly string[]>();
-  for (const { kind, field, target, compiled, consumer_path: consumerPath } of compiledTargets) {
+  const sourcePatternsByContract = new Map<string, readonly string[]>();
+  for (const contractTarget of compiledTargets) {
+    const { kind, field, target, compiled, consumer_path: consumerPath } = contractTarget;
     const variants = packageTargetSourceVariants(compiled.relativePath, kind === "entry" && field !== "bin");
     const preferRootSource = packageTargetPrefersRootSource({ kind, field, consumer_path: consumerPath });
     const matchingPatterns = new Set<string>();
@@ -237,9 +238,11 @@ function compiledPackageSourceProjection(
         matchingPatterns.add(candidate.root === "." ? variant : `${candidate.root}/${variant}`);
       }
     }
-    if (matchingPatterns.size > 0) sourcePatternsByTarget.set(target, [...matchingPatterns].sort(compareStrings));
+    if (matchingPatterns.size > 0) {
+      sourcePatternsByContract.set(packageManifestTargetProjectionKey(contractTarget), [...matchingPatterns].sort(compareStrings));
+    }
   }
-  return { roots: [...roots].sort(compareStrings), sourcePatternsByTarget };
+  return { roots: [...roots].sort(compareStrings), sourcePatternsByContract };
 }
 
 // The first path segment of an entry-point or include pattern, stopping at the

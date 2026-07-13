@@ -15,7 +15,8 @@ import { parseBudgetDuration } from "../human/budget";
 import { computeDependencyFacts } from "../risks/dependency-facts";
 import { loadReviewPolicy, POLICY_FILE, ReviewPolicy } from "../feedback/policy";
 import { computeConfigFacts } from "../risks/config-facts";
-import { buildImportGraph, findSymbolImporters, importGraphWouldTruncate, resolveRelativeImports, resolveRuntimeRelativeImports } from "../collector/import-graph";
+import { buildImportGraph, findSymbolReferences, importGraphWouldTruncate, resolveRelativeImports, resolveRuntimeRelativeImports } from "../collector/import-graph";
+import { createApiContractSurfaceClassifier } from "../risks/contract-surface";
 import { createRuntimeImportResolver } from "../collector/compiler-options";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -1977,7 +1978,9 @@ function buildHumanReviewForPacket(
     semanticFacts: withBlastRadius(
       cwd,
       computeSemanticFactsForPacket(resolvedDiff, factReaders, effectiveConfig?.contract_surfaces.paths, contractSourceProjection),
-      factReaders
+      factReaders,
+      effectiveConfig?.contract_surfaces.paths,
+      contractSourceProjection.head
     ),
     // review-surfaces.RANKING.1: per-changed-impl-path evidence (changed test ->
     // impl import map) computed here so it is uniform on every build path.
@@ -2024,8 +2027,8 @@ function computeSemanticFactsForPacket(
   readers: FactReaders | undefined,
   contractPaths: readonly string[] = [],
   sourceProjection: { base: ContractSourceProjection; head: ContractSourceProjection } = {
-    base: { roots: [], sourcePatternsByTarget: new Map() },
-    head: { roots: [], sourcePatternsByTarget: new Map() }
+    base: { roots: [], sourcePatternsByContract: new Map() },
+    head: { roots: [], sourcePatternsByContract: new Map() }
   }
 ): SemanticChangeFacts {
   if (!diff || diff.files.length === 0 || !readers) {
@@ -2038,8 +2041,8 @@ function computeSemanticFactsForPacket(
     contractPaths,
     baseSourceRoots: sourceProjection.base.roots,
     headSourceRoots: sourceProjection.head.roots,
-    basePackageSourcePatterns: sourceProjection.base.sourcePatternsByTarget,
-    headPackageSourcePatterns: sourceProjection.head.sourcePatternsByTarget
+    basePackageSourcePatterns: sourceProjection.base.sourcePatternsByContract,
+    headPackageSourcePatterns: sourceProjection.head.sourcePatternsByContract
   });
 }
 
@@ -2134,7 +2137,7 @@ function detectContractRootsForPacket(
   cwd: string,
   readers: FactReaders | undefined
 ): { base: ContractSourceProjection; head: ContractSourceProjection } {
-  const empty = (): ContractSourceProjection => ({ roots: [], sourcePatternsByTarget: new Map() });
+  const empty = (): ContractSourceProjection => ({ roots: [], sourcePatternsByContract: new Map() });
   if (!readers) return { base: empty(), head: empty() };
   const detect = (args: string[], read: (path: string) => string | undefined): ContractSourceProjection => {
     try {
@@ -2484,7 +2487,13 @@ async function runScoreboard(parsed: ParsedArgs): Promise<number> {
 // in-repo importer counts from a bounded reverse import graph over the
 // git-tracked source files. A truncated graph carries the note rather than
 // presenting "used by 0" as fact.
-function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactReaders | undefined): SemanticChangeFacts {
+function withBlastRadius(
+  cwd: string,
+  facts: SemanticChangeFacts,
+  readers: FactReaders | undefined,
+  contractPaths: readonly string[] = [],
+  sourceProjection: ContractSourceProjection = { roots: [], sourcePatternsByContract: new Map() }
+): SemanticChangeFacts {
   const targets = facts.api_changes.filter((change) =>
     change.path !== "package.json" &&
     (change.exports_removed.length > 0 || change.signatures_changed.length > 0)
@@ -2544,21 +2553,40 @@ function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactR
     resolveImports: (sourcePath, content, exists) =>
       resolveRelativeImports(sourcePath, content, exists, deletedTargetExists)
   });
+  const classifyContractSurface = createApiContractSurfaceClassifier({
+    packageJson: readers.readHead("package.json"),
+    configuredPaths: contractPaths,
+    sourceRoots: sourceProjection.roots,
+    packageSourcePatterns: sourceProjection.sourcePatternsByContract
+  });
   for (const change of targets) {
     const symbols = [...change.exports_removed, ...change.signatures_changed.map((sig) => sig.name)];
-    const importers = findSymbolImporters({
+    const references = findSymbolReferences({
       graph,
       modulePath: change.path,
       symbols,
       read: readers.readHead,
       exists: headExists,
-      fallbackExists: deletedTargetExists
+      fallbackExists: deletedTargetExists,
+      includeReexporters: !change.contract_surface,
+      ...(!change.contract_surface ? {
+        stopAtReexporter: (filePath: string): boolean => classifyContractSurface(filePath) !== undefined
+      } : {})
     });
+    const publicReexport = references.matchedReexporter
+      ? classifyContractSurface(references.matchedReexporter)
+      : undefined;
     change.used_by = {
-      count: importers.length,
-      top: importers.slice(0, 5),
+      count: references.importers.length,
+      top: references.importers.slice(0, 5),
       ...(graph.truncated ? { truncated: true } : {})
     };
+    if (!change.contract_surface) {
+      if (publicReexport) {
+        change.contract_surface = publicReexport;
+        change.contract_name = publicReexport.binding ?? publicReexport.identity;
+      }
+    }
   }
   return facts;
 }

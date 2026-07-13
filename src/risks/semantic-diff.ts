@@ -15,7 +15,7 @@
 import * as ts from "typescript";
 import { StructuredDiff, StructuredDiffFile } from "../pr/contract";
 import { isTestPath } from "../scope/pr-scope";
-import { createApiContractSurfaceClassifier, isExplicitContractSurfacePath, listPackageContractEntries, listPackageContractExclusions, packageExclusionRemovesContract, type ApiContractSurface, type PackageContractEntry } from "./contract-surface";
+import { createApiContractSurfaceClassifier, isExplicitContractSurfacePath, listPackageConditionalContractExclusions, listPackageContractEntries, listPackageContractExclusions, packageExclusionRemovesContract, selectEffectivePackageContractEntries, type ApiContractSurface, type PackageContractEntry } from "./contract-surface";
 
 export interface SchemaContractChange {
   path: string;
@@ -180,18 +180,25 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
     sources.headSourceRoots ?? sources.sourceRoots ?? [],
     sources.headPackageSourcePatterns
   );
+  const effectiveBaseEntries = selectEffectivePackageContractEntries(baseEntries);
+  const effectiveHeadEntries = selectEffectivePackageContractEntries(headEntries);
   const basePackageExclusions = listPackageContractExclusions(basePackageJson);
   const baseExclusionPatterns = basePackageExclusions.map((exclusion) => exclusion.consumer_path);
   const baseExclusionIdentities = new Set(basePackageExclusions.map(({ surface }) => surface.identity));
   const addedPackageExclusions = listPackageContractExclusions(headPackageJson)
     .filter(({ surface }) => surface.identity !== undefined && !baseExclusionIdentities.has(surface.identity));
-  const headPackageSurfaces = headEntries.map((entry) => entry.surface);
+  const baseConditionalExclusionIdentities = new Set(
+    listPackageConditionalContractExclusions(basePackageJson).map(({ surface }) => surface.identity)
+  );
+  const addedConditionalExclusions = listPackageConditionalContractExclusions(headPackageJson)
+    .filter(({ surface }) => surface.identity !== undefined && !baseConditionalExclusionIdentities.has(surface.identity));
+  const headPackageSurfaces = effectiveHeadEntries.map((entry) => entry.surface);
   const headPackageIdentities = new Set(headPackageSurfaces.map((surface) => surface.identity).filter((identity): identity is string => Boolean(identity)));
   const headPackageSourceKeys = new Set(headPackageSurfaces
     .filter((surface): surface is ApiContractSurface & { identity: string } => surface.identity !== undefined)
     .map((surface) => `${surface.identity}\0${surface.source}`));
   const basePackageSurfaces = [...new Map(
-    baseEntries.map(({ surface }) => [surface.identity ?? surface.source, surface])
+    effectiveBaseEntries.map(({ surface }) => [surface.identity ?? surface.source, surface])
   ).values()];
   const removedPackageSurfaces = basePackageSurfaces
     .filter((surface) => surface.identity !== undefined && !headPackageIdentities.has(surface.identity));
@@ -297,7 +304,7 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
       if (packageChanged) api_changes.push(unresolvedPackageTargetChange(identity, headEntry.surface));
       return;
     }
-    const pairKey = `${basePath}\0${headPath}`;
+    const pairKey = `${identity}\0${basePath}\0${headPath}`;
     if (reconciledPairs.has(pairKey)) return;
     reconciledPairs.add(pairKey);
     const crossTargetChange = diffApiSurfaceTexts(headPath, sources.readBase(basePath), sources.readHead(headPath), basePath);
@@ -314,7 +321,7 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
     const baseSurface = baseChangedSurfaceByIdentity.get(identity);
     const headSurface = headChangedSurfaceByIdentity.get(identity);
     if (!headPath || !baseSurface || !headSurface || baseSurface.source === headSurface.source) continue;
-    const pairKey = `${basePath}\0${headPath}`;
+    const pairKey = `${identity}\0${basePath}\0${headPath}`;
     if (reconciledPairs.has(pairKey)) continue;
     reconciledPairs.add(pairKey);
     const alreadyCorrelated = sources.diff.files.some((file) => file.path === headPath && baseReadPath(file) === basePath);
@@ -355,25 +362,24 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
       if (packageChanged) api_changes.push(unresolvedPackageTargetChange(identity, headGroup[0].surface));
       continue;
     }
-    const unmatchedHead = [...headGroup];
-    const unmatchedBase = baseGroup.filter((baseEntry) => {
-      const unchangedIndex = unmatchedHead.findIndex((headEntry) => headEntry.surface.source === baseEntry.surface.source);
-      if (unchangedIndex < 0) return true;
-      unmatchedHead.splice(unchangedIndex, 1);
-      return false;
-    });
-    if (unmatchedBase.length === 0) {
-      const onlyAppended = baseSources.every((source, index) => headSources[index] === source);
-      if (!onlyAppended && packageChanged) api_changes.push(unresolvedPackageTargetChange(identity, headGroup[0].surface));
-      continue;
-    }
-    if (unmatchedBase.length === 1 && unmatchedHead.length === 1) {
-      comparePackageTargets(identity, unmatchedBase[0], unmatchedHead[0]);
-    } else if (packageChanged) {
-      api_changes.push(unresolvedPackageTargetChange(identity, headGroup[0].surface));
-    }
+    // No shared target changed priority, so only the selected transition is
+    // observable; later replacements/deletions remain shadowed.
+    comparePackageTargets(identity, baseGroup[0], headGroup[0]);
   }
   if (packageChanged) {
+    for (const { surface, priority_group: priorityGroup } of addedConditionalExclusions) {
+      if (surface.identity && removedPackageIdentities.has(surface.identity)) continue;
+      if (!baseEntries.some((entry) => entry.priority_group === priorityGroup)) continue;
+      api_changes.push({
+        path: "package.json",
+        exports_added: [],
+        exports_removed: [],
+        signatures_changed: [],
+        contract_removed: true,
+        contract_name: surface.identity,
+        contract_surface: surface
+      });
+    }
     for (const { surface, consumer_path: consumerPath } of addedPackageExclusions) {
       if (surface.identity && [...removedPackageIdentities].some((identity) =>
         identity === surface.identity || identity.startsWith(`${surface.identity}:`)

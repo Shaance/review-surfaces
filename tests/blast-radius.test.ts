@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildImportGraph, findSymbolImporters, resolveRuntimeRelativeImports } from "../src/collector/import-graph";
+import { buildImportGraph, findSymbolImporters, findSymbolReferences, resolveRuntimeRelativeImports } from "../src/collector/import-graph";
 
 const FILES: Record<string, string> = {
   "src/core.ts": "export function widely(): number { return 1; }\nexport function unused(): number { return 2; }",
@@ -61,6 +61,55 @@ test("review-surfaces.BLAST_RADIUS.2 namespaced API members match only real qual
   assert.deepEqual(
     findSymbolImporters({ graph, modulePath: "src/types.ts", symbols: ["export="], read }),
     ["src/import-equals.ts"]
+  );
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 distinguishes public re-exports from ordinary imports", () => {
+  const files: Record<string, string> = {
+    "src/core.ts": "export function value(): number { return 1; }",
+    "src/named.ts": 'export { value as publicValue } from "./core";',
+    "src/star.ts": 'export * from "./core";',
+    "src/namespace.ts": 'export * as core from "./core";',
+    "src/local.ts": 'import { value as localValue } from "./core"; export { localValue as localPublic };',
+    "src/export-before.ts": 'export { lateValue as latePublic }; import { value as lateValue } from "./core";',
+    "src/two-hop.ts": 'export { publicValue as finalValue } from "./named";',
+    "src/caller.ts": 'import { value } from "./core"; export const result = value();'
+  };
+  const read = (filePath: string): string | undefined => files[filePath];
+  const graph = buildImportGraph({ files: Object.keys(files), read, exists: (filePath) => filePath in files });
+  assert.deepEqual(
+    findSymbolReferences({ graph, modulePath: "src/core.ts", symbols: ["value"], read }).reexporters,
+    ["src/export-before.ts", "src/local.ts", "src/named.ts", "src/namespace.ts", "src/star.ts", "src/two-hop.ts"]
+  );
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 star barrels do not expose default exports", () => {
+  const files: Record<string, string> = {
+    "src/core.ts": "export default function value(): number { return 1; }",
+    "src/star.ts": 'export * from "./core";'
+  };
+  const read = (filePath: string): string | undefined => files[filePath];
+  const graph = buildImportGraph({ files: Object.keys(files), read, exists: (filePath) => filePath in files });
+  assert.deepEqual(findSymbolReferences({ graph, modulePath: "src/core.ts", symbols: ["default"], read }).reexporters, []);
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 follows default and export-equals assignments through barrels", () => {
+  const files: Record<string, string> = {
+    "src/default-core.ts": "export default function value(): number { return 1; }",
+    "src/default-mid.ts": 'import implementation from "./default-core"; export default implementation;',
+    "src/default-public.ts": 'export { default as api } from "./default-mid";',
+    "src/equals-core.ts": "const value = 1; export = value;",
+    "src/equals-public.ts": 'import value = require("./equals-core"); export = value;'
+  };
+  const read = (filePath: string): string | undefined => files[filePath];
+  const graph = buildImportGraph({ files: Object.keys(files), read, exists: (filePath) => filePath in files });
+  assert.deepEqual(
+    findSymbolReferences({ graph, modulePath: "src/default-core.ts", symbols: ["default"], read }).reexporters,
+    ["src/default-mid.ts", "src/default-public.ts"]
+  );
+  assert.deepEqual(
+    findSymbolReferences({ graph, modulePath: "src/equals-core.ts", symbols: ["export="], read }).reexporters,
+    ["src/equals-public.ts"]
   );
 });
 

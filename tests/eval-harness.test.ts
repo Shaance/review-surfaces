@@ -258,6 +258,29 @@ test("review-surfaces.EVAL_HARNESS.2 a breaking API change with call sites carri
   }
 });
 
+test("review-surfaces.REVIEWER_VALUE.11 preserves an internal break re-exported by a public package entry", () => {
+  const fixture = createEvalFixture("public-reexport-break");
+  try {
+    fixture.write("package.json", JSON.stringify({ exports: { ".": "./src/index.ts" } }, null, 2));
+    fixture.write("src/index.ts", 'export { publicAdd as add } from "./feature";\n');
+    fixture.write("src/feature.ts", 'import { add as internalAdd } from "./calc";\nexport { internalAdd as publicAdd };\n');
+    fixture.write("src/calc.ts", "export function add(left: number, right: number): number { return left + right; }\n");
+    fixture.commit("seed public re-export");
+    fixture.write("src/calc.ts", "export function add(left: number, right: number, base: number): number { return left + right + base; }\n");
+    fixture.commit("break re-exported api");
+
+    const model = fixture.run(["--base", "HEAD~1"]);
+    const fact = model.semantic_facts.api_changes.find((change) => change.path === "src/calc.ts");
+    assert.equal(fact?.contract_surface?.identity, "export:.");
+    assert.ok(model.review_queue.some((item) => item.path === "src/calc.ts" && /API|signature/i.test(item.title)));
+    assert.ok(model.decision_projection?.findings.some((finding) =>
+      finding.root_cause === "public_contract:src/calc.ts"
+    ));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("review-surfaces.REVIEWER_VALUE.11 keeps package-only repoints decision-scoped without fake blast radius", () => {
   const fixture = createEvalFixture("package-repoint-scope");
   try {

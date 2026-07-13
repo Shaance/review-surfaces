@@ -125,7 +125,7 @@ test("review-surfaces.REVIEWER_VALUE.11 infers a root-level source behind compil
       })
     };
     const projection = detectContractSourceProjection({ files, read: (filePath) => contents[filePath] });
-    const options = { packageJson: contents["package.json"], sourceRoots: projection.roots, packageSourcePatterns: projection.sourcePatternsByTarget };
+    const options = { packageJson: contents["package.json"], sourceRoots: projection.roots, packageSourcePatterns: projection.sourcePatternsByContract };
     assert.deepEqual(projection.roots, [".", "src"], `mixed ${outputRoot} entries retain every evidence-backed source root`);
     assert.equal(classifyApiContractSurface("index.ts", options)?.kind, "package_entry");
     assert.equal(classifyApiContractSurface("src/browser.ts", options)?.kind, "package_entry");
@@ -142,7 +142,7 @@ test("review-surfaces.REVIEWER_VALUE.11 infers a root-level source behind compil
     files: conditionalFiles,
     read: (filePath) => filePath === "package.json" ? conditionalPackage : undefined
   });
-  const conditionalOptions = { packageJson: conditionalPackage, sourceRoots: conditionalProjection.roots, packageSourcePatterns: conditionalProjection.sourcePatternsByTarget };
+  const conditionalOptions = { packageJson: conditionalPackage, sourceRoots: conditionalProjection.roots, packageSourcePatterns: conditionalProjection.sourcePatternsByContract };
   assert.deepEqual(conditionalProjection.roots, [".", "src"]);
   assert.equal(classifyApiContractSurface("index.mts", conditionalOptions)?.kind, "package_export");
   assert.equal(classifyApiContractSurface("src/browser.cts", conditionalOptions)?.kind, "package_export");
@@ -152,10 +152,23 @@ test("review-surfaces.REVIEWER_VALUE.11 infers a root-level source behind compil
     files: ["package.json", "index.ts", "src/feature.ts"],
     read: (filePath) => filePath === "package.json" ? wildcardPackage : undefined
   });
-  const wildcardOptions = { packageJson: wildcardPackage, sourceRoots: wildcardProjection.roots, packageSourcePatterns: wildcardProjection.sourcePatternsByTarget };
+  const wildcardOptions = { packageJson: wildcardPackage, sourceRoots: wildcardProjection.roots, packageSourcePatterns: wildcardProjection.sourcePatternsByContract };
   assert.deepEqual(wildcardProjection.roots, [".", "src"]);
   assert.equal(classifyApiContractSurface("index.ts", wildcardOptions)?.identity, "export:.");
   assert.equal(classifyApiContractSurface("src/feature.ts", wildcardOptions)?.binding, "export:./feature");
+
+  const sharedTargetPackage = JSON.stringify({ exports: { ".": "./dist/index.js", "./alias": "./dist/index.js" } });
+  const sharedTargetProjection = detectContractSourceProjection({
+    files: ["package.json", "index.ts", "src/index.ts"],
+    read: (filePath) => filePath === "package.json" ? sharedTargetPackage : undefined
+  });
+  const sharedTargetOptions = {
+    packageJson: sharedTargetPackage,
+    sourceRoots: sharedTargetProjection.roots,
+    packageSourcePatterns: sharedTargetProjection.sourcePatternsByContract
+  };
+  assert.equal(classifyApiContractSurface("index.ts", sharedTargetOptions)?.identity, "export:.");
+  assert.equal(classifyApiContractSurface("src/index.ts", sharedTargetOptions)?.identity, "export:./alias");
 });
 
 test("review-surfaces.REVIEWER_VALUE.11 prefers explicit tsconfig include roots over committed package output", () => {

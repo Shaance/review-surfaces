@@ -1,6 +1,6 @@
 import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
-import { collectPackageExportExclusions, collectPackageManifestTargets, compilePackageTargetPathMatcher, packageExportSubpathIdentity, packageTargetPrefersRootSource, packageTargetSourceVariants, parseCompiledPackageTarget, parsePackageManifest } from "../core/package-manifest";
+import { collectPackageExportConditionExclusions, collectPackageExportExclusions, collectPackageManifestTargets, compilePackageTargetPathMatcher, packageExportSubpathIdentity, packageManifestTargetProjectionKey, packageTargetPrefersRootSource, packageTargetSourceVariants, parseCompiledPackageTarget, parsePackageManifest } from "../core/package-manifest";
 
 export type ApiContractSurfaceKind = "declaration" | "package_export" | "package_entry" | "configured";
 
@@ -48,7 +48,10 @@ export function createApiContractSurfaceClassifier(
     .sort(compareStrings)
     .map((pattern) => ({ pattern, matcher: globToRegExp(pattern) }));
   const manifest = parsePackageManifest(options.packageJson);
-  const entries = manifest ? packageContractEntries(manifest, options.sourceRoots ?? ["src"], options.packageSourcePatterns).map((entry) => ({
+  const entries = manifest ? selectEffectiveEntries(
+    packageContractEntries(manifest, options.sourceRoots ?? ["src"], options.packageSourcePatterns),
+    (entry) => entry.identity
+  ).map((entry) => ({
     ...entry,
     patterns: entry.patterns.map((pattern) => ({ pattern, match: compilePackageTargetPathMatcher(pattern) }))
   })) : [];
@@ -107,7 +110,8 @@ export function isPersistedSchemaPath(filePath: string): boolean {
 export function listPackageContractSurfaces(packageJson: string | undefined): ApiContractSurface[] {
   const manifest = parsePackageManifest(packageJson);
   if (!manifest) return [];
-  return packageContractEntries(manifest, []).map(({ kind, source, identity }) => ({ kind, source, identity }));
+  return selectEffectiveEntries(packageContractEntries(manifest, []), (entry) => entry.identity)
+    .map(({ kind, source, identity }) => ({ kind, source, identity }));
 }
 
 export interface PackageContractExclusion {
@@ -124,6 +128,26 @@ export function listPackageContractExclusions(packageJson: string | undefined): 
       kind: "package_export",
       source: `package.json#exports:${consumerPath}:null`,
       identity: packageExportSubpathIdentity(consumerPath)
+    }
+  }));
+}
+
+export interface PackageConditionalContractExclusion extends PackageContractExclusion {
+  priority_group: string;
+}
+
+export function listPackageConditionalContractExclusions(
+  packageJson: string | undefined
+): PackageConditionalContractExclusion[] {
+  const manifest = parsePackageManifest(packageJson);
+  if (!manifest) return [];
+  return collectPackageExportConditionExclusions(manifest).map(({ identity, consumer_path, priority_group }) => ({
+    consumer_path,
+    priority_group,
+    surface: {
+      kind: "package_export",
+      source: `package.json#exports:${consumer_path}:${identity}:null`,
+      identity
     }
   }));
 }
@@ -148,6 +172,27 @@ export function listPackageContractEntries(
     ...(priority_group ? { priority_group } : {}),
     ...(consumer_path ? { consumer_path } : {})
   }));
+}
+
+/** Keep the selected fallback per consumer identity while preserving all non-fallback entries. */
+export function selectEffectivePackageContractEntries(
+  entries: readonly PackageContractEntry[]
+): PackageContractEntry[] {
+  return selectEffectiveEntries(entries, (entry) => entry.surface.identity);
+}
+
+function selectEffectiveEntries<T extends { priority_group?: string }>(
+  entries: readonly T[],
+  identityOf: (entry: T) => string | undefined
+): T[] {
+  const selectedFallbacks = new Set<string>();
+  return entries.filter((entry) => {
+    const identity = identityOf(entry);
+    if (!entry.priority_group || !identity) return true;
+    if (selectedFallbacks.has(identity)) return false;
+    selectedFallbacks.add(identity);
+    return true;
+  });
 }
 
 /** True only when a newly added exclusion subtracts an effective base export. */
@@ -193,7 +238,8 @@ function packageContractEntries(
   consumer_path?: string;
 }> {
   const entries: Array<{ kind: "package_export" | "package_entry"; source: string; identity: string; patterns: string[]; priority_group?: string; consumer_path?: string }> = [];
-  for (const { kind, field, target, identity, priority_group, consumer_path } of collectPackageManifestTargets(manifest)) {
+  for (const contractTarget of collectPackageManifestTargets(manifest)) {
+    const { kind, field, target, identity, priority_group, consumer_path } = contractTarget;
     if (kind === "file") continue;
     entries.push({
       kind: kind === "export" ? "package_export" : "package_entry",
@@ -204,6 +250,7 @@ function packageContractEntries(
         sourceRoots,
         kind === "entry" && field !== "bin",
         packageTargetPrefersRootSource({ kind, field, consumer_path }),
+        identity,
         packageSourcePatterns
       ),
       ...(priority_group ? { priority_group } : {}),
@@ -218,13 +265,14 @@ function sourcePathPatterns(
   sourceRoots: readonly string[],
   probeExtensionlessLegacyEntry: boolean,
   preferRootSource: boolean,
+  identity: string,
   packageSourcePatterns?: ReadonlyMap<string, readonly string[]>
 ): string[] {
   const normalized = normalizePath(target);
   const roots = [...new Set(sourceRoots.map(normalizePath))].sort(compareStrings);
   const compiledTarget = parseCompiledPackageTarget(normalized);
   const candidates = new Set<string>();
-  const detectedPatterns = packageSourcePatterns?.get(target);
+  const detectedPatterns = packageSourcePatterns?.get(packageManifestTargetProjectionKey({ identity, target }));
   if (detectedPatterns) {
     for (const pattern of detectedPatterns) candidates.add(pattern);
   } else if (!compiledTarget) {

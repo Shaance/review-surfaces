@@ -456,8 +456,8 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
             contractPaths: options.config.contract_surfaces.paths,
             headSourceRoots: headContractProjection.roots,
             baseSourceRoots: baseContractProjection.roots,
-            headPackageSourcePatterns: headContractProjection.sourcePatternsByTarget,
-            basePackageSourcePatterns: baseContractProjection.sourcePatternsByTarget
+            headPackageSourcePatterns: headContractProjection.sourcePatternsByContract,
+            basePackageSourcePatterns: baseContractProjection.sourcePatternsByContract
           });
         })()
       : emptySemanticChangeFacts();

@@ -238,126 +238,177 @@ interface ImporterSyntax {
 
 const importerSyntaxByGraph = new WeakMap<ImportGraph, Map<string, ImporterSyntax>>();
 
-export function findSymbolImporters(options: {
+function importerSyntax(graph: ImportGraph, filePath: string, content: string): ImporterSyntax {
+  let syntaxCache = importerSyntaxByGraph.get(graph);
+  if (!syntaxCache) {
+    syntaxCache = new Map();
+    importerSyntaxByGraph.set(graph, syntaxCache);
+  }
+  let syntax = syntaxCache.get(filePath);
+  if (!syntax) {
+    syntax = { source: ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, false) };
+    syntaxCache.set(filePath, syntax);
+  }
+  return syntax;
+}
+
+interface SymbolReferenceOptions {
   graph: ImportGraph;
   modulePath: string;
   symbols: string[];
   read: (filePath: string) => string | undefined;
   exists?: (filePath: string) => boolean;
   fallbackExists?: (filePath: string) => boolean;
-}): string[] {
-  const importerPaths = options.graph.importers.get(options.modulePath) ?? [];
-  if (importerPaths.length === 0 || options.symbols.length === 0) {
-    return [];
-  }
-  // review-surfaces.PERF.1: memoize the existence probe here too — resolveSpecifier
-  // re-probes the same candidate paths across every importer, and the default
-  // probe is a contents-map lookup while an injected one may spawn per call.
+  includeReexporters?: boolean;
+  stopAtReexporter?: (filePath: string) => boolean;
+}
+
+export function findSymbolImporters(options: SymbolReferenceOptions): string[] {
+  return findSymbolReferences({ ...options, includeReexporters: false }).importers;
+}
+
+export function findSymbolReferences(options: SymbolReferenceOptions): {
+  importers: string[];
+  reexporters: string[];
+  matchedReexporter?: string;
+} {
+  if (options.symbols.length === 0) return { importers: [], reexporters: [] };
   const exists = memoizeExists(options.exists ?? ((filePath: string) => options.graph.contents.has(filePath)));
-  const readCached = (filePath: string): string | undefined =>
-    options.graph.contents.get(filePath) ?? options.read(filePath);
-  const symbolSet = new Set(options.symbols);
-  const symbolPaths = options.symbols.map((symbol) =>
+  const importers = new Set<string>();
+  const reexporters = new Set<string>();
+  let matchedReexporter: string | undefined;
+  const queue = [{ modulePath: options.modulePath, symbols: [...options.symbols].sort() }];
+  let cursor = 0;
+  const enqueued = new Set([`${options.modulePath}\0${queue[0].symbols.join("\0")}`]);
+  while (cursor < queue.length) {
+    const current = queue[cursor++];
+    for (const importer of options.graph.importers.get(current.modulePath) ?? []) {
+      const content = options.graph.contents.get(importer) ?? options.read(importer);
+      if (!content) continue;
+      const analysis = analyzeSymbolReferences(
+        importerSyntax(options.graph, importer, content),
+        current.modulePath,
+        current.symbols,
+        path.posix.dirname(toPosix(importer)),
+        exists,
+        options.fallbackExists
+      );
+      const exportedSymbols = analysis.reexported;
+      if (current.modulePath === options.modulePath && (analysis.references || exportedSymbols.length > 0)) {
+        importers.add(importer);
+      }
+      if (exportedSymbols.length === 0 || options.includeReexporters === false) continue;
+      reexporters.add(importer);
+      if (!matchedReexporter && options.stopAtReexporter?.(importer)) matchedReexporter = importer;
+      const stateKey = `${importer}\0${exportedSymbols.join("\0")}`;
+      if (!enqueued.has(stateKey)) {
+        enqueued.add(stateKey);
+        queue.push({ modulePath: importer, symbols: exportedSymbols });
+      }
+    }
+    if (matchedReexporter) {
+      return {
+        importers: [...importers].sort(),
+        reexporters: [...reexporters].sort(),
+        matchedReexporter
+      };
+    }
+  }
+  return { importers: [...importers].sort(), reexporters: [...reexporters].sort() };
+}
+
+function analyzeSymbolReferences(
+  syntax: ImporterSyntax,
+  modulePath: string,
+  symbols: readonly string[],
+  fromDir: string,
+  exists: (filePath: string) => boolean,
+  fallbackExists?: (filePath: string) => boolean
+): { references: boolean; reexported: string[] } {
+  const symbolPaths = symbols.map((symbol) =>
     (symbol.startsWith("namespace:") ? symbol.slice("namespace:".length) : symbol).split(".").filter(Boolean)
   );
-  const symbolPathsByRoot = new Map<string, string[][]>();
-  for (const symbolPath of symbolPaths) {
-    const root = symbolPath[0];
+  const roots = new Set(symbolPaths.map((parts) => parts[0]).filter(Boolean));
+  const pathsByRoot = new Map<string, string[][]>();
+  for (const parts of symbolPaths) {
+    const root = parts[0];
     if (!root) continue;
-    const paths = symbolPathsByRoot.get(root) ?? [];
-    paths.push(symbolPath);
-    symbolPathsByRoot.set(root, paths);
+    const paths = pathsByRoot.get(root) ?? [];
+    paths.push(parts);
+    pathsByRoot.set(root, paths);
   }
-  const result: string[] = [];
-  for (const importer of importerPaths) {
-    const content = readCached(importer);
-    if (!content) {
-      continue;
-    }
-    const fromDir = path.posix.dirname(toPosix(importer));
-    let syntaxCache = importerSyntaxByGraph.get(options.graph);
-    if (!syntaxCache) {
-      syntaxCache = new Map();
-      importerSyntaxByGraph.set(options.graph, syntaxCache);
-    }
-    let syntax = syntaxCache.get(importer);
-    if (!syntax) {
-      syntax = { source: ts.createSourceFile(importer, content, ts.ScriptTarget.Latest, false) };
-      syntaxCache.set(importer, syntax);
-    }
-    const qualifiedReferences = (): Set<string> => {
-      syntax!.qualifiedReferences ??= collectQualifiedReferenceKeys(syntax!.source);
-      return syntax!.qualifiedReferences;
-    };
-    const resolvesReviewedModule = (specifier: string): boolean =>
-      specifier.startsWith(".") &&
-      resolveSpecifierWithFallback(fromDir, specifier, exists, options.fallbackExists) === options.modulePath;
-    let references = false;
-    for (const statement of syntax.source.statements) {
-      if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
-        if (!resolvesReviewedModule(statement.moduleSpecifier.text)) {
-          continue;
-        }
-        const clause = statement.importClause;
-        if (!clause) continue;
-        if (clause.name && symbolSet.has("default")) {
-          references = true;
-          break;
-        }
-        const bindings = clause.namedBindings;
-        if (bindings && ts.isNamedImports(bindings)) {
-          const namedMatch = bindings.elements.some((element) => {
-            const imported = (element.propertyName ?? element.name).text;
-            const matchingPaths = symbolPathsByRoot.get(imported);
-            if (!matchingPaths) return false;
-            if (matchingPaths.some((symbolPath) => symbolPath.length === 1)) return true;
-            return matchingPaths.some((symbolPath) =>
-              qualifiedReferences().has([element.name.text, ...symbolPath.slice(1)].join("."))
-            );
-          });
-          if (namedMatch) {
+  const localBindings = new Set<string>();
+  const exported = new Set<string>();
+  let references = false;
+  const resolvesModule = (specifier: string): boolean => specifier.startsWith(".") &&
+    resolveSpecifierWithFallback(fromDir, specifier, exists, fallbackExists) === modulePath;
+  const qualifiedReferences = (): Set<string> => {
+    syntax.qualifiedReferences ??= collectQualifiedReferenceKeys(syntax.source);
+    return syntax.qualifiedReferences;
+  };
+  // Imports are collected first because module binding order is not semantic.
+  for (const statement of syntax.source.statements) {
+    if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier) &&
+      resolvesModule(statement.moduleSpecifier.text)) {
+      const clause = statement.importClause;
+      if (!clause) continue;
+      if (clause.name && roots.has("default")) {
+        localBindings.add(clause.name.text);
+        references = true;
+      }
+      if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+        for (const element of clause.namedBindings.elements) {
+          const imported = (element.propertyName ?? element.name).text;
+          const matchingPaths = pathsByRoot.get(imported);
+          if (!matchingPaths) continue;
+          localBindings.add(element.name.text);
+          if (matchingPaths.some((parts) => parts.length === 1) || matchingPaths.some((parts) =>
+            qualifiedReferences().has([element.name.text, ...parts.slice(1)].join(".")))) {
             references = true;
-            break;
           }
-        } else if (bindings && ts.isNamespaceImport(bindings) && symbolPaths.some((symbolPath) =>
-          qualifiedReferences().has([bindings.name.text, ...symbolPath].join(".")))) {
-          references = true;
-          break;
         }
-        continue;
-      }
-      if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
-        if (!resolvesReviewedModule(statement.moduleSpecifier.text)) {
-          continue;
-        }
-        if (!statement.exportClause || ts.isNamespaceExport(statement.exportClause)) {
+      } else if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+        const namespaceName = clause.namedBindings.name.text;
+        localBindings.add(namespaceName);
+        if (symbolPaths.some((parts) => qualifiedReferences().has([namespaceName, ...parts].join(".")))) {
           references = true;
-          break;
-        }
-        if (statement.exportClause.elements.some((element) =>
-          symbolPathsByRoot.has((element.propertyName ?? element.name).text))) {
-          references = true;
-          break;
-        }
-        continue;
-      }
-      if (ts.isImportEqualsDeclaration(statement) &&
-        ts.isExternalModuleReference(statement.moduleReference) &&
-        statement.moduleReference.expression &&
-        ts.isStringLiteral(statement.moduleReference.expression) &&
-        resolvesReviewedModule(statement.moduleReference.expression.text)) {
-        if (symbolSet.has("export=") || symbolPaths.some((symbolPath) =>
-          qualifiedReferences().has([statement.name.text, ...symbolPath].join(".")))) {
-          references = true;
-          break;
         }
       }
-    }
-    if (references) {
-      result.push(importer);
+    } else if (ts.isImportEqualsDeclaration(statement) &&
+      ts.isExternalModuleReference(statement.moduleReference) &&
+      statement.moduleReference.expression &&
+      ts.isStringLiteral(statement.moduleReference.expression) &&
+      resolvesModule(statement.moduleReference.expression.text)) {
+      localBindings.add(statement.name.text);
+      if (roots.has("export=") || symbolPaths.some((parts) =>
+        qualifiedReferences().has([statement.name.text, ...parts].join(".")))) {
+        references = true;
+      }
     }
   }
-  return result;
+  for (const statement of syntax.source.statements) {
+    if (ts.isExportDeclaration(statement)) {
+      if (statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+        if (!resolvesModule(statement.moduleSpecifier.text)) continue;
+        if (!statement.exportClause) {
+          for (const root of roots) if (root !== "default") exported.add(root);
+        } else if (ts.isNamespaceExport(statement.exportClause)) {
+          exported.add(statement.exportClause.name.text);
+        } else {
+          for (const element of statement.exportClause.elements) {
+            if (roots.has((element.propertyName ?? element.name).text)) exported.add(element.name.text);
+          }
+        }
+      } else if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+        for (const element of statement.exportClause.elements) {
+          if (localBindings.has((element.propertyName ?? element.name).text)) exported.add(element.name.text);
+        }
+      }
+    } else if (ts.isExportAssignment(statement) && ts.isIdentifier(statement.expression) && localBindings.has(statement.expression.text)) {
+      exported.add(statement.isExportEquals ? "export=" : "default");
+    }
+  }
+  return { references, reexported: [...exported].sort() };
 }
 
 function collectQualifiedReferenceKeys(source: ts.SourceFile): Set<string> {

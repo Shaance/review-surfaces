@@ -892,6 +892,30 @@ test("review-surfaces.REVIEWER_VALUE.11 matches unchanged package fallback targe
   });
   assert.deepEqual(shadowedFallbackReplacement.api_changes, [], "later fallback replacements stay quiet while the selected first target is unchanged");
 
+  const selectedReplacementWithCleanup = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } }) : path === "src/a.ts" ? "export const value = 1;" : path === "src/b.ts" ? "export const shadowed = 2;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/c.ts"] } }) : path === "src/c.ts" ? "export const value = 1;" : undefined
+  });
+  assert.deepEqual(selectedReplacementWithCleanup.api_changes, [], "shadowed cleanup does not prevent comparing compatible selected targets");
+
+  const incompatibleSelectedReplacementWithCleanup = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } }) : path === "src/a.ts" ? "export function value(input: string): string { return input; }" : path === "src/b.ts" ? "export const shadowed = 2;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/c.ts"] } }) : path === "src/c.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.equal(incompatibleSelectedReplacementWithCleanup.api_changes.length, 1);
+  assert.equal(incompatibleSelectedReplacementWithCleanup.api_changes[0]?.path, "package.json");
+  assert.equal(incompatibleSelectedReplacementWithCleanup.api_changes[0]?.contract_target_changed, undefined);
+
+  const fallbackManifest = JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } });
+  assert.equal(classifyApiContractSurface("src/a.ts", { packageJson: fallbackManifest })?.identity, "export:.");
+  assert.equal(
+    classifyApiContractSurface("src/b.ts", { packageJson: fallbackManifest }),
+    undefined,
+    "a valid later fallback stays shadowed while the first target resolves"
+  );
+
   const invalidFirstFallbackReplacement = computeSemanticChangeFacts({
     diff: parseStructuredDiff(packageDiff),
     readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["not:valid", "./src/a.ts"] } }) : path === "src/a.ts" ? "export function value(input: string): string { return input; }" : undefined,
@@ -956,6 +980,32 @@ test("review-surfaces.REVIEWER_VALUE.11 matches unchanged package fallback targe
   });
   assert.deepEqual(defaultOnlyWrapper.api_changes, [], "a sole default wrapper preserves the unconditioned root contract identity");
 
+  for (const [baseExports, headExports] of [
+    ["./src/index.ts", { node: "./src/index.ts", default: "./src/index.ts" }],
+    [{ node: "./src/index.ts", default: "./src/index.ts" }, "./src/index.ts"]
+  ] as const) {
+    const uniformConditionWrapper = computeSemanticChangeFacts({
+      diff: parseStructuredDiff(packageDiff),
+      readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": baseExports } }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
+      readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": headExports } }) : path === "src/index.ts" ? "export const value = 1;" : undefined
+    });
+    assert.deepEqual(uniformConditionWrapper.api_changes, [], "uniform conditions with default preserve the unconditional contract");
+  }
+
+  const splitConditionTargets = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": "./src/index.ts" } }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { node: "./src/node.ts", default: "./src/index.ts" } } }) : path === "src/index.ts" || path === "src/node.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(splitConditionTargets.api_changes.some((change) => change.contract_removed), true);
+
+  const noDefaultConditionWrapper = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": "./src/index.ts" } }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { node: "./src/index.ts", import: "./src/index.ts" } } }) : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(noDefaultConditionWrapper.api_changes.some((change) => change.contract_removed), true);
+
   const nestedDefaultOnlyWrapper = computeSemanticChangeFacts({
     diff: parseStructuredDiff(packageDiff),
     readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { node: "./src/index.ts" } } }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
@@ -968,7 +1018,7 @@ test("review-surfaces.REVIEWER_VALUE.11 matches unchanged package fallback targe
     readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { import: "./src/a.ts", default: "./src/b.ts" } } }) : path === "src/a.ts" || path === "src/b.ts" ? "export const value = 1;" : undefined,
     readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { default: "./src/b.ts", import: "./src/a.ts" } } }) : path === "src/a.ts" || path === "src/b.ts" ? "export const value = 1;" : undefined
   });
-  assert.equal(reorderedConditions.api_changes.some((change) => change.contract_name === "export:." && change.contract_target_changed), true, "condition key order participates in package resolution priority");
+  assert.equal(reorderedConditions.api_changes.some(isBreakingApiChange), true, "moving default before a condition removes that condition's reachable contract");
 
   const reorderedEquivalentConditions = computeSemanticChangeFacts({
     diff: parseStructuredDiff(packageDiff),
@@ -981,15 +1031,22 @@ test("review-surfaces.REVIEWER_VALUE.11 matches unchanged package fallback targe
     "reordering conditions with identical resolved targets is unobservable"
   );
 
+  const unreachableAfterDefault = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { default: "./src/a.ts", node: "./src/b.ts" } } }) : path === "src/a.ts" || path === "src/b.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { default: "./src/a.ts", node: "./src/c.ts" } } }) : path === "src/a.ts" || path === "src/c.ts" ? "export const value = 1;" : undefined
+  });
+  assert.deepEqual(unreachableAfterDefault.api_changes, [], "targets after default are unreachable");
+
   const reassignedConditionsWithStableTargetOrder = computeSemanticChangeFacts({
     diff: parseStructuredDiff(packageDiff),
     readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { node: "./src/a.ts", default: "./src/b.ts" } } }) : path === "src/a.ts" || path === "src/b.ts" ? "export const value = 1;" : undefined,
     readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { default: "./src/a.ts", node: "./src/b.ts" } } }) : path === "src/a.ts" || path === "src/b.ts" ? "export const value = 1;" : undefined
   });
   assert.equal(
-    reassignedConditionsWithStableTargetOrder.api_changes.some((change) => change.contract_target_changed),
+    reassignedConditionsWithStableTargetOrder.api_changes.some(isBreakingApiChange),
     true,
-    "stable target order cannot hide targets reassigned to different conditions"
+    "moving default ahead of reassigned conditions remains approval-changing"
   );
 
   const dottedCondition = computeSemanticChangeFacts({
@@ -1011,6 +1068,99 @@ test("review-surfaces.REVIEWER_VALUE.11 matches unchanged package fallback targe
     sourceRoots: ["src"]
   });
   assert.equal(wildcardCondition?.binding, "export:./foo:custom%2A", "literal condition stars are not replaced as subpath wildcards");
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 reports newly effective condition-specific null blocks", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -1 +1 @@",
+    "-old",
+    "+new"
+  ].join("\n"));
+  const run = (baseExports: unknown, headExports: unknown) => computeSemanticChangeFacts({
+    diff,
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: baseExports }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: headExports }) : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  const base = { ".": { import: "./src/index.ts", default: "./src/index.ts" } };
+  const blocked = { ".": { browser: null, import: "./src/index.ts", default: "./src/index.ts" } };
+  const fact = run(base, blocked).api_changes.find((change) => change.contract_name === "export:.:browser");
+  assert.equal(fact?.contract_removed, true);
+  assert.deepEqual(
+    run(base, { ".": { import: "./src/index.ts", default: "./src/index.ts", browser: null } }).api_changes,
+    [],
+    "a condition after default is unreachable"
+  );
+  assert.equal(
+    run({ ".": { import: "./src/index.ts", default: "./src/index.ts", browser: null } }, blocked)
+      .api_changes.some((change) => change.contract_name === "export:.:browser"),
+    true,
+    "moving the block before default makes it effective"
+  );
+  assert.deepEqual(run(blocked, base).api_changes, [], "removing a condition block is additive");
+  assert.deepEqual(
+    run({}, { "./new": { browser: null, default: "./src/index.ts" } }).api_changes,
+    [],
+    "a brand-new blocked condition is not a removed base contract"
+  );
+  assert.deepEqual(
+    run({ ".": "./src/index.ts" }, { ".": [{ browser: null, default: "./src/index.ts" }, "./src/index.ts"] }).api_changes,
+    [],
+    "a later unconditional array fallback covers an earlier conditional null"
+  );
+  assert.equal(
+    run({ ".": "./src/index.ts" }, { ".": [{ browser: null, default: "./src/index.ts" }, { node: "./src/index.ts" }] })
+      .api_changes.some((change) => change.contract_name === "export:.:browser"),
+    true,
+    "an unrelated later condition does not cover the blocked condition"
+  );
+  assert.deepEqual(
+    run({ ".": "./src/index.ts" }, { ".": ["./src/index.ts", { browser: null, default: "./src/index.ts" }] }).api_changes,
+    [],
+    "an earlier unconditional array target makes a later null branch unreachable"
+  );
+  const combinedBlocks = run({ ".": "./src/index.ts" }, { ".": [
+      { browser: null, default: "./src/index.ts" },
+      { node: null, default: "./src/index.ts" }
+    ] }).api_changes;
+  assert.equal(combinedBlocks.some((change) => change.contract_name === "export:.:browser"), true);
+  assert.equal(combinedBlocks.some((change) => change.contract_name === "export:.:node"), true);
+  assert.equal(
+    run({ ".": "./src/index.ts" }, { ".": [
+      { browser: null, default: "./src/index.ts" },
+      { browser: null, default: "./src/index.ts" }
+    ] }).api_changes.filter((change) => change.contract_name === "export:.:browser").length,
+    1,
+    "a condition blocked by every fallback is reported once"
+  );
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 reconciles shared target moves once per export identity", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -1 +1 @@",
+    "-old",
+    "+new"
+  ].join("\n"));
+  const baseManifest = JSON.stringify({ exports: { "./one": "./src/a.ts", "./two": "./src/a.ts" } });
+  const headManifest = JSON.stringify({ exports: { "./one": "./src/b.ts", "./two": "./src/b.ts" } });
+  const facts = computeSemanticChangeFacts({
+    diff,
+    readBase: (filePath) => filePath === "package.json" ? baseManifest : filePath === "src/a.ts"
+      ? "export function value(input: string): string { return input; }"
+      : undefined,
+    readHead: (filePath) => filePath === "package.json" ? headManifest : filePath === "src/b.ts"
+      ? "export function value(input: number): string { return String(input); }"
+      : undefined
+  });
+  assert.deepEqual(
+    facts.api_changes.map((change) => change.contract_surface?.identity).sort(),
+    ["export:./one", "export:./two"]
+  );
 });
 
 test("review-surfaces.REVIEWER_VALUE.11 target reconciliation preserves surviving internal module facts", () => {
