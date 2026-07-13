@@ -104,6 +104,43 @@ test("review-surfaces.REVIEWER_VALUE.6 admits explicit contracts but keeps inter
   assert.ok(model.semantic_facts.api_changes.some((change) => change.path === internalPath), "internal fact remains in supporting ledger");
 });
 
+test("review-surfaces.REVIEWER_VALUE.6 keeps distinct package contracts in distinct decision roots", () => {
+  const packagePath = "package.json";
+  const model = buildHumanReview({
+    packet: packet(),
+    prSurface: surface([packagePath]),
+    semanticFacts: {
+      ...emptySemanticFacts,
+      api_changes: ["export:./alpha", "export:./beta"].map((contractName, index) => ({
+        path: packagePath,
+        contract_removed: true,
+        // The second fact exercises the contract-surface identity fallback.
+        ...(index === 0 ? { contract_name: contractName } : {}),
+        contract_surface: {
+          kind: "package_export" as const,
+          source: `package.json#exports:${contractName}`,
+          identity: contractName
+        },
+        exports_added: [],
+        exports_removed: [],
+        signatures_changed: []
+      }))
+    }
+  });
+  const roots = model.decision_projection?.findings.map((finding) => finding.root_cause) ?? [];
+  assert.ok(roots.includes("public_contract:package.json:export:./alpha"));
+  assert.ok(roots.includes("public_contract:package.json:export:./beta"));
+  const packageQueueIds = model.review_queue
+    .filter((item) => item.path === packagePath && item.title === "Exported API surface change")
+    .map((item) => item.id)
+    .sort();
+  const packageFindings = model.decision_projection?.findings
+    .filter((finding) => finding.root_cause.startsWith("public_contract:package.json:")) ?? [];
+  assert.equal(packageFindings.length, 2);
+  assert.ok(packageFindings.every((finding) => finding.source_queue_ids.length === 1));
+  assert.deepEqual(packageFindings.flatMap((finding) => finding.source_queue_ids).sort(), packageQueueIds);
+});
+
 test("review-surfaces.REVIEWER_VALUE.11 keeps internal importers as supporting evidence", () => {
   const internalPath = "src/internal/helper.ts";
   const model = buildHumanReview({

@@ -29,6 +29,7 @@ export function parsePackageManifest(value: string | undefined): Record<string, 
 /** Deterministically collect package entry targets shared by source-root and contract analysis. */
 export function collectPackageManifestTargets(manifest: Record<string, unknown>): PackageManifestTarget[] {
   const targets: PackageManifestTarget[] = [];
+  const hasExports = Object.prototype.hasOwnProperty.call(manifest, "exports");
   for (const entry of collectExportTargets(manifest.exports)) {
     targets.push({
       kind: "export",
@@ -40,9 +41,23 @@ export function collectPackageManifestTargets(manifest: Record<string, unknown>)
     });
   }
   for (const field of ["main", "module", "types", "typings"] as const) {
+    // Node package resolution gives an authored `exports` field precedence
+    // over the legacy `main` root, even when `exports` is empty or null. Keep
+    // bundler/declaration metadata independent: `module`, `types`, and
+    // `typings` remain distinct supported consumer surfaces.
+    if (hasExports && field === "main") continue;
     const target = manifest[field];
     if (typeof target === "string") {
-      targets.push({ kind: "entry", field, target, identity: `entry:${field}`, consumer_path: "." });
+      targets.push({
+        kind: "entry",
+        field,
+        target,
+        // `main` and the root `exports` key are two resolution mechanisms for
+        // the same consumer slot. Canonicalizing that slot lets semantic diff
+        // compare their targets instead of reporting a fake remove/add pair.
+        identity: field === "main" ? packageExportSubpathIdentity(".") : `entry:${field}`,
+        consumer_path: "."
+      });
     }
   }
   const bin = manifest.bin;

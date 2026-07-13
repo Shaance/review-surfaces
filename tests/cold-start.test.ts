@@ -93,6 +93,25 @@ test("review-surfaces.COLD_START.2 detects implementation roots from tsconfig, p
   assert.equal(clusterOfPath("README.md", ["source"]), "(root)");
 });
 
+test("review-surfaces.REVIEWER_VALUE.11 preserves a root-level contract source sentinel", () => {
+  const files = ["package.json", "tsconfig.json", "index.ts", "README.md"];
+  for (const rootDir of [".", "./"]) {
+    const contents: Record<string, string> = {
+      "tsconfig.json": JSON.stringify({ compilerOptions: { rootDir } }),
+      "package.json": JSON.stringify({ main: "dist/index.js" })
+    };
+    assert.deepEqual(
+      detectContractSourceRoots({ files, read: (filePath) => contents[filePath] }),
+      ["."],
+      `rootDir ${JSON.stringify(rootDir)} keeps the root-level contract source`
+    );
+    assert.ok(
+      !detectImplementationRoots({ files, read: (filePath) => contents[filePath] }).includes("."),
+      "the contract-only root sentinel never becomes a change-map implementation root"
+    );
+  }
+});
+
 test("review-surfaces.COLD_START.2 reading order classifies a detected root as implementation, in agreement with the clusters", () => {
   const sections = buildChangeGraphSections({
     files: [

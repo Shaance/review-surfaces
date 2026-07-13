@@ -21,6 +21,10 @@ export function isDecisionRelevantApiChange(change: ApiSurfaceChange): boolean {
 export function decisionRootForApiChange(change: ApiSurfaceChange): string | undefined {
   if (!isBreakingApiChange(change)) return undefined;
   if (isSupportedApiContractChange(change)) {
+    if (change.path === "package.json") {
+      const identity = change.contract_name ?? change.contract_surface?.binding ?? change.contract_surface?.identity;
+      if (identity) return `public_contract:${change.path}:${identity}`;
+    }
     return `public_contract:${change.contract_removed ? change.renamed_from ?? change.path : change.path}`;
   }
   return undefined;

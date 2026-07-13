@@ -24,6 +24,8 @@ export interface BuildDecisionProjectionInput {
   conversationAnalysis?: ConversationAnalysis;
   scope: DecisionScope;
   reviewQueue: ReviewQueueItem[];
+  /** Internal exact queue-to-semantic-root association from queue ranking. */
+  queueDecisionRoots?: ReadonlyMap<string, string>;
   blockers: ReviewBlocker[];
   semanticFacts: SemanticChangeFacts;
 }
@@ -218,6 +220,8 @@ function validationRunStateDrafts(input: BuildDecisionProjectionInput): FindingD
 
 function queueRoot(input: BuildDecisionProjectionInput, item: ReviewQueueItem): string | undefined {
   if (input.scope.mode === "pr" && !input.scope.changed_paths.has(item.path)) return undefined;
+  const exactSemanticRoot = input.queueDecisionRoots?.get(item.id);
+  if (exactSemanticRoot) return exactSemanticRoot;
   const prRisk = input.prSurface?.risks.candidates.find((risk) => item.risk_ids.includes(risk.id));
   if (prRisk) {
     const riskRoot = decisionRootForRisk(prRisk.rule, item.path);
@@ -238,9 +242,14 @@ function queueRoot(input: BuildDecisionProjectionInput, item: ReviewQueueItem): 
   const schema = input.semanticFacts.schema_changes.find((change) => change.path === item.path);
   if (schema && isBreakingSchemaChange(schema)) return `persisted_contract:${item.path}`;
 
-  const api = input.semanticFacts.api_changes.find((change) => change.path === item.path);
-  const apiRoot = api ? decisionRootForApiChange(api) : undefined;
-  if (apiRoot) return apiRoot;
+  const apiRoots = uniqueStrings(input.semanticFacts.api_changes
+    .filter((change) => change.path === item.path)
+    .map(decisionRootForApiChange)
+    .filter((root): root is string => root !== undefined));
+  // A path-only queue row may support a single public-contract root. When
+  // several independent contracts share package.json, guessing the first one
+  // would merge unrelated decisions; exact semantic rows use the queue map.
+  if (apiRoots.length === 1) return apiRoots[0];
 
   const weakening = input.semanticFacts.test_weakening.find((signal) => signal.path === item.path);
   if (weakening) return `test_integrity:${item.path}`;

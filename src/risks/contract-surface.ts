@@ -180,7 +180,11 @@ function packageContractEntries(manifest: Record<string, unknown>, sourceRoots: 
       kind: kind === "export" ? "package_export" : "package_entry",
       source: `package.json#${field}:${target}`,
       identity,
-      patterns: sourcePathPatterns(target, sourceRoots),
+      patterns: sourcePathPatterns(
+        target,
+        sourceRoots,
+        kind === "entry" && field !== "bin"
+      ),
       ...(priority_group ? { priority_group } : {}),
       ...(consumer_path ? { consumer_path } : {})
     });
@@ -188,7 +192,11 @@ function packageContractEntries(manifest: Record<string, unknown>, sourceRoots: 
   return entries;
 }
 
-function sourcePathPatterns(target: string, sourceRoots: readonly string[]): string[] {
+function sourcePathPatterns(
+  target: string,
+  sourceRoots: readonly string[],
+  probeExtensionlessLegacyEntry: boolean
+): string[] {
   const normalized = normalizePath(target);
   const roots = [...new Set(sourceRoots.map(normalizePath))].sort(compareStrings);
   const buildMatch = /^(dist|build|out|lib)\/(.+)$/u.exec(normalized);
@@ -197,13 +205,21 @@ function sourcePathPatterns(target: string, sourceRoots: readonly string[]): str
     candidates.add(normalized);
   } else if (roots.length === 1) {
     const entryRelative = buildMatch[2];
-    candidates.add(entryRelative.startsWith(`${roots[0]}/`) ? entryRelative : `${roots[0]}/${entryRelative}`);
+    candidates.add(roots[0] === "."
+      ? entryRelative
+      : entryRelative.startsWith(`${roots[0]}/`) ? entryRelative : `${roots[0]}/${entryRelative}`);
   } else if (roots.includes(buildMatch[1])) {
     // A build-looking prefix is still source when repository evidence names it
     // as an implementation root. Never project it across multiple roots.
     candidates.add(normalized);
   }
   for (const value of [...candidates]) {
+    // Legacy package fields commonly omit the compiled extension. `exports`
+    // targets are exact Node resolution targets, so never invent extension
+    // candidates for an extensionless export (a false public contract).
+    if (probeExtensionlessLegacyEntry && !value.includes("*") && !/\.[^/]+$/u.test(value)) {
+      for (const extension of ["ts", "tsx", "mts", "cts"]) candidates.add(`${value}.${extension}`);
+    }
     if (/\.(mjs|cjs|js)$/u.test(value)) {
       const stem = value.replace(/\.(mjs|cjs|js)$/u, "");
       for (const extension of ["ts", "tsx", "mts", "cts"]) candidates.add(`${stem}.${extension}`);

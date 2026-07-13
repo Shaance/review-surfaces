@@ -205,6 +205,22 @@ test("review-surfaces.REVIEWER_VALUE.11 maps common dist package targets back to
     packageJson: JSON.stringify({ main: "lib/index.js" }),
     sourceRoots: ["src"]
   })?.kind, "package_entry");
+  assert.equal(classifyApiContractSurface("src/index.ts", {
+    packageJson: JSON.stringify({ main: "dist/index" }),
+    sourceRoots: ["src"]
+  })?.kind, "package_entry", "extensionless runtime entries expand to TypeScript source candidates");
+  assert.equal(classifyApiContractSurface("src/index.ts", {
+    packageJson: JSON.stringify({ exports: { ".": "./dist/index" } }),
+    sourceRoots: ["src"]
+  }), undefined, "extensionless exports remain exact and do not invent a TypeScript contract");
+  assert.equal(classifyApiContractSurface("index.ts", {
+    packageJson: JSON.stringify({ main: "dist/index.js" }),
+    sourceRoots: ["."]
+  })?.kind, "package_entry", "a sole root-level source sentinel projects compiled entries to root source files");
+  assert.equal(classifyApiContractSurface("src/index.ts", {
+    packageJson: JSON.stringify({ main: "dist/index.js" }),
+    sourceRoots: ["."]
+  }), undefined, "the root-level sentinel does not promote a nested namesake");
   assert.equal(classifyApiContractSurface("index.ts", {
     packageJson: JSON.stringify({ main: "dist/index.js" }),
     sourceRoots: ["src"]
@@ -472,6 +488,50 @@ test("review-surfaces.REVIEWER_VALUE.11 detects package-only removals but not st
   assert.equal(removed.api_changes[0].contract_name, "export:./feature");
   assert.equal(isBreakingApiChange(removed.api_changes[0]), true);
 
+  const sameRootThroughExports = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ main: "./dist/index.js" })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ main: "./dist/index.js", exports: { ".": "./dist/index.js" } })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    sourceRoots: ["src"]
+  });
+  assert.deepEqual(
+    sameRootThroughExports.api_changes,
+    [],
+    "moving the same root target from main to exports preserves the consumer contract"
+  );
+
+  const changedRootThroughExports = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ main: "./dist/a.js" })
+      : path === "src/a.ts" ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ main: "./dist/a.js", exports: { ".": "./dist/b.js" } })
+      : path === "src/b.ts" ? "export function value(input: number): string { return String(input); }" : undefined,
+    sourceRoots: ["src"]
+  });
+  assert.equal(changedRootThroughExports.api_changes.length, 1);
+  assert.equal(changedRootThroughExports.api_changes[0].contract_surface?.identity, "export:.");
+  assert.equal(changedRootThroughExports.api_changes[0].signatures_changed[0]?.name, "value");
+
+  const rootHiddenBySubpathExports = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ main: "./dist/index.js" }) : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ main: "./dist/index.js", exports: { "./feature": "./dist/feature.js" } })
+      : undefined,
+    sourceRoots: ["src"]
+  });
+  assert.deepEqual(
+    rootHiddenBySubpathExports.api_changes.map((change) => change.contract_name),
+    ["export:."],
+    "an authored exports map without a root key removes the legacy main root"
+  );
+
   const moved = computeSemanticChangeFacts({
     diff: parseStructuredDiff(packageDiff),
     readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { "./feature": "./dist/old.js" } }) : path === "src/old.ts" ? "export const value = 1;" : undefined,
@@ -507,6 +567,47 @@ test("review-surfaces.REVIEWER_VALUE.11 detects package-only removals but not st
     nulledConditionalExport.api_changes.map((change) => change.contract_name).sort(),
     ["export:./feature:import", "export:./feature:require"],
     "the generic null exclusion must not duplicate condition-specific removals for the same consumer path"
+  );
+
+  const packageAndFooDiff = parseStructuredDiff([
+    packageDiff,
+    "diff --git a/src/foo.ts b/src/foo.ts",
+    "--- a/src/foo.ts",
+    "+++ b/src/foo.ts",
+    "@@ -1 +1,2 @@",
+    " export const value = 1;",
+    "+// implementation-only edit"
+  ].join("\n"));
+  const wildcardRemovalWithChangedBinding = computeSemanticChangeFacts({
+    diff: packageAndFooDiff,
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./*": "./src/*.ts" } })
+      : path === "src/foo.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: {} })
+      : path === "src/foo.ts" ? "export const value = 1;\n// implementation-only edit" : undefined,
+    sourceRoots: ["src"]
+  });
+  const wildcardRemovedNames = wildcardRemovalWithChangedBinding.api_changes
+    .filter((change) => change.contract_removed)
+    .map((change) => change.contract_name);
+  assert.ok(wildcardRemovedNames.includes("export:./foo"), "the changed concrete binding remains visible");
+  assert.ok(wildcardRemovedNames.includes("export:./*"), "the package-wide wildcard removal remains visible too");
+
+  const exactRemovalWithChangedFile = computeSemanticChangeFacts({
+    diff: packageAndFooDiff,
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./foo": "./src/foo.ts" } })
+      : path === "src/foo.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: {} })
+      : path === "src/foo.ts" ? "export const value = 1;\n// implementation-only edit" : undefined,
+    sourceRoots: ["src"]
+  });
+  assert.deepEqual(
+    exactRemovalWithChangedFile.api_changes.filter((change) => change.contract_removed).map((change) => change.contract_name),
+    ["export:./foo"],
+    "an exact export removal is represented once rather than duplicated as package and file facts"
   );
 
   const incompatibleRepoint = computeSemanticChangeFacts({

@@ -83,6 +83,7 @@ import {
 import {
   buildDecisionScope,
   currentValidationRunState,
+  decisionRootForApiChange,
   isDecisionRelevantApiChange,
   decisionRootForRisk,
   isCurrentValidationEvidence,
@@ -191,6 +192,8 @@ interface QueueDraft {
   estimated_review_effort: "quick" | "moderate" | "deep";
   score: number;
   sortKey: string;
+  /** Internal semantic identity carried through queue ranking to projection. */
+  decisionRoot?: string;
   // review-surfaces.RANKING.1/.3: evidence ordering tier — a SECONDARY sort key so
   // evidence breaks ties and demotes well-evidenced items WITHOUT changing the
   // primary score (the semantic-risk class stays the primary key and evidence can
@@ -401,7 +404,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   }
   const riskLensFindings = buildRiskLensFindings(input, config, semanticFacts);
   const blockers = buildBlockers(input, feedbackEffects, semanticFacts, decisionScope);
-  const reviewQueue = buildReviewQueue(input, feedbackEffects, config, semanticFacts);
+  const { items: reviewQueue, decisionRootsByQueueId } = buildReviewQueue(input, feedbackEffects, config, semanticFacts);
   const intentMismatch = buildIntentMismatch(input, specMode);
   const questions = buildQuestions(input, blockers, feedbackEffects, riskLensFindings, intentMismatch, config);
   const suggestedComments = buildSuggestedComments(input, blockers, riskLensFindings, config, semanticFacts);
@@ -413,6 +416,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     conversationAnalysis: input.conversationAnalysis ?? input.prSurface?.conversation_analysis,
     scope: decisionScope,
     reviewQueue,
+    queueDecisionRoots: decisionRootsByQueueId,
     blockers,
     semanticFacts
   });
@@ -2171,7 +2175,10 @@ function buildReviewQueue(
   feedbackEffects: FeedbackPolicyEffect[],
   config: HumanReviewBuildConfig,
   semanticFacts: SemanticChangeFacts
-): HumanReviewModel["review_queue"] {
+): {
+  items: HumanReviewModel["review_queue"];
+  decisionRootsByQueueId: ReadonlyMap<string, string>;
+} {
   const drafts: QueueDraft[] = [];
   const prChangedPaths = input.prSurface ? prChangedFilePaths(input.prSurface) : undefined;
   const diffIndex = buildDiffIndex(input.diff);
@@ -2379,9 +2386,12 @@ function buildReviewQueue(
       (left.evidenceTier ?? 0) - (right.evidenceTier ?? 0) ||
       compareStrings(left.sortKey, right.sortKey)
   );
-  return drafts.slice(0, Math.min(MAX_QUEUE, config.max_review_first)).map((draft, index) =>
-    stripUndefined({
-      id: `REVIEW-${String(index + 1).padStart(3, "0")}`,
+  const decisionRootsByQueueId = new Map<string, string>();
+  const items = drafts.slice(0, Math.min(MAX_QUEUE, config.max_review_first)).map((draft, index) => {
+    const id = `REVIEW-${String(index + 1).padStart(3, "0")}`;
+    if (draft.decisionRoot) decisionRootsByQueueId.set(id, draft.decisionRoot);
+    return stripUndefined({
+      id,
       rank: index + 1,
       title: draft.title,
       path: draft.path,
@@ -2399,8 +2409,9 @@ function buildReviewQueue(
       confidence: draft.confidence,
       priority: draft.priority,
       estimated_review_effort: draft.estimated_review_effort
-    })
-  );
+    });
+  });
+  return { items, decisionRootsByQueueId };
 }
 
 // review-surfaces.RANKING.1/.2/.3: assign each queue item an evidence ordering
@@ -2619,7 +2630,8 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
       // importers outranks one with none (bounded so blast radius cannot lift
       // an API change above test-weakening signals).
       score: 160 - index + Math.min(change.used_by?.count ?? 0, 20),
-      sortKey: `semantic-api:${change.path}`
+      sortKey: `semantic-api:${change.path}:${change.contract_name ?? change.contract_surface?.binding ?? change.contract_surface?.identity ?? "path"}`,
+      decisionRoot: decisionRootForApiChange(change)
     }));
   }
   return drafts;
@@ -2641,7 +2653,7 @@ function apiQueueReviewerAction(change: ApiSurfaceChange): string {
 
 function semanticDraft(
   diffIndex: DiffIndex | undefined,
-  fields: { title: string; path: string; reason: string; reviewer_action: string; priority: HumanReviewPriority; score: number; sortKey: string }
+  fields: { title: string; path: string; reason: string; reviewer_action: string; priority: HumanReviewPriority; score: number; sortKey: string; decisionRoot?: string }
 ): QueueDraft {
   const evidence = fileEvidence(fields.path, "Semantic change fact.");
   const anchor = queueAnchorForEvidence(evidence, diffIndex);
@@ -2662,7 +2674,8 @@ function semanticDraft(
     priority: fields.priority,
     estimated_review_effort: "moderate",
     score: fields.score,
-    sortKey: fields.sortKey
+    sortKey: fields.sortKey,
+    ...(fields.decisionRoot ? { decisionRoot: fields.decisionRoot } : {})
   };
 }
 

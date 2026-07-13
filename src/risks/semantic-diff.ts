@@ -254,7 +254,9 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
           if (baseConsumerIdentity) {
             change.contract_name = baseConsumerIdentity;
           }
-          if (baseSurface?.identity) {
+          // A concrete wildcard binding represents only that binding; retain
+          // the package-level wildcard removal as a separate contract fact.
+          if (baseSurface?.identity && baseSurface.binding === undefined) {
             representedRemovedIdentities.add(baseSurface.identity);
           }
         }

@@ -138,10 +138,10 @@ export function detectContractSourceRoots(signals: SourceRootSignals): string[] 
       | { compilerOptions?: { rootDir?: unknown; rootDirs?: unknown } }
       | undefined;
     const rootDir = topSegment(parsed?.compilerOptions?.rootDir);
-    if (rootDir && topDirs.has(rootDir)) explicit.add(rootDir);
+    if (rootDir && (rootDir === "." || topDirs.has(rootDir))) explicit.add(rootDir);
     for (const value of stringArray(parsed?.compilerOptions?.rootDirs)) {
       const root = topSegment(value);
-      if (root && topDirs.has(root)) explicit.add(root);
+      if (root && (root === "." || topDirs.has(root))) explicit.add(root);
     }
   }
   if (explicit.size > 0) return [...explicit].sort(compareStrings);
@@ -154,7 +154,9 @@ function topSegment(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
-  const normalized = value.replace(/\\/g, "/").replace(/^\.\//, "");
+  const slashNormalized = value.replace(/\\/g, "/");
+  if (slashNormalized === "." || slashNormalized === "./") return ".";
+  const normalized = slashNormalized.replace(/^\.\//, "");
   const first = normalized.split("/")[0];
   if (first === "" || /[*?[\]{}!]/.test(first)) {
     return undefined;
