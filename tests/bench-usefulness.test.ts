@@ -69,6 +69,24 @@ test("review-surfaces.REVIEWER_VALUE.10 clean usefulness judgments produce no ga
   assert.equal(score.comment_precision, 1);
 });
 
+test("review-surfaces.REVIEWER_VALUE.10 counts decision findings as first actions", () => {
+  const score = scoreReviewerUsefulness(
+    {},
+    [
+      "# Human Review",
+      "## Decision findings",
+      "1. Contract break",
+      "   - Action: preserve the public contract",
+      "## Review first",
+      "No additional actions.",
+      "## Reading order"
+    ].join("\n"),
+    { max_first_action_line: 4 }
+  );
+  assert.equal(score.first_action_line, 4);
+  assert.deepEqual(score.failures, []);
+});
+
 test("review-surfaces.REVIEWER_VALUE.10 fails when a curated actionable item disappears", () => {
   const score = scoreReviewerUsefulness(
     { review_queue: [], suggested_comments: [] },

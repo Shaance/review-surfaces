@@ -1,6 +1,6 @@
 import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
-import { collectPackageExportConditionExclusions, collectPackageExportExclusions, collectPackageManifestTargets, compilePackageTargetPathMatcher, packageExportSubpathIdentity, packageManifestTargetProjectionKey, packageTargetPrefersRootSource, packageTargetSourceVariants, parseCompiledPackageTarget, parsePackageManifest } from "../core/package-manifest";
+import { collectPackageExportConditionExclusions, collectPackageExportExclusions, collectPackageManifestTargets, collectUniversalPackageExportConditionParents, compilePackageTargetPathMatcher, packageExportSubpathIdentity, packageManifestTargetProjectionKey, packageTargetPrefersRootSource, packageTargetSourceVariants, parseCompiledPackageTarget, parsePackageManifest } from "../core/package-manifest";
 
 export type ApiContractSurfaceKind = "declaration" | "package_export" | "package_entry" | "configured";
 
@@ -150,6 +150,11 @@ export function listPackageConditionalContractExclusions(
       identity
     }
   }));
+}
+
+export function listUniversalPackageExportConditionParents(packageJson: string | undefined): string[] {
+  const manifest = parsePackageManifest(packageJson);
+  return manifest ? collectUniversalPackageExportConditionParents(manifest) : [];
 }
 
 export interface PackageContractEntry {

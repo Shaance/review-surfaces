@@ -997,7 +997,68 @@ test("review-surfaces.REVIEWER_VALUE.11 matches unchanged package fallback targe
     readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": "./src/index.ts" } }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
     readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { node: "./src/node.ts", default: "./src/index.ts" } } }) : path === "src/index.ts" || path === "src/node.ts" ? "export const value = 1;" : undefined
   });
-  assert.equal(splitConditionTargets.api_changes.some((change) => change.contract_removed), true);
+  assert.deepEqual(splitConditionTargets.api_changes, [], "compatible condition divergence compares targets instead of removing the root contract");
+
+  const divergentConditionTarget = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": { import: "./src/index.ts", require: "./src/index.ts", default: "./src/index.ts" } } })
+      : path === "src/index.ts" ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": { import: "./src/index.ts", require: "./src/require.ts", default: "./src/index.ts" } } })
+      : path === "src/index.ts" ? "export function value(input: string): string { return input; }"
+        : path === "src/require.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.equal(divergentConditionTarget.api_changes.some((change) => change.contract_name === "export:." && change.contract_removed), false);
+  assert.equal(divergentConditionTarget.api_changes.length, 1);
+  assert.equal(divergentConditionTarget.api_changes[0]?.contract_surface?.identity, "export:.:require");
+
+  const nestedDivergentConditionTarget = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": { node: { import: "./src/index.ts", default: "./src/index.ts" } } } })
+      : path === "src/index.ts" ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": { node: { import: "./src/index.ts", default: "./src/node.ts" } } } })
+      : path === "src/index.ts" ? "export function value(input: string): string { return input; }"
+        : path === "src/node.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.equal(nestedDivergentConditionTarget.api_changes.some((change) => change.contract_removed), false);
+  assert.equal(nestedDivergentConditionTarget.api_changes.length, 1);
+  assert.equal(nestedDivergentConditionTarget.api_changes[0]?.contract_surface?.identity, "export:.:node.default");
+
+  const partialNestedDefault = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": "./src/index.ts" } })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": { node: "./src/index.ts", default: { import: "./src/index.ts" } } } })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(partialNestedDefault.api_changes.some((change) => change.contract_name === "export:." && change.contract_removed), true);
+
+  const coveredNestedDefault = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": "./src/index.ts" } })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": { node: "./src/index.ts", default: { import: "./src/index.ts", default: "./src/index.ts" } } } })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  assert.deepEqual(coveredNestedDefault.api_changes, []);
+
+  const colonBinRename = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ bin: { foo: "./src/index.ts" } })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ bin: { "foo:default": "./src/index.ts" } })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(colonBinRename.api_changes.some((change) => change.contract_name === "bin:foo" && change.contract_removed), true);
 
   const noDefaultConditionWrapper = computeSemanticChangeFacts({
     diff: parseStructuredDiff(packageDiff),

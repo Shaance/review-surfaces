@@ -163,8 +163,18 @@ export function detectContractSourceProjection(signals: SourceRootSignals): Cont
       }
     }
   }
-  if (explicit.size > 0) return { roots: [...explicit].sort(compareStrings), sourcePatternsByContract: new Map() };
-  const packageProjection = compiledPackageSourceProjection(files, read("package.json"), topDirs);
+  const packageProjection = compiledPackageSourceProjection(
+    files,
+    read("package.json"),
+    topDirs,
+    explicit.size > 0 ? explicit : undefined
+  );
+  if (explicit.size > 0) {
+    return {
+      roots: [...explicit].sort(compareStrings),
+      sourcePatternsByContract: packageProjection.sourcePatternsByContract
+    };
+  }
   if (packageProjection.roots.length > 0) return packageProjection;
   return {
     roots: detectImplementationRoots({ files, read }).filter((root) => topDirs.has(root)),
@@ -180,7 +190,8 @@ export function detectContractSourceRoots(signals: SourceRootSignals): string[] 
 function compiledPackageSourceProjection(
   files: readonly string[],
   packageText: string | undefined,
-  topDirs: ReadonlySet<string>
+  topDirs: ReadonlySet<string>,
+  allowedRoots?: ReadonlySet<string>
 ): ContractSourceProjection {
   const manifest = parsePackageManifest(packageText);
   if (!manifest) return { roots: [], sourcePatternsByContract: new Map() };
@@ -190,15 +201,18 @@ function compiledPackageSourceProjection(
     return compiled ? [{ ...target, compiled }] : [];
   });
   if (compiledTargets.length === 0) return { roots: [], sourcePatternsByContract: new Map() };
-  const eligibleRoots = new Set([".", ...topDirs].filter((root) => !NON_ROOT_DIRS.has(root)));
+  const eligibleRoots = new Set(allowedRoots ?? [".", ...topDirs].filter((root) => !NON_ROOT_DIRS.has(root)));
   const sourceCandidatesByRelativePath = new Map<string, Array<{ root: string; sourcePath: string }>>();
   for (const sourcePath of files) {
     if (!SOURCE_EXTENSION.test(sourcePath) || TEST_PATH.test(sourcePath)) continue;
-    const candidates = [{ root: ".", relativePath: sourcePath }];
+    const candidates: Array<{ root: string; relativePath: string }> = [];
     const slash = sourcePath.indexOf("/");
+    const topRoot = slash > 0 ? sourcePath.slice(0, slash) : ".";
+    if (eligibleRoots.has(".") || eligibleRoots.has(topRoot)) {
+      candidates.push({ root: ".", relativePath: sourcePath });
+    }
     if (slash > 0) {
-      const root = sourcePath.slice(0, slash);
-      if (eligibleRoots.has(root)) candidates.push({ root, relativePath: sourcePath.slice(slash + 1) });
+      if (eligibleRoots.has(topRoot)) candidates.push({ root: topRoot, relativePath: sourcePath.slice(slash + 1) });
     }
     for (const candidate of candidates) {
       const indexed = sourceCandidatesByRelativePath.get(candidate.relativePath) ?? [];
@@ -222,14 +236,19 @@ function compiledPackageSourceProjection(
       for (const relativePath of relativePaths) {
         if (matcher(relativePath) === undefined) continue;
         for (const candidate of sourceCandidatesByRelativePath.get(relativePath) ?? []) {
-          if (candidate.root === compiled.outputRoot) continue;
+          // Exclude the emitted target inside its output directory, but retain
+          // a transformed sibling source such as lib/index.ts for lib/index.js.
+          if (candidate.root === compiled.outputRoot && variant === compiled.relativePath) continue;
           matchingCandidates.push(candidate);
         }
       }
       const hasRootCandidate = matchingCandidates.some((candidate) => candidate.root === ".");
       const hasNestedCandidate = matchingCandidates.some((candidate) => candidate.root !== ".");
+      const outputSiblingCandidates = matchingCandidates.filter((candidate) => candidate.root === compiled.outputRoot);
       const preferredCandidates = preferRootSource && hasRootCandidate
         ? matchingCandidates.filter((candidate) => candidate.root === ".")
+        : outputSiblingCandidates.length > 0
+          ? outputSiblingCandidates
         : !preferRootSource && hasNestedCandidate
           ? matchingCandidates.filter((candidate) => candidate.root !== ".")
           : matchingCandidates;

@@ -59,8 +59,9 @@ export function scoreReviewerUsefulness(
     .map((finding) => finding.root_cause)
     .filter((root): root is string => Boolean(root));
   const duplicateRootCauses = roots.length - new Set(roots).size;
-  const firstActionLine = lineOfFirstAction(markdown);
-  const primarySurfaceLines = lineOfFirstSupportingSection(markdown);
+  const markdownLines = markdown.split("\n");
+  const firstActionLine = lineOfFirstAction(markdownLines);
+  const primarySurfaceLines = lineOfFirstSupportingSection(markdownLines);
   const rawRating = finiteNumber(expectations.reviewer_value_rating);
   const rating = rawRating !== null && rawRating >= 1 && rawRating <= 5 ? rawRating : null;
   const failures: string[] = [];
@@ -123,16 +124,12 @@ function evaluateJudgments(
   };
 }
 
-function lineOfFirstAction(markdown: string): number | null {
-  const lines = markdown.split("\n");
-  const queue = lines.findIndex((line) => line.trim() === "## Review first");
-  if (queue < 0) return null;
-  const offset = lines.slice(queue + 1).findIndex((line) => /^\s*(?:-\s+)?Action:/u.test(line));
-  return offset < 0 ? null : queue + offset + 2;
+function lineOfFirstAction(lines: readonly string[]): number | null {
+  const index = lines.findIndex((line) => /^\s*(?:-\s+)?Action:/u.test(line));
+  return index < 0 ? null : index + 1;
 }
 
-function lineOfFirstSupportingSection(markdown: string): number | null {
-  const lines = markdown.split("\n");
+function lineOfFirstSupportingSection(lines: readonly string[]): number | null {
   const index = lines.findIndex((line) => line === "## Reading order" || line === "## Change map");
   return index < 0 ? null : index + 1;
 }

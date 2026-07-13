@@ -15,7 +15,7 @@
 import * as ts from "typescript";
 import { StructuredDiff, StructuredDiffFile } from "../pr/contract";
 import { isTestPath } from "../scope/pr-scope";
-import { createApiContractSurfaceClassifier, isExplicitContractSurfacePath, listPackageConditionalContractExclusions, listPackageContractEntries, listPackageContractExclusions, packageExclusionRemovesContract, selectEffectivePackageContractEntries, type ApiContractSurface, type PackageContractEntry } from "./contract-surface";
+import { createApiContractSurfaceClassifier, isExplicitContractSurfacePath, listPackageConditionalContractExclusions, listPackageContractEntries, listPackageContractExclusions, listUniversalPackageExportConditionParents, packageExclusionRemovesContract, selectEffectivePackageContractEntries, type ApiContractSurface, type PackageContractEntry } from "./contract-surface";
 
 export interface SchemaContractChange {
   path: string;
@@ -182,6 +182,10 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
   );
   const effectiveBaseEntries = selectEffectivePackageContractEntries(baseEntries);
   const effectiveHeadEntries = selectEffectivePackageContractEntries(headEntries);
+  const baseEntriesByIdentity = groupPackageEntriesByIdentity(baseEntries);
+  const headEntriesByIdentity = groupPackageEntriesByIdentity(headEntries);
+  const headConditionIndex = indexPackageConditionDescendants(headEntriesByIdentity);
+  const headUniversalConditionParents = new Set(listUniversalPackageExportConditionParents(headPackageJson));
   const basePackageExclusions = listPackageContractExclusions(basePackageJson);
   const baseExclusionPatterns = basePackageExclusions.map((exclusion) => exclusion.consumer_path);
   const baseExclusionIdentities = new Set(basePackageExclusions.map(({ surface }) => surface.identity));
@@ -201,7 +205,9 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
     effectiveBaseEntries.map(({ surface }) => [surface.identity ?? surface.source, surface])
   ).values()];
   const removedPackageSurfaces = basePackageSurfaces
-    .filter((surface) => surface.identity !== undefined && !headPackageIdentities.has(surface.identity));
+    .filter((surface) => surface.identity !== undefined &&
+      !headPackageIdentities.has(surface.identity) &&
+      !headUniversalConditionParents.has(surface.identity));
   const removedPackageIdentities = new Set(removedPackageSurfaces.map((surface) => surface.identity as string));
   const representedRemovedIdentities = new Set<string>();
   const baseChangedPathByIdentity = new Map<string, string>();
@@ -338,14 +344,23 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
       api_changes.push(crossTargetChange);
     }
   }
-  const baseEntriesByIdentity = groupPackageEntriesByIdentity(baseEntries);
-  const headEntriesByIdentity = groupPackageEntriesByIdentity(headEntries);
   for (const { group, surface } of changedPackagePriorityGroups(baseEntries, headEntries)) {
     if (packageChanged) api_changes.push(unresolvedPackageTargetChange(group, surface));
   }
   for (const [identity, baseGroup] of baseEntriesByIdentity) {
     const headGroup = headEntriesByIdentity.get(identity);
-    if (!headGroup) continue;
+    if (!headGroup) {
+      // A uniform reachable-default condition map is represented by its parent
+      // identity. If a later revision makes one condition diverge, compare the
+      // old uniform target against each authored condition instead of reporting
+      // that the whole parent contract disappeared.
+      if (headUniversalConditionParents.has(identity)) {
+        for (const [headIdentity, conditionalHeadGroup] of headConditionIndex.byParent.get(identity) ?? []) {
+          comparePackageTargets(headIdentity, baseGroup[0], conditionalHeadGroup[0]);
+        }
+      }
+      continue;
+    }
     const baseSources = baseGroup.map((entry) => entry.surface.source);
     const headSources = headGroup.map((entry) => entry.surface.source);
     // A stable first fallback remains the selected target. Later entries are
@@ -418,6 +433,27 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
     api_changes,
     test_weakening: detectTestWeakening(sources.diff)
   };
+}
+
+function indexPackageConditionDescendants(
+  entriesByIdentity: ReadonlyMap<string, PackageContractEntry[]>
+): { byParent: Map<string, Array<[string, PackageContractEntry[]]>> } {
+  const byParent = new Map<string, Array<[string, PackageContractEntry[]]>>();
+  for (const [identity, entries] of entriesByIdentity) {
+    if (!identity.startsWith("export:")) continue;
+    const exportSeparator = identity.indexOf(":");
+    const conditionSeparator = identity.indexOf(":", exportSeparator + 1);
+    if (conditionSeparator < 0) continue;
+    const root = identity.slice(0, conditionSeparator);
+    const conditions = identity.slice(conditionSeparator + 1).split(".");
+    for (let index = 0; index < conditions.length; index += 1) {
+      const parent = index === 0 ? root : `${root}:${conditions.slice(0, index).join(".")}`;
+      const descendants = byParent.get(parent) ?? [];
+      descendants.push([identity, entries]);
+      byParent.set(parent, descendants);
+    }
+  }
+  return { byParent };
 }
 
 function isOrderedSubsequence(orderedSubset: readonly string[], sequence: readonly string[]): boolean {

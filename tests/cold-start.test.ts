@@ -169,6 +169,21 @@ test("review-surfaces.REVIEWER_VALUE.11 infers a root-level source behind compil
   };
   assert.equal(classifyApiContractSurface("index.ts", sharedTargetOptions)?.identity, "export:.");
   assert.equal(classifyApiContractSurface("src/index.ts", sharedTargetOptions)?.identity, "export:./alias");
+
+  const directLibPackage = JSON.stringify({ main: "lib/index.js" });
+  const directLibProjection = detectContractSourceProjection({
+    files: ["package.json", "lib/index.js", "lib/index.ts", "src/index.ts"],
+    read: (filePath) => filePath === "package.json" ? directLibPackage : undefined
+  });
+  const directLibOptions = {
+    packageJson: directLibPackage,
+    sourceRoots: directLibProjection.roots,
+    packageSourcePatterns: directLibProjection.sourcePatternsByContract
+  };
+  assert.deepEqual(directLibProjection.roots, ["lib"]);
+  assert.equal(classifyApiContractSurface("lib/index.ts", directLibOptions)?.kind, "package_entry");
+  assert.equal(classifyApiContractSurface("src/index.ts", directLibOptions), undefined);
+  assert.equal(classifyApiContractSurface("lib/index.js", directLibOptions), undefined);
 });
 
 test("review-surfaces.REVIEWER_VALUE.11 prefers explicit tsconfig include roots over committed package output", () => {
@@ -182,6 +197,39 @@ test("review-surfaces.REVIEWER_VALUE.11 prefers explicit tsconfig include roots 
     ["src"],
     "an explicit source include projects package output without admitting generated or test roots"
   );
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 retains package projection across broad tsconfig includes", () => {
+  const contents: Record<string, string> = {
+    "tsconfig.json": JSON.stringify({ include: ["src/**", "scripts/**"] }),
+    "package.json": JSON.stringify({ main: "dist/index.js" })
+  };
+  const projection = detectContractSourceProjection({
+    files: ["package.json", "tsconfig.json", "dist/index.js", "src/index.ts", "scripts/build.ts"],
+    read: (filePath) => contents[filePath]
+  });
+  const options = {
+    packageJson: contents["package.json"],
+    sourceRoots: projection.roots,
+    packageSourcePatterns: projection.sourcePatternsByContract
+  };
+  assert.deepEqual(projection.roots, ["scripts", "src"]);
+  assert.equal(classifyApiContractSurface("src/index.ts", options)?.kind, "package_entry");
+  assert.equal(classifyApiContractSurface("scripts/build.ts", options), undefined);
+
+  const excludedContents: Record<string, string> = {
+    "tsconfig.json": JSON.stringify({ include: ["src/**"] }),
+    "package.json": JSON.stringify({ main: "dist/tools/index.js" })
+  };
+  const excludedProjection = detectContractSourceProjection({
+    files: ["package.json", "tsconfig.json", "dist/tools/index.js", "src/other.ts", "tools/index.ts"],
+    read: (filePath) => excludedContents[filePath]
+  });
+  assert.equal(classifyApiContractSurface("tools/index.ts", {
+    packageJson: excludedContents["package.json"],
+    sourceRoots: excludedProjection.roots,
+    packageSourcePatterns: excludedProjection.sourcePatternsByContract
+  }), undefined, "package projection cannot escape explicit tsconfig roots");
 });
 
 test("review-surfaces.COLD_START.2 reading order classifies a detected root as implementation, in agreement with the clusters", () => {
