@@ -1,6 +1,6 @@
 import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
-import { collectPackageManifestTargets, parsePackageManifest } from "../core/package-manifest";
+import { collectPackageExportExclusions, collectPackageManifestTargets, packageExportSubpathIdentity, parsePackageManifest } from "../core/package-manifest";
 
 export type ApiContractSurfaceKind = "declaration" | "package_export" | "package_entry" | "configured";
 
@@ -45,23 +45,35 @@ export function createApiContractSurfaceClassifier(
     ...entry,
     patterns: entry.patterns.map((pattern) => ({ pattern, match: compilePackagePathMatcher(pattern) }))
   })) : [];
+  const exclusions = manifest ? collectPackageExportExclusions(manifest).map((pattern) => ({
+    pattern,
+    match: compilePackagePathMatcher(pattern)
+  })) : [];
   return (filePath: string): ApiContractSurface | undefined => {
     const normalized = normalizePath(filePath);
     if (isDeclarationContractPath(normalized)) return { kind: "declaration", source: normalized };
     const configuredMatch = configured.find(({ matcher }) => matcher.test(normalized));
     if (configuredMatch) return { kind: "configured", source: configuredMatch.pattern };
-    let entry: typeof entries[number] | undefined;
-    let capture: string | undefined;
-    findEntry: for (const candidate of entries) {
+    const matches: Array<{ entry: typeof entries[number]; capture?: string; consumerPath?: string }> = [];
+    for (const candidate of entries) {
       for (const pattern of candidate.patterns) {
         const result = pattern.match(normalized);
         if (result !== undefined) {
-          entry = candidate;
-          capture = result.capture;
-          break findEntry;
+          matches.push({
+            entry: candidate,
+            ...(result.capture !== undefined ? { capture: result.capture } : {}),
+            ...(candidate.consumer_path ? { consumerPath: candidate.consumer_path.replaceAll("*", result.capture ?? "") } : {})
+          });
+          break;
         }
       }
     }
+    matches.sort((a, b) => comparePackagePatternSpecificity(b.entry.consumer_path, a.entry.consumer_path));
+    const selected = matches.find(({ entry, consumerPath }) => !consumerPath || !exclusions.some((exclusion) =>
+      exclusion.match(consumerPath) !== undefined && comparePackagePatternSpecificity(exclusion.pattern, entry.consumer_path) >= 0
+    ));
+    const entry = selected?.entry;
+    const capture = selected?.capture;
     const binding = entry?.identity.includes("*") && capture !== undefined
       ? entry.identity.replaceAll("*", capture)
       : undefined;
@@ -91,10 +103,29 @@ export function listPackageContractSurfaces(packageJson: string | undefined): Ap
   return packageContractEntries(manifest, []).map(({ kind, source, identity }) => ({ kind, source, identity }));
 }
 
+export interface PackageContractExclusion {
+  surface: ApiContractSurface;
+  consumer_path: string;
+}
+
+export function listPackageContractExclusions(packageJson: string | undefined): PackageContractExclusion[] {
+  const manifest = parsePackageManifest(packageJson);
+  if (!manifest) return [];
+  return collectPackageExportExclusions(manifest).map((consumerPath) => ({
+    consumer_path: consumerPath,
+    surface: {
+      kind: "package_export",
+      source: `package.json#exports:${consumerPath}:null`,
+      identity: packageExportSubpathIdentity(consumerPath)
+    }
+  }));
+}
+
 export interface PackageContractEntry {
   surface: ApiContractSurface;
   patterns: string[];
   priority_group?: string;
+  consumer_path?: string;
 }
 
 export function listPackageContractEntries(
@@ -103,11 +134,35 @@ export function listPackageContractEntries(
 ): PackageContractEntry[] {
   const manifest = parsePackageManifest(packageJson);
   if (!manifest) return [];
-  return packageContractEntries(manifest, sourceRoots).map(({ kind, source, identity, patterns, priority_group }) => ({
+  return packageContractEntries(manifest, sourceRoots).map(({ kind, source, identity, patterns, priority_group, consumer_path }) => ({
     surface: { kind, source, identity },
     patterns,
-    ...(priority_group ? { priority_group } : {})
+    ...(priority_group ? { priority_group } : {}),
+    ...(consumer_path ? { consumer_path } : {})
   }));
+}
+
+/** True only when a newly added exclusion subtracts an effective base export. */
+export function packageExclusionRemovesContract(
+  baseEntries: readonly PackageContractEntry[],
+  headEntries: readonly PackageContractEntry[],
+  exclusionPattern: string
+): boolean {
+  const basePatterns = baseEntries.map((entry) => entry.consumer_path).filter((value): value is string => Boolean(value));
+  const headPatterns = headEntries.map((entry) => entry.consumer_path).filter((value): value is string => Boolean(value));
+  return basePatterns.some((basePattern) => {
+    if (!packagePatternsOverlap(basePattern, exclusionPattern)) return false;
+    const removedRegion = packagePatternCovers(basePattern, exclusionPattern)
+      ? exclusionPattern
+      : packagePatternCovers(exclusionPattern, basePattern)
+        ? basePattern
+        : undefined;
+    if (!removedRegion) return true;
+    return !headPatterns.some((headPattern) =>
+      comparePackagePatternSpecificity(headPattern, exclusionPattern) > 0 &&
+      packagePatternCovers(headPattern, removedRegion)
+    );
+  });
 }
 
 function packageContractEntries(manifest: Record<string, unknown>, sourceRoots: readonly string[]): Array<{
@@ -116,16 +171,18 @@ function packageContractEntries(manifest: Record<string, unknown>, sourceRoots: 
   identity: string;
   patterns: string[];
   priority_group?: string;
+  consumer_path?: string;
 }> {
-  const entries: Array<{ kind: "package_export" | "package_entry"; source: string; identity: string; patterns: string[]; priority_group?: string }> = [];
-  for (const { kind, field, target, identity, priority_group } of collectPackageManifestTargets(manifest)) {
+  const entries: Array<{ kind: "package_export" | "package_entry"; source: string; identity: string; patterns: string[]; priority_group?: string; consumer_path?: string }> = [];
+  for (const { kind, field, target, identity, priority_group, consumer_path } of collectPackageManifestTargets(manifest)) {
     if (kind === "file") continue;
     entries.push({
       kind: kind === "export" ? "package_export" : "package_entry",
       source: `package.json#${field}:${target}`,
       identity,
       patterns: sourcePathPatterns(target, sourceRoots),
-      ...(priority_group ? { priority_group } : {})
+      ...(priority_group ? { priority_group } : {}),
+      ...(consumer_path ? { consumer_path } : {})
     });
   }
   return entries;
@@ -163,6 +220,39 @@ function normalizePath(value: string): string {
   return value.replace(/\\/gu, "/").replace(/^\.\//u, "");
 }
 
+function comparePackagePatternSpecificity(left: string | undefined, right: string | undefined): number {
+  const score = (pattern: string | undefined): [number, number, number] => {
+    if (!pattern) return [0, 0, 0];
+    const wildcard = pattern.indexOf("*");
+    return [wildcard < 0 ? 1 : 0, wildcard < 0 ? pattern.length : wildcard, pattern.replaceAll("*", "").length];
+  };
+  const a = score(left);
+  const b = score(right);
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+
+function packagePatternCovers(cover: string, target: string): boolean {
+  if (!target.includes("*")) return compilePackagePathMatcher(cover)(target) !== undefined;
+  if (!cover.includes("*")) return false;
+  const [coverPrefix, ...coverTail] = cover.split("*");
+  const [targetPrefix, ...targetTail] = target.split("*");
+  const coverSuffix = coverTail.join("*");
+  const targetSuffix = targetTail.join("*");
+  return targetPrefix.startsWith(coverPrefix) && targetSuffix.endsWith(coverSuffix);
+}
+
+function packagePatternsOverlap(left: string, right: string): boolean {
+  if (packagePatternCovers(left, right) || packagePatternCovers(right, left)) return true;
+  if (!left.includes("*") || !right.includes("*")) return false;
+  const [leftPrefix, ...leftTail] = left.split("*");
+  const [rightPrefix, ...rightTail] = right.split("*");
+  const prefixesOverlap = leftPrefix.startsWith(rightPrefix) || rightPrefix.startsWith(leftPrefix);
+  const leftSuffix = leftTail.join("*");
+  const rightSuffix = rightTail.join("*");
+  const suffixesOverlap = leftSuffix.endsWith(rightSuffix) || rightSuffix.endsWith(leftSuffix);
+  return prefixesOverlap && suffixesOverlap;
+}
+
 // Node package export `*` captures may contain `/`, and repeated stars in a
 // target all receive the same capture. Compile once per manifest entry and use
 // a named backreference so following digits cannot become numeric references.
@@ -170,7 +260,7 @@ function compilePackagePathMatcher(pattern: string): (value: string) => { captur
   const parts = pattern.split("*");
   if (parts.length < 2) return (value) => value === pattern ? {} : undefined;
   const tail = escapeRegExp(parts[1]) + parts.slice(2).map((part) => `\\k<binding>${escapeRegExp(part)}`).join("");
-  const expression = new RegExp(`^${escapeRegExp(parts[0])}(?<binding>.*?)${tail}$`, "u");
+  const expression = new RegExp(`^${escapeRegExp(parts[0])}(?<binding>.+?)${tail}$`, "u");
   return (value) => {
     const capture = expression.exec(value)?.groups?.binding;
     return capture === undefined ? undefined : { capture };

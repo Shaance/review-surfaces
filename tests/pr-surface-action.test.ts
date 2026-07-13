@@ -79,6 +79,7 @@ test("review-surfaces.PR_SURFACE.5 recovery pins to the last POSTED sticky's run
   const runStep = steps.find((s) => typeof s.run === "string" && s.run.includes("--previous-packet"));
   assert.ok(runStep, "the prior packet is wired as --previous-packet");
   assert.match(String(runStep.run), /--run-id "\$GITHUB_RUN_ID"/);
+  assert.match(String(runStep.run), /--artifact-url "\$RS_ARTIFACT_URL"/);
 });
 
 // review-surfaces.ACTION_IO.1: the action declares an outputs block a consuming

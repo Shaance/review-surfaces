@@ -229,7 +229,7 @@ test("review-surfaces.CONVERSATION_REVIEW.4 legacy human v1 artifacts render wit
   assert.match(markdown, /\*\*Not assessed\.\*\* No conversation analysis is present/);
   assert.match(html, /Not assessed[^]*No conversation analysis is present/);
   assert.match(html, /No conversation-grounded conclusions are available/);
-  assert.match(sticky, /\*\*Not assessed\.\*\* No conversation analysis is present/);
+  assert.doesNotMatch(sticky, /No conversation analysis is present/, "the sticky omits canonical missing-log boilerplate from its primary scan path");
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.4 Markdown and HTML share non-analyzed status, summary, and empty-result meaning", () => {

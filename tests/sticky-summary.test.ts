@@ -232,14 +232,28 @@ test("review-surfaces.PR_SURFACE.4 a persisted high-confidence redaction marker 
   assert.equal(blocked, true);
 });
 
-test("compact conversation rendering stays below the working-tree warning", () => {
+test("empty conversation boilerplate is omitted and the working-tree warning stays below the verdict", () => {
   const review = model();
   review.generated_from.uncommitted_files = 2;
   const { markdown } = renderStickySummary(review);
-  assert.ok(
-    markdown.indexOf("includes 2 uncommitted file(s)") < markdown.indexOf("### Conversation-aware insights"),
-    "working-tree provenance remains directly below the verdict"
-  );
+  assert.match(markdown, /includes 2 uncommitted file\(s\)/);
+  assert.doesNotMatch(markdown, /### Conversation-aware insights/);
+  assert.ok(markdown.indexOf("includes 2 uncommitted file(s)") < markdown.indexOf("### Active intent"));
+});
+
+test("degraded conversation analysis remains visible as an incompleteness caveat", () => {
+  const review = model({
+    conversation_analysis: {
+      ...notAssessedConversationAnalysis("ai-sdk"),
+      status: "degraded",
+      summary: "Provider reconciliation failed; only partial context is available.",
+      quality_flags: ["conversation_analysis_unavailable"]
+    }
+  });
+  const { markdown } = renderStickySummary(review);
+  assert.match(markdown, /### Conversation-aware insights/);
+  assert.match(markdown, /Provider reconciliation failed; only partial context is available\./);
+  assert.match(markdown, /Degraded — incomplete/);
 });
 
 test("review-surfaces.PR_SURFACE.2 sticky renders verdict, top queue items, trust counts and artifact link from the human model", () => {
@@ -254,7 +268,64 @@ test("review-surfaces.PR_SURFACE.2 sticky renders verdict, top queue items, trus
   assert.match(markdown, /- Action: Add a test covering the change\./);
   assert.match(markdown, /### Trust/);
   assert.match(markdown, /1 verified, 1 claimed \(unverified\), 1 missing evidence, 0 invalid\./);
-  assert.match(markdown, /download the \*\*review-surfaces-pr-7\*\* workflow artifact/);
+  assert.match(markdown, /open the \*\*review-surfaces-pr-7\*\* workflow artifact/);
+});
+
+test("sticky links directly to the workflow run when an artifact URL is available", () => {
+  const { markdown } = renderStickySummary(model(), {
+    artifactName: "review-surfaces-pr-7",
+    artifactUrl: "https://github.com/Shaance/review-surfaces/actions/runs/7"
+  });
+  assert.match(markdown, /\[\*\*review-surfaces-pr-7\*\*\]\(https:\/\/github\.com\/Shaance\/review-surfaces\/actions\/runs\/7\)/);
+});
+
+test("needs-author-clarification renders the concrete author action beside the verdict", () => {
+  const { markdown } = renderStickySummary(model({
+    verdict: {
+      decision: "needs_author_clarification",
+      confidence: "medium",
+      reasons: [{
+        id: "VERDICT-1",
+        severity: "medium",
+        summary: "Validation evidence is missing.",
+        required_action: "Attach the current-head renderer snapshot.",
+        evidence: []
+      }]
+    }
+  }));
+  assert.match(markdown, /\*\*Author action:\*\* Attach the current-head renderer snapshot\./);
+  assert.ok(markdown.indexOf("**Author action:**") < markdown.indexOf("### Active intent"));
+});
+
+test("review first excludes queue actions already projected as decision findings", () => {
+  const review = model();
+  review.decision_projection = {
+    active_intent: { summary: "Keep the sticky actionable.", source: "packet", requirement_ids: [], event_ids: [] },
+    findings: [{
+      id: "DECISION-001",
+      root_cause: "test-gap",
+      title: "Untested impl change",
+      path: "src/cli/index.ts",
+      priority: "high",
+      reason: "Implementation file changed with no focused test.",
+      reviewer_action: "Add a test covering the change.",
+      evidence: [],
+      requirement_ids: [],
+      risk_ids: [],
+      source_queue_ids: ["REVIEW-001"]
+    }],
+    supporting_detail_counts: {
+      total_queue_items: 2,
+      projected_queue_items: 1,
+      supporting_queue_items: 1,
+      affected_requirement_count: 0,
+      supporting_requirement_count: 0
+    }
+  };
+  const { markdown } = renderStickySummary(review);
+  const reviewFirst = markdown.split("### Review first")[1].split("### Trust")[0];
+  assert.doesNotMatch(reviewFirst, /src\/cli\/index\.ts/);
+  assert.match(reviewFirst, /1\. `src\/render\/sticky-summary\.ts`/);
 });
 
 test("review-surfaces.PR_SURFACE.2 sticky bounds the queue to the requested top-N", () => {
@@ -293,10 +364,9 @@ test("review-surfaces.PR_SURFACE.5 sticky leads with the since-last-review delta
   const { markdown } = renderStickySummary(model({ since_last_review: since }));
   // The delta section leads (appears before the full review).
   const deltaIdx = markdown.indexOf("### Since your last review");
-  const conversationIdx = markdown.indexOf("### Conversation-aware insights");
   const fullIdx = markdown.indexOf("<summary>Full review");
   assert.ok(deltaIdx > -1, "delta section present");
-  assert.ok(conversationIdx > deltaIdx, "conversation review preserves the re-review delta lead");
+  assert.doesNotMatch(markdown, /### Conversation-aware insights/);
   assert.ok(fullIdx > deltaIdx, "full review collapsed AFTER the delta");
   assert.match(markdown, /✅ Resolved risks: Null-deref risk resolved/);
   assert.match(markdown, /⚠️ Regressed: RENDER\.3 regressed to partial/);

@@ -519,14 +519,18 @@ test("review-surfaces.PROVIDERS.1 comment diagram embedding is injection-safe (f
 test("review-surfaces.PR_SURFACE.2 comment --format sticky renders the deterministic sticky from human_review.json", () => {
   const cwd = setupFixture("rs-sticky-");
   runAll(cwd);
-  const result = runComment(cwd, ["--format", "sticky", "--artifact-name", "review-surfaces-pr-7"]);
+  const result = runComment(cwd, [
+    "--format", "sticky",
+    "--artifact-name", "review-surfaces-pr-7",
+    "--artifact-url", "https://github.com/example/repo/actions/runs/7"
+  ]);
   assert.equal(result.status, 0);
   // Marker first so the workflow upsert finds the sticky; deterministic sections.
   assert.equal(result.stdout.split("\n")[0], "<!-- review-surfaces:sticky -->");
   assert.match(result.stdout, /## review-surfaces/);
   assert.match(result.stdout, /### Review first/);
   assert.match(result.stdout, /### Trust/);
-  assert.match(result.stdout, /download the \*\*review-surfaces-pr-7\*\* workflow artifact/);
+  assert.match(result.stdout, /\[\*\*review-surfaces-pr-7\*\*\]\(https:\/\/github\.com\/example\/repo\/actions\/runs\/7\)/);
   // The sticky was written to comment.md (what the action posts).
   assert.equal(
     fs.readFileSync(path.join(cwd, ".review-surfaces", "comment.md"), "utf8").split("\n")[0],

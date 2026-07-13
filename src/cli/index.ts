@@ -3276,7 +3276,8 @@ async function runCommentSticky(parsed: ParsedArgs): Promise<number> {
     diff,
     topN: numberFlag(parsed, "comment-top-n"),
     artifactName: stringFlag(parsed, "artifact-name"),
-    runId: stringFlag(parsed, "run-id") ?? process.env.GITHUB_RUN_ID
+    runId: stringFlag(parsed, "run-id") ?? process.env.GITHUB_RUN_ID,
+    artifactUrl: stringFlag(parsed, "artifact-url")
   });
   const commentPath = path.join(outputDir, "comment.md");
   await writeText(commentPath, sticky.markdown);
@@ -3838,7 +3839,7 @@ const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
   // so it reads every flag any of them read: --out/--config (resolveOutputDir +
   // loadConfig), --format, the scope flags, --budget, --post/--strict-postability
   // (github/sticky/review), the sticky flags (--comment-top-n/--artifact-name/
-  // --run-id), and --sarif-out (sarif).
+  // --run-id/--artifact-url), and --sarif-out (sarif).
   comment: flagSet(OUTPUT_CONFIG_FLAGS, SCOPE_FLAGS, [
     "format",
     "budget",
@@ -3846,6 +3847,7 @@ const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
     "strict-postability",
     "comment-top-n",
     "artifact-name",
+    "artifact-url",
     "run-id",
     "sarif-out",
     // review-surfaces.QUALITY_GATE.2: `comment --format json` projects gate_code
@@ -4261,6 +4263,8 @@ Options:
                    defaults to $GITHUB_RUN_ID when unset.
   --artifact-name <name>
                    comment --format sticky: artifact name referenced by the sticky comment.
+  --artifact-url <url>
+                   comment --format sticky: direct workflow-run URL for the artifact.
   --comment-top-n <n>
                    comment --format sticky: cap the sticky comment to the top N items.
   --author <name>   review: label captured reviewer feedback with this author name.

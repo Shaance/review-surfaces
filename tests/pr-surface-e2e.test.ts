@@ -325,7 +325,7 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     // review-surfaces.RENDER.8: a local render without --post writes the comment
     // and exits 0; the not-postable warning is still printed.
     assert.equal(humanPrComment.status, 0, "local PR comment render without --post succeeds (RENDER.8)");
-    assert.match(humanPrComment.stdout, /JSON sentinel PR comment queue/);
+    assert.doesNotMatch(humanPrComment.stdout, /JSON sentinel PR comment queue/, "a queue item already projected into decision findings is not repeated under Review first");
     assert.match(humanPrComment.stdout, /JSON sentinel PR comment draft/);
     assert.match(humanPrComment.stdout, /Full human review: `human_review\.md`/);
     assert.match(humanPrComment.stderr, /not postable/);

@@ -292,6 +292,167 @@ test("review-surfaces.REVIEWER_VALUE.11 preserves base contract evidence across 
   assert.equal(isBreakingApiChange(renameFacts.api_changes[0]), true);
 });
 
+test("review-surfaces.REVIEWER_VALUE.11 wildcard and path-only renames remove the old consumer contract", () => {
+  const renameDiff = (oldPath: string, newPath: string): string => [
+    `diff --git a/${oldPath} b/${newPath}`,
+    "similarity index 100%",
+    `rename from ${oldPath}`,
+    `rename to ${newPath}`
+  ].join("\n");
+
+  const wildcardManifest = JSON.stringify({ exports: { "./*": "./src/*.ts" } });
+  const wildcard = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(renameDiff("src/foo.ts", "src/bar.ts")),
+    readBase: (path) => path === "package.json" ? wildcardManifest : path === "src/foo.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? wildcardManifest : path === "src/bar.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(wildcard.api_changes[0]?.contract_removed, true);
+  assert.equal(wildcard.api_changes[0]?.contract_name, "export:./foo");
+  assert.equal(wildcard.api_changes[0]?.contract_surface?.binding, "export:./foo");
+  assert.equal(wildcard.api_changes[0]?.renamed_from, "src/foo.ts");
+
+  const declaration = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(renameDiff("types/a.d.ts", "types/b.d.ts")),
+    readBase: (path) => path === "types/a.d.ts" ? "export interface Value {}" : undefined,
+    readHead: (path) => path === "types/b.d.ts" ? "export interface Value {}" : undefined
+  });
+  assert.equal(declaration.api_changes[0]?.contract_removed, true);
+  assert.equal(declaration.api_changes[0]?.contract_surface?.source, "types/a.d.ts");
+
+  const configured = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(renameDiff("src/public/a.ts", "src/public/b.ts")),
+    readBase: (path) => path === "src/public/a.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "src/public/b.ts" ? "export const value = 1;" : undefined,
+    contractPaths: ["src/public/**"]
+  });
+  assert.equal(configured.api_changes[0]?.contract_removed, true);
+  assert.equal(configured.api_changes[0]?.renamed_from, "src/public/a.ts");
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 null package exports exclude private wildcard bindings", () => {
+  const excludedManifest = JSON.stringify({
+    exports: {
+      "./features/*.js": "./src/features/*.js",
+      "./features/private-internal/*": null
+    }
+  });
+  assert.equal(classifyApiContractSurface("src/features/private-internal/value.ts", {
+    packageJson: excludedManifest,
+    sourceRoots: ["src"]
+  }), undefined);
+  assert.equal(classifyApiContractSurface("src/features/public.ts", {
+    packageJson: excludedManifest,
+    sourceRoots: ["src"]
+  })?.kind, "package_export");
+
+  const conditionalExclusion = JSON.stringify({
+    exports: {
+      "./*": "./src/*.ts",
+      "./private/*": { node: null, default: null }
+    }
+  });
+  assert.equal(classifyApiContractSurface("src/private/value.ts", {
+    packageJson: conditionalExclusion,
+    sourceRoots: ["src"]
+  }), undefined, "a null-only conditional tree excludes the subpath");
+
+  const nulledLegacyRoot = JSON.stringify({ main: "./src/index.js", exports: { ".": null } });
+  assert.equal(classifyApiContractSurface("src/index.ts", {
+    packageJson: nulledLegacyRoot,
+    sourceRoots: ["src"]
+  }), undefined, "a root exports exclusion takes precedence over the legacy main entry");
+
+  const narrowerPositive = JSON.stringify({
+    exports: {
+      "./features/*": null,
+      "./features/safe/*": "./src/features/safe/*.ts"
+    }
+  });
+  assert.equal(classifyApiContractSurface("src/features/safe/value.ts", {
+    packageJson: narrowerPositive,
+    sourceRoots: ["src"]
+  })?.kind, "package_export", "a more-specific positive export overrides a broad exclusion");
+
+  for (const packageJson of [
+    JSON.stringify({ exports: { ".": { node: null, default: "./src/index.ts" } } }),
+    JSON.stringify({ exports: { ".": [null, "./src/index.ts"] } })
+  ]) {
+    assert.equal(classifyApiContractSurface("src/index.ts", { packageJson, sourceRoots: ["src"] })?.kind, "package_export");
+  }
+
+  const privateDiff = [
+    "diff --git a/src/features/private-internal/value.ts b/src/features/private-internal/value.ts",
+    "--- a/src/features/private-internal/value.ts",
+    "+++ b/src/features/private-internal/value.ts",
+    "@@ -1 +1 @@",
+    "-export function value(input: string): string { return input; }",
+    "+export function value(input: number): string { return String(input); }"
+  ].join("\n");
+  const internal = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(privateDiff),
+    readBase: (path) => path === "package.json" ? excludedManifest : path.includes("private-internal") ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json" ? excludedManifest : path.includes("private-internal") ? "export function value(input: number): string { return String(input); }" : undefined,
+    sourceRoots: ["src"]
+  });
+  assert.equal(internal.api_changes[0]?.contract_surface, undefined);
+
+  const packageDiff = [
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -1 +1 @@",
+    "-old",
+    "+new"
+  ].join("\n");
+  const broadManifest = JSON.stringify({ exports: { "./features/*.js": "./src/features/*.js" } });
+  const addedExclusion = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? broadManifest : undefined,
+    readHead: (path) => path === "package.json" ? excludedManifest : undefined
+  });
+  assert.equal(addedExclusion.api_changes.some((change) => change.contract_removed && change.contract_name === "export:./features/private-internal/*"), true);
+
+  const unmatchedExclusion = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./public/*": "./src/public/*.ts" } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./public/*": "./src/public/*.ts", "./private/*": null } })
+      : undefined
+  });
+  assert.equal(unmatchedExclusion.api_changes.some((change) => change.contract_removed), false, "an exclusion that matches no base export is not breaking");
+
+  const preservedNarrowExport = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./private/safe": "./src/safe.ts" } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./private/*": null, "./private/safe": "./src/safe.ts" } })
+      : undefined
+  });
+  assert.equal(preservedNarrowExport.api_changes.some((change) => change.contract_removed), false, "a narrower positive export preserved in head overrides the broad exclusion");
+
+  const emptyWildcardCapture = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./feature/*-impl": "./src/*-impl.ts" } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./feature/*-impl": "./src/*-impl.ts", "./feature/-impl": null } })
+      : undefined
+  });
+  assert.equal(emptyWildcardCapture.api_changes.some((change) => change.contract_removed), false, "an exact exclusion cannot remove the empty binding of a wildcard export because empty wildcard captures are not exported");
+
+  const removedExclusion = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? excludedManifest : undefined,
+    readHead: (path) => path === "package.json" ? broadManifest : undefined
+  });
+  assert.equal(removedExclusion.api_changes.some((change) => change.contract_removed), false, "removing an exclusion is additive");
+});
+
 test("review-surfaces.REVIEWER_VALUE.11 detects package-only removals but not stable export target moves", () => {
   const packageDiff = [
     "diff --git a/package.json b/package.json",
@@ -326,6 +487,27 @@ test("review-surfaces.REVIEWER_VALUE.11 detects package-only removals but not st
     readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { import: "./dist/index.mjs" } } }) : undefined
   });
   assert.equal(removedCondition.api_changes[0]?.contract_name, "export:.:require", "conditional consumer slots are tracked independently");
+
+  const nulledLegacyRoot = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ main: "./src/index.js" }) : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ main: "./src/index.js", exports: { ".": null } }) : undefined,
+    sourceRoots: ["src"]
+  });
+  assert.deepEqual(nulledLegacyRoot.api_changes.map((change) => change.contract_name), ["export:."]);
+
+  const nulledConditionalExport = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./feature": { import: "./dist/feature.mjs", require: "./dist/feature.cjs" } } })
+      : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { "./feature": null } }) : undefined
+  });
+  assert.deepEqual(
+    nulledConditionalExport.api_changes.map((change) => change.contract_name).sort(),
+    ["export:./feature:import", "export:./feature:require"],
+    "the generic null exclusion must not duplicate condition-specific removals for the same consumer path"
+  );
 
   const incompatibleRepoint = computeSemanticChangeFacts({
     diff: parseStructuredDiff(packageDiff),

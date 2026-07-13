@@ -15,7 +15,7 @@
 import * as ts from "typescript";
 import { StructuredDiff, StructuredDiffFile } from "../pr/contract";
 import { isTestPath } from "../scope/pr-scope";
-import { createApiContractSurfaceClassifier, isExplicitContractSurfacePath, listPackageContractEntries, type ApiContractSurface, type PackageContractEntry } from "./contract-surface";
+import { createApiContractSurfaceClassifier, isExplicitContractSurfacePath, listPackageContractEntries, listPackageContractExclusions, packageExclusionRemovesContract, type ApiContractSurface, type PackageContractEntry } from "./contract-surface";
 
 export interface SchemaContractChange {
   path: string;
@@ -170,6 +170,9 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
   const basePackageJson = sources.readBase("package.json");
   const baseEntries = listPackageContractEntries(basePackageJson, sources.baseSourceRoots ?? sources.sourceRoots ?? []);
   const headEntries = listPackageContractEntries(headPackageJson, sources.headSourceRoots ?? sources.sourceRoots ?? []);
+  const baseExclusionIdentities = new Set(listPackageContractExclusions(basePackageJson).map(({ surface }) => surface.identity));
+  const addedPackageExclusions = listPackageContractExclusions(headPackageJson)
+    .filter(({ surface }) => surface.identity !== undefined && !baseExclusionIdentities.has(surface.identity));
   const headPackageSurfaces = headEntries.map((entry) => entry.surface);
   const headPackageIdentities = new Set(headPackageSurfaces.map((surface) => surface.identity).filter((identity): identity is string => Boolean(identity)));
   const headPackageSourceKeys = new Set(headPackageSurfaces
@@ -219,11 +222,17 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
       }
       const packageTargetUnchanged = baseSurface?.identity !== undefined &&
         headPackageSourceKeys.has(`${baseSurface.identity}\0${baseSurface.source}`);
+      const baseConsumerIdentity = baseSurface?.binding ?? baseSurface?.identity;
+      const headConsumerIdentity = headSurface?.binding ?? headSurface?.identity;
+      const wildcardBindingRemoved = baseSurface?.binding !== undefined && oldPath !== file.path && baseConsumerIdentity !== headConsumerIdentity;
       const packageContractRemoved = baseSurface?.identity !== undefined && (
         removedPackageIdentities.has(baseSurface.identity) ||
-        (packageTargetUnchanged && !headSurface && (!headExists || oldPath !== file.path))
+        (packageTargetUnchanged && (wildcardBindingRemoved || (!headSurface && (!headExists || oldPath !== file.path))))
       );
-      const pathContractRemoved = baseSurface?.identity === undefined && Boolean(baseSurface && !headSurface && (!headExists || file.old_path));
+      const pathContractRemoved = baseSurface?.identity === undefined && Boolean(baseSurface && (
+        (oldPath !== file.path && file.old_path) ||
+        (!headSurface && !headExists)
+      ));
       const contractRemoved = packageContractRemoved || pathContractRemoved;
       const change = diffApiSurfaceFile(file, sources) ?? (
         contractRemoved
@@ -234,7 +243,7 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
               signatures_changed: [],
               contract_removed: true,
               ...(oldPath !== file.path ? { renamed_from: oldPath } : {}),
-              ...(baseSurface?.identity ? { contract_name: baseSurface.identity } : {})
+              ...(baseConsumerIdentity ? { contract_name: baseConsumerIdentity } : {})
             }
           : undefined
       );
@@ -242,15 +251,17 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
         if (contractRemoved) {
           change.contract_removed = true;
           if (oldPath !== file.path) change.renamed_from = oldPath;
+          if (baseConsumerIdentity) {
+            change.contract_name = baseConsumerIdentity;
+          }
           if (baseSurface?.identity) {
-            change.contract_name = baseSurface.identity;
             representedRemovedIdentities.add(baseSurface.identity);
           }
         }
         const baseSurfaceStillApplies = baseSurface?.identity === undefined ||
           removedPackageIdentities.has(baseSurface.identity) ||
           packageTargetUnchanged;
-        const contractSurface = headSurface ?? (baseSurfaceStillApplies ? baseSurface : undefined);
+        const contractSurface = contractRemoved ? baseSurface : headSurface ?? (baseSurfaceStillApplies ? baseSurface : undefined);
         if (contractSurface) change.contract_surface = contractSurface;
         api_changes.push(change);
       }
@@ -330,6 +341,21 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
     }
   }
   if (packageChanged) {
+    for (const { surface, consumer_path: consumerPath } of addedPackageExclusions) {
+      if (surface.identity && [...removedPackageIdentities].some((identity) =>
+        identity === surface.identity || identity.startsWith(`${surface.identity}:`)
+      )) continue;
+      if (!packageExclusionRemovesContract(baseEntries, headEntries, consumerPath)) continue;
+      api_changes.push({
+        path: "package.json",
+        exports_added: [],
+        exports_removed: [],
+        signatures_changed: [],
+        contract_removed: true,
+        contract_name: surface.identity,
+        contract_surface: surface
+      });
+    }
     for (const surface of removedPackageSurfaces) {
       if (surface.identity === undefined || representedRemovedIdentities.has(surface.identity)) continue;
       api_changes.push({

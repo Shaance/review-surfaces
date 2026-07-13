@@ -12,6 +12,38 @@ import { validateJsonSchema } from "../src/schema/json-schema";
 import type { SemanticChangeFacts } from "../src/risks/semantic-diff";
 import { decisionPacket as packet, decisionRisk as risk, decisionSurface as surface, emptyDecisionSemanticFacts as emptySemanticFacts, requirement } from "./helpers/decision-projection";
 
+test("broad requirement scope preserves the packet goal instead of presenting an inventory as intent", () => {
+  const value = packet();
+  value.intent.requirements = Array.from({ length: 10 }, (_, index) => requirement(`REQ-${index}`, `review-surfaces.BROAD.${index}`));
+  value.intent.requirements.forEach((item) => { item.title = "Reviewer decision quality uplift"; });
+  value.agent_handoff = { summary: "Current milestone.", current_milestone: "usefulness-M1", next_tasks: [] };
+  value.evaluation.results = value.intent.requirements.map((item) => ({
+    requirement_id: item.id,
+    acai_id: item.acai_id,
+    status: "partial" as const,
+    summary: "Needs review.",
+    partial_reason: "other" as const,
+    evidence: [],
+    missing_evidence: [],
+    review_focus: "Review the affected behavior.",
+    confidence: "medium" as const
+  }));
+  const affected = new Set(value.intent.requirements.flatMap((item) => [item.id, item.acai_id! ]));
+  const projection = buildDecisionProjection({
+    packet: value,
+    scope: { mode: "pr", changed_paths: new Set(["features/review-surfaces.feature.yaml"]), affected_requirement_ids: affected, head_sha: "head", working_tree_dirty: false },
+    reviewQueue: [],
+    blockers: [],
+    semanticFacts: emptySemanticFacts
+  });
+  assert.equal(projection.active_intent.source, "packet");
+  assert.match(projection.active_intent.summary, /^Make the review immediately useful to an approver\./);
+  assert.match(projection.active_intent.summary, /Current milestone: usefulness-M1\./);
+  assert.match(projection.active_intent.summary, /Affected areas: Reviewer decision quality uplift\./);
+  assert.match(projection.active_intent.summary, /Scope: 10 of 10 requirements are affected\./);
+  assert.doesNotMatch(projection.active_intent.summary, /^Reviewed change affects/);
+});
+
 test("review-surfaces.REVIEWER_VALUE.6 merges detector manifestations by root without merging independent roots", () => {
   const path = "schemas/public.schema.json";
   const pr = surface(path ? [path] : [], [
@@ -406,9 +438,9 @@ test("review-surfaces.REVIEWER_VALUE.8 summarizes broad affected intent as areas
   }));
 
   const summary = buildHumanReview({ packet: value, prSurface: pr }).decision_projection?.active_intent.summary ?? "";
-  assert.match(summary, /^Reviewed change affects 5 requirement\(s\) across/);
-  assert.match(summary, /REQ-0 \(review-surfaces\.REQ-0\)/);
-  assert.match(summary, /\(\+2 more areas\)\.$/);
+  assert.match(summary, /^Make the review immediately useful to an approver\./);
+  assert.match(summary, /Affected areas: REQ-0, REQ-1, REQ-2 \(\+2 more\)\./);
+  assert.match(summary, /Scope: 5 of 5 requirements are affected\.$/);
   assert.doesNotMatch(summary, /Reviewer-visible requirement/, "long requirement prose stays out of the primary intent summary");
   assert.ok(summary.length <= 900);
 });

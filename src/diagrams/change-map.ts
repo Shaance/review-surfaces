@@ -17,7 +17,10 @@ import { MAX_CHANGED_NODES } from "../human/legibility-budget";
 // Derived from the SAME palette the SVG cockpit map uses (RENDER.11), so the
 // two renderers can never color a lens differently.
 function lensClassDef(lens: RiskLens): string {
-  return `fill:${SVG_LENS_FILLS[lens]},stroke:${LENS_STROKES[lens]}`;
+  // GitHub does not reliably inherit a readable Mermaid text colour in dark
+  // mode. Keep the light fills, but pin dark text so labels never become the
+  // pale-on-pale boxes the old overview produced.
+  return `fill:${SVG_LENS_FILLS[lens]},stroke:${LENS_STROKES[lens]},color:#111827`;
 }
 
 export interface RenderChangeMapMermaidOptions {

@@ -26,19 +26,19 @@ node bin/review-surfaces.js scoreboard --check
 
 # review-surfaces.DISTRIBUTION.4: packaging smoke test — the pnpm pack tarball
 # must install and run from a directory outside this repository (the cold-start
-# path a stranger takes). Uses the local pnpm store, so no registry network is
-# required when the repo's own dependencies are already installed.
+# path a stranger takes). Prefer the local pnpm store, while allowing pnpm to
+# fetch registry metadata needed to resolve the tarball's dependency ranges.
 PACK_TMP="$(mktemp -d)"
 trap 'rm -rf "$PACK_TMP"' EXIT
-# Pack from a CLEAN dist (prepack rebuilds it) so the smoke covers the real
-# cold-start tarball path, not whatever a prior test run left behind.
-rm -rf dist
-pnpm pack --pack-destination "$PACK_TMP" >/dev/null
+# `pnpm run test` above starts with a clean build. Package that exact tested
+# dist instead of compiling a second time after the long subprocess matrix;
+# publish-time `prepack` still guarantees a clean checkout builds before pack.
+pnpm pack --config.ignore-scripts=true --pack-destination "$PACK_TMP" >/dev/null
 TARBALL="$(ls "$PACK_TMP"/review-surfaces-*.tgz)"
 printf '{"name":"pack-smoke","private":true}\n' > "$PACK_TMP/package.json"
-# --offline: the smoke must prove the no-registry path; the repo's own install
-# primes the pnpm store with every runtime dependency.
-(cd "$PACK_TMP" && pnpm add "./$(basename "$TARBALL")" --offline --silent --store-dir "$PNPM_STORE_ROOT")
+# A locked checkout primes package contents but not necessarily pnpm's metadata
+# mirror, so strict --offline installs are not a valid cold-start contract.
+(cd "$PACK_TMP" && pnpm add "./$(basename "$TARBALL")" --prefer-offline --silent --store-dir "$PNPM_STORE_ROOT")
 SMOKE_REPO="$PACK_TMP/smoke-repo"
 mkdir -p "$SMOKE_REPO"
 (
@@ -47,7 +47,7 @@ mkdir -p "$SMOKE_REPO"
   printf 'export const answer = 42;\n' > index.ts
   git -c user.email=gate@local -c user.name=gate add -A
   git -c user.email=gate@local -c user.name=gate commit -qm smoke
-  "$PACK_TMP/node_modules/.bin/review-surfaces" all --provider mock --base HEAD --head HEAD --out .rs >/dev/null
+  "$PACK_TMP/node_modules/.bin/review-surfaces" all --provider mock --no-conversation-discovery --base HEAD --head HEAD --out .rs >/dev/null
   "$PACK_TMP/node_modules/.bin/review-surfaces" validate .rs --surface all >/dev/null
 )
 echo "pack smoke: PASS (tarball installs and runs outside the repo)"

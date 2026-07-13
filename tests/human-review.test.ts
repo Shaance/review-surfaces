@@ -5022,6 +5022,9 @@ test("review-surfaces.HUMAN_REVIEW.28 cold-start floor augments a thin detector 
   // them — a lone detector finding must not leave the source a reviewer should read hidden.
   const model = buildHumanReview({ packet: packetFixture(), diff: coldStartDiff() });
   assert.ok(model.review_queue.some((item) => item.risk_ids.includes("RISK-001")), "the detector finding is still present");
+  const detectorIndex = model.review_queue.findIndex((item) => item.risk_ids.includes("RISK-001"));
+  const firstBaselineIndex = model.review_queue.findIndex((item) => /^Review-focus:/.test(item.title));
+  assert.ok(detectorIndex >= 0 && firstBaselineIndex > detectorIndex, "concrete detector work must rank before generic reading prompts");
   const focus = model.review_queue.filter((item) => /^Review-focus:/.test(item.title)).map((item) => item.path);
   assert.ok(focus.includes("src/payment-processor.ts"), "an uncovered impl file is augmented as review-focus");
   assert.ok(focus.includes("src/format.ts"), "every uncovered impl file is augmented");
@@ -5064,6 +5067,64 @@ test("review-surfaces.HUMAN_REVIEW.28 augmentation does not fire on a fallback-o
     !model.review_queue.some((item) => /Another finding was queued for this diff/.test(item.reason)),
     "the baseline augmentation does not pile onto a fallback-only changed-file queue"
   );
+});
+
+test("review-surfaces.HUMAN_REVIEW.28 ranks concrete findings, changed-file fallbacks, then packet aggregates", () => {
+  const surface = prSurfaceFixture();
+  surface.risks = { summary: "no scoped risks", candidates: [] };
+  surface.scope.changed_files = [{
+    path: "src/large-fallback.ts",
+    status: "M",
+    areas: ["HUMAN_REVIEW"],
+    role: "implementation",
+    added_lines: 900,
+    deleted_lines: 100
+  }];
+  const packet = minimalReviewPacket() as unknown as ReviewPacket;
+  packet.risks.items = [
+    {
+      id: "RISK-CONCRETE",
+      category: "correctness",
+      severity: "low",
+      summary: "A concrete detector found an approval-relevant behavior change.",
+      evidence: [{
+        ...fileEvidence("src/detector.ts", "Detector-backed changed behavior."),
+        line_start: 1,
+        line_end: 1
+      }],
+      suggested_checks: ["Inspect the detector-backed behavior."],
+      manual_review: false
+    },
+    {
+      id: "RISK-AGGREGATE",
+      category: "correctness",
+      severity: "critical",
+      summary: "A packet-wide aggregate summarizes many requirements.",
+      evidence: [fileEvidence("src/detector.ts", "Aggregate packet evidence without a precise range.")],
+      suggested_checks: ["Inspect the packet-wide aggregate."],
+      manual_review: false
+    }
+  ];
+  surface.scope.changed_files.push({
+    path: "src/detector.ts",
+    status: "M",
+    areas: ["HUMAN_REVIEW"],
+    role: "implementation",
+    added_lines: 1,
+    deleted_lines: 1
+  });
+
+  const model = buildHumanReview({
+    packet,
+    prSurface: surface,
+    config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_review_first: 2 }
+  });
+
+  assert.equal(model.review_queue[0]?.risk_ids[0], "RISK-CONCRETE");
+  assert.equal(model.review_queue[0]?.path, "src/detector.ts");
+  assert.deepEqual(model.review_queue[1]?.risk_ids, []);
+  assert.equal(model.review_queue[1]?.path, "src/large-fallback.ts");
+  assert.equal(model.review_queue.some((item) => item.risk_ids.includes("RISK-AGGREGATE")), false);
 });
 
 test("review-surfaces.HUMAN_REVIEW.28 augmentation stays within headroom and never evicts the detector item", () => {

@@ -10,6 +10,8 @@ export interface PackageManifestTarget {
   identity: string;
   /** Consumer subpath whose condition order participates in resolution priority. */
   priority_group?: string;
+  /** Raw consumer-facing export key used for wildcard precedence/exclusions. */
+  consumer_path?: string;
 }
 
 export function parsePackageManifest(value: string | undefined): Record<string, unknown> | undefined {
@@ -28,11 +30,20 @@ export function parsePackageManifest(value: string | undefined): Record<string, 
 export function collectPackageManifestTargets(manifest: Record<string, unknown>): PackageManifestTarget[] {
   const targets: PackageManifestTarget[] = [];
   for (const entry of collectExportTargets(manifest.exports)) {
-    targets.push({ kind: "export", field: "exports", target: entry.target, identity: entry.identity, priority_group: entry.priority_group });
+    targets.push({
+      kind: "export",
+      field: "exports",
+      target: entry.target,
+      identity: entry.identity,
+      priority_group: entry.priority_group,
+      consumer_path: entry.consumer_path
+    });
   }
   for (const field of ["main", "module", "types", "typings"] as const) {
     const target = manifest[field];
-    if (typeof target === "string") targets.push({ kind: "entry", field, target, identity: `entry:${field}` });
+    if (typeof target === "string") {
+      targets.push({ kind: "entry", field, target, identity: `entry:${field}`, consumer_path: "." });
+    }
   }
   const bin = manifest.bin;
   const binTargets: Array<{ key: string; target: unknown }> = typeof bin === "string"
@@ -51,10 +62,33 @@ export function collectPackageManifestTargets(manifest: Record<string, unknown>)
   return targets;
 }
 
-function collectExportTargets(value: unknown, subpath = ".", conditions: string[] = []): Array<{ identity: string; target: string; priority_group: string }> {
+/** Unconditional consumer subpaths explicitly blocked with a top-level null target. */
+export function collectPackageExportExclusions(manifest: Record<string, unknown>): string[] {
+  const value = manifest.exports;
+  if (value === null) return ["."];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const record = value as Record<string, unknown>;
+  const subpathKeys = Object.keys(record).filter((key) => key.startsWith("."));
+  if (subpathKeys.length === 0) {
+    return isNullOnlyTargetTree(record) ? ["."] : [];
+  }
+  return Object.keys(record)
+    .filter((key) => key.startsWith(".") && isNullOnlyTargetTree(record[key]))
+    .sort(compareStrings);
+}
+
+function isNullOnlyTargetTree(value: unknown): boolean {
+  if (value === null) return true;
+  if (Array.isArray(value)) return value.length > 0 && value.every(isNullOnlyTargetTree);
+  if (!value || typeof value !== "object") return false;
+  const values = Object.values(value as Record<string, unknown>);
+  return values.length > 0 && values.every(isNullOnlyTargetTree);
+}
+
+function collectExportTargets(value: unknown, subpath = ".", conditions: string[] = []): Array<{ identity: string; target: string; priority_group: string; consumer_path: string }> {
   const encodedSubpath = encodeSubpathIdentityPart(subpath);
-  const identity = `export:${encodedSubpath}${conditions.length > 0 ? `:${conditions.map(encodeConditionIdentityPart).join(".")}` : ""}`;
-  if (typeof value === "string") return [{ identity, target: value, priority_group: `export:${encodedSubpath}` }];
+  const identity = `${packageExportSubpathIdentity(subpath)}${conditions.length > 0 ? `:${conditions.map(encodeConditionIdentityPart).join(".")}` : ""}`;
+  if (typeof value === "string") return [{ identity, target: value, priority_group: `export:${encodedSubpath}`, consumer_path: subpath }];
   if (Array.isArray(value)) return value.flatMap((entry) => collectExportTargets(entry, subpath, conditions));
   if (!value || typeof value !== "object") return [];
   const record = value as Record<string, unknown>;
@@ -66,6 +100,10 @@ function collectExportTargets(value: unknown, subpath = ".", conditions: string[
   return keys.flatMap((key) => subpathMap && key.startsWith(".")
     ? collectExportTargets(record[key], key, [])
     : collectExportTargets(record[key], subpath, [...conditions, key]));
+}
+
+export function packageExportSubpathIdentity(subpath: string): string {
+  return `export:${encodeSubpathIdentityPart(subpath)}`;
 }
 
 function encodeSubpathIdentityPart(value: string): string {

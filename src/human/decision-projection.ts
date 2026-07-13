@@ -82,6 +82,28 @@ function activeIntent(input: BuildDecisionProjectionInput): DecisionProjection["
     };
   }
   if (affected.length > 0) {
+    const totalRequirements = input.packet.intent.requirements.length;
+    const areas = summarizeRequirementAreas(affected);
+    const affectedShare = totalRequirements > 0 ? affected.length / totalRequirements : 0;
+    const broadScope = affected.length >= 3 && (areas.length >= 3 || affectedShare >= 0.25);
+    if (broadScope) {
+      const milestone = input.packet.agent_handoff?.current_milestone?.trim();
+      const visibleAreas = areas.slice(0, 3).map(({ label }) => label);
+      const omittedAreas = Math.max(0, areas.length - visibleAreas.length);
+      const areaSuffix = omittedAreas > 0 ? ` (+${omittedAreas} more)` : "";
+      const goal = input.packet.intent.summary.trim() || "Review the changed behavior.";
+      const milestoneContext = milestone ? ` Current milestone: ${milestone}.` : "";
+      return {
+        summary: boundedText(
+          `${goal}${milestoneContext} Affected areas: ${visibleAreas.join(", ")}${areaSuffix}. Scope: ${affected.length} of ${totalRequirements} requirements are affected.`,
+          2000,
+          "Packet intent."
+        ),
+        source: "packet",
+        requirement_ids: uniqueStrings(affected.flatMap((requirement) => [requirement.id, requirement.acai_id].filter((id): id is string => Boolean(id)))),
+        event_ids: []
+      };
+    }
     return {
       summary: summarizeAffectedIntent(affected),
       source: "affected_requirements",
@@ -95,6 +117,21 @@ function activeIntent(input: BuildDecisionProjectionInput): DecisionProjection["
     requirement_ids: [],
     event_ids: []
   };
+}
+
+function summarizeRequirementAreas(requirements: ReviewPacket["intent"]["requirements"]): Array<{ label: string; count: number; key: string }> {
+  const areas = new Map<string, { label: string; count: number; key: string }>();
+  for (const requirement of requirements) {
+    const acid = requirement.acai_id ?? requirement.id;
+    const key = acid.replace(/\.\d+$/u, "");
+    const existing = areas.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      areas.set(key, { label: requirement.title?.trim() || key, count: 1, key });
+    }
+  }
+  return [...areas.values()].sort((left, right) => right.count - left.count || left.key.localeCompare(right.key));
 }
 
 function affectedRequirements(input: BuildDecisionProjectionInput): ReviewPacket["intent"]["requirements"] {

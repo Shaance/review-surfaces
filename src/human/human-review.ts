@@ -203,6 +203,10 @@ interface QueueDraft {
   // ranking reason must be the deterministic signal, not a "ranked by risk severity"
   // line that reads as a risk assessment.
   baseline?: string;
+  // A path/range-backed detector can outrank generic changed-file fallbacks;
+  // packet-wide aggregates cannot, because they are less specific than the
+  // changed-file action they would displace.
+  detector_specificity?: "concrete" | "aggregate" | "fallback";
 }
 
 type TestPlanDraft = Omit<TestPlanItem, "id">;
@@ -2223,7 +2227,8 @@ function buildReviewQueue(
       score:
         (policyOverride ? scorePrRiskWithPriority(risk, anchor, policyOverride.priority) : scorePrRisk(risk, anchor)) +
         (suppressedByPolicy || feedbackDowngrade ? -60 : 0),
-      sortKey: `${risk.id}:${first.path}`
+      sortKey: `${risk.id}:${first.path}`,
+      detector_specificity: aggregate ? "aggregate" : "concrete"
     });
   }
 
@@ -2273,7 +2278,8 @@ function buildReviewQueue(
       priority: priorityForSeverity(risk.severity),
       estimated_review_effort: effortForSeverity(risk.severity),
       score: severityWeight(risk.severity) + 10 + (anchor.line_start ? 5 : 0) + (anchor.hunk_header ? 5 : 0),
-      sortKey: `${risk.id}:${first.path}`
+      sortKey: `${risk.id}:${first.path}`,
+      detector_specificity: aggregate ? "aggregate" : "concrete"
     });
   }
 
@@ -2343,8 +2349,32 @@ function buildReviewQueue(
   // an item.
   applyRankingEvidence(drafts, input, input.rankingEvidence ?? emptyRankingEvidence());
 
+  const specificityRank = (draft: QueueDraft): number => {
+    if (draft.detector_specificity === "fallback") return 1;
+    if (draft.detector_specificity === "aggregate") return 2;
+    if (draft.baseline) return 3;
+    return 0;
+  };
+
+  // A concrete detector already supplies the precise action for this path;
+  // retain a changed-file fallback beside packet-wide aggregates, but never
+  // duplicate the same path beside a range-backed detector finding.
+  const concretePaths = new Set(drafts
+    .filter((draft) => draft.detector_specificity === "concrete")
+    .flatMap((draft) => [draft.path, draft.old_path].filter((path): path is string => Boolean(path))));
+  for (let index = drafts.length - 1; index >= 0; index -= 1) {
+    const draft = drafts[index];
+    if (draft.detector_specificity === "fallback" &&
+      ((draft.path && concretePaths.has(draft.path)) || (draft.old_path && concretePaths.has(draft.old_path)))) {
+      drafts.splice(index, 1);
+    }
+  }
   drafts.sort(
     (left, right) =>
+      // Once a detector has found concrete work, generic changed-file reading
+      // prompts are supporting context and must never displace it from the
+      // reviewer-facing top N.
+      specificityRank(left) - specificityRank(right) ||
       right.score - left.score ||
       (left.evidenceTier ?? 0) - (right.evidenceTier ?? 0) ||
       compareStrings(left.sortKey, right.sortKey)
@@ -2741,7 +2771,9 @@ function changedFileQueueDrafts(
         priority: priorityForChangedFile(file),
         estimated_review_effort: file.role === "test" ? "quick" as const : "moderate" as const,
         score: changedFileQueueWeight(file) + (anchor.line_start ? 8 : 0) + (anchor.hunk_header ? 8 : 0),
-        sortKey: `changed:${file.path}`
+        sortKey: `changed:${file.path}`,
+        baseline: "ranked by deterministic changed-file signals (no scoped PR risk candidate fired): role, affected area, and churn.",
+        detector_specificity: "fallback"
       };
     });
 }
