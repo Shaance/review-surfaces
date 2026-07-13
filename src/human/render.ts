@@ -29,6 +29,7 @@ import {
   conversationInsightCitationGroups,
   conversationInsightsForRender,
   conversationReviewPresentation,
+  hasConversationReviewValue,
   visibleConversationInsights
 } from "./conversation-review-presentation";
 import type {
@@ -196,6 +197,8 @@ export async function writeHumanStandaloneArtifact(
 }
 
 export function renderHumanReviewMarkdown(model: HumanReviewModel, context: HumanRenderContext = {}): string {
+  const conversationSection = `## Conversation-aware insights\n\n${renderConversationInsightsMarkdown(model)}\n\n`;
+  const conversationLeads = hasConversationReviewValue(model);
   return `# Human Review
 
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
@@ -213,7 +216,7 @@ ${bullets(model.verdict.reasons.slice(0, MAX_BLOCKERS).map((reason) => `${reason
 
 ${renderDecisionProjectionMarkdown(model)}
 
-## Review first
+${conversationLeads ? conversationSection : ""}## Review first
 
 ${renderReviewFirst(model, partitionPrimary(model.review_queue).primary, context, 1)}
 ${supportingQueueNote(model.review_queue.length, PRIMARY_SURFACE_LIMIT)}
@@ -235,11 +238,7 @@ ${renderPrimaryChecks(model.test_plan)}
 
 ${renderTrustSummary(model.trust_audit)}
 
-## Conversation-aware insights
-
-${renderConversationInsightsMarkdown(model)}
-
-## Reading order
+${conversationLeads ? "" : conversationSection}## Reading order
 
 ${renderReadingOrderSection(model.reading_order)}
 

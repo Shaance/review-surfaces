@@ -73,6 +73,8 @@ export interface SemanticDiffSources {
   sourceRoots?: readonly string[];
   baseSourceRoots?: readonly string[];
   headSourceRoots?: readonly string[];
+  basePackageSourcePatterns?: ReadonlyMap<string, readonly string[]>;
+  headPackageSourcePatterns?: ReadonlyMap<string, readonly string[]>;
 }
 
 export function emptySemanticChangeFacts(): SemanticChangeFacts {
@@ -168,8 +170,16 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
   const api_changes: ApiSurfaceChange[] = [];
   const headPackageJson = sources.readHead("package.json");
   const basePackageJson = sources.readBase("package.json");
-  const baseEntries = listPackageContractEntries(basePackageJson, sources.baseSourceRoots ?? sources.sourceRoots ?? []);
-  const headEntries = listPackageContractEntries(headPackageJson, sources.headSourceRoots ?? sources.sourceRoots ?? []);
+  const baseEntries = listPackageContractEntries(
+    basePackageJson,
+    sources.baseSourceRoots ?? sources.sourceRoots ?? [],
+    sources.basePackageSourcePatterns
+  );
+  const headEntries = listPackageContractEntries(
+    headPackageJson,
+    sources.headSourceRoots ?? sources.sourceRoots ?? [],
+    sources.headPackageSourcePatterns
+  );
   const basePackageExclusions = listPackageContractExclusions(basePackageJson);
   const baseExclusionPatterns = basePackageExclusions.map((exclusion) => exclusion.consumer_path);
   const baseExclusionIdentities = new Set(basePackageExclusions.map(({ surface }) => surface.identity));
@@ -194,12 +204,14 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
   const headContractSurface = createApiContractSurfaceClassifier({
     packageJson: headPackageJson,
     configuredPaths: sources.contractPaths,
-    sourceRoots: sources.headSourceRoots ?? sources.sourceRoots
+    sourceRoots: sources.headSourceRoots ?? sources.sourceRoots,
+    packageSourcePatterns: sources.headPackageSourcePatterns
   });
   const baseContractSurface = createApiContractSurfaceClassifier({
     packageJson: basePackageJson,
     configuredPaths: sources.contractPaths,
-    sourceRoots: sources.baseSourceRoots ?? sources.sourceRoots
+    sourceRoots: sources.baseSourceRoots ?? sources.sourceRoots,
+    packageSourcePatterns: sources.basePackageSourcePatterns
   });
   for (const file of sources.diff.files) {
     if (isJsonSchemaPath(file.path)) {
@@ -329,10 +341,13 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
     if (!headGroup) continue;
     const baseSources = baseGroup.map((entry) => entry.surface.source);
     const headSources = headGroup.map((entry) => entry.surface.source);
+    // A stable first fallback remains the selected target. Later entries are
+    // shadowed, so replacing or deleting them cannot change the public API.
+    if (baseSources[0] === headSources[0]) continue;
     if (isOrderedSubsequence(headSources, baseSources)) {
       // Removing later fallbacks does not change the selected target. Removing
       // the first fallback does, so compare the old and newly selected APIs.
-      if (baseSources[0] !== headSources[0]) comparePackageTargets(identity, baseGroup[0], headGroup[0]);
+      comparePackageTargets(identity, baseGroup[0], headGroup[0]);
       continue;
     }
     const sharedPriorityChanged = sharedPackageEntryPriorityChanged(baseGroup, headGroup);

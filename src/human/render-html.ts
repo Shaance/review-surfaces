@@ -25,7 +25,8 @@ import {
   conversationInsightBasisLabel,
   conversationInsightCitationGroups,
   conversationInsightsForRender,
-  conversationReviewPresentation
+  conversationReviewPresentation,
+  hasConversationReviewValue
 } from "./conversation-review-presentation";
 import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
 import { renderChangeMapOverviewSvg, renderChangeMapSvg, SVG_LENS_FILLS } from "./render-svg-map";
@@ -156,6 +157,7 @@ ${incompleteReviewScopeText(model.generated_from.omitted_untracked_files ?? 0) ?
 <p>${esc(model.summary)}</p>
 ${renderDecisionProjection(model)}
 
+${hasConversationReviewValue(model) ? renderConversationInsights(model) : ""}
 <h2 id="queue">Review queue</h2>
 <p class="filters" id="file-filter-note" hidden>Filtered to <code id="file-filter-path"></code> <button data-clear-file-filter>show all</button></p>
 ${queueHtml}
@@ -174,7 +176,7 @@ ${renderRequiredChecks(model)}
 <h2 id="trust-summary">Trust summary</h2>
 ${renderTrustSummary(model)}
 
-${renderConversationInsights(model)}
+${hasConversationReviewValue(model) ? "" : renderConversationInsights(model)}
 <h2 id="reading-order">Reading order</h2>
 ${renderReadingOrder(model)}
 

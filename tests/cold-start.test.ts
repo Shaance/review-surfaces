@@ -10,7 +10,8 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import { computeSemanticChangeFacts, SemanticDiffSources } from "../src/risks/semantic-diff";
-import { clusterOfPath, detectContractSourceRoots, detectImplementationRoots } from "../src/core/source-roots";
+import { clusterOfPath, detectContractSourceProjection, detectContractSourceRoots, detectImplementationRoots } from "../src/core/source-roots";
+import { classifyApiContractSurface } from "../src/risks/contract-surface";
 import { buildChangeGraphSections } from "../src/human/change-graph";
 import { createEvalFixture } from "./helpers/eval-fixture";
 
@@ -110,6 +111,51 @@ test("review-surfaces.REVIEWER_VALUE.11 preserves a root-level contract source s
       "the contract-only root sentinel never becomes a change-map implementation root"
     );
   }
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 infers a root-level source behind compiled package output", () => {
+  for (const outputRoot of ["dist", "lib"] as const) {
+    const files = ["package.json", "index.ts", `${outputRoot}/index.js`, "src/browser.ts", "src/cli.ts", "src/index.ts", "src/types.ts", "README.md"];
+    const contents: Record<string, string> = {
+      "package.json": JSON.stringify({
+        main: `${outputRoot}/index.js`,
+        module: `${outputRoot}/browser.js`,
+        types: `${outputRoot}/types.d.ts`,
+        bin: { cli: `${outputRoot}/cli.js` }
+      })
+    };
+    const projection = detectContractSourceProjection({ files, read: (filePath) => contents[filePath] });
+    const options = { packageJson: contents["package.json"], sourceRoots: projection.roots, packageSourcePatterns: projection.sourcePatternsByTarget };
+    assert.deepEqual(projection.roots, [".", "src"], `mixed ${outputRoot} entries retain every evidence-backed source root`);
+    assert.equal(classifyApiContractSurface("index.ts", options)?.kind, "package_entry");
+    assert.equal(classifyApiContractSurface("src/browser.ts", options)?.kind, "package_entry");
+    assert.equal(classifyApiContractSurface("src/cli.ts", options)?.kind, "package_entry");
+    assert.equal(classifyApiContractSurface("src/types.ts", options)?.kind, "package_entry");
+    assert.equal(classifyApiContractSurface("src/index.ts", options), undefined, "the root main entry does not fan out to a nested namesake");
+  }
+
+  const conditionalFiles = ["package.json", "index.mts", "src/browser.cts"];
+  const conditionalPackage = JSON.stringify({
+    exports: { ".": { import: "./dist/index.mjs", require: "./dist/browser.cjs" } }
+  });
+  const conditionalProjection = detectContractSourceProjection({
+    files: conditionalFiles,
+    read: (filePath) => filePath === "package.json" ? conditionalPackage : undefined
+  });
+  const conditionalOptions = { packageJson: conditionalPackage, sourceRoots: conditionalProjection.roots, packageSourcePatterns: conditionalProjection.sourcePatternsByTarget };
+  assert.deepEqual(conditionalProjection.roots, [".", "src"]);
+  assert.equal(classifyApiContractSurface("index.mts", conditionalOptions)?.kind, "package_export");
+  assert.equal(classifyApiContractSurface("src/browser.cts", conditionalOptions)?.kind, "package_export");
+
+  const wildcardPackage = JSON.stringify({ exports: { ".": "./dist/index.js", "./*": "./dist/*.js" } });
+  const wildcardProjection = detectContractSourceProjection({
+    files: ["package.json", "index.ts", "src/feature.ts"],
+    read: (filePath) => filePath === "package.json" ? wildcardPackage : undefined
+  });
+  const wildcardOptions = { packageJson: wildcardPackage, sourceRoots: wildcardProjection.roots, packageSourcePatterns: wildcardProjection.sourcePatternsByTarget };
+  assert.deepEqual(wildcardProjection.roots, [".", "src"]);
+  assert.equal(classifyApiContractSurface("index.ts", wildcardOptions)?.identity, "export:.");
+  assert.equal(classifyApiContractSurface("src/feature.ts", wildcardOptions)?.binding, "export:./feature");
 });
 
 test("review-surfaces.REVIEWER_VALUE.11 prefers explicit tsconfig include roots over committed package output", () => {

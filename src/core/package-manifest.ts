@@ -14,6 +14,60 @@ export interface PackageManifestTarget {
   consumer_path?: string;
 }
 
+export function packageTargetPrefersRootSource(
+  target: Pick<PackageManifestTarget, "kind" | "field" | "consumer_path">
+): boolean {
+  return target.consumer_path === "." || (target.kind === "entry" && target.field !== "bin");
+}
+
+export interface CompiledPackageTarget {
+  outputRoot: "dist" | "build" | "out" | "lib";
+  relativePath: string;
+}
+
+export function parseCompiledPackageTarget(target: string): CompiledPackageTarget | undefined {
+  const normalized = target.replace(/\\/gu, "/").replace(/^\.\//u, "");
+  const match = /^(dist|build|out|lib)\/(.+)$/u.exec(normalized);
+  return match ? {
+    outputRoot: match[1] as CompiledPackageTarget["outputRoot"],
+    relativePath: match[2]
+  } : undefined;
+}
+
+export function packageTargetSourceVariants(
+  value: string,
+  probeExtensionlessLegacyEntry: boolean
+): string[] {
+  const candidates = new Set<string>([value]);
+  if (probeExtensionlessLegacyEntry && !value.includes("*") && !/\.[^/]+$/u.test(value)) {
+    for (const extension of ["ts", "tsx", "mts", "cts"]) candidates.add(`${value}.${extension}`);
+  }
+  if (/\.jsx$/u.test(value)) {
+    candidates.add(`${value.slice(0, -4)}.tsx`);
+  } else if (/\.(mjs|cjs|js)$/u.test(value)) {
+    const stem = value.replace(/\.(mjs|cjs|js)$/u, "");
+    for (const extension of ["ts", "tsx", "mts", "cts"]) candidates.add(`${stem}.${extension}`);
+  }
+  if (/\.d\.(mts|cts|ts)$/u.test(value)) {
+    const stem = value.replace(/\.d\.(mts|cts|ts)$/u, "");
+    for (const extension of ["ts", "tsx", "mts", "cts"]) candidates.add(`${stem}.${extension}`);
+  }
+  return [...candidates].filter(Boolean).sort(compareStrings);
+}
+
+export function compilePackageTargetPathMatcher(
+  pattern: string
+): (value: string) => { capture?: string } | undefined {
+  const parts = pattern.split("*");
+  if (parts.length < 2) return (value) => value === pattern ? {} : undefined;
+  const tail = escapeRegExp(parts[1]) + parts.slice(2).map((part) => `\\k<binding>${escapeRegExp(part)}`).join("");
+  const expression = new RegExp(`^${escapeRegExp(parts[0])}(?<binding>.+?)${tail}$`, "u");
+  return (value) => {
+    const capture = expression.exec(value)?.groups?.binding;
+    return capture === undefined ? undefined : { capture };
+  };
+}
+
 export function parsePackageManifest(value: string | undefined): Record<string, unknown> | undefined {
   if (!value) return undefined;
   try {
@@ -29,7 +83,7 @@ export function parsePackageManifest(value: string | undefined): Record<string, 
 /** Deterministically collect package entry targets shared by source-root and contract analysis. */
 export function collectPackageManifestTargets(manifest: Record<string, unknown>): PackageManifestTarget[] {
   const targets: PackageManifestTarget[] = [];
-  const hasExports = Object.prototype.hasOwnProperty.call(manifest, "exports");
+  const hasExports = manifest.exports !== null && Object.prototype.hasOwnProperty.call(manifest, "exports");
   for (const entry of collectExportTargets(manifest.exports)) {
     targets.push({
       kind: "export",
@@ -41,9 +95,10 @@ export function collectPackageManifestTargets(manifest: Record<string, unknown>)
     });
   }
   for (const field of ["main", "module", "types", "typings"] as const) {
-    // Node package resolution gives an authored `exports` field precedence
-    // over the legacy `main` root, even when `exports` is empty or null. Keep
-    // bundler/declaration metadata independent: `module`, `types`, and
+    // Node package resolution gives a non-null authored `exports` field
+    // precedence over the legacy `main` root. A top-level JSON null behaves as
+    // an absent exports field, while `{ ".": null }` explicitly blocks root.
+    // Keep bundler/declaration metadata independent: `module`, `types`, and
     // `typings` remain distinct supported consumer surfaces.
     if (hasExports && field === "main") continue;
     const target = manifest[field];
@@ -80,7 +135,7 @@ export function collectPackageManifestTargets(manifest: Record<string, unknown>)
 /** Unconditional consumer subpaths explicitly blocked with a top-level null target. */
 export function collectPackageExportExclusions(manifest: Record<string, unknown>): string[] {
   const value = manifest.exports;
-  if (value === null) return ["."];
+  if (value === null) return [];
   if (!value || typeof value !== "object" || Array.isArray(value)) return [];
   const record = value as Record<string, unknown>;
   const subpathKeys = Object.keys(record).filter((key) => key.startsWith("."));
@@ -103,7 +158,12 @@ function isNullOnlyTargetTree(value: unknown): boolean {
 function collectExportTargets(value: unknown, subpath = ".", conditions: string[] = []): Array<{ identity: string; target: string; priority_group: string; consumer_path: string }> {
   const encodedSubpath = encodeSubpathIdentityPart(subpath);
   const identity = `${packageExportSubpathIdentity(subpath)}${conditions.length > 0 ? `:${conditions.map(encodeConditionIdentityPart).join(".")}` : ""}`;
-  if (typeof value === "string") return [{ identity, target: value, priority_group: `export:${encodedSubpath}`, consumer_path: subpath }];
+  // Node package exports accept only package-relative targets. Invalid entries
+  // in fallback arrays are skipped during resolution and must not become the
+  // apparent selected contract target.
+  if (typeof value === "string") return validPackageExportTarget(value)
+    ? [{ identity, target: value, priority_group: `export:${encodedSubpath}`, consumer_path: subpath }]
+    : [];
   if (Array.isArray(value)) return value.flatMap((entry) => collectExportTargets(entry, subpath, conditions));
   if (!value || typeof value !== "object") return [];
   const record = value as Record<string, unknown>;
@@ -116,6 +176,25 @@ function collectExportTargets(value: unknown, subpath = ".", conditions: string[
   return keys.flatMap((key) => subpathMap && key.startsWith(".")
     ? collectExportTargets(record[key], key, [])
     : collectExportTargets(record[key], subpath, soleDefault ? conditions : [...conditions, key]));
+}
+
+function validPackageExportTarget(target: string): boolean {
+  if (!target.startsWith("./") || /%2f|%5c/iu.test(target)) return false;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(target);
+  } catch {
+    return false;
+  }
+  const relative = decoded.slice(2).replace(/\\/gu, "/");
+  if (!relative || relative.startsWith("/")) return false;
+  return !relative.split("/").some((segment) =>
+    segment === "." || segment === ".." || segment.toLowerCase() === "node_modules"
+  );
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[|\\{}()[\]^$+?.]/gu, "\\$&");
 }
 
 export function packageExportSubpathIdentity(subpath: string): string {

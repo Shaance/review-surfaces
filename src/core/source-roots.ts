@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { compareStrings } from "./compare";
-import { collectPackageManifestTargets, parsePackageManifest } from "./package-manifest";
+import { collectPackageManifestTargets, compilePackageTargetPathMatcher, packageTargetPrefersRootSource, packageTargetSourceVariants, parseCompiledPackageTarget, parsePackageManifest } from "./package-manifest";
 
 // review-surfaces.COLD_START.2: derive a target repository's implementation
 // roots from its OWN signals instead of a hardcoded src|bin|lib list (the
@@ -46,6 +46,11 @@ export interface SourceRootSignals {
   files: string[];
   /** Committed content reader for tsconfig.json / package.json. */
   read: (filePath: string) => string | undefined;
+}
+
+export interface ContractSourceProjection {
+  roots: string[];
+  sourcePatternsByTarget: ReadonlyMap<string, readonly string[]>;
 }
 
 export function detectImplementationRoots(signals: SourceRootSignals): string[] {
@@ -124,15 +129,20 @@ export function detectImplementationRoots(signals: SourceRootSignals): string[] 
   return [...roots].sort(compareStrings);
 }
 
-/** Source roots safe for compiled package-entry projection; explicit tsconfig roots win. */
-export function detectContractSourceRoots(signals: SourceRootSignals): string[] {
+/** Source roots and exact per-package-target patterns; explicit tsconfig roots win. */
+export function detectContractSourceProjection(signals: SourceRootSignals): ContractSourceProjection {
   const files = [...signals.files].sort(compareStrings);
+  const readCache = new Map<string, string | undefined>();
+  const read = (filePath: string): string | undefined => {
+    if (!readCache.has(filePath)) readCache.set(filePath, signals.read(filePath));
+    return readCache.get(filePath);
+  };
   const topDirs = new Set(files.flatMap((filePath) => {
     const slash = filePath.indexOf("/");
     return slash > 0 ? [filePath.slice(0, slash)] : [];
   }));
   const explicit = new Set<string>();
-  const tsconfigText = signals.read("tsconfig.json");
+  const tsconfigText = read("tsconfig.json");
   if (tsconfigText !== undefined) {
     const parsed = ts.parseConfigFileTextToJson("tsconfig.json", tsconfigText).config as
       | { compilerOptions?: { rootDir?: unknown; rootDirs?: unknown }; include?: unknown }
@@ -153,8 +163,83 @@ export function detectContractSourceRoots(signals: SourceRootSignals): string[] 
       }
     }
   }
-  if (explicit.size > 0) return [...explicit].sort(compareStrings);
-  return detectImplementationRoots({ files, read: signals.read }).filter((root) => topDirs.has(root));
+  if (explicit.size > 0) return { roots: [...explicit].sort(compareStrings), sourcePatternsByTarget: new Map() };
+  const packageProjection = compiledPackageSourceProjection(files, read("package.json"), topDirs);
+  if (packageProjection.roots.length > 0) return packageProjection;
+  return {
+    roots: detectImplementationRoots({ files, read }).filter((root) => topDirs.has(root)),
+    sourcePatternsByTarget: new Map()
+  };
+}
+
+/** Compatibility wrapper for consumers that only need the roots. */
+export function detectContractSourceRoots(signals: SourceRootSignals): string[] {
+  return detectContractSourceProjection(signals).roots;
+}
+
+function compiledPackageSourceProjection(
+  files: readonly string[],
+  packageText: string | undefined,
+  topDirs: ReadonlySet<string>
+): ContractSourceProjection {
+  const manifest = parsePackageManifest(packageText);
+  if (!manifest) return { roots: [], sourcePatternsByTarget: new Map() };
+  const compiledTargets = collectPackageManifestTargets(manifest).flatMap((target) => {
+    if (target.kind === "file") return [];
+    const compiled = parseCompiledPackageTarget(target.target);
+    return compiled ? [{ ...target, compiled }] : [];
+  });
+  if (compiledTargets.length === 0) return { roots: [], sourcePatternsByTarget: new Map() };
+  const eligibleRoots = new Set([".", ...topDirs].filter((root) => !NON_ROOT_DIRS.has(root)));
+  const sourceCandidatesByRelativePath = new Map<string, Array<{ root: string; sourcePath: string }>>();
+  for (const sourcePath of files) {
+    if (!SOURCE_EXTENSION.test(sourcePath) || TEST_PATH.test(sourcePath)) continue;
+    const candidates = [{ root: ".", relativePath: sourcePath }];
+    const slash = sourcePath.indexOf("/");
+    if (slash > 0) {
+      const root = sourcePath.slice(0, slash);
+      if (eligibleRoots.has(root)) candidates.push({ root, relativePath: sourcePath.slice(slash + 1) });
+    }
+    for (const candidate of candidates) {
+      const indexed = sourceCandidatesByRelativePath.get(candidate.relativePath) ?? [];
+      indexed.push({ root: candidate.root, sourcePath });
+      sourceCandidatesByRelativePath.set(candidate.relativePath, indexed);
+    }
+  }
+  const roots = new Set<string>();
+  const sourcePatternsByTarget = new Map<string, readonly string[]>();
+  for (const { kind, field, target, compiled, consumer_path: consumerPath } of compiledTargets) {
+    const variants = packageTargetSourceVariants(compiled.relativePath, kind === "entry" && field !== "bin");
+    const preferRootSource = packageTargetPrefersRootSource({ kind, field, consumer_path: consumerPath });
+    const matchingPatterns = new Set<string>();
+    for (const variant of variants) {
+      const matcher = compilePackageTargetPathMatcher(variant);
+      const relativePaths = variant.includes("*")
+        ? sourceCandidatesByRelativePath.keys()
+        : [variant];
+      const matchingCandidates: Array<{ root: string; sourcePath: string }> = [];
+      for (const relativePath of relativePaths) {
+        if (matcher(relativePath) === undefined) continue;
+        for (const candidate of sourceCandidatesByRelativePath.get(relativePath) ?? []) {
+          if (candidate.root === compiled.outputRoot) continue;
+          matchingCandidates.push(candidate);
+        }
+      }
+      const hasRootCandidate = matchingCandidates.some((candidate) => candidate.root === ".");
+      const hasNestedCandidate = matchingCandidates.some((candidate) => candidate.root !== ".");
+      const preferredCandidates = preferRootSource && hasRootCandidate
+        ? matchingCandidates.filter((candidate) => candidate.root === ".")
+        : !preferRootSource && hasNestedCandidate
+          ? matchingCandidates.filter((candidate) => candidate.root !== ".")
+          : matchingCandidates;
+      for (const candidate of preferredCandidates) {
+        roots.add(candidate.root);
+        matchingPatterns.add(candidate.root === "." ? variant : `${candidate.root}/${variant}`);
+      }
+    }
+    if (matchingPatterns.size > 0) sourcePatternsByTarget.set(target, [...matchingPatterns].sort(compareStrings));
+  }
+  return { roots: [...roots].sort(compareStrings), sourcePatternsByTarget };
 }
 
 // The first path segment of an entry-point or include pattern, stopping at the

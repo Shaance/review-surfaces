@@ -85,7 +85,7 @@ import { buildHumanReview, humanReviewConfigSignature } from "../human/human-rev
 import { ChangedImportEdge, ChangeGraphAreaInsight, ChangeGraphEdgeInsight, computeChangedImportEdges } from "../human/change-graph";
 import { buildChangeMapInsights, ChangeMapInsights } from "../human/change-map-insights";
 import { ArchDriftResult, boundArchDriftByGraphCompleteness, computeArchDriftFacts, moduleOf } from "../risks/arch-drift";
-import { clusterOfPath, detectContractSourceRoots, detectImplementationRoots, DEFAULT_IMPLEMENTATION_ROOTS } from "../core/source-roots";
+import { clusterOfPath, detectContractSourceProjection, detectImplementationRoots, DEFAULT_IMPLEMENTATION_ROOTS, type ContractSourceProjection } from "../core/source-roots";
 import { EvalScoreboardSummary, HUMAN_REVIEW_DECISIONS, RoundsLedgerEntry } from "../human/contract";
 import { buildChangeNarrative } from "../human/narrative";
 import { ChangeNarrative, HumanReviewModel, ReviewQueueItem } from "../human/contract";
@@ -1959,7 +1959,7 @@ function buildHumanReviewForPacket(
   // from committed signals; the change map, tour, and drift facts all consume
   // the same value so they cannot disagree on what counts as implementation.
   const implementationRoots = detectRootsForPacket(cwd, factReaders);
-  const contractSourceRoots = detectContractRootsForPacket(cwd, factReaders);
+  const contractSourceProjection = detectContractRootsForPacket(cwd, factReaders);
   const humanReview = buildHumanReview({
     packet,
     prSurface,
@@ -1976,7 +1976,7 @@ function buildHumanReviewForPacket(
     // facts are present uniformly on every build path — main, cache, standalone.
     semanticFacts: withBlastRadius(
       cwd,
-      computeSemanticFactsForPacket(resolvedDiff, factReaders, effectiveConfig?.contract_surfaces.paths, contractSourceRoots),
+      computeSemanticFactsForPacket(resolvedDiff, factReaders, effectiveConfig?.contract_surfaces.paths, contractSourceProjection),
       factReaders
     ),
     // review-surfaces.RANKING.1: per-changed-impl-path evidence (changed test ->
@@ -2023,7 +2023,10 @@ function computeSemanticFactsForPacket(
   diff: StructuredDiff | undefined,
   readers: FactReaders | undefined,
   contractPaths: readonly string[] = [],
-  sourceRoots: { base: readonly string[]; head: readonly string[] } = { base: [], head: [] }
+  sourceProjection: { base: ContractSourceProjection; head: ContractSourceProjection } = {
+    base: { roots: [], sourcePatternsByTarget: new Map() },
+    head: { roots: [], sourcePatternsByTarget: new Map() }
+  }
 ): SemanticChangeFacts {
   if (!diff || diff.files.length === 0 || !readers) {
     return emptySemanticChangeFacts();
@@ -2033,8 +2036,10 @@ function computeSemanticFactsForPacket(
     readBase: readers.readBase,
     readHead: readers.readHead,
     contractPaths,
-    baseSourceRoots: sourceRoots.base,
-    headSourceRoots: sourceRoots.head
+    baseSourceRoots: sourceProjection.base.roots,
+    headSourceRoots: sourceProjection.head.roots,
+    basePackageSourcePatterns: sourceProjection.base.sourcePatternsByTarget,
+    headPackageSourcePatterns: sourceProjection.head.sourcePatternsByTarget
   });
 }
 
@@ -2128,14 +2133,15 @@ function detectRootsForPacket(cwd: string, readers: FactReaders | undefined): st
 function detectContractRootsForPacket(
   cwd: string,
   readers: FactReaders | undefined
-): { base: string[]; head: string[] } {
-  if (!readers) return { base: [], head: [] };
-  const detect = (args: string[], read: (path: string) => string | undefined): string[] => {
+): { base: ContractSourceProjection; head: ContractSourceProjection } {
+  const empty = (): ContractSourceProjection => ({ roots: [], sourcePatternsByTarget: new Map() });
+  if (!readers) return { base: empty(), head: empty() };
+  const detect = (args: string[], read: (path: string) => string | undefined): ContractSourceProjection => {
     try {
       const files = execFileSync("git", args, { cwd, encoding: "utf8" }).split("\n").filter(Boolean);
-      return detectContractSourceRoots({ files, read });
+      return detectContractSourceProjection({ files, read });
     } catch {
-      return [];
+      return empty();
     }
   };
   return {
@@ -2145,7 +2151,7 @@ function detectContractRootsForPacket(
     ),
     base: readers.baseReadRef
       ? detect(["ls-tree", "-r", "--name-only", readers.baseReadRef], readers.readBase)
-      : []
+      : empty()
   };
 }
 

@@ -382,6 +382,12 @@ test("review-surfaces.REVIEWER_VALUE.11 null package exports exclude private wil
     sourceRoots: ["src"]
   }), undefined, "a root exports exclusion takes precedence over the legacy main entry");
 
+  const absentExportsRoot = JSON.stringify({ main: "./src/index.js", exports: null });
+  assert.equal(classifyApiContractSurface("src/index.ts", {
+    packageJson: absentExportsRoot,
+    sourceRoots: ["src"]
+  })?.kind, "package_entry", "top-level null exports falls back to the legacy main entry");
+
   const narrowerPositive = JSON.stringify({
     exports: {
       "./features/*": null,
@@ -596,6 +602,18 @@ test("review-surfaces.REVIEWER_VALUE.11 detects package-only removals but not st
     [],
     "moving the same root target from main to exports preserves the consumer contract"
   );
+
+  const topLevelNullExports = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ main: "./src/index.js" })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ main: "./src/index.js", exports: null })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    sourceRoots: ["src"]
+  });
+  assert.deepEqual(topLevelNullExports.api_changes, [], "top-level null exports preserves the legacy main root contract");
 
   const changedRootThroughExports = computeSemanticChangeFacts({
     diff: parseStructuredDiff(packageDiff),
@@ -866,6 +884,27 @@ test("review-surfaces.REVIEWER_VALUE.11 matches unchanged package fallback targe
   assert.equal(removedIncompatibleFirstFallback.api_changes[0]?.path, "package.json");
   assert.equal(removedIncompatibleFirstFallback.api_changes[0]?.contract_target_changed, undefined);
   assert.equal(isBreakingApiChange(removedIncompatibleFirstFallback.api_changes[0]), true);
+
+  const shadowedFallbackReplacement = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } }) : path === "src/a.ts" ? "export const value = 1;" : path === "src/b.ts" ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/c.ts"] } }) : path === "src/a.ts" ? "export const value = 1;" : path === "src/c.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.deepEqual(shadowedFallbackReplacement.api_changes, [], "later fallback replacements stay quiet while the selected first target is unchanged");
+
+  const invalidFirstFallbackReplacement = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["not:valid", "./src/a.ts"] } }) : path === "src/a.ts" ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["not:valid", "./src/b.ts"] } }) : path === "src/b.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.equal(isBreakingApiChange(invalidFirstFallbackReplacement.api_changes[0]), true, "invalid fallbacks are skipped before comparing the effective selected targets");
+
+  const traversalFirstFallbackReplacement = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./dist/../invalid.js", "./src/a.ts"] } }) : path === "src/a.ts" ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./dist/../invalid.js", "./src/b.ts"] } }) : path === "src/b.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.equal(isBreakingApiChange(traversalFirstFallbackReplacement.api_changes[0]), true, "traversal-invalid fallbacks are skipped before comparing effective targets");
 
   const prepended = computeSemanticChangeFacts({
     diff: parseStructuredDiff(packageDiff),

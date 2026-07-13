@@ -1,6 +1,6 @@
 import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
-import { collectPackageExportExclusions, collectPackageManifestTargets, packageExportSubpathIdentity, parsePackageManifest } from "../core/package-manifest";
+import { collectPackageExportExclusions, collectPackageManifestTargets, compilePackageTargetPathMatcher, packageExportSubpathIdentity, packageTargetPrefersRootSource, packageTargetSourceVariants, parseCompiledPackageTarget, parsePackageManifest } from "../core/package-manifest";
 
 export type ApiContractSurfaceKind = "declaration" | "package_export" | "package_entry" | "configured";
 
@@ -11,6 +11,13 @@ export interface ApiContractSurface {
   identity?: string;
   /** Concrete wildcard binding (for example export:./foo from export:./*). */
   binding?: string;
+}
+
+export interface ApiContractClassifierOptions {
+  packageJson?: string;
+  configuredPaths?: readonly string[];
+  sourceRoots?: readonly string[];
+  packageSourcePatterns?: ReadonlyMap<string, readonly string[]>;
 }
 
 /** Conservative path-only classification for persisted and declaration contracts. */
@@ -29,25 +36,25 @@ export function isExplicitContractSurfacePath(filePath: string): boolean {
  */
 export function classifyApiContractSurface(
   filePath: string,
-  options: { packageJson?: string; configuredPaths?: readonly string[]; sourceRoots?: readonly string[] } = {}
+  options: ApiContractClassifierOptions = {}
 ): ApiContractSurface | undefined {
   return createApiContractSurfaceClassifier(options)(filePath);
 }
 
 export function createApiContractSurfaceClassifier(
-  options: { packageJson?: string; configuredPaths?: readonly string[]; sourceRoots?: readonly string[] } = {}
+  options: ApiContractClassifierOptions = {}
 ): (filePath: string) => ApiContractSurface | undefined {
   const configured = [...(options.configuredPaths ?? [])]
     .sort(compareStrings)
     .map((pattern) => ({ pattern, matcher: globToRegExp(pattern) }));
   const manifest = parsePackageManifest(options.packageJson);
-  const entries = manifest ? packageContractEntries(manifest, options.sourceRoots ?? ["src"]).map((entry) => ({
+  const entries = manifest ? packageContractEntries(manifest, options.sourceRoots ?? ["src"], options.packageSourcePatterns).map((entry) => ({
     ...entry,
-    patterns: entry.patterns.map((pattern) => ({ pattern, match: compilePackagePathMatcher(pattern) }))
+    patterns: entry.patterns.map((pattern) => ({ pattern, match: compilePackageTargetPathMatcher(pattern) }))
   })) : [];
   const exclusions = manifest ? collectPackageExportExclusions(manifest).map((pattern) => ({
     pattern,
-    match: compilePackagePathMatcher(pattern)
+    match: compilePackageTargetPathMatcher(pattern)
   })) : [];
   return (filePath: string): ApiContractSurface | undefined => {
     const normalized = normalizePath(filePath);
@@ -130,11 +137,12 @@ export interface PackageContractEntry {
 
 export function listPackageContractEntries(
   packageJson: string | undefined,
-  sourceRoots: readonly string[] = []
+  sourceRoots: readonly string[] = [],
+  packageSourcePatterns?: ReadonlyMap<string, readonly string[]>
 ): PackageContractEntry[] {
   const manifest = parsePackageManifest(packageJson);
   if (!manifest) return [];
-  return packageContractEntries(manifest, sourceRoots).map(({ kind, source, identity, patterns, priority_group, consumer_path }) => ({
+  return packageContractEntries(manifest, sourceRoots, packageSourcePatterns).map(({ kind, source, identity, patterns, priority_group, consumer_path }) => ({
     surface: { kind, source, identity },
     patterns,
     ...(priority_group ? { priority_group } : {}),
@@ -172,7 +180,11 @@ export function packageExclusionRemovesContract(
   });
 }
 
-function packageContractEntries(manifest: Record<string, unknown>, sourceRoots: readonly string[]): Array<{
+function packageContractEntries(
+  manifest: Record<string, unknown>,
+  sourceRoots: readonly string[],
+  packageSourcePatterns?: ReadonlyMap<string, readonly string[]>
+): Array<{
   kind: "package_export" | "package_entry";
   source: string;
   identity: string;
@@ -190,7 +202,9 @@ function packageContractEntries(manifest: Record<string, unknown>, sourceRoots: 
       patterns: sourcePathPatterns(
         target,
         sourceRoots,
-        kind === "entry" && field !== "bin"
+        kind === "entry" && field !== "bin",
+        packageTargetPrefersRootSource({ kind, field, consumer_path }),
+        packageSourcePatterns
       ),
       ...(priority_group ? { priority_group } : {}),
       ...(consumer_path ? { consumer_path } : {})
@@ -202,43 +216,37 @@ function packageContractEntries(manifest: Record<string, unknown>, sourceRoots: 
 function sourcePathPatterns(
   target: string,
   sourceRoots: readonly string[],
-  probeExtensionlessLegacyEntry: boolean
+  probeExtensionlessLegacyEntry: boolean,
+  preferRootSource: boolean,
+  packageSourcePatterns?: ReadonlyMap<string, readonly string[]>
 ): string[] {
   const normalized = normalizePath(target);
   const roots = [...new Set(sourceRoots.map(normalizePath))].sort(compareStrings);
-  const buildMatch = /^(dist|build|out|lib)\/(.+)$/u.exec(normalized);
+  const compiledTarget = parseCompiledPackageTarget(normalized);
   const candidates = new Set<string>();
-  if (!buildMatch) {
+  const detectedPatterns = packageSourcePatterns?.get(target);
+  if (detectedPatterns) {
+    for (const pattern of detectedPatterns) candidates.add(pattern);
+  } else if (!compiledTarget) {
     candidates.add(normalized);
   } else if (roots.length === 1) {
-    const entryRelative = buildMatch[2];
-    candidates.add(roots[0] === "."
+    const entryRelative = compiledTarget.relativePath;
+    const root = roots[0];
+    candidates.add(root === "."
       ? entryRelative
-      : entryRelative.startsWith(`${roots[0]}/`) ? entryRelative : `${roots[0]}/${entryRelative}`);
-  } else if (roots.includes(buildMatch[1])) {
-    // A build-looking prefix is still source when repository evidence names it
-    // as an implementation root. Never project it across multiple roots.
-    candidates.add(normalized);
-  }
-  for (const value of [...candidates]) {
-    // Legacy package fields commonly omit the compiled extension. `exports`
-    // targets are exact Node resolution targets, so never invent extension
-    // candidates for an extensionless export (a false public contract).
-    if (probeExtensionlessLegacyEntry && !value.includes("*") && !/\.[^/]+$/u.test(value)) {
-      for (const extension of ["ts", "tsx", "mts", "cts"]) candidates.add(`${value}.${extension}`);
-    }
-    if (/\.jsx$/u.test(value)) {
-      candidates.add(`${value.slice(0, -4)}.tsx`);
-    } else if (/\.(mjs|cjs|js)$/u.test(value)) {
-      const stem = value.replace(/\.(mjs|cjs|js)$/u, "");
-      for (const extension of ["ts", "tsx", "mts", "cts"]) candidates.add(`${stem}.${extension}`);
-    }
-    if (/\.d\.(mts|cts|ts)$/u.test(value)) {
-      const stem = value.replace(/\.d\.(mts|cts|ts)$/u, "");
-      for (const extension of ["ts", "tsx", "mts", "cts"]) candidates.add(`${stem}.${extension}`);
+      : entryRelative.startsWith(`${root}/`) ? entryRelative : `${root}/${entryRelative}`);
+  } else if (roots.includes(".")) {
+    const entryRelative = compiledTarget.relativePath;
+    const projectionRoots = preferRootSource ? ["."] : roots.filter((root) => root !== ".");
+    for (const root of projectionRoots) {
+      candidates.add(root === "."
+        ? entryRelative
+        : entryRelative.startsWith(`${root}/`) ? entryRelative : `${root}/${entryRelative}`);
     }
   }
-  return [...candidates].filter(Boolean).sort(compareStrings);
+  return [...new Set([...candidates].flatMap((value) =>
+    packageTargetSourceVariants(value, probeExtensionlessLegacyEntry)
+  ))].sort(compareStrings);
 }
 
 function normalizePath(value: string): string {
@@ -257,7 +265,7 @@ function comparePackagePatternSpecificity(left: string | undefined, right: strin
 }
 
 function packagePatternCovers(cover: string, target: string): boolean {
-  if (!target.includes("*")) return compilePackagePathMatcher(cover)(target) !== undefined;
+  if (!target.includes("*")) return compilePackageTargetPathMatcher(cover)(target) !== undefined;
   if (!cover.includes("*")) return false;
   const [coverPrefix, ...coverTail] = cover.split("*");
   const [targetPrefix, ...targetTail] = target.split("*");
@@ -283,30 +291,12 @@ function packagePatternIntersections(left: string, right: string): string[] {
   // overlaps) are separate exact regions that the wildcard intersection does
   // not cover, so retain every boundary spelling accepted by both inputs.
   const overlapLimit = Math.min(prefix.length, suffix.length);
-  const leftMatch = compilePackagePathMatcher(left);
-  const rightMatch = compilePackagePathMatcher(right);
+  const leftMatch = compilePackageTargetPathMatcher(left);
+  const rightMatch = compilePackageTargetPathMatcher(right);
   for (let overlap = 0; overlap <= overlapLimit; overlap += 1) {
     if (!prefix.endsWith(suffix.slice(0, overlap))) continue;
     const exact = `${prefix}${suffix.slice(overlap)}`;
     if (leftMatch(exact) !== undefined && rightMatch(exact) !== undefined) regions.add(exact);
   }
   return [...regions];
-}
-
-// Node package export `*` captures may contain `/`, and repeated stars in a
-// target all receive the same capture. Compile once per manifest entry and use
-// a named backreference so following digits cannot become numeric references.
-function compilePackagePathMatcher(pattern: string): (value: string) => { capture?: string } | undefined {
-  const parts = pattern.split("*");
-  if (parts.length < 2) return (value) => value === pattern ? {} : undefined;
-  const tail = escapeRegExp(parts[1]) + parts.slice(2).map((part) => `\\k<binding>${escapeRegExp(part)}`).join("");
-  const expression = new RegExp(`^${escapeRegExp(parts[0])}(?<binding>.+?)${tail}$`, "u");
-  return (value) => {
-    const capture = expression.exec(value)?.groups?.binding;
-    return capture === undefined ? undefined : { capture };
-  };
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[|\\{}()[\]^$+?.]/gu, "\\$&");
 }
