@@ -225,16 +225,13 @@ function queueRoot(input: BuildDecisionProjectionInput, item: ReviewQueueItem): 
   }
 
   // Packet risks predate the PR-risk candidate model, but a medium-or-higher
-  // packet risk with evidence on a changed path is still an approval-changing
-  // range fact. Keep it admitted under a stable category/path root so duplicate
-  // manifestations collapse without allowing repository-wide aggregates into
-  // the decision projection.
+  // concrete packet risk with evidence on a changed path can still be an
+  // approval-changing range fact. Built-in RISK-NNN rows are exhaustive
+  // repository rollups: a bounded evidence sample touching this range does not
+  // turn the aggregate count into a PR fact.
   const packetRisk = input.packet.risks.items.find((risk) => item.risk_ids.includes(risk.id));
   if (packetRisk && (item.priority === "blocker" || item.priority === "high" || item.priority === "medium")) {
-    const aggregateIsAffected = !/^RISK-\d+$/u.test(packetRisk.id) || (packetRisk.evidence ?? []).some((ref) =>
-      ref.acai_id !== undefined && input.scope.affected_requirement_ids.has(ref.acai_id)
-    );
-    if (!aggregateIsAffected) return undefined;
+    if (/^RISK-\d+$/u.test(packetRisk.id)) return undefined;
     return `packet_risk:${packetRisk.category}:${item.path}`;
   }
 

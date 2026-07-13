@@ -5466,14 +5466,11 @@ function isPacketRiskDecisionScoped(
 ): boolean {
   const evidence = risk.evidence ?? [];
   // The built-in RISK-NNN rows are exhaustive rollups over the repository
-  // evaluation. A changed test path in their bounded evidence sample does not
-  // make “146 requirements are partial” a PR fact. Admit an aggregate only
-  // when it cites an affected requirement explicitly; provider/concrete risks
-  // may still qualify through changed-path evidence.
+  // evaluation. A changed path or affected requirement in their bounded
+  // evidence sample does not make “146 requirements are partial” a PR fact;
+  // only independently scoped provider/concrete risks may qualify.
   if (/^RISK-\d+$/u.test(risk.id)) {
-    return evidence.some((ref) =>
-      ref.acai_id !== undefined && decisionScope.affected_requirement_ids.has(ref.acai_id)
-    );
+    return false;
   }
   return isDecisionScopedSignal(decisionScope, evidence, requirementIds(evidence));
 }

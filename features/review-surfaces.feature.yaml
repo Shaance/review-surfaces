@@ -215,7 +215,7 @@ components:
         note: "Reviewer decision uplift M2. Live dogfood placed an 80-file tour and change map before the ranked queue, forcing reviewers to reconstruct the decision from supporting machinery."
       5:
         requirement: >-
-          Whole-repository requirement coverage and aggregate partial or missing counts are supporting evidence only: they cannot enter the decision projection or change the verdict unless the reviewed range deterministically affects the cited requirement or changed-path evidence; the projection must state how many exhaustive queue and compliance items were moved to supporting detail rather than silently dropping them.
+          Whole-repository requirement coverage and aggregate partial or missing counts are supporting evidence only: built-in exhaustive aggregate risks cannot enter the decision projection or change the verdict merely because their bounded evidence sample touches an affected requirement or changed path; an independently scoped concrete fact is required to change the PR decision, and the projection must state how many exhaustive queue and compliance items were moved to supporting detail rather than silently dropping them.
         note: "Reviewer decision uplift M2. A 145-partial whole-repo count dominated a PR review even though it did not describe an approval-changing fact in the reviewed range."
       6:
         requirement: >-
