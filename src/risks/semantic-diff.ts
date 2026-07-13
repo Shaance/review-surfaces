@@ -170,7 +170,9 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
   const basePackageJson = sources.readBase("package.json");
   const baseEntries = listPackageContractEntries(basePackageJson, sources.baseSourceRoots ?? sources.sourceRoots ?? []);
   const headEntries = listPackageContractEntries(headPackageJson, sources.headSourceRoots ?? sources.sourceRoots ?? []);
-  const baseExclusionIdentities = new Set(listPackageContractExclusions(basePackageJson).map(({ surface }) => surface.identity));
+  const basePackageExclusions = listPackageContractExclusions(basePackageJson);
+  const baseExclusionPatterns = basePackageExclusions.map((exclusion) => exclusion.consumer_path);
+  const baseExclusionIdentities = new Set(basePackageExclusions.map(({ surface }) => surface.identity));
   const addedPackageExclusions = listPackageContractExclusions(headPackageJson)
     .filter(({ surface }) => surface.identity !== undefined && !baseExclusionIdentities.has(surface.identity));
   const headPackageSurfaces = headEntries.map((entry) => entry.surface);
@@ -271,6 +273,7 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
   }
   const reconciledPairs = new Set<string>();
   const packageChanged = sources.diff.files.some((file) => file.path === "package.json");
+  const changedHeadPaths = new Set(sources.diff.files.map((file) => file.path));
   for (const [identity, basePath] of baseChangedPathByIdentity) {
     const headPath = headChangedPathByIdentity.get(identity);
     const baseSurface = baseChangedSurfaceByIdentity.get(identity);
@@ -335,6 +338,9 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
       const crossTargetChange = diffApiSurfaceTexts(headPath, sources.readBase(basePath), sources.readHead(headPath), basePath);
       removeReconciledPathFacts(api_changes, identity, basePath, headPath, sources.readBase, sources.readHead);
       if (crossTargetChange) {
+        // If only the manifest selected a different existing source, keep the
+        // approval-changing fact inside the changed PR range.
+        if (packageChanged && !changedHeadPaths.has(headPath)) crossTargetChange.path = "package.json";
         crossTargetChange.contract_surface = headEntry.surface;
         api_changes.push(crossTargetChange);
       }
@@ -347,7 +353,12 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
       if (surface.identity && [...removedPackageIdentities].some((identity) =>
         identity === surface.identity || identity.startsWith(`${surface.identity}:`)
       )) continue;
-      if (!packageExclusionRemovesContract(baseEntries, headEntries, consumerPath)) continue;
+      if (!packageExclusionRemovesContract(
+        baseEntries,
+        headEntries,
+        consumerPath,
+        baseExclusionPatterns
+      )) continue;
       api_changes.push({
         path: "package.json",
         exports_added: [],
@@ -427,6 +438,15 @@ function changedPackagePriorityGroups(
   for (const [group, baseGroup] of baseGroups) {
     const headGroup = headGroups.get(group);
     if (!headGroup) continue;
+    const orderedTargetsUnchanged = baseGroup.length === headGroup.length &&
+      baseGroup.every((entry, index) => entry.surface.source === headGroup[index]?.surface.source);
+    // Equal target order is only a no-op when each condition still owns the
+    // same target; otherwise consumers can observe a condition reassignment.
+    const baseAssignments = baseGroup.map((entry) => `${entry.surface.identity}\0${entry.surface.source}`).sort();
+    const headAssignments = headGroup.map((entry) => `${entry.surface.identity}\0${entry.surface.source}`).sort();
+    const assignmentsUnchanged = baseAssignments.length === headAssignments.length &&
+      baseAssignments.every((assignment, index) => assignment === headAssignments[index]);
+    if (orderedTargetsUnchanged && assignmentsUnchanged) continue;
     const baseOrder = [...new Set(baseGroup.map((entry) => entry.surface.identity).filter((value): value is string => Boolean(value)))];
     const headOrder = [...new Set(headGroup.map((entry) => entry.surface.identity).filter((value): value is string => Boolean(value)))];
     if (baseOrder.some((identity) => !headOrder.includes(identity))) continue;

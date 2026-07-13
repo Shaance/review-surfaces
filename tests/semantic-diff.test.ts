@@ -213,6 +213,10 @@ test("review-surfaces.REVIEWER_VALUE.11 maps common dist package targets back to
     packageJson: JSON.stringify({ exports: { ".": "./dist/index" } }),
     sourceRoots: ["src"]
   }), undefined, "extensionless exports remain exact and do not invent a TypeScript contract");
+  assert.equal(classifyApiContractSurface("src/index.tsx", {
+    packageJson: JSON.stringify({ exports: { ".": "./dist/index.jsx" } }),
+    sourceRoots: ["src"]
+  })?.kind, "package_export", "preserved JSX package output maps back to its TSX source contract");
   assert.equal(classifyApiContractSurface("index.ts", {
     packageJson: JSON.stringify({ main: "dist/index.js" }),
     sourceRoots: ["."]
@@ -450,6 +454,95 @@ test("review-surfaces.REVIEWER_VALUE.11 null package exports exclude private wil
   });
   assert.equal(preservedNarrowExport.api_changes.some((change) => change.contract_removed), false, "a narrower positive export preserved in head overrides the broad exclusion");
 
+  const redundantNarrowExclusion = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./*": "./src/*.ts", "./private/*": null } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./*": "./src/*.ts", "./private/*": null, "./private/foo": null } })
+      : undefined
+  });
+  assert.equal(
+    redundantNarrowExclusion.api_changes.some((change) => change.contract_removed),
+    false,
+    "a narrower null exclusion already covered in the base manifest removes no new contract"
+  );
+
+  const crossingExclusionLeavesExactBoundaryPublic = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./feature/*-impl": "./src/*.ts", "./feature/private-*-impl": null } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./feature/*-impl": "./src/*.ts", "./feature/private-*-impl": null, "./feature/private-*": null } })
+      : undefined
+  });
+  assert.equal(
+    crossingExclusionLeavesExactBoundaryPublic.api_changes.some((change) => change.contract_removed),
+    true,
+    "crossing wildcard exclusions still remove an exact boundary path when wildcard captures are non-empty"
+  );
+
+  const redundantCrossingExclusion = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./feature/*-impl": "./src/*.ts", "./feature/private-*-impl": null, "./feature/private--impl": null, "./feature/private-impl": null } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./feature/*-impl": "./src/*.ts", "./feature/private-*-impl": null, "./feature/private--impl": null, "./feature/private-impl": null, "./feature/private-*": null } })
+      : undefined
+  });
+  assert.equal(
+    redundantCrossingExclusion.api_changes.some((change) => change.contract_removed),
+    false,
+    "a crossing wildcard exclusion is redundant when its wildcard and every exact boundary region were already excluded"
+  );
+
+  const overlappingLiteralBoundary = (includeExactBoundaries: boolean) => computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: {
+        "./a*defg": "./src/*.ts",
+        "./abcd*defg": null,
+        ...(includeExactBoundaries ? { "./abcdefg": null, "./abcddefg": null } : {})
+      } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: {
+        "./a*defg": "./src/*.ts",
+        "./abcd*defg": null,
+        ...(includeExactBoundaries ? { "./abcdefg": null, "./abcddefg": null } : {}),
+        "./abcd*g": null
+      } })
+      : undefined
+  });
+  assert.equal(
+    overlappingLiteralBoundary(false).api_changes.some((change) => change.contract_removed),
+    true,
+    "overlapping wildcard literals still expose exact boundary spellings"
+  );
+  assert.equal(
+    overlappingLiteralBoundary(true).api_changes.some((change) => change.contract_removed),
+    false,
+    "covering the wildcard and all overlapping exact boundaries makes the new exclusion redundant"
+  );
+
+  const exclusionReplacingNarrowPositive = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./*": "./src/*.ts", "./private/*": null, "./private/foo": "./src/foo.ts" } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./*": "./src/*.ts", "./private/*": null, "./private/foo": null } })
+      : undefined
+  });
+  assert.equal(
+    exclusionReplacingNarrowPositive.api_changes.some((change) => change.contract_removed && change.contract_name === "export:./private/foo"),
+    true,
+    "a narrower positive that overrode the broad base exclusion remains a real removal"
+  );
+
   const emptyWildcardCapture = computeSemanticChangeFacts({
     diff: parseStructuredDiff(packageDiff),
     readBase: (path) => path === "package.json"
@@ -615,6 +708,7 @@ test("review-surfaces.REVIEWER_VALUE.11 detects package-only removals but not st
     readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": "./src/v1.ts" } }) : path === "src/v1.ts" ? "export function value(input: string): string { return input; }" : undefined,
     readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": "./src/v2.ts" } }) : path === "src/v2.ts" ? "export function value(input: number): string { return String(input); }" : undefined
   });
+  assert.equal(incompatibleRepoint.api_changes[0]?.path, "package.json", "a package-only target break stays in the changed PR scope");
   assert.equal(incompatibleRepoint.api_changes[0]?.signatures_changed[0]?.name, "value");
   assert.equal(isBreakingApiChange(incompatibleRepoint.api_changes[0]), true);
 });
@@ -805,6 +899,28 @@ test("review-surfaces.REVIEWER_VALUE.11 matches unchanged package fallback targe
     readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { default: "./src/b.ts", import: "./src/a.ts" } } }) : path === "src/a.ts" || path === "src/b.ts" ? "export const value = 1;" : undefined
   });
   assert.equal(reorderedConditions.api_changes.some((change) => change.contract_name === "export:." && change.contract_target_changed), true, "condition key order participates in package resolution priority");
+
+  const reorderedEquivalentConditions = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { node: "./src/index.ts", default: "./src/index.ts" } } }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { default: "./src/index.ts", node: "./src/index.ts" } } }) : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(
+    reorderedEquivalentConditions.api_changes.some((change) => change.contract_target_changed),
+    false,
+    "reordering conditions with identical resolved targets is unobservable"
+  );
+
+  const reassignedConditionsWithStableTargetOrder = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { node: "./src/a.ts", default: "./src/b.ts" } } }) : path === "src/a.ts" || path === "src/b.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { default: "./src/a.ts", node: "./src/b.ts" } } }) : path === "src/a.ts" || path === "src/b.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(
+    reassignedConditionsWithStableTargetOrder.api_changes.some((change) => change.contract_target_changed),
+    true,
+    "stable target order cannot hide targets reassigned to different conditions"
+  );
 
   const dottedCondition = computeSemanticChangeFacts({
     diff: parseStructuredDiff(packageDiff),

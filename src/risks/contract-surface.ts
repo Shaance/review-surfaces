@@ -146,22 +146,29 @@ export function listPackageContractEntries(
 export function packageExclusionRemovesContract(
   baseEntries: readonly PackageContractEntry[],
   headEntries: readonly PackageContractEntry[],
-  exclusionPattern: string
+  exclusionPattern: string,
+  baseExclusionPatterns: readonly string[] = []
 ): boolean {
   const basePatterns = baseEntries.map((entry) => entry.consumer_path).filter((value): value is string => Boolean(value));
   const headPatterns = headEntries.map((entry) => entry.consumer_path).filter((value): value is string => Boolean(value));
   return basePatterns.some((basePattern) => {
-    if (!packagePatternsOverlap(basePattern, exclusionPattern)) return false;
-    const removedRegion = packagePatternCovers(basePattern, exclusionPattern)
-      ? exclusionPattern
-      : packagePatternCovers(exclusionPattern, basePattern)
-        ? basePattern
-        : undefined;
-    if (!removedRegion) return true;
-    return !headPatterns.some((headPattern) =>
-      comparePackagePatternSpecificity(headPattern, exclusionPattern) > 0 &&
-      packagePatternCovers(headPattern, removedRegion)
-    );
+    // Compare the exact region jointly selected by the old positive export and
+    // the new exclusion, including crossing wildcard prefix/suffix patterns.
+    const removedRegions = packagePatternIntersections(basePattern, exclusionPattern);
+    return removedRegions.some((removedRegion) => {
+      // A base exclusion with at least the positive export's precedence means
+      // this region was already private. A narrower positive is evaluated as
+      // its own basePattern and can still prove that the region was public.
+      const alreadyExcluded = baseExclusionPatterns.some((baseExclusion) =>
+        comparePackagePatternSpecificity(baseExclusion, basePattern) >= 0 &&
+        packagePatternCovers(baseExclusion, removedRegion)
+      );
+      if (alreadyExcluded) return false;
+      return !headPatterns.some((headPattern) =>
+        comparePackagePatternSpecificity(headPattern, exclusionPattern) > 0 &&
+        packagePatternCovers(headPattern, removedRegion)
+      );
+    });
   });
 }
 
@@ -220,7 +227,9 @@ function sourcePathPatterns(
     if (probeExtensionlessLegacyEntry && !value.includes("*") && !/\.[^/]+$/u.test(value)) {
       for (const extension of ["ts", "tsx", "mts", "cts"]) candidates.add(`${value}.${extension}`);
     }
-    if (/\.(mjs|cjs|js)$/u.test(value)) {
+    if (/\.jsx$/u.test(value)) {
+      candidates.add(`${value.slice(0, -4)}.tsx`);
+    } else if (/\.(mjs|cjs|js)$/u.test(value)) {
       const stem = value.replace(/\.(mjs|cjs|js)$/u, "");
       for (const extension of ["ts", "tsx", "mts", "cts"]) candidates.add(`${stem}.${extension}`);
     }
@@ -257,16 +266,31 @@ function packagePatternCovers(cover: string, target: string): boolean {
   return targetPrefix.startsWith(coverPrefix) && targetSuffix.endsWith(coverSuffix);
 }
 
-function packagePatternsOverlap(left: string, right: string): boolean {
-  if (packagePatternCovers(left, right) || packagePatternCovers(right, left)) return true;
-  if (!left.includes("*") || !right.includes("*")) return false;
+function packagePatternIntersections(left: string, right: string): string[] {
+  if (packagePatternCovers(left, right)) return [right];
+  if (packagePatternCovers(right, left)) return [left];
+  if (!left.includes("*") || !right.includes("*")) return [];
   const [leftPrefix, ...leftTail] = left.split("*");
   const [rightPrefix, ...rightTail] = right.split("*");
-  const prefixesOverlap = leftPrefix.startsWith(rightPrefix) || rightPrefix.startsWith(leftPrefix);
+  if (!leftPrefix.startsWith(rightPrefix) && !rightPrefix.startsWith(leftPrefix)) return [];
   const leftSuffix = leftTail.join("*");
   const rightSuffix = rightTail.join("*");
-  const suffixesOverlap = leftSuffix.endsWith(rightSuffix) || rightSuffix.endsWith(leftSuffix);
-  return prefixesOverlap && suffixesOverlap;
+  if (!leftSuffix.endsWith(rightSuffix) && !rightSuffix.endsWith(leftSuffix)) return [];
+  const prefix = leftPrefix.length >= rightPrefix.length ? leftPrefix : rightPrefix;
+  const suffix = leftSuffix.length >= rightSuffix.length ? leftSuffix : rightSuffix;
+  const regions = new Set<string>([`${prefix}*${suffix}`]);
+  // Wildcard captures are non-empty. Prefix/suffix boundaries (including
+  // overlaps) are separate exact regions that the wildcard intersection does
+  // not cover, so retain every boundary spelling accepted by both inputs.
+  const overlapLimit = Math.min(prefix.length, suffix.length);
+  const leftMatch = compilePackagePathMatcher(left);
+  const rightMatch = compilePackagePathMatcher(right);
+  for (let overlap = 0; overlap <= overlapLimit; overlap += 1) {
+    if (!prefix.endsWith(suffix.slice(0, overlap))) continue;
+    const exact = `${prefix}${suffix.slice(overlap)}`;
+    if (leftMatch(exact) !== undefined && rightMatch(exact) !== undefined) regions.add(exact);
+  }
+  return [...regions];
 }
 
 // Node package export `*` captures may contain `/`, and repeated stars in a

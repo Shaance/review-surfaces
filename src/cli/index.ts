@@ -2479,7 +2479,10 @@ async function runScoreboard(parsed: ParsedArgs): Promise<number> {
 // git-tracked source files. A truncated graph carries the note rather than
 // presenting "used by 0" as fact.
 function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactReaders | undefined): SemanticChangeFacts {
-  const targets = facts.api_changes.filter((change) => change.exports_removed.length > 0 || change.signatures_changed.length > 0);
+  const targets = facts.api_changes.filter((change) =>
+    change.path !== "package.json" &&
+    (change.exports_removed.length > 0 || change.signatures_changed.length > 0)
+  );
   if (!readers || targets.length === 0) {
     return facts;
   }

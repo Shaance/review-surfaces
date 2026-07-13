@@ -134,6 +134,11 @@ test("review-surfaces.REVIEWER_VALUE.6 keeps distinct package contracts in disti
     .filter((item) => item.path === packagePath && item.title === "Exported API surface change")
     .map((item) => item.id)
     .sort();
+  assert.equal(
+    model.review_queue.some((item) => item.path === packagePath && item.title === "Changed implementation file"),
+    false,
+    "a precise semantic contract item prunes the generic changed-file fallback"
+  );
   const packageFindings = model.decision_projection?.findings
     .filter((finding) => finding.root_cause.startsWith("public_contract:package.json:")) ?? [];
   assert.equal(packageFindings.length, 2);

@@ -2675,6 +2675,7 @@ function semanticDraft(
     estimated_review_effort: "moderate",
     score: fields.score,
     sortKey: fields.sortKey,
+    detector_specificity: "concrete",
     ...(fields.decisionRoot ? { decisionRoot: fields.decisionRoot } : {})
   };
 }

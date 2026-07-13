@@ -258,6 +258,36 @@ test("review-surfaces.EVAL_HARNESS.2 a breaking API change with call sites carri
   }
 });
 
+test("review-surfaces.REVIEWER_VALUE.11 keeps package-only repoints decision-scoped without fake blast radius", () => {
+  const fixture = createEvalFixture("package-repoint-scope");
+  try {
+    fixture.write("package.json", JSON.stringify({ exports: { ".": "./src/v1.ts" } }, null, 2));
+    fixture.write("src/v1.ts", "export function value(input: string): string { return input; }\n");
+    fixture.write("src/v2.ts", "export function value(input: number): string { return String(input); }\n");
+    fixture.commit("seed package targets");
+    fixture.write("package.json", JSON.stringify({ exports: { ".": "./src/v2.ts" } }, null, 2));
+    fixture.commit("repoint package root");
+
+    const model = fixture.run(["--base", "HEAD~1"]);
+    const packageFact = model.semantic_facts.api_changes.find((change) =>
+      change.path === "package.json" && change.contract_surface?.identity === "export:."
+    );
+    assert.ok(packageFact, "the incompatible package repoint stays anchored to the changed manifest");
+    assert.equal(packageFact.used_by, undefined, "manifest anchors are not treated as source-code blast-radius targets");
+    assert.ok(
+      model.decision_projection?.findings.some((finding) => finding.root_cause === "public_contract:package.json:export:."),
+      "the package decision remains visible"
+    );
+    assert.equal(
+      model.review_queue.some((item) => /No in-repo importers/u.test(item.reason)),
+      false,
+      "the manifest anchor does not produce a fake no-importers claim"
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("review-surfaces.EVAL_HARNESS.2 a deleted internal API keeps caller evidence without becoming a public-contract finding (BLAST_RADIUS)", () => {
   const fixture = createEvalFixture("deleted-api-blast");
   try {
