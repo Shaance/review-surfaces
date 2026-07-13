@@ -112,9 +112,10 @@ function collectExportTargets(value: unknown, subpath = ".", conditions: string[
   // Subpath key order is not priority, so keep deterministic sorting there.
   // Condition key order is runtime-significant and must remain authored order.
   const keys = subpathMap ? [...insertionKeys].sort(compareStrings) : insertionKeys;
+  const soleDefault = !subpathMap && keys.length === 1 && keys[0] === "default";
   return keys.flatMap((key) => subpathMap && key.startsWith(".")
     ? collectExportTargets(record[key], key, [])
-    : collectExportTargets(record[key], subpath, [...conditions, key]));
+    : collectExportTargets(record[key], subpath, soleDefault ? conditions : [...conditions, key]));
 }
 
 export function packageExportSubpathIdentity(subpath: string): string {

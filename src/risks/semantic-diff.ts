@@ -274,6 +274,29 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
   const reconciledPairs = new Set<string>();
   const packageChanged = sources.diff.files.some((file) => file.path === "package.json");
   const changedHeadPaths = new Set(sources.diff.files.map((file) => file.path));
+  const comparePackageTargets = (
+    identity: string,
+    baseEntry: PackageContractEntry,
+    headEntry: PackageContractEntry
+  ): void => {
+    const basePath = resolvePackageEntryPath(baseEntry, sources.readBase);
+    const headPath = resolvePackageEntryPath(headEntry, sources.readHead);
+    if (!basePath || !headPath) {
+      if (packageChanged) api_changes.push(unresolvedPackageTargetChange(identity, headEntry.surface));
+      return;
+    }
+    const pairKey = `${basePath}\0${headPath}`;
+    if (reconciledPairs.has(pairKey)) return;
+    reconciledPairs.add(pairKey);
+    const crossTargetChange = diffApiSurfaceTexts(headPath, sources.readBase(basePath), sources.readHead(headPath), basePath);
+    removeReconciledPathFacts(api_changes, identity, basePath, headPath, sources.readBase, sources.readHead);
+    if (!crossTargetChange) return;
+    // If only the manifest selected a different existing source, keep the
+    // approval-changing fact inside the changed PR range.
+    if (packageChanged && !changedHeadPaths.has(headPath)) crossTargetChange.path = "package.json";
+    crossTargetChange.contract_surface = headEntry.surface;
+    api_changes.push(crossTargetChange);
+  };
   for (const [identity, basePath] of baseChangedPathByIdentity) {
     const headPath = headChangedPathByIdentity.get(identity);
     const baseSurface = baseChangedSurfaceByIdentity.get(identity);
@@ -304,6 +327,14 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
   for (const [identity, baseGroup] of baseEntriesByIdentity) {
     const headGroup = headEntriesByIdentity.get(identity);
     if (!headGroup) continue;
+    const baseSources = baseGroup.map((entry) => entry.surface.source);
+    const headSources = headGroup.map((entry) => entry.surface.source);
+    if (isOrderedSubsequence(headSources, baseSources)) {
+      // Removing later fallbacks does not change the selected target. Removing
+      // the first fallback does, so compare the old and newly selected APIs.
+      if (baseSources[0] !== headSources[0]) comparePackageTargets(identity, baseGroup[0], headGroup[0]);
+      continue;
+    }
     const sharedPriorityChanged = sharedPackageEntryPriorityChanged(baseGroup, headGroup);
     if (sharedPriorityChanged) {
       if (packageChanged) api_changes.push(unresolvedPackageTargetChange(identity, headGroup[0].surface));
@@ -316,34 +347,13 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
       unmatchedHead.splice(unchangedIndex, 1);
       return false;
     });
-    const baseSources = baseGroup.map((entry) => entry.surface.source);
-    const headSources = headGroup.map((entry) => entry.surface.source);
     if (unmatchedBase.length === 0) {
       const onlyAppended = baseSources.every((source, index) => headSources[index] === source);
       if (!onlyAppended && packageChanged) api_changes.push(unresolvedPackageTargetChange(identity, headGroup[0].surface));
       continue;
     }
     if (unmatchedBase.length === 1 && unmatchedHead.length === 1) {
-      const baseEntry = unmatchedBase[0];
-      const headEntry = unmatchedHead[0];
-      const basePath = resolvePackageEntryPath(baseEntry, sources.readBase);
-      const headPath = resolvePackageEntryPath(headEntry, sources.readHead);
-      if (!basePath || !headPath) {
-        if (packageChanged) api_changes.push(unresolvedPackageTargetChange(identity, headEntry.surface));
-        continue;
-      }
-      const pairKey = `${basePath}\0${headPath}`;
-      if (reconciledPairs.has(pairKey)) continue;
-      reconciledPairs.add(pairKey);
-      const crossTargetChange = diffApiSurfaceTexts(headPath, sources.readBase(basePath), sources.readHead(headPath), basePath);
-      removeReconciledPathFacts(api_changes, identity, basePath, headPath, sources.readBase, sources.readHead);
-      if (crossTargetChange) {
-        // If only the manifest selected a different existing source, keep the
-        // approval-changing fact inside the changed PR range.
-        if (packageChanged && !changedHeadPaths.has(headPath)) crossTargetChange.path = "package.json";
-        crossTargetChange.contract_surface = headEntry.surface;
-        api_changes.push(crossTargetChange);
-      }
+      comparePackageTargets(identity, unmatchedBase[0], unmatchedHead[0]);
     } else if (packageChanged) {
       api_changes.push(unresolvedPackageTargetChange(identity, headGroup[0].surface));
     }
@@ -387,6 +397,14 @@ export function computeSemanticChangeFacts(sources: SemanticDiffSources): Semant
     api_changes,
     test_weakening: detectTestWeakening(sources.diff)
   };
+}
+
+function isOrderedSubsequence(orderedSubset: readonly string[], sequence: readonly string[]): boolean {
+  let subsetIndex = 0;
+  for (const value of sequence) {
+    if (value === orderedSubset[subsetIndex]) subsetIndex += 1;
+  }
+  return subsetIndex === orderedSubset.length;
 }
 
 function sharedPackageEntryPriorityChanged(

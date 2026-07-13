@@ -850,6 +850,23 @@ test("review-surfaces.REVIEWER_VALUE.11 matches unchanged package fallback targe
   });
   assert.equal(reordered.api_changes.some((change) => change.contract_target_changed), true, "fallback reorder changes first-match resolution");
 
+  const removedCompatibleFirstFallback = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } }) : path === "src/a.ts" || path === "src/b.ts" ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/b.ts"] } }) : path === "src/b.ts" ? "export function value(input: string): string { return input; }" : undefined
+  });
+  assert.deepEqual(removedCompatibleFirstFallback.api_changes, [], "deleting the first fallback compares the newly selected API before reporting a target change");
+
+  const removedIncompatibleFirstFallback = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } }) : path === "src/a.ts" ? "export function value(input: string): string { return input; }" : path === "src/b.ts" ? "export function value(input: number): string { return String(input); }" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/b.ts"] } }) : path === "src/b.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.equal(removedIncompatibleFirstFallback.api_changes.length, 1);
+  assert.equal(removedIncompatibleFirstFallback.api_changes[0]?.path, "package.json");
+  assert.equal(removedIncompatibleFirstFallback.api_changes[0]?.contract_target_changed, undefined);
+  assert.equal(isBreakingApiChange(removedIncompatibleFirstFallback.api_changes[0]), true);
+
   const prepended = computeSemanticChangeFacts({
     diff: parseStructuredDiff(packageDiff),
     readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/b.ts"] } }) : path === "src/b.ts" ? "export const value = 1;" : undefined,
@@ -892,6 +909,20 @@ test("review-surfaces.REVIEWER_VALUE.11 matches unchanged package fallback targe
     readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/a.ts"] } }) : path === "src/a.ts" ? "export const value = 1;" : undefined
   });
   assert.deepEqual(duplicateFallback.api_changes, [], "duplicate unchanged fallbacks are matched occurrence by occurrence");
+
+  const defaultOnlyWrapper = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": "./src/index.ts" } }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { default: "./src/index.ts" } } }) : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  assert.deepEqual(defaultOnlyWrapper.api_changes, [], "a sole default wrapper preserves the unconditioned root contract identity");
+
+  const nestedDefaultOnlyWrapper = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { node: "./src/index.ts" } } }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { node: { default: "./src/index.ts" } } } }) : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  assert.deepEqual(nestedDefaultOnlyWrapper.api_changes, [], "a nested sole default wrapper preserves its parent condition identity");
 
   const reorderedConditions = computeSemanticChangeFacts({
     diff: parseStructuredDiff(packageDiff),

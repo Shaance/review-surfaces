@@ -135,13 +135,22 @@ export function detectContractSourceRoots(signals: SourceRootSignals): string[] 
   const tsconfigText = signals.read("tsconfig.json");
   if (tsconfigText !== undefined) {
     const parsed = ts.parseConfigFileTextToJson("tsconfig.json", tsconfigText).config as
-      | { compilerOptions?: { rootDir?: unknown; rootDirs?: unknown } }
+      | { compilerOptions?: { rootDir?: unknown; rootDirs?: unknown }; include?: unknown }
       | undefined;
     const rootDir = topSegment(parsed?.compilerOptions?.rootDir);
     if (rootDir && (rootDir === "." || topDirs.has(rootDir))) explicit.add(rootDir);
     for (const value of stringArray(parsed?.compilerOptions?.rootDirs)) {
       const root = topSegment(value);
       if (root && (root === "." || topDirs.has(root))) explicit.add(root);
+    }
+    // Authored rootDir/rootDirs are the strongest signal. Only fall back to
+    // include roots when neither is present, and keep test/build/doc trees out
+    // so a broad tsconfig does not recreate the ambiguous multi-root fallback.
+    if (explicit.size === 0) {
+      for (const value of stringArray(parsed?.include)) {
+        const root = topSegment(value);
+        if (root && !NON_ROOT_DIRS.has(root) && (root === "." || topDirs.has(root))) explicit.add(root);
+      }
     }
   }
   if (explicit.size > 0) return [...explicit].sort(compareStrings);

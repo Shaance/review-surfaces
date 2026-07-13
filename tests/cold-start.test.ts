@@ -112,6 +112,19 @@ test("review-surfaces.REVIEWER_VALUE.11 preserves a root-level contract source s
   }
 });
 
+test("review-surfaces.REVIEWER_VALUE.11 prefers explicit tsconfig include roots over committed package output", () => {
+  const files = ["package.json", "tsconfig.json", "lib/index.js", "src/index.ts", "tests/index.test.ts"];
+  const contents: Record<string, string> = {
+    "tsconfig.json": JSON.stringify({ include: ["src", "tests"] }),
+    "package.json": JSON.stringify({ main: "lib/index.js" })
+  };
+  assert.deepEqual(
+    detectContractSourceRoots({ files, read: (filePath) => contents[filePath] }),
+    ["src"],
+    "an explicit source include projects package output without admitting generated or test roots"
+  );
+});
+
 test("review-surfaces.COLD_START.2 reading order classifies a detected root as implementation, in agreement with the clusters", () => {
   const sections = buildChangeGraphSections({
     files: [

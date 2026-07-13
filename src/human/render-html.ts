@@ -56,8 +56,8 @@ export function renderHumanReviewHtml(model: HumanReviewModel, context: HumanRen
   // review-surfaces.PRIVACY.6: render the queue first with a redaction sink so a
   // high-confidence secret in any diff excerpt is observed, not silently dropped.
   const excerptRedaction: ExcerptRedactionState = { blocked: false };
-  const renderedQueue = model.review_queue.map((item, index) =>
-    renderQueueItem(model, item, index === 0 ? context : {}, excerptRedaction)
+  const renderedQueue = model.review_queue.map((item) =>
+    renderQueueItem(model, item, context, excerptRedaction)
   );
   const queueItems = partitionPrimary(renderedQueue);
   const queueHtml = renderedQueue.length === 0
