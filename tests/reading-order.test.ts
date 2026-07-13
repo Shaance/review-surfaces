@@ -146,7 +146,7 @@ test("review-surfaces.READING_ORDER.1 the tour never includes unchanged files (h
   assert.equal(sections.change_graph.halo_nodes.length, 1);
 });
 
-test("review-surfaces.READING_ORDER.2 the tour renders after the verdict in human_review.md and the cockpit, and the sticky carries only the first leg", () => {
+test("review-surfaces.READING_ORDER.2 the tour follows reviewer actions in the cockpit, and the sticky carries only the first leg", () => {
   const sections = buildChangeGraphSections({
     files: [file("src/core/contract.ts"), file("src/render/consumer.ts"), file("tests/consumer.test.ts")],
     edges: [
@@ -166,7 +166,7 @@ test("review-surfaces.READING_ORDER.2 the tour renders after the verdict in huma
   assert.ok(verdictIndex >= 0 && orderIndex > verdictIndex && orderIndex < mapIndex && mapIndex < narrativeIndex, "reading order is THE section after the verdict, before the change map");
   const html = renderHumanReviewHtml(fixture, {});
   assert.match(html, /<h2 id="reading-order">Reading order<\/h2>/);
-  assert.ok(html.indexOf('id="reading-order"') < html.indexOf('id="queue"'));
+  assert.ok(html.indexOf('id="queue"') < html.indexOf('id="reading-order"'), "reviewer actions precede the supporting reading-order tour");
   // Sticky: only the FIRST leg, with a pointer to the rest.
   const sticky = renderStickySummary(fixture).markdown;
   assert.match(sticky, /### Start reading here/);

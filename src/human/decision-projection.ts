@@ -14,7 +14,7 @@ import type {
 } from "./contract";
 import { currentValidationRunState, decisionRootForApiChange, decisionRootForRisk, isDecisionScopedEvidenceRef, type DecisionScope } from "./decision-admission";
 
-const MAX_DECISION_FINDINGS = 5;
+const MAX_DECISION_FINDINGS = 3;
 const MAX_DECISION_STRING_ITEMS = 24;
 const MAX_DECISION_ID_LENGTH = 1000;
 
@@ -24,6 +24,8 @@ export interface BuildDecisionProjectionInput {
   conversationAnalysis?: ConversationAnalysis;
   scope: DecisionScope;
   reviewQueue: ReviewQueueItem[];
+  /** Internal exact queue-to-semantic-root association from queue ranking. */
+  queueDecisionRoots?: ReadonlyMap<string, string>;
   blockers: ReviewBlocker[];
   semanticFacts: SemanticChangeFacts;
 }
@@ -82,6 +84,28 @@ function activeIntent(input: BuildDecisionProjectionInput): DecisionProjection["
     };
   }
   if (affected.length > 0) {
+    const totalRequirements = input.packet.intent.requirements.length;
+    const areas = summarizeRequirementAreas(affected);
+    const affectedShare = totalRequirements > 0 ? affected.length / totalRequirements : 0;
+    const broadScope = affected.length >= 3 && (areas.length >= 3 || affectedShare >= 0.25);
+    if (broadScope) {
+      const milestone = input.packet.agent_handoff?.current_milestone?.trim();
+      const visibleAreas = areas.slice(0, 3).map(({ label }) => label);
+      const omittedAreas = Math.max(0, areas.length - visibleAreas.length);
+      const areaSuffix = omittedAreas > 0 ? ` (+${omittedAreas} more)` : "";
+      const goal = input.packet.intent.summary.trim() || "Review the changed behavior.";
+      const milestoneContext = milestone ? ` Current milestone: ${milestone}.` : "";
+      return {
+        summary: boundedText(
+          `${goal}${milestoneContext} Affected areas: ${visibleAreas.join(", ")}${areaSuffix}. Scope: ${affected.length} of ${totalRequirements} requirements are affected.`,
+          2000,
+          "Packet intent."
+        ),
+        source: "packet",
+        requirement_ids: uniqueStrings(affected.flatMap((requirement) => [requirement.id, requirement.acai_id].filter((id): id is string => Boolean(id)))),
+        event_ids: []
+      };
+    }
     return {
       summary: summarizeAffectedIntent(affected),
       source: "affected_requirements",
@@ -95,6 +119,21 @@ function activeIntent(input: BuildDecisionProjectionInput): DecisionProjection["
     requirement_ids: [],
     event_ids: []
   };
+}
+
+function summarizeRequirementAreas(requirements: ReviewPacket["intent"]["requirements"]): Array<{ label: string; count: number; key: string }> {
+  const areas = new Map<string, { label: string; count: number; key: string }>();
+  for (const requirement of requirements) {
+    const acid = requirement.acai_id ?? requirement.id;
+    const key = acid.replace(/\.\d+$/u, "");
+    const existing = areas.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      areas.set(key, { label: requirement.title?.trim() || key, count: 1, key });
+    }
+  }
+  return [...areas.values()].sort((left, right) => right.count - left.count || left.key.localeCompare(right.key));
 }
 
 function affectedRequirements(input: BuildDecisionProjectionInput): ReviewPacket["intent"]["requirements"] {
@@ -181,6 +220,8 @@ function validationRunStateDrafts(input: BuildDecisionProjectionInput): FindingD
 
 function queueRoot(input: BuildDecisionProjectionInput, item: ReviewQueueItem): string | undefined {
   if (input.scope.mode === "pr" && !input.scope.changed_paths.has(item.path)) return undefined;
+  const exactSemanticRoot = input.queueDecisionRoots?.get(item.id);
+  if (exactSemanticRoot) return exactSemanticRoot;
   const prRisk = input.prSurface?.risks.candidates.find((risk) => item.risk_ids.includes(risk.id));
   if (prRisk) {
     const riskRoot = decisionRootForRisk(prRisk.rule, item.path);
@@ -188,25 +229,27 @@ function queueRoot(input: BuildDecisionProjectionInput, item: ReviewQueueItem): 
   }
 
   // Packet risks predate the PR-risk candidate model, but a medium-or-higher
-  // packet risk with evidence on a changed path is still an approval-changing
-  // range fact. Keep it admitted under a stable category/path root so duplicate
-  // manifestations collapse without allowing repository-wide aggregates into
-  // the decision projection.
+  // concrete packet risk with evidence on a changed path can still be an
+  // approval-changing range fact. Built-in RISK-NNN rows are exhaustive
+  // repository rollups: a bounded evidence sample touching this range does not
+  // turn the aggregate count into a PR fact.
   const packetRisk = input.packet.risks.items.find((risk) => item.risk_ids.includes(risk.id));
   if (packetRisk && (item.priority === "blocker" || item.priority === "high" || item.priority === "medium")) {
-    const aggregateIsAffected = !/^RISK-\d+$/u.test(packetRisk.id) || (packetRisk.evidence ?? []).some((ref) =>
-      ref.acai_id !== undefined && input.scope.affected_requirement_ids.has(ref.acai_id)
-    );
-    if (!aggregateIsAffected) return undefined;
+    if (/^RISK-\d+$/u.test(packetRisk.id)) return undefined;
     return `packet_risk:${packetRisk.category}:${item.path}`;
   }
 
   const schema = input.semanticFacts.schema_changes.find((change) => change.path === item.path);
   if (schema && isBreakingSchemaChange(schema)) return `persisted_contract:${item.path}`;
 
-  const api = input.semanticFacts.api_changes.find((change) => change.path === item.path);
-  const apiRoot = api ? decisionRootForApiChange(api) : undefined;
-  if (apiRoot) return apiRoot;
+  const apiRoots = uniqueStrings(input.semanticFacts.api_changes
+    .filter((change) => change.path === item.path)
+    .map(decisionRootForApiChange)
+    .filter((root): root is string => root !== undefined));
+  // A path-only queue row may support a single public-contract root. When
+  // several independent contracts share package.json, guessing the first one
+  // would merge unrelated decisions; exact semantic rows use the queue map.
+  if (apiRoots.length === 1) return apiRoots[0];
 
   const weakening = input.semanticFacts.test_weakening.find((signal) => signal.path === item.path);
   if (weakening) return `test_integrity:${item.path}`;
@@ -296,14 +339,26 @@ function boundedText(value: string, maxLength: number, fallback: string): string
 }
 
 function summarizeAffectedIntent(requirements: ReviewPacket["intent"]["requirements"]): string {
-  const visible = requirements.slice(0, 3).map((requirement) => {
+  if (requirements.length === 1) {
+    const requirement = requirements[0];
     const text = boundedText(requirement.requirement.replace(/\s+/gu, " "), 500, "Affected requirement intent.");
-    const id = requirement.acai_id ?? requirement.id;
-    return `${text.replace(/[.!?]+$/u, "")} [${id}]`;
-  });
-  const omitted = requirements.length - visible.length;
-  const suffix = omitted > 0 ? ` (+${omitted} more affected requirement${omitted === 1 ? "" : "s"})` : "";
-  return boundedText(`${visible.join("; ")}${suffix}`, 2000, "Affected requirement intent.");
+    const id = boundedText(requirement.acai_id ?? requirement.id, MAX_DECISION_ID_LENGTH, "unknown");
+    return boundedText(`${text.replace(/[.!?]+$/u, "")} [${id}]`, 2000, "Affected requirement intent.");
+  }
+  const areas = [...new Map(requirements.map((requirement) => {
+    const acid = requirement.acai_id ?? requirement.id;
+    const group = acid.replace(/\.\d+$/u, "");
+    const title = requirement.title?.trim() || group;
+    return [group, `${title} (${group})`];
+  })).values()];
+  const visible = areas.slice(0, 3);
+  const omitted = areas.length - visible.length;
+  const suffix = omitted > 0 ? ` (+${omitted} more area${omitted === 1 ? "" : "s"})` : "";
+  return boundedText(
+    `Reviewed change affects ${requirements.length} requirement(s) across ${visible.join(", ")}${suffix}.`,
+    900,
+    "Affected requirement intent."
+  );
 }
 
 function summarizeConversationIntent(

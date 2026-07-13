@@ -60,7 +60,7 @@ test("review-surfaces.REVIEWER_VALUE.5 unrelated repository totals cannot change
   );
 });
 
-test("review-surfaces.REVIEWER_VALUE.5 an aggregate may enter the decision only when it cites an affected requirement", () => {
+test("review-surfaces.REVIEWER_VALUE.5 an exhaustive aggregate stays supporting even when its sample cites an affected requirement", () => {
   const value = packet();
   value.risks.items.push({
     id: "RISK-001",
@@ -74,12 +74,25 @@ test("review-surfaces.REVIEWER_VALUE.5 an aggregate may enter the decision only 
     suggested_checks: ["Review the affected requirement evidence."],
     manual_review: true
   });
+  value.risks.items.push({
+    id: "RISK-CONCRETE-REVIEWER",
+    category: "correctness",
+    severity: "high",
+    summary: "The changed reviewer behavior has a concrete unresolved defect.",
+    evidence: [{
+      ...fileEvidence("src/reviewer.ts", "A scoped detector proves the changed behavior."),
+      acai_id: "review-surfaces.REVIEWER_VALUE.4"
+    }],
+    suggested_checks: ["Fix the scoped reviewer behavior."],
+    manual_review: true
+  });
 
   const model = buildHumanReview({ packet: value, prSurface: surface(["src/reviewer.ts"]) });
   assert.equal(model.verdict.decision, "reviewable_with_attention");
+  assert.ok(!model.decision_projection?.findings.some((finding) => finding.risk_ids.includes("RISK-001")));
   assert.ok(model.decision_projection?.findings.some((finding) =>
-    finding.root_cause === "packet_risk:testing:src/reviewer.ts" &&
-    finding.requirement_ids.includes("review-surfaces.REVIEWER_VALUE.4")
+    finding.root_cause === "packet_risk:correctness:src/reviewer.ts" &&
+    finding.risk_ids.includes("RISK-CONCRETE-REVIEWER")
   ));
 });
 

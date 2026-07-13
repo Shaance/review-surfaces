@@ -12,12 +12,26 @@ import { LENS_STROKES, SVG_LENS_FILLS } from "../human/render-svg-map";
 // — the same constants the SVG emitter and the budget decision use.
 import { MAX_CHANGED_NODES } from "../human/legibility-budget";
 
+// GitHub's dark Mermaid theme overrides HTML-label text colour inside
+// foreignObject nodes. SVG text honors classDef `color`, so keep labels in SVG
+// mode and let the shared lens palette remain readable in both themes.
+const MERMAID_FLOWCHART_HEADER = [
+  "---",
+  "config:",
+  "  htmlLabels: false",
+  "---",
+  "flowchart LR"
+] as const;
+
 // Print-safe, color-not-alone palette: each lens also carries its name in the
 // node label via the class name legend below the map on rendered surfaces.
 // Derived from the SAME palette the SVG cockpit map uses (RENDER.11), so the
 // two renderers can never color a lens differently.
 function lensClassDef(lens: RiskLens): string {
-  return `fill:${SVG_LENS_FILLS[lens]},stroke:${LENS_STROKES[lens]}`;
+  // GitHub does not reliably inherit a readable Mermaid text colour in dark
+  // mode. Keep the light fills, but pin dark text so labels never become the
+  // pale-on-pale boxes the old overview produced.
+  return `fill:${SVG_LENS_FILLS[lens]},stroke:${LENS_STROKES[lens]},color:#111827`;
 }
 
 export interface RenderChangeMapMermaidOptions {
@@ -31,7 +45,7 @@ export function renderChangeMapMermaid(graph: ChangeGraph, options: RenderChange
   if (graph.nodes.length === 0) {
     return undefined;
   }
-  const lines: string[] = ["flowchart LR"];
+  const lines: string[] = [...MERMAID_FLOWCHART_HEADER];
   const nodeIds = new Map<string, string>();
   const usedLenses = new Set<RiskLens>();
   const nodeByPath = new Map(graph.nodes.map((node) => [node.path, node]));
@@ -153,7 +167,7 @@ export function renderChangeMapOverviewMermaid(overview: ChangeGraphOverview): s
   if (overview.groups.length === 0) {
     return undefined;
   }
-  const lines: string[] = ["flowchart LR"];
+  const lines: string[] = [...MERMAID_FLOWCHART_HEADER];
   const idByGroup = new Map<string, string>();
   const usedLenses = new Set<RiskLens>();
   for (const [index, group] of overview.groups.entries()) {

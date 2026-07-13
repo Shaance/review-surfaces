@@ -158,6 +158,7 @@ test("review-surfaces.CONVERSATION_REVIEW.4 conversation-aware insights lead the
   const html = renderHumanReviewHtml(review);
 
   assert.ok(markdown.indexOf("## Verdict") < markdown.indexOf("## Conversation-aware insights"));
+  assert.ok(markdown.indexOf("## Conversation-aware insights") < markdown.indexOf("## Review first"));
   assert.ok(markdown.indexOf("## Conversation-aware insights") < markdown.indexOf("## Reading order"));
   assert.match(markdown, /\*\*Analyzed\.\*\*/);
   assert.match(markdown, /AI synopsis: The author refined the goal/);
@@ -169,6 +170,7 @@ test("review-surfaces.CONVERSATION_REVIEW.4 conversation-aware insights lead the
   assert.match(markdown, /Conversation finding 3/);
   assert.doesNotMatch(markdown, /Conversation finding 4/);
 
+  assert.ok(html.indexOf('id="conversation-insights"') < html.indexOf('id="queue"'));
   assert.ok(html.indexOf('id="conversation-insights"') < html.indexOf('id="reading-order"'));
   assert.match(html, /AI synopsis: The author refined the goal/);
   assert.match(html, /badge contradicted[^>]*>Conflicts with intent</);
@@ -229,7 +231,7 @@ test("review-surfaces.CONVERSATION_REVIEW.4 legacy human v1 artifacts render wit
   assert.match(markdown, /\*\*Not assessed\.\*\* No conversation analysis is present/);
   assert.match(html, /Not assessed[^]*No conversation analysis is present/);
   assert.match(html, /No conversation-grounded conclusions are available/);
-  assert.match(sticky, /\*\*Not assessed\.\*\* No conversation analysis is present/);
+  assert.doesNotMatch(sticky, /No conversation analysis is present/, "the sticky omits canonical missing-log boilerplate from its primary scan path");
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.4 Markdown and HTML share non-analyzed status, summary, and empty-result meaning", () => {

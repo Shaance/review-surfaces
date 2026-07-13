@@ -17,7 +17,17 @@ export function fullDecisionSupportingText(counts: DecisionSupportingDetailCount
 }
 
 export function compactDecisionSupportingText(counts: DecisionSupportingDetailCounts): string {
-  return `${counts.supporting_queue_items} queue and ${counts.supporting_requirement_count} requirement item(s) remain supporting detail.`;
+  const parts = [
+    countLabel(counts.supporting_queue_items, "queue item"),
+    countLabel(counts.supporting_requirement_count, "requirement")
+  ].filter((part): part is string => part !== undefined);
+  return parts.length > 0
+    ? `${parts.join(" and ")} remain supporting detail.`
+    : "No additional supporting detail remains.";
+}
+
+function countLabel(count: number, singular: string): string | undefined {
+  return count > 0 ? `${count} ${singular}${count === 1 ? "" : "s"}` : undefined;
 }
 
 export function incompleteReviewScopeText(omittedCount: number): string | undefined {

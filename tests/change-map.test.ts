@@ -7,7 +7,7 @@ import { buildChangeMapInsights } from "../src/human/change-map-insights";
 import { renderChangeMapMermaid, renderChangeMapOverviewMermaid } from "../src/diagrams/change-map";
 import { changeMapLeadLevel, COCKPIT_WIDTH_PX, SVG_HEADER_HEIGHT, SVG_NODE_HEIGHT, SVG_PADDING, SVG_ROW_GAP } from "../src/human/legibility-budget";
 import { renderChangeMapOverviewSvg, renderChangeMapSvg } from "../src/human/render-svg-map";
-import { changeMapDetailsBlock } from "../src/render/change-map-embed";
+import { changeMapCommentBlock } from "../src/render/change-map-embed";
 import { renderHumanPrComment } from "../src/render/pr-comment";
 import { renderStickySummary } from "../src/render/sticky-summary";
 import { renderHumanReviewMarkdown } from "../src/human/render";
@@ -300,9 +300,9 @@ test("review-surfaces.CHANGE_MAP.2 the mermaid emitter renders flowchart LR with
     reviewQueue: []
   });
   const body = renderChangeMapMermaid(sections.change_graph) as string;
-  assert.ok(body.startsWith("flowchart LR"));
+  assert.ok(body.startsWith("---\nconfig:\n  htmlLabels: false\n---\nflowchart LR"));
   assert.match(body, /subgraph c0\["src\/core"\]/);
-  assert.match(body, /classDef lens_api_contract/);
+  assert.match(body, /classDef lens_api_contract fill:[^,]+,stroke:[^,]+,color:#111827/);
   // 30 nodes, cap 25 -> an explicit "+ 5 more files" overflow node.
   assert.match(body, /\+ 5 more files/);
   // No spec/requirement anchors on the map (CHANGE_MAP.3): no ACID-shaped labels.
@@ -400,7 +400,7 @@ test("review-surfaces.CHANGE_MAP.4 labels pass the shared sanitizer, the fence-c
   // diagramLabel collapses newlines, so a hostile label can never reach a line
   // start; the fence guard is the body-level backstop. Either the block is
   // omitted entirely or no inner body line can close the fence.
-  const block = changeMapDetailsBlock(hostile);
+  const block = changeMapCommentBlock(hostile).body;
   if (block !== undefined) {
     const inner = (block.split("```mermaid\n")[1] ?? "").split("\n```")[0];
     assert.doesNotMatch(inner, /^\s*```/m);
@@ -702,14 +702,18 @@ test("review-surfaces.MAP_SCALE.2 the legibility budget decides per surface: the
   // detail blocks below it carry the file-level subgraphs (MAP_SCALE.6).
   const leadFence = markdown.split("## Change map")[1].split("```mermaid\n")[1].split("\n```")[0];
   assert.doesNotMatch(leadFence, /subgraph c0/);
-  assert.match(leadFence, /^flowchart LR/);
-  // Sticky comment: the details block is titled honestly and stays compact.
+  assert.match(leadFence, /^---\nconfig:\n {2}htmlLabels: false\n---\nflowchart LR/);
+  // Comment surfaces use a bounded, dark-mode-safe table instead of a field of
+  // disconnected overview boxes.
   const sticky = renderStickySummary(fixture);
-  assert.match(sticky.markdown, /<details><summary>Change map \(overview\)<\/summary>/);
+  assert.match(sticky.markdown, /<details><summary>Change map — 99 files · 10 areas · 3 review items<\/summary>/);
+  assert.match(sticky.markdown, /\| Area \| Files \| Churn \| Review focus \|/);
+  assert.match(sticky.markdown, /\| \+2 more areas \|/);
+  assert.doesNotMatch(sticky.markdown, /```mermaid/);
   assert.doesNotMatch(sticky.markdown, /\+ \d+ more files/);
-  // PR comment surface: same decision, same title.
+  // PR comment surface: same compact representation.
   const prComment = renderHumanPrComment(fixture).markdown;
-  assert.match(prComment, /<details><summary>Change map \(overview\)<\/summary>/);
+  assert.match(prComment, /<details><summary>Change map — 99 files · 10 areas · 3 review items<\/summary>/);
   // The overview mermaid carries dominant-lens classes but suppresses generic
   // fallback routes such as tests -> src and the blast-radius halo card.
   const body = renderChangeMapOverviewMermaid(wide.change_graph.overview) as string;
@@ -831,7 +835,7 @@ test("review-surfaces.MAP_SCALE.4 every overview group expands to a detail view 
   assert.doesNotMatch(body, /classDef stub stroke-dasharray/);
 });
 
-test("review-surfaces.MAP_SCALE.6 human_review.md renders one collapsed detail block per group in model order, the sticky stays overview-only, and the PR comment stays overview-only", () => {
+test("review-surfaces.MAP_SCALE.6 human_review.md renders group details while GitHub comments use one compact overview table", () => {
   const sections = wideFixtureSections();
   const fixture = model(sections.change_graph, sections.reading_order.legs);
   const markdown = renderHumanReviewMarkdown(fixture);
@@ -842,14 +846,108 @@ test("review-surfaces.MAP_SCALE.6 human_review.md renders one collapsed detail b
   // Each block carries its own mermaid fence (per-block embed guard).
   const detailFences = markdown.split("## Change map")[1].split("\n## ")[0].match(/```mermaid/g) ?? [];
   assert.equal(detailFences.length, 1 + sections.change_graph.overview.groups.length);
-  // The sticky comment stays overview-only: one map block, no group details.
+  // The sticky comment stays overview-only without a GitHub Mermaid fence.
   const sticky = renderStickySummary(fixture);
-  assert.match(sticky.markdown, /<details><summary>Change map \(overview\)<\/summary>/);
+  assert.match(sticky.markdown, /<details><summary>Change map — 99 files · 10 areas · 3 review items<\/summary>/);
   assert.doesNotMatch(sticky.markdown, /file\(s\) · \d+ topic\(s\)<\/summary>/);
   const stickyFences = sticky.markdown.match(/```mermaid/g) ?? [];
-  assert.equal(stickyFences.length, 1);
-  // The PR comment surface stays overview-only too.
+  assert.equal(stickyFences.length, 0);
+  // The PR comment surface uses the same compact overview.
   const prComment = renderHumanPrComment(fixture).markdown;
   const prFences = prComment.match(/```mermaid/g) ?? [];
-  assert.equal(prFences.length, 1);
+  assert.equal(prFences.length, 0);
+});
+
+test("wide GitHub map prioritizes queued areas, escapes hostile labels, and keeps only reviewer-worthy relationships", () => {
+  const graph = structuredClone(wideFixtureSections().change_graph);
+  const urgent = graph.overview.groups.at(-1)!;
+  urgent.queue_count = 99;
+  urgent.name = "![urgent](mailto:x)@reviewer|\\name";
+  const token = `ghp_${"x".repeat(36)}`;
+  urgent.summary = `**Inspect** <unsafe> relationship changes ${token}`;
+  graph.overview.edges = Array.from({ length: 7 }, (_, index) => ({
+    from: graph.overview.groups[index % graph.overview.groups.length].name,
+    to: urgent.name,
+    weight: 20 - index,
+    has_new: index === 0,
+    has_removed: index === 0,
+    summary: "relationship",
+    insight_source: index > 0 ? "provider" as const : "fallback" as const
+  }));
+  const originalEdges = structuredClone(graph.overview.edges);
+  const rendered = changeMapCommentBlock(graph);
+  const body = rendered.body ?? "";
+  assert.match(body, /99 queued/, "the only urgent late group survives the row cap");
+  assert.doesNotMatch(body, /mailto:x|@reviewer|<unsafe>/);
+  assert.match(body, /mailto&#58;x/);
+  assert.match(body, /&#64;reviewer/);
+  assert.match(body, /changed · 20 links/);
+  assert.match(body, /\+2 more relationships; see the full artifact\./);
+  assert.doesNotMatch(body, /ghp_x{36}/);
+  assert.match(body, /REDACTED:github\\_token/);
+  assert.equal(rendered.blocked, true);
+  assert.deepEqual(graph.overview.edges, originalEdges, "comment rendering must not mutate model edge order");
+});
+
+test("wide GitHub map omits unchanged fallback relationships", () => {
+  const graph = structuredClone(wideFixtureSections().change_graph);
+  graph.overview.edges = [{
+    from: "tests",
+    to: "src",
+    weight: 38,
+    has_new: false,
+    has_removed: false,
+    summary: "mechanical import aggregation",
+    insight_source: "fallback"
+  }];
+
+  const rendered = changeMapCommentBlock(graph).body ?? "";
+  assert.doesNotMatch(rendered, /Key relationships|38 links|tests → src/);
+});
+
+test("wide GitHub map redacts full summaries before compacting them", () => {
+  const graph = structuredClone(wideFixtureSections().change_graph);
+  const token = `ghp_${"s".repeat(36)}`;
+  graph.overview.groups[0].summary = `${"review context ".repeat(5)}${token} trailing text`;
+  graph.overview.edges = [{
+    from: "tests",
+    to: "src",
+    weight: 1,
+    has_new: true,
+    has_removed: false,
+    summary: `${"relationship context ".repeat(4)}${token} trailing text`,
+    insight_source: "provider"
+  }];
+
+  const rendered = changeMapCommentBlock(graph);
+  assert.equal(rendered.blocked, true);
+  assert.doesNotMatch(rendered.body ?? "", /ghp_s+/);
+});
+
+test("wide GitHub map keeps changed relationships ahead of heavier provider context", () => {
+  const graph = structuredClone(wideFixtureSections().change_graph);
+  graph.overview.edges = [
+    ...Array.from({ length: 6 }, (_, index) => ({
+      from: `context-${index}`,
+      to: "src",
+      weight: 100 - index,
+      has_new: false,
+      has_removed: false,
+      summary: `Provider context ${index}`,
+      insight_source: "provider" as const
+    })),
+    {
+      from: "new-consumer",
+      to: "src",
+      weight: 1,
+      has_new: true,
+      has_removed: false,
+      summary: "New runtime dependency created by this change",
+      insight_source: "fallback" as const
+    }
+  ];
+
+  const rendered = changeMapCommentBlock(graph).body ?? "";
+  assert.ok(rendered.includes("src → new\\-consumer (new · 1 link) — New runtime dependency created by this change"));
+  assert.match(rendered, /\+2 more relationships; see the full artifact\./);
 });

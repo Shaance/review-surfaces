@@ -1,8 +1,10 @@
 import { SPEC_NONE_NOTE } from "../evaluation/status";
 import { inspectAndRedactSecrets, redactSecrets } from "../privacy/secrets";
-import { changeMapMermaidEmbed, changeMapTitle, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
+import { changeMapCommentBlock, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
 import { firstTourLegSnippet } from "./tour-snippet";
 import { renderCompactConversationReviewMarkdown } from "../human/render";
+import { hasConversationReviewValue } from "../human/conversation-review-presentation";
+import { requiredAuthorAction, supportingReviewQueue } from "../human/primary-surface-policy";
 import {
   compactDecisionSupportingText,
   decisionIntentSourceLabel,
@@ -232,9 +234,10 @@ export function renderHumanPrComment(model: HumanReviewModel, options: RenderHum
   const surfacePath = options.surfacePath ?? DEFAULT_SURFACE_PATH;
   // review-surfaces.CHANGE_MAP.3 + READING_ORDER.2: the PR-mode sticky carries
   // the collapsed map AND the first tour leg, like the Action sticky.
-  const mapEmbed = changeMapMermaidEmbed(model.change_graph);
+  const mapEmbed = changeMapCommentBlock(model.change_graph);
   const depTree = dependencyTreeEmbed(model.dependency_chains);
   const tourLeg = firstTourLegSnippet(model);
+  const authorAction = requiredAuthorAction(model);
   const sections: string[] = [
     PR_STICKY_MARKER,
     "## review-surfaces PR review",
@@ -250,13 +253,16 @@ export function renderHumanPrComment(model: HumanReviewModel, options: RenderHum
       : []),
     field(model.summary),
     "",
+    ...(authorAction
+      ? [`**Author action:** ${field(authorAction)}`, ""]
+      : []),
     renderDecisionProjection(model),
     "",
-    "### Conversation-aware insights",
-    renderCompactConversationReviewMarkdown(model.conversation_analysis, model.review_insights),
-    "",
+    ...(hasConversationReviewValue(model)
+      ? ["### Conversation-aware insights", renderCompactConversationReviewMarkdown(model.conversation_analysis, model.review_insights), ""]
+      : []),
     "### Review first",
-    renderHumanReviewFirst(model.review_queue.slice(0, MAX_REVIEW_FIRST)),
+    renderHumanReviewFirst(supportingReviewQueue(model).slice(0, MAX_REVIEW_FIRST)),
     "",
     "### Blockers",
     renderHumanBlockers(model.blockers.slice(0, MAX_HUMAN_BLOCKERS)),
@@ -269,7 +275,7 @@ export function renderHumanPrComment(model: HumanReviewModel, options: RenderHum
     "",
     // The blank line before the details block is required for GitHub to render
     // the inner mermaid.
-    ...(mapEmbed.body ? [mermaidDetailsBlock(changeMapTitle(mapEmbed.level), mapEmbed.body), ""] : []),
+    ...(mapEmbed.body ? [mapEmbed.body, ""] : []),
     ...(depTree.body ? [mermaidDetailsBlock("Dependency chains (supply chain)", depTree.body), ""] : []),
     ...(tourLeg.text ? [tourLeg.text, ""] : []),
     `Full human review: \`${field(humanReviewPath)}\`.`,

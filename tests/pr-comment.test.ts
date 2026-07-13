@@ -342,6 +342,7 @@ test("renderHumanPrComment renders the compact PR comment from human_review.json
   assert.match(md, /review-surfaces:sticky/);
   assert.match(md, /## review-surfaces PR review/);
   assert.match(md, /\*\*Verdict:\*\* Needs author clarification\./);
+  assert.match(md, /\*\*Author action:\*\* Add or cite a compatibility fixture\./);
   assert.match(md, /### Review first/);
   assert.match(md, /`schemas\/human_review\.schema\.json:71-98` - Schema contract change/);
   assert.match(md, /### Blockers/);
@@ -478,6 +479,20 @@ test("review-surfaces.PR_SURFACE.4 a persisted high-confidence redaction marker 
 test("renderHumanPrComment is byte-deterministic for the same model", () => {
   const model = humanModel();
   assert.deepEqual(renderHumanPrComment(model), renderHumanPrComment(model));
+});
+
+test("renderHumanPrComment preserves degraded conversation caveats", () => {
+  const review = humanModel();
+  review.conversation_analysis = {
+    ...notAssessedConversationAnalysis("ai-sdk"),
+    status: "degraded",
+    summary: "Conversation reconciliation failed before completion.",
+    quality_flags: ["conversation_analysis_unavailable"]
+  };
+  const markdown = renderHumanPrComment(review).markdown;
+  assert.match(markdown, /### Conversation-aware insights/);
+  assert.match(markdown, /Conversation reconciliation failed before completion\./);
+  assert.match(markdown, /Degraded — incomplete/);
 });
 
 test("renderHumanPrComment caps suggested comments after filtering ready drafts", () => {

@@ -102,9 +102,14 @@ test("review-surfaces.DISTRIBUTION.3 README is written for a stranger's first fi
 
 test("review-surfaces.DISTRIBUTION.4 the local gate includes the pnpm pack smoke test; publish stays manual", () => {
   const gate = read("scripts/local-gate.sh");
-  assert.match(gate, /pnpm pack --pack-destination/, "the gate packs the tarball");
+  assert.match(gate, /pnpm run test[^]*pnpm pack --config\.ignore-scripts=true --pack-destination/, "the gate packages the exact clean dist produced by the full test run without a redundant lifecycle build");
   assert.match(gate, /pnpm add .*tgz|pnpm add "\.\/\$\(basename/, "the gate installs the packed tarball");
-  assert.match(gate, /review-surfaces" all --provider mock/, "the installed binary runs a real pipeline outside the repo");
+  assert.match(gate, /pnpm add [^\n]*--prefer-offline/, "the tarball smoke reuses cached packages without pretending registry metadata is always cached");
+  assert.match(
+    gate,
+    /review-surfaces" all --provider mock --no-conversation-discovery/,
+    "the installed binary runs a hermetic pipeline outside the repo"
+  );
   assert.match(gate, /validate \.rs --surface all/, "the installed binary validates from outside the repo");
   // npm publish is the owner's manual step — prepared, never run by the gate.
   assert.ok(!gate.includes("npm publish") && !gate.includes("pnpm publish"), "the gate never publishes");
@@ -114,7 +119,19 @@ test("review-surfaces.DISTRIBUTION.4 the local gate includes the pnpm pack smoke
   // prepack guarantees the tarball carries dist/ even from a clean checkout
   // (pnpm pack / npm pack run prepack; prepublishOnly only runs on publish).
   assert.equal(manifest.scripts?.prepack, "pnpm run build", "pack always builds first");
-  assert.match(gate, /rm -rf dist\n/, "the smoke packs from a clean dist");
+  assert.doesNotMatch(gate, /rm -rf dist\npnpm run build\npnpm pack/, "the smoke does not replace the tested dist with an untested second build");
+
+  const packDir = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-pnpm-pack-"));
+  try {
+    const packed = spawnSync("pnpm", ["pack", "--config.ignore-scripts=true", "--pack-destination", packDir], {
+      cwd: root,
+      encoding: "utf8"
+    });
+    assert.equal(packed.status, 0, `the lifecycle-suppressed pnpm pack command must execute:\n${packed.stderr}`);
+    assert.equal(fs.readdirSync(packDir).some((name) => name.endsWith(".tgz")), true, "the supported pack command writes a tarball");
+  } finally {
+    fs.rmSync(packDir, { recursive: true, force: true });
+  }
 });
 
 // review-surfaces.DISTRIBUTION.5-8 — pre-publish polish uplift Phase 3

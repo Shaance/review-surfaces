@@ -813,6 +813,21 @@
               "path": { "type": "string" },
               "exports_added": { "type": "array", "items": { "type": "string" } },
               "exports_removed": { "type": "array", "items": { "type": "string" } },
+              "contract_removed": { "type": "boolean" },
+              "contract_target_changed": { "type": "boolean" },
+              "contract_name": { "type": "string" },
+              "renamed_from": { "type": "string" },
+              "contract_surface": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "source"],
+                "properties": {
+                  "kind": { "enum": ["declaration", "package_export", "package_entry", "configured"] },
+                  "source": { "type": "string" },
+                  "identity": { "type": "string" },
+                  "binding": { "type": "string" }
+                }
+              },
               "signatures_changed": {
                 "type": "array",
                 "items": {

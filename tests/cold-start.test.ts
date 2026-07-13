@@ -10,7 +10,8 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import { computeSemanticChangeFacts, SemanticDiffSources } from "../src/risks/semantic-diff";
-import { clusterOfPath, detectImplementationRoots } from "../src/core/source-roots";
+import { clusterOfPath, detectContractSourceProjection, detectContractSourceRoots, detectImplementationRoots } from "../src/core/source-roots";
+import { classifyApiContractSurface } from "../src/risks/contract-surface";
 import { buildChangeGraphSections } from "../src/human/change-graph";
 import { createEvalFixture } from "./helpers/eval-fixture";
 
@@ -73,6 +74,11 @@ test("review-surfaces.COLD_START.2 detects implementation roots from tsconfig, p
   assert.ok(!roots.includes("dist"), "build output must never become an implementation root");
   assert.ok(!roots.includes("test"), "test trees must never become an implementation root");
   assert.ok(!roots.includes("documentation"), "docs dirs must not qualify via the majority fallback");
+  assert.deepEqual(
+    detectContractSourceRoots({ files, read: (filePath) => contents[filePath] }),
+    ["source"],
+    "explicit tsconfig source roots avoid ambiguous package-target fan-out"
+  );
 
   // Majority fallback alone (no tsconfig/package signals): a packages-style
   // top-level dir of mostly .ts files qualifies; a docs dir does not.
@@ -86,6 +92,144 @@ test("review-surfaces.COLD_START.2 detects implementation roots from tsconfig, p
   // The shared cluster rule subclusters under a detected root.
   assert.equal(clusterOfPath("source/core/index.ts", ["source"]), "source/core");
   assert.equal(clusterOfPath("README.md", ["source"]), "(root)");
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 preserves a root-level contract source sentinel", () => {
+  const files = ["package.json", "tsconfig.json", "index.ts", "README.md"];
+  for (const rootDir of [".", "./"]) {
+    const contents: Record<string, string> = {
+      "tsconfig.json": JSON.stringify({ compilerOptions: { rootDir } }),
+      "package.json": JSON.stringify({ main: "dist/index.js" })
+    };
+    assert.deepEqual(
+      detectContractSourceRoots({ files, read: (filePath) => contents[filePath] }),
+      ["."],
+      `rootDir ${JSON.stringify(rootDir)} keeps the root-level contract source`
+    );
+    assert.ok(
+      !detectImplementationRoots({ files, read: (filePath) => contents[filePath] }).includes("."),
+      "the contract-only root sentinel never becomes a change-map implementation root"
+    );
+  }
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 infers a root-level source behind compiled package output", () => {
+  for (const outputRoot of ["dist", "lib"] as const) {
+    const files = ["package.json", "index.ts", `${outputRoot}/index.js`, "src/browser.ts", "src/cli.ts", "src/index.ts", "src/types.ts", "README.md"];
+    const contents: Record<string, string> = {
+      "package.json": JSON.stringify({
+        main: `${outputRoot}/index.js`,
+        module: `${outputRoot}/browser.js`,
+        types: `${outputRoot}/types.d.ts`,
+        bin: { cli: `${outputRoot}/cli.js` }
+      })
+    };
+    const projection = detectContractSourceProjection({ files, read: (filePath) => contents[filePath] });
+    const options = { packageJson: contents["package.json"], sourceRoots: projection.roots, packageSourcePatterns: projection.sourcePatternsByContract };
+    assert.deepEqual(projection.roots, [".", "src"], `mixed ${outputRoot} entries retain every evidence-backed source root`);
+    assert.equal(classifyApiContractSurface("index.ts", options)?.kind, "package_entry");
+    assert.equal(classifyApiContractSurface("src/browser.ts", options)?.kind, "package_entry");
+    assert.equal(classifyApiContractSurface("src/cli.ts", options)?.kind, "package_entry");
+    assert.equal(classifyApiContractSurface("src/types.ts", options)?.kind, "package_entry");
+    assert.equal(classifyApiContractSurface("src/index.ts", options), undefined, "the root main entry does not fan out to a nested namesake");
+  }
+
+  const conditionalFiles = ["package.json", "index.mts", "src/browser.cts"];
+  const conditionalPackage = JSON.stringify({
+    exports: { ".": { import: "./dist/index.mjs", require: "./dist/browser.cjs" } }
+  });
+  const conditionalProjection = detectContractSourceProjection({
+    files: conditionalFiles,
+    read: (filePath) => filePath === "package.json" ? conditionalPackage : undefined
+  });
+  const conditionalOptions = { packageJson: conditionalPackage, sourceRoots: conditionalProjection.roots, packageSourcePatterns: conditionalProjection.sourcePatternsByContract };
+  assert.deepEqual(conditionalProjection.roots, [".", "src"]);
+  assert.equal(classifyApiContractSurface("index.mts", conditionalOptions)?.kind, "package_export");
+  assert.equal(classifyApiContractSurface("src/browser.cts", conditionalOptions)?.kind, "package_export");
+
+  const wildcardPackage = JSON.stringify({ exports: { ".": "./dist/index.js", "./*": "./dist/*.js" } });
+  const wildcardProjection = detectContractSourceProjection({
+    files: ["package.json", "index.ts", "src/feature.ts"],
+    read: (filePath) => filePath === "package.json" ? wildcardPackage : undefined
+  });
+  const wildcardOptions = { packageJson: wildcardPackage, sourceRoots: wildcardProjection.roots, packageSourcePatterns: wildcardProjection.sourcePatternsByContract };
+  assert.deepEqual(wildcardProjection.roots, [".", "src"]);
+  assert.equal(classifyApiContractSurface("index.ts", wildcardOptions)?.identity, "export:.");
+  assert.equal(classifyApiContractSurface("src/feature.ts", wildcardOptions)?.binding, "export:./feature");
+
+  const sharedTargetPackage = JSON.stringify({ exports: { ".": "./dist/index.js", "./alias": "./dist/index.js" } });
+  const sharedTargetProjection = detectContractSourceProjection({
+    files: ["package.json", "index.ts", "src/index.ts"],
+    read: (filePath) => filePath === "package.json" ? sharedTargetPackage : undefined
+  });
+  const sharedTargetOptions = {
+    packageJson: sharedTargetPackage,
+    sourceRoots: sharedTargetProjection.roots,
+    packageSourcePatterns: sharedTargetProjection.sourcePatternsByContract
+  };
+  assert.equal(classifyApiContractSurface("index.ts", sharedTargetOptions)?.identity, "export:.");
+  assert.equal(classifyApiContractSurface("src/index.ts", sharedTargetOptions)?.identity, "export:./alias");
+
+  const directLibPackage = JSON.stringify({ main: "lib/index.js" });
+  const directLibProjection = detectContractSourceProjection({
+    files: ["package.json", "lib/index.js", "lib/index.ts", "src/index.ts"],
+    read: (filePath) => filePath === "package.json" ? directLibPackage : undefined
+  });
+  const directLibOptions = {
+    packageJson: directLibPackage,
+    sourceRoots: directLibProjection.roots,
+    packageSourcePatterns: directLibProjection.sourcePatternsByContract
+  };
+  assert.deepEqual(directLibProjection.roots, ["lib"]);
+  assert.equal(classifyApiContractSurface("lib/index.ts", directLibOptions)?.kind, "package_entry");
+  assert.equal(classifyApiContractSurface("src/index.ts", directLibOptions), undefined);
+  assert.equal(classifyApiContractSurface("lib/index.js", directLibOptions), undefined);
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 prefers explicit tsconfig include roots over committed package output", () => {
+  const files = ["package.json", "tsconfig.json", "lib/index.js", "src/index.ts", "tests/index.test.ts"];
+  const contents: Record<string, string> = {
+    "tsconfig.json": JSON.stringify({ include: ["src", "tests"] }),
+    "package.json": JSON.stringify({ main: "lib/index.js" })
+  };
+  assert.deepEqual(
+    detectContractSourceRoots({ files, read: (filePath) => contents[filePath] }),
+    ["src"],
+    "an explicit source include projects package output without admitting generated or test roots"
+  );
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 retains package projection across broad tsconfig includes", () => {
+  const contents: Record<string, string> = {
+    "tsconfig.json": JSON.stringify({ include: ["src/**", "scripts/**"] }),
+    "package.json": JSON.stringify({ main: "dist/index.js" })
+  };
+  const projection = detectContractSourceProjection({
+    files: ["package.json", "tsconfig.json", "dist/index.js", "src/index.ts", "scripts/build.ts"],
+    read: (filePath) => contents[filePath]
+  });
+  const options = {
+    packageJson: contents["package.json"],
+    sourceRoots: projection.roots,
+    packageSourcePatterns: projection.sourcePatternsByContract
+  };
+  assert.deepEqual(projection.roots, ["scripts", "src"]);
+  assert.equal(classifyApiContractSurface("src/index.ts", options)?.kind, "package_entry");
+  assert.equal(classifyApiContractSurface("scripts/build.ts", options), undefined);
+
+  const excludedContents: Record<string, string> = {
+    "tsconfig.json": JSON.stringify({ include: ["src/**"] }),
+    "package.json": JSON.stringify({ main: "dist/tools/index.js" })
+  };
+  const excludedProjection = detectContractSourceProjection({
+    files: ["package.json", "tsconfig.json", "dist/tools/index.js", "src/other.ts", "tools/index.ts"],
+    read: (filePath) => excludedContents[filePath]
+  });
+  assert.equal(classifyApiContractSurface("tools/index.ts", {
+    packageJson: excludedContents["package.json"],
+    sourceRoots: excludedProjection.roots,
+    packageSourcePatterns: excludedProjection.sourcePatternsByContract
+  }), undefined, "package projection cannot escape explicit tsconfig roots");
 });
 
 test("review-surfaces.COLD_START.2 reading order classifies a detected root as implementation, in agreement with the clusters", () => {
@@ -117,6 +261,20 @@ test("review-surfaces.COLD_START.2 end-to-end: a source/-rooted repo gets implem
     const leg = human.reading_order.legs.find((candidate) => candidate.steps.some((step) => step.path === "source/core/engine.ts"));
     assert.ok(leg, "the new source file is in the tour");
     assert.equal(leg?.title, "Implementation", "detected source/ root classifies as implementation end-to-end");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 untracked source roots participate in worktree contract classification", () => {
+  const fixture = createEvalFixture("untracked-contract-root");
+  try {
+    fixture.write("package.json", JSON.stringify({ main: "dist/index.js" }));
+    fixture.write("tsconfig.json", JSON.stringify({ compilerOptions: { rootDir: "source" } }));
+    fixture.write("source/index.ts", "export const value: number = 1;\n");
+    const model = fixture.run();
+    const change = model.semantic_facts.api_changes.find((entry) => entry.path === "source/index.ts");
+    assert.equal(change?.contract_surface?.kind, "package_entry");
   } finally {
     fixture.cleanup();
   }

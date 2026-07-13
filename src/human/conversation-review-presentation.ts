@@ -1,5 +1,6 @@
 import {
   MAX_VISIBLE_CONVERSATION_INSIGHTS,
+  NOT_ASSESSED_CONVERSATION_SUMMARIES,
   type ConversationAnalysis,
   type ReviewerInsight
 } from "../contracts/conversation-review";
@@ -12,6 +13,18 @@ export function conversationAnalysisForRender(model: HumanReviewModel): Conversa
 
 export function conversationInsightsForRender(model: HumanReviewModel): ReviewerInsight[] {
   return visibleConversationInsights(model.conversation_analysis, model.review_insights);
+}
+
+/**
+ * Hide only the canonical no-log boilerplate on space-constrained comments.
+ * Degraded, partial, custom not-assessed, or insight-bearing states remain
+ * visible because they carry reviewer-relevant trust caveats.
+ */
+export function hasConversationReviewValue(model: HumanReviewModel): boolean {
+  if ((model.review_insights?.length ?? 0) > 0) return true;
+  const analysis = model.conversation_analysis;
+  if (!analysis) return false;
+  return analysis.status !== "not_assessed" || analysis.summary !== NOT_ASSESSED_CONVERSATION_SUMMARIES.missing_log;
 }
 
 export interface ConversationReviewPresentation {

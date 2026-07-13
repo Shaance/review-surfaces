@@ -15,7 +15,8 @@ import { parseBudgetDuration } from "../human/budget";
 import { computeDependencyFacts } from "../risks/dependency-facts";
 import { loadReviewPolicy, POLICY_FILE, ReviewPolicy } from "../feedback/policy";
 import { computeConfigFacts } from "../risks/config-facts";
-import { buildImportGraph, findSymbolImporters, importGraphWouldTruncate, resolveRelativeImports, resolveRuntimeRelativeImports } from "../collector/import-graph";
+import { buildImportGraph, findSymbolReferences, importGraphWouldTruncate, resolveRelativeImports, resolveRuntimeRelativeImports } from "../collector/import-graph";
+import { createApiContractSurfaceClassifier } from "../risks/contract-surface";
 import { createRuntimeImportResolver } from "../collector/compiler-options";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -85,7 +86,7 @@ import { buildHumanReview, humanReviewConfigSignature } from "../human/human-rev
 import { ChangedImportEdge, ChangeGraphAreaInsight, ChangeGraphEdgeInsight, computeChangedImportEdges } from "../human/change-graph";
 import { buildChangeMapInsights, ChangeMapInsights } from "../human/change-map-insights";
 import { ArchDriftResult, boundArchDriftByGraphCompleteness, computeArchDriftFacts, moduleOf } from "../risks/arch-drift";
-import { clusterOfPath, detectImplementationRoots, DEFAULT_IMPLEMENTATION_ROOTS } from "../core/source-roots";
+import { clusterOfPath, detectContractSourceProjection, detectImplementationRoots, DEFAULT_IMPLEMENTATION_ROOTS, type ContractSourceProjection } from "../core/source-roots";
 import { EvalScoreboardSummary, HUMAN_REVIEW_DECISIONS, RoundsLedgerEntry } from "../human/contract";
 import { buildChangeNarrative } from "../human/narrative";
 import { ChangeNarrative, HumanReviewModel, ReviewQueueItem } from "../human/contract";
@@ -1831,7 +1832,10 @@ async function loadOrBuildHumanReviewJson(
 }
 
 function humanReviewJsonMatchesConfig(model: HumanReviewModel, config?: ReviewSurfacesConfig): boolean {
-  return model.generated_from.human_review_config_signature === humanReviewConfigSignature(config?.human_review);
+  return model.generated_from.human_review_config_signature === humanReviewConfigSignature(
+    config?.human_review,
+    config?.contract_surfaces.paths
+  );
 }
 
 function humanReviewJsonSatisfiesStandaloneCommand(model: HumanReviewModel, command: string | undefined): boolean {
@@ -1956,12 +1960,14 @@ function buildHumanReviewForPacket(
   // from committed signals; the change map, tour, and drift facts all consume
   // the same value so they cannot disagree on what counts as implementation.
   const implementationRoots = detectRootsForPacket(cwd, factReaders);
+  const contractSourceProjection = detectContractRootsForPacket(cwd, factReaders);
   const humanReview = buildHumanReview({
     packet,
     prSurface,
     diff: resolvedDiff,
     feedback,
     config: effectiveConfig?.human_review,
+    contractPaths: effectiveConfig?.contract_surfaces.paths,
     narrative,
     conversationAnalysis: conversationReview?.analysis,
     reviewInsights: conversationReview?.insights,
@@ -1969,7 +1975,13 @@ function buildHumanReviewForPacket(
     policyNowIso: typeof (packet.manifest as { created_at?: unknown }).created_at === "string" ? (packet.manifest as { created_at: string }).created_at : "",
     // review-surfaces.SEMANTIC_DIFF.1-4: computed here (sync git access) so the
     // facts are present uniformly on every build path — main, cache, standalone.
-    semanticFacts: withBlastRadius(cwd, computeSemanticFactsForPacket(resolvedDiff, factReaders), factReaders),
+    semanticFacts: withBlastRadius(
+      cwd,
+      computeSemanticFactsForPacket(resolvedDiff, factReaders, effectiveConfig?.contract_surfaces.paths, contractSourceProjection),
+      factReaders,
+      effectiveConfig?.contract_surfaces.paths,
+      contractSourceProjection.head
+    ),
     // review-surfaces.RANKING.1: per-changed-impl-path evidence (changed test ->
     // impl import map) computed here so it is uniform on every build path.
     rankingEvidence: computeRankingEvidenceForPacket(cwd, packet, resolvedDiff),
@@ -2010,14 +2022,27 @@ function buildHumanReviewForPacket(
 // review-surfaces.SEMANTIC_DIFF.1-4: compute the semantic change facts from the
 // collected diff plus the shared base/head readers (merge-base for the OLD side,
 // worktree-or-committed-blob for the NEW side — see buildFactReaders).
-function computeSemanticFactsForPacket(diff: StructuredDiff | undefined, readers: FactReaders | undefined): SemanticChangeFacts {
+function computeSemanticFactsForPacket(
+  diff: StructuredDiff | undefined,
+  readers: FactReaders | undefined,
+  contractPaths: readonly string[] = [],
+  sourceProjection: { base: ContractSourceProjection; head: ContractSourceProjection } = {
+    base: { roots: [], sourcePatternsByContract: new Map() },
+    head: { roots: [], sourcePatternsByContract: new Map() }
+  }
+): SemanticChangeFacts {
   if (!diff || diff.files.length === 0 || !readers) {
     return emptySemanticChangeFacts();
   }
   return computeSemanticChangeFacts({
     diff,
     readBase: readers.readBase,
-    readHead: readers.readHead
+    readHead: readers.readHead,
+    contractPaths,
+    baseSourceRoots: sourceProjection.base.roots,
+    headSourceRoots: sourceProjection.head.roots,
+    basePackageSourcePatterns: sourceProjection.base.sourcePatternsByContract,
+    headPackageSourcePatterns: sourceProjection.head.sourcePatternsByContract
   });
 }
 
@@ -2097,7 +2122,7 @@ function detectRootsForPacket(cwd: string, readers: FactReaders | undefined): st
   try {
     files = execFileSync(
       "git",
-      readers.headIsWorktree ? ["ls-files", "--cached"] : ["ls-tree", "-r", "--name-only", readers.headSha],
+      readers.headIsWorktree ? ["ls-files", "--cached", "--others", "--exclude-standard"] : ["ls-tree", "-r", "--name-only", readers.headSha],
       { cwd, encoding: "utf8" }
     )
       .split("\n")
@@ -2106,6 +2131,31 @@ function detectRootsForPacket(cwd: string, readers: FactReaders | undefined): st
     return [...DEFAULT_IMPLEMENTATION_ROOTS];
   }
   return detectImplementationRoots({ files, read: readers.readHead });
+}
+
+function detectContractRootsForPacket(
+  cwd: string,
+  readers: FactReaders | undefined
+): { base: ContractSourceProjection; head: ContractSourceProjection } {
+  const empty = (): ContractSourceProjection => ({ roots: [], sourcePatternsByContract: new Map() });
+  if (!readers) return { base: empty(), head: empty() };
+  const detect = (args: string[], read: (path: string) => string | undefined): ContractSourceProjection => {
+    try {
+      const files = execFileSync("git", args, { cwd, encoding: "utf8" }).split("\n").filter(Boolean);
+      return detectContractSourceProjection({ files, read });
+    } catch {
+      return empty();
+    }
+  };
+  return {
+    head: detect(
+      readers.headIsWorktree ? ["ls-files", "--cached", "--others", "--exclude-standard"] : ["ls-tree", "-r", "--name-only", readers.headSha],
+      readers.readHead
+    ),
+    base: readers.baseReadRef
+      ? detect(["ls-tree", "-r", "--name-only", readers.baseReadRef], readers.readBase)
+      : empty()
+  };
 }
 
 // review-surfaces.CHANGE_MAP.1: importer->imported edges among the changed
@@ -2437,8 +2487,17 @@ async function runScoreboard(parsed: ParsedArgs): Promise<number> {
 // in-repo importer counts from a bounded reverse import graph over the
 // git-tracked source files. A truncated graph carries the note rather than
 // presenting "used by 0" as fact.
-function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactReaders | undefined): SemanticChangeFacts {
-  const targets = facts.api_changes.filter((change) => change.exports_removed.length > 0 || change.signatures_changed.length > 0);
+function withBlastRadius(
+  cwd: string,
+  facts: SemanticChangeFacts,
+  readers: FactReaders | undefined,
+  contractPaths: readonly string[] = [],
+  sourceProjection: ContractSourceProjection = { roots: [], sourcePatternsByContract: new Map() }
+): SemanticChangeFacts {
+  const targets = facts.api_changes.filter((change) =>
+    change.path !== "package.json" &&
+    (change.exports_removed.length > 0 || change.signatures_changed.length > 0)
+  );
   if (!readers || targets.length === 0) {
     return facts;
   }
@@ -2494,21 +2553,40 @@ function withBlastRadius(cwd: string, facts: SemanticChangeFacts, readers: FactR
     resolveImports: (sourcePath, content, exists) =>
       resolveRelativeImports(sourcePath, content, exists, deletedTargetExists)
   });
+  const classifyContractSurface = createApiContractSurfaceClassifier({
+    packageJson: readers.readHead("package.json"),
+    configuredPaths: contractPaths,
+    sourceRoots: sourceProjection.roots,
+    packageSourcePatterns: sourceProjection.sourcePatternsByContract
+  });
   for (const change of targets) {
     const symbols = [...change.exports_removed, ...change.signatures_changed.map((sig) => sig.name)];
-    const importers = findSymbolImporters({
+    const references = findSymbolReferences({
       graph,
       modulePath: change.path,
       symbols,
       read: readers.readHead,
       exists: headExists,
-      fallbackExists: deletedTargetExists
+      fallbackExists: deletedTargetExists,
+      includeReexporters: !change.contract_surface,
+      ...(!change.contract_surface ? {
+        stopAtReexporter: (filePath: string): boolean => classifyContractSurface(filePath) !== undefined
+      } : {})
     });
+    const publicReexport = references.matchedReexporter
+      ? classifyContractSurface(references.matchedReexporter)
+      : undefined;
     change.used_by = {
-      count: importers.length,
-      top: importers.slice(0, 5),
+      count: references.importers.length,
+      top: references.importers.slice(0, 5),
       ...(graph.truncated ? { truncated: true } : {})
     };
+    if (!change.contract_surface) {
+      if (publicReexport) {
+        change.contract_surface = publicReexport;
+        change.contract_name = publicReexport.binding ?? publicReexport.identity;
+      }
+    }
   }
   return facts;
 }
@@ -3235,7 +3313,8 @@ async function runCommentSticky(parsed: ParsedArgs): Promise<number> {
     diff,
     topN: numberFlag(parsed, "comment-top-n"),
     artifactName: stringFlag(parsed, "artifact-name"),
-    runId: stringFlag(parsed, "run-id") ?? process.env.GITHUB_RUN_ID
+    runId: stringFlag(parsed, "run-id") ?? process.env.GITHUB_RUN_ID,
+    artifactUrl: stringFlag(parsed, "artifact-url")
   });
   const commentPath = path.join(outputDir, "comment.md");
   await writeText(commentPath, sticky.markdown);
@@ -3797,7 +3876,7 @@ const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
   // so it reads every flag any of them read: --out/--config (resolveOutputDir +
   // loadConfig), --format, the scope flags, --budget, --post/--strict-postability
   // (github/sticky/review), the sticky flags (--comment-top-n/--artifact-name/
-  // --run-id), and --sarif-out (sarif).
+  // --run-id/--artifact-url), and --sarif-out (sarif).
   comment: flagSet(OUTPUT_CONFIG_FLAGS, SCOPE_FLAGS, [
     "format",
     "budget",
@@ -3805,6 +3884,7 @@ const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
     "strict-postability",
     "comment-top-n",
     "artifact-name",
+    "artifact-url",
     "run-id",
     "sarif-out",
     // review-surfaces.QUALITY_GATE.2: `comment --format json` projects gate_code
@@ -4220,6 +4300,8 @@ Options:
                    defaults to $GITHUB_RUN_ID when unset.
   --artifact-name <name>
                    comment --format sticky: artifact name referenced by the sticky comment.
+  --artifact-url <url>
+                   comment --format sticky: direct workflow-run URL for the artifact.
   --comment-top-n <n>
                    comment --format sticky: cap the sticky comment to the top N items.
   --author <name>   review: label captured reviewer feedback with this author name.

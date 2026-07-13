@@ -11,8 +11,7 @@ import { globToRegExp } from "../core/glob";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
 import { formatHunkHeader, hunkOverlapsRange } from "../collector/diff-hunks";
 import { buildFallbackNarrative } from "./narrative";
-import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTypeChanges, isBreakingApiChange, isBreakingSchemaChange, SchemaContractChange, SemanticChangeFacts, TestWeakeningSignal } from "../risks/semantic-diff";
-import { isExplicitContractSurfacePath } from "../risks/contract-surface";
+import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTypeChanges, isBreakingApiChange, isBreakingSchemaChange, isSupportedApiContractChange, SchemaContractChange, SemanticChangeFacts, TestWeakeningSignal } from "../risks/semantic-diff";
 import { emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { buildReviewPlan } from "./budget";
 import { buildChangeGraphSections, ChangedFileFacts, ChangedImportEdge, ChangeGraphAreaInsight, ChangeGraphEdgeInsight } from "./change-graph";
@@ -84,6 +83,7 @@ import {
 import {
   buildDecisionScope,
   currentValidationRunState,
+  decisionRootForApiChange,
   isDecisionRelevantApiChange,
   decisionRootForRisk,
   isCurrentValidationEvidence,
@@ -97,6 +97,8 @@ export interface BuildHumanReviewInput {
   diff?: StructuredDiff;
   feedback?: FeedbackFile[];
   config?: HumanReviewBuildConfig;
+  /** Semantic-fact config that must participate in cached model validity. */
+  contractPaths?: readonly string[];
   packetPath?: string;
   prSurfacePath?: string;
   // review-surfaces.NARRATIVE.1-4: an already-anchor-validated change narrative
@@ -190,6 +192,8 @@ interface QueueDraft {
   estimated_review_effort: "quick" | "moderate" | "deep";
   score: number;
   sortKey: string;
+  /** Internal semantic identity carried through queue ranking to projection. */
+  decisionRoot?: string;
   // review-surfaces.RANKING.1/.3: evidence ordering tier — a SECONDARY sort key so
   // evidence breaks ties and demotes well-evidenced items WITHOUT changing the
   // primary score (the semantic-risk class stays the primary key and evidence can
@@ -202,6 +206,10 @@ interface QueueDraft {
   // ranking reason must be the deterministic signal, not a "ranked by risk severity"
   // line that reads as a risk assessment.
   baseline?: string;
+  // A path/range-backed detector can outrank generic changed-file fallbacks;
+  // packet-wide aggregates cannot, because they are less specific than the
+  // changed-file action they would displace.
+  detector_specificity?: "concrete" | "aggregate" | "fallback";
 }
 
 type TestPlanDraft = Omit<TestPlanItem, "id">;
@@ -396,7 +404,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   }
   const riskLensFindings = buildRiskLensFindings(input, config, semanticFacts);
   const blockers = buildBlockers(input, feedbackEffects, semanticFacts, decisionScope);
-  const reviewQueue = buildReviewQueue(input, feedbackEffects, config, semanticFacts);
+  const { items: reviewQueue, decisionRootsByQueueId } = buildReviewQueue(input, feedbackEffects, config, semanticFacts);
   const intentMismatch = buildIntentMismatch(input, specMode);
   const questions = buildQuestions(input, blockers, feedbackEffects, riskLensFindings, intentMismatch, config);
   const suggestedComments = buildSuggestedComments(input, blockers, riskLensFindings, config, semanticFacts);
@@ -408,6 +416,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     conversationAnalysis: input.conversationAnalysis ?? input.prSurface?.conversation_analysis,
     scope: decisionScope,
     reviewQueue,
+    queueDecisionRoots: decisionRootsByQueueId,
     blockers,
     semanticFacts
   });
@@ -636,7 +645,10 @@ function humanReviewBuildConfig(input: BuildHumanReviewInput): HumanReviewBuildC
   };
 }
 
-export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): string {
+export function humanReviewConfigSignature(
+  config?: HumanReviewBuildConfig,
+  contractPaths: readonly string[] = []
+): string {
   const resolved = {
     ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
     ...config,
@@ -662,6 +674,7 @@ export function humanReviewConfigSignature(config?: HumanReviewBuildConfig): str
       path_patterns: check.path_patterns,
       prompt: check.prompt
     })),
+    contract_paths: [...new Set(contractPaths)].sort(compareStrings),
     risk_lenses: RISK_LENSES.map((lens) => [lens, resolved.risk_lenses[lens]])
   };
   return crypto.createHash("sha256").update(JSON.stringify(fingerprint)).digest("hex");
@@ -693,7 +706,7 @@ function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["gen
     // pinned-head runs); every human surface announces a nonzero count.
     uncommitted_files: typeof manifest.uncommitted_files === "number" ? manifest.uncommitted_files : 0,
     omitted_untracked_files: typeof manifest.omitted_untracked_files === "number" ? manifest.omitted_untracked_files : 0,
-    human_review_config_signature: humanReviewConfigSignature(input.config)
+    human_review_config_signature: humanReviewConfigSignature(input.config, input.contractPaths)
   };
 }
 
@@ -2162,7 +2175,10 @@ function buildReviewQueue(
   feedbackEffects: FeedbackPolicyEffect[],
   config: HumanReviewBuildConfig,
   semanticFacts: SemanticChangeFacts
-): HumanReviewModel["review_queue"] {
+): {
+  items: HumanReviewModel["review_queue"];
+  decisionRootsByQueueId: ReadonlyMap<string, string>;
+} {
   const drafts: QueueDraft[] = [];
   const prChangedPaths = input.prSurface ? prChangedFilePaths(input.prSurface) : undefined;
   const diffIndex = buildDiffIndex(input.diff);
@@ -2218,7 +2234,8 @@ function buildReviewQueue(
       score:
         (policyOverride ? scorePrRiskWithPriority(risk, anchor, policyOverride.priority) : scorePrRisk(risk, anchor)) +
         (suppressedByPolicy || feedbackDowngrade ? -60 : 0),
-      sortKey: `${risk.id}:${first.path}`
+      sortKey: `${risk.id}:${first.path}`,
+      detector_specificity: aggregate ? "aggregate" : "concrete"
     });
   }
 
@@ -2268,7 +2285,8 @@ function buildReviewQueue(
       priority: priorityForSeverity(risk.severity),
       estimated_review_effort: effortForSeverity(risk.severity),
       score: severityWeight(risk.severity) + 10 + (anchor.line_start ? 5 : 0) + (anchor.hunk_header ? 5 : 0),
-      sortKey: `${risk.id}:${first.path}`
+      sortKey: `${risk.id}:${first.path}`,
+      detector_specificity: aggregate ? "aggregate" : "concrete"
     });
   }
 
@@ -2338,15 +2356,42 @@ function buildReviewQueue(
   // an item.
   applyRankingEvidence(drafts, input, input.rankingEvidence ?? emptyRankingEvidence());
 
+  const specificityRank = (draft: QueueDraft): number => {
+    if (draft.detector_specificity === "fallback") return 1;
+    if (draft.detector_specificity === "aggregate") return 2;
+    if (draft.baseline) return 3;
+    return 0;
+  };
+
+  // A concrete detector already supplies the precise action for this path;
+  // retain a changed-file fallback beside packet-wide aggregates, but never
+  // duplicate the same path beside a range-backed detector finding.
+  const concretePaths = new Set(drafts
+    .filter((draft) => draft.detector_specificity === "concrete")
+    .flatMap((draft) => [draft.path, draft.old_path].filter((path): path is string => Boolean(path))));
+  for (let index = drafts.length - 1; index >= 0; index -= 1) {
+    const draft = drafts[index];
+    if (draft.detector_specificity === "fallback" &&
+      ((draft.path && concretePaths.has(draft.path)) || (draft.old_path && concretePaths.has(draft.old_path)))) {
+      drafts.splice(index, 1);
+    }
+  }
   drafts.sort(
     (left, right) =>
+      // Once a detector has found concrete work, generic changed-file reading
+      // prompts are supporting context and must never displace it from the
+      // reviewer-facing top N.
+      specificityRank(left) - specificityRank(right) ||
       right.score - left.score ||
       (left.evidenceTier ?? 0) - (right.evidenceTier ?? 0) ||
       compareStrings(left.sortKey, right.sortKey)
   );
-  return drafts.slice(0, Math.min(MAX_QUEUE, config.max_review_first)).map((draft, index) =>
-    stripUndefined({
-      id: `REVIEW-${String(index + 1).padStart(3, "0")}`,
+  const decisionRootsByQueueId = new Map<string, string>();
+  const items = drafts.slice(0, Math.min(MAX_QUEUE, config.max_review_first)).map((draft, index) => {
+    const id = `REVIEW-${String(index + 1).padStart(3, "0")}`;
+    if (draft.decisionRoot) decisionRootsByQueueId.set(id, draft.decisionRoot);
+    return stripUndefined({
+      id,
       rank: index + 1,
       title: draft.title,
       path: draft.path,
@@ -2364,8 +2409,9 @@ function buildReviewQueue(
       confidence: draft.confidence,
       priority: draft.priority,
       estimated_review_effort: draft.estimated_review_effort
-    })
-  );
+    });
+  });
+  return { items, decisionRootsByQueueId };
 }
 
 // review-surfaces.RANKING.1/.2/.3: assign each queue item an evidence ordering
@@ -2584,7 +2630,8 @@ function semanticQueueDrafts(facts: SemanticChangeFacts, diffIndex: DiffIndex | 
       // importers outranks one with none (bounded so blast radius cannot lift
       // an API change above test-weakening signals).
       score: 160 - index + Math.min(change.used_by?.count ?? 0, 20),
-      sortKey: `semantic-api:${change.path}`
+      sortKey: `semantic-api:${change.path}:${change.contract_name ?? change.contract_surface?.binding ?? change.contract_surface?.identity ?? "path"}`,
+      decisionRoot: decisionRootForApiChange(change)
     }));
   }
   return drafts;
@@ -2600,12 +2647,13 @@ function apiQueueReviewerAction(change: ApiSurfaceChange): string {
   if (change.used_by?.count) {
     return `Inspect the ${change.used_by.count} identified in-repo consumer${change.used_by.count === 1 ? "" : "s"}; preserve compatibility or update their focused tests.`;
   }
-  return "Determine whether the changed export is a supported external surface; if so, preserve compatibility or document the migration.";
+  const source = change.contract_surface?.source ? ` (${change.contract_surface.source})` : "";
+  return `This is an explicitly supported contract${source}; preserve compatibility or document the downstream migration before merge.`;
 }
 
 function semanticDraft(
   diffIndex: DiffIndex | undefined,
-  fields: { title: string; path: string; reason: string; reviewer_action: string; priority: HumanReviewPriority; score: number; sortKey: string }
+  fields: { title: string; path: string; reason: string; reviewer_action: string; priority: HumanReviewPriority; score: number; sortKey: string; decisionRoot?: string }
 ): QueueDraft {
   const evidence = fileEvidence(fields.path, "Semantic change fact.");
   const anchor = queueAnchorForEvidence(evidence, diffIndex);
@@ -2626,7 +2674,9 @@ function semanticDraft(
     priority: fields.priority,
     estimated_review_effort: "moderate",
     score: fields.score,
-    sortKey: fields.sortKey
+    sortKey: fields.sortKey,
+    detector_specificity: "concrete",
+    ...(fields.decisionRoot ? { decisionRoot: fields.decisionRoot } : {})
   };
 }
 
@@ -2668,6 +2718,13 @@ function schemaChangeReason(change: SchemaContractChange): string {
 
 function apiChangeReason(change: ApiSurfaceChange): string {
   const parts: string[] = [];
+  if (change.contract_removed) {
+    const contract = change.contract_name ?? change.renamed_from ?? change.contract_surface?.source ?? change.path;
+    parts.push(`supported contract \`${contract}\` was removed without a matching head-side contract`);
+  }
+  if (change.contract_target_changed) {
+    parts.push(`supported contract \`${change.contract_name ?? change.contract_surface?.source ?? change.path}\` resolves to a different target whose compatibility could not be compared`);
+  }
   if (change.signatures_changed.length > 0) {
     parts.push(`signature change(s): ${change.signatures_changed.map((s) => `\`${s.name}\``).join(", ")}`);
   }
@@ -2728,7 +2785,9 @@ function changedFileQueueDrafts(
         priority: priorityForChangedFile(file),
         estimated_review_effort: file.role === "test" ? "quick" as const : "moderate" as const,
         score: changedFileQueueWeight(file) + (anchor.line_start ? 8 : 0) + (anchor.hunk_header ? 8 : 0),
-        sortKey: `changed:${file.path}`
+        sortKey: `changed:${file.path}`,
+        baseline: "ranked by deterministic changed-file signals (no scoped PR risk candidate fired): role, affected area, and churn.",
+        detector_specificity: "fallback"
       };
     });
 }
@@ -2743,12 +2802,12 @@ function changedFileQueueDrafts(
 // NOT on content-authoring words (author/authors/authorId) (Codex #112 round-6).
 const BASELINE_SENSITIVE =
   /\b(async|await|abort|signal|retry|catch|throw|reject|error|timeout|auth(?!or(?!iz))|login|logout|session|token|permission|oauth|password|fetch|request|http|url|socket|persist|database|migrat|cache|transaction|lifecycle|useeffect|dispose|cleanup)[a-z]*/i;
-// Exported/public surface added or removed in the diff itself (HUMAN_REVIEW.28 round-2):
+// Export-declaration signal added or removed in the diff itself (HUMAN_REVIEW.28 round-2):
 // in the spec-less cold-start path `semanticFacts.api_changes` is empty, so the only way
 // to see a public-surface change is the changed lines. Cross-language: TS/JS `export`/
 // CommonJS `module.exports`, Rust `pub`, Java/Kotlin/C#/PHP `public`, Go exported
 // `func Name` / receiver method `func (r T) Name` / `type Name`, Python `__all__`. This is
-// an advisory boost, not an exhaustive surface parser — rarer public-declaration forms
+// an advisory review-focus boost, not proof of a supported public contract — rarer declaration forms
 // (Kotlin top-level `fun`, Scala, Swift `open`) are intentionally NOT chased (Codex #112 r4).
 const BASELINE_EXPORT =
   /\bexport\b|\bmodule\.exports\b|\bexports\.|\bpub(\s|\()|\bpublic\s+(class|interface|function|fun|static|final|abstract|async|void|[A-Z])|\bfunc\s+(\([^)]*\)\s*)?[A-Z]|\btype\s+[A-Z]\w*\s+(struct|interface)\b|\b__all__\b/;
@@ -2957,7 +3016,7 @@ function baselineReviewFocusDrafts(
       if (sensitive) score += 10;
 
       const reasons: string[] = [];
-      if (exported) reasons.push("changes an exported/public surface");
+      if (exported) reasons.push("contains changed exported declarations");
       if (isImpl && !hasConnectedTest && churn > 0) reasons.push("an implementation change with no connected test change");
       if (sensitive) reasons.push("touches error/async/auth/network/persistence paths");
       if (churn >= 50) reasons.push(`high churn (+${added}/-${removed})`);
@@ -3233,6 +3292,7 @@ function buildRiskLensFindings(input: BuildHumanReviewInput, config: HumanReview
     addSignal("api_contract", breaking ? "high" : "medium", [fileEvidence(change.path, schemaChangeReason(change))], [], [], [change.path]);
   }
   for (const change of semanticFacts.api_changes) {
+    if (!isSupportedApiContractChange(change)) continue;
     const breaking = isBreakingApiChange(change);
     addSignal("api_contract", breaking ? "high" : "medium", [fileEvidence(change.path, apiChangeReason(change))], [], [], [change.path]);
   }
@@ -4524,7 +4584,7 @@ function pathOnlyLensNeedsReviewerAction(
   const hasBreakingPublicApi = semanticFacts.api_changes.some((change) =>
     paths.has(normalizeEvidencePath(change.path)) &&
     isBreakingApiChange(change) &&
-    isExplicitContractSurfacePath(change.path)
+    isSupportedApiContractChange(change)
   );
   const hasNonSchemaPublicPath = finding.paths.some((filePath) =>
     isCliConfigOrFeatureContractPath(normalizeEvidencePath(filePath)) || (
@@ -4571,7 +4631,6 @@ function buildSuggestedComments(
 ): SuggestedReviewComment[] {
   const comments: SuggestedReviewComment[] = [];
   const candidates: SuggestedCommentCandidate[] = [];
-  const focusedGaps = focusedRequirementGaps(input);
 
   // review-surfaces.SEMANTIC_DIFF.1/.4: suggested comments naming the concrete
   // contract change (e.g. the field that became required), ranked first.
@@ -4651,23 +4710,6 @@ function buildSuggestedComments(
     });
   }
 
-  const focusedGap = focusedGaps[0];
-  if (focusedGap) {
-    candidates.push({
-      sourceRank: 4,
-      sortKey: focusedGap.acai_id ?? focusedGap.requirement_id,
-      draft: {
-        severity: focusedGap.status === "missing" || focusedGap.status === "invalid_evidence" ? "blocking" : "clarifying",
-        body: `Can you point to the validation evidence or explicit deferral for ${focusedGap.acai_id ?? focusedGap.requirement_id}? The human review surface currently marks it as ${focusedGap.status}.`,
-        evidence: requirementGapEvidence(focusedGap),
-        risk_ids: [],
-        requirement_ids: compactStrings([focusedGap.acai_id, focusedGap.requirement_id]),
-        confidence: "medium",
-        ready_to_post: true
-      }
-    });
-  }
-
   const coherentCandidates = candidates.map((candidate) =>
     candidate.sourceRank === 0 || candidate.draft.severity !== "blocking"
       ? candidate
@@ -4718,7 +4760,7 @@ function semanticCommentCandidates(facts: SemanticChangeFacts): SuggestedComment
     );
   }
   for (const change of facts.api_changes) {
-    if (!isBreakingApiChange(change) || !isExplicitContractSurfacePath(change.path)) continue;
+    if (!isBreakingApiChange(change) || !isSupportedApiContractChange(change)) continue;
     add("clarifying", change.path, `${apiChangeReason(change)}${apiCallerCallToAction(change)}`, `semantic-api:${change.path}`);
   }
   return candidates;
@@ -5438,14 +5480,11 @@ function isPacketRiskDecisionScoped(
 ): boolean {
   const evidence = risk.evidence ?? [];
   // The built-in RISK-NNN rows are exhaustive rollups over the repository
-  // evaluation. A changed test path in their bounded evidence sample does not
-  // make “146 requirements are partial” a PR fact. Admit an aggregate only
-  // when it cites an affected requirement explicitly; provider/concrete risks
-  // may still qualify through changed-path evidence.
+  // evaluation. A changed path or affected requirement in their bounded
+  // evidence sample does not make “146 requirements are partial” a PR fact;
+  // only independently scoped provider/concrete risks may qualify.
   if (/^RISK-\d+$/u.test(risk.id)) {
-    return evidence.some((ref) =>
-      ref.acai_id !== undefined && decisionScope.affected_requirement_ids.has(ref.acai_id)
-    );
+    return false;
   }
   return isDecisionScopedSignal(decisionScope, evidence, requirementIds(evidence));
 }

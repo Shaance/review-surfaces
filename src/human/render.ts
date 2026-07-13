@@ -29,6 +29,7 @@ import {
   conversationInsightCitationGroups,
   conversationInsightsForRender,
   conversationReviewPresentation,
+  hasConversationReviewValue,
   visibleConversationInsights
 } from "./conversation-review-presentation";
 import type {
@@ -53,6 +54,7 @@ import type {
   TestPlanItem,
   TrustAudit
 } from "./contract";
+import { partitionPrimary, PRIMARY_SURFACE_LIMIT } from "./primary-surface-policy";
 
 export {
   conversationAnalysisCaveats,
@@ -77,7 +79,6 @@ export type {
 const MAX_SUMMARY_CHARS = 600;
 const MAX_FIELD_CHARS = 300;
 const CONVERSATION_MARKDOWN_CONTROLS = new Set(["\\", "`", "*", "[", "]", "(", ")", "#", "!", "|", "~"]);
-const MAX_REVIEW_FIRST = 7;
 const MAX_BLOCKERS = 6;
 const MAX_QUESTIONS = 8;
 const MAX_TRUST = 6;
@@ -196,6 +197,8 @@ export async function writeHumanStandaloneArtifact(
 }
 
 export function renderHumanReviewMarkdown(model: HumanReviewModel, context: HumanRenderContext = {}): string {
+  const conversationSection = `## Conversation-aware insights\n\n${renderConversationInsightsMarkdown(model)}\n\n`;
+  const conversationLeads = hasConversationReviewValue(model);
   return `# Human Review
 
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
@@ -213,11 +216,29 @@ ${bullets(model.verdict.reasons.slice(0, MAX_BLOCKERS).map((reason) => `${reason
 
 ${renderDecisionProjectionMarkdown(model)}
 
-## Conversation-aware insights
+${conversationLeads ? conversationSection : ""}## Review first
 
-${renderConversationInsightsMarkdown(model)}
+${renderReviewFirst(model, partitionPrimary(model.review_queue).primary, context, 1)}
+${supportingQueueNote(model.review_queue.length, PRIMARY_SURFACE_LIMIT)}
 
-## Reading order
+## Blockers
+
+${renderBlockers(model)}
+
+## Questions for author
+
+${renderQuestionRollups(partitionPrimary(model.questions).primary, PRIMARY_SURFACE_LIMIT)}
+${supportingItemNote("question", model.questions.length, PRIMARY_SURFACE_LIMIT)}
+
+## Required checks
+
+${renderPrimaryChecks(model.test_plan)}
+
+## Trust summary
+
+${renderTrustSummary(model.trust_audit)}
+
+${conversationLeads ? "" : conversationSection}## Reading order
 
 ${renderReadingOrderSection(model.reading_order)}
 
@@ -233,10 +254,6 @@ ${renderNarrativeSection(model.narrative)}
 
 ${renderSemanticFacts(model.semantic_facts)}
 
-## Review first
-
-${renderReviewFirst(model, model.review_queue.slice(0, MAX_REVIEW_FIRST), context)}
-
 ## Review routes
 
 ${renderReviewRoutesSummary(reviewRoutes(model).slice(0, MAX_REVIEW_ROUTES))}
@@ -244,10 +261,6 @@ ${renderReviewRoutesSummary(reviewRoutes(model).slice(0, MAX_REVIEW_ROUTES))}
 ## Evidence cards
 
 ${renderEvidenceCardsRollupSummary(evidenceCards(model), MAX_EVIDENCE_CARDS)}
-
-## Blockers
-
-${renderBlockers(model)}
 
 ## Since last review
 
@@ -264,10 +277,6 @@ ${renderReviewPlan(model)}
 ## Intent mismatch
 
 ${renderIntentMismatchSummary(intentMismatch(model))}
-
-## Questions for author
-
-${renderQuestionRollups(model.questions, MAX_QUESTIONS)}
 
 ## Trust audit
 
@@ -309,6 +318,31 @@ ${renderFeedbackEffects(model.feedback_effects ?? [])}
 
 ${bullets(evidencePointers(model), "No evidence pointers recorded.")}
 `;
+}
+
+function supportingQueueNote(total: number, visibleLimit: number): string {
+  const omitted = Math.max(0, total - visibleLimit);
+  return omitted > 0
+    ? `_${omitted} additional queue item(s) remain in \`review_queue.md\` and \`human_review.json\` as supporting detail._`
+    : "";
+}
+
+function supportingItemNote(label: string, total: number, visibleLimit: number): string {
+  const omitted = Math.max(0, total - visibleLimit);
+  return omitted > 0 ? `_${omitted} additional ${label}(s) remain in \`human_review.json\`._` : "";
+}
+
+function renderPrimaryChecks(items: TestPlanItem[]): string {
+  const { primary: required, supporting } = partitionPrimary(items.filter((item) => item.priority === "required"));
+  if (required.length === 0) return "No required checks were generated.";
+  const lines = required.map((item) => `- ${field(item.scenario)} Expected: ${field(item.expected_result)}`);
+  const omitted = supporting.length;
+  if (omitted > 0) lines.push(`- ${omitted} additional required check(s) remain in \`test_plan.md\`.`);
+  return lines.join("\n");
+}
+
+function renderTrustSummary(trust: TrustAudit): string {
+  return `${trust.verified_facts.length} verified fact(s); ${trust.claimed_not_verified.length} unverified claim(s); ${trust.missing_evidence.length} missing-evidence item(s); ${trust.invalid_evidence.length} invalid-evidence item(s).`;
 }
 
 export function renderDecisionProjectionMarkdown(model: HumanReviewModel): string {
@@ -1121,20 +1155,27 @@ function semanticSchemaSummary(change: HumanReviewModel["semantic_facts"]["schem
 
 function semanticApiSummary(change: HumanReviewModel["semantic_facts"]["api_changes"][number]): string {
   const parts: string[] = [];
+  if (change.contract_removed) parts.push(`supported contract ${change.contract_name ?? change.renamed_from ?? change.contract_surface?.source ?? change.path} was removed without a matching head-side contract`);
+  if (change.contract_target_changed) parts.push(`supported contract ${change.contract_name ?? change.contract_surface?.source ?? change.path} resolves to a different target whose compatibility could not be compared`);
   if (change.signatures_changed.length) parts.push(`signature changed: ${change.signatures_changed.map((s) => s.name).join(", ")}`);
   if (change.exports_removed.length) parts.push(`removed: ${change.exports_removed.join(", ")}`);
   if (change.exports_added.length) parts.push(`added: ${change.exports_added.join(", ")}`);
   return parts.join("; ");
 }
 
-function renderReviewFirst(model: HumanReviewModel, items: ReviewQueueItem[], context: HumanRenderContext = {}): string {
+function renderReviewFirst(
+  model: HumanReviewModel,
+  items: ReviewQueueItem[],
+  context: HumanRenderContext = {},
+  excerptLimit = Number.POSITIVE_INFINITY
+): string {
   if (items.length === 0) {
     return "- No path-backed review queue items generated.";
   }
   return items
-    .map((item) => {
+    .map((item, index) => {
       const location = formatQueueLocation(item);
-      const excerpt = inlineHunkExcerpt(item, context);
+      const excerpt = index < excerptLimit ? inlineHunkExcerpt(item, context) : undefined;
       // When an excerpt renders, its fenced @@ header names the hunk
       // authoritatively, so suppress the separate (possibly stale) Hunk: metadata
       // line to avoid contradictory labels.

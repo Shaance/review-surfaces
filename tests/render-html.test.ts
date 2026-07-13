@@ -208,14 +208,30 @@ test("review-surfaces.RENDER.10 collapsible hunk excerpts render escaped from th
       "+++ b/src/render.ts",
       "@@ -3,1 +3,2 @@",
       " context",
-      '+const evil = "<img onerror=x>";'
+      '+const evil = "<img onerror=x>";',
+      "diff --git a/src/second.ts b/src/second.ts",
+      "--- a/src/second.ts",
+      "+++ b/src/second.ts",
+      "@@ -9,1 +9,2 @@",
+      " context",
+      "+const rankTwoEvidence = true;"
     ].join("\n")
   );
-  const html = renderHumanReviewHtml(model(), { diff });
+  const reviewModel = model();
+  reviewModel.review_queue.push({
+    ...reviewModel.review_queue[0],
+    id: "REVIEW-002",
+    rank: 2,
+    path: "src/second.ts",
+    line_start: 10,
+    risk_ids: []
+  });
+  const html = renderHumanReviewHtml(reviewModel, { diff });
   assert.match(html, /<details><summary>diff excerpt<\/summary><pre>/);
   // Hostile diff content is escaped, never live markup.
   assert.doesNotMatch(html, /<img onerror/);
   assert.match(html, /&lt;img onerror=x&gt;/);
+  assert.match(html, /rankTwoEvidence/, "rank 2+ queue cards retain their own diff context");
 });
 
 test("review-surfaces.RENDER.10 lens filters render from the model's lens findings", () => {

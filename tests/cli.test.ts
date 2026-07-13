@@ -1270,7 +1270,7 @@ test("review-surfaces.CLI.10 --help documents the previously-omitted flags and a
   const result = spawnSync("node", [CLI, "--help"], { encoding: "utf8" });
   assert.equal(result.status, ExitCodes.success, result.stderr);
   // A representative set of the flags the CLI reads but --help used to omit.
-  for (const flag of ["--budget", "--verbose", "--check", "--no-redact-secrets", "--readme", "--run-id", "--artifact-name", "--comment-top-n"]) {
+  for (const flag of ["--budget", "--verbose", "--check", "--no-redact-secrets", "--readme", "--run-id", "--artifact-name", "--artifact-url", "--comment-top-n"]) {
     assert.ok(result.stdout.includes(flag), `--help must document ${flag}`);
   }
   // comment --format must list all four values, and --coverage must mention the

@@ -187,6 +187,7 @@ runs:
         RS_OUT: ${{ inputs.output-dir }}
         RS_TOP_N: ${{ inputs.comment-top-n }}
         RS_ARTIFACT: review-surfaces-pr-${{ inputs.pr-number }}
+        RS_ARTIFACT_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: |
         prev_flag=()
         if [ -n "$PREVIOUS_PACKET" ]; then prev_flag=(--previous-packet "$PREVIOUS_PACKET"); fi
@@ -260,6 +261,7 @@ runs:
           --strict-postability \
           --comment-top-n "$RS_TOP_N" \
           --artifact-name "$RS_ARTIFACT" \
+          --artifact-url "$RS_ARTIFACT_URL" \
           --run-id "$GITHUB_RUN_ID" \
           --out "$RS_OUT"
     - name: Emit outputs and run-UI summary (best-effort, renderer-only)

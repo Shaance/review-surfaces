@@ -94,6 +94,7 @@ test.skip("app.CORE.1 add sums two numbers", () => {
 test("review-surfaces.EVAL_HARNESS.2 breaking API change ranks in the top N", () => {
   const fixture = createEvalFixture("api-break");
   try {
+    fixture.write("package.json", JSON.stringify({ exports: { "./calc": "./src/calc.ts" } }, null, 2));
     fixture.write(
       "src/calc.ts",
       `export function add(left: number, right: number, base: number): number {
@@ -236,6 +237,7 @@ test("review-surfaces.EVAL_HARNESS.2 a sneaky new dependency with an install scr
 test("review-surfaces.EVAL_HARNESS.2 a breaking API change with call sites carries its blast radius (BLAST_RADIUS)", () => {
   const fixture = createEvalFixture("blast");
   try {
+    fixture.write("package.json", JSON.stringify({ exports: { "./calc": "./src/calc.ts" } }, null, 2));
     fixture.write("src/caller1.ts", `import { add } from "./calc";\nexport const one = add(1, 2);\n`);
     fixture.write("src/caller2.ts", `import { add } from "./calc";\nexport const two = add(2, 3);\n`);
     fixture.commit("add callers");
@@ -256,7 +258,60 @@ test("review-surfaces.EVAL_HARNESS.2 a breaking API change with call sites carri
   }
 });
 
-test("review-surfaces.EVAL_HARNESS.2 a deleted internal API keeps surviving callers visible (BLAST_RADIUS)", () => {
+test("review-surfaces.REVIEWER_VALUE.11 preserves an internal break re-exported by a public package entry", () => {
+  const fixture = createEvalFixture("public-reexport-break");
+  try {
+    fixture.write("package.json", JSON.stringify({ exports: { ".": "./src/index.ts" } }, null, 2));
+    fixture.write("src/index.ts", 'export { publicAdd as add } from "./feature";\n');
+    fixture.write("src/feature.ts", 'import { add as internalAdd } from "./calc";\nexport { internalAdd as publicAdd };\n');
+    fixture.write("src/calc.ts", "export function add(left: number, right: number): number { return left + right; }\n");
+    fixture.commit("seed public re-export");
+    fixture.write("src/calc.ts", "export function add(left: number, right: number, base: number): number { return left + right + base; }\n");
+    fixture.commit("break re-exported api");
+
+    const model = fixture.run(["--base", "HEAD~1"]);
+    const fact = model.semantic_facts.api_changes.find((change) => change.path === "src/calc.ts");
+    assert.equal(fact?.contract_surface?.identity, "export:.");
+    assert.ok(model.review_queue.some((item) => item.path === "src/calc.ts" && /API|signature/i.test(item.title)));
+    assert.ok(model.decision_projection?.findings.some((finding) =>
+      finding.root_cause === "public_contract:src/calc.ts"
+    ));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 keeps package-only repoints decision-scoped without fake blast radius", () => {
+  const fixture = createEvalFixture("package-repoint-scope");
+  try {
+    fixture.write("package.json", JSON.stringify({ exports: { ".": "./src/v1.ts" } }, null, 2));
+    fixture.write("src/v1.ts", "export function value(input: string): string { return input; }\n");
+    fixture.write("src/v2.ts", "export function value(input: number): string { return String(input); }\n");
+    fixture.commit("seed package targets");
+    fixture.write("package.json", JSON.stringify({ exports: { ".": "./src/v2.ts" } }, null, 2));
+    fixture.commit("repoint package root");
+
+    const model = fixture.run(["--base", "HEAD~1"]);
+    const packageFact = model.semantic_facts.api_changes.find((change) =>
+      change.path === "package.json" && change.contract_surface?.identity === "export:."
+    );
+    assert.ok(packageFact, "the incompatible package repoint stays anchored to the changed manifest");
+    assert.equal(packageFact.used_by, undefined, "manifest anchors are not treated as source-code blast-radius targets");
+    assert.ok(
+      model.decision_projection?.findings.some((finding) => finding.root_cause === "public_contract:package.json:export:."),
+      "the package decision remains visible"
+    );
+    assert.equal(
+      model.review_queue.some((item) => /No in-repo importers/u.test(item.reason)),
+      false,
+      "the manifest anchor does not produce a fake no-importers claim"
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("review-surfaces.EVAL_HARNESS.2 a deleted internal API keeps caller evidence without becoming a public-contract finding (BLAST_RADIUS)", () => {
   const fixture = createEvalFixture("deleted-api-blast");
   try {
     fixture.write("src/internal.ts", "export function internalValue(): number { return 1; }\n");
@@ -266,13 +321,13 @@ test("review-surfaces.EVAL_HARNESS.2 a deleted internal API keeps surviving call
     fixture.commit("delete internal api");
     record("blast_radius", () => {
       const model = fixture.run(["--base", "HEAD~1"]);
-      const item = topQueue(model).find((entry) => entry.path === "src/internal.ts" && /API|export/i.test(entry.title));
-      assert.ok(item, "the deleted internal API must stay in the primary queue while a caller survives");
-      assert.match(item.reason, /Used by 1 file\(s\)/);
-      assert.match(item.reason, /internal-caller\.ts/);
-      assert.ok(model.decision_projection?.findings.some((finding) =>
+      const fact = model.semantic_facts.api_changes.find((entry) => entry.path === "src/internal.ts");
+      assert.equal(fact?.used_by?.count, 1, "the supporting semantic fact retains the surviving caller");
+      assert.deepEqual(fact?.used_by?.top, ["src/internal-caller.ts"]);
+      assert.equal(fact?.contract_surface, undefined, "an ordinary internal export is not classified as a supported contract");
+      assert.ok(!model.decision_projection?.findings.some((finding) =>
         finding.root_cause === "caller_break:src/internal.ts"
-      ));
+      ), "an internal module does not become a public-contract approval finding");
     });
   } finally {
     fixture.cleanup();

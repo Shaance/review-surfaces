@@ -19,8 +19,10 @@ import {
 } from "../human/render";
 import {
   conversationAnalysisForRender,
-  conversationInsightsForRender
+  conversationInsightsForRender,
+  hasConversationReviewValue
 } from "../human/conversation-review-presentation";
+import { requiredAuthorAction, supportingReviewQueue } from "../human/primary-surface-policy";
 import {
   compactDecisionSupportingText,
   decisionIntentSourceLabel,
@@ -31,7 +33,7 @@ import {
 } from "../human/decision-projection-presentation";
 import type { HumanReviewModel, ReviewQueueItem, SinceLastReview, SinceLastReviewItem } from "../human/contract";
 import { STICKY_MARKER } from "./comment";
-import { changeMapMermaidEmbed, changeMapTitle, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
+import { changeMapCommentBlock, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
 import { firstTourLegSnippet } from "./tour-snippet";
 
 const MAX_SUMMARY_CHARS = 600;
@@ -53,6 +55,9 @@ export interface StickySummaryOptions {
   // fingerprint so the NEXT run can recover this run's artifact as the comparison
   // baseline — the last sticky the reviewer actually saw (review-surfaces.PR_SURFACE.5).
   runId?: string;
+  // Direct link to the workflow run that owns artifactName. When present, the
+  // reviewer can reach the artifact without hunting through the Actions tab.
+  artifactUrl?: string;
 }
 
 export interface StickySummaryResult {
@@ -87,8 +92,8 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   const hasPriorReview = sinceLastReviewIsAvailable(since);
 
   const verdict = `**${decisionLabel(model.verdict.decision)}.** ${field(model.summary, state, MAX_SUMMARY_CHARS)}`;
-  const queueBlock = renderQueue(model.review_queue.slice(0, topN), options.diff, state);
-  const trustBlock = renderTrustCounts(model);
+  const queueBlock = renderQueue(supportingReviewQueue(model).slice(0, topN), options.diff, state);
+  const trustBlock = renderTrustCounts(model, state);
 
   const sections: string[] = [
     STICKY_MARKER,
@@ -102,6 +107,10 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   if (model.generated_from.uncommitted_files > 0) {
     sections.push("", `_includes ${model.generated_from.uncommitted_files} uncommitted file(s) (working tree)_`);
   }
+  const authorAction = requiredAuthorAction(model);
+  if (authorAction) {
+    sections.push("", `**Author action:** ${field(authorAction, state, MAX_FIELD_CHARS)}`);
+  }
   const scopeWarning = incompleteReviewScopeText(model.generated_from.omitted_untracked_files ?? 0);
   if (scopeWarning) {
     sections.push("", `**${scopeWarning}**`);
@@ -114,7 +123,9 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   }
 
   sections.push("", renderDecisionProjection(model, state));
-  sections.push("", "### Conversation-aware insights", "", renderConversationInsights(model, state));
+  if (hasConversationReviewValue(model)) {
+    sections.push("", "### Conversation-aware insights", "", renderConversationInsights(model, state));
+  }
 
   if (hasPriorReview) {
     sections.push(
@@ -139,12 +150,12 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   // block so the sticky stays short; READING_ORDER.2: only the FIRST tour leg.
   // The embed's redaction block signal feeds the postability gate — the final
   // whole-body pass only sees already-redacted text.
-  const mapEmbed = changeMapMermaidEmbed(model.change_graph);
+  const mapEmbed = changeMapCommentBlock(model.change_graph);
   if (mapEmbed.blocked) {
     state.blocked = true;
   }
   if (mapEmbed.body) {
-    sections.push("", mermaidDetailsBlock(changeMapTitle(mapEmbed.level), mapEmbed.body));
+    sections.push("", mapEmbed.body);
   }
   // review-surfaces.RENDER.13: attributed dependency chains as a collapsed
   // mermaid tree — only when a chain exists (flat facts stay in the queue).
@@ -172,9 +183,13 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   }
 
   if (options.artifactName) {
+    const artifactName = field(options.artifactName, state);
+    const artifactPointer = options.artifactUrl
+      ? `[**${artifactName}**](${field(options.artifactUrl, state)})`
+      : `**${artifactName}**`;
     sections.push(
       "",
-      `📦 Full \`.review-surfaces/\` packet: download the **${field(options.artifactName, state)}** workflow artifact.`
+      `📦 Full \`.review-surfaces/\` packet: open the ${artifactPointer} workflow artifact.`
     );
   }
 
@@ -248,9 +263,9 @@ function renderQueue(items: ReviewQueueItem[], diff: StructuredDiff | undefined,
     return "- No path-backed review queue items.";
   }
   return items
-    .map((item) => {
+    .map((item, index) => {
       const excerpt = inlineExcerpt(item, diff, state);
-      return `${item.rank}. \`${field(formatQueueLocation(item), state)}\` — ${field(item.reason, state)}
+      return `${index + 1}. \`${field(formatQueueLocation(item), state)}\` — ${field(item.reason, state)}
    - Action: ${field(item.reviewer_action, state)}${excerpt ? `\n${excerpt}` : ""}`;
     })
     .join("\n\n");
@@ -282,10 +297,17 @@ function inlineExcerpt(item: ReviewQueueItem, diff: StructuredDiff | undefined, 
     .join("\n");
 }
 
-function renderTrustCounts(model: HumanReviewModel): string {
+function renderTrustCounts(model: HumanReviewModel, state: RedactionState): string {
   const trust = model.trust_audit;
-  return `- ${trust.verified_facts.length} verified, ${trust.claimed_not_verified.length} claimed (unverified), ${trust.missing_evidence.length} missing evidence, ${trust.invalid_evidence.length} invalid.`;
+  const lines = [`- ${trust.verified_facts.length} verified, ${trust.claimed_not_verified.length} claimed (unverified), ${trust.missing_evidence.length} missing evidence, ${trust.invalid_evidence.length} invalid.`];
+  const claimedGap = trust.claimed_not_verified[0]?.missing_evidence;
+  const missingGap = trust.missing_evidence[0]?.summary;
+  if (claimedGap || missingGap) {
+    lines.push(`- Next evidence: ${field(claimedGap ?? missingGap ?? "", state, MAX_FIELD_CHARS)}`);
+  }
+  return lines.join("\n");
 }
+
 
 function renderSinceSection(since: SinceLastReview, state: RedactionState): string {
   // review-surfaces.TREND.5: a single aggregate risk whose only change is its

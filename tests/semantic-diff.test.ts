@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
-import { computeSemanticChangeFacts, isBreakingApiChange, SemanticDiffSources } from "../src/risks/semantic-diff";
+import { classifyApiContractSurface } from "../src/risks/contract-surface";
+import { computeSemanticChangeFacts, isBreakingApiChange, isExplicitApiContractChange, isSupportedApiContractChange, SemanticDiffSources } from "../src/risks/semantic-diff";
 
 test("review-surfaces.REVIEWER_VALUE.7 optional interface additions remain supporting API facts", () => {
   assert.equal(isBreakingApiChange({
@@ -114,6 +115,1232 @@ function sources(diffText: string, base: Record<string, string>, head: Record<st
     readHead: (path) => head[path]
   };
 }
+
+test("review-surfaces.REVIEWER_VALUE.11 classifies package exports and configured paths as explicit contracts", () => {
+  const paths = ["src/public.ts", "src/internal.ts", "src/extensions/plugin.ts"];
+  const diffText = paths.flatMap((filePath) => [
+    `diff --git a/${filePath} b/${filePath}`,
+    `--- a/${filePath}`,
+    `+++ b/${filePath}`,
+    "@@ -1 +1 @@",
+    "-export function value(input: string): string { return input; }",
+    "+export function value(input: number): string { return String(input); }"
+  ]).join("\n");
+  const base = {
+    ...Object.fromEntries(paths.map((filePath) => [filePath, "export function value(input: string): string { return input; }"])),
+    "package.json": JSON.stringify({ exports: { ".": "./dist/src/public.js" } })
+  };
+  const head = {
+    ...Object.fromEntries(paths.map((filePath) => [filePath, "export function value(input: number): string { return String(input); }"])),
+    "package.json": JSON.stringify({ exports: { ".": "./dist/src/public.js" } })
+  };
+  const facts = computeSemanticChangeFacts({
+    ...sources(diffText, base, head),
+    contractPaths: ["src/extensions/**"]
+  });
+  const byPath = new Map(facts.api_changes.map((change) => [change.path, change]));
+  assert.deepEqual(byPath.get("src/public.ts")?.contract_surface?.kind, "package_export");
+  assert.deepEqual(byPath.get("src/extensions/plugin.ts")?.contract_surface?.kind, "configured");
+  assert.equal(isExplicitApiContractChange(byPath.get("src/internal.ts")!), false);
+
+  const removedExportManifest = computeSemanticChangeFacts({
+    ...sources(diffText, base, { ...head, "package.json": JSON.stringify({}) }),
+    contractPaths: ["src/extensions/**"]
+  });
+  assert.equal(
+    removedExportManifest.api_changes.find((change) => change.path === "src/public.ts")?.contract_surface?.kind,
+    "package_export",
+    "the base manifest preserves public-surface evidence when an export is removed in the same range"
+  );
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 reads each package manifest once and maps declaration entries to source", () => {
+  const path = "src/public.ts";
+  const diffText = [
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    "@@ -1 +1 @@",
+    "-export function value(input: string): string { return input; }",
+    "+export function value(input: number): string { return String(input); }"
+  ].join("\n");
+  let basePackageReads = 0;
+  let headPackageReads = 0;
+  const facts = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(diffText),
+    readBase: (filePath) => {
+      if (filePath === "package.json") {
+        basePackageReads += 1;
+        return JSON.stringify({ types: "./dist/src/public.d.ts" });
+      }
+      return filePath === path ? "export function value(input: string): string { return input; }" : undefined;
+    },
+    readHead: (filePath) => {
+      if (filePath === "package.json") {
+        headPackageReads += 1;
+        return JSON.stringify({ types: "./dist/src/public.d.ts" });
+      }
+      return filePath === path ? "export function value(input: number): string { return String(input); }" : undefined;
+    }
+  });
+  assert.equal(basePackageReads, 1);
+  assert.equal(headPackageReads, 1);
+  assert.equal(facts.api_changes[0]?.contract_surface?.kind, "package_entry");
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 maps common dist package targets back to src contracts", () => {
+  const main = classifyApiContractSurface("src/index.ts", {
+    packageJson: JSON.stringify({ main: "dist/index.js" })
+  });
+  const wildcard = classifyApiContractSurface("src/widgets/button.ts", {
+    packageJson: JSON.stringify({ exports: { "./*": "./dist/widgets/*.js" } })
+  });
+  assert.equal(main?.kind, "package_entry");
+  assert.equal(wildcard?.kind, "package_export");
+  assert.equal(classifyApiContractSurface("source/index.ts", {
+    packageJson: JSON.stringify({ main: "dist/index.js" }),
+    sourceRoots: ["source"]
+  })?.kind, "package_entry");
+  assert.equal(classifyApiContractSurface("src/index.ts", {
+    packageJson: JSON.stringify({ main: "lib/index.js" }),
+    sourceRoots: ["src"]
+  })?.kind, "package_entry");
+  assert.equal(classifyApiContractSurface("src/index.ts", {
+    packageJson: JSON.stringify({ main: "dist/index" }),
+    sourceRoots: ["src"]
+  })?.kind, "package_entry", "extensionless runtime entries expand to TypeScript source candidates");
+  assert.equal(classifyApiContractSurface("src/index.ts", {
+    packageJson: JSON.stringify({ exports: { ".": "./dist/index" } }),
+    sourceRoots: ["src"]
+  }), undefined, "extensionless exports remain exact and do not invent a TypeScript contract");
+  assert.equal(classifyApiContractSurface("src/index.tsx", {
+    packageJson: JSON.stringify({ exports: { ".": "./dist/index.jsx" } }),
+    sourceRoots: ["src"]
+  })?.kind, "package_export", "preserved JSX package output maps back to its TSX source contract");
+  assert.equal(classifyApiContractSurface("index.ts", {
+    packageJson: JSON.stringify({ main: "dist/index.js" }),
+    sourceRoots: ["."]
+  })?.kind, "package_entry", "a sole root-level source sentinel projects compiled entries to root source files");
+  assert.equal(classifyApiContractSurface("src/index.ts", {
+    packageJson: JSON.stringify({ main: "dist/index.js" }),
+    sourceRoots: ["."]
+  }), undefined, "the root-level sentinel does not promote a nested namesake");
+  assert.equal(classifyApiContractSurface("index.ts", {
+    packageJson: JSON.stringify({ main: "dist/index.js" }),
+    sourceRoots: ["src"]
+  }), undefined, "an explicit source root prevents a compiled target from promoting a root-level namesake");
+  const ambiguousOptions = {
+    packageJson: JSON.stringify({ main: "dist/index.js" }),
+    sourceRoots: ["bin", "lib", "src", "source"]
+  };
+  assert.equal(classifyApiContractSurface("bin/index.ts", ambiguousOptions), undefined);
+  assert.equal(classifyApiContractSurface("source/index.ts", ambiguousOptions), undefined, "ambiguous root fan-out never promotes multiple internal modules");
+  assert.equal(classifyApiContractSurface("index.ts", ambiguousOptions), undefined, "ambiguous roots do not fall back to a root-level namesake");
+  const nested = classifyApiContractSurface("src/features/admin/panel.ts", {
+    packageJson: JSON.stringify({ exports: { "./*": "./src/*.ts" } }),
+    sourceRoots: ["src"]
+  });
+  assert.equal(nested?.binding, "export:./features/admin/panel", "package wildcards bind nested consumer subpaths");
+  const repeated = classifyApiContractSurface("src/foo/index/foo.ts", {
+    packageJson: JSON.stringify({ exports: { "./*": "./src/*/index/*.ts" } }),
+    sourceRoots: ["src"]
+  });
+  assert.equal(repeated?.binding, "export:./foo", "repeated target stars use the same consumer-subpath binding");
+  const digitLiteral = classifyApiContractSurface("src/foo/index/foo2.ts", {
+    packageJson: JSON.stringify({ exports: { "./*": "./src/*/index/*2.ts" } }),
+    sourceRoots: ["src"]
+  });
+  assert.equal(digitLiteral?.binding, "export:./foo", "a digit after a repeated star cannot become an ambiguous numeric backreference");
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 preserves base contract evidence across rename-out changes", () => {
+  const oldPath = "src/public.ts";
+  const newPath = "src/private.ts";
+  const baseManifest = JSON.stringify({ exports: { ".": "./src/public.ts" } });
+  const renamedWithBreak = [
+    `diff --git a/${oldPath} b/${newPath}`,
+    "similarity index 70%",
+    `rename from ${oldPath}`,
+    `rename to ${newPath}`,
+    `--- a/${oldPath}`,
+    `+++ b/${newPath}`,
+    "@@ -1 +1 @@",
+    "-export function value(input: string): string { return input; }",
+    "+export function value(input: number): string { return String(input); }"
+  ].join("\n");
+  const breakingFacts = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(renamedWithBreak),
+    readBase: (path) => path === oldPath ? "export function value(input: string): string { return input; }" : path === "package.json" ? baseManifest : undefined,
+    readHead: (path) => path === newPath ? "export function value(input: number): string { return String(input); }" : path === "package.json" ? "{}" : undefined
+  });
+  assert.equal(breakingFacts.api_changes[0]?.contract_surface?.kind, "package_export");
+  assert.equal(isBreakingApiChange(breakingFacts.api_changes[0]), true);
+
+  const renamedWithAddition = [
+    `diff --git a/${oldPath} b/${newPath}`,
+    "similarity index 80%",
+    `rename from ${oldPath}`,
+    `rename to ${newPath}`,
+    `--- a/${oldPath}`,
+    `+++ b/${newPath}`,
+    "@@ -1 +1,2 @@",
+    " export const value = 1;",
+    "+export const extra = 2;"
+  ].join("\n");
+  const additiveFacts = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(renamedWithAddition),
+    readBase: (path) => path === oldPath ? "export const value = 1;" : path === "package.json" ? baseManifest : undefined,
+    readHead: (path) => path === newPath ? "export const value = 1;\nexport const extra = 2;" : path === "package.json" ? "{}" : undefined
+  });
+  assert.deepEqual(additiveFacts.api_changes[0]?.exports_added, ["extra"]);
+  assert.equal(additiveFacts.api_changes[0]?.contract_removed, true, "contract removal remains breaking even when the semantic diff is otherwise additive");
+  assert.equal(isBreakingApiChange(additiveFacts.api_changes[0]), true);
+
+  const pureRename = [
+    `diff --git a/${oldPath} b/${newPath}`,
+    "similarity index 100%",
+    `rename from ${oldPath}`,
+    `rename to ${newPath}`
+  ].join("\n");
+  const renameFacts = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(pureRename),
+    readBase: (path) => path === oldPath ? "export const value = 1;" : path === "package.json" ? baseManifest : undefined,
+    readHead: (path) => path === newPath ? "export const value = 1;" : path === "package.json" ? "{}" : undefined
+  });
+  assert.equal(renameFacts.api_changes[0]?.contract_removed, true);
+  assert.equal(renameFacts.api_changes[0]?.renamed_from, oldPath);
+  assert.equal(isBreakingApiChange(renameFacts.api_changes[0]), true);
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 wildcard and path-only renames remove the old consumer contract", () => {
+  const renameDiff = (oldPath: string, newPath: string): string => [
+    `diff --git a/${oldPath} b/${newPath}`,
+    "similarity index 100%",
+    `rename from ${oldPath}`,
+    `rename to ${newPath}`
+  ].join("\n");
+
+  const wildcardManifest = JSON.stringify({ exports: { "./*": "./src/*.ts" } });
+  const wildcard = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(renameDiff("src/foo.ts", "src/bar.ts")),
+    readBase: (path) => path === "package.json" ? wildcardManifest : path === "src/foo.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? wildcardManifest : path === "src/bar.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(wildcard.api_changes[0]?.contract_removed, true);
+  assert.equal(wildcard.api_changes[0]?.contract_name, "export:./foo");
+  assert.equal(wildcard.api_changes[0]?.contract_surface?.binding, "export:./foo");
+  assert.equal(wildcard.api_changes[0]?.renamed_from, "src/foo.ts");
+
+  const declaration = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(renameDiff("types/a.d.ts", "types/b.d.ts")),
+    readBase: (path) => path === "types/a.d.ts" ? "export interface Value {}" : undefined,
+    readHead: (path) => path === "types/b.d.ts" ? "export interface Value {}" : undefined
+  });
+  assert.equal(declaration.api_changes[0]?.contract_removed, true);
+  assert.equal(declaration.api_changes[0]?.contract_surface?.source, "types/a.d.ts");
+
+  const configured = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(renameDiff("src/public/a.ts", "src/public/b.ts")),
+    readBase: (path) => path === "src/public/a.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "src/public/b.ts" ? "export const value = 1;" : undefined,
+    contractPaths: ["src/public/**"]
+  });
+  assert.equal(configured.api_changes[0]?.contract_removed, true);
+  assert.equal(configured.api_changes[0]?.renamed_from, "src/public/a.ts");
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 null package exports exclude private wildcard bindings", () => {
+  const excludedManifest = JSON.stringify({
+    exports: {
+      "./features/*.js": "./src/features/*.js",
+      "./features/private-internal/*": null
+    }
+  });
+  assert.equal(classifyApiContractSurface("src/features/private-internal/value.ts", {
+    packageJson: excludedManifest,
+    sourceRoots: ["src"]
+  }), undefined);
+  assert.equal(classifyApiContractSurface("src/features/public.ts", {
+    packageJson: excludedManifest,
+    sourceRoots: ["src"]
+  })?.kind, "package_export");
+
+  const conditionalExclusion = JSON.stringify({
+    exports: {
+      "./*": "./src/*.ts",
+      "./private/*": { node: null, default: null }
+    }
+  });
+  assert.equal(classifyApiContractSurface("src/private/value.ts", {
+    packageJson: conditionalExclusion,
+    sourceRoots: ["src"]
+  }), undefined, "a null-only conditional tree excludes the subpath");
+
+  const nulledLegacyRoot = JSON.stringify({ main: "./src/index.js", exports: { ".": null } });
+  assert.equal(classifyApiContractSurface("src/index.ts", {
+    packageJson: nulledLegacyRoot,
+    sourceRoots: ["src"]
+  }), undefined, "a root exports exclusion takes precedence over the legacy main entry");
+
+  const absentExportsRoot = JSON.stringify({ main: "./src/index.js", exports: null });
+  assert.equal(classifyApiContractSurface("src/index.ts", {
+    packageJson: absentExportsRoot,
+    sourceRoots: ["src"]
+  })?.kind, "package_entry", "top-level null exports falls back to the legacy main entry");
+
+  const narrowerPositive = JSON.stringify({
+    exports: {
+      "./features/*": null,
+      "./features/safe/*": "./src/features/safe/*.ts"
+    }
+  });
+  assert.equal(classifyApiContractSurface("src/features/safe/value.ts", {
+    packageJson: narrowerPositive,
+    sourceRoots: ["src"]
+  })?.kind, "package_export", "a more-specific positive export overrides a broad exclusion");
+
+  for (const packageJson of [
+    JSON.stringify({ exports: { ".": { node: null, default: "./src/index.ts" } } }),
+    JSON.stringify({ exports: { ".": [null, "./src/index.ts"] } })
+  ]) {
+    assert.equal(classifyApiContractSurface("src/index.ts", { packageJson, sourceRoots: ["src"] })?.kind, "package_export");
+  }
+
+  const privateDiff = [
+    "diff --git a/src/features/private-internal/value.ts b/src/features/private-internal/value.ts",
+    "--- a/src/features/private-internal/value.ts",
+    "+++ b/src/features/private-internal/value.ts",
+    "@@ -1 +1 @@",
+    "-export function value(input: string): string { return input; }",
+    "+export function value(input: number): string { return String(input); }"
+  ].join("\n");
+  const internal = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(privateDiff),
+    readBase: (path) => path === "package.json" ? excludedManifest : path.includes("private-internal") ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json" ? excludedManifest : path.includes("private-internal") ? "export function value(input: number): string { return String(input); }" : undefined,
+    sourceRoots: ["src"]
+  });
+  assert.equal(internal.api_changes[0]?.contract_surface, undefined);
+
+  const packageDiff = [
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -1 +1 @@",
+    "-old",
+    "+new"
+  ].join("\n");
+  const broadManifest = JSON.stringify({ exports: { "./features/*.js": "./src/features/*.js" } });
+  const addedExclusion = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? broadManifest : undefined,
+    readHead: (path) => path === "package.json" ? excludedManifest : undefined
+  });
+  assert.equal(addedExclusion.api_changes.some((change) => change.contract_removed && change.contract_name === "export:./features/private-internal/*"), true);
+
+  const unmatchedExclusion = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./public/*": "./src/public/*.ts" } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./public/*": "./src/public/*.ts", "./private/*": null } })
+      : undefined
+  });
+  assert.equal(unmatchedExclusion.api_changes.some((change) => change.contract_removed), false, "an exclusion that matches no base export is not breaking");
+
+  const preservedNarrowExport = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./private/safe": "./src/safe.ts" } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./private/*": null, "./private/safe": "./src/safe.ts" } })
+      : undefined
+  });
+  assert.equal(preservedNarrowExport.api_changes.some((change) => change.contract_removed), false, "a narrower positive export preserved in head overrides the broad exclusion");
+
+  const redundantNarrowExclusion = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./*": "./src/*.ts", "./private/*": null } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./*": "./src/*.ts", "./private/*": null, "./private/foo": null } })
+      : undefined
+  });
+  assert.equal(
+    redundantNarrowExclusion.api_changes.some((change) => change.contract_removed),
+    false,
+    "a narrower null exclusion already covered in the base manifest removes no new contract"
+  );
+
+  const crossingExclusionLeavesExactBoundaryPublic = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./feature/*-impl": "./src/*.ts", "./feature/private-*-impl": null } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./feature/*-impl": "./src/*.ts", "./feature/private-*-impl": null, "./feature/private-*": null } })
+      : undefined
+  });
+  assert.equal(
+    crossingExclusionLeavesExactBoundaryPublic.api_changes.some((change) => change.contract_removed),
+    true,
+    "crossing wildcard exclusions still remove an exact boundary path when wildcard captures are non-empty"
+  );
+
+  const redundantCrossingExclusion = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./feature/*-impl": "./src/*.ts", "./feature/private-*-impl": null, "./feature/private--impl": null, "./feature/private-impl": null } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./feature/*-impl": "./src/*.ts", "./feature/private-*-impl": null, "./feature/private--impl": null, "./feature/private-impl": null, "./feature/private-*": null } })
+      : undefined
+  });
+  assert.equal(
+    redundantCrossingExclusion.api_changes.some((change) => change.contract_removed),
+    false,
+    "a crossing wildcard exclusion is redundant when its wildcard and every exact boundary region were already excluded"
+  );
+
+  const overlappingLiteralBoundary = (includeExactBoundaries: boolean) => computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: {
+        "./a*defg": "./src/*.ts",
+        "./abcd*defg": null,
+        ...(includeExactBoundaries ? { "./abcdefg": null, "./abcddefg": null } : {})
+      } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: {
+        "./a*defg": "./src/*.ts",
+        "./abcd*defg": null,
+        ...(includeExactBoundaries ? { "./abcdefg": null, "./abcddefg": null } : {}),
+        "./abcd*g": null
+      } })
+      : undefined
+  });
+  assert.equal(
+    overlappingLiteralBoundary(false).api_changes.some((change) => change.contract_removed),
+    true,
+    "overlapping wildcard literals still expose exact boundary spellings"
+  );
+  assert.equal(
+    overlappingLiteralBoundary(true).api_changes.some((change) => change.contract_removed),
+    false,
+    "covering the wildcard and all overlapping exact boundaries makes the new exclusion redundant"
+  );
+
+  const exclusionReplacingNarrowPositive = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./*": "./src/*.ts", "./private/*": null, "./private/foo": "./src/foo.ts" } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./*": "./src/*.ts", "./private/*": null, "./private/foo": null } })
+      : undefined
+  });
+  assert.equal(
+    exclusionReplacingNarrowPositive.api_changes.some((change) => change.contract_removed && change.contract_name === "export:./private/foo"),
+    true,
+    "a narrower positive that overrode the broad base exclusion remains a real removal"
+  );
+
+  const emptyWildcardCapture = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./feature/*-impl": "./src/*-impl.ts" } })
+      : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./feature/*-impl": "./src/*-impl.ts", "./feature/-impl": null } })
+      : undefined
+  });
+  assert.equal(emptyWildcardCapture.api_changes.some((change) => change.contract_removed), false, "an exact exclusion cannot remove the empty binding of a wildcard export because empty wildcard captures are not exported");
+
+  const removedExclusion = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? excludedManifest : undefined,
+    readHead: (path) => path === "package.json" ? broadManifest : undefined
+  });
+  assert.equal(removedExclusion.api_changes.some((change) => change.contract_removed), false, "removing an exclusion is additive");
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 detects package-only removals but not stable export target moves", () => {
+  const packageDiff = [
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -1 +1 @@",
+    "-old",
+    "+new"
+  ].join("\n");
+  const removed = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { "./feature": "./dist/feature.js" } }) : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: {} }) : undefined
+  });
+  assert.equal(removed.api_changes.length, 1);
+  assert.equal(removed.api_changes[0].path, "package.json");
+  assert.equal(removed.api_changes[0].contract_name, "export:./feature");
+  assert.equal(isBreakingApiChange(removed.api_changes[0]), true);
+
+  const sameRootThroughExports = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ main: "./dist/index.js" })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ main: "./dist/index.js", exports: { ".": "./dist/index.js" } })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    sourceRoots: ["src"]
+  });
+  assert.deepEqual(
+    sameRootThroughExports.api_changes,
+    [],
+    "moving the same root target from main to exports preserves the consumer contract"
+  );
+
+  const topLevelNullExports = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ main: "./src/index.js" })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ main: "./src/index.js", exports: null })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    sourceRoots: ["src"]
+  });
+  assert.deepEqual(topLevelNullExports.api_changes, [], "top-level null exports preserves the legacy main root contract");
+
+  const changedRootThroughExports = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ main: "./dist/a.js" })
+      : path === "src/a.ts" ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ main: "./dist/a.js", exports: { ".": "./dist/b.js" } })
+      : path === "src/b.ts" ? "export function value(input: number): string { return String(input); }" : undefined,
+    sourceRoots: ["src"]
+  });
+  assert.equal(changedRootThroughExports.api_changes.length, 1);
+  assert.equal(changedRootThroughExports.api_changes[0].contract_surface?.identity, "export:.");
+  assert.equal(changedRootThroughExports.api_changes[0].signatures_changed[0]?.name, "value");
+
+  const rootHiddenBySubpathExports = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ main: "./dist/index.js" }) : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ main: "./dist/index.js", exports: { "./feature": "./dist/feature.js" } })
+      : undefined,
+    sourceRoots: ["src"]
+  });
+  assert.deepEqual(
+    rootHiddenBySubpathExports.api_changes.map((change) => change.contract_name),
+    ["export:."],
+    "an authored exports map without a root key removes the legacy main root"
+  );
+
+  const moved = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { "./feature": "./dist/old.js" } }) : path === "src/old.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { "./feature": "./dist/new.js" } }) : path === "src/new.ts" ? "export const value = 1;" : undefined,
+    baseSourceRoots: ["src"],
+    headSourceRoots: ["src"]
+  });
+  assert.deepEqual(moved.api_changes, [], "changing the build target behind a stable export identity is not a removed consumer contract");
+
+  const removedCondition = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { import: "./dist/index.mjs", require: "./dist/index.cjs" } } }) : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { import: "./dist/index.mjs" } } }) : undefined
+  });
+  assert.equal(removedCondition.api_changes[0]?.contract_name, "export:.:require", "conditional consumer slots are tracked independently");
+
+  const nulledLegacyRoot = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ main: "./src/index.js" }) : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ main: "./src/index.js", exports: { ".": null } }) : undefined,
+    sourceRoots: ["src"]
+  });
+  assert.deepEqual(nulledLegacyRoot.api_changes.map((change) => change.contract_name), ["export:."]);
+
+  const nulledConditionalExport = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./feature": { import: "./dist/feature.mjs", require: "./dist/feature.cjs" } } })
+      : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { "./feature": null } }) : undefined
+  });
+  assert.deepEqual(
+    nulledConditionalExport.api_changes.map((change) => change.contract_name).sort(),
+    ["export:./feature:import", "export:./feature:require"],
+    "the generic null exclusion must not duplicate condition-specific removals for the same consumer path"
+  );
+
+  const packageAndFooDiff = parseStructuredDiff([
+    packageDiff,
+    "diff --git a/src/foo.ts b/src/foo.ts",
+    "--- a/src/foo.ts",
+    "+++ b/src/foo.ts",
+    "@@ -1 +1,2 @@",
+    " export const value = 1;",
+    "+// implementation-only edit"
+  ].join("\n"));
+  const wildcardRemovalWithChangedBinding = computeSemanticChangeFacts({
+    diff: packageAndFooDiff,
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./*": "./src/*.ts" } })
+      : path === "src/foo.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: {} })
+      : path === "src/foo.ts" ? "export const value = 1;\n// implementation-only edit" : undefined,
+    sourceRoots: ["src"]
+  });
+  const wildcardRemovedNames = wildcardRemovalWithChangedBinding.api_changes
+    .filter((change) => change.contract_removed)
+    .map((change) => change.contract_name);
+  assert.ok(wildcardRemovedNames.includes("export:./foo"), "the changed concrete binding remains visible");
+  assert.ok(wildcardRemovedNames.includes("export:./*"), "the package-wide wildcard removal remains visible too");
+
+  const exactRemovalWithChangedFile = computeSemanticChangeFacts({
+    diff: packageAndFooDiff,
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { "./foo": "./src/foo.ts" } })
+      : path === "src/foo.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: {} })
+      : path === "src/foo.ts" ? "export const value = 1;\n// implementation-only edit" : undefined,
+    sourceRoots: ["src"]
+  });
+  assert.deepEqual(
+    exactRemovalWithChangedFile.api_changes.filter((change) => change.contract_removed).map((change) => change.contract_name),
+    ["export:./foo"],
+    "an exact export removal is represented once rather than duplicated as package and file facts"
+  );
+
+  const incompatibleRepoint = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": "./src/v1.ts" } }) : path === "src/v1.ts" ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": "./src/v2.ts" } }) : path === "src/v2.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.equal(incompatibleRepoint.api_changes[0]?.path, "package.json", "a package-only target break stays in the changed PR scope");
+  assert.equal(incompatibleRepoint.api_changes[0]?.signatures_changed[0]?.name, "value");
+  assert.equal(isBreakingApiChange(incompatibleRepoint.api_changes[0]), true);
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 detects ambient/configured deletion and stale-target rename removals", () => {
+  const path = "types/ambient.d.ts";
+  const deletion = [
+    `diff --git a/${path} b/${path}`,
+    "deleted file mode 100644",
+    `--- a/${path}`,
+    "+++ /dev/null",
+    "@@ -1 +0,0 @@",
+    "-declare global { interface Window { feature: string } }"
+  ].join("\n");
+  const deletedFacts = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(deletion),
+    readBase: (filePath) => filePath === path ? "declare global { interface Window { feature: string } }" : undefined,
+    readHead: () => undefined
+  });
+  assert.equal(deletedFacts.api_changes[0]?.contract_removed, true);
+  assert.equal(deletedFacts.api_changes[0]?.contract_surface?.kind, "declaration");
+
+  const configuredPath = "src/extension-hook.ts";
+  const configuredDeletion = deletion.replaceAll(path, configuredPath).replace(
+    "declare global { interface Window { feature: string } }",
+    "const extensionHook = 1;"
+  );
+  const configuredFacts = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(configuredDeletion),
+    readBase: (filePath) => filePath === configuredPath ? "const extensionHook = 1;" : undefined,
+    readHead: () => undefined,
+    contractPaths: [configuredPath]
+  });
+  assert.equal(configuredFacts.api_changes[0]?.contract_removed, true);
+  assert.equal(configuredFacts.api_changes[0]?.contract_surface?.kind, "configured");
+
+  const oldPath = "src/public.ts";
+  const newPath = "src/private.ts";
+  const staleRename = [
+    `diff --git a/${oldPath} b/${newPath}`,
+    "similarity index 100%",
+    `rename from ${oldPath}`,
+    `rename to ${newPath}`
+  ].join("\n");
+  const packageJson = JSON.stringify({ exports: { ".": `./${oldPath}` } });
+  const staleFacts = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(staleRename),
+    readBase: (filePath) => filePath === oldPath ? "export const value = 1;" : filePath === "package.json" ? packageJson : undefined,
+    readHead: (filePath) => filePath === newPath ? "export const value = 1;" : filePath === "package.json" ? packageJson : undefined
+  });
+  assert.equal(staleFacts.api_changes[0]?.contract_removed, true, "a surviving identity whose target still names the removed path is broken");
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 stable package target moves do not promote delete/add source facts", () => {
+  const oldPath = "src/old.ts";
+  const newPath = "src/new.ts";
+  const diffText = [
+    `diff --git a/${oldPath} b/${oldPath}`,
+    "deleted file mode 100644",
+    `--- a/${oldPath}`,
+    "+++ /dev/null",
+    "@@ -1 +0,0 @@",
+    "-export const value = 1;",
+    `diff --git a/${newPath} b/${newPath}`,
+    "new file mode 100644",
+    "--- /dev/null",
+    `+++ b/${newPath}`,
+    "@@ -0,0 +1 @@",
+    "+export const value = 1;"
+  ].join("\n");
+  const facts = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(diffText),
+    readBase: (path) => path === oldPath ? "export const value = 1;" : path === "package.json" ? JSON.stringify({ exports: { ".": `./${oldPath}` } }) : undefined,
+    readHead: (path) => path === newPath ? "export const value = 1;" : path === "package.json" ? JSON.stringify({ exports: { ".": `./${newPath}` } }) : undefined
+  });
+  assert.equal(facts.api_changes.some((change) => isSupportedApiContractChange(change) && isBreakingApiChange(change)), false);
+  assert.deepEqual(facts.api_changes, [], "an identity-preserving source move with the same API is not a contract change");
+
+  const incompatible = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(diffText),
+    readBase: (path) => path === oldPath ? "export function value(input: string): string { return input; }" : path === "package.json" ? JSON.stringify({ exports: { ".": `./${oldPath}` } }) : undefined,
+    readHead: (path) => path === newPath ? "export function value(input: number): string { return String(input); }" : path === "package.json" ? JSON.stringify({ exports: { ".": `./${newPath}` } }) : undefined
+  });
+  const contractChange = incompatible.api_changes.find(isSupportedApiContractChange);
+  assert.equal(contractChange?.path, newPath);
+  assert.equal(contractChange?.signatures_changed[0]?.name, "value");
+  assert.equal(contractChange ? isBreakingApiChange(contractChange) : false, true);
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 moving one identity preserves breaks on another identity sharing its old module", () => {
+  const path = "src/a.ts";
+  const packageDiff = [
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -1 +1 @@",
+    "-old",
+    "+new",
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    "@@ -1 +1 @@",
+    "-export function value(input: string): string { return input; }",
+    "+export function value(input: number): string { return String(input); }"
+  ].join("\n");
+  const baseManifest = JSON.stringify({ exports: { ".": `./${path}`, "./alias": `./${path}` } });
+  const headManifest = JSON.stringify({ exports: { ".": "./src/b.ts", "./alias": `./${path}` } });
+  const facts = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (filePath) => filePath === "package.json" ? baseManifest : filePath === path ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (filePath) => filePath === "package.json" ? headManifest : filePath === path ? "export function value(input: number): string { return String(input); }" : filePath === "src/b.ts" ? "export function value(input: string): string { return input; }" : undefined
+  });
+  const aliasBreak = facts.api_changes.find((change) => change.path === path && change.contract_surface?.identity === "export:./alias");
+  assert.equal(aliasBreak ? isBreakingApiChange(aliasBreak) : false, true, "reconciling export:. cannot erase the still-public alias break");
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 matches unchanged package fallback targets before reconciling replacements", () => {
+  const packageDiff = [
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -1 +1 @@",
+    "-old",
+    "+new"
+  ].join("\n");
+  const baseManifest = JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } });
+  const headManifest = JSON.stringify({ exports: { ".": ["./src/c.ts", "./src/b.ts"] } });
+  const facts = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? baseManifest : path === "src/a.ts" ? "export function value(input: string): string { return input; }" : path === "src/b.ts" ? "export function value(input: number): string { return String(input); }" : undefined,
+    readHead: (path) => path === "package.json" ? headManifest : path === "src/c.ts" ? "export function value(input: string): string { return input; }" : path === "src/b.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.deepEqual(facts.api_changes, [], "the unchanged b fallback is not incorrectly compared with replacement c");
+
+  const reordered = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } }) : path === "src/a.ts" || path === "src/b.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/b.ts", "./src/a.ts"] } }) : path === "src/a.ts" || path === "src/b.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(reordered.api_changes.some((change) => change.contract_target_changed), true, "fallback reorder changes first-match resolution");
+
+  const removedCompatibleFirstFallback = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } }) : path === "src/a.ts" || path === "src/b.ts" ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/b.ts"] } }) : path === "src/b.ts" ? "export function value(input: string): string { return input; }" : undefined
+  });
+  assert.deepEqual(removedCompatibleFirstFallback.api_changes, [], "deleting the first fallback compares the newly selected API before reporting a target change");
+
+  const removedIncompatibleFirstFallback = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } }) : path === "src/a.ts" ? "export function value(input: string): string { return input; }" : path === "src/b.ts" ? "export function value(input: number): string { return String(input); }" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/b.ts"] } }) : path === "src/b.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.equal(removedIncompatibleFirstFallback.api_changes.length, 1);
+  assert.equal(removedIncompatibleFirstFallback.api_changes[0]?.path, "package.json");
+  assert.equal(removedIncompatibleFirstFallback.api_changes[0]?.contract_target_changed, undefined);
+  assert.equal(isBreakingApiChange(removedIncompatibleFirstFallback.api_changes[0]), true);
+
+  const shadowedFallbackReplacement = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } }) : path === "src/a.ts" ? "export const value = 1;" : path === "src/b.ts" ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/c.ts"] } }) : path === "src/a.ts" ? "export const value = 1;" : path === "src/c.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.deepEqual(shadowedFallbackReplacement.api_changes, [], "later fallback replacements stay quiet while the selected first target is unchanged");
+
+  const selectedReplacementWithCleanup = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } }) : path === "src/a.ts" ? "export const value = 1;" : path === "src/b.ts" ? "export const shadowed = 2;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/c.ts"] } }) : path === "src/c.ts" ? "export const value = 1;" : undefined
+  });
+  assert.deepEqual(selectedReplacementWithCleanup.api_changes, [], "shadowed cleanup does not prevent comparing compatible selected targets");
+
+  const incompatibleSelectedReplacementWithCleanup = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } }) : path === "src/a.ts" ? "export function value(input: string): string { return input; }" : path === "src/b.ts" ? "export const shadowed = 2;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/c.ts"] } }) : path === "src/c.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.equal(incompatibleSelectedReplacementWithCleanup.api_changes.length, 1);
+  assert.equal(incompatibleSelectedReplacementWithCleanup.api_changes[0]?.path, "package.json");
+  assert.equal(incompatibleSelectedReplacementWithCleanup.api_changes[0]?.contract_target_changed, undefined);
+
+  const fallbackManifest = JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } });
+  assert.equal(classifyApiContractSurface("src/a.ts", { packageJson: fallbackManifest })?.identity, "export:.");
+  assert.equal(
+    classifyApiContractSurface("src/b.ts", { packageJson: fallbackManifest }),
+    undefined,
+    "a valid later fallback stays shadowed while the first target resolves"
+  );
+
+  const invalidFirstFallbackReplacement = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["not:valid", "./src/a.ts"] } }) : path === "src/a.ts" ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["not:valid", "./src/b.ts"] } }) : path === "src/b.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.equal(isBreakingApiChange(invalidFirstFallbackReplacement.api_changes[0]), true, "invalid fallbacks are skipped before comparing the effective selected targets");
+
+  const traversalFirstFallbackReplacement = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./dist/../invalid.js", "./src/a.ts"] } }) : path === "src/a.ts" ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./dist/../invalid.js", "./src/b.ts"] } }) : path === "src/b.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.equal(isBreakingApiChange(traversalFirstFallbackReplacement.api_changes[0]), true, "traversal-invalid fallbacks are skipped before comparing effective targets");
+
+  const prepended = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/b.ts"] } }) : path === "src/b.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/c.ts", "./src/b.ts"] } }) : path === "src/b.ts" || path === "src/c.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(prepended.api_changes.some((change) => change.contract_target_changed), true, "a new first fallback cannot be treated as an additive tail");
+
+  const replacementAndReorder = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } }) : path === "src/a.ts" || path === "src/c.ts" ? "export const value = 1;" : path === "src/b.ts" ? "export const other = 2;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/b.ts", "./src/c.ts"] } }) : path === "src/a.ts" || path === "src/c.ts" ? "export const value = 1;" : path === "src/b.ts" ? "export const other = 2;" : undefined
+  });
+  assert.equal(replacementAndReorder.api_changes.some((change) => change.contract_target_changed), true, "a shared fallback moving priority cannot hide behind a compatible replacement");
+
+  const movedSourceDiff = [
+    packageDiff,
+    "diff --git a/src/a.ts b/src/a.ts",
+    "deleted file mode 100644",
+    "--- a/src/a.ts",
+    "+++ /dev/null",
+    "@@ -1 +0,0 @@",
+    "-export const value = 1;",
+    "diff --git a/src/c.ts b/src/c.ts",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/src/c.ts",
+    "@@ -0,0 +1 @@",
+    "+export const value = 1;"
+  ].join("\n");
+  const replacementReorderWithFiles = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(movedSourceDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/b.ts"] } }) : path === "src/a.ts" ? "export const value = 1;" : path === "src/b.ts" ? "export const other = 2;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/b.ts", "./src/c.ts"] } }) : path === "src/c.ts" ? "export const value = 1;" : path === "src/b.ts" ? "export const other = 2;" : undefined
+  });
+  assert.equal(replacementReorderWithFiles.api_changes.some((change) => change.contract_target_changed), true, "source-file reconciliation cannot suppress fallback priority analysis");
+
+  const duplicateFallback = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/a.ts"] } }) : path === "src/a.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": ["./src/a.ts", "./src/a.ts"] } }) : path === "src/a.ts" ? "export const value = 1;" : undefined
+  });
+  assert.deepEqual(duplicateFallback.api_changes, [], "duplicate unchanged fallbacks are matched occurrence by occurrence");
+
+  const defaultOnlyWrapper = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": "./src/index.ts" } }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { default: "./src/index.ts" } } }) : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  assert.deepEqual(defaultOnlyWrapper.api_changes, [], "a sole default wrapper preserves the unconditioned root contract identity");
+
+  for (const [baseExports, headExports] of [
+    ["./src/index.ts", { node: "./src/index.ts", default: "./src/index.ts" }],
+    [{ node: "./src/index.ts", default: "./src/index.ts" }, "./src/index.ts"]
+  ] as const) {
+    const uniformConditionWrapper = computeSemanticChangeFacts({
+      diff: parseStructuredDiff(packageDiff),
+      readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": baseExports } }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
+      readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": headExports } }) : path === "src/index.ts" ? "export const value = 1;" : undefined
+    });
+    assert.deepEqual(uniformConditionWrapper.api_changes, [], "uniform conditions with default preserve the unconditional contract");
+  }
+
+  const splitConditionTargets = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": "./src/index.ts" } }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { node: "./src/node.ts", default: "./src/index.ts" } } }) : path === "src/index.ts" || path === "src/node.ts" ? "export const value = 1;" : undefined
+  });
+  assert.deepEqual(splitConditionTargets.api_changes, [], "compatible condition divergence compares targets instead of removing the root contract");
+
+  const divergentConditionTarget = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": { import: "./src/index.ts", require: "./src/index.ts", default: "./src/index.ts" } } })
+      : path === "src/index.ts" ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": { import: "./src/index.ts", require: "./src/require.ts", default: "./src/index.ts" } } })
+      : path === "src/index.ts" ? "export function value(input: string): string { return input; }"
+        : path === "src/require.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.equal(divergentConditionTarget.api_changes.some((change) => change.contract_name === "export:." && change.contract_removed), false);
+  assert.equal(divergentConditionTarget.api_changes.length, 1);
+  assert.equal(divergentConditionTarget.api_changes[0]?.contract_surface?.identity, "export:.:require");
+
+  const nestedDivergentConditionTarget = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": { node: { import: "./src/index.ts", default: "./src/index.ts" } } } })
+      : path === "src/index.ts" ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": { node: { import: "./src/index.ts", default: "./src/node.ts" } } } })
+      : path === "src/index.ts" ? "export function value(input: string): string { return input; }"
+        : path === "src/node.ts" ? "export function value(input: number): string { return String(input); }" : undefined
+  });
+  assert.equal(nestedDivergentConditionTarget.api_changes.some((change) => change.contract_removed), false);
+  assert.equal(nestedDivergentConditionTarget.api_changes.length, 1);
+  assert.equal(nestedDivergentConditionTarget.api_changes[0]?.contract_surface?.identity, "export:.:node.default");
+
+  const partialNestedDefault = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": "./src/index.ts" } })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": { node: "./src/index.ts", default: { import: "./src/index.ts" } } } })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(partialNestedDefault.api_changes.some((change) => change.contract_name === "export:." && change.contract_removed), true);
+
+  const coveredNestedDefault = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": "./src/index.ts" } })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ exports: { ".": { node: "./src/index.ts", default: { import: "./src/index.ts", default: "./src/index.ts" } } } })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  assert.deepEqual(coveredNestedDefault.api_changes, []);
+
+  const colonBinRename = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json"
+      ? JSON.stringify({ bin: { foo: "./src/index.ts" } })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json"
+      ? JSON.stringify({ bin: { "foo:default": "./src/index.ts" } })
+      : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(colonBinRename.api_changes.some((change) => change.contract_name === "bin:foo" && change.contract_removed), true);
+
+  const noDefaultConditionWrapper = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": "./src/index.ts" } }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { node: "./src/index.ts", import: "./src/index.ts" } } }) : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(noDefaultConditionWrapper.api_changes.some((change) => change.contract_removed), true);
+
+  const nestedDefaultOnlyWrapper = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { node: "./src/index.ts" } } }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { node: { default: "./src/index.ts" } } } }) : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  assert.deepEqual(nestedDefaultOnlyWrapper.api_changes, [], "a nested sole default wrapper preserves its parent condition identity");
+
+  const reorderedConditions = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { import: "./src/a.ts", default: "./src/b.ts" } } }) : path === "src/a.ts" || path === "src/b.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { default: "./src/b.ts", import: "./src/a.ts" } } }) : path === "src/a.ts" || path === "src/b.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(reorderedConditions.api_changes.some(isBreakingApiChange), true, "moving default before a condition removes that condition's reachable contract");
+
+  const reorderedEquivalentConditions = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { node: "./src/index.ts", default: "./src/index.ts" } } }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { default: "./src/index.ts", node: "./src/index.ts" } } }) : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(
+    reorderedEquivalentConditions.api_changes.some((change) => change.contract_target_changed),
+    false,
+    "reordering conditions with identical resolved targets is unobservable"
+  );
+
+  const unreachableAfterDefault = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { default: "./src/a.ts", node: "./src/b.ts" } } }) : path === "src/a.ts" || path === "src/b.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { default: "./src/a.ts", node: "./src/c.ts" } } }) : path === "src/a.ts" || path === "src/c.ts" ? "export const value = 1;" : undefined
+  });
+  assert.deepEqual(unreachableAfterDefault.api_changes, [], "targets after default are unreachable");
+
+  const reassignedConditionsWithStableTargetOrder = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { node: "./src/a.ts", default: "./src/b.ts" } } }) : path === "src/a.ts" || path === "src/b.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { default: "./src/a.ts", node: "./src/b.ts" } } }) : path === "src/a.ts" || path === "src/b.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(
+    reassignedConditionsWithStableTargetOrder.api_changes.some(isBreakingApiChange),
+    true,
+    "moving default ahead of reassigned conditions remains approval-changing"
+  );
+
+  const dottedCondition = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { "a.b": "./src/a.ts" } } }) : path === "src/a.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { ".": { a: { b: "./src/b.ts" } } } }) : path === "src/b.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(dottedCondition.api_changes.some((change) => change.contract_removed && change.contract_name === "export:.:a%2Eb"), true, "literal dotted and nested condition vectors have distinct identities");
+
+  const colonSubpath = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: { "./feature:import": "./src/a.ts" } }) : path === "src/a.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: { "./feature": { import: "./src/b.ts" } } }) : path === "src/b.ts" ? "export const value = 1;" : undefined
+  });
+  assert.equal(colonSubpath.api_changes.some((change) => change.contract_removed && change.contract_name === "export:./feature%3Aimport"), true, "subpath delimiters cannot collide with condition delimiters");
+
+  const wildcardCondition = classifyApiContractSurface("src/foo.ts", {
+    packageJson: JSON.stringify({ exports: { "./*": { "custom*": "./src/*.ts" } } }),
+    sourceRoots: ["src"]
+  });
+  assert.equal(wildcardCondition?.binding, "export:./foo:custom%2A", "literal condition stars are not replaced as subpath wildcards");
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 reports newly effective condition-specific null blocks", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -1 +1 @@",
+    "-old",
+    "+new"
+  ].join("\n"));
+  const run = (baseExports: unknown, headExports: unknown) => computeSemanticChangeFacts({
+    diff,
+    readBase: (path) => path === "package.json" ? JSON.stringify({ exports: baseExports }) : path === "src/index.ts" ? "export const value = 1;" : undefined,
+    readHead: (path) => path === "package.json" ? JSON.stringify({ exports: headExports }) : path === "src/index.ts" ? "export const value = 1;" : undefined
+  });
+  const base = { ".": { import: "./src/index.ts", default: "./src/index.ts" } };
+  const blocked = { ".": { browser: null, import: "./src/index.ts", default: "./src/index.ts" } };
+  const fact = run(base, blocked).api_changes.find((change) => change.contract_name === "export:.:browser");
+  assert.equal(fact?.contract_removed, true);
+  assert.deepEqual(
+    run(base, { ".": { import: "./src/index.ts", default: "./src/index.ts", browser: null } }).api_changes,
+    [],
+    "a condition after default is unreachable"
+  );
+  assert.equal(
+    run({ ".": { import: "./src/index.ts", default: "./src/index.ts", browser: null } }, blocked)
+      .api_changes.some((change) => change.contract_name === "export:.:browser"),
+    true,
+    "moving the block before default makes it effective"
+  );
+  assert.deepEqual(run(blocked, base).api_changes, [], "removing a condition block is additive");
+  assert.deepEqual(
+    run({}, { "./new": { browser: null, default: "./src/index.ts" } }).api_changes,
+    [],
+    "a brand-new blocked condition is not a removed base contract"
+  );
+  assert.deepEqual(
+    run({ ".": "./src/index.ts" }, { ".": [{ browser: null, default: "./src/index.ts" }, "./src/index.ts"] }).api_changes,
+    [],
+    "a later unconditional array fallback covers an earlier conditional null"
+  );
+  assert.equal(
+    run({ ".": "./src/index.ts" }, { ".": [{ browser: null, default: "./src/index.ts" }, { node: "./src/index.ts" }] })
+      .api_changes.some((change) => change.contract_name === "export:.:browser"),
+    true,
+    "an unrelated later condition does not cover the blocked condition"
+  );
+  assert.deepEqual(
+    run({ ".": "./src/index.ts" }, { ".": ["./src/index.ts", { browser: null, default: "./src/index.ts" }] }).api_changes,
+    [],
+    "an earlier unconditional array target makes a later null branch unreachable"
+  );
+  const combinedBlocks = run({ ".": "./src/index.ts" }, { ".": [
+      { browser: null, default: "./src/index.ts" },
+      { node: null, default: "./src/index.ts" }
+    ] }).api_changes;
+  assert.equal(combinedBlocks.some((change) => change.contract_name === "export:.:browser"), true);
+  assert.equal(combinedBlocks.some((change) => change.contract_name === "export:.:node"), true);
+  assert.equal(
+    run({ ".": "./src/index.ts" }, { ".": [
+      { browser: null, default: "./src/index.ts" },
+      { browser: null, default: "./src/index.ts" }
+    ] }).api_changes.filter((change) => change.contract_name === "export:.:browser").length,
+    1,
+    "a condition blocked by every fallback is reported once"
+  );
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 reconciles shared target moves once per export identity", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -1 +1 @@",
+    "-old",
+    "+new"
+  ].join("\n"));
+  const baseManifest = JSON.stringify({ exports: { "./one": "./src/a.ts", "./two": "./src/a.ts" } });
+  const headManifest = JSON.stringify({ exports: { "./one": "./src/b.ts", "./two": "./src/b.ts" } });
+  const facts = computeSemanticChangeFacts({
+    diff,
+    readBase: (filePath) => filePath === "package.json" ? baseManifest : filePath === "src/a.ts"
+      ? "export function value(input: string): string { return input; }"
+      : undefined,
+    readHead: (filePath) => filePath === "package.json" ? headManifest : filePath === "src/b.ts"
+      ? "export function value(input: number): string { return String(input); }"
+      : undefined
+  });
+  assert.deepEqual(
+    facts.api_changes.map((change) => change.contract_surface?.identity).sort(),
+    ["export:./one", "export:./two"]
+  );
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 target reconciliation preserves surviving internal module facts", () => {
+  const path = "src/a.ts";
+  const packageDiff = [
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -1 +1 @@",
+    "-old",
+    "+new",
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    "@@ -1 +1 @@",
+    "-export function internal(input: string): string { return input; }",
+    "+export function internal(input: number): string { return String(input); }"
+  ].join("\n");
+  const facts = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(packageDiff),
+    readBase: (filePath) => filePath === "package.json" ? JSON.stringify({ exports: { ".": `./${path}` } }) : filePath === path ? "export function internal(input: string): string { return input; }" : filePath === "src/b.ts" ? "export const value = 1;" : undefined,
+    readHead: (filePath) => filePath === "package.json" ? JSON.stringify({ exports: { ".": "./src/b.ts" } }) : filePath === path ? "export function internal(input: number): string { return String(input); }" : filePath === "src/b.ts" ? "export function internal(input: string): string { return input; }" : undefined
+  });
+  const internal = facts.api_changes.find((change) => change.path === path);
+  assert.equal(internal?.signatures_changed[0]?.name, "internal");
+  assert.equal(internal?.contract_surface, undefined, "the old target's surviving module remains supporting, not public");
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 reconciles every concrete wildcard export binding", () => {
+  const names = ["foo", "bar"];
+  const diffText = [
+    "diff --git a/package.json b/package.json",
+    "--- a/package.json",
+    "+++ b/package.json",
+    "@@ -1 +1 @@",
+    "-old",
+    "+new",
+    ...names.flatMap((name) => [
+      `diff --git a/src/${name}.ts b/src/${name}.ts`,
+      "deleted file mode 100644",
+      `--- a/src/${name}.ts`,
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-export function value(input: string): string { return input; }",
+      `diff --git a/lib/${name}.ts b/lib/${name}.ts`,
+      "new file mode 100644",
+      "--- /dev/null",
+      `+++ b/lib/${name}.ts`,
+      "@@ -0,0 +1 @@",
+      `+export function value(input: ${name === "foo" ? "number" : "string"}): string { return String(input); }`
+    ])
+  ].join("\n");
+  const baseManifest = JSON.stringify({ exports: { "./*": "./src/*.ts" } });
+  const headManifest = JSON.stringify({ exports: { "./*": "./lib/*.ts" } });
+  const facts = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(diffText),
+    readBase: (path) => path === "package.json" ? baseManifest : names.some((name) => path === `src/${name}.ts`) ? "export function value(input: string): string { return input; }" : undefined,
+    readHead: (path) => path === "package.json" ? headManifest : names.some((name) => path === `lib/${name}.ts`) ? `export function value(input: ${path.includes("foo") ? "number" : "string"}): string { return String(input); }` : undefined,
+    baseSourceRoots: ["src"],
+    headSourceRoots: ["lib"]
+  });
+  const supported = facts.api_changes.filter(isSupportedApiContractChange);
+  const concrete = supported.find((change) => change.path === "lib/foo.ts");
+  assert.equal(concrete?.contract_surface?.binding, "export:./foo");
+  assert.equal(concrete ? isBreakingApiChange(concrete) : false, true);
+  assert.equal(
+    supported.some((change) => change.path === "package.json" && change.contract_target_changed),
+    true,
+    "changed concrete bindings cannot prove every unchanged binding behind a wildcard target is compatible"
+  );
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 uses independent base and head source roots", () => {
+  const oldPath = "source/index.ts";
+  const newPath = "src/index.ts";
+  const diffText = [
+    `diff --git a/${oldPath} b/${newPath}`,
+    "similarity index 70%",
+    `rename from ${oldPath}`,
+    `rename to ${newPath}`,
+    `--- a/${oldPath}`,
+    `+++ b/${newPath}`,
+    "@@ -1 +1 @@",
+    "-export function value(input: string): string { return input; }",
+    "+export function value(input: number): string { return String(input); }"
+  ].join("\n");
+  const facts = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(diffText),
+    readBase: (path) => path === oldPath ? "export function value(input: string): string { return input; }" : path === "package.json" ? JSON.stringify({ main: "dist/index.js" }) : undefined,
+    readHead: (path) => path === newPath ? "export function value(input: number): string { return String(input); }" : path === "package.json" ? JSON.stringify({ main: "dist/index.js" }) : undefined,
+    baseSourceRoots: ["source"],
+    headSourceRoots: ["src"]
+  });
+  assert.equal(facts.api_changes[0]?.contract_surface?.kind, "package_entry");
+  assert.equal(facts.api_changes[0]?.contract_removed, undefined, "the stable package entry identity survived the source-root move");
+  assert.equal(isBreakingApiChange(facts.api_changes[0]), true);
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 analyzes mts, cts, d.mts, and d.cts contract sources", () => {
+  const paths = ["src/public.mts", "src/public.cts", "types/public.d.mts", "types/public.d.cts"];
+  const diffText = paths.flatMap((path) => [
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    "@@ -1 +1 @@",
+    "-export function value(input: string): string;",
+    "+export function value(input: number): string;"
+  ]).join("\n");
+  const oldText = "export function value(input: string): string;";
+  const newText = "export function value(input: number): string;";
+  const packageJson = JSON.stringify({ exports: { "./esm": "./src/public.mjs", "./cjs": "./src/public.cjs" } });
+  const facts = computeSemanticChangeFacts({
+    diff: parseStructuredDiff(diffText),
+    readBase: (path) => path === "package.json" ? packageJson : paths.includes(path) ? oldText : undefined,
+    readHead: (path) => path === "package.json" ? packageJson : paths.includes(path) ? newText : undefined
+  });
+  assert.deepEqual(facts.api_changes.map((change) => change.path), paths);
+  assert.ok(facts.api_changes.every((change) => change.contract_surface !== undefined));
+});
 
 // review-surfaces.SEMANTIC_DIFF.1: a schema change making a field required is
 // reported with the field name and the kind of change.

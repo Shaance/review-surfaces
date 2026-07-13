@@ -13,7 +13,7 @@ test("review-surfaces.PROVIDERS.3 loads local review-surfaces config with mock a
   assert.equal(config.output_dir, ".review-surfaces");
   assert.deepEqual(config.specs, ["features/**/*.feature.yaml"]);
   assert.equal(config.llm.provider, "mock");
-  assert.equal(config.dogfood.milestone, "M5");
+  assert.equal(config.dogfood.milestone, "usefulness-M1");
 });
 
 test("treats an empty or comment-only config file as defaults rather than an error", async () => {
@@ -148,6 +148,20 @@ test("review-surfaces.HUMAN_REVIEW.16 parses human_review caps and risk lens tog
         prompt: "Confirm PR-controlled code cannot access secrets."
       }
     ]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.REVIEWER_VALUE.11 parses explicit contract-surface paths", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-config-contracts-"));
+  try {
+    fs.writeFileSync(
+      path.join(tmp, "review-surfaces.config.yaml"),
+      "contract_surfaces:\n  paths:\n    - src/extensions/**\n    - src/public-api.ts\n"
+    );
+    const config = await loadConfig(tmp);
+    assert.deepEqual(config.contract_surfaces.paths, ["src/extensions/**", "src/public-api.ts"]);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

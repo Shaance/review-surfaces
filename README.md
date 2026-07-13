@@ -126,8 +126,10 @@ that story).
 Honesty about depth, so you can calibrate trust:
 
 - **TypeScript/JavaScript-first deep analysis.** The import graph, exported-API
-  surface diff, call-site reach ("this removed export is used by 14 files"), and
+  syntax diff, in-repo importer reach ("this changed export is used by 14 files"), and
   architecture-drift facts parse TS/JS sources (via the TypeScript compiler).
+  Export syntax and importers remain supporting facts unless the path is a package
+  export/entry, declaration contract, or configured contract surface.
   Implementation-root detection reads *your* repo's `tsconfig.json` and
   `package.json` — a `source/` layout classifies just like `src/`.
 - **Language-agnostic everywhere else.** Test-weakening signals, secret
@@ -297,7 +299,8 @@ The tool is fully useful with zero configuration. Each layer below is opt-in:
 - **`review-surfaces.config.yaml`** — review areas, risk-lens toggles, bounded
   output caps, required manual checks per path pattern (e.g. "any
   `.github/workflows/**` change must record a secret-boundary check before the
-  verdict can clear").
+  verdict can clear"), and `contract_surfaces.paths` globs for documented public
+  or extension APIs not already declared through `package.json`.
 - **Acai-style feature specs** (`features/*.feature.yaml`) — the requirements
   ledger layer. With specs indexed, every requirement gets an
   implementation-and-test coverage status (`satisfied` / `partial` / `missing` /
