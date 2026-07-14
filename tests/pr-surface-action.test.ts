@@ -283,9 +283,28 @@ test("review-surfaces.PR_SURFACE.1 the repo workflow is a same-repo-only thin co
   // Fork PRs are served by the ci pull_request smoke job (mock, post=false), so
   // they upload the artifact without the secret-bearing pull_request_target path.
   const ci = readYaml(".github/workflows/ci.yml");
+  const reviewHeadRef = "${{ env.REVIEW_HEAD_SHA }}";
+  assert.equal(ci.env.REVIEW_HEAD_SHA, "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}");
+  const buildCheckout = ci.jobs["build-test"].steps.find((s: any) => s.uses === "actions/checkout@v4");
+  assert.equal(buildCheckout.with.ref, reviewHeadRef, "build-test stamps evidence for the real PR head, not GitHub's synthetic merge commit");
+  const localeCheckout = ci.jobs["locale-invariance"].steps.find((s: any) => s.uses === "actions/checkout@v4");
+  assert.equal(localeCheckout.with.ref, "${{ github.sha }}", "a required check still validates GitHub's synthetic merge result");
   const smoke = ci.jobs["pr-surface-smoke"];
   assert.ok(smoke, "ci has the pr-surface-smoke job");
+  assert.equal(smoke.needs, "build-test", "the preview waits for exact-head command evidence instead of inventing untested decisions");
+  const smokeCheckout = smoke.steps.find((s: any) => s.uses === "actions/checkout@v4");
+  assert.equal(smokeCheckout.with.ref, reviewHeadRef, "the preview checks out the PR head, never the synthetic merge commit");
+  const evidenceDownload = smoke.steps.find((s: any) => s.uses === "actions/download-artifact@v4");
+  assert.equal(evidenceDownload.with.name, `command-evidence-${reviewHeadRef}`);
+  assert.equal(evidenceDownload.with.path, ".review-surfaces/commands");
   const smokeStep = smoke.steps.find((s: any) => s.uses === "./");
   assert.equal(smokeStep.with.provider, "mock");
   assert.equal(String(smokeStep.with.post), "false");
+  assert.equal(smokeStep.with["head-ref"], reviewHeadRef);
+  const smokeAssertion = smoke.steps.find((s: any) => s.name === "Assert the sticky comment rendered");
+  assert.match(smokeAssertion.run, /review-surfaces:fingerprint head=\$EXPECTED_HEAD/);
+  assert.match(smokeAssertion.run, /\.generated_from\.head_sha/);
+  assert.match(smokeAssertion.run, /ci-typecheck/);
+  assert.match(smokeAssertion.run, /ci-tests/);
+  assert.match(smokeAssertion.run, /\.head_sha == \$head/);
 });

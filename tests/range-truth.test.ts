@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { CLI, runCli } from "./helpers/cli-repo";
-import { collectHeadCommits, MAX_UNTRACKED_REVIEW_BYTES } from "../src/collector/git";
+import { collectDiff, collectHeadCommits, MAX_UNTRACKED_REVIEW_BYTES } from "../src/collector/git";
 import type { HumanReviewModel } from "../src/human/contract";
 import { renderStickySummary } from "../src/render/sticky-summary";
 
@@ -48,6 +48,48 @@ function makeRepo(branch: string): string {
 function readManifest(cwd: string, outDir = ".review-surfaces"): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(path.join(cwd, outDir, "manifest.json"), "utf8")) as Record<string, unknown>;
 }
+
+test("review-surfaces.COLD_START.6 collects committed range diffs larger than Node's implicit 1 MiB buffer", () => {
+  const tmp = makeRepo("main");
+  try {
+    const base = commitFile(tmp, "large.txt", "base\n", "base");
+    const largeText = Array.from(
+      { length: 20_000 },
+      (_, index) => `review-line-${index.toString().padStart(5, "0")}-${"x".repeat(64)}`
+    ).join("\n");
+    commitFile(tmp, "large.txt", `${largeText}\n`, "large review change");
+
+    const result = collectDiff(tmp, base, "HEAD", false);
+
+    assert.equal(result.diffSource, "range");
+    assert.deepEqual(result.diagnostics, []);
+    assert.ok(Buffer.byteLength(result.text, "utf8") > 1024 * 1024, "the complete range exceeds the old implicit buffer");
+    assert.match(result.text, /review-line-19999-/, "the end of the committed range is retained");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.COLD_START.6 a range command failure with resolved refs fails closed", () => {
+  const tmp = makeRepo("main");
+  try {
+    fs.writeFileSync(path.join(tmp, ".gitattributes"), "*.txt diff=broken\n");
+    git(tmp, ["add", ".gitattributes"]);
+    const base = commitFile(tmp, "large.txt", "base\n", "base");
+    git(tmp, ["config", "diff.broken.textconv", "false"]);
+    fs.writeFileSync(path.join(tmp, "large.txt"), "changed\n");
+    git(tmp, ["add", "large.txt"]);
+    git(tmp, ["commit", "-m", "change with broken diff driver"]);
+
+    assert.throws(
+      () => collectDiff(tmp, base, "HEAD", false),
+      /refusing to review a smaller fallback/,
+      "resolved refs must never degrade to an incomplete working-tree review"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
 
 function changedFilePaths(cwd: string, outDir = ".review-surfaces"): string[] {
   const parsed = JSON.parse(
