@@ -322,6 +322,30 @@ test("non-JS colocated test naming conventions classify as tests", () => {
   }
 });
 
+test("conventional singular test and nested __tests__ directories classify as tests", () => {
+  const paths = ["test/abort.ts", "src/client/__tests__/retry.ts", "spec/pagination.ts", "packages/client/test/retry.ts"];
+  const model = buildPrScope(input({
+    collection: collectionStub(paths.map((path) => ({ path, status: "M" }))),
+    diff: { files: paths.map((path) => diffFile(path, ["test('behavior', () => {});"])) }
+  }));
+
+  for (const filePath of paths) {
+    assert.equal(model.changed_files.find((file) => file.path === filePath)?.role, "test", `${filePath} should be a test`);
+  }
+});
+
+test("source directories named spec or test-support remain implementation", () => {
+  const paths = ["src/spec/parser.ts", "src/test-support/fixture.ts"];
+  const model = buildPrScope(input({
+    collection: collectionStub(paths.map((path) => ({ path, status: "M" }))),
+    diff: { files: paths.map((path) => diffFile(path, ["export const value = true;"])) }
+  }));
+
+  for (const filePath of paths) {
+    assert.notEqual(model.changed_files.find((file) => file.path === filePath)?.role, "test", `${filePath} should remain implementation`);
+  }
+});
+
 test("spec_block_changed fires when a changed spec hunk overlaps the requirement source range", () => {
   const specPath = "features/privacy.feature.yaml";
   const evidence = specEvidence(specPath, "review-surfaces.PRIVACY.2");

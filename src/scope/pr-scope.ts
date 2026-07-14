@@ -230,7 +230,12 @@ export function classifyRole(filePath: string, areas: string[]): ChangedFileRole
 }
 
 export function isTestPath(filePath: string): boolean {
-  return filePath.startsWith("tests/") || isExecutableTestPath(filePath);
+  return (
+    /^(?:test|tests|spec)\//u.test(filePath) ||
+    /^(?:apps|packages)\/[^/]+\/(?:test|tests|spec)\//u.test(filePath) ||
+    /(^|\/)__tests__\//u.test(filePath) ||
+    isExecutableTestPath(filePath)
+  );
 }
 
 export function isExecutableTestPath(filePath: string): boolean {
@@ -239,7 +244,7 @@ export function isExecutableTestPath(filePath: string): boolean {
   return (
     /\.test\.[^./]+$/.test(filePath) ||
     /\.spec\.[^./]+$/.test(filePath) ||
-    /^.+_test\.go$/.test(lowerBase) ||
+    /^.+_test\.(go|rs)$/.test(lowerBase) ||
     /^(test_.+|.+_test)\.(py|rb|php)$/.test(lowerBase) ||
     /^.+_spec\.(py|rb|php)$/.test(lowerBase) ||
     /^.+(?:Test|Tests|Spec|Specs)\.(java|kt|kts|cs|php)$/.test(base)

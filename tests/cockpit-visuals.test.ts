@@ -63,8 +63,7 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
     mode: "repo",
     spec_mode: "acai",
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
-    summary: "Cockpit visuals fixture.",
-    narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
+    decision_projection: { active_intent: { summary: "Fixture intent.", source: "packet", redaction_blocked: false, requirement_ids: [], event_ids: [] }, findings: [] },
     conversation_analysis: notAssessedConversationAnalysis("mock"),
     review_insights: [],
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
@@ -97,7 +96,6 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
     ],
     methodology_audit: { quality_flags: [], considered: [], research: [], workflow_findings: [] },
     intent_mismatch: { expected_by_spec: [], observed_in_diff: [], possible_mismatches: [], possible_overreach: [], missing_intent: [], claimed_candidates: [] },
-    review_routes: [],
     since_last_review: {
       improved: [],
       regressed: [],
@@ -129,7 +127,8 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
     skim_safe: [],
     feedback_effects: [],
     generated_from: { packet_path: "review_packet.json", base_ref: "origin/main", head_ref: "HEAD", head_sha: "abc", uncommitted_files: 0 },
-    ...overrides
+    ...overrides,
+    rounds: overrides.rounds ?? []
   };
 }
 
@@ -175,7 +174,7 @@ test("review-surfaces.RENDER.11 the cockpit renders the change_graph as determin
   assert.match(html, /data-path="src\/core\/a\.ts"/);
 });
 
-test("review-surfaces.RENDER.11 SVG caps render explicit overflow entries, never silent truncation", () => {
+test("review-surfaces.CHANGE_MAP.2 / RENDER.11 SVG detail caps render explicit changed-file overflow while omitting out-of-diff halo lanes", () => {
   const many = buildChangeGraphSections({
     files: Array.from({ length: 30 }, (_, index) => file(`src/core/f${String(index).padStart(2, "0")}.ts`)),
     edges: [],
@@ -258,7 +257,7 @@ test("review-surfaces.RENDER.11 relationship ordering is locale-independent", ()
   );
 });
 
-test("review-surfaces.RENDER.12 the header strip renders lens-chip filter buttons with counts, the review_plan stacked bar with minutes, trust counts, and a progress bar — all with text labels", () => {
+test("review-surfaces.RENDER.12 the header strip renders lens filters, the review-plan budget, and progress without repeating trust counts", () => {
   const html = renderHumanReviewHtml(model(), {});
   // Chips ARE the filter buttons, with counts.
   assert.match(html, /data-lens-filter="security_privacy">Security \/ privacy lens \(\d+\)<\/button>/);
@@ -268,8 +267,9 @@ test("review-surfaces.RENDER.12 the header strip renders lens-chip filter button
   assert.match(html, /skim 6m/);
   assert.match(html, /class="strip-bar"/);
   assert.match(html, /class="progress-track"/);
-  // Trust counts with glyphs.
-  assert.match(html, /✓ 1 verified · ~ 1 claimed/);
+  // Trust counts belong only to the dedicated trust summary, not the strip.
+  assert.doesNotMatch(html, /✓ 1 verified · ~ 1 claimed/);
+  assert.match(html, /1 verified fact\(s\); 1 unverified claim\(s\)/);
   // Progress bar fed by the existing checkbox state.
   assert.match(html, /id="progress-bar"/);
   assert.match(html, /0 of 2 reviewed/);
@@ -299,7 +299,7 @@ test("review-surfaces.MAP_SCALE.5 the file-level SVG wraps columns into bands an
     reviewQueue: []
   });
   // 23 nodes <= cap, so the file level leads on the cockpit despite 8 columns.
-  assert.equal(changeMapLeadLevel(sections.change_graph, "svg"), "file");
+  assert.equal(changeMapLeadLevel(sections.change_graph), "file");
   const rendered = renderChangeMapSvg(sections.change_graph) as { svg: string };
   const viewBox = rendered.svg.match(/viewBox="0 0 (\d+) (\d+)"/) as RegExpMatchArray;
   assert.ok(Number(viewBox[1]) <= COCKPIT_WIDTH_PX, `wrapped width ${viewBox[1]} must fit the ${COCKPIT_WIDTH_PX}px budget`);
@@ -342,7 +342,7 @@ test("review-surfaces.MAP_SCALE.6 the cockpit pre-renders hidden per-group detai
     lensFindings: [],
     reviewQueue: []
   });
-  assert.equal(changeMapLeadLevel(sections.change_graph, "svg"), "overview");
+  assert.equal(changeMapLeadLevel(sections.change_graph), "overview");
   const html = renderHumanReviewHtml(model({ change_graph: sections.change_graph, reading_order: sections.reading_order }));
   // Overview cards carry data-map-group; each group gets a HIDDEN pre-rendered
   // detail panel; detail file nodes carry data-map-file so the existing

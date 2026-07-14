@@ -125,7 +125,7 @@ export function hostileConversationAnalysis(): ConversationAnalysis {
   };
 }
 
-export function hostileConversationInsight(path = "src/render/comment.ts"): ReviewerInsight {
+export function hostileConversationInsight(path = "src/render/sticky-summary.ts"): ReviewerInsight {
   return {
     id: "CONV-HOSTILE-001",
     category: "intent_mismatch",

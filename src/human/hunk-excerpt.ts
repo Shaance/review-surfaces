@@ -72,11 +72,17 @@ export function renderHunkExcerpt(
   // failed the header lookup and been replaced by a line-overlap match, so
   // echoing the anchor header could name a different hunk than the body shown.
   const header = formatHunkHeader(hunk);
+  // Markdown queue excerpts are themselves committed as example artifacts.
+  // Expanding source tabs for display avoids producing space-before-tab lines
+  // once the fenced block is nested under a list item (`git diff --check`
+  // rejects those generated artifacts) without changing the reviewed facts.
+  const printableHeader = header.replace(/\t/g, "    ");
+  const printableBody = body.map((line) => line.replace(/\t/g, "    "));
   // Use a fence longer than any backtick run in the content so a diff line that
   // itself contains ``` (common in Markdown/test changes) cannot prematurely
   // close the excerpt and corrupt the surrounding review surface.
-  const fence = "`".repeat(Math.max(3, longestBacktickRun([header, ...body]) + 1));
-  return [`${fence}diff`, header, ...body, fence].join("\n");
+  const fence = "`".repeat(Math.max(3, longestBacktickRun([printableHeader, ...printableBody]) + 1));
+  return [`${fence}diff`, printableHeader, ...printableBody, fence].join("\n");
 }
 
 // Choose which side's line numbers the excerpt should use. A deletion lives on

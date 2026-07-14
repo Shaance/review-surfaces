@@ -713,11 +713,9 @@ test("review-surfaces --cache --strict: a clean hit reuses the packet and still 
       run.stdout.indexOf("Human review: .review-surfaces/human_review.md") < run.stdout.indexOf("inputs unchanged (signature match)"),
       "the human review entrypoint should be printed before the cache reuse detail"
     );
+    assert.match(run.stdout, /Change purpose: /);
     assert.match(run.stdout, /Verdict: [a-z_]+/);
-    assert.match(run.stdout, /Review first: \d+ item\(s\)/);
-    assert.match(run.stdout, /Blockers: \d+/);
-    assert.match(run.stdout, /Suggested comments: \d+/);
-    assert.match(run.stdout, /Missing evidence: \d+/);
+    assert.match(run.stdout, /Approval decisions: \d+/);
     assert.doesNotMatch(run.stdout, /agent_handoff\.md/);
     assert.match(read(tmp, "review_packet.json"), /\[cache-sentinel\]/, "a clean hit must leave the packet untouched");
   } finally {

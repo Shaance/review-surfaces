@@ -90,7 +90,7 @@ The top surface will optimize for:
 
 - time to first useful finding;
 - false-blocking rate;
-- actionable findings in the top five;
+- actionability of every independent approval decision;
 - duplicate root-cause rate;
 - agreement between displayed severity and the final decision;
 - percentage of suggested comments a reviewer would actually post;
@@ -105,4 +105,3 @@ The top surface will optimize for:
 - Keep each milestone independently releasable and small enough to review.
 - Reassess from merged `main` after every milestone; do not stack all four changes
   into one large pull request.
-

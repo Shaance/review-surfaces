@@ -12,16 +12,6 @@ import { initGitRepo, runCli } from "./helpers/cli-repo";
 
 const root = process.cwd();
 const read = (relativePath: string): string => fs.readFileSync(path.join(root, relativePath), "utf8");
-const readmeRawImageBase = "https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/";
-
-function assertReadmeImage(readme: string, baseName: string): string {
-  const match = readme.match(new RegExp(`${readmeRawImageBase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(${baseName}-[0-9a-f]{8}\\.png)`));
-  assert.ok(match, `README embeds a cache-busted ${baseName} image`);
-  const fileName = match[1] ?? "";
-  assert.ok(fs.statSync(path.join(root, "docs", "images", fileName)).size > 10_000, `${fileName} is a real screenshot`);
-  return fileName;
-}
-
 test("review-surfaces.DISTRIBUTION.1 LICENSE (MIT) and CONTRIBUTING.md exist with the required content", () => {
   const license = read("LICENSE");
   assert.match(license, /^MIT License/, "LICENSE is MIT");
@@ -72,21 +62,22 @@ test("review-surfaces.DISTRIBUTION.2 internal process docs live under docs/histo
 test("review-surfaces.DISTRIBUTION.3 README is written for a stranger's first five minutes", () => {
   const readme = read("README.md");
 
-  // Leads with the three trust questions, before anything Acai-shaped.
+  // Leads with the adaptive decision brief, before anything Acai-shaped.
   const firstScreen = readme.slice(0, 1500);
-  assert.match(firstScreen, /Did the agent overreach/i);
-  assert.match(firstScreen, /weaken tests/i);
-  assert.match(firstScreen, /claim things it didn'?t do/i);
+  assert.match(firstScreen, /What is the author trying to change/i);
+  assert.match(firstScreen, /Which independent decisions could change approval/i);
+  assert.match(firstScreen, /What evidence supports each decision/i);
+  assert.match(firstScreen, /There is no universal word\s+or item cap/i);
+  assert.doesNotMatch(firstScreen, /Did the agent overreach|Did it weaken tests|Did it claim things it didn't do/i);
 
   // An npx quickstart that works on a spec-less repo (no --spec flag in it).
   const quickstart = readme.slice(readme.indexOf("## Quickstart"), readme.indexOf("## What you get"));
   assert.match(quickstart, /npx review-surfaces all/);
   assert.ok(!quickstart.includes("--spec"), "the quickstart must not require a spec");
 
-  // A what-you-get tour with screenshots from a real run, and the images exist.
-  for (const baseName of ["cockpit", "change-map", "change-map-detail", "sticky-comment"]) {
-    assertReadmeImage(readme, baseName);
-  }
+  // A real packet is available before install; stale screenshots are not used as
+  // a substitute for the actual current artifacts.
+  assert.match(readme, /https:\/\/github\.com\/Shaance\/review-surfaces\/blob\/main\/docs\/example\/README\.md/);
 
   // An explicit scope statement: TS/JS-first deep analysis, language-agnostic
   // coverage (lcov) and test-weakening.
@@ -141,7 +132,11 @@ test("review-surfaces.DISTRIBUTION.4 the local gate includes the pnpm pack smoke
 // quickstart path).
 
 test("review-surfaces.DISTRIBUTION.5 docs/example/ holds the committed sample packet with a framing README and a main-README link", () => {
-  for (const artifact of ["human_review.md", "human_review.html", "comment.md", "README.md"]) {
+  for (const artifact of [
+    "human_review.md", "human_review.html", "human_review.json", "comment.md", "README.md",
+    "review_queue.md", "suggested_comments.md", "trust_audit.md", "risk_lenses.md",
+    "intent_mismatch.md", "evidence_cards.md", "since_last_review.md", "test_plan.md"
+  ]) {
     assert.ok(fs.existsSync(path.join(root, "docs", "example", artifact)), `docs/example/${artifact} exists`);
   }
   const framing = read("docs/example/README.md");
@@ -150,8 +145,8 @@ test("review-surfaces.DISTRIBUTION.5 docs/example/ holds the committed sample pa
   assert.match(framing, /a5b76bffb33d5fa8b0d1393cce410b88e7c2b848/);
   assert.match(framing, /--now 2026-06-12T00:00:00Z/);
   assert.match(framing, /review-surfaces all --provider mock --base 'HEAD~3' --head HEAD/);
-  assert.match(framing, /human --format html/);
-  assert.match(framing, /comment --format sticky/);
+  assert.match(framing, /review-surfaces human .*--format html/);
+  assert.match(framing, /review-surfaces comment .*--format sticky/);
   // The artifacts are the spec-less cold-start output, redaction verified: no
   // local usernames or machine paths leak into the committed files.
   for (const artifact of ["human_review.md", "human_review.html", "comment.md"]) {
@@ -162,6 +157,10 @@ test("review-surfaces.DISTRIBUTION.5 docs/example/ holds the committed sample pa
     const reviewOutput = content.replace(/<script>[\s\S]*?<\/script>/g, "");
     assert.doesNotMatch(reviewOutput, /review-surfaces\.[A-Z_]+\.\d/, `${artifact} is spec-less (no Acai-shaped output)`);
   }
+  const brief = read(path.join("docs", "example", "human_review.md"));
+  for (const match of brief.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
+    assert.ok(fs.existsSync(path.join(root, "docs", "example", match[1]!)), `example brief link resolves: ${match[1]}`);
+  }
   // The main README invites the stranger to read a packet before installing,
   // and the linked example ships INSIDE the npm tarball so the link resolves
   // for installed users too.
@@ -170,23 +169,14 @@ test("review-surfaces.DISTRIBUTION.5 docs/example/ holds the committed sample pa
   assert.ok(exampleManifest.files?.includes("docs/example"), "docs/example ships in the package");
 });
 
-test("review-surfaces.DISTRIBUTION.6 the README change-map screenshot shows the overview and the copy describes overview and zoom", () => {
+test("review-surfaces.DISTRIBUTION.6 the README positions the change map as optional supporting context", () => {
   const readme = read("README.md");
-  // The copy describes both levels and the summarize-never-shrink behavior.
-  assert.match(readme, /overview/i);
-  assert.match(readme, /zoom/i);
-  assert.match(readme, /legibility budget/);
-  assert.match(readme, /change-map-[0-9a-f]{8}\.png/);
-  assert.match(readme, /change-map-detail-[0-9a-f]{8}\.png/);
-  assert.match(readme, /cockpit-[0-9a-f]{8}\.png/);
-  // The committed map screenshot is no longer the 4680x768 ribbon that
-  // demonstrated the scaling bug: its aspect ratio is README-legible.
-  const png = fs.readFileSync(path.join(root, "docs", "images", "change-map.png"));
-  assert.equal(png.readUInt32BE(12), 0x49484452, "PNG IHDR present");
-  const width = png.readUInt32BE(16);
-  const height = png.readUInt32BE(20);
-  assert.ok(width <= 2200, `change-map.png width ${width} renders legibly in the README column`);
-  assert.ok(width / height <= 3, `change-map.png aspect ${width}x${height} is not a ribbon`);
+  const section = readme.slice(readme.indexOf("### The change map"), readme.indexOf("### The sticky PR comment"));
+  assert.match(section, /optional structural context, never the review itself/i);
+  assert.match(section, /compact overview and per-area details/i);
+  assert.match(section, /after the decisions/i);
+  assert.match(section, /never duplicated in the compact Markdown or sticky PR brief/i);
+  assert.doesNotMatch(section, /!\[/, "the removed legacy map screenshots must not keep advertising the unusable surface");
 });
 
 test("review-surfaces.DISTRIBUTION.7 the all terminal summary ends with the HTML cockpit pointer", () => {
@@ -305,7 +295,10 @@ test("review-surfaces.DISTRIBUTION.11 the README renders on the npm page: absolu
   // rewrite them, so images and doc links must be absolute.
   assert.doesNotMatch(readme, /\]\(docs\//, "no relative ](docs/... links");
   assert.doesNotMatch(readme, /\]\(\.\//, "no relative ](./... links");
-  assert.match(readme, /!\[[^\]]*\]\(https:\/\/raw\.githubusercontent\.com\/Shaance\/review-surfaces\/main\/docs\/images\//, "images use absolute raw URLs");
+  const images = [...readme.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map((match) => match[1]);
+  for (const image of images) {
+    assert.match(image, /^https:\/\//, `README image must use an absolute URL on npm: ${image}`);
+  }
   const manifest = JSON.parse(read("package.json")) as { homepage?: string; bugs?: { url?: string } };
   assert.match(manifest.homepage ?? "", /^https:\/\/github\.com\/Shaance\/review-surfaces/, "homepage set for the npm sidebar");
   assert.match(manifest.bugs?.url ?? "", /\/issues$/, "bugs URL set for the npm sidebar");

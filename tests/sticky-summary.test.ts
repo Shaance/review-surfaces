@@ -3,20 +3,8 @@ import assert from "node:assert/strict";
 import { HUMAN_REVIEW_SCHEMA_VERSION } from "../src/human/contract";
 import type { HumanReviewModel, SinceLastReview } from "../src/human/contract";
 import { renderStickySummary, stickyQueueItemKey } from "../src/render/sticky-summary";
-import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import { notAssessedConversationAnalysis } from "../src/conversation/analysis";
-import {
-  HOSTILE_CONVERSATION_RAW_CONTROLS,
-  HOSTILE_CONVERSATION_NEUTRALIZED_ENTITIES,
-  HOSTILE_CONVERSATION_TRAILING_BACKSLASH_MARKERS,
-  ORDINARY_CONVERSATION_VALUE,
-  hostileConversationBackslashRun,
-  hostileConversationControlSurvives,
-  hostileConversationDisclosureClosesBeforeHeading,
-  hostileConversationAnalysis,
-  hostileConversationInsight,
-  hostileConversationTitleClosesEmphasis
-} from "./helpers/conversation-review";
+import { hostileConversationAnalysis, hostileConversationInsight } from "./helpers/conversation-review";
 
 function emptySince(): SinceLastReview {
   return {
@@ -42,12 +30,31 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
     schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
     mode: "pr",
     spec_mode: "acai",
-    narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
     change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
     reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
-    summary: "Two files changed; one impl file lacks a focused test.",
+    decision_projection: {
+      active_intent: {
+        summary: "Make reviewer decisions legible before supporting diagnostics.",
+        source: "pull_request",
+        redaction_blocked: false,
+        requirement_ids: [],
+        event_ids: []
+      },
+      findings: [{
+        id: "DECISION-001",
+        root_cause: "test_integrity:src/cli/index.ts",
+        title: "Untested implementation change",
+        path: "src/cli/index.ts",
+        priority: "high",
+        reason: "Implementation file changed with no focused test.",
+        reviewer_action: "Add a test covering the change.",
+        evidence: [{ kind: "file", path: "src/cli/index.ts", line_start: 42, confidence: "medium" }],
+        requirement_ids: [],
+        risk_ids: ["PR-RISK-001"],
+      }]
+    },
     conversation_analysis: notAssessedConversationAnalysis("mock"),
     review_insights: [],
     review_queue: [
@@ -94,7 +101,6 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
     risk_lens_findings: [],
     methodology_audit: { quality_flags: [], considered: [], research: [], workflow_findings: [] },
     intent_mismatch: { expected_by_spec: [], observed_in_diff: [], possible_mismatches: [], possible_overreach: [], missing_intent: [] },
-    review_routes: [],
     since_last_review: emptySince(),
     coverage_evidence: { status: "no_report", files: [] },
     review_plan: { enabled: false, read: [], skim: [], defer: [] },
@@ -110,7 +116,8 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
       head_sha: "deadbeef",
       uncommitted_files: 0
     },
-    ...overrides
+    ...overrides,
+    rounds: overrides.rounds ?? []
   };
 }
 
@@ -134,7 +141,7 @@ function stickyInsight(index: number): NonNullable<HumanReviewModel["review_insi
   };
 }
 
-test("sticky leads with at most three conversation-aware insights and compact citations", () => {
+test("the primary sticky excludes conversation machinery when the reviewer brief already has a purpose", () => {
   const review = model({
     conversation_analysis: {
       ...notAssessedConversationAnalysis("ai-sdk"),
@@ -147,58 +154,25 @@ test("sticky leads with at most three conversation-aware insights and compact ci
     review_insights: [1, 2, 3, 4].map(stickyInsight)
   });
   const { markdown } = renderStickySummary(review);
-  assert.ok(markdown.indexOf("### Conversation-aware insights") < markdown.indexOf("### Review first"));
-  assert.match(markdown, /\*\*Analyzed — partial\.\*\*/);
-  assert.match(markdown, /Command transcript context was bounded/);
-  assert.match(markdown, /\[Conflicts with intent · high\] Reviewer insight 1/);
-  assert.match(markdown, /Why it matters: The conversation promises stronger behavior/);
-  assert.match(markdown, /events `evt-1`; paths `src\/validation-1\.ts`/);
-  const topIdx = markdown.indexOf("Reviewer insight 1");
-  const detailsIdx = markdown.indexOf("<summary>Conversation context, grounding and 2 more insights</summary>");
-  const contextIdx = markdown.indexOf("Stated goal:");
-  const secondIdx = markdown.indexOf("Reviewer insight 2");
-  assert.ok(topIdx > -1 && topIdx < detailsIdx, "the top insight stays in the immediate scan path");
-  assert.ok(contextIdx > detailsIdx, "conversation context is accessible inside the disclosure");
-  assert.ok(secondIdx > detailsIdx, "remaining insights are accessible inside the disclosure");
-  assert.match(markdown, /Reviewer insight 3/);
-  assert.doesNotMatch(markdown, /Reviewer insight 4/);
-  assert.equal(review.verdict.decision, "reviewable_with_attention");
+  assert.match(markdown, /### Change purpose/);
+  assert.match(markdown, /Make reviewer decisions legible/);
+  assert.doesNotMatch(markdown, /Conversation-aware insights|Reviewer insight|Command transcript context/);
 });
 
-test("review-surfaces.PR_SURFACE.4 Action sticky neutralizes hostile conversation Markdown while retaining its deterministic sections", () => {
+test("review-surfaces.PR_SURFACE.4 hostile conversation content is absent from the primary sticky", () => {
   const { markdown, blocked } = renderStickySummary(model({
     conversation_analysis: hostileConversationAnalysis(),
     review_insights: [hostileConversationInsight("src/cli/index.ts")]
   }));
 
-  for (const rawControl of HOSTILE_CONVERSATION_RAW_CONTROLS) {
-    assert.equal(hostileConversationControlSurvives(markdown, rawControl), false, `raw provider control survived: ${rawControl}`);
-  }
-  for (const entity of HOSTILE_CONVERSATION_NEUTRALIZED_ENTITIES) {
-    assert.ok(markdown.includes(entity), `neutralized provider text must remain readable: ${entity}`);
-  }
-  for (const marker of HOSTILE_CONVERSATION_TRAILING_BACKSLASH_MARKERS) {
-    assert.equal(
-      hostileConversationBackslashRun(markdown, marker),
-      2,
-      `provider trailing backslash must be doubled at ${marker}`
-    );
-  }
-  assert.equal(hostileConversationTitleClosesEmphasis(markdown), true, "renderer-owned title emphasis must close after the neutralized backslash");
-  assert.equal(
-    hostileConversationDisclosureClosesBeforeHeading(markdown, "### Review first"),
-    true,
-    "Action sticky conversation details must close before the next deterministic section"
-  );
-  assert.match(markdown, new RegExp(ORDINARY_CONVERSATION_VALUE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.match(markdown, /&lt;\\!--HOSTILE_SUMMARY--&gt;/);
-  assert.match(markdown, /\n### Review first\n/);
-  assert.match(markdown, /### Trust/);
+  assert.doesNotMatch(markdown, /HOSTILE|attacker\.invalid|ordinary conversation value/i);
+  assert.match(markdown, /### Change purpose/);
+  assert.match(markdown, /### Approval decision/);
   assert.match(markdown, /<!-- review-surfaces:fingerprint head=deadbeef/);
-  assert.equal(blocked, false, "markup neutralization alone must not trip strict postability");
+  assert.equal(blocked, false);
 });
 
-test("review-surfaces.PR_SURFACE.4 compact conversation rendering preserves sticky secret blocking", () => {
+test("review-surfaces.PR_SURFACE.4 excluded conversation text cannot leak through the sticky", () => {
   const leak = "ghp_" + "c".repeat(36);
   const review = model({
     conversation_analysis: {
@@ -211,11 +185,11 @@ test("review-surfaces.PR_SURFACE.4 compact conversation rendering preserves stic
 
   const { markdown, blocked } = renderStickySummary(review);
   assert.doesNotMatch(markdown, /ghp_c{36}/);
-  assert.match(markdown, /\[REDACTED:github_token\]/);
-  assert.equal(blocked, true);
+  assert.doesNotMatch(markdown, /\[REDACTED:github_token\]/);
+  assert.equal(blocked, false);
 });
 
-test("review-surfaces.PR_SURFACE.4 a persisted high-confidence redaction marker keeps the sticky blocked", () => {
+test("review-surfaces.PR_SURFACE.4 an excluded conversation redaction marker does not create a sticky blocker", () => {
   const review = model({
     conversation_analysis: {
       ...notAssessedConversationAnalysis("ai-sdk"),
@@ -228,8 +202,8 @@ test("review-surfaces.PR_SURFACE.4 a persisted high-confidence redaction marker 
 
   const { markdown, blocked } = renderStickySummary(review);
 
-  assert.match(markdown, /\[REDACTED:github_token\]/);
-  assert.equal(blocked, true);
+  assert.doesNotMatch(markdown, /\[REDACTED:github_token\]/);
+  assert.equal(blocked, false);
 });
 
 test("empty conversation boilerplate is omitted and the working-tree warning stays below the verdict", () => {
@@ -238,10 +212,10 @@ test("empty conversation boilerplate is omitted and the working-tree warning sta
   const { markdown } = renderStickySummary(review);
   assert.match(markdown, /includes 2 uncommitted file\(s\)/);
   assert.doesNotMatch(markdown, /### Conversation-aware insights/);
-  assert.ok(markdown.indexOf("includes 2 uncommitted file(s)") < markdown.indexOf("### Active intent"));
+  assert.ok(markdown.indexOf("includes 2 uncommitted file(s)") < markdown.indexOf("### Change purpose"));
 });
 
-test("degraded conversation analysis remains visible as an incompleteness caveat", () => {
+test("degraded conversation analysis remains supporting detail rather than primary sticky copy", () => {
   const review = model({
     conversation_analysis: {
       ...notAssessedConversationAnalysis("ai-sdk"),
@@ -251,23 +225,22 @@ test("degraded conversation analysis remains visible as an incompleteness caveat
     }
   });
   const { markdown } = renderStickySummary(review);
-  assert.match(markdown, /### Conversation-aware insights/);
-  assert.match(markdown, /Provider reconciliation failed; only partial context is available\./);
-  assert.match(markdown, /Degraded — incomplete/);
+  assert.doesNotMatch(markdown, /Conversation-aware insights|Provider reconciliation failed|Degraded — incomplete/);
 });
 
-test("review-surfaces.PR_SURFACE.2 sticky renders verdict, top queue items, trust counts and artifact link from the human model", () => {
+test("review-surfaces.PR_SURFACE.2 sticky renders the adaptive reviewer brief and artifact link", () => {
   const { markdown, blocked } = renderStickySummary(model(), { artifactName: "review-surfaces-pr-7" });
   assert.equal(blocked, false);
   // Marker is the first line so the workflow upsert can find the sticky.
   assert.equal(markdown.split("\n")[0], "<!-- review-surfaces:sticky -->");
   assert.match(markdown, /## review-surfaces/);
   assert.match(markdown, /\*\*Reviewable with attention\.\*\*/);
-  assert.match(markdown, /### Review first/);
-  assert.match(markdown, /1\. `src\/cli\/index\.ts:42`/);
-  assert.match(markdown, /- Action: Add a test covering the change\./);
-  assert.match(markdown, /### Trust/);
-  assert.match(markdown, /1 verified, 1 claimed \(unverified\), 1 missing evidence, 0 invalid\./);
+  assert.match(markdown, /### Change purpose/);
+  assert.match(markdown, /### Approval decision/);
+  assert.match(markdown, /Untested implementation change/);
+  assert.match(markdown, /Review: Add a test covering the change\./);
+  assert.match(markdown, /Evidence: `src\/cli\/index\.ts:42`/);
+  assert.doesNotMatch(markdown, /### Review first|### Trust|Change map|Start reading here|Review rounds/);
   assert.match(markdown, /open the \*\*review-surfaces-pr-7\*\* workflow artifact/);
 });
 
@@ -294,13 +267,13 @@ test("needs-author-clarification renders the concrete author action beside the v
     }
   }));
   assert.match(markdown, /\*\*Author action:\*\* Attach the current-head renderer snapshot\./);
-  assert.ok(markdown.indexOf("**Author action:**") < markdown.indexOf("### Active intent"));
+  assert.ok(markdown.indexOf("**Author action:**") < markdown.indexOf("### Change purpose"));
 });
 
-test("review first excludes queue actions already projected as decision findings", () => {
+test("the sticky renders a projected decision once and does not repeat the generic queue", () => {
   const review = model();
   review.decision_projection = {
-    active_intent: { summary: "Keep the sticky actionable.", source: "packet", requirement_ids: [], event_ids: [] },
+    active_intent: { summary: "Keep the sticky actionable.", source: "packet", redaction_blocked: false, requirement_ids: [], event_ids: [] },
     findings: [{
       id: "DECISION-001",
       root_cause: "test-gap",
@@ -312,26 +285,19 @@ test("review first excludes queue actions already projected as decision findings
       evidence: [],
       requirement_ids: [],
       risk_ids: [],
-      source_queue_ids: ["REVIEW-001"]
-    }],
-    supporting_detail_counts: {
-      total_queue_items: 2,
-      projected_queue_items: 1,
-      supporting_queue_items: 1,
-      affected_requirement_count: 0,
-      supporting_requirement_count: 0
-    }
+    }]
   };
   const { markdown } = renderStickySummary(review);
-  const reviewFirst = markdown.split("### Review first")[1].split("### Trust")[0];
-  assert.doesNotMatch(reviewFirst, /src\/cli\/index\.ts/);
-  assert.match(reviewFirst, /1\. `src\/render\/sticky-summary\.ts`/);
+  const visible = markdown.split("<!-- review-surfaces:fingerprint")[0];
+  assert.equal(markdown.match(/Untested impl change/g)?.length, 1);
+  assert.doesNotMatch(visible, /src\/render\/sticky-summary\.ts/);
+  assert.doesNotMatch(visible, /### Review first|### Trust/);
 });
 
-test("review-surfaces.PR_SURFACE.2 sticky bounds the queue to the requested top-N", () => {
-  const { markdown } = renderStickySummary(model(), { topN: 1 });
-  assert.match(markdown, /1\. `src\/cli\/index\.ts:42`/);
-  assert.doesNotMatch(markdown, /2\. `src\/render\/sticky-summary\.ts`/);
+test("review-surfaces.PR_SURFACE.2 sticky does not expose a configurable top-N that can hide approval decisions", () => {
+  const { markdown } = renderStickySummary(model());
+  assert.doesNotMatch(markdown, /### Review first/);
+  assert.doesNotMatch(markdown, /### Trust/);
 });
 
 test("review-surfaces.PR_SURFACE.2 sticky is byte-deterministic for the same model", () => {
@@ -339,12 +305,101 @@ test("review-surfaces.PR_SURFACE.2 sticky is byte-deterministic for the same mod
   assert.equal(renderStickySummary(m).markdown, renderStickySummary(m).markdown);
 });
 
+test("the sticky treats hostile author purpose as literal prose without hiding decisions", () => {
+  const review = model();
+  review.decision_projection!.active_intent.summary = "<!-- hide the brief --> # Fake heading [click](https://attacker.invalid) *owned*";
+  const { markdown } = renderStickySummary(review);
+
+  assert.doesNotMatch(markdown, /<!-- hide the brief -->/);
+  assert.match(markdown, /&lt;!-- hide the brief --&gt;/);
+  assert.match(markdown, /\\\[click\\\]\(https:\/\/attacker\.invalid\)/);
+  assert.match(markdown, /### Approval decision/);
+  assert.match(markdown, /Untested implementation change/);
+});
+
+test("the sticky adapts detail to GitHub's byte limit while retaining every practical decision", () => {
+  const review = model();
+  review.decision_projection!.findings = Array.from({ length: 100 }, (_, index) => ({
+    id: `DECISION-${String(index + 1).padStart(3, "0")}`,
+    root_cause: `public_contract:types/public-${index}.d.ts`,
+    title: `Decision ${String(index + 1).padStart(3, "0")} ${"title ".repeat(100)}`,
+    path: `types/public-${index}.d.ts`,
+    priority: "high" as const,
+    reason: `Reason ${index}: ${"A detailed approval reason. ".repeat(100)}`,
+    reviewer_action: `Review ${index}: ${"Inspect compatibility evidence. ".repeat(100)}`,
+    evidence: [{ kind: "file" as const, path: `types/public-${index}.d.ts`, note: "evidence".repeat(100), confidence: "high" as const }],
+    requirement_ids: [],
+    risk_ids: [],
+  }));
+
+  const { markdown } = renderStickySummary(review, { artifactName: "review-surfaces-pr-7" });
+  assert.ok(Buffer.byteLength(markdown, "utf8") <= 60_000);
+  for (let index = 1; index <= 100; index += 1) {
+    assert.match(markdown, new RegExp(`Decision ${String(index).padStart(3, "0")}`));
+  }
+  assert.match(markdown, /Approval decisions \(100\)/);
+  assert.match(markdown, /Full .* packet/);
+});
+
+test("the sticky explicitly redirects when an actionable decision brief exceeds GitHub's byte limit", () => {
+  const review = model();
+  review.decision_projection.findings = Array.from({ length: 200 }, (_, index) => ({
+    id: `DECISION-${String(index + 1).padStart(3, "0")}`,
+    root_cause: `public_contract:types/public-${index}.d.ts`,
+    title: `Decision ${String(index + 1).padStart(3, "0")} ${"title ".repeat(100)}`,
+    path: `types/public-${index}.d.ts`,
+    priority: "high" as const,
+    reason: `Reason ${index}: ${"A detailed approval reason. ".repeat(100)}`,
+    reviewer_action: `Review ${index}: ${"Inspect compatibility evidence. ".repeat(100)}`,
+    evidence: [{ kind: "file" as const, path: `types/public-${index}.d.ts`, note: "evidence".repeat(100), confidence: "high" as const }],
+    requirement_ids: [],
+    risk_ids: [],
+  }));
+
+  const { markdown } = renderStickySummary(review, { artifactName: "review-surfaces-pr-7" });
+  assert.ok(Buffer.byteLength(markdown, "utf8") <= 60_000);
+  assert.match(markdown, /Approval brief exceeds GitHub's physical comment limit/);
+  assert.match(markdown, /200 independent approval decisions were preserved/);
+  assert.match(markdown, /actionable one-line-per-decision brief exceeds GitHub's comment size limit/);
+  assert.match(markdown, /review-surfaces-pr-7/);
+  assert.match(markdown, /\*\*Author action:\*\*/);
+  assert.doesNotMatch(markdown, /Decision 001/);
+});
+
+test("the sticky stops reading decision rows once both detail modes exceed the byte budget", () => {
+  const review = model();
+  review.decision_projection.findings = Array.from({ length: 201 }, (_, index) => ({
+    id: `DECISION-${String(index + 1).padStart(3, "0")}`,
+    root_cause: `public_contract:types/public-${index}.d.ts`,
+    title: `Decision ${String(index + 1).padStart(3, "0")} ${"title ".repeat(100)}`,
+    path: `types/public-${index}.d.ts`,
+    priority: "high" as const,
+    reason: `Reason ${index}: ${"A detailed approval reason. ".repeat(100)}`,
+    reviewer_action: `Review ${index}: ${"Inspect compatibility evidence. ".repeat(100)}`,
+    evidence: [{ kind: "file" as const, path: `types/public-${index}.d.ts`, confidence: "high" as const }],
+    requirement_ids: [],
+    risk_ids: []
+  }));
+  Object.defineProperty(review.decision_projection.findings, 200, {
+    configurable: true,
+    get: () => {
+      throw new Error("renderer read beyond the proven GitHub byte budget");
+    }
+  });
+
+  const { markdown } = renderStickySummary(review, { artifactName: "review-surfaces-pr-7" });
+  assert.match(markdown, /201 independent approval decisions were preserved/);
+  assert.ok(Buffer.byteLength(markdown, "utf8") <= 60_000);
+});
+
 test("review-surfaces.PR_SURFACE.4 sticky redacts secrets and blocks posting when a high-confidence secret survives", () => {
   const leak = "ghp_" + "a".repeat(36);
-  const { markdown, blocked } = renderStickySummary(model({ summary: `Token committed: ${leak}` }));
+  const review = model();
+  review.decision_projection!.active_intent.summary = `Token committed: ${leak}`;
+  const { markdown, blocked } = renderStickySummary(review);
   // Redaction ran before the body left the renderer; the raw token never appears.
   assert.doesNotMatch(markdown, /ghp_a{36}/);
-  assert.match(markdown, /\[REDACTED:github_token\]/);
+  assert.match(markdown, /\\\[REDACTED:github\\_token\\\]/);
   // The block gate trips so the caller refuses to post.
   assert.equal(blocked, true);
 });
@@ -353,84 +408,105 @@ test("review-surfaces.PR_SURFACE.4 a clean model is not blocked", () => {
   assert.equal(renderStickySummary(model()).blocked, false);
 });
 
-test("review-surfaces.PR_SURFACE.5 sticky leads with the since-last-review delta and collapses the rest when a prior packet was compared", () => {
+test("review-surfaces.PR_SURFACE.5 sticky keeps purpose and decisions before the since-last-review delta", () => {
   const since: SinceLastReview = {
     ...emptySince(),
     previous_packet_path: ".rs-prev/review_packet.json",
-    resolved_risks: [{ id: "S-1", category: "risk", summary: "Null-deref risk resolved", evidence: [] }],
+    resolved_risks: [{ id: "S-1", category: "risk", summary: "Reviewer decision risk resolved", decision_refs: ["PR-RISK-001"], evidence: [] }],
     regressed: [{ id: "S-2", category: "requirement", summary: "RENDER.3 regressed to partial", evidence: [] }],
-    new_risks: [{ id: "S-3", category: "risk", summary: "New supply-chain risk", evidence: [] }]
+    new_risks: [{ id: "S-3", category: "risk", summary: "New reviewer-surface risk", decision_refs: ["PR-RISK-001"], evidence: [] }]
   };
   const { markdown } = renderStickySummary(model({ since_last_review: since }));
-  // The delta section leads (appears before the full review).
+  const purposeIdx = markdown.indexOf("### Change purpose");
   const deltaIdx = markdown.indexOf("### Since your last review");
-  const fullIdx = markdown.indexOf("<summary>Full review");
   assert.ok(deltaIdx > -1, "delta section present");
   assert.doesNotMatch(markdown, /### Conversation-aware insights/);
-  assert.ok(fullIdx > deltaIdx, "full review collapsed AFTER the delta");
-  assert.match(markdown, /✅ Resolved risks: Null-deref risk resolved/);
-  assert.match(markdown, /⚠️ Regressed: RENDER\.3 regressed to partial/);
-  assert.match(markdown, /🆕 New risks: New supply-chain risk/);
-  // The full review is wrapped in a collapsible <details> block.
-  assert.match(markdown, /<details>\n<summary>Full review/);
+  assert.ok(purposeIdx > -1 && purposeIdx < deltaIdx, "orientation stays before the delta");
+  assert.match(markdown, /✅ Resolved risks: Reviewer decision risk resolved/);
+  assert.doesNotMatch(markdown, /RENDER\.3 regressed to partial/);
+  assert.match(markdown, /🆕 New risks: New reviewer-surface risk/);
+  assert.doesNotMatch(markdown, /<summary>Full review|### Review first|### Trust/);
 });
 
-test("review-surfaces.PR_SURFACE.5 a first review (no prior packet) shows the queue expanded with no delta section", () => {
+test("review-surfaces.PR_SURFACE.5 delta correlation is exact rather than an ordinal id substring", () => {
+  const since: SinceLastReview = {
+    ...emptySince(),
+    previous_packet_path: ".rs-prev/review_packet.json",
+    new_risks: [{
+      id: "SLR-NEW-RISK-PR-RISK-001",
+      category: "risk",
+      summary: "Unrelated ordinal-looking risk",
+      evidence: []
+    }]
+  };
+  const unrelated = renderStickySummary(model({ since_last_review: since })).markdown;
+  assert.doesNotMatch(unrelated, /### Since your last review|Unrelated ordinal-looking risk/);
+
+  since.new_risks[0].decision_refs = ["PR-RISK-001"];
+  const correlated = renderStickySummary(model({ since_last_review: since })).markdown;
+  assert.match(correlated, /### Since your last review/);
+  assert.match(correlated, /Unrelated ordinal-looking risk/);
+});
+
+test("review-surfaces.PR_SURFACE.5 a first review shows the reviewer brief with no delta section", () => {
   const { markdown } = renderStickySummary(model());
   assert.doesNotMatch(markdown, /### Since your last review/);
   assert.doesNotMatch(markdown, /<summary>Full review/);
-  // Queue is expanded, not collapsed.
-  assert.match(markdown, /### Review first\n\n1\. `src\/cli\/index\.ts:42`/);
+  assert.match(markdown, /### Change purpose/);
+  assert.match(markdown, /### Approval decision/);
 });
 
-test("review-surfaces.PR_SURFACE.5 a recovered prior packet with no changes still leads with the delta (collapsed), not a first review", () => {
+test("review-surfaces.PR_SURFACE.5 an unchanged comparison stays out of the primary brief", () => {
   const since: SinceLastReview = { ...emptySince(), previous_packet_path: ".rs-prev/review_packet.json" };
   const { markdown } = renderStickySummary(model({ since_last_review: since }));
-  // Re-review mode even with all-empty buckets: lead with the delta, then collapse
-  // the unchanged queue under <details> (not expanded as a first review).
-  assert.match(markdown, /No requirement or risk changes since the last review/);
-  const deltaIdx = markdown.indexOf("### Since your last review");
-  const detailsIdx = markdown.indexOf("<summary>Full review");
-  const queueIdx = markdown.indexOf("### Review first");
-  assert.ok(deltaIdx > -1 && detailsIdx > deltaIdx && queueIdx > detailsIdx, "delta leads; queue collapsed after it");
+  assert.doesNotMatch(markdown, /No requirement or risk changes since the last review/);
+  assert.doesNotMatch(markdown, /### Since your last review/);
+  assert.doesNotMatch(markdown, /<summary>Full review|### Review first|### Trust/);
 });
 
 test("review-surfaces.PR_SURFACE.5 the fingerprint records the run id so the next run can recover this run's artifact", () => {
   const { markdown } = renderStickySummary(model(), { runId: "987654" });
-  assert.match(markdown, /<!-- review-surfaces:fingerprint head=deadbeef run=987654 keys=/);
+  assert.match(markdown, /<!-- review-surfaces:fingerprint head=deadbeef run=987654 queue=[a-f0-9]{20} -->/);
   // Omitted when no run id is supplied (local renders).
   assert.doesNotMatch(renderStickySummary(model()).markdown, /run=/);
 });
 
-test("review-surfaces.PR_SURFACE.4 a high-confidence secret in a hunk excerpt trips the block gate too", () => {
+test("review-surfaces.PR_SURFACE.4 a high-confidence secret in the change purpose trips the block gate", () => {
   const leak = "ghp_" + "b".repeat(36);
-  const diff = parseStructuredDiff(
-    [
-      "diff --git a/src/cli/index.ts b/src/cli/index.ts",
-      "--- a/src/cli/index.ts",
-      "+++ b/src/cli/index.ts",
-      "@@ -41,1 +41,2 @@",
-      " context line",
-      `+const token = "${leak}";`
-    ].join("\n")
-  );
-  const { markdown, blocked } = renderStickySummary(model(), { diff });
-  // The excerpt renders, the token is redacted, AND the block gate trips.
-  assert.match(markdown, /```diff/);
+  const review = model();
+  review.decision_projection!.active_intent.summary = `Rotate ${leak}`;
+  const { markdown, blocked } = renderStickySummary(review);
   assert.doesNotMatch(markdown, /ghp_b{36}/);
   assert.equal(blocked, true);
 });
 
-test("review-surfaces.PR_SURFACE.5 an overreach-only delta still renders its group (not 'no changes')", () => {
+test("review-surfaces.PR_SURFACE.5 unrelated overreach churn stays supporting", () => {
   const since: SinceLastReview = {
     ...emptySince(),
     previous_packet_path: ".rs-prev/review_packet.json",
     new_overreach: [{ id: "S-OR", category: "overreach", summary: "src/new.ts changed with no mapped intent", evidence: [] }]
   };
   const { markdown } = renderStickySummary(model({ since_last_review: since }));
-  assert.match(markdown, /### Since your last review/);
-  assert.match(markdown, /➕ New overreach: src\/new\.ts changed with no mapped intent/);
-  assert.doesNotMatch(markdown, /No requirement or risk changes since the last review/);
+  assert.doesNotMatch(markdown, /### Since your last review/);
+  assert.doesNotMatch(markdown, /src\/new\.ts changed with no mapped intent/);
+});
+
+test("review-surfaces.PR_SURFACE.5 related overreach churn does not duplicate an admitted decision", () => {
+  const since: SinceLastReview = {
+    ...emptySince(),
+    previous_packet_path: ".rs-prev/review_packet.json",
+    new_overreach: [{
+      id: "S-OR",
+      category: "overreach",
+      summary: "src/cli/index.ts changed with no mapped intent",
+      path: "src/cli/index.ts",
+      evidence: []
+    }]
+  };
+  const { markdown } = renderStickySummary(model({ since_last_review: since }));
+  assert.match(markdown, /### Approval decision/);
+  assert.doesNotMatch(markdown, /### Since your last review/);
+  assert.doesNotMatch(markdown, /src\/cli\/index\.ts changed with no mapped intent/);
 });
 
 test("review-surfaces.PR_SURFACE.5 the fingerprint sanitizes keys so a path with --> cannot close the HTML comment", () => {
@@ -444,10 +520,25 @@ test("review-surfaces.PR_SURFACE.5 the fingerprint sanitizes keys so a path with
   assert.doesNotMatch(fingerprint, /evil-->inject/);
 });
 
-test("review-surfaces.PR_SURFACE.5 the in-comment fingerprint pins the head sha and stable finding keys (rule+path+anchor, not array index)", () => {
+test("review-surfaces.PR_SURFACE.5 the in-comment fingerprint pins the head and a bounded queue identity", () => {
   const { markdown } = renderStickySummary(model());
-  assert.match(markdown, /<!-- review-surfaces:fingerprint head=deadbeef keys=/);
+  assert.match(markdown, /<!-- review-surfaces:fingerprint head=deadbeef queue=[a-f0-9]{20} -->/);
   // Stable key uses rule id + path + anchor.
   assert.equal(stickyQueueItemKey(model().review_queue[0]), "PR-RISK-001:src/cli/index.ts:42");
-  assert.match(markdown, /keys=PR-RISK-001:src\/cli\/index\.ts:42,PR-RISK-002:src\/render\/sticky-summary\.ts:/);
+  const fingerprint = markdown.split("\n").find((line) => line.includes("review-surfaces:fingerprint")) ?? "";
+  assert.doesNotMatch(fingerprint, /src\/cli\/index\.ts/);
+});
+
+test("the physical GitHub-size fallback cannot be defeated by hostile queue fingerprints", () => {
+  const review = model();
+  review.review_queue = Array.from({ length: 100 }, (_, index) => ({
+    ...review.review_queue[0],
+    id: `REVIEW-${index}`,
+    path: `src/${"oversized-".repeat(10_000)}${index}.ts`,
+    hunk_header: `@@ ${"header-".repeat(10_000)} @@`
+  }));
+  const { markdown } = renderStickySummary(review, { runId: "9".repeat(10_000) });
+  assert.ok(Buffer.byteLength(markdown, "utf8") <= 60_000);
+  assert.match(markdown, /queue=[a-f0-9]{20}/);
+  assert.doesNotMatch(markdown, /oversized-oversized/);
 });

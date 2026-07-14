@@ -3,8 +3,7 @@ import assert from "node:assert/strict";
 import { CollectionResult } from "../src/collector/collect";
 import { EvaluationModel } from "../src/evaluation/evaluate";
 import { IntentModel } from "../src/intent/intent";
-import { ReasoningProvider, StructuredResult } from "../src/llm/provider";
-import { assemblePrReviewSurface } from "../src/pipeline/pr-surface";
+import { assemblePrReviewSurface, normalizePrChangeContext } from "../src/pipeline/pr-surface";
 import { ReviewArea } from "../src/review-areas/areas";
 import { StructuredDiff } from "../src/pr/contract";
 
@@ -20,21 +19,21 @@ const AREAS: ReviewArea[] = [
   }
 ];
 
-const PROVIDER: ReasoningProvider = {
-  name: "mock",
-  async generateStructured(): Promise<StructuredResult> {
-    return {
-      ok: true,
-      data: {
-        summary: "src/foo/widget.ts changed.",
-        what_changed: [{ text: "src/foo/widget.ts changed.", paths: ["src/foo/widget.ts"] }],
-        why_it_matters: [{ text: "Review src/foo/widget.ts.", paths: ["src/foo/widget.ts"] }],
-        review_first: [{ text: "Review src/foo/widget.ts first.", paths: ["src/foo/widget.ts"] }],
-        risk_narratives: []
-      }
-    };
-  }
-};
+test("PR change-context normalization is stable for long and redacted same-head inputs", () => {
+  const secret = `ghp_${"a".repeat(36)}`;
+  const input = {
+    title: `Purpose ${secret} ${"x".repeat(500)}`,
+    description: `Details ${secret} ${"y".repeat(7_000)}`,
+    source: "github" as const,
+    redaction_blocked: false
+  };
+  const first = normalizePrChangeContext(input);
+  const second = normalizePrChangeContext({ ...input });
+  assert.deepEqual(first, second);
+  assert.ok((first?.title.length ?? 0) <= 300);
+  assert.ok((first?.description?.length ?? 0) <= 6_000);
+  assert.doesNotMatch(`${first?.title} ${first?.description}`, /ghp_a{36}/);
+});
 
 function collection(overrides: Partial<CollectionResult> = {}): CollectionResult {
   return {
@@ -94,9 +93,6 @@ async function surface(input: Partial<CollectionResult>) {
     intent: INTENT,
     evaluation: EVALUATION,
     reviewAreas: AREAS,
-    provider: PROVIDER,
-    providerName: "mock",
-    redactSecrets: true,
     diff: DIFF
   });
 }
@@ -109,6 +105,40 @@ test("PR surface existing-test guidance ignores non-executable test artifacts", 
   assert.match(risk.summary, /no test mapped to FOO/);
   assert.ok(risk.suggested_checks.some((check) => /Add a test covering/.test(check)));
   assert.equal(risk.suggested_checks.some((check) => /Run the existing test/.test(check)), false);
+});
+
+test("PR surface existing-test guidance ignores implementation directories named spec or test-support", async () => {
+  for (const repositoryFile of ["src/spec/foo.ts", "src/test-support/foo.ts"]) {
+    const model = await surface({ repositoryFiles: [repositoryFile] } as unknown as Partial<CollectionResult>);
+    const risk = model.risks.candidates.find((candidate) => candidate.rule === "untested_changed_impl");
+
+    assert.ok(risk);
+    assert.match(risk.summary, /no test mapped to FOO/, repositoryFile);
+    assert.equal(risk.suggested_checks.some((check) => /Run the existing test/.test(check)), false, repositoryFile);
+  }
+});
+
+test("product reset M1 persists bounded, redacted author context independently of provider narrative", async () => {
+  const token = "ghp_" + "x".repeat(36);
+  const model = await assemblePrReviewSurface({
+    collection: collection({}),
+    intent: INTENT,
+    evaluation: EVALUATION,
+    reviewAreas: AREAS,
+    diff: DIFF,
+    changeContext: {
+      title: "Make approval decisions legible",
+      description: `## Summary\n\nExplain the change before diagnostics. ${token}`,
+      source: "github",
+      redaction_blocked: false
+    }
+  });
+
+  assert.equal(model.change_context?.title, "Make approval decisions legible");
+  assert.match(model.change_context?.description ?? "", /Explain the change before diagnostics/);
+  assert.match(model.change_context?.description ?? "", /\[REDACTED:github_token\]/);
+  assert.doesNotMatch(model.change_context?.description ?? "", /ghp_x{36}/);
+  assert.equal(model.change_context?.redaction_blocked, true);
 });
 
 test("PR surface existing-test guidance honors configured, named, and directory-based tests", async () => {
@@ -134,64 +164,7 @@ test("PR surface existing-test guidance honors configured, named, and directory-
   assert.match(testDirectoryRisk.summary, /test is mapped to FOO/);
 });
 
-test("review-surfaces.CONVERSATION_REVIEW.4 PR assembly protects the postability-critical narrative call, then persists conversation review", async () => {
-  const stages: string[] = [];
-  const provider: ReasoningProvider = {
-    name: "ai-sdk",
-    async generateStructured(stage): Promise<StructuredResult> {
-      stages.push(stage);
-      if (stage === "conversation_analysis") {
-        return {
-          ok: true,
-          data: {
-            summary: "The user asked to retain the widget guard.",
-            intent: [{ text: "Retain the widget guard.", event_ids: ["u-final"] }],
-            refinements: [],
-            decisions: [],
-            constraints: [{ text: "The guard must remain.", event_ids: ["u-final"] }],
-            non_goals: [],
-            rejected_alternatives: [],
-            claims: [],
-            validation_claims: [],
-            known_gaps: []
-          }
-        };
-      }
-      if (stage === "conversation_review_insights") {
-        return {
-          ok: true,
-          data: {
-            insights: [{
-              root_cause_key: "widget-guard",
-              category: "intent_mismatch",
-              title: "Widget guard was removed",
-              summary: "The diff removes the guard the user retained.",
-              why_it_matters: "The widget may now be enabled unexpectedly.",
-              reviewer_action: "Restore the guard or confirm the scope change.",
-              priority: "high",
-              evidence_state: "contradicted",
-              conversation_event_ids: ["u-final"],
-              paths: ["src/foo/widget.ts"],
-              requirement_ids: [],
-              risk_ids: [],
-              command_ids: [],
-              diff_anchors: [{ path: "src/foo/widget.ts", line_kind: "delete", line: 1, contains: "widgetGuard" }]
-            }]
-          }
-        };
-      }
-      return {
-        ok: true,
-        data: {
-          summary: "src/foo/widget.ts changed.",
-          what_changed: [{ text: "src/foo/widget.ts changed.", paths: ["src/foo/widget.ts"] }],
-          why_it_matters: [{ text: "Review src/foo/widget.ts.", paths: ["src/foo/widget.ts"] }],
-          review_first: [{ text: "Review src/foo/widget.ts first.", paths: ["src/foo/widget.ts"] }],
-          risk_narratives: []
-        }
-      };
-    }
-  };
+test("PR assembly stays deterministic and leaves optional enrichment to the human artifact", async () => {
   const diff: StructuredDiff = {
     files: [{
       path: "src/foo/widget.ts",
@@ -213,29 +186,13 @@ test("review-surfaces.CONVERSATION_REVIEW.4 PR assembly protects the postability
     intent: INTENT,
     evaluation: EVALUATION,
     reviewAreas: AREAS,
-    provider,
-    providerName: "ai-sdk",
-    redactSecrets: true,
     diff
   });
 
-  assert.deepEqual(stages, ["pr_narrative", "conversation_analysis", "conversation_review_insights"]);
-  assert.equal(model.conversation_analysis?.status, "analyzed");
-  assert.equal(model.review_insights?.length, 1);
-  assert.equal(model.review_insights?.[0].evidence_state, "contradicted");
   assert.equal(model.status, "ready");
 });
 
-test("review-surfaces.CONVERSATION_REVIEW.2 a no-diff PR skips every AI call and stays explicitly not assessed", async () => {
-  let calls = 0;
-  const provider: ReasoningProvider = {
-    name: "ai-sdk",
-    async generateStructured(): Promise<StructuredResult> {
-      calls += 1;
-      return { ok: false, reason: "must_not_run" };
-    }
-  };
-
+test("review-surfaces.CONVERSATION_REVIEW.2 a no-diff PR stays explicitly not assessed", async () => {
   const model = await assemblePrReviewSurface({
     collection: collection({
       changedFiles: [],
@@ -244,15 +201,8 @@ test("review-surfaces.CONVERSATION_REVIEW.2 a no-diff PR skips every AI call and
     intent: INTENT,
     evaluation: EVALUATION,
     reviewAreas: AREAS,
-    provider,
-    providerName: "ai-sdk",
-    redactSecrets: true,
     diff: { files: [] }
   });
 
-  assert.equal(calls, 0);
   assert.equal(model.status, "blocked");
-  assert.equal(model.conversation_analysis?.status, "not_assessed");
-  assert.ok(model.conversation_analysis?.quality_flags.includes("conversation_review_no_diff"));
-  assert.deepEqual(model.review_insights, []);
 });

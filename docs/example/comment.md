@@ -1,45 +1,18 @@
 <!-- review-surfaces:sticky -->
 ## review-surfaces
 
-**Needs author clarification.** 0 blocker(s) and 0 review queue item(s) across 6 changed file(s), 0 packet risk(s).
+**Reviewable with attention.**
 
-### Review first
+### Change purpose
 
-- No path-backed review queue items.
+Harden abort handling and cross-origin pagination. Attach abort listeners after request handlers run, strip inherited sensitive headers when pagination crosses origins, and document the behavior.
 
-### Trust
+_From the PR title and description._
 
-- 0 verified, 0 claimed (unverified), 1 missing evidence, 0 invalid.
+### Approval decision
 
-<details><summary>Change map</summary>
+1. **Current-head test evidence** — 2 changed implementation files share one unresolved validation question: the available evidence does not yet show that their behavior was exercised at the current head.
+   - Review: Confirm the changed behavior is covered, add focused tests only where coverage is missing, and attach one current-head transcript for the relevant test run.
+   - Evidence: `source/core/index.ts`, `source/core/options.ts`, `test/abort.ts`
 
-```mermaid
-flowchart LR
-  subgraph c0["source/core"]
-    n0["source/core/index.ts<br/>+33/-20"]
-    n1["source/core/options.ts<br/>+2/-0"]
-  end
-  subgraph c1["test"]
-    n2["test/abort.ts<br/>+113/-8"]
-    n3["test/pagination.ts<br/>+69/-0"]
-  end
-  subgraph c2["documentation"]
-    n4["documentation/4-pagination.md<br/>+1/-0"]
-  end
-  subgraph c3["root"]
-    n5["package.json<br/>+1/-1"]
-  end
-  n1 --> n0
-  n0 --> n2
-```
-
-</details>
-
-### Start reading here (Implementation)
-
-1. `source/core/options.ts` — imported by 1 changed file(s)
-2. `source/core/index.ts` — imported by 1 changed file(s)
-
-_2 more leg(s) in the full reading order (human_review.md)._
-
-<!-- review-surfaces:fingerprint head=a5b76bffb33d5fa8b0d1393cce410b88e7c2b848 keys= -->
+<!-- review-surfaces:fingerprint head=a5b76bffb33d5fa8b0d1393cce410b88e7c2b848 queue=8e67fe5ed6574923dbce -->

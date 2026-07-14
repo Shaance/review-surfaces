@@ -27,15 +27,17 @@ and iteration cost first-class quality concerns.
 6. Preserve mandatory privacy, schema, determinism, exact-head, and evidence gates
    while introducing cheaper normal-development test lanes.
 
-## Milestone 1: reviewer usefulness and attention budget
+## Milestone 1: reviewer usefulness and adaptive attention
 
 - Add curated usefulness judgments and metrics for precision, duplicate roots,
   actionability, first-action position, and postable comments.
 - Replace importer-count admission with explicit contract-surface evidence.
-- Put the top three decision findings and top three review actions before maps,
-  tours, and exhaustive ledgers; collapse the remainder into supporting detail.
+- Put every independent approval decision before maps, tours, and exhaustive
+  ledgers. Collapse duplicate roots and supporting diagnostics, never a distinct
+  decision merely because the change is large.
 - Reproduce `2076964..171b414` and require no internal compatibility finding, a
-  queue near the top, and a bounded primary surface.
+  decisions near the top, and a primary surface whose prose adapts before the
+  physical GitHub comment limit is reached.
 
 ## Milestone 2: ownership and traceability
 
@@ -47,7 +49,7 @@ and iteration cost first-class quality concerns.
 ## Milestone 3: orchestration and artifact trust
 
 - Extract verdict/admission, queue ranking, trust projection, question/comment/test
-  synthesis, review routes, CLI command handlers, and artifact/provenance loading
+  synthesis, CLI command handlers, and artifact/provenance loading
   behind small contracts.
 - Add per-stage timings, typed degradation diagnostics, and an artifact-status
   command that reports current/stale provenance.

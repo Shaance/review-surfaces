@@ -90,9 +90,6 @@ export const REVIEWER_INSIGHT_EVIDENCE_STATES = [
 
 export type ReviewerInsightEvidenceState = (typeof REVIEWER_INSIGHT_EVIDENCE_STATES)[number];
 
-/** Public artifact/rendering cap for conversation-first reviewer insights. */
-export const MAX_VISIBLE_CONVERSATION_INSIGHTS = 3;
-
 export interface ReviewerInsight {
   id: string;
   category: ReviewerInsightCategory;

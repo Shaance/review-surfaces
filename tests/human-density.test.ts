@@ -10,7 +10,13 @@ import {
   normalizeAcidTemplate,
   rollupBy
 } from "../src/human/rollup";
-import { renderHumanReviewMarkdown, renderReviewQueueMarkdown } from "../src/human/render";
+import {
+  renderEvidenceCardsMarkdown,
+  renderHumanReviewMarkdown,
+  renderReviewQueueMarkdown,
+  renderTestPlanMarkdown,
+  renderTrustAuditMarkdown
+} from "../src/human/render";
 import { renderHumanReviewHtml } from "../src/human/render-html";
 import type {
   HumanReviewModel,
@@ -30,14 +36,13 @@ function baseModel(overrides: Partial<HumanReviewModel>): HumanReviewModel {
     schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
     mode: "repo",
     spec_mode: "acai",
-    narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
     conversation_analysis: notAssessedConversationAnalysis("mock"),
     review_insights: [],
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
     change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
     reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
-    summary: "Density fixture.",
+    decision_projection: { active_intent: { summary: "Fixture intent.", source: "packet", redaction_blocked: false, requirement_ids: [], event_ids: [] }, findings: [] },
     review_queue: [],
     blockers: [],
     questions: [],
@@ -58,7 +63,6 @@ function baseModel(overrides: Partial<HumanReviewModel>): HumanReviewModel {
       possible_overreach: [],
       missing_intent: []
     },
-    review_routes: [],
     since_last_review: {
       unavailable_reason: "No previous packet.",
       improved: [],
@@ -89,7 +93,8 @@ function baseModel(overrides: Partial<HumanReviewModel>): HumanReviewModel {
       head_sha: "abc123",
       uncommitted_files: 0
     },
-    ...overrides
+    ...overrides,
+    rounds: overrides.rounds ?? []
   };
 }
 
@@ -108,7 +113,7 @@ function templatedTestItem(index: number, acid: string): TestPlanItem {
   };
 }
 
-test("review-surfaces.REVIEWER_VALUE.12 puts three actions before bounded supporting detail", () => {
+test("review-surfaces.REVIEWER_VALUE.12 keeps every approval decision while bounding only the supporting queue", () => {
   const queue: ReviewQueueItem[] = Array.from({ length: 5 }, (_unused, index) => ({
     id: `REVIEW-${index + 1}`,
     rank: index + 1,
@@ -123,23 +128,46 @@ test("review-surfaces.REVIEWER_VALUE.12 puts three actions before bounded suppor
     confidence: "high",
     priority: "medium"
   }));
-  const model = baseModel({ review_queue: queue });
+  const model = baseModel({
+    review_queue: queue,
+    decision_projection: {
+      active_intent: { summary: "Approve five independent behavior changes.", source: "pull_request", redaction_blocked: false, requirement_ids: [], event_ids: [] },
+      findings: queue.map((item, index) => ({
+        id: `DECISION-${index + 1}`,
+        title: `Approval decision ${index + 1}`,
+        path: item.path,
+        reason: item.reason,
+        reviewer_action: item.reviewer_action,
+        priority: "medium" as const,
+        root_cause: `root-${index + 1}`,
+        evidence: item.evidence,
+        risk_ids: [],
+        requirement_ids: []
+      }))
+    }
+  });
   const markdown = renderHumanReviewMarkdown(model);
   const lines = markdown.split("\n");
-  const queueLine = lines.findIndex((line) => line === "## Review first") + 1;
-  const supportingLine = lines.findIndex((line) => line === "## Reading order") + 1;
-  assert.ok(queueLine > 0 && queueLine <= 30, `first review-action section must begin within roughly 30 lines, got ${queueLine}`);
+  const decisionsLine = lines.findIndex((line) => line.startsWith("## Approval decisions")) + 1;
+  const queueLine = lines.findIndex((line) => line === "## Supporting review queue") + 1;
+  const supportingLine = lines.findIndex((line) => line === "## Supporting artifacts") + 1;
+  assert.ok(decisionsLine > 0 && queueLine > decisionsLine, "all approval decisions must precede the mechanical queue");
   assert.ok(supportingLine > queueLine && supportingLine <= 100, `supporting machinery must begin within the bounded primary surface, got ${supportingLine}`);
-  const primary = markdown.split("## Review first")[1].split("\n## Blockers")[0];
-  assert.match(primary, /src\/action-3\.ts/);
-  assert.doesNotMatch(primary, /src\/action-4\.ts/, "only the top three queue items belong on the primary Markdown surface");
-  assert.match(primary, /2 additional queue item\(s\) remain/);
+  const decisions = markdown.split("## Approval decisions")[1].split("\n## Required checks")[0];
+  assert.match(decisions, /Approval decision 5/, "an independent fifth decision must not be hidden by a fixed top-N");
+  const supporting = markdown.split("## Supporting review queue")[1].split("\n## Supporting artifacts")[0];
+  assert.match(supporting, /src\/action-3\.ts/);
+  assert.doesNotMatch(supporting, /src\/action-4\.ts/, "the secondary queue may remain a bounded diagnostic preview");
+  assert.match(supporting, /2 additional queue item\(s\) remain/);
 
   const html = renderHumanReviewHtml(model);
   assert.ok(html.indexOf('id="queue"') < html.indexOf('id="reading-order"'));
-  assert.ok(html.indexOf('id="queue"') < html.indexOf('id="strip"'), "HTML leads with reviewer actions before support controls");
+  assert.ok(html.indexOf('id="approval-decisions"') < html.indexOf('id="queue"'), "HTML leads with adaptive approval decisions");
+  assert.ok(html.indexOf('id="queue"') < html.indexOf('id="strip"'), "support controls follow the supporting queue");
   assert.match(html, /<details data-supporting-queue><summary>\+2 supporting queue item\(s\)<\/summary>/);
   assert.ok(html.indexOf('id="trust-summary"') < html.indexOf('id="reading-order"'), "HTML exposes the compact trust summary on the primary surface");
+  const compactTrust = html.split('id="trust-summary"')[1]!.split('id="queue"')[0]!;
+  assert.doesNotMatch(compactTrust, /Medium confidence fixture/, "the compact trust line must not repeat the full audit summary");
   assert.match(html, /details\.open = true/, "map filtering opens a matching supporting queue container");
   assert.match(html, /activeFile \|\| activeLens/, "lens filtering also opens matching supporting queue items");
   assert.match(html, /data-filter-opened/, "clearing the map filter restores an auto-opened supporting queue container");
@@ -156,8 +184,7 @@ test("review-surfaces.HUMAN_REVIEW.19 rolls up templated test-plan items into on
   const model = baseModel({
     test_plan: acids.map((acid, i) => templatedTestItem(i + 1, acid))
   });
-  const md = renderHumanReviewMarkdown(model);
-  const testPlanSection = md.split("## Test plan")[1].split("\n## ")[0];
+  const testPlanSection = renderTestPlanMarkdown(model);
   // Exactly one rollup heading for the three identical-modulo-ACID items.
   const headings = testPlanSection.match(/^### /gm) ?? [];
   assert.equal(headings.length, 1, "three templated items must collapse to one rollup");
@@ -186,7 +213,7 @@ test("review-surfaces.HUMAN_REVIEW.19 rolls up before capping so distinct items 
     priority: "required"
   };
   const model = baseModel({ test_plan: [...dupes, distinct] });
-  const section = renderHumanReviewMarkdown(model).split("## Test plan")[1].split("\n## ")[0];
+  const section = renderTestPlanMarkdown(model);
   assert.match(section, /A distinct required test the reviewer must not lose\./, "the distinct item must survive the cap");
 });
 
@@ -203,7 +230,7 @@ test("review-surfaces.HUMAN_REVIEW.19 lists ACIDs that differ only in the expect
     maps_to_risks: [],
     evidence_gap: "Weak test evidence."
   }));
-  const section = renderHumanReviewMarkdown(baseModel({ test_plan: items })).split("## Test plan")[1].split("\n## ")[0];
+  const section = renderTestPlanMarkdown(baseModel({ test_plan: items }));
   assert.match(section, /review-surfaces\.CLI\.1/);
   assert.match(section, /review-surfaces\.CLI\.2/, "both ACIDs must be listed even though they differ only in expected_result");
 });
@@ -281,6 +308,27 @@ test("review-surfaces.HUMAN_REVIEW.20 bounds the excerpt to the configured cap",
     `excerpt body (incl. elision markers) must stay within the cap, got ${excerptBody.length} lines`
   );
   assert.match(excerpt!, /elided/, "a long hunk must mark elided context");
+});
+
+test("review-surfaces.HUMAN_REVIEW.20 expands source tabs in committed Markdown excerpts", () => {
+  const diff = parseStructuredDiff([
+    "diff --git a/src/tabbed.ts b/src/tabbed.ts",
+    "--- a/src/tabbed.ts",
+    "+++ b/src/tabbed.ts",
+    "@@ -1,1 +1,1 @@",
+    "-\tconst value = 1;",
+    "+\tconst value = 2;",
+    ""
+  ].join("\n"));
+  const excerpt = renderHunkExcerpt(diff, {
+    path: "src/tabbed.ts",
+    hunk_header: "@@ -1,1 +1,1 @@",
+    line_start: 1,
+    line_end: 1
+  });
+  assert.ok(excerpt);
+  assert.doesNotMatch(excerpt, /\t/);
+  assert.match(excerpt, /\+    const value = 2;/);
 });
 
 // review-surfaces.HUMAN_REVIEW.20: a replacement-rename (rename A->B plus a new
@@ -470,7 +518,7 @@ test("review-surfaces.HUMAN_REVIEW.19 normalizes a rolled-up command", () => {
     maps_to_risks: [],
     evidence_gap: "Weak test evidence."
   }));
-  const section = renderHumanReviewMarkdown(baseModel({ test_plan: items })).split("## Test plan")[1].split("\n## ")[0];
+  const section = renderTestPlanMarkdown(baseModel({ test_plan: items }));
   assert.match(section, /Command: `pnpm run test -- the listed requirements`/, "merged command must be ACID-templated");
   assert.doesNotMatch(section, /pnpm run test -- review-surfaces\.CLI\.1`/, "must not show only the first ACID's command");
 });
@@ -497,9 +545,9 @@ test("review-surfaces.HUMAN_REVIEW.20 suppresses the Hunk metadata line when an 
     confidence: "high", priority: "medium"
   };
   const md = renderHumanReviewMarkdown(baseModel({ review_queue: [item] }), { diff });
-  const reviewFirst = md.split("## Review first")[1].split("\n## ")[0];
-  assert.match(reviewFirst, /```diff/, "excerpt renders");
-  assert.doesNotMatch(reviewFirst, /- Hunk: `/, "the separate Hunk: line is suppressed when an excerpt renders");
+  const supportingQueue = md.split("## Supporting review queue")[1].split("\n## ")[0];
+  assert.match(supportingQueue, /```diff/, "excerpt renders");
+  assert.doesNotMatch(supportingQueue, /- Hunk: `/, "the separate Hunk: line is suppressed when an excerpt renders");
 });
 
 // review-surfaces.HUMAN_REVIEW.20: when a long hunk has multiple changed
@@ -566,16 +614,15 @@ test("review-surfaces.HUMAN_REVIEW.19 rollups preserve evidence across grouped i
       priority: "medium" as const
     }))
   });
-  const md = renderHumanReviewMarkdown(model);
-  const questions = md.split("## Questions for author")[1].split("\n## ")[0];
+  const questions = renderHumanReviewHtml(model);
   assert.match(questions, /evidence: .*tests\/q1\.test\.ts/, "rolled-up question must keep evidence pointers");
   assert.match(questions, /tests\/q2\.test\.ts/, "rolled-up question must union evidence across items");
-  const trust = md.split("Missing:")[1].split("\n\n")[0];
+  const trust = renderTrustAuditMarkdown(model);
   assert.match(trust, /src\/bootstrap1\.ts/);
   assert.match(trust, /src\/bootstrap2\.ts/, "rolled-up trust gap must union evidence across requirements");
   assert.match(trust, /review-surfaces\.BOOTSTRAP\.1/, "rolled-up trust gap must list the affected ACIDs");
   assert.match(trust, /review-surfaces\.BOOTSTRAP\.2/);
-  const cards = md.split("## Evidence cards")[1].split("\n## ")[0];
+  const cards = renderEvidenceCardsMarkdown(model);
   assert.match(cards, /evidence: direct 0, missing 2, invalid 0/, "evidence card rollup must show the unioned evidence mix");
 });
 
@@ -597,7 +644,7 @@ test("review-surfaces.HUMAN_REVIEW.19 trust rollup lists ACIDs from evidence met
       confidence_summary: "Fixture."
     }
   });
-  const trust = renderHumanReviewMarkdown(model).split("Missing:")[1].split("\n\n")[0];
+  const trust = renderTrustAuditMarkdown(model);
   assert.match(trust, /review-surfaces\.SEMANTIC_DIFF\.1/, "must list ACID from evidence metadata");
   assert.match(trust, /review-surfaces\.SEMANTIC_DIFF\.2/);
 });
@@ -618,7 +665,7 @@ test("review-surfaces.HUMAN_REVIEW.19 trust rollup marks omitted evidence past t
       confidence_summary: "Fixture."
     }
   });
-  const trust = renderHumanReviewMarkdown(model).split("Missing:")[1].split("\n\n")[0];
+  const trust = renderTrustAuditMarkdown(model);
   assert.match(trust, /\(\+\d+ more\)/, "rolled-up trust evidence past the 4-ref cap must show a (+N more) marker");
 });
 
@@ -907,8 +954,13 @@ test("review-surfaces.PRIVACY.6 the HTML cockpit surfaces the excerpt redaction-
 // not only diff excerpts.
 test("review-surfaces.PRIVACY.6 the HTML cockpit surfaces a blocked secret in a model field too", () => {
   const token = `ghp_${"F".repeat(36)}`;
-  const html = renderHumanReviewHtml(baseModel({ summary: `Audit: key ${token} was committed.` }), {});
-  assert.ok(!html.includes(token), "the model-summary secret must be redacted out of the cockpit");
-  assert.match(html, /\[REDACTED:github_token\]/, "the summary keeps its redaction marker");
+  const html = renderHumanReviewHtml(baseModel({
+    decision_projection: {
+      active_intent: { summary: `Audit: key ${token} was committed.`, source: "pull_request", redaction_blocked: false, requirement_ids: [], event_ids: [] },
+      findings: []
+    }
+  }), {});
+  assert.ok(!html.includes(token), "the change-purpose secret must be redacted out of the cockpit");
+  assert.match(html, /\[REDACTED:github_token\]/, "the purpose keeps its redaction marker");
   assert.match(html, /data-excerpt-redaction="blocked"/, "the block signal is surfaced for a model-field secret, not just excerpts");
 });

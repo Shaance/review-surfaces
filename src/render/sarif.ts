@@ -6,7 +6,7 @@ import { isHypothesisOnly } from "../evidence/evidence";
 import type { EvidenceRef } from "../evidence/evidence";
 import type { RequirementResult } from "../evaluation/evaluate";
 import type { RiskItem } from "../risks/risks";
-import { resolvePacketPath } from "./comment";
+import { resolvePacketPath } from "./artifact-path";
 import type { ReviewPacket } from "./packet";
 
 // ---------------------------------------------------------------------------

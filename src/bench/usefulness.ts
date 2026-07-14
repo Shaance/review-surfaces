@@ -125,12 +125,12 @@ function evaluateJudgments(
 }
 
 function lineOfFirstAction(lines: readonly string[]): number | null {
-  const index = lines.findIndex((line) => /^\s*(?:-\s+)?Action:/u.test(line));
+  const index = lines.findIndex((line) => /^\s*(?:-\s+)?(?:Action|Review):/u.test(line));
   return index < 0 ? null : index + 1;
 }
 
 function lineOfFirstSupportingSection(lines: readonly string[]): number | null {
-  const index = lines.findIndex((line) => line === "## Reading order" || line === "## Change map");
+  const index = lines.findIndex((line) => line === "## Supporting review queue" || line === "## Reading order" || line === "## Change map");
   return index < 0 ? null : index + 1;
 }
 

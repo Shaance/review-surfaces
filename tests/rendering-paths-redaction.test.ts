@@ -4,7 +4,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createReviewPacket, PacketInputs, rewriteReviewPacket, ReviewPacket, writeReviewPacket } from "../src/render/packet";
-import { renderComment } from "../src/render/comment";
 import { initGitRepo, runCli } from "./helpers/cli-repo";
 
 function readArtifact(cwd: string, file: string): string {
@@ -237,108 +236,4 @@ test("FINDING B (mock no-op): `methodology --provider mock` writes only methodol
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-});
-
-// ---------------------------------------------------------------------------
-// FINDING C (SECRET LEAK): the comment renderer truncated/collapsed each
-// interpolated free-text field to the display cap BEFORE redacting secrets. The
-// private-key redactor needs the WHOLE -----BEGIN ... PRIVATE KEY----- ...
-// -----END ... PRIVATE KEY----- block; a truncated block is NOT matched, so the
-// first ~300 chars of the key could leak into comment.md and the posted PR
-// comment. The fix redacts the FULL field FIRST, then truncates. Verify a full
-// multi-line private key block is fully redacted in every free-text surface.
-// ---------------------------------------------------------------------------
-
-// A realistic, long multi-line BEGIN/END private key block. The first 300 chars
-// (the display cap) must NOT survive into the rendered comment.
-function fakePrivateKeyBlock(): string {
-  const body = Array.from({ length: 20 }, (_unused, index) => `KEYLINE${index}aB3xQ9zPmL7wKvN2tR5yUcDfGhJkMnPqRsTuVwXyZ0123456789abcdefghij`).join("\n");
-  return `-----BEGIN RSA PRIVATE KEY-----\n${body}\n-----END RSA PRIVATE KEY-----`;
-}
-
-function minimalPacketWithSecret(secret: string, field: "review_focus" | "risk" | "requirement" | "result"): ReviewPacket {
-  const packet = {
-    schema_version: "review-surfaces.packet.v1",
-    manifest: { milestone: "M7" },
-    intent: { summary: "round7", spec_mode: "acai", requirements: [] },
-    evaluation: { summary: "round7", results: [], overreach: [] },
-    architecture: { summary: "round7", diagrams: [], diagram_validation: [], subsystems: [] },
-    methodology: { summary: "round7", missing_logs: false, decisions: [] },
-    risks: {
-      summary: "round7",
-      items: [],
-      test_evidence: [],
-      test_gaps: [],
-      missing_automatic_tests: [],
-      missing_manual_checks: [],
-      review_focus: []
-    }
-  } as unknown as ReviewPacket;
-
-  if (field === "review_focus") {
-    packet.risks.review_focus = [`Inspect this credential leak: ${secret}`];
-  } else if (field === "risk") {
-    (packet.risks.items as unknown[]).push({
-      id: "RISK-LEAK",
-      category: "security",
-      severity: "high",
-      summary: `A handler logs a credential: ${secret}`,
-      evidence: [{ kind: "code", path: "src/x.ts", confidence: "high" }]
-    });
-  } else if (field === "requirement") {
-    (packet.intent.requirements as unknown[]).push({
-      id: "REQ-LEAK",
-      requirement: `The service must store: ${secret}`,
-      llm_derived: true
-    });
-  } else {
-    (packet.evaluation.results as unknown[]).push({
-      requirement_id: "REQ-LEAK",
-      acai_id: "review-surfaces.PRIVACY.2",
-      status: "missing",
-      summary: `Missing handling for: ${secret}`,
-      evidence: []
-    });
-  }
-  return packet;
-}
-
-test("FINDING C: a full multi-line private key in a comment review_focus field is fully redacted (no raw key bytes, including the first 300 chars)", () => {
-  const secret = fakePrivateKeyBlock();
-  const comment = renderComment(minimalPacketWithSecret(secret, "review_focus"));
-
-  // The block secret is replaced wholesale.
-  assert.match(comment, /\[REDACTED:private_key\]/, "the private key block must be redacted");
-  // No raw key bytes survive -- crucially NOT the first 300 chars the display cap
-  // would otherwise have kept before redaction.
-  assert.doesNotMatch(comment, /BEGIN RSA PRIVATE KEY/, "the BEGIN marker must not leak");
-  assert.doesNotMatch(comment, /KEYLINE0/, "the first key line (within the first 300 chars) must not leak");
-  assert.ok(!comment.includes(secret.slice(0, 300)), "the first 300 chars of the key must not survive truncation-before-redaction");
-});
-
-test("FINDING C: a full multi-line private key leaks in NO comment free-text surface (risk, requirement, result)", () => {
-  const secret = fakePrivateKeyBlock();
-  const first300 = secret.slice(0, 300);
-  for (const field of ["risk", "requirement", "result"] as const) {
-    const comment = renderComment(minimalPacketWithSecret(secret, field));
-    assert.match(comment, /\[REDACTED:private_key\]/, `the private key must be redacted in the ${field} field`);
-    assert.doesNotMatch(comment, /BEGIN RSA PRIVATE KEY/, `the BEGIN marker must not leak via the ${field} field`);
-    assert.doesNotMatch(comment, /KEYLINE0/, `the first key line must not leak via the ${field} field`);
-    assert.ok(!comment.includes(first300), `the first 300 chars must not survive via the ${field} field`);
-  }
-});
-
-test("FINDING C: redaction-then-truncation still bounds an oversized field after a secret is replaced", () => {
-  // A field that is a private key block followed by a huge tail: after the block
-  // is redacted the remaining tail must still be truncated so the per-line bound
-  // holds (redact-first does not disable the display cap).
-  const secret = fakePrivateKeyBlock();
-  const tail = "T".repeat(5000);
-  const packet = minimalPacketWithSecret(`${secret} ${tail}`, "review_focus");
-  const comment = renderComment(packet);
-  assert.match(comment, /\[REDACTED:private_key\]/);
-  // No single rendered line is unbounded despite the 5k tail.
-  const longestLine = Math.max(...comment.split("\n").map((line) => line.length));
-  assert.ok(longestLine < 1000, `no line should be unbounded after redact-then-truncate, longest was ${longestLine}`);
-  assert.doesNotMatch(comment, /BEGIN RSA PRIVATE KEY/);
 });

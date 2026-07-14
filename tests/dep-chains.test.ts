@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { computeDependencyFacts } from "../src/risks/dependency-facts";
 import { buildHumanReview } from "../src/human/human-review";
-import { renderDependencyTreeMermaid, renderDependencyTreeText } from "../src/diagrams/dep-tree";
+import { renderDependencyTreeText } from "../src/diagrams/dep-tree";
 import { renderStickySummary } from "../src/render/sticky-summary";
 import { renderRiskLensesMarkdown } from "../src/human/render";
 import { minimalReviewPacket } from "./helpers/review-packet";
@@ -58,7 +58,7 @@ test("review-surfaces.DEP_FACTS.4 pnpm lockfile dependency edges attribute trans
   assert.equal(transitive?.via, "left-pad");
 });
 
-test("review-surfaces.RENDER.13 attributed chains render as an indented tree (install scripts marked) and a mermaid block on comment surfaces, with the flat fallback when no chain resolved", () => {
+test("review-surfaces.RENDER.13 attributed chains render in supporting artifacts and stay out of the reviewer brief", () => {
   const packet = { ...(minimalReviewPacket() as unknown as Record<string, unknown>) } as unknown as ReviewPacket;
   const facts = factsFor(HEAD_LOCK);
   const model = buildHumanReview({ packet, dependencyFacts: facts });
@@ -71,11 +71,9 @@ test("review-surfaces.RENDER.13 attributed chains render as an indented tree (in
   assert.match(lensMd, /## Dependency chains/);
   assert.match(lensMd, /left-pad \(direct, package-lock\.json\)/);
   assert.match(lensMd, /└─ minimist ⚠ install scripts/);
-  // Mermaid tree on the GitHub comment surface.
+  // General dependency diagrams do not occupy the GitHub reviewer brief.
   const sticky = renderStickySummary(model).markdown;
-  assert.match(sticky, /<details><summary>Dependency chains \(supply chain\)<\/summary>/);
-  assert.match(sticky, /flowchart TD/);
-  assert.match(sticky, /minimist — install scripts/);
+  assert.doesNotMatch(sticky, /Dependency chains|flowchart TD|minimist — install scripts/);
   // Flat fallback: unresolvable edges -> no chains, no tree sections.
   const flatModel = buildHumanReview({
     packet,
@@ -84,8 +82,6 @@ test("review-surfaces.RENDER.13 attributed chains render as an indented tree (in
   assert.equal(flatModel.dependency_chains, undefined);
   assert.doesNotMatch(renderRiskLensesMarkdown(flatModel), /## Dependency chains/);
   assert.doesNotMatch(renderStickySummary(flatModel).markdown, /Dependency chains/);
-  // The mermaid emitter itself: deterministic and empty-safe.
-  assert.equal(renderDependencyTreeMermaid([]), undefined);
   assert.deepEqual(renderDependencyTreeText(model.dependency_chains ?? []), [
     "left-pad (direct, package-lock.json)",
     "  └─ minimist ⚠ install scripts"

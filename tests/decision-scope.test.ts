@@ -5,7 +5,6 @@ import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import { buildHumanReview } from "../src/human/human-review";
 import { renderHumanReviewHtml } from "../src/human/render-html";
 import { renderHumanReviewMarkdown } from "../src/human/render";
-import { renderHumanPrComment } from "../src/render/pr-comment";
 import { renderStickySummary } from "../src/render/sticky-summary";
 import type { SemanticChangeFacts } from "../src/risks/semantic-diff";
 import { decisionPacket as packet, decisionRisk as risk, decisionSurface as surface, emptyDecisionSemanticFacts as emptySemanticFacts, requirement } from "./helpers/decision-projection";
@@ -43,7 +42,6 @@ test("review-surfaces.REVIEWER_VALUE.5 unrelated repository totals cannot change
   const after = buildHumanReview({ packet: noisy, prSurface: pr });
   assert.deepEqual(after.verdict, before.verdict);
   assert.deepEqual(after.decision_projection?.findings, before.decision_projection?.findings);
-  assert.equal(after.decision_projection?.supporting_detail_counts.supporting_requirement_count, 145);
 
   const repoDiff = parseStructuredDiff([
     "diff --git a/src/reviewer.ts b/src/reviewer.ts",
@@ -232,7 +230,7 @@ test("review-surfaces.REVIEWER_VALUE.5 commit-pinned validation stays supporting
     renderHumanReviewMarkdown(omittedModel),
     renderHumanReviewHtml(omittedModel),
     renderStickySummary(omittedModel).markdown,
-    renderHumanPrComment(omittedModel).markdown
+    renderStickySummary(omittedModel).markdown
   ]) assert.match(rendered, /Review scope incomplete/);
 });
 

@@ -184,7 +184,10 @@ export function normalizeConfig(raw: Record<string, unknown>): ReviewSurfacesCon
     human_review: {
       enabled: booleanValue(readRecord(raw.human_review).enabled, defaultConfig.human_review.enabled),
       default_entrypoint: booleanValue(readRecord(raw.human_review).default_entrypoint, defaultConfig.human_review.default_entrypoint),
-      max_review_first: positiveIntValue(readRecord(raw.human_review).max_review_first, defaultConfig.human_review.max_review_first),
+      max_supporting_queue: positiveIntValue(
+        readRecord(raw.human_review).max_supporting_queue,
+        defaultConfig.human_review.max_supporting_queue
+      ),
       max_suggested_comments: positiveIntValue(
         readRecord(raw.human_review).max_suggested_comments,
         defaultConfig.human_review.max_suggested_comments

@@ -4,48 +4,34 @@ import { EvidenceRef } from "../evidence/evidence";
 import { redactSecrets } from "../privacy/secrets";
 import { StructuredDiff } from "../pr/contract";
 import type { ConversationAnalysis, ReviewerInsight } from "../contracts/conversation-review";
-import { formatEnumChanges, formatTypeChanges } from "../risks/semantic-diff";
 import { renderHunkExcerpt } from "./hunk-excerpt";
 import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
-import { changeMapDetailEmbeds, changeMapMermaidEmbed } from "../render/change-map-embed";
-import { esc } from "./esc";
+import { escapeMarkdownLiteral, markdownInlineCode } from "../render/markdown-literal";
 import { renderDependencyTreeText } from "../diagrams/dep-tree";
 import { extractAcids, fillAcidTemplate, normalizeAcidTemplate, RollupGroup, rollupBy } from "./rollup";
 import { RISK_LENS_METADATA } from "./contract";
 import {
+  decisionFindingPresentation,
   decisionIntentSourceLabel,
+  decisionProjectionHeading,
   EMPTY_DECISION_FINDINGS_TEXT,
-  fullDecisionSupportingText,
-  incompleteReviewScopeText,
-  STALE_DECISION_PROJECTION_TEXT,
-  UNAVAILABLE_DECISION_FINDINGS_TEXT
+  incompleteReviewScopeText
 } from "./decision-projection-presentation";
 import {
   conversationAnalysisCaveats,
   conversationAnalysisContextRows,
-  conversationAnalysisForRender,
   conversationEvidenceStateLabel,
   conversationInsightBasisLabel,
   conversationInsightCitationGroups,
-  conversationInsightsForRender,
   conversationReviewPresentation,
-  hasConversationReviewValue,
-  visibleConversationInsights
+  presentableConversationInsights
 } from "./conversation-review-presentation";
 import type {
-  ChangeNarrative,
   EvidenceCard,
-  FeedbackPolicyEffect,
   HumanReviewModel,
-  IntentMismatch,
   IntentMismatchItem,
   MissingEvidenceSummary,
-  NarrativeClaim,
-  ReadingOrder,
-  ReviewerQuestion,
   ReviewQueueItem,
-  ReviewRoute,
-  ReviewRouteStep,
   RiskLensFinding,
   SinceLastReview,
   SinceLastReviewItem,
@@ -54,16 +40,19 @@ import type {
   TestPlanItem,
   TrustAudit
 } from "./contract";
-import { partitionPrimary, PRIMARY_SURFACE_LIMIT } from "./primary-surface-policy";
+import { partitionSupportingPreview, SUPPORTING_PREVIEW_LIMIT } from "./primary-surface-policy";
+import {
+  decisionLabel,
+  formatQueueLocation,
+  rankingReasonsAreDefaultOnly
+} from "./review-presentation";
 
 export {
   conversationAnalysisCaveats,
   conversationAnalysisContextRows,
-  conversationAnalysisForRender,
   conversationEvidenceStateLabel,
   conversationInsightBasisLabel,
   conversationInsightCitationGroups,
-  conversationInsightsForRender,
   conversationReviewPresentation
 };
 export {
@@ -76,21 +65,15 @@ export type {
   ConversationReviewPresentation
 } from "./conversation-review-presentation";
 
+// Keep the primary change purpose at the decision-projection/schema contract
+// bound. This is the full human artifact; supporting summaries use their own
+// smaller preview bounds below.
+const MAX_DECISION_PURPOSE_CHARS = 2_000;
 const MAX_SUMMARY_CHARS = 600;
 const MAX_FIELD_CHARS = 300;
 const CONVERSATION_MARKDOWN_CONTROLS = new Set(["\\", "`", "*", "[", "]", "(", ")", "#", "!", "|", "~"]);
-const MAX_BLOCKERS = 6;
-const MAX_QUESTIONS = 8;
-const MAX_TRUST = 6;
-const MAX_TEST_PLAN = 8;
-const MAX_COMMENTS = 6;
-const MAX_SKIM_SAFE = 8;
 const MAX_STANDALONE_EVIDENCE = 8;
-const MAX_EVIDENCE_CARDS = 6;
-const MAX_RISK_LENSES = 6;
 const MAX_SINCE_LAST_REVIEW = 5;
-const MAX_REVIEW_ROUTES = 5;
-const MAX_ROUTE_STEPS = 5;
 
 // review-surfaces.HUMAN_REVIEW.20: render-time inputs sourced from collected
 // diff artifacts (never from the human_review.json model itself), used to inline
@@ -134,24 +117,14 @@ export const HUMAN_STANDALONE_ARTIFACTS = [
     artifact: "intent_mismatch.md",
     label: "Intent mismatch",
     heading: "# Intent Mismatch",
-    render: renderIntentMismatchMarkdown,
-    isSatisfied: (model: HumanReviewModel) => Object.prototype.hasOwnProperty.call(model, "intent_mismatch")
-  },
-  {
-    command: "routes",
-    artifact: "review_routes.md",
-    label: "Review routes",
-    heading: "# Review Routes",
-    render: renderReviewRoutesMarkdown,
-    isSatisfied: (model: HumanReviewModel) => reviewRoutes(model).length > 0
+    render: renderIntentMismatchMarkdown
   },
   {
     command: "evidence-cards",
     artifact: "evidence_cards.md",
     label: "Evidence cards",
     heading: "# Evidence Cards",
-    render: renderEvidenceCardsMarkdown,
-    isSatisfied: (model: HumanReviewModel) => evidenceCards(model).length > 0
+    render: renderEvidenceCardsMarkdown
   },
   {
     command: "since-last-review",
@@ -197,8 +170,7 @@ export async function writeHumanStandaloneArtifact(
 }
 
 export function renderHumanReviewMarkdown(model: HumanReviewModel, context: HumanRenderContext = {}): string {
-  const conversationSection = `## Conversation-aware insights\n\n${renderConversationInsightsMarkdown(model)}\n\n`;
-  const conversationLeads = hasConversationReviewValue(model);
+  const requiredCheckCount = model.test_plan.filter((item) => item.priority === "required").length;
   return `# Human Review
 
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
@@ -207,117 +179,39 @@ ${model.generated_from.uncommitted_files > 0 ? `\n**includes ${model.generated_f
 
 **${decisionLabel(model.verdict.decision)}.**
 
-${field(model.summary, MAX_SUMMARY_CHARS)}
-
 Confidence: ${model.verdict.confidence}.
 
-Reasons:
-${bullets(model.verdict.reasons.slice(0, MAX_BLOCKERS).map((reason) => `${reason.summary}${reason.required_action ? ` Required action: ${reason.required_action}` : ""} (${reason.id}; ${reason.severity})`), "No readiness reasons recorded.")}
+Approval-changing reasons and actions are listed once below.
 
 ${renderDecisionProjectionMarkdown(model)}
 
-${conversationLeads ? conversationSection : ""}## Review first
-
-${renderReviewFirst(model, partitionPrimary(model.review_queue).primary, context, 1)}
-${supportingQueueNote(model.review_queue.length, PRIMARY_SURFACE_LIMIT)}
-
-## Blockers
-
-${renderBlockers(model)}
-
-## Questions for author
-
-${renderQuestionRollups(partitionPrimary(model.questions).primary, PRIMARY_SURFACE_LIMIT)}
-${supportingItemNote("question", model.questions.length, PRIMARY_SURFACE_LIMIT)}
-
 ## Required checks
 
-${renderPrimaryChecks(model.test_plan)}
+${requiredCheckCount > 0 ? `- ${requiredCheckCount} required check(s). See \`test_plan.md\` for exact commands and expected results.` : "- No required checks were generated."}
 
 ## Trust summary
 
 ${renderTrustSummary(model.trust_audit)}
 
-${conversationLeads ? "" : conversationSection}## Reading order
+## Supporting review queue
 
-${renderReadingOrderSection(model.reading_order)}
+${renderSupportingReviewQueue(model, partitionSupportingPreview(model.review_queue).preview, context, 1)}
+${supportingQueueNote(model.review_queue.length, SUPPORTING_PREVIEW_LIMIT)}
 
-## Change map
+## Supporting artifacts
 
-${renderChangeMapSection(model)}
-
-## Change narrative
-
-${renderNarrativeSection(model.narrative)}
-
-## Semantic change facts
-
-${renderSemanticFacts(model.semantic_facts)}
-
-## Review routes
-
-${renderReviewRoutesSummary(reviewRoutes(model).slice(0, MAX_REVIEW_ROUTES))}
-
-## Evidence cards
-
-${renderEvidenceCardsRollupSummary(evidenceCards(model), MAX_EVIDENCE_CARDS)}
-
-## Since last review
-
-${renderSinceLastReviewSummary(sinceLastReview(model), model.spec_mode)}
-
-## Coverage evidence
-
-${renderCoverageEvidence(model)}
-
-## Review plan
-
-${renderReviewPlan(model)}
-
-## Intent mismatch
-
-${renderIntentMismatchSummary(intentMismatch(model))}
-
-## Trust audit
-
-Confidence summary: ${field(model.trust_audit.confidence_summary)}
-
-Verified:
-${bullets(verifiedTrustFacts(model.trust_audit).slice(0, MAX_TRUST).map((fact) => `${fact.summary} Evidence: ${evidenceList(fact.evidence)}`), "No verified facts recorded.")}
-
-Claimed but not verified:
-${bullets(unverifiedTrustClaims(model.trust_audit).slice(0, MAX_TRUST).map((claim) => `${claim.claim} Missing: ${claim.missing_evidence}`), "No unverified claims recorded.")}
-
-Missing:
-${renderTrustMissingRollups(missingTrustEvidence(model.trust_audit), MAX_TRUST)}
-
-Invalid:
-${bullets(invalidTrustEvidence(model.trust_audit).slice(0, MAX_TRUST).map((item) => `${item.summary} Evidence: ${evidenceList(item.evidence)}`), "None recorded.")}
-
-## Risk lenses
-
-${renderRiskLenses(riskLensFindings(model).slice(0, MAX_RISK_LENSES))}
-
-## Test plan
-
-${renderTestPlanRollups(model.test_plan, MAX_TEST_PLAN)}
-
-## Suggested comments
-
-${renderSuggestedComments(model.suggested_comments.slice(0, MAX_COMMENTS))}
-
-## Skim-safe
-
-${bullets(model.skim_safe.slice(0, MAX_SKIM_SAFE).map((item) => `\`${field(item.path)}\`: ${item.reason}${item.caveat ? ` Caveat: ${item.caveat}` : ""}`), "No skim-safe files identified.")}
-
-## Feedback memory
-
-${renderFeedbackEffects(model.feedback_effects ?? [])}
-
-## Evidence pointers
-
-${bullets(evidencePointers(model), "No evidence pointers recorded.")}
+${renderSupportingArtifactIndex()}
 `;
+}
+
+function renderSupportingArtifactIndex(): string {
+  return [
+    "- [Interactive HTML cockpit](human_review.html) — reading order, maps, coverage, trust, and the complete supporting review.",
+    "- [`human_review.json`](human_review.json) — schema-validated machine model with every recorded fact.",
+    ...HUMAN_STANDALONE_ARTIFACTS.map((artifact) =>
+      `- [${artifact.label}](${artifact.artifact}) — focused supporting detail.`
+    )
+  ].join("\n");
 }
 
 function supportingQueueNote(total: number, visibleLimit: number): string {
@@ -327,48 +221,34 @@ function supportingQueueNote(total: number, visibleLimit: number): string {
     : "";
 }
 
-function supportingItemNote(label: string, total: number, visibleLimit: number): string {
-  const omitted = Math.max(0, total - visibleLimit);
-  return omitted > 0 ? `_${omitted} additional ${label}(s) remain in \`human_review.json\`._` : "";
-}
-
-function renderPrimaryChecks(items: TestPlanItem[]): string {
-  const { primary: required, supporting } = partitionPrimary(items.filter((item) => item.priority === "required"));
-  if (required.length === 0) return "No required checks were generated.";
-  const lines = required.map((item) => `- ${field(item.scenario)} Expected: ${field(item.expected_result)}`);
-  const omitted = supporting.length;
-  if (omitted > 0) lines.push(`- ${omitted} additional required check(s) remain in \`test_plan.md\`.`);
-  return lines.join("\n");
-}
-
 function renderTrustSummary(trust: TrustAudit): string {
   return `${trust.verified_facts.length} verified fact(s); ${trust.claimed_not_verified.length} unverified claim(s); ${trust.missing_evidence.length} missing-evidence item(s); ${trust.invalid_evidence.length} invalid-evidence item(s).`;
 }
 
 export function renderDecisionProjectionMarkdown(model: HumanReviewModel): string {
   const projection = model.decision_projection;
-  if (!projection) {
-    return `## Active intent\n\n_${STALE_DECISION_PROJECTION_TEXT}_\n\n## Decision findings\n\n- ${UNAVAILABLE_DECISION_FINDINGS_TEXT}`;
-  }
   const source = decisionIntentSourceLabel(projection.active_intent.source);
   const findings = projection.findings.length === 0
     ? `- ${EMPTY_DECISION_FINDINGS_TEXT}`
     : projection.findings.map((finding, index) => {
-      const location = finding.path ? ` \`${field(finding.path)}\`` : "";
-      return `${index + 1}. **${field(finding.title)}**${location} — ${field(finding.reason)}\n   - Action: ${field(finding.reviewer_action)} (${finding.priority}; ${field(finding.root_cause)})`;
+      const row = decisionFindingPresentation(finding);
+      const location = row.path ? ` ${markdownInlineCode(field(row.path))}` : "";
+      const reason = row.reason ? ` — ${proseField(row.reason)}` : "";
+      const evidenceLine = row.evidence.length > 0
+        ? `\n   - Evidence: ${row.evidence.map((value) => markdownInlineCode(field(value))).join(", ")}`
+        : "";
+      return `${index + 1}. **${proseField(row.title)}**${location}${reason}\n   - Review: ${proseField(row.reviewerAction)}${evidenceLine}`;
     }).join("\n");
-  const counts = projection.supporting_detail_counts;
-  return `## Active intent
+  const decisionHeading = `## ${decisionProjectionHeading(projection.findings.length)}`;
+  return `## Change purpose
 
-${field(projection.active_intent.summary, MAX_SUMMARY_CHARS)}
+${proseField(projection.active_intent.summary, MAX_DECISION_PURPOSE_CHARS)}
 
-Source: ${source}.
+_${source}._
 
-## Decision findings
+${decisionHeading}
 
-${findings}
-
-_${fullDecisionSupportingText(counts)}_`;
+${findings}`;
 }
 
 /**
@@ -376,28 +256,28 @@ _${fullDecisionSupportingText(counts)}_`;
  * rendered beside, but never folded into, the deterministic merge verdict.
  */
 export function renderConversationInsightsMarkdown(model: HumanReviewModel): string {
-  const analysis = conversationAnalysisForRender(model);
-  const insights = conversationInsightsForRender(model);
+  const analysis = model.conversation_analysis;
+  const insights = presentableConversationInsights(analysis, model.review_insights);
   return renderConversationReviewMarkdown(analysis, insights);
 }
 
 export function renderConversationReviewMarkdown(
-  analysis: ConversationAnalysis | undefined,
-  insights: ReviewerInsight[] | undefined
+  analysis: ConversationAnalysis,
+  insights: ReviewerInsight[]
 ): string {
   const renderField = conversationMarkdownField(field);
-  const visibleInsights = visibleConversationInsights(analysis, insights);
+  const presentedInsights = presentableConversationInsights(analysis, insights);
   const status = conversationAnalysisStatusLineWithField(analysis, renderField, MAX_SUMMARY_CHARS);
   const context = conversationAnalysisContextMarkdownWithField(analysis, renderField);
   const caveats = conversationAnalysisCaveats(analysis);
   const header = [status, context, caveats.length > 0 ? `**Caveat:** ${caveats.join(" ")}` : ""]
     .filter(Boolean)
     .join("\n\n");
-  if (visibleInsights.length === 0) {
+  if (presentedInsights.length === 0) {
     return `${header}\n\n${conversationReviewPresentation(analysis).emptyMessage}`;
   }
 
-  const lines = visibleInsights.map((insight, index) => {
+  const lines = presentedInsights.map((insight, index) => {
     const evidence = conversationInsightCitationsWithField(insight, renderField, 3);
     return `${index + 1}. **[${conversationEvidenceStateLabel(insight.evidence_state)} · ${renderField(insight.priority, 40)}] ${renderField(insight.title, 180)}**
    - What changed: ${renderField(insight.summary)}
@@ -410,91 +290,12 @@ export function renderConversationReviewMarkdown(
 
 type ConversationMarkdownField = (value: string, max?: number) => string;
 
-export interface CompactConversationReviewMarkdownOptions {
-  /** Render-boundary sanitizer; sticky comments use this to preserve their block signal. */
-  renderField?: ConversationMarkdownField;
-}
-
-/**
- * Compact comment-mode rendering: keep the top finding in the scan path while
- * retaining the bounded conversation context, grounding, and remaining
- * findings in a disclosure. The full cockpit renderers deliberately do not use
- * this mode.
- */
-export function renderCompactConversationReviewMarkdown(
-  analysis: ConversationAnalysis | undefined,
-  insights: ReviewerInsight[] | undefined,
-  options: CompactConversationReviewMarkdownOptions = {}
-): string {
-  const renderField = conversationMarkdownField(options.renderField ?? field);
-  const visibleInsights = visibleConversationInsights(analysis, insights);
-  const status = conversationAnalysisStatusLineWithField(analysis, renderField, MAX_FIELD_CHARS);
-  const caveats = conversationAnalysisCaveats(analysis);
-  const lead = [
-    status,
-    caveats.length > 0 ? `**Caveat:** ${renderField(caveats.join(" "), 900)}` : ""
-  ].filter(Boolean);
-  const context = conversationAnalysisContextMarkdownWithField(analysis, renderField);
-
-  if (visibleInsights.length === 0) {
-    const details = context
-      ? conversationReviewDetails("Conversation context", context)
-      : "";
-    return [...lead, conversationReviewPresentation(analysis).emptyMessage, details].filter(Boolean).join("\n\n");
-  }
-
-  const [topInsight, ...remainingInsights] = visibleInsights;
-  const top = renderCompactConversationInsight(topInsight, 1, renderField, false);
-  const detailsBody = [
-    context ? `#### Conversation context\n\n${context}` : "",
-    `#### Grounding for insight 1\n\n${renderConversationInsightGrounding(topInsight, renderField)}`,
-    remainingInsights.length > 0
-      ? `#### More conversation insights\n\n${remainingInsights
-          .map((insight, index) => renderCompactConversationInsight(insight, index + 2, renderField, true))
-          .join("\n\n")}`
-      : ""
-  ].filter(Boolean).join("\n\n");
-  const remainingLabel = remainingInsights.length > 0
-    ? ` and ${remainingInsights.length} more insight${remainingInsights.length === 1 ? "" : "s"}`
-    : "";
-  const details = conversationReviewDetails(`Conversation context, grounding${remainingLabel}`, detailsBody);
-  return [...lead, top, details].join("\n\n");
-}
-
-function renderCompactConversationInsight(
-  insight: ReviewerInsight,
-  number: number,
-  renderField: ConversationMarkdownField,
-  includeGrounding: boolean
-): string {
-  return `${number}. **[${conversationEvidenceStateLabel(insight.evidence_state)} · ${renderField(insight.priority, 40)}] ${renderField(insight.title, 180)}** — ${renderField(insight.summary)}
-   - Why it matters: ${renderField(insight.why_it_matters)}
-   - Review: ${renderField(insight.reviewer_action)}${includeGrounding ? `\n   - Grounding: ${renderConversationInsightGrounding(insight, renderField)}` : ""}`;
-}
-
-function renderConversationInsightGrounding(
-  insight: ReviewerInsight,
-  renderField: ConversationMarkdownField
-): string {
-  const citations = conversationInsightCitationsWithField(insight, renderField, 2);
-  return `${conversationInsightBasisLabel(insight.basis)}${citations ? ` Evidence: ${citations}.` : ""}`;
-}
-
-function conversationReviewDetails(summary: string, body: string): string {
-  return `<details>
-<summary>${summary}</summary>
-
-${body}
-
-</details>`;
-}
-
-export function conversationAnalysisStatusLine(analysis: ConversationAnalysis | undefined): string {
+export function conversationAnalysisStatusLine(analysis: ConversationAnalysis): string {
   return conversationAnalysisStatusLineWithField(analysis, conversationMarkdownField(field), MAX_SUMMARY_CHARS);
 }
 
 function conversationAnalysisStatusLineWithField(
-  analysis: ConversationAnalysis | undefined,
+  analysis: ConversationAnalysis,
   renderField: ConversationMarkdownField,
   summaryLimit: number
 ): string {
@@ -542,7 +343,7 @@ function neutralizeConversationMarkdown(value: string): string {
 }
 
 function conversationAnalysisContextMarkdownWithField(
-  analysis: ConversationAnalysis | undefined,
+  analysis: ConversationAnalysis,
   renderField: ConversationMarkdownField
 ): string {
   return conversationAnalysisContextRows(analysis).map((row) =>
@@ -607,7 +408,7 @@ export function renderRiskLensesMarkdown(model: HumanReviewModel, _context: Huma
 
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
 
-${riskLensFindings(model).length === 0 ? "- No domain risk lenses fired." : riskLensFindings(model).map(renderRiskLensDetail).join("\n\n---\n\n")}
+${model.risk_lens_findings.length === 0 ? "- No domain risk lenses fired." : model.risk_lens_findings.map(renderRiskLensDetail).join("\n\n---\n\n")}
 ${renderDependencyChainsSection(model)}`;
 }
 
@@ -626,7 +427,7 @@ function renderDependencyChainsSection(model: HumanReviewModel): string {
 }
 
 export function renderIntentMismatchMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
-  const intent = intentMismatch(model);
+  const intent = model.intent_mismatch;
   // review-surfaces.COLD_START.5: in spec-less mode the standalone surface is
   // the note plus the diff-derived observations — no empty spec sections.
   if (intent.spec_note) {
@@ -675,65 +476,21 @@ ${renderIntentMismatchItems(intent.claimed_candidates ?? [])}
 `;
 }
 
-export function renderReviewRoutesMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
-  const routes = reviewRoutes(model);
-  return `# Review Routes
-
-Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
-
-${routes.length === 0 ? "- This human review JSON was generated before review-route support." : routes.map(renderReviewRouteDetail).join("\n\n---\n\n")}
-`;
-}
-
 export function renderEvidenceCardsMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
-  const cards = evidenceCards(model);
-  // review-surfaces.HUMAN_REVIEW.19: the STANDALONE evidence_cards.md keeps full
-  // per-card detail. The combined human_review.md is where near-identical cards
-  // roll up.
+  const cards = model.evidence_cards;
+  // review-surfaces.HUMAN_REVIEW.19: keep the standalone Markdown readable by
+  // collapsing mechanically repeated cards. The complete structured cards stay
+  // available in human_review.json and the HTML cockpit.
   return `# Evidence Cards
 
 Generated from \`${field(model.generated_from.packet_path)}\`${model.generated_from.pr_surface_path ? ` and \`${field(model.generated_from.pr_surface_path)}\`` : ""}.
 
-${cards.length === 0 ? "- This human review JSON was generated before evidence-card support." : cards.map(renderEvidenceCardDetail).join("\n\n---\n\n")}
+${renderEvidenceCardsRollupSummary(cards, Number.POSITIVE_INFINITY)}
 `;
 }
 
-function renderEvidenceCardDetail(card: EvidenceCard): string {
-  const sources = idList(card.source_ids);
-  const risks = idList(card.risk_ids);
-  const requirements = idList(card.requirement_ids);
-  return `## Evidence Card: ${field(card.title)}
-
-Status: ${evidenceCardStatusLabel(card.status)}.
-Priority: ${card.priority}
-Confidence: ${card.confidence}
-Sources: ${sources}
-Risks: ${risks}
-Requirements: ${requirements}
-
-Summary:
-${field(card.summary, 800)}
-
-Evidence:
-
-Direct:
-${evidenceBullets(card.direct_evidence, MAX_STANDALONE_EVIDENCE)}
-
-Missing:
-${evidenceBullets(card.missing_evidence, MAX_STANDALONE_EVIDENCE)}
-
-Invalid:
-${evidenceBullets(card.invalid_evidence, MAX_STANDALONE_EVIDENCE)}
-
-Why it matters:
-- ${field(card.why_it_matters, 500)}
-
-Reviewer action:
-- ${field(card.reviewer_action, 500)}`;
-}
-
 export function renderSinceLastReviewMarkdown(model: HumanReviewModel, _context: HumanRenderContext = {}): string {
-  const since = sinceLastReview(model);
+  const since = model.since_last_review;
   return `# Since Last Review
 
 Generated from \`${field(model.generated_from.packet_path)}\`.
@@ -803,15 +560,14 @@ export function renderTestPlanMarkdown(model: HumanReviewModel, _context: HumanR
     ["Recommended", "recommended"],
     ["Optional", "optional"]
   ];
-  // review-surfaces.HUMAN_REVIEW.19: the standalone deep-dive surface keeps full
-  // per-item detail — every item with its runnable command, no cap, no merge (the
-  // combined human_review.md is where near-identical items roll up). Empty priority
-  // buckets are still omitted rather than rendered with a dead "No items"
-  // placeholder, mirroring the empty-section omission used elsewhere in this file.
+  // review-surfaces.HUMAN_REVIEW.19: roll up repeated generated checks before
+  // rendering this standalone Markdown. Every item and exact per-item command is
+  // retained in human_review.json; the reviewer-facing document should not repeat
+  // the same instruction once per requirement. Empty priority buckets are omitted.
   const sections = groups
     .map(([heading, priority]) => [heading, model.test_plan.filter((item) => item.priority === priority)] as const)
     .filter(([, items]) => items.length > 0)
-    .map(([heading, items]) => `## ${heading}\n\n${renderTestPlan(items)}`);
+    .map(([heading, items]) => `## ${heading}\n\n${renderTestPlanRollups(items, Number.POSITIVE_INFINITY)}`);
   const body = sections.length ? sections.join("\n\n") : "- No concrete test-plan items generated.";
   return `# Test Plan
 
@@ -819,18 +575,6 @@ Generated from \`${field(model.generated_from.packet_path)}\`.
 
 ${body}
 `;
-}
-
-function renderRiskLenses(findings: RiskLensFinding[]): string {
-  if (findings.length === 0) {
-    return "- No domain risk lenses fired.";
-  }
-  // review-surfaces.HUMAN_REVIEW.21: lead with the concern and reviewer action;
-  // lens/severity/id trail as metadata.
-  return bullets(
-    findings.map((finding) => `${finding.summary} Action: ${finding.reviewer_action} Evidence: ${evidenceList(finding.evidence)} (${finding.id}; ${RISK_LENS_METADATA[finding.lens].label}; ${finding.severity})`),
-    "No domain risk lenses fired."
-  );
 }
 
 function renderRiskLensDetail(finding: RiskLensFinding): string {
@@ -863,66 +607,6 @@ Suggested comments:
 ${renderSuggestedComments(finding.suggested_comments)}`;
 }
 
-function riskLensFindings(model: HumanReviewModel): RiskLensFinding[] {
-  return model.risk_lens_findings ?? [];
-}
-
-function intentMismatch(model: HumanReviewModel): IntentMismatch {
-  return model.intent_mismatch ?? {
-    expected_by_spec: [],
-    observed_in_diff: [],
-    possible_mismatches: [],
-    possible_overreach: [],
-    missing_intent: []
-  };
-}
-
-function reviewRoutes(model: HumanReviewModel): ReviewRoute[] {
-  return model.review_routes ?? [];
-}
-
-function evidenceCards(model: HumanReviewModel): EvidenceCard[] {
-  return model.evidence_cards ?? [];
-}
-
-function renderReviewRoutesSummary(routes: ReviewRoute[]): string {
-  if (routes.length === 0) {
-    return "- This human review JSON was generated before review-route support.";
-  }
-  return bullets(
-    routes.map((route) => {
-      const flags = [
-        route.is_default ? "default" : undefined,
-        route.is_secondary ? "secondary" : undefined
-      ].filter((flag): flag is string => typeof flag === "string");
-      const stepText = route.steps.slice(0, 3).map((step) => step.title).join(" -> ");
-      return `${route.title}${flags.length ? ` (${flags.join(", ")})` : ""}: ${route.summary} Path: ${stepText || "no steps recorded."}`;
-    }),
-    "No review routes generated."
-  );
-}
-
-function renderIntentMismatchSummary(intent: IntentMismatch): string {
-  // review-surfaces.COLD_START.5: spec-less mode replaces the spec-coupled
-  // counts and overreach items with the one-line honest note.
-  if (intent.spec_note) {
-    return bullets([intent.spec_note], "No intent mismatch summary generated.");
-  }
-  const risky = [...intent.possible_mismatches, ...intent.possible_overreach, ...intent.missing_intent];
-  const lines = [
-    `${intent.expected_by_spec.length} expected intent item(s), ${intent.observed_in_diff.length} observed changed-file item(s).`,
-    `${intent.possible_mismatches.length} possible mismatch item(s), ${intent.possible_overreach.length} possible overreach item(s), ${intent.missing_intent.length} missing-intent item(s).`
-  ];
-  if (risky.length > 0) {
-    for (const [index, item] of risky.slice(0, 3).entries()) {
-      lines.push(`Review first ${index + 1}: ${item.summary} Evidence: ${evidenceList(item.evidence)}`);
-    }
-  } else {
-    lines.push("No explicit intent mismatch, overreach, or missing-intent item was identified.");
-  }
-  return bullets(lines, "No intent mismatch summary generated.");
-}
-
 function renderIntentMismatchItems(items: IntentMismatchItem[]): string {
   if (items.length === 0) {
     return "- None recorded.";
@@ -936,56 +620,6 @@ function renderIntentMismatchItems(items: IntentMismatchItem[]): string {
   - Requirements: ${requirements}
   - Evidence: ${evidenceList(item.evidence)}`;
   }).join("\n");
-}
-
-function renderReviewRouteDetail(route: ReviewRoute): string {
-  const flags = [
-    route.is_default ? "Default: yes" : "Default: no",
-    route.is_secondary ? "Secondary: yes" : "Secondary: no"
-  ];
-  // review-surfaces.HUMAN_REVIEW.26: when a non-default route's every step is a
-  // low-priority negation (no signal fired for it — e.g. the security route on a
-  // change with no security/CI/redaction/privacy signal), say so once so the
-  // reviewer can skip the four "nothing detected" steps. The model steps are kept
-  // intact; this is an additive header note only.
-  const skippable =
-    !route.is_default && !route.is_secondary && route.steps.length > 0 && route.steps.every((step) => step.priority === "low")
-      ? "\nSkippable: no signal fired for this route — every step is a low-priority negation."
-      : "";
-  return `## ${field(route.title)}
-
-Persona: ${route.persona}
-${flags.join("\n")}${skippable}
-
-${field(route.summary, 1000)}
-
-${renderReviewRouteSteps(route.steps.slice(0, MAX_ROUTE_STEPS))}`;
-}
-
-function renderReviewRouteSteps(steps: ReviewRouteStep[]): string {
-  if (steps.length === 0) {
-    return "- No route steps recorded.";
-  }
-  return steps.map((step) => `${step.rank}. ${field(step.title)}
-   - Priority: ${step.priority}
-   - Action: ${field(step.action, 1000)}
-   - Artifact: ${step.artifact ? `\`${field(step.artifact)}\`` : "human_review.md"}
-   - Links: ${routeStepLinks(step)}
-   - Evidence: ${evidenceList(step.evidence)}`).join("\n\n");
-}
-
-function routeStepLinks(step: ReviewRouteStep): string {
-  const groups: Array<[string, string[]]> = [
-    ["queue", step.queue_item_ids],
-    ["lenses", step.risk_lens_ids],
-    ["questions", step.question_ids],
-    ["tests", step.test_plan_ids],
-    ["comments", step.suggested_comment_ids]
-  ];
-  const rendered = groups
-    .filter(([, ids]) => ids.length > 0)
-    .map(([label, ids]) => `${label}: ${ids.map((id) => `\`${field(id)}\``).join(", ")}`);
-  return rendered.length ? rendered.join("; ") : "none";
 }
 
 function evidenceCardStatusLabel(status: EvidenceCard["status"]): string {
@@ -1003,55 +637,6 @@ function evidenceCardStatusLabel(status: EvidenceCard["status"]): string {
     case "unknown":
       return "Unknown";
   }
-}
-
-function idList(ids: string[], limit = 6): string {
-  if (ids.length === 0) {
-    return "none";
-  }
-  const visible = ids.slice(0, limit).map((id) => `\`${field(id)}\``);
-  const omitted = ids.length - visible.length;
-  return omitted > 0 ? `${visible.join(", ")}, ... ${omitted} more` : visible.join(", ");
-}
-
-function sinceLastReview(model: HumanReviewModel): SinceLastReview {
-  return model.since_last_review ?? {
-    unavailable_reason: "This human review JSON was generated before since-last-review support.",
-    improved: [],
-    regressed: [],
-    new_risks: [],
-    resolved_risks: [],
-    new_overreach: [],
-    resolved_overreach: [],
-    still_open: [],
-    count_deltas: {
-      satisfied: { before: 0, after: 0, delta: 0 },
-      partial: { before: 0, after: 0, delta: 0 },
-      missing: { before: 0, after: 0, delta: 0 },
-      unknown: { before: 0, after: 0, delta: 0 },
-      invalid_evidence: { before: 0, after: 0, delta: 0 }
-    }
-  };
-}
-
-function renderSinceLastReviewSummary(since: SinceLastReview, specMode: HumanReviewModel["spec_mode"] = "acai"): string {
-  if (since.unavailable_reason) {
-    return bullets([since.unavailable_reason], "No previous packet comparison available.");
-  }
-  // review-surfaces.COLD_START.5: spec-less comparisons report only the
-  // diff-derived risk deltas — no requirement or overreach counts.
-  const lines = specMode === "none"
-    ? [
-        `${since.new_risks.length} new risk(s), ${since.resolved_risks.length} resolved risk(s).`,
-        `${since.still_open.length} still-open item(s) to keep in review focus.`
-      ]
-    : [
-        `${since.improved.length} improved requirement(s), ${since.regressed.length} regressed requirement(s).`,
-        `${since.new_risks.length} new risk(s), ${since.resolved_risks.length} resolved risk(s).`,
-        `${since.new_overreach.length} new overreach item(s), ${since.resolved_overreach.length} resolved overreach item(s).`,
-        `${since.still_open.length} still-open item(s) to keep in review focus.`
-      ];
-  return bullets(lines, "No previous packet comparison available.");
 }
 
 function renderSinceLastReviewItems(items: SinceLastReviewItem[]): string {
@@ -1103,67 +688,7 @@ function formatSignedDelta(value: number): string {
   return value > 0 ? `+${value}` : String(value);
 }
 
-// review-surfaces.NARRATIVE.1/.3: render the grounded narrative with a per-claim
-// trust marker — `✓` for anchored (all citations valid) and `~` for claimed
-// (demoted; an anchor is missing/invalid). Each line leads with the claim text
-// (reviewer-language); anchors and any invalid anchors trail as metadata.
-function renderNarrativeSection(narrative: ChangeNarrative | undefined): string {
-  if (!narrative || narrative.claims.length === 0) {
-    return "- No grounded narrative available; rely on the verdict and review queue below.";
-  }
-  const header = `_Source: ${narrative.source} (${narrative.provider}); validated at \`${field(narrative.validated_at_head)}\`. ✓ anchored (citations validated, claim not independently proven), ~ claimed (unverified anchor)._`;
-  const lines = narrative.claims.map((claim) => renderNarrativeClaim(claim));
-  return `${header}\n${lines.join("\n")}`;
-}
-
-function renderNarrativeClaim(claim: NarrativeClaim): string {
-  const marker = claim.trust === "verified" ? "✓" : "~";
-  const anchors = claim.anchors.length ? ` (anchors: ${evidenceList(claim.anchors)})` : "";
-  const invalid = claim.invalid_anchors.length
-    ? ` [claimed; unverified anchor(s): ${claim.invalid_anchors.map((token) => `\`${field(token)}\``).join(", ")}]`
-    : "";
-  return `- ${marker} ${field(claim.text, 600)}${anchors}${invalid}`;
-}
-
-// review-surfaces.SEMANTIC_DIFF.1-4: render the concrete change facts (schema
-// contract changes, exported API surface changes, test-weakening signals) near
-// the top of the surface, leading with the observable fact (reviewer-language).
-function renderSemanticFacts(facts: HumanReviewModel["semantic_facts"]): string {
-  const lines: string[] = [];
-  for (const signal of facts.test_weakening) {
-    lines.push(`⚠️ Test weakening — ${field(signal.detail)} (\`${field(signal.path)}\`; ${signal.kind.replace(/_/g, " ")})`);
-  }
-  for (const change of facts.schema_changes) {
-    lines.push(`Schema contract — ${field(semanticSchemaSummary(change))} (\`${field(change.path)}\`)`);
-  }
-  for (const change of facts.api_changes) {
-    lines.push(`Exported API — ${field(semanticApiSummary(change))} (\`${field(change.path)}\`)`);
-  }
-  return bullets(lines, "No semantic schema/API/test-weakening facts detected in this change.");
-}
-
-function semanticSchemaSummary(change: HumanReviewModel["semantic_facts"]["schema_changes"][number]): string {
-  const parts: string[] = [];
-  if (change.required_added.length) parts.push(`now requires ${change.required_added.join(", ")} (existing artifacts without them fail validation)`);
-  if (change.required_removed.length) parts.push(`no longer requires ${change.required_removed.join(", ")}`);
-  if (change.properties_removed.length) parts.push(`removed ${change.properties_removed.join(", ")}`);
-  if (change.properties_added.length) parts.push(`added ${change.properties_added.join(", ")}`);
-  if (change.type_changes.length) parts.push(`type: ${formatTypeChanges(change.type_changes)}`);
-  if (change.enum_changes.length) parts.push(`enum: ${formatEnumChanges(change.enum_changes)}`);
-  return parts.join("; ");
-}
-
-function semanticApiSummary(change: HumanReviewModel["semantic_facts"]["api_changes"][number]): string {
-  const parts: string[] = [];
-  if (change.contract_removed) parts.push(`supported contract ${change.contract_name ?? change.renamed_from ?? change.contract_surface?.source ?? change.path} was removed without a matching head-side contract`);
-  if (change.contract_target_changed) parts.push(`supported contract ${change.contract_name ?? change.contract_surface?.source ?? change.path} resolves to a different target whose compatibility could not be compared`);
-  if (change.signatures_changed.length) parts.push(`signature changed: ${change.signatures_changed.map((s) => s.name).join(", ")}`);
-  if (change.exports_removed.length) parts.push(`removed: ${change.exports_removed.join(", ")}`);
-  if (change.exports_added.length) parts.push(`added: ${change.exports_added.join(", ")}`);
-  return parts.join("; ");
-}
-
-function renderReviewFirst(
+function renderSupportingReviewQueue(
   model: HumanReviewModel,
   items: ReviewQueueItem[],
   context: HumanRenderContext = {},
@@ -1196,47 +721,6 @@ ${hunkLine}   - Why it matters: ${field(item.reason)}${rankingLine}
     .join("\n\n");
 }
 
-// review-surfaces.BUDGET.1/.2: the explicit read/skim/defer cut. Off (the
-// default) renders a single note; estimates are stated as estimates. Blockers
-// are budget-exempt and the render says so on the item.
-function renderReviewPlan(model: HumanReviewModel): string {
-  const plan = model.review_plan;
-  if (!plan || !plan.enabled) {
-    return "- No time budget configured (pass --budget 15m or set human_review.review_budget).";
-  }
-  const group = (label: string, items: typeof plan.read): string =>
-    `${label}:\n${items.length === 0 ? "- None." : items.map((item) => `- \`${field(item.path)}\` (~${item.estimated_minutes} min${item.reason ? `; ${field(item.reason)}` : ""}) [${item.queue_item_id}]`).join("\n")}`;
-  return `Budget: ${plan.budget_minutes} minute(s). Estimates are deterministic approximations, not promises. Blocker items are budget-exempt.
-
-${group("Read", plan.read)}
-
-${group("Skim (read the excerpt, not the file)", plan.skim)}
-
-${group("Safe to defer", plan.defer)}`;
-}
-
-// review-surfaces.COVERAGE.3/.4: changed-line coverage per file when a report
-// exists; the honest negative ("no coverage evidence") when none was provided —
-// explicitly distinct from "uncovered", and never a penalty.
-function renderCoverageEvidence(model: HumanReviewModel): string {
-  const coverage = model.coverage_evidence;
-  if (!coverage || coverage.status === "no_report") {
-    return "- No coverage evidence: no coverage report was provided. This is different from changed lines being uncovered.";
-  }
-  if (coverage.postdates_head === false) {
-    // A stale report is recorded but NOT trusted: render only the warning, never
-    // its per-file classifications as if they were current evidence.
-    return `- The report at \`${field(coverage.source_path ?? "")}\` predates the reviewed code, so it is recorded but NOT trusted: no current coverage evidence.`;
-  }
-  if (coverage.files.length === 0) {
-    return `- Report ingested from \`${field(coverage.source_path ?? "")}\`, but none of the changed lines are instrumented by it (no coverage evidence for this diff — distinct from uncovered).`;
-  }
-  return bullets(
-    coverage.files.map((file) => `\`${field(file.path)}\`: ${file.covered_lines} of ${file.changed_lines} changed line(s) executed by tests (${file.classification}).`),
-    "No coverage evidence recorded."
-  );
-}
-
 // review-surfaces.RANKING.2: the "why ranked here" line — the per-item evidence
 // signals that moved it up or down. Joined with "; "; older JSON written before
 // ranking support degrades to a neutral note rather than an empty line.
@@ -1251,17 +735,6 @@ function rankingReasonsLine(item: ReviewQueueItem): string {
 // high risk severity with a precise diff anchor") it merely restates the Priority
 // line, so the render suppresses the block. The JSON model stays populated
 // (RANKING.2 + schema minItems:1).
-export function rankingReasonsAreDefaultOnly(item: ReviewQueueItem): boolean {
-  const reasons = item.ranking_reasons ?? [];
-  if (reasons.length === 0) {
-    return true;
-  }
-  if (reasons.length > 1) {
-    return false;
-  }
-  return /^ranked by \w+ risk severity (with a precise diff anchor|at file level)$/.test(reasons[0]);
-}
-
 // review-surfaces.HUMAN_REVIEW.20: render a bounded, indented fenced diff
 // excerpt for a queue item that carries hunk/line anchors. Returns "" when no
 // diff context or no matching hunk is available so the queue item degrades to
@@ -1287,7 +760,7 @@ function inlineHunkExcerpt(item: ReviewQueueItem, context: HumanRenderContext): 
 
 function renderQueueDetail(model: HumanReviewModel, item: ReviewQueueItem, context: HumanRenderContext = {}): string {
   // review-surfaces.COVERAGE.6: the standalone queue artifact carries the same
-  // one-line coverage summary as the Review first section.
+  // one-line coverage summary as the supporting queue surface.
   const coverageHunkDetail = coverageHunkForAnchor(model, item.path, item.hunk_header);
   const coverageDetailLine = coverageHunkDetail ? `Coverage: ${field(coverageSummaryLine(coverageHunkDetail))}\n\n` : "";
   const location = formatQueueLocation(item);
@@ -1327,32 +800,6 @@ ${rankingBlock}Reviewer action:
 ${field(item.reviewer_action, 1000)}
 ${excerpt ? `\n${excerpt}\n` : ""}${coverageDetailLine}Evidence:
 ${evidenceBullets(item.evidence, MAX_STANDALONE_EVIDENCE)}${trailer ? `\n\n${trailer}` : ""}`;
-}
-
-function renderBlockers(model: HumanReviewModel): string {
-  if (model.blockers.length === 0) {
-    return "- No merge blockers generated from deterministic evidence.";
-  }
-  return bullets(
-    model.blockers.slice(0, MAX_BLOCKERS).map((blocker) => `${blocker.summary} Required action: ${blocker.required_action} Evidence: ${evidenceList(blocker.evidence)}`),
-    "No merge blockers generated from deterministic evidence."
-  );
-}
-
-function renderFeedbackEffects(effects: FeedbackPolicyEffect[]): string {
-  if (effects.length === 0) {
-    return "- No reviewer feedback policy effects applied.";
-  }
-  // review-surfaces.HUMAN_REVIEW.21: lead with the effect summary and action;
-  // the effect id and kind trail as metadata.
-  return bullets(
-    effects.slice(0, 8).map((effect) => {
-      const paths = effect.paths.length ? ` Paths: ${effect.paths.map((filePath) => `\`${field(filePath)}\``).join(", ")}.` : "";
-      const risks = effect.risk_ids.length ? ` Risks: ${effect.risk_ids.map((id) => `\`${field(id)}\``).join(", ")}.` : "";
-      return `${effect.summary} Action: ${effect.action}.${paths}${risks} Evidence: ${evidenceList(effect.evidence)} (${effect.id}; ${effect.kind})`;
-    }),
-    "No reviewer feedback policy effects applied."
-  );
 }
 
 // review-surfaces.HUMAN_REVIEW.25: a suggested comment that already names its
@@ -1499,34 +946,9 @@ function renderTestPlanRollup(group: RollupGroup<TestPlanItem>): string {
 - Items: ${ids}`;
 }
 
-function renderQuestionRollups(questions: ReviewerQuestion[], maxGroups: number): string {
-  if (questions.length === 0) {
-    return "- No reviewer questions generated.";
-  }
-  // Roll up the full list, then cap rendered groups (review-surfaces.HUMAN_REVIEW.19).
-  const groups = rollupBy(
-    questions,
-    (question) => `${question.severity}|${normalizeAcidTemplate(question.question)}`,
-    (question) => rollupAcids(question.maps_to_requirements, question.question)
-  );
-  return groups
-    .slice(0, maxGroups)
-    .map((group, index) => {
-      const text = fillAcidTemplate(normalizeAcidTemplate(group.representative.question), group.acids);
-      const requirements = group.acids.length ? `; requirements: ${group.acids.map((acid) => `\`${field(acid)}\``).join(", ")}` : "";
-      const count = group.items.length > 1 ? `; ${group.items.length} questions` : "";
-      // Preserve the evidence pointer the per-question renderer carried, unioned
-      // across the rolled-up questions (with an omitted-count marker) so the
-      // reviewer still sees why to ask and is not misled by the 4-ref cap.
-      const evidence = evidenceListWithOmission(group.items.flatMap((question) => question.evidence));
-      return `${index + 1}. ${field(text)} (${group.representative.severity}${requirements}${count}; evidence: ${evidence})`;
-    })
-    .join("\n");
-}
-
 function renderEvidenceCardsRollupSummary(cards: EvidenceCard[], maxGroups: number): string {
   if (cards.length === 0) {
-    return "- This human review JSON was generated before evidence-card support.";
+    return "- No evidence cards were generated.";
   }
   // Roll up the full list, then cap rendered groups (review-surfaces.HUMAN_REVIEW.19).
   const groups = rollupBy(
@@ -1620,13 +1042,11 @@ function suggestedCommentSeverityLabel(severity: SuggestedCommentSeverity): stri
 }
 
 function renderTrustAuditSections(audit: TrustAudit, limit: number): string {
-  // review-surfaces.HUMAN_REVIEW.19: the STANDALONE trust_audit.md keeps full
-  // per-item detail (one line per requirement). The combined human_review.md is
-  // where near-identical items roll up — a reviewer who wants the collapsed view
-  // reads the summary surface.
+  // review-surfaces.HUMAN_REVIEW.19: repeated missing-evidence statements are
+  // one reviewer concern, not one concern per requirement. Keep all raw entries
+  // in human_review.json while the Markdown unions their IDs and evidence.
   const verified = verifiedTrustFacts(audit).slice(0, limit);
   const claimed = unverifiedTrustClaims(audit).slice(0, limit);
-  const missing = missingTrustEvidence(audit).slice(0, limit);
   const invalid = invalidTrustEvidence(audit).slice(0, limit);
 
   return `## Verified facts
@@ -1639,26 +1059,11 @@ ${bullets(claimed.map((claim) => `${claim.claim} Missing: ${claim.missing_eviden
 
 ## Missing evidence
 
-${bullets(missing.map((item) => `${item.summary} Evidence: ${evidenceList(item.evidence)}`), "No missing evidence recorded.")}
+${renderTrustMissingRollups(missingTrustEvidence(audit), limit)}
 
 ## Invalid evidence
 
 ${bullets(invalid.map((item) => `${item.summary} Evidence: ${evidenceList(item.evidence)}`), "None recorded.")}`;
-}
-
-export function decisionLabel(decision: HumanReviewModel["verdict"]["decision"]): string {
-  switch (decision) {
-    case "probably_safe":
-      return "Probably safe";
-    case "reviewable_with_attention":
-      return "Reviewable with attention";
-    case "needs_author_clarification":
-      return "Needs author clarification";
-    case "block_before_merge":
-      return "Block before merge";
-    case "no_signal":
-      return "No signal";
-  }
 }
 
 function evidenceList(evidence: EvidenceRef[]): string {
@@ -1723,21 +1128,6 @@ function bullets(items: string[], emptyText: string): string {
   return items.length ? items.map((item) => `- ${field(item, 900)}`).join("\n") : `- ${emptyText}`;
 }
 
-function evidencePointers(model: HumanReviewModel): string[] {
-  return [
-    `Packet: \`${field(model.generated_from.packet_path)}\``,
-    model.generated_from.pr_surface_path ? `PR surface: \`${field(model.generated_from.pr_surface_path)}\`` : undefined,
-    ...HUMAN_STANDALONE_ARTIFACTS.map((artifact) => `${artifact.label}: \`${field(siblingArtifactPath(model.generated_from.packet_path, artifact.artifact))}\``),
-    `Base/head: \`${field(model.generated_from.base_ref)}\` -> \`${field(model.generated_from.head_ref)}\``,
-    `Head SHA: \`${field(model.generated_from.head_sha)}\``,
-    // COLD_START.7: a literal-HEAD review that absorbed working-tree files says
-    // so on every human surface; a clean or pinned-head run renders nothing.
-    model.generated_from.uncommitted_files > 0
-      ? `Working tree: includes ${model.generated_from.uncommitted_files} uncommitted file(s) (working tree)`
-      : undefined
-  ].filter((item): item is string => typeof item === "string");
-}
-
 function verifiedTrustFacts(audit: TrustAudit): TrustAudit["verified_facts"] {
   return uniqueBy(
     audit.verified_facts,
@@ -1766,17 +1156,6 @@ function invalidTrustEvidence(audit: TrustAudit): TrustAudit["invalid_evidence"]
   );
 }
 
-export function formatQueueLocation(item: ReviewQueueItem): string {
-  return item.line_start
-    ? `${item.path}:${item.line_start}${item.line_end && item.line_end !== item.line_start ? `-${item.line_end}` : ""}`
-    : item.path;
-}
-
-function siblingArtifactPath(packetPath: string, artifact: string): string {
-  const dir = path.dirname(packetPath);
-  return dir === "." ? artifact : path.join(dir, artifact);
-}
-
 function uniqueBy<T>(items: T[], keyFor: (item: T) => string): T[] {
   const seen = new Set<string>();
   const result: T[] = [];
@@ -1796,76 +1175,6 @@ function field(value: string, max = MAX_FIELD_CHARS): string {
   return redacted.length <= max ? redacted : `${redacted.slice(0, max - 3)}...`;
 }
 
-// review-surfaces.CHANGE_MAP.3: the change map embeds on human_review.md (the
-// mermaid renders in editor previews and on GitHub; the cockpit's SVG is the
-// local answer). The shared embed helper runs redaction + the fence guard.
-// review-surfaces.MAP_SCALE.2: the embed helper consults the legibility budget
-// — when the overview leads, an honest lead-in line says so.
-function renderChangeMapSection(model: HumanReviewModel): string {
-  const embed = changeMapMermaidEmbed(model.change_graph);
-  const body = embed.body;
-  if (!body) {
-    // Honest omission: a populated graph whose rendered body tripped the size
-    // cap or fence-close guard is OMITTED, never reported as "no changes".
-    return model.change_graph.nodes.length === 0
-      ? "No changed files to map."
-      : `Change map omitted (${model.change_graph.nodes.length} changed file(s); the rendered diagram exceeded the embed size cap or contained fence-closing content).`;
-  }
-  const lead =
-    embed.level === "overview"
-      ? `Overview — ${model.change_graph.nodes.length} changed file(s) across ${model.change_graph.overview.groups.length} group(s); the file-level map exceeds the legibility budget, so groups lead.\n\n`
-      : "";
-  const sections = [`${lead}\`\`\`mermaid\n${body}\n\`\`\``];
-  // review-surfaces.MAP_SCALE.6: when the overview leads, every group expands
-  // to its own collapsed detail view (deterministic model order; per-block
-  // embed guard). The group name is redacted-then-escaped — the summary is not
-  // a constant title.
-  if (embed.level === "overview") {
-    for (const detail of changeMapDetailEmbeds(model.change_graph)) {
-      const summary = `${esc(detail.group)} — ${detail.file_count} file(s) · ${detail.topic_count} topic(s)`;
-      sections.push(
-        detail.body
-          ? `<details><summary>${summary}</summary>\n\n\`\`\`mermaid\n${detail.body}\n\`\`\`\n\n</details>`
-          : `Detail view for ${esc(detail.group)} omitted (the rendered diagram exceeded the embed size cap or contained fence-closing content).`
-      );
-    }
-  }
-  return sections.join("\n\n");
-}
-
-// review-surfaces.READING_ORDER.2: the guided tour renders right after the
-// verdict — comprehension order, never including unchanged files.
-function renderReadingOrderSection(order: ReadingOrder): string {
-  if (order.legs.length === 0) {
-    return "No changed files to order.";
-  }
-  const lines: string[] = [];
-  let stepNumber = 0;
-  for (const leg of order.legs) {
-    lines.push(`**${field(leg.title)}**`);
-    for (const step of leg.steps) {
-      stepNumber += 1;
-      const refs = step.queue_refs.length > 0 ? ` (queue: ${step.queue_refs.map((ref) => field(ref)).join(", ")})` : "";
-      // review-surfaces.READING_ORDER.3: the bold leg header already names the
-      // Tests and Config/docs legs, so a "test — ..." / "config or docs — read
-      // last" why on every line just echoes it. Drop the pure echo and the
-      // redundant "test — " prefix here (render-only; the JSON `why` is unchanged)
-      // while keeping the Implementation/Contracts fan-in/out signal verbatim.
-      const why = collapseReadingOrderWhy(step.why);
-      lines.push(why ? `${stepNumber}. \`${field(step.path)}\` — ${field(why)}${refs}` : `${stepNumber}. \`${field(step.path)}\`${refs}`);
-    }
-    lines.push("");
-  }
-  return lines.join("\n").trimEnd();
-}
-
-// Render-only shortening of a reading-order `why` that merely restates its leg
-// header (the strings come from change-graph deriveWhy, the single source under
-// READING_ORDER.1). If those derived strings change, this degrades to showing the
-// full why — never to a wrong label.
-export function collapseReadingOrderWhy(why: string): string {
-  if (why === "test — read after the code it covers" || why === "config or docs — read last") {
-    return "";
-  }
-  return why.startsWith("test — ") ? why.slice("test — ".length) : why;
+function proseField(value: string, max = MAX_FIELD_CHARS): string {
+  return escapeMarkdownLiteral(field(value, max));
 }

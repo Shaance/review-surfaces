@@ -190,6 +190,54 @@ test("FINDING A (e2e): dogfood --previous-packet at a truncated packet is a no-o
   }
 });
 
+test("resolved risks retain exact approval identity from the previous review", () => {
+  const tmp = setupDogfoodRepo("review-surfaces-resolved-approval-risk-");
+  try {
+    const prevDir = path.join(tmp, "prev");
+    fs.mkdirSync(prevDir, { recursive: true });
+    fs.writeFileSync(path.join(prevDir, "review_packet.json"), JSON.stringify({
+      evaluation: { summary: "previous", results: [], overreach: [], acai_coverage: {} },
+      risks: {
+        summary: "previous",
+        items: [{ id: "RISK-OLD-APPROVAL", category: "security", severity: "high", summary: "Removed unsafe fallback" }]
+      }
+    }));
+    fs.writeFileSync(path.join(prevDir, "human_review.json"), JSON.stringify({
+      rounds: [{
+        round: 1,
+        head_sha: "abc1234",
+        new_count: 1,
+        resolved_count: 0,
+        regressed_count: 0,
+        verdict: "changes_requested"
+      }],
+      decision_projection: {
+        findings: [{ risk_ids: ["RISK-OLD-APPROVAL"] }]
+      }
+    }));
+
+    const run = runCli(tmp, [
+      "all",
+      "--provider", "mock",
+      "--dogfood",
+      "--base", "HEAD",
+      "--head", "HEAD",
+      "--previous-packet", "prev"
+    ]);
+    assert.equal(run.status, 0, run.stderr);
+
+    const human = JSON.parse(readArtifact(tmp, "human_review.json")) as {
+      since_last_review: { resolved_risks: Array<{ summary: string; decision_refs?: string[] }> };
+    };
+    const resolved = human.since_last_review.resolved_risks.find((item) =>
+      item.summary.includes("Removed unsafe fallback")
+    );
+    assert.deepEqual(resolved?.decision_refs, ["RISK-OLD-APPROVAL"]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // FINDING B: the standalone `handoff` stage must run the SAME packet-level
 // enrichPacket the monolithic `all`/`packet` run does BEFORE writing

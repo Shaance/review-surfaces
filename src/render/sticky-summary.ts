@@ -3,51 +3,32 @@
 // model (human_review.json) rather than the lower-level PR sidecar.
 //
 // It is the DETERMINISTIC human-review rollup, not provider-written narrative
-// prose, so it is exempt from the PROVIDERS.5 non-mock-narrative posting gate
-// (review-surfaces.PR_SURFACE.4) and may be posted under --provider mock. The
-// only posting gate it carries is a hard secret-block check: if redaction blocks
+// prose, so it remains postable without an LLM (review-surfaces.PR_SURFACE.4).
+// The only posting gate it carries is a hard secret-block check: if redaction blocks
 // a high-confidence secret, the result is marked blocked and the caller must not
 // post it.
+import crypto from "node:crypto";
 import { inspectAndRedactSecrets } from "../privacy/secrets";
 import { compareStrings } from "../core/compare";
-import { StructuredDiff } from "../pr/contract";
-import { renderHunkExcerpt } from "../human/hunk-excerpt";
+import { decisionLabel } from "../human/review-presentation";
+import { requiredAuthorAction } from "../human/primary-surface-policy";
 import {
-  decisionLabel,
-  formatQueueLocation,
-  renderCompactConversationReviewMarkdown
-} from "../human/render";
-import {
-  conversationAnalysisForRender,
-  conversationInsightsForRender,
-  hasConversationReviewValue
-} from "../human/conversation-review-presentation";
-import { requiredAuthorAction, supportingReviewQueue } from "../human/primary-surface-policy";
-import {
-  compactDecisionSupportingText,
   decisionIntentSourceLabel,
+  decisionProjectionHeading,
   EMPTY_DECISION_FINDINGS_TEXT,
-  incompleteReviewScopeText,
-  STALE_DECISION_PROJECTION_TEXT,
-  UNAVAILABLE_DECISION_FINDINGS_TEXT
+  incompleteReviewScopeText
 } from "../human/decision-projection-presentation";
 import type { HumanReviewModel, ReviewQueueItem, SinceLastReview, SinceLastReviewItem } from "../human/contract";
-import { STICKY_MARKER } from "./comment";
-import { changeMapCommentBlock, dependencyTreeEmbed, mermaidDetailsBlock } from "./change-map-embed";
-import { firstTourLegSnippet } from "./tour-snippet";
+import { STICKY_MARKER } from "./sticky-marker";
+import { escapeMarkdownLiteral, markdownInlineCode, markdownLinkDestination } from "./markdown-literal";
 
-const MAX_SUMMARY_CHARS = 600;
 const MAX_FIELD_CHARS = 300;
-const DEFAULT_TOP_N = 5;
 const MAX_SINCE_ITEMS = 5;
+// GitHub rejects issue comments above 65,536 bytes. Stay below that physical
+// boundary and adapt the detail per decision to the actual rendered size.
+const MAX_GITHUB_COMMENT_BYTES = 60_000;
 
 export interface StickySummaryOptions {
-  // Render-time diff context (from collected diff artifacts, never the model
-  // itself) used to inline bounded hunk excerpts. Optional: without it the queue
-  // items degrade to their anchor metadata.
-  diff?: StructuredDiff;
-  // Number of review-queue items to surface; defaults to 5.
-  topN?: number;
   // The workflow-artifact name the full .review-surfaces/ packet was uploaded
   // under, so the comment can point a reviewer at it (review-surfaces.PR_SURFACE.3).
   artifactName?: string;
@@ -73,6 +54,12 @@ export interface StickySummaryResult {
 // block signal must be captured here or it would be laundered away.
 interface RedactionState {
   blocked: boolean;
+  cache: Map<string, { text: string; blocked: boolean }>;
+}
+
+interface StickyDraft {
+  markdown: string;
+  blocked: boolean;
 }
 
 // Stable identity for a queue item across runs: rule/requirement id + file path +
@@ -86,14 +73,79 @@ export function stickyQueueItemKey(item: ReviewQueueItem): string {
 }
 
 export function renderStickySummary(model: HumanReviewModel, options: StickySummaryOptions = {}): StickySummaryResult {
-  const topN = options.topN && options.topN > 0 ? options.topN : DEFAULT_TOP_N;
-  const state: RedactionState = { blocked: false };
-  const since = model.since_last_review;
-  const hasPriorReview = sinceLastReviewIsAvailable(since);
+  const cache = new Map<string, { text: string; blocked: boolean }>();
+  const decisionDelta = approvalChangingSinceLastReview(model);
+  const full = buildStickySummary(model, options, "full", cache, decisionDelta);
+  if (full) {
+    return finalizeStickyDraft(full);
+  }
+  const compact = buildStickySummary(model, options, "compact", cache, decisionDelta);
+  if (compact) {
+    return finalizeStickyDraft(compact);
+  }
+  const overflow = buildOverflowStickySummary(model, options, cache);
+  if (Buffer.byteLength(overflow.markdown, "utf8") <= MAX_GITHUB_COMMENT_BYTES) {
+    return finalizeStickyDraft(overflow);
+  }
+  return buildEmergencyStickySummary(model, options.runId);
+}
 
-  const verdict = `**${decisionLabel(model.verdict.decision)}.** ${field(model.summary, state, MAX_SUMMARY_CHARS)}`;
-  const queueBlock = renderQueue(supportingReviewQueue(model).slice(0, topN), options.diff, state);
-  const trustBlock = renderTrustCounts(model, state);
+function finalizeStickyDraft(draft: StickyDraft): StickySummaryResult {
+  const redaction = inspectAndRedactSecrets(draft.markdown);
+  return { markdown: redaction.text, blocked: draft.blocked || redaction.blocked };
+}
+
+function buildEmergencyStickySummary(model: HumanReviewModel, runId: string | undefined): StickySummaryResult {
+  const body = `${STICKY_MARKER}\n## review-surfaces\n\n**${decisionLabel(model.verdict.decision)}.**\n\nThe approval brief exceeds GitHub's physical comment limit. Review the workflow artifact before merge.\n\n${renderFingerprint(model, runId)}\n`;
+  const redaction = inspectAndRedactSecrets(body);
+  return { markdown: redaction.text, blocked: redaction.blocked };
+}
+
+function buildOverflowStickySummary(
+  model: HumanReviewModel,
+  options: StickySummaryOptions,
+  cache: RedactionState["cache"]
+): StickyDraft {
+  const state: RedactionState = {
+    blocked: model.decision_projection.active_intent.redaction_blocked,
+    cache
+  };
+  const count = model.decision_projection.findings.length;
+  const artifact = options.artifactName
+    ? options.artifactUrl
+      ? `[**${prose(options.artifactName, state)}**](${linkDestination(options.artifactUrl, state)})`
+      : `**${prose(options.artifactName, state)}**`
+    : "the full review artifact";
+  const body = `${[
+    STICKY_MARKER,
+    "## review-surfaces",
+    "",
+    `**${decisionLabel(model.verdict.decision)}.**`,
+    "",
+    "### Approval brief exceeds GitHub's physical comment limit",
+    "",
+    `${count} independent approval decisions were preserved in ${artifact}, but the actionable one-line-per-decision brief exceeds GitHub's comment size limit.`,
+    "",
+    "**Author action:** Split the change into reviewable approval units, or review and record each decision from the full artifact before merge.",
+    "",
+    renderFingerprint(model, options.runId)
+  ].join("\n")}\n`;
+  return { markdown: body, blocked: state.blocked };
+}
+
+function buildStickySummary(
+  model: HumanReviewModel,
+  options: StickySummaryOptions,
+  detail: "full" | "compact",
+  cache: RedactionState["cache"],
+  decisionDelta: ReturnType<typeof approvalChangingSinceLastReview>
+): StickyDraft | undefined {
+  const state: RedactionState = {
+    blocked: model.decision_projection.active_intent.redaction_blocked,
+    cache
+  };
+
+  const verdict = `**${decisionLabel(model.verdict.decision)}.**`;
 
   const sections: string[] = [
     STICKY_MARKER,
@@ -109,86 +161,24 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   }
   const authorAction = requiredAuthorAction(model);
   if (authorAction) {
-    sections.push("", `**Author action:** ${field(authorAction, state, MAX_FIELD_CHARS)}`);
+    sections.push("", `**Author action:** ${prose(authorAction, state, MAX_FIELD_CHARS)}`);
   }
   const scopeWarning = incompleteReviewScopeText(model.generated_from.omitted_untracked_files ?? 0);
   if (scopeWarning) {
     sections.push("", `**${scopeWarning}**`);
   }
 
-  if (hasPriorReview) {
-    // review-surfaces.PR_SURFACE.5: on a re-review, LEAD with the delta and
-    // collapse the unchanged full review under a <details> block.
-    sections.push("", renderSinceSection(since, state));
-  }
-
-  sections.push("", renderDecisionProjection(model, state));
-  if (hasConversationReviewValue(model)) {
-    sections.push("", "### Conversation-aware insights", "", renderConversationInsights(model, state));
-  }
-
-  if (hasPriorReview) {
-    sections.push(
-      "",
-      "<details>",
-      "<summary>Full review (verdict, review queue, trust)</summary>",
-      "",
-      "### Review first",
-      "",
-      queueBlock,
-      "",
-      "### Trust",
-      "",
-      trustBlock,
-      "</details>"
-    );
-  } else {
-    sections.push("", "### Review first", "", queueBlock, "", "### Trust", "", trustBlock);
-  }
-
-  // review-surfaces.CHANGE_MAP.3: the change map embeds as a collapsed details
-  // block so the sticky stays short; READING_ORDER.2: only the FIRST tour leg.
-  // The embed's redaction block signal feeds the postability gate — the final
-  // whole-body pass only sees already-redacted text.
-  const mapEmbed = changeMapCommentBlock(model.change_graph);
-  if (mapEmbed.blocked) {
-    state.blocked = true;
-  }
-  if (mapEmbed.body) {
-    sections.push("", mapEmbed.body);
-  }
-  // review-surfaces.RENDER.13: attributed dependency chains as a collapsed
-  // mermaid tree — only when a chain exists (flat facts stay in the queue).
-  const depTree = dependencyTreeEmbed(model.dependency_chains);
-  if (depTree.blocked) {
-    state.blocked = true;
-  }
-  if (depTree.body) {
-    sections.push("", mermaidDetailsBlock("Dependency chains (supply chain)", depTree.body));
-  }
-  // review-surfaces.TREND.2: the rounds ledger as a compact table (last ~8
-  // rounds; the full ledger lives in the artifact). Partial history renders
-  // honestly — "history begins at round N" — never as an error.
-  const roundsBlock = renderRoundsTable(model);
-  if (roundsBlock) {
-    sections.push("", roundsBlock);
-  }
-
-  const firstLeg = firstTourLegSnippet(model);
-  if (firstLeg.blocked) {
-    state.blocked = true;
-  }
-  if (firstLeg.text) {
-    sections.push("", firstLeg.text);
+  const trailingSections: string[] = [];
+  if (decisionDelta) {
+    trailingSections.push(renderSinceSection(decisionDelta.since, state, decisionDelta.verdictTransition));
   }
 
   if (options.artifactName) {
-    const artifactName = field(options.artifactName, state);
+    const artifactName = prose(options.artifactName, state);
     const artifactPointer = options.artifactUrl
-      ? `[**${artifactName}**](${field(options.artifactUrl, state)})`
+      ? `[**${artifactName}**](${linkDestination(options.artifactUrl, state)})`
       : `**${artifactName}**`;
-    sections.push(
-      "",
+    trailingSections.push(
       `📦 Full \`.review-surfaces/\` packet: open the ${artifactPointer} workflow artifact.`
     );
   }
@@ -196,120 +186,102 @@ export function renderStickySummary(model: HumanReviewModel, options: StickySumm
   // review-surfaces.PR_SURFACE.5: an in-comment fingerprint (head sha, the run id
   // that produced this posted sticky, and stable finding keys) lets the next run
   // recover THIS run's artifact as the baseline reviewers last saw.
-  sections.push("", renderFingerprint(model, options.runId));
+  trailingSections.push(renderFingerprint(model, options.runId));
 
-  const body = `${sections.join("\n")}\n`;
-  // Final whole-body redaction pass: field-level redaction already ran on prose
-  // fields, but this catches anything not field-redacted (e.g. diff excerpts) and
-  // contributes to the block gate alongside the field-level signal.
-  const redaction = inspectAndRedactSecrets(body);
-  return { markdown: redaction.text, blocked: state.blocked || redaction.blocked };
-}
-
-function renderDecisionProjection(model: HumanReviewModel, state: RedactionState): string {
-  const projection = model.decision_projection;
-  if (!projection) {
-    return `### Active intent\n\n_${STALE_DECISION_PROJECTION_TEXT}_\n\n### Decision findings\n\n- ${UNAVAILABLE_DECISION_FINDINGS_TEXT}`;
-  }
-  const source = decisionIntentSourceLabel(projection.active_intent.source);
-  const findings = projection.findings.length === 0
-    ? `- ${EMPTY_DECISION_FINDINGS_TEXT}`
-    : projection.findings.map((finding, index) => {
-      const location = finding.path ? ` \`${field(finding.path, state)}\`` : "";
-      return `${index + 1}. **${field(finding.title, state)}**${location} — ${field(finding.reason, state)}\n   - Action: ${field(finding.reviewer_action, state)} (${finding.priority})`;
-    }).join("\n");
-  const counts = projection.supporting_detail_counts;
-  return `### Active intent\n\n${field(projection.active_intent.summary, state, MAX_SUMMARY_CHARS)}\n\n_Source: ${source}._\n\n### Decision findings\n\n${findings}\n\n_${compactDecisionSupportingText(counts)}_`;
-}
-
-function renderConversationInsights(model: HumanReviewModel, state: RedactionState): string {
-  const analysis = conversationAnalysisForRender(model);
-  const insights = conversationInsightsForRender(model);
-  return renderCompactConversationReviewMarkdown(analysis, insights, {
-    renderField: (value, max) => field(value, state, max)
-  });
-}
-
-const MAX_ROUNDS_ROWS = 8;
-
-// review-surfaces.TREND.2: rendered only when there is actual history (a
-// one-row ledger is the first review — nothing to trend yet).
-function renderRoundsTable(model: HumanReviewModel): string | undefined {
-  const rounds = model.rounds ?? [];
-  if (rounds.length < 2) {
-    return undefined;
-  }
-  const shown = rounds.slice(-MAX_ROUNDS_ROWS);
-  const lines = [
-    "### Review rounds",
-    "",
-    ...(rounds[0].round > 1
-      ? [`_History begins at round ${rounds[0].round} (earlier rounds expired with their artifacts); full ledger in human_review.json._`, ""]
-      : shown[0].round > 1
-        ? [`_Showing the last ${shown.length} of ${rounds.length} rounds; full ledger in human_review.json._`, ""]
-        : []),
-    "| round | head | new | resolved | regressed | verdict |",
-    "| --- | --- | --- | --- | --- | --- |",
-    ...shown.map(
-      (entry) =>
-        `| ${entry.round} | \`${entry.head_sha.slice(0, 7)}\` | ${entry.new_count} | ${entry.resolved_count} | ${entry.regressed_count} | ${entry.verdict} |`
-    )
-  ];
-  return lines.join("\n");
-}
-
-function renderQueue(items: ReviewQueueItem[], diff: StructuredDiff | undefined, state: RedactionState): string {
-  if (items.length === 0) {
-    return "- No path-backed review queue items.";
-  }
-  return items
-    .map((item, index) => {
-      const excerpt = inlineExcerpt(item, diff, state);
-      return `${index + 1}. \`${field(formatQueueLocation(item), state)}\` — ${field(item.reason, state)}
-   - Action: ${field(item.reviewer_action, state)}${excerpt ? `\n${excerpt}` : ""}`;
-    })
-    .join("\n\n");
-}
-
-function inlineExcerpt(item: ReviewQueueItem, diff: StructuredDiff | undefined, state: RedactionState): string {
-  // review-surfaces.PR_SURFACE.4: thread the block state so a high-confidence
-  // secret in an excerpt line also trips the postability gate, not just the
-  // field-level prose redaction.
-  const excerpt = renderHunkExcerpt(
-    diff,
-    {
-      path: item.path,
-      old_path: item.old_path,
-      hunk_header: item.hunk_header,
-      line_start: item.line_start,
-      line_end: item.line_end,
-      side: item.anchor_side
-    },
-    undefined,
-    state
+  const decisionPrefix = renderDecisionProjectionPrefix(model, state, detail);
+  const prefix = `${sections.join("\n")}\n\n${decisionPrefix}`;
+  const suffix = `${trailingSections.map((section) => `\n\n${section}`).join("")}\n`;
+  const fixedBytes = Buffer.byteLength(prefix, "utf8") + Buffer.byteLength(suffix, "utf8");
+  if (fixedBytes > MAX_GITHUB_COMMENT_BYTES) return undefined;
+  const findings = renderDecisionFindingsWithinBudget(
+    model,
+    state,
+    detail,
+    MAX_GITHUB_COMMENT_BYTES - fixedBytes
   );
-  if (!excerpt) {
-    return "";
-  }
-  return excerpt
-    .split("\n")
-    .map((line) => `   ${line}`)
-    .join("\n");
+  if (findings === undefined) return undefined;
+  return { markdown: `${prefix}${findings}${suffix}`, blocked: state.blocked };
 }
 
-function renderTrustCounts(model: HumanReviewModel, state: RedactionState): string {
-  const trust = model.trust_audit;
-  const lines = [`- ${trust.verified_facts.length} verified, ${trust.claimed_not_verified.length} claimed (unverified), ${trust.missing_evidence.length} missing evidence, ${trust.invalid_evidence.length} invalid.`];
-  const claimedGap = trust.claimed_not_verified[0]?.missing_evidence;
-  const missingGap = trust.missing_evidence[0]?.summary;
-  if (claimedGap || missingGap) {
-    lines.push(`- Next evidence: ${field(claimedGap ?? missingGap ?? "", state, MAX_FIELD_CHARS)}`);
+function renderDecisionProjectionPrefix(
+  model: HumanReviewModel,
+  state: RedactionState,
+  detail: "full" | "compact"
+): string {
+  const projection = model.decision_projection;
+  const source = decisionIntentSourceLabel(projection.active_intent.source);
+  const decisionHeading = `### ${decisionProjectionHeading(projection.findings.length)}`;
+  const purposeLimit = detail === "full" ? 2000 : 700;
+  return `### Change purpose\n\n${prose(projection.active_intent.summary, state, purposeLimit)}\n\n_${source}._\n\n${decisionHeading}\n\n`;
+}
+
+function renderDecisionFindingsWithinBudget(
+  model: HumanReviewModel,
+  state: RedactionState,
+  detail: "full" | "compact",
+  byteBudget: number
+): string | undefined {
+  const findings = model.decision_projection.findings;
+  if (findings.length === 0) {
+    const empty = `- ${EMPTY_DECISION_FINDINGS_TEXT}`;
+    return Buffer.byteLength(empty, "utf8") <= byteBudget ? empty : undefined;
   }
-  return lines.join("\n");
+  const rows: string[] = [];
+  let bytes = 0;
+  for (let index = 0; index < findings.length; index += 1) {
+    const finding = findings[index];
+    const location = finding.path ? ` ${inlineCode(finding.path, state)}` : "";
+    const separator = index === 0 ? "" : "\n";
+    const separatorBytes = Buffer.byteLength(separator, "utf8");
+    const rendered = detail === "compact"
+      ? `${index + 1}. **${prose(finding.title, state, 160)}**${location} — Review: ${prose(finding.reviewer_action, state, 260)}`
+      : renderFullDecisionRowWithinBudget(finding, index, location, state, byteBudget - bytes - separatorBytes);
+    if (rendered === undefined) return undefined;
+    const chunkBytes = separatorBytes + Buffer.byteLength(rendered, "utf8");
+    if (bytes + chunkBytes > byteBudget) return undefined;
+    if (separator) rows.push(separator);
+    rows.push(rendered);
+    bytes += chunkBytes;
+  }
+  return rows.join("");
+}
+
+function renderFullDecisionRowWithinBudget(
+  finding: HumanReviewModel["decision_projection"]["findings"][number],
+  index: number,
+  location: string,
+  state: RedactionState,
+  byteBudget: number
+): string | undefined {
+  const reasonText = finding.reason.trim() === finding.title.trim() ? undefined : finding.reason;
+  const reason = reasonText ? ` — ${prose(reasonText, state)}` : "";
+  const parts = [
+    `${index + 1}. **${prose(finding.title, state)}**${location}${reason}\n   - Review: ${prose(finding.reviewer_action, state)}`
+  ];
+  let bytes = Buffer.byteLength(parts[0], "utf8");
+  if (bytes > byteBudget) return undefined;
+  const seenEvidence = new Set<string>();
+  let evidenceCount = 0;
+  for (const ref of finding.evidence) {
+    const value = ref.path ? `${ref.path}${ref.line_start ? `:${ref.line_start}` : ""}` : ref.note;
+    if (!value || seenEvidence.has(value)) continue;
+    seenEvidence.add(value);
+    const chunk = `${evidenceCount === 0 ? "\n   - Evidence: " : ", "}${inlineCode(value, state)}`;
+    const chunkBytes = Buffer.byteLength(chunk, "utf8");
+    if (bytes + chunkBytes > byteBudget) return undefined;
+    parts.push(chunk);
+    bytes += chunkBytes;
+    evidenceCount += 1;
+  }
+  return parts.join("");
 }
 
 
-function renderSinceSection(since: SinceLastReview, state: RedactionState): string {
+function renderSinceSection(
+  since: SinceLastReview,
+  state: RedactionState,
+  verdictTransition?: string
+): string {
   // review-surfaces.TREND.5: a single aggregate risk whose only change is its
   // count appears as BOTH resolved (old count) and new (new count) because the
   // count is baked into the comparison identity. Collapse the count-moved pair at
@@ -317,17 +289,18 @@ function renderSinceSection(since: SinceLastReview, state: RedactionState): stri
   // as both resolved and new.
   const { resolved, news, moved } = dedupeCountMovedRisks(since.resolved_risks, since.new_risks);
   const lines = [
+    verdictTransition ? `- Verdict changed: ${prose(verdictTransition, state)}` : undefined,
     formatSinceGroup("✅ Resolved risks", resolved, state),
     formatSinceGroup("⚠️ Regressed", since.regressed, state),
     formatSinceGroup("🆕 New risks", news, state),
-    moved.length ? `- ↔ Still open (count changed): ${moved.map((note) => field(note, state)).join("; ")}` : undefined,
+    moved.length ? `- ↔ Still open (count changed): ${moved.map((note) => prose(note, state)).join("; ")}` : undefined,
     formatSinceGroup("📈 Improved", since.improved, state),
     formatSinceGroup("➕ New overreach", since.new_overreach, state),
     formatSinceGroup("✅ Resolved overreach", since.resolved_overreach, state)
   ].filter((line): line is string => line !== undefined);
   return `### Since your last review
 
-${lines.length ? lines.join("\n") : "- No requirement or risk changes since the last review."}
+${lines.join("\n")}
 
 _Compared against the previous review packet._`;
 }
@@ -405,7 +378,7 @@ function sinceGroupBody(items: SinceLastReviewItem[], state: RedactionState): st
       return [...byTransition.entries()]
         .sort(([left], [right]) => compareStrings(left, right))
         .map(([transition, group]) => {
-          const samples = group.slice(0, 2).map((item) => field(item.acai_id ?? item.summary, state)).join(", ");
+          const samples = group.slice(0, 2).map((item) => prose(item.acai_id ?? item.summary, state)).join(", ");
           return `${group.length} requirement(s) ${transition} (e.g. ${samples})`;
         })
         .join("; ");
@@ -413,7 +386,7 @@ function sinceGroupBody(items: SinceLastReviewItem[], state: RedactionState): st
   }
   const shown = items
     .slice(0, MAX_SINCE_ITEMS)
-    .map((item) => field(item.summary, state))
+    .map((item) => prose(item.summary, state))
     .join("; ");
   const more = items.length > MAX_SINCE_ITEMS ? ` (+${items.length - MAX_SINCE_ITEMS} more)` : "";
   return `${shown}${more}`;
@@ -421,12 +394,14 @@ function sinceGroupBody(items: SinceLastReviewItem[], state: RedactionState): st
 
 function renderFingerprint(model: HumanReviewModel, runId: string | undefined): string {
   const keys = model.review_queue.map((item) => stickyQueueItemKey(item)).join(",");
-  const runPart = runId ? ` run=${runId}` : "";
+  const keyHash = crypto.createHash("sha256").update(keys).digest("hex").slice(0, 20);
+  const safeHead = sanitizeForHtmlComment(model.generated_from.head_sha).slice(0, 80);
+  const safeRun = runId ? sanitizeForHtmlComment(runId).slice(0, 32) : undefined;
+  const runPart = safeRun ? ` run=${safeRun}` : "";
   // Strip characters that could close the HTML comment early: a path or hunk
   // anchor containing `-->` would otherwise break out and render the rest as
   // visible Markdown (an injection surface for arbitrary comment text).
-  const safe = sanitizeForHtmlComment(`head=${model.generated_from.head_sha}${runPart} keys=${keys}`);
-  return `<!-- review-surfaces:fingerprint ${safe} -->`;
+  return `<!-- review-surfaces:fingerprint head=${safeHead}${runPart} queue=${keyHash} -->`;
 }
 
 function sanitizeForHtmlComment(text: string): string {
@@ -441,15 +416,87 @@ function sinceLastReviewIsAvailable(since: SinceLastReview | undefined): since i
   return Boolean(since && !since.unavailable_reason && since.previous_packet_path);
 }
 
+function approvalChangingSinceLastReview(model: HumanReviewModel): {
+  since: SinceLastReview;
+  verdictTransition?: string;
+} | undefined {
+  const since = model.since_last_review;
+  if (!sinceLastReviewIsAvailable(since)) return undefined;
+  const findings = model.decision_projection.findings;
+  const decisionRefs = new Set(findings.flatMap((finding) => [...finding.risk_ids, ...finding.requirement_ids]));
+  const paths = new Set(findings.flatMap((finding) => [
+    ...(finding.path ? [finding.path] : []),
+    ...finding.evidence.flatMap((ref) => ref.path ? [ref.path] : [])
+  ]));
+  const relevant = (item: SinceLastReviewItem): boolean =>
+    item.decision_refs?.some((ref) => decisionRefs.has(ref)) === true ||
+    (item.acai_id !== undefined && decisionRefs.has(item.acai_id)) ||
+    (item.path !== undefined && paths.has(item.path)) ||
+    item.evidence.some((ref) => ref.path !== undefined && paths.has(ref.path));
+  const filtered: SinceLastReview = {
+    ...since,
+    improved: since.improved.filter(relevant),
+    regressed: since.regressed.filter(relevant),
+    new_risks: since.new_risks.filter(relevant),
+    // A resolved risk cannot appear in the current decision projection. Its
+    // exact refs come from the previous review's admitted approval decisions.
+    resolved_risks: since.resolved_risks.filter((item) =>
+      (item.decision_refs?.length ?? 0) > 0 || relevant(item)
+    ),
+    // Path-level overreach is supporting inventory, not a decision transition.
+    // If overreach matters to approval it already appears as an admitted
+    // decision above; repeating file churn here turns the brief into a changelog.
+    new_overreach: [],
+    resolved_overreach: [],
+    still_open: since.still_open.filter(relevant)
+  };
+  const previousRound = [...model.rounds]
+    .reverse()
+    .find((entry) => entry.head_sha !== model.generated_from.head_sha);
+  const verdictTransition = previousRound && previousRound.verdict !== model.verdict.decision
+    ? `${decisionLabel(previousRound.verdict)} → ${decisionLabel(model.verdict.decision)}`
+    : undefined;
+  const hasRelevantItems = [
+    filtered.improved,
+    filtered.regressed,
+    filtered.new_risks,
+    filtered.resolved_risks
+  ].some((items) => items.length > 0);
+  return hasRelevantItems || verdictTransition ? { since: filtered, verdictTransition } : undefined;
+}
+
 // Redact secrets first, then collapse whitespace and truncate — same invariant as
 // the human renderer: truncating before redacting would split a multi-line secret
 // and leave it unmatched. A blocked secret is recorded on `state` because the
 // replacement hides it from the final whole-body pass.
 function field(value: string, state: RedactionState, max = MAX_FIELD_CHARS): string {
-  const redaction = inspectAndRedactSecrets(value);
+  let redaction = state.cache.get(value);
+  if (!redaction) {
+    const inspected = inspectAndRedactSecrets(value);
+    redaction = {
+      text: inspected.text.replace(/\s+/g, " ").trim(),
+      blocked: inspected.blocked
+    };
+    state.cache.set(value, redaction);
+  }
   if (redaction.blocked) {
     state.blocked = true;
   }
-  const redacted = redaction.text.replace(/\s+/g, " ").trim();
+  const redacted = redaction.text;
   return redacted.length <= max ? redacted : `${redacted.slice(0, max - 3)}...`;
+}
+
+// User-authored PR titles/bodies are rendered as literal prose, never as
+// Markdown/HTML control syntax. This prevents a title such as `<!--` or `#`
+// from hiding or restructuring the approval decisions below it.
+function prose(value: string, state: RedactionState, max = MAX_FIELD_CHARS): string {
+  return escapeMarkdownLiteral(field(value, state, max));
+}
+
+function inlineCode(value: string, state: RedactionState): string {
+  return markdownInlineCode(field(value, state));
+}
+
+function linkDestination(value: string, state: RedactionState): string {
+  return markdownLinkDestination(field(value, state, 2000));
 }

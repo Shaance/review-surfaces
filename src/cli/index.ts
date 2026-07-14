@@ -21,7 +21,6 @@ import { createRuntimeImportResolver } from "../collector/compiler-options";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { loadPrivacyIgnoreSync } from "../privacy/ignore";
-import { inspectAndRedactSecrets } from "../privacy/secrets";
 import { errorMessage, stripUndefined } from "../core/guards";
 import type { CoverageEvidence } from "../human/contract";
 import { PROVENANCE_ARTIFACTS } from "../collector/artifact-provenance";
@@ -33,7 +32,7 @@ import { isRecord } from "../core/guards";
 import { FailOnSeverity, gateDecision, GateOptions } from "../core/gate";
 import { buildArchitecture } from "../diagrams/diagrams";
 import { buildDogfood, DogfoodComparisonInput } from "../dogfood/dogfood";
-import { comparePackets, loadPreviousPacket, resolvePreviousPacketPath } from "../dogfood/compare";
+import { comparePackets, comparisonRiskKey, loadPreviousPacket, resolvePreviousPacketPath } from "../dogfood/compare";
 import { EvaluationModel } from "../evaluation/evaluate";
 import { buildIntent, IntentModel } from "../intent/intent";
 import {
@@ -66,23 +65,22 @@ import {
   writeRisksArtifact
 } from "../render/packet";
 import { loadEvaluation } from "../render/load";
-import { renderCommentFromPacketFile, resolvePacketPath } from "../render/comment";
-import { renderHumanPrComment, renderPrComment } from "../render/pr-comment";
-import { renderStickySummary } from "../render/sticky-summary";
+import { resolvePacketPath } from "../render/artifact-path";
+import { renderStickySummary, type StickySummaryOptions } from "../render/sticky-summary";
 import { renderHumanReviewHtml } from "../human/render-html";
-import { assemblePrReviewSurface } from "../pipeline/pr-surface";
+import { assemblePrReviewSurface, normalizePrChangeContext, samePrChangeContext } from "../pipeline/pr-surface";
 import { evaluateBaseline } from "../evaluation/baseline";
-import { PrReviewSurfaceModel, ReviewScope, StructuredDiff } from "../pr/contract";
+import { PrChangeContext, PrReviewSurfaceModel, ReviewScope, StructuredDiff } from "../pr/contract";
 import { renderSarifFromPacketFile } from "../render/sarif";
 import { GateContext, projectRunSummary, readQueueIds, renderRunSummaryFromPacketFile, serializeRunSummary } from "../render/summary-json";
 import { buildDraftReview } from "../render/draft-review";
-import { postStickyComment } from "../render/post-comment";
+import { postStickyComment, removeStickyComment } from "../render/post-comment";
 import { writeJson, writeText } from "../core/files";
 import { compareStrings } from "../core/compare";
 import { PACKET_SCHEMA_VERSION, PACKET_SEVERITIES } from "../schema/review-packet-contract";
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { packagedSchemaPath } from "../schema/packaged-schemas";
-import { buildHumanReview, humanReviewConfigSignature } from "../human/human-review";
+import { buildHumanReview, humanReviewConfigSignature, prSurfaceSignature } from "../human/human-review";
 import { ChangedImportEdge, ChangeGraphAreaInsight, ChangeGraphEdgeInsight, computeChangedImportEdges } from "../human/change-graph";
 import { buildChangeMapInsights, ChangeMapInsights } from "../human/change-map-insights";
 import { ArchDriftResult, boundArchDriftByGraphCompleteness, computeArchDriftFacts, moduleOf } from "../risks/arch-drift";
@@ -548,6 +546,7 @@ interface CacheSnapshot {
 interface PrSurfaceCacheReuse {
   reusable: boolean;
   surface?: PrReviewSurfaceModel;
+  surfaceChanged?: boolean;
 }
 
 interface CachedHumanReviewReuse {
@@ -574,11 +573,20 @@ interface HumanReviewArtifactInputs {
   packet?: ReviewPacket;
   prSurface?: PrReviewSurfaceModel;
   feedback?: FeedbackFile[];
-  // A provider-built narrative to carry through a cache-hit rebuild so it is not
-  // overwritten by the deterministic fallback (review-surfaces.NARRATIVE.1).
+  // Optional provider prose carried through a cache-hit rebuild.
   narrative?: ChangeNarrative;
   changeMapInsights?: ChangeMapInsights;
   conversationReview?: ConversationReviewResult;
+}
+
+interface HumanFactContext {
+  implementationRoots: string[];
+  semanticFacts: SemanticChangeFacts;
+  rankingEvidence: RankingEvidence;
+  dependencyFacts: ReturnType<typeof computeDependencyFacts>;
+  configFacts: ReturnType<typeof computeConfigFacts>;
+  changedImportEdges: ChangedImportEdge[];
+  archDrift?: ArchDriftResult;
 }
 
 // Resolve the EFFECTIVE output dir with the SAME precedence collectInputs uses
@@ -705,15 +713,16 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // same cached human artifact. Parse and validate it once before deciding
   // whether the cache is complete enough to reuse.
   const cachedHumanReuse = cacheHit && config.human_review.enabled
-    ? readCachedHumanReviewReuse(
-        cwd,
-        collection.outputDir,
-        String(collection.manifest.head_sha ?? ""),
-        String(collection.manifest.signature ?? "")
-      )
+      ? readCachedHumanReviewReuse(
+          cwd,
+          collection.outputDir,
+          String(collection.manifest.head_sha ?? ""),
+          String(collection.manifest.signature ?? ""),
+          reviewScope(parsed)
+        )
     : undefined;
   const prSurfaceReuse = cacheHit
-    ? prSurfaceCacheReuse(parsed, collection, config, cachedHumanReuse?.conversationReview)
+    ? prSurfaceCacheReuse(parsed, collection, config, cachedHumanReuse)
     : undefined;
   if (cacheSnapshot && cacheHit && prSurfaceReuse?.reusable) {
     const strict = booleanFlag(parsed, "strict");
@@ -727,21 +736,20 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // Inputs unchanged: restore the prior manifest bytes (collect just rewrote
       // it; only created_at could differ) and reuse the existing packet untouched.
       await writeText(cacheSnapshot.manifestPath, cacheSnapshot.manifestRaw);
+      if (prSurfaceReuse.surfaceChanged && prSurfaceReuse.surface) {
+        assertValidPrSurface(cwd, prSurfaceReuse.surface);
+        await writeJson(path.join(collection.outputDir, "pr_review_surface.json"), prSurfaceReuse.surface);
+      }
       const provider = providerFlag(parsed, config);
       // review-surfaces.NARRATIVE.1: on a cache hit the inputs (and the
       // provider/agent-input, which are part of the cache signature) are
-      // unchanged, so REUSE the narrative already in human_review.json rather than
-      // re-invoking the provider. This keeps cache reuse lossless and avoids a
-      // fresh ai-sdk call (which could now fail and clobber good cached prose with
-      // the fallback). When no prior narrative exists, buildHumanReview renders
-      // the deterministic fallback.
+      // unchanged, so REUSE any provider narrative already in human_review.json
+      // rather than re-invoking the provider. This keeps optional prose lossless
+      // and avoids a fresh ai-sdk call. No prior narrative means no narrative.
       const cachedNarrative = cachedHumanReuse?.narrative;
       const cachedChangeMapInsights = cachedHumanReuse?.changeMapInsights;
       const cachedConversationReview = config.human_review.enabled
-        ? conversationReviewFromFields(
-            prSurfaceReuse.surface?.conversation_analysis,
-            prSurfaceReuse.surface?.review_insights ?? []
-          ) ?? cachedHumanReuse?.conversationReview
+        ? cachedHumanReuse?.conversationReview
         : undefined;
       const cachedHumanInputs: HumanReviewArtifactInputs = {
         packet: cacheSnapshot.packet,
@@ -921,31 +929,32 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   const humanReviewDiff = isPrScope || config.human_review.enabled
     ? readHumanReviewDiff(collection.outputDir)
     : undefined;
+  const humanFactContext = config.human_review.enabled
+    ? buildHumanFactContext(cwd, writtenPacket, humanReviewDiff, config)
+    : undefined;
   if (isPrScope) {
     // Evaluate the base ref in a throwaway worktree for the coverage delta
     // (best-effort: degrades to current-status when the base can't be evaluated).
-    const baseEvaluation = await evaluateBaseline({
-      cwd,
-      // COLD_START.6: reuse the base the run already resolved (auto chain or
-      // explicit flag) so the baseline evaluates the same range the packet did.
-      baseRef: collection.manifest.base_ref,
-      config,
-      specFlag: stringFlag(parsed, "spec")
-    });
-    // The PR sidecar and later human enrichments share one provider instance.
-    // assemblePrReviewSurface still invokes its postability-critical narrative
-    // before optional conversation enrichment.
+    const baseEvaluation = humanReviewDiff && humanReviewDiff.files.length > 0
+      ? await evaluateBaseline({
+          cwd,
+          // COLD_START.6: reuse the base the run already resolved (auto chain or
+          // explicit flag) so the baseline evaluates the same range the packet did.
+          baseRef: collection.manifest.base_ref,
+          config,
+          specFlag: stringFlag(parsed, "spec")
+        })
+      : undefined;
+    // The PR sidecar is deterministic. Optional provider enrichments are built
+    // once on the human artifact below and never gate the posted brief.
     const surface = await assemblePrReviewSurface({
       collection,
       intent: packet.intent,
       evaluation: packet.evaluation,
       baseEvaluation,
       reviewAreas: reviewAreas.areas,
-      provider: humanEnrichment.provider,
-      providerName: humanEnrichment.providerName,
-      model: humanEnrichment.model,
-      redactSecrets: humanEnrichment.redactSecrets,
-      diff: humanReviewDiff
+      diff: humanReviewDiff,
+      changeContext: changeContextFromFlags(parsed)
     });
     persistedSurface = jsonSerializable(surface);
     assertValidPrSurface(cwd, persistedSurface);
@@ -958,7 +967,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       await writeText(diagramPath, persistedSurface.diagram.body);
     }
     if (persistedSurface.status === "blocked") {
-      console.warn(`PR review surface blocked (${persistedSurface.blocked_reason}); see pr_review_surface.json`);
+      console.warn(`PR review surface is not ready (${persistedSurface.blocked_reason})`);
     }
   }
   let narrative: ChangeNarrative | undefined;
@@ -966,20 +975,19 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   let conversationReview: ConversationReviewResult | undefined;
   if (config.human_review.enabled) {
     if (isPrScope) {
-      // Preserve PR ordering: the sidecar's required narrative and conversation
-      // work completed above before these secondary cockpit enrichments.
-      narrative = await buildHumanNarrativeForAll(
-        config, writtenPacket, persistedSurface, humanReviewDiff, collection, humanEnrichment
-      );
-      changeMapInsights = await buildChangeMapInsightsForAll(
-        cwd, writtenPacket, humanReviewDiff, humanEnrichment
-      );
-      conversationReview = conversationReviewFromFields(
-        persistedSurface?.conversation_analysis,
-        persistedSurface?.review_insights ?? []
-      ) ?? await buildConversationReviewForAll(
-            writtenPacket, humanReviewDiff, collection, humanEnrichment
-          );
+      // These optional projections read the same deterministic packet and do
+      // not influence approval. Their latency should therefore not be additive.
+      [narrative, changeMapInsights, conversationReview] = await Promise.all([
+        buildHumanNarrativeForAll(
+          config, writtenPacket, persistedSurface, humanReviewDiff, collection, humanEnrichment
+        ),
+        buildChangeMapInsightsForAll(
+          cwd, writtenPacket, humanReviewDiff, humanEnrichment, humanFactContext
+        ),
+        buildConversationReviewForAll(
+          writtenPacket, humanReviewDiff, collection, humanEnrichment
+        )
+      ]);
     } else {
       // Repo enrichments are independent read-only projections over the same
       // packet/diff/provider input, so their latency need not be additive.
@@ -988,7 +996,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
           config, writtenPacket, undefined, humanReviewDiff, collection, humanEnrichment
         ),
         buildChangeMapInsightsForAll(
-          cwd, writtenPacket, humanReviewDiff, humanEnrichment
+          cwd, writtenPacket, humanReviewDiff, humanEnrichment, humanFactContext
         ),
         buildConversationReviewForAll(
           writtenPacket, humanReviewDiff, collection, humanEnrichment
@@ -997,7 +1005,7 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     }
   }
   const humanReview = config.human_review.enabled
-    ? await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff, collection.feedback, config, narrative, changeMapInsights, conversationReview)
+    ? await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff, collection.feedback, config, narrative, changeMapInsights, conversationReview, humanFactContext)
     : undefined;
   if (!config.human_review.enabled) {
     removeHumanReviewArtifacts(collection.outputDir);
@@ -1079,6 +1087,18 @@ function isPrEnvironment(): boolean {
   return process.env.GITHUB_EVENT_NAME === "pull_request" || process.env.GITHUB_EVENT_NAME === "pull_request_target" || process.env.GITHUB_BASE_REF !== undefined;
 }
 
+function changeContextFromFlags(parsed: ParsedArgs): PrChangeContext | undefined {
+  const title = stringFlag(parsed, "change-title")?.trim();
+  if (!title) return undefined;
+  const description = stringFlag(parsed, "change-description")?.trim();
+  return {
+    title,
+    ...(description ? { description } : {}),
+    source: isPrEnvironment() ? "github" : "cli",
+    redaction_blocked: false
+  };
+}
+
 // Whether a --cache signature hit may be honored as-is. Always true in repo mode
 // (the cache governs the whole-repo packet it was built for). In pr mode the PR
 // surface is a separate artifact NOT covered by the signature, so the shortcut is
@@ -1131,7 +1151,7 @@ async function buildHumanNarrativeForAll(
   diff: StructuredDiff | undefined,
   collection: CollectionResult,
   enrichment: HumanEnrichmentContext
-): Promise<ChangeNarrative> {
+): Promise<ChangeNarrative | undefined> {
   return buildChangeNarrative({
     provider: enrichment.provider,
     providerName: enrichment.providerName,
@@ -1149,16 +1169,18 @@ async function buildChangeMapInsightsForAll(
   cwd: string,
   packet: ReviewPacket,
   diff: StructuredDiff | undefined,
-  enrichment: HumanEnrichmentContext
+  enrichment: HumanEnrichmentContext,
+  suppliedFacts?: HumanFactContext
 ): Promise<ChangeMapInsights> {
-  const readers = buildFactReaders(cwd, packet, diff);
-  const edges = computeChangedImportEdgesForPacket(cwd, diff, readers);
-  const implementationRoots = readers ? detectRootsForPacket(cwd, readers) : DEFAULT_IMPLEMENTATION_ROOTS;
-  const areas = changeMapAreasForInsights(diff, implementationRoots);
+  if (enrichment.providerName === "mock") {
+    return { edgeInsights: [], areaInsights: [] };
+  }
+  const facts = suppliedFacts ?? buildHumanFactContext(cwd, packet, diff);
+  const areas = changeMapAreasForInsights(diff, facts.implementationRoots);
   return buildChangeMapInsights({
     provider: enrichment.provider,
     providerName: enrichment.providerName,
-    edges,
+    edges: facts.changedImportEdges,
     areas,
     diff,
     redactSecrets: enrichment.redactSecrets,
@@ -1211,34 +1233,38 @@ function prSurfaceCacheReuse(
   parsed: ParsedArgs,
   collection: CollectionResult,
   config: ReviewSurfacesConfig,
-  repoConversationReview?: ConversationReviewResult
+  cachedHumanReuse?: CachedHumanReviewReuse
 ): PrSurfaceCacheReuse {
   if (reviewScope(parsed) !== "pr") {
     return {
-      reusable: !config.human_review.enabled || conversationReviewIsReusable(repoConversationReview)
+      reusable: !config.human_review.enabled || conversationReviewIsReusable(cachedHumanReuse?.conversationReview)
     };
   }
   const surfacePath = path.join(collection.outputDir, "pr_review_surface.json");
   try {
     const surface = readPrSurfaceArtifact(collection.cwd, surfacePath);
-    const requestedModel = effectiveNarrativeModel(parsed, config);
-    // The surface depends on head AND base (coverage delta) AND the narrative
-    // provider/model, none of which are in the whole-repo packet signature in pr
-    // mode. Reuse only a READY surface that matches all of them; otherwise (stale
-    // base, blocked surface, swapped provider/model) force a regenerate.
-    const reusable = (
+    const requestedChangeContext = normalizePrChangeContext(changeContextFromFlags(parsed));
+    // The deterministic sidecar depends on head, base, and author context. It is
+    // independent of optional narrative provider/model settings.
+    const factsReusable = (
       surface?.status === "ready" &&
-      surface.scope?.head_sha === collection.git.head_sha &&
-      surface.scope?.base_sha === collection.git.base_sha &&
-      surface.scope?.base_ref === collection.git.base_ref &&
-      surface.llm?.provider === providerFlag(parsed, config) &&
-      (surface.llm?.model ?? undefined) === requestedModel &&
-      conversationReviewIsReusable(conversationReviewFromFields(
-        surface.conversation_analysis,
-        surface.review_insights
+      prSurfaceIdentityMatches(collection.git, surface, "strict") &&
+      (!config.human_review.enabled || (
+        conversationReviewIsReusable(
+          cachedHumanReuse?.conversationReview
+        ) && (
+          providerFlag(parsed, config) !== "ai-sdk" || cachedHumanReuse?.narrative?.source === "provider"
+        )
       ))
     );
-    return { reusable, surface: reusable ? surface : undefined };
+    if (!factsReusable) {
+      return { reusable: false };
+    }
+    const surfaceChanged = !samePrChangeContext(surface.change_context, requestedChangeContext);
+    const refreshedSurface = surfaceChanged
+      ? stripUndefined({ ...surface, change_context: requestedChangeContext }) as PrReviewSurfaceModel
+      : surface;
+    return { reusable: true, surface: refreshedSurface, surfaceChanged };
   } catch {
     return { reusable: false };
   }
@@ -1557,7 +1583,7 @@ async function runReviewWalkthrough(parsed: ParsedArgs): Promise<number> {
     throw new CliError("Human review is disabled by config; enable it to run the review walkthrough.", ExitCodes.usageError);
   }
   const scope = reviewScope(parsed);
-  const { outputDir, model } = await loadOrBuildHumanReviewJson(cwd, outDir, scope, "review", config);
+  const { outputDir, model } = await loadOrBuildHumanReviewJson(cwd, outDir, scope, config);
   // Fail fast rather than silently walking a repo queue under a PR-scope request.
   // A PR-scope review needs a CURRENT pr_review_surface.json matching the review
   // (full identity, not just head) — both so the queue is the PR queue AND so the
@@ -1643,7 +1669,7 @@ function prScopeReviewGateError(cwd: string, outputDir: string, model: HumanRevi
       surface = undefined;
     }
   }
-  if (surface && humanReviewMatchesPrSurface(cwd, outputDir, model, surface)) {
+  if (surface && humanReviewMatchesPrSurface(model, surface)) {
     return undefined;
   }
   return new CliError(
@@ -1725,7 +1751,7 @@ async function runHumanSubartifactStage(parsed: ParsedArgs): Promise<void> {
     console.log(`${artifact.label}: disabled by human_review.enabled=false`);
     return;
   }
-  const context = await loadOrBuildHumanReviewJson(cwd, outDir, reviewScope(parsed), artifact.command, config, configPath !== undefined);
+  const context = await loadOrBuildHumanReviewJson(cwd, outDir, reviewScope(parsed), config, configPath !== undefined);
   await writeHumanStandaloneArtifact(context.outputDir, context.model, artifact, humanRenderContext(context.outputDir));
   console.log(`${artifact.label}: ${artifactPathForLog(cwd, context.outputDir, artifact.artifact)}`);
 }
@@ -1776,11 +1802,9 @@ async function writeHumanReviewFromArtifacts(
 
 function printHumanReviewTerminalSummary(cwd: string, outDir: string, humanReview: HumanReviewModel): void {
   console.log(`Human review: ${artifactPathForLog(cwd, outDir, "human_review.md")}`);
+  console.log(`Change purpose: ${humanReview.decision_projection.active_intent.summary}`);
   console.log(`Verdict: ${humanReview.verdict.decision}`);
-  console.log(`Review first: ${humanReview.review_queue.length} item(s)`);
-  console.log(`Blockers: ${humanReview.blockers.length}`);
-  console.log(`Suggested comments: ${humanReview.suggested_comments.length}`);
-  console.log(`Missing evidence: ${humanReview.trust_audit.missing_evidence.length}`);
+  console.log(`Approval decisions: ${humanReview.decision_projection.findings.length}`);
 }
 
 // review-surfaces.DISTRIBUTION.7: the flagship surface must be discoverable
@@ -1797,7 +1821,6 @@ async function loadOrBuildHumanReviewJson(
   cwd: string,
   outDir: string,
   scope: ReviewScope,
-  command?: string,
   config?: ReviewSurfacesConfig,
   forceRebuild = false
 ): Promise<{ outputDir: string; model: HumanReviewModel }> {
@@ -1808,12 +1831,10 @@ async function loadOrBuildHumanReviewJson(
     // review-surfaces.SCHEMA.3: a schema-invalid (e.g. stale prior-version,
     // partial) artifact is treated as stale and rebuilt from current artifacts
     // rather than hard-failing; the rebuilt model is always schema-valid. The
-    // rebuild also fires on a config-signature change or when the model does not
-    // satisfy the requested standalone command.
+    // rebuild also fires on a config-signature change.
     const isStale =
       humanReviewIssues(cwd, model).length > 0 ||
       !humanReviewJsonMatchesConfig(model, config) ||
-      !humanReviewJsonSatisfiesStandaloneCommand(model, command) ||
       // A cached review built for a different scope must not satisfy this request
       // (e.g. `review --review-scope pr` reusing a repo-scoped model), so the
       // walkthrough walks the PR queue and captures PR-risk rule/ids.
@@ -1835,17 +1856,6 @@ function humanReviewJsonMatchesConfig(model: HumanReviewModel, config?: ReviewSu
   return model.generated_from.human_review_config_signature === humanReviewConfigSignature(
     config?.human_review,
     config?.contract_surfaces.paths
-  );
-}
-
-function humanReviewJsonSatisfiesStandaloneCommand(model: HumanReviewModel, command: string | undefined): boolean {
-  const artifact = command ? humanStandaloneArtifactForCommand(command) : undefined;
-  return artifact && "isSatisfied" in artifact ? artifact.isSatisfied(model) : true;
-}
-
-function humanReviewJsonSatisfiesPrComment(model: HumanReviewModel): boolean {
-  return ["routes", "evidence-cards", "intent-mismatch"].every((command) =>
-    humanReviewJsonSatisfiesStandaloneCommand(model, command)
   );
 }
 
@@ -1874,7 +1884,8 @@ async function buildHumanReviewFromArtifacts(
         cwd,
         outputDir,
         String((packet.manifest as { head_sha?: unknown }).head_sha ?? ""),
-        String((packet.manifest as { signature?: unknown }).signature ?? "")
+        String((packet.manifest as { signature?: unknown }).signature ?? ""),
+        "repo"
       )?.conversationReview
     : undefined;
   const conversationReview = inputs?.conversationReview ?? repoConversationReview;
@@ -1919,6 +1930,36 @@ async function buildHumanReviewFromArtifacts(
   };
 }
 
+function buildHumanFactContext(
+  cwd: string,
+  packet: ReviewPacket,
+  diff: StructuredDiff | undefined,
+  config?: ReviewSurfacesConfig
+): HumanFactContext {
+  const readers = buildFactReaders(cwd, packet, diff);
+  const implementationRoots = detectRootsForPacket(cwd, readers);
+  const contractSourceProjection = detectContractRootsForPacket(cwd, readers);
+  const contractPaths = config?.contract_surfaces.paths;
+  const semanticFacts = withBlastRadius(
+    cwd,
+    computeSemanticFactsForPacket(diff, readers, contractPaths, contractSourceProjection),
+    readers,
+    contractPaths,
+    contractSourceProjection.head
+  );
+  return {
+    implementationRoots,
+    semanticFacts,
+    rankingEvidence: computeRankingEvidenceForPacket(cwd, packet, diff, readers),
+    dependencyFacts: readers
+      ? computeDependencyFacts({ changedFiles: readers.changedFiles, readBase: readers.readBase, readHead: readers.readHead })
+      : [],
+    configFacts: readers && diff ? computeConfigFacts({ diff, readBase: readers.readBase, readHead: readers.readHead }) : [],
+    changedImportEdges: computeChangedImportEdgesForPacket(cwd, diff, readers),
+    archDrift: computeArchDriftForPacket(cwd, diff, readers, implementationRoots)
+  };
+}
+
 function buildHumanReviewForPacket(
   cwd: string,
   outDir: string,
@@ -1929,10 +1970,10 @@ function buildHumanReviewForPacket(
   config?: ReviewSurfacesConfig,
   narrative?: ChangeNarrative,
   changeMapInsights?: ChangeMapInsights,
-  conversationReview?: ConversationReviewResult
+  conversationReview?: ConversationReviewResult,
+  suppliedFacts?: HumanFactContext
 ): HumanReviewModel {
   const resolvedDiff = diff;
-  const factReaders = buildFactReaders(cwd, packet, resolvedDiff);
   // review-surfaces.POLICY.1: a malformed committed policy fails LOUDLY.
   let policy: ReviewPolicy | undefined;
   try {
@@ -1956,11 +1997,11 @@ function buildHumanReviewForPacket(
         }
       }
     : config;
-  // review-surfaces.COLD_START.2: detect the repo's implementation roots ONCE
-  // from committed signals; the change map, tour, and drift facts all consume
-  // the same value so they cannot disagree on what counts as implementation.
-  const implementationRoots = detectRootsForPacket(cwd, factReaders);
-  const contractSourceProjection = detectContractRootsForPacket(cwd, factReaders);
+  // One deterministic fact context supplies every consumer in this run. It
+  // shares memoized readers, tree listings, roots, and import edges across
+  // enrichment and human-model assembly.
+  const facts = suppliedFacts ?? buildHumanFactContext(cwd, packet, resolvedDiff, effectiveConfig);
+  const previousReview = readPreviousReviewContext(cwd, packet);
   const humanReview = buildHumanReview({
     packet,
     prSurface,
@@ -1975,36 +2016,31 @@ function buildHumanReviewForPacket(
     policyNowIso: typeof (packet.manifest as { created_at?: unknown }).created_at === "string" ? (packet.manifest as { created_at: string }).created_at : "",
     // review-surfaces.SEMANTIC_DIFF.1-4: computed here (sync git access) so the
     // facts are present uniformly on every build path — main, cache, standalone.
-    semanticFacts: withBlastRadius(
-      cwd,
-      computeSemanticFactsForPacket(resolvedDiff, factReaders, effectiveConfig?.contract_surfaces.paths, contractSourceProjection),
-      factReaders,
-      effectiveConfig?.contract_surfaces.paths,
-      contractSourceProjection.head
-    ),
+    semanticFacts: facts.semanticFacts,
     // review-surfaces.RANKING.1: per-changed-impl-path evidence (changed test ->
     // impl import map) computed here so it is uniform on every build path.
-    rankingEvidence: computeRankingEvidenceForPacket(cwd, packet, resolvedDiff),
+    rankingEvidence: facts.rankingEvidence,
     // review-surfaces.COVERAGE.3/.4: intersect the collected lcov model (if any)
     // with the diff; absent report -> the honest "no_report" negative.
     coverageEvidence: computeCoverageEvidenceForPacket(outDir, resolvedDiff),
     // review-surfaces.DEP_FACTS / CONFIG_FACTS: deterministic, offline detectors
     // computed here so every build path carries them uniformly.
-    dependencyFacts: factReaders ? computeDependencyFacts({ changedFiles: factReaders.changedFiles, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
-    configFacts: factReaders && resolvedDiff ? computeConfigFacts({ diff: resolvedDiff, readBase: factReaders.readBase, readHead: factReaders.readHead }) : [],
+    dependencyFacts: facts.dependencyFacts,
+    configFacts: facts.configFacts,
     // review-surfaces.CHANGE_MAP.1: import edges among changed files, from the
     // shared import-graph parser over head content — computed here (file access)
     // so the section is uniform on every build path.
-    changedImportEdges: computeChangedImportEdgesForPacket(cwd, resolvedDiff, factReaders),
+    changedImportEdges: facts.changedImportEdges,
     changeGraphEdgeInsights: changeMapInsights?.edgeInsights,
     changeGraphAreaInsights: changeMapInsights?.areaInsights,
-    implementationRoots,
+    implementationRoots: facts.implementationRoots,
     // review-surfaces.ARCH_DRIFT.1-3: base-vs-head resolved import diffs at
     // module altitude, computed here (base/head file access).
-    archDrift: computeArchDriftForPacket(cwd, resolvedDiff, factReaders, implementationRoots),
+    archDrift: facts.archDrift,
     // review-surfaces.TREND.1: carry the prior rounds ledger forward from the
     // previous packet's sibling human_review.json (any transport).
-    previousRounds: readPreviousRounds(cwd, packet),
+    previousRounds: previousReview.rounds,
+    previousApprovalRisks: previousReview.approvalRisks,
     // review-surfaces.EVAL_HARNESS.6: surface the eval scoreboard on the
     // cockpit footer when the output directory carries one.
     evalScoreboard: readEvalScoreboard(outDir),
@@ -2071,6 +2107,10 @@ interface FactReaders {
   changedFiles: Array<{ path: string; old_path?: string }>;
   readBase: (filePath: string) => string | undefined;
   readHead: (filePath: string) => string | undefined;
+  existsBase: (filePath: string) => boolean;
+  existsHead: (filePath: string) => boolean;
+  listBasePaths: () => string[] | undefined;
+  listHeadPaths: (includeUntracked: boolean) => string[] | undefined;
   headIsWorktree: boolean;
   headSha: string;
   // The resolved merge-base ref the base side reads at (empty when unknown).
@@ -2100,10 +2140,71 @@ function buildFactReaders(cwd: string, packet: ReviewPacket, diff: StructuredDif
       return undefined;
     }
   };
+  const memoizeReader = (
+    reader: (filePath: string) => string | undefined
+  ): ((filePath: string) => string | undefined) => {
+    const cache = new Map<string, string | undefined>();
+    return (filePath) => {
+      if (cache.has(filePath)) {
+        return cache.get(filePath);
+      }
+      const value = reader(filePath);
+      cache.set(filePath, value);
+      return value;
+    };
+  };
+  const readBase = baseReadRef
+    ? (filePath: string) => readFileAtRef(cwd, baseReadRef, filePath)
+    : () => undefined;
+  const readHead = headIsWorktree
+    ? readWorktree
+    : (filePath: string) => readFileAtRef(cwd, headSha, filePath);
+  const pathCache = new Map<string, string[] | undefined>();
+  const listPaths = (key: string, args: string[]): string[] | undefined => {
+    if (pathCache.has(key)) return pathCache.get(key);
+    try {
+      const files = execFileSync("git", args, { cwd, encoding: "utf8" }).split("\n").filter(Boolean);
+      pathCache.set(key, files);
+      return files;
+    } catch {
+      pathCache.set(key, undefined);
+      return undefined;
+    }
+  };
+  const listHeadPaths = (includeUntracked: boolean): string[] | undefined => headIsWorktree
+    ? listPaths(
+        includeUntracked ? "head:reviewed" : "head:tracked",
+        includeUntracked ? ["ls-files", "--cached", "--others", "--exclude-standard"] : ["ls-files", "--cached"]
+      )
+    : listPaths("head:committed", ["ls-tree", "-r", "--name-only", headSha]);
+  const listBasePaths = (): string[] | undefined => baseReadRef
+    ? listPaths("base", ["ls-tree", "-r", "--name-only", baseReadRef])
+    : undefined;
+  const memoizeExists = (exists: (filePath: string) => boolean): ((filePath: string) => boolean) => {
+    const cache = new Map<string, boolean>();
+    return (filePath) => {
+      if (cache.has(filePath)) return cache.get(filePath) ?? false;
+      const value = exists(filePath);
+      cache.set(filePath, value);
+      return value;
+    };
+  };
   return {
     changedFiles: diff.files.map((file) => stripUndefined({ path: file.path, old_path: file.old_path }) as { path: string; old_path?: string }),
-    readBase: baseReadRef ? (filePath) => readFileAtRef(cwd, baseReadRef, filePath) : () => undefined,
-    readHead: headIsWorktree ? readWorktree : (filePath) => readFileAtRef(cwd, headSha, filePath),
+    readBase: memoizeReader(readBase),
+    readHead: memoizeReader(readHead),
+    existsBase: memoizeExists((filePath) => Boolean(baseReadRef) && blobExistsAtRef(cwd, baseReadRef, filePath)),
+    existsHead: memoizeExists(headIsWorktree
+      ? (filePath) => {
+          try {
+            return fs.statSync(path.resolve(cwd, filePath)).isFile();
+          } catch {
+            return false;
+          }
+        }
+      : (filePath) => blobExistsAtRef(cwd, headSha, filePath)),
+    listBasePaths,
+    listHeadPaths,
     headIsWorktree,
     headSha,
     baseReadRef
@@ -2118,16 +2219,8 @@ function detectRootsForPacket(cwd: string, readers: FactReaders | undefined): st
   if (!readers) {
     return [...DEFAULT_IMPLEMENTATION_ROOTS];
   }
-  let files: string[];
-  try {
-    files = execFileSync(
-      "git",
-      readers.headIsWorktree ? ["ls-files", "--cached", "--others", "--exclude-standard"] : ["ls-tree", "-r", "--name-only", readers.headSha],
-      { cwd, encoding: "utf8" }
-    )
-      .split("\n")
-      .filter(Boolean);
-  } catch {
+  const files = readers.listHeadPaths(true);
+  if (!files) {
     return [...DEFAULT_IMPLEMENTATION_ROOTS];
   }
   return detectImplementationRoots({ files, read: readers.readHead });
@@ -2139,21 +2232,13 @@ function detectContractRootsForPacket(
 ): { base: ContractSourceProjection; head: ContractSourceProjection } {
   const empty = (): ContractSourceProjection => ({ roots: [], sourcePatternsByContract: new Map() });
   if (!readers) return { base: empty(), head: empty() };
-  const detect = (args: string[], read: (path: string) => string | undefined): ContractSourceProjection => {
-    try {
-      const files = execFileSync("git", args, { cwd, encoding: "utf8" }).split("\n").filter(Boolean);
-      return detectContractSourceProjection({ files, read });
-    } catch {
-      return empty();
-    }
+  const detect = (files: string[] | undefined, read: (path: string) => string | undefined): ContractSourceProjection => {
+    return files ? detectContractSourceProjection({ files, read }) : empty();
   };
   return {
-    head: detect(
-      readers.headIsWorktree ? ["ls-files", "--cached", "--others", "--exclude-standard"] : ["ls-tree", "-r", "--name-only", readers.headSha],
-      readers.readHead
-    ),
+    head: detect(readers.listHeadPaths(true), readers.readHead),
     base: readers.baseReadRef
-      ? detect(["ls-tree", "-r", "--name-only", readers.baseReadRef], readers.readBase)
+      ? detect(readers.listBasePaths(), readers.readBase)
       : empty()
   };
 }
@@ -2174,15 +2259,7 @@ function computeChangedImportEdgesForPacket(cwd: string, diff: StructuredDiff | 
     // Blob-only check for committed refs: `git show <ref>:<dir>` succeeds for
     // directories, which would resolve `./foo` to the directory instead of
     // foo/index.ts and silently drop the edge.
-    exists: readers.headIsWorktree
-      ? (filePath) => {
-          try {
-            return fs.statSync(path.resolve(cwd, filePath)).isFile();
-          } catch {
-            return false;
-          }
-        }
-      : (filePath) => blobExistsAtRef(cwd, readers.headSha, filePath)
+    exists: readers.existsHead
   });
 }
 
@@ -2197,21 +2274,13 @@ function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined
   if (!diff || diff.files.length === 0 || !readers || readers.baseReadRef === "") {
     return undefined;
   }
-  const existsHead = readers.headIsWorktree
-    ? (filePath: string): boolean => {
-        try {
-          return fs.statSync(path.resolve(cwd, filePath)).isFile();
-        } catch {
-          return false;
-        }
-      }
-    : (filePath: string) => blobExistsAtRef(cwd, readers.headSha, filePath);
+  const existsHead = readers.existsHead;
   // Full-tree module-edge sets: novelty must be judged against EVERY base
   // import (the same module edge often already exists via another file), so
   // both trees are parsed once with the shared bounded import graph.
-  const existsBase = (filePath: string): boolean => readers.baseReadRef !== "" && blobExistsAtRef(cwd, readers.baseReadRef, filePath);
+  const existsBase = readers.existsBase;
   const ignore = loadPrivacyIgnoreSync(cwd);
-  const worktreeTracked = readers.headIsWorktree ? trackedWorktreePaths(cwd) : undefined;
+  const worktreeTracked = readers.headIsWorktree ? readers.listHeadPaths(false) : undefined;
   if (readers.headIsWorktree && !worktreeTracked) return undefined;
   const isIgnored = (filePath: string): boolean => ignore.isIgnored(filePath);
   const reviewedWorktreePaths = worktreeTracked
@@ -2243,8 +2312,8 @@ function computeArchDriftForPacket(cwd: string, diff: StructuredDiff | undefined
   if (changedOnly.file_edges.added.length === 0 && changedOnly.file_edges.removed.length === 0) {
     return changedOnly;
   }
-  const baseTracked = architectureTreePaths(cwd, readers.baseReadRef)?.filter((filePath) => !isIgnored(filePath));
-  const headTracked = architectureTreePaths(cwd, readers.headIsWorktree ? "WORKTREE" : readers.headSha)?.filter((filePath) => !isIgnored(filePath));
+  const baseTracked = readers.listBasePaths()?.filter((filePath) => !isIgnored(filePath));
+  const headTracked = readers.listHeadPaths(true)?.filter((filePath) => !isIgnored(filePath));
   if (!baseTracked || !headTracked) return undefined;
   const baseGraph = treeArchitectureGraph(baseTracked, readers.readBase, existsBase, implementationRoots, resolveBaseImports);
   const headGraph = treeArchitectureGraph(headTracked, readers.readHead, existsHead, implementationRoots, resolveHeadImports);
@@ -2289,30 +2358,6 @@ interface TreeArchitectureGraph {
   dependencies: Map<string, string[]>;
 }
 
-function architectureTreePaths(cwd: string, treeRef: string): string[] | undefined {
-  try {
-    return execFileSync(
-      "git",
-      treeRef === "WORKTREE" ? ["ls-files", "--cached", "--others", "--exclude-standard"] : ["ls-tree", "-r", "--name-only", treeRef],
-      { cwd, encoding: "utf8" }
-    )
-      .split("\n")
-      .filter(Boolean);
-  } catch {
-    return undefined;
-  }
-}
-
-function trackedWorktreePaths(cwd: string): string[] | undefined {
-  try {
-    return execFileSync("git", ["ls-files", "--cached"], { cwd, encoding: "utf8" })
-      .split("\n")
-      .filter(Boolean);
-  } catch {
-    return undefined;
-  }
-}
-
 function treeArchitectureGraph(
   treePaths: readonly string[],
   read: (filePath: string) => string | undefined,
@@ -2344,23 +2389,29 @@ function treeArchitectureGraph(
   return { moduleEdgeKeys: keys, dependencies: graph.dependencies };
 }
 
-// review-surfaces.TREND.1: read the prior ledger from the previous packet's
-// sibling human_review.json. Absent/unreadable/malformed -> first review.
-function readPreviousRounds(cwd: string, packet: ReviewPacket): RoundsLedgerEntry[] | undefined {
+interface PreviousReviewContext {
+  rounds?: RoundsLedgerEntry[];
+  approvalRisks?: ReviewPacket["risks"]["items"];
+}
+
+// Read the prior human decision context from the previous packet's sibling
+// human_review.json. The rounds ledger and approval-risk identity share this
+// source so a single parser governs both re-review features.
+function readPreviousReviewContext(cwd: string, packet: ReviewPacket): PreviousReviewContext {
   const dogfood = packet.dogfood as { previous_packet_path?: unknown; comparison?: unknown } | undefined;
   const previousPath = dogfood?.previous_packet_path;
   // No computed comparison means the prior packet was absent/unreadable: the
   // ledger must NOT be carried forward (a zero-count row would fake a valid
   // next round). Documented missing-prior-packet case = first review.
   if (typeof previousPath !== "string" || previousPath.length === 0 || !dogfood?.comparison) {
-    return undefined;
+    return {};
   }
-  const humanPath = path.join(path.dirname(path.resolve(cwd, previousPath)), "human_review.json");
+  const packetPath = path.resolve(cwd, previousPath);
+  const humanPath = path.join(path.dirname(packetPath), "human_review.json");
   try {
-    const parsed = JSON.parse(fs.readFileSync(humanPath, "utf8")) as { rounds?: unknown };
-    if (!Array.isArray(parsed.rounds)) {
-      return undefined;
-    }
+    const parsed = JSON.parse(fs.readFileSync(humanPath, "utf8")) as unknown;
+    if (!isRecord(parsed)) return {};
+
     // Every row must be fully formed: carrying a partial row forward would
     // fail the new model's schema validation (or render undefined counts).
     // Any malformed row degrades the WHOLE ledger to the first-review case.
@@ -2377,12 +2428,26 @@ function readPreviousRounds(cwd: string, packet: ReviewPacket): RoundsLedgerEntr
         (HUMAN_REVIEW_DECISIONS as readonly string[]).includes(row.verdict)
       );
     };
-    if (parsed.rounds.length === 0 || !parsed.rounds.every(isValidRow)) {
-      return undefined;
-    }
-    return parsed.rounds;
+    const rounds = Array.isArray(parsed.rounds) && parsed.rounds.length > 0 && parsed.rounds.every(isValidRow)
+      ? parsed.rounds
+      : undefined;
+
+    const decisionProjection = isRecord(parsed.decision_projection) ? parsed.decision_projection : undefined;
+    const findings = Array.isArray(decisionProjection?.findings) ? decisionProjection.findings : [];
+    const approvalRiskIds = new Set(findings.flatMap((finding) => {
+      if (!isRecord(finding) || !Array.isArray(finding.risk_ids)) return [];
+      return finding.risk_ids.filter((id): id is string => typeof id === "string");
+    }));
+    const previousPacket = approvalRiskIds.size > 0 ? loadPreviousPacket(packetPath) : null;
+    const approvalRisks = previousPacket?.risks.items.filter((risk) =>
+      approvalRiskIds.has(risk.id) && comparisonRiskKey(risk).length > 0
+    );
+    return {
+      ...(rounds ? { rounds } : {}),
+      ...(approvalRisks?.length ? { approvalRisks } : {})
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -2504,19 +2569,10 @@ function withBlastRadius(
   // The graph must enumerate the REVIEWED head's tree: ls-files reads the
   // current index, which is stale when --head is a committed ref that is not
   // checked out.
-  let tracked: string[];
-  try {
-    tracked = execFileSync(
-      "git",
-      readers.headIsWorktree ? ["ls-files"] : ["ls-tree", "-r", "--name-only", readers.headSha],
-      { cwd, encoding: "utf8" }
-    )
-      .split("\n")
-      .filter(Boolean);
-  } catch {
+  let tracked = readers.listHeadPaths(false);
+  if (!tracked) {
     return facts;
   }
-  const headPaths = new Set(tracked);
   // Honor the existing privacy/generated exclusions: an ignored tree must not
   // contribute importers to the blast radius.
   const ignore = loadPrivacyIgnoreSync(cwd);
@@ -2525,23 +2581,7 @@ function withBlastRadius(
   // callers can still import them. Treat those exact reviewed targets as
   // tombstones during resolution so the broken callers remain visible without
   // resurrecting deleted files as graph sources.
-  const existsCache = new Map<string, boolean>();
-  const headExists = (filePath: string): boolean => {
-    const cached = existsCache.get(filePath);
-    if (cached !== undefined) return cached;
-    let present: boolean;
-    if (readers.headIsWorktree) {
-      try {
-        present = fs.statSync(path.resolve(cwd, filePath)).isFile();
-      } catch {
-        present = false;
-      }
-    } else {
-      present = headPaths.has(filePath);
-    }
-    existsCache.set(filePath, present);
-    return present;
-  };
+  const headExists = readers.existsHead;
   const deletedTargets = new Set(targets
     .filter((change) => !headExists(change.path))
     .map((change) => change.path));
@@ -2595,7 +2635,12 @@ function withBlastRadius(
 // Reads each changed test file's head content (worktree or committed blob, same
 // resolution as the semantic facts) and resolves its relative imports against the
 // on-disk repo. Pure of clocks; the on-disk file set is stable for a given tree.
-function computeRankingEvidenceForPacket(cwd: string, packet: ReviewPacket, diff: StructuredDiff | undefined): RankingEvidence {
+function computeRankingEvidenceForPacket(
+  cwd: string,
+  packet: ReviewPacket,
+  diff: StructuredDiff | undefined,
+  readers?: FactReaders
+): RankingEvidence {
   if (!diff || diff.files.length === 0) {
     return emptyRankingEvidence();
   }
@@ -2603,7 +2648,7 @@ function computeRankingEvidenceForPacket(cwd: string, packet: ReviewPacket, diff
   const headSha = typeof manifest.head_sha === "string" ? manifest.head_sha : "";
   const worktreeHead = resolveGitRefSha(cwd, "HEAD");
   const headIsWorktree = !headSha || !worktreeHead || headSha === worktreeHead;
-  const readHead = headIsWorktree
+  const readHead = readers?.readHead ?? (headIsWorktree
     ? (filePath: string): string | undefined => {
         try {
           return fs.readFileSync(path.resolve(cwd, filePath), "utf8");
@@ -2611,11 +2656,11 @@ function computeRankingEvidenceForPacket(cwd: string, packet: ReviewPacket, diff
           return undefined;
         }
       }
-    : (filePath: string) => readFileAtRef(cwd, headSha, filePath);
+    : (filePath: string) => readFileAtRef(cwd, headSha, filePath));
   // Resolve imports against the SAME tree the test content came from: the worktree
   // when head is checked out, otherwise the reviewed head blob — so ranking does
   // not depend on whatever branch happens to be checked out.
-  const exists = headIsWorktree
+  const exists = readers?.existsHead ?? (headIsWorktree
     ? (repoRelativePath: string): boolean => {
         try {
           return fs.statSync(path.resolve(cwd, repoRelativePath)).isFile();
@@ -2623,7 +2668,7 @@ function computeRankingEvidenceForPacket(cwd: string, packet: ReviewPacket, diff
           return false;
         }
       }
-    : (repoRelativePath: string): boolean => blobExistsAtRef(cwd, headSha, repoRelativePath);
+    : (repoRelativePath: string): boolean => blobExistsAtRef(cwd, headSha, repoRelativePath));
   return computeRankingEvidence({ diff, isTestPath, readHead, exists });
 }
 
@@ -2675,7 +2720,8 @@ function readCachedHumanReviewReuse(
   cwd: string,
   outDir: string,
   headSha: string,
-  packetSignature: string
+  packetSignature: string,
+  expectedScope: ReviewScope
 ): CachedHumanReviewReuse | undefined {
   const humanReviewPath = path.join(outDir.endsWith(".json") ? path.dirname(outDir) : outDir, "human_review.json");
   try {
@@ -2684,12 +2730,14 @@ function readCachedHumanReviewReuse(
       return undefined;
     }
     const model = loaded as HumanReviewModel;
-    const narrative = headSha && model.narrative.validated_at_head === headSha
+    if (model.mode !== expectedScope) {
+      return undefined;
+    }
+    const narrative = headSha && model.narrative?.validated_at_head === headSha
       ? model.narrative
       : undefined;
     const changeMapInsights = cachedChangeMapInsights(model, headSha);
-    const conversationReview = model.mode === "repo" &&
-      headSha && model.generated_from.head_sha === headSha &&
+    const conversationReview = headSha && model.generated_from.head_sha === headSha &&
       packetSignature && model.generated_from.packet_signature === packetSignature
       ? conversationReviewFromFields(model.conversation_analysis, model.review_insights)
       : undefined;
@@ -2761,7 +2809,8 @@ function conversationReviewFromFields(
   analysis: ConversationReviewResult["analysis"] | undefined,
   insights: ConversationReviewResult["insights"] | undefined
 ): ConversationReviewResult | undefined {
-  return analysis && Array.isArray(insights) ? { analysis, insights } : undefined;
+  if (!analysis || !Array.isArray(insights)) return undefined;
+  return { analysis, insights };
 }
 
 function conversationReviewIsReusable(
@@ -2863,9 +2912,12 @@ async function writeHumanReviewForPacket(
   config?: ReviewSurfacesConfig,
   narrative?: ChangeNarrative,
   changeMapInsights?: ChangeMapInsights,
-  conversationReview?: ConversationReviewResult
+  conversationReview?: ConversationReviewResult,
+  factContext?: HumanFactContext
 ): Promise<HumanReviewModel> {
-  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, prSurface, diff, feedback, config, narrative, changeMapInsights, conversationReview);
+  const humanReview = buildHumanReviewForPacket(
+    cwd, outDir, packet, prSurface, diff, feedback, config, narrative, changeMapInsights, conversationReview, factContext
+  );
   await writeHumanReviewArtifacts(outDir, humanReview, { diff });
   return humanReview;
 }
@@ -2929,22 +2981,23 @@ function artifactPathForLog(cwd: string, outDir: string, fileName: string): stri
 }
 
 function prSurfaceMatchesPacketManifest(packet: ReviewPacket, surface: PrReviewSurfaceModel): boolean {
-  const manifest = packet.manifest as {
-    base_ref?: unknown;
-    head_ref?: unknown;
-    base_sha?: unknown;
-    head_sha?: unknown;
-  };
-  return (
-    matchesManifestString(manifest.base_ref, surface.scope.base_ref) &&
-    matchesManifestString(manifest.head_ref, surface.scope.head_ref) &&
-    matchesManifestString(manifest.base_sha, surface.scope.base_sha) &&
-    matchesManifestString(manifest.head_sha, surface.scope.head_sha)
-  );
+  return prSurfaceIdentityMatches(packet.manifest, surface, "allow_missing");
 }
 
-function matchesManifestString(packetValue: unknown, surfaceValue: string | undefined): boolean {
-  return typeof packetValue !== "string" || packetValue.length === 0 || packetValue === surfaceValue;
+type PrSurfaceIdentityMode = "strict" | "allow_missing";
+
+function prSurfaceIdentityMatches(
+  candidate: { base_ref?: unknown; head_ref?: unknown; base_sha?: unknown; head_sha?: unknown },
+  surface: PrReviewSurfaceModel,
+  mode: PrSurfaceIdentityMode
+): boolean {
+  return (["base_ref", "head_ref", "base_sha", "head_sha"] as const).every((field) => {
+    const candidateValue = candidate[field];
+    if (mode === "allow_missing" && (typeof candidateValue !== "string" || candidateValue.length === 0)) {
+      return true;
+    }
+    return candidateValue === surface.scope[field];
+  });
 }
 
 
@@ -3148,16 +3201,9 @@ async function runValidatePacket(parsed: ParsedArgs): Promise<number> {
   return ExitCodes.success;
 }
 
-// Phase 6a/6b (PROVIDERS.1/PROVIDERS.2; M6): render a review surface from the
-// LOCAL review_packet.json. These are renderers, not pipeline stages: they read
-// the already-written artifact, never recompute the pipeline, and never redefine
-// the artifact contract. Both paths are fully offline.
-//
-//   --format github (default): a compact GitHub sticky comment (6a).
-//   --format sarif:            a SARIF 2.1.0 log written to review.sarif (6b).
-//
-// An absent packet is a clean usage error (exit 2) that points at
-// `review-surfaces all` rather than silently recomputing, for either format.
+// Render local artifacts without recomputing the pipeline. `github` and
+// `sticky` are aliases for the one human reviewer brief; SARIF and JSON remain
+// packet projections for machine consumers.
 async function runComment(parsed: ParsedArgs): Promise<number> {
   const format = stringFlag(parsed, "format") ?? "github";
   // SARIF is a whole-repo packet projection; in pr scope the only surface is the
@@ -3192,13 +3238,10 @@ async function runComment(parsed: ParsedArgs): Promise<number> {
   if (format === "review") {
     return runCommentDraftReview(parsed);
   }
-  if (format === "sticky") {
+  if (format === "sticky" || format === "github") {
     return runCommentSticky(parsed);
   }
-  if (format !== "github") {
-    throw new CliError(`Unknown --format: ${format}. Use github, sticky, sarif, json, or review.`, ExitCodes.usageError);
-  }
-  return runCommentGithub(parsed);
+  throw new CliError(`Unknown --format: ${format}. Use github, sticky, sarif, json, or review.`, ExitCodes.usageError);
 }
 
 // Load human_review.json for a render command (draft review, sticky comment),
@@ -3297,25 +3340,65 @@ async function runCommentDraftReview(parsed: ParsedArgs): Promise<number> {
 }
 
 // review-surfaces.PR_SURFACE.2/.4/.5: render the compact sticky-summary comment
-// from human_review.json. Unlike `--format github`, the sticky is the
-// DETERMINISTIC human rollup (not provider narrative), so it is NOT gated on the
-// PROVIDERS.5 remote-narrative requirement and is postable under --provider mock;
-// its only posting gate is the hard secret-block check. It leads with the
-// since-last-review delta when a prior packet was compared in.
+// from human_review.json. This is the deterministic human rollup; provider
+// enrichment never gates it, and it remains postable under --provider mock;
+// its only posting gate is the hard secret-block check. The author purpose and
+// approval decisions stay ahead of any since-last-review delta.
 async function runCommentSticky(parsed: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
   const outDir = await resolveOutputDir(cwd, parsed);
   const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
+  if (reviewScope(parsed) === "pr") {
+    const config = await loadConfig(cwd, stringFlag(parsed, "config") ?? "review-surfaces.config.yaml");
+    applyBudgetFlag(parsed, config);
+    return runPrStickyComment(cwd, outputDir, parsed, config, {
+      artifactName: stringFlag(parsed, "artifact-name"),
+      runId: stringFlag(parsed, "run-id") ?? process.env.GITHUB_RUN_ID,
+      artifactUrl: stringFlag(parsed, "artifact-url")
+    });
+  }
   const model = await loadHumanReviewForRender(cwd, outputDir, parsed, "sticky comment");
-  const diffPath = path.join(outputDir, "inputs", "diff.patch");
-  const diff = fileExists(diffPath) ? parseStructuredDiff(fs.readFileSync(diffPath, "utf8")) : undefined;
-  const sticky = renderStickySummary(model, {
-    diff,
-    topN: numberFlag(parsed, "comment-top-n"),
+  return emitStickyComment(cwd, outputDir, parsed, model, undefined, {
     artifactName: stringFlag(parsed, "artifact-name"),
     runId: stringFlag(parsed, "run-id") ?? process.env.GITHUB_RUN_ID,
     artifactUrl: stringFlag(parsed, "artifact-url")
   });
+}
+
+function readPrSurfaceForComment(cwd: string, outputDir: string): PrReviewSurfaceModel {
+  const surfacePath = path.join(outputDir, "pr_review_surface.json");
+  if (!fileExists(surfacePath)) {
+    throw new CliError(
+      `No PR review surface found at ${path.relative(cwd, surfacePath)}. Run \`review-surfaces all --review-scope pr\` first.`,
+      ExitCodes.usageError
+    );
+  }
+  return readPrSurfaceArtifact(cwd, surfacePath);
+}
+
+function suppressNoDiffSticky(cwd: string, outputDir: string, parsed: ParsedArgs, surface: PrReviewSurfaceModel): number {
+  const commentPath = path.join(outputDir, "comment.md");
+  fs.rmSync(commentPath, { force: true });
+  console.error(`PR review surface is not ready (${surface.blocked_reason ?? surface.status}); no sticky was generated.`);
+  if (booleanFlag(parsed, "post")) {
+    const result = removeStickyComment(cwd, {
+      headSha: surface.scope.head_sha,
+      changeContext: surface.change_context
+    });
+    console.error(result.reason);
+  }
+  return ExitCodes.success;
+}
+
+async function emitStickyComment(
+  cwd: string,
+  outputDir: string,
+  parsed: ParsedArgs,
+  model: HumanReviewModel,
+  surface: PrReviewSurfaceModel | undefined,
+  options: StickySummaryOptions
+): Promise<number> {
+  const sticky = renderStickySummary(model, options);
   const commentPath = path.join(outputDir, "comment.md");
   await writeText(commentPath, sticky.markdown);
   process.stdout.write(sticky.markdown);
@@ -3329,114 +3412,42 @@ async function runCommentSticky(parsed: ParsedArgs): Promise<number> {
   const strictPostability = booleanFlag(parsed, "strict-postability");
   if (sticky.blocked) {
     console.error("Sticky comment blocked: redaction flagged a high-confidence secret; skipping post.");
+    if (posting) {
+      const result = removeStickyComment(cwd, {
+        headSha: model.generated_from.head_sha,
+        changeContext: surface?.change_context
+      });
+      console.error(result.reason);
+    }
     return posting || strictPostability ? ExitCodes.privacyBlocked : ExitCodes.success;
   }
   if (posting) {
-    const result = postStickyComment(cwd, sticky.markdown);
+    const result = postStickyComment(cwd, sticky.markdown, {
+      headSha: model.generated_from.head_sha,
+      changeContext: surface?.change_context
+    });
     console.error(result.reason);
   }
   return ExitCodes.success;
 }
 
-// --post is OPTIONAL and best-effort: only when set AND `gh` is available AND a
-// PR context is detectable will it upsert the sticky comment. It is never
-// required and never runs without the flag (so tests, which never pass --post,
-// never touch the network).
-async function runCommentGithub(parsed: ParsedArgs): Promise<number> {
-  const cwd = process.cwd();
-  // Resolve the EFFECTIVE output dir with the same precedence collectInputs/`all`
-  // use (--out -> config.output_dir -> .review-surfaces) so comment finds the
-  // packet `all` actually wrote. Passing undefined would hardcode .review-surfaces
-  // and miss a config-set output_dir.
-  const outDir = await resolveOutputDir(cwd, parsed);
-  const config = await loadConfig(cwd, stringFlag(parsed, "config") ?? "review-surfaces.config.yaml");
-  applyBudgetFlag(parsed, config);
-
-  // PR mode renders the diff-scoped surface and NEVER falls back to the
-  // whole-repo comment when it is missing/blocked.
-  if (reviewScope(parsed) === "pr") {
-    return runPrCommentGithub(cwd, outDir, parsed, config);
+async function runPrStickyComment(
+  cwd: string,
+  outputDir: string,
+  parsed: ParsedArgs,
+  config: ReviewSurfacesConfig,
+  options: StickySummaryOptions
+): Promise<number> {
+  const surface = readPrSurfaceForComment(cwd, outputDir);
+  if (surface.status !== "ready") {
+    return suppressNoDiffSticky(cwd, outputDir, parsed, surface);
   }
-
-  const rendered = renderCommentFromPacketFile(cwd, outDir);
-  if (!rendered) {
-    throw missingPacketError(cwd, outDir);
-  }
-
-  const commentPath = path.join(path.dirname(rendered.packetPath), "comment.md");
-  await writeText(commentPath, rendered.markdown);
-  process.stdout.write(rendered.markdown);
-  console.error(`Wrote ${displayPath(cwd, commentPath)}`);
-
-  if (booleanFlag(parsed, "post")) {
-    const result = postStickyComment(cwd, rendered.markdown);
-    console.error(result.reason);
-  }
-  return ExitCodes.success;
-}
-
-// Render the PR-mode sticky comment from the diff-scoped pr_review_surface.json
-// (written by `all --review-scope pr`). Absent surface is a clean usage error
-// pointing at `all --review-scope pr`; never a whole-repo fallback.
-async function runPrCommentGithub(cwd: string, outDir: string, parsed: ParsedArgs, config: ReviewSurfacesConfig): Promise<number> {
-  const surfacePath = path.join(outDir.endsWith(".json") ? path.dirname(outDir) : outDir, "pr_review_surface.json");
-  if (!fileExists(surfacePath)) {
-    throw new CliError(
-      `No PR review surface found at ${path.relative(cwd, surfacePath)}. Run \`review-surfaces all --review-scope pr --provider ai-sdk\` first.`,
-      ExitCodes.usageError
-    );
-  }
-  const surface = readPrSurfaceArtifact(cwd, surfacePath);
   // COLD_START.8: the comment's artifact pointers are sibling file names — the
   // comment and the artifacts it cites live in the same output dir, and a
   // cwd-relative path embeds `../` chains whenever --out points outside the
   // repo. The renderer defaults already use the sibling form.
-  const humanCommentModel = await loadCurrentHumanReviewForPrComment(cwd, path.dirname(surfacePath), surface, config);
-  const siblingSurfacePath = path.basename(surfacePath);
-  const humanRendered = humanCommentModel
-    ? renderHumanPrComment(humanCommentModel, { surfacePath: siblingSurfacePath })
-    : undefined;
-  const renderedMarkdown = humanRendered ? humanRendered.markdown : renderPrComment(surface, { surfacePath: siblingSurfacePath });
-  const inspectedMarkdown = inspectAndRedactSecrets(renderedMarkdown);
-  const markdown = inspectedMarkdown.text;
-  // review-surfaces.CHANGE_MAP.4: a redaction BLOCK inside the embedded map or
-  // tour snippet must trip the privacy gate — the rendered body only carries
-  // the placeholder, so this flag is the surviving signal.
-  const renderBlocked = (humanRendered?.blocked ?? false) || inspectedMarkdown.blocked;
-  const commentPath = path.join(path.dirname(surfacePath), "comment.md");
-  await writeText(commentPath, markdown);
-  process.stdout.write(markdown);
-  console.error(`Wrote ${displayPath(cwd, commentPath)}`);
-  // review-surfaces.PROVIDERS.5: posted PR comments require a validated remote
-  // LLM narrative. Local agent-file narratives are useful for dogfooding, but
-  // must remain local artifacts and never satisfy the sticky-post gate.
-  const hasRemoteNarrative =
-    surface.status === "ready" &&
-    surface.llm.status === "applied" &&
-    surface.llm.provider === "ai-sdk" &&
-    surface.narrative !== undefined;
-  // review-surfaces.RENDER.8: a local render (no --post) succeeds once the
-  // comment and diagnostics are written. Postability is a *posting* gate, so a
-  // non-postable surface is only a non-zero exit when posting is actually
-  // requested (--post) or the caller opts into strict postability checking
-  // (--strict-postability). Without either, the local comment.md is the
-  // deliverable and the command exits 0 after warning about postability.
-  const posting = booleanFlag(parsed, "post");
-  const strictPostability = booleanFlag(parsed, "strict-postability");
-  if (renderBlocked) {
-    console.error("PR comment render blocked a high-confidence secret; the comment must not be posted.");
-    return posting || strictPostability ? ExitCodes.privacyBlocked : ExitCodes.success;
-  }
-  if (!hasRemoteNarrative) {
-    const reason = surface.blocked_reason ?? `${surface.llm.status}/${surface.llm.provider}`;
-    console.error(`PR review surface is not postable (${reason}); skipping sticky post.`);
-    return posting || strictPostability ? ExitCodes.evidenceValidationFailed : ExitCodes.success;
-  }
-  if (posting) {
-    const result = postStickyComment(cwd, markdown);
-    console.error(result.reason);
-  }
-  return ExitCodes.success;
+  const humanCommentModel = await loadCurrentHumanReviewForPrComment(cwd, outputDir, surface, config);
+  return emitStickyComment(cwd, outputDir, parsed, humanCommentModel, surface, options);
 }
 
 async function loadCurrentHumanReviewForPrComment(
@@ -3444,37 +3455,43 @@ async function loadCurrentHumanReviewForPrComment(
   outputDir: string,
   surface: PrReviewSurfaceModel,
   config: ReviewSurfacesConfig
-): Promise<HumanReviewModel | undefined> {
+): Promise<HumanReviewModel> {
   if (!config.human_review.enabled) {
     removeHumanReviewArtifacts(outputDir);
-    return undefined;
+    throw new CliError(
+      "PR comments require the human reviewer brief; enable human_review and rerun `review-surfaces all --review-scope pr`.",
+      ExitCodes.usageError
+    );
   }
   const humanReviewPath = path.join(outputDir, "human_review.json");
   if (!fileExists(humanReviewPath)) {
-    return undefined;
+    throw new CliError(
+      `No human reviewer brief found at ${path.relative(cwd, humanReviewPath)}. Run \`review-surfaces all --review-scope pr\` first.`,
+      ExitCodes.usageError
+    );
   }
   let model: unknown;
   try {
     model = await readJson(humanReviewPath);
   } catch (error) {
     const reason = errorMessage(error);
-    console.warn(
-      `Ignoring unreadable human_review.json (${reason}); falling back to pr_review_surface.json for the PR comment.`
+    throw new CliError(
+      `Human reviewer brief is unreadable (${reason}); rerun \`review-surfaces all --review-scope pr\`.`,
+      ExitCodes.schemaValidationFailed
     );
-    return undefined;
   }
-  if (!humanReviewMatchesPrSurface(cwd, outputDir, model, surface)) {
-    console.warn(
-      `Ignoring stale or non-PR human_review.json; run review-surfaces human --review-scope pr to refresh it for the current PR surface.`
+  if (!humanReviewMatchesPrSurface(model, surface)) {
+    throw new CliError(
+      "Human reviewer brief is stale or belongs to a different scope; rerun `review-surfaces all --review-scope pr`.",
+      ExitCodes.usageError
     );
-    return undefined;
   }
   const issues = humanReviewIssues(cwd, model);
   if (issues.length > 0) {
-    console.warn(
-      `Ignoring schema-invalid human_review.json (${issues.join("; ")}); falling back to pr_review_surface.json for the PR comment.`
+    throw new CliError(
+      `Human reviewer brief failed schema validation (${issues.join("; ")}); rerun \`review-surfaces all --review-scope pr\`.`,
+      ExitCodes.schemaValidationFailed
     );
-    return undefined;
   }
   const humanReview = model as HumanReviewModel;
   if (!humanReviewJsonMatchesConfig(humanReview, config)) {
@@ -3485,20 +3502,10 @@ async function loadCurrentHumanReviewForPrComment(
     await writeHumanReviewArtifacts(context.outputDir, context.model, { diff: context.diff });
     return context.model;
   }
-  if (!humanReviewJsonSatisfiesPrComment(humanReview)) {
-    console.warn(
-      `Refreshing stale human_review.json for the current human review artifact set before rendering the PR comment.`
-    );
-    const context = await buildHumanReviewFromArtifacts(cwd, outputDir, "pr", config);
-    await writeHumanReviewArtifacts(context.outputDir, context.model, { diff: context.diff });
-    return context.model;
-  }
   return humanReview;
 }
 
 function humanReviewMatchesPrSurface(
-  cwd: string,
-  outputDir: string,
   candidate: unknown,
   surface: PrReviewSurfaceModel
 ): boolean {
@@ -3506,32 +3513,11 @@ function humanReviewMatchesPrSurface(
     return false;
   }
   const generatedFrom = candidate.generated_from;
-  const baseShaMatches = typeof surface.scope.base_sha === "string"
-    ? generatedFrom.base_sha === surface.scope.base_sha
-    : typeof generatedFrom.base_sha !== "string";
   return (
-    generatedFrom.base_ref === surface.scope.base_ref &&
-    baseShaMatches &&
-    generatedFrom.head_ref === surface.scope.head_ref &&
-    generatedFrom.head_sha === surface.scope.head_sha &&
-    JSON.stringify(candidate.conversation_analysis) === JSON.stringify(surface.conversation_analysis) &&
-    JSON.stringify(candidate.review_insights) === JSON.stringify(surface.review_insights ?? []) &&
-    artifactPathMatches(cwd, outputDir, generatedFrom.pr_surface_path, "pr_review_surface.json")
+    prSurfaceIdentityMatches(generatedFrom, surface, "strict") &&
+    generatedFrom.pr_surface_path === "pr_review_surface.json" &&
+    generatedFrom.pr_surface_signature === prSurfaceSignature(surface)
   );
-}
-
-// COLD_START.8: generated_from pointers are sibling file names relative to the
-// artifact dir; artifacts written before that change carried cwd-relative
-// paths. Resolve each form against its anchor and accept either when it lands
-// on the expected artifact in THIS output dir.
-function artifactPathMatches(cwd: string, outputDir: string, actual: unknown, artifact: string): boolean {
-  if (typeof actual !== "string") {
-    return false;
-  }
-  const expected = path.resolve(cwd, outputDir, artifact);
-  const siblingForm = path.resolve(cwd, outputDir, actual);
-  const legacyCwdForm = path.resolve(cwd, actual);
-  return siblingForm === expected || legacyCwdForm === expected;
 }
 
 function readPrSurfaceArtifact(cwd: string, surfacePath: string): PrReviewSurfaceModel {
@@ -3770,6 +3756,11 @@ const COLLECTOR_FLAGS = [
   "no-redact-secrets"
 ] as const;
 
+// Only runAll builds the PR surface that consumes author context. Advertising
+// these flags on individual collector/stage commands would silently discard the
+// value, so keep them scoped to all/dogfood.
+const CHANGE_CONTEXT_FLAGS = ["change-title", "change-description"] as const;
+
 // review-surfaces.CLI.9: the flags the pipeline-generating commands read on top
 // of the universal + collector sets. These are the commands that run
 // collect()/buildStageContext (collect, intent, evaluate, diagrams, methodology,
@@ -3849,8 +3840,8 @@ const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
   // review-surfaces.QUALITY_GATE.3: --json prints the structured run summary.
   // QUALITY_GATE.1: all/dogfood route through runAll, whose applyGate threads
   // packet.risks, so --fail-on works here (unlike evaluate).
-  all: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema", "json"], GATE_FLAGS, FAIL_ON_FLAG),
-  dogfood: flagSet(PIPELINE_EXTRA_FLAGS, ["cache", "schema"], GATE_FLAGS, FAIL_ON_FLAG),
+  all: flagSet(PIPELINE_EXTRA_FLAGS, CHANGE_CONTEXT_FLAGS, ["cache", "schema", "json"], GATE_FLAGS, FAIL_ON_FLAG),
+  dogfood: flagSet(PIPELINE_EXTRA_FLAGS, CHANGE_CONTEXT_FLAGS, ["cache", "schema"], GATE_FLAGS, FAIL_ON_FLAG),
   // init only reads --force (overwrite scaffolding). runInit scaffolds into
   // process.cwd() and never calls resolveOutputDir()/loadConfig(), so it reads
   // NEITHER --out NOR --config; passing them must be rejected as a no-op.
@@ -3875,14 +3866,13 @@ const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
   // comment dispatches across ALL --format renderers (github/sticky/sarif/review),
   // so it reads every flag any of them read: --out/--config (resolveOutputDir +
   // loadConfig), --format, the scope flags, --budget, --post/--strict-postability
-  // (github/sticky/review), the sticky flags (--comment-top-n/--artifact-name/
+  // (github/sticky/review), the sticky flags (--artifact-name/
   // --run-id/--artifact-url), and --sarif-out (sarif).
   comment: flagSet(OUTPUT_CONFIG_FLAGS, SCOPE_FLAGS, [
     "format",
     "budget",
     "post",
     "strict-postability",
-    "comment-top-n",
     "artifact-name",
     "artifact-url",
     "run-id",
@@ -4177,8 +4167,8 @@ ${humanStandaloneCommandHelp()}
                 .review-surfaces/eval_scoreboard.json (idempotent; --check exits
                 non-zero when the committed block is stale)
   comment       Render a review surface from local artifacts. With
-                --format github (default) writes .review-surfaces/comment.md (a compact
-                GitHub sticky comment); with --format sarif writes
+                --format github (default, alias: sticky) writes the adaptive human
+                reviewer brief to .review-surfaces/comment.md; with --format sarif writes
                 .review-surfaces/review.sarif (a SARIF 2.1.0 log); with --format review
                 writes .review-surfaces/pending_review.json (a GitHub PENDING draft
                 review of the hunk-anchored suggested comments — you edit and submit it;
@@ -4195,22 +4185,23 @@ Options:
   --base <ref>      Base ref for diff collection; default: auto (first of
                     origin/HEAD, origin/main, origin/master, main, master)
   --head <ref>      Head ref for diff collection, default HEAD
+  --change-title <text>
+                   Author-provided change or PR title used as the primary change purpose
+  --change-description <text>
+                   Author-provided change or PR body used as supporting purpose context
   --spec <path>     Feature spec path, default from config
   --out <dir>       Output directory, default .review-surfaces
   --mode <s>      comment: pr, repo, or auto. Alias for --review-scope on comments.
   --surface-mode <s>
                    all: pr, repo, or auto. Alias for --review-scope on packet generation.
   --review-scope <s> all/comment: pr, repo, or auto (default repo). pr emits/reads a SEPARATE
-                   diff-scoped surface (pr_review_surface.json): changed files mapped to
-                   affected requirements, base-vs-head coverage delta, PR-specific risk
-                   candidates, a PR change-impact diagram, and an LLM-authored narrative
-                   (What changed / Why it matters / Review first). pr REQUIRES a non-mock
-                   provider for the narrative; under mock it renders a blocked comment with
-                   the deterministic scope counts (never a whole-repo fallback). repo is the
-                   legacy whole-repo evaluation/risks/architecture comment (unchanged).
+                   diff-scoped surface (pr_review_surface.json) and an adaptive reviewer
+                   brief led by author purpose and independent approval decisions. Detailed
+                   requirements, diagnostics, maps, and optional enrichment stay in supporting
+                   artifacts. repo is the whole-repo evidence artifact mode.
   --format <fmt>    comment: output format, one of github (default) | sticky | sarif | json | review.
-                   github writes .review-surfaces/comment.md (the provider-narrative comment);
-                   sticky writes the deterministic human-rollup .review-surfaces/comment.md;
+                   github and sticky are aliases that write the adaptive human reviewer
+                   brief to .review-surfaces/comment.md;
                    sarif writes .review-surfaces/review.sarif (SARIF 2.1.0); json prints a
                    compact, byte-stable run-summary object (gate code, per-status requirement
                    counts, risk-severity histogram, top-N queue/risk ids) to stdout for CI;
@@ -4296,14 +4287,12 @@ Options:
                    Disable secret redaction for this run (overrides config privacy.redact_secrets;
                    equivalent to --redact-secrets false). Off by default — redaction stays on.
   --readme <path>   scoreboard: README to update/check, default README.md
-  --run-id <id>     comment --format sticky: CI run id stamped into the sticky comment;
+  --run-id <id>     comment --format github|sticky: CI run id stamped into the sticky comment;
                    defaults to $GITHUB_RUN_ID when unset.
   --artifact-name <name>
-                   comment --format sticky: artifact name referenced by the sticky comment.
+                   comment --format github|sticky: artifact name referenced by the sticky comment.
   --artifact-url <url>
-                   comment --format sticky: direct workflow-run URL for the artifact.
-  --comment-top-n <n>
-                   comment --format sticky: cap the sticky comment to the top N items.
+                   comment --format github|sticky: direct workflow-run URL for the artifact.
   --author <name>   review: label captured reviewer feedback with this author name.
   --verbose         Print resolved refs / diff source / output dir (and stack traces on an
                    unexpected failure) to stderr. Off by default (byte-silent stderr).

@@ -179,9 +179,10 @@ components:
       2:
         requirement: Every conversation interpretation must cite collected event ids, active user intent/constraints/non-goals/rejections must include a user-event anchor, fabricated or role-incompatible citations must be rejected, and a missing log or unavailable provider must render as not_assessed/degraded rather than as a clean review.
       3:
-        requirement: A second provider pass must reconcile the validated conversation analysis against a bounded evidence context of changed paths, line-numbered diff lines, scoped requirements, deterministic risks, and captured command transcripts; runtime validation must use that exact prompt-visible context (never broader raw inputs), strong supported/contradicted labels require a validated exact-line anchor or a path-related deterministic risk while remaining explicitly AI-inferred, a passing broad suite must not prove behavior whose assertion was removed, duplicate root causes must collapse, and at most three ranked reviewer insights may survive.
+        requirement: A second provider pass must reconcile the validated conversation analysis against a bounded evidence context of changed paths, line-numbered diff lines, scoped requirements, deterministic risks, and captured command transcripts; runtime validation must use that exact prompt-visible context (never broader raw inputs), strong supported/contradicted labels require a validated exact-line anchor or a path-related deterministic risk while remaining explicitly AI-inferred, a passing broad suite must not prove behavior whose assertion was removed, and duplicate root causes must collapse. The reviewer surface must scale to the independent approval decisions that survive admission rather than hiding valid decisions behind a universal item cap.
       4:
-        requirement: When conversation evidence or reviewer insights exist, conversation-aware insights must render before the generic review queue on the human Markdown, HTML, sticky, and both PR-comment fallback surfaces (while preserving higher-priority working-tree and since-last-review notices), exposing the cited stated goal, later refinements, constraints, incompleteness caveats, evidence state, priority, why-it-matters, reviewer action, grounding basis, and compact exact-line citations; a missing log must not consume the sticky's primary scan path with boilerplate, unavailable or partial reconciliation must remain visibly inconclusive wherever conversation analysis is shown, and conversation-derived output must never create or clear blockers, change coverage, or alter the merge-readiness verdict.
+        requirement: >-
+          Conversation evidence and reviewer insights are supporting analysis: they must render after the supporting review queue in the human Markdown and HTML artifacts, exposing the cited stated goal, later refinements, constraints, incompleteness caveats, evidence state, priority, why-it-matters, reviewer action, grounding basis, and compact exact-line citations. They must stay out of the primary GitHub brief unless deterministic admission folds the underlying issue into an approval decision; a missing log must not consume the primary scan path with boilerplate, unavailable or partial reconciliation must remain visibly inconclusive wherever conversation analysis is shown, and conversation-derived output must never create or clear blockers, change coverage, or alter the merge-readiness verdict.
       5:
         requirement: >-
           A usable deterministic conversation brief must be produced from eligible normalized events without a remote provider, preserving chronological user intent, later corrections, constraints, explicit non-goals, agent claims, and observed tool outcomes with exact event citations; provider enrichment is additive only, cannot remove or reorder the deterministic baseline, and provider failure preserves the baseline with an explicit enrichment caveat.
@@ -211,11 +212,11 @@ components:
         note: "Reviewer decision uplift M1. Two additive optional schema fields generated blocking migration comments while the cockpit reported zero blockers."
       4:
         requirement: >-
-          The human review model must expose a deterministic decision projection containing the active source-backed intent and at most five approval-changing findings; Markdown, HTML, sticky, and PR-comment surfaces must render verdict, active intent, and those findings before reading order, change maps, repository-compliance ledgers, and other supporting detail, while the exhaustive queue remains available outside the primary decision path.
+          The human review model must expose a deterministic reviewer brief containing the author-provided change purpose when available and every independently rooted approval-changing finding that survives deterministic admission; Markdown, HTML, sticky, and PR-comment surfaces must render verdict, change purpose, and those decisions before supporting detail. Large mechanical diffs may produce a short brief while smaller cross-boundary diffs may produce several decisions; raw file count and universal item caps must not determine what the reviewer is allowed to see.
         note: "Reviewer decision uplift M2. Live dogfood placed an 80-file tour and change map before the ranked queue, forcing reviewers to reconstruct the decision from supporting machinery."
       5:
         requirement: >-
-          Whole-repository requirement coverage and aggregate partial or missing counts are supporting evidence only: built-in exhaustive aggregate risks cannot enter the decision projection or change the verdict merely because their bounded evidence sample touches an affected requirement or changed path; an independently scoped concrete fact is required to change the PR decision, and the projection must state how many exhaustive queue and compliance items were moved to supporting detail rather than silently dropping them.
+          Whole-repository requirement coverage and aggregate partial or missing counts are supporting evidence only: built-in exhaustive aggregate risks cannot enter the decision projection or change the verdict merely because their bounded evidence sample touches an affected requirement or changed path; an independently scoped concrete fact is required to change the PR decision, and generic compliance inventory must stay out of the primary reviewer brief while remaining available in supporting artifacts.
         note: "Reviewer decision uplift M2. A 145-partial whole-repo count dominated a PR review even though it did not describe an approval-changing fact in the reviewed range."
       6:
         requirement: >-
@@ -243,8 +244,12 @@ components:
         note: "Simplification-and-usefulness M1. The exact 2076964..171b414 report promoted src/collector/import-graph.ts and src/human/conversation-review-presentation.ts because normal internal consumers imported them."
       12:
         requirement: >-
-          The default human Markdown and HTML surfaces must place the top review actions immediately after verdict, active intent, and at most three decision findings, before reading order, change maps, narratives, semantic ledgers, and exhaustive routes; GitHub comment surfaces must expose a concrete required author action beside a clarification verdict, avoid repeating projected decision actions in Review first, omit only valueless missing-log conversation boilerplate, and preserve degraded or partial conversation caveats; the first concrete action should appear within roughly 30 Markdown lines, the primary decision surface should stay around 100 lines, and queue items beyond the top three must remain available as explicitly collapsed or standalone supporting detail.
-        note: "Simplification-and-usefulness M1. Support machinery occupied lines 37-232 before the ranked queue in the reproduced merged-range report."
+          The default human and GitHub surfaces must put the author-provided change purpose and every approval-changing decision immediately after a truthful verdict, without repeating those decisions in a second queue. Supporting diagnostics, maps, reading tours, round ledgers, repository-compliance data, and provider state must not occupy the primary scan path. Surface length must adapt to the number and complexity of independent decisions, with progressive disclosure for supporting evidence; line, word, and item counts are evaluation signals and abuse guards, not universal product rules.
+        note: "Product reset M1. The live PR #136 sticky ignored the useful PR description, mislabeled 278 bootstrap requirements as active intent, declared author clarification because optional LLM enrichment was unavailable, and expanded to a low-contrast directory map that did not explain an approval decision."
+      13:
+        requirement: >-
+          The verdict must describe the state of the reviewed change, not the availability of optional analysis machinery: unavailable, failed, invalid, privacy-blocked, or baseline-limited enrichment cannot produce an author-clarification verdict or merge blocker by itself, and generic missing-evidence aggregates may reduce confidence to reviewable-with-attention but may not claim the author owes clarification. A privacy or secret blocker requires an independently detected secret or policy violation in the change.
+        note: "Product reset M1 dogfood. PR scope still said needs-author-clarification with zero blockers because optional LLM output and aggregate requirement evidence were absent."
   RISK:
     name: Risk and test-gap analysis
     description: Compute review risk, tested areas, untested areas, and manual/automatic checks.
@@ -308,7 +313,7 @@ components:
       4:
         requirement: Generated Markdown must support compact and full modes so human reviewers are not overwhelmed.
       5:
-        requirement: Repo-mode PR/MR comments must remain a renderer over review_packet.json, while PR-mode comments must render from a separate PR-scoped sidecar artifact.
+        requirement: Every human-facing PR/MR comment must render the current schema-valid human_review.json reviewer brief; review_packet.json remains the machine evidence ledger, and no sidecar or legacy packet renderer may post a second marker-bearing fallback.
       6:
         requirement: PR-mode comments must avoid whole-spec coverage dumps, generic review-focus boilerplate, and static whole-repo diagrams.
       7:
@@ -319,16 +324,16 @@ components:
         requirement: The human surface must support a human --format html mode that emits a single self-contained HTML file (inline CSS and a small amount of vanilla JS, no server, no CDN, and no framework) rendered strictly from the HumanReviewModel and nothing else.
         note: Next-value Phase 5 (brainstorm idea 7). A strict sibling of the markdown renderer — if the HTML needs data the model lacks, the model and strict schema grow first so the JSON, Markdown, and HTML surfaces can never diverge.
       10:
-        requirement: The HTML cockpit must escape every interpolated value through one shared helper, re-run the redaction pass on render, and produce byte-deterministic output (no timestamps), laying out a verdict and narrative header, the review queue as the spine (each item with its excerpt, evidence, ranking reason, and links between queue, evidence, and narrative claims), and lens filters, with collapsible hunks and localStorage-persisted checkable queue items.
+        requirement: The HTML cockpit must escape every interpolated value through one shared helper, re-run the redaction pass on render, and produce byte-deterministic output (no timestamps), leading with the verdict, author-grounded change purpose, and every independent approval decision; the review queue remains supporting evidence with excerpts, ranking reasons, links, lens filters, collapsible hunks, and localStorage-persisted checkable items.
         note: Next-value Phase 5 (brainstorm idea 7). The file must open from disk offline, be safe to attach in chat, and stay printable.
       11:
         requirement: The HTML cockpit must render the change_graph model as deterministic inline SVG via a dedicated src/human/render-svg-map.ts module — a hand-rolled layered layout (column per cluster ordered by the reading-order leg order, stable row sort within a column, fixed viewBox, system font stack) with no chart or diagram library and no inlined mermaid.js — where every coordinate derives from sorted input so identical models produce byte-identical SVG, every interpolated label passes through the shared redact-then-escape helper, node click filters the queue to that file via the existing data-attribute filter pattern, and hover details are carried by SVG title elements so the map degrades gracefully in print.
         note: Visual uplift M10 (brainstorm idea 3). Pure renderer over the CHANGE_MAP.1 model — if the SVG needs data the model lacks, the model and strict schema grow first. The esc() helper is module-private in render-html.ts today and must be exported or lifted to a shared module.
       12:
-        requirement: The HTML cockpit must open with an at-a-glance header strip rendered purely from existing model fields — lens chips with counts that are the existing lens-filter toggle buttons, the review_plan read/skim/defer cut as a stacked CSS bar with estimated minutes, trust-audit counts, and a review-progress bar recomputed from the existing persisted checkbox state — with no charts library or canvas, and every chip and bar carrying a text label so color never carries meaning alone and the strip stays printable.
-        note: Visual uplift M10 (brainstorm idea 6). Zero new data; pure render work over verdict, queue lens tags, review_plan, and trust-audit fields the model already carries.
+        requirement: The HTML cockpit must render a supporting-control strip purely from existing model fields — lens chips with counts that are the existing lens-filter toggle buttons, the review_plan read/skim/defer cut as a stacked CSS bar with estimated minutes, and a review-progress bar recomputed from the existing persisted checkbox state — with no charts library or canvas, and every chip and bar carrying a text label so color never carries meaning alone and the strip stays printable; trust counts render only once in the dedicated trust summary.
+        note: Visual uplift M10 (brainstorm idea 6), simplified by the reviewer-brief reset. Zero new data; pure render work over queue lens tags and review_plan fields.
       13:
-        requirement: When dependency facts include attributed transitive additions, supply-chain lens surfaces must render the chain as an indented tree (direct dependency to the new transitives it pulled, install-script flags marked), using a mermaid rendering on GitHub comment surfaces where a chain exists, and must fall back to the honest flat grouping (direct-dependency section plus unattributed new-transitives list) whenever lockfile dependency edges could not be resolved.
+        requirement: When dependency facts include attributed transitive additions, supporting supply-chain artifacts must render the chain as an indented tree (direct dependency to the new transitives it pulled, install-script flags marked) and must fall back to the honest flat grouping (direct-dependency section plus unattributed new-transitives list) whenever lockfile dependency edges could not be resolved; the GitHub reviewer brief includes the chain only when it constitutes an independent approval decision, and then renders the smallest decision-specific evidence rather than a general dependency diagram.
         note: Visual uplift P2 tail (brainstorm idea 8). The render is a grouping pass over DEP_FACTS.4 attribution data; registry metadata stays deferred behind the provider boundary.
 
   HUMAN_REVIEW:
@@ -336,8 +341,8 @@ components:
     description: Convert packet evidence into an ordered review decision surface for human reviewers.
     requirements:
       1:
-        requirement: The default human surface must start with a merge-readiness verdict, top blockers, and an ordered review queue.
-        note: The verdict must be deterministic and derived from evidence, risks, coverage, tests, privacy state, and configured policy, not from untrusted LLM prose.
+        requirement: "The default human surface must start with a merge-readiness verdict, the author-grounded change purpose, and every independently rooted approval decision; blockers must identify the author action needed to unblock review, while the ordered review queue remains supporting evidence. human_review.md must stay a compact brief: after a required-check summary, compact trust summary, and bounded supporting-queue preview, it links to the HTML, JSON, and focused standalone artifacts instead of re-embedding their deep sections."
+        note: The verdict must be deterministic and derived from evidence, risks, coverage, tests, privacy state, and configured policy, not from untrusted LLM prose. The complete decision set is never subject to the supporting-preview bound.
       2:
         requirement: Review queue items must cite changed files and, when available, diff hunks or line ranges.
         note: Queue items without path or hunk evidence must be rendered as general questions, not as main review-first items.
@@ -363,21 +368,18 @@ components:
       11:
         requirement: When a previous packet comparison is available, the human surface must render reviewer-focused since-last-review deltas.
         note: Improved, regressed, new, resolved, and still-open items must be visible without forcing reviewers to inspect raw count deltas.
-      12:
-        requirement: The human surface must generate review routes for the default human reviewer, maintainer, security reviewer, product reviewer, and agent-continuation personas.
-        note: Routes must be derived from the same evidence-backed verdict, queue, risks, questions, trust audit, comments, and test-plan items; the human route is default and the agent route is secondary.
       13:
         requirement: The human surface must render compact inline evidence cards that cite evidence, explain why the evidence matters, and give a reviewer action.
         note: Evidence cards must distinguish direct evidence, missing evidence, and invalid evidence so missing or untrusted signals are not rendered as proof.
       14:
-        requirement: PR-mode comments should render from the human review model when a current schema-valid human_review.json is available, while preserving pr_review_surface.json as the lower-level PR fact and postability model.
-        note: If the human model is missing or stale, the renderer may fall back to the PR sidecar; posting must still obey the validated remote-narrative gate.
+        requirement: PR-mode comments must render from the current schema-valid human_review.json reviewer brief, while preserving pr_review_surface.json as a lower-level deterministic fact model.
+        note: Optional provider prose may enrich supporting artifacts but must never decide whether the deterministic reviewer brief can be posted.
       15:
-        requirement: The all command terminal summary must make the human review surface the default entrypoint and report verdict, review-first count, blocker count, suggested-comment count, and missing-evidence count.
+        requirement: The all command terminal summary must make the human review surface the default entrypoint and report change purpose, verdict, and the number of independently rooted approval decisions without promoting supporting queue, comment, or evidence counts into the primary result.
         note: Agent handoff remains a secondary artifact and must not be promoted above the human review surface in the default terminal summary.
       16:
-        requirement: Human review configuration must support bounded reviewer-facing caps and deterministic risk-lens toggles without changing the default local-first behavior.
-        note: Invalid or absent config values must fall back to safe defaults, and disabled risk lenses must remove lens-derived actions rather than hiding underlying deterministic evidence.
+        requirement: Human review configuration must support bounded supporting previews and deterministic risk-lens toggles without changing the default local-first behavior.
+        note: Preview caps must never truncate independently rooted approval decisions. Invalid or absent config values must fall back to safe defaults, and disabled risk lenses must remove lens-derived actions rather than hiding underlying deterministic evidence.
       17:
         requirement: Human review configuration must support required manual checks triggered by changed-path patterns.
         note: Missing configured manual checks must appear as deterministic blockers, reviewer questions, and required manual test-plan items until current-head evidence records the check.
@@ -399,29 +401,23 @@ components:
       23:
         requirement: "Generated reviewer-facing prose must be punctuation- and label-clean — a templated question or sentence embedding a summary that already ends in sentence punctuation must not produce doubled terminal punctuation (for example \".?\"), and the empty linked-risk-id case must not render a label that reads as a risk-severity claim (\"Risk: none\") next to a high-severity ranking line; an empty linked-risk-id or requirement trailer is OMITTED entirely rather than rendered as a placeholder, so a present trailer line means real linked IDs."
         note: "ci-trust uplift Phase 5. Live runs showed '.?' in reviewer questions and 'Risk: none' rendered directly under 'ranked by high risk severity'. The human-value polish uplift extended this to omit the empty trailer rather than print 'Linked risk IDs: none'."
-      24:
-        requirement: The human-review summary sentence must lead with what a reviewer acts on — the blocker and review-queue counts — over a changed-file denominator, and must not restate the verdict decision (the badge already prints it) or carry a "generated from local evidence" provenance preamble; the spec-less branch still never advertises "requirement result(s)".
-        note: "human-value polish uplift (docs/history/HUMAN_VALUE_POLISH_GOAL.md). The live summary opened 'Human review surface generated from local evidence: 217 requirement result(s) ... Verdict is needs_author_clarification ...', restating the badge and leading with an engine-internal count."
       25:
         requirement: A suggested reviewer comment that already names its path in the heading must omit an "Evidence:" line that only echoes that same path; the Evidence line renders only when it adds a distinct source (a different file, a line range, or a non-file evidence kind), so a present Evidence line means a second source.
         note: "human-value polish uplift. 7 of 9 live suggested comments carried an 'Evidence: <the file already named twice>' line."
-      26:
-        requirement: A non-default review route whose every step is a low-priority negation (no signal fired for it, for example the security route on a change with no security/CI/redaction/privacy signal) must be flagged skippable once in its route header, rather than presenting four "nothing detected" steps as if they were review work; the model steps are preserved.
-        note: "human-value polish uplift. The live security route rendered four negation steps with 'Default: no / Secondary: no' and no skip hint."
       27:
-        requirement: The HTML cockpit's first screen must answer the three questions the tool promises about agent-written code — did the agent overreach, weaken tests, or claim things it didn't do — each as a count linking to its section above the reading order (overreach degrades to "not assessed" when no spec is indexed); and evidence anchors must reuse the Markdown label fallback order so a command/test/note-only anchor shows its id rather than the bare word "command".
-        note: "human-value polish uplift. The live cockpit never named the three questions on the first screen, and command-transcript evidence anchors rendered as the literal word 'command'."
+        requirement: HTML evidence anchors must reuse the Markdown label fallback order so a command/test/note-only anchor shows its id rather than the bare word "command"; aggregate overreach, test-weakening, and unbacked-claim counts must not compete with the approval-decision brief as a second first-screen mental model.
+        note: "Reviewer-brief reset. The evidence-label fix remains; the legacy three-question aggregate block was removed because approval decisions now answer what requires action."
       28:
         requirement: When NO deterministic detector produces a review-queue item — a spec-less run, no PR surface, no semantic/dependency/config fact fired — a substantive diff must still not yield an empty review queue. The review surface must add a deterministic baseline review-focus queue derived from the structured diff ALONE, ranking the changed files most worth reading by churn, exported/public-surface involvement, an implementation change with no connected changed test, and error/async/auth/network/persistence content; every baseline item states "no risk rule produced a ranked finding, but this is worth reading because ..." and fabricates no risk or blocker (empty risk_ids, no added blockers); docs/generated/lock/binary files are excluded. The floor also AUGMENTS a thin, non-empty queue — when a detector queued only a few items (e.g. a lone dependency/config finding) and substantive IMPLEMENTATION source changed but is unranked, the floor adds review-focus items for those uncovered impl files — so a dependency/config finding never hides the source a reviewer should read — without duplicating a file a detector already covers and without adding docs/tests into an already-populated queue.
         note: "cold-start usefulness PR + augmentation follow-up. External spec-less runs (sindresorhus/ky, spf13/cobra) produced 0 review-first items on substantive diffs, so the reviewer was handed a verdict with no files to read; the effectiveness benchmark (BENCH.1) then caught the thin-queue case (express-send: a content-disposition bump in package.json queued the dep finding and hid the lib/response.js source change), motivating the augmentation clause."
 
   NARRATIVE:
     name: Grounded change narrative
-    description: Optional provider-written prose that explains what the change does, with every claim anchored to evidence and trust-marked by deterministic validation.
+    description: Optional supporting prose over the same deterministic facts as the reviewer brief, with every claim anchored to evidence and trust-marked by deterministic validation.
     requirements:
       1:
-        requirement: The human surface should open with a bounded plain-language narrative covering what the change does, why it matters, and where risk concentrates, produced through the existing provider boundary (mock, agent-file, ai-sdk).
-        note: The narrative reuses the PR-narrative anchor discipline; it is prose over deterministic facts, never a new fact source.
+        requirement: The human and GitHub primary surfaces must open with a truthful verdict, the author-provided change purpose, and every independently rooted approval decision; narrative is optional supporting prose produced through the existing provider boundary (mock, agent-file, ai-sdk) and must never displace, gate, or redefine that primary reviewer brief.
+        note: Narrative reuses the PR-narrative anchor discipline; it is optional prose over deterministic facts, never a new fact source or a prerequisite for a postable review.
       2:
         requirement: Every narrative claim must cite allowlisted anchors (changed files, hunks, ACIDs, command transcripts, schema artifacts) and pass deterministic anchor validation.
         note: Claims with missing or invalid anchors must be demoted to visibly marked unverified claims rather than dropped silently or rendered as fact.
@@ -431,7 +427,7 @@ components:
         requirement: Narrative output must not create or clear blockers, change coverage status, or alter the merge-readiness verdict.
         note: This restates review-surfaces.HUMAN_TRUST.2 for the narrative surface specifically.
       5:
-        requirement: When no narrative provider output is available or validation rejects it, the human surface must render the deterministic fallback summary without failing.
+        requirement: Narrative is emitted only when a configured non-mock provider returns at least one usable claim that survives deterministic anchor validation; unavailable, rejected, invalid, or empty provider output must omit the narrative section without failing or weakening the deterministic reviewer brief.
 
   SEMANTIC_DIFF:
     name: Semantic change facts
@@ -474,7 +470,7 @@ components:
       4:
         requirement: Acai CLI/API sync, when added, must preserve local-first operation and work without requiring hosted Acai for tests.
       5:
-        requirement: Posted PR-mode comments must require a non-mock LLM narrative whose file, requirement, risk, and status anchors are validated against deterministic PR facts.
+        requirement: Posted PR-mode reviewer briefs must be derived from deterministic current-head facts and must remain postable without an LLM; any optional provider prose must be anchor-validated and kept in supporting artifacts.
       6:
         requirement: The CI PR comment workflow must keep LLM API keys out of PR-controlled workflow YAML, install, build, and executable code by running secret-bearing steps from a base-controlled workflow with a trusted tool checkout against a credentialless PR subject checkout.
       7:
@@ -490,19 +486,19 @@ components:
       Action is a renderer over local artifacts, never a separate analysis path.
     requirements:
       1:
-        requirement: The repository must publish a reusable composite GitHub Action that runs review-surfaces all --review-scope pr on a pull request, defaulting to --provider mock so a consuming repository gets full value with zero secrets, with inputs for provider, base/head refs, output directory, and comment top-N.
+        requirement: The repository must publish a reusable composite GitHub Action that runs review-surfaces all --review-scope pr on a pull request, defaulting to --provider mock so a consuming repository gets full value with zero secrets, with inputs for provider, base/head refs, output directory, and author-provided PR title/body context.
         note: Generalize the existing base-controlled pr-review-comment workflow (PROVIDERS.6); the repo-local workflow must become a thin consumer of the action so CI and local artifacts share one implementation and cannot disagree.
       2:
-        requirement: The Action must post or update exactly one sticky PR comment rendered from human_review.json via a compact sticky-summary renderer (verdict, top-N review-queue items with their existing hunk excerpts, trust-audit counts, and a link to the uploaded artifact), using marker-based idempotent upsert so re-runs edit the same comment.
-        note: Reuse the human-review rollup logic so the comment stays short; the sticky renders from the human review model, not the lower-level PR sidecar.
+        requirement: The Action must post or update exactly one sticky PR comment rendered from human_review.json as an adaptive reviewer brief (truthful verdict, author-provided change purpose, all independently rooted approval decisions, directly relevant validation evidence, and a link to supporting artifacts), using marker-based idempotent upsert so re-runs edit the same comment.
+        note: The sticky renders from the human review model, not the lower-level PR sidecar. Maps, tours, round ledgers, repository-wide compliance counts, provider availability, and duplicate generic queues stay out of the primary comment.
       3:
         requirement: The Action must upload the full .review-surfaces/ directory as a workflow artifact under a stable name keyed by PR number; for fork pull requests it must still generate and upload the artifact but skip posting, never exposing the write token to PR-controlled code.
       4:
         requirement: The strict postability gate and secret redaction must run before any rendered text leaves the runner, and the Action must post only the sticky summary comment; suggested review comments remain local drafts and must never be auto-posted.
-        note: The sticky summary is the deterministic human-review rollup, not provider-written narrative prose, so it is exempt from the PROVIDERS.5 non-mock-narrative posting gate and may be posted under --provider mock; PROVIDERS.5 continues to govern any LLM narrative comment. The redaction and postability gates apply to the sticky regardless of provider.
+        note: Provider availability is not a postability gate. The redaction and exact-head truth gates apply to the sticky regardless of provider.
       5:
-        requirement: On a subsequent push the Action must recover the previous review packet (most recent prior PR-keyed artifact, with an in-comment fingerprint as a fallback pointer) and lead the sticky comment with the since-last-review delta (improved, regressed, new, resolved) computed against the last posted sticky, collapsing the unchanged remainder.
-        note: Item identity across runs must use stable finding keys (rule id plus file path plus anchor), not array positions; a missing or expired prior artifact must be treated as the first-review case, never an error.
+        requirement: On a subsequent push the Action must recover the previous review packet (most recent prior PR-keyed artifact, with an in-comment fingerprint as a fallback pointer) and, after the change purpose and approval decisions, show a concise since-last-review delta only when the verdict changes or the delta is tied to an admitted approval decision; repository-wide requirement/risk churn and an unchanged comparison stay in supporting artifacts.
+        note: Item identity across runs must derive from stable finding keys (rule id plus file path plus anchor), not array positions; the comment may retain only a bounded hash of those keys. A missing or expired prior artifact must be treated as the first-review case, never an error.
 
   RANKING:
     name: Queue ranking v2
@@ -684,20 +680,20 @@ components:
     description: >-
       Visual uplift Phase 2 / milestone M9 (brainstorm idea 1). A shared,
       schema-validated change-graph model built from the existing import graph and
-      blast-radius facts, plus a focused mermaid emitter that replaces the
-      requirements-hairball diagram on the human comment surfaces. Every node and
-      edge cites a deterministic fact; caps are rendered, never silent.
+      blast-radius facts, rendered as a compact interactive HTML/SVG supporting
+      map. Every node and edge cites a deterministic fact; caps are rendered,
+      never silent.
     requirements:
       1:
         requirement: The human review model and strict schema must grow a change_graph section with nodes (changed files with churn added/removed counts, dominant risk lens, and status added/modified/deleted/renamed), halo_nodes (top unchanged importers taken from blast-radius facts, at most two per high-blast node, alphabetical exactly as the fact's bounded used_by top list stores them), edges (importer to imported restricted to those nodes, each carrying a kind of existing, new, or removed), and clusters (top-level directory grouping, with files under src/ grouped by their directory directly under src/ — the brainstorm's "top-level dir under src/, plus tests/, schemas/, config"), with every list sorted and the graph built from the existing buildImportGraph output restricted to changed files — no new parsing.
         note: Visual uplift M9 (brainstorm idea 1). The edge kind slot ships here as existing-only; ARCH_DRIFT.2 fills new/removed later.
       2:
-        requirement: A focused mermaid emitter (src/diagrams/change-map.ts) must render the change_graph as a flowchart LR with one subgraph per cluster and a classDef per lens, enforcing hard caps (around 25 changed-file nodes and around 10 halo nodes) where overflow renders as one explicit "+ N more files" node per cluster, never as silent truncation.
+        requirement: The HTML cockpit must render change_graph as a deterministic, dark-mode-readable SVG overview with compact area cards and expandable file-level detail views, enforcing a hard cap of around 25 changed-file nodes per detail view where overflow renders explicitly rather than as silent truncation; unchanged-file halo facts remain in the JSON model but stay out of the visual map so they cannot create orphan-looking lanes for files outside the diff.
       3:
-        requirement: The change map must embed as a collapsed details block in renderHumanPrComment and the sticky summary, and as a new diagram embed in human_review.md; wide GitHub comment maps must use a bounded dark-mode-safe overview table rather than disconnected prose-heavy Mermaid cards, while small file-level maps may retain Mermaid; the old provider-narrative-path "Change impact" embed must retire with the requirements hairball, while the spec/requirement-mapping diagram (pr-change-impact.mmd) remains a standalone agent-facing artifact off the human surfaces; the map must carry no spec or requirement anchors.
-        note: One diagram answers one question. The map's left-to-right flow must agree with the reading-order tour's numbering — same underlying order.
+        requirement: The change map is a supporting artifact for reviewers who choose to inspect structural context; it must not embed in the sticky summary, human PR comment, or compact human_review.md brief, and may render in the HTML artifact while remaining fully represented in human_review.json. The old provider-narrative-path "Change impact" embed must retire with the requirements hairball, the spec/requirement-mapping diagram (pr-change-impact.mmd) remains a standalone agent-facing artifact, and the map must carry no spec or requirement anchors.
+        note: One diagram answers one question. The map explains structure; it never substitutes for a change purpose or approval decision.
       4:
-        requirement: Every change-map label must pass through the shared diagram-label sanitizer (unifying the private copy in pr-change-diagram.ts rather than adding another), every embed point must keep the body-level fence-close guard, redaction must run before render, and scripts/determinism-check.sh must gain a PR-scope run so the comment-embedded map is determinism-checked.
+        requirement: Every change-map label must be HTML/SVG-escaped and redacted before render, the HTML map must remain readable in GitHub-style dark mode without horizontal overflow, and scripts/determinism-check.sh must include a PR-scope run so the supporting map is determinism-checked without putting it in the GitHub brief.
 
   READING_ORDER:
     name: Guided diff tour
@@ -710,10 +706,10 @@ components:
       1:
         requirement: The human review model and strict schema must grow a reading_order section computed by restricting the import graph to changed files and topologically sorting with dependencies first, where strongly connected components collapse into one read-together leg with alphabetical order inside so the output is total and deterministic, and each step carries a path, a derived (never freeform) why line, and queue item references.
       2:
-        requirement: The reading order must render in human_review.md and the HTML cockpit as the section after the verdict, while the sticky comment carries only the first leg; the tour must never include unchanged files.
-        note: Halo files belong to the map, not the reading plan; a blocker still leads the cockpit — the tour serves the comprehension pass after the verdict.
+        requirement: The reading order is supporting navigation that may render after the approval decisions in the HTML artifact and remains fully represented in human_review.json; it must not render in the sticky summary, human PR comment, or compact human_review.md brief, and it must never include unchanged files.
+        note: Halo files belong to the map, not the reading plan. The reviewer brief establishes purpose and approval decisions before offering optional navigation.
       3:
-        requirement: The reading order must not repeat its leg header on every line — the Tests and Config/docs legs drop the per-step "test — ..." / "config or docs — read last" why that merely echoes the bold leg header (render-only; the JSON why is unchanged) — and the HTML cockpit must cap the reading-order wall by rendering the queue-linked and per-leg-lead steps visibly and collapsing the remaining mechanical rows behind a details element, with the full ordered list preserved in human_review.md and the JSON.
+        requirement: The reading order must not repeat its leg header on every line — the Tests and Config/docs legs drop the per-step "test — ..." / "config or docs — read last" why that merely echoes the bold leg header (render-only; the JSON why is unchanged) — and the HTML cockpit must cap the reading-order wall by rendering the queue-linked and per-leg-lead steps visibly and collapsing the remaining mechanical rows behind a details element, with the full ordered list preserved in JSON.
         note: "human-value polish uplift (docs/history/HUMAN_VALUE_POLISH_GOAL.md). A live 51-step reading order restated 'config or docs — read last' on 9 lines and 'test — ...' on 25, and the full wall preceded the ranked queue in the cockpit."
 
   ARCH_DRIFT:
@@ -727,7 +723,7 @@ components:
       1:
         requirement: For each changed or deleted file the tool must parse the base content (read via readFileAtRef) with the same import extraction the import graph already uses, diff the resolved import sets per file, and emit module_edge_added and module_edge_removed facts at module altitude; import_cycle_created requires a concrete newly added runtime file edge plus a complete runtime return path in the head tree, excludes type-only imports, and records the proven file chain before any module aggregation.
       2:
-        requirement: Architecture-drift facts must carry an architecture lens tag and set kind new or removed on matching change_graph edges so both map renderers pick the drift up; ordinary module edges remain supporting detail, while only a proven concrete runtime cycle or explicit policy violation may enter the review queue and decision projection, and one canonical cycle may occupy at most one slot.
+        requirement: Architecture-drift facts must carry an architecture lens tag and set kind new or removed on matching change_graph edges so the supporting HTML map picks the drift up; ordinary module edges remain supporting detail, while only a proven concrete runtime cycle or explicit policy violation may enter the review queue and decision projection, and one canonical cycle may occupy at most one slot.
       3:
         requirement: Drift detection must respect rename detection (a moved file re-creating its old edges from a new path is not drift), and imports the resolver cannot resolve (such as tsconfig path aliases) must count as unknown, never as removed, with resolver bounds documented like the import graph's existing bounds.
 
@@ -741,15 +737,15 @@ components:
       1:
         requirement: The tool must carry forward a rounds ledger with the prior packet — each entry recording round number, head SHA, new/resolved/regressed counts from the existing compare output, and verdict — appending one row per run, with item identity on stable finding keys, never array positions, and the ledger must work from both transports, CI artifacts and the local prior-packet directory.
       2:
-        requirement: The sticky comment and the HTML cockpit must render the rounds ledger as a compact table capped at the last eight or so rounds with the full ledger preserved in the artifact, and partial history must render honestly (for example "history begins at round 3") and never as an error — a missing prior packet is the first-review case.
+        requirement: The HTML artifact may render the rounds ledger as supporting history, with the full ledger preserved in the machine artifact; the sticky comment and human PR comment must instead show only a concise since-last-review delta when it changes a review decision. Partial history must render honestly (for example "history begins at round 3") and never as an error — a missing prior packet is the first-review case.
       3:
         requirement: Since-last-review deltas must not triple-encode direction — a status-change summary renders arrow-only (no trailing "(improved/regressed)" parenthetical) and a resolved/new/overreach bullet drops the "<direction> since last review:" prefix its section header already states — while the structured direction field is preserved.
         note: "human-value polish uplift (docs/history/HUMAN_VALUE_POLISH_GOAL.md). Live bullets read 'Resolved risk since last review: testing: ...' under a 'Resolved risks' header, and status changes ended in 'satisfied -> partial (regressed)'."
       4:
-        requirement: When a since-last-review bucket is dominated by one homogeneous status transition (the test-evidence aggregate that regresses dozens of requirements satisfied->partial at once), the sticky comment must collapse it to a count plus a couple of sample ids rather than a fixed sample list and a "(+N more)" remainder, so the loudest delta line is not the lowest-signal one.
+        requirement: When a since-last-review bucket is dominated by one homogeneous status transition (the test-evidence aggregate that regresses dozens of requirements satisfied->partial at once), supporting trend artifacts must collapse it to a count plus a couple of sample ids rather than a fixed sample list and a "(+N more)" remainder; the sticky omits the bucket unless it is tied to an admitted approval decision.
         note: "human-value polish uplift. A live sticky showed '⚠️ Regressed: ... (+34 more)' as the loudest line while the real queue was 2 items and 0 blockers."
       5:
-        requirement: A single aggregate risk whose only change is its count must not be reported as both resolved (at its old count) and new (at its new count); the sticky comment must detect the count-moved pair from the render-time delta model and report it once as "still open (count N -> M)".
+        requirement: A single aggregate risk whose only change is its count must not be reported as both resolved (at its old count) and new (at its new count); supporting trend artifacts must detect the count-moved pair and report it once as "still open (count N -> M)", while the sticky omits it unless it is tied to an admitted approval decision.
         note: "human-value polish uplift. The count is baked into the comparison identity, so one test-evidence aggregate appeared in both the Resolved and New buckets of the same comment."
 
   COLD_START:
@@ -866,7 +862,7 @@ components:
         requirement: The change_graph model and strict human-review schema must grow an overview section whose groups are the model clusters merged by first path segment (the "(root)" cluster stays itself), each group carrying its file count, cluster count, churn added/removed totals, dominant risk lens with a deterministic tie-break, and review-queue item count, plus one aggregate dashed halo entry and aggregated inter-group edges each carrying weight equal to the number of underlying model edges and has_new/has_removed flags; the overview must be derived from the same change_graph model the tour and queue use — no renderer-local clustering — and ship additively, model-and-strict-schema-first.
         note: "Phase 1. Closes the model half of failure 4: clusterOfPath already emits two-level cluster keys, but no schema-visible high-level grouping exists for any renderer to lead with."
       2:
-        requirement: One legibility-budget helper (a single module with shared constants) must decide per surface whether the file-level map or the overview leads; renderers must not carry private size thresholds, and when the file-level map exceeds the budget the overview must lead on every surface — cockpit SVG, markdown mermaid, and a bounded Markdown overview table on GitHub comment surfaces — via same-model emitters, while small diffs (the pinned got a5b76bffb HEAD~3 range) keep the file-level map leading with today's structure.
+        requirement: One legibility-budget helper (a single module with shared constants) must decide whether the file-level map or the overview leads in the supporting HTML cockpit; renderers must not carry private size thresholds, and when the file-level map exceeds the budget the overview must lead in the cockpit SVG, while small diffs (the pinned got a5b76bffb HEAD~3 range) keep the file-level map leading with today's structure. GitHub and compact Markdown briefs omit the map at every size.
         note: "Phase 1. Closes failure 1 (8-PR cockpit map rendered at ~16 percent, labels ~2px) and failure 3 (the 8-PR sticky embeds a 151-line mermaid flowchart whose only size control deletes the map entirely)."
       3:
         requirement: The overview must be honest by construction — group file counts must sum to the full changed-file count and aggregated edge weights must account for every model edge between groups — with ACID-named tests reproducing the 8-PR fixture (23 clusters, 99 files) and asserting the overview leads, fits the budget, and that both sums add up.
@@ -878,7 +874,7 @@ components:
         requirement: All SVG map layouts must wrap — columns wrap into rows and long file stacks wrap — so that no rendered SVG (overview, detail, or small-diff file-level) exceeds the width budget; height may grow but width never, and the typical-PR file-level map (the pinned aefc63c~1..aefc63c range, previously 1792px natural width rendered at ~55 percent) must render at or above ~94 percent of natural size as a single wrapped file-level map.
         note: "Phase 2. Closes failure 1's typical-PR case and enforces the summarize-never-shrink standing rule: scale-to-fit below ~90 percent of natural size is a rendering bug."
       6:
-        requirement: In the cockpit, clicking an overview group must toggle that group's pre-rendered hidden detail SVG using vanilla JS with deterministic markup and the same data- attribute pattern as existing filters, while file clicks inside a detail view keep filtering the review queue exactly as today; human_review.md must render one collapsed details block per group containing its detail mermaid in deterministic order with the embed guard applied per block; GitHub comments stay overview-only and wide overviews render as a bounded table with file, churn, review-focus, overflow, and relationship summaries rather than a Mermaid fence.
+        requirement: In the cockpit, clicking an overview group must toggle that group's pre-rendered hidden detail SVG using vanilla JS with deterministic markup and the same data- attribute pattern as existing filters, while file clicks inside a detail view keep filtering the review queue exactly as today; GitHub and compact Markdown briefs omit both overview and detail maps.
         note: "Phase 2. Closes the interaction half of failures 3 and 4: the cockpit's only interaction is node-click-filters-queue, and a reviewer cannot ask 'show me just src' anywhere."
       7:
         requirement: The HTML cockpit change map must preserve visual relationship lines for review-worthy relationships while routing them around cards with no line overlap, label overlap, orphan rails, or edges anchored to hidden nodes; provider-backed runs may enrich those relationships through the existing schema-bound provider boundary, while mock/offline runs must keep deterministic model evidence available without inventing edges or promoting generic raw-import summaries into the human map.
@@ -913,7 +909,7 @@ components:
       1:
         requirement: action.yml must declare an outputs block (gate code, missing/invalid/risk counts, artifact name, comment path) populated from the generation step via $GITHUB_OUTPUT, so a consuming workflow can branch on the result.
       2:
-        requirement: The action must append the rendered review summary (comment.md, or a trimmed top-N) to $GITHUB_STEP_SUMMARY in a best-effort step so the verdict appears in the Actions run UI even on fork PRs where the comment is not posted.
+        requirement: The action must append the complete admitted reviewer brief from comment.md to $GITHUB_STEP_SUMMARY in a best-effort step so the verdict and every independent approval decision appear in the Actions run UI even on fork PRs where the comment is not posted.
       3:
         requirement: action.yml must carry a top-level branding block (icon and color) so the advertised reusable action is GitHub Marketplace-publishable.
 
@@ -948,7 +944,7 @@ constraints:
       6:
         requirement: The packet must clearly distinguish verified evidence from agent claims.
       7:
-        requirement: PR narrative output must answer what changed, why it matters, and where to look first, and each core section must survive evidence validation before the surface is postable.
+        requirement: When optional PR narrative output is present, it must help explain what changed, why it matters, or where to look first, and every rendered claim must survive deterministic evidence validation; narrative absence must never make the deterministic reviewer brief unpostable.
       8:
         requirement: A feedback-recorded passed validation command is a CLAIM — its output is not captured in the artifact — so it must classify as claimed and render under "Claimed but not verified", never as indirect evidence promoted into "Verified facts" where the row would contradict its own "output is not captured" note; manual-check notes (CI secret-boundary, security review) remain a separate evidence-bearing channel and are unaffected.
         note: "human-value polish uplift (docs/history/HUMAN_VALUE_POLISH_GOAL.md). Live trust audits listed five 'Validation command recorded in local feedback; command output is not captured' rows under Verified facts."

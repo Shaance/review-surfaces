@@ -1,4 +1,4 @@
-// review-surfaces.NARRATIVE.1-5: build the grounded change narrative that opens
+// review-surfaces.NARRATIVE.1-5: build optional grounded supporting prose for
 // the human surface.
 //
 // The narrative is prose over deterministic facts produced through the provider
@@ -11,10 +11,9 @@
 // It never creates/clears blockers or alters the verdict — the builder only
 // returns claims; the caller stores them read-only on the model.
 //
-// Mock, a non-ok provider result, or a narrative with nothing usable falls back
-// to a deterministic summary so the section always renders without failing.
+// Mock, a non-ok provider result, or a narrative with nothing usable produces
+// no narrative. The deterministic reviewer brief remains complete without it.
 
-import { TEXT_ACID_TOKEN, TEXT_PATH_TOKEN, TEXT_ROOT_FILE_TOKEN } from "../core/anchor-tokens";
 import { isRecord } from "../core/guards";
 import { EvidenceRef } from "../evidence/evidence";
 import { ProviderName, ReasoningProvider } from "../llm/provider";
@@ -26,6 +25,9 @@ import { ChangeNarrative, NarrativeClaim, NarrativeClaimTrust } from "./contract
 export const DEFAULT_NARRATIVE_MAX_CLAIMS = 8;
 const MAX_NARRATIVE_MAX_CLAIMS = 16;
 const MAX_CLAIM_TEXT_CHARS = 280;
+const TEXT_PATH_TOKEN = /(?<![\w./-])\.?[\w-]+(?:\/[\w.-]+)+\.[A-Za-z][\w]*/g;
+const TEXT_ACID_TOKEN = /\b[A-Za-z][\w-]*\.[A-Za-z][\w-]*\.\d+\b/g;
+const TEXT_ROOT_FILE_TOKEN = /(?<![\w./-])[\w-]+\.(?:json|jsonc|ya?ml|toml|cfg|lock|sh|md|tsx?)\b/g;
 
 // Provider output contract: claims with optional structured anchors.
 export const HUMAN_NARRATIVE_SCHEMA = {
@@ -73,15 +75,14 @@ export interface BuildChangeNarrativeInput extends NarrativeFacts {
   remotePrivacyBlocked: boolean;
 }
 
-export async function buildChangeNarrative(input: BuildChangeNarrativeInput): Promise<ChangeNarrative> {
+export async function buildChangeNarrative(input: BuildChangeNarrativeInput): Promise<ChangeNarrative | undefined> {
   const allowlist = buildNarrativeAllowlist(input);
   const maxClaims = clampMaxClaims(input.maxClaims);
-  // Reuse the already-built allowlist for any fallback path below.
-  const fallback = (): ChangeNarrative => buildFallbackNarrative(input, input.providerName, allowlist);
 
-  // Mock never enriches (review-surfaces.NARRATIVE.5): deterministic fallback.
+  // Mock never enriches (review-surfaces.NARRATIVE.5). The primary reviewer
+  // brief is deterministic and complete, so optional prose is simply absent.
   if (input.providerName === "mock") {
-    return fallback();
+    return undefined;
   }
 
   const result = await input.provider.generateStructured(
@@ -91,13 +92,11 @@ export async function buildChangeNarrative(input: BuildChangeNarrativeInput): Pr
     { redactSecrets: input.redactSecrets, remotePrivacyBlocked: input.remotePrivacyBlocked }
   );
   if (!result.ok || !isRecord(result.data)) {
-    return fallback();
+    return undefined;
   }
   const claims = validateClaims(result.data.claims, allowlist, maxClaims);
   if (claims.length === 0) {
-    // Provider returned nothing usable: render the deterministic fallback rather
-    // than an empty narrative section.
-    return fallback();
+    return undefined;
   }
   return {
     source: "provider",
@@ -271,78 +270,6 @@ function classifyAnchors(
   return { anchors, invalid };
 }
 
-// Deterministic fallback narrative (review-surfaces.NARRATIVE.5): a bounded set
-// of verified claims derived from packet facts, each anchored to real evidence.
-// Synchronous and provider-free, so every build path (all / cache / standalone)
-// can always render a narrative without an LLM call.
-export function buildFallbackNarrative(
-  input: NarrativeFacts,
-  provider: ProviderName = "mock",
-  reusableAllowlist?: NarrativeAllowlist
-): ChangeNarrative {
-  const allowlist = reusableAllowlist ?? buildNarrativeAllowlist(input);
-  const maxClaims = clampMaxClaims(input.maxClaims);
-  const claims: NarrativeClaim[] = [];
-  const add = (text: string, anchors: EvidenceRef[]): void => {
-    if (claims.length >= maxClaims || anchors.length === 0) {
-      return;
-    }
-    claims.push({
-      id: `NARR-${String(claims.length + 1).padStart(3, "0")}`,
-      text: boundedRedacted(text),
-      trust: "verified",
-      anchors,
-      invalid_anchors: []
-    });
-  };
-
-  const changedPaths = [...allowlist.paths];
-  if (changedPaths.length > 0) {
-    add(
-      `The change touches ${changedPaths.length} file(s).`,
-      changedPaths.slice(0, 4).map((path) => validAnchor({ kind: "file", path }))
-    );
-  }
-
-  const missing = (input.packet.evaluation.results ?? []).filter((result) => result.status === "missing" || result.status === "partial");
-  const missingAcids = compact(missing.map((result) => result.acai_id ?? result.requirement_id));
-  if (missingAcids.length > 0) {
-    add(
-      `${missing.length} requirement(s) still need implementation or test evidence.`,
-      missingAcids.slice(0, 4).map((id) => validAnchor({ kind: "spec", acai_id: id }))
-    );
-  }
-
-  const riskItems = input.packet.risks.items ?? [];
-  // Anchor the risk claim to the risks' REAL evidence (changed files / ACIDs on
-  // the allowlist) — NARRATIVE.2 allowed anchor types — rather than the risk row
-  // id (RISK-001), which is not an allowlisted anchor type.
-  const riskAnchors = dedupeAnchors(
-    riskItems.flatMap((risk) => risk.evidence ?? []).flatMap((ref) => allowlistedRiskAnchor(ref, allowlist))
-  ).slice(0, 4);
-  if (riskItems.length > 0) {
-    add(`${riskItems.length} packet risk(s) were identified for review.`, riskAnchors);
-  }
-
-  // Count distinct transcript-backed ROWS (not the allowlist, which may hold both
-  // a row id and a CMD-* token from the same row, double-counting it).
-  const transcriptCount = transcriptBackedTestEvidence(input.packet).length;
-  const commandIds = [...allowlist.commandIds];
-  if (transcriptCount > 0 && commandIds.length > 0) {
-    add(
-      `${transcriptCount} command transcript(s) back the recorded validation evidence.`,
-      commandIds.slice(0, 4).map((command) => validAnchor({ kind: "command", command }))
-    );
-  }
-
-  return {
-    source: "fallback",
-    provider,
-    validated_at_head: input.headSha,
-    claims
-  };
-}
-
 function narrativePrompt(input: BuildChangeNarrativeInput, allowlist: NarrativeAllowlist): string {
   return [
     "Write 5-8 short plain-language claims describing what this change does, why it matters, and where risk concentrates.",
@@ -374,48 +301,6 @@ function boundedRedacted(text: string): string {
 // A deterministically-validated anchor: high confidence, validation_status valid.
 function validAnchor(ref: Omit<EvidenceRef, "confidence" | "validation_status">): EvidenceRef {
   return { ...ref, confidence: "high", validation_status: "valid" };
-}
-
-// Map a packet-risk evidence ref to an allowlisted narrative anchor (a changed
-// file or an ACID). Returns [] for evidence that is not an allowed anchor type or
-// not on the allowlist, so a risk claim is only anchored to real, allowed proof.
-function allowlistedRiskAnchor(ref: EvidenceRef, allowlist: NarrativeAllowlist): EvidenceRef[] {
-  if (ref.path && allowlist.paths.has(ref.path)) {
-    return [validAnchor({ kind: "file", path: ref.path })];
-  }
-  if (ref.acai_id && allowlist.requirementIds.has(ref.acai_id)) {
-    return [validAnchor({ kind: "spec", acai_id: ref.acai_id })];
-  }
-  return [];
-}
-
-function dedupeAnchors(anchors: EvidenceRef[]): EvidenceRef[] {
-  const seen = new Set<string>();
-  const out: EvidenceRef[] = [];
-  for (const anchor of anchors) {
-    const key = `${anchor.kind}:${anchor.path ?? ""}:${anchor.acai_id ?? ""}:${anchor.command ?? ""}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      out.push(anchor);
-    }
-  }
-  return out;
-}
-
-function asStringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
-
-function compact(values: (string | undefined)[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const value of values) {
-    if (value && !seen.has(value)) {
-      seen.add(value);
-      out.push(value);
-    }
-  }
-  return out;
 }
 
 // Path/ACID/root-file/command tokens in prose, using the shared anchored-or-

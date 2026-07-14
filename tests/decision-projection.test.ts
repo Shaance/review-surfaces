@@ -7,10 +7,39 @@ import { fileEvidence, missingEvidence } from "../src/evidence/evidence";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import { buildHumanReview } from "../src/human/human-review";
 import { buildDecisionProjection } from "../src/human/decision-projection";
-import { buildDecisionScope } from "../src/human/decision-admission";
+import type { ReviewQueueItem } from "../src/human/contract";
+import { renderDecisionProjectionMarkdown } from "../src/human/render";
+import { buildDecisionScope, schemaChangeDisposition } from "../src/human/decision-admission";
 import { validateJsonSchema } from "../src/schema/json-schema";
 import type { SemanticChangeFacts } from "../src/risks/semantic-diff";
 import { decisionPacket as packet, decisionRisk as risk, decisionSurface as surface, emptyDecisionSemanticFacts as emptySemanticFacts, requirement } from "./helpers/decision-projection";
+
+test("schema disposition indexes a semantic-fact set once across repeated decisions", () => {
+  let pathReads = 0;
+  const schemaChanges = Array.from({ length: 1_000 }, (_, index) => {
+    const change = {
+      properties_added: ["added"],
+      properties_removed: [],
+      required_added: [],
+      required_removed: [],
+      type_changes: [],
+      enum_changes: []
+    } as Record<string, unknown>;
+    Object.defineProperty(change, "path", {
+      enumerable: true,
+      get() {
+        pathReads += 1;
+        return `schemas/${index}.json`;
+      }
+    });
+    return change;
+  }) as unknown as SemanticChangeFacts["schema_changes"];
+
+  assert.equal(schemaChangeDisposition(["schemas/999.json"], schemaChanges), "additive");
+  const readsAfterIndexBuild = pathReads;
+  assert.equal(schemaChangeDisposition(["schemas/1.json", "schemas/999.json"], schemaChanges), "additive");
+  assert.equal(pathReads, readsAfterIndexBuild, "later decisions reuse the normalized path index");
+});
 
 test("broad requirement scope preserves the packet goal instead of presenting an inventory as intent", () => {
   const value = packet();
@@ -66,8 +95,32 @@ test("review-surfaces.REVIEWER_VALUE.6 merges detector manifestations by root wi
   const findings = model.decision_projection?.findings ?? [];
   const schemaFindings = findings.filter((finding) => finding.root_cause === `persisted_contract:${path}`);
   assert.equal(schemaFindings.length, 1, "schema blocker, PR risk, and semantic queue row must share one slot");
-  assert.ok(schemaFindings[0].source_queue_ids.length >= 2, "merged root must retain contributing queue rows");
   assert.ok(findings.some((finding) => finding.root_cause === `secret_boundary:${path}`), "independent secret root on the same path must remain separate");
+});
+
+test("the interdependent PR and human review schemas form one artifact-reset decision", () => {
+  const paths = ["schemas/human_review.schema.json", "schemas/pr_review_surface.schema.json"];
+  const model = buildHumanReview({
+    packet: packet(),
+    prSurface: surface(paths, paths.map((path, index) => risk(`PR-RISK-SCHEMA-${index}`, "schema_contract_change", path))),
+    semanticFacts: {
+      ...emptySemanticFacts,
+      schema_changes: paths.map((path) => ({
+        path,
+        properties_added: [],
+        properties_removed: ["legacy"],
+        required_added: [],
+        required_removed: [],
+        type_changes: [],
+        enum_changes: []
+      }))
+    }
+  });
+
+  const resets = model.decision_projection?.findings.filter((finding) => finding.root_cause === "review_artifact_contract") ?? [];
+  assert.equal(resets.length, 1);
+  assert.equal(resets[0].path, undefined);
+  assert.deepEqual([...new Set(resets[0].evidence.flatMap((ref) => ref.path))].sort(), paths);
 });
 
 test("review-surfaces.REVIEWER_VALUE.6 admits explicit contracts but keeps internal exports supporting", () => {
@@ -130,10 +183,6 @@ test("review-surfaces.REVIEWER_VALUE.6 keeps distinct package contracts in disti
   const roots = model.decision_projection?.findings.map((finding) => finding.root_cause) ?? [];
   assert.ok(roots.includes("public_contract:package.json:export:./alpha"));
   assert.ok(roots.includes("public_contract:package.json:export:./beta"));
-  const packageQueueIds = model.review_queue
-    .filter((item) => item.path === packagePath && item.title === "Exported API surface change")
-    .map((item) => item.id)
-    .sort();
   assert.equal(
     model.review_queue.some((item) => item.path === packagePath && item.title === "Changed implementation file"),
     false,
@@ -142,8 +191,30 @@ test("review-surfaces.REVIEWER_VALUE.6 keeps distinct package contracts in disti
   const packageFindings = model.decision_projection?.findings
     .filter((finding) => finding.root_cause.startsWith("public_contract:package.json:")) ?? [];
   assert.equal(packageFindings.length, 2);
-  assert.ok(packageFindings.every((finding) => finding.source_queue_ids.length === 1));
-  assert.deepEqual(packageFindings.flatMap((finding) => finding.source_queue_ids).sort(), packageQueueIds);
+});
+
+test("approval decisions are not truncated by the supporting review-queue limit", () => {
+  const paths = Array.from({ length: 25 }, (_, index) => `types/public-${index}.d.ts`);
+  const model = buildHumanReview({
+    packet: packet(),
+    prSurface: surface(paths),
+    semanticFacts: {
+      ...emptySemanticFacts,
+      api_changes: paths.map((path) => ({
+        path,
+        exports_added: [],
+        exports_removed: ["legacyExport"],
+        signatures_changed: []
+      }))
+    }
+  });
+
+  assert.equal(model.review_queue.length, 20, "the supporting queue remains bounded for scanability");
+  assert.equal(model.decision_projection?.findings.length, 25, "every independent public contract remains an approval decision");
+  assert.deepEqual(
+    model.decision_projection?.findings.map((finding) => finding.path).sort(),
+    [...paths].sort()
+  );
 });
 
 test("review-surfaces.REVIEWER_VALUE.11 keeps internal importers as supporting evidence", () => {
@@ -260,7 +331,7 @@ test("review-surfaces.REVIEWER_VALUE.6 ordinary import edges remain supporting c
   assert.ok(!model.decision_projection?.findings.some((finding) => finding.root_cause.includes("architecture")));
 });
 
-test("review-surfaces.REVIEWER_VALUE.6 merged root evidence stays within the strict schema bound", () => {
+test("review-surfaces.REVIEWER_VALUE.6 merged roots preserve complete decision evidence", () => {
   const contractPath = "schemas/public.schema.json";
   const schemaRisk = risk("PR-RISK-SCHEMA", "schema_contract_change", contractPath);
   schemaRisk.evidence = Array.from({ length: 8 }, (_, index) =>
@@ -283,9 +354,94 @@ test("review-surfaces.REVIEWER_VALUE.6 merged root evidence stays within the str
     }
   });
   const finding = model.decision_projection?.findings.find((item) => item.root_cause === `persisted_contract:${contractPath}`);
-  assert.equal(finding?.evidence.length, 6);
+  assert.ok((finding?.evidence.length ?? 0) >= 8);
+  for (let index = 0; index < 8; index += 1) {
+    assert.ok(finding?.evidence.some((ref) => ref.note === `Independent contract evidence ${index}.`));
+  }
   const schema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "human_review.schema.json"), "utf8"));
   assert.equal(validateJsonSchema(schema, model).valid, true);
+});
+
+test("large adaptive decision sets merge one shared root without losing evidence", () => {
+  const count = 1_000;
+  const paths = Array.from({ length: count }, (_, index) => `src/render/surface-${index}.ts`);
+  const risks = paths.map((filePath, index) => risk(`PR-RISK-${index}`, "comment_surface_change", filePath));
+  const reviewQueue: ReviewQueueItem[] = risks.map((item, index) => ({
+    id: `REVIEW-${index}`,
+    rank: index + 1,
+    title: `Reviewer surface ${index}`,
+    path: paths[index],
+    reviewer_action: "Inspect the reviewer-facing output.",
+    reason: "The reviewer-facing output changed.",
+    ranking_reasons: ["Reviewer-facing change."],
+    evidence: item.evidence,
+    requirement_ids: [],
+    risk_ids: [item.id],
+    confidence: "high",
+    priority: "medium"
+  }));
+  const projection = buildDecisionProjection({
+    packet: packet(),
+    prSurface: surface(paths, risks),
+    scope: {
+      mode: "pr",
+      changed_paths: new Set(paths),
+      affected_requirement_ids: new Set(),
+      head_sha: "head",
+      working_tree_dirty: false
+    },
+    reviewQueue,
+    blockers: [],
+    semanticFacts: emptySemanticFacts
+  });
+
+  assert.equal(projection.findings.length, 1);
+  assert.equal(projection.findings[0].root_cause, "review_surface");
+  assert.equal(projection.findings[0].evidence.length, count);
+  assert.deepEqual(
+    projection.findings[0].evidence.map((ref) => ref.path),
+    paths
+  );
+});
+
+test("large adaptive untested sets index changed-file validation areas", () => {
+  const count = 1_000;
+  const paths = Array.from({ length: count }, (_, index) => `src/validation/area-${index}.ts`);
+  const risks = paths.map((filePath, index) => risk(`PR-RISK-UNTESTED-${index}`, "untested_changed_impl", filePath));
+  const prSurface = surface(paths, risks);
+  prSurface.scope.changed_files.forEach((file, index) => { file.areas = [`VALIDATION_${index}`]; });
+  const reviewQueue: ReviewQueueItem[] = risks.map((item, index) => ({
+    id: `REVIEW-UNTESTED-${index}`,
+    rank: index + 1,
+    title: `Untested validation area ${index}`,
+    path: paths[index],
+    reviewer_action: "Confirm focused validation at the current head.",
+    reason: "No current-head validation transcript covers this area.",
+    ranking_reasons: ["Current-head validation is missing."],
+    evidence: item.evidence,
+    requirement_ids: [],
+    risk_ids: [item.id],
+    confidence: "high",
+    priority: "medium"
+  }));
+  const projection = buildDecisionProjection({
+    packet: packet(),
+    prSurface,
+    scope: {
+      mode: "pr",
+      changed_paths: new Set(paths),
+      affected_requirement_ids: new Set(),
+      head_sha: "head",
+      working_tree_dirty: false
+    },
+    reviewQueue,
+    blockers: [],
+    semanticFacts: emptySemanticFacts
+  });
+
+  assert.equal(projection.findings.length, count);
+  assert.equal(projection.findings[0].root_cause, "test_validation_area:VALIDATION_0");
+  assert.ok(projection.findings.some((finding) => finding.root_cause === `test_validation_area:VALIDATION_${count - 1}`));
 });
 
 test("review-surfaces.REVIEWER_VALUE.4 projection arrays stay within the strict schema bounds", () => {
@@ -385,7 +541,6 @@ test("review-surfaces.REVIEWER_VALUE.4 bounds decision prose from schema-valid p
   assert.ok(idsProjection.active_intent.requirement_ids.every((id) => id.length === 1000));
   assert.ok(idsProjection.findings[0].requirement_ids.every((id) => id.length === 1000));
   assert.ok(idsProjection.findings[0].risk_ids.every((id) => id.length === 1000));
-  assert.ok(idsProjection.findings[0].source_queue_ids.every((id) => id.length === 1000));
   const advisoryPr = surface(["src/reviewer.ts"], [], false);
   const eventProjection = buildDecisionProjection({
     packet: idsPacket,
@@ -414,16 +569,20 @@ test("review-surfaces.REVIEWER_VALUE.8 bounds the complete single-requirement in
   assert.equal(validateJsonSchema(schema, model).valid, true);
 });
 
-test("review-surfaces.REVIEWER_VALUE.12 deduplicates before the stable three-finding cap", () => {
+test("review-surfaces.REVIEWER_VALUE.12 deduplicates roots without hiding independent approval decisions", () => {
   const contractPath = "schemas/public.schema.json";
   const paths = [contractPath, ...Array.from({ length: 5 }, (_, index) => `src/area-${index}.ts`)];
   const risks = [
     risk("PR-RISK-SCHEMA", "schema_contract_change", contractPath),
     ...paths.slice(1).map((path, index) => risk(`PR-RISK-${index}`, "untested_changed_impl", path))
   ];
+  const prSurface = surface(paths, risks);
+  prSurface.scope.changed_files
+    .filter((file) => file.path !== contractPath)
+    .forEach((file, index) => { file.areas = [`INDEPENDENT_AREA_${index}`]; });
   const input = {
     packet: packet(),
-    prSurface: surface(paths, risks),
+    prSurface,
     semanticFacts: {
       ...emptySemanticFacts,
       schema_changes: [{
@@ -434,13 +593,153 @@ test("review-surfaces.REVIEWER_VALUE.12 deduplicates before the stable three-fin
   };
   const first = buildHumanReview(input);
   const second = buildHumanReview(input);
-  assert.equal(first.decision_projection?.findings.length, 3);
+  assert.equal(first.decision_projection?.findings.length, paths.length);
   assert.equal(first.decision_projection?.findings.filter((finding) => finding.root_cause === `persisted_contract:${contractPath}`).length, 1);
   assert.deepEqual(first.decision_projection, second.decision_projection);
-  assert.equal(first.decision_projection?.supporting_detail_counts.projected_queue_items, 4);
-  assert.ok((first.decision_projection?.supporting_detail_counts.supporting_queue_items ?? 0) > 0);
-  const counts = first.decision_projection?.supporting_detail_counts;
-  assert.equal(counts?.total_queue_items, (counts?.projected_queue_items ?? 0) + (counts?.supporting_queue_items ?? 0));
+});
+
+test("product reset M1 decision count scales with approval choices, not changed-file count", () => {
+  const mechanicalPaths = Array.from({ length: 6 }, (_, index) => `src/generated/part-${index}.ts`);
+  const mechanicalSurface = surface(
+    mechanicalPaths,
+    mechanicalPaths.map((path, index) => risk(`PR-RISK-MECHANICAL-${index}`, "untested_changed_impl", path))
+  );
+  for (const file of mechanicalSurface.scope.changed_files) file.areas = ["GENERATED_CLIENT"];
+  const oneDecision = buildHumanReview({
+    packet: packet(),
+    prSurface: mechanicalSurface
+  });
+  assert.equal(oneDecision.decision_projection?.findings.length, 1, "many files with one validation choice produce one approval decision");
+  assert.equal(oneDecision.decision_projection?.findings[0].title, "Current-head test evidence");
+
+  const independentPaths = Array.from({ length: 14 }, (_, index) => `src/boundary-${index}.ts`);
+  const independentSurface = surface(
+    independentPaths,
+    independentPaths.map((path, index) => risk(`PR-RISK-${index}`, "untested_changed_impl", path))
+  );
+  independentSurface.scope.changed_files.forEach((file, index) => { file.areas = [`BOUNDARY_${index}`]; });
+  const independentDecisions = buildHumanReview({
+    packet: packet(),
+    prSurface: independentSurface
+  });
+  assert.equal(independentDecisions.decision_projection?.findings.length, 14, "every independent validation area survives beyond twelve");
+});
+
+test("coverage regression remains a coverage decision rather than a grouped transcript decision", () => {
+  const coverageRisk = risk("PR-RISK-COVERAGE", "coverage_regression", "features/review-surfaces.feature.yaml");
+  coverageRisk.evidence.push(fileEvidence("tests/pr-surface-e2e.test.ts", "The affected requirement previously had test evidence here."));
+  const model = buildHumanReview({
+    packet: packet(),
+    prSurface: surface(["features/review-surfaces.feature.yaml", "tests/pr-surface-e2e.test.ts"], [coverageRisk])
+  });
+  const finding = model.decision_projection?.findings[0];
+  assert.equal(finding?.root_cause, "test_coverage:features/review-surfaces.feature.yaml");
+  assert.match(finding?.title ?? "", /coverage[_ ]regression/i);
+  assert.doesNotMatch(finding?.title ?? "", /current-head test evidence/i);
+});
+
+test("product reset M1 keeps test heuristics supporting and admits one reviewer-surface contract", () => {
+  const paths = ["src/render/sticky-summary.ts", "tests/sticky-summary.test.ts"];
+  const model = buildHumanReview({
+    packet: packet(),
+    prSurface: surface(paths, [
+      risk("PR-RISK-SURFACE", "comment_surface_change", paths[0]),
+      risk("PR-RISK-TEST", "failed_or_skipped_test", paths[1])
+    ]),
+    semanticFacts: {
+      ...emptySemanticFacts,
+      test_weakening: paths.slice(1).map((testPath) => ({
+        kind: "removed_assertion" as const,
+        path: testPath,
+        detail: "An assertion was removed."
+      }))
+    }
+  });
+
+  assert.equal(model.decision_projection?.findings.length, 1);
+  assert.equal(model.decision_projection?.findings[0].root_cause, "review_surface");
+  assert.equal(model.decision_projection?.findings[0].title, "Reviewer brief contract");
+  assert.ok(model.review_queue.some((item) => /removed assertion/i.test(item.title)), "test heuristics remain available as supporting evidence");
+  assert.ok(model.suggested_comments.every((comment) => !/assertion was removed|removed assertion/i.test(comment.body)));
+});
+
+test("product reset M1 uses author-provided PR context as the change purpose", () => {
+  const prSurface = surface(["src/reviewer.ts"]);
+  prSurface.change_context = {
+    title: "Make reviewer decisions legible",
+    description: "## Summary\n\n- Explain the approval decisions before diagnostic detail.\n\n## Validation\n\n- pnpm test",
+    source: "github",
+    redaction_blocked: false
+  };
+  const model = buildHumanReview({ packet: packet(), prSurface });
+  assert.equal(model.decision_projection?.active_intent.source, "pull_request");
+  assert.match(model.decision_projection?.active_intent.summary ?? "", /^Make reviewer decisions legible\./);
+  assert.match(model.decision_projection?.active_intent.summary ?? "", /Explain the approval decisions/);
+  assert.doesNotMatch(model.decision_projection?.active_intent.summary ?? "", /pnpm test/);
+});
+
+test("product reset M1 reads a standard Description section without absorbing later validation", () => {
+  const prSurface = surface(["src/reviewer.ts"]);
+  prSurface.change_context = {
+    title: "Make reviewer decisions legible",
+    description: "## Description:\n\nExplain the approval decisions before diagnostic detail.\n\n## Validation\n\npnpm test",
+    source: "github",
+    redaction_blocked: false
+  };
+  const model = buildHumanReview({ packet: packet(), prSurface });
+  assert.match(model.decision_projection?.active_intent.summary ?? "", /Explain the approval decisions/);
+  assert.doesNotMatch(model.decision_projection?.active_intent.summary ?? "", /pnpm test/);
+});
+
+test("product reset M1 reads a case-insensitive Purpose section without absorbing later testing", () => {
+  const prSurface = surface(["src/reviewer.ts"]);
+  prSurface.change_context = {
+    title: "Make reviewer decisions legible",
+    description: "## PURPOSE —\n\nHelp reviewers decide whether the change is safe.\n\n## Testing\n\npnpm test",
+    source: "github",
+    redaction_blocked: false
+  };
+  const model = buildHumanReview({ packet: packet(), prSurface });
+  assert.match(model.decision_projection?.active_intent.summary ?? "", /Help reviewers decide whether the change is safe/);
+  assert.doesNotMatch(model.decision_projection?.active_intent.summary ?? "", /pnpm test/);
+});
+
+test("product reset M1 does not mistake PR template testing sections for the change purpose", () => {
+  const prSurface = surface(["src/reviewer.ts"]);
+  prSurface.change_context = {
+    title: "Make reviewer decisions legible",
+    description: "<!-- Describe the user-facing change above. -->\n## Testing\n\n- pnpm test\n\n## Screenshots\n\nNot applicable.",
+    source: "github",
+    redaction_blocked: false
+  };
+  const model = buildHumanReview({ packet: packet(), prSurface });
+  assert.equal(model.decision_projection?.active_intent.summary, "Make reviewer decisions legible");
+});
+
+test("product reset M1 stops an empty summary section before the testing section", () => {
+  const prSurface = surface(["src/reviewer.ts"]);
+  prSurface.change_context = {
+    title: "Make reviewer decisions legible",
+    description: "## Summary\n\n## Testing\n\n- pnpm test",
+    source: "github",
+    redaction_blocked: false
+  };
+  const model = buildHumanReview({ packet: packet(), prSurface });
+  assert.equal(model.decision_projection?.active_intent.summary, "Make reviewer decisions legible");
+});
+
+test("author-provided purpose renders as literal prose on the full Markdown surface", () => {
+  const prSurface = surface(["src/reviewer.ts"]);
+  prSurface.change_context = {
+    title: "<!-- hide decisions --> # Fake heading [click](https://attacker.invalid) *owned*",
+    source: "github",
+    redaction_blocked: false
+  };
+  const markdown = renderDecisionProjectionMarkdown(buildHumanReview({ packet: packet(), prSurface }));
+
+  assert.doesNotMatch(markdown, /<!-- hide decisions -->/);
+  assert.match(markdown, /&lt;!-- hide decisions --&gt;/);
+  assert.match(markdown, /## Approval decisions/);
 });
 
 test("review-surfaces.REVIEWER_VALUE.8 leads with the reviewer goal and retains affected requirement anchors", () => {
@@ -461,6 +760,7 @@ test("review-surfaces.REVIEWER_VALUE.8 leads with the reviewer goal and retains 
   assert.deepEqual(advisory.decision_projection?.active_intent, {
     summary: "Reviewer goal: An advisory interpretation.",
     source: "conversation_advisory",
+    redaction_blocked: false,
     requirement_ids: [],
     event_ids: ["EVT-2"]
   });
@@ -504,7 +804,7 @@ test("review-surfaces.REVIEWER_VALUE.8 keeps distinct requirement groups that sh
   assert.match(summary, /Shared reviewer title \(review-surfaces\.BETA\)/);
 });
 
-test("review-surfaces.REVIEWER_VALUE.10 keeps generic requirement gaps as questions, not postable comments", () => {
+test("review-surfaces.REVIEWER_VALUE.10 keeps generic requirement gaps in diagnostics, not author actions", () => {
   const value = packet();
   value.evaluation.results = [{
     requirement_id: "REQ-DECISION",
@@ -517,8 +817,9 @@ test("review-surfaces.REVIEWER_VALUE.10 keeps generic requirement gaps as questi
     confidence: "medium"
   }];
   const model = buildHumanReview({ packet: value, prSurface: surface(["src/reviewer.ts"]) });
-  assert.ok(model.questions.some((question) => question.question.includes("validation evidence or explicit deferral")));
+  assert.ok(!model.questions.some((question) => question.question.includes("validation evidence or explicit deferral")));
   assert.ok(!model.suggested_comments.some((comment) => comment.body.includes("validation evidence or explicit deferral")));
+  assert.ok(!model.test_plan.some((item) => item.maps_to_requirements.includes("review-surfaces.HUMAN_TRUST.2")));
 });
 
 test("review-surfaces.REVIEWER_VALUE.4 repo mode derives active intent from changed requirement text", () => {
@@ -545,6 +846,4 @@ test("review-surfaces.REVIEWER_VALUE.4 repo mode derives active intent from chan
   const model = buildHumanReview({ packet: value, diff });
   assert.equal(model.decision_projection?.active_intent.source, "affected_requirements");
   assert.deepEqual(model.decision_projection?.active_intent.requirement_ids, ["REQ-DECISION", "review-surfaces.REVIEWER_VALUE.4"]);
-  assert.equal(model.decision_projection?.supporting_detail_counts.affected_requirement_count, 1);
-  assert.equal(model.decision_projection?.supporting_detail_counts.supporting_requirement_count, 1);
 });

@@ -1,7 +1,7 @@
 name: pr-review-comment
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 jobs:
   review-comment:
@@ -19,6 +19,9 @@ jobs:
     # write token or LLM key to fork-controlled code or comparing against a fork's
     # `origin/main`.
     if: github.event.pull_request.head.repo.full_name == github.repository
+    concurrency:
+      group: review-surfaces-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -93,7 +96,6 @@ jobs:
           head-ref: HEAD
           spec: features/review-surfaces.feature.yaml
           output-dir: .review-surfaces
-          comment-top-n: "5"
           subject-directory: subject
           pr-number: ${{ github.event.pull_request.number }}
           repository: ${{ github.repository }}

@@ -7,7 +7,6 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { CLI, runCli } from "./helpers/cli-repo";
 import { collectHeadCommits, MAX_UNTRACKED_REVIEW_BYTES } from "../src/collector/git";
 import type { HumanReviewModel } from "../src/human/contract";
-import { renderHumanPrComment } from "../src/render/pr-comment";
 import { renderStickySummary } from "../src/render/sticky-summary";
 
 // Release quick-wins uplift Phase 1 (QUICK_WINS_UPLIFT_GOAL.md): range truth.
@@ -397,11 +396,11 @@ test("review-surfaces.COLD_START.7 a HEAD review with a dirty tree announces the
     const comment = fs.readFileSync(path.join(tmp, ".review-surfaces", "comment.md"), "utf8");
     assert.match(comment, /includes 2 uncommitted file\(s\) \(working tree\)/, "the sticky must carry the line");
 
-    // PR #79 round 5: the legacy default `comment` format carries it too.
-    const legacy = runCli(tmp, ["comment"]);
-    assert.equal(legacy.status, 0, legacy.stderr);
-    const legacyComment = fs.readFileSync(path.join(tmp, ".review-surfaces", "comment.md"), "utf8");
-    assert.match(legacyComment, /includes 2 uncommitted file\(s\) \(working tree\)/, "the default comment must carry the line");
+    // The default `github` alias renders the same human brief as `sticky`.
+    const defaultComment = runCli(tmp, ["comment"]);
+    assert.equal(defaultComment.status, 0, defaultComment.stderr);
+    const defaultMarkdown = fs.readFileSync(path.join(tmp, ".review-surfaces", "comment.md"), "utf8");
+    assert.equal(defaultMarkdown, comment);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -428,7 +427,7 @@ test("review-surfaces.REVIEWER_VALUE.5 omitted untracked scope survives the full
       fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.md"), "utf8"),
       fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.html"), "utf8"),
       renderStickySummary(model).markdown,
-      renderHumanPrComment(model).markdown
+      renderStickySummary(model).markdown
     ];
     for (const surface of surfaces) {
       assert.match(surface, /Review scope incomplete/);

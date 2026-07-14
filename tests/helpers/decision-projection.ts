@@ -36,7 +36,7 @@ export function decisionPacket(): ReviewPacket {
 
 export function decisionSurface(paths: string[], risks: PrRiskCandidate[] = [], affected = true): PrReviewSurfaceModel {
   return {
-    schema_version: PR_SURFACE_SCHEMA_VERSION, mode: "pr", spec_mode: "acai", status: "ready",
+    schema_version: PR_SURFACE_SCHEMA_VERSION, mode: "pr", status: "ready",
     scope: {
       base_ref: "origin/main", base_sha: "base", head_ref: "HEAD", head_sha: "head", diff_source: "range",
       changed_files: paths.map((path) => ({ path, status: "M", areas: ["REVIEWER_VALUE"], role: "implementation" })),
@@ -51,8 +51,7 @@ export function decisionSurface(paths: string[], risks: PrRiskCandidate[] = [], 
       base_available: true, summary: "Scoped coverage is available.", in_scope_count: affected ? 1 : 0, deltas: [],
       counts: { improved: 0, regressed: 0, unchanged: 0, new_requirement: 0, removed_requirement: 0, newly_in_scope: 0 }
     },
-    risks: { summary: `${risks.length} scoped risks.`, candidates: risks },
-    llm: { required: true, provider: "mock", status: "blocked" }
+    risks: { summary: `${risks.length} scoped risks.`, candidates: risks }
   };
 }
 

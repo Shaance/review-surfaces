@@ -20,7 +20,6 @@ export const REVIEW_SURFACES_ROOT_ARTIFACT_FILES = new Set([
   "trust_audit.md",
   "risk_lenses.md",
   "intent_mismatch.md",
-  "review_routes.md",
   "evidence_cards.md",
   "since_last_review.md",
   "test_plan.md",

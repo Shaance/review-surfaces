@@ -9,7 +9,7 @@ import { PACKET_REQUIREMENT_STATUSES, PACKET_SEVERITIES } from "../schema/review
 import type { PacketRequirementStatus, PacketSeverity } from "../schema/review-packet-contract";
 import type { CollectionResult } from "../collector/collect";
 import type { ProviderName } from "../llm/provider";
-import { resolvePacketPath } from "./comment";
+import { resolvePacketPath } from "./artifact-path";
 import type { ReviewPacket } from "./packet";
 
 // ---------------------------------------------------------------------------

@@ -9,8 +9,9 @@
     "mode",
     "spec_mode",
     "verdict",
-    "summary",
-    "narrative",
+    "decision_projection",
+    "conversation_analysis",
+    "review_insights",
     "semantic_facts",
     "review_queue",
     "blockers",
@@ -20,12 +21,12 @@
     "risk_lens_findings",
     "methodology_audit",
     "intent_mismatch",
-    "review_routes",
     "since_last_review",
     "coverage_evidence",
     "review_plan",
     "change_graph",
     "reading_order",
+    "rounds",
     "evidence_cards",
     "test_plan",
     "skim_safe",
@@ -33,6 +34,19 @@
     "generated_from"
   ],
   "allOf": [
+    {
+      "if": {
+        "properties": { "mode": { "const": "pr" } },
+        "required": ["mode"]
+      },
+      "then": {
+        "properties": {
+          "generated_from": {
+            "required": ["pr_surface_path", "pr_surface_signature"]
+          }
+        }
+      }
+    },
     {
       "if": {
         "required": ["review_insights"],
@@ -103,10 +117,6 @@
     "decision_projection": {
       "$ref": "#/$defs/decisionProjection"
     },
-    "summary": {
-      "type": "string",
-      "maxLength": 2000
-    },
     "narrative": {
       "$ref": "#/$defs/changeNarrative"
     },
@@ -115,7 +125,6 @@
     },
     "review_insights": {
       "type": "array",
-      "maxItems": 3,
       "items": {
         "$ref": "#/$defs/reviewerInsight"
       }
@@ -199,12 +208,6 @@
     },
     "intent_mismatch": {
       "$ref": "#/$defs/intentMismatch"
-    },
-    "review_routes": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/reviewRoute"
-      }
     },
     "evidence_cards": {
       "type": "array",
@@ -479,7 +482,7 @@
                 "items": {
                   "type": "object",
                   "additionalProperties": true,
-                  "required": ["hunk_header", "changed_lines", "covered_lines", "classification"],
+                  "required": ["hunk_header", "changed_lines", "covered_lines", "classification", "uncovered_lines", "covered_line_numbers"],
                   "properties": {
                     "hunk_header": { "type": "string" },
                     "changed_lines": { "type": "integer", "minimum": 0 },
@@ -521,6 +524,7 @@
       "properties": {
         "packet_path": { "type": "string" },
         "pr_surface_path": { "type": "string" },
+        "pr_surface_signature": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
         "base_ref": { "type": "string" },
         "base_sha": { "type": "string" },
         "head_ref": { "type": "string" },
@@ -539,24 +543,23 @@
     "decisionProjection": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["active_intent", "findings", "supporting_detail_counts"],
+      "required": ["active_intent", "findings"],
       "properties": {
         "active_intent": { "$ref": "#/$defs/decisionActiveIntent" },
         "findings": {
           "type": "array",
-          "maxItems": 5,
           "items": { "$ref": "#/$defs/decisionFinding" }
-        },
-        "supporting_detail_counts": { "$ref": "#/$defs/decisionSupportingDetailCounts" }
+        }
       }
     },
     "decisionActiveIntent": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["summary", "source", "requirement_ids", "event_ids"],
+      "required": ["summary", "source", "redaction_blocked", "requirement_ids", "event_ids"],
       "properties": {
         "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
-        "source": { "enum": ["affected_requirements", "packet", "conversation_advisory"] },
+        "source": { "enum": ["pull_request", "affected_requirements", "packet", "conversation_advisory"] },
+        "redaction_blocked": { "type": "boolean" },
         "requirement_ids": { "$ref": "#/$defs/decisionStringArray" },
         "event_ids": { "$ref": "#/$defs/decisionStringArray" }
       }
@@ -564,7 +567,7 @@
     "decisionFinding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "root_cause", "title", "priority", "reason", "reviewer_action", "evidence", "requirement_ids", "risk_ids", "source_queue_ids"],
+      "required": ["id", "root_cause", "title", "priority", "reason", "reviewer_action", "evidence", "requirement_ids", "risk_ids"],
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 80 },
         "root_cause": { "type": "string", "minLength": 1, "maxLength": 500 },
@@ -573,22 +576,9 @@
         "priority": { "enum": ["blocker", "high", "medium", "low"] },
         "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
         "reviewer_action": { "type": "string", "minLength": 1, "maxLength": 2000 },
-        "evidence": { "type": "array", "minItems": 1, "maxItems": 6, "items": { "$ref": "#/$defs/evidenceRef" } },
+        "evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidenceRef" } },
         "requirement_ids": { "$ref": "#/$defs/decisionStringArray" },
-        "risk_ids": { "$ref": "#/$defs/decisionStringArray" },
-        "source_queue_ids": { "$ref": "#/$defs/decisionStringArray" }
-      }
-    },
-    "decisionSupportingDetailCounts": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["total_queue_items", "projected_queue_items", "supporting_queue_items", "affected_requirement_count", "supporting_requirement_count"],
-      "properties": {
-        "total_queue_items": { "type": "integer", "minimum": 0 },
-        "projected_queue_items": { "type": "integer", "minimum": 0 },
-        "supporting_queue_items": { "type": "integer", "minimum": 0 },
-        "affected_requirement_count": { "type": "integer", "minimum": 0 },
-        "supporting_requirement_count": { "type": "integer", "minimum": 0 }
+        "risk_ids": { "$ref": "#/$defs/decisionStringArray" }
       }
     },
     "decisionStringArray": {
@@ -864,11 +854,12 @@
       "additionalProperties": true,
       "required": ["source", "provider", "validated_at_head", "claims"],
       "properties": {
-        "source": { "enum": ["provider", "fallback"] },
+        "source": { "const": "provider" },
         "provider": { "enum": ["mock", "agent-file", "ai-sdk"] },
         "validated_at_head": { "type": "string" },
         "claims": {
           "type": "array",
+          "minItems": 1,
           "items": {
             "type": "object",
             "additionalProperties": true,
@@ -1322,76 +1313,6 @@
         "severity": { "$ref": "#/$defs/severity" }
       }
     },
-    "reviewRoute": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": ["id", "persona", "title", "summary", "is_default", "is_secondary", "steps"],
-      "properties": {
-        "id": { "type": "string" },
-        "persona": {
-          "enum": ["human_reviewer", "maintainer", "security", "product", "agent_continuation"]
-        },
-        "title": { "type": "string" },
-        "summary": { "type": "string" },
-        "is_default": { "type": "boolean" },
-        "is_secondary": { "type": "boolean" },
-        "steps": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/reviewRouteStep" }
-        }
-      }
-    },
-    "reviewRouteStep": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": [
-        "id",
-        "rank",
-        "title",
-        "action",
-        "evidence",
-        "priority",
-        "queue_item_ids",
-        "risk_lens_ids",
-        "question_ids",
-        "test_plan_ids",
-        "suggested_comment_ids"
-      ],
-      "properties": {
-        "id": { "type": "string" },
-        "rank": { "type": "integer", "minimum": 1 },
-        "title": { "type": "string" },
-        "action": { "type": "string" },
-        "evidence": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/evidenceRef" }
-        },
-        "priority": {
-          "enum": ["blocker", "high", "medium", "low"]
-        },
-        "artifact": { "type": "string" },
-        "queue_item_ids": {
-          "type": "array",
-          "items": { "type": "string" }
-        },
-        "risk_lens_ids": {
-          "type": "array",
-          "items": { "type": "string" }
-        },
-        "question_ids": {
-          "type": "array",
-          "items": { "type": "string" }
-        },
-        "test_plan_ids": {
-          "type": "array",
-          "items": { "type": "string" }
-        },
-        "suggested_comment_ids": {
-          "type": "array",
-          "items": { "type": "string" }
-        }
-      }
-    },
     "evidenceCard": {
       "type": "object",
       "additionalProperties": true,
@@ -1521,6 +1442,12 @@
         "evidence": {
           "type": "array",
           "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "decision_refs": {
+          "type": "array",
+          "maxItems": 24,
+          "items": { "type": "string", "maxLength": 1000 },
+          "uniqueItems": true
         },
         "acai_id": { "type": "string" },
         "previous_status": { "type": "string" },

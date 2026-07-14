@@ -11,9 +11,13 @@
 
 ## 1. Executive summary
 
-`review-surfaces` is a local-first human review decision cockpit for agent-generated code changes.
+`review-surfaces` is a local-first reviewer brief for agent-generated code changes.
 
-It does not try to replace the reviewer. It reduces the reviewer’s reconstruction cost by turning specs, docs, diffs, tests, agent logs, and human feedback into a compact, evidence-backed review path: verdict, review-first queue, blockers, questions, trust audit, suggested comments, and concrete checks. The review packet remains the machine-readable evidence backbone underneath the human surface.
+It does not try to replace the reviewer. It reduces reconstruction cost by answering, in order: what the author is trying to change, which independent decisions could change approval, what evidence supports those decisions, and what the reviewer should do next. Specs, diffs, tests, agent logs, and diagnostics remain evidence underneath that brief; they are not the brief itself.
+
+The primary surface is adaptive. A 100-file mechanical migration may need one approval decision, while a 12-file cross-boundary change may need six. The product must therefore scale to independent decision roots rather than enforce universal word, line, or item caps. Numeric bounds are allowed for schema safety, abuse resistance, and evaluation, but must not silently hide an approval-changing decision.
+
+The verdict is about the change, not the analysis pipeline. Optional enrichment being unavailable, invalid, privacy-blocked, or baseline-limited may reduce available context but cannot manufacture an author-clarification verdict or merge blocker. Missing evidence reduces confidence; only a concrete approval decision, independently detected policy violation, or merge blocker changes the review state.
 
 The central output is a directory:
 
@@ -135,11 +139,12 @@ The packet should not become a long AI essay. It should produce tables, short ca
 
 The reviewer should be able to answer quickly:
 
-1. What changed?
-2. Why?
-3. What proves it?
-4. What is missing?
-5. Where should I look first?
+1. What is this change trying to accomplish?
+2. What could change my approval decision?
+3. What evidence supports or weakens each decision?
+4. What should I ask, inspect, or run next?
+
+Repository requirement coverage, change maps, reading tours, round ledgers, provider status, and exhaustive queues are supporting artifacts. They appear in the primary surface only when they directly answer one of those questions.
 
 ### 3.5 Dogfood-first development
 
@@ -293,7 +298,7 @@ Later, CI can run the same local pipeline and post a sticky comment or upload ar
 | `agent_handoff.md` | Compact briefing for the next agent. |
 | `review_packet.md` | Human-readable packet. |
 | `review_packet.json` | Machine-readable packet, validated by JSON Schema. |
-| `pr_review_surface.json` | PR-scoped sidecar: changed files, affected requirements, coverage deltas, deterministic PR risks, change-impact diagram, and validated LLM narrative. |
+| `pr_review_surface.json` | PR-scoped deterministic sidecar: changed files, affected requirements, coverage deltas, PR risks, and supporting diagram metadata. |
 | `feedback/*.yaml` | Optional human or agent feedback on packet usefulness. |
 
 ### 6.3 Review packet sections
@@ -1161,7 +1166,7 @@ Dogfood:
 - use handoff to start the next implementation slice;
 - record whether the handoff actually reduced context reconstruction.
 
-### M6: Provider renderers and CI/PR integration
+### M6: Reviewer brief and CI/PR integration
 
 Goal: expose local review artifacts through code-hosting workflows without
 turning the whole-repo packet into the default PR review surface.
@@ -1169,13 +1174,18 @@ turning the whole-repo packet into the default PR review surface.
 Delivered shape:
 
 - GitHub Action using a trusted-tool checkout and credentialless PR subject
-  checkout for secret-bearing LLM generation;
-- sticky PR comment renderer with `comment --mode pr|repo|auto`;
-- `all --surface-mode pr|repo|auto` sidecar generation;
+  checkout, with any secret-bearing provider enrichment isolated to trusted
+  orchestration and never required for the reviewer brief;
+- `all --review-scope pr` generation of deterministic current-head facts and the
+  human reviewer model;
+- sticky PR comment renderer with `comment --review-scope pr --format sticky`;
 - `pr_review_surface.json` sidecar schema;
-- PR comments require a non-mock, applied narrative before they are postable;
-- static whole-repo diagrams remain in repo mode, while PR mode uses only a
-  change-impact diagram derived from the PR scope;
+- PR comments lead with a truthful verdict, author-provided change purpose, and
+  every independently rooted approval decision, and remain postable with the
+  mock provider or no provider enrichment;
+- narrative, provider state, diagrams, maps, reading tours, and repository-wide
+  compliance details remain optional supporting material rather than occupying
+  or gating the primary scan path;
 - optional GitLab/Gerrit adapters;
 - optional SARIF export;
 - optional Acai CLI/API sync.

@@ -11,10 +11,9 @@ import {
 import { buildConversationReviewPrompt } from "./review-insight-prompt";
 import { isStrictConversationReviewInsightEnvelope } from "./review-candidate-payload";
 import { validateConversationReviewCandidates } from "./review-candidate-grounding";
-import { rankDedupeAndCapConversationReviewInsights } from "./review-insight-ranking";
+import { rankAndDedupeConversationReviewInsights } from "./review-insight-ranking";
 
 export {
-  MAX_VISIBLE_CONVERSATION_INSIGHTS,
   REVIEWER_INSIGHT_CATEGORIES,
   REVIEWER_INSIGHT_EVIDENCE_STATES
 } from "../contracts/conversation-review";
@@ -92,7 +91,7 @@ export async function buildConversationReview(
     analysis,
     input.headSha
   );
-  const insights = rankDedupeAndCapConversationReviewInsights(validated.insights);
+  const insights = rankAndDedupeConversationReviewInsights(validated.insights);
   const suppliedCandidateCount = result.data.insights.length;
   return {
     analysis: withQualityFlags(analysis, [

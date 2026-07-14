@@ -1,13 +1,12 @@
 import { compareStrings } from "../core/compare";
 import {
-  MAX_VISIBLE_CONVERSATION_INSIGHTS,
   type ReviewerInsight,
   type ReviewerInsightEvidenceState
 } from "../contracts/conversation-review";
 import { reviewSeverityRank } from "../contracts/review";
 import type { GroundedConversationReviewInsight } from "./review-candidate-grounding";
 
-export function rankDedupeAndCapConversationReviewInsights(
+export function rankAndDedupeConversationReviewInsights(
   values: GroundedConversationReviewInsight[]
 ): ReviewerInsight[] {
   const sorted = [...values].sort((left, right) =>
@@ -21,9 +20,6 @@ export function rankDedupeAndCapConversationReviewInsights(
       continue;
     }
     kept.push(candidate);
-    if (kept.length >= MAX_VISIBLE_CONVERSATION_INSIGHTS) {
-      break;
-    }
   }
   return kept.map(({ rootCauseKey: _rootCauseKey, ...insight }, index) => ({
     ...insight,

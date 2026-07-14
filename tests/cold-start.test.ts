@@ -417,7 +417,6 @@ test("review-surfaces.COLD_START.5 spec-less mode suppresses Acai-shaped noise b
     const allText = JSON.stringify([human.review_queue, human.questions, human.suggested_comments]);
     assert.ok(!/map the changed file to an Acai requirement/i.test(allText), "no Acai-mapping actions");
     assert.ok(!/resolve this intent gap/i.test(allText), "no per-file intent-gap questions");
-    assert.ok(!/requirement result\(s\)/.test(human.summary), "the summary never advertises 0 requirement result(s)");
 
     // The single honest open question survives (src/intent/intent.ts).
     const packetIntent = JSON.parse(fs.readFileSync(path.join(fixture.dir, ".rs", "review_packet.json"), "utf8")) as {

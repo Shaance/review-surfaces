@@ -15,11 +15,12 @@ import {
   renderIntentMismatchMarkdown,
   renderRiskLensesMarkdown,
   renderReviewQueueMarkdown,
-  renderReviewRoutesMarkdown,
   renderSinceLastReviewMarkdown,
+  renderTestPlanMarkdown,
   writeHumanReviewArtifacts
 } from "../src/human/render";
 import { ReviewPacket } from "../src/render/packet";
+import { renderStickySummary } from "../src/render/sticky-summary";
 import { PrReviewSurfaceModel, PR_RISK_RULES, PrRiskRule, PR_SURFACE_SCHEMA_VERSION } from "../src/pr/contract";
 import { commandEvidence, feedbackEvidence, fileEvidence, missingEvidence, testEvidence } from "../src/evidence/evidence";
 import { validateJsonSchema } from "../src/schema/json-schema";
@@ -34,7 +35,6 @@ import {
   HUMAN_REVIEW_DECISIONS,
   HUMAN_REVIEW_PRIORITIES,
   HUMAN_REVIEW_SCHEMA_VERSION,
-  REVIEW_ROUTE_PERSONAS,
   REVIEWER_QUESTION_SEVERITIES,
   RISK_LENSES,
   SUGGESTED_COMMENT_SEVERITIES
@@ -160,9 +160,7 @@ function prSurfaceFixture(): PrReviewSurfaceModel {
   return {
     schema_version: PR_SURFACE_SCHEMA_VERSION,
     mode: "pr",
-    spec_mode: "acai",
-    status: "blocked",
-    blocked_reason: "llm_unavailable",
+    status: "ready",
     scope: {
       base_ref: "origin/main",
       base_sha: "base123",
@@ -258,8 +256,7 @@ function prSurfaceFixture(): PrReviewSurfaceModel {
           suggested_checks: ["Allocate extra review time."]
         }
       ]
-    },
-    llm: { required: true, provider: "mock", status: "blocked" }
+    }
   };
 }
 
@@ -341,7 +338,7 @@ test("review-surfaces.COVERAGE.3 a current report feeds ranking reasons and emit
           changed_lines: 4,
           covered_lines: 0,
           classification: "uncovered",
-          hunks: [{ hunk_header: "@@ -70,2 +70,3 @@", changed_lines: 4, covered_lines: 0, classification: "uncovered", uncovered_lines: []  }]
+          hunks: [{ hunk_header: "@@ -70,2 +70,3 @@", changed_lines: 4, covered_lines: 0, classification: "uncovered", uncovered_lines: [], covered_line_numbers: [] }]
         }
       ]
     }
@@ -369,7 +366,7 @@ test("review-surfaces.COVERAGE.2 a stale report (predates head) is recorded but 
           changed_lines: 4,
           covered_lines: 0,
           classification: "uncovered",
-          hunks: [{ hunk_header: "@@ -220,2 +220,3 @@", changed_lines: 4, covered_lines: 0, classification: "uncovered", uncovered_lines: []  }]
+          hunks: [{ hunk_header: "@@ -220,2 +220,3 @@", changed_lines: 4, covered_lines: 0, classification: "uncovered", uncovered_lines: [], covered_line_numbers: [] }]
         }
       ]
     }
@@ -383,7 +380,9 @@ test("review-surfaces.COVERAGE.4 no report renders the honest negative, never a 
   const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
   assert.equal(model.coverage_evidence.status, "no_report");
   const markdown = renderHumanReviewMarkdown(model);
-  assert.match(markdown, /No coverage evidence: no coverage report was provided\. This is different from changed lines being uncovered\./);
+  const html = renderHumanReviewHtml(model);
+  assert.doesNotMatch(markdown, /## Coverage evidence/, "the compact brief delegates coverage diagnostics");
+  assert.match(html, /No coverage evidence: no coverage report was provided\. This is different from changed lines being uncovered\./);
   assert.ok(!model.review_queue.some((i) => i.ranking_reasons.some((r) => /uncovered|executed by any test/.test(r))));
 });
 
@@ -419,6 +418,73 @@ test("review-surfaces.RANKING.1 an untested changed impl is promoted with a 'no 
   if (evidenced) {
     assert.ok(evidenced.ranking_reasons.some((r) => /focused test changed alongside this file/.test(r)));
   }
+});
+
+test("review-surfaces.RANKING.1 connected file-level tests cannot contradict an area-level untested signal", () => {
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files.push(
+    { path: "src/core/index.ts", status: "M", areas: ["CORE"], role: "implementation", added_lines: 2, deleted_lines: 1 },
+    { path: "src/core/options.ts", status: "M", areas: ["CORE"], role: "implementation", added_lines: 2, deleted_lines: 1 },
+    { path: "tests/abort.test.ts", status: "M", areas: ["TESTS"], role: "test", added_lines: 4, deleted_lines: 0 }
+  );
+  prSurface.risks.candidates.push({
+    id: "PR-RISK-UNTESTED-GROUP",
+    rule: "untested_changed_impl",
+    category: "testing",
+    severity: "medium",
+    summary: "2 implementation files changed in one area; no test is mapped to this validation area.",
+    evidence: [
+      fileEvidence("src/core/index.ts", "Changed implementation file; no test maps to its area."),
+      fileEvidence("src/core/options.ts", "Changed implementation file; no test maps to its area."),
+      missingEvidence("No current-head validation covers this area group.")
+    ],
+    suggested_checks: ["Add focused tests for the changed behavior in this area."]
+  });
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    prSurface,
+    diff: structuredDiffFixture(),
+    rankingEvidence: { changed_tests_by_impl: { "src/core/index.ts": ["tests/abort.test.ts"] } }
+  });
+  const item = model.review_queue.find((candidate) => candidate.risk_ids.includes("PR-RISK-UNTESTED-GROUP"));
+  assert.ok(item);
+  assert.doesNotMatch(item.reason, /no test is mapped/);
+  assert.match(item.reason, /focused changed-test evidence is connected to 1, 1 still lack connected changed-test evidence/);
+  assert.match(item.reviewer_action, /add focused coverage only for the remaining gap/);
+  assert.ok(item.evidence.some((ref) => ref.kind === "test" && ref.path === "tests/abort.test.ts"));
+  const decision = model.decision_projection.findings.find((finding) => finding.risk_ids.includes("PR-RISK-UNTESTED-GROUP"));
+  assert.ok(decision);
+  assert.match(decision.reason, /^2 changed implementation files share one unresolved validation question:/);
+});
+
+test("review-surfaces.RANKING.1 a single implementation with connected tests uses singular prose", () => {
+  const prSurface = prSurfaceFixture();
+  prSurface.scope.changed_files.push(
+    { path: "src/core/index.ts", status: "M", areas: ["CORE"], role: "implementation", added_lines: 2, deleted_lines: 1 },
+    { path: "tests/abort.test.ts", status: "M", areas: ["TESTS"], role: "test", added_lines: 4, deleted_lines: 0 }
+  );
+  prSurface.risks.candidates.push({
+    id: "PR-RISK-UNTESTED-SINGLE",
+    rule: "untested_changed_impl",
+    category: "testing",
+    severity: "medium",
+    summary: "1 implementation file changed with no mapped test.",
+    evidence: [
+      fileEvidence("src/core/index.ts", "Changed implementation file; no test maps to its area."),
+      missingEvidence("No current-head validation covers this implementation.")
+    ],
+    suggested_checks: ["Add focused tests for the changed behavior."]
+  });
+  const review = buildHumanReview({
+    packet: packetFixture(),
+    prSurface,
+    diff: structuredDiffFixture(),
+    rankingEvidence: { changed_tests_by_impl: { "src/core/index.ts": ["tests/abort.test.ts"] } }
+  });
+  const item = review.review_queue.find((candidate) => candidate.risk_ids.includes("PR-RISK-UNTESTED-SINGLE"));
+  assert.ok(item);
+  assert.match(item.reason, /^The changed implementation has focused changed-test evidence,/);
+  assert.doesNotMatch(item.reason, /implementation have/);
 });
 
 test("review-surfaces.RANKING.3 the evidence modifier reorders but never drops an item, and is deterministic", () => {
@@ -687,7 +753,54 @@ test("review-surfaces.REVIEWER_VALUE.3 additive schema changes stay nonblocking 
   assert.ok(!model.suggested_comments.some((comment) => /review_insights|existing artifacts remain compatible/.test(comment.body)));
 });
 
-test("review-surfaces.REVIEWER_VALUE.3 deterministically breaking schemas create one coherent blocking path", () => {
+test("an unclassified multi-file schema risk stays supporting without inventing an author action", () => {
+  const surface = prSurfaceFixture();
+  surface.status = "ready";
+  delete surface.blocked_reason;
+  surface.scope.changed_files = ["schemas/additive.schema.json", "schemas/unclassified.schema.json"].map((path) => ({
+    path,
+    status: "M" as const,
+    areas: ["SCHEMA"],
+    role: "spec" as const
+  }));
+  surface.risks.candidates = [{
+    id: "PR-RISK-MULTI-SCHEMA",
+    rule: "schema_contract_change",
+    category: "architecture",
+    severity: "high",
+    summary: "Two persisted schemas changed.",
+    evidence: [
+      fileEvidence("schemas/additive.schema.json", "Optional property added."),
+      fileEvidence("schemas/unclassified.schema.json", "Contract changed without semantic classification.")
+    ],
+    suggested_checks: ["Confirm both schema changes are compatible."]
+  }];
+
+  const model = buildHumanReview({
+    packet: packetFixture(),
+    prSurface: surface,
+    diff: structuredDiffForPaths(surface.scope.changed_files.map((file) => file.path)),
+    semanticFacts: {
+      schema_changes: [{
+        path: "schemas/additive.schema.json",
+        properties_added: ["optional_note"],
+        properties_removed: [],
+        required_added: [],
+        required_removed: [],
+        type_changes: [],
+        enum_changes: []
+      }],
+      api_changes: [],
+      test_weakening: []
+    }
+  });
+
+  assert.equal(model.questions.some((question) => /schema or persisted artifact contract/i.test(question.question)), false);
+  assert.equal(model.suggested_comments.some((comment) => /persisted schema or artifact contract/i.test(comment.body)), false);
+  assert.ok(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-MULTI-SCHEMA")));
+});
+
+test("review-surfaces.REVIEWER_VALUE.3 deterministically breaking schemas create one coherent approval decision", () => {
   const model = buildHumanReview({
     packet: packetFixture(),
     diff: structuredDiffForPaths(["schemas/external.schema.json"]),
@@ -706,12 +819,16 @@ test("review-surfaces.REVIEWER_VALUE.3 deterministically breaking schemas create
     }
   });
 
-  assert.equal(model.blockers.length, 1);
-  assert.ok(model.questions.some((question) => question.severity === "blocking"));
-  assert.ok(model.suggested_comments.some((comment) => comment.severity === "blocking"));
+  assert.equal(model.blockers.length, 0);
+  assert.equal(model.questions.length, 0);
+  assert.equal(model.suggested_comments.length, 0);
+  const decision = model.decision_projection?.findings.find((finding) => finding.root_cause === "persisted_contract:schemas/external.schema.json");
+  assert.equal(decision?.title, "External artifact contract reset");
+  assert.equal(decision?.reason, "The saved reviewer artifact changes shape, so older artifacts or consumers may no longer validate.");
+  assert.match(decision?.reviewer_action ?? "", /every supported producer and consumer/);
 });
 
-test("review-surfaces.REVIEWER_VALUE.3 enum additions clarify while enum removals block", () => {
+test("review-surfaces.REVIEWER_VALUE.3 enum additions stay supporting while removals require an approval decision", () => {
   const schemaChange = (added: string[], removed: string[]) => ({
     path: "schemas/external.schema.json",
     properties_added: [],
@@ -729,11 +846,12 @@ test("review-surfaces.REVIEWER_VALUE.3 enum additions clarify while enum removal
 
   assert.equal(build(["defer"], []).blockers.length, 0);
   const removal = build([], ["approve"]);
-  assert.equal(removal.blockers.some((blocker) => blocker.id === "BLOCK-SCHEMA-001"), true);
+  assert.equal(removal.blockers.length, 0);
+  assert.equal(removal.decision_projection?.findings.some((finding) => finding.root_cause === "persisted_contract:schemas/external.schema.json"), true);
   assert.equal(removal.risk_lens_findings.find((finding) => finding.lens === "api_contract")?.severity, "high");
 });
 
-test("review-surfaces.REVIEWER_VALUE.3 strict human-review schema additions remain breaking without explicit migration evidence", () => {
+test("review-surfaces.REVIEWER_VALUE.3 strict human-review schema additions require an explicit reset decision", () => {
   const model = buildHumanReview({
     packet: packetFixture(),
     diff: structuredDiffForPaths(["schemas/human_review.schema.json"]),
@@ -751,12 +869,13 @@ test("review-surfaces.REVIEWER_VALUE.3 strict human-review schema additions rema
       test_weakening: []
     }
   });
-  assert.ok(model.blockers.some((blocker) => blocker.id.startsWith("BLOCK-SCHEMA-")));
-  assert.ok(model.suggested_comments.some((comment) => comment.severity === "blocking"));
+  assert.equal(model.blockers.length, 0);
+  assert.equal(model.suggested_comments.length, 0);
+  assert.equal(model.decision_projection?.findings.some((finding) => finding.root_cause === "review_artifact_contract"), true);
   assert.ok(model.review_queue.some((item) => item.path === "schemas/human_review.schema.json" && item.priority === "high"));
 });
 
-test("review-surfaces.REVIEWER_VALUE.3 destructive human-review schema changes still block", () => {
+test("review-surfaces.REVIEWER_VALUE.3 destructive human-review schema changes remain explicit approval decisions", () => {
   const model = buildHumanReview({
     packet: packetFixture(),
     diff: structuredDiffForPaths(["schemas/human_review.schema.json"]),
@@ -774,11 +893,12 @@ test("review-surfaces.REVIEWER_VALUE.3 destructive human-review schema changes s
       test_weakening: []
     }
   });
-  assert.ok(model.blockers.some((blocker) => blocker.id === "BLOCK-SCHEMA-001"));
-  assert.ok(model.suggested_comments.some((comment) => comment.severity === "blocking"));
+  assert.equal(model.blockers.length, 0);
+  assert.equal(model.suggested_comments.length, 0);
+  assert.equal(model.decision_projection?.findings.some((finding) => finding.root_cause === "review_artifact_contract"), true);
 });
 
-test("review-surfaces.REVIEWER_VALUE.3 blocker comments are reserved before demoted semantic drafts", () => {
+test("review-surfaces.REVIEWER_VALUE.3 schema decision count scales without generating blocker comments", () => {
   const schemaChanges = Array.from({ length: 10 }, (_, index) => ({
     path: `schemas/contract-${index}.schema.json`,
     properties_added: [],
@@ -795,9 +915,9 @@ test("review-surfaces.REVIEWER_VALUE.3 blocker comments are reserved before demo
     config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_suggested_comments: 2 }
   });
 
-  assert.equal(model.blockers.filter((blocker) => blocker.id.startsWith("BLOCK-SCHEMA-")).length, 2);
-  assert.equal(model.suggested_comments.length, 2);
-  assert.equal(model.suggested_comments.every((comment) => comment.severity === "blocking"), true);
+  assert.equal(model.blockers.length, 0);
+  assert.equal(model.decision_projection?.findings.filter((finding) => finding.root_cause.startsWith("persisted_contract:")).length, 10, "all independent schema decisions survive the preview cap");
+  assert.equal(model.suggested_comments.length, 0);
 });
 
 test("review-surfaces.REVIEWER_VALUE.3 coverage blockers survive the global blocker cap", () => {
@@ -824,8 +944,8 @@ test("review-surfaces.REVIEWER_VALUE.3 coverage blockers survive the global bloc
     areas: ["REVIEWER_VALUE"],
     role: "spec" as const
   })));
-  surface.status = "blocked";
-  surface.blocked_reason = "privacy_block";
+  surface.status = "ready";
+  delete surface.blocked_reason;
   surface.risks.candidates = [
     prRiskFixture("coverage_regression"),
     { ...prRiskFixture("coverage_regression"), id: "PR-RISK-COVERAGE-SECOND" },
@@ -847,11 +967,11 @@ test("review-surfaces.REVIEWER_VALUE.3 coverage blockers survive the global bloc
     semanticFacts: { schema_changes: breakingSchemas, api_changes: [], test_weakening: [] }
   });
 
-  assert.equal(model.blockers.length, 8);
+  assert.equal(model.blockers.length, 6);
   assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-PR-RISK-COVERAGE"), true);
-  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-PR-RISK-COVERAGE-SECOND"), false);
-  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-SCHEMA-001"), true);
-  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-SCHEMA-002"), true);
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-PR-RISK-COVERAGE-SECOND"), true);
+  assert.equal(model.blockers.some((blocker) => blocker.id.startsWith("BLOCK-SCHEMA-")), false);
+  assert.equal(model.decision_projection?.findings.filter((finding) => finding.root_cause.startsWith("persisted_contract:")).length, 2);
 });
 
 test("human review model is schema-valid and starts with deterministic readiness signals", () => {
@@ -896,7 +1016,7 @@ test("human review model is schema-valid and starts with deterministic readiness
   assert.equal(validation.valid, true, JSON.stringify(validation.issues));
 });
 
-test("review-surfaces.HUMAN_REVIEW.18 renders explicit intent mismatch buckets and reviewer questions", () => {
+test("review-surfaces.HUMAN_REVIEW.18 renders intent mismatch diagnostics without generic author questions", () => {
   const packet = packetFixture();
   packet.evaluation.overreach = [
     {
@@ -932,12 +1052,10 @@ test("review-surfaces.HUMAN_REVIEW.18 renders explicit intent mismatch buckets a
   assert.ok(model.intent_mismatch.possible_overreach.some((item) => item.paths.includes("scripts/release.sh")));
   assert.equal(model.intent_mismatch.possible_overreach.filter((item) => item.paths.includes("scripts/release.sh")).length, 1);
   assert.ok(model.intent_mismatch.missing_intent.some((item) => item.paths.includes("scripts/release.sh")));
-  assert.ok(model.questions.some((question) => /intent gap/.test(question.question) && question.evidence.some((ref) => ref.path === "scripts/release.sh")));
-  assert.equal(model.review_routes.find((route) => route.persona === "product")?.steps[0]?.artifact, "intent_mismatch.md");
-
+  assert.equal(model.questions.some((question) => /intent gap/.test(question.question) && question.evidence.some((ref) => ref.path === "scripts/release.sh")), false);
   const humanMarkdown = renderHumanReviewMarkdown(model);
-  assert.match(humanMarkdown, /## Intent mismatch/);
-  assert.match(humanMarkdown, /missing-intent item/);
+  assert.doesNotMatch(humanMarkdown, /## Intent mismatch|missing-intent item/);
+  assert.match(humanMarkdown, /\[Intent mismatch\]\(intent_mismatch\.md\)/);
 
   const intentMarkdown = renderIntentMismatchMarkdown(model);
   assert.match(intentMarkdown, /^# Intent Mismatch/);
@@ -989,7 +1107,7 @@ test("review-surfaces.HUMAN_REVIEW.18 PR intent mismatch does not fall back to p
 
   assert.deepEqual(model.intent_mismatch.possible_mismatches, []);
   assert.ok(model.intent_mismatch.missing_intent.some((item) => item.paths.includes("scripts/release.sh")));
-  assert.ok(model.questions.some((question) => /scripts\/release\.sh/.test(question.question)));
+  assert.equal(model.questions.some((question) => /scripts\/release\.sh/.test(question.question)), false);
 });
 
 test("review-surfaces.HUMAN_REVIEW.18 repo-scope intent mismatch observes diff files without PR surface", () => {
@@ -1011,7 +1129,7 @@ test("review-surfaces.HUMAN_REVIEW.18 repo-scope intent mismatch observes diff f
   assert.deepEqual(observed.requirement_ids, ["review-surfaces.HUMAN_REVIEW.18"]);
   assert.match(observed.summary, /references exact requirement/);
   assert.ok(model.intent_mismatch.missing_intent.some((item) => item.paths.includes("scripts/release.sh")));
-  assert.ok(model.questions.some((question) => /scripts\/release\.sh/.test(question.question)));
+  assert.equal(model.questions.some((question) => /scripts\/release\.sh/.test(question.question)), false);
 });
 
 test("review-surfaces.HUMAN_REVIEW.18 PR intent mismatch scopes packet overreach to changed paths", () => {
@@ -1542,7 +1660,7 @@ test("review-surfaces.HUMAN_REVIEW.18 missing intent skips generated and ignored
   assert.ok(!model.intent_mismatch.missing_intent.some((item) => item.paths.includes("tmp/generated.txt")));
 });
 
-test("review-surfaces.HUMAN_REVIEW.18 preserves an intent question under a tight question cap", () => {
+test("review-surfaces.HUMAN_REVIEW.18 does not promote generic mapping gaps under a tight question cap", () => {
   const prSurface = prSurfaceFixture();
   prSurface.risks.candidates = [];
   const model = buildHumanReview({
@@ -1556,7 +1674,7 @@ test("review-surfaces.HUMAN_REVIEW.18 preserves an intent question under a tight
   });
 
   assert.equal(model.questions.length, 2);
-  assert.ok(model.questions.some((question) => /intent gap/.test(question.question)));
+  assert.equal(model.questions.some((question) => /intent gap/.test(question.question)), false);
 });
 
 test("review-surfaces.HUMAN_REVIEW.18 does not evict blocking questions for clarifying intent gaps", () => {
@@ -1662,7 +1780,18 @@ test("since-last-review model turns packet comparison into reviewer-focused delt
     suggested_checks: ["Review the new risk."]
   });
 
-  const model = buildHumanReview({ packet, packetPath: ".review-surfaces/review_packet.json" });
+  const model = buildHumanReview({
+    packet,
+    packetPath: ".review-surfaces/review_packet.json",
+    previousApprovalRisks: [{
+      id: "RISK-RESOLVED",
+      category: "testing",
+      severity: "high",
+      summary: "Gone risk",
+      evidence: [fileEvidence("src/old-test.ts", "Prior approval evidence.")],
+      suggested_checks: ["Confirm the risk is resolved."]
+    }]
+  });
   const since = model.since_last_review;
 
   assert.equal(since.previous_packet_path, ".review-surfaces-prev/review_packet.json");
@@ -1671,6 +1800,7 @@ test("since-last-review model turns packet comparison into reviewer-focused delt
   assert.equal(since.new_risks[0].summary, "security: Brand new risk.");
   assert.equal(since.new_risks[0].severity, "high");
   assert.equal(since.resolved_risks[0].summary, "testing: Gone risk.");
+  assert.deepEqual(since.resolved_risks[0].decision_refs, ["RISK-RESOLVED"]);
   assert.equal(since.new_overreach[0].path, "src/new-overreach.ts");
   assert.equal(since.resolved_overreach[0].path, "src/old-overreach.ts");
   assert.ok(since.still_open.some((item) => item.summary.includes("review-surfaces.HUMAN_REVIEW.1 remains partial")));
@@ -1679,8 +1809,8 @@ test("since-last-review model turns packet comparison into reviewer-focused delt
   assert.ok([...since.improved, ...since.regressed, ...since.new_risks, ...since.still_open].every((item) => item.evidence.length > 0));
 
   const humanMarkdown = renderHumanReviewMarkdown(model);
-  assert.match(humanMarkdown, /## Since last review/);
-  assert.match(humanMarkdown, /1 improved requirement\(s\), 1 regressed requirement\(s\)/);
+  assert.doesNotMatch(humanMarkdown, /## Since last review|1 improved requirement\(s\), 1 regressed requirement\(s\)/);
+  assert.match(humanMarkdown, /\[Since last review\]\(since_last_review\.md\)/);
 
   const sinceMarkdown = renderSinceLastReviewMarkdown(model);
   assert.match(sinceMarkdown, /^# Since Last Review/);
@@ -1691,6 +1821,10 @@ test("since-last-review model turns packet comparison into reviewer-focused delt
 
   const validation = validateJsonSchema(schema, model);
   assert.equal(validation.valid, true, JSON.stringify(validation.issues));
+
+  const sticky = renderStickySummary(model).markdown;
+  assert.match(sticky, /Since your last review/);
+  assert.match(sticky, /Resolved risks: testing: Gone risk\./);
 });
 
 test("since-last-review degrades cleanly when no previous packet was supplied", () => {
@@ -1698,53 +1832,9 @@ test("since-last-review degrades cleanly when no previous packet was supplied", 
 
   assert.match(model.since_last_review.unavailable_reason ?? "", /No previous packet was supplied/);
   assert.deepEqual(model.since_last_review.improved, []);
-  assert.match(renderHumanReviewMarkdown(model), /No previous packet was supplied/);
+  assert.doesNotMatch(renderHumanReviewMarkdown(model), /No previous packet was supplied/);
+  assert.match(renderHumanReviewMarkdown(model), /\[Since last review\]\(since_last_review\.md\)/);
   assert.match(renderSinceLastReviewMarkdown(model), /No previous packet path recorded/);
-});
-
-test("review routes provide default human and secondary agent paths from shared evidence", () => {
-  const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
-
-  assert.equal(model.review_routes.length, 5);
-  assert.equal(model.review_routes[0].persona, "human_reviewer");
-  assert.equal(model.review_routes[0].is_default, true);
-  assert.equal(model.review_routes[0].is_secondary, false);
-  assert.equal(model.review_routes.filter((route) => route.is_default).length, 1);
-  assert.equal(model.review_routes.find((route) => route.persona === "agent_continuation")?.is_secondary, true);
-  assert.deepEqual(model.review_routes.map((route) => route.persona), [
-    "human_reviewer",
-    "maintainer",
-    "security",
-    "product",
-    "agent_continuation"
-  ]);
-  assert.ok(model.review_routes.every((route) => route.steps.length > 0));
-  assert.ok(model.review_routes.flatMap((route) => route.steps).every((step) => step.evidence.length > 0));
-  assert.ok(model.review_routes.find((route) => route.persona === "human_reviewer")?.steps.some((step) => step.queue_item_ids.length > 0));
-  assert.ok(model.review_routes.find((route) => route.persona === "maintainer")?.steps.some((step) => step.artifact === "risk_lenses.md"));
-  assert.ok(model.review_routes.find((route) => route.persona === "security")?.steps.some((step) => step.risk_lens_ids.length > 0));
-  assert.ok(model.review_routes.find((route) => route.persona === "product")?.steps.some((step) => step.artifact === "suggested_comments.md"));
-
-  const markdown = renderReviewRoutesMarkdown(model);
-  assert.match(markdown, /^# Review Routes/);
-  assert.match(markdown, /## Human reviewer route/);
-  assert.match(markdown, /Default: yes/);
-  assert.match(markdown, /## Agent-continuation route/);
-  assert.match(markdown, /Secondary: yes/);
-
-  const validation = validateJsonSchema(schema, model);
-  assert.equal(validation.valid, true, JSON.stringify(validation.issues));
-});
-
-test("security review route degrades to skim guidance when no security signal fires", () => {
-  const model = buildHumanReview({ packet: packetFixture() });
-  const securityRoute = model.review_routes.find((route) => route.persona === "security");
-
-  assert.ok(securityRoute);
-  assert.equal(securityRoute.steps.find((step) => step.title === "Security and LLM trust-boundary lenses")?.priority, "low");
-  assert.match(securityRoute.steps.find((step) => step.title === "Security and LLM trust-boundary lenses")?.action ?? "", /No security\/privacy/);
-  assert.equal(securityRoute.steps.find((step) => step.title === "Manual security checks")?.priority, "low");
-  assert.equal(securityRoute.steps.find((step) => step.title === "Privacy and trust audit gaps")?.priority, "low");
 });
 
 test("evidence cards separate direct, missing, and invalid evidence with reviewer actions", () => {
@@ -1776,11 +1866,11 @@ test("evidence cards separate direct, missing, and invalid evidence with reviewe
 
   const markdown = renderEvidenceCardsMarkdown(model);
   assert.match(markdown, /^# Evidence Cards/);
-  assert.match(markdown, /## Evidence Card:/);
-  assert.match(markdown, /Direct:/);
-  assert.match(markdown, /Missing:/);
-  assert.match(markdown, /Invalid:/);
-  assert.match(markdown, /Reviewer action:/);
+  assert.match(markdown, /Action: Record a manual check/);
+  assert.match(markdown, /\[Mixed evidence; high; evidence: direct 1, missing 1, invalid 0\]/);
+  assert.match(markdown, /evidence: direct 1, missing 1, invalid 1/);
+  assert.match(markdown, /\[Unchecked direct evidence;/);
+  assert.match(markdown, /\[Missing evidence;/);
   assert.doesNotMatch(markdown, /This human review JSON was generated before evidence-card support/);
 
   const validation = validateJsonSchema(schema, model);
@@ -1792,7 +1882,7 @@ test("evidence cards preserve risk-lens priority when equal-severity lens cards 
   surface.risks.candidates = [];
   surface.scope.changed_files = [
     {
-      path: "src/llm/pr-narrative.ts",
+      path: "src/human/narrative.ts",
       status: "M",
       areas: ["PROVIDERS"],
       role: "implementation",
@@ -1825,22 +1915,21 @@ test("human review Markdown renders a compact cockpit surface", () => {
   assert.match(markdown, /^# Human Review/);
   assert.match(markdown, /## Verdict/);
   assert.match(markdown, /\*\*Block before merge\.\*\*/);
-  assert.match(markdown, /## Review first/);
-  assert.match(markdown, /## Review routes/);
-  assert.match(markdown, /Human reviewer route \(default\)/);
-  assert.match(markdown, /## Evidence cards/);
-  assert.match(markdown, /\.github\/workflows\/pr-review-comment\.yml/);
-  assert.match(markdown, /Hunk: `@@ -10,3 \+10,5 @@`/);
-  assert.match(markdown, /## Since last review/);
-  assert.match(markdown, /## Trust audit/);
-  assert.match(markdown, /Claimed but not verified/);
-  assert.match(markdown, /## Risk lenses/);
-  assert.match(markdown, /Security \/ privacy lens/);
-  assert.match(markdown, /## Suggested comments/);
+  assert.match(markdown, /## Change purpose/);
+  assert.match(markdown, /## Approval decisions/);
+  assert.match(markdown, /## Required checks/);
+  assert.match(markdown, /## Trust summary/);
+  assert.match(markdown, /## Supporting review queue/);
+  assert.match(markdown, /## Supporting artifacts/);
+  assert.match(markdown, /\[Interactive HTML cockpit\]\(human_review\.html\)/);
+  assert.match(markdown, /\[`human_review\.json`\]\(human_review\.json\)/);
   for (const artifact of HUMAN_STANDALONE_ARTIFACTS) {
-    assert.match(markdown, new RegExp(`${artifact.label}: \`${artifact.artifact}\``));
+    assert.match(markdown, new RegExp(`\\[${artifact.label}\\]\\(${artifact.artifact.replace(".", "\\.")}\\)`));
   }
-  assert.doesNotMatch(markdown, /Start with missing and partial requirement results/);
+  assert.doesNotMatch(
+    markdown,
+    /## (Evidence cards|Since last review|Trust audit|Risk lenses|Suggested comments|Intent mismatch|Reading order|Change map|Change narrative|Test plan|Conversation-aware insights)/
+  );
 });
 
 test("line-specific queue evidence does not inherit an unrelated diff hunk", () => {
@@ -1937,7 +2026,7 @@ test("risk lenses fire from changed paths even when no PR risk candidate fires",
   surface.risks.candidates = [];
   surface.scope.changed_files = [
     {
-      path: "src/llm/pr-narrative.ts",
+      path: "src/human/narrative.ts",
       status: "M",
       areas: ["PROVIDERS"],
       role: "implementation",
@@ -1969,8 +2058,8 @@ test("risk lenses fire from changed paths even when no PR risk candidate fires",
 
   assert.ok(llmLens);
   assert.deepEqual(llmLens.risk_ids, []);
-  assert.ok(llmLens.paths.includes("src/llm/pr-narrative.ts"));
-  assert.ok(llmLens.suggested_tests.some((item) => item.suggested_file === "tests/pr-narrative.test.ts"));
+  assert.ok(llmLens.paths.includes("src/human/narrative.ts"));
+  assert.ok(llmLens.suggested_tests.some((item) => item.suggested_file === "tests/human-narrative.test.ts"));
   assert.ok(llmLens.suggested_comments.every((comment) => comment.evidence.length > 0));
 
   assert.ok(cacheLens);
@@ -1985,10 +2074,11 @@ test("risk lenses fire from changed paths even when no PR risk candidate fires",
   assert.match(apiLens.suggested_comments[0]?.body ?? "", /focused CLI, config, or feature-ledger test/);
   assert.doesNotMatch(apiLens.suggested_comments[0]?.body ?? "", /compatibility fixture/);
 
-  assert.ok(model.questions.some((question) => /fabricated LLM paths/.test(question.question)));
+  assert.equal(model.questions.some((question) => /fabricated LLM paths/.test(question.question)), false);
+  assert.equal(model.questions.some((question) => /stale or mismatched review artifacts/.test(question.question)), false);
   assert.ok(model.questions.some((question) => /focused CLI, config, or feature-ledger test/.test(question.question)));
-  assert.ok(model.suggested_comments.some((comment) => /LLM trust-boundary lens/.test(comment.body)));
-  assert.ok(model.test_plan.some((item) => item.maps_to_risks.length === 0 && item.suggested_file === "tests/pr-narrative.test.ts"));
+  assert.equal(model.suggested_comments.some((comment) => /LLM trust-boundary lens/.test(comment.body)), false);
+  assert.ok(model.test_plan.some((item) => item.maps_to_risks.length === 0 && item.suggested_file === "tests/human-narrative.test.ts"));
 });
 
 test("review-surfaces.HUMAN_REVIEW.16 config caps reviewer-facing output and disables lens-derived actions", () => {
@@ -1996,7 +2086,7 @@ test("review-surfaces.HUMAN_REVIEW.16 config caps reviewer-facing output and dis
   surface.risks.candidates = [];
   surface.scope.changed_files.push(
     {
-      path: "src/llm/pr-narrative.ts",
+      path: "src/human/narrative.ts",
       status: "M",
       areas: ["PROVIDERS"],
       role: "implementation",
@@ -2018,7 +2108,7 @@ test("review-surfaces.HUMAN_REVIEW.16 config caps reviewer-facing output and dis
     prSurface: surface,
     config: {
       ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
-      max_review_first: 2,
+      max_supporting_queue: 2,
       max_suggested_comments: 1,
       max_questions: 2,
       risk_lenses: {
@@ -2255,10 +2345,10 @@ test("reviewer UX lens prefers renderer fixtures over schema fixtures", () => {
   assert.ok(uxLens);
   assert.equal(uxLens.suggested_tests[0]?.suggested_file, "tests/human-review.test.ts");
   assert.equal(uxLens.suggested_comments[0]?.path, "src/human/render.ts");
-  assert.ok(model.suggested_comments.some((comment) => comment.body.includes("reviewer UX lens") && comment.path === "src/human/render.ts"));
+  assert.equal(model.suggested_comments.some((comment) => comment.body.includes("reviewer UX lens") && comment.path === "src/human/render.ts"), false);
 });
 
-test("PR mode queues changed files when PR risk candidates are pathless", () => {
+test("PR mode queues changed files while low-severity pathless risks stay diagnostic", () => {
   const surface = prSurfaceFixture();
   const pathlessRisk = surface.risks.candidates.find((risk) => risk.id === "PR-RISK-003");
   assert.ok(pathlessRisk);
@@ -2278,7 +2368,7 @@ test("PR mode queues changed files when PR risk candidates are pathless", () => 
   assert.ok(changedImpl);
   assert.deepEqual(changedImpl.risk_ids, []);
   assert.equal(model.review_queue.some((item) => item.risk_ids.includes("PR-RISK-003")), false);
-  assert.equal(model.questions.some((question) => question.maps_to_risks.includes("PR-RISK-003")), true);
+  assert.equal(model.questions.some((question) => question.maps_to_risks.includes("PR-RISK-003")), false);
 });
 
 test("PR mode fallback maps path-scoped affected requirements without group keys", () => {
@@ -2459,11 +2549,11 @@ test("standalone review queue bounds and de-duplicates evidence refs", () => {
   assert.doesNotMatch(markdown, /`src\/i\.ts`/);
 });
 
-test("pathless PR risks become questions and out-of-scope packet risks stay out of PR queue", () => {
+test("low-severity pathless PR risks and out-of-scope packet risks stay out of author actions", () => {
   const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture() });
   assert.equal(model.review_queue.some((item) => item.risk_ids.includes("PR-RISK-003")), false);
   assert.equal(model.review_queue.some((item) => item.risk_ids.includes("RISK-001")), false);
-  assert.equal(model.questions.some((question) => question.maps_to_risks.includes("PR-RISK-003")), true);
+  assert.equal(model.questions.some((question) => question.maps_to_risks.includes("PR-RISK-003")), false);
 });
 
 test("PR-scoped packet risks match changed files with normalized evidence paths", () => {
@@ -2525,17 +2615,17 @@ test("PR-scoped packet risks include renamed old paths in the changed-file scope
   assert.equal(item?.path, "src/human/old-review.ts");
 });
 
-test("repo-mode human review keeps focused human gaps as questions and checks, not generic postable comments", () => {
+test("repo-mode human review keeps focused human gaps diagnostic, not prescribed author work", () => {
   const model = buildHumanReview({ packet: packetFixture() });
 
   assert.equal(model.mode, "repo");
-  assert.equal(model.questions[0].maps_to_requirements.includes("review-surfaces.HUMAN_REVIEW.1"), true);
-  assert.match(model.questions[0].question, /validation evidence/);
+  assert.equal(model.questions.some((question) =>
+    question.maps_to_requirements.includes("review-surfaces.HUMAN_REVIEW.1") && /validation evidence/i.test(question.question)
+  ), false);
   assert.equal(model.suggested_comments.some((comment) =>
     comment.requirement_ids.includes("review-surfaces.HUMAN_REVIEW.1") && /validation evidence/i.test(comment.body)
   ), false);
-  assert.equal(model.test_plan[0].maps_to_requirements.includes("review-surfaces.HUMAN_REVIEW.1"), true);
-  assert.equal(model.test_plan[0].suggested_file, "tests/human-review.test.ts");
+  assert.equal(model.test_plan.some((item) => item.maps_to_requirements.includes("review-surfaces.HUMAN_REVIEW.1")), false);
 });
 
 test("nonzero validation command evidence blocks merge readiness", () => {
@@ -2878,7 +2968,10 @@ test("reviewer feedback memory visibly tunes human review focus without hiding e
   assert.equal(model.skim_safe.some((item) => item.path === "pnpm-lock.yaml"), true);
   assert.equal(model.skim_safe.some((item) => item.path === "docs/review-surfaces-trd.md"), false);
   assert.equal(validateJsonSchema(schema, model).valid, true);
-  assert.match(renderHumanReviewMarkdown(model), /## Feedback memory/);
+  const compact = renderHumanReviewMarkdown(model);
+  assert.doesNotMatch(compact, /## Feedback memory/);
+  assert.doesNotMatch(compact, /always_prioritize|prioritize_review_focus/);
+  assert.match(compact, /\[`human_review\.json`\]\(human_review\.json\)/);
 });
 
 test("recorded team-policy manual check clears the feedback policy blocker", () => {
@@ -3291,7 +3384,7 @@ test("configured required manual checks reserve required test-plan space", () =>
     }
   });
 
-  assert.equal(model.test_plan.length, 12);
+  assert.equal(model.test_plan.length, requiredRules.length);
   assert.equal(model.test_plan[0].maps_to_risks.includes("config:docs_required_check"), true);
 });
 
@@ -3888,7 +3981,6 @@ test("human review schema enums stay aligned with runtime contract constants", (
   assert.deepEqual(schema.$defs.suggestedComment.properties.severity.enum, [...SUGGESTED_COMMENT_SEVERITIES]);
   assert.deepEqual(schema.$defs.feedbackEffect.properties.kind.enum, [...FEEDBACK_POLICY_EFFECT_KINDS]);
   assert.deepEqual(schema.$defs.riskLensFinding.properties.lens.enum, [...RISK_LENSES]);
-  assert.deepEqual(schema.$defs.reviewRoute.properties.persona.enum, [...REVIEW_ROUTE_PERSONAS]);
   assert.deepEqual(schema.$defs.evidenceCard.properties.status.enum, [...EVIDENCE_CARD_STATUSES]);
   assert.deepEqual(schema.$defs.evidenceCard.properties.priority.enum, [...HUMAN_REVIEW_PRIORITIES]);
   assert.deepEqual(schema.$defs.confidence.enum, [...PACKET_CONFIDENCE_LEVELS]);
@@ -3897,37 +3989,10 @@ test("human review schema enums stay aligned with runtime contract constants", (
   assert.deepEqual(schema.$defs.conversationAnalysis.properties.status.enum, [...CONVERSATION_ANALYSIS_STATUSES]);
   assert.deepEqual(schema.$defs.reviewerInsight.properties.category.enum, [...REVIEWER_INSIGHT_CATEGORIES]);
   assert.deepEqual(schema.$defs.reviewerInsight.properties.evidence_state.enum, [...REVIEWER_INSIGHT_EVIDENCE_STATES]);
-  assert.deepEqual(prSurfaceSchema.$defs.conversationAnalysis.properties.status.enum, [...CONVERSATION_ANALYSIS_STATUSES]);
-  assert.deepEqual(prSurfaceSchema.$defs.reviewerInsight.properties.category.enum, [...REVIEWER_INSIGHT_CATEGORIES]);
-  assert.deepEqual(prSurfaceSchema.$defs.reviewerInsight.properties.evidence_state.enum, [...REVIEWER_INSIGHT_EVIDENCE_STATES]);
   assert.deepEqual(schema.$defs.evidenceRef.properties.validation_status.enum, [...PACKET_VALIDATION_STATUSES]);
 });
 
-test("review-surfaces.SCHEMA.3 rejects prior v1 artifacts without optional fields but the renderer still degrades", () => {
-  const model = JSON.parse(JSON.stringify(buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture() }))) as Record<string, unknown>;
-  delete model.feedback_effects;
-  delete model.risk_lens_findings;
-  delete model.review_routes;
-  delete model.since_last_review;
-  delete model.evidence_cards;
-
-  // review-surfaces.SCHEMA.3: the strict schema rejects the partial artifact so
-  // a stale human_review.json fails validation instead of degrading quietly...
-  const result = validateJsonSchema(schema, model);
-  assert.equal(result.valid, false);
-  assert.ok(result.issues.some((issue) => /review_routes/.test(issue.message)));
-
-  // ...while the RENDERER stays backward-compatible: an old artifact that bypassed
-  // validation still renders with explicit "generated before X support" fallbacks.
-  assert.match(renderHumanReviewMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /No domain risk lenses fired/);
-  assert.match(renderHumanReviewMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /generated before review-route support/);
-  assert.match(renderRiskLensesMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /No domain risk lenses fired/);
-  assert.match(renderReviewRoutesMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /generated before review-route support/);
-  assert.match(renderEvidenceCardsMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /generated before evidence-card support/);
-  assert.match(renderSinceLastReviewMarkdown(model as unknown as ReturnType<typeof buildHumanReview>), /generated before since-last-review support/);
-});
-
-test("human trust gaps suggest human review tests, not PR tests from incidental substrings", () => {
+test("human trust gaps remain diagnostic instead of inventing a PR test from incidental substrings", () => {
   const packet = packetFixture();
   packet.evaluation.results = [
     {
@@ -3946,8 +4011,7 @@ test("human trust gaps suggest human review tests, not PR tests from incidental 
 
   const model = buildHumanReview({ packet });
 
-  assert.equal(model.test_plan[0].maps_to_requirements.includes("review-surfaces.HUMAN_TRUST.1"), true);
-  assert.equal(model.test_plan[0].suggested_file, "tests/human-review.test.ts");
+  assert.equal(model.test_plan.some((item) => item.maps_to_requirements.includes("review-surfaces.HUMAN_TRUST.1")), false);
 });
 
 test("human suggested comments synthesize evidence-backed drafts for non-cleared PR risk rules", () => {
@@ -3977,7 +4041,14 @@ test("human suggested comments synthesize evidence-backed drafts for non-cleared
   // the per-rule synthesis (not the cap) is what this test exercises.
   const model = buildHumanReview({ packet, prSurface: surface, config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_suggested_comments: PR_RISK_RULES.length + 2 } });
   const byRisk = new Map(model.suggested_comments.flatMap((comment) => comment.risk_ids.map((riskId) => [riskId, comment] as const)));
-  const expectedRisks = surface.risks.candidates.filter((risk) => risk.rule !== "ci_secret_boundary_change");
+  const expectedRisks = surface.risks.candidates.filter((risk) =>
+    risk.rule !== "ci_secret_boundary_change" &&
+    risk.rule !== "unmapped_change" &&
+    risk.rule !== "comment_surface_change" &&
+    risk.rule !== "schema_contract_change" &&
+    risk.rule !== "large_diff" &&
+    risk.rule !== "failed_or_skipped_test"
+  );
 
   assert.equal(model.suggested_comments.length, expectedRisks.length);
   assert.equal(surface.risks.candidates.length, PR_RISK_RULES.length);
@@ -3985,7 +4056,6 @@ test("human suggested comments synthesize evidence-backed drafts for non-cleared
   assert.equal(model.suggested_comments.every((comment) => comment.ready_to_post), true);
   assert.ok(model.suggested_comments.some((comment) => comment.severity === "blocking"));
   assert.ok(model.suggested_comments.some((comment) => comment.severity === "clarifying"));
-  assert.ok(model.suggested_comments.some((comment) => comment.severity === "non_blocking"));
   assert.equal(byRisk.has("PR-RISK-CI"), false);
   for (const risk of expectedRisks) {
     assert.ok(byRisk.has(risk.id), `missing suggested comment for ${risk.rule}`);
@@ -4053,7 +4123,7 @@ test("human suggested comments do not duplicate failed-test blocker comments", (
   assert.equal(model.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-TEST")), false);
 });
 
-test("human suggested comments keep skipped-only test risk drafts", () => {
+test("skipped-test heuristics stay supporting unless current-head evidence records the skip", () => {
   const packet = packetFixture();
   packet.evaluation.results = [];
   packet.evaluation.acai_coverage = {};
@@ -4073,8 +4143,8 @@ test("human suggested comments keep skipped-only test risk drafts", () => {
   const model = buildHumanReview({ packet, prSurface: surface });
 
   assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-TESTS-001"), false);
-  assert.equal(model.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-TEST")), true);
-  assert.equal(model.suggested_comments.find((comment) => comment.risk_ids.includes("PR-RISK-TEST"))?.severity, "clarifying");
+  assert.equal(model.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-TEST")), false);
+  assert.equal(model.decision_projection?.findings.some((finding) => finding.risk_ids.includes("PR-RISK-TEST")), false);
 });
 
 test("review-surfaces.REVIEWER_VALUE.3 a path-only privacy-sensitive change asks but does not block", () => {
@@ -4113,13 +4183,13 @@ test("blocking suggested comments stay visible when non-blocking risk drafts exc
 
   const model = buildHumanReview({ packet, prSurface: surface });
 
-  assert.equal(model.suggested_comments.length, 10);
+  assert.ok(model.suggested_comments.length <= 10);
   assert.ok(model.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-COVERAGE")));
   assert.equal(model.suggested_comments.find((comment) => comment.risk_ids.includes("PR-RISK-COVERAGE"))?.severity, "blocking");
   assert.equal(model.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-LARGE-010")), false);
 });
 
-test("human test plan synthesizes concrete checks for every PR risk rule", () => {
+test("human test plan synthesizes checks only for concrete PR risks", () => {
   const packet = packetFixture();
   packet.evaluation.results = [];
   packet.evaluation.acai_coverage = {};
@@ -4138,14 +4208,14 @@ test("human test plan synthesizes concrete checks for every PR risk rule", () =>
   assert.equal(byRisk.get("PR-RISK-COVERAGE")?.priority, "required");
   assert.equal(byRisk.get("PR-RISK-UNTESTED")?.suggested_file, "tests/human-review.test.ts");
   assert.equal(byRisk.get("PR-RISK-UNTESTED")?.priority, "required");
-  assert.equal(byRisk.get("PR-RISK-UNMAPPED")?.kind, "manual");
+  assert.equal(byRisk.has("PR-RISK-UNMAPPED"), false);
   assert.equal(byRisk.get("PR-RISK-PRIVACY")?.suggested_file, "tests/privacy.test.ts");
-  assert.equal(byRisk.get("PR-RISK-COMMENT")?.suggested_file, "tests/pr-comment.test.ts");
+  assert.equal(byRisk.get("PR-RISK-COMMENT")?.suggested_file, "tests/sticky-summary.test.ts");
   assert.equal(byRisk.get("PR-RISK-CI")?.kind, "manual");
   assert.equal(byRisk.get("PR-RISK-SCHEMA")?.suggested_file, "tests/schema-contract.test.ts");
   assert.equal(byRisk.get("PR-RISK-DELETE")?.command, "pnpm run test -- tests/human-review.test.ts");
-  assert.equal(byRisk.get("PR-RISK-TEST")?.command, "pnpm run test");
-  assert.equal(byRisk.get("PR-RISK-LARGE")?.priority, "optional");
+  assert.equal(byRisk.has("PR-RISK-TEST"), false);
+  assert.equal(byRisk.has("PR-RISK-LARGE"), false);
   assert.equal(model.test_plan.every((item) => item.maps_to_risks.length > 0), true);
 });
 
@@ -4303,7 +4373,7 @@ test("required PR risk checks stay visible when the test plan is capped", () => 
   assert.equal(model.test_plan.find((item) => item.maps_to_risks.includes("PR-RISK-CI"))?.kind, "manual");
 });
 
-test("duplicate PR risk drafts do not consume the cap before distinct focused gaps", () => {
+test("test-change heuristics without failed current-head evidence do not prescribe reruns", () => {
   const packet = packetFixture();
   packet.risks.items = [];
   packet.risks.missing_automatic_tests = [];
@@ -4317,11 +4387,11 @@ test("duplicate PR risk drafts do not consume the cap before distinct focused ga
 
   const model = buildHumanReview({ packet, prSurface: surface });
 
-  assert.ok(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-TEST-001")));
-  assert.ok(model.test_plan.some((item) => item.maps_to_requirements.includes("review-surfaces.HUMAN_REVIEW.1")));
+  assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-TEST-001")), false);
+  assert.equal(model.test_plan.some((item) => /Add a focused unit or fixture test tied to/.test(item.scenario)), false);
 });
 
-test("optional PR risk checks do not crowd out required focused gaps at the cap", () => {
+test("PR test plans contain concrete PR risks instead of repository-wide requirement gaps", () => {
   const packet = packetFixture();
   packet.evaluation.results = [{
     requirement_id: "REQ-HUMAN-MISSING",
@@ -4350,8 +4420,8 @@ test("optional PR risk checks do not crowd out required focused gaps at the cap"
 
   const model = buildHumanReview({ packet, prSurface: surface });
 
-  assert.equal(model.test_plan.length, 12);
-  assert.ok(model.test_plan.some((item) => item.maps_to_requirements.includes("review-surfaces.HUMAN_TRUST.MISSING")));
+  assert.ok(model.test_plan.length <= 12);
+  assert.equal(model.test_plan.some((item) => item.maps_to_requirements.includes("review-surfaces.HUMAN_TRUST.MISSING")), false);
   assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-LARGE")), false);
 });
 
@@ -4511,15 +4581,6 @@ test("trust audit reserves capped invalid-evidence slots for PR risk refs", () =
   assert.match(invalidSummaries, /review-surfaces.INVALID.1/);
 });
 
-// Slice the "## Test plan" section out of the rendered human surface so heading
-// assertions do not bleed into adjacent sections.
-function testPlanSection(markdown: string): string {
-  const start = markdown.indexOf("## Test plan");
-  assert.notEqual(start, -1, "rendered surface should contain a Test plan section");
-  const after = markdown.indexOf("\n## ", start + 1);
-  return after === -1 ? markdown.slice(start) : markdown.slice(start, after);
-}
-
 test("review-surfaces.HUMAN_REVIEW.22 a multi-file api_contract rollup renders one Test plan heading, not a duplicate per file", () => {
   const model = buildHumanReview({ packet: packetFixture(), prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
   // Several test-plan items that share kind/priority/scenario/expected/gap and
@@ -4553,8 +4614,7 @@ test("review-surfaces.HUMAN_REVIEW.22 a multi-file api_contract rollup renders o
   // Guard the test's own premise: the per-item commands are genuinely distinct.
   assert.equal(new Set(model.test_plan.map((item) => item.command)).size, files.length, "the fixture commands must differ per file");
 
-  const markdown = renderHumanReviewMarkdown(model);
-  const section = testPlanSection(markdown);
+  const section = renderTestPlanMarkdown(model);
   const headings = section.split("\n").filter((line) => line.startsWith("### "));
 
   // Items differing only by suggested_file AND its derived per-file command must
@@ -4586,7 +4646,7 @@ test("review-surfaces.HUMAN_REVIEW.22 a multi-file api_contract rollup renders o
   assert.deepEqual(model.test_plan.map((item) => item.command), files.map((file) => `pnpm run test -- ${file}`));
 });
 
-test("review-surfaces.HUMAN_REVIEW.23 reviewer questions strip ANY trailing sentence punctuation before the appended '?', so no question renders '.?', '??', or '!?'", () => {
+test("review-surfaces.HUMAN_REVIEW.23 generic overreach summaries do not become author questions", () => {
   // Overreach summaries flow into the "How should reviewers resolve this intent
   // gap: <summary>?" template. forQuestionTail must strip the ENTIRE trailing
   // run of sentence-ending marks before the appended '?' — not just one — so a
@@ -4635,13 +4695,7 @@ test("review-surfaces.HUMAN_REVIEW.23 reviewer questions strip ANY trailing sent
     const model = buildHumanReview({ packet, prSurface, diff: structuredDiffFixture() });
 
     const overreachQuestion = model.questions.find((question) => /human-review intent\b/.test(question.question));
-    assert.ok(overreachQuestion, `the overreach intent-gap reviewer question should be generated for ${ending.requirement_id}`);
-    // The embedded summary ended in a sentence mark (or a RUN of them); the fix
-    // strips the whole run before the appended '?', so the question ends in
-    // exactly one "...human-review intent?" — never a residual mark before it.
-    assert.match(overreachQuestion.question, /human-review intent\?$/, `question must end in a single '?': ${overreachQuestion.question}`);
-    // Exactly one trailing '?' — no preceding sentence mark survived the strip.
-    assert.match(overreachQuestion.question, /[^.?!]\?$/, `question must end in exactly one '?' with no preceding mark: ${overreachQuestion.question}`);
+    assert.equal(overreachQuestion, undefined, `generic overreach must stay diagnostic for ${ending.requirement_id}`);
 
     // No generated reviewer question (in the model or the rendered surface) may
     // carry doubled terminal punctuation — neither this ending's flavor nor any
@@ -4730,7 +4784,7 @@ function prRiskFixture(rule: PrRiskRule): PrReviewSurfaceModel["risks"]["candida
       category: "maintainability",
       severity: "medium",
       summary: "Reviewer comment surface changed.",
-      evidence: [fileEvidence("src/render/pr-comment.ts", "Comment renderer changed.")],
+      evidence: [fileEvidence("src/render/sticky-summary.ts", "Comment renderer changed.")],
       suggested_checks: ["Render the comment."]
     },
     ci_secret_boundary_change: {
@@ -4786,7 +4840,7 @@ function prRiskFixture(rule: PrRiskRule): PrReviewSurfaceModel["risks"]["candida
   return { rule, ...fixtures[rule] };
 }
 
-test("review-surfaces.METHODOLOGY.7 a validated methodology workflow finding surfaces as an advisory clarifying question", () => {
+test("review-surfaces.METHODOLOGY.7 validated workflow findings stay in the methodology artifact", () => {
   const packet = packetFixture();
   packet.methodology.workflow_findings = [
     {
@@ -4809,11 +4863,9 @@ test("review-surfaces.METHODOLOGY.7 a validated methodology workflow finding sur
   ];
 
   const model = buildHumanReview({ packet });
-  const methodologyQuestion = model.questions.find((q) => /impl no test/.test(q.question));
-  assert.ok(methodologyQuestion, "validated workflow finding becomes a question");
-  assert.equal(methodologyQuestion.severity, "clarifying");
-  // The unanchored finding stays out of the queue (no noise).
-  assert.ok(!model.questions.some((q) => /assumed something unverifiable/.test(q.question)));
+  assert.equal(model.questions.some((q) => /impl no test|assumed something unverifiable/.test(q.question)), false);
+  assert.equal(model.methodology_audit.workflow_findings.length, 1);
+  assert.equal(model.methodology_audit.workflow_findings[0].id, "WF-001");
 });
 
 test("review-surfaces.METHODOLOGY.7 the cockpit surfaces the agent-workflow audit (considered/research/findings)", () => {
@@ -4891,7 +4943,7 @@ test("review-surfaces.METHODOLOGY.7 the audit prefers provider-derived considere
   assert.ok(model.methodology_audit.considered.includes("LLM-proposed: the grounded alternative"), "the provider entry survives the cap");
 });
 
-test("review-surfaces.METHODOLOGY.8 a corroborated workflow finding stays clarifying and cannot create a blocker", () => {
+test("review-surfaces.METHODOLOGY.8 a corroborated workflow finding stays diagnostic and cannot create a blocker", () => {
   const packet = packetFixture();
   packet.methodology.workflow_findings = [
     {
@@ -4906,15 +4958,12 @@ test("review-surfaces.METHODOLOGY.8 a corroborated workflow finding stays clarif
   ];
 
   const model = buildHumanReview({ packet });
-  const question = model.questions.find((q) => /api no compat/.test(q.question));
-  assert.ok(question, "the corroborated finding surfaces as a question");
-  assert.equal(question.severity, "clarifying");
-  assert.match(question.reason, /corroborated/, "the reason reflects deterministic corroboration, not 'advisory'");
-  assert.doesNotMatch(`${question.question} ${question.reason}`, /before approval|resolve it/i);
+  assert.equal(model.questions.some((q) => /api no compat|a public type was removed/.test(q.question)), false);
+  assert.equal(model.methodology_audit.workflow_findings[0]?.id, "XREF-001");
   assert.equal(model.blockers.length, 0);
 });
 
-test("review-surfaces.METHODOLOGY.8 a PROMOTED workflow finding survives the question cap over earlier advisory ones (Codex P2)", () => {
+test("review-surfaces.METHODOLOGY.8 promoted workflow findings remain in the bounded methodology artifact", () => {
   const packet = packetFixture();
   const anchor = (path: string) => [{ kind: "file" as const, path, confidence: "medium" as const, validation_status: "valid" as const }];
   packet.methodology.workflow_findings = [
@@ -4926,12 +4975,11 @@ test("review-surfaces.METHODOLOGY.8 a PROMOTED workflow finding survives the que
   ];
 
   const model = buildHumanReview({ packet });
-  const corroborated = model.questions.find((q) => /corroborated breaking change/.test(q.question));
-  assert.ok(corroborated, "the promoted finding reaches the surface despite being emitted last");
-  assert.equal(corroborated.severity, "clarifying");
+  assert.equal(model.questions.some((q) => /corroborated breaking change/.test(q.question)), false);
+  assert.ok(model.methodology_audit.workflow_findings.some((finding) => finding.id === "XREF-004"));
 });
 
-test("review-surfaces.METHODOLOGY.8 a corroborated workflow question survives the GLOBAL cap behind other questions (#109)", () => {
+test("review-surfaces.METHODOLOGY.8 corroborated workflow diagnostics never consume question capacity", () => {
   const packet = packetFixture();
   const anchor = (path: string) => [{ kind: "file" as const, path, confidence: "medium" as const, validation_status: "valid" as const }];
   // A single corroborated D6 finding — appended AFTER the blocker/risk/gap
@@ -4940,26 +4988,16 @@ test("review-surfaces.METHODOLOGY.8 a corroborated workflow question survives th
   packet.methodology.workflow_findings = [
     { id: "XREF-009", signal_kind: "api_no_compat", summary: "globally-capped corroborated change", severity: "high", advisory: false, evidence: anchor("late.ts") }
   ];
-  // packetFixture yields a non-preserved "clarifying" question first, then a preserved
-  // intent-mismatch question; the corroborated workflow question is appended last.
   const uncapped = buildHumanReview({ packet });
-  assert.ok(uncapped.questions.length >= 3, "precondition: there are questions before the workflow one");
-  assert.ok(uncapped.questions.some((q) => /needs tests/.test(q.reason)), "precondition: a non-preserved filler question exists");
+  assert.equal(uncapped.questions.some((q) => /globally-capped corroborated change/.test(q.question)), false);
+  assert.ok(uncapped.methodology_audit.workflow_findings.some((finding) => finding.id === "XREF-009"));
 
-  // Cap=2: the late-appended corroborated question survives by evicting the NON-preserved
-  // filler (not the preserved intent-mismatch one).
   const capped2 = buildHumanReview({ packet, config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_questions: 2 } });
-  assert.equal(capped2.questions.length, 2, "the cap is honored");
-  assert.ok(
-    capped2.questions.some((q) => /globally-capped corroborated change/.test(q.question) && q.severity === "clarifying"),
-    "the corroborated D6 question is preserved through the global cap"
-  );
-  assert.ok(!capped2.questions.some((q) => /needs tests/.test(q.reason)), "the non-preserved filler was evicted, not the corroborated D6 question");
-
-  // Cap=1: stable preserved ordering keeps the corroborated workflow question.
   const capped1 = buildHumanReview({ packet, config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_questions: 1 } });
-  assert.equal(capped1.questions.length, 1);
-  assert.match(capped1.questions[0].question, /globally-capped corroborated change/, "the corroborated question is prioritized over the intent question");
+  assert.ok(capped2.questions.length <= 2);
+  assert.ok(capped1.questions.length <= 1);
+  assert.equal(capped2.questions.some((q) => /globally-capped corroborated change/.test(q.question)), false);
+  assert.equal(capped1.questions.some((q) => /globally-capped corroborated change/.test(q.question)), false);
 });
 
 function coldStartDiff() {
@@ -5117,7 +5155,7 @@ test("review-surfaces.HUMAN_REVIEW.28 ranks concrete findings, changed-file fall
   const model = buildHumanReview({
     packet,
     prSurface: surface,
-    config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_review_first: 2 }
+    config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_supporting_queue: 2 }
   });
 
   assert.equal(model.review_queue[0]?.risk_ids[0], "RISK-CONCRETE");
@@ -5128,14 +5166,14 @@ test("review-surfaces.HUMAN_REVIEW.28 ranks concrete findings, changed-file fall
 });
 
 test("review-surfaces.HUMAN_REVIEW.28 augmentation stays within headroom and never evicts the detector item", () => {
-  // With a small max_review_first, augmentation must not push the detector-backed item out of
+  // With a small max_supporting_queue, augmentation must not push the detector-backed item out of
   // the queue — it only fills the remaining headroom under the cap.
   const model = buildHumanReview({
     packet: packetFixture(),
     diff: coldStartDiff(),
-    config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_review_first: 2 }
+    config: { ...DEFAULT_HUMAN_REVIEW_BUILD_CONFIG, max_supporting_queue: 2 }
   });
-  assert.ok(model.review_queue.length <= 2, "the queue respects max_review_first");
+  assert.ok(model.review_queue.length <= 2, "the queue respects max_supporting_queue");
   assert.ok(model.review_queue.some((item) => item.risk_ids.includes("RISK-001")), "the detector item survives augmentation under a small cap");
 });
 

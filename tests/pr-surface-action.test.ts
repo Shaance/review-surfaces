@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
 
 const ROOT = process.cwd();
@@ -14,13 +16,37 @@ function rawFile(relativePath: string): string {
   return fs.readFileSync(path.join(ROOT, relativePath), "utf8");
 }
 
+function outputBoundaryScript(): string {
+  const action = readYaml("action.yml");
+  const steps: any[] = action.runs.steps;
+  const runStep = steps.find((step) => typeof step.run === "string" && step.run.includes('node "$RS_BIN" all'));
+  const run = String(runStep?.run ?? "");
+  const start = run.indexOf('subject_root="$(pwd -P)"');
+  const marker = "# Output boundary validated.";
+  const end = run.indexOf(marker, start);
+  assert.ok(start >= 0 && end > start, "the executable output-boundary prologue exists");
+  return `set -euo pipefail\n${run.slice(start, end + marker.length)}\n`;
+}
+
+function runOutputBoundary(subject: string, rawOutput: string): { status: number | null; stdout: string; stderr: string } {
+  const script = path.join(path.dirname(subject), "output-boundary.sh");
+  const githubOutput = path.join(path.dirname(subject), `github-output-${Math.random()}`);
+  fs.writeFileSync(script, outputBoundaryScript(), { mode: 0o700 });
+  const result = spawnSync("bash", [script], {
+    cwd: subject,
+    encoding: "utf8",
+    env: { ...process.env, RS_OUT: rawOutput, GITHUB_OUTPUT: githubOutput }
+  });
+  return { status: result.status, stdout: String(result.stdout), stderr: String(result.stderr) };
+}
+
 test("review-surfaces.PR_SURFACE.1 the composite action runs the PR pipeline with a zero-secret mock default and is a renderer over local artifacts", () => {
   const action = readYaml("action.yml");
   assert.equal(action.runs.using, "composite");
   // Zero-secret default so a consuming repo gets full value with no credentials.
   assert.equal(action.inputs.provider.default, "mock");
-  // Inputs the goal requires: provider, base/head, output dir, comment top-N.
-  for (const input of ["provider", "base-ref", "head-ref", "output-dir", "comment-top-n", "pr-number"]) {
+  // The action carries author context instead of a UI cap that can hide decisions.
+  for (const input of ["provider", "base-ref", "head-ref", "change-title", "change-description", "output-dir", "pr-number"]) {
     assert.ok(action.inputs[input], `action input ${input} present`);
   }
   const steps: any[] = action.runs.steps;
@@ -29,15 +55,39 @@ test("review-surfaces.PR_SURFACE.1 the composite action runs the PR pipeline wit
   // It calls the same CLI commands a local user runs (never a separate analysis path).
   assert.match(runStep.run, /node "\$RS_BIN" all \\/);
   assert.match(runStep.run, /--review-scope pr/);
+  // A prior artifact is comparison input on a changed head and a cache seed on
+  // the exact same head. The seed must replace its old commands with the
+  // current-head evidence staged by the workflow before installing $RS_OUT.
+  assert.match(runStep.run, /current_head=.*git rev-parse --verify "\$\{RS_HEAD\}\^\{commit\}"/);
+  assert.match(runStep.run, /prior_head=.*\.manifest\.head_sha/);
+  assert.match(runStep.run, /"\$prior_head" = "\$current_head"/);
+  assert.match(runStep.run, /rm -rf -- "\$seed_out\/commands"/);
+  assert.match(runStep.run, /cp -a "\$RS_OUT\/commands\/\." "\$current_commands\/"/);
+  assert.match(runStep.run, /cp -a "\$current_commands\/\." "\$seed_out\/commands\/"/);
+  assert.ok(
+    runStep.run.indexOf('cp -a "$current_commands/." "$seed_out/commands/"') < runStep.run.indexOf('mv "$seed_out" "$RS_OUT"'),
+    "current command evidence is restored into the seed before it becomes the live output"
+  );
+  assert.match(runStep.run, /--cache/);
   // The sticky is rendered from human_review.json via the deterministic format.
   assert.match(runStep.run, /node "\$RS_BIN" comment \\/);
   assert.match(runStep.run, /--format sticky/);
+  assert.match(runStep.run, /comment \\[^]*--config "\$RS_CONFIG"/);
   // review-surfaces.PR_SURFACE.4: --strict-postability makes a blocked (secret)
   // body a non-zero exit, so the action fails before upload/post — never posting it.
   assert.match(runStep.run, /--strict-postability/);
   // Caller inputs flow through env, never interpolated into the shell (injection).
   assert.doesNotMatch(runStep.run, /\$\{\{ inputs\.(head-ref|base-ref|model|provider) \}\}/);
   assert.match(runStep.run, /--head "\$RS_HEAD"/);
+  assert.match(runStep.run, /--change-title "\$RS_CHANGE_TITLE"/);
+  assert.match(runStep.run, /--change-description "\$RS_CHANGE_DESCRIPTION"/);
+  assert.doesNotMatch(runStep.run, /comment-top-n/);
+  const workflow = readYaml(".github/workflows/pr-review-comment.yml");
+  const localActionStep = Object.values(workflow.jobs)
+    .flatMap((job: any) => job.steps ?? [])
+    .find((step: any) => step.uses === "./tool");
+  assert.ok(localActionStep, "the repo workflow invokes the local composite action");
+  assert.doesNotMatch(JSON.stringify(localActionStep.with), /comment-top-n/);
 });
 
 test("review-surfaces.PR_SURFACE.3 the action uploads the full packet under a stable PR-keyed name and forks upload but skip posting", () => {
@@ -46,32 +96,43 @@ test("review-surfaces.PR_SURFACE.3 the action uploads the full packet under a st
   const upload = steps.find((s) => typeof s.uses === "string" && s.uses.startsWith("actions/upload-artifact"));
   assert.ok(upload, "uploads a workflow artifact");
   assert.equal(upload.with.name, "review-surfaces-pr-${{ inputs.pr-number }}");
-  assert.match(String(upload.with.path), /inputs\.output-dir/);
+  assert.match(String(upload.with.path), /steps\.generate\.outputs\.safe-output-dir/);
   // The posting step is gated so fork PRs (post=false) upload only, never post.
   const postStep = steps.find((s) => typeof s.if === "string" && s.if.includes("inputs.post"));
   assert.ok(postStep, "posting is gated on the post input");
+  assert.match(String(postStep.if), /always\(\)/, "privacy-blocked generation still reconciles an older sticky");
   // upload happens before the gated post (forks reach upload, stop before post).
   assert.ok(steps.indexOf(upload) < steps.indexOf(postStep), "upload precedes the gated post");
 });
 
-test("review-surfaces.PR_SURFACE.4 the action posts only the sticky comment.md (marker-checked); suggested comments stay drafts", () => {
+test("review-surfaces.PR_SURFACE.4 the action delegates exact-head sticky reconciliation to the shared trusted client", () => {
   const action = readYaml("action.yml");
   const steps: any[] = action.runs.steps;
   const postStep = steps.find((s) => typeof s.if === "string" && s.if.includes("inputs.post"));
-  assert.match(String(postStep.run), /review-surfaces:sticky/);
-  assert.match(String(postStep.env.BODY), /comment\.md/);
-  // It never posts the suggested-comments artifact.
+  assert.match(String(postStep.if), /always\(\)/);
+  assert.match(String(postStep.env.RS_BIN), /bin\/review-surfaces\.js/);
+  assert.equal(postStep.env.GH_REPO, "${{ inputs.repository }}");
+  assert.equal(postStep.env.GH_PR_NUMBER, "${{ inputs.pr-number }}");
+  assert.match(String(postStep.run), /node "\$RS_BIN" comment/);
+  assert.match(String(postStep.run), /--review-scope pr/);
+  assert.match(String(postStep.run), /--format sticky/);
+  assert.match(String(postStep.run), /--post/);
+  assert.match(String(postStep.run), /--out "\$RS_OUT"/);
+  assert.doesNotMatch(String(postStep.run), /gh api|gh pr comment|--method (?:PATCH|DELETE)/);
   assert.doesNotMatch(String(postStep.run), /suggested_comments\.md|pending_review\.json/);
 });
 
 test("review-surfaces.PR_SURFACE.5 recovery pins to the last POSTED sticky's run via its fingerprint, first-review on miss", () => {
   const action = readYaml("action.yml");
   const steps: any[] = action.runs.steps;
-  const prior = steps.find((s) => typeof s.run === "string" && s.run.includes("review-surfaces:fingerprint"));
-  assert.ok(prior, "a step reads the prior sticky's fingerprint");
-  // It extracts run=<id> from the last posted sticky and downloads THAT run's artifact.
-  assert.match(String(prior.run), /run=\[0-9\]\+/);
+  const prior = steps.find((s) => typeof s.run === "string" && s.run.includes('node "$RS_STICKY"'));
+  assert.ok(prior, "a step reads the prior owned sticky through the shared client");
+  assert.match(String(prior.env.RS_STICKY), /bin\/review-surfaces-sticky\.js/);
+  assert.match(String(prior.run), /\.head_sha/);
+  assert.match(String(prior.run), /\.run_id/);
+  assert.match(String(prior.run), /packet_head.*prior_head/s);
   assert.match(String(prior.run), /actions\/runs\/\$prior_run\/artifacts/);
+  assert.doesNotMatch(String(prior.run), /gh api user|\.user\.login|startswith\(\$marker/);
   // A missing sticky / fingerprint / expired artifact is the first-review case.
   assert.match(String(prior.run), /first review/i);
   // The generation wires the recovered packet as --previous-packet and records
@@ -80,6 +141,58 @@ test("review-surfaces.PR_SURFACE.5 recovery pins to the last POSTED sticky's run
   assert.ok(runStep, "the prior packet is wired as --previous-packet");
   assert.match(String(runStep.run), /--run-id "\$GITHUB_RUN_ID"/);
   assert.match(String(runStep.run), /--artifact-url "\$RS_ARTIFACT_URL"/);
+});
+
+test("review-surfaces.PR_SURFACE.5 same-head cache reuse does not become a previous-review comparison or clobber current command evidence", () => {
+  const action = readYaml("action.yml");
+  const steps: any[] = action.runs.steps;
+  const runStep = steps.find((s) => typeof s.run === "string" && s.run.includes('node "$RS_BIN" all'));
+  const run = String(runStep?.run ?? "");
+  const sameHeadBranch = run.slice(run.indexOf('if [[ "$prior_head"'), run.indexOf('elif [[ "$prior_head"'));
+  const changedHeadBranch = run.slice(run.indexOf('elif [[ "$prior_head"'), run.indexOf('model_flag=()'));
+
+  assert.ok(sameHeadBranch.length > 0, "the exact-head cache branch exists");
+  assert.doesNotMatch(sameHeadBranch, /prev_flag=\(--previous-packet/, "same-head cache reuse is not comparison input");
+  assert.match(changedHeadBranch, /prev_flag=\(--previous-packet "\$PREVIOUS_PACKET"\)/);
+  assert.doesNotMatch(changedHeadBranch, /cp -a|mv "\$seed_out"/, "a changed head never receives the old cache");
+  assert.match(sameHeadBranch, /commands_present=false/);
+  assert.match(sameHeadBranch, /\[ -d "\$RS_OUT\/commands" \]/);
+  assert.match(sameHeadBranch, /rm -rf -- "\$seed_out\/commands"/);
+  assert.match(sameHeadBranch, /preserved current command evidence/);
+  assert.match(run, /Prior artifact is missing or invalid; treating this as a first review/);
+});
+
+test("review-surfaces.PR_SURFACE.5 executes the output boundary before the same-head cache may replace a directory", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-output-boundary-"));
+  const subject = path.join(temp, "subject");
+  fs.mkdirSync(subject);
+  try {
+    const safe = runOutputBoundary(subject, ".review-surfaces/nested");
+    assert.equal(safe.status, 0, safe.stderr);
+
+    const safeDotPrefix = runOutputBoundary(subject, "./.review-surfaces");
+    assert.equal(safeDotPrefix.status, 0, safeDotPrefix.stderr);
+
+    const safeAbsolute = runOutputBoundary(subject, path.join(fs.realpathSync(subject), "artifacts"));
+    assert.equal(safeAbsolute.status, 0, safeAbsolute.stderr);
+
+    const traversal = runOutputBoundary(subject, "../tool");
+    assert.notEqual(traversal.status, 0, "parent traversal must be rejected");
+
+    const outside = runOutputBoundary(subject, path.join(temp, "outside"));
+    assert.notEqual(outside.status, 0, "an absolute path outside the subject must be rejected");
+
+    fs.mkdirSync(path.join(subject, "real"));
+    fs.symlinkSync("real", path.join(subject, "linked"), "dir");
+    const symlinkedParent = runOutputBoundary(subject, "linked/output");
+    assert.notEqual(symlinkedParent.status, 0, "a symlinked output parent must be rejected");
+
+    fs.writeFileSync(path.join(subject, "file-parent"), "not a directory");
+    const regularFileParent = runOutputBoundary(subject, "file-parent/output");
+    assert.notEqual(regularFileParent.status, 0, "a non-directory output parent must be rejected");
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
 });
 
 // review-surfaces.ACTION_IO.1: the action declares an outputs block a consuming
@@ -155,6 +268,9 @@ test("review-surfaces.PR_SURFACE.1 the repo workflow is a same-repo-only thin co
   // PROVIDERS.6: base-controlled pull_request_target with a trusted tool checkout
   // at base.sha against a credentialless PR subject checkout.
   assert.ok(workflow.on.pull_request_target, "base-controlled trigger preserved");
+  assert.ok(workflow.on.pull_request_target.types.includes("edited"), "PR title/body edits refresh the author-provided purpose at the same head");
+  assert.equal(job.concurrency.group, "review-surfaces-pr-${{ github.event.pull_request.number }}");
+  assert.equal(job.concurrency["cancel-in-progress"], true, "a newer title/body/head event cancels a stale generation run");
   const raw = rawFile(".github/workflows/pr-review-comment.yml");
   assert.match(raw, /pull_request\.base\.sha/);
   assert.match(raw, /pull_request\.head\.sha/);

@@ -1,29 +1,26 @@
 # review-surfaces
 
-**The trust layer for agent-written code.** A local-first review cockpit that
-answers the three questions a human actually has when reviewing a change an
-agent produced:
+**A reviewer brief for agent-written code.** `review-surfaces` turns a PR into
+the smallest useful approval surface:
 
-1. **Did the agent overreach its instructions?** — a change-impact map, guided
-   reading order, semantic change facts (schema/API contract diffs, new
-   dependencies, architecture drift), and optional conversation-aware insights
-   reconcile the user's final intent with the real scope of the diff.
-2. **Did the agent weaken tests to make them pass?** — test-weakening detection
-   flags deleted tests, newly skipped tests, removed assertions, and regenerated
-   snapshots as a first-class risk.
-3. **Did the agent claim things it didn't do?** — a trust audit and
-   per-sentence narrative trust markers separate citation-anchored claims from
-   unbacked prose without pretending a valid citation independently proves the
-   sentence. *"The agent says the tests passed; no transcript backs it"* is a
-   headline no generic review bot produces.
+1. What is the author trying to change?
+2. Which independent decisions could change approval?
+3. What evidence supports each decision, and what should the reviewer do next?
 
-Every answer is grounded in visible local evidence — files, diffs, command
-transcripts, coverage reports, and, when enabled, cited events from the locally
-discovered or explicitly supplied agent conversation. The deterministic default
-provider needs no API key; without a log the conversation layer is `not assessed`,
-and with a log but no reasoning provider it is visibly `degraded`. A configured
-AI provider adds the conversation-first layer without being allowed to change
-blockers, coverage, or the merge verdict.
+It leads with those answers. Maps, tours, exhaustive requirement coverage,
+provider status, conversation analysis, and generic queues remain supporting
+artifacts instead of forcing the reviewer to reconstruct the decision.
+
+The brief is adaptive: a 100-file mechanical migration may need one decision,
+while a smaller cross-boundary change may need six. There is no universal word
+or item cap that silently hides an approval decision; only GitHub's physical
+comment limit can force a link to the complete artifact.
+
+Every decision is grounded in visible local evidence—files, diff ranges,
+command transcripts, coverage reports, and deterministic contract/risk facts.
+The default provider needs no API key. Optional AI can enrich supporting
+analysis, but provider failure or a missing conversation cannot manufacture a
+blocker or an author-clarification verdict.
 
 **Read a packet before installing:** [`docs/example/`](https://github.com/Shaance/review-surfaces/blob/main/docs/example/README.md)
 holds the unedited output of a real run on a repository this tool had never
@@ -49,77 +46,46 @@ a hard error with the fix in the message — never a silently wrong review.
 > `git clone https://github.com/Shaance/review-surfaces && cd review-surfaces && pnpm install --frozen-lockfile && pnpm run build`,
 > then `node /path/to/review-surfaces/bin/review-surfaces.js all` inside your repo.
 
-That one command produces a merge-readiness verdict, up to three
-conversation-aware reviewer insights when a conversation and AI provider are
-available, a ranked review-first queue with inline diff excerpts and "why ranked
-here" lines, a guided reading order for the diff, a change-impact map, a trust
-audit, reviewer questions, a concrete test plan, and suggested review comments — all under
-`.review-surfaces/`, all validated against checked-in schemas
-(`npx review-surfaces validate .review-surfaces --surface all`).
+That command writes the reviewer brief to `human_review.md`, a self-contained
+supporting cockpit to `human_review.html`, and deterministic machine artifacts
+under `.review-surfaces/`. Validate the complete output with
+`npx review-surfaces validate .review-surfaces --surface all`.
 
 ## What you get
 
-### Conversation-aware insights
+### The reviewer brief
 
-The product first reconstructs the conversation chronologically — active intent,
-later refinements, decisions, constraints, rejected alternatives, claims, and
-known gaps — with every interpretation tied to exact event IDs. Long logs are
-read in chronological windows and reduced so a late user correction is not lost.
+The Markdown and GitHub surfaces begin with a truthful verdict, the PR title and
+description as the change purpose, and every independently rooted approval
+decision. Each decision states why it matters, the evidence that caused it, and
+the next review action. Duplicate detector output is folded into one root cause;
+repository-wide compliance inventory does not become author work.
 
-A second pass reconciles that model against the exact bounded evidence it was
-shown: line-numbered diff lines, changed paths, scoped requirements, related
-deterministic risks, and captured command transcripts. Validation cannot accept
-an event, line, risk, requirement, or command hidden outside that prompt. The
-cockpit shows at most three root-cause-level insights as **aligned with intent**,
-**conflicts with intent**, or **needs verification**, while stating that the
-semantic relationship remains AI-inferred even when its citations validate. A
-green broad test command is not treated as proof when the relevant assertion was
-deleted. Missing logs, unavailable AI, or partial reconciliation are shown as
-`not assessed`/`degraded`/`partial`, never as “no problems found.”
+On later pushes, the brief adds a concise delta only when the verdict or an
+admitted decision changed. An unchanged comparison, aggregate requirement churn,
+and provider diagnostics stay out of the primary scan path.
 
 ### The HTML cockpit
 
-Every `review-surfaces all` run writes a single self-contained
-`human_review.html` (also available standalone via `review-surfaces human
---format html`) — verdict, lens filters, reading order, ranked queue with
-per-line coverage gutters, clickable SVG change map with overview ↔ zoom, and
-progress tracking. No server, no CDN, opens from disk:
-
-![The HTML cockpit: verdict, lens chips, and the guided reading order](https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/cockpit-c4970315.png)
+Every `review-surfaces all` run writes a self-contained `human_review.html`
+(also available via `review-surfaces human --format html`). It repeats the
+purpose and decisions first, then exposes the ranked queue, coverage gutters,
+reading order, maps, trust audit, and other diagnostics for reviewers who need
+to dig deeper. No server or CDN is required.
 
 ### The change map
 
-Two zoom levels, chosen by a legibility budget so the map is readable at any
-diff size. Small diffs get the file-level map: changed files grouped by
-review topic, churn and risk-lens tints, plus useful file-to-file relationship
-lines when the tool has a review-worthy explanation. When a diff is too wide
-to render legibly file by file, an
-**overview** leads instead — one card per top-level area with a short
-what-changed summary, file/topic counts, and churn — and clicking a card in the
-cockpit zooms into that area's detail view (its topic groups, files, useful
-file-to-file relationship lines, and review-lens tags). Rendered as deterministic inline SVG
-in the cockpit and as mermaid on comment surfaces; layouts wrap instead of
-shrinking, so nothing ever renders below full size:
-
-![The change map overview: group cards summarizing changed areas](https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/change-map-2d9fb818.png)
-
-After clicking a group, the cockpit opens that area's topic-grouped detail
-view, with files underneath each topic plus useful file-to-file relationship lines and
-risk-lens tags:
-
-![The change map detail after clicking the src group: topic groups, file nodes, and useful file-to-file relationship lines](https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/change-map-detail-e51cfbc9.png)
+The map is optional structural context, never the review itself. Small diffs get
+a file-level view; wide diffs get a compact overview and per-area details. It is
+available after the decisions in the HTML cockpit (and represented in the JSON
+model), and is never duplicated in the compact Markdown or sticky PR brief.
 
 ### The sticky PR comment
 
 A reusable GitHub Action (or `review-surfaces comment --format sticky` locally)
-posts one idempotent comment per PR: verdict, top queue items with diff
-excerpts, and a since-last-review delta on every push:
-
-![The sticky PR comment: verdict, review-first queue, inline diff excerpts](https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images/sticky-comment-8dca844a.png)
-
-All four screenshots come from a real run of this tool on its own repository —
-the project reviews itself with itself (see [`docs/history/`](https://github.com/Shaance/review-surfaces/tree/main/docs/history) for
-that story).
+upserts one comment per PR. It posts only a current-head, current-title/body
+brief; a stale run cannot overwrite or delete a newer sticky. A PR with no
+reviewable diff removes an obsolete sticky instead of posting an empty report.
 
 ## Scope: what the analysis actually covers
 
@@ -170,9 +136,9 @@ The same pipeline runs as a reusable composite action. Posting to a PR is
 **same-repo only**: it needs the write token, so it must run on
 `pull_request_target` — evaluated from the base branch — guarded by an `if:`
 that excludes fork heads. The default `provider: mock` posts the deterministic
-sticky summary just fine (this repo's own `ci.yml` smoke renders it that way);
-add `provider: ai-sdk` with an API-key secret only when you want the LLM
-narrative on the comment surface.
+  sticky summary just fine (this repo's own `ci.yml` smoke renders it that way);
+  add `provider: ai-sdk` with an API-key secret only when you want optional LLM
+  narrative in the supporting artifacts.
 
 In **your** repo, the one step that runs the tool is the snippet below:
 
@@ -181,7 +147,7 @@ In **your** repo, the one step that runs the tool is the snippet below:
 # worked example below for the surrounding job, split checkouts, and permissions
 - uses: Shaance/review-surfaces@8ba7c46d73f429c71060040463899333fdd92c9d # pin a full SHA you trust
   with:
-    provider: mock # mock posts the deterministic sticky; switch to ai-sdk for the LLM narrative
+    provider: mock # the deterministic brief needs no LLM; ai-sdk enriches supporting artifacts only
     spec: features/**/*.feature.yaml # YOUR spec(s); the action defaults to this repo's own spec
     base-ref: origin/${{ github.base_ref }}
     head-ref: HEAD
@@ -258,11 +224,11 @@ code**, so codes outside this table (e.g. `7`, `127`) can occur when you use
 | --- | --- |
 | `all` | Run the whole local pipeline and write every surface. Add `--surface-mode pr` for the PR-scoped sidecar. |
 | `human` | Render `human_review.json` / `human_review.md` (and `--format html` for the cockpit) from existing artifacts without recomputing. |
-| `comment` | Render the PR comment. `--format sticky` for the idempotent sticky summary, `--format sarif` for SARIF, `--format review` for a GitHub pending (draft) review of the hunk-anchored suggested comments — never auto-submitted. |
+| `comment` | Render the adaptive sticky reviewer brief (`--format github`, the default; `sticky` is an alias), `--format sarif` for SARIF, or `--format review` for a GitHub pending draft review of hunk-anchored suggested comments — never auto-submitted. |
 | `review` | Interactive walkthrough of the ranked queue; accept / flag / false-positive / comment decisions feed local feedback memory so later runs adapt. |
 | `validate [dir]` | Validate generated artifacts against the bundled schemas (`--surface packet\|human\|pr\|all`). Works from any directory. |
 | `run [--id <id>] -- <cmd>...` | Execute a command and record a bounded transcript as direct evidence (this is how "tests passed" becomes verifiable). |
-| `queue` / `comments` / `trust` / `risk-lenses` / `intent-mismatch` / `routes` / `evidence-cards` / `since-last-review` / `test-plan` | Focused standalone sections rendered from `human_review.json`. |
+| `queue` / `comments` / `trust` / `risk-lenses` / `intent-mismatch` / `evidence-cards` / `since-last-review` / `test-plan` | Focused standalone sections rendered from `human_review.json`. |
 | `init [--force]` / `bootstrap [--strict]` | Scaffold (create-or-validate) or validate-only a repo's review-surfaces setup. |
 | `scoreboard [--check]` | Regenerate (or verify) the README eval-scoreboard block from `eval_scoreboard.json`. |
 

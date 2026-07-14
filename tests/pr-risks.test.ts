@@ -197,7 +197,7 @@ test("changed src/privacy file produces a privacy_sensitive_change candidate", (
 test("comment_surface_change fires for a render file but NOT for src/evaluation or src/risks files", () => {
   const renderModel = buildPrRiskCandidates(
     buildInput({
-      scope: scope({ changed_files: [changedFile({ path: "src/render/pr-comment.ts", role: "implementation", areas: ["RENDER"] })] })
+      scope: scope({ changed_files: [changedFile({ path: "src/render/sticky-summary.ts", role: "implementation", areas: ["RENDER"] })] })
     })
   );
   assert.ok(
@@ -243,6 +243,40 @@ test("impl file with no co-changed test in its area produces an untested_changed
     candidate.evidence.some((ref) => ref.path === "src/foo/widget.ts"),
     "evidence cites the untested impl file"
   );
+});
+
+test("untested implementation risks preserve every independent validation area beyond twelve", () => {
+  const changedFiles = Array.from({ length: 14 }, (_, index) =>
+    changedFile({ path: `src/area-${index}/feature.ts`, role: "implementation", areas: [`AREA_${index}`] })
+  );
+  const model = buildPrRiskCandidates(buildInput({ scope: scope({ changed_files: changedFiles }) }));
+  const candidates = model.candidates.filter((candidate) => candidate.rule === "untested_changed_impl");
+
+  assert.equal(candidates.length, changedFiles.length);
+  for (const file of changedFiles) {
+    assert.ok(candidates.some((candidate) => candidate.evidence.some((ref) => ref.path === file.path)), file.path);
+  }
+});
+
+test("untested implementation risks collapse files sharing one validation area", () => {
+  const changedFiles = Array.from({ length: 14 }, (_, index) =>
+    changedFile({ path: `src/shared/feature-${index}.ts`, role: "implementation", areas: ["SHARED"] })
+  );
+  const model = buildPrRiskCandidates(buildInput({ scope: scope({ changed_files: changedFiles }) }));
+  const candidates = model.candidates.filter((candidate) => candidate.rule === "untested_changed_impl");
+
+  assert.equal(candidates.length, 1);
+  assert.match(candidates[0]?.summary ?? "", /14 implementation files changed in SHARED/);
+});
+
+test("deleted implementation does not ask for a test run of behavior that no longer exists", () => {
+  const model = buildPrRiskCandidates(buildInput({
+    scope: scope({
+      changed_files: [changedFile({ path: "src/foo/dead-helper.ts", status: "D", role: "implementation", areas: ["FOO"] })]
+    })
+  }));
+
+  assert.equal(model.candidates.some((candidate) => candidate.rule === "untested_changed_impl"), false);
 });
 
 test("impl file with an existing area test asks to run it before adding new tests", () => {
@@ -740,7 +774,7 @@ test("candidate ids are zero-padded PR-RISK-00N in rule-priority order", () => {
         changedFile({ path: ".github/workflows/ci.yml", role: "ci" }),
         changedFile({ path: "schemas/packet.schema.json", role: "config" }),
         changedFile({ path: "src/privacy/redact.ts", role: "implementation", areas: ["PRIVACY"] }),
-        changedFile({ path: "src/render/comment.ts", role: "implementation", areas: ["RENDER"] })
+        changedFile({ path: "src/render/sticky-summary.ts", role: "implementation", areas: ["RENDER"] })
       ]
     }),
     coverage: coverage([regressedDelta("REQ-A", "review-surfaces.A.1")])
@@ -848,7 +882,7 @@ test("output is byte-stable across repeated calls with the same input", () => {
     buildInput({
       scope: scope({
         changed_files: [
-          changedFile({ path: "src/render/comment.ts", role: "implementation", areas: ["RENDER"] }),
+          changedFile({ path: "src/render/sticky-summary.ts", role: "implementation", areas: ["RENDER"] }),
           changedFile({ path: "src/privacy/redact.ts", role: "implementation", areas: ["PRIVACY"] })
         ]
       }),

@@ -19,8 +19,8 @@ SNAP_B="$WORK/snapshot-b"
 trap 'rm -rf "$WORK"' EXIT
 
 # review-surfaces.CHANGE_MAP.4: determinism is checked for BOTH scopes — the
-# repo-scope `all` and a PR-scope run, so the comment-embedded change map and
-# the PR sidecar are covered, not just the repo-scope artifacts.
+# repo-scope `all` and a PR-scope run, so the supporting HTML/SVG map and the
+# reviewer-brief sidecars are covered, not just the repo-scope artifacts.
 run() {
   local scope="$1"
   rm -rf "$OUT"
@@ -35,9 +35,9 @@ run() {
     --strict \
     --now "$FROZEN" \
     --out "$OUT" >/dev/null
-  # Materialize the comment surfaces too: `all` alone never writes the
-  # PR/sticky comment.md, so nondeterminism in renderHumanPrComment or the
-  # sticky embed would otherwise slip past this check (CHANGE_MAP.4).
+  # Materialize the reviewer-brief surfaces too: `all` alone never writes
+  # comment.md, so nondeterminism in either compact or sticky formatting would
+  # otherwise slip past this check (CHANGE_MAP.4).
   node bin/review-surfaces.js comment --review-scope "$scope" --out "$OUT" >/dev/null 2>&1
   mv "$OUT/comment.md" "$OUT/comment.$scope.md"
   node bin/review-surfaces.js comment --format sticky --out "$OUT" >/dev/null 2>&1

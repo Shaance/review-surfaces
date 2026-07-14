@@ -1,17 +1,13 @@
-import type { ConversationAnalysis, ReviewerInsight } from "./conversation-review";
 import type { EvidenceRef } from "./evidence";
-import type { ProviderName } from "./provider";
 import type { RequirementStatus, ReviewSeverity, RiskCategory } from "./review";
 
 // ---------------------------------------------------------------------------
 // PR review surface contract (review-surfaces.pr_surface.v1).
 //
 // A SEPARATE, diff-scoped model that lives alongside (not inside) the whole-repo
-// evaluation/risks/architecture sections. The PR sticky comment renders from
-// THIS model in `--review-scope pr` mode; the legacy whole-repo comment renders
-// from the full packet in `--review-scope repo` mode. Deterministic facts (scope,
-// coverage delta, risk candidates, change diagram) are byte-stable; the LLM only
-// authors the `narrative` from those facts and may cite only the allowlists.
+// evaluation/risks/architecture sections. It feeds the human reviewer artifact,
+// which owns all prose and optional enrichment. Deterministic facts (scope,
+// coverage delta, risk candidates, and change diagram) stay byte-stable here.
 // ---------------------------------------------------------------------------
 
 export const PR_SURFACE_SCHEMA_VERSION = "review-surfaces.pr_surface.v1" as const;
@@ -23,12 +19,7 @@ export const PR_SURFACE_STATUSES = ["ready", "blocked"] as const;
 export type PrSurfaceStatus = (typeof PR_SURFACE_STATUSES)[number];
 
 export const PR_SURFACE_BLOCKED_REASONS = [
-  "llm_unavailable",
-  "llm_failed",
-  "privacy_block",
-  "baseline_unavailable",
-  "no_diff",
-  "invalid_llm_output"
+  "no_diff"
 ] as const;
 export type PrSurfaceBlockedReason = (typeof PR_SURFACE_BLOCKED_REASONS)[number];
 
@@ -86,15 +77,13 @@ export interface ScopedChangedFile {
   deleted_lines?: number;
 }
 
-// Ordered by confidence (high deterministic first). `llm_candidate_mapping_validated`
-// is low-confidence: it only surfaces in a clearly-labeled "possible related" appendix.
+// Ordered by confidence, with deterministic exact matches first.
 export const PR_SCOPE_RULES = [
   "exact_acid_in_diff",
   "spec_block_changed",
   "changed_test_exact_acid",
   "changed_path_requirement_group",
-  "changed_test_group",
-  "llm_candidate_mapping_validated"
+  "changed_test_group"
 ] as const;
 export type PrScopeRule = (typeof PR_SCOPE_RULES)[number];
 
@@ -224,37 +213,14 @@ export interface PrChangeDiagramModel {
   warnings: string[];
 }
 
-// --- LLM narrative ---------------------------------------------------------
-
-export interface AnchoredNarrativeItem {
-  text: string;
-  paths?: string[];
-  requirement_ids?: string[];
-  risk_ids?: string[];
-}
-
-export interface AnchoredRiskNarrative {
-  risk_id: string;
-  text: string;
-  suggested_checks?: string[];
-}
-
-export interface PrNarrativeModel {
-  summary: string;
-  what_changed: AnchoredNarrativeItem[];
-  why_it_matters: AnchoredNarrativeItem[];
-  review_first: AnchoredNarrativeItem[];
-  risk_narratives: AnchoredRiskNarrative[];
-}
-
-export interface PrNarrativeLlmMeta {
-  required: true;
-  provider: ProviderName;
-  model?: string;
-  status: "applied" | "blocked" | "failed";
-  prompt_hash?: string;
-  output_hash?: string;
-  validation_errors?: string[];
+// Author-provided host context is the most direct statement of why a PR exists.
+// It is stored separately from inferred intent and provider narrative so a
+// renderer can identify its provenance and so provider failure cannot erase it.
+export interface PrChangeContext {
+  title: string;
+  description?: string;
+  source: "github" | "cli";
+  redaction_blocked: boolean;
 }
 
 // --- Top-level PR review surface -------------------------------------------
@@ -262,19 +228,11 @@ export interface PrNarrativeLlmMeta {
 export interface PrReviewSurfaceModel {
   schema_version: typeof PR_SURFACE_SCHEMA_VERSION;
   mode: "pr";
-  // review-surfaces.COLD_START.4: carried from the packet intent so the
-  // lower-level PR fallback renderer can suppress requirement language too.
-  spec_mode: "acai" | "none";
   status: PrSurfaceStatus;
   blocked_reason?: PrSurfaceBlockedReason;
+  change_context?: PrChangeContext;
   scope: PrScopeModel;
   coverage: PrScopedCoverageModel;
   risks: PrRiskModel;
-  // Advisory, conversation-derived reviewer context. Optional so persisted PR
-  // surfaces from before this feature remain readable; new builds emit both.
-  conversation_analysis?: ConversationAnalysis;
-  review_insights?: ReviewerInsight[];
   diagram?: PrChangeDiagramModel;
-  narrative?: PrNarrativeModel;
-  llm: PrNarrativeLlmMeta;
 }

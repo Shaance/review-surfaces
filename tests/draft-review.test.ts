@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { HumanReviewModel, SuggestedReviewComment } from "../src/human/contract";
+import type { DecisionProjection, HumanReviewModel, SuggestedReviewComment } from "../src/human/contract";
 import { buildDraftReview } from "../src/render/draft-review";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
 
@@ -23,10 +23,48 @@ function comment(over: Partial<SuggestedReviewComment>): SuggestedReviewComment 
   };
 }
 
-function model(comments: SuggestedReviewComment[], headSha?: string): HumanReviewModel {
+function decisionProjection(over: Partial<DecisionProjection> = {}): DecisionProjection {
+  return {
+    active_intent: {
+      summary: "Preserve retry behavior while simplifying the request path.",
+      source: "pull_request",
+      redaction_blocked: false,
+      requirement_ids: [],
+      event_ids: []
+    },
+    findings: [
+      {
+        id: "DECISION-001",
+        root_cause: "retry-contract",
+        title: "Retry behavior changes for callers",
+        path: "src/retry.ts",
+        priority: "high",
+        reason: "The new request path changes when retries stop.",
+        reviewer_action: "Confirm callers still receive the documented retry behavior.",
+        evidence: [{ kind: "file", path: "src/retry.ts", line_start: 12, confidence: "high" }],
+        requirement_ids: [],
+        risk_ids: []
+      },
+      {
+        id: "DECISION-002",
+        root_cause: "fallback-contract",
+        title: "Fallback errors have a new shape",
+        priority: "medium",
+        reason: "The fallback now returns structured error details.",
+        reviewer_action: "Confirm the new error shape is acceptable to downstream consumers.",
+        evidence: [{ kind: "file", path: "src/fallback.ts", confidence: "medium" }],
+        requirement_ids: [],
+        risk_ids: []
+      }
+    ],
+    ...over
+  };
+}
+
+function model(comments: SuggestedReviewComment[], headSha?: string, projection = decisionProjection()): HumanReviewModel {
   return {
     verdict: { decision: "needs_author_clarification" },
-    summary: "2 review-first item(s).",
+    decision_projection: projection,
     generated_from: headSha ? { head_sha: headSha } : {},
     suggested_comments: comments
   } as unknown as HumanReviewModel;
@@ -165,29 +203,69 @@ test("review-surfaces.PROVIDERS.7 produces a stable payload for an empty comment
   assert.match(draft.payload.body, /never auto-submit|nothing is auto-submitted/i);
 });
 
+test("review-surfaces.PROVIDERS.7 makes the change purpose and every approval decision actionable", () => {
+  const draft = buildDraftReview(model([]));
+  assert.match(draft.payload.body, /Verdict: needs_author_clarification/);
+  assert.match(draft.payload.body, /Change purpose:\nPreserve retry behavior while simplifying the request path\./);
+  assert.match(draft.payload.body, /Source: From the PR title and description\./);
+  assert.match(draft.payload.body, /Approval decisions \(2\):/);
+  assert.match(draft.payload.body, /1\. Retry behavior changes for callers — `src\/retry\.ts`/);
+  assert.match(draft.payload.body, /Reason: The new request path changes when retries stop\./);
+  assert.match(draft.payload.body, /Action: Confirm callers still receive the documented retry behavior\./);
+  assert.match(draft.payload.body, /Evidence: src\/retry\.ts:12/);
+  assert.match(draft.payload.body, /2\. Fallback errors have a new shape/);
+  assert.match(draft.payload.body, /Action: Confirm the new error shape is acceptable to downstream consumers\./);
+  assert.match(draft.payload.body, /Evidence: src\/fallback\.ts/);
+});
+
 // review-surfaces.PRIVACY.6 — the draft-review export was the only postable
 // surface with no secret redaction; a secret in a suggested comment body or the
-// model summary leaked into pending_review.json (and its stdout copy).
+// active purpose/decision prose leaked into pending_review.json (and its stdout copy).
 test("review-surfaces.PRIVACY.6 redacts secrets out of the draft-review payload and flags blocked", () => {
   const ghToken = `ghp_${"C".repeat(36)}`;
-  const m = {
-    verdict: { decision: "needs_author_clarification" },
-    summary: "Audit done; key AIzaSyA1234567890abcdefghijklmnopqrstuv was committed.",
-    generated_from: {},
-    suggested_comments: [
+  // Assemble the fixture at runtime so the committed diff never contains a
+  // contiguous credential-shaped value that the product must correctly flag.
+  const googleKey = ["AIza", "SyA", "1234567890", "abcdefghijklmnopqrstuv"].join("");
+  const decisionToken = `sk-proj-${"d".repeat(24)}`;
+  const projection = decisionProjection({
+    active_intent: {
+      summary: `Audit the request path where key ${googleKey} was committed.`,
+      source: "pull_request",
+      redaction_blocked: false,
+      requirement_ids: [],
+      event_ids: []
+    },
+    findings: [{
+      id: "DECISION-SECRET",
+      root_cause: "secret-boundary",
+      title: "Remove the exposed credential",
+      priority: "high",
+      reason: `The decision prose contains ${decisionToken}.`,
+      reviewer_action: "Confirm the credential is rotated.",
+      evidence: [{ kind: "file", path: "src/secrets.ts", confidence: "high" }],
+      requirement_ids: [],
+      risk_ids: []
+    }]
+  });
+  const m = model(
+    [
       comment({ id: "SC-1", path: "src/a.ts", line_start: 3, body: `Token ${ghToken} is hardcoded here.` }),
       comment({ id: "SC-2", body: "General note: SECRET=topsecretvalue9999 leaks in logs." }) // unanchored -> body
-    ]
-  } as unknown as HumanReviewModel;
+    ],
+    undefined,
+    projection
+  );
 
   const draft = buildDraftReview(m);
   const serialized = JSON.stringify(draft.payload);
 
   assert.ok(!serialized.includes(ghToken), "the github token must be redacted from the inline comment body");
-  assert.ok(!serialized.includes("AIzaSyA1234567890"), "the google key must be redacted from the summary");
+  assert.ok(!serialized.includes(googleKey), "the google key must be redacted from the active purpose");
+  assert.ok(!serialized.includes(decisionToken), "the token must be redacted from the decision reason");
   assert.ok(!serialized.includes("topsecretvalue9999"), "the secret in the un-anchored comment must be redacted from the body");
   assert.match(serialized, /\[REDACTED:github_token\]/, "the inline comment body keeps its redaction marker");
-  assert.match(serialized, /\[REDACTED:google_api_key\]/, "the summary keeps its redaction marker");
+  assert.match(serialized, /\[REDACTED:google_api_key\]/, "the active purpose keeps its redaction marker");
+  assert.match(serialized, /\[REDACTED:openai_key\]/, "the decision reason keeps its redaction marker");
   assert.equal(draft.blocked, true, "a high-confidence secret raises the blocked signal for the postability gate");
 });
 

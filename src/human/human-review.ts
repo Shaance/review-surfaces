@@ -10,7 +10,6 @@ import { compareStrings } from "../core/compare";
 import { globToRegExp } from "../core/glob";
 import { stripUndefined, uniqueTruthy } from "../core/guards";
 import { formatHunkHeader, hunkOverlapsRange } from "../collector/diff-hunks";
-import { buildFallbackNarrative } from "./narrative";
 import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTypeChanges, isBreakingApiChange, isBreakingSchemaChange, isSupportedApiContractChange, SchemaContractChange, SemanticChangeFacts, TestWeakeningSignal } from "../risks/semantic-diff";
 import { emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { buildReviewPlan } from "./budget";
@@ -21,7 +20,7 @@ import { ConfigFact } from "../risks/config-facts";
 import { expiredPolicySuppressions, matchPolicySeverityOverride, matchPolicySuppression, ReviewPolicy } from "../feedback/policy";
 import type { CoverageEvidence } from "./contract";
 import { comparisonRiskKey } from "../dogfood/compare";
-import { EvidenceRef, feedbackEvidence, fileEvidence, missingEvidence, uniqueEvidenceRefs } from "../evidence/evidence";
+import { EvidenceRef, feedbackEvidence, fileEvidence, missingEvidence, testEvidence, uniqueEvidenceRefs } from "../evidence/evidence";
 import { normalizeEvidencePath } from "../evidence/validate";
 import { affectedRequirementKeysForRange, changedLineAcidKeys } from "./intent-scope";
 import type { FeedbackFile } from "../feedback/feedback";
@@ -40,7 +39,6 @@ import type { PacketConfidence, PacketSeverity } from "../schema/review-packet-c
 import {
   DEFAULT_HUMAN_REVIEW_BUILD_CONFIG,
   HUMAN_REVIEW_SCHEMA_VERSION,
-  REVIEW_ROUTE_PERSONAS,
   ChangeNarrative,
   DecisionFinding,
   EvidenceCard,
@@ -60,11 +58,7 @@ import {
   ReviewBlocker,
   DependencyChain,
   EvalScoreboardSummary,
-  ReviewQueueItem,
   RoundsLedgerEntry,
-  ReviewRoute,
-  ReviewRoutePersona,
-  ReviewRouteStep,
   ReviewerQuestion,
   RiskLens,
   RiskLensFinding,
@@ -88,6 +82,7 @@ import {
   decisionRootForRisk,
   isCurrentValidationEvidence,
   isDecisionScopedSignal,
+  schemaChangeDisposition,
   type DecisionScope
 } from "./decision-admission";
 
@@ -147,23 +142,13 @@ export interface BuildHumanReviewInput {
   // previous packet's human_review.json (either transport: CI artifact or the
   // local prior-packet directory). Absent -> this run starts the ledger.
   previousRounds?: RoundsLedgerEntry[];
+  // Risks that were independent approval decisions in the previous review.
+  // This lets a resolved risk retain its prior decision identity even though
+  // it is intentionally absent from the current packet.
+  previousApprovalRisks?: ReviewPacket["risks"]["items"];
   // review-surfaces.EVAL_HARNESS.6: the eval scoreboard summary read from the
   // output directory's eval_scoreboard.json (absent when no scoreboard exists).
   evalScoreboard?: EvalScoreboardSummary;
-}
-
-interface BuildReviewRoutesInput {
-  input: BuildHumanReviewInput;
-  verdict: HumanReviewVerdict;
-  reviewQueue: HumanReviewModel["review_queue"];
-  blockers: ReviewBlocker[];
-  questions: ReviewerQuestion[];
-  suggestedComments: SuggestedReviewComment[];
-  trustAudit: TrustAudit;
-  riskLensFindings: RiskLensFinding[];
-  intentMismatch: IntentMismatch;
-  sinceLastReview: SinceLastReview;
-  testPlan: TestPlanItem[];
 }
 
 interface BuildEvidenceCardsInput {
@@ -210,6 +195,8 @@ interface QueueDraft {
   // packet-wide aggregates cannot, because they are less specific than the
   // changed-file action they would displace.
   detector_specificity?: "concrete" | "aggregate" | "fallback";
+  /** PR detector identity used only to reconcile richer downstream evidence. */
+  risk_rule?: PrRiskCandidate["rule"];
 }
 
 type TestPlanDraft = Omit<TestPlanItem, "id">;
@@ -217,8 +204,6 @@ type TestPlanDraftCore =
   Omit<TestPlanDraft, "maps_to_requirements" | "maps_to_risks" | "evidence_gap"> &
   Partial<Pick<TestPlanDraft, "maps_to_requirements" | "maps_to_risks" | "evidence_gap">>;
 type RequirementGap = ReviewPacket["evaluation"]["results"][number];
-type MissingAutomaticTestGap = NonNullable<RisksModel["missing_automatic_tests"]>[number];
-type MissingManualCheckGap = NonNullable<RisksModel["missing_manual_checks"]>[number];
 type PrChangedFile = PrReviewSurfaceModel["scope"]["changed_files"][number];
 type IntentObservedFile = Pick<PrChangedFile, "path" | "old_path" | "status" | "areas" | "role" | "added_lines" | "deleted_lines">;
 type TrustFactDraft = Omit<TrustFact, "id">;
@@ -238,21 +223,12 @@ interface TestPlanCandidate {
   sortKey: string;
 }
 type EvidenceCardDraft = Omit<EvidenceCard, "id">;
-type ReviewRouteStepDraft = Omit<ReviewRouteStep, "id" | "rank">;
 type FeedbackPolicyEffectDraft = Omit<FeedbackPolicyEffect, "id">;
 type IntentMismatchDraft = Omit<IntentMismatchItem, "id">;
 interface IntentMismatchFocus {
   exactRequirementKeys: Set<string>;
   scopedRequirementKeys: Set<string>;
   changedPaths: Set<string>;
-}
-interface ReviewRouteDefinition {
-  id: string;
-  title: string;
-  is_default: boolean;
-  is_secondary: boolean;
-  summary: string;
-  steps: (ctx: BuildReviewRoutesInput) => ReviewRouteStepDraft[];
 }
 interface RiskLensAccumulator {
   lens: RiskLens;
@@ -273,19 +249,13 @@ interface ManualCheckRecord {
   evidence: EvidenceRef[];
 }
 
-const MAX_QUEUE = 20;
 const MAX_BLOCKERS = 8;
-const MAX_QUESTIONS = 10;
-// Hard ceiling above the config default (10): one draft per PR-risk rule must
-// stay representable as rules grow (11 rules since secret_in_diff).
-const MAX_COMMENTS = 12;
 const MAX_TEST_PLAN = 12;
 const MAX_TRUST_ITEMS = 10;
 const MAX_EVIDENCE_CARDS = 10;
 const MAX_RISK_LENS_FINDINGS = 12;
 const MAX_RISK_LENS_PATHS = 12;
 const MAX_INTENT_MISMATCH_ITEMS = 8;
-const MAX_FOCUSED_REQUIREMENT_TESTS = 6;
 const MAX_CHANGED_FILE_QUEUE = 8;
 const MAX_FEEDBACK_EFFECTS = 12;
 const MAX_MISSING_TEAM_POLICY_QUESTION_EFFECTS = 3;
@@ -293,7 +263,6 @@ const INTENT_MISMATCH_QUESTION_REASON = "The intent-mismatch surface found chang
 // A corroborated (advisory===false) D6 workflow finding: a deterministic check backs
 // it, so its question must survive the global cap even when appended after the
 // blocker/risk/gap questions (Codex P2, #109).
-const CORROBORATED_WORKFLOW_QUESTION_REASON = "The methodology audit's deterministic cross-reference check corroborated this; consider whether it was intentional during review.";
 const FEEDBACK_ACTION_DOWNGRADE_TO_LOW = "downgrade_to_low";
 const FEEDBACK_ACTION_RETAIN_LOW_PRIORITY = "retain_low_priority";
 const FEEDBACK_ACTION_PRIORITIZE_REVIEW_FOCUS = "prioritize_review_focus";
@@ -332,48 +301,6 @@ const PR_RISK_RULE_LENSES: Record<PrRiskCandidate["rule"], RiskLens[]> = {
   failed_or_skipped_test: ["test_evidence"],
   large_diff: []
 };
-const REVIEW_ROUTE_DEFINITIONS: Record<ReviewRoutePersona, ReviewRouteDefinition> = {
-  human_reviewer: {
-    id: "ROUTE-HUMAN",
-    title: "Human reviewer route",
-    is_default: true,
-    is_secondary: false,
-    summary: "Default path through the verdict, review queue, blockers, questions, trust audit, and test plan.",
-    steps: humanReviewerRouteSteps
-  },
-  maintainer: {
-    id: "ROUTE-MAINTAINER",
-    title: "Maintainer route",
-    is_default: false,
-    is_secondary: false,
-    summary: "Focuses on merge readiness, public contracts, required tests, and blocking comments.",
-    steps: maintainerRouteSteps
-  },
-  security: {
-    id: "ROUTE-SECURITY",
-    title: "Security route",
-    is_default: false,
-    is_secondary: false,
-    summary: "Focuses on security/privacy lenses, CI secret-boundary checks, provider/redaction changes, and manual-check evidence.",
-    steps: securityRouteSteps
-  },
-  product: {
-    id: "ROUTE-PRODUCT",
-    title: "Product route",
-    is_default: false,
-    is_secondary: false,
-    summary: "Focuses on intent fit, reviewer-facing output, reviewer UX risks, and suggested comments.",
-    steps: productRouteSteps
-  },
-  agent_continuation: {
-    id: "ROUTE-AGENT",
-    title: "Agent-continuation route",
-    is_default: false,
-    is_secondary: true,
-    summary: "Secondary path for implementation agents to continue from open risks, missing tests, and deferrals.",
-    steps: agentContinuationRouteSteps
-  }
-};
 export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel {
   const config = humanReviewBuildConfig(input);
   // review-surfaces.COLD_START.4: the spec mode is MODEL state read from the
@@ -403,29 +330,34 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     });
   }
   const riskLensFindings = buildRiskLensFindings(input, config, semanticFacts);
-  const blockers = buildBlockers(input, feedbackEffects, semanticFacts, decisionScope);
-  const { items: reviewQueue, decisionRootsByQueueId } = buildReviewQueue(input, feedbackEffects, config, semanticFacts);
+  // The model keeps bounded supporting lists for scanability, but approval
+  // decisions must be projected from every independently detected item. A
+  // large change must not silently lose decision work because the lower-level
+  // queue/blocker previews reached their display limits.
+  const decisionBlockers = buildBlockers(input, feedbackEffects, semanticFacts, decisionScope);
+  const blockers = decisionBlockers.slice(0, MAX_BLOCKERS);
+  const { items: reviewQueue, decisionItems: decisionQueue, decisionRootsByQueueId } = buildReviewQueue(input, feedbackEffects, config, semanticFacts);
   const intentMismatch = buildIntentMismatch(input, specMode);
-  const questions = buildQuestions(input, blockers, feedbackEffects, riskLensFindings, intentMismatch, config);
+  const questions = buildQuestions(input, blockers, feedbackEffects, riskLensFindings, intentMismatch, config, semanticFacts);
   const suggestedComments = buildSuggestedComments(input, blockers, riskLensFindings, config, semanticFacts);
   const trustAudit = buildTrustAudit(input);
   const decisionTrustAudit = scopeTrustAudit(trustAudit, decisionScope);
   const decisionProjection = buildDecisionProjection({
     packet: input.packet,
     prSurface: input.prSurface,
-    conversationAnalysis: input.conversationAnalysis ?? input.prSurface?.conversation_analysis,
+    conversationAnalysis: input.conversationAnalysis,
     scope: decisionScope,
-    reviewQueue,
+    reviewQueue: decisionQueue,
     queueDecisionRoots: decisionRootsByQueueId,
-    blockers,
+    blockers: decisionBlockers,
     semanticFacts
   });
   const sinceLastReview = buildSinceLastReview(input);
   const coverageEvidence: CoverageEvidence = input.coverageEvidence ?? { status: "no_report", files: [] };
   // review-surfaces.BUDGET.1/.2: a pure post-ranking annotation; off by default.
   const reviewPlan = buildReviewPlan(reviewQueue, input.diff, config.review_budget_minutes ?? undefined);
-  const testPlan = buildTestPlan(input, feedbackEffects, riskLensFindings);
-  const verdict = buildVerdict(input, blockers, decisionTrustAudit, decisionScope, decisionProjection.findings);
+  const testPlan = buildTestPlan(input, feedbackEffects, riskLensFindings, semanticFacts, decisionScope);
+  const verdict = buildVerdict(input, decisionBlockers, decisionTrustAudit, decisionScope, decisionProjection.findings);
   const evidenceCards = buildEvidenceCards({
     blockers,
     trustAudit,
@@ -448,7 +380,7 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     areaInsights: input.changeGraphAreaInsights,
     implementationRoots: input.implementationRoots,
     // review-surfaces.ARCH_DRIFT.2: drift edge deltas set kind new/removed so
-    // both map renderers pick the drift up with zero extra work.
+    // the supporting map picks the drift up with zero extra work.
     driftEdges: input.archDrift?.file_edges
   });
   const generatedFrom = buildGeneratedFrom(input);
@@ -456,44 +388,21 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
   const rounds = buildRoundsLedger(input, verdict, generatedFrom.head_sha);
   // review-surfaces.DEP_FACTS.4 / RENDER.13: attributed dependency chains.
   const dependencyChains = buildDependencyChains(input.dependencyFacts ?? []);
-  // review-surfaces.NARRATIVE.5: a provider-built narrative is passed in when
-  // available; otherwise always render the deterministic fallback so the section
-  // never fails and standalone/cache rebuilds still carry a narrative.
-  const narrative = input.narrative ?? buildFallbackNarrative({
-    packet: input.packet,
-    prSurface: input.prSurface,
-    diff: input.diff,
-    headSha: generatedFrom.head_sha,
-    maxClaims: config.narrative_max_claims
-  });
-  const reviewRoutes = buildReviewRoutes({
-    input,
-    verdict,
-    reviewQueue,
-    blockers,
-    questions,
-    suggestedComments,
-    trustAudit,
-    riskLensFindings,
-    intentMismatch,
-    sinceLastReview,
-    testPlan
-  });
+  // review-surfaces.NARRATIVE.5: optional provider prose is stored only when it
+  // contains validated claims. The deterministic brief never synthesizes an
+  // aggregate fallback narrative.
+  const narrative = input.narrative?.claims.length ? input.narrative : undefined;
   // Resolve advisory AI output only after verdicts, blockers, queues, and trust
   // facts are complete, keeping it outside every merge-readiness calculation.
-  const conversationAnalysis = input.conversationAnalysis ?? input.prSurface?.conversation_analysis ??
-    buildNotAssessedConversationAnalysis(
-      input.prSurface?.llm.provider ?? narrative.provider,
-      "missing_review"
-    );
-  const reviewInsights = input.reviewInsights ?? input.prSurface?.review_insights ?? [];
+  const conversationAnalysis = input.conversationAnalysis ??
+    buildNotAssessedConversationAnalysis(narrative?.provider ?? "mock", "missing_review");
+  const reviewInsights = input.reviewInsights ?? [];
   return stripUndefined({
     schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
     mode: input.prSurface ? "pr" : "repo",
     spec_mode: specMode,
     verdict,
     decision_projection: decisionProjection,
-    summary: summarizeHumanReview(input, reviewQueue.length, blockers.length),
     // review-surfaces.NARRATIVE.4: the narrative is stored read-only AFTER the
     // verdict/blockers/coverage are computed, so it can never influence them.
     narrative,
@@ -508,7 +417,6 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     risk_lens_findings: riskLensFindings,
     methodology_audit: buildMethodologyAudit(input),
     intent_mismatch: intentMismatch,
-    review_routes: reviewRoutes,
     since_last_review: sinceLastReview,
     coverage_evidence: coverageEvidence,
     review_plan: reviewPlan,
@@ -659,7 +567,7 @@ export function humanReviewConfigSignature(
   };
   const fingerprint = {
     max_questions: resolved.max_questions,
-    max_review_first: resolved.max_review_first,
+    max_supporting_queue: resolved.max_supporting_queue,
     max_suggested_comments: resolved.max_suggested_comments,
     // narrative_max_claims changes the rendered model, so a config-only change
     // to it must bust the cache / trigger a standalone rebuild.
@@ -680,6 +588,13 @@ export function humanReviewConfigSignature(
   return crypto.createHash("sha256").update(JSON.stringify(fingerprint)).digest("hex");
 }
 
+export function prSurfaceSignature(surface: PrReviewSurfaceModel): string {
+  // Bind the human brief to the complete persisted decision input. Git identity
+  // and author context alone are insufficient: changed scope, coverage, risks,
+  // status, or diagrams can all alter what the reviewer should see.
+  return crypto.createHash("sha256").update(JSON.stringify(surface)).digest("hex");
+}
+
 function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["generated_from"] {
   const manifest = input.packet.manifest as {
     base_ref?: unknown;
@@ -697,6 +612,7 @@ function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["gen
     // call site) — the defaults match for inputs that predate the field.
     packet_path: input.packetPath ?? "review_packet.json",
     pr_surface_path: input.prSurface ? input.prSurfacePath ?? "pr_review_surface.json" : undefined,
+    pr_surface_signature: input.prSurface ? prSurfaceSignature(input.prSurface) : undefined,
     base_ref: prScope?.base_ref ?? stringOr(manifest.base_ref, "origin/main"),
     ...(baseSha ? { base_sha: baseSha } : {}),
     head_ref: prScope?.head_ref ?? stringOr(manifest.head_ref, "HEAD"),
@@ -707,33 +623,6 @@ function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["gen
     uncommitted_files: typeof manifest.uncommitted_files === "number" ? manifest.uncommitted_files : 0,
     omitted_untracked_files: typeof manifest.omitted_untracked_files === "number" ? manifest.omitted_untracked_files : 0,
     human_review_config_signature: humanReviewConfigSignature(input.config, input.contractPaths)
-  };
-}
-
-function buildReviewRoutes(ctx: BuildReviewRoutesInput): ReviewRoute[] {
-  return REVIEW_ROUTE_PERSONAS.map((persona) => {
-    const definition = REVIEW_ROUTE_DEFINITIONS[persona];
-    return reviewRoute(persona, definition, definition.steps(ctx));
-  });
-}
-
-function reviewRoute(
-  persona: ReviewRoutePersona,
-  definition: ReviewRouteDefinition,
-  drafts: ReviewRouteStepDraft[]
-): ReviewRoute {
-  return {
-    id: definition.id,
-    persona,
-    title: definition.title,
-    summary: definition.summary,
-    is_default: definition.is_default,
-    is_secondary: definition.is_secondary,
-    steps: drafts.map((draft, index) => ({
-      id: `${definition.id}-STEP-${String(index + 1).padStart(3, "0")}`,
-      rank: index + 1,
-      ...draft
-    }))
   };
 }
 
@@ -1051,239 +940,6 @@ function dedupeEvidenceCardDrafts(
   });
 }
 
-function humanReviewerRouteSteps(ctx: BuildReviewRoutesInput): ReviewRouteStepDraft[] {
-  return [
-    routeStep(ctx, {
-      title: "Merge readiness verdict",
-      action: `Start with the ${ctx.verdict.decision} verdict and resolve blocker-level reasons before detailed diff review.`,
-      priority: ctx.verdict.decision === "block_before_merge" ? "blocker" : "high",
-      artifact: "human_review.md",
-      evidence: ctx.verdict.reasons.flatMap((reason) => reason.evidence)
-    }),
-    routeStep(ctx, {
-      title: "Top review queue",
-      action: "Inspect the top-ranked path-backed review queue items before skimming lower-risk files.",
-      priority: highestQueuePriority(ctx.reviewQueue),
-      artifact: "review_queue.md",
-      queue_item_ids: ctx.reviewQueue.slice(0, 5).map((item) => item.id),
-      evidence: ctx.reviewQueue.slice(0, 5).flatMap((item) => item.evidence)
-    }),
-    routeStep(ctx, {
-      title: "Blockers and author questions",
-      action: "Turn deterministic blockers and blocking/clarifying questions into review comments or author follow-up.",
-      priority: ctx.blockers.length > 0 ? "blocker" : "high",
-      artifact: "human_review.md",
-      question_ids: ctx.questions.slice(0, 5).map((question) => question.id),
-      evidence: [...ctx.blockers.flatMap((blocker) => blocker.evidence), ...ctx.questions.slice(0, 5).flatMap((question) => question.evidence)]
-    }),
-    routeStep(ctx, {
-      title: "Trust audit and test plan",
-      action: "Check missing/invalid evidence and run or request the required test-plan items before approval.",
-      priority: ctx.testPlan.some((item) => item.priority === "required") ? "high" : "medium",
-      artifact: "trust_audit.md",
-      test_plan_ids: ctx.testPlan.slice(0, 5).map((item) => item.id),
-      evidence: [...ctx.trustAudit.missing_evidence.flatMap((item) => item.evidence), ...ctx.testPlan.slice(0, 5).flatMap(testPlanEvidence)]
-    })
-  ];
-}
-
-function maintainerRouteSteps(ctx: BuildReviewRoutesInput): ReviewRouteStepDraft[] {
-  const contractLenses = ctx.riskLensFindings.filter((finding) => finding.lens === "api_contract" || finding.paths.some(isMaintainerContractPath));
-  const blockingComments = ctx.suggestedComments.filter((comment) => comment.severity === "blocking");
-  return [
-    routeStep(ctx, {
-      title: "Merge readiness verdict",
-      action: "Confirm the verdict, confidence, and required actions line up with repository merge policy.",
-      priority: ctx.verdict.decision === "block_before_merge" ? "blocker" : "high",
-      artifact: "human_review.md",
-      evidence: ctx.verdict.reasons.flatMap((reason) => reason.evidence)
-    }),
-    routeStep(ctx, {
-      title: "Schema, CLI, and artifact contracts",
-      action: "Review schema, CLI, config, feature-ledger, and persisted artifact contract changes for compatibility or versioning.",
-      priority: contractLenses.some((finding) => isElevatedSeverity(finding.severity)) ? "blocker" : "high",
-      artifact: "risk_lenses.md",
-      risk_lens_ids: contractLenses.map((finding) => finding.id),
-      evidence: contractLenses.flatMap((finding) => finding.evidence)
-    }),
-    routeStep(ctx, {
-      title: "Required tests and manual checks",
-      action: "Verify required test-plan items exist for changed contracts and required manual checks are recorded.",
-      priority: ctx.testPlan.some((item) => item.priority === "required") ? "high" : "medium",
-      artifact: "test_plan.md",
-      test_plan_ids: ctx.testPlan.filter((item) => item.priority === "required").slice(0, 6).map((item) => item.id),
-      evidence: ctx.testPlan.filter((item) => item.priority === "required").slice(0, 6).flatMap(testPlanEvidence)
-    }),
-    routeStep(ctx, {
-      title: "Blocking suggested comments",
-      action: "Use blocking comment drafts only when their cited evidence still applies to the current head.",
-      priority: blockingComments.length > 0 ? "high" : "medium",
-      artifact: "suggested_comments.md",
-      suggested_comment_ids: blockingComments.slice(0, 5).map((comment) => comment.id),
-      evidence: blockingComments.slice(0, 5).flatMap((comment) => comment.evidence)
-    })
-  ];
-}
-
-function securityRouteSteps(ctx: BuildReviewRoutesInput): ReviewRouteStepDraft[] {
-  const securityLenses = ctx.riskLensFindings.filter((finding) => finding.lens === "security_privacy" || finding.lens === "llm_trust_boundary");
-  const securityQueue = ctx.reviewQueue.filter((item) => routeText(item.title, item.reason, item.reviewer_action, item.path).match(/\b(secret|security|privacy|provider|redact|llm|prompt|anchor|workflow|ci)\b/i));
-  const manualChecks = ctx.testPlan.filter((item) => item.kind === "manual" || routeText(item.scenario, item.evidence_gap).match(/\b(secret|security|privacy|manual|provider|redact|ci)\b/i));
-  const privacyAuditGaps = [...ctx.trustAudit.missing_evidence, ...ctx.trustAudit.invalid_evidence]
-    .filter((item) => routeText(item.summary).match(/\b(secret|security|privacy|provider|redact|llm|ci)\b/i));
-  return [
-    routeStep(ctx, {
-      title: "Security and LLM trust-boundary lenses",
-      action: securityLenses.length > 0
-        ? "Review security/privacy and LLM trust-boundary lens findings before lower-risk implementation changes."
-        : "No security/privacy or LLM trust-boundary lens fired; skim unless the changed files manually imply that boundary.",
-      priority: securityLenses.length === 0 ? "low" : securityLenses.some((finding) => isElevatedSeverity(finding.severity)) ? "blocker" : "high",
-      artifact: "risk_lenses.md",
-      risk_lens_ids: securityLenses.map((finding) => finding.id),
-      evidence: securityLenses.flatMap((finding) => finding.evidence)
-    }),
-    routeStep(ctx, {
-      title: "CI, provider, and redaction paths",
-      action: securityQueue.length > 0
-        ? "Inspect workflow, provider, prompt, anchor-validation, and redaction changes that can affect trust boundaries."
-        : "No CI, provider, prompt, anchor-validation, or redaction queue item was detected for this review.",
-      priority: highestQueuePriority(securityQueue),
-      artifact: "review_queue.md",
-      queue_item_ids: securityQueue.slice(0, 6).map((item) => item.id),
-      evidence: securityQueue.slice(0, 6).flatMap((item) => item.evidence)
-    }),
-    routeStep(ctx, {
-      title: "Manual security checks",
-      action: manualChecks.length > 0
-        ? "Confirm required manual security/privacy checks are recorded against the current head, not as future intent."
-        : "No manual security/privacy check was generated for this review.",
-      priority: manualChecks.length === 0 ? "low" : manualChecks.some((item) => item.priority === "required") ? "blocker" : "high",
-      artifact: "test_plan.md",
-      test_plan_ids: manualChecks.slice(0, 6).map((item) => item.id),
-      evidence: manualChecks.slice(0, 6).flatMap(testPlanEvidence)
-    }),
-    routeStep(ctx, {
-      title: "Privacy and trust audit gaps",
-      action: privacyAuditGaps.length > 0
-        ? "Treat missing privacy, secret-boundary, provider, or LLM evidence as clarification work before approval."
-        : "No privacy, secret-boundary, provider, or LLM trust-audit gap was detected for this review.",
-      priority: privacyAuditGaps.length > 0 ? "high" : "low",
-      artifact: "trust_audit.md",
-      evidence: privacyAuditGaps.flatMap((item) => item.evidence)
-    })
-  ];
-}
-
-function productRouteSteps(ctx: BuildReviewRoutesInput): ReviewRouteStepDraft[] {
-  const uxLenses = ctx.riskLensFindings.filter((finding) => finding.lens === "reviewer_ux");
-  const routeQuestions = ctx.questions.filter((question) => routeText(question.question, question.reason).match(/\b(intent|reviewer|human|surface|comment|markdown|output|ux|baseline)\b/i));
-  const intentItems = [
-    ...ctx.intentMismatch.possible_mismatches,
-    ...ctx.intentMismatch.possible_overreach,
-    ...ctx.intentMismatch.missing_intent
-  ];
-  return [
-    routeStep(ctx, {
-      title: "Intent and reviewer workflow fit",
-      action: intentItems.length > 0
-        ? "Start with the intent-mismatch surface and resolve possible mismatch, overreach, or missing-intent items before relying on lower-risk UX review."
-        : "Check whether the changed surface still gives reviewers the fastest safe path through the PR.",
-      priority: intentItems.some((item) => isElevatedSeverity(item.severity)) || routeQuestions.some((question) => question.severity === "blocking") ? "high" : "medium",
-      artifact: "intent_mismatch.md",
-      question_ids: routeQuestions.slice(0, 5).map((question) => question.id),
-      evidence: [...intentItems.slice(0, 5).flatMap((item) => item.evidence), ...routeQuestions.slice(0, 5).flatMap((question) => question.evidence)]
-    }),
-    routeStep(ctx, {
-      title: "Reviewer UX lens",
-      action: "Review renderer, Markdown, comment, queue, and diagram changes for human readability and bounded output.",
-      priority: uxLenses.some((finding) => isElevatedSeverity(finding.severity)) ? "high" : "medium",
-      artifact: "risk_lenses.md",
-      risk_lens_ids: uxLenses.map((finding) => finding.id),
-      evidence: uxLenses.flatMap((finding) => finding.evidence)
-    }),
-    routeStep(ctx, {
-      title: "Human review output",
-      action: "Read the generated human review summary and standalone artifacts before relying on lower-level packet details.",
-      priority: "medium",
-      artifact: "human_review.md",
-      evidence: routeEvidence(ctx.input, "Human review route points reviewers at generated human_review.md and standalone human artifacts.")
-    }),
-    routeStep(ctx, {
-      title: "Suggested comments",
-      action: "Use suggested comments as evidence-backed drafts, and keep non-blocking drafts separate from merge blockers.",
-      priority: ctx.suggestedComments.some((comment) => comment.severity === "blocking") ? "high" : "medium",
-      artifact: "suggested_comments.md",
-      suggested_comment_ids: ctx.suggestedComments.slice(0, 6).map((comment) => comment.id),
-      evidence: ctx.suggestedComments.slice(0, 6).flatMap((comment) => comment.evidence)
-    })
-  ];
-}
-
-function agentContinuationRouteSteps(ctx: BuildReviewRoutesInput): ReviewRouteStepDraft[] {
-  const openRiskEvidence = [...ctx.blockers.flatMap((blocker) => blocker.evidence), ...ctx.riskLensFindings.flatMap((finding) => finding.evidence)];
-  return [
-    routeStep(ctx, {
-      title: "Open risks and blockers",
-      action: "Start continuation work from deterministic blockers, high-risk lenses, and still-open risk evidence.",
-      priority: ctx.blockers.length > 0 ? "blocker" : "high",
-      artifact: "human_review.md",
-      risk_lens_ids: ctx.riskLensFindings.slice(0, 6).map((finding) => finding.id),
-      evidence: openRiskEvidence
-    }),
-    routeStep(ctx, {
-      title: "Missing tests and manual checks",
-      action: "Implement or record the required test-plan items before changing reviewer-facing summaries.",
-      priority: ctx.testPlan.some((item) => item.priority === "required") ? "high" : "medium",
-      artifact: "test_plan.md",
-      test_plan_ids: ctx.testPlan.slice(0, 8).map((item) => item.id),
-      evidence: ctx.testPlan.slice(0, 8).flatMap(testPlanEvidence)
-    }),
-    routeStep(ctx, {
-      title: "Since-last-review open items",
-      action: "Prioritize regressed, new, and still-open items before adding unrelated features.",
-      priority: ctx.sinceLastReview.regressed.length > 0 || ctx.sinceLastReview.new_risks.length > 0 ? "high" : "medium",
-      artifact: "since_last_review.md",
-      evidence: [
-        ...ctx.sinceLastReview.regressed,
-        ...ctx.sinceLastReview.new_risks,
-        ...ctx.sinceLastReview.still_open
-      ].flatMap((item) => item.evidence)
-    }),
-    routeStep(ctx, {
-      title: "Agent handoff and deferrals",
-      action: "Use the generated agent handoff for next tasks and deferrals, but keep it secondary to the human route.",
-      priority: "low",
-      artifact: "agent_handoff.md",
-      evidence: routeEvidence(ctx.input, "Agent-continuation route points at agent_handoff.md as the secondary continuation surface.")
-    })
-  ];
-}
-
-function routeStep(
-  ctx: BuildReviewRoutesInput,
-  draft: Omit<ReviewRouteStepDraft, "evidence" | "queue_item_ids" | "risk_lens_ids" | "question_ids" | "test_plan_ids" | "suggested_comment_ids"> &
-    Partial<Pick<ReviewRouteStepDraft, "evidence" | "queue_item_ids" | "risk_lens_ids" | "question_ids" | "test_plan_ids" | "suggested_comment_ids">>
-): ReviewRouteStepDraft {
-  return {
-    ...draft,
-    evidence: routeStepEvidence(ctx.input, draft.title, draft.evidence ?? []),
-    queue_item_ids: draft.queue_item_ids ?? [],
-    risk_lens_ids: draft.risk_lens_ids ?? [],
-    question_ids: draft.question_ids ?? [],
-    test_plan_ids: draft.test_plan_ids ?? [],
-    suggested_comment_ids: draft.suggested_comment_ids ?? []
-  };
-}
-
-function routeStepEvidence(input: BuildHumanReviewInput, title: string, evidence: EvidenceRef[]): EvidenceRef[] {
-  const refs = evidence.length ? evidence : routeEvidence(input, `Review route step "${title}" is derived from the generated human review model.`);
-  return dedupeEvidenceRefs(refs).slice(0, 8);
-}
-
-function routeEvidence(input: BuildHumanReviewInput, note: string): EvidenceRef[] {
-  return [fileEvidence(input.packetPath ?? ".review-surfaces/review_packet.json", note, "medium")];
-}
-
 function dedupeEvidenceRefs(evidence: EvidenceRef[]): EvidenceRef[] {
   const seen = new Set<string>();
   return evidence.filter((ref) => {
@@ -1298,31 +954,6 @@ function dedupeEvidenceRefs(evidence: EvidenceRef[]): EvidenceRef[] {
 
 function testPlanEvidence(item: TestPlanItem): EvidenceRef {
   return missingEvidence(item.evidence_gap);
-}
-
-function highestQueuePriority(items: ReviewQueueItem[]): HumanReviewPriority {
-  if (items.some((item) => item.priority === "blocker")) {
-    return "blocker";
-  }
-  if (items.some((item) => item.priority === "high")) {
-    return "high";
-  }
-  if (items.some((item) => item.priority === "medium")) {
-    return "medium";
-  }
-  return "low";
-}
-
-function isMaintainerContractPath(filePath: string): boolean {
-  return /^schemas\//.test(filePath) ||
-    /^src\/cli\//.test(filePath) ||
-    /^features\//.test(filePath) ||
-    /(?:^|\/)contract\.ts$/.test(filePath) ||
-    /schema/i.test(filePath);
-}
-
-function routeText(...values: Array<string | undefined>): string {
-  return values.filter((value): value is string => typeof value === "string").join(" ");
 }
 
 function buildIntentMismatch(input: BuildHumanReviewInput, specMode: "acai" | "none"): IntentMismatch {
@@ -1794,13 +1425,22 @@ function buildSinceLastReview(input: BuildHumanReviewInput): SinceLastReview {
     .filter((change) => change.direction === "regressed")
     .map((change, index) => statusChangeItem(input, "SLR-REGRESSED", index, change));
   const currentRisksByKey = new Map(input.packet.risks.items.map((risk) => [comparisonRiskKey(risk), risk]));
+  const previousApprovalRisksByKey = new Map(
+    (input.previousApprovalRisks ?? []).map((risk) => [comparisonRiskKey(risk), risk])
+  );
 
   return {
     previous_packet_path: previousPacketPath,
     improved,
     regressed,
     new_risks: riskComparisonItems(input, "SLR-NEW-RISK", comparison.new_risks ?? [], "New risk since last review", currentRisksByKey),
-    resolved_risks: riskComparisonItems(input, "SLR-RESOLVED-RISK", comparison.resolved_risks ?? [], "Resolved risk since last review"),
+    resolved_risks: riskComparisonItems(
+      input,
+      "SLR-RESOLVED-RISK",
+      comparison.resolved_risks ?? [],
+      "Resolved risk since last review",
+      previousApprovalRisksByKey
+    ),
     new_overreach: specless ? [] : overreachComparisonItems(input, "SLR-NEW-OVERREACH", comparison.new_overreach ?? [], "New overreach since last review"),
     resolved_overreach: specless ? [] : overreachComparisonItems(input, "SLR-RESOLVED-OVERREACH", comparison.resolved_overreach ?? [], "Resolved overreach since last review"),
     still_open: stillOpenSinceLastReviewItems(input, comparison, specless),
@@ -1841,6 +1481,7 @@ function statusChangeItem(
   return {
     id: `${prefix}-${String(index + 1).padStart(3, "0")}`,
     category: "requirement",
+    decision_refs: [change.acai_id],
     acai_id: change.acai_id,
     previous_status: change.previous_status,
     current_status: change.current_status,
@@ -1865,6 +1506,7 @@ function riskComparisonItems(
     return {
       id: `${prefix}-${String(index + 1).padStart(3, "0")}`,
       category: "risk",
+      ...(currentRisk ? { decision_refs: [currentRisk.id] } : {}),
       severity: currentRisk?.severity ?? "unknown",
       // review-surfaces.TREND.3: the section header ("Resolved risks" / "New
       // risks") already names the direction; drop the per-bullet "<label>:"
@@ -1906,6 +1548,7 @@ function stillOpenSinceLastReviewItems(
     .filter((result) => !changedRequirementKeys.has(requirementComparisonKey(result)))
     .map((result) => ({
       category: "requirement" as const,
+      decision_refs: [requirementComparisonKey(result)],
       acai_id: requirementComparisonKey(result),
       current_status: result.status,
       summary: `${requirementComparisonKey(result)} remains ${result.status}.`,
@@ -1916,6 +1559,7 @@ function stillOpenSinceLastReviewItems(
     .filter((risk) => !newRiskKeys.has(comparisonRiskKey(risk)))
     .map((risk) => ({
       category: "risk" as const,
+      decision_refs: [risk.id],
       severity: risk.severity,
       summary: `Risk still open: ${comparisonRiskKey(risk)}.`,
       evidence: [comparisonEvidence(input, `Current packet still reports risk ${comparisonRiskKey(risk)}.`)]
@@ -1981,23 +1625,23 @@ function buildVerdict(
 
   if (blockers.length > 0) {
     decision = "block_before_merge";
-  } else if (input.prSurface?.status === "blocked") {
-    decision = input.prSurface.blocked_reason === "no_diff" ? "no_signal" : "needs_author_clarification";
+  } else if (input.prSurface?.status === "blocked" && input.prSurface.blocked_reason === "no_diff") {
+    decision = "no_signal";
     reasons.push({
       id: "READY-PR-SURFACE-BLOCKED",
-      severity: input.prSurface.blocked_reason === "no_diff" ? "low" : "medium",
-      summary: `PR review surface is blocked (${input.prSurface.blocked_reason ?? "unknown"}).`,
-      evidence: [missingEvidence("PR surface narrative is unavailable; deterministic scope is still available.")],
-      required_action: "Regenerate the PR surface with the required provider or review deterministic facts locally."
+      severity: "low",
+      summary: "No changed files were found for the requested range.",
+      evidence: [missingEvidence("The requested PR range contains no diff to review.")],
+      required_action: "Confirm the requested base and head refs if a change was expected."
     });
   } else if (trustAudit.missing_evidence.length > 0 || trustAudit.claimed_not_verified.length > 0) {
-    decision = "needs_author_clarification";
+    decision = "reviewable_with_attention";
     reasons.push({
       id: "READY-MISSING-EVIDENCE",
       severity: "medium",
-      summary: "Required review evidence is missing or claimed without proof.",
+      summary: "Some review evidence is missing or claimed without proof; confidence is reduced.",
       evidence: trustAudit.missing_evidence[0]?.evidence ?? [missingEvidence("Missing evidence lowers readiness confidence.")],
-      required_action: "Record validation evidence or answer the generated reviewer questions."
+      required_action: "Run the listed validation or inspect the affected decision evidence before approval."
     });
     // review-surfaces.HUMAN_TRUST.6: a soft, off-diff "missing manual check" must
     // not be the SOLE headline reason while in-diff high-severity lenses (a
@@ -2064,16 +1708,6 @@ function buildBlockers(
   const blockers: ReviewBlocker[] = [];
   const prSurface = input.prSurface;
 
-  if (prSurface?.blocked_reason === "privacy_block") {
-    blockers.push({
-      id: "BLOCK-PRIVACY-001",
-      severity: "high",
-      summary: "A privacy or secret guard blocked the PR review surface.",
-      evidence: [missingEvidence("Remote provider call was blocked by privacy checks.")],
-      required_action: "Inspect redaction/secret findings and rerun only after sensitive material is removed or excluded."
-    });
-  }
-
   const failedTestEvidence = failedValidationEvidence(input, decisionScope);
   if (failedTestEvidence.length > 0) {
     blockers.push({
@@ -2085,7 +1719,7 @@ function buildBlockers(
     });
   }
 
-  for (const risk of allCriticalRisks(input, decisionScope).slice(0, 3)) {
+  for (const risk of allCriticalRisks(input, decisionScope)) {
     blockers.push({
       id: `BLOCK-${risk.id}`,
       severity: "critical",
@@ -2101,9 +1735,8 @@ function buildBlockers(
   // secret, semantic-breaking, or failed-validation evidence below.
   for (const risk of (prSurface?.risks.candidates ?? [])
     .filter((candidate) => candidate.rule === "coverage_regression")
-    .filter((candidate) => isDecisionScopedSignal(decisionScope, candidate.evidence, requirementIds(candidate.evidence)))
-    .slice(0, 1)) {
-    const disposition = prRiskReviewDisposition(input, risk);
+    .filter((candidate) => isDecisionScopedSignal(decisionScope, candidate.evidence, requirementIds(candidate.evidence)))) {
+    const disposition = prRiskReviewDisposition(risk);
     if (disposition?.severity !== "blocking") {
       continue;
     }
@@ -2113,20 +1746,6 @@ function buildBlockers(
       summary: risk.summary,
       evidence: evidenceOrMissing(risk.evidence, risk.summary),
       required_action: disposition.body
-    });
-  }
-
-  for (const [index, change] of semanticFacts.schema_changes
-    .filter((candidate) => decisionScope.changed_paths.has(candidate.path))
-    .filter(isBreakingSchemaChange)
-    .slice(0, 2)
-    .entries()) {
-    blockers.push({
-      id: `BLOCK-SCHEMA-${String(index + 1).padStart(3, "0")}`,
-      severity: "high",
-      summary: schemaChangeReason(change),
-      evidence: [fileEvidence(change.path, "Deterministic breaking schema change.")],
-      required_action: "Version the persisted contract or prove existing artifacts are migrated before merge."
     });
   }
 
@@ -2144,7 +1763,7 @@ function buildBlockers(
     });
   }
 
-  for (const effect of feedbackEffects.filter(isMissingTeamPolicyEffect).slice(0, 4)) {
+  for (const effect of feedbackEffects.filter(isMissingTeamPolicyEffect)) {
     blockers.push({
       id: `BLOCK-${stableFeedbackEffectId(effect.id)}`,
       severity: "high",
@@ -2154,7 +1773,7 @@ function buildBlockers(
     });
   }
 
-  return dedupeById(blockers).sort(compareBlockers).slice(0, MAX_BLOCKERS);
+  return dedupeById(blockers).sort(compareBlockers);
 }
 
 function compareBlockers(left: ReviewBlocker, right: ReviewBlocker): number {
@@ -2177,6 +1796,7 @@ function buildReviewQueue(
   semanticFacts: SemanticChangeFacts
 ): {
   items: HumanReviewModel["review_queue"];
+  decisionItems: HumanReviewModel["review_queue"];
   decisionRootsByQueueId: ReadonlyMap<string, string>;
 } {
   const drafts: QueueDraft[] = [];
@@ -2235,7 +1855,8 @@ function buildReviewQueue(
         (policyOverride ? scorePrRiskWithPriority(risk, anchor, policyOverride.priority) : scorePrRisk(risk, anchor)) +
         (suppressedByPolicy || feedbackDowngrade ? -60 : 0),
       sortKey: `${risk.id}:${first.path}`,
-      detector_specificity: aggregate ? "aggregate" : "concrete"
+      detector_specificity: aggregate ? "aggregate" : "concrete",
+      risk_rule: risk.rule
     });
   }
 
@@ -2320,7 +1941,7 @@ function buildReviewQueue(
         coveredPaths.add(draft.old_path);
       }
     }
-    const headroom = Math.max(0, Math.min(MAX_QUEUE, config.max_review_first) - drafts.length);
+    const headroom = Math.max(0, config.max_supporting_queue - drafts.length);
     const augment = baselineDrafts
       .filter((draft) => {
         const path = draft.path;
@@ -2387,7 +2008,7 @@ function buildReviewQueue(
       compareStrings(left.sortKey, right.sortKey)
   );
   const decisionRootsByQueueId = new Map<string, string>();
-  const items = drafts.slice(0, Math.min(MAX_QUEUE, config.max_review_first)).map((draft, index) => {
+  const decisionItems = drafts.map((draft, index) => {
     const id = `REVIEW-${String(index + 1).padStart(3, "0")}`;
     if (draft.decisionRoot) decisionRootsByQueueId.set(id, draft.decisionRoot);
     return stripUndefined({
@@ -2411,7 +2032,8 @@ function buildReviewQueue(
       estimated_review_effort: draft.estimated_review_effort
     });
   });
-  return { items, decisionRootsByQueueId };
+  const items = decisionItems.slice(0, config.max_supporting_queue);
+  return { items, decisionItems, decisionRootsByQueueId };
 }
 
 // review-surfaces.RANKING.1/.2/.3: assign each queue item an evidence ordering
@@ -2437,6 +2059,9 @@ function applyRankingEvidence(drafts: QueueDraft[], input: BuildHumanReviewInput
     const reasons: string[] = [];
     const tests = changedTestsByImpl[draft.path];
     if (tests && tests.length > 0) {
+      if (draft.risk_rule === "untested_changed_impl") {
+        reconcileUntestedDraftWithConnectedTests(draft, changedTestsByImpl, untestedImplPaths);
+      }
       draft.evidenceTier = 1;
       // review-surfaces.RANKING.2: cap the inline co-changed test list (it can run
       // to ~10 backtick paths) to a readable sample + "(+N more)", mirroring the
@@ -2476,6 +2101,43 @@ function applyRankingEvidence(drafts: QueueDraft[], input: BuildHumanReviewInput
     }
     draft.ranking_reasons = reasons;
   }
+}
+
+// Area mapping is intentionally conservative and can miss a real file-level
+// connection discovered later from imports/stems. Never tell a reviewer both
+// "no test is mapped" and "a focused test changed alongside this file". Keep
+// the unresolved current-head proof question, but acknowledge the test evidence
+// and ask for new coverage only where a cited implementation still lacks it.
+function reconcileUntestedDraftWithConnectedTests(
+  draft: QueueDraft,
+  changedTestsByImpl: RankingEvidence["changed_tests_by_impl"],
+  untestedImplPaths: ReadonlySet<string>
+): void {
+  const implementationPaths = [...new Set(draft.evidence
+    .map((ref) => ref.path)
+    .filter((path): path is string => Boolean(path) && untestedImplPaths.has(path!)))];
+  const connectedPaths = implementationPaths.filter((filePath) => (changedTestsByImpl[filePath]?.length ?? 0) > 0);
+  if (connectedPaths.length === 0) return;
+  const unconnectedPaths = implementationPaths.filter((filePath) => !connectedPaths.includes(filePath));
+  const connectedTests = [...new Set(connectedPaths.flatMap((filePath) => changedTestsByImpl[filePath] ?? []))].sort(compareStrings);
+  const subject = implementationPaths.length === 1 ? "The changed implementation" : `${implementationPaths.length} changed implementation files`;
+  const verb = implementationPaths.length === 1 ? "has" : "have";
+  draft.reason = unconnectedPaths.length > 0
+    ? `${subject} share one validation question: focused changed-test evidence is connected to ${connectedPaths.length}, ${unconnectedPaths.length} still lack connected changed-test evidence, and no current-head transcript proves the relevant checks ran.`
+    : `${subject} ${verb} focused changed-test evidence, but no current-head transcript proves the relevant checks ran against this change.`;
+  draft.reviewer_action = unconnectedPaths.length > 0
+    ? "Confirm the changed tests cover the connected behavior, add focused coverage only for the remaining gap, and record one current-head transcript."
+    : "Confirm the changed tests cover the cited behavior and record one current-head transcript; add tests only if that coverage is incomplete.";
+  draft.evidence = uniqueEvidenceRefs([
+    ...draft.evidence.map((ref) =>
+      ref.path && connectedPaths.includes(ref.path)
+        ? { ...ref, note: "Changed implementation file with connected changed-test evidence; no current-head passing transcript records the relevant run." }
+        : ref.kind === "unknown"
+          ? { ...ref, note: "No current-head transcript establishes validation for the complete cited implementation group." }
+          : ref
+    ),
+    ...connectedTests.map((testPath) => testEvidence(testPath, "Focused test changed alongside a cited implementation file.", "high"))
+  ]);
 }
 
 // Cited implementation paths the PR risk pass flagged as untested. This
@@ -2696,22 +2358,22 @@ function testWeakeningTitle(kind: TestWeakeningSignal["kind"]): string {
 function schemaChangeReason(change: SchemaContractChange): string {
   const parts: string[] = [];
   if (change.required_added.length > 0) {
-    parts.push(`field(s) ${joinIds(change.required_added)} became required — existing artifacts without them will fail validation`);
+    parts.push(`fields ${joinIds(change.required_added)} became required — existing artifacts without them will fail validation`);
   }
   if (change.required_removed.length > 0) {
-    parts.push(`field(s) ${joinIds(change.required_removed)} no longer required`);
+    parts.push(`fields ${joinIds(change.required_removed)} are no longer required`);
   }
   if (change.properties_removed.length > 0) {
-    parts.push(`propert(ies) ${joinIds(change.properties_removed)} removed`);
+    parts.push(`properties ${joinIds(change.properties_removed)} were removed`);
   }
   if (change.properties_added.length > 0) {
-    parts.push(`propert(ies) ${joinIds(change.properties_added)} added`);
+    parts.push(`properties ${joinIds(change.properties_added)} were added`);
   }
   if (change.type_changes.length > 0) {
-    parts.push(`type change(s): ${formatTypeChanges(change.type_changes)}`);
+    parts.push(`type changes: ${formatTypeChanges(change.type_changes)}`);
   }
   if (change.enum_changes.length > 0) {
-    parts.push(`enum change(s): ${formatEnumChanges(change.enum_changes)}`);
+    parts.push(`enum changes: ${formatEnumChanges(change.enum_changes)}`);
   }
   return `\`${change.path}\` contract changed: ${parts.join("; ")}.`;
 }
@@ -2848,20 +2510,8 @@ function isNonReviewArtifact(filePath: string): boolean {
   return BASELINE_NON_REVIEW_EXT.test(base) || BASELINE_LOCKFILE_NAMES.has(base);
 }
 
-// `classifyRole`'s isTestPath only matches `tests/` + `.test.`/`.spec.`; broaden it to
-// the cross-language test conventions (`test/`, `spec/`, `__tests__/`, `foo_test.go`,
-// `FooTest.java`) so a `test/retry.ts` is not mislabeled implementation (HUMAN_REVIEW.28).
 function isBaselineTest(filePath: string): boolean {
-  if (isTestPath(filePath)) {
-    return true;
-  }
-  const base = filePath.split("/").pop() ?? filePath;
-  return (
-    /(^|\/)(tests?|__tests__|spec)\//.test(filePath) ||
-    /(^|[._-])(test|spec)[._-]/i.test(base) ||
-    /(^|[._-])(test|spec)\.[^.]+$/i.test(base) ||
-    /(?:Test|Spec)s?\.[^.]+$/.test(base)
-  );
+  return isTestPath(filePath);
 }
 
 type BaselineRole = "impl" | "test" | "config" | "ci" | "doc" | "generated" | "other";
@@ -2935,10 +2585,8 @@ function baselineReviewFocusDrafts(
   const changedTestsByImpl = input.rankingEvidence?.changed_tests_by_impl ?? {};
   // Tests the import evidence already attributed to an impl cover THAT impl; their stem must
   // not be reused as a fallback connection for a different same-stem impl (Codex #112 r3).
-  // The map is keyed by the narrower `isTestPath`, so a test it never saw (a cross-language
-  // `FooTest.java` the broader baseline detector recognizes) is NOT attributed and may still
-  // drive the stem fallback — a single evidence entry must not disable the fallback for the
-  // whole diff (Codex #112 r4).
+  // Keep attributed test evidence from being reused as a fallback connection for a
+  // different same-stem implementation file.
   const attributedTestPaths = new Set(Object.values(changedTestsByImpl).flat());
   // The stem fallback uses only changed test files that are (a) NOT deletions — a removed
   // test is the opposite of connected coverage (Codex #112 r4) — and (b) not already
@@ -3563,10 +3211,10 @@ function buildRiskLensSuggestedTests(
       drafts.push({
         kind: "automatic",
         priority: "required",
-        suggested_file: "tests/pr-narrative.test.ts",
+        suggested_file: "tests/human-narrative.test.ts",
         scenario: "Generate LLM narrative candidates with off-allowlist paths, ACIDs, risks, and statuses.",
         expected_result: "Invalid anchors are dropped or marked invalid and never appear as trusted reviewer-facing facts.",
-        command: "pnpm run test -- tests/pr-narrative.test.ts",
+        command: "pnpm run test -- tests/human-narrative.test.ts",
         maps_to_requirements: finding.requirement_ids,
         maps_to_risks: finding.risk_ids,
         evidence_gap: finding.summary
@@ -3587,7 +3235,7 @@ function buildRiskLensSuggestedTests(
       });
       break;
     case "reviewer_ux":
-      const reviewerUxFile = suggestedLensTestFile(finding, "tests/pr-comment.test.ts", isReviewerUxImplementationPath);
+      const reviewerUxFile = suggestedLensTestFile(finding, "tests/sticky-summary.test.ts", isReviewerUxImplementationPath);
       drafts.push({
         kind: "automatic",
         priority: "recommended",
@@ -3891,8 +3539,8 @@ function feedbackReviewQueueDrafts(
         line_start: anchor.line_start,
         line_end: anchor.line_end,
         anchor_side: anchor.side,
-        reviewer_action: effect.action,
-        reason: effect.summary,
+        reviewer_action: feedbackQueueReviewerAction(effect),
+        reason: feedbackQueueReason(effect),
         evidence: [evidence, ...effect.evidence],
         requirement_ids: requirementIds(effect.evidence),
         risk_ids: effect.risk_ids,
@@ -4023,6 +3671,18 @@ function feedbackQueueTitle(effect: FeedbackPolicyEffect): string {
     case "false_positive":
       return "Feedback-downgraded risk";
   }
+}
+
+function feedbackQueueReason(effect: FeedbackPolicyEffect): string {
+  return effect.kind === "reviewer_preference"
+    ? "A saved reviewer preference marked this changed file for extra attention."
+    : effect.summary;
+}
+
+function feedbackQueueReviewerAction(effect: FeedbackPolicyEffect): string {
+  return effect.kind === "reviewer_preference"
+    ? "Review this changed file early."
+    : effect.action;
 }
 
 function feedbackEffectEvidence(effect: FeedbackPolicyEffect): EvidenceRef[] {
@@ -4222,10 +3882,10 @@ function buildQuestions(
   feedbackEffects: FeedbackPolicyEffect[],
   riskLensFindings: RiskLensFinding[],
   intentMismatch: IntentMismatch,
-  config: HumanReviewBuildConfig
+  config: HumanReviewBuildConfig,
+  semanticFacts: SemanticChangeFacts
 ): ReviewerQuestion[] {
   const questions: ReviewerQuestion[] = [];
-  const focusedGaps = focusedRequirementGaps(input);
 
   for (const blocker of blockers) {
     questions.push({
@@ -4236,23 +3896,6 @@ function buildQuestions(
       evidence: blocker.evidence,
       maps_to_risks: riskIdsFromBlocker(blocker),
       maps_to_requirements: requirementIds(blocker.evidence)
-    });
-  }
-
-  const schemaRisk = input.prSurface?.risks.candidates.find((risk) => risk.rule === "schema_contract_change");
-  if (schemaRisk) {
-    questions.push(questionFromPrRisk(questions.length + 1, "clarifying", schemaRisk, "Is the schema or persisted artifact contract change additive-only, and where is the compatibility fixture?"));
-  }
-
-  if (input.prSurface && !input.prSurface.coverage.base_available) {
-    questions.push({
-      id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
-      severity: "clarifying",
-      question: "Was the baseline evaluation intentionally unavailable for this run?",
-      reason: "Coverage deltas are current-status only when the baseline is unavailable.",
-      evidence: [missingEvidence("PR coverage base_available=false.")],
-      maps_to_risks: [],
-      maps_to_requirements: input.prSurface.coverage.deltas.map((delta) => delta.acai_id ?? delta.requirement_id).slice(0, 8)
     });
   }
 
@@ -4280,9 +3923,8 @@ function buildQuestions(
     });
   }
 
-  const semanticFacts = input.semanticFacts ?? emptySemanticChangeFacts();
   for (const finding of riskLensFindings
-    .filter((candidate) => isPathOnlyRiskLensFinding(candidate) && pathOnlyLensNeedsReviewerAction(candidate, semanticFacts))
+    .filter((candidate) => isPathOnlyRiskLensFinding(candidate) && pathOnlyLensNeedsAuthorPrompt(candidate, semanticFacts))
     .slice(0, 3)) {
     questions.push({
       id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
@@ -4299,6 +3941,9 @@ function buildQuestions(
     if (firstPathEvidence(risk.evidence)) {
       continue;
     }
+    if (risk.severity !== "critical" && risk.severity !== "high") {
+      continue;
+    }
     questions.push(questionFromPrRisk(
       questions.length + 1,
       questionSeverityForRisk(risk.severity),
@@ -4307,31 +3952,9 @@ function buildQuestions(
     ));
   }
 
-  if (hasNoValidationEvidence(input.packet.risks)) {
-    questions.push({
-      id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
-      severity: "clarifying",
-      question: "Which validation command or parsed test artifact should reviewers trust for this change?",
-      reason: "The packet does not contain direct or indirect validation evidence.",
-      evidence: [missingEvidence("No direct or indirect validation evidence found in risks.test_evidence.")],
-      maps_to_risks: [],
-      maps_to_requirements: []
-    });
-  }
-
-  for (const gap of focusedGaps.slice(0, 3)) {
-    questions.push({
-      id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
-      severity: gap.status === "missing" || gap.status === "invalid_evidence" ? "blocking" : "clarifying",
-      question: `What validation evidence or explicit deferral should close ${gap.acai_id ?? gap.requirement_id}?`,
-      reason: gap.summary,
-      evidence: requirementGapEvidence(gap),
-      maps_to_risks: [],
-      maps_to_requirements: compactStrings([gap.acai_id, gap.requirement_id])
-    });
-  }
-
-  for (const item of intentMismatchQuestionItems(intentMismatch, 3)) {
+  for (const item of intentMismatchQuestionItems(intentMismatch, 3).filter((candidate) =>
+    candidate.severity === "critical" || candidate.severity === "high"
+  )) {
     questions.push({
       id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
       severity: questionSeverityForRisk(item.severity ?? "unknown"),
@@ -4343,61 +3966,8 @@ function buildQuestions(
     });
   }
 
-  if (focusedGaps.length === 0) {
-    for (const item of missingEvidenceSummaries(input).slice(0, 2)) {
-      questions.push({
-        id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
-        severity: "clarifying",
-        question: `What evidence closes this review gap: ${forQuestionTail(item.summary)}?`,
-        reason: "The trust audit marks this evidence as missing.",
-        evidence: item.evidence,
-        maps_to_risks: [],
-        maps_to_requirements: requirementIds(item.evidence)
-      });
-    }
-  }
-
-  if (input.prSurface?.status === "blocked" && input.prSurface.blocked_reason !== "no_diff") {
-    questions.push({
-      id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
-      severity: "clarifying",
-      question: `Should the PR surface be regenerated so the blocked state (${input.prSurface.blocked_reason ?? "unknown"}) is resolved before review?`,
-      reason: "The human artifact can use deterministic facts, but PR narrative evidence is unavailable.",
-      evidence: [missingEvidence("PR surface is blocked.")],
-      maps_to_risks: [],
-      maps_to_requirements: []
-    });
-  }
-
-  // review-surfaces.METHODOLOGY.7/.8 (D5/D6): surface the methodology audit's item-4
-  // findings as reviewer questions — only the ones whose anchor was VALIDATED
-  // against a real event id / changed path (so the demoted / unanchored ones never
-  // add noise). A promoted finding (advisory === false) names its independent
-  // deterministic corroboration, but stays clarifying: conversation-derived output
-  // can focus review and must never create a blocker or alter merge readiness.
-  // Order corroborated findings first so the cap preserves the stronger reviewer
-  // question. Stable within each group (producer order preserved).
-  const orderedWorkflowFindings = (input.packet.methodology.workflow_findings ?? [])
-    .filter(workflowFindingHasValidatedAnchor)
-    .map((finding, index) => ({ finding, index }))
-    .sort((a, b) => Number(a.finding.advisory !== false) - Number(b.finding.advisory !== false) || a.index - b.index)
-    .map((entry) => entry.finding);
-  for (const finding of orderedWorkflowFindings.slice(0, 3)) {
-    const corroborated = finding.advisory === false;
-    questions.push({
-      id: `QUESTION-${String(questions.length + 1).padStart(3, "0")}`,
-      severity: "clarifying",
-      question: corroborated
-        ? `A deterministic check corroborated this (${finding.signal_kind.replace(/_/g, " ")}): ${forQuestionTail(finding.summary)}. Consider whether it was intentional during review.`
-        : `Did the agent's workflow account for this (${finding.signal_kind.replace(/_/g, " ")}): ${forQuestionTail(finding.summary)}?`,
-      reason: corroborated
-        ? CORROBORATED_WORKFLOW_QUESTION_REASON
-        : "The methodology audit of the agent conversation flagged this as advisory context for the reviewer.",
-      evidence: finding.evidence,
-      maps_to_risks: [],
-      maps_to_requirements: []
-    });
-  }
+  // Agent-workflow analysis belongs in the methodology artifact. It may inform
+  // a reviewer, but it never creates an author-facing question by itself.
 
   const blockerReasons = new Set(blockers.map((blocker) => blocker.summary));
   const coherentQuestions = questions.map((question) =>
@@ -4405,7 +3975,7 @@ function buildQuestions(
       ? { ...question, severity: "clarifying" as const }
       : question
   );
-  return capQuestionsPreservingIntent(dedupeQuestions(coherentQuestions), Math.min(MAX_QUESTIONS, config.max_questions));
+  return capQuestionsPreservingIntent(dedupeQuestions(coherentQuestions), config.max_questions);
 }
 
 // A methodology workflow finding is worth a reviewer question only when the leaf
@@ -4467,16 +4037,10 @@ function capQuestionsPreservingIntent(questions: ReviewerQuestion[], limit: numb
   }
 
   const selected = questions.slice(0, limit);
-  // Questions the head-cap must not silently drop just because they were appended late:
-  // the FIRST intent-mismatch question (matching the prior single-preserve behavior),
-  // plus EVERY corroborated D6 workflow question. Process them HIGHEST severity
-  // first and swap each in over the LAST selected question of
-  // equal-or-lower severity that is not itself preserved (Codex P2, #109).
+  // The first concrete intent-mismatch question must not be silently dropped
+  // simply because another detector happened to append work earlier.
   const firstIntent = questions.find(isIntentMismatchQuestion);
-  const preserved = questions.filter((question) => question.reason === CORROBORATED_WORKFLOW_QUESTION_REASON);
-  if (firstIntent) {
-    preserved.push(firstIntent);
-  }
+  const preserved = firstIntent ? [firstIntent] : [];
   preserved.sort((a, b) => questionSeverityRank(b.severity) - questionSeverityRank(a.severity));
   for (const priority of preserved) {
     if (selected.includes(priority)) {
@@ -4574,13 +4138,16 @@ function pathOnlyLensNeedsReviewerAction(
   if (finding.lens === "architecture") {
     return finding.severity === "high";
   }
+  if (finding.lens === "test_evidence") {
+    return false;
+  }
+  if (finding.lens === "reviewer_ux") {
+    return false;
+  }
   if (finding.lens !== "api_contract") {
     return true;
   }
   const paths = new Set(finding.paths.map(normalizeEvidencePath));
-  const hasBreakingSchema = semanticFacts.schema_changes.some((change) =>
-    paths.has(normalizeEvidencePath(change.path)) && isBreakingSchemaChange(change)
-  );
   const hasBreakingPublicApi = semanticFacts.api_changes.some((change) =>
     paths.has(normalizeEvidencePath(change.path)) &&
     isBreakingApiChange(change) &&
@@ -4594,7 +4161,21 @@ function pathOnlyLensNeedsReviewerAction(
       )
     )
   );
-  return hasBreakingSchema || hasBreakingPublicApi || hasNonSchemaPublicPath;
+  // Persisted schema changes are independent approval decisions, not generic
+  // author questions or comment drafts. The decision brief asks the reviewer
+  // whether an intentional reset is acceptable; it must not assume every
+  // generated artifact has compatibility consumers.
+  return hasBreakingPublicApi || hasNonSchemaPublicPath;
+}
+
+function pathOnlyLensNeedsAuthorPrompt(
+  finding: RiskLensFinding,
+  semanticFacts: SemanticChangeFacts
+): boolean {
+  if (finding.lens === "llm_trust_boundary" || finding.lens === "cache_provenance") {
+    return false;
+  }
+  return pathOnlyLensNeedsReviewerAction(finding, semanticFacts);
 }
 
 function riskLensQuestionText(finding: RiskLensFinding): string {
@@ -4672,13 +4253,14 @@ function buildSuggestedComments(
     if (blockers.some((blocker) => blocker.id === `BLOCK-${risk.id}`)) {
       continue;
     }
+    if (prRiskIsSupersededByAdditiveSchemaFact(risk, semanticFacts)) continue;
     for (const draft of commentDraftsForPrRisk(input, risk)) {
       candidates.push({ risk, draft, sourceRank: 1, sortKey: risk.id });
     }
   }
 
   for (const finding of riskLensFindings.filter((candidate) =>
-    isPathOnlyRiskLensFinding(candidate) && pathOnlyLensNeedsReviewerAction(candidate, semanticFacts)
+    isPathOnlyRiskLensFinding(candidate) && pathOnlyLensNeedsAuthorPrompt(candidate, semanticFacts)
   )) {
     // review-surfaces.SEMANTIC_DIFF.5: only the lenses a semantic-fact comment
     // actually duplicates may be deduped against it — the api/schema-contract lens
@@ -4694,21 +4276,8 @@ function buildSuggestedComments(
     }
   }
 
-  if (hasNoValidationEvidence(input.packet.risks)) {
-    candidates.push({
-      sourceRank: 3,
-      sortKey: "missing-validation-evidence",
-      draft: {
-        severity: "clarifying",
-        body: "I do not see direct validation evidence in the packet. Can you record the relevant test/typecheck command transcript or parsed test output?",
-        evidence: [missingEvidence("No direct or indirect validation evidence found.")],
-        risk_ids: [],
-        requirement_ids: [],
-        confidence: "medium",
-        ready_to_post: true
-      }
-    });
-  }
+  // Missing generic validation evidence reduces confidence in the supporting
+  // artifact; it is not a ready-to-post author comment without a concrete risk.
 
   const coherentCandidates = candidates.map((candidate) =>
     candidate.sourceRank === 0 || candidate.draft.severity !== "blocking"
@@ -4719,10 +4288,21 @@ function buildSuggestedComments(
     // Blocking drafts are projections of actual blockers, never an independent
     // severity channel that can contradict the verdict/header count. Normalize
     // before sorting so demoted drafts cannot consume the blocker comment budget.
-    appendSuggestedComment(comments, candidate.draft);
+    appendSuggestedComment(comments, candidate.draft, config.max_suggested_comments);
   }
 
-  return comments.slice(0, Math.min(MAX_COMMENTS, config.max_suggested_comments));
+  return comments;
+}
+
+function prRiskIsSupersededByAdditiveSchemaFact(
+  risk: PrRiskCandidate,
+  semanticFacts: SemanticChangeFacts
+): boolean {
+  if (risk.rule !== "schema_contract_change") return false;
+  const paths = [...new Set(risk.evidence
+    .map((ref) => ref.path)
+    .filter((path): path is string => path !== undefined))];
+  return schemaChangeDisposition(paths, semanticFacts.schema_changes) === "additive";
 }
 
 // review-surfaces.SEMANTIC_DIFF.1/.3/.4: suggested comments from semantic facts,
@@ -4746,19 +4326,8 @@ function semanticCommentCandidates(facts: SemanticChangeFacts): SuggestedComment
       }
     });
   };
-  for (const signal of facts.test_weakening) {
-    add("clarifying", signal.path, `${signal.detail} (${signal.kind.replace(/_/g, " ")})`, `semantic-test:${signal.kind}:${signal.path}`);
-  }
-  for (const change of facts.schema_changes) {
-    const breaking = isBreakingSchemaChange(change);
-    if (!breaking) continue;
-    add(
-      "blocking",
-      change.path,
-      `${schemaChangeReason(change)} Please version the contract or migrate existing artifacts.`,
-      `semantic-schema:${change.path}`
-    );
-  }
+  // Test-weakening signals remain in the supporting review queue. A removed
+  // assertion is not, by itself, a defect worth posting as an author comment.
   for (const change of facts.api_changes) {
     if (!isBreakingApiChange(change) || !isSupportedApiContractChange(change)) continue;
     add("clarifying", change.path, `${apiChangeReason(change)}${apiCallerCallToAction(change)}`, `semantic-api:${change.path}`);
@@ -4867,7 +4436,9 @@ function scopeTrustAudit(trustAudit: TrustAudit, decisionScope: DecisionScope): 
     isDecisionScopedSignal(decisionScope, item.evidence)
   );
   const missing = trustAudit.missing_evidence.filter((item) =>
-    isDecisionScopedSignal(decisionScope, item.evidence)
+    item.evidence.some((ref) =>
+      ref.path !== undefined && decisionScope.changed_paths.has(normalizeEvidencePath(ref.path))
+    )
   );
   const invalid = trustAudit.invalid_evidence.filter((item) =>
     isDecisionScopedSignal(decisionScope, item.evidence)
@@ -4933,58 +4504,26 @@ function parseMethodologyClaim(claim: string): { eventId: string; text: string }
 // must describe what passing looks like for THIS gap, derived from its
 // deterministic partial_reason/status — not restate the project-wide determinism
 // invariant identically across every TEST-### item.
-function expectedResultForGap(gap: RequirementGap): string {
-  switch (gap.partial_reason) {
-    case "impl_no_test":
-      return "A direct test exercises this requirement's behavior, so a regression would fail a check.";
-    case "impl_broad_no_exact_test":
-      // Exact TEST evidence already exists; the gap is exact IMPLEMENTATION proof.
-      return "The implementation is tied to this requirement by an exact ACID reference in the code, not just broad-area code.";
-    case "exact_impl_broad_test":
-      return "A focused test pins the exact changed behavior rather than the broad area.";
-    case "broad_area_only":
-      return "A test ties directly to this requirement instead of only its general area.";
-    case "test_no_impl":
-      return "The implementation backing this requirement is present and exercised by the test.";
-    default:
-      return gap.status === "missing" || gap.status === "invalid_evidence"
-        ? "Direct implementation and a test prove this requirement's behavior exists."
-        : "A focused test gives this requirement direct, evidence-backed coverage.";
-  }
-}
-
-// review-surfaces.HUMAN_REVIEW.21: a broad-evidence gap's "Evidence gap" is
-// matcher-confidence prose with nothing to act on; append the file the test
-// should land in so the reviewer has a concrete next step.
-function evidenceGapForGap(gap: RequirementGap, suggestedFile: string | undefined): string {
-  // impl_broad_no_exact_test means an exact TEST already exists and the gap is
-  // exact IMPLEMENTATION proof, so point at the code, not another test file.
-  if (gap.partial_reason === "impl_broad_no_exact_test") {
-    return `${trimSentenceEnd(gap.summary)} — tie the implementation to this requirement with an exact ACID reference in the code.`;
-  }
-  // These two genuinely need a requirement-specific test, so name where it lands.
-  const needsTest = gap.partial_reason === "broad_area_only" || gap.partial_reason === "exact_impl_broad_test";
-  if (needsTest && suggestedFile) {
-    return `${trimSentenceEnd(gap.summary)} — add a direct assertion in \`${suggestedFile}\`.`;
-  }
-  return gap.summary;
-}
-
 function buildTestPlan(
   input: BuildHumanReviewInput,
   feedbackEffects: FeedbackPolicyEffect[],
-  riskLensFindings: RiskLensFinding[]
+  riskLensFindings: RiskLensFinding[],
+  semanticFacts: SemanticChangeFacts,
+  decisionScope: DecisionScope
 ): TestPlanItem[] {
   const items: TestPlanItem[] = [];
   const candidates: TestPlanCandidate[] = [];
 
   for (const risk of input.prSurface?.risks.candidates ?? []) {
-    for (const draft of testPlanDraftsForPrRisk(input, risk)) {
+    if (prRiskIsSupersededByAdditiveSchemaFact(risk, semanticFacts)) continue;
+    for (const draft of testPlanDraftsForPrRisk(input, risk, decisionScope)) {
       candidates.push({ risk, draft, sourceRank: 0, sortKey: risk.id });
     }
   }
 
-  for (const finding of riskLensFindings.filter(isPathOnlyRiskLensFinding)) {
+  for (const finding of riskLensFindings.filter((candidate) =>
+    isPathOnlyRiskLensFinding(candidate) && pathOnlyLensNeedsReviewerAction(candidate, semanticFacts)
+  )) {
     for (const testItem of finding.suggested_tests) {
       candidates.push({
         lens: finding,
@@ -4995,60 +4534,9 @@ function buildTestPlan(
     }
   }
 
-  for (const [index, gap] of focusedRequirementGaps(input).slice(0, MAX_FOCUSED_REQUIREMENT_TESTS).entries()) {
-    const requirementId = gap.acai_id ?? gap.requirement_id;
-    const suggestedFile = suggestedTestFile(requirementId, gap.summary);
-    candidates.push({
-      sourceRank: 1,
-      sortKey: rankedSortKey(index, requirementId),
-      draft: {
-        kind: "automatic",
-        priority: gap.status === "missing" || gap.status === "invalid_evidence" ? "required" : "recommended",
-        suggested_file: suggestedFile,
-        scenario: `Add a focused unit or fixture test tied to ${requirementId}.`,
-        expected_result: expectedResultForGap(gap),
-        command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test",
-        maps_to_requirements: compactStrings([gap.acai_id, gap.requirement_id]),
-        maps_to_risks: [],
-        evidence_gap: evidenceGapForGap(gap, suggestedFile)
-      }
-    });
-  }
-
-  for (const [index, gap] of [...(input.packet.risks.missing_automatic_tests ?? [])].sort(compareMissingGapPriority).entries()) {
-    const suggestedFile = suggestedTestFile(gap.acai_id, gap.suggested_test);
-    candidates.push({
-      sourceRank: 3,
-      sortKey: rankedSortKey(index, gap.acai_id ?? gap.requirement_id ?? gap.id),
-      draft: {
-        kind: "automatic",
-        priority: "recommended",
-        suggested_file: suggestedFile,
-        scenario: gap.suggested_test,
-        expected_result: "The packet records direct or requirement-specific test evidence for the mapped requirement.",
-        command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test",
-        maps_to_requirements: compactStrings([gap.acai_id, gap.requirement_id]),
-        maps_to_risks: [],
-        evidence_gap: gap.summary
-      }
-    });
-  }
-
-  for (const [index, gap] of [...(input.packet.risks.missing_manual_checks ?? [])].sort(compareMissingGapPriority).entries()) {
-    candidates.push({
-      sourceRank: 4,
-      sortKey: rankedSortKey(index, gap.acai_id ?? gap.requirement_id ?? gap.id),
-      draft: {
-        kind: "manual",
-        priority: "recommended",
-        scenario: gap.manual_check,
-        expected_result: "Reviewer records the files inspected, conclusion, and any follow-up action.",
-        maps_to_requirements: compactStrings([gap.acai_id, gap.requirement_id]),
-        maps_to_risks: [],
-        evidence_gap: gap.summary
-      }
-    });
-  }
+  // Repository-wide evidence inventories are supporting diagnostics, not a PR
+  // test plan. Only concrete PR risks, decision lenses, and explicit team
+  // policies may prescribe work here.
 
   for (const [index, effect] of feedbackEffects.filter(isMissingTeamPolicyEffect).entries()) {
     candidates.push({
@@ -5078,7 +4566,7 @@ function testPlanDraftWithoutId(item: TestPlanItem): TestPlanDraft {
   return draft;
 }
 
-function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandidate): TestPlanDraft[] {
+function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandidate, decisionScope: DecisionScope): TestPlanDraft[] {
   const riskEvidence = evidenceOrMissing(risk.evidence, risk.summary);
   const path = firstPathEvidence(risk.evidence)?.path;
   const suggestedFile = suggestedTestFileForPath(path);
@@ -5131,21 +4619,7 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
         command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test"
       })];
     case "unmapped_change":
-      // review-surfaces.COLD_START.5: spec-less repos are never asked to map
-      // files to requirements — review areas are the only mapping concept.
-      return isSpeclessIntent(input.packet.intent)
-        ? [riskDraft({
-            kind: "manual",
-            priority: "recommended",
-            scenario: "Inspect the unmapped changed files and decide whether they need review-area mappings.",
-            expected_result: "Each unmapped file is either mapped to a review area or explicitly recorded as generated, ignored, or non-product behavior."
-          })]
-        : [riskDraft({
-            kind: "manual",
-            priority: "recommended",
-            scenario: "Inspect the unmapped changed files and decide whether they need review-area or requirement mappings.",
-            expected_result: "Each unmapped file is either mapped to a review area/requirement or explicitly recorded as generated, ignored, or non-product behavior."
-          })];
+      return [];
     case "privacy_sensitive_change":
       return [riskDraft({
         kind: "automatic",
@@ -5166,10 +4640,10 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
       return [riskDraft({
         kind: "automatic",
         priority: "recommended",
-        suggested_file: "tests/pr-comment.test.ts",
+        suggested_file: "tests/sticky-summary.test.ts",
         scenario: "Render the changed reviewer-facing Markdown surface from a deterministic fixture.",
         expected_result: "The Markdown stays bounded, evidence-backed, and avoids whole-packet fallback in PR mode.",
-        command: "pnpm run test -- tests/pr-comment.test.ts"
+        command: "pnpm run test -- tests/sticky-summary.test.ts"
       })];
     case "ci_secret_boundary_change":
       if (hasRecordedCiSecretBoundaryManualCheck(input)) {
@@ -5201,6 +4675,12 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
         command: suggestedFile ? `pnpm run test -- ${suggestedFile}` : "pnpm run test"
       })];
     case "failed_or_skipped_test":
+      if (!input.packet.risks.test_evidence.some((item) => {
+        const state = currentValidationRunState(decisionScope, item).state;
+        return state === "failed" || state === "skipped";
+      })) {
+        return [];
+      }
       return [riskDraft({
         kind: "automatic",
         priority: "required",
@@ -5209,13 +4689,7 @@ function testPlanDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandi
         command: "pnpm run test"
       })];
     case "large_diff":
-      return [riskDraft({
-        kind: "manual",
-        priority: "optional",
-        scenario: "Decide whether the large diff should be split or reviewed with extra owner attention.",
-        expected_result: "Reviewer records whether the diff size is acceptable for one review and which areas received deeper inspection.",
-        evidence_gap: riskEvidence[0]?.note ?? risk.summary
-      })];
+      return [];
   }
 }
 
@@ -5282,8 +4756,12 @@ function appendTestPlanItem(items: TestPlanItem[], draft: TestPlanDraft): void {
   items.push(candidate);
 }
 
-function appendSuggestedComment(items: SuggestedReviewComment[], draft: SuggestedCommentDraft): void {
-  if (items.length >= MAX_COMMENTS) {
+function appendSuggestedComment(
+  items: SuggestedReviewComment[],
+  draft: SuggestedCommentDraft,
+  limit: number
+): void {
+  if (items.length >= limit) {
     return;
   }
   const candidate = withSuggestedCommentId(items.length + 1, draft);
@@ -5331,31 +4809,6 @@ function buildSkimSafe(input: BuildHumanReviewInput, feedbackEffects: FeedbackPo
       evidence: [fileEvidence(file.path, "Changed file considered skim-safe by deterministic role/path heuristics.", "low")],
       confidence: "low" as const
     }));
-}
-
-function summarizeHumanReview(
-  input: BuildHumanReviewInput,
-  queueCount: number,
-  blockerCount: number
-): string {
-  // review-surfaces.HUMAN_REVIEW.24: lead with what a reviewer acts on (blockers
-  // and queue items), not a restatement of the verdict badge or a "generated from
-  // local evidence" preamble the section header already establishes. The
-  // denominator is the changed-file count — the scope a reviewer actually feels —
-  // never "217 requirement result(s)".
-  // review-surfaces.COLD_START.5: a spec-less packet never advertises
-  // "0 requirement result(s)" — the spec-coupled counts are simply absent.
-  const specless = isSpeclessIntent(input.packet.intent);
-  // Only assert a changed-file count when the diff is actually present. A review
-  // rebuilt from an existing packet (no inputs/diff.patch) must not claim
-  // "0 changed file(s)" — it falls back to the packet-risk denominator instead.
-  const changedFilePart = input.diff ? `${input.diff.files.length} changed file(s), ` : "";
-  const scope = input.prSurface
-    ? specless
-      ? `${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.risks.candidates.length} PR risk candidate(s)`
-      : `${input.prSurface.scope.changed_files.length} changed file(s), ${input.prSurface.scope.affected_requirements.length} affected requirement(s), ${input.prSurface.risks.candidates.length} PR risk candidate(s)`
-    : `${changedFilePart}${input.packet.risks.items.length} packet risk(s)`;
-  return `${blockerCount} blocker(s) and ${queueCount} review queue item(s) across ${scope}.`;
 }
 
 function missingEvidenceSummaries(input: BuildHumanReviewInput): MissingEvidenceSummary[] {
@@ -5446,10 +4899,6 @@ function positiveValidationEvidence(risks: RisksModel, decisionScope?: DecisionS
   return decisionScope ? evidence.filter((ref) => isCurrentValidationEvidence(decisionScope, ref)) : evidence;
 }
 
-function hasNoValidationEvidence(risks: RisksModel): boolean {
-  return !risks.test_evidence.some((item) => item.kind === "direct" || item.kind === "indirect");
-}
-
 function allCriticalRisks(input: BuildHumanReviewInput, decisionScope: DecisionScope): Array<{
   id: string;
   summary: string;
@@ -5527,13 +4976,6 @@ function failedValidationEvidence(input: BuildHumanReviewInput, decisionScope: D
     const current = currentValidationRunState(decisionScope, item);
     return current.state === "failed" ? [{ ...item, evidence: current.evidence }] : [];
   });
-}
-
-function prRiskMentionsFailedTests(risk: PrRiskCandidate): boolean {
-  const evidenceText = risk.evidence
-    .flatMap((ref) => compactStrings([ref.note, ref.command, ref.test_name, ref.path, ref.acai_id]))
-    .join(" ");
-  return /\b(fail(?:ed|ing)?|error)\b/i.test(`${risk.summary} ${evidenceText}`);
 }
 
 // Score with the policy-overridden priority's weight in place of the risk's own
@@ -5769,7 +5211,7 @@ interface PrRiskReviewDisposition {
   body: string;
 }
 
-function prRiskReviewDisposition(input: BuildHumanReviewInput, risk: PrRiskCandidate): PrRiskReviewDisposition | undefined {
+function prRiskReviewDisposition(risk: PrRiskCandidate): PrRiskReviewDisposition | undefined {
   const path = firstPathEvidence(risk.evidence)?.path;
   switch (risk.rule) {
     case "coverage_regression":
@@ -5777,32 +5219,31 @@ function prRiskReviewDisposition(input: BuildHumanReviewInput, risk: PrRiskCandi
     case "untested_changed_impl":
       return { severity: "clarifying", body: `What test or existing fixture covers the behavior changed in ${path ?? "this implementation file"}?` };
     case "unmapped_change":
-      return { severity: "clarifying", body: "This change is outside the mapped review areas. Can you confirm whether it is intentional and add a review-area mapping or explicit deferral if needed?" };
+      return undefined;
     case "privacy_sensitive_change":
       return { severity: "clarifying", body: "This touches privacy, provider, redaction, secret, or token-handling code. Can you add or point to sensitive-input validation before approval?" };
     case "secret_in_diff":
       return { severity: "blocking", body: `An added line in ${path ?? "this change"} matches a high-confidence secret pattern. Please remove it and rotate the credential — a committed secret must be treated as leaked.` };
     case "comment_surface_change":
-      return { severity: "non_blocking", body: "Please include or inspect a rendered comment/human surface fixture so reviewers can verify the Markdown output directly." };
+      return undefined;
     case "ci_secret_boundary_change":
       // The merge-readiness blocker is the canonical suggested comment for this manual-check gate.
       return undefined;
     case "schema_contract_change":
-      return { severity: "clarifying", body: "This changes a persisted schema or artifact contract. Can you add a compatibility fixture for an existing generated artifact, or explicitly version this as a breaking change?" };
+      return undefined;
     case "deleted_or_renamed_surface":
       return { severity: "clarifying", body: "This deletes or renames a generated or reviewer-facing surface. Can you confirm no stale imports, generated references, or reviewer links still point to the old path?" };
     case "failed_or_skipped_test":
-      if (failedValidationEvidence(input, buildDecisionScope(input)).length > 0 && prRiskMentionsFailedTests(risk)) {
-        return undefined;
-      }
-      return { severity: "clarifying", body: "Validation evidence indicates failed or skipped tests. Can you fix the failures or record why the skipped tests are intentional before approval?" };
+      // The canonical current-head validation blocker owns the author action.
+      // A filename/risk heuristic alone must not generate a duplicate comment.
+      return undefined;
     case "large_diff":
-      return { severity: "non_blocking", body: "This is a large diff. Consider splitting it or listing the areas that received deeper owner review." };
+      return undefined;
   }
 }
 
 function commentDraftsForPrRisk(input: BuildHumanReviewInput, risk: PrRiskCandidate): SuggestedCommentDraft[] {
-  const disposition = prRiskReviewDisposition(input, risk);
+  const disposition = prRiskReviewDisposition(risk);
   return disposition ? [commentDraftFromPrRisk(input, disposition.severity, risk, disposition.body)] : [];
 }
 
@@ -6172,70 +5613,11 @@ function commandEvidenceRecordsPassingTranscript(ref: EvidenceRef): boolean {
   return /\bexit_code=0\b/.test(note) && /\bstatus=passed\b/.test(note);
 }
 
-function focusedRequirementGaps(input: BuildHumanReviewInput): RequirementGap[] {
-  return input.packet.evaluation.results
-    .filter((result) => result.status !== "satisfied")
-    .filter((result) => {
-      const id = result.acai_id ?? result.requirement_id;
-      return id.includes(".HUMAN_REVIEW.") || id.includes(".HUMAN_TRUST.");
-    })
-    .sort(compareRequirementGapPriority);
-}
-
-function compareRequirementGapPriority(left: RequirementGap, right: RequirementGap): number {
-  return (
-    requirementGapPriority(left) - requirementGapPriority(right) ||
-    compareStrings(left.acai_id ?? left.requirement_id, right.acai_id ?? right.requirement_id)
-  );
-}
-
-function requirementGapPriority(gap: RequirementGap): number {
-  const id = gap.acai_id ?? gap.requirement_id;
-  if (gap.status === "invalid_evidence") {
-    return 0;
-  }
-  if (gap.status === "missing") {
-    return 1;
-  }
-  if (id.includes(".HUMAN_TRUST.")) {
-    return 2;
-  }
-  return 3;
-}
-
 function requirementGapEvidence(gap: RequirementGap): EvidenceRef[] {
   return evidenceOrMissing(
     [...(gap.evidence ?? []), ...(gap.missing_evidence ?? [])],
     `${gap.acai_id ?? gap.requirement_id} needs evidence.`
   );
-}
-
-function compareMissingGapPriority(
-  left: MissingAutomaticTestGap | MissingManualCheckGap,
-  right: MissingAutomaticTestGap | MissingManualCheckGap
-): number {
-  return (
-    missingGapPriority(left) - missingGapPriority(right) ||
-    compareStrings(left.acai_id ?? left.requirement_id ?? left.id, right.acai_id ?? right.requirement_id ?? right.id)
-  );
-}
-
-function missingGapPriority(gap: MissingAutomaticTestGap | MissingManualCheckGap): number {
-  const id = gap.acai_id ?? gap.requirement_id ?? "";
-  if (id.includes(".HUMAN_TRUST.")) {
-    return 0;
-  }
-  if (id.includes(".HUMAN_REVIEW.")) {
-    return 1;
-  }
-  if (id.includes(".PRIVACY.") || id.includes(".PROVIDERS.") || id.includes(".SCHEMA.")) {
-    return 2;
-  }
-  return 3;
-}
-
-function suggestedTestFile(acaiId: string | undefined, suggested: string): string | undefined {
-  return suggestedTestFileFromKeywords(`${acaiId ?? ""} ${suggested}`);
 }
 
 function suggestedTestFileForPath(filePath: string | undefined): string | undefined {
@@ -6269,20 +5651,11 @@ function suggestedTestFileFromKeywords(value: string): string | undefined {
   if (lower.includes("pr-scope")) {
     return "tests/pr-scope.test.ts";
   }
-  if (lower.includes("pr-comment")) {
-    return "tests/pr-comment.test.ts";
-  }
-  if (lower.includes("pr-narrative")) {
-    return "tests/pr-narrative.test.ts";
-  }
   if (lower.includes("render/") || lower.includes("comment")) {
     return "tests/render.test.ts";
   }
   if (lower.includes("privacy") || lower.includes("redact") || lower.includes("secret")) {
     return "tests/privacy.test.ts";
-  }
-  if (lower.includes("provider")) {
-    return "tests/provider.test.ts";
   }
   if (lower.includes("coverage")) {
     return "tests/scoped-coverage.test.ts";
