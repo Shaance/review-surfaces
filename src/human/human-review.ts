@@ -96,6 +96,10 @@ export interface BuildHumanReviewInput {
   contractPaths?: readonly string[];
   packetPath?: string;
   prSurfacePath?: string;
+  // Identity of the optional provider-authored enrichment. Packet inputs can be
+  // unchanged while the requested provider/model changes, so cached prose must
+  // be bound independently from the deterministic packet signature.
+  enrichmentSignature?: string;
   // review-surfaces.NARRATIVE.1-4: an already-anchor-validated change narrative
   // built through the provider boundary. Stored read-only; it NEVER influences
   // the verdict, blockers, or coverage. Absent -> no narrative section.
@@ -618,6 +622,7 @@ function buildGeneratedFrom(input: BuildHumanReviewInput): HumanReviewModel["gen
     head_ref: prScope?.head_ref ?? stringOr(manifest.head_ref, "HEAD"),
     head_sha: prScope?.head_sha ?? stringOr(manifest.head_sha, "unknown"),
     ...(typeof manifest.signature === "string" ? { packet_signature: manifest.signature } : {}),
+    ...(input.enrichmentSignature ? { enrichment_signature: input.enrichmentSignature } : {}),
     // COLD_START.7: working-tree files absorbed into this review (0 on clean or
     // pinned-head runs); every human surface announces a nonzero count.
     uncommitted_files: typeof manifest.uncommitted_files === "number" ? manifest.uncommitted_files : 0,

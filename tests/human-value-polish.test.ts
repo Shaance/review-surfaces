@@ -156,7 +156,13 @@ test("review-surfaces.CONVERSATION_REVIEW.4 conversation insights remain availab
   const markdown = renderHumanReviewMarkdown(review);
   const html = renderHumanReviewHtml(review);
 
-  assert.doesNotMatch(markdown, /## Conversation-aware insights|AI synopsis|Conversation finding/);
+  assert.ok(markdown.indexOf("## Supporting review queue") < markdown.indexOf("## Conversation-aware insights"));
+  assert.match(markdown, /AI synopsis: The author refined the goal/);
+  assert.match(markdown, /Give reviewers clear, conversation-aware findings/);
+  assert.match(markdown, /Conversation finding 1/);
+  assert.match(markdown, /Why it matters: A reviewer could approve behavior/);
+  assert.match(markdown, /Review: Check the cited change 1\./);
+  assert.match(markdown, /Conversation finding 4/);
   assert.match(markdown, /\[Interactive HTML cockpit\]\(human_review\.html\)/);
 
   assert.ok(html.indexOf('id="approval-decisions"') < html.indexOf('id="conversation-insights"'));
@@ -265,21 +271,28 @@ test("review-surfaces.CONVERSATION_REVIEW.4 stale insights stay hidden unless an
     }
   ];
 
-  for (const analysis of cases) {
+  for (const [index, analysis] of cases.entries()) {
     const review = model({
       conversation_analysis: analysis,
       review_insights: [conversationInsight(99)]
     });
     const markdown = renderConversationInsightsMarkdown(review);
+    const fullMarkdown = renderHumanReviewMarkdown(review);
     const html = renderHumanReviewHtml(review);
     const sticky = renderStickySummary(review).markdown;
 
     for (const rendered of [markdown, html, sticky]) {
       assert.doesNotMatch(rendered, /Conversation finding 99|Conflicts with intent/);
     }
-    assert.doesNotMatch(renderHumanReviewMarkdown(review), /Conversation finding 99|Conflicts with intent|conversation-grounded conclusion/i);
+    assert.doesNotMatch(fullMarkdown, /Conversation finding 99|Conflicts with intent/);
     assert.match(markdown, /no conversation-grounded conclusion|Diff reconciliation did not complete/i);
-    assert.match(html, /no conversation-grounded conclusion|Diff reconciliation did not complete/i);
+    if (index === 0) {
+      assert.doesNotMatch(fullMarkdown, /Conversation-aware insights|conversation-grounded conclusion/i);
+      assert.doesNotMatch(html, /conversation-grounded conclusion|Diff reconciliation did not complete/i);
+    } else {
+      assert.match(fullMarkdown, /no conversation-grounded conclusion|Diff reconciliation did not complete/i);
+      assert.match(html, /no conversation-grounded conclusion|Diff reconciliation did not complete/i);
+    }
   }
 });
 

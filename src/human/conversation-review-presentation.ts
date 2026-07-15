@@ -12,8 +12,8 @@ import type { HumanReviewModel } from "./contract";
  * visible because they carry reviewer-relevant trust caveats.
  */
 export function hasConversationReviewValue(model: HumanReviewModel): boolean {
-  if (model.review_insights.length > 0) return true;
   const analysis = model.conversation_analysis;
+  if (presentableConversationInsights(analysis, model.review_insights).length > 0) return true;
   return analysis.status !== "not_assessed" || analysis.summary !== NOT_ASSESSED_CONVERSATION_SUMMARIES.missing_log;
 }
 

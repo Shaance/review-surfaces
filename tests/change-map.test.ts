@@ -314,7 +314,16 @@ test("review-surfaces.CHANGE_MAP.4 labels are escaped in SVG and determinism-che
   // determinism-check exercises a PR-scope run, not only repo scope.
   const script = fs.readFileSync(path.join(process.cwd(), "scripts", "determinism-check.sh"), "utf8");
   assert.match(script, /for SCOPE in repo pr/);
-  assert.match(script, /--review-scope/);
+  assert.match(
+    script,
+    /comment --review-scope "\$scope" --out/,
+    "the GitHub/sticky renderer must use the same scope as the artifact it validates"
+  );
+  assert.equal(
+    [...script.matchAll(/node bin\/review-surfaces\.js comment /g)].length,
+    1,
+    "github and sticky are aliases, so determinism renders the shared surface once per run"
+  );
 });
 
 // ---------------------------------------------------------------------------

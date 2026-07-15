@@ -1015,7 +1015,11 @@ test("review-surfaces.CONVERSATION_REVIEW.4 PR optional enrichment is cached on 
 
       const retry = runCounted();
       assert.equal(retry.status, 0, retry.stderr);
-      assert.doesNotMatch(retry.stdout, /inputs unchanged \(signature match\)/);
+      assert.match(
+        retry.stdout,
+        /inputs unchanged \(signature match\)/,
+        `${flag} should reuse deterministic packet facts while refreshing provider enrichment`
+      );
       const retryStages = countedProviderStages(retry.stderr);
       assert.equal(
         retryStages.filter((stage) => stage === "conversation_analysis").length,
@@ -1026,6 +1030,11 @@ test("review-surfaces.CONVERSATION_REVIEW.4 PR optional enrichment is cached on 
         retryStages.filter((stage) => stage === "conversation_review_insights").length,
         1,
         `${flag} must rerun PR conversation reconciliation; saw ${JSON.stringify(retryStages)}`
+      );
+      assert.deepEqual(
+        retryStages,
+        ["conversation_analysis", "conversation_review_insights"],
+        `${flag} must not rerun reusable narrative or change-map enrichment`
       );
       const refreshed = JSON.parse(fs.readFileSync(humanPath, "utf8"));
       assert.equal(refreshed.conversation_analysis.status, "analyzed");
@@ -1370,6 +1379,96 @@ test("all --review-scope pr --cache reuses a ready PR surface while keeping huma
   }
 });
 
+test("PR cache binds provider-authored sections to the exact enrichment identity", () => {
+  const tmp = setupChangedRepo();
+  try {
+    const marker = "The reviewer brief keeps the approval decision visible.";
+    fs.writeFileSync(path.join(tmp, "agent-stages.json"), JSON.stringify({
+      stages: {
+        human_narrative: {
+          claims: [{ text: `${CHANGED}: ${marker}`, paths: [CHANGED] }]
+        }
+      }
+    }));
+    const agentArgs = [
+      ...ALL_PR,
+      "--cache",
+      "--provider",
+      "agent-file",
+      "--agent-input",
+      "agent-stages.json"
+    ];
+
+    const prime = runCli(tmp, agentArgs);
+    assert.equal(prime.status, 0, prime.stderr);
+    const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
+    const packetPath = path.join(tmp, ".review-surfaces", "review_packet.json");
+    const first = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    const firstPacket = JSON.parse(fs.readFileSync(packetPath, "utf8"));
+    assert.match(JSON.stringify(first.narrative), new RegExp(marker));
+    assert.match(first.generated_from.enrichment_signature, /^[a-f0-9]{64}$/);
+
+    const tampered = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    tampered.generated_from.enrichment_signature = "0".repeat(64);
+    fs.writeFileSync(humanPath, `${JSON.stringify(tampered, null, 2)}\n`);
+    const identityMismatch = runCli(tmp, agentArgs);
+    assert.equal(identityMismatch.status, 0, identityMismatch.stderr);
+    assert.match(identityMismatch.stdout, /inputs unchanged \(signature match\)/);
+    const second = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    assert.equal(second.generated_from.enrichment_signature, first.generated_from.enrichment_signature);
+    assert.notEqual(second.generated_from.enrichment_signature, "0".repeat(64));
+    assert.match(JSON.stringify(second.narrative), new RegExp(marker));
+
+    const providerSwitch = runCli(tmp, [
+      ...ALL_PR,
+      "--cache",
+      "--provider",
+      "mock",
+      "--agent-input",
+      "agent-stages.json"
+    ]);
+    assert.equal(providerSwitch.status, 0, providerSwitch.stderr);
+    assert.match(providerSwitch.stdout, /inputs unchanged \(signature match\)/);
+    const third = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    const thirdPacket = JSON.parse(fs.readFileSync(packetPath, "utf8"));
+    assert.equal(
+      thirdPacket.manifest.signature,
+      firstPacket.manifest.signature,
+      "provider switch must exercise unchanged deterministic packet identity"
+    );
+    assert.notEqual(third.generated_from.enrichment_signature, second.generated_from.enrichment_signature);
+    assert.equal(third.narrative, undefined, "mock regeneration must not retain agent-file prose");
+    assert.doesNotMatch(JSON.stringify(third), new RegExp(marker));
+
+    const preload = countingProviderPreload(tmp, "unused-conversation-event");
+    const runAiAlias = (model: string): { status: number | null; stdout: string; stderr: string } => {
+      const result = spawnSync(
+        "node",
+        [CLI, ...ALL_PR, "--cache", "--provider", "ai-sdk", "--model", model, "--agent-input", "agent-stages.json"],
+        {
+          cwd: tmp,
+          encoding: "utf8",
+          env: { ...process.env, NODE_OPTIONS: `--require=${preload}` }
+        }
+      );
+      return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+    };
+    const unprefixed = runAiAlias("gemini-2.5-flash");
+    assert.equal(unprefixed.status, 0, unprefixed.stderr);
+    assert.ok(countedProviderStages(unprefixed.stderr).includes("human_narrative"));
+    const fourth = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+
+    const prefixed = runAiAlias("google:gemini-2.5-flash");
+    assert.equal(prefixed.status, 0, prefixed.stderr);
+    assert.match(prefixed.stdout, /inputs unchanged \(signature match\)/);
+    assert.deepEqual(countedProviderStages(prefixed.stderr), [], "canonical model aliases must reuse enrichment");
+    const fifth = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    assert.equal(fifth.generated_from.enrichment_signature, fourth.generated_from.enrichment_signature);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("review-surfaces.CONVERSATION_REVIEW.4 repo cache reuses a successful ai-sdk conversation review", () => {
   const tmp = setupChangedRepo();
   try {
@@ -1519,7 +1618,11 @@ test("review-surfaces.CONVERSATION_REVIEW.4 repo cache retries incomplete remote
       const retry = runWithoutCredentials();
 
       assert.equal(retry.status, 0, retry.stderr);
-      assert.doesNotMatch(retry.stdout, /inputs unchanged \(signature match\)/, `${flag} must bypass cache reuse`);
+      assert.match(
+        retry.stdout,
+        /inputs unchanged \(signature match\)/,
+        `${flag} should reuse deterministic packet facts while refreshing provider enrichment`
+      );
       const regenerated = JSON.parse(fs.readFileSync(humanPath, "utf8"));
       assert.equal(regenerated.conversation_analysis.status, "analyzed");
       assert.ok(regenerated.conversation_analysis.quality_flags.includes("conversation_analysis_unavailable"));

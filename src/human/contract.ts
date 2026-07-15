@@ -758,6 +758,9 @@ export interface HumanReviewModel {
     // Producing packet signature; artifact-only rebuilds retain advisory
     // provider output only when every packet input is unchanged.
     packet_signature?: string;
+    // Provider + effective model identity for optional provider-authored prose.
+    // This is separate from the deterministic packet signature by design.
+    enrichment_signature?: string;
     // COLD_START.7: working-tree files absorbed into this review. 0 on a clean
     // or pinned-head run; a nonzero count renders on every human surface.
     uncommitted_files: number;

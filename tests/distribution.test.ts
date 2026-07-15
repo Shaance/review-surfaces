@@ -190,21 +190,33 @@ test("review-surfaces.DISTRIBUTION.7 the all terminal summary ends with the HTML
   assert.match(pointer, /HTML cockpit: open/);
   assert.match(pointer, /human_review\.html/);
   assert.doesNotMatch(pointer, /npx|--out|--config/);
-  // In the all command the ordering is: human-review summary leads
+  // In the all command the ordering is: the shared cockpit writer renders HTML
+  // and prints the human-review summary, then the artifacts line, then gate
+  // messages, then the cockpit pointer LAST — the run genuinely ends on it even
+  // when a gate warning or strict failure prints.
+  //
+  // Keeping rendering and summarization in one shared helper prevents normal,
+  // cache-hit, and optional-enrichment-refresh paths from drifting apart.
+  const cockpitWriter = cli.split("async function writeHumanReviewCockpitAndMaybeSummarize")[1].split("\nfunction ")[0];
+  assert.ok(cockpitWriter.includes("renderHumanReviewHtml("), "the shared writer renders human_review.html");
+  assert.ok(cockpitWriter.includes("printHumanReviewTerminalSummary("), "the shared writer prints the terminal summary");
+  // In the all command the ordering is: shared writer first
   // (HUMAN_REVIEW.15), then the artifacts line, then gate messages, then the
   // cockpit pointer LAST — the run genuinely ends on it even when a gate
   // warning or strict failure prints.
   const runAll = cli.split("async function runAll")[1].split("\nasync function ")[0];
-  // `all` renders the cockpit itself on the main path; the cache-hit helper
-  // does the same.
-  assert.ok(runAll.includes("renderHumanReviewHtml("), "all writes human_review.html directly");
-  assert.ok(cli.split("async function writeAndMaybeSummarizeHumanReviewFromArtifacts")[1].split("\nasync function ")[0].includes("renderHumanReviewHtml("), "the cache-hit path writes the cockpit too");
-  const summaryCallIndex = runAll.indexOf("printHumanReviewTerminalSummary(");
+  assert.ok(runAll.includes("writeHumanReviewCockpitAndMaybeSummarize("), "all uses the shared cockpit writer");
+  assert.ok(
+    cli.split("async function writeAndMaybeSummarizeHumanReviewFromArtifacts")[1].split("\nasync function ")[0]
+      .includes("writeHumanReviewCockpitAndMaybeSummarize("),
+    "the cache-hit path uses the shared cockpit writer too"
+  );
+  const cockpitCallIndex = runAll.indexOf("writeHumanReviewCockpitAndMaybeSummarize(");
   const artifactsLogIndex = runAll.indexOf("Wrote review-surfaces artifacts to");
   const lastGateIndex = runAll.lastIndexOf("applyGate(");
   const lastPointerIndex = runAll.lastIndexOf("printCockpitPointer(");
-  assert.ok(summaryCallIndex >= 0 && artifactsLogIndex >= 0 && lastGateIndex >= 0 && lastPointerIndex >= 0);
-  assert.ok(summaryCallIndex < artifactsLogIndex, "the human-review summary leads the artifact-status line");
+  assert.ok(cockpitCallIndex >= 0 && artifactsLogIndex >= 0 && lastGateIndex >= 0 && lastPointerIndex >= 0);
+  assert.ok(cockpitCallIndex < artifactsLogIndex, "the human-review summary leads the artifact-status line");
   assert.ok(lastGateIndex < lastPointerIndex, "the cockpit pointer prints after gate messages");
   // Every applyGate in runAll is followed by a pointer print (cache-hit paths
   // end on the pointer too).

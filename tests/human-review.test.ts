@@ -1920,6 +1920,8 @@ test("human review Markdown renders a compact cockpit surface", () => {
   assert.match(markdown, /## Required checks/);
   assert.match(markdown, /## Trust summary/);
   assert.match(markdown, /## Supporting review queue/);
+  assert.match(markdown, /## Conversation-aware insights/);
+  assert.match(markdown, /No conversation analysis was supplied with this review/);
   assert.match(markdown, /## Supporting artifacts/);
   assert.match(markdown, /\[Interactive HTML cockpit\]\(human_review\.html\)/);
   assert.match(markdown, /\[`human_review\.json`\]\(human_review\.json\)/);
@@ -1928,7 +1930,7 @@ test("human review Markdown renders a compact cockpit surface", () => {
   }
   assert.doesNotMatch(
     markdown,
-    /## (Evidence cards|Since last review|Trust audit|Risk lenses|Suggested comments|Intent mismatch|Reading order|Change map|Change narrative|Test plan|Conversation-aware insights)/
+    /## (Evidence cards|Since last review|Trust audit|Risk lenses|Suggested comments|Intent mismatch|Reading order|Change map|Change narrative|Test plan)/
   );
 });
 

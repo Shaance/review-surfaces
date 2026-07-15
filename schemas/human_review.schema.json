@@ -530,6 +530,7 @@
         "head_ref": { "type": "string" },
         "head_sha": { "type": "string" },
         "packet_signature": { "type": "string", "maxLength": 128 },
+        "enrichment_signature": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
         "uncommitted_files": { "type": "integer", "minimum": 0 },
         "omitted_untracked_files": { "type": "integer", "minimum": 0 },
         "human_review_config_signature": { "type": "string" }

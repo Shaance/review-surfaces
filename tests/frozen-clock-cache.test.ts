@@ -177,8 +177,9 @@ test("review-surfaces signature: changes when a changed file's content changes",
   }
 });
 
-// FIX 2: provider/model swaps and base/head differences are cache-key-relevant.
-test("review-surfaces signature: changes with provider/model and with base/head", () => {
+// Provider and base/head changes are cache-key-relevant. Model flags are only
+// inputs for providers that actually use a model.
+test("review-surfaces signature: changes with provider and base/head but ignores a mock-only model flag", () => {
   const tmp = setupRepo("review-surfaces-sig-provider-");
   try {
     runAll(tmp, ["--now", FROZEN]);
@@ -188,7 +189,7 @@ test("review-surfaces signature: changes with provider/model and with base/head"
     assert.notEqual(signatureOf(tmp), mockSig, "provider swap must change the signature");
 
     runAll(tmp, ["--now", FROZEN, "--model", "anthropic:claude-3-5-haiku-latest"]);
-    assert.notEqual(signatureOf(tmp), mockSig, "model swap must change the signature");
+    assert.equal(signatureOf(tmp), mockSig, "mock does not use a model, so the flag must not invalidate its cache");
 
     // Distinct base produces a distinct base_sha (HEAD vs HEAD~ requires a 2nd
     // commit); add one so base/head differ.

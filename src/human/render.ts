@@ -24,6 +24,7 @@ import {
   conversationInsightBasisLabel,
   conversationInsightCitationGroups,
   conversationReviewPresentation,
+  hasConversationReviewValue,
   presentableConversationInsights
 } from "./conversation-review-presentation";
 import type {
@@ -198,7 +199,11 @@ ${renderTrustSummary(model.trust_audit)}
 ${renderSupportingReviewQueue(model, partitionSupportingPreview(model.review_queue).preview, context, 1)}
 ${supportingQueueNote(model.review_queue.length, SUPPORTING_PREVIEW_LIMIT)}
 
-## Supporting artifacts
+${hasConversationReviewValue(model) ? `## Conversation-aware insights
+
+${renderConversationInsightsMarkdown(model)}
+
+` : ""}## Supporting artifacts
 
 ${renderSupportingArtifactIndex()}
 `;

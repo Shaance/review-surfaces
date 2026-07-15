@@ -495,21 +495,20 @@ function resolveBaseRefForRun(cwd: string, explicitBase: string | undefined, hea
 // default) so a model change made ONLY through the env var still busts the
 // cache; without this the signature recorded `undefined` and a re-run with a
 // DIFFERENT REVIEW_SURFACES_AI_MODEL hit the old cache and reused the prior
-// model's reasoning/enrichment. mock NEVER calls a model and must stay
-// deterministic, so it folds nothing extra (the explicit requested model, if
-// any, is still recorded so an explicit --model swap remains a cache miss).
-// agent-file is offline and does not consult the AI model env var, so it keeps
-// the requested-model-only behavior unchanged.
+// model's reasoning/enrichment. mock and agent-file NEVER call a model, so a
+// model flag is not an input for either provider and must not invalidate their
+// deterministic cache entries.
 function signatureModel(
   parsed: ParsedArgs,
   config: ReviewSurfacesConfig,
   provider: ProviderName
 ): string | undefined {
   const requested = stringFlag(parsed, "model") ?? config.llm.model ?? undefined;
-  if (provider === "ai-sdk") {
-    return effectiveModelId(requested);
-  }
-  return requested;
+  return effectiveProviderModel(provider, requested);
+}
+
+function effectiveProviderModel(provider: ProviderName, requested?: string): string | undefined {
+  return provider === "ai-sdk" ? effectiveModelId(requested) : undefined;
 }
 
 // Validate --now as a parseable ISO 8601 instant and normalize it to a single
@@ -563,20 +562,48 @@ interface HumanEnrichmentContext {
   remotePrivacyBlocked: boolean;
 }
 
+interface HumanEnrichmentIdentity {
+  providerName: ProviderName;
+  model?: string;
+  signature: string;
+}
+
 interface BuiltHumanReviewContext {
   outputDir: string;
   model: HumanReviewModel;
   diff?: StructuredDiff;
 }
 
-interface HumanReviewArtifactInputs {
-  packet?: ReviewPacket;
+interface HumanReviewBuildOptions {
   prSurface?: PrReviewSurfaceModel;
+  diff?: StructuredDiff;
   feedback?: FeedbackFile[];
+  config?: ReviewSurfacesConfig;
   // Optional provider prose carried through a cache-hit rebuild.
   narrative?: ChangeNarrative;
   changeMapInsights?: ChangeMapInsights;
   conversationReview?: ConversationReviewResult;
+  factContext?: HumanFactContext;
+  enrichmentSignature?: string;
+}
+
+interface HumanReviewArtifactInputs extends Pick<
+  HumanReviewBuildOptions,
+  "prSurface" | "feedback" | "narrative" | "changeMapInsights" | "conversationReview" | "enrichmentSignature"
+> {
+  packet?: ReviewPacket;
+}
+
+interface BuildHumanEnrichmentsInput {
+  cwd: string;
+  config: ReviewSurfacesConfig;
+  packet: ReviewPacket;
+  prSurface?: PrReviewSurfaceModel;
+  diff?: StructuredDiff;
+  collection: CollectionResult;
+  enrichment: HumanEnrichmentContext;
+  factContext?: HumanFactContext;
+  cached?: CachedHumanReviewReuse;
 }
 
 interface HumanFactContext {
@@ -702,6 +729,11 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   const cacheSnapshot = booleanFlag(parsed, "cache") ? await readCacheSnapshot(cwd, parsed) : undefined;
   const { collection, config } = await collect(parsed);
   const artifactStore = createPipelineArtifactStoreForCollection(collection);
+  const provider = providerFlag(parsed, config);
+  const requestedModel = effectiveNarrativeModel(parsed, config);
+  const humanEnrichmentIdentity = resolveHumanEnrichmentIdentity(provider, requestedModel);
+  const enrichmentSignature = humanEnrichmentIdentity.signature;
+  const redactSecrets = redactSecretsFlag(parsed, config);
   // The cache signature folds the whole-repo packet inputs, NOT --review-scope. In
   // pr mode the PR surface is a separate artifact written further below; a plain
   // signature hit would return before that block and leave pr_review_surface.json
@@ -718,11 +750,12 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
           collection.outputDir,
           String(collection.manifest.head_sha ?? ""),
           String(collection.manifest.signature ?? ""),
-          reviewScope(parsed)
+          reviewScope(parsed),
+          enrichmentSignature
         )
     : undefined;
   const prSurfaceReuse = cacheHit
-    ? prSurfaceCacheReuse(parsed, collection, config, cachedHumanReuse)
+    ? prSurfaceCacheReuse(parsed, collection)
     : undefined;
   if (cacheSnapshot && cacheHit && prSurfaceReuse?.reusable) {
     const strict = booleanFlag(parsed, "strict");
@@ -740,25 +773,70 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
         assertValidPrSurface(cwd, prSurfaceReuse.surface);
         await writeJson(path.join(collection.outputDir, "pr_review_surface.json"), prSurfaceReuse.surface);
       }
-      const provider = providerFlag(parsed, config);
-      // review-surfaces.NARRATIVE.1: on a cache hit the inputs (and the
-      // provider/agent-input, which are part of the cache signature) are
-      // unchanged, so REUSE any provider narrative already in human_review.json
-      // rather than re-invoking the provider. This keeps optional prose lossless
-      // and avoids a fresh ai-sdk call. No prior narrative means no narrative.
-      const cachedNarrative = cachedHumanReuse?.narrative;
-      const cachedChangeMapInsights = cachedHumanReuse?.changeMapInsights;
-      const cachedConversationReview = config.human_review.enabled
-        ? cachedHumanReuse?.conversationReview
-        : undefined;
-      const cachedHumanInputs: HumanReviewArtifactInputs = {
-        packet: cacheSnapshot.packet,
-        prSurface: prSurfaceReuse.surface,
-        feedback: collection.feedback,
-        narrative: cachedNarrative,
-        changeMapInsights: cachedChangeMapInsights,
-        conversationReview: cachedConversationReview
-      };
+      const cachedPacket = cacheSnapshot.packet!;
+      if (config.human_review.enabled && !humanEnrichmentCacheIsReusable(
+        reviewScope(parsed),
+        provider,
+        cachedHumanReuse
+      )) {
+        // Deterministic packet + PR facts still match. Refresh only the optional
+        // provider-authored projections, then rebuild the human surface around
+        // the cached facts instead of rerunning collection/evaluation.
+        const diff = readHumanReviewDiff(collection.outputDir);
+        const factContext = buildHumanFactContext(cwd, cachedPacket, diff, config);
+        const enrichment = resolveHumanEnrichmentContext(
+          cwd,
+          parsed,
+          collection,
+          redactSecrets,
+          humanEnrichmentIdentity
+        );
+        const refreshed = await buildHumanEnrichmentsForAll({
+          cwd,
+          config,
+          packet: cachedPacket,
+          prSurface: prSurfaceReuse.surface,
+          diff,
+          collection,
+          enrichment,
+          factContext,
+          cached: cachedHumanReuse
+        });
+        const humanReview = await writeHumanReviewForPacket(cwd, collection.outputDir, cachedPacket, {
+          prSurface: prSurfaceReuse.surface,
+          diff,
+          feedback: collection.feedback,
+          config,
+          ...refreshed,
+          factContext,
+          enrichmentSignature
+        });
+        await writeHumanReviewCockpitAndMaybeSummarize(
+          cwd,
+          collection.outputDir,
+          humanReview,
+          diff,
+          config
+        );
+      } else {
+        // review-surfaces.NARRATIVE.1: reuse provider-authored sections only
+        // after packet and provider/model enrichment identities both match.
+        await writeAndMaybeSummarizeHumanReviewFromArtifacts(
+          cwd,
+          collection.outputDir,
+          reviewScope(parsed),
+          config,
+          {
+            packet: cachedPacket,
+            prSurface: prSurfaceReuse.surface,
+            feedback: collection.feedback,
+            narrative: cachedHumanReuse?.narrative,
+            changeMapInsights: cachedHumanReuse?.changeMapInsights,
+            conversationReview: config.human_review.enabled ? cachedHumanReuse?.conversationReview : undefined,
+            enrichmentSignature
+          }
+        );
+      }
       // Round 6: a cache hit must match a normal run's gate behavior. Run
       // applyGate on the cached evaluation so a cached packet with a
       // gate-tripping condition is NOT silently passed: without --strict
@@ -768,41 +846,19 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       // evaluation is unavailable here (only reachable without --strict, since
       // strict-without-evaluation falls through to regenerate below) we keep the
       // prior reuse-and-succeed behavior rather than forcing a regenerate.
-      if (evaluation) {
-        await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
-        console.log(`inputs unchanged (signature match); reusing existing packet at ${displayPath(cwd, cacheSnapshot.packetPath)}`);
-        const cachedGateExit = applyGate(parsed, evaluation, collection, provider, config, cacheSnapshot.packet?.risks);
-        // review-surfaces.QUALITY_GATE.3: the cache hit is the FASTEST reuse path,
-        // and it accepts --json too, so it must emit the SAME structured run
-        // summary the non-cache path does (after the gate, before the cockpit
-        // pointer) — otherwise `all --cache --json` prints no structured line.
-        if (cacheSnapshot.packet) {
-          maybePrintRunSummaryJson(parsed, config, cacheSnapshot.packet, collection.outputDir, { collection, provider });
-        }
-        // review-surfaces.DISTRIBUTION.7: the cache-hit run also ends on the
-        // cockpit pointer, after any gate message.
-        if (config.human_review.enabled && config.human_review.default_entrypoint) {
-          printCockpitPointer(cwd, collection.outputDir);
-        }
-        return cachedGateExit;
-      }
-      await writeAndMaybeSummarizeHumanReviewFromArtifacts(cwd, collection.outputDir, reviewScope(parsed), config, cachedHumanInputs);
       console.log(`inputs unchanged (signature match); reusing existing packet at ${displayPath(cwd, cacheSnapshot.packetPath)}`);
-      // review-surfaces.QUALITY_GATE.3: emit the --json summary on this reuse path
-      // too (no --strict, no evaluation gate ran, but --json is still honored).
-      if (cacheSnapshot.packet) {
-        maybePrintRunSummaryJson(parsed, config, cacheSnapshot.packet, collection.outputDir, { collection, provider });
-      }
+      const cachedGateExit = evaluation
+        ? applyGate(parsed, evaluation, collection, provider, config, cachedPacket.risks)
+        : ExitCodes.success;
+      maybePrintRunSummaryJson(parsed, config, cachedPacket, collection.outputDir, { collection, provider });
       if (config.human_review.enabled && config.human_review.default_entrypoint) {
         printCockpitPointer(cwd, collection.outputDir);
       }
-      return ExitCodes.success;
+      return cachedGateExit;
     }
     console.warn("Cached output is incomplete (evaluation.yaml missing/unreadable); regenerating to apply the --strict gate.");
   }
   const commands = [`review-surfaces ${parsed.command} ${process.argv.slice(3).join(" ")}`.trim()];
-  const provider = providerFlag(parsed, config);
-  const requestedModel = stringFlag(parsed, "model") ?? config.llm.model ?? undefined;
   const isPrScope = reviewScope(parsed) === "pr";
   // PR-mode contract: scope/coverage/risks are DETERMINISTIC and the live provider
   // contributes only diff-scoped narrative plus advisory conversation review. So
@@ -834,13 +890,12 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
     agentInput: stringFlag(parsed, "agent-input")
   });
-  const redactSecrets = redactSecretsFlag(parsed, config);
   const humanEnrichment = resolveHumanEnrichmentContext(
     cwd,
     parsed,
-    config,
     collection,
-    redactSecrets
+    redactSecrets,
+    humanEnrichmentIdentity
   );
   const reasoningOptions = {
     redactSecrets,
@@ -970,63 +1025,45 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
       console.warn(`PR review surface is not ready (${persistedSurface.blocked_reason})`);
     }
   }
-  let narrative: ChangeNarrative | undefined;
-  let changeMapInsights: ChangeMapInsights | undefined;
-  let conversationReview: ConversationReviewResult | undefined;
-  if (config.human_review.enabled) {
-    if (isPrScope) {
-      // These optional projections read the same deterministic packet and do
-      // not influence approval. Their latency should therefore not be additive.
-      [narrative, changeMapInsights, conversationReview] = await Promise.all([
-        buildHumanNarrativeForAll(
-          config, writtenPacket, persistedSurface, humanReviewDiff, collection, humanEnrichment
-        ),
-        buildChangeMapInsightsForAll(
-          cwd, writtenPacket, humanReviewDiff, humanEnrichment, humanFactContext
-        ),
-        buildConversationReviewForAll(
-          writtenPacket, humanReviewDiff, collection, humanEnrichment
-        )
-      ]);
-    } else {
-      // Repo enrichments are independent read-only projections over the same
-      // packet/diff/provider input, so their latency need not be additive.
-      [narrative, changeMapInsights, conversationReview] = await Promise.all([
-        buildHumanNarrativeForAll(
-          config, writtenPacket, undefined, humanReviewDiff, collection, humanEnrichment
-        ),
-        buildChangeMapInsightsForAll(
-          cwd, writtenPacket, humanReviewDiff, humanEnrichment, humanFactContext
-        ),
-        buildConversationReviewForAll(
-          writtenPacket, humanReviewDiff, collection, humanEnrichment
-        )
-      ]);
-    }
-  }
+  // Optional projections share the same deterministic packet and run in
+  // parallel; they never influence approval.
+  const humanEnrichments = config.human_review.enabled
+    ? await buildHumanEnrichmentsForAll({
+        cwd,
+        config,
+        packet: writtenPacket,
+        prSurface: persistedSurface,
+        diff: humanReviewDiff,
+        collection,
+        enrichment: humanEnrichment,
+        factContext: humanFactContext
+      })
+    : {};
   const humanReview = config.human_review.enabled
-    ? await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, persistedSurface, humanReviewDiff, collection.feedback, config, narrative, changeMapInsights, conversationReview, humanFactContext)
+    ? await writeHumanReviewForPacket(cwd, collection.outputDir, writtenPacket, {
+        prSurface: persistedSurface,
+        diff: humanReviewDiff,
+        feedback: collection.feedback,
+        config,
+        ...humanEnrichments,
+        factContext: humanFactContext,
+        enrichmentSignature
+      })
     : undefined;
   if (!config.human_review.enabled) {
     removeHumanReviewArtifacts(collection.outputDir);
   }
-  // review-surfaces.DISTRIBUTION.7: `all` writes the cockpit DIRECTLY from the
-  // exact model it just built (provider narrative, scope, budget, and config
-  // intact), so the final pointer never asks the user to re-run a command that
-  // could rebuild a different cockpit.
-  if (humanReview) {
-    await writeText(
-      path.join(collection.outputDir, "human_review.html"),
-      renderHumanReviewHtml(humanReview, { diff: humanReviewDiff })
-    );
-  }
   if (enrichment.status === "skipped" || enrichment.status === "failed") {
     console.warn(enrichment.summary);
   }
-  // review-surfaces.HUMAN_REVIEW.15: the human-review summary leads over the
-  // secondary artifact-status line.
-  if (humanReview && config.human_review.default_entrypoint) {
-    printHumanReviewTerminalSummary(cwd, collection.outputDir, humanReview);
+  if (humanReview) {
+    await writeHumanReviewCockpitAndMaybeSummarize(
+      cwd,
+      collection.outputDir,
+      humanReview,
+      humanReviewDiff,
+      config
+    );
   }
   console.log(`Wrote review-surfaces artifacts to ${displayPath(cwd, collection.outputDir)}`);
   debug(parsed, `completed in ${Date.now() - startedAt}ms`);
@@ -1116,23 +1153,49 @@ function effectiveNarrativeModel(parsed: ParsedArgs, config: ReviewSurfacesConfi
   return stringFlag(parsed, "model") ?? config.llm.model ?? process.env.REVIEW_SURFACES_AI_MODEL ?? undefined;
 }
 
-function resolveHumanEnrichmentContext(
-  cwd: string,
-  parsed: ParsedArgs,
-  config: ReviewSurfacesConfig,
-  collection: CollectionResult,
-  redactSecrets: boolean
-): HumanEnrichmentContext {
-  const providerName = providerFlag(parsed, config);
-  const model = effectiveNarrativeModel(parsed, config);
-  const remotePrivacyBlocked = collection.privacy.remote_provider_blocked;
+function resolveHumanEnrichmentIdentity(
+  providerName: ProviderName,
+  requestedModel?: string
+): HumanEnrichmentIdentity {
+  // mock and agent-file are model-independent. Ambient/model flags must not
+  // invalidate their otherwise identical offline enrichment.
+  const model = effectiveProviderModel(providerName, requestedModel);
   return {
     providerName,
     model,
+    signature: crypto.createHash("sha256").update(JSON.stringify({
+      provider: providerName,
+      model: model ?? null
+    })).digest("hex")
+  };
+}
+
+function humanEnrichmentCacheIsReusable(
+  scope: ReviewScope,
+  provider: ProviderName,
+  cached?: CachedHumanReviewReuse
+): boolean {
+  if (!conversationReviewIsReusable(cached?.conversationReview)) {
+    return false;
+  }
+  return scope !== "pr" || provider !== "ai-sdk" || cached?.narrative?.source === "provider";
+}
+
+function resolveHumanEnrichmentContext(
+  cwd: string,
+  parsed: ParsedArgs,
+  collection: CollectionResult,
+  redactSecrets: boolean,
+  identity: HumanEnrichmentIdentity
+): HumanEnrichmentContext {
+  const remotePrivacyBlocked = collection.privacy.remote_provider_blocked;
+  return {
+    providerName: identity.providerName,
+    model: identity.model,
     redactSecrets,
     remotePrivacyBlocked,
-    provider: providerFor(providerName, {
-      model,
+    provider: providerFor(identity.providerName, {
+      model: identity.model,
       cwd,
       remotePrivacyBlocked,
       agentInput: stringFlag(parsed, "agent-input")
@@ -1213,6 +1276,51 @@ async function buildConversationReviewForAll(
   });
 }
 
+async function buildHumanEnrichmentsForAll(
+  input: BuildHumanEnrichmentsInput
+): Promise<Pick<HumanReviewBuildOptions, "narrative" | "changeMapInsights" | "conversationReview">> {
+  // A matching human artifact proves each optional stage already completed.
+  // Retry only components whose result is explicitly non-reusable; an absent
+  // map contribution is still a valid completed result when the identity matched.
+  const narrative = input.cached?.narrative
+    ? Promise.resolve(input.cached.narrative)
+    : buildHumanNarrativeForAll(
+        input.config,
+        input.packet,
+        input.prSurface,
+        input.diff,
+        input.collection,
+        input.enrichment
+      );
+  const changeMapInsights = input.cached
+    ? Promise.resolve(input.cached.changeMapInsights)
+    : buildChangeMapInsightsForAll(
+        input.cwd,
+        input.packet,
+        input.diff,
+        input.enrichment,
+        input.factContext
+      );
+  const conversationReview = input.cached?.conversationReview
+    ? Promise.resolve(input.cached.conversationReview)
+    : buildConversationReviewForAll(
+        input.packet,
+        input.diff,
+        input.collection,
+        input.enrichment
+      );
+  const [resolvedNarrative, resolvedChangeMapInsights, resolvedConversationReview] = await Promise.all([
+    narrative,
+    changeMapInsights,
+    conversationReview
+  ]);
+  return {
+    narrative: resolvedNarrative,
+    changeMapInsights: resolvedChangeMapInsights,
+    conversationReview: resolvedConversationReview
+  };
+}
+
 function changeMapAreasForInsights(diff: StructuredDiff | undefined, roots: readonly string[]): Array<{ name: string; paths: string[] }> {
   if (!diff) {
     return [];
@@ -1231,14 +1339,10 @@ function changeMapAreasForInsights(diff: StructuredDiff | undefined, roots: read
 
 function prSurfaceCacheReuse(
   parsed: ParsedArgs,
-  collection: CollectionResult,
-  config: ReviewSurfacesConfig,
-  cachedHumanReuse?: CachedHumanReviewReuse
+  collection: CollectionResult
 ): PrSurfaceCacheReuse {
   if (reviewScope(parsed) !== "pr") {
-    return {
-      reusable: !config.human_review.enabled || conversationReviewIsReusable(cachedHumanReuse?.conversationReview)
-    };
+    return { reusable: true };
   }
   const surfacePath = path.join(collection.outputDir, "pr_review_surface.json");
   try {
@@ -1248,14 +1352,7 @@ function prSurfaceCacheReuse(
     // independent of optional narrative provider/model settings.
     const factsReusable = (
       surface?.status === "ready" &&
-      prSurfaceIdentityMatches(collection.git, surface, "strict") &&
-      (!config.human_review.enabled || (
-        conversationReviewIsReusable(
-          cachedHumanReuse?.conversationReview
-        ) && (
-          providerFlag(parsed, config) !== "ai-sdk" || cachedHumanReuse?.narrative?.source === "provider"
-        )
-      ))
+      prSurfaceIdentityMatches(collection.git, surface, "strict")
     );
     if (!factsReusable) {
       return { reusable: false };
@@ -1768,15 +1865,26 @@ async function writeAndMaybeSummarizeHumanReviewFromArtifacts(
     return;
   }
   const context = await writeHumanReviewFromArtifacts(cwd, outDir, scope, config, inputs);
-  // review-surfaces.DISTRIBUTION.7: the cache-hit path writes the cockpit from
-  // the same freshly-rebuilt model, like the main `all` path.
+  await writeHumanReviewCockpitAndMaybeSummarize(cwd, outDir, context.model, context.diff, config);
+}
+
+async function writeHumanReviewCockpitAndMaybeSummarize(
+  cwd: string,
+  outDir: string,
+  model: HumanReviewModel,
+  diff: StructuredDiff | undefined,
+  config: ReviewSurfacesConfig
+): Promise<void> {
+  // review-surfaces.DISTRIBUTION.7: every path writes the cockpit from the exact
+  // model it just built, so provider narrative, scope, budget, and config cannot
+  // drift between the Markdown/JSON artifacts and the browser surface.
   const outputDir = outDir.endsWith(".json") ? path.dirname(outDir) : outDir;
   await writeText(
     path.join(outputDir, "human_review.html"),
-    renderHumanReviewHtml(context.model, { diff: context.diff })
+    renderHumanReviewHtml(model, { diff })
   );
   if (config.human_review.default_entrypoint) {
-    printHumanReviewTerminalSummary(cwd, outDir, context.model);
+    printHumanReviewTerminalSummary(cwd, outDir, model);
   }
 }
 
@@ -1897,36 +2005,31 @@ async function buildHumanReviewFromArtifacts(
       return {
         outputDir,
         diff,
-        model: buildHumanReviewForPacket(
-          cwd,
-          outputDir,
-          packet,
-          undefined,
+        model: buildHumanReviewForPacket(cwd, outputDir, packet, {
           diff,
-          inputs?.feedback ?? readHumanReviewFeedback(outputDir),
+          feedback: inputs?.feedback ?? readHumanReviewFeedback(outputDir),
           config,
-          inputs?.narrative,
-          inputs?.changeMapInsights,
-          conversationReview
-        )
+          narrative: inputs?.narrative,
+          changeMapInsights: inputs?.changeMapInsights,
+          conversationReview,
+          enrichmentSignature: inputs?.enrichmentSignature
+        })
       };
     }
   }
   return {
     outputDir,
     diff,
-    model: buildHumanReviewForPacket(
-      cwd,
-      outputDir,
-      packet,
-      surface,
+    model: buildHumanReviewForPacket(cwd, outputDir, packet, {
+      prSurface: surface,
       diff,
-      inputs?.feedback ?? readHumanReviewFeedback(outputDir),
+      feedback: inputs?.feedback ?? readHumanReviewFeedback(outputDir),
       config,
-      inputs?.narrative,
-      inputs?.changeMapInsights,
-      conversationReview
-    )
+      narrative: inputs?.narrative,
+      changeMapInsights: inputs?.changeMapInsights,
+      conversationReview,
+      enrichmentSignature: inputs?.enrichmentSignature
+    })
   };
 }
 
@@ -1964,16 +2067,9 @@ function buildHumanReviewForPacket(
   cwd: string,
   outDir: string,
   packet: ReviewPacket,
-  prSurface?: PrReviewSurfaceModel,
-  diff?: StructuredDiff,
-  feedback?: FeedbackFile[],
-  config?: ReviewSurfacesConfig,
-  narrative?: ChangeNarrative,
-  changeMapInsights?: ChangeMapInsights,
-  conversationReview?: ConversationReviewResult,
-  suppliedFacts?: HumanFactContext
+  options: HumanReviewBuildOptions = {}
 ): HumanReviewModel {
-  const resolvedDiff = diff;
+  const resolvedDiff = options.diff;
   // review-surfaces.POLICY.1: a malformed committed policy fails LOUDLY.
   let policy: ReviewPolicy | undefined;
   try {
@@ -1985,33 +2081,33 @@ function buildHumanReviewForPacket(
   // local config/feedback), and the policy content hash joins the config
   // signature so a policy edit regenerates cached human artifacts.
   const policySignature = policy ? crypto.createHash("sha256").update(JSON.stringify(policy)).digest("hex") : "";
-  const effectiveConfig = config
+  const effectiveConfig = options.config
     ? {
-        ...config,
+        ...options.config,
         human_review: {
-          ...config.human_review,
+          ...options.config.human_review,
           policy_signature: policySignature,
           required_manual_checks: policy?.required_manual_checks?.length
-            ? [...policy.required_manual_checks, ...config.human_review.required_manual_checks]
-            : config.human_review.required_manual_checks
+            ? [...policy.required_manual_checks, ...options.config.human_review.required_manual_checks]
+            : options.config.human_review.required_manual_checks
         }
       }
-    : config;
+    : options.config;
   // One deterministic fact context supplies every consumer in this run. It
   // shares memoized readers, tree listings, roots, and import edges across
   // enrichment and human-model assembly.
-  const facts = suppliedFacts ?? buildHumanFactContext(cwd, packet, resolvedDiff, effectiveConfig);
+  const facts = options.factContext ?? buildHumanFactContext(cwd, packet, resolvedDiff, effectiveConfig);
   const previousReview = readPreviousReviewContext(cwd, packet);
   const humanReview = buildHumanReview({
     packet,
-    prSurface,
+    prSurface: options.prSurface,
     diff: resolvedDiff,
-    feedback,
+    feedback: options.feedback,
     config: effectiveConfig?.human_review,
     contractPaths: effectiveConfig?.contract_surfaces.paths,
-    narrative,
-    conversationAnalysis: conversationReview?.analysis,
-    reviewInsights: conversationReview?.insights,
+    narrative: options.narrative,
+    conversationAnalysis: options.conversationReview?.analysis,
+    reviewInsights: options.conversationReview?.insights,
     policy,
     policyNowIso: typeof (packet.manifest as { created_at?: unknown }).created_at === "string" ? (packet.manifest as { created_at: string }).created_at : "",
     // review-surfaces.SEMANTIC_DIFF.1-4: computed here (sync git access) so the
@@ -2031,8 +2127,8 @@ function buildHumanReviewForPacket(
     // shared import-graph parser over head content — computed here (file access)
     // so the section is uniform on every build path.
     changedImportEdges: facts.changedImportEdges,
-    changeGraphEdgeInsights: changeMapInsights?.edgeInsights,
-    changeGraphAreaInsights: changeMapInsights?.areaInsights,
+    changeGraphEdgeInsights: options.changeMapInsights?.edgeInsights,
+    changeGraphAreaInsights: options.changeMapInsights?.areaInsights,
     implementationRoots: facts.implementationRoots,
     // review-surfaces.ARCH_DRIFT.1-3: base-vs-head resolved import diffs at
     // module altitude, computed here (base/head file access).
@@ -2049,7 +2145,8 @@ function buildHumanReviewForPacket(
     // can escape the repo when --out points elsewhere. Console logs still use
     // artifactPathForLog — the terminal is ephemeral, the model is not.
     packetPath: "review_packet.json",
-    prSurfacePath: prSurface ? "pr_review_surface.json" : undefined
+    prSurfacePath: options.prSurface ? "pr_review_surface.json" : undefined,
+    enrichmentSignature: options.enrichmentSignature
   });
   assertValidHumanReview(cwd, humanReview);
   return humanReview;
@@ -2721,7 +2818,8 @@ function readCachedHumanReviewReuse(
   outDir: string,
   headSha: string,
   packetSignature: string,
-  expectedScope: ReviewScope
+  expectedScope: ReviewScope,
+  expectedEnrichmentSignature?: string
 ): CachedHumanReviewReuse | undefined {
   const humanReviewPath = path.join(outDir.endsWith(".json") ? path.dirname(outDir) : outDir, "human_review.json");
   try {
@@ -2731,6 +2829,12 @@ function readCachedHumanReviewReuse(
     }
     const model = loaded as HumanReviewModel;
     if (model.mode !== expectedScope) {
+      return undefined;
+    }
+    if (
+      expectedEnrichmentSignature !== undefined &&
+      model.generated_from.enrichment_signature !== expectedEnrichmentSignature
+    ) {
       return undefined;
     }
     const narrative = headSha && model.narrative?.validated_at_head === headSha
@@ -2906,19 +3010,10 @@ async function writeHumanReviewForPacket(
   cwd: string,
   outDir: string,
   packet: ReviewPacket,
-  prSurface?: PrReviewSurfaceModel,
-  diff?: StructuredDiff,
-  feedback?: FeedbackFile[],
-  config?: ReviewSurfacesConfig,
-  narrative?: ChangeNarrative,
-  changeMapInsights?: ChangeMapInsights,
-  conversationReview?: ConversationReviewResult,
-  factContext?: HumanFactContext
+  options: HumanReviewBuildOptions = {}
 ): Promise<HumanReviewModel> {
-  const humanReview = buildHumanReviewForPacket(
-    cwd, outDir, packet, prSurface, diff, feedback, config, narrative, changeMapInsights, conversationReview, factContext
-  );
-  await writeHumanReviewArtifacts(outDir, humanReview, { diff });
+  const humanReview = buildHumanReviewForPacket(cwd, outDir, packet, options);
+  await writeHumanReviewArtifacts(outDir, humanReview, { diff: options.diff });
   return humanReview;
 }
 
@@ -3280,7 +3375,15 @@ async function loadHumanReviewForRender(
     );
   }
   const model = loaded as HumanReviewModel;
-  if (reviewScope(parsed) === "pr") {
+  const scope = reviewScope(parsed);
+  if (model.mode !== scope) {
+    throw new CliError(
+      `${scope === "pr" ? "PR" : "Repo"}-scope ${label} requires a ${scope}-scoped human_review.json. ` +
+      `Run \`review-surfaces all --review-scope ${scope}\` first.`,
+      ExitCodes.usageError
+    );
+  }
+  if (scope === "pr") {
     const gateError = prScopeReviewGateError(cwd, outputDir, model, label);
     if (gateError) {
       throw gateError;

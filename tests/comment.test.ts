@@ -89,6 +89,27 @@ test("comment rejects conflicting --mode and --review-scope values", () => {
   }
 });
 
+test("default repo comment rejects a PR-scoped human brief", () => {
+  const tmp = setupFixture("review-surfaces-comment-cross-scope-");
+  try {
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "base"], { cwd: tmp, stdio: "ignore" });
+    fs.appendFileSync(path.join(tmp, "README.md"), "\nPR-only change\n");
+    runAll(tmp, ["--review-scope", "pr", "--change-title", "PR-only purpose"]);
+
+    const human = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    assert.equal(human.mode, "pr");
+
+    const result = runComment(tmp);
+    assert.notEqual(result.status, 0, "repo comment must not silently render the PR brief");
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Repo-scope sticky comment requires a repo-scoped human_review\.json/);
+    assert.match(result.stderr, /all --review-scope repo/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("comment --review-scope pr --format sarif is a usage error (PR surface has no SARIF projection)", () => {
   const tmp = setupFixture("review-surfaces-pr-sarif-");
   try {

@@ -514,8 +514,10 @@ test("review-surfaces.COLD_START.7 a ROOT output dir (--out .) never counts its 
     // absorb any of them — this test pins the root-artifact exclusion list, so
     // a new artifact writer that is not excluded turns it red. The draft-review
     // renderer's output is simulated too (PR #79 round 3: pending_review.json
-    // was missing from the list).
+    // was missing from the list). A removed artifact can also remain in a
+    // long-lived root output directory, so deprecated names stay excluded.
     fs.writeFileSync(path.join(tmp, "pending_review.json"), "{}\n");
+    fs.writeFileSync(path.join(tmp, "review_routes.md"), "# stale generated routes\n");
     // REAL user files in same-named directories must NOT be treated as
     // artifact churn (PR #79 round 4): only the exact files the tool writes
     // are excluded at the root.

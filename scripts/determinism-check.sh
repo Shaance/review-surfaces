@@ -35,12 +35,12 @@ run() {
     --strict \
     --now "$FROZEN" \
     --out "$OUT" >/dev/null
-  # Materialize the reviewer-brief surfaces too: `all` alone never writes
-  # comment.md, so nondeterminism in either compact or sticky formatting would
-  # otherwise slip past this check (CHANGE_MAP.4).
+  # Materialize the reviewer brief too: `all` alone never writes comment.md, so
+  # nondeterminism in the GitHub/sticky renderer would otherwise slip past this
+  # check (CHANGE_MAP.4). `github` and `sticky` are aliases, so one explicitly
+  # scoped render covers both without launching the CLI twice.
   node bin/review-surfaces.js comment --review-scope "$scope" --out "$OUT" >/dev/null 2>&1
   mv "$OUT/comment.md" "$OUT/comment.$scope.md"
-  node bin/review-surfaces.js comment --format sticky --out "$OUT" >/dev/null 2>&1
 }
 
 for SCOPE in repo pr; do
