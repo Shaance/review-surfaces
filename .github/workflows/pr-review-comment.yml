@@ -94,6 +94,8 @@ jobs:
           llm-api-key: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
           base-ref: origin/${{ github.base_ref }}
           head-ref: HEAD
+          change-title: ${{ github.event.pull_request.title }}
+          change-description: ${{ github.event.pull_request.body }}
           spec: features/review-surfaces.feature.yaml
           output-dir: .review-surfaces
           subject-directory: subject

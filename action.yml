@@ -48,11 +48,11 @@ inputs:
   change-title:
     description: Author-provided pull request title used as the primary change purpose.
     required: false
-    default: ${{ github.event.pull_request.title }}
+    default: ""
   change-description:
     description: Author-provided pull request body used as supporting purpose context.
     required: false
-    default: ${{ github.event.pull_request.body }}
+    default: ""
   spec:
     description: Feature spec path.
     required: false
@@ -71,7 +71,7 @@ inputs:
   repository:
     description: owner/repo, used for artifact lookup and comment posting.
     required: false
-    default: ${{ github.repository }}
+    default: ""
   post:
     description: Whether to upsert the sticky comment (set false for fork PRs — upload only).
     required: false
@@ -136,9 +136,9 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
-        GH_REPO: ${{ inputs.repository }}
+        GH_REPO: ${{ inputs.repository || github.repository }}
         GH_PR_NUMBER: ${{ inputs.pr-number }}
-        REPO: ${{ inputs.repository }}
+        REPO: ${{ inputs.repository || github.repository }}
         ARTIFACT: review-surfaces-pr-${{ inputs.pr-number }}
         SUBJECT: ${{ inputs.subject-directory }}
         RS_STICKY: ${{ github.action_path }}/bin/review-surfaces-sticky.js
@@ -483,7 +483,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         GH_PR_NUMBER: ${{ inputs.pr-number }}
-        GH_REPO: ${{ inputs.repository }}
+        GH_REPO: ${{ inputs.repository || github.repository }}
         RS_BIN: ${{ github.action_path }}/bin/review-surfaces.js
         RS_CONFIG: ${{ github.action_path }}/review-surfaces.config.yaml
         RS_OUT: ${{ steps.generate.outputs.safe-output-dir }}

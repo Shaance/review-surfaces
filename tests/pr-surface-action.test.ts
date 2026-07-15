@@ -49,6 +49,9 @@ test("review-surfaces.PR_SURFACE.1 the composite action runs the PR pipeline wit
   for (const input of ["provider", "base-ref", "head-ref", "change-title", "change-description", "output-dir", "pr-number"]) {
     assert.ok(action.inputs[input], `action input ${input} present`);
   }
+  assert.equal(action.inputs["change-title"].default, "", "event expressions belong in the caller workflow, not action metadata defaults");
+  assert.equal(action.inputs["change-description"].default, "", "event expressions belong in the caller workflow, not action metadata defaults");
+  assert.equal(action.inputs.repository.default, "", "repository context is resolved in executable steps, not action metadata defaults");
   const steps: any[] = action.runs.steps;
   const runStep = steps.find((s) => typeof s.run === "string" && s.run.includes('node "$RS_BIN" all'));
   assert.ok(runStep, "a step runs the pipeline");
@@ -87,6 +90,8 @@ test("review-surfaces.PR_SURFACE.1 the composite action runs the PR pipeline wit
     .flatMap((job: any) => job.steps ?? [])
     .find((step: any) => step.uses === "./tool");
   assert.ok(localActionStep, "the repo workflow invokes the local composite action");
+  assert.equal(localActionStep.with["change-title"], "${{ github.event.pull_request.title }}");
+  assert.equal(localActionStep.with["change-description"], "${{ github.event.pull_request.body }}");
   assert.doesNotMatch(JSON.stringify(localActionStep.with), /comment-top-n/);
 });
 
@@ -111,7 +116,7 @@ test("review-surfaces.PR_SURFACE.4 the action delegates exact-head sticky reconc
   const postStep = steps.find((s) => typeof s.if === "string" && s.if.includes("inputs.post"));
   assert.match(String(postStep.if), /always\(\)/);
   assert.match(String(postStep.env.RS_BIN), /bin\/review-surfaces\.js/);
-  assert.equal(postStep.env.GH_REPO, "${{ inputs.repository }}");
+  assert.equal(postStep.env.GH_REPO, "${{ inputs.repository || github.repository }}");
   assert.equal(postStep.env.GH_PR_NUMBER, "${{ inputs.pr-number }}");
   assert.match(String(postStep.run), /node "\$RS_BIN" comment/);
   assert.match(String(postStep.run), /--review-scope pr/);
