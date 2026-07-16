@@ -38,8 +38,8 @@ export interface ArchDriftFileEdges {
 
 export interface ArchDriftResult {
   facts: ArchDriftFact[];
-  // File-level edge deltas for the change-graph renderers (ARCH_DRIFT.2):
-  // kind "new"/"removed" on matching change_graph edges.
+  // File-level edge deltas for the machine change graph (ARCH_DRIFT.2): kind
+  // "new"/"removed" on matching change_graph edges.
   file_edges: ArchDriftFileEdges;
 }
 
@@ -78,7 +78,7 @@ export interface ComputeArchDriftInput {
   baseFileDependencies?: Map<string, string[]>;
   headFileDependencies?: Map<string, string[]>;
   // review-surfaces.COLD_START.2: detected implementation roots so module
-  // altitude agrees with the change-map clusters on any repository layout.
+  // altitude agrees with the machine change-graph clusters on any repository layout.
   implementationRoots?: readonly string[];
   // Cheap preflight for callers deciding whether whole-tree graphs are needed.
   // Skips module novelty and cycle analysis after exact changed-file deltas.
@@ -86,7 +86,7 @@ export interface ComputeArchDriftInput {
 }
 
 // Module altitude = the shared cluster rule (source-roots.ts) so drift facts
-// and the change map can never disagree on module names.
+// and the machine change graph can never disagree on module names.
 export function moduleOf(filePath: string, roots: readonly string[] = DEFAULT_IMPLEMENTATION_ROOTS): string {
   return clusterOfPath(filePath, roots);
 }

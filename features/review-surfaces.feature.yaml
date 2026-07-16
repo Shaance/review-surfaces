@@ -244,7 +244,7 @@ components:
         note: "Simplification-and-usefulness M1. The exact 2076964..171b414 report promoted src/collector/import-graph.ts and src/human/conversation-review-presentation.ts because normal internal consumers imported them."
       12:
         requirement: >-
-          The default human and GitHub surfaces must put the author-provided change purpose and every approval-changing decision immediately after a truthful verdict, without repeating those decisions in a second queue. Supporting diagnostics, maps, reading tours, round ledgers, repository-compliance data, and provider state must not occupy the primary scan path. Surface length must adapt to the number and complexity of independent decisions, with progressive disclosure for supporting evidence; line, word, and item counts are evaluation signals and abuse guards, not universal product rules.
+          The default human and GitHub surfaces must put the author-provided change purpose and every approval-changing decision immediately after a truthful verdict, without repeating those decisions in a second queue. Supporting diagnostics, reading tours, round ledgers, repository-compliance data, and provider state must not occupy the primary scan path. Surface length must adapt to the number and complexity of independent decisions, with progressive disclosure for supporting evidence; line, word, and item counts are evaluation signals and abuse guards, not universal product rules.
         note: "Product reset M1. The live PR #136 sticky ignored the useful PR description, mislabeled 278 bootstrap requirements as active intent, declared author clarification because optional LLM enrichment was unavailable, and expanded to a low-contrast directory map that did not explain an approval decision."
       13:
         requirement: >-
@@ -326,9 +326,6 @@ components:
       10:
         requirement: The HTML cockpit must escape every interpolated value through one shared helper, re-run the redaction pass on render, and produce byte-deterministic output (no timestamps), leading with the verdict, author-grounded change purpose, and every independent approval decision; the review queue remains supporting evidence with excerpts, ranking reasons, links, lens filters, collapsible hunks, and localStorage-persisted checkable items.
         note: Next-value Phase 5 (brainstorm idea 7). The file must open from disk offline, be safe to attach in chat, and stay printable.
-      11:
-        requirement: The HTML cockpit must render the change_graph model as deterministic inline SVG via a dedicated src/human/render-svg-map.ts module — a hand-rolled layered layout (column per cluster ordered by the reading-order leg order, stable row sort within a column, fixed viewBox, system font stack) with no chart or diagram library and no inlined mermaid.js — where every coordinate derives from sorted input so identical models produce byte-identical SVG, every interpolated label passes through the shared redact-then-escape helper, node click filters the queue to that file via the existing data-attribute filter pattern, and hover details are carried by SVG title elements so the map degrades gracefully in print.
-        note: Visual uplift M10 (brainstorm idea 3). Pure renderer over the CHANGE_MAP.1 model — if the SVG needs data the model lacks, the model and strict schema grow first. The esc() helper is module-private in render-html.ts today and must be exported or lifted to a shared module.
       12:
         requirement: The HTML cockpit must render a supporting-control strip purely from existing model fields — lens chips with counts that are the existing lens-filter toggle buttons, the review_plan read/skim/defer cut as a stacked CSS bar with estimated minutes, and a review-progress bar recomputed from the existing persisted checkbox state — with no charts library or canvas, and every chip and bar carrying a text label so color never carries meaning alone and the strip stays printable; trust counts render only once in the dedicated trust summary.
         note: Visual uplift M10 (brainstorm idea 6), simplified by the reviewer-brief reset. Zero new data; pure render work over queue lens tags and review_plan fields.
@@ -676,24 +673,19 @@ components:
         requirement: Both scripts must be documented in README.md and AGENTS.md as the way to produce and gate review surfaces without CI, and must contain orchestration only — no flag, behavior, or analysis may exist solely inside a script rather than in the CLI commands it calls.
 
   CHANGE_MAP:
-    name: Change-impact map v2
+    name: Machine-readable change graph
     description: >-
-      Visual uplift Phase 2 / milestone M9 (brainstorm idea 1). A shared,
-      schema-validated change-graph model built from the existing import graph and
-      blast-radius facts, rendered as a compact interactive HTML/SVG supporting
-      map. Every node and edge cites a deterministic fact; caps are rendered,
-      never silent.
+      A shared, schema-validated change-graph model built from the existing import
+      graph. It supports deterministic reading order and
+      machine consumers without asking reviewers to decode a second structural
+      visualization that duplicates the review queue.
     requirements:
       1:
-        requirement: The human review model and strict schema must grow a change_graph section with nodes (changed files with churn added/removed counts, dominant risk lens, and status added/modified/deleted/renamed), halo_nodes (top unchanged importers taken from blast-radius facts, at most two per high-blast node, alphabetical exactly as the fact's bounded used_by top list stores them), edges (importer to imported restricted to those nodes, each carrying a kind of existing, new, or removed), and clusters (top-level directory grouping, with files under src/ grouped by their directory directly under src/ — the brainstorm's "top-level dir under src/, plus tests/, schemas/, config"), with every list sorted and the graph built from the existing buildImportGraph output restricted to changed files — no new parsing.
+        requirement: The human review model and strict schema must carry a minimal change_graph section with nodes (changed files with churn added/removed counts, dominant risk lens, and status added/modified/deleted/renamed), edges (importer to imported restricted to those nodes, each carrying a kind of existing, new, or removed), and clusters (top-level directory grouping, with files under src/ grouped by their directory directly under src/), with every list sorted and the graph built from the existing buildImportGraph output restricted to changed files — no new parsing, duplicated blast-radius facts, provider prose, overview projection, or human map fields.
         note: Visual uplift M9 (brainstorm idea 1). The edge kind slot ships here as existing-only; ARCH_DRIFT.2 fills new/removed later.
       2:
-        requirement: The HTML cockpit must render change_graph as a deterministic, dark-mode-readable SVG overview with compact area cards and expandable file-level detail views, enforcing a hard cap of around 25 changed-file nodes per detail view where overflow renders explicitly rather than as silent truncation; unchanged-file halo facts remain in the JSON model but stay out of the visual map so they cannot create orphan-looking lanes for files outside the diff.
-      3:
-        requirement: The change map is a supporting artifact for reviewers who choose to inspect structural context; it must not embed in the sticky summary, human PR comment, or compact human_review.md brief, and may render in the HTML artifact while remaining fully represented in human_review.json. The old provider-narrative-path "Change impact" embed must retire with the requirements hairball, the spec/requirement-mapping diagram (pr-change-impact.mmd) remains a standalone agent-facing artifact, and the map must carry no spec or requirement anchors.
-        note: One diagram answers one question. The map explains structure; it never substitutes for a change purpose or approval decision.
-      4:
-        requirement: Every change-map label must be HTML/SVG-escaped and redacted before render, the HTML map must remain readable in GitHub-style dark mode without horizontal overflow, and scripts/determinism-check.sh must include a PR-scope run so the supporting map is determinism-checked without putting it in the GitHub brief.
+        requirement: The change_graph must remain machine-readable in human_review.json and may drive the deterministic reading order, but no human-facing reviewer brief or HTML artifact may render it as a change map; the approval decisions and reading order already answer the reviewer questions, while directory/churn cards duplicate information without changing an approval decision. The standalone agent-facing spec/requirement diagram may remain because it answers a separate machine-workflow question.
+        note: Product reset evidence from PR #137: even the legible dark-mode card layout reduced a 119-file change to directory names, churn, and lens labels. It repeated the reading order without explaining a useful relationship, so the correct product decision is removal rather than another visual redesign.
 
   READING_ORDER:
     name: Guided diff tour
@@ -707,7 +699,7 @@ components:
         requirement: The human review model and strict schema must grow a reading_order section computed by restricting the import graph to changed files and topologically sorting with dependencies first, where strongly connected components collapse into one read-together leg with alphabetical order inside so the output is total and deterministic, and each step carries a path, a derived (never freeform) why line, and queue item references.
       2:
         requirement: The reading order is supporting navigation that may render after the approval decisions in the HTML artifact and remains fully represented in human_review.json; it must not render in the sticky summary, human PR comment, or compact human_review.md brief, and it must never include unchanged files.
-        note: Halo files belong to the map, not the reading plan. The reviewer brief establishes purpose and approval decisions before offering optional navigation.
+        note: Unchanged files do not become reading-plan steps. The reviewer brief establishes purpose and approval decisions before offering optional navigation.
       3:
         requirement: The reading order must not repeat its leg header on every line — the Tests and Config/docs legs drop the per-step "test — ..." / "config or docs — read last" why that merely echoes the bold leg header (render-only; the JSON why is unchanged) — and the HTML cockpit must cap the reading-order wall by rendering the queue-linked and per-leg-lead steps visibly and collapsing the remaining mechanical rows behind a details element, with the full ordered list preserved in JSON.
         note: "human-value polish uplift (docs/history/HUMAN_VALUE_POLISH_GOAL.md). A live 51-step reading order restated 'config or docs — read last' on 9 lines and 'test — ...' on 25, and the full wall preceded the ranked queue in the cockpit."
@@ -723,7 +715,7 @@ components:
       1:
         requirement: For each changed or deleted file the tool must parse the base content (read via readFileAtRef) with the same import extraction the import graph already uses, diff the resolved import sets per file, and emit module_edge_added and module_edge_removed facts at module altitude; import_cycle_created requires a concrete newly added runtime file edge plus a complete runtime return path in the head tree, excludes type-only imports, and records the proven file chain before any module aggregation.
       2:
-        requirement: Architecture-drift facts must carry an architecture lens tag and set kind new or removed on matching change_graph edges so the supporting HTML map picks the drift up; ordinary module edges remain supporting detail, while only a proven concrete runtime cycle or explicit policy violation may enter the review queue and decision projection, and one canonical cycle may occupy at most one slot.
+        requirement: Architecture-drift facts must carry an architecture lens tag and set kind new or removed on matching machine change_graph edges; ordinary module edges remain machine-readable supporting detail, while only a proven concrete runtime cycle or explicit policy violation may enter the review queue and decision projection, and one canonical cycle may occupy at most one slot.
       3:
         requirement: Drift detection must respect rename detection (a moved file re-creating its old edges from a new path is not drift), and imports the resolver cannot resolve (such as tsconfig path aliases) must count as unknown, never as removed, with resolver bounds documented like the import graph's existing bounds.
 
@@ -766,7 +758,7 @@ components:
         requirement: validate (and every other schema consumer) must resolve schemas/ relative to the installed package root, for example via module-relative paths, never relative to the user's current working directory, and a regression test must run validate from a temporary working directory outside the repository.
         note: "Closes cold-start failure 1: validate --surface all failed with ENOENT .../got/schemas/review_packet.schema.json because schema paths resolved against the CWD."
       2:
-        requirement: Reading-order file categorization must derive implementation roots from the target repository's own signals — tsconfig.json rootDir/include, package.json main/exports/files, and as fallback the top-level directories containing a majority of non-test source files — instead of a hardcoded src|bin|lib list, with the same detection feeding change-map clusters so map and tour stay in agreement, and detection reading committed files only with sorted iteration for determinism.
+        requirement: Reading-order file categorization must derive implementation roots from the target repository's own signals — tsconfig.json rootDir/include, package.json main/exports/files, and as fallback the top-level directories containing a majority of non-test source files — instead of a hardcoded src|bin|lib list, with the same detection feeding machine change-graph clusters so graph and tour stay in agreement, and detection reading committed files only with sorted iteration for determinism.
         note: "Closes cold-start failure 2: got's source/ directory fell through categoryOf() to 'config or docs - read last', telling the reviewer to read the heart of the change last."
       3:
         requirement: The exported-API differ must compare comment-stripped, whitespace-normalized signatures (for example printing nodes via the TS printer with comments removed, or comparing structural members) so trivia-only edits produce no signature-changed fact, with a seeded eval fixture asserting a doc-comment-only edit inside an exported type yields no signature-changed finding.
@@ -775,7 +767,7 @@ components:
         requirement: The intent model and strict human-review schema must carry an explicit spec_mode flag ("acai" or "none") derived deterministically from whether zero Acai spec requirements were indexed.
         note: "Closes cold-start failure 4 (mechanism): the mode must be schema-visible model state, not renderer guesswork, so every renderer inherits it."
       5:
-        requirement: In spec_mode none the packet must stop speaking Acai — per-cluster overreach findings and per-file requirement-mapping questions and actions are suppressed in favor of the single honest open question about unindexed requirements plus a one-line note that intent checks are limited to docs and constraints, and all renderers must hide empty spec-coupled sections rather than rendering zero-count requirement results — while test-weakening detection, trust audit, semantic facts, coverage, change map, reading order, and drift remain unchanged.
+        requirement: In spec_mode none the packet must stop speaking Acai — per-cluster overreach findings and per-file requirement-mapping questions and actions are suppressed in favor of the single honest open question about unindexed requirements plus a one-line note that intent checks are limited to docs and constraints, and all renderers must hide empty spec-coupled sections rather than rendering zero-count requirement results — while test-weakening detection, trust audit, semantic facts, coverage, the machine change graph, reading order, and drift remain unchanged.
         note: "Closes cold-start failure 4: with zero specs, OVERREACH-001..003 covered 100 percent of the got diff and review actions said 'map the changed file to an Acai requirement'. Presentation and derivation logic only, not a second pipeline."
       6:
         requirement: The default --base must resolve through an explicit deterministic chain — origin/HEAD, origin/main, origin/master, main, master, first ref that resolves, merge-base semantics unchanged — and a base that does not resolve (explicitly passed, or the chain exhausted) must be a hard error with non-zero exit and no artifacts written, naming the ref or refs tried and giving the shallow-clone fixes (fetch-depth 0 for Actions, git fetch --unshallow locally), never a silent working-tree fallback; the resolved range (both refs with short SHAs) must be printed in the all summary and persisted as model state, and the README quickstart, help text, and init templates must drop the hard-coded origin/main in favor of the auto default.
@@ -807,15 +799,15 @@ components:
       2:
         requirement: Internal process documents (goal files, brainstorm docs, README.bootstrap.md) must move to docs/history/ with a short framing README explaining the tool was built by agents and reviewed with itself, and inbound references must be updated.
       3:
-        requirement: README.md must be written for a stranger's first five minutes — leading with the trust questions it answers and a quickstart that works on a spec-less repository, a what-you-get tour with screenshots of the cockpit, change map, and sticky comment from a real run, an explicit scope statement that analysis depth is TS/JS-first (import graph and API diff are TypeScript; coverage via lcov and test-weakening are language-agnostic), and Acai specs introduced as the optional power-user layer rather than the prerequisite.
+        requirement: README.md must be written for a stranger's first five minutes — leading with the trust questions it answers and a quickstart that works on a spec-less repository, a what-you-get tour of the reviewer brief, cockpit, and sticky comment from a real run, an explicit scope statement that analysis depth is TS/JS-first (import graph and API diff are TypeScript; coverage via lcov and test-weakening are language-agnostic), and Acai specs introduced as the optional power-user layer rather than the prerequisite.
       4:
         requirement: The local gate must include a packaging smoke test verifying the pnpm pack tarball installs and runs from a temporary directory outside the repository; actual npm publish remains the owner's manual step, prepared but never run.
       5:
         requirement: The repository must contain docs/example/ with committed sample artifacts (human_review.md, human_review.html, comment.md) generated from the pinned got cold-start range (a5b76bffb, HEAD~3) with a frozen --now timestamp and verified redaction, plus a short framing README stating the exact commands that generated them, linked from the main README so a stranger can read a packet before installing.
         note: "Pre-publish polish uplift Phase 3 (docs/history/POLISH_UPLIFT_GOAL.md). Closes legibility evidence-log failure 5: no committed sample artifacts exist, so the three README PNGs are the only pre-install preview. This is the open-source uplift's deliberately skipped Phase 4, unblocked now that the artifacts are worth showing."
       6:
-        requirement: docs/images/change-map.png must be regenerated from a real run so it shows the overview level at legible width, cockpit.png must be refreshed if the above-the-fold cockpit changed, and the README's change-map copy must describe the overview and zoom levels.
-        note: "Pre-publish polish uplift Phase 3 (docs/history/POLISH_UPLIFT_GOAL.md). Closes the README half of failures 1 and 5: the committed change-map.png is a 4680x768 ribbon — the screenshot that sells the feature demonstrates the scaling bug."
+        requirement: README showcase assets and the reproducible screenshot script must cover only current human-facing surfaces — the reviewer cockpit and sticky comment — and must not retain screenshots, extraction code, or copy for a removed change map.
+        note: "Product reset on PR #137 removed the human change map after browser dogfood showed that even the legible overview duplicated directory, churn, and reading-order facts without helping an approval decision."
       7:
         requirement: The review-surfaces all terminal summary must end with a pointer to the HTML cockpit (review-surfaces human --format html), or all must write human_review.html directly, so the flagship surface is discoverable from a stranger's first quickstart run.
         note: "Pre-publish polish uplift Phase 3 (docs/history/POLISH_UPLIFT_GOAL.md). Closes the quickstart half of failure 6: the all summary never mentions the cockpit."
@@ -843,45 +835,6 @@ components:
       15:
         requirement: README must document consuming the tool in CI — a copy-pasteable GitHub Action `uses:` snippet (linking the worked example workflow) and an exit-code table sourced from src/core/exit-codes.ts mapping each code to its meaning — so a CI author can wire the action and branch on exit codes without reading action.yml.
         note: "ci-trust uplift Phase 7. The README references the reusable Action three times with no usage snippet and sells --strict 'for CI' without documenting the exit codes CI gates on."
-
-  MAP_SCALE:
-    name: Change-map legibility at scale
-    description: >-
-      Pre-publish polish uplift Phases 1-2 (docs/history/POLISH_UPLIFT_GOAL.md). Every
-      requirement traces to the 2026-06-12 legibility evidence log: on wide
-      ranges (this repo's last 8 PRs, 99 files; got HEAD~40, 87 files) the
-      change map renders at 16-55 percent of natural size, hides 74 of 99
-      files behind "+ N more", and silently drops edges touching capped
-      files. Standing rule: a visual that cannot render legibly must
-      summarize, never shrink — scale-to-fit below ~90 percent of natural
-      size is a rendering bug, and overflow stays explicit, including edges.
-      This family extends the surfaces CHANGE_MAP.2-4 own; their caps,
-      sanitizer, embed guards, and determinism checks remain in force.
-    requirements:
-      1:
-        requirement: The change_graph model and strict human-review schema must grow an overview section whose groups are the model clusters merged by first path segment (the "(root)" cluster stays itself), each group carrying its file count, cluster count, churn added/removed totals, dominant risk lens with a deterministic tie-break, and review-queue item count, plus one aggregate dashed halo entry and aggregated inter-group edges each carrying weight equal to the number of underlying model edges and has_new/has_removed flags; the overview must be derived from the same change_graph model the tour and queue use — no renderer-local clustering — and ship additively, model-and-strict-schema-first.
-        note: "Phase 1. Closes the model half of failure 4: clusterOfPath already emits two-level cluster keys, but no schema-visible high-level grouping exists for any renderer to lead with."
-      2:
-        requirement: One legibility-budget helper (a single module with shared constants) must decide whether the file-level map or the overview leads in the supporting HTML cockpit; renderers must not carry private size thresholds, and when the file-level map exceeds the budget the overview must lead in the cockpit SVG, while small diffs (the pinned got a5b76bffb HEAD~3 range) keep the file-level map leading with today's structure. GitHub and compact Markdown briefs omit the map at every size.
-        note: "Phase 1. Closes failure 1 (8-PR cockpit map rendered at ~16 percent, labels ~2px) and failure 3 (the 8-PR sticky embeds a 151-line mermaid flowchart whose only size control deletes the map entirely)."
-      3:
-        requirement: The overview must be honest by construction — group file counts must sum to the full changed-file count and aggregated edge weights must account for every model edge between groups — with ACID-named tests reproducing the 8-PR fixture (23 clusters, 99 files) and asserting the overview leads, fits the budget, and that both sums add up.
-        note: "Phase 1. Closes failure 2: MAX_CHANGED_NODES leaves 74 of 99 files represented only as '+ N more' texts and edges touching capped files vanish with no note, violating the never-silent rule."
-      4:
-        requirement: Each overview group must expand to a detail view containing its model clusters and changed files, plus review-worthy intra-group edges and provider-backed cross-group relationship summaries when those relationships explain the change; the model may still carry cross-group edge totals, capped nodes, and halo share for evidence and non-human projections, but the human map must not promote unchanged-file halo cards or generic raw-import stubs such as "tests use src" when they do not add reviewer insight. Detail views must use the model clusters the queue and tour reference verbatim so map/tour agreement holds, and every changed file must appear in exactly one detail view, asserted on the 99-file fixture.
-        note: "Phase 2. Closes failure 4 (no zoom level exists although the model is already two-level) while preserving reviewer-facing signal: unchanged halo and mechanical cross-area stubs stay out of the human visual map unless enriched into useful explanation."
-      5:
-        requirement: All SVG map layouts must wrap — columns wrap into rows and long file stacks wrap — so that no rendered SVG (overview, detail, or small-diff file-level) exceeds the width budget; height may grow but width never, and the typical-PR file-level map (the pinned aefc63c~1..aefc63c range, previously 1792px natural width rendered at ~55 percent) must render at or above ~94 percent of natural size as a single wrapped file-level map.
-        note: "Phase 2. Closes failure 1's typical-PR case and enforces the summarize-never-shrink standing rule: scale-to-fit below ~90 percent of natural size is a rendering bug."
-      6:
-        requirement: In the cockpit, clicking an overview group must toggle that group's pre-rendered hidden detail SVG using vanilla JS with deterministic markup and the same data- attribute pattern as existing filters, while file clicks inside a detail view keep filtering the review queue exactly as today; GitHub and compact Markdown briefs omit both overview and detail maps.
-        note: "Phase 2. Closes the interaction half of failures 3 and 4: the cockpit's only interaction is node-click-filters-queue, and a reviewer cannot ask 'show me just src' anywhere."
-      7:
-        requirement: The HTML cockpit change map must preserve visual relationship lines for review-worthy relationships while routing them around cards with no line overlap, label overlap, orphan rails, or edges anchored to hidden nodes; provider-backed runs may enrich those relationships through the existing schema-bound provider boundary, while mock/offline runs must keep deterministic model evidence available without inventing edges or promoting generic raw-import summaries into the human map.
-        note: "Screenshot dogfood feedback: removing overlapping lines made the map cleaner but less useful, while numbered badges, relationship notes, and raw labels like 'tests use src' were impossible to read and did not explain the change. The reviewer needs high-level relationship insight only when the relationship itself carries signal."
-      8:
-        requirement: Overview cards must carry a reviewer-facing one-line summary of what changed in that area, and zoomed detail views must group files under reviewer-meaningful topic labels rather than mechanical continuation columns; provider-backed runs may enrich area summaries and topic groups through the existing schema-bound provider boundary, but every topic path must validate against the deterministic changed-file set and mock/offline runs must use deterministic fallback summaries and topic buckets.
-        note: "Screenshot dogfood feedback: file/count/churn cards and labels like 'tests (cont.)' still forced reviewers to reconstruct intent from filenames. The map should explain what each area is doing and why files are grouped together."
 
   QUALITY_GATE:
     name: CI quality gate and machine-readable summaries

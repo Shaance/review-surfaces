@@ -5,7 +5,10 @@ on:
 
 concurrency:
   group: review-surfaces-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  # A title/body edit must not cancel exact-head validation already in flight.
+  # It waits for that run, then reuses its trusted transcript for the unchanged
+  # head. Head-changing events still cancel stale work.
+  cancel-in-progress: ${{ github.event.action != 'edited' }}
 
 jobs:
   trusted-command-evidence:
@@ -18,8 +21,50 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      actions: read
     steps:
+      - name: Find prior trusted evidence for an unchanged edited head
+        id: prior-evidence
+        if: github.event.action == 'edited'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          result-encoding: string
+          script: |
+            const name = `trusted-command-evidence-${context.payload.pull_request.head.sha}`;
+            const { data } = await github.rest.actions.listArtifactsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name,
+              per_page: 100,
+            });
+            for (const artifact of data.artifacts) {
+              if (artifact.expired || !artifact.workflow_run?.id) continue;
+              const { data: run } = await github.rest.actions.getWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: artifact.workflow_run.id,
+              });
+              if (
+                run.path === ".github/workflows/pr-review-comment.yml" &&
+                run.event === "pull_request_target" &&
+                run.conclusion === "success"
+              ) {
+                return String(run.id);
+              }
+            }
+            return "";
+      - name: Recover trusted evidence for the unchanged head
+        if: github.event.action == 'edited' && steps.prior-evidence.outputs.result != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: trusted-command-evidence-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/trusted-command-evidence/
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.prior-evidence.outputs.result }}
       - name: Checkout trusted tool (base ref)
+        if: github.event.action != 'edited' || steps.prior-evidence.outputs.result == ''
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -27,6 +72,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Checkout PR subject (head ref, credentialless)
+        if: github.event.action != 'edited' || steps.prior-evidence.outputs.result == ''
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -34,9 +80,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
+        if: github.event.action != 'edited' || steps.prior-evidence.outputs.result == ''
         with:
           node-version: 22
       - name: Validate subject in an isolated container (trusted recorder)
+        if: github.event.action != 'edited' || steps.prior-evidence.outputs.result == ''
         working-directory: subject
         shell: bash
         run: |

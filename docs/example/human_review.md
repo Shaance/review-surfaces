@@ -64,9 +64,15 @@ _From the PR title and description._
    - Evidence: `source/core/options.ts`
 
 
+## Conversation-aware insights
+
+**Not assessed.** No conversation analysis was supplied with this review; conversation intent was not assessed.
+
+No conversation-grounded conclusions are available. This is not evidence that the change is clean.
+
 ## Supporting artifacts
 
-- [Interactive HTML cockpit](human_review.html) — reading order, maps, coverage, trust, and the complete supporting review.
+- [Interactive HTML cockpit](human_review.html) — reading order, coverage, trust, and the complete supporting review.
 - [`human_review.json`](human_review.json) — schema-validated machine model with every recorded fact.
 - [Review queue](review_queue.md) — focused supporting detail.
 - [Suggested comments](suggested_comments.md) — focused supporting detail.

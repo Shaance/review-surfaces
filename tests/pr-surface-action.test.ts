@@ -158,6 +158,11 @@ test("review-surfaces.PR_SURFACE.1 the composite action runs the PR pipeline wit
   assert.equal(localActionStep.with["change-title"], "${{ github.event.pull_request.title }}");
   assert.equal(localActionStep.with["change-description"], "${{ github.event.pull_request.body }}");
   assert.doesNotMatch(JSON.stringify(localActionStep.with), /comment-top-n/);
+  const ciWorkflow = readYaml(".github/workflows/ci.yml");
+  const smokeActionStep = ciWorkflow.jobs["pr-surface-smoke"].steps.find((step: any) => step.uses === "./");
+  assert.ok(smokeActionStep, "the exact-head smoke workflow invokes the branch action");
+  assert.equal(smokeActionStep.with["change-title"], "${{ github.event.pull_request.title }}");
+  assert.equal(smokeActionStep.with["change-description"], "${{ github.event.pull_request.body }}");
 });
 
 test("review-surfaces.PR_SURFACE.3 the action uploads the full packet under a stable PR-keyed name and forks upload but skip posting", () => {
@@ -414,7 +419,11 @@ test("review-surfaces.PR_SURFACE.1 the repo workflow is a same-repo-only thin co
   assert.ok(workflow.on.pull_request_target, "base-controlled trigger preserved");
   assert.ok(workflow.on.pull_request_target.types.includes("edited"), "PR title/body edits refresh the author-provided purpose at the same head");
   assert.equal(workflow.concurrency.group, "review-surfaces-pr-${{ github.event.pull_request.number }}");
-  assert.equal(workflow.concurrency["cancel-in-progress"], true, "a newer title/body/head event cancels stale evidence and generation jobs");
+  assert.equal(
+    workflow.concurrency["cancel-in-progress"],
+    "${{ github.event.action != 'edited' }}",
+    "metadata edits wait for exact-head validation instead of restarting it"
+  );
   assert.equal(job.needs, "trusted-command-evidence", "secret-bearing rendering waits for same-run trusted evidence");
   const raw = rawFile(".github/workflows/pr-review-comment.yml");
   assert.match(raw, /pull_request\.base\.sha/);
@@ -430,10 +439,21 @@ test("review-surfaces.PR_SURFACE.1 the repo workflow is a same-repo-only thin co
   // the artifact from this same workflow run rather than searching artifacts
   // uploaded by PR-controlled workflow code.
   assert.equal(trustedEvidence.permissions.contents, "read");
+  assert.equal(trustedEvidence.permissions.actions, "read", "metadata refresh may read only base-workflow evidence for the exact head");
   assert.equal(trustedEvidence["timeout-minutes"], 30, "untrusted lifecycle scripts cannot consume the runner indefinitely");
   assert.equal(Object.hasOwn(trustedEvidence.permissions, "pull-requests"), false);
   assert.match(String(trustedEvidence.if), /head\.repo\.full_name == github\.repository/);
   const trustedSteps = trustedEvidence.steps as any[];
+  const priorEvidence = trustedSteps.find((s: any) => s.id === "prior-evidence");
+  assert.equal(priorEvidence.if, "github.event.action == 'edited'");
+  assert.match(priorEvidence.with.script, /listArtifactsForRepo/);
+  assert.match(priorEvidence.with.script, /run\.path === "\.github\/workflows\/pr-review-comment\.yml"/);
+  assert.match(priorEvidence.with.script, /run\.event === "pull_request_target"/);
+  assert.match(priorEvidence.with.script, /run\.conclusion === "success"/);
+  const recoveredEvidence = trustedSteps.find((s: any) => s.uses === "actions/download-artifact@v4");
+  assert.match(recoveredEvidence.if, /github\.event\.action == 'edited'/);
+  assert.equal(recoveredEvidence.with["run-id"], "${{ steps.prior-evidence.outputs.result }}");
+  assert.equal(recoveredEvidence.with.name, "trusted-command-evidence-${{ github.event.pull_request.head.sha }}");
   const evidenceCheckouts = trustedSteps.filter((s: any) => s.uses === "actions/checkout@v4");
   assert.equal(evidenceCheckouts[0].with.ref, "${{ github.event.pull_request.base.sha }}");
   assert.equal(evidenceCheckouts[1].with.ref, "${{ github.event.pull_request.head.sha }}");
@@ -445,6 +465,7 @@ test("review-surfaces.PR_SURFACE.1 the repo workflow is a same-repo-only thin co
   assert.equal(trustedSteps.some((s: any) => String(s.run ?? "").includes("pnpm install") && s["working-directory"] === "tool"), false);
   assert.doesNotMatch(JSON.stringify(trustedEvidence), /\$\{\{\s*secrets\./, "the PR-executing job receives no repository secret");
   const recordedCommands = trustedSteps.find((s: any) => String(s.run ?? "").includes("--id ci-typecheck"));
+  assert.match(recordedCommands.if, /github\.event\.action != 'edited'/, "metadata-only refresh skips the slow validation path when evidence exists");
   assert.equal(recordedCommands["working-directory"], "subject");
   assert.match(recordedCommands.run, /docker run --detach --rm/);
   assert.match(recordedCommands.run, /--volume "\$GITHUB_WORKSPACE\/subject:\/subject"/);

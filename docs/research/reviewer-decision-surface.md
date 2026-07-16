@@ -4,7 +4,7 @@
 
 The current product is evidence-rich but decision-poor. A live self-review can
 produce a clean-looking cockpit whose first actionable queue item appears after
-an exhaustive reading order and change map. Repository-wide requirement counts,
+an exhaustive reading order and a redundant directory map. Repository-wide requirement counts,
 keyword-picked methodology excerpts, and mechanically detected API/import changes
 can dominate the result even when they do not change whether a reviewer should
 approve the pull request.
@@ -72,7 +72,8 @@ blocking comments, duplicate findings, and low-quality conversation inputs.
 Keep the packet and deterministic facts as the evidence backbone, but introduce a
 reviewer-decision projection with strict admission rules. Only PR-scoped,
 approval-changing, evidence-backed root causes enter the top surface. Repository
-compliance, maps, tours, and methodology remain available as supporting detail.
+compliance, tours, and methodology remain available as supporting detail. The raw
+change graph remains available to machines without becoming a human review map.
 
 ### C. Replace the pipeline with provider-written review prose
 

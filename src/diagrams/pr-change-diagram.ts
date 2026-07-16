@@ -1,4 +1,4 @@
-// review-surfaces.CHANGE_MAP.4: the diagram-label sanitizer is shared — one
+// review-surfaces.ARCH.6: the diagram-label sanitizer is shared — one
 // copy in diagrams.ts, imported by every mermaid emitter.
 import { diagramLabel, validateMermaidDiagramArtifact } from "./diagrams";
 import type {

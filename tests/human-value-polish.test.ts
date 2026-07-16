@@ -38,7 +38,7 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
     mode: "pr",
     spec_mode: "acai",
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
-    change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
+    change_graph: { nodes: [], edges: [], clusters: [] },
     reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     decision_projection: { active_intent: { summary: "Fixture intent.", source: "packet", redaction_blocked: false, requirement_ids: [], event_ids: [] }, findings: [] },

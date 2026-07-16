@@ -30,11 +30,8 @@ import {
   hasConversationReviewValue
 } from "./conversation-review-presentation";
 import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
-import { renderChangeMapOverviewSvg, renderChangeMapSvg, SVG_LENS_FILLS } from "./render-svg-map";
-import { changeMapLeadLevel } from "./legibility-budget";
-import { buildGroupDetailViews, detailViewSubGraph } from "./change-graph";
 // Redact-then-escape: EVERY interpolated value goes through this shared helper
-// (lifted to esc.ts so the SVG emitter uses the same one — RENDER.11).
+// (lifted to esc.ts so every cockpit fragment uses the same one — RENDER.10).
 import { esc } from "./esc";
 import { RISK_LENS_METADATA } from "./contract";
 import {
@@ -93,14 +90,6 @@ export function renderHumanReviewHtml(model: HumanReviewModel, context: HumanRen
   --ok:#1f8a65;
   --info:#3a6a9f;
   --shadow:0 1px 0 rgba(38,37,30,.06);
-  --map-card:#f2f1ed;
-  --map-card-alt:#ebeae5;
-  --map-tint-warm:#f3ede6;
-  --map-tint-blue:#e3ebf3;
-  --map-tint-neutral:#e6e5e0;
-  --map-tint-green:#e4efe8;
-  --map-tint-pink:#f1e6ea;
-  --map-edge:#8d877d;
 }
 * { box-sizing: border-box; }
 [hidden] { display:none !important; }
@@ -148,23 +137,6 @@ details > summary:hover { color:var(--accent); }
 .budget-segment.defer { background:rgba(38,37,30,.06); }
 .progress-track { height:10px; }
 #progress-bar { height:100%; width:0; background:var(--accent); }
-.lens-key { display:flex; flex-wrap:wrap; gap:8px 12px; }
-.lens-key span { display:inline-block; padding-left:.35rem; }
-.map-detail { background:var(--chrome); border:1px solid var(--line); border-radius:4px; padding:10px 12px; margin:12px 0; }
-svg[aria-label^="Change map"] text[fill="#050503"] { fill:var(--strong); }
-svg[aria-label^="Change map"] text[fill="#26251e"] { fill:var(--fg); }
-svg[aria-label^="Change map"] text[fill="#6f6a60"] { fill:var(--muted); }
-svg[aria-label^="Change map"] rect[fill="#f2f1ed"] { fill:var(--map-card); }
-svg[aria-label^="Change map"] rect[fill="#ebeae5"] { fill:var(--map-card-alt); }
-svg[aria-label^="Change map"] rect[fill="#f3ede6"] { fill:var(--map-tint-warm); }
-svg[aria-label^="Change map"] rect[fill="#e3ebf3"] { fill:var(--map-tint-blue); }
-svg[aria-label^="Change map"] rect[fill="#e6e5e0"] { fill:var(--map-tint-neutral); }
-svg[aria-label^="Change map"] rect[fill="#e4efe8"] { fill:var(--map-tint-green); }
-svg[aria-label^="Change map"] rect[fill="#f1e6ea"] { fill:var(--map-tint-pink); }
-svg[aria-label^="Change map"] rect[stroke="#d9d5cf"] { stroke:var(--line); }
-svg[aria-label^="Change map"] polyline[stroke="#8d877d"] { stroke:var(--map-edge); }
-svg[aria-label^="Change map"] polygon[fill="#8d877d"] { fill:var(--map-edge); }
-svg[aria-label^="Change map"] polyline[stroke="#aaa49a"] { stroke:var(--line-strong); }
 table { width:100%; border-collapse:collapse; margin:.6rem 0; font-size:12px; }
 th, td { border-bottom:1px solid var(--line); padding:.35rem .45rem; text-align:left; vertical-align:top; }
 th { color:var(--muted); font-weight:600; }
@@ -185,21 +157,13 @@ th { color:var(--muted); font-weight:600; }
     --ok:#55c49a;
     --info:#78a9df;
     --shadow:0 1px 0 rgba(0,0,0,.28);
-    --map-card:#20231e;
-    --map-card-alt:#252821;
-    --map-tint-warm:#302720;
-    --map-tint-blue:#202b37;
-    --map-tint-neutral:#292b27;
-    --map-tint-green:#203029;
-    --map-tint-pink:#31242c;
-    --map-edge:#858c80;
   }
   code, pre { background:rgba(255,255,255,.045); border-color:rgba(255,255,255,.08); }
   .badge { background:rgba(20,22,18,.72); }
   .filters button.active { background:#302720; }
   .strip-bar, .progress-track { background:rgba(20,22,18,.72); }
 }
-@media print { #file-filter-note, .item header label { display:none; } details > * { display:block; } }
+@media print { .item header label { display:none; } details > * { display:block; } }
 </style>
 </head>
 <body>
@@ -220,16 +184,12 @@ ${renderRequiredChecks(model)}
 ${renderTrustSummary(model)}
 
 <h2 id="queue">Supporting review queue</h2>
-<p class="filters" id="file-filter-note" hidden>Filtered to <code id="file-filter-path"></code> <button data-clear-file-filter>show all</button></p>
 ${queueHtml}
 
 ${renderHeaderStrip(model, lenses)}
 ${hasConversationReviewValue(model) ? renderConversationInsights(model) : ""}
 <h2 id="reading-order">Reading order</h2>
 ${renderReadingOrder(model)}
-
-<h2 id="map">Change map</h2>
-${renderSvgMapSection(model)}
 
 ${renderNarrative(model)}
 
@@ -271,29 +231,20 @@ ${renderScoreboardFooter(model)}
       try { localStorage.setItem(KEY, JSON.stringify(checked)); } catch (e) { /* private mode */ }
     });
   });
-  // Lens and map-file filters COMPOSE: an item is visible only when it passes
-  // both active filters (intersection), so toggling one never un-hides items
-  // the other filtered out.
+  // Lens filters keep the supporting queue navigable without introducing a
+  // second structural surface that competes with the reading order.
   var activeLens = null;
-  var activeFile = null;
-  var activeFileOld = null;
-  var fileNote = document.getElementById("file-filter-note");
-  var filePathEl = document.getElementById("file-filter-path");
   function applyFilters() {
     Array.prototype.forEach.call(document.querySelectorAll("[data-lenses]"), function (item) {
       var lensOk = !activeLens || activeLens === "all" || (" " + item.getAttribute("data-lenses") + " ").indexOf(" " + activeLens + " ") >= 0;
-      // Rename-aware: an old-side-anchored item (path = rename source) matches
-      // the map node of its renamed destination, and vice versa.
-      var itemPath = item.getAttribute("data-path");
-      var fileOk = !activeFile || itemPath === activeFile || item.getAttribute("data-path-old") === activeFile || (activeFileOld && itemPath === activeFileOld);
-      item.style.display = lensOk && fileOk ? "" : "none";
+      item.style.display = lensOk ? "" : "none";
     });
     Array.prototype.forEach.call(document.querySelectorAll("[data-supporting-queue]"), function (details) {
       var visibleMatch = false;
       Array.prototype.forEach.call(details.querySelectorAll("[data-lenses]"), function (item) {
         if (item.style.display !== "none") { visibleMatch = true; }
       });
-      if ((activeFile || activeLens) && visibleMatch) {
+      if (activeLens && visibleMatch) {
         if (!details.open) { details.setAttribute("data-filter-opened", "true"); }
         details.open = true;
       } else if (details.getAttribute("data-filter-opened") === "true") {
@@ -301,10 +252,6 @@ ${renderScoreboardFooter(model)}
         details.removeAttribute("data-filter-opened");
       }
     });
-    if (fileNote && filePathEl) {
-      fileNote.hidden = !activeFile;
-      filePathEl.textContent = activeFile || "";
-    }
   }
   var buttons = document.querySelectorAll("[data-lens-filter]");
   Array.prototype.forEach.call(buttons, function (button) {
@@ -333,41 +280,6 @@ ${renderScoreboardFooter(model)}
     box.addEventListener("change", updateProgress);
   });
   updateProgress();
-  // review-surfaces.RENDER.11: clicking a map node filters the queue to that
-  // file (same data- attribute pattern as the lens filters; composes with the
-  // lens filter via applyFilters above).
-  Array.prototype.forEach.call(document.querySelectorAll("[data-map-file]"), function (node) {
-    node.addEventListener("click", function () {
-      var file = node.getAttribute("data-map-file");
-      if (activeFile === file) {
-        activeFile = null;
-        activeFileOld = null;
-      } else {
-        activeFile = file;
-        activeFileOld = node.getAttribute("data-map-file-old");
-      }
-      applyFilters();
-    });
-  });
-  var clearButton = document.querySelector("[data-clear-file-filter]");
-  if (clearButton) {
-    clearButton.addEventListener("click", function () { activeFile = null; activeFileOld = null; applyFilters(); });
-  }
-  // review-surfaces.MAP_SCALE.6: clicking an overview group toggles its
-  // pre-rendered hidden detail SVG (one open at a time; clicking the same
-  // group again closes it). Same data- attribute pattern as the filters.
-  Array.prototype.forEach.call(document.querySelectorAll("[data-map-group]"), function (card) {
-    card.addEventListener("click", function () {
-      var group = card.getAttribute("data-map-group");
-      Array.prototype.forEach.call(document.querySelectorAll("[data-map-detail]"), function (panel) {
-        if (panel.getAttribute("data-map-detail") === group) {
-          panel.hidden = !panel.hidden;
-        } else {
-          panel.hidden = true;
-        }
-      });
-    });
-  });
 })();
 </script>
 </body>
@@ -375,7 +287,7 @@ ${renderScoreboardFooter(model)}
 `;
   // review-surfaces.PRIVACY.6: the persisted cockpit held BLOCKED material if any
   // diff excerpt raised the block signal, OR any esc()'d model field (summary,
-  // narrative, reasons, cards, SVG labels) was redacted to a high-confidence
+  // narrative, reasons, and cards) was redacted to a high-confidence
   // marker. Surface one deterministic, greppable notice in either case.
   const blocked = excerptRedaction.blocked || containsBlockedRedaction(body);
   if (!blocked) {
@@ -502,65 +414,6 @@ function renderHeaderStrip(model: HumanReviewModel, lenses: string[]): string {
       : "";
   const contents = `${chips}${budgetBar}${progress}`;
   return contents ? `<div id="strip">${contents}</div>` : "";
-}
-
-// review-surfaces.RENDER.11: the inline SVG map with its text legend; the same
-// change_graph model used by the rest of the review — never a second graph model.
-// review-surfaces.CHANGE_MAP.3: structural maps live only in this supporting
-// HTML cockpit. The compact Markdown and GitHub reviewer brief deliberately
-// omit them so a diagram cannot substitute for purpose and approval decisions.
-// review-surfaces.MAP_SCALE.2: the legibility budget decides which level leads
-// — the overview SVG summarizes when the file-level map cannot render at full
-// size (summarize, never shrink).
-function renderSvgMapSection(model: HumanReviewModel): string {
-  const level = changeMapLeadLevel(model.change_graph);
-  const rendered = level === "overview" ? renderChangeMapOverviewSvg(model.change_graph.overview) : renderChangeMapSvg(model.change_graph);
-  if (!rendered) {
-    return `<p class="muted">No changed files to map.</p>`;
-  }
-  const legend =
-    rendered.lenses.length > 0
-      ? `<p class="muted lens-key">Lenses: ${rendered.lenses
-          .map((lens) => `<span style="border-left:10px solid ${SVG_LENS_FILLS[lens]}">${esc(RISK_LENS_METADATA[lens]?.label ?? lens)}</span>`)
-          .join("")}</p>`
-      : "";
-  if (level === "overview") {
-    const overview = model.change_graph.overview;
-    // review-surfaces.MAP_SCALE.6: every group's detail SVG is pre-rendered
-    // and hidden; clicking the overview card toggles it (vanilla JS, same
-    // data- pattern as the existing filters). File nodes inside detail views
-    // carry data-map-file, so the existing click-to-filter binding picks them
-    // up unchanged.
-    const detailLenses = new Set(rendered.lenses);
-    const panels: string[] = [];
-    for (const view of buildGroupDetailViews(model.change_graph)) {
-      const detail = renderChangeMapSvg(detailViewSubGraph(model.change_graph, view), {
-        stubs: view.stubs,
-        ariaLabel: `Change map detail: ${view.group}`
-      });
-      if (!detail) {
-        continue;
-      }
-      for (const lens of detail.lenses) {
-        detailLenses.add(lens);
-      }
-      panels.push(
-        `<div class="map-detail" data-map-detail="${esc(view.group)}" hidden>` +
-          `<p class="muted">Detail — <code>${esc(view.group)}</code>. Click a file to filter the review queue; click the group card again to close.</p>` +
-          detail.svg +
-          `</div>`
-      );
-    }
-    const combinedLegend =
-      detailLenses.size > 0
-        ? `<p class="muted lens-key">Lenses: ${[...detailLenses]
-            .sort()
-            .map((lens) => `<span style="border-left:10px solid ${SVG_LENS_FILLS[lens]}">${esc(RISK_LENS_METADATA[lens]?.label ?? lens)}</span>`)
-            .join("")}</p>`
-        : "";
-    return `<p class="muted">Overview — ${esc(model.change_graph.nodes.length)} changed file(s) across ${esc(overview.groups.length)} area(s). Cards summarize what changed; click a card to zoom into topic groups and files; hover for details.</p>\n${rendered.svg}\n${panels.join("\n")}\n${combinedLegend}`;
-  }
-  return `${rendered.svg}\n${legend}<p class="muted">Click a node to filter the review queue to that file; hover for details.</p>`;
 }
 
 function renderQueueItem(model: HumanReviewModel, item: ReviewQueueItem, context: HumanRenderContext, redaction?: ExcerptRedactionState): string {

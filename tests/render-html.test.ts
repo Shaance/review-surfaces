@@ -21,7 +21,7 @@ function model(over: Partial<HumanReviewModel> = {}): HumanReviewModel {
       ]
     },
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
-    change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
+    change_graph: { nodes: [], edges: [], clusters: [] },
     reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     decision_projection: {
@@ -96,8 +96,7 @@ test("review-surfaces.RENDER.9 the HTML cockpit is one self-contained offline fi
   assert.match(html, /--bg:#f7f7f4/);
   assert.match(html, /--chrome:#f2f1ed/);
   assert.match(html, /@media \(prefers-color-scheme: dark\)/);
-  assert.match(html, /--map-card:#20231e/);
-  assert.match(html, /svg\[aria-label\^="Change map"\] text\[fill="#050503"\] \{ fill:var\(--strong\); \}/);
+  assert.doesNotMatch(html, /Change map|data-map-|--map-card/);
   assert.match(html, /\[hidden\] \{ display:none !important; \}/);
   assert.match(html, /--accent:#f54e00/);
   assert.doesNotMatch(html, /--accent:#0b5fff|background:#f6f8fa/);

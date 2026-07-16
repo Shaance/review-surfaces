@@ -24,7 +24,7 @@ const artifacts = process.env.RS_ARTIFACTS ? path.resolve(process.env.RS_ARTIFAC
 const outDir = path.join(root, "docs", "images");
 fs.mkdirSync(outDir, { recursive: true });
 const readmePath = path.join(root, "README.md");
-const readmeImageBases = ["cockpit", "change-map", "change-map-detail", "sticky-comment"];
+const readmeImageBases = ["cockpit", "sticky-comment"];
 const readmeImageBaseUrl = "https://raw.githubusercontent.com/Shaance/review-surfaces/main/docs/images";
 
 const humanModelPath = path.join(artifacts, "human_review.json");
@@ -87,86 +87,9 @@ function escapeRegExp(value) {
 // 1. The HTML cockpit, top of page: verdict, header strip, review queue.
 shoot(path.join(artifacts, "human_review.html"), "cockpit.png", 1280, 900);
 
-// 2. The change map: the cockpit's inline SVG, extracted into a standalone page.
-const cockpit = fs.readFileSync(path.join(artifacts, "human_review.html"), "utf8");
-const svgMatch = cockpit.match(/<svg[\s\S]*?<\/svg>/);
-if (!svgMatch) {
-  throw new Error("no inline SVG change map found in human_review.html");
-}
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rs-shot-"));
-const mapHtml = path.join(tmp, "map.html");
-// Crop the (deliberately honest, often very wide) map to its dense left region
-// for the README teaser: clamp the viewBox width, keep natural scale.
-const CROP_WIDTH = 2300;
-const viewBox = svgMatch[0].match(/viewBox="0 0 (\d+) (\d+)"/);
-const mapWidth = viewBox ? Math.min(Number(viewBox[1]), CROP_WIDTH) : CROP_WIDTH;
-const mapHeight = viewBox ? Number(viewBox[2]) : 324;
-const croppedSvg = svgMatch[0]
-  .replace(/viewBox="0 0 \d+ (\d+)"/, `viewBox="0 0 ${mapWidth} $1"`)
-  .replace(/max-width:\d+px/, `max-width:${mapWidth}px`);
-const isOverviewMap = /aria-label="Change map overview"/.test(croppedSvg);
-const mapTitle = isOverviewMap ? "Change map overview" : "Change map";
-const mapCopy = isOverviewMap
-  ? "Cards summarize what changed in each area. In the cockpit, click a card to zoom into topic groups and files."
-  : "Changed files are grouped by review topic, with useful file-to-file relationships and review-lens tags when available. In the cockpit, click a file to filter the review queue.";
-fs.writeFileSync(
-  mapHtml,
-  `<!doctype html><meta charset="utf-8"><body style="margin:0;background:#f7f7f4;font-family:CursorGothic,-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;color:#26251e">
-  <main style="padding:24px 32px 28px">
-    <h1 style="font-size:26px;font-weight:400;line-height:32.5px;margin:0 0 8px;color:#050503">${mapTitle}</h1>
-    <p style="font-size:14px;line-height:1.45;margin:0 0 18px;color:#6f6a60;max-width:760px">${mapCopy}</p>
-    ${croppedSvg}
-  </main>
-  </body>`
-);
-shoot(mapHtml, "change-map.png", Math.max(860, Math.min(mapWidth + 80, 2340)), Math.max(mapHeight + 150, 420));
 
-// 3. The map detail view: the same pre-rendered panel the cockpit reveals after
-// clicking an overview group.
-let firstDetailMatch;
-let srcDetailMatch;
-let srcRelationshipDetailMatch;
-let compactRelationshipDetailMatch;
-const detailPattern = /<div class="map-detail" data-map-detail="([^"]+)" hidden><p class="muted">([\s\S]*?)<\/p>(<svg[\s\S]*?<\/svg>)<\/div>/g;
-for (const match of cockpit.matchAll(detailPattern)) {
-  firstDetailMatch ??= match;
-  if (match[1] === "src") {
-    srcDetailMatch = match;
-  }
-  if (!/<polyline\b/.test(match[3])) {
-    continue;
-  }
-  if (match[1] === "src") {
-    srcRelationshipDetailMatch = match;
-    break;
-  }
-  if (!compactRelationshipDetailMatch || detailSvgHeight(match[3]) < detailSvgHeight(compactRelationshipDetailMatch[3])) {
-    compactRelationshipDetailMatch = match;
-  }
-}
-const detailMatch = srcRelationshipDetailMatch ?? compactRelationshipDetailMatch ?? srcDetailMatch ?? firstDetailMatch;
-if (!detailMatch) {
-  throw new Error("no hidden change-map detail panel found in human_review.html");
-}
-const detailGroup = detailMatch[1];
-const detailSvg = detailMatch[3];
-const detailViewBox = detailSvg.match(/viewBox="0 0 (\d+) (\d+)"/);
-const detailWidth = detailViewBox ? Number(detailViewBox[1]) : 860;
-const detailHeight = detailViewBox ? Number(detailViewBox[2]) : 360;
-const detailHtml = path.join(tmp, "map-detail.html");
-fs.writeFileSync(
-  detailHtml,
-  `<!doctype html><meta charset="utf-8"><body style="margin:0;background:#f7f7f4;font-family:CursorGothic,-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;color:#26251e">
-  <main style="padding:24px 32px 28px">
-    <h1 style="font-size:26px;font-weight:400;line-height:32.5px;margin:0 0 8px;color:#050503">Change map detail: ${detailGroup}</h1>
-    <p style="font-size:14px;line-height:1.45;margin:0 0 18px;color:#6f6a60;max-width:760px">This is the view revealed after clicking the <code style="background:rgba(38,37,30,.045);border:1px solid rgba(38,37,30,.08);border-radius:4px;padding:1px 5px">${detailGroup}</code> overview card: topic groups, files, and useful file-to-file relationships when available.</p>
-    ${detailSvg}
-  </main>
-  </body>`
-);
-shoot(detailHtml, "change-map-detail.png", Math.max(860, Math.min(detailWidth + 80, 2340)), Math.max(detailHeight + 150, 420));
-
-// 4. The sticky PR comment preview: comment.md rendered through a deliberately
+// 2. The sticky PR comment preview: comment.md rendered through a deliberately
 // small markdown-to-HTML pass (headings, bold, inline code, lists, fences,
 // details) styled like a PR comment. Not a full renderer — just enough for an
 // honest picture of the real file.
@@ -208,8 +131,3 @@ shoot(stickyHtml, "sticky-comment.png", 820, 980);
 
 syncReadmeImageReferences();
 fs.rmSync(tmp, { recursive: true, force: true });
-
-function detailSvgHeight(svg) {
-  const box = svg.match(/viewBox="0 0 \d+ (\d+)"/);
-  return Number(box?.[1] ?? Number.MAX_SAFE_INTEGER);
-}

@@ -169,14 +169,17 @@ test("review-surfaces.DISTRIBUTION.5 docs/example/ holds the committed sample pa
   assert.ok(exampleManifest.files?.includes("docs/example"), "docs/example ships in the package");
 });
 
-test("review-surfaces.DISTRIBUTION.6 the README positions the change map as optional supporting context", () => {
+test("review-surfaces.DISTRIBUTION.6 the README and screenshot tooling expose only current human surfaces", () => {
   const readme = read("README.md");
-  const section = readme.slice(readme.indexOf("### The change map"), readme.indexOf("### The sticky PR comment"));
-  assert.match(section, /optional structural context, never the review itself/i);
-  assert.match(section, /compact overview and per-area details/i);
-  assert.match(section, /after the decisions/i);
-  assert.match(section, /never duplicated in the compact Markdown or sticky PR brief/i);
-  assert.doesNotMatch(section, /!\[/, "the removed legacy map screenshots must not keep advertising the unusable surface");
+  const tour = readme.slice(readme.indexOf("## What you get"), readme.indexOf("## Scope:"));
+  assert.doesNotMatch(tour, /change map/i);
+  assert.match(readme, /machine-readable change graph/i);
+  assert.match(readme, /human\s+surfaces do not .* redundant map/i);
+  const screenshots = read("scripts/readme-screenshots.mjs");
+  assert.match(screenshots, /\["cockpit", "sticky-comment"\]/);
+  assert.doesNotMatch(screenshots, /change-map|inline SVG change map|map-detail/);
+  assert.equal(fs.existsSync(path.join(root, "docs", "images", "change-map.png")), false);
+  assert.equal(fs.existsSync(path.join(root, "docs", "images", "change-map-detail.png")), false);
 });
 
 test("review-surfaces.DISTRIBUTION.7 the all terminal summary ends with the HTML cockpit pointer", () => {
