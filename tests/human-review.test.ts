@@ -967,7 +967,7 @@ test("review-surfaces.REVIEWER_VALUE.3 coverage blockers survive the global bloc
     semanticFacts: { schema_changes: breakingSchemas, api_changes: [], test_weakening: [] }
   });
 
-  assert.equal(model.blockers.length, 6);
+  assert.equal(model.blockers.length, 5);
   assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-PR-RISK-COVERAGE"), true);
   assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-PR-RISK-COVERAGE-SECOND"), true);
   assert.equal(model.blockers.some((blocker) => blocker.id.startsWith("BLOCK-SCHEMA-")), false);
@@ -986,8 +986,8 @@ test("human review model is schema-valid and starts with deterministic readiness
   assert.equal(model.schema_version, "review-surfaces.human_review.v1");
   assert.equal(model.mode, "pr");
   assert.equal(model.generated_from.base_sha, "base123");
-  assert.equal(model.verdict.decision, "block_before_merge");
-  assert.equal(model.blockers[0].id, "BLOCK-CI-SECRET-001");
+  assert.equal(model.verdict.decision, "reviewable_with_attention");
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), false);
   assert.equal(model.review_queue[0].path, ".github/workflows/pr-review-comment.yml");
   assert.equal(model.review_queue[0].hunk_header, "@@ -10,3 +10,5 @@");
   assert.deepEqual(
@@ -996,9 +996,8 @@ test("human review model is schema-valid and starts with deterministic readiness
   );
   assert.deepEqual(model.review_queue[0].risk_ids, ["PR-RISK-001"]);
   assert.ok(model.review_queue.every((item) => item.path !== ""));
-  assert.ok(model.questions.some((question) => question.severity === "blocking"));
-  assert.ok(model.suggested_comments.length > 0);
-  assert.ok(model.suggested_comments.every((comment) => comment.evidence.length > 0));
+  assert.equal(model.questions.some((question) => question.severity === "blocking"), false);
+  assert.equal(model.suggested_comments.length, 0, "a workflow approval decision does not invent an inline defect");
   assert.ok(model.trust_audit.claimed_not_verified.length > 0);
   assert.ok(model.risk_lens_findings.some((finding) => finding.lens === "security_privacy"));
   assert.ok(model.risk_lens_findings.some((finding) => finding.lens === "api_contract"));
@@ -1678,8 +1677,15 @@ test("review-surfaces.HUMAN_REVIEW.18 does not promote generic mapping gaps unde
 });
 
 test("review-surfaces.HUMAN_REVIEW.18 does not evict blocking questions for clarifying intent gaps", () => {
+  const packet = packetFixture();
+  packet.risks.test_evidence = [{
+    id: "TEST-TR-FAIL",
+    kind: "missing",
+    summary: "Command transcript records exit 1: pnpm test",
+    evidence: [commandEvidence("pnpm test", "Command transcript recorded exit_code=1 and status=failed.", "high", { sha: "abc123", validationStatus: "valid" })]
+  }];
   const model = buildHumanReview({
-    packet: packetFixture(),
+    packet,
     prSurface: prSurfaceFixture(),
     diff: structuredDiffFixture(),
     config: {
@@ -1849,14 +1855,13 @@ test("evidence cards separate direct, missing, and invalid evidence with reviewe
   });
   const model = buildHumanReview({ packet, prSurface: prSurfaceFixture(), diff: structuredDiffFixture() });
 
-  const secretBoundaryCard = model.evidence_cards.find((card) => card.source_ids.includes("BLOCK-CI-SECRET-001"));
+  const secretBoundaryCard = model.evidence_cards.find((card) => card.risk_ids.includes("PR-RISK-001"));
   assert.ok(secretBoundaryCard);
   assert.equal(secretBoundaryCard.priority, "high");
-  assert.equal(secretBoundaryCard.status, "mixed");
   assert.ok(secretBoundaryCard.direct_evidence.some((ref) => ref.path === ".github/workflows/pr-review-comment.yml"));
-  assert.ok(secretBoundaryCard.missing_evidence.length > 0, "CI secret-boundary card should show missing manual-check evidence");
   assert.equal(secretBoundaryCard.invalid_evidence.length, 0);
-  assert.match(secretBoundaryCard.reviewer_action, /Record a manual check/);
+  assert.match(secretBoundaryCard.reviewer_action, /manual check|workflow\/provider/i);
+  assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
 
   const invalidCard = model.evidence_cards.find((card) => card.invalid_evidence.length > 0);
   assert.ok(invalidCard);
@@ -1866,8 +1871,7 @@ test("evidence cards separate direct, missing, and invalid evidence with reviewe
 
   const markdown = renderEvidenceCardsMarkdown(model);
   assert.match(markdown, /^# Evidence Cards/);
-  assert.match(markdown, /Action: Record a manual check/);
-  assert.match(markdown, /\[Mixed evidence; high; evidence: direct 1, missing 1, invalid 0\]/);
+  assert.match(markdown, /Action: .*manual check|Action: Inspect workflow\/provider/i);
   assert.match(markdown, /evidence: direct 1, missing 1, invalid 1/);
   assert.match(markdown, /\[Unchecked direct evidence;/);
   assert.match(markdown, /\[Missing evidence;/);
@@ -1914,9 +1918,9 @@ test("human review Markdown renders a compact cockpit surface", () => {
 
   assert.match(markdown, /^# Human Review/);
   assert.match(markdown, /## Verdict/);
-  assert.match(markdown, /\*\*Block before merge\.\*\*/);
+  assert.match(markdown, /\*\*Reviewable with attention\.\*\*/);
   assert.match(markdown, /## Change purpose/);
-  assert.match(markdown, /## Approval decisions/);
+  assert.match(markdown, /## Approval decision/);
   assert.match(markdown, /## Required checks/);
   assert.match(markdown, /## Trust summary/);
   assert.match(markdown, /## Supporting review queue/);
@@ -2679,7 +2683,7 @@ test("passing test evidence whose name mentions errors does not block merge read
   assert.notEqual(model.verdict.decision, "block_before_merge");
 });
 
-test("recorded CI secret-boundary manual evidence clears the deterministic blocker", () => {
+test("recorded CI secret-boundary manual evidence clears the required reviewer check", () => {
   const packet = packetFixture();
   packet.risks.test_evidence.push({
     id: "TEST-MANUAL-CI-SECRET",
@@ -2700,7 +2704,7 @@ test("recorded CI secret-boundary manual evidence clears the deterministic block
   assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), false);
 });
 
-test("recorded CI secret-boundary canonical expected result clears the deterministic blocker", () => {
+test("recorded CI secret-boundary canonical expected result clears the required reviewer check", () => {
   const packet = packetFixture();
   packet.risks.test_evidence.push({
     id: "TEST-MANUAL-CI-SECRET-CANONICAL",
@@ -2721,7 +2725,7 @@ test("recorded CI secret-boundary canonical expected result clears the determini
   assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), false);
 });
 
-test("stale-head CI secret-boundary feedback does not clear the deterministic blocker", () => {
+test("stale-head CI secret-boundary feedback does not clear the required reviewer check", () => {
   const packet = packetFixture();
   packet.risks.test_evidence.push({
     id: "TEST-MANUAL-CI-SECRET-STALE",
@@ -2738,11 +2742,11 @@ test("stale-head CI secret-boundary feedback does not clear the deterministic bl
 
   const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
 
-  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), true);
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), false);
   assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
 });
 
-test("command text does not clear the CI secret-boundary blocker", () => {
+test("command text does not clear the CI secret-boundary reviewer check", () => {
   const packet = packetFixture();
   packet.risks.test_evidence.push({
     id: "TEST-COMMAND-MANUAL-CI-SECRET",
@@ -2760,11 +2764,11 @@ test("command text does not clear the CI secret-boundary blocker", () => {
 
   const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
 
-  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), true);
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), false);
   assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
 });
 
-test("summary-only CI secret-boundary claims do not clear the deterministic blocker", () => {
+test("summary-only CI secret-boundary claims do not clear the required reviewer check", () => {
   const packet = packetFixture();
   packet.risks.test_evidence.push({
     id: "TEST-MANUAL-CI-SECRET-CLAIM",
@@ -2775,11 +2779,11 @@ test("summary-only CI secret-boundary claims do not clear the deterministic bloc
 
   const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
 
-  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), true);
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), false);
   assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
 });
 
-test("CI secret-boundary policy wording does not clear the deterministic blocker", () => {
+test("CI secret-boundary policy wording does not clear the required reviewer check", () => {
   const packet = packetFixture();
   packet.risks.test_evidence.push({
     id: "TEST-MANUAL-CI-SECRET-POLICY",
@@ -2796,11 +2800,11 @@ test("CI secret-boundary policy wording does not clear the deterministic blocker
 
   const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
 
-  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), true);
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), false);
   assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
 });
 
-test("CI secret-boundary policy text with recorded wording does not clear the deterministic blocker", () => {
+test("CI secret-boundary policy text with recorded wording does not clear the required reviewer check", () => {
   const packet = packetFixture();
   packet.risks.test_evidence.push({
     id: "TEST-MANUAL-CI-SECRET-POLICY-RECORDED",
@@ -2817,11 +2821,11 @@ test("CI secret-boundary policy text with recorded wording does not clear the de
 
   const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
 
-  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), true);
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), false);
   assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
 });
 
-test("inconclusive CI secret-boundary evidence does not clear the deterministic blocker", () => {
+test("inconclusive CI secret-boundary evidence does not clear the required reviewer check", () => {
   const packet = packetFixture();
   packet.risks.test_evidence.push({
     id: "TEST-MANUAL-CI-SECRET-INCONCLUSIVE",
@@ -2838,11 +2842,11 @@ test("inconclusive CI secret-boundary evidence does not clear the deterministic 
 
   const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
 
-  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), true);
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), false);
   assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
 });
 
-test("split CI secret-boundary phrases do not clear the deterministic blocker", () => {
+test("split CI secret-boundary phrases do not clear the required reviewer check", () => {
   const packet = packetFixture();
   packet.risks.test_evidence.push({
     id: "TEST-MANUAL-CI-SECRET-SPLIT",
@@ -2856,11 +2860,11 @@ test("split CI secret-boundary phrases do not clear the deterministic blocker", 
 
   const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
 
-  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), true);
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), false);
   assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
 });
 
-test("unrelated manual security wording does not clear the CI secret-boundary blocker", () => {
+test("unrelated manual security wording does not clear the CI secret-boundary reviewer check", () => {
   const packet = packetFixture();
   packet.risks.test_evidence.push({
     id: "TEST-MANUAL-UNRELATED",
@@ -2871,7 +2875,7 @@ test("unrelated manual security wording does not clear the CI secret-boundary bl
 
   const model = buildHumanReview({ packet, prSurface: prSurfaceFixture() });
 
-  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), true);
+  assert.equal(model.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), false);
   assert.equal(model.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-001") && item.kind === "manual"), true);
 });
 
@@ -4064,7 +4068,7 @@ test("human suggested comments synthesize evidence-backed drafts for non-cleared
   }
 });
 
-test("human suggested comments ask for CI secret-boundary manual check only when missing", () => {
+test("CI secret-boundary changes remain reviewer decisions and recorded evidence clears the manual check", () => {
   const packet = packetFixture();
   packet.evaluation.results = [];
   packet.evaluation.acai_coverage = {};
@@ -4076,9 +4080,9 @@ test("human suggested comments ask for CI secret-boundary manual check only when
   surface.risks.candidates = [prRiskFixture("ci_secret_boundary_change")];
 
   const missing = buildHumanReview({ packet, prSurface: surface });
-  const missingManualCheckComments = missing.suggested_comments.filter((comment) => /manual check/.test(comment.body));
-  assert.equal(missingManualCheckComments.length, 1);
-  assert.equal(missingManualCheckComments[0]?.severity, "blocking");
+  assert.equal(missing.blockers.some((blocker) => blocker.id === "BLOCK-CI-SECRET-001"), false);
+  assert.equal(missing.test_plan.some((item) => item.maps_to_risks.includes("PR-RISK-CI") && item.kind === "manual"), true);
+  assert.equal(missing.decision_projection?.findings.some((finding) => finding.risk_ids.includes("PR-RISK-CI")), true);
   assert.equal(missing.suggested_comments.some((comment) => comment.risk_ids.includes("PR-RISK-CI")), false);
 
   packet.risks.test_evidence.push({

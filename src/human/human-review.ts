@@ -1747,20 +1747,6 @@ function buildBlockers(
     });
   }
 
-  const secretBoundary = prSurface?.risks.candidates.find((risk) =>
-    risk.rule === "ci_secret_boundary_change" &&
-    isDecisionScopedSignal(decisionScope, risk.evidence, requirementIds(risk.evidence))
-  );
-  if (secretBoundary && !hasRecordedCiSecretBoundaryManualCheck(input)) {
-    blockers.push({
-      id: "BLOCK-CI-SECRET-001",
-      severity: "high",
-      summary: "CI / secret-boundary files changed without recorded manual check evidence.",
-      evidence: evidenceOrMissing(secretBoundary.evidence, "CI / secret-boundary risk needs file evidence."),
-      required_action: "Record a manual check confirming PR-controlled code cannot access secrets."
-    });
-  }
-
   for (const effect of feedbackEffects.filter(isMissingTeamPolicyEffect)) {
     blockers.push({
       id: `BLOCK-${stableFeedbackEffectId(effect.id)}`,
@@ -5225,7 +5211,9 @@ function prRiskReviewDisposition(risk: PrRiskCandidate): PrRiskReviewDisposition
     case "comment_surface_change":
       return undefined;
     case "ci_secret_boundary_change":
-      // The merge-readiness blocker is the canonical suggested comment for this manual-check gate.
+      // A changed workflow is an approval decision, not proof of exposure. The
+      // risk lens and required manual test-plan item carry the review action;
+      // only concrete secret/privacy evidence may block merge.
       return undefined;
     case "schema_contract_change":
       return undefined;

@@ -45,8 +45,9 @@ jobs:
                 repo: context.repo.repo,
                 run_id: artifact.workflow_run.id,
               });
+              const workflowPath = run.path.replace(/@[^@]+$/, "");
               if (
-                run.path === ".github/workflows/pr-review-comment.yml" &&
+                workflowPath === ".github/workflows/pr-review-comment.yml" &&
                 run.event === "pull_request_target" &&
                 run.conclusion === "success"
               ) {

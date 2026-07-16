@@ -448,7 +448,8 @@ test("review-surfaces.PR_SURFACE.1 the repo workflow is a same-repo-only thin co
   const priorEvidence = trustedSteps.find((s: any) => s.id === "prior-evidence");
   assert.equal(priorEvidence.if, "github.event.action == 'edited'");
   assert.match(priorEvidence.with.script, /listArtifactsForRepo/);
-  assert.match(priorEvidence.with.script, /run\.path === "\.github\/workflows\/pr-review-comment\.yml"/);
+  assert.match(priorEvidence.with.script, /run\.path\.replace\(\/@\[\^@\]\+\$\/, ""\)/);
+  assert.match(priorEvidence.with.script, /workflowPath === "\.github\/workflows\/pr-review-comment\.yml"/);
   assert.match(priorEvidence.with.script, /run\.event === "pull_request_target"/);
   assert.match(priorEvidence.with.script, /run\.conclusion === "success"/);
   const recoveredEvidence = trustedSteps.find((s: any) => s.uses === "actions/download-artifact@v4");

@@ -260,3 +260,13 @@ test("review-surfaces.RENDER.10 lens filters render from the model's lens findin
   assert.match(html, /data-lens-filter="reviewer_ux"/);
   assert.match(html, /data-lenses="reviewer_ux"/);
 });
+
+test("review-surfaces.RENDER.12 the supporting controls label lens, budget, and review progress without a chart", () => {
+  const html = renderHumanReviewHtml(model());
+  assert.match(html, /<div id="strip">/);
+  assert.match(html, /data-lens-filter="all">All lenses \(1\)<\/button>/);
+  assert.match(html, /class="budget-segment read"[^>]*>read 3m<\/span>/);
+  assert.match(html, /id="progress-bar"/);
+  assert.match(html, /id="progress-label">0 of 1 reviewed<\/p>/);
+  assert.doesNotMatch(html, /<canvas|<svg/);
+});

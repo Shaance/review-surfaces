@@ -152,11 +152,11 @@ export function decisionRootForRisk(rule: PrRiskCandidate["rule"], path?: string
     // current-head command evidence.
     case "failed_or_skipped_test": return undefined;
     case "secret_in_diff": return `secret_boundary${suffix}`;
-    // A sensitive path is not itself a policy violation. Keep path-only privacy
-    // and CI boundary signals as supporting checks unless concrete evidence
-    // creates a blocker.
-    case "privacy_sensitive_change":
-    case "ci_secret_boundary_change": return undefined;
+    // A generic sensitive path is not itself a policy violation. A changed CI
+    // boundary is different: it requires an explicit reviewer approval choice,
+    // but remains nonblocking until concrete exposure evidence exists.
+    case "privacy_sensitive_change": return undefined;
+    case "ci_secret_boundary_change": return `secret_boundary${suffix}`;
     case "coverage_regression":
     case "untested_changed_impl": return `test_coverage${suffix}`;
     // Reviewer-facing renderers are one product contract even when several
