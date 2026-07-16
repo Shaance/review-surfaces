@@ -383,7 +383,15 @@ runs:
         # `|| true` keeps a no-match from aborting under `set -eo pipefail` — a
         # missing summary line is the best-effort blank-gate-code case, never fatal.
         gate_line="$(printf '%s\n' "$all_out" | grep -F '"review-surfaces.run-summary.v1"' | tail -n1 || true)"
-        gate_code="$(printf '%s' "$gate_line" | jq -r '.gate_code // ""' 2>/dev/null || true)"
+        # Node is already a hard dependency of this action; jq is not available in
+        # every supported runner/container. Parse the single summary line without
+        # silently turning a clean gate into a missing action output.
+        gate_code="$(node -e '
+          try {
+            const value = JSON.parse(process.argv[1]).gate_code;
+            if (Number.isInteger(value) && value >= 0) process.stdout.write(String(value));
+          } catch {}
+        ' "$gate_line" 2>/dev/null || true)"
         # A privacy exit may occur before a summary line is available. Preserve
         # the authoritative process status so the cleanup-only step can remove
         # an older approval brief without ever entering the posting path.

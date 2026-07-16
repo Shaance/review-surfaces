@@ -205,6 +205,7 @@ test("review-surfaces.PR_SURFACE.4 the action delegates exact-head sticky reconc
 });
 
 test("review-surfaces.PR_SURFACE.4 generation publishes privacy gate output before bash -e returns failure", (t) => {
+  assert.doesNotMatch(generationGateScript(), /\|\s*jq\b/, "generation must not depend on runner-provided jq");
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-generation-gate-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
