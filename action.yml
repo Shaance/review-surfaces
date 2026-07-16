@@ -360,6 +360,7 @@ runs:
         # context and report 0. So `--json` is passed to `all` and the run-summary
         # line it prints (gated over the live context) is the authoritative gate
         # code, written to this step's $GITHUB_OUTPUT for the action's gate-code.
+        all_status=0
         all_out="$(node "$RS_BIN" all \
           --provider "$RS_PROVIDER" \
           "${model_flag[@]}" \
@@ -375,7 +376,7 @@ runs:
           --cache \
           --json \
           "${prev_flag[@]}" \
-          --out "$RS_OUT")"
+          --out "$RS_OUT")" || all_status=$?
         printf '%s\n' "$all_out"
         # The run summary is a SINGLE compact JSON line amid the prose; pick exactly
         # that line and read its gate_code (the real gate, incl. a privacy block 5).
@@ -383,10 +384,15 @@ runs:
         # missing summary line is the best-effort blank-gate-code case, never fatal.
         gate_line="$(printf '%s\n' "$all_out" | grep -F '"review-surfaces.run-summary.v1"' | tail -n1 || true)"
         gate_code="$(printf '%s' "$gate_line" | jq -r '.gate_code // ""' 2>/dev/null || true)"
+        # A privacy exit may occur before a summary line is available. Preserve
+        # the authoritative process status so the cleanup-only step can remove
+        # an older approval brief without ever entering the posting path.
+        if [ "$all_status" -eq 5 ]; then gate_code=5; fi
         case "$gate_code" in
           ''|*[!0-9]*) echo "Could not read a numeric gate_code from the run summary (best-effort); leaving gate-code blank." ;;
           *) echo "gate-code=$gate_code" >> "$GITHUB_OUTPUT" ;;
         esac
+        if [ "$all_status" -ne 0 ]; then exit "$all_status"; fi
         node "$RS_BIN" validate "$RS_OUT"
         # review-surfaces.PR_SURFACE.2/.4: render the deterministic sticky from
         # human_review.json. Redaction and the secret-block postability gate run
@@ -394,6 +400,7 @@ runs:
         # exit so the action fails before the later upload/post steps run — a
         # blocked sticky is never posted. Suggested comments stay local drafts
         # (PROVIDERS.7) and are never posted here.
+        comment_status=0
         node "$RS_BIN" comment \
           --review-scope pr \
           --format sticky \
@@ -402,7 +409,11 @@ runs:
           --artifact-name "$RS_ARTIFACT" \
           --artifact-url "$RS_ARTIFACT_URL" \
           --run-id "$GITHUB_RUN_ID" \
-          --out "$RS_OUT"
+          --out "$RS_OUT" || comment_status=$?
+        # Strict postability is a second privacy boundary. If it blocks after a
+        # clean pipeline gate, publish code 5 before returning the failure.
+        if [ "$comment_status" -eq 5 ]; then echo "gate-code=5" >> "$GITHUB_OUTPUT"; fi
+        exit "$comment_status"
     - name: Emit outputs and run-UI summary (best-effort, renderer-only)
       id: summary
       shell: bash
@@ -477,7 +488,7 @@ runs:
         if-no-files-found: error
         overwrite: true
     - name: Reconcile sticky comment (trusted exact-head client)
-      if: ${{ always() && inputs.post == 'true' }}
+      if: ${{ steps.generate.outcome == 'success' && inputs.post == 'true' }}
       shell: bash
       working-directory: ${{ inputs.subject-directory }}
       env:
@@ -492,10 +503,8 @@ runs:
       run: |
         # review-surfaces.PR_SURFACE.3/.4: only this trusted step holds the write
         # token. The shared CLI owns sticky discovery, freshness, deletion, and
-        # upsert semantics, so Actions and local --post cannot drift. `always()`
-        # lets a privacy-blocked generation remove an older approval brief; the
-        # blocked body is never posted. This reconciliation remains best-effort
-        # and never hides the earlier generation failure.
+        # upsert semantics, so Actions and local --post cannot drift. A failed
+        # generation can never reach this body-posting path.
         set +e
         if [ -z "$GH_TOKEN" ]; then echo "No token; skipping post (upload-only)."; exit 0; fi
         if [ -z "$RS_OUT" ]; then echo "No validated output directory; skipping sticky reconciliation."; exit 0; fi
@@ -512,4 +521,23 @@ runs:
         if [ "$status" -ne 0 ]; then
           echo "Sticky reconciliation returned $status (best-effort; generation status remains authoritative)."
         fi
+        exit 0
+    - name: Remove stale sticky after a confirmed privacy block
+      if: ${{ always() && inputs.post == 'true' && steps.generate.outcome == 'failure' && steps.generate.outputs.gate-code == '5' }}
+      shell: bash
+      working-directory: ${{ inputs.subject-directory }}
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_PR_NUMBER: ${{ inputs.pr-number }}
+        GH_REPO: ${{ inputs.repository || github.repository }}
+        RS_HEAD: ${{ inputs.head-ref }}
+        RS_STICKY: ${{ github.action_path }}/bin/review-surfaces-sticky.js
+      run: |
+        # Cleanup is deliberately separate from posting: this client mode can
+        # only remove the owned exact-head sticky and has no body-upsert path.
+        set +e
+        if [ -z "$GH_TOKEN" ]; then echo "No token; skipping privacy cleanup."; exit 0; fi
+        head_sha="$(git rev-parse --verify "${RS_HEAD}^{commit}" 2>/dev/null)"
+        if [ -z "$head_sha" ]; then echo "Could not resolve exact head; skipping privacy cleanup."; exit 0; fi
+        SUBJECT="$(pwd -P)" HEAD_SHA="$head_sha" node "$RS_STICKY" remove || true
         exit 0

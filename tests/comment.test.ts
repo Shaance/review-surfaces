@@ -110,6 +110,25 @@ test("default repo comment rejects a PR-scoped human brief", () => {
   }
 });
 
+test("repo comment rejects a human brief generated from an older packet identity", () => {
+  const tmp = setupFixture("review-surfaces-comment-stale-packet-");
+  try {
+    runAll(tmp);
+    const packetPath = path.join(tmp, ".review-surfaces", "review_packet.json");
+    const packet = JSON.parse(fs.readFileSync(packetPath, "utf8"));
+    packet.manifest.signature = "f".repeat(64);
+    fs.writeFileSync(packetPath, JSON.stringify(packet));
+
+    const result = runComment(tmp);
+    assert.notEqual(result.status, 0, "a stale brief must not render over a rewritten packet");
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /generated from the current review_packet\.json/);
+    assert.match(result.stderr, /all --review-scope repo/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("comment --review-scope pr --format sarif is a usage error (PR surface has no SARIF projection)", () => {
   const tmp = setupFixture("review-surfaces-pr-sarif-");
   try {

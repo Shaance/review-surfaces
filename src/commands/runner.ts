@@ -57,6 +57,10 @@ export async function recordCommandTranscript(options: RecordCommandOptions): Pr
   const stdout = new BoundedStreamCapture(COMMAND_RAW_EXCERPT_CAP);
   const stderr = new BoundedStreamCapture(COMMAND_RAW_EXCERPT_CAP);
   const command = shellCommandString(options.args);
+  // Bind evidence to the checkout that is about to run. The wrapped command is
+  // untrusted and may mutate .git; resolving HEAD after it exits would let the
+  // command choose the identity stamped on its own transcript.
+  const headSha = options.headSha ?? resolveGitRefSha(options.cwd, "HEAD");
   const childResult = await runChildCommand(options, stdout, stderr);
   const completed = now();
   const id = options.id ?? defaultTranscriptId(options.args);
@@ -74,7 +78,7 @@ export async function recordCommandTranscript(options: RecordCommandOptions): Pr
     command: redact(command) ?? "",
     status: childResult.exitCode === 0 ? "passed" : "failed",
     exit_code: childResult.exitCode,
-    head_sha: options.headSha ?? resolveGitRefSha(options.cwd, "HEAD"),
+    head_sha: headSha,
     duration_ms: Math.max(0, completed.getTime() - started.getTime()),
     started_at: started.toISOString(),
     completed_at: completed.toISOString(),

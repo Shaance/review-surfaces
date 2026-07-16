@@ -40,6 +40,71 @@ function runOutputBoundary(subject: string, rawOutput: string): { status: number
   return { status: result.status, stdout: String(result.stdout), stderr: String(result.stderr) };
 }
 
+function generationGateScript(): string {
+  const action = readYaml("action.yml");
+  const steps: any[] = action.runs.steps;
+  const runStep = steps.find((step) => typeof step.run === "string" && step.run.includes('node "$RS_BIN" all'));
+  const run = String(runStep?.run ?? "");
+  const start = run.indexOf("all_status=0");
+  assert.ok(start >= 0, "the executable generation status-control flow exists");
+  return `set -eo pipefail
+model_flag=()
+base_flag=()
+prev_flag=()
+${run.slice(start)}
+`;
+}
+
+function runGenerationGate(
+  root: string,
+  statuses: { all: number; gate: number; comment: number }
+): { status: number | null; calls: string[]; gateCodes: string[]; stderr: string } {
+  const fakeCli = path.join(root, "fake-review-surfaces.js");
+  const invocationLog = path.join(root, "invocations.log");
+  const githubOutput = path.join(root, "github-output.txt");
+  fs.writeFileSync(fakeCli, `
+const fs = require("node:fs");
+const command = process.argv[2] || "";
+fs.appendFileSync(process.env.INVOCATION_LOG, command + "\\n");
+if (command === "all") {
+  process.stdout.write(JSON.stringify({ schema_version: "review-surfaces.run-summary.v1", gate_code: Number(process.env.ALL_GATE) }) + "\\n");
+  process.exit(Number(process.env.ALL_STATUS));
+}
+if (command === "comment") process.exit(Number(process.env.COMMENT_STATUS));
+process.exit(0);
+`);
+  const result = spawnSync("bash", ["-c", generationGateScript()], {
+    cwd: root,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      RS_BIN: fakeCli,
+      RS_PROVIDER: "mock",
+      RS_CONFIG: "config.yaml",
+      RS_HEAD: "HEAD",
+      RS_CHANGE_TITLE: "Purpose",
+      RS_CHANGE_DESCRIPTION: "",
+      RS_SPEC: "feature.yaml",
+      RS_OUT: ".review-surfaces",
+      RS_ARTIFACT: "artifact",
+      RS_ARTIFACT_URL: "https://example.invalid/artifact",
+      GITHUB_RUN_ID: "1",
+      GITHUB_OUTPUT: githubOutput,
+      INVOCATION_LOG: invocationLog,
+      ALL_STATUS: String(statuses.all),
+      ALL_GATE: String(statuses.gate),
+      COMMENT_STATUS: String(statuses.comment)
+    }
+  });
+  const calls = fs.existsSync(invocationLog)
+    ? fs.readFileSync(invocationLog, "utf8").trim().split("\n").filter(Boolean)
+    : [];
+  const gateCodes = fs.existsSync(githubOutput)
+    ? fs.readFileSync(githubOutput, "utf8").split("\n").filter((line) => line.startsWith("gate-code="))
+    : [];
+  return { status: result.status, calls, gateCodes, stderr: String(result.stderr) };
+}
+
 test("review-surfaces.PR_SURFACE.1 the composite action runs the PR pipeline with a zero-secret mock default and is a renderer over local artifacts", () => {
   const action = readYaml("action.yml");
   assert.equal(action.runs.using, "composite");
@@ -105,16 +170,23 @@ test("review-surfaces.PR_SURFACE.3 the action uploads the full packet under a st
   // The posting step is gated so fork PRs (post=false) upload only, never post.
   const postStep = steps.find((s) => typeof s.if === "string" && s.if.includes("inputs.post"));
   assert.ok(postStep, "posting is gated on the post input");
-  assert.match(String(postStep.if), /always\(\)/, "privacy-blocked generation still reconciles an older sticky");
+  assert.match(String(postStep.if), /steps\.generate\.outcome == 'success'/, "only a successfully generated current brief may be posted");
+  assert.doesNotMatch(String(postStep.if), /always\(\)/);
   // upload happens before the gated post (forks reach upload, stop before post).
   assert.ok(steps.indexOf(upload) < steps.indexOf(postStep), "upload precedes the gated post");
+  const privacyCleanup = steps.find((s) => s.name === "Remove stale sticky after a confirmed privacy block");
+  assert.match(String(privacyCleanup.if), /always\(\)/);
+  assert.match(String(privacyCleanup.if), /steps\.generate\.outcome == 'failure'/);
+  assert.match(String(privacyCleanup.if), /steps\.generate\.outputs\.gate-code == '5'/);
+  assert.match(String(privacyCleanup.run), /node "\$RS_STICKY" remove/);
+  assert.doesNotMatch(String(privacyCleanup.run), /comment|--post|PATCH/);
 });
 
 test("review-surfaces.PR_SURFACE.4 the action delegates exact-head sticky reconciliation to the shared trusted client", () => {
   const action = readYaml("action.yml");
   const steps: any[] = action.runs.steps;
   const postStep = steps.find((s) => typeof s.if === "string" && s.if.includes("inputs.post"));
-  assert.match(String(postStep.if), /always\(\)/);
+  assert.match(String(postStep.if), /steps\.generate\.outcome == 'success'/);
   assert.match(String(postStep.env.RS_BIN), /bin\/review-surfaces\.js/);
   assert.equal(postStep.env.GH_REPO, "${{ inputs.repository || github.repository }}");
   assert.equal(postStep.env.GH_PR_NUMBER, "${{ inputs.pr-number }}");
@@ -125,6 +197,72 @@ test("review-surfaces.PR_SURFACE.4 the action delegates exact-head sticky reconc
   assert.match(String(postStep.run), /--out "\$RS_OUT"/);
   assert.doesNotMatch(String(postStep.run), /gh api|gh pr comment|--method (?:PATCH|DELETE)/);
   assert.doesNotMatch(String(postStep.run), /suggested_comments\.md|pending_review\.json/);
+});
+
+test("review-surfaces.PR_SURFACE.4 generation publishes privacy gate output before bash -e returns failure", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-generation-gate-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  const allBlockedDir = path.join(tmp, "all-blocked");
+  fs.mkdirSync(allBlockedDir);
+  const allBlocked = runGenerationGate(allBlockedDir, { all: 5, gate: 0, comment: 0 });
+  assert.equal(allBlocked.status, 5, allBlocked.stderr);
+  assert.deepEqual(allBlocked.calls, ["all"], "validation and rendering stop after a blocked pipeline");
+  assert.equal(allBlocked.gateCodes.at(-1), "gate-code=5");
+
+  const commentBlockedDir = path.join(tmp, "comment-blocked");
+  fs.mkdirSync(commentBlockedDir);
+  const commentBlocked = runGenerationGate(commentBlockedDir, { all: 0, gate: 0, comment: 5 });
+  assert.equal(commentBlocked.status, 5, commentBlocked.stderr);
+  assert.deepEqual(commentBlocked.calls, ["all", "validate", "comment"]);
+  assert.equal(commentBlocked.gateCodes.at(-1), "gate-code=5", "strict postability overrides an earlier clean gate");
+
+  const cleanDir = path.join(tmp, "clean");
+  fs.mkdirSync(cleanDir);
+  const clean = runGenerationGate(cleanDir, { all: 0, gate: 0, comment: 0 });
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.equal(clean.gateCodes.at(-1), "gate-code=0");
+});
+
+test("review-surfaces.PR_SURFACE.4 the sticky cleanup client can only delete the owned exact-head comment", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-sticky-cleanup-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const binDir = path.join(tmp, "bin");
+  const log = path.join(tmp, "gh.log");
+  fs.mkdirSync(binDir);
+  const gh = path.join(binDir, "gh");
+  fs.writeFileSync(gh, `#!/bin/sh
+printf '%s\\n' "$*" >> "${log}"
+case "$*" in
+  "--version") printf '%s\\n' 'gh version 2' ;;
+  "api repos/acme/repo/pulls/7") printf '%s\\n' '{"head":{"sha":"deadbeef"},"title":"Purpose","body":""}' ;;
+  "api user --jq .login") printf '%s\\n' 'github-actions[bot]' ;;
+  "api --paginate repos/acme/repo/issues/7/comments --jq "*) printf '%s\\n' '77' ;;
+  "api repos/acme/repo/issues/comments/77 --jq "*) printf '%s\\n' '{"id":77,"body":"<!-- review-surfaces:sticky -->\\nold","user":{"login":"github-actions[bot]"}}' ;;
+  "api --method DELETE repos/acme/repo/issues/comments/77") exit 0 ;;
+  *) exit 1 ;;
+esac
+`);
+  fs.chmodSync(gh, 0o755);
+
+  const result = spawnSync(process.execPath, [path.join(ROOT, "bin", "review-surfaces-sticky.js"), "remove"], {
+    cwd: tmp,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      GH_REPO: "acme/repo",
+      GH_PR_NUMBER: "7",
+      HEAD_SHA: "deadbeef",
+      SUBJECT: tmp
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).status, "removed");
+  const invocations = fs.readFileSync(log, "utf8");
+  assert.match(invocations, /--method DELETE repos\/acme\/repo\/issues\/comments\/77/);
+  assert.doesNotMatch(invocations, /--method PATCH|pr comment/);
 });
 
 test("review-surfaces.PR_SURFACE.5 recovery pins to the last POSTED sticky's run via its fingerprint, first-review on miss", () => {
@@ -270,12 +408,14 @@ test("review-surfaces.ACTION_IO.3 the action carries a Marketplace branding bloc
 test("review-surfaces.PR_SURFACE.1 the repo workflow is a same-repo-only thin consumer that preserves the PROVIDERS.6 secret boundary", () => {
   const workflow = readYaml(".github/workflows/pr-review-comment.yml");
   const job = workflow.jobs["review-comment"];
+  const trustedEvidence = workflow.jobs["trusted-command-evidence"];
   // PROVIDERS.6: base-controlled pull_request_target with a trusted tool checkout
   // at base.sha against a credentialless PR subject checkout.
   assert.ok(workflow.on.pull_request_target, "base-controlled trigger preserved");
   assert.ok(workflow.on.pull_request_target.types.includes("edited"), "PR title/body edits refresh the author-provided purpose at the same head");
-  assert.equal(job.concurrency.group, "review-surfaces-pr-${{ github.event.pull_request.number }}");
-  assert.equal(job.concurrency["cancel-in-progress"], true, "a newer title/body/head event cancels a stale generation run");
+  assert.equal(workflow.concurrency.group, "review-surfaces-pr-${{ github.event.pull_request.number }}");
+  assert.equal(workflow.concurrency["cancel-in-progress"], true, "a newer title/body/head event cancels stale evidence and generation jobs");
+  assert.equal(job.needs, "trusted-command-evidence", "secret-bearing rendering waits for same-run trusted evidence");
   const raw = rawFile(".github/workflows/pr-review-comment.yml");
   assert.match(raw, /pull_request\.base\.sha/);
   assert.match(raw, /pull_request\.head\.sha/);
@@ -284,6 +424,40 @@ test("review-surfaces.PR_SURFACE.1 the repo workflow is a same-repo-only thin co
   assert.ok(job.steps.some((s: any) => s.uses === "./tool"), "workflow consumes the ./tool composite action");
   // The secret-bearing job is gated to same-repo PRs; forks never reach it.
   assert.match(String(job.if), /head\.repo\.full_name == github\.repository/);
+
+  // PR code runs only in a separate read-only job. The recorder is executed
+  // from the base checkout, both checkouts drop credentials, and the privileged job uses
+  // the artifact from this same workflow run rather than searching artifacts
+  // uploaded by PR-controlled workflow code.
+  assert.equal(trustedEvidence.permissions.contents, "read");
+  assert.equal(trustedEvidence["timeout-minutes"], 30, "untrusted lifecycle scripts cannot consume the runner indefinitely");
+  assert.equal(Object.hasOwn(trustedEvidence.permissions, "pull-requests"), false);
+  assert.match(String(trustedEvidence.if), /head\.repo\.full_name == github\.repository/);
+  const trustedSteps = trustedEvidence.steps as any[];
+  const evidenceCheckouts = trustedSteps.filter((s: any) => s.uses === "actions/checkout@v4");
+  assert.equal(evidenceCheckouts[0].with.ref, "${{ github.event.pull_request.base.sha }}");
+  assert.equal(evidenceCheckouts[1].with.ref, "${{ github.event.pull_request.head.sha }}");
+  assert.ok(evidenceCheckouts.every((s: any) => s.with["persist-credentials"] === false));
+  assert.equal(trustedSteps.some((s: any) => s.uses === "pnpm/action-setup@v4"), false, "the dependency-free recorder needs no host pnpm install");
+  const setupNode = trustedSteps.find((s: any) => s.uses === "actions/setup-node@v4");
+  assert.equal(setupNode.with["node-version"], 22);
+  assert.equal(Object.hasOwn(setupNode.with, "cache"), false, "the host performs no dependency install to cache");
+  assert.equal(trustedSteps.some((s: any) => String(s.run ?? "").includes("pnpm install") && s["working-directory"] === "tool"), false);
+  assert.doesNotMatch(JSON.stringify(trustedEvidence), /\$\{\{\s*secrets\./, "the PR-executing job receives no repository secret");
+  const recordedCommands = trustedSteps.find((s: any) => String(s.run ?? "").includes("--id ci-typecheck"));
+  assert.equal(recordedCommands["working-directory"], "subject");
+  assert.match(recordedCommands.run, /docker run --detach --rm/);
+  assert.match(recordedCommands.run, /--volume "\$GITHUB_WORKSPACE\/subject:\/subject"/);
+  assert.match(recordedCommands.run, /\$GITHUB_WORKSPACE\/tool\/bin\/review-surfaces\.js/);
+  assert.match(recordedCommands.run, /--command-transcripts "\$RUNNER_TEMP\/trusted-command-evidence"/);
+  assert.match(recordedCommands.run, /--id ci-typecheck/);
+  assert.match(recordedCommands.run, /--id ci-tests/);
+  const trustedUpload = trustedSteps.find((s: any) => s.uses === "actions/upload-artifact@v4");
+  assert.equal(trustedUpload.with.name, "trusted-command-evidence-${{ github.event.pull_request.head.sha }}");
+  assert.equal(trustedUpload.with.path, "${{ runner.temp }}/trusted-command-evidence/");
+  const privilegedDownload = job.steps.find((s: any) => s.uses === "actions/download-artifact@v4");
+  assert.equal(privilegedDownload.with.name, "trusted-command-evidence-${{ github.event.pull_request.head.sha }}");
+  assert.doesNotMatch(raw, /gh api --paginate .*actions\/artifacts/);
 
   // Fork PRs are served by the ci pull_request smoke job (mock, post=false), so
   // they upload the artifact without the secret-bearing pull_request_target path.
@@ -300,7 +474,7 @@ test("review-surfaces.PR_SURFACE.1 the repo workflow is a same-repo-only thin co
   const smokeCheckout = smoke.steps.find((s: any) => s.uses === "actions/checkout@v4");
   assert.equal(smokeCheckout.with.ref, reviewHeadRef, "the preview checks out the PR head, never the synthetic merge commit");
   const evidenceDownload = smoke.steps.find((s: any) => s.uses === "actions/download-artifact@v4");
-  assert.equal(evidenceDownload.with.name, `command-evidence-${reviewHeadRef}`);
+  assert.equal(evidenceDownload.with.name, `preview-command-evidence-${reviewHeadRef}`);
   assert.equal(evidenceDownload.with.path, ".review-surfaces/commands");
   const smokeStep = smoke.steps.find((s: any) => s.uses === "./");
   assert.equal(smokeStep.with.provider, "mock");

@@ -1775,6 +1775,44 @@ function prScopeReviewGateError(cwd: string, outputDir: string, model: HumanRevi
   );
 }
 
+// Repo renderers do not have the PR sidecar's full identity gate, so bind the
+// brief directly to its producing packet. Requiring both fields catches an
+// intervening same-head packet rewrite as well as a changed head. Missing or
+// malformed artifacts fail closed: a reviewer must never receive prose whose
+// evidence packet cannot be identified.
+function humanReviewMatchesCurrentPacket(outputDir: string, model: HumanReviewModel): boolean {
+  try {
+    const packet = JSON.parse(fs.readFileSync(path.join(outputDir, "review_packet.json"), "utf8")) as ReviewPacket;
+    return humanReviewMatchesPacketIdentity(model, packet.manifest?.head_sha, packet.manifest?.signature);
+  } catch {
+    return false;
+  }
+}
+
+function humanReviewMatchesPacketIdentity(
+  model: HumanReviewModel,
+  headSha: unknown,
+  packetSignature: unknown
+): boolean {
+  return (
+    typeof headSha === "string" && headSha.length > 0 &&
+    typeof packetSignature === "string" && packetSignature.length > 0 &&
+    model.generated_from.head_sha === headSha &&
+    model.generated_from.packet_signature === packetSignature
+  );
+}
+
+function repoScopeReviewGateError(outputDir: string, model: HumanReviewModel, label: string): CliError | undefined {
+  if (humanReviewMatchesCurrentPacket(outputDir, model)) {
+    return undefined;
+  }
+  return new CliError(
+    `Repo-scope ${label} requires a human_review.json generated from the current review_packet.json. ` +
+    `Run \`review-surfaces all --review-scope repo\` first.`,
+    ExitCodes.usageError
+  );
+}
+
 // The first of `<dir>/<base><ext>`, `<dir>/<base>-2<ext>`, … that does not exist,
 // so repeated writes never clobber an earlier file.
 function nextAvailablePath(dir: string, base: string, ext: string): string {
@@ -1946,7 +1984,11 @@ async function loadOrBuildHumanReviewJson(
       // A cached review built for a different scope must not satisfy this request
       // (e.g. `review --review-scope pr` reusing a repo-scoped model), so the
       // walkthrough walks the PR queue and captures PR-risk rule/ids.
-      model.mode !== scope;
+      model.mode !== scope ||
+      // A composable stage may have rewritten review_packet.json after this
+      // brief was generated. The head can stay identical while the packet
+      // signature changes, so repo reuse needs both identity fields.
+      (scope === "repo" && !humanReviewMatchesCurrentPacket(outputDir, model));
     if (isStale) {
       const context = await buildHumanReviewFromArtifacts(cwd, outDir, scope, config);
       await writeJson(path.join(context.outputDir, "human_review.json"), context.model);
@@ -2841,8 +2883,7 @@ function readCachedHumanReviewReuse(
       ? model.narrative
       : undefined;
     const changeMapInsights = cachedChangeMapInsights(model, headSha);
-    const conversationReview = headSha && model.generated_from.head_sha === headSha &&
-      packetSignature && model.generated_from.packet_signature === packetSignature
+    const conversationReview = humanReviewMatchesPacketIdentity(model, headSha, packetSignature)
       ? conversationReviewFromFields(model.conversation_analysis, model.review_insights)
       : undefined;
     return {
@@ -3385,6 +3426,11 @@ async function loadHumanReviewForRender(
   }
   if (scope === "pr") {
     const gateError = prScopeReviewGateError(cwd, outputDir, model, label);
+    if (gateError) {
+      throw gateError;
+    }
+  } else {
+    const gateError = repoScopeReviewGateError(outputDir, model, label);
     if (gateError) {
       throw gateError;
     }

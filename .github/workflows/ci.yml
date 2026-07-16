@@ -23,10 +23,9 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Record typecheck + tests THROUGH the tool so the self-review below (and the
-      # privileged comment job, via the uploaded artifact) can VERIFY they ran at this
-      # exact head instead of seeing zero command evidence and falsely flagging every
-      # changed implementation file as untested.
+      # Record typecheck + tests through the PR's own tool for the unprivileged
+      # exact-head preview below. Privileged posting never trusts this artifact;
+      # pr-review-comment.yml records its own evidence with base-controlled code.
       - name: Typecheck (recorded transcript)
         run: node bin/review-surfaces.js run --id ci-typecheck -- pnpm run typecheck
       - name: Tests (recorded transcript)
@@ -53,14 +52,11 @@ jobs:
         run: node bin/review-surfaces.js validate .review-surfaces
       - name: Determinism check
         run: ./scripts/determinism-check.sh
-      # Hand the head-bound test evidence to the privileged comment workflow. This job
-      # is the unprivileged `pull_request` context, so the transcripts it produced are
-      # genuine head-sha-stamped output.
-      - name: Upload command evidence (bound to the head SHA)
+      - name: Upload preview command evidence (bound to the head SHA)
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: command-evidence-${{ env.REVIEW_HEAD_SHA }}
+          name: preview-command-evidence-${{ env.REVIEW_HEAD_SHA }}
           path: .review-surfaces/commands/
           include-hidden-files: true
           if-no-files-found: error
@@ -126,7 +122,7 @@ jobs:
       - name: Download head-bound command evidence
         uses: actions/download-artifact@v4
         with:
-          name: command-evidence-${{ env.REVIEW_HEAD_SHA }}
+          name: preview-command-evidence-${{ env.REVIEW_HEAD_SHA }}
           path: .review-surfaces/commands
       - name: Run the review-surfaces PR-surface action (mock, no post)
         uses: ./
