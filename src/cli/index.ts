@@ -1946,6 +1946,8 @@ async function writeHumanReviewFromArtifacts(
   return context;
 }
 
+// review-surfaces.HUMAN_REVIEW.15: this is the implementation boundary for the
+// reviewer-first `all` summary, not a generic HUMAN_REVIEW renderer concern.
 function printHumanReviewTerminalSummary(cwd: string, outDir: string, humanReview: HumanReviewModel): void {
   console.log(`Human review: ${artifactPathForLog(cwd, outDir, "human_review.md")}`);
   console.log(`Change purpose: ${humanReview.decision_projection.active_intent.summary}`);
