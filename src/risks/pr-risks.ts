@@ -56,7 +56,6 @@ export interface BuildPrRiskInput {
 const DEFAULT_LARGE_DIFF_FILE_CAP = 40;
 const DEFAULT_LARGE_DIFF_LINE_CAP = 1500;
 const MAX_RULE_EVIDENCE = 12;
-const MAX_PER_FILE_CANDIDATES = 12;
 
 // A pre-id candidate carries its sort key (rule priority + path) so the final
 // PR-RISK-00N numbering follows the documented order without re-sorting evidence.
@@ -179,74 +178,49 @@ function pushSecretInDiff(drafts: DraftCandidate[], input: BuildPrRiskInput): vo
 }
 
 // --- Rule: untested_changed_impl (testing, medium) -------------------------
-// An implementation-role changed file whose review area has no changed test file
-// and no current-head command transcript in scope. Cites the impl file. One
-// candidate per such file (id/path ordered).
+// Implementation changes whose validation area has no changed test file and no
+// current-head command transcript. One candidate is emitted per independent
+// validation-area root; the number of roots follows the change rather than an
+// arbitrary file cap.
 function pushUntestedChangedImpl(drafts: DraftCandidate[], input: BuildPrRiskInput): void {
   const changed = input.scope.changed_files;
   const validation = buildImplementationValidationIndex(input);
   const repositoryTestAreas = input.repositoryTestAreas ?? new Set<string>();
   const untested = changed
-    .filter((file) => file.role === "implementation" && !hasImplementationValidation(file, validation))
+    .filter((file) => file.role === "implementation" && file.status !== "D" && !hasImplementationValidation(file, validation))
     .sort((left, right) => compareStrings(left.path, right.path));
-  for (const file of untested.slice(0, MAX_PER_FILE_CANDIDATES)) {
-    const state = untestedAreaState(file, repositoryTestAreas);
+  const groups = new Map<string, ScopedChangedFile[]>();
+  for (const file of untested) {
+    const key = untestedValidationRoot(file);
+    const files = groups.get(key) ?? [];
+    files.push(file);
+    groups.set(key, files);
+  }
+  for (const [root, files] of [...groups.entries()].sort(([left], [right]) => compareStrings(left, right))) {
+    const representative = files[0];
+    if (!representative) continue;
+    const state = untestedAreaState(representative, repositoryTestAreas);
+    const paths = files.map((file) => file.path);
     drafts.push({
       rule: "untested_changed_impl",
       category: "testing",
       severity: "medium",
-      summary: untestedSummary(file, state),
+      summary: untestedGroupSummary(files, state),
       evidence: [
-        fileEvidence(file.path, untestedEvidenceNote(state)),
-        missingEvidence(untestedMissingNote(file, state))
+        ...evidenceForPaths(paths, untestedEvidenceNote(state)).slice(0, MAX_RULE_EVIDENCE - 1),
+        missingEvidence(untestedGroupMissingNote(files, state))
       ],
-      suggested_checks: untestedChecks(file, state),
-      sortPath: file.path
+      suggested_checks: untestedGroupChecks(files, state),
+      sortPath: `${root}:${representative.path}`
     });
-  }
-  if (untested.length > MAX_PER_FILE_CANDIDATES) {
-    const overflow = untested.slice(MAX_PER_FILE_CANDIDATES);
-    const withExisting = overflow.filter((file) => fileHasExistingAreaTest(file, repositoryTestAreas));
-    const withoutExisting = overflow.filter((file) => !fileHasExistingAreaTest(file, repositoryTestAreas));
-    if (withExisting.length > 0) {
-      drafts.push({
-        rule: "untested_changed_impl",
-        category: "testing",
-        severity: "medium",
-        summary: `${withExisting.length} additional implementation file(s) changed whose mapped tests have no current-head passing transcript.`,
-        evidence: evidenceForPaths(
-          withExisting.map((file) => file.path),
-          "Additional implementation file with a mapped test but no current-head passing transcript."
-        ),
-        suggested_checks: [
-          "Run the existing tests mapped to these areas at the current head and record the transcripts.",
-          "Add tests only where the changes introduce behavior the existing tests do not cover."
-        ],
-        sortPath: withExisting[0]?.path ?? ""
-      });
-    }
-    if (withoutExisting.length > 0) {
-      drafts.push({
-        rule: "untested_changed_impl",
-        category: "testing",
-        severity: "medium",
-        summary: `${withoutExisting.length} additional implementation file(s) changed with no test mapped to their review area.`,
-        evidence: evidenceForPaths(
-          withoutExisting.map((file) => file.path),
-          "Additional implementation file with no mapped test and no current-head transcript."
-        ),
-        suggested_checks: [
-          "Add tests for these untested implementation changes.",
-          "Record current-head broad or focused test transcripts so the new tests' runs are verified."
-        ],
-        sortPath: withoutExisting[0]?.path ?? ""
-      });
-    }
   }
 }
 
-function fileHasExistingAreaTest(file: ScopedChangedFile, repositoryTestAreas: Set<string>): boolean {
-  return file.areas.some((area) => repositoryTestAreas.has(area));
+function untestedValidationRoot(file: ScopedChangedFile): string {
+  const areas = [...new Set(file.areas)].sort(compareStrings);
+  if (areas.length > 0) return `area:${areas.join("+")}`;
+  const directory = file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "(root)";
+  return `directory:${directory}`;
 }
 
 interface UntestedAreaState {
@@ -256,8 +230,9 @@ interface UntestedAreaState {
 }
 
 function untestedAreaState(file: ScopedChangedFile, repositoryTestAreas: Set<string>): UntestedAreaState {
-  const withTests = file.areas.filter((area) => repositoryTestAreas.has(area));
-  const without = file.areas.filter((area) => !repositoryTestAreas.has(area));
+  const areas = [...new Set(file.areas)].sort(compareStrings);
+  const withTests = areas.filter((area) => repositoryTestAreas.has(area));
+  const without = areas.filter((area) => !repositoryTestAreas.has(area));
   if (without.length === 0) {
     return { kind: "run_existing", withTests, without };
   }
@@ -279,6 +254,19 @@ function untestedSummary(file: ScopedChangedFile, state: UntestedAreaState): str
       return `Implementation file ${file.path} changed with no test mapped to ${areaList(state.without)} and no current-head command transcript.`;
     case "mixed":
       return `Implementation file ${file.path} changed; tests are mapped to ${areaList(state.withTests)} but ${areaList(state.without)} has no mapped test, and no current-head command transcript ran.`;
+  }
+}
+
+function untestedGroupSummary(files: ScopedChangedFile[], state: UntestedAreaState): string {
+  if (files.length === 1) return untestedSummary(files[0]!, state);
+  const subject = `${files.length} implementation files changed in ${areaList([...state.withTests, ...state.without])}`;
+  switch (state.kind) {
+    case "run_existing":
+      return `${subject}; mapped tests have no current-head passing transcript.`;
+    case "add":
+      return `${subject}; no test is mapped to this validation area and no current-head command transcript exists.`;
+    case "mixed":
+      return `${subject}; some mapped areas have tests that were not run at the current head and others have no mapped test.`;
   }
 }
 
@@ -304,6 +292,14 @@ function untestedMissingNote(file: ScopedChangedFile, state: UntestedAreaState):
   }
 }
 
+function untestedGroupMissingNote(files: ScopedChangedFile[], state: UntestedAreaState): string {
+  if (files.length === 1) return untestedMissingNote(files[0]!, state);
+  const paths = files.map((file) => file.path);
+  const preview = paths.slice(0, 3).join(", ");
+  const remainder = paths.length > 3 ? ` (+${paths.length - 3} more)` : "";
+  return `No current-head validation covers this area group (${preview}${remainder}).`;
+}
+
 function untestedChecks(file: ScopedChangedFile, state: UntestedAreaState): string[] {
   switch (state.kind) {
     case "run_existing":
@@ -320,6 +316,27 @@ function untestedChecks(file: ScopedChangedFile, state: UntestedAreaState): stri
       return [
         `Run the existing test(s) mapped to ${areaList(state.withTests)} at the current head and record the transcript, and add a test covering ${areaList(state.without)}.`,
         `Record a current-head test transcript so the coverage of ${file.path} is verified.`
+      ];
+  }
+}
+
+function untestedGroupChecks(files: ScopedChangedFile[], state: UntestedAreaState): string[] {
+  if (files.length === 1) return untestedChecks(files[0]!, state);
+  switch (state.kind) {
+    case "run_existing":
+      return [
+        `Run the existing tests mapped to ${areaList(state.withTests)} at the current head and record one transcript.`,
+        "Add tests only where these changes introduce behavior the existing area tests do not cover."
+      ];
+    case "add":
+      return [
+        `Add focused tests for the changed behavior in ${areaList(state.without)}.`,
+        "Record one current-head broad or focused test transcript for this validation area."
+      ];
+    case "mixed":
+      return [
+        `Run the existing tests mapped to ${areaList(state.withTests)} and add focused coverage for ${areaList(state.without)}.`,
+        "Record current-head evidence for the complete validation area."
       ];
   }
 }

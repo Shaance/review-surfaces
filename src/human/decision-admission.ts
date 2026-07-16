@@ -1,8 +1,15 @@
 import type { EvidenceRef } from "../contracts/evidence";
 import type { PrReviewSurfaceModel, PrRiskCandidate, StructuredDiff } from "../contracts/pr-review";
 import type { ReviewPacket } from "../render/packet";
+import { normalizeEvidencePath } from "../evidence/validate";
 import { isExplicitContractSurfacePath, isPersistedSchemaPath } from "../risks/contract-surface";
-import { isBreakingApiChange, isSupportedApiContractChange, type ApiSurfaceChange } from "../risks/semantic-diff";
+import {
+  isBreakingApiChange,
+  isBreakingSchemaChange,
+  isSupportedApiContractChange,
+  type ApiSurfaceChange,
+  type SchemaContractChange
+} from "../risks/semantic-diff";
 import { classifyValidationRunState, type ValidationRunState } from "../risks/validation-state";
 import { affectedRequirementKeysForRange } from "./intent-scope";
 
@@ -16,6 +23,47 @@ export interface DecisionScope {
 
 export function isDecisionRelevantApiChange(change: ApiSurfaceChange): boolean {
   return decisionRootForApiChange(change) !== undefined;
+}
+
+export type SchemaChangeDisposition = "breaking" | "additive" | "unknown";
+
+const schemaDispositionIndexes = new WeakMap<
+  readonly SchemaContractChange[],
+  ReadonlyMap<string, Exclude<SchemaChangeDisposition, "unknown">>
+>();
+
+function schemaDispositionIndex(
+  schemaChanges: readonly SchemaContractChange[]
+): ReadonlyMap<string, Exclude<SchemaChangeDisposition, "unknown">> {
+  const cached = schemaDispositionIndexes.get(schemaChanges);
+  if (cached) return cached;
+  const index = new Map<string, Exclude<SchemaChangeDisposition, "unknown">>();
+  for (const change of schemaChanges) {
+    const filePath = normalizeEvidencePath(change.path);
+    if (isBreakingSchemaChange(change)) {
+      index.set(filePath, "breaking");
+    } else if (!index.has(filePath)) {
+      index.set(filePath, "additive");
+    }
+  }
+  schemaDispositionIndexes.set(schemaChanges, index);
+  return index;
+}
+
+export function schemaChangeDisposition(
+  paths: Iterable<string>,
+  schemaChanges: readonly SchemaContractChange[]
+): SchemaChangeDisposition {
+  const normalizedPaths = [...new Set([...paths].map(normalizeEvidencePath))];
+  if (normalizedPaths.length === 0) return "unknown";
+  const index = schemaDispositionIndex(schemaChanges);
+  let sawBreaking = false;
+  for (const filePath of normalizedPaths) {
+    const disposition = index.get(filePath);
+    if (!disposition) return "unknown";
+    if (disposition === "breaking") sawBreaking = true;
+  }
+  return sawBreaking ? "breaking" : "additive";
 }
 
 export function decisionRootForApiChange(change: ApiSurfaceChange): string | undefined {
@@ -99,13 +147,21 @@ export function decisionRootForRisk(rule: PrRiskCandidate["rule"], path?: string
     case "deleted_or_renamed_surface": return path && isExplicitContractSurfacePath(path)
       ? `${isPersistedSchemaPath(path) ? "persisted_contract" : "public_contract"}${suffix}`
       : undefined;
-    case "failed_or_skipped_test": return "test_integrity";
-    case "secret_in_diff":
+    // A heuristic that test code changed is a review check, not an approval
+    // decision. Actual failed/skipped validation is admitted separately from
+    // current-head command evidence.
+    case "failed_or_skipped_test": return undefined;
+    case "secret_in_diff": return `secret_boundary${suffix}`;
+    // A sensitive path is not itself a policy violation. Keep path-only privacy
+    // and CI boundary signals as supporting checks unless concrete evidence
+    // creates a blocker.
     case "privacy_sensitive_change":
-    case "ci_secret_boundary_change": return `secret_boundary${suffix}`;
+    case "ci_secret_boundary_change": return undefined;
     case "coverage_regression":
     case "untested_changed_impl": return `test_coverage${suffix}`;
-    case "comment_surface_change": return `review_surface${suffix}`;
+    // Reviewer-facing renderers are one product contract even when several
+    // files implement the surface.
+    case "comment_surface_change": return "review_surface";
     case "large_diff":
     case "unmapped_change": return undefined;
   }

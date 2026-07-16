@@ -5,27 +5,129 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>review-surfaces — human review</title>
 <style>
-:root { --fg:#1c1c1c; --muted:#666; --line:#ddd; --accent:#0b5fff; --bad:#b00020; --warn:#9a6700; --ok:#1a7f37; }
+:root {
+  color-scheme: light dark;
+  --bg:#f7f7f4;
+  --chrome:#f2f1ed;
+  --card:#ebeae5;
+  --card-hover:#e6e5e0;
+  --fg:#26251e;
+  --strong:#050503;
+  --muted:#6f6a60;
+  --line:#d9d5cf;
+  --line-strong:#aaa49a;
+  --accent:#f54e00;
+  --bad:#cf2d56;
+  --warn:#c08532;
+  --ok:#1f8a65;
+  --info:#3a6a9f;
+  --shadow:0 1px 0 rgba(38,37,30,.06);
+  --map-card:#f2f1ed;
+  --map-card-alt:#ebeae5;
+  --map-tint-warm:#f3ede6;
+  --map-tint-blue:#e3ebf3;
+  --map-tint-neutral:#e6e5e0;
+  --map-tint-green:#e4efe8;
+  --map-tint-pink:#f1e6ea;
+  --map-edge:#8d877d;
+}
 * { box-sizing: border-box; }
-body { margin:0 auto; max-width: 980px; padding: 2rem 1.25rem 4rem; color: var(--fg); font: 15px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif; }
-h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
-h2 { font-size: 1.1rem; margin: 2rem 0 .5rem; border-bottom: 1px solid var(--line); padding-bottom: .3rem; }
-code, pre { font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-pre { background:#f6f8fa; border:1px solid var(--line); border-radius:6px; padding:.6rem .8rem; overflow-x:auto; }
+[hidden] { display:none !important; }
+html { background: var(--bg); }
+body { margin:0 auto; max-width: 1120px; padding: 28px 24px 64px; background: var(--bg); color: var(--fg); font: 14px/1.55 "CursorGothic", "CursorGothic Fallback", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+h1 { color: var(--strong); font-size: 26px; font-weight: 400; line-height: 32.5px; margin: 0 0 6px; }
+h2 { color: var(--strong); font-size: 18px; font-weight: 700; line-height: 1.25; margin: 30px 0 10px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+h3 { color: var(--strong); font-size: 14px; line-height: 1.35; margin: 18px 0 6px; }
+p { margin: .45rem 0; }
+ul, ol { margin: .45rem 0 .7rem; padding-left: 1.25rem; }
+li { margin: .18rem 0; }
+code, pre { font: 12.5px/1.5 "Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+code { background: rgba(38,37,30,.045); border:1px solid rgba(38,37,30,.08); border-radius:4px; padding:.06rem .28rem; color: var(--strong); overflow-wrap:anywhere; }
+pre { background: rgba(38,37,30,.045); border:1px solid var(--line); border-radius:4px; padding:.7rem .85rem; overflow-x:auto; color: var(--strong); }
 .muted { color: var(--muted); }
-.badge { display:inline-block; border-radius: 10px; padding: .05rem .55rem; font-size: .78rem; border:1px solid var(--line); }
-.badge.blocker, .badge.high, .badge.block_before_merge { color:var(--bad); border-color:var(--bad); }
-.badge.medium, .badge.needs_author_clarification, .badge.reviewable_with_attention { color:var(--warn); border-color:var(--warn); }
-.badge.low, .badge.probably_safe, .badge.covered { color:var(--ok); border-color:var(--ok); }
-.item { border:1px solid var(--line); border-radius:8px; padding: .7rem .9rem; margin: .6rem 0; }
-.item.done { opacity:.55; }
-.item header { display:flex; gap:.6rem; align-items:baseline; }
-.item header label { margin-left:auto; font-size:.8rem; color:var(--muted); white-space:nowrap; }
-details > summary { cursor:pointer; color:var(--accent); font-size:.85rem; }
-ul { padding-left: 1.2rem; }
-.filters button { margin: 0 .35rem .35rem 0; border:1px solid var(--line); background:#fff; border-radius:14px; padding:.2rem .7rem; cursor:pointer; font-size:.8rem; }
-.filters button.active { border-color: var(--accent); color: var(--accent); }
-a { color: var(--accent); }
+strong { color: var(--strong); }
+a { color: var(--accent); text-decoration-color: rgba(245,78,0,.35); text-underline-offset: 2px; }
+a:hover { text-decoration-color: var(--accent); }
+.badge { display:inline-flex; align-items:center; min-height:20px; border-radius:999px; padding: .05rem .5rem; font-size: 11px; font-weight: 500; line-height:1.35; border:1px solid var(--line); background: rgba(247,247,244,.7); color: var(--fg); white-space:nowrap; }
+.badge.blocker, .badge.high, .badge.block_before_merge { color:var(--bad); border-color:rgba(207,45,86,.38); background:rgba(207,45,86,.07); }
+.badge.medium, .badge.needs_author_clarification, .badge.reviewable_with_attention { color:var(--warn); border-color:rgba(192,133,50,.42); background:rgba(192,133,50,.09); }
+.badge.low, .badge.probably_safe, .badge.covered { color:var(--ok); border-color:rgba(31,138,101,.34); background:rgba(31,138,101,.08); }
+.badge.contradicted, .badge.degraded { color:var(--bad); border-color:rgba(207,45,86,.38); background:rgba(207,45,86,.07); }
+.badge.unverified, .badge.not_assessed { color:var(--warn); border-color:rgba(192,133,50,.42); background:rgba(192,133,50,.09); }
+.badge.supported, .badge.analyzed { color:var(--ok); border-color:rgba(31,138,101,.34); background:rgba(31,138,101,.08); }
+#strip { background: var(--chrome); border:1px solid var(--line); border-radius:4px; padding: 12px 14px; margin: 12px 0 16px; box-shadow: var(--shadow); }
+.item { background: var(--card); border:1px solid var(--line); border-radius:4px; padding: 12px 14px; margin: 10px 0; box-shadow: var(--shadow); }
+.item.done { opacity:.62; }
+.item header { display:flex; flex-wrap:wrap; gap:7px 8px; align-items:center; }
+.item header strong { min-width: min(100%, 280px); flex:1 1 420px; overflow-wrap:anywhere; }
+.item header label { margin-left:auto; display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--muted); white-space:nowrap; }
+input[type="checkbox"] { accent-color: var(--accent); }
+details { margin:.45rem 0; }
+details > summary { cursor:pointer; color:var(--fg); font-size:12px; font-weight:600; }
+details > summary:hover { color:var(--accent); }
+.filters { display:flex; flex-wrap:wrap; gap:6px; margin:.4rem 0 .65rem; }
+.filters button { border:1px solid var(--line); background:var(--chrome); color:var(--fg); border-radius:999px; padding:.25rem .7rem; cursor:pointer; font: inherit; font-size:12px; line-height:1.3; }
+.filters button:hover { background:var(--card-hover); border-color:var(--line-strong); }
+.filters button.active { border-color: rgba(245,78,0,.75); color: var(--accent); background:#f3ede6; box-shadow: inset 0 0 0 1px rgba(245,78,0,.12); }
+.strip-bar, .progress-track { border:1px solid var(--line); border-radius:4px; overflow:hidden; margin:.45rem 0; background:rgba(247,247,244,.72); }
+.strip-bar { display:flex; min-height:24px; }
+.budget-segment { display:inline-block; padding:.2rem .45rem; overflow:hidden; white-space:nowrap; font-size:12px; color:var(--fg); border-right:1px solid rgba(38,37,30,.08); }
+.budget-segment.read { background:rgba(31,138,101,.12); }
+.budget-segment.skim { background:rgba(192,133,50,.14); }
+.budget-segment.defer { background:rgba(38,37,30,.06); }
+.progress-track { height:10px; }
+#progress-bar { height:100%; width:0; background:var(--accent); }
+.lens-key { display:flex; flex-wrap:wrap; gap:8px 12px; }
+.lens-key span { display:inline-block; padding-left:.35rem; }
+.map-detail { background:var(--chrome); border:1px solid var(--line); border-radius:4px; padding:10px 12px; margin:12px 0; }
+svg[aria-label^="Change map"] text[fill="#050503"] { fill:var(--strong); }
+svg[aria-label^="Change map"] text[fill="#26251e"] { fill:var(--fg); }
+svg[aria-label^="Change map"] text[fill="#6f6a60"] { fill:var(--muted); }
+svg[aria-label^="Change map"] rect[fill="#f2f1ed"] { fill:var(--map-card); }
+svg[aria-label^="Change map"] rect[fill="#ebeae5"] { fill:var(--map-card-alt); }
+svg[aria-label^="Change map"] rect[fill="#f3ede6"] { fill:var(--map-tint-warm); }
+svg[aria-label^="Change map"] rect[fill="#e3ebf3"] { fill:var(--map-tint-blue); }
+svg[aria-label^="Change map"] rect[fill="#e6e5e0"] { fill:var(--map-tint-neutral); }
+svg[aria-label^="Change map"] rect[fill="#e4efe8"] { fill:var(--map-tint-green); }
+svg[aria-label^="Change map"] rect[fill="#f1e6ea"] { fill:var(--map-tint-pink); }
+svg[aria-label^="Change map"] rect[stroke="#d9d5cf"] { stroke:var(--line); }
+svg[aria-label^="Change map"] polyline[stroke="#8d877d"] { stroke:var(--map-edge); }
+svg[aria-label^="Change map"] polygon[fill="#8d877d"] { fill:var(--map-edge); }
+svg[aria-label^="Change map"] polyline[stroke="#aaa49a"] { stroke:var(--line-strong); }
+table { width:100%; border-collapse:collapse; margin:.6rem 0; font-size:12px; }
+th, td { border-bottom:1px solid var(--line); padding:.35rem .45rem; text-align:left; vertical-align:top; }
+th { color:var(--muted); font-weight:600; }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#141612;
+    --chrome:#1b1e19;
+    --card:#22251f;
+    --card-hover:#2a2e27;
+    --fg:#d6d9d1;
+    --strong:#f4f5f1;
+    --muted:#a9ada3;
+    --line:#373c34;
+    --line-strong:#60675c;
+    --accent:#ff7137;
+    --bad:#ff668c;
+    --warn:#e0a95a;
+    --ok:#55c49a;
+    --info:#78a9df;
+    --shadow:0 1px 0 rgba(0,0,0,.28);
+    --map-card:#20231e;
+    --map-card-alt:#252821;
+    --map-tint-warm:#302720;
+    --map-tint-blue:#202b37;
+    --map-tint-neutral:#292b27;
+    --map-tint-green:#203029;
+    --map-tint-pink:#31242c;
+    --map-edge:#858c80;
+  }
+  code, pre { background:rgba(255,255,255,.045); border-color:rgba(255,255,255,.08); }
+  .badge { background:rgba(20,22,18,.72); }
+  .filters button.active { background:#302720; }
+  .strip-bar, .progress-track { background:rgba(20,22,18,.72); }
+}
 @media print { #file-filter-note, .item header label { display:none; } details > * { display:block; } }
 </style>
 </head>
@@ -33,39 +135,77 @@ a { color: var(--accent); }
 <h1>Human review</h1>
 <p class="muted">Generated from <code>review_packet.json</code> · <code>HEAD~3</code> → <code>HEAD</code> @ <code>a5b76bffb33d5fa8b0d1393cce410b88e7c2b848</code></p>
 
+
 <h2 id="verdict">Verdict</h2>
-<p><span class="badge needs_author_clarification">Needs author clarification</span> <span class="muted">confidence: medium</span></p>
-<p>0 blocker(s) and 0 review queue item(s) across 6 changed file(s), 0 packet risk(s).</p>
-<div id="strip"><p class="muted">✓ 0 verified · ~ 0 claimed · 1 missing evidence · 0 invalid</p></div>
-<div class="three-questions" style="border:1px solid var(--line);border-radius:8px;padding:.6rem .9rem;margin:.6rem 0">
-<strong>What a human reviewer needs to know</strong>
-<ul style="margin:.3rem 0">
-<li><a href="#queue">Did the agent overreach its instructions?</a> — not assessed — no spec indexed</li>
-<li><a href="#queue">Did it weaken tests to make them pass?</a> — none detected — no deleted/skipped tests or removed assertions</li>
-<li><a href="#trust">Did it claim things it didn't do?</a> — none — no claim lacks backing evidence</li>
-</ul>
+<p><span class="badge reviewable_with_attention">Reviewable with attention</span> <span class="muted">confidence: high</span></p>
+<h2 id="change-purpose">Change purpose</h2><p>Harden abort handling and cross-origin pagination. Attach abort listeners after request handlers run, strip inherited sensitive headers when pagination crosses origins, and document the behavior.</p><p class="muted">From the PR title and description.</p><h2 id="approval-decisions">Approval decision</h2><ol><li><strong>Current-head test evidence</strong> — 2 changed implementation files share one unresolved validation question: the available evidence does not yet show that their behavior was exercised at the current head.<br><span class="muted">Review: Confirm the changed behavior is covered, add focused tests only where coverage is missing, and attach one current-head transcript for the relevant test run.</span><br><span class="muted">Evidence: <code>source/core/index.ts</code>, <code>source/core/options.ts</code>, <code>test/abort.ts</code></span></li></ol>
+
+
+
+<h2 id="required-checks">Required checks</h2>
+<p>1 required check(s). See <a href="test_plan.md"><code>test_plan.md</code></a> for exact commands and expected results.</p>
+
+<h2 id="trust-summary">Trust summary</h2>
+<p>3 verified fact(s); 0 unverified claim(s); 2 missing-evidence item(s); 0 invalid-evidence item(s).</p>
+
+<h2 id="queue">Supporting review queue</h2>
+<p class="filters" id="file-filter-note" hidden>Filtered to <code id="file-filter-path"></code> <button data-clear-file-filter>show all</button></p>
+<div class="item" data-lenses="test_evidence" data-path="source/core/index.ts" id="queue-REVIEW-001">
+<header><strong>1. <code>source/core/index.ts</code></strong> <span class="badge medium">medium</span><label><input type="checkbox" data-queue-check="REVIEW-001"> reviewed</label></header>
+<p>2 changed implementation files share one validation question: focused changed-test evidence is connected to 1, 1 still lack connected changed-test evidence, and no current-head transcript proves the relevant checks ran.</p>
+<p class="muted">Why ranked here: a focused test changed alongside this file (`test/abort.ts`), so it ranks lower among equal-severity items</p>
+<p>Action: Confirm the changed tests cover the connected behavior, add focused coverage only for the remaining gap, and record one current-head transcript.</p>
+<details><summary>diff excerpt</summary><pre>@@ -297,7 +297,7 @@
+<span style="display:block">   	private _triggerRead = false;</span><span style="display:block">   	private readonly _jobs: Array&lt;() =&gt; void&gt; = [];</span><span style="display:block">   	private _cancelTimeouts?: () =&gt; void;</span><span style="display:block">  -	private readonly _abortListenerDisposer?: {[Symbol.dispose](): void};</span><span style="display:block">  +	private _abortListenerDisposer?: {[Symbol.dispose](): void};</span><span style="display:block">   	private _flushed = false;</span><span style="display:block">   	private _aborted = false;</span><span style="display:block">   	private _expectedContentLength?: number;</span></pre></details>
+<p class="muted">Evidence: <code>source/core/index.ts</code>, <code>source/core/options.ts</code>, <code>No current-head transcript establishes validation for the complete cited implementation group.</code>, <code>test/abort.ts</code></p>
+<p class="muted">REVIEW-001 · risks: PR-RISK-001 · cards: <a href="#card-CARD-001">CARD-001</a> <a href="#card-CARD-004">CARD-004</a></p>
 </div>
+<div class="item" data-lenses="" data-path="documentation/4-pagination.md" id="queue-REVIEW-002">
+<header><strong>2. <code>documentation/4-pagination.md</code></strong> <span class="badge low">low</span><label><input type="checkbox" data-queue-check="REVIEW-002"> reviewed</label></header>
+<p>2 changed file(s) did not map to any review area.</p>
+<p>Action: Confirm the unmapped change is intended and not missing a review-area mapping.</p>
+<details><summary>diff excerpt</summary><pre>@@ -132,6 +132,7 @@
+<span style="display:block">   **Note:**</span><span style="display:block">   &gt; - The `url` option (if set) accepts **only** a [`URL`](https://developer.mozilla.org/en-US/docs/Web/API/URL) instance.\</span><span style="display:block">   &gt;   This prevents `prefixUrl` ambiguity. In order to use a relative URL string, merge it via `new URL(relativeUrl, response.url)`.</span><span style="display:block">  +&gt; - When pagination navigates to a different origin, Got strips inherited sensitive headers such as `authorization`, `cookie`, and `proxy-authorization`. If you trust the next-page URL and want to fo…</span><span style="display:block">   </span><span style="display:block">   #### `filter`</span><span style="display:block">   </span></pre></details>
+<p class="muted">Evidence: <code>documentation/4-pagination.md</code>, <code>package.json</code></p>
+<p class="muted">REVIEW-002 · risks: PR-RISK-002</p>
+</div>
+<div class="item" data-lenses="test_evidence" data-path="source/core/options.ts" id="queue-REVIEW-003">
+<header><strong>3. <code>source/core/options.ts:796-797</code></strong> <span class="badge medium">medium</span><label><input type="checkbox" data-queue-check="REVIEW-003"> reviewed</label></header>
+<p>Another finding was queued for this diff, and this changed source is also worth reading: an implementation change with no connected test change, touches error/async/auth/network/persistence paths.</p>
+<p class="muted">Why ranked here: no changed test or current-head transcript covers this file, so it ranks higher among equal-severity items</p>
+<p>Action: No defect pattern fired here — read this changed file to confirm the change is intended and skim-safe.</p>
+<details><summary>diff excerpt</summary><pre>@@ -793,6 +793,8 @@
+<span style="display:block">   </span><span style="display:block">   	It should return an object representing Got options pointing to the next page. The options are merged automatically with the previous request, therefore the options returned `pagination.paginate(...…</span><span style="display:block">   </span><span style="display:block">  +	When pagination navigates to a different origin, Got strips inherited sensitive headers such as `authorization`, `cookie`, and `proxy-authorization`. If you trust the next-page URL and want to forwa…</span><span style="display:block">  +</span><span style="display:block">   	@example</span><span style="display:block">   	```</span><span style="display:block">   	import got from &#39;got&#39;;</span></pre></details>
+<p class="muted">Evidence: <code>source/core/options.ts</code></p>
+<p class="muted">REVIEW-003</p>
+</div>
+
+<div id="strip"><p class="filters"><button data-lens-filter="all">All lenses (3)</button><button data-lens-filter="test_evidence">Test evidence lens (2)</button></p><div class="progress-track"><div id="progress-bar"></div></div><p class="muted" id="progress-label">0 of 3 reviewed</p></div>
+<h2 id="conversation-insights">Conversation-aware insights</h2>
+<p><span class="badge not_assessed">Not assessed</span> No conversation analysis was supplied with this review; conversation intent was not assessed.</p>
+
+
+<p class="muted">No conversation-grounded conclusions are available. This is not evidence that the change is clean.</p>
 <h2 id="reading-order">Reading order</h2>
-<h3>Implementation</h3><ol><li value="1"><code>source/core/options.ts</code> — imported by 1 changed file(s)</li></ol><details><summary>+1 supporting file(s) in dependency order</summary><ol><li value="2"><code>source/core/index.ts</code> — imported by 1 changed file(s)</li></ol></details>
+<h3>Implementation</h3><ol><li value="1"><code>source/core/options.ts</code> — imported by 1 changed file(s) <span class="muted">(queue: REVIEW-003)</span></li><li value="2"><code>source/core/index.ts</code> — imported by 1 changed file(s) <span class="muted">(queue: REVIEW-001)</span></li></ol>
 <h3>Tests</h3><ol><li value="3"><code>test/abort.ts</code> — read after the 1 changed file(s) it imports</li></ol><details><summary>+1 supporting file(s) in dependency order</summary><ol><li value="4"><code>test/pagination.ts</code></li></ol></details>
-<h3>Config and docs</h3><ol><li value="5"><code>documentation/4-pagination.md</code></li></ol><details><summary>+1 supporting file(s) in dependency order</summary><ol><li value="6"><code>package.json</code></li></ol></details>
+<h3>Config and docs</h3><ol><li value="5"><code>documentation/4-pagination.md</code> <span class="muted">(queue: REVIEW-002)</span></li></ol><details><summary>+1 supporting file(s) in dependency order</summary><ol><li value="6"><code>package.json</code></li></ol></details>
 
 <h2 id="map">Change map</h2>
-<svg viewBox="0 0 752 264" width="100%" role="img" aria-label="Change map" style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;max-width:752px"><defs><marker id="map-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/></marker></defs><path d="M 216 112 C 116 112, 116 58, 16 58" fill="none" stroke="#9ca3af" stroke-width="1.2" marker-end="url(#map-arrow)"/><path d="M 216 58 C 246 58, 246 58, 276 58" fill="none" stroke="#9ca3af" stroke-width="1.2" marker-end="url(#map-arrow)"/><text x="16" y="28" font-size="11" font-weight="600" fill="#444">source/core</text><g data-map-file="source/core/index.ts" style="cursor:pointer"><rect x="16" y="38" width="200" height="40" rx="6" fill="#ffffff" stroke="#6b7280"/><text x="24" y="55" font-size="12">index.ts</text><text x="24" y="70" font-size="10" fill="#666">+33/-20</text><title>source/core/index.ts
-+33/-20 modified</title></g><g data-map-file="source/core/options.ts" style="cursor:pointer"><rect x="16" y="92" width="200" height="40" rx="6" fill="#ffffff" stroke="#6b7280"/><text x="24" y="109" font-size="12">options.ts</text><text x="24" y="124" font-size="10" fill="#666">+2/-0</text><title>source/core/options.ts
-+2/-0 modified</title></g><text x="276" y="28" font-size="11" font-weight="600" fill="#444">test</text><g data-map-file="test/abort.ts" style="cursor:pointer"><rect x="276" y="38" width="200" height="40" rx="6" fill="#ffffff" stroke="#6b7280"/><text x="284" y="55" font-size="12">abort.ts</text><text x="284" y="70" font-size="10" fill="#666">+113/-8</text><title>test/abort.ts
-+113/-8 modified</title></g><g data-map-file="test/pagination.ts" style="cursor:pointer"><rect x="276" y="92" width="200" height="40" rx="6" fill="#ffffff" stroke="#6b7280"/><text x="284" y="109" font-size="12">pagination.ts</text><text x="284" y="124" font-size="10" fill="#666">+69/-0</text><title>test/pagination.ts
-+69/-0 modified</title></g><text x="536" y="28" font-size="11" font-weight="600" fill="#444">documentation</text><g data-map-file="documentation/4-pagination.md" style="cursor:pointer"><rect x="536" y="38" width="200" height="40" rx="6" fill="#ffffff" stroke="#6b7280"/><text x="544" y="55" font-size="12">4-pagination.md</text><text x="544" y="70" font-size="10" fill="#666">+1/-0</text><title>documentation/4-pagination.md
-+1/-0 modified</title></g><text x="16" y="184" font-size="11" font-weight="600" fill="#444">(root)</text><g data-map-file="package.json" style="cursor:pointer"><rect x="16" y="194" width="200" height="40" rx="6" fill="#ffffff" stroke="#6b7280"/><text x="24" y="211" font-size="12">package.json</text><text x="24" y="226" font-size="10" fill="#666">+1/-1</text><title>package.json
+<svg viewBox="0 0 752 320" width="100%" role="img" aria-label="Change map" style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;max-width:752px"><defs><marker id="map-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><polygon points="0,0 10,5 0,10" fill="#8d877d"/></marker></defs><text x="16" y="28" font-size="11" font-weight="600" fill="#26251e">source/core</text><g data-map-file="source/core/index.ts" style="cursor:pointer"><rect x="16" y="66" width="200" height="40" rx="4" fill="#e3ebf3" stroke="#3a6a9f"/><text x="24" y="83" font-size="12" fill="#050503">index.ts</text><text x="24" y="98" font-size="10" fill="#6f6a60">+33/-20 · test_evidence</text><title>source/core/index.ts
++33/-20 modified
+lens: test_evidence</title></g><g data-map-file="source/core/options.ts" style="cursor:pointer"><rect x="16" y="120" width="200" height="40" rx="4" fill="#e3ebf3" stroke="#3a6a9f"/><text x="24" y="137" font-size="12" fill="#050503">options.ts</text><text x="24" y="152" font-size="10" fill="#6f6a60">+2/-0 · test_evidence</text><title>source/core/options.ts
++2/-0 modified
+lens: test_evidence</title></g><text x="276" y="28" font-size="11" font-weight="600" fill="#26251e">test</text><g data-map-file="test/abort.ts" style="cursor:pointer"><rect x="276" y="66" width="200" height="40" rx="4" fill="#e3ebf3" stroke="#3a6a9f"/><text x="284" y="83" font-size="12" fill="#050503">abort.ts</text><text x="284" y="98" font-size="10" fill="#6f6a60">+113/-8 · test_evidence</text><title>test/abort.ts
++113/-8 modified
+lens: test_evidence</title></g><g data-map-file="test/pagination.ts" style="cursor:pointer"><rect x="276" y="120" width="200" height="40" rx="4" fill="#e3ebf3" stroke="#3a6a9f"/><text x="284" y="137" font-size="12" fill="#050503">pagination.ts</text><text x="284" y="152" font-size="10" fill="#6f6a60">+69/-0 · test_evidence</text><title>test/pagination.ts
++69/-0 modified
+lens: test_evidence</title></g><text x="536" y="28" font-size="11" font-weight="600" fill="#26251e">documentation</text><g data-map-file="documentation/4-pagination.md" style="cursor:pointer"><rect x="536" y="66" width="200" height="40" rx="4" fill="#f2f1ed" stroke="#d9d5cf"/><text x="544" y="83" font-size="12" fill="#050503">4-pagination.md</text><text x="544" y="98" font-size="10" fill="#6f6a60">+1/-0</text><title>documentation/4-pagination.md
++1/-0 modified</title></g><text x="16" y="212" font-size="11" font-weight="600" fill="#26251e">(root)</text><g data-map-file="package.json" style="cursor:pointer"><rect x="16" y="250" width="200" height="40" rx="4" fill="#f2f1ed" stroke="#d9d5cf"/><text x="24" y="267" font-size="12" fill="#050503">package.json</text><text x="24" y="282" font-size="10" fill="#6f6a60">+1/-1</text><title>package.json
 +1/-1 modified</title></g></svg>
-<p class="muted">Click a node to filter the review queue to that file; hover for details.</p>
-
-<ul><li>✓ The change touches 6 file(s). <span class="muted">(anchors: <code>documentation/4-pagination.md</code>, <code>package.json</code>, <code>source/core/index.ts</code>, <code>source/core/options.ts</code>)</span></li></ul>
+<p class="muted lens-key">Lenses: <span style="border-left:10px solid #e3ebf3">Test evidence lens</span></p><p class="muted">Click a node to filter the review queue to that file; hover for details.</p>
 
 
-<h2 id="queue">Review queue</h2>
-<p class="filters" id="file-filter-note" hidden>Filtered to <code id="file-filter-path"></code> <button data-clear-file-filter>show all</button></p>
-<p class="muted">No path-backed review queue items.</p>
 
 <h2 id="plan">Review plan</h2>
 <p class="muted">No time budget configured (pass <code>--budget 15m</code> or set <code>human_review.review_budget</code>).</p>
@@ -75,10 +215,40 @@ a { color: var(--accent); }
 
 <h2 id="cards">Evidence cards</h2>
 <div class="item" id="card-CARD-001">
+<header><strong>Test evidence lens</strong> <span class="badge medium">mixed</span></header>
+<p>Test evidence lens fired from 1 deterministic risk(s) across source/core/index.ts, source/core/options.ts, test/abort.ts, test/pagination.ts.</p>
+<p class="muted">Why it matters: Test-evidence changes affect whether the reviewer can trust validation and coverage claims.</p>
+<p>Action: Confirm parsed test output, coverage, command transcripts, and skipped-test handling still produce trustworthy review evidence. <span class="muted">(CARD-001)</span></p>
+</div>
+<div class="item" id="card-CARD-002">
 <header><strong>No command transcript or validation feedback was supplied to prove test execution.</strong> <span class="badge medium">missing_evidence</span></header>
 <p>No command transcript or validation feedback was supplied to prove test execution.</p>
 <p class="muted">Why it matters: Missing evidence keeps the reviewer from verifying a claim, check, or readiness condition.</p>
-<p>Action: Ask the author to provide the missing evidence or record an explicit deferral. <span class="muted">(CARD-001)</span></p>
+<p>Action: Ask the author to provide the missing evidence or record an explicit deferral. <span class="muted">(CARD-002)</span></p>
+</div>
+<div class="item" id="card-CARD-003">
+<header><strong>Baseline evaluation unavailable; coverage deltas are current-status only.</strong> <span class="badge medium">missing_evidence</span></header>
+<p>Baseline evaluation unavailable; coverage deltas are current-status only.</p>
+<p class="muted">Why it matters: Missing evidence keeps the reviewer from verifying a claim, check, or readiness condition.</p>
+<p>Action: Ask the author to provide the missing evidence or record an explicit deferral. <span class="muted">(CARD-003)</span></p>
+</div>
+<div class="item" id="card-CARD-004">
+<header><strong>Add or identify a focused test that exercises the changed implementation in s...</strong> <span class="badge high">missing_evidence</span></header>
+<p>2 implementation files changed in CLUSTER:SOURCE/CORE; no test is mapped to this validation area and no current-head command transcript exists.</p>
+<p class="muted">Why it matters: A required test-plan item records the evidence needed to unblock review confidence.</p>
+<p>Action: Run or add the suggested check: Add or identify a focused test that exercises the changed implementation in source/core/index.ts. <span class="muted">(CARD-004)</span></p>
+</div>
+<div class="item" id="card-CARD-005">
+<header><strong>PR scope contains 6 changed file(s) and 2 deterministic PR risk candidate(s)</strong> <span class="badge low">unchecked</span></header>
+<p>PR scope contains 6 changed file(s) and 2 deterministic PR risk candidate(s).</p>
+<p class="muted">Why it matters: This is a verified fact the reviewer can use as supporting context while reviewing the change.</p>
+<p>Action: Use this as supporting evidence; inspect only if it conflicts with higher-priority findings. <span class="muted">(CARD-005)</span></p>
+</div>
+<div class="item" id="card-CARD-006">
+<header><strong>Deterministic PR risk PR-RISK-001 (untested_changed_impl) fired</strong> <span class="badge low">unchecked</span></header>
+<p>Deterministic PR risk PR-RISK-001 (untested_changed_impl) fired: 2 implementation files changed in CLUSTER:SOURCE/CORE; no test is mapped to this validation area and no current-head command transcript exists.</p>
+<p class="muted">Why it matters: This is a verified fact the reviewer can use as supporting context while reviewing the change.</p>
+<p>Action: Use this as supporting evidence; inspect only if it conflicts with higher-priority findings. <span class="muted">(CARD-006)</span></p>
 </div>
 
 <h2 id="dep-chains" hidden>Dependency chains</h2>
@@ -88,10 +258,10 @@ a { color: var(--accent); }
 <p class="muted">First review round — nothing to trend yet.</p>
 
 <h2 id="trust">Trust audit</h2>
-<p class="muted">Medium confidence: 0 verified fact(s), 1 missing evidence item(s), and 0 unverified claim(s).</p><h3>Missing evidence</h3><ul><li>No command transcript or validation feedback was supplied to prove test execution.</li></ul>
+<p class="muted">Medium confidence: 3 verified fact(s), 2 missing evidence item(s), and 0 unverified claim(s).</p><h3>Verified</h3><ul><li>PR scope contains 6 changed file(s) and 2 deterministic PR risk candidate(s).</li><li>Deterministic PR risk PR-RISK-001 (untested_changed_impl) fired: 2 implementation files changed in CLUSTER:SOURCE/CORE; no test is mapped to this validation area and no current-head command transcript exists.</li><li>Deterministic PR risk PR-RISK-002 (unmapped_change) fired: 2 changed file(s) did not map to any review area.</li></ul><h3>Missing evidence</h3><ul><li>No command transcript or validation feedback was supplied to prove test execution.</li><li>Baseline evaluation unavailable; coverage deltas are current-status only.</li></ul>
 
-<h2 id="questions">Questions for the author</h2>
-<ul><li><span class="badge clarifying">clarifying</span> Which validation command or parsed test artifact should reviewers trust for this change? <span class="muted">(QUESTION-001)</span></li><li><span class="badge clarifying">clarifying</span> What evidence closes this review gap: No command transcript or validation feedback was supplied to prove test execution? <span class="muted">(QUESTION-002)</span></li></ul>
+<h2 id="methodology">Agent workflow audit</h2>
+<p class="muted"><em>No conversation log was available — this audit is derived only from local files and command context. Deep audit not run (no LLM provider); the items below are deterministic keyword picks, not a conversation audit.</em></p><h3>Workflow findings</h3><ul><li><span class="badge low">advisory</span> <span class="muted">impl no test</span>: Implementation changed with no test coverage evidence or test discussion: source/core/index.ts, source/core/options.ts. <span class="muted">[<code>source/core/index.ts</code>]</span></li><li><span class="badge low">advisory</span> <span class="muted">deps no rationale</span>: Dependency/CI/config change with no rationale in the conversation: package.json. <span class="muted">[<code>package.json</code>]</span></li></ul>
 
 
 <script>
@@ -126,6 +296,19 @@ a { color: var(--accent); }
       var itemPath = item.getAttribute("data-path");
       var fileOk = !activeFile || itemPath === activeFile || item.getAttribute("data-path-old") === activeFile || (activeFileOld && itemPath === activeFileOld);
       item.style.display = lensOk && fileOk ? "" : "none";
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-supporting-queue]"), function (details) {
+      var visibleMatch = false;
+      Array.prototype.forEach.call(details.querySelectorAll("[data-lenses]"), function (item) {
+        if (item.style.display !== "none") { visibleMatch = true; }
+      });
+      if ((activeFile || activeLens) && visibleMatch) {
+        if (!details.open) { details.setAttribute("data-filter-opened", "true"); }
+        details.open = true;
+      } else if (details.getAttribute("data-filter-opened") === "true") {
+        details.open = false;
+        details.removeAttribute("data-filter-opened");
+      }
     });
     if (fileNote && filePathEl) {
       fileNote.hidden = !activeFile;

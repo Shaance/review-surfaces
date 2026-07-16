@@ -28,8 +28,10 @@ context: changed paths and line-numbered diff lines, scoped requirement IDs,
 deterministic risk IDs, and captured command transcripts. Runtime validation uses
 that exact same prompt-visible context, so a model cannot earn grounding from a
 hidden event, line 221, file 41, or command 31. It groups
-implementation/test/doc/spec symptoms by root cause and emits at most three
-reviewer insights:
+implementation/test/doc/spec symptoms by root cause and emits the independently
+grounded reviewer insights that survive validation. There is no universal
+three-item cap; schema safety bounds untrusted input size without silently
+hiding an approval-changing conclusion:
 
 Analysis status:
 
@@ -49,9 +51,11 @@ Insight evidence state:
 
 The reviewer sees the cited stated goal, later refinements, constraints,
 why each finding matters, the action to take, and compact event plus exact-line
-evidence. The insights are advisory: they render before the generic review queue
-in Markdown, HTML, sticky, and both PR-comment paths, but cannot create or clear
-blockers, alter coverage, or change merge readiness.
+evidence. The insights are advisory: they render in the supporting Markdown and
+HTML analysis after the review queue. They stay out of the GitHub reviewer brief
+unless deterministic evidence independently admits the underlying issue as an
+approval decision, and they cannot create or clear blockers, alter coverage, or
+change merge readiness.
 
 Command transcript ingestion preserves a separate privacy-block bit before
 redacting command/output text. Diff, conversation, or command material that held

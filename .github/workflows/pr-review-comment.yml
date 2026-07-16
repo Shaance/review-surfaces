@@ -1,9 +1,73 @@
 name: pr-review-comment
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+concurrency:
+  group: review-surfaces-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
+  trusted-command-evidence:
+    # This job may execute PR code, so it has no secrets, no write permission,
+    # and no persisted checkout credential. The dependency-free recorder is
+    # executed from the base checkout: a PR cannot forge a passing transcript
+    # or its head binding.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted tool (base ref)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: tool
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout PR subject (head ref, credentialless)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: subject
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate subject in an isolated container (trusted recorder)
+        working-directory: subject
+        shell: bash
+        run: |
+          set -euo pipefail
+          container="review-surfaces-subject-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker run --detach --rm \
+            --name "$container" \
+            --volume "$GITHUB_WORKSPACE/subject:/subject" \
+            --workdir /subject \
+            node:22-bookworm \
+            tail -f /dev/null >/dev/null
+          trap 'docker rm --force "$container" >/dev/null 2>&1 || true' EXIT
+          docker exec "$container" bash -lc \
+            'corepack enable && corepack prepare pnpm@10.8.0 --activate && pnpm install --frozen-lockfile'
+          node "$GITHUB_WORKSPACE/tool/bin/review-surfaces.js" run \
+            --command-transcripts "$RUNNER_TEMP/trusted-command-evidence" \
+            --id ci-typecheck -- \
+            docker exec "$container" pnpm run typecheck
+          node "$GITHUB_WORKSPACE/tool/bin/review-surfaces.js" run \
+            --command-transcripts "$RUNNER_TEMP/trusted-command-evidence" \
+            --id ci-tests -- \
+            docker exec "$container" pnpm test
+      - name: Upload trusted exact-head command evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: trusted-command-evidence-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/trusted-command-evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
   review-comment:
     # review-surfaces.PROVIDERS.6 + review-surfaces.PR_SURFACE.1
     # Base-controlled workflow: this file is evaluated from the target branch, so
@@ -19,6 +83,7 @@ jobs:
     # write token or LLM key to fork-controlled code or comparing against a fork's
     # `origin/main`.
     if: github.event.pull_request.head.repo.full_name == github.repository
+    needs: trusted-command-evidence
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -39,50 +104,11 @@ jobs:
           path: subject
           fetch-depth: 0
           persist-credentials: false
-      - name: Stage head-bound command evidence (download + validate, never execute PR code)
-        # The unprivileged ci.yml records typecheck/tests through the tool and
-        # uploads `command-evidence-<head sha>`. This privileged job only downloads
-        # and validates transcripts stamped for the current head before rendering.
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          DEST: subject/.review-surfaces/commands
-        run: |
-          set +e
-          name="command-evidence-$HEAD_SHA"
-          id=""
-          for attempt in $(seq 1 20); do
-            id="$(gh api --paginate "repos/$REPO/actions/artifacts?name=$name" \
-              --jq '.artifacts[] | select(.expired==false) | .id' 2>/dev/null | head -n1)"
-            case "$id" in [0-9]*) break ;; esac
-            echo "command evidence not uploaded yet (attempt $attempt/20); waiting…"
-            sleep 15
-          done
-          case "$id" in
-            ""|*[!0-9]*) echo "No head-bound command evidence within the wait window; rendering without verified test transcripts."; exit 0 ;;
-          esac
-          tmp="$RUNNER_TEMP/cmd-ev"; rm -rf "$tmp"; mkdir -p "$tmp"
-          if ! gh api "repos/$REPO/actions/artifacts/$id/zip" > "$RUNNER_TEMP/cmd-ev.zip" 2>/dev/null \
-            || ! unzip -q -o "$RUNNER_TEMP/cmd-ev.zip" -d "$tmp" 2>/dev/null; then
-            echo "Could not download/unzip command evidence (best-effort); rendering without it."; exit 0
-          fi
-          mkdir -p "$DEST"
-          copied=0
-          while IFS= read -r f; do
-            [ -f "$f" ] || continue
-            ok="$(jq -r --arg sha "$HEAD_SHA" '
-              ((.commands // .transcripts // [.]) | if type=="array" then . else [.] end)
-              | all(.[]; (.head_sha // .headSha) == $sha)' "$f" 2>/dev/null)"
-            if [ "$ok" = "true" ]; then
-              cp "$f" "$DEST/"; copied=$((copied+1))
-            else
-              echo "Rejected $(basename "$f"): head_sha != $HEAD_SHA (stale or forged)."
-            fi
-          done < <(find "$tmp" -type f -name '*.json')
-          echo "Validated and staged $copied head-bound command transcript file(s)."
-          exit 0
+      - name: Download trusted exact-head command evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: trusted-command-evidence-${{ github.event.pull_request.head.sha }}
+          path: subject/.review-surfaces/commands
       - name: review-surfaces PR surface (trusted action over credentialless subject)
         uses: ./tool
         with:
@@ -91,9 +117,10 @@ jobs:
           llm-api-key: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
           base-ref: origin/${{ github.base_ref }}
           head-ref: HEAD
+          change-title: ${{ github.event.pull_request.title }}
+          change-description: ${{ github.event.pull_request.body }}
           spec: features/review-surfaces.feature.yaml
           output-dir: .review-surfaces
-          comment-top-n: "5"
           subject-directory: subject
           pr-number: ${{ github.event.pull_request.number }}
           repository: ${{ github.repository }}

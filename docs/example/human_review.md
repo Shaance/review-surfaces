@@ -1,157 +1,78 @@
 # Human Review
 
-Generated from `review_packet.json`.
+Generated from `review_packet.json` and `pr_review_surface.json`.
 
 ## Verdict
 
-**Needs author clarification.**
+**Reviewable with attention.**
 
-0 blocker(s) and 0 review queue item(s) across 6 changed file(s), 0 packet risk(s).
+Confidence: high.
 
-Confidence: medium.
+Approval-changing reasons and actions are listed once below.
 
-Reasons:
-- Required review evidence is missing or claimed without proof. Required action: Record validation evidence or answer the generated reviewer questions. (READY-MISSING-EVIDENCE; medium)
+## Change purpose
 
-## Reading order
+Harden abort handling and cross-origin pagination. Attach abort listeners after request handlers run, strip inherited sensitive headers when pagination crosses origins, and document the behavior.
 
-**Implementation**
-1. `source/core/options.ts` — imported by 1 changed file(s)
-2. `source/core/index.ts` — imported by 1 changed file(s)
+_From the PR title and description._
 
-**Tests**
-3. `test/abort.ts` — read after the 1 changed file(s) it imports
-4. `test/pagination.ts`
+## Approval decision
 
-**Config and docs**
-5. `documentation/4-pagination.md`
-6. `package.json`
+1. **Current-head test evidence** — 2 changed implementation files share one unresolved validation question: the available evidence does not yet show that their behavior was exercised at the current head.
+   - Review: Confirm the changed behavior is covered, add focused tests only where coverage is missing, and attach one current-head transcript for the relevant test run.
+   - Evidence: `source/core/index.ts`, `source/core/options.ts`, `test/abort.ts`
 
-## Change map
+## Required checks
 
-```mermaid
-flowchart LR
-  subgraph c0["source/core"]
-    n0["source/core/index.ts<br/>+33/-20"]
-    n1["source/core/options.ts<br/>+2/-0"]
-  end
-  subgraph c1["test"]
-    n2["test/abort.ts<br/>+113/-8"]
-    n3["test/pagination.ts<br/>+69/-0"]
-  end
-  subgraph c2["documentation"]
-    n4["documentation/4-pagination.md<br/>+1/-0"]
-  end
-  subgraph c3["root"]
-    n5["package.json<br/>+1/-1"]
-  end
-  n1 --> n0
-  n0 --> n2
-```
+- 1 required check(s). See `test_plan.md` for exact commands and expected results.
 
-## Change narrative
+## Trust summary
 
-_Source: fallback (mock); validated at `a5b76bffb33d5fa8b0d1393cce410b88e7c2b848`. ✓ verified, ~ claimed (unverified anchor)._
-- ✓ The change touches 6 file(s). (anchors: `documentation/4-pagination.md`, `package.json`, `source/core/index.ts`, `source/core/options.ts`)
+3 verified fact(s); 0 unverified claim(s); 2 missing-evidence item(s); 0 invalid-evidence item(s).
 
-## Semantic change facts
+## Supporting review queue
 
-- No semantic schema/API/test-weakening facts detected in this change.
+1. `source/core/index.ts`
+   - Why it matters: 2 changed implementation files share one validation question: focused changed-test evidence is connected to 1, 1 still lack connected changed-test evidence, and no current-head transcript proves the relevant checks ran.
+   - Why ranked here: a focused test changed alongside this file (`test/abort.ts`), so it ranks lower among equal-severity items
+   - Action: Confirm the changed tests cover the connected behavior, add focused coverage only for the remaining gap, and record one current-head transcript.
+   ```diff
+   @@ -297,7 +297,7 @@
+        private _triggerRead = false;
+        private readonly _jobs: Array<() => void> = [];
+        private _cancelTimeouts?: () => void;
+   -    private readonly _abortListenerDisposer?: {[Symbol.dispose](): void};
+   +    private _abortListenerDisposer?: {[Symbol.dispose](): void};
+        private _flushed = false;
+        private _aborted = false;
+        private _expectedContentLength?: number;
+   ```
+   - Risk: `PR-RISK-001`
+   - Evidence: `source/core/index.ts`, `source/core/options.ts`, `No current-head transcript establishes validation for the complete cited implementation group.`, `test/abort.ts`
 
-## Review first
+2. `documentation/4-pagination.md`
+   - Why it matters: 2 changed file(s) did not map to any review area.
+   - Action: Confirm the unmapped change is intended and not missing a review-area mapping.
+   - Risk: `PR-RISK-002`
+   - Evidence: `documentation/4-pagination.md`, `package.json`
 
-- No path-backed review queue items generated.
+3. `source/core/options.ts:796-797`
+   - Hunk: `@@ -793,6 +793,8 @@`
+   - Why it matters: Another finding was queued for this diff, and this changed source is also worth reading: an implementation change with no connected test change, touches error/async/auth/network/persistence paths.
+   - Why ranked here: no changed test or current-head transcript covers this file, so it ranks higher among equal-severity items
+   - Action: No defect pattern fired here — read this changed file to confirm the change is intended and skim-safe.
+   - Evidence: `source/core/options.ts`
 
-## Review routes
 
-- Human reviewer route (default): Default path through the verdict, review queue, blockers, questions, trust audit, and test plan. Path: Merge readiness verdict -> Top review queue -> Blockers and author questions
-- Maintainer route: Focuses on merge readiness, public contracts, required tests, and blocking comments. Path: Merge readiness verdict -> Schema, CLI, and artifact contracts -> Required tests and manual checks
-- Security route: Focuses on security/privacy lenses, CI secret-boundary checks, provider/redaction changes, and manual-check evidence. Path: Security and LLM trust-boundary lenses -> CI, provider, and redaction paths -> Manual security checks
-- Product route: Focuses on intent fit, reviewer-facing output, reviewer UX risks, and suggested comments. Path: Intent and reviewer workflow fit -> Reviewer UX lens -> Human review output
-- Agent-continuation route (secondary): Secondary path for implementation agents to continue from open risks, missing tests, and deferrals. Path: Open risks and blockers -> Missing tests and manual checks -> Since-last-review open items
+## Supporting artifacts
 
-## Evidence cards
-
-- No command transcript or validation feedback was supplied to prove test execution. Action: Ask the author to provide the missing evidence or record an explicit deferral. [Missing evidence; medium; evidence: direct 0, missing 1, invalid 0] (`CARD-001`)
-
-## Blockers
-
-- No merge blockers generated from deterministic evidence.
-
-## Since last review
-
-- No previous packet was supplied; pass --previous-packet to compare review rounds.
-
-## Coverage evidence
-
-- No coverage evidence: no coverage report was provided. This is different from changed lines being uncovered.
-
-## Review plan
-
-- No time budget configured (pass --budget 15m or set human_review.review_budget).
-
-## Intent mismatch
-
-- No requirement spec configured — intent checks are limited to docs and constraints.
-
-## Questions for author
-
-1. Which validation command or parsed test artifact should reviewers trust for this change? (clarifying; evidence: `No direct or indirect validation evidence found in risks.test_evidence.`)
-2. What evidence closes this review gap: No command transcript or validation feedback was supplied to prove test execution? (clarifying; evidence: `Run validation commands and preserve output externally or in a future command transcript artifact.`)
-
-## Trust audit
-
-Confidence summary: Medium confidence: 0 verified fact(s), 1 missing evidence item(s), and 0 unverified claim(s).
-
-Verified:
-- No verified facts recorded.
-
-Claimed but not verified:
-- No unverified claims recorded.
-
-Missing:
-- No command transcript or validation feedback was supplied to prove test execution. Evidence: `Run validation commands and preserve output externally or in a future command transcript artifact.`
-
-Invalid:
-- None recorded.
-
-## Risk lenses
-
-- No domain risk lenses fired.
-
-## Test plan
-
-- No concrete test-plan items generated.
-
-## Suggested comments
-
-### Clarifying comment (SC-001)
-
-> I do not see direct validation evidence in the packet. Can you record the relevant test/typecheck command transcript or parsed test output?
-
-Evidence: `No direct or indirect validation evidence found.`
-
-Ready to post: yes.
-
-## Skim-safe
-
-- No skim-safe files identified.
-
-## Feedback memory
-
-- No reviewer feedback policy effects applied.
-
-## Evidence pointers
-
-- Packet: `review_packet.json`
-- Review queue: `review_queue.md`
-- Suggested comments: `suggested_comments.md`
-- Trust audit: `trust_audit.md`
-- Risk lenses: `risk_lenses.md`
-- Intent mismatch: `intent_mismatch.md`
-- Review routes: `review_routes.md`
-- Evidence cards: `evidence_cards.md`
-- Since last review: `since_last_review.md`
-- Test plan: `test_plan.md`
-- Base/head: `HEAD~3` -> `HEAD`
-- Head SHA: `a5b76bffb33d5fa8b0d1393cce410b88e7c2b848`
+- [Interactive HTML cockpit](human_review.html) — reading order, maps, coverage, trust, and the complete supporting review.
+- [`human_review.json`](human_review.json) — schema-validated machine model with every recorded fact.
+- [Review queue](review_queue.md) — focused supporting detail.
+- [Suggested comments](suggested_comments.md) — focused supporting detail.
+- [Trust audit](trust_audit.md) — focused supporting detail.
+- [Risk lenses](risk_lenses.md) — focused supporting detail.
+- [Intent mismatch](intent_mismatch.md) — focused supporting detail.
+- [Evidence cards](evidence_cards.md) — focused supporting detail.
+- [Since last review](since_last_review.md) — focused supporting detail.
+- [Test plan](test_plan.md) — focused supporting detail.

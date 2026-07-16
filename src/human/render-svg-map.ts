@@ -1,6 +1,7 @@
-// review-surfaces.RENDER.11: deterministic inline-SVG change map for the HTML
-// cockpit, rendered from the SAME change_graph model as the mermaid emitter —
-// no chart or diagram library and no inlined mermaid.js. Hand-rolled layout:
+// review-surfaces.CHANGE_MAP.2 / RENDER.11: deterministic, dark-mode-readable
+// inline-SVG change map for the HTML cockpit, rendered directly from the shared
+// change_graph model. No chart or diagram library and no inlined mermaid.js.
+// Hand-rolled layout:
 // one column per cluster (in the model's tour-agreeing order), stable row
 // order within a column, fixed viewBox, system font stack. Columns wrap into
 // bands and long stacks split into continuation slots (MAP_SCALE.5) so no
@@ -31,7 +32,7 @@ import { DetailStub } from "./change-graph";
 
 // Print-safe fills paired with the lens name in the node's <title> and the
 // legend the cockpit renders next to the map — color never carries meaning
-// alone. ONE palette shared with the mermaid emitter (change-map.ts derives
+// alone. One palette shared by overview and detail renderers
 // its classDefs from it) so the two maps can never color a lens differently.
 export const SVG_LENS_FILLS: Record<RiskLens, string> = {
   api_contract: "#f3ede6",
@@ -109,8 +110,8 @@ const COLUMNS_PER_BAND = Math.max(1, Math.floor((COCKPIT_WIDTH_PX - 2 * PADDING 
 
 export interface RenderChangeMapSvgOptions {
   // review-surfaces.MAP_SCALE.4/.7: raw cross-area import stubs stay out of the
-  // SVG file map. Stub metadata still feeds the text/mermaid surfaces, but this
-  // renderer only draws relationships between exact visible files.
+  // SVG file map. Stub metadata stays in the JSON model, but this renderer only
+  // draws relationships between exact visible files.
   stubs?: DetailStub[];
   ariaLabel?: string;
 }

@@ -177,7 +177,7 @@ test("invalid event and path citations are rejected, demote a partly grounded it
   assert.ok(!JSON.stringify(result).includes("ghost-event"));
 });
 
-test("review-surfaces.CONVERSATION_REVIEW.3 insights deduplicate by root cause, order deterministically, and cap the reviewer surface at three", async () => {
+test("review-surfaces.CONVERSATION_REVIEW.3 insights deduplicate by root cause, order deterministically, and retain every independent concern", async () => {
   const staged = stageProvider([
     candidate({
       root_cause_key: "root-a",
@@ -230,12 +230,18 @@ test("review-surfaces.CONVERSATION_REVIEW.3 insights deduplicate by root cause, 
     diff: multiFileDiff()
   });
 
-  assert.equal(result.insights.length, 3);
-  assert.deepEqual(result.insights.map((item) => item.id), ["CONV-INSIGHT-001", "CONV-INSIGHT-002", "CONV-INSIGHT-003"]);
+  assert.equal(result.insights.length, 4);
+  assert.deepEqual(result.insights.map((item) => item.id), [
+    "CONV-INSIGHT-001",
+    "CONV-INSIGHT-002",
+    "CONV-INSIGHT-003",
+    "CONV-INSIGHT-004"
+  ]);
   assert.deepEqual(result.insights.map((item) => item.title), [
     "A: primary contradiction",
     "D: second contradiction",
-    "B: unverified critical concern"
+    "B: unverified critical concern",
+    "C: supported change"
   ]);
   assert.equal(result.insights.filter((item) => item.title.startsWith("A:")).length, 1);
 });

@@ -29,9 +29,24 @@ import {
   PACKET_WORKFLOW_SIGNAL_KINDS
 } from "../src/schema/review-packet-contract";
 import { RISK_LENSES } from "../src/human/contract";
-import { PR_SURFACE_SCHEMA_VERSION } from "../src/pr/contract";
 import {
-  MAX_VISIBLE_CONVERSATION_INSIGHTS,
+  CHANGED_FILE_ROLES,
+  PR_COVERAGE_DELTAS,
+  PR_RISK_RULES,
+  PR_SCOPE_RULES,
+  PR_SURFACE_SCHEMA_VERSION
+} from "../src/pr/contract";
+import {
+  EVIDENCE_CONFIDENCE_LEVELS,
+  EVIDENCE_KINDS,
+  EVIDENCE_VALIDATION_STATUSES
+} from "../src/contracts/evidence";
+import {
+  REQUIREMENT_STATUSES as REVIEW_REQUIREMENT_STATUSES,
+  REVIEW_SEVERITIES,
+  RISK_CATEGORIES
+} from "../src/contracts/review";
+import {
   REVIEWER_INSIGHT_EVIDENCE_STATES
 } from "../src/conversation/review";
 import { VERSION } from "../src/core/version";
@@ -42,22 +57,14 @@ const humanReviewSchema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "s
 const prSurfaceSchema = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "pr_review_surface.schema.json"), "utf8"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as { version: string };
 
-// The current writer emits these defaults even where the v1 read schema keeps a
-// field optional for backward compatibility. Slice fixtures start complete so
-// each schema test remains focused on its one mutation.
+// Slice fixtures start with the current complete contract so each schema test
+// remains focused on its one mutation.
 const HUMAN_REQUIRED_DEFAULTS = {
+  rounds: [],
   decision_projection: {
-    active_intent: { summary: "Fixture intent.", source: "packet", requirement_ids: [], event_ids: [] },
-    findings: [],
-    supporting_detail_counts: {
-      total_queue_items: 0,
-      projected_queue_items: 0,
-      supporting_queue_items: 0,
-      affected_requirement_count: 0,
-      supporting_requirement_count: 0
-    }
+    active_intent: { summary: "Fixture intent.", source: "packet", redaction_blocked: false, requirement_ids: [], event_ids: [] },
+    findings: []
   },
-  narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
   conversation_analysis: {
     status: "not_assessed",
     provider: "mock",
@@ -84,7 +91,6 @@ const HUMAN_REQUIRED_DEFAULTS = {
     possible_overreach: [],
     missing_intent: []
   },
-  review_routes: [],
   since_last_review: {
     unavailable_reason: "No previous packet.",
     improved: [],
@@ -111,7 +117,19 @@ const HUMAN_REQUIRED_DEFAULTS = {
 };
 
 function withRequiredHumanFields<T extends Record<string, unknown>>(model: T): T & typeof HUMAN_REQUIRED_DEFAULTS {
-  return { ...HUMAN_REQUIRED_DEFAULTS, ...model };
+  const generatedFrom = model.generated_from as Record<string, unknown> | undefined;
+  const currentGeneratedFrom = model.mode === "pr" && generatedFrom
+    ? {
+        ...generatedFrom,
+        pr_surface_path: generatedFrom.pr_surface_path ?? ".review-surfaces/pr_review_surface.json",
+        pr_surface_signature: generatedFrom.pr_surface_signature ?? "a".repeat(64)
+      }
+    : generatedFrom;
+  return {
+    ...HUMAN_REQUIRED_DEFAULTS,
+    ...model,
+    ...(currentGeneratedFrom ? { generated_from: currentGeneratedFrom } : {})
+  } as T & typeof HUMAN_REQUIRED_DEFAULTS;
 }
 
 const enumContracts: Array<{
@@ -295,7 +313,6 @@ test("review-surfaces.SCHEMA.3 human review schema rejects stale partial v1 arti
       confidence: "medium",
       reasons: []
     },
-    summary: "Prior v1 human review artifact fixture.",
     review_queue: [],
     blockers: [],
     questions: [],
@@ -320,23 +337,20 @@ test("review-surfaces.SCHEMA.3 human review schema rejects stale partial v1 arti
   };
 
   // review-surfaces.SCHEMA.3: a partial artifact (no risk_lens_findings,
-  // intent_mismatch, review_routes, since_last_review, evidence_cards,
+  // intent_mismatch, since_last_review, evidence_cards,
   // feedback_effects) now fails validation instead of degrading quietly.
   const result = validateJsonSchema(humanReviewSchema, priorV1HumanReview);
   assert.equal(result.valid, false);
-  assert.ok(result.issues.some((issue) => /review_routes/.test(issue.message)));
+  assert.ok(result.issues.some((issue) => /risk_lens_findings/.test(issue.message)));
 });
 
-test("review-surfaces.SCHEMA.3 human review schema requires the narrative field", () => {
-  // narrative is always emitted (provider or deterministic fallback), so a stale
-  // artifact lacking it must fail validation and be rebuilt, not render empty.
-  assert.ok(humanReviewSchema.required.includes("narrative"), "narrative must be a required field");
+test("review-surfaces.NARRATIVE.5 human review schema keeps narrative optional and provider-only", () => {
+  assert.ok(!humanReviewSchema.required.includes("narrative"), "the deterministic brief must validate without optional prose");
   const withoutNarrative = withRequiredHumanFields({
     schema_version: "review-surfaces.human_review.v1",
     mode: "repo",
     spec_mode: "acai",
     verdict: { decision: "no_signal", confidence: "low", reasons: [] },
-    summary: "No narrative fixture.",
     review_queue: [],
     blockers: [],
     questions: [],
@@ -347,29 +361,24 @@ test("review-surfaces.SCHEMA.3 human review schema requires the narrative field"
     generated_from: { packet_path: "p", base_ref: "origin/main", head_ref: "HEAD", head_sha: "abc", uncommitted_files: 0 }
   }) as Record<string, unknown>;
   delete withoutNarrative.narrative;
-  const result = validateJsonSchema(humanReviewSchema, withoutNarrative);
-  assert.equal(result.valid, false);
-  assert.ok(result.issues.some((issue) => /narrative/.test(issue.message)));
-});
+  assert.equal(validateJsonSchema(humanReviewSchema, withoutNarrative).valid, true);
 
-test("review-surfaces.REVIEWER_VALUE.4 legacy human review artifacts may omit the additive decision projection", () => {
-  assert.ok(!humanReviewSchema.required.includes("decision_projection"));
-  const stale = validHumanReview();
-  delete stale.decision_projection;
-  const result = validateJsonSchema(humanReviewSchema, stale);
-  assert.equal(result.valid, true, result.issues.map((issue) => issue.message).join("; "));
-});
+  const providerNarrative = {
+    ...withoutNarrative,
+    narrative: {
+      source: "provider",
+      provider: "agent-file",
+      validated_at_head: "abc",
+      claims: [{ id: "NARR-001", text: "Explains the change.", trust: "verified", anchors: [], invalid_anchors: [] }]
+    }
+  };
+  assert.equal(validateJsonSchema(humanReviewSchema, providerNarrative).valid, true);
 
-test("review-surfaces.CONVERSATION_REVIEW.4 pre-conversation human v1 artifacts remain valid", () => {
-  const legacy = validHumanReview();
-  delete legacy.conversation_analysis;
-  delete legacy.review_insights;
-
-  const result = validateJsonSchema(humanReviewSchema, legacy);
-
-  assert.equal(result.valid, true, JSON.stringify(result.issues));
-  assert.equal(humanReviewSchema.required.includes("conversation_analysis"), false);
-  assert.equal(humanReviewSchema.required.includes("review_insights"), false);
+  const legacyFallback = {
+    ...withoutNarrative,
+    narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] }
+  };
+  assert.equal(validateJsonSchema(humanReviewSchema, legacyFallback).valid, false);
 });
 
 test("review-surfaces.CONVERSATION_REVIEW.4 persisted insights require completed analyzed conversation state", () => {
@@ -401,63 +410,23 @@ test("review-surfaces.CONVERSATION_REVIEW.4 persisted insights require completed
   const human = validHumanReview();
   human.conversation_analysis = analyzed;
   human.review_insights = [insight];
-  const prSurface: Record<string, unknown> = {
-    schema_version: "review-surfaces.pr_surface.v1",
-    mode: "pr",
-    spec_mode: "none",
-    status: "ready",
-    scope: {
-      base_ref: "main",
-      head_ref: "HEAD",
-      head_sha: "abc123",
-      diff_source: "range",
-      changed_files: [],
-      affected_areas: [],
-      affected_requirements: [],
-      out_of_scope_changed_files: []
-    },
-    coverage: {
-      base_available: false,
-      summary: "No requirements in scope.",
-      in_scope_count: 0,
-      deltas: [],
-      counts: {}
-    },
-    risks: { summary: "No deterministic risks.", candidates: [] },
-    llm: { required: true, provider: "ai-sdk", status: "applied" },
-    narrative: {
-      summary: "Reviewer-facing renderer behavior changed.",
-      what_changed: [],
-      why_it_matters: [],
-      review_first: [],
-      risk_narratives: []
-    },
-    conversation_analysis: analyzed,
-    review_insights: [insight]
-  };
+  assert.equal(validateJsonSchema(humanReviewSchema, human).valid, true, "human analyzed fixture must be valid");
 
-  for (const { name, schemaValue, artifact } of [
-    { name: "human", schemaValue: humanReviewSchema, artifact: human },
-    { name: "PR", schemaValue: prSurfaceSchema, artifact: prSurface }
+  for (const analysis of [
+    undefined,
+    { ...analyzed, status: "not_assessed" },
+    { ...analyzed, status: "degraded" },
+    { ...analyzed, quality_flags: ["conversation_review_unavailable"] },
+    { ...analyzed, quality_flags: ["conversation_review_invalid_payload"] }
   ]) {
-    assert.equal(validateJsonSchema(schemaValue, artifact).valid, true, `${name} analyzed fixture must be valid`);
-
-    for (const analysis of [
-      undefined,
-      { ...analyzed, status: "not_assessed" },
-      { ...analyzed, status: "degraded" },
-      { ...analyzed, quality_flags: ["conversation_review_unavailable"] },
-      { ...analyzed, quality_flags: ["conversation_review_invalid_payload"] }
-    ]) {
-      const invalid = structuredClone(artifact);
-      if (analysis === undefined) {
-        delete invalid.conversation_analysis;
-      } else {
-        invalid.conversation_analysis = analysis;
-      }
-      const result = validateJsonSchema(schemaValue, invalid);
-      assert.equal(result.valid, false, `${name} must reject insights without completed analysis: ${JSON.stringify(analysis)}`);
+    const invalid = structuredClone(human);
+    if (analysis === undefined) {
+      delete invalid.conversation_analysis;
+    } else {
+      invalid.conversation_analysis = analysis;
     }
+    const result = validateJsonSchema(humanReviewSchema, invalid);
+    assert.equal(result.valid, false, `human must reject insights without completed analysis: ${JSON.stringify(analysis)}`);
   }
 });
 
@@ -471,7 +440,6 @@ test("human review schema validates since-last-review comparison slices", () => 
       confidence: "medium",
       reasons: []
     },
-    summary: "Since-last-review schema fixture.",
     review_queue: [],
     blockers: [],
     questions: [],
@@ -552,93 +520,6 @@ test("human review schema validates since-last-review comparison slices", () => 
   assert.equal(result.valid, true, JSON.stringify(result.issues));
 });
 
-test("human review schema validates review route slices", () => {
-  const humanReview = {
-    schema_version: "review-surfaces.human_review.v1",
-    mode: "pr",
-    spec_mode: "acai",
-    verdict: {
-      decision: "reviewable_with_attention",
-      confidence: "medium",
-      reasons: []
-    },
-    summary: "Review route schema fixture.",
-    review_queue: [],
-    blockers: [],
-    questions: [],
-    suggested_comments: [],
-    trust_audit: {
-      verified_facts: [],
-      claimed_not_verified: [],
-      missing_evidence: [],
-      invalid_evidence: [],
-      confidence_summary: "Fixture."
-    },
-    review_routes: [
-      {
-        id: "ROUTE-HUMAN",
-        persona: "human_reviewer",
-        title: "Human reviewer route",
-        summary: "Default evidence-backed review path.",
-        is_default: true,
-        is_secondary: false,
-        steps: [
-          {
-            id: "ROUTE-HUMAN-STEP-001",
-            rank: 1,
-            title: "Merge readiness verdict",
-            action: "Start with the verdict.",
-            evidence: [{ kind: "file", path: ".review-surfaces/review_packet.json", confidence: "high", validation_status: "valid" }],
-            priority: "high",
-            artifact: "human_review.md",
-            queue_item_ids: ["REVIEW-001"],
-            risk_lens_ids: ["LENS-001"],
-            question_ids: ["QUESTION-001"],
-            test_plan_ids: ["TEST-001"],
-            suggested_comment_ids: ["SC-001"]
-          }
-        ]
-      },
-      {
-        id: "ROUTE-AGENT",
-        persona: "agent_continuation",
-        title: "Agent-continuation route",
-        summary: "Secondary continuation path.",
-        is_default: false,
-        is_secondary: true,
-        steps: [
-          {
-            id: "ROUTE-AGENT-STEP-001",
-            rank: 1,
-            title: "Open risks",
-            action: "Continue from open risks.",
-            evidence: [{ kind: "file", path: ".review-surfaces/review_packet.json", confidence: "medium", validation_status: "not_checked" }],
-            priority: "medium",
-            queue_item_ids: [],
-            risk_lens_ids: [],
-            question_ids: [],
-            test_plan_ids: [],
-            suggested_comment_ids: []
-          }
-        ]
-      }
-    ],
-    test_plan: [],
-    skim_safe: [],
-    generated_from: {
-      packet_path: ".review-surfaces/review_packet.json",
-      pr_surface_path: ".review-surfaces/pr_review_surface.json",
-      base_ref: "origin/main",
-      head_ref: "HEAD",
-      head_sha: "abc123",
-      uncommitted_files: 0
-    }
-  };
-
-  const result = validateJsonSchema(humanReviewSchema, withRequiredHumanFields(humanReview));
-  assert.equal(result.valid, true, JSON.stringify(result.issues));
-});
-
 test("human review schema validates inline evidence cards", () => {
   const humanReview = {
     schema_version: "review-surfaces.human_review.v1",
@@ -649,7 +530,6 @@ test("human review schema validates inline evidence cards", () => {
       confidence: "medium",
       reasons: []
     },
-    summary: "Evidence card schema fixture.",
     review_queue: [],
     blockers: [],
     questions: [],
@@ -719,7 +599,6 @@ test("human review schema validates intent-mismatch slices", () => {
       confidence: "medium",
       reasons: []
     },
-    summary: "Intent mismatch schema fixture.",
     review_queue: [],
     blockers: [],
     questions: [],
@@ -793,7 +672,6 @@ test("human review schema rejects intent-mismatch items without evidence", () =>
       confidence: "medium",
       reasons: []
     },
-    summary: "Intent mismatch schema fixture.",
     review_queue: [],
     blockers: [],
     questions: [],
@@ -858,7 +736,6 @@ function validHumanReview(): Record<string, unknown> {
     mode: "pr",
     spec_mode: "acai",
     verdict: { decision: "probably_safe", confidence: "high", reasons: [] },
-    summary: "Strict-schema unknown-property fixture.",
     review_queue: [],
     blockers: [],
     questions: [],
@@ -1367,6 +1244,198 @@ test("review-surfaces.SCHEMA.6 pr_surface schema_version const matches PR_SURFAC
   assert.equal(schemaAt(prSurfaceSchema, ["properties", "schema_version", "const"]), PR_SURFACE_SCHEMA_VERSION);
 });
 
+test("privacy block signals are required in persisted PR purpose and active intent", () => {
+  const prSurface: Record<string, unknown> = {
+    schema_version: PR_SURFACE_SCHEMA_VERSION,
+    mode: "pr",
+    status: "ready",
+    change_context: { title: "Safe title", source: "cli", redaction_blocked: false },
+    scope: {
+      base_ref: "main",
+      head_ref: "HEAD",
+      head_sha: "abc123",
+      diff_source: "range",
+      changed_files: [],
+      affected_areas: [],
+      affected_requirements: [],
+      out_of_scope_changed_files: []
+    },
+    coverage: {
+      base_available: false,
+      summary: "No requirements in scope.",
+      in_scope_count: 0,
+      deltas: [],
+      counts: { improved: 0, regressed: 0, unchanged: 0, new_requirement: 0, removed_requirement: 0, newly_in_scope: 0 }
+    },
+    risks: { summary: "No deterministic risks.", candidates: [] }
+  };
+  assert.equal(validateJsonSchema(prSurfaceSchema, prSurface).valid, true);
+  const unsafeSurface = structuredClone(prSurface) as typeof prSurface & { change_context: Record<string, unknown> };
+  delete unsafeSurface.change_context.redaction_blocked;
+  assert.equal(validateJsonSchema(prSurfaceSchema, unsafeSurface).valid, false);
+
+  const human = validHumanReview();
+  assert.equal(validateJsonSchema(humanReviewSchema, human).valid, true);
+  const unsafeHuman = structuredClone(human) as Record<string, any>;
+  delete unsafeHuman.decision_projection.active_intent.redaction_blocked;
+  assert.equal(validateJsonSchema(humanReviewSchema, unsafeHuman).valid, false);
+});
+
+test("pr_surface nested enums stay tied to the runtime contract", () => {
+  assert.deepEqual(schemaAt(prSurfaceSchema, ["$defs", "changedFile", "properties", "role", "enum"]), [...CHANGED_FILE_ROLES]);
+  assert.deepEqual(schemaAt(prSurfaceSchema, ["$defs", "scopeReason", "properties", "rule", "enum"]), [...PR_SCOPE_RULES]);
+  assert.deepEqual(schemaAt(prSurfaceSchema, ["$defs", "coverageDelta", "properties", "base_status", "enum"]), [
+    ...REVIEW_REQUIREMENT_STATUSES,
+    "absent"
+  ]);
+  assert.deepEqual(schemaAt(prSurfaceSchema, ["$defs", "coverageDelta", "properties", "head_status", "enum"]), [
+    ...REVIEW_REQUIREMENT_STATUSES,
+    "absent"
+  ]);
+  assert.deepEqual(schemaAt(prSurfaceSchema, ["$defs", "coverageDelta", "properties", "delta", "enum"]), [...PR_COVERAGE_DELTAS]);
+  assert.deepEqual(schemaAt(prSurfaceSchema, ["$defs", "riskCandidate", "properties", "rule", "enum"]), [...PR_RISK_RULES]);
+  assert.deepEqual(schemaAt(prSurfaceSchema, ["$defs", "riskCandidate", "properties", "category", "enum"]), [...RISK_CATEGORIES]);
+  assert.deepEqual(schemaAt(prSurfaceSchema, ["$defs", "riskCandidate", "properties", "severity", "enum"]), [...REVIEW_SEVERITIES]);
+  assert.deepEqual(schemaAt(prSurfaceSchema, ["$defs", "evidenceRef", "properties", "kind", "enum"]), [...EVIDENCE_KINDS]);
+  assert.deepEqual(schemaAt(prSurfaceSchema, ["$defs", "evidenceRef", "properties", "confidence", "enum"]), [
+    ...EVIDENCE_CONFIDENCE_LEVELS
+  ]);
+  assert.deepEqual(schemaAt(prSurfaceSchema, ["$defs", "evidenceRef", "properties", "validation_status", "enum"]), [
+    ...EVIDENCE_VALIDATION_STATUSES
+  ]);
+});
+
+test("pr_surface rejects malformed or unknown values throughout every nested retained surface", async (t) => {
+  const validSurface: Record<string, any> = {
+    schema_version: PR_SURFACE_SCHEMA_VERSION,
+    mode: "pr",
+    status: "ready",
+    scope: {
+      base_ref: "origin/main",
+      head_ref: "HEAD",
+      base_sha: "base123",
+      head_sha: "head123",
+      diff_source: "range",
+      changed_files: [
+        {
+          path: "src/reviewer.ts",
+          old_path: "src/old-reviewer.ts",
+          status: "R",
+          areas: ["REVIEW"],
+          role: "implementation",
+          added_lines: 12,
+          deleted_lines: 4
+        }
+      ],
+      affected_areas: [
+        {
+          group_key: "REVIEW",
+          area_ids: ["AREA-REVIEW"],
+          name: "Reviewer brief",
+          changed_files: ["src/reviewer.ts"]
+        }
+      ],
+      affected_requirements: [
+        {
+          requirement_id: "REQ-1",
+          acai_id: "review-surfaces.REVIEW.1",
+          title: "Show the reviewer decision",
+          group_key: "REVIEW",
+          reasons: [
+            {
+              rule: "changed_path_requirement_group",
+              confidence: "high",
+              path: "src/reviewer.ts",
+              line_start: 10,
+              line_end: 20,
+              note: "Reviewer surface changed."
+            }
+          ]
+        }
+      ],
+      out_of_scope_changed_files: [{ path: "dist/reviewer.js", status: "M", reason: "generated" }]
+    },
+    coverage: {
+      base_available: true,
+      summary: "One requirement improved.",
+      in_scope_count: 1,
+      deltas: [
+        {
+          requirement_id: "REQ-1",
+          acai_id: "review-surfaces.REVIEW.1",
+          title: "Show the reviewer decision",
+          base_status: "partial",
+          head_status: "satisfied",
+          delta: "improved",
+          reasons: ["A focused current-head test now covers the change."],
+          head_evidence: [
+            {
+              kind: "test",
+              path: "tests/reviewer.test.ts",
+              line_start: 12,
+              test_name: "shows the decision",
+              confidence: "high",
+              validation_status: "valid",
+              verified: true
+            }
+          ],
+          missing_evidence: []
+        }
+      ],
+      counts: { improved: 1, regressed: 0, unchanged: 0, new_requirement: 0, removed_requirement: 0, newly_in_scope: 0 }
+    },
+    risks: {
+      summary: "One risk needs review.",
+      candidates: [
+        {
+          id: "PR-RISK-001",
+          rule: "comment_surface_change",
+          category: "correctness",
+          severity: "medium",
+          summary: "The reviewer-facing summary changed.",
+          evidence: [{ kind: "diff", path: "src/reviewer.ts", confidence: "high" }],
+          suggested_checks: ["Inspect the rendered GitHub comment in dark mode."]
+        }
+      ]
+    },
+    diagram: {
+      path: "diagrams/pr-change-impact.mmd",
+      status: "valid",
+      body: "flowchart LR\n  A --> B",
+      warnings: []
+    }
+  };
+
+  assert.deepEqual(validateJsonSchema(prSurfaceSchema, validSurface), { valid: true, issues: [] });
+
+  const cases: Array<{ name: string; mutate: (surface: Record<string, any>) => void }> = [
+    { name: "null changed file", mutate: (surface) => { surface.scope.changed_files[0] = null; } },
+    { name: "unknown changed-file field", mutate: (surface) => { surface.scope.changed_files[0].unexpected = true; } },
+    { name: "invalid changed-file role", mutate: (surface) => { surface.scope.changed_files[0].role = "source"; } },
+    { name: "malformed affected area", mutate: (surface) => { surface.scope.affected_areas[0].changed_files = [null]; } },
+    { name: "unknown scope reason", mutate: (surface) => { surface.scope.affected_requirements[0].reasons[0].rule = "guess"; } },
+    { name: "unknown affected-requirement field", mutate: (surface) => { surface.scope.affected_requirements[0].owner = "team"; } },
+    { name: "invalid out-of-scope reason", mutate: (surface) => { surface.scope.out_of_scope_changed_files[0].reason = "other"; } },
+    { name: "null coverage delta", mutate: (surface) => { surface.coverage.deltas[0] = null; } },
+    { name: "unknown coverage count", mutate: (surface) => { surface.coverage.counts.total = 1; } },
+    { name: "malformed coverage evidence", mutate: (surface) => { surface.coverage.deltas[0].head_evidence[0] = {}; } },
+    { name: "unknown coverage evidence field", mutate: (surface) => { surface.coverage.deltas[0].head_evidence[0].source = "runner"; } },
+    { name: "empty risk candidate", mutate: (surface) => { surface.risks.candidates[0] = {}; } },
+    { name: "unknown risk field", mutate: (surface) => { surface.risks.candidates[0].owner = "security"; } },
+    { name: "malformed risk evidence", mutate: (surface) => { surface.risks.candidates[0].evidence = [null]; } },
+    { name: "unknown diagram field", mutate: (surface) => { surface.diagram.format = "mermaid"; } },
+    { name: "malformed diagram warning", mutate: (surface) => { surface.diagram.warnings = [null]; } }
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, () => {
+      const malformed = structuredClone(validSurface);
+      testCase.mutate(malformed);
+      assert.equal(validateJsonSchema(prSurfaceSchema, malformed).valid, false);
+    });
+  }
+});
+
 test("review-surfaces.SCHEMA.6 the hoisted human risk-lens enum equals RISK_LENSES", () => {
   // The lens enum was inline-duplicated three times. It is now a single $def
   // (#/$defs/riskLens) the two change-graph sites $ref; the riskLensFinding copy
@@ -1421,38 +1490,7 @@ test("review-surfaces.SCHEMA.6 human evidence-kind and validation-status enums m
   );
 });
 
-test("review-surfaces.CONVERSATION_REVIEW.3 persisted conversation schemas stay fully aligned", () => {
-  const humanCrossFieldRules = schemaAt(humanReviewSchema, ["allOf"]) as unknown[];
-  const prCrossFieldRules = schemaAt(prSurfaceSchema, ["allOf"]) as unknown[];
-  assert.deepEqual(
-    humanCrossFieldRules[0],
-    prCrossFieldRules.at(-1),
-    "conversation cross-field invariants must match across human and PR surfaces"
-  );
-  for (const property of ["conversation_analysis", "review_insights"]) {
-    assert.deepEqual(
-      schemaAt(humanReviewSchema, ["properties", property]),
-      schemaAt(prSurfaceSchema, ["properties", property]),
-      `${property} must have one persisted shape across human and PR surfaces`
-    );
-  }
-  for (const definition of [
-    "conversationAnalysisItem",
-    "conversationAnalysisItems",
-    "conversationAnalysis",
-    "insightStringArray",
-    "reviewerInsight"
-  ]) {
-    assert.deepEqual(
-      schemaAt(humanReviewSchema, ["$defs", definition]),
-      schemaAt(prSurfaceSchema, ["$defs", definition]),
-      `${definition} must have one persisted shape across human and PR surfaces`
-    );
-  }
-  assert.equal(
-    schemaAt(humanReviewSchema, ["properties", "review_insights", "maxItems"]),
-    MAX_VISIBLE_CONVERSATION_INSIGHTS
-  );
+test("review-surfaces.CONVERSATION_REVIEW.3 human conversation schema matches runtime limits", () => {
   assert.deepEqual(
     schemaAt(humanReviewSchema, ["$defs", "reviewerInsight", "properties", "evidence_state", "enum"]),
     [...REVIEWER_INSIGHT_EVIDENCE_STATES]

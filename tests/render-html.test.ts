@@ -12,8 +12,8 @@ function model(over: Partial<HumanReviewModel> = {}): HumanReviewModel {
     mode: "pr",
     spec_mode: "acai",
     narrative: {
-      source: "fallback",
-      provider: "mock",
+      source: "provider",
+      provider: "agent-file",
       validated_at_head: "abc",
       claims: [
         { id: "C1", text: "Changes the renderer.", trust: "verified", anchors: [], invalid_anchors: [] },
@@ -24,7 +24,21 @@ function model(over: Partial<HumanReviewModel> = {}): HumanReviewModel {
     change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
     reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
-    summary: "One renderer file changed.",
+    decision_projection: {
+      active_intent: { summary: "Change the renderer output intentionally.", source: "pull_request", redaction_blocked: false, requirement_ids: [], event_ids: [] },
+      findings: [{
+        id: "DECISION-001",
+        root_cause: "renderer-output",
+        title: "Renderer output decision",
+        path: "src/render.ts",
+        priority: "high",
+        reason: "The rendered output changed.",
+        reviewer_action: "Confirm the new output communicates the intended review decision.",
+        evidence: [],
+        requirement_ids: [],
+        risk_ids: ["PR-RISK-001"],
+      }]
+    },
     conversation_analysis: notAssessedConversationAnalysis("mock"),
     review_insights: [],
     review_queue: [
@@ -53,7 +67,6 @@ function model(over: Partial<HumanReviewModel> = {}): HumanReviewModel {
     ],
     methodology_audit: { quality_flags: [], considered: [], research: [], workflow_findings: [] },
     intent_mismatch: { expected_by_spec: [], observed_in_diff: [], possible_mismatches: [], possible_overreach: [], missing_intent: [] },
-    review_routes: [],
     since_last_review: {
       improved: [], regressed: [], new_risks: [], resolved_risks: [], new_overreach: [], resolved_overreach: [], still_open: [],
       count_deltas: { satisfied: { before: 0, after: 0, delta: 0 }, partial: { before: 0, after: 0, delta: 0 }, missing: { before: 0, after: 0, delta: 0 }, unknown: { before: 0, after: 0, delta: 0 }, invalid_evidence: { before: 0, after: 0, delta: 0 } }
@@ -67,7 +80,8 @@ function model(over: Partial<HumanReviewModel> = {}): HumanReviewModel {
     skim_safe: [],
     feedback_effects: [],
     generated_from: { packet_path: ".review-surfaces/review_packet.json", base_ref: "origin/main", head_ref: "HEAD", head_sha: "deadbeef", uncommitted_files: 0 },
-    ...over
+    ...over,
+    rounds: over.rounds ?? []
   };
 }
 
@@ -81,6 +95,10 @@ test("review-surfaces.RENDER.9 the HTML cockpit is one self-contained offline fi
   // accent rather than the old GitHub-like white/blue default.
   assert.match(html, /--bg:#f7f7f4/);
   assert.match(html, /--chrome:#f2f1ed/);
+  assert.match(html, /@media \(prefers-color-scheme: dark\)/);
+  assert.match(html, /--map-card:#20231e/);
+  assert.match(html, /svg\[aria-label\^="Change map"\] text\[fill="#050503"\] \{ fill:var\(--strong\); \}/);
+  assert.match(html, /\[hidden\] \{ display:none !important; \}/);
   assert.match(html, /--accent:#f54e00/);
   assert.doesNotMatch(html, /--accent:#0b5fff|background:#f6f8fa/);
   // Strictly model-sourced sections: verdict, narrative trust marks, queue spine
@@ -97,10 +115,14 @@ test("review-surfaces.RENDER.9 the HTML cockpit is one self-contained offline fi
   assert.match(html, /href="#queue-REVIEW-001"/);
 });
 
+test("review-surfaces.NARRATIVE.5 HTML omits absent optional narrative", () => {
+  const html = renderHumanReviewHtml(model({ narrative: undefined }));
+  assert.doesNotMatch(html, /id="narrative"|Change narrative|No grounded narrative/);
+});
+
 test("review-surfaces.RENDER.10 every interpolation is escaped and redaction re-runs on render", () => {
-  const hostile = model({
-    summary: `<script>alert(1)</script> & "quotes" with token ghp_${"a".repeat(36)}`
-  });
+  const hostile = model();
+  hostile.decision_projection!.active_intent.summary = `<script>alert(1)</script> & "quotes" with token ghp_${"a".repeat(36)}`;
   const html = renderHumanReviewHtml(hostile);
   assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);

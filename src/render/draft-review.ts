@@ -8,15 +8,21 @@
 // export never auto-submits a review or comment. Reading is local-only and the
 // payload is deterministic (built in the model's comment order, no timestamps).
 
-import { HumanReviewModel, SuggestedReviewComment } from "../human/contract";
-import { StructuredDiff } from "../pr/contract";
+import type { HumanReviewModel, SuggestedReviewComment } from "../human/contract";
+import {
+  decisionFindingPresentation,
+  decisionIntentSourceLabel,
+  decisionProjectionHeading,
+  EMPTY_DECISION_FINDINGS_TEXT
+} from "../human/decision-projection-presentation";
+import type { StructuredDiff } from "../pr/contract";
 import { redactSecrets } from "../privacy/secrets";
 
 // review-surfaces.PRIVACY.6: the draft-review export was the ONLY postable
-// surface that interpolated suggested-comment bodies and the model summary with
-// no secret redaction (every other postable surface redacts). Sink for the
-// block signal so a high-confidence secret can refuse the write/print
-// (the CLI gate that honors `blocked` lives in runCommentDraftReview).
+// surface that interpolated suggested-comment bodies and reviewer-brief prose
+// with no secret redaction (every other postable surface redacts). Sink for the
+// block signal so a high-confidence secret can refuse the write/print (the CLI
+// gate that honors `blocked` lives in runCommentDraftReview).
 interface DraftRedactionState {
   blocked: boolean;
 }
@@ -50,8 +56,9 @@ export interface DraftReviewExport {
   // be inline review comments; surfaced in the review body instead of dropped.
   unanchored: number;
   // review-surfaces.PRIVACY.6: true when redaction hit a high-confidence
-  // (blocked) secret in any comment body or the summary, so the caller can
-  // refuse to write/print pending_review.json under a strict-postability gate.
+  // (blocked) secret in any comment body, active purpose, or decision prose, so
+  // the caller can refuse to write/print pending_review.json under a
+  // strict-postability gate.
   blocked: boolean;
 }
 
@@ -148,13 +155,34 @@ function commentBody(comment: SuggestedReviewComment, redaction: DraftRedactionS
 }
 
 function reviewBody(model: HumanReviewModel, unanchored: string[], redaction: DraftRedactionState): string {
+  const projection = model.decision_projection;
+  const findings = projection.findings.map(decisionFindingPresentation);
   const lines = [
     "Pending review drafted by review-surfaces from local evidence. Edit and submit it yourself — nothing is auto-submitted.",
     "",
-    // unanchored items are already redacted via commentBody; only the summary
-    // needs redacting here.
-    `Verdict: ${model.verdict.decision}. ${redact(model.summary, redaction)}`
+    `Verdict: ${model.verdict.decision}`,
+    "",
+    "Change purpose:",
+    redact(projection.active_intent.summary, redaction),
+    `Source: ${decisionIntentSourceLabel(projection.active_intent.source)}.`,
+    "",
+    `${decisionProjectionHeading(findings.length)}:`
   ];
+  if (findings.length === 0) {
+    lines.push(`- ${EMPTY_DECISION_FINDINGS_TEXT}`);
+  } else {
+    findings.forEach((finding, index) => {
+      const location = finding.path ? ` — \`${redact(finding.path, redaction)}\`` : "";
+      lines.push(
+        `${index + 1}. ${redact(finding.title, redaction)}${location}`,
+        `   Reason: ${redact(finding.reason ?? finding.title, redaction)}`,
+        `   Action: ${redact(finding.reviewerAction, redaction)}`,
+        `   Evidence: ${finding.evidence.length > 0
+          ? finding.evidence.map((value) => redact(value, redaction)).join(", ")
+          : "No evidence anchors recorded."}`
+      );
+    });
+  }
   if (unanchored.length > 0) {
     lines.push("", "General comments (not anchored to a line):", ...unanchored);
   }

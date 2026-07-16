@@ -1,27 +1,22 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CollectionResult } from "../collector/collect";
-import { buildNotAssessedConversationAnalysis } from "../contracts/conversation-review";
 import { parseStructuredDiff } from "../collector/diff-hunks";
 import { EvaluationModel } from "../evaluation/evaluate";
 import { buildPrScopedCoverage } from "../evaluation/scoped-coverage";
 import { IntentModel } from "../intent/intent";
-import { ProviderName, ReasoningProvider } from "../llm/provider";
-import { buildPrNarrative } from "../llm/pr-narrative";
 import { buildPrChangeDiagram } from "../diagrams/pr-change-diagram";
 import { buildPrRiskCandidates } from "../risks/pr-risks";
-import { buildConversationReview } from "../conversation/review";
 import { createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
-import { buildPrScope, isExecutableTestPath } from "../scope/pr-scope";
-import { PrReviewSurfaceModel, PR_SURFACE_SCHEMA_VERSION, PrSurfaceBlockedReason, StructuredDiff } from "../pr/contract";
+import { buildPrScope, isTestPath } from "../scope/pr-scope";
+import { PrChangeContext, PrReviewSurfaceModel, PR_SURFACE_SCHEMA_VERSION, StructuredDiff } from "../pr/contract";
+import { inspectAndRedactSecrets } from "../privacy/secrets";
 
 // ---------------------------------------------------------------------------
 // PR review surface assembly. Runs the deterministic diff-scoped facts
-// (scope -> coverage delta -> risks -> change diagram), then the required LLM
-// narrative and advisory conversation review, and packages them into a
-// PrReviewSurfaceModel. PR mode REQUIRES the narrative:
-// a blocked surface (no narrative) is returned rather than ever falling back to
-// the whole-repo comment. The caller (CLI/renderer) decides whether to post.
+// (scope -> coverage delta -> risks -> change diagram) and packages them into a
+// PrReviewSurfaceModel. Provider prose is optional enrichment on the human
+// artifact; it is deliberately not duplicated in this lower-level sidecar.
 // ---------------------------------------------------------------------------
 
 export interface AssemblePrSurfaceInput {
@@ -32,11 +27,8 @@ export interface AssemblePrSurfaceInput {
   // current-status. Wired by the CLI/pipeline when a base ref is resolvable.
   baseEvaluation?: EvaluationModel;
   reviewAreas: ReviewArea[];
-  provider: ReasoningProvider;
-  providerName: ProviderName;
-  model?: string;
-  redactSecrets: boolean;
   diff?: StructuredDiff;
+  changeContext?: PrChangeContext;
 }
 
 function readDiffText(collection: CollectionResult): string {
@@ -50,6 +42,7 @@ function readDiffText(collection: CollectionResult): string {
 
 export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Promise<PrReviewSurfaceModel> {
   const diff: StructuredDiff = input.diff ?? parseStructuredDiff(readDiffText(input.collection));
+  const changeContext = normalizePrChangeContext(input.changeContext);
 
   const scope = buildPrScope({
     collection: input.collection,
@@ -86,79 +79,59 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
   // No changed files -> nothing to review. Block (don't post an empty surface),
   // skip the LLM call entirely.
   if (scope.changed_files.length === 0) {
-    const conversationAnalysis = buildNotAssessedConversationAnalysis(input.providerName, "no_diff");
     return {
       schema_version: PR_SURFACE_SCHEMA_VERSION,
       mode: "pr",
-      spec_mode: input.intent.spec_mode,
       status: "blocked",
       blocked_reason: "no_diff",
+      change_context: changeContext,
       scope,
       coverage,
       risks,
-      conversation_analysis: {
-        ...conversationAnalysis,
-        quality_flags: [
-          ...(input.collection.conversationEvents?.length ? [] : conversationAnalysis.quality_flags),
-          "conversation_review_no_diff"
-        ]
-      },
-      review_insights: [],
-      diagram,
-      llm: { required: true, provider: input.providerName, model: input.model, status: "blocked", validation_errors: ["no_diff"] }
+      diagram
     };
   }
 
-  // Preserve the existing postability-critical narrative call ahead of optional
-  // conversation enrichment so a long transcript cannot consume the provider
-  // budget and cause an otherwise-ready PR surface to fail afterwards.
-  const narrativeResult = await buildPrNarrative({
-    specMode: input.intent.spec_mode,
-    provider: input.provider,
-    providerName: input.providerName,
-    model: input.model,
-    repo: input.collection.git.repo,
-    scope,
-    coverage,
-    risks,
-    diagram,
-    diff,
-    redactSecrets: input.redactSecrets,
-    remotePrivacyBlocked: input.collection.privacy.remote_provider_blocked
-  });
-
-  const conversationReview = await buildConversationReview({
-    provider: input.provider,
-    providerName: input.providerName,
-    events: input.collection.conversationEvents,
-    diff,
-    scope,
-    coverage,
-    risks,
-    commandTranscripts: input.collection.commandTranscripts,
-    commandRules: input.collection.commandRules,
-    headSha: scope.head_sha,
-    redactSecrets: input.redactSecrets,
-    remotePrivacyBlocked: input.collection.privacy.remote_provider_blocked
-  });
-
-  const blockedReason: PrSurfaceBlockedReason | undefined = narrativeResult.narrative ? undefined : narrativeResult.blocked_reason ?? "llm_unavailable";
-
+  // review-surfaces.PROVIDERS.5: deterministic current-head facts are enough to
+  // produce a ready PR surface. Optional provider prose is never a readiness or
+  // postability prerequisite.
   return {
     schema_version: PR_SURFACE_SCHEMA_VERSION,
     mode: "pr",
-    spec_mode: input.intent.spec_mode,
-    status: narrativeResult.narrative ? "ready" : "blocked",
-    blocked_reason: blockedReason,
+    status: "ready",
+    change_context: changeContext,
     scope,
     coverage,
     risks,
-    conversation_analysis: conversationReview.analysis,
-    review_insights: conversationReview.insights,
-    diagram,
-    narrative: narrativeResult.narrative,
-    llm: narrativeResult.meta
+    diagram
   };
+}
+
+export function normalizePrChangeContext(context: PrChangeContext | undefined): PrChangeContext | undefined {
+  if (!context) return undefined;
+  const titleRedaction = inspectAndRedactSecrets(context.title);
+  const descriptionRedaction = inspectAndRedactSecrets(context.description ?? "");
+  const title = titleRedaction.text.trim().slice(0, 300);
+  if (!title) return undefined;
+  const description = descriptionRedaction.text.trim().slice(0, 6000);
+  return {
+    title,
+    ...(description ? { description } : {}),
+    source: context.source,
+    redaction_blocked: titleRedaction.blocked || descriptionRedaction.blocked
+  };
+}
+
+export function samePrChangeContext(
+  left: PrChangeContext | undefined,
+  right: PrChangeContext | undefined
+): boolean {
+  const normalizedLeft = normalizePrChangeContext(left);
+  const normalizedRight = normalizePrChangeContext(right);
+  return normalizedLeft?.title === normalizedRight?.title &&
+    normalizedLeft?.description === normalizedRight?.description &&
+    normalizedLeft?.source === normalizedRight?.source &&
+    normalizedLeft?.redaction_blocked === normalizedRight?.redaction_blocked;
 }
 
 function collectRepositoryTestAreas(input: AssemblePrSurfaceInput): Set<string> {
@@ -179,8 +152,5 @@ function collectRepositoryTestAreas(input: AssemblePrSurfaceInput): Set<string> 
 const REPOSITORY_TEST_CODE_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|rb|php|cs|swift|scala|c|cc|cpp|h|hpp|m|sh|bash|zsh)$/i;
 
 function isRepositoryExecutableTestPath(filePath: string): boolean {
-  if (isExecutableTestPath(filePath)) {
-    return true;
-  }
-  return /(^|\/)(tests?|__tests__|spec)\//i.test(filePath) && REPOSITORY_TEST_CODE_EXT.test(filePath) && !/\.d\.ts$/i.test(filePath);
+  return isTestPath(filePath) && REPOSITORY_TEST_CODE_EXT.test(filePath) && !/\.d\.ts$/i.test(filePath);
 }

@@ -19,14 +19,13 @@ function entry(round: number, overrides: Partial<RoundsLedgerEntry> = {}): Round
   };
 }
 
-function model(rounds: RoundsLedgerEntry[] | undefined): HumanReviewModel {
+function model(rounds: RoundsLedgerEntry[]): HumanReviewModel {
   return {
     schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
     mode: "repo",
     spec_mode: "acai",
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
-    summary: "Rounds fixture.",
-    narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
+    decision_projection: { active_intent: { summary: "Fixture intent.", source: "packet", redaction_blocked: false, requirement_ids: [], event_ids: [] }, findings: [] },
     conversation_analysis: notAssessedConversationAnalysis("mock"),
     review_insights: [],
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
@@ -38,7 +37,6 @@ function model(rounds: RoundsLedgerEntry[] | undefined): HumanReviewModel {
     risk_lens_findings: [],
     methodology_audit: { quality_flags: [], considered: [], research: [], workflow_findings: [] },
     intent_mismatch: { expected_by_spec: [], observed_in_diff: [], possible_mismatches: [], possible_overreach: [], missing_intent: [], claimed_candidates: [] },
-    review_routes: [],
     since_last_review: {
       improved: [],
       regressed: [],
@@ -59,7 +57,7 @@ function model(rounds: RoundsLedgerEntry[] | undefined): HumanReviewModel {
     review_plan: { enabled: false, read: [], skim: [], defer: [] },
     change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
     reading_order: { legs: [] },
-    ...(rounds ? { rounds } : {}),
+    rounds,
     evidence_cards: [],
     test_plan: [],
     skim_safe: [],
@@ -74,7 +72,7 @@ test("review-surfaces.TREND.1 the ledger appends one row per run with counts fro
   // carries the FULL ledger, ordered, with monotonically increasing rounds.
   const rounds = [entry(1), entry(2), entry(3)];
   const fixture = model(rounds);
-  assert.deepEqual(fixture.rounds?.map((row) => row.round), [1, 2, 3]);
+  assert.deepEqual(fixture.rounds.map((row) => row.round), [1, 2, 3]);
   // Transport-indifference is a property of the input (previousRounds is read
   // from the previous packet's sibling human_review.json regardless of whether
   // that directory came from a CI artifact or pnpm run local-review's
@@ -95,8 +93,8 @@ test("review-surfaces.TREND.1 the ledger appends one row per run with counts fro
     }
   } as never;
   const built = buildHumanReview({ packet: packetStub, previousRounds: [entry(1), entry(2)] });
-  const last = built.rounds?.[built.rounds.length - 1];
-  assert.equal(built.rounds?.length, 3);
+  const last = built.rounds[built.rounds.length - 1];
+  assert.equal(built.rounds.length, 3);
   assert.equal(last?.round, 3);
   assert.equal(last?.new_count, 2);
   assert.equal(last?.resolved_count, 1);
@@ -104,25 +102,20 @@ test("review-surfaces.TREND.1 the ledger appends one row per run with counts fro
   assert.equal(last?.verdict, built.verdict.decision);
   // No prior ledger -> first review, a one-row ledger (never an error).
   const first = buildHumanReview({ packet: packetStub });
-  assert.equal(first.rounds?.length, 1);
-  assert.equal(first.rounds?.[0].round, 1);
+  assert.equal(first.rounds.length, 1);
+  assert.equal(first.rounds[0].round, 1);
 });
 
-test("review-surfaces.TREND.2 the sticky and cockpit render a compact table capped at ~8 rounds with honest partial-history notes", () => {
+test("review-surfaces.TREND.2 the rounds ledger stays in the HTML artifact and out of the sticky", () => {
   const longLedger = Array.from({ length: 12 }, (_, index) => entry(index + 3)); // history begins at round 3
   const fixture = model(longLedger);
   const sticky = renderStickySummary(fixture).markdown;
-  assert.match(sticky, /### Review rounds/);
-  // Capped at the last 8 rounds.
-  assert.doesNotMatch(sticky, /\| 6 \|/);
-  assert.match(sticky, /\| 14 \|/);
-  // Genuinely expired history (ledger starts at round 3) says so...
-  assert.match(sticky, /History begins at round 3 \(earlier rounds expired/);
-  // ...while a full ledger that is merely display-capped says "showing last N".
+  assert.doesNotMatch(sticky, /### Review rounds|History begins at round|\| Round \|/);
+  // A full ledger also remains supporting-only on GitHub.
   const fullLedger = Array.from({ length: 12 }, (_, index) => entry(index + 1));
   const cappedSticky = renderStickySummary(model(fullLedger)).markdown;
-  assert.match(cappedSticky, /Showing the last 8 of 12 rounds/);
-  assert.doesNotMatch(cappedSticky, /expired/);
+  assert.doesNotMatch(cappedSticky, /Review rounds|Showing the last 8 of 12 rounds|expired/);
+  // The HTML artifact keeps the bounded, honest history.
   const html = renderHumanReviewHtml(fixture, {});
   assert.match(html, /<h2 id="rounds">Review rounds<\/h2>/);
   assert.match(html, /History begins at round 3/);
@@ -131,7 +124,4 @@ test("review-surfaces.TREND.2 the sticky and cockpit render a compact table capp
   assert.doesNotMatch(firstSticky, /### Review rounds/);
   const firstHtml = renderHumanReviewHtml(model([entry(1)]), {});
   assert.match(firstHtml, /First review round — nothing to trend yet/);
-  // A missing ledger (pre-TREND artifact) renders honestly too.
-  const noneHtml = renderHumanReviewHtml(model(undefined), {});
-  assert.match(noneHtml, /No rounds ledger/);
 });

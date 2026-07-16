@@ -117,6 +117,9 @@ function recordCommandTranscript(options) {
   const started = new Date();
   const stdout = new BoundedStreamCapture(RAW_EXCERPT_CAP);
   const stderr = new BoundedStreamCapture(RAW_EXCERPT_CAP);
+  // Match the compiled recorder: snapshot identity before untrusted command
+  // code can mutate the checkout whose validation it is recording.
+  const headSha = currentGitHeadSha(options.cwd);
   return runChildCommand(options, stdout, stderr).then((childResult) => {
     const completed = new Date();
     const id = options.id ?? defaultTranscriptId(options.args);
@@ -129,7 +132,7 @@ function recordCommandTranscript(options) {
       command: redact(shellCommandString(options.args)),
       status: childResult.exitCode === 0 ? "passed" : "failed",
       exit_code: childResult.exitCode,
-      head_sha: currentGitHeadSha(options.cwd),
+      head_sha: headSha,
       duration_ms: Math.max(0, completed.getTime() - started.getTime()),
       started_at: started.toISOString(),
       completed_at: completed.toISOString(),

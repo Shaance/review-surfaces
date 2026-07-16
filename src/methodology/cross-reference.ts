@@ -106,23 +106,8 @@ function isSecuritySensitive(filePath: string): boolean {
   );
 }
 
-// A test file across conventions, including colocated NON-JS tests (`foo_test.go`,
-// `test_foo.py`, `foo_test.py`, `foo_spec.rb`, `FooTest.java`, `foo_test.rs`) that
-// `isTestPath` (tests/ + .test./.spec.) does not recognize, so a test-only change in
-// those languages is not misread as implementation (Codex P2).
 function isTestFile(filePath: string): boolean {
-  if (isTestPath(filePath)) {
-    return true;
-  }
-  const name = basename(filePath);
-  return (
-    /(^|\/)(tests?|__tests__|spec)\//.test(filePath) || // a tests/ or spec/ directory
-    /(^|[._-])(test|spec)[._-]/i.test(name) || // test_foo.py, spec.foo
-    /(^|[._-])(test|spec)\.[^.]+$/i.test(name) || // foo.test.ts, foo_test.go, foo-spec.rb
-    /(?:Test|Spec)\.[^.]+$/.test(name) // FooTest.java, FooSpec.scala (boundary via the capital)
-    // NOTE: an UNanchored `test`/`spec` is intentionally NOT matched — `latest.ts`,
-    // `contest.py`, `request.ts` are implementation, not tests (Codex P2).
-  );
+  return isTestPath(filePath);
 }
 
 // An implementation SOURCE file across common languages (not only JS/TS), excluding

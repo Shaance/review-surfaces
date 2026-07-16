@@ -1,7 +1,4 @@
-import {
-  MAX_VISIBLE_CONVERSATION_INSIGHTS,
-  type ConversationAnalysis
-} from "../contracts/conversation-review";
+import type { ConversationAnalysis } from "../contracts/conversation-review";
 import {
   MAX_CONVERSATION_REVIEW_PROVIDER_CANDIDATES,
   MAX_CONVERSATION_REVIEW_TEXT
@@ -68,7 +65,7 @@ export function buildConversationReviewPrompt(
 
   return `Return compact JSON only matching the schema. You are doing the second pass of a conversation-first code review.
 
-Your job is to reconcile the FINAL conversation intent (later user refinements override earlier suggestions) with the exact reviewed diff and deterministic evidence. Produce at most ${MAX_CONVERSATION_REVIEW_PROVIDER_CANDIDATES} candidate insights; the program will rank, deduplicate, and show at most ${MAX_VISIBLE_CONVERSATION_INSIGHTS}.
+Your job is to reconcile the FINAL conversation intent (later user refinements override earlier suggestions) with the exact reviewed diff and deterministic evidence. Produce at most ${MAX_CONVERSATION_REVIEW_PROVIDER_CANDIDATES} candidate insights. Cover every independent reviewer-relevant concern that fits within that provider boundary; the program will rank and deduplicate them without applying a smaller presentation cap.
 
 Rules:
 - Group one root cause across implementation, tests, docs, and specs into ONE insight with one root_cause_key.

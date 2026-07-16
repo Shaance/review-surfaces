@@ -8,12 +8,8 @@ import { validateJsonSchema } from "../src/schema/json-schema";
 import { HUMAN_STANDALONE_ARTIFACTS } from "../src/human/render";
 import { ExitCodes } from "../src/core/exit-codes";
 import {
-  HOSTILE_CONVERSATION_RAW_CONTROLS,
-  HOSTILE_CONVERSATION_NEUTRALIZED_ENTITIES,
   HOSTILE_CONVERSATION_TRAILING_BACKSLASH_MARKERS,
-  ORDINARY_CONVERSATION_VALUE,
   hostileConversationBackslashRun,
-  hostileConversationControlSurvives,
   hostileConversationDisclosureClosesBeforeHeading,
   hostileConversationAnalysis,
   hostileConversationInsight,
@@ -22,7 +18,7 @@ import {
 import { isLocalRuntimeArtifactPath } from "./helpers/cli-repo";
 
 const CLI = path.join(process.cwd(), "dist", "src", "cli", "index.js");
-const CHANGED = "src/render/comment.ts";
+const CHANGED = "src/render/sticky-summary.ts";
 const HUMAN_REVIEW_SCHEMA = JSON.parse(fs.readFileSync(path.join(process.cwd(), "schemas", "human_review.schema.json"), "utf8"));
 
 // Copy the repo (minus .git/.review-surfaces/dist), init git, commit a baseline,
@@ -54,18 +50,27 @@ function runCli(cwd: string, args: string[]): { status: number | null; stdout: s
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
+function assertInlineApprovalBrief(cwd: string, comment: string): void {
+  const human = JSON.parse(fs.readFileSync(path.join(cwd, ".review-surfaces", "human_review.json"), "utf8"));
+  const count = human.decision_projection.findings.length;
+  const heading = count === 1 ? "Approval decision" : count > 1 ? `Approval decisions (${count})` : "Approval decisions";
+  assert.ok(comment.includes(`### ${heading}`), `sticky should render the adaptive ${heading} heading`);
+  assert.equal(
+    comment.match(/^\d+\. \*\*/gm)?.length ?? 0,
+    count,
+    "every independent approval decision should be visible in the sticky"
+  );
+  assert.doesNotMatch(comment, /exceeds GitHub's physical comment limit/);
+}
+
 const PROVIDER_STAGE_PREFIX = "__review_surfaces_provider_stage__:";
 
 function countingProviderPreload(directory: string, conversationEventId: string): string {
   const preloadPath = path.join(directory, "counting-provider.cjs");
   const providerModulePath = path.join(process.cwd(), "dist", "src", "llm", "provider.js");
   const responses: Record<string, unknown> = {
-    pr_narrative: {
-      summary: `${CHANGED} changed.`,
-      what_changed: [{ text: `${CHANGED} changed.`, paths: [CHANGED] }],
-      why_it_matters: [{ text: `Review ${CHANGED}.`, paths: [CHANGED] }],
-      review_first: [{ text: `Review ${CHANGED} first.`, paths: [CHANGED] }],
-      risk_narratives: []
+    human_narrative: {
+      claims: [{ text: `${CHANGED} changes the reviewer-facing brief.`, paths: [CHANGED] }]
     },
     conversation_analysis: {
       summary: "The user asked to preserve the reviewer-facing renderer behavior.",
@@ -113,7 +118,29 @@ function countedProviderStages(stderr: string): string[] {
 
 const ALL_PR = ["all", "--review-scope", "pr", "--base", "HEAD", "--head", "HEAD", "--spec", "features/review-surfaces.feature.yaml", "--out", ".review-surfaces"];
 
-test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_review_surface; mock blocks the narrative", () => {
+test("a no-diff PR emits no sticky and removes a stale local comment artifact", () => {
+  const tmp = setupChangedRepo();
+  try {
+    execFileSync("git", ["checkout", "--", CHANGED], { cwd: tmp, stdio: "ignore" });
+    const generated = runCli(tmp, [...ALL_PR, "--provider", "mock"]);
+    assert.equal(generated.status, 0, generated.stderr);
+    const surface = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "pr_review_surface.json"), "utf8"));
+    assert.equal(surface.status, "blocked");
+    assert.equal(surface.blocked_reason, "no_diff");
+
+    const commentPath = path.join(tmp, ".review-surfaces", "comment.md");
+    fs.writeFileSync(commentPath, "stale sticky");
+    const comment = runCli(tmp, ["comment", "--review-scope", "pr", "--format", "sticky", "--out", ".review-surfaces"]);
+    assert.equal(comment.status, 0, comment.stderr);
+    assert.equal(comment.stdout, "");
+    assert.match(comment.stderr, /no sticky was generated/);
+    assert.equal(fs.existsSync(commentPath), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("all --review-scope pr writes a deterministic, LLM-optional reviewer surface", () => {
   const tmp = setupChangedRepo();
   try {
     const run = runCli(tmp, [...ALL_PR, "--provider", "mock"]);
@@ -126,11 +153,9 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
       run.stdout.indexOf("Human review: .review-surfaces/human_review.md") < run.stdout.indexOf("Wrote review-surfaces artifacts to .review-surfaces"),
       "the human review entrypoint should be printed before secondary artifact status"
     );
+    assert.match(run.stdout, /Change purpose: /);
     assert.match(run.stdout, /Verdict: [a-z_]+/);
-    assert.match(run.stdout, /Review first: \d+ item\(s\)/);
-    assert.match(run.stdout, /Blockers: \d+/);
-    assert.match(run.stdout, /Suggested comments: \d+/);
-    assert.match(run.stdout, /Missing evidence: \d+/);
+    assert.match(run.stdout, /Approval decisions: \d+/);
     assert.doesNotMatch(run.stdout, /agent_handoff\.md/);
     const surface = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "pr_review_surface.json"), "utf8"));
     const human = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
@@ -144,7 +169,7 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     assert.ok(changedQueueItem.line_start > 0, "human review queue should include a diff-derived line anchor");
     assert.match(humanMarkdown, /^# Human Review/);
     assert.match(humanMarkdown, /## Verdict/);
-    assert.match(humanMarkdown, /## Review first/);
+    assert.match(humanMarkdown, /## Approval decisions/);
     for (const artifact of HUMAN_STANDALONE_ARTIFACTS) {
       const body = fs.readFileSync(path.join(tmp, ".review-surfaces", artifact.artifact), "utf8");
       assert.match(
@@ -159,7 +184,6 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
       trust: "JSON sentinel trust summary",
       "risk-lenses": "JSON sentinel risk lens",
       "intent-mismatch": "JSON sentinel intent mismatch",
-      routes: "JSON sentinel review route",
       "evidence-cards": "JSON sentinel evidence card",
       "since-last-review": "JSON sentinel since last review",
       "test-plan": "JSON sentinel test plan"
@@ -215,33 +239,6 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
           possible_overreach: [],
           missing_intent: []
         };
-      } else if (artifact.command === "routes") {
-        human.review_routes = [
-          {
-            id: "ROUTE-SENTINEL",
-            persona: "human_reviewer",
-            title: marker,
-            summary: "Focused renderer reads human_review.json.",
-            is_default: true,
-            is_secondary: false,
-            steps: [
-              {
-                id: "ROUTE-SENTINEL-STEP-001",
-                rank: 1,
-                title: "JSON route step",
-                action: marker,
-                evidence: [{ kind: "unknown", confidence: "low", note: "JSON sentinel evidence." }],
-                priority: "medium",
-                artifact: "human_review.md",
-                queue_item_ids: [],
-                risk_lens_ids: [],
-                question_ids: [],
-                test_plan_ids: [],
-                suggested_comment_ids: []
-              }
-            ]
-          }
-        ];
       } else if (artifact.command === "evidence-cards") {
         human.evidence_cards = [
           {
@@ -326,26 +323,24 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     // and exits 0; the not-postable warning is still printed.
     assert.equal(humanPrComment.status, 0, "local PR comment render without --post succeeds (RENDER.8)");
     assert.doesNotMatch(humanPrComment.stdout, /JSON sentinel PR comment queue/, "a queue item already projected into decision findings is not repeated under Review first");
-    assert.match(humanPrComment.stdout, /JSON sentinel PR comment draft/);
-    assert.match(humanPrComment.stdout, /Full human review: `human_review\.md`/);
-    assert.match(humanPrComment.stderr, /not postable/);
-    assert.doesNotMatch(humanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
-    // review-surfaces.RENDER.8: --strict-postability re-arms the gate to a
-    // non-zero (evidence-validation) exit even without --post.
+    assert.doesNotMatch(humanPrComment.stdout, /JSON sentinel PR comment draft/, "draft comments stay in supporting artifacts");
+    assertInlineApprovalBrief(tmp, humanPrComment.stdout);
+    assert.doesNotMatch(humanPrComment.stderr, /not postable/);
+    // Provider availability is not a postability gate; strict mode still runs
+    // the actual redaction/truth checks and succeeds for this clean brief.
     const strictPostability = runCli(tmp, ["comment", "--review-scope", "pr", "--strict-postability", "--out", ".review-surfaces"]);
-    assert.equal(strictPostability.status, 4, "--strict-postability re-arms the postability gate without --post");
-    assert.match(strictPostability.stderr, /not postable/);
-    // review-surfaces.SCHEMA.3: a partial prior-version human_review.json (missing
-    // a now-required slice such as intent_mismatch) is schema-invalid, so the PR
-    // comment path no longer trusts it; it falls back to the validated PR sidecar
-    // instead of degrading quietly.
+    assert.equal(strictPostability.status, 0);
+    assert.doesNotMatch(strictPostability.stderr, /not postable/);
+    // A PR comment has one product path: a current, schema-valid human brief.
+    // Stale or malformed briefs fail closed instead of replacing the decision
+    // surface with a marker-bearing sidecar diagnostic.
     const priorIntentHuman = { ...human };
     delete priorIntentHuman.intent_mismatch;
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(priorIntentHuman, null, 2));
     const staleIntentHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
-    assert.equal(staleIntentHumanPrComment.status, 0, "local PR comment render without --post still succeeds (RENDER.8)");
-    assert.match(staleIntentHumanPrComment.stderr, /Ignoring schema-invalid human_review\.json \([^)]*intent_mismatch[^)]*\)/);
-    assert.match(staleIntentHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
+    assert.equal(staleIntentHumanPrComment.status, ExitCodes.schemaValidationFailed);
+    assert.match(staleIntentHumanPrComment.stderr, /Human reviewer brief failed schema validation.*intent_mismatch/);
+    assert.equal(staleIntentHumanPrComment.stdout, "");
     assert.doesNotMatch(staleIntentHumanPrComment.stdout, /JSON sentinel PR comment queue/);
     const staleHuman = {
       ...human,
@@ -353,9 +348,9 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     };
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(staleHuman, null, 2));
     const staleHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
-    assert.equal(staleHumanPrComment.status, 0, "stale human JSON should fall back to the blocked PR sidecar");
-    assert.match(staleHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
-    assert.match(staleHumanPrComment.stderr, /Ignoring stale or non-PR human_review\.json/);
+    assert.equal(staleHumanPrComment.status, ExitCodes.usageError);
+    assert.equal(staleHumanPrComment.stdout, "");
+    assert.match(staleHumanPrComment.stderr, /Human reviewer brief is stale or belongs to a different scope/);
     assert.doesNotMatch(staleHumanPrComment.stdout, /JSON sentinel PR comment queue/);
     const staleBaseShaHuman = {
       ...human,
@@ -363,10 +358,39 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     };
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(staleBaseShaHuman, null, 2));
     const staleBaseShaHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
-    assert.equal(staleBaseShaHumanPrComment.status, 0, "base-SHA-stale human JSON should fall back to the blocked PR sidecar");
-    assert.match(staleBaseShaHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
-    assert.match(staleBaseShaHumanPrComment.stderr, /Ignoring stale or non-PR human_review\.json/);
+    assert.equal(staleBaseShaHumanPrComment.status, ExitCodes.usageError);
+    assert.equal(staleBaseShaHumanPrComment.stdout, "");
+    assert.match(staleBaseShaHumanPrComment.stderr, /Human reviewer brief is stale or belongs to a different scope/);
     assert.doesNotMatch(staleBaseShaHumanPrComment.stdout, /JSON sentinel PR comment queue/);
+    const surfacePath = path.join(tmp, ".review-surfaces", "pr_review_surface.json");
+    const sameHeadChangedSurface = structuredClone(surface);
+    sameHeadChangedSurface.change_context = {
+      title: "Same head, newly clarified author purpose",
+      description: "The sidecar changed after the human brief was generated.",
+      source: "cli",
+      redaction_blocked: false
+    };
+    fs.writeFileSync(surfacePath, JSON.stringify(sameHeadChangedSurface, null, 2));
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(human, null, 2));
+    const staleSameHeadHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(staleSameHeadHumanPrComment.status, ExitCodes.usageError);
+    assert.equal(staleSameHeadHumanPrComment.stdout, "");
+    assert.match(staleSameHeadHumanPrComment.stderr, /Human reviewer brief is stale or belongs to a different scope/);
+    assert.doesNotMatch(staleSameHeadHumanPrComment.stdout, /JSON sentinel PR comment queue/);
+    fs.writeFileSync(surfacePath, JSON.stringify(surface, null, 2));
+    const sameHeadChangedRiskSurface = structuredClone(surface);
+    sameHeadChangedRiskSurface.risks = {
+      ...sameHeadChangedRiskSurface.risks,
+      summary: "Same head, changed decision inputs.",
+      candidates: []
+    };
+    fs.writeFileSync(surfacePath, JSON.stringify(sameHeadChangedRiskSurface, null, 2));
+    const staleSameHeadRiskHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(staleSameHeadRiskHumanPrComment.status, ExitCodes.usageError);
+    assert.equal(staleSameHeadRiskHumanPrComment.stdout, "");
+    assert.match(staleSameHeadRiskHumanPrComment.stderr, /Human reviewer brief is stale or belongs to a different scope/);
+    assert.doesNotMatch(staleSameHeadRiskHumanPrComment.stdout, /JSON sentinel PR comment queue/);
+    fs.writeFileSync(surfacePath, JSON.stringify(surface, null, 2));
     const legacyNoBaseShaHuman = {
       ...human,
       generated_from: { ...human.generated_from }
@@ -374,42 +398,31 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     delete legacyNoBaseShaHuman.generated_from.base_sha;
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(legacyNoBaseShaHuman, null, 2));
     const legacyNoBaseShaHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
-    assert.equal(legacyNoBaseShaHumanPrComment.status, 0, "legacy human JSON without base_sha should fall back when the PR surface records one");
-    assert.match(legacyNoBaseShaHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
-    assert.match(legacyNoBaseShaHumanPrComment.stderr, /Ignoring stale or non-PR human_review\.json/);
+    assert.equal(legacyNoBaseShaHumanPrComment.status, ExitCodes.usageError);
+    assert.equal(legacyNoBaseShaHumanPrComment.stdout, "");
+    assert.match(legacyNoBaseShaHumanPrComment.stderr, /Human reviewer brief is stale or belongs to a different scope/);
     assert.doesNotMatch(legacyNoBaseShaHumanPrComment.stdout, /JSON sentinel PR comment queue/);
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "{");
     const malformedHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
-    assert.equal(malformedHumanPrComment.status, 0, "malformed optional human JSON should not block PR comment rendering");
-    assert.match(malformedHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
-    assert.match(malformedHumanPrComment.stderr, /Ignoring unreadable human_review\.json/);
+    assert.equal(malformedHumanPrComment.status, ExitCodes.schemaValidationFailed);
+    assert.equal(malformedHumanPrComment.stdout, "");
+    assert.match(malformedHumanPrComment.stderr, /Human reviewer brief is unreadable/);
     assert.doesNotMatch(malformedHumanPrComment.stdout, /JSON sentinel PR comment queue/);
     const schemaInvalidHuman = { ...human, verdict: {} };
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(schemaInvalidHuman, null, 2));
     const schemaInvalidHumanPrComment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
-    assert.equal(schemaInvalidHumanPrComment.status, 0, "schema-invalid optional human JSON should not block PR comment rendering");
-    assert.match(schemaInvalidHumanPrComment.stdout, /blocked \(`llm_unavailable`\)/);
-    assert.match(schemaInvalidHumanPrComment.stderr, /Ignoring schema-invalid human_review\.json/);
+    assert.equal(schemaInvalidHumanPrComment.status, ExitCodes.schemaValidationFailed);
+    assert.equal(schemaInvalidHumanPrComment.stdout, "");
+    assert.match(schemaInvalidHumanPrComment.stderr, /Human reviewer brief failed schema validation/);
     assert.doesNotMatch(schemaInvalidHumanPrComment.stdout, /JSON sentinel PR comment queue/);
-    delete human.review_routes;
+    delete human.evidence_cards;
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(human, null, 2));
-    fs.writeFileSync(path.join(tmp, ".review-surfaces", "review_routes.md"), "stale route artifact");
-    const staleRoutes = runCli(tmp, ["routes", "--review-scope", "pr", "--out", ".review-surfaces"]);
-    assert.equal(staleRoutes.status, 0, staleRoutes.stderr);
-    const rebuiltRouteBody = fs.readFileSync(path.join(tmp, ".review-surfaces", "review_routes.md"), "utf8");
-    assert.match(rebuiltRouteBody, /^# Review Routes/);
-    assert.match(rebuiltRouteBody, /Human reviewer route/);
-    assert.doesNotMatch(rebuiltRouteBody, /generated before review-route support/);
-    const rebuiltRoutesHuman = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
-    assert.ok(rebuiltRoutesHuman.review_routes.length > 0, "routes command should rebuild stale prior-v1 human_review.json");
-    delete rebuiltRoutesHuman.evidence_cards;
-    fs.writeFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), JSON.stringify(rebuiltRoutesHuman, null, 2));
     fs.writeFileSync(path.join(tmp, ".review-surfaces", "evidence_cards.md"), "stale evidence-card artifact");
     const staleEvidenceCards = runCli(tmp, ["evidence-cards", "--review-scope", "pr", "--out", ".review-surfaces"]);
     assert.equal(staleEvidenceCards.status, 0, staleEvidenceCards.stderr);
     const rebuiltEvidenceCardBody = fs.readFileSync(path.join(tmp, ".review-surfaces", "evidence_cards.md"), "utf8");
     assert.match(rebuiltEvidenceCardBody, /^# Evidence Cards/);
-    assert.match(rebuiltEvidenceCardBody, /Evidence Card:/);
+    assert.match(rebuiltEvidenceCardBody, /\(`CARD-\d+`\)/, "rebuilt artifact should contain current evidence-card rows");
     assert.doesNotMatch(rebuiltEvidenceCardBody, /generated before evidence-card support/);
     const rebuiltEvidenceCardsHuman = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
     assert.ok(rebuiltEvidenceCardsHuman.evidence_cards.length > 0, "evidence-cards command should rebuild stale prior-v1 human_review.json");
@@ -491,8 +504,16 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     assert.equal(rebuiltHuman.feedback_effects.some((effect: { kind: string; action: string; paths: string[] }) => effect.kind === "reviewer_preference" && effect.paths.includes(CHANGED)), true);
     assert.equal(rebuiltHuman.feedback_effects.some((effect: { kind: string; action: string }) => effect.kind === "team_policy" && effect.action.startsWith("Manual check recorded:")), true);
     assert.equal(rebuiltHuman.blockers.some((blocker: { id: string }) => blocker.id === "BLOCK-FEEDBACK-001"), false);
-    assert.match(rebuiltHumanMarkdown, /## Feedback memory/);
-    assert.match(rebuiltHumanMarkdown, /always_prioritize/);
+    assert.equal(
+      rebuiltHuman.review_queue.some((item: { title: string; path: string }) => item.path === CHANGED && item.title === "Reviewer-preferred review focus"),
+      true,
+      "feedback memory should influence the supporting review order"
+    );
+    assert.doesNotMatch(
+      rebuiltHumanMarkdown,
+      /## Feedback memory|always_prioritize/,
+      "the compact reviewer brief should not expose internal feedback configuration"
+    );
     fs.writeFileSync(
       path.join(tmp, ".review-surfaces", "inputs", "feedback.index.json"),
       JSON.stringify(
@@ -628,20 +649,15 @@ test("review-surfaces.PROVIDERS.5 all --review-scope pr writes a diff-scoped pr_
     assert.ok(surface.scope.affected_requirements.length < 80, "scope is a SUBSET of the spec, not all ~85 requirements");
     // A renderer-surface change yields a deterministic PR risk.
     assert.ok(surface.risks.candidates.some((c: { rule: string }) => c.rule === "comment_surface_change"));
-    // Mock has no narrative -> blocked, never a whole-repo fallback.
-    assert.equal(surface.status, "blocked");
-    assert.equal(surface.narrative, undefined);
-    assert.equal(Object.hasOwn(surface, "narrative"), false, "blocked serialized surfaces must omit undefined narrative");
-    assert.equal(Object.hasOwn(surface.llm, "model"), false, "serialized llm meta must omit undefined model");
-    const blockedComment = runCli(tmp, ["comment", "--mode", "pr", "--out", ".review-surfaces"]);
-    assert.equal(blockedComment.status, 0, "blocked PR surfaces render a local comment without --post (RENDER.8)");
-    assert.match(blockedComment.stdout, /## review-surfaces PR review/);
-    assert.match(blockedComment.stdout, /\*\*Verdict:\*\*/);
-    assert.match(blockedComment.stdout, /Full human review: `human_review\.md`/);
-    assert.match(blockedComment.stdout, /Human review JSON: `human_review\.json`/);
-    assert.match(blockedComment.stdout, /Lower-level PR facts: `pr_review_surface\.json`/);
-    assert.match(blockedComment.stderr, /not postable/);
-    assert.doesNotMatch(blockedComment.stdout, /\d+ satisfied, \d+ partial, \d+ missing/);
+    // Deterministic facts are ready and postable without sidecar prose.
+    assert.equal(surface.status, "ready");
+    const deterministicComment = runCli(tmp, ["comment", "--mode", "pr", "--out", ".review-surfaces"]);
+    assert.equal(deterministicComment.status, 0);
+    assert.match(deterministicComment.stdout, /## review-surfaces/);
+    assert.match(deterministicComment.stdout, /### Change purpose/);
+    assertInlineApprovalBrief(tmp, deterministicComment.stdout);
+    assert.doesNotMatch(deterministicComment.stderr, /not postable/);
+    assert.doesNotMatch(deterministicComment.stdout, /\d+ satisfied, \d+ partial, \d+ missing/);
     // The diagram artifact the surface advertises is actually materialized on disk.
     if (surface.diagram) {
       const diagramFile = path.join(tmp, ".review-surfaces", surface.diagram.path);
@@ -716,7 +732,7 @@ test("review-surfaces.HUMAN_REVIEW.16 all applies human_review config caps to ge
       path.join(tmp, "human-review-caps.yaml"),
       [
         "human_review:",
-        "  max_review_first: 1",
+        "  max_supporting_queue: 1",
         "  max_suggested_comments: 1",
         "  max_questions: 1"
       ].join("\n")
@@ -783,7 +799,7 @@ test("review-surfaces.HUMAN_REVIEW.16 focused human artifacts rebuild when expli
     fs.writeFileSync(humanPath, `${JSON.stringify(human, null, 2)}\n`);
     fs.writeFileSync(
       path.join(tmp, "human-review-caps.yaml"),
-      ["human_review:", "  max_review_first: 1"].join("\n")
+      ["human_review:", "  max_supporting_queue: 1"].join("\n")
     );
 
     const queue = runCli(tmp, ["queue", "--review-scope", "pr", "--out", ".review-surfaces", "--config", "human-review-caps.yaml"]);
@@ -792,6 +808,28 @@ test("review-surfaces.HUMAN_REVIEW.16 focused human artifacts rebuild when expli
     const queueMarkdown = fs.readFileSync(path.join(tmp, ".review-surfaces", "review_queue.md"), "utf8");
     assert.ok(rebuiltHuman.review_queue.length <= 1);
     assert.doesNotMatch(queueMarkdown, /STALE SENTINEL QUEUE ITEM/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("a current schema-valid model with no evidence cards is reused without a no-op rebuild", () => {
+  const tmp = setupChangedRepo();
+  try {
+    const first = runCli(tmp, [...ALL_PR, "--provider", "mock"]);
+    assert.equal(first.status, 0, first.stderr);
+    const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
+    const human = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    human.evidence_cards = [];
+    human.review_queue[0].title = "VALID EMPTY-CARDS SENTINEL";
+    fs.writeFileSync(humanPath, `${JSON.stringify(human, null, 2)}\n`);
+
+    const focused = runCli(tmp, ["evidence-cards", "--review-scope", "pr", "--out", ".review-surfaces"]);
+    assert.equal(focused.status, 0, focused.stderr);
+    assert.doesNotMatch(focused.stderr, /Refreshing stale human_review\.json/);
+    assert.match(fs.readFileSync(path.join(tmp, ".review-surfaces", "evidence_cards.md"), "utf8"), /No evidence cards were generated/);
+    const reused = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    assert.equal(reused.review_queue[0].title, "VALID EMPTY-CARDS SENTINEL");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -812,7 +850,7 @@ test("review-surfaces.HUMAN_REVIEW.16 focused human artifacts rebuild when the d
     ];
     fs.writeFileSync(humanPath, `${JSON.stringify(human, null, 2)}\n`);
     const configPath = path.join(tmp, "review-surfaces.config.yaml");
-    fs.writeFileSync(configPath, fs.readFileSync(configPath, "utf8").replace("max_review_first: 20", "max_review_first: 1"));
+    fs.writeFileSync(configPath, fs.readFileSync(configPath, "utf8").replace("max_supporting_queue: 20", "max_supporting_queue: 1"));
 
     const queue = runCli(tmp, ["queue", "--review-scope", "pr", "--out", ".review-surfaces"]);
     assert.equal(queue.status, 0, queue.stderr);
@@ -840,12 +878,12 @@ test("review-surfaces.HUMAN_REVIEW.16 PR comments rebuild human artifacts when t
     ];
     fs.writeFileSync(humanPath, `${JSON.stringify(human, null, 2)}\n`);
     const configPath = path.join(tmp, "review-surfaces.config.yaml");
-    fs.writeFileSync(configPath, fs.readFileSync(configPath, "utf8").replace("max_review_first: 20", "max_review_first: 1"));
+    fs.writeFileSync(configPath, fs.readFileSync(configPath, "utf8").replace("max_supporting_queue: 20", "max_supporting_queue: 1"));
 
     const comment = runCli(tmp, ["comment", "--review-scope", "pr", "--out", ".review-surfaces"]);
     assert.equal(comment.status, 0, "local PR comment render without --post succeeds after refreshing stale human JSON (RENDER.8)");
     assert.match(comment.stderr, /Refreshing stale human_review\.json/);
-    assert.match(comment.stdout, /Full human review: `human_review\.md`/);
+    assertInlineApprovalBrief(tmp, comment.stdout);
     assert.doesNotMatch(comment.stdout, /PR COMMENT STALE SENTINEL/);
     const rebuiltHuman = JSON.parse(fs.readFileSync(humanPath, "utf8"));
     assert.ok(rebuiltHuman.review_queue.length <= 1);
@@ -888,7 +926,7 @@ test("review-surfaces.PROVIDERS.6 PR comment workflow is base-controlled and use
   assert.doesNotMatch(workflow, /--surface-mode pr/);
 });
 
-test("review-surfaces.CONVERSATION_REVIEW.4 PR ai-sdk identity drives sidecar reuse and transient retries", () => {
+test("review-surfaces.CONVERSATION_REVIEW.4 PR optional enrichment is cached on the human artifact and retries transient failures", () => {
   const tmp = setupChangedRepo();
   const preloadDir = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-counting-provider-"));
   try {
@@ -924,46 +962,43 @@ test("review-surfaces.CONVERSATION_REVIEW.4 PR ai-sdk identity drives sidecar re
     assert.equal(run.status, 0, run.stderr);
     const stages = countedProviderStages(run.stderr);
     const count = (stage: string): number => stages.filter((candidate) => candidate === stage).length;
-    assert.equal(count("pr_narrative"), 1, `expected one PR narrative call; saw ${JSON.stringify(stages)}`);
+    assert.equal(count("human_narrative"), 1, `expected one optional human narrative call; saw ${JSON.stringify(stages)}`);
     assert.equal(count("conversation_analysis_chunk"), 0, `one-event input must not chunk; saw ${JSON.stringify(stages)}`);
     assert.equal(
       count("conversation_analysis"),
       1,
-      `PR assembly analysis must be reused by human orchestration; saw ${JSON.stringify(stages)}`
+      `optional conversation analysis should run once; saw ${JSON.stringify(stages)}`
     );
     assert.equal(
       count("conversation_review_insights"),
       1,
-      `PR assembly reconciliation must be reused by human orchestration; saw ${JSON.stringify(stages)}`
+      `optional conversation reconciliation should run once; saw ${JSON.stringify(stages)}`
     );
     assert.deepEqual(
       stages.filter((stage) => [
-        "pr_narrative",
+        "human_narrative",
         "conversation_analysis_chunk",
         "conversation_analysis",
         "conversation_review_insights"
       ].includes(stage)),
-      ["pr_narrative", "conversation_analysis", "conversation_review_insights"]
+      ["human_narrative", "conversation_analysis", "conversation_review_insights"]
     );
 
-    // Artifact assertions prove the reuse branch had populated sidecars; the
-    // provider counts above are the regression guard against recomputing them.
+    // The sidecar remains deterministic; optional conversation value belongs to
+    // the human artifact and is reused from there on a same-input cache hit.
     const surfacePath = path.join(tmp, ".review-surfaces", "pr_review_surface.json");
+    const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
     const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
-    const human = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    const human = JSON.parse(fs.readFileSync(humanPath, "utf8"));
     assert.equal(surface.status, "ready");
-    assert.equal(surface.conversation_analysis.status, "analyzed");
-    assert.equal(surface.conversation_analysis.provider, "ai-sdk");
-    assert.equal(surface.conversation_analysis.provider, surface.llm.provider);
-    assert.deepEqual(surface.review_insights, []);
-    assert.deepEqual(human.conversation_analysis, surface.conversation_analysis);
-    assert.deepEqual(human.review_insights, surface.review_insights);
+    assert.equal(human.conversation_analysis.status, "analyzed");
+    assert.equal(human.conversation_analysis.provider, "ai-sdk");
 
     const successfulSurface = fs.readFileSync(surfacePath, "utf8");
     const hit = runCounted();
     assert.equal(hit.status, 0, hit.stderr);
     assert.match(hit.stdout, /inputs unchanged \(signature match\)/);
-    assert.deepEqual(countedProviderStages(hit.stderr), [], "a reusable successful PR sidecar must not call the provider");
+    assert.deepEqual(countedProviderStages(hit.stderr), [], "a reusable successful human artifact must not call the provider");
     assert.equal(fs.readFileSync(surfacePath, "utf8"), successfulSurface);
 
     const retryCases = [
@@ -971,16 +1006,20 @@ test("review-surfaces.CONVERSATION_REVIEW.4 PR ai-sdk identity drives sidecar re
       { status: "analyzed", flag: "conversation_review_unavailable" }
     ] as const;
     for (const { status, flag } of retryCases) {
-      const incomplete = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
+      const incomplete = JSON.parse(fs.readFileSync(humanPath, "utf8"));
       incomplete.conversation_analysis.status = status;
       incomplete.conversation_analysis.summary = `Temporary ${flag}.`;
       incomplete.conversation_analysis.quality_flags = [flag];
       incomplete.review_insights = [];
-      fs.writeFileSync(surfacePath, `${JSON.stringify(incomplete, null, 2)}\n`);
+      fs.writeFileSync(humanPath, `${JSON.stringify(incomplete, null, 2)}\n`);
 
       const retry = runCounted();
       assert.equal(retry.status, 0, retry.stderr);
-      assert.doesNotMatch(retry.stdout, /inputs unchanged \(signature match\)/);
+      assert.match(
+        retry.stdout,
+        /inputs unchanged \(signature match\)/,
+        `${flag} should reuse deterministic packet facts while refreshing provider enrichment`
+      );
       const retryStages = countedProviderStages(retry.stderr);
       assert.equal(
         retryStages.filter((stage) => stage === "conversation_analysis").length,
@@ -992,10 +1031,14 @@ test("review-surfaces.CONVERSATION_REVIEW.4 PR ai-sdk identity drives sidecar re
         1,
         `${flag} must rerun PR conversation reconciliation; saw ${JSON.stringify(retryStages)}`
       );
-      const refreshed = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
+      assert.deepEqual(
+        retryStages,
+        ["conversation_analysis", "conversation_review_insights"],
+        `${flag} must not rerun reusable narrative or change-map enrichment`
+      );
+      const refreshed = JSON.parse(fs.readFileSync(humanPath, "utf8"));
       assert.equal(refreshed.conversation_analysis.status, "analyzed");
       assert.equal(refreshed.conversation_analysis.provider, "ai-sdk");
-      assert.equal(refreshed.conversation_analysis.provider, refreshed.llm.provider);
       assert.ok(!refreshed.conversation_analysis.quality_flags.includes(flag));
     }
   } finally {
@@ -1004,7 +1047,7 @@ test("review-surfaces.CONVERSATION_REVIEW.4 PR ai-sdk identity drives sidecar re
   }
 });
 
-test("review-surfaces.PR_SURFACE.4 persisted conversation redaction markers fail strict postability for both PR comment renderers", () => {
+test("review-surfaces.PR_SURFACE.4 excluded conversation markers do not block or leak through PR comments", () => {
   const tmp = setupChangedRepo();
   const preloadDir = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-marker-provider-"));
   try {
@@ -1036,13 +1079,11 @@ test("review-surfaces.PR_SURFACE.4 persisted conversation redaction markers fail
     assert.equal(prime.status, 0, prime.stderr);
 
     const marker = "[REDACTED:github_token]";
-    for (const artifactName of ["pr_review_surface.json", "human_review.json"]) {
-      const artifactPath = path.join(tmp, ".review-surfaces", artifactName);
-      const artifact = JSON.parse(fs.readFileSync(artifactPath, "utf8"));
-      artifact.conversation_analysis.summary = `Provider output included ${marker}.`;
-      artifact.conversation_analysis.quality_flags = ["conversation_analysis_output_redacted"];
-      fs.writeFileSync(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
-    }
+    const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
+    const human = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    human.conversation_analysis.summary = `Provider output included ${marker}.`;
+    human.conversation_analysis.quality_flags = ["conversation_analysis_output_redacted"];
+    fs.writeFileSync(humanPath, `${JSON.stringify(human, null, 2)}\n`);
 
     const sticky = runCli(tmp, [
       "comment",
@@ -1054,9 +1095,8 @@ test("review-surfaces.PR_SURFACE.4 persisted conversation redaction markers fail
       "--out",
       ".review-surfaces"
     ]);
-    assert.equal(sticky.status, ExitCodes.privacyBlocked, sticky.stderr);
-    assert.match(sticky.stdout, /\[REDACTED:github_token\]/);
-    assert.match(sticky.stderr, /Sticky comment blocked: redaction flagged a high-confidence secret/);
+    assert.equal(sticky.status, ExitCodes.success, sticky.stderr);
+    assert.doesNotMatch(sticky.stdout, /\[REDACTED:github_token\]/);
 
     const prComment = runCli(tmp, [
       "comment",
@@ -1066,13 +1106,11 @@ test("review-surfaces.PR_SURFACE.4 persisted conversation redaction markers fail
       "--out",
       ".review-surfaces"
     ]);
-    assert.equal(prComment.status, ExitCodes.privacyBlocked, prComment.stderr);
-    assert.match(prComment.stdout, /\[REDACTED:github_token\]/);
-    assert.match(prComment.stderr, /PR comment render blocked a high-confidence secret/);
+    assert.equal(prComment.status, ExitCodes.success, prComment.stderr);
+    assert.doesNotMatch(prComment.stdout, /\[REDACTED:github_token\]/);
 
-    // Force the low-level pr_review_surface.json renderer. Its public renderer
-    // returns markdown only, so the CLI's final inspectAndRedactSecrets pass is
-    // the sole surviving block signal for an already-persisted marker.
+    // Removing the canonical brief fails closed; the sidecar cannot replace it
+    // with a second marker-bearing product surface.
     fs.rmSync(path.join(tmp, ".review-surfaces", "human_review.json"));
     const fallbackComment = runCli(tmp, [
       "comment",
@@ -1082,52 +1120,20 @@ test("review-surfaces.PR_SURFACE.4 persisted conversation redaction markers fail
       "--out",
       ".review-surfaces"
     ]);
-    assert.equal(fallbackComment.status, ExitCodes.privacyBlocked, fallbackComment.stderr);
-    assert.match(fallbackComment.stdout, /### What changed/);
-    assert.match(fallbackComment.stdout, /\[REDACTED:github_token\]/);
-    assert.match(fallbackComment.stderr, /PR comment render blocked a high-confidence secret/);
+    assert.equal(fallbackComment.status, ExitCodes.usageError, fallbackComment.stderr);
+    assert.equal(fallbackComment.stdout, "");
+    assert.match(fallbackComment.stderr, /No human reviewer brief found/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.rmSync(preloadDir, { recursive: true, force: true });
   }
 });
 
-test("review-surfaces.PR_SURFACE.4 strict low-level PR fallback neutralizes hostile conversation markup without privacy-blocking", () => {
+test("review-surfaces.PR_SURFACE.4 a sidecar cannot replace a missing human reviewer brief", () => {
   const tmp = setupChangedRepo();
-  const preloadDir = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-hostile-markdown-provider-"));
   try {
-    const conversationEventId = "user-final";
-    fs.writeFileSync(
-      path.join(tmp, "conversation.jsonl"),
-      `${JSON.stringify({
-        id: conversationEventId,
-        actor: "user",
-        kind: "message",
-        summary: "Preserve the reviewer-facing renderer behavior.",
-        raw_index: 0
-      })}\n`
-    );
-    const preload = countingProviderPreload(preloadDir, conversationEventId);
-    const prime = spawnSync("node", [
-      "--require",
-      preload,
-      CLI,
-      ...ALL_PR,
-      "--provider",
-      "ai-sdk",
-      "--conversation",
-      "conversation.jsonl",
-      "--conversation-format",
-      "normalized",
-      "--no-conversation-discovery"
-    ], { cwd: tmp, encoding: "utf8" });
+    const prime = runCli(tmp, ALL_PR);
     assert.equal(prime.status, 0, prime.stderr);
-
-    const surfacePath = path.join(tmp, ".review-surfaces", "pr_review_surface.json");
-    const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
-    surface.conversation_analysis = hostileConversationAnalysis();
-    surface.review_insights = [hostileConversationInsight()];
-    fs.writeFileSync(surfacePath, `${JSON.stringify(surface, null, 2)}\n`);
     fs.rmSync(path.join(tmp, ".review-surfaces", "human_review.json"));
 
     const comment = runCli(tmp, [
@@ -1139,128 +1145,33 @@ test("review-surfaces.PR_SURFACE.4 strict low-level PR fallback neutralizes host
       ".review-surfaces"
     ]);
 
-    assert.equal(comment.status, ExitCodes.success, comment.stderr);
-    for (const rawControl of HOSTILE_CONVERSATION_RAW_CONTROLS) {
-      assert.equal(hostileConversationControlSurvives(comment.stdout, rawControl), false, `raw provider control survived: ${rawControl}`);
-    }
-    for (const entity of HOSTILE_CONVERSATION_NEUTRALIZED_ENTITIES) {
-      assert.ok(comment.stdout.includes(entity), `neutralized provider text must remain readable: ${entity}`);
-    }
-    for (const marker of HOSTILE_CONVERSATION_TRAILING_BACKSLASH_MARKERS) {
-      assert.equal(
-        hostileConversationBackslashRun(comment.stdout, marker),
-        2,
-        `provider trailing backslash must be doubled at ${marker}`
-      );
-    }
-    assert.equal(hostileConversationTitleClosesEmphasis(comment.stdout), true, "renderer-owned title emphasis must close after the neutralized backslash");
-    assert.equal(
-      hostileConversationDisclosureClosesBeforeHeading(comment.stdout, "### What changed"),
-      true,
-      "strict fallback conversation details must close before the next deterministic section"
-    );
-    assert.match(comment.stdout, new RegExp(ORDINARY_CONVERSATION_VALUE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.match(comment.stdout, /\n### What changed\n/);
-    assert.match(comment.stdout, /### PR risks/);
-    assert.doesNotMatch(comment.stderr, /blocked a high-confidence secret/);
+    assert.equal(comment.status, ExitCodes.usageError, comment.stderr);
+    assert.equal(comment.stdout, "");
+    assert.match(comment.stderr, /No human reviewer brief found/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
-    fs.rmSync(preloadDir, { recursive: true, force: true });
   }
 });
 
-test("comment --review-scope pr renders agent-file narratives locally but does not mark them postable", () => {
+test("comment --review-scope pr posts the deterministic brief without provider enrichment", () => {
   const tmp = setupChangedRepo();
   try {
-    // An agent-authored narrative citing the real changed path (anchor allowlisted).
-    const narrative = {
-      summary: "Adjusts the comment renderer.",
-      what_changed: [{ text: "Tweaked the sticky comment renderer", paths: [CHANGED] }],
-      why_it_matters: [{ text: "Affects reviewer-facing output", paths: [CHANGED] }],
-      review_first: [{ text: "Confirm the rendered comment", paths: [CHANGED] }],
-      risk_narratives: []
-    };
-    fs.writeFileSync(path.join(tmp, "narrative.json"), JSON.stringify(narrative));
-
-    const allRun = runCli(tmp, [...ALL_PR, "--provider", "agent-file", "--agent-input", "narrative.json"]);
+    const allRun = runCli(tmp, [...ALL_PR, "--provider", "mock"]);
     assert.equal(allRun.status, 0, allRun.stderr);
     const surface = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "pr_review_surface.json"), "utf8"));
     assert.equal(surface.status, "ready", `expected ready, got ${surface.status}/${surface.blocked_reason}`);
-    assert.ok(surface.narrative.what_changed.length > 0);
 
     const comment = runCli(tmp, ["comment", "--mode", "pr", "--out", ".review-surfaces"]);
-    assert.equal(comment.status, 0, "agent-file PR narratives render locally without --post and exit 0 (RENDER.8); still not postable");
-    assert.match(comment.stdout, /## review-surfaces PR review/);
-    assert.match(comment.stdout, /\*\*Verdict:\*\*/);
-    assert.match(comment.stdout, /### Review first/);
-    assert.match(comment.stdout, /Full human review: `human_review\.md`/);
-    assert.match(comment.stdout, /Human review JSON: `human_review\.json`/);
-    assert.match(comment.stdout, /Lower-level PR facts: `pr_review_surface\.json`/);
-    assert.match(comment.stderr, /not postable \(applied\/agent-file\)/);
+    assert.equal(comment.status, 0);
+    assert.match(comment.stdout, /## review-surfaces/);
+    assert.match(comment.stdout, /### Change purpose/);
+    assert.match(comment.stdout, /### Approval decision/);
+    assertInlineApprovalBrief(tmp, comment.stdout);
+    assert.doesNotMatch(comment.stderr, /not postable/);
     // Not the whole-spec dump or boilerplate.
     assert.doesNotMatch(comment.stdout, /\d+ satisfied, \d+ partial, \d+ missing/);
     assert.doesNotMatch(comment.stdout, /Start with missing and partial requirement results/);
     assert.doesNotMatch(comment.stdout, /### Affected coverage/);
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("review-surfaces.CONVERSATION_REVIEW.4 PR comment rejects a same-head stale human artifact and preserves sidecar conversation value", () => {
-  const tmp = setupChangedRepo();
-  try {
-    const narrative = {
-      summary: "Adjusts the comment renderer.",
-      what_changed: [{ text: "Tweaked the sticky comment renderer", paths: [CHANGED] }],
-      why_it_matters: [{ text: "Affects reviewer-facing output", paths: [CHANGED] }],
-      review_first: [{ text: "Confirm the rendered comment", paths: [CHANGED] }],
-      risk_narratives: []
-    };
-    fs.writeFileSync(path.join(tmp, "narrative.json"), JSON.stringify(narrative));
-    const prime = runCli(tmp, [...ALL_PR, "--provider", "agent-file", "--agent-input", "narrative.json"]);
-    assert.equal(prime.status, 0, prime.stderr);
-
-    const surfacePath = path.join(tmp, ".review-surfaces", "pr_review_surface.json");
-    const surface = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
-    surface.conversation_analysis = {
-      status: "analyzed",
-      provider: "agent-file",
-      summary: "The final request preserves the sticky marker.",
-      intent: [{ text: "Preserve the sticky marker.", event_ids: ["evt-final"] }],
-      refinements: [],
-      decisions: [],
-      constraints: [],
-      non_goals: [],
-      rejected_alternatives: [],
-      claims: [],
-      validation_claims: [],
-      known_gaps: [],
-      quality_flags: []
-    };
-    surface.review_insights = [{
-      id: "CONV-INSIGHT-001",
-      category: "intent_mismatch",
-      title: "Same-head conversation insight refreshed",
-      summary: "The new sidecar carries updated conversation context.",
-      why_it_matters: "A stale human artifact would hide the latest reviewer guidance.",
-      reviewer_action: "Review the updated conversation finding.",
-      priority: "high",
-      evidence_state: "unverified",
-      basis: "ai_reconciliation",
-      conversation_event_ids: ["evt-final"],
-      paths: [CHANGED],
-      requirement_ids: [],
-      risk_ids: [],
-      command_ids: [],
-      evidence: [{ kind: "conversation", event_id: "evt-final", confidence: "low", validation_status: "valid", llm_proposed: true }]
-    }];
-    fs.writeFileSync(surfacePath, JSON.stringify(surface, null, 2));
-
-    const comment = runCli(tmp, ["comment", "--mode", "pr", "--out", ".review-surfaces"]);
-
-    assert.equal(comment.status, 0, comment.stderr);
-    assert.match(comment.stderr, /Ignoring stale or non-PR human_review\.json/);
-    assert.match(comment.stdout, /Same-head conversation insight refreshed/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -1444,21 +1355,12 @@ test("review-surfaces.CONVERSATION_REVIEW.4 repo review wires deterministic pack
 test("all --review-scope pr --cache reuses a ready PR surface while keeping human review PR-scoped", () => {
   const tmp = setupChangedRepo();
   try {
-    const narrative = {
-      summary: "Adjusts the comment renderer.",
-      what_changed: [{ text: "Tweaked the sticky comment renderer", paths: [CHANGED] }],
-      why_it_matters: [{ text: "Affects reviewer-facing output", paths: [CHANGED] }],
-      review_first: [{ text: "Confirm the rendered comment", paths: [CHANGED] }],
-      risk_narratives: []
-    };
-    fs.writeFileSync(path.join(tmp, "narrative.json"), JSON.stringify(narrative));
-
-    const prime = runCli(tmp, [...ALL_PR, "--cache", "--provider", "agent-file", "--agent-input", "narrative.json"]);
+    const prime = runCli(tmp, [...ALL_PR, "--cache", "--provider", "mock"]);
     assert.equal(prime.status, 0, prime.stderr);
     const surface = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "pr_review_surface.json"), "utf8"));
     assert.equal(surface.status, "ready");
 
-    const hit = runCli(tmp, [...ALL_PR, "--cache", "--provider", "agent-file", "--agent-input", "narrative.json"]);
+    const hit = runCli(tmp, [...ALL_PR, "--cache", "--provider", "mock"]);
     assert.equal(hit.status, 0, hit.stderr);
     assert.match(hit.stdout, /inputs unchanged \(signature match\)/);
     assert.doesNotMatch(hit.stdout, /Wrote review-surfaces artifacts to \.review-surfaces/);
@@ -1477,68 +1379,91 @@ test("all --review-scope pr --cache reuses a ready PR surface while keeping huma
   }
 });
 
-test("review-surfaces.CONVERSATION_REVIEW.4 cache does not reuse a legacy PR sidecar missing conversation fields", () => {
+test("PR cache binds provider-authored sections to the exact enrichment identity", () => {
   const tmp = setupChangedRepo();
   try {
-    const narrative = {
-      summary: "Adjusts the comment renderer.",
-      what_changed: [{ text: "Tweaked the sticky comment renderer", paths: [CHANGED] }],
-      why_it_matters: [{ text: "Affects reviewer-facing output", paths: [CHANGED] }],
-      review_first: [{ text: "Confirm the rendered comment", paths: [CHANGED] }],
-      risk_narratives: []
-    };
-    fs.writeFileSync(path.join(tmp, "narrative.json"), JSON.stringify(narrative));
-    const args = [...ALL_PR, "--cache", "--provider", "agent-file", "--agent-input", "narrative.json"];
-    const prime = runCli(tmp, args);
+    const marker = "The reviewer brief keeps the approval decision visible.";
+    fs.writeFileSync(path.join(tmp, "agent-stages.json"), JSON.stringify({
+      stages: {
+        human_narrative: {
+          claims: [{ text: `${CHANGED}: ${marker}`, paths: [CHANGED] }]
+        }
+      }
+    }));
+    const agentArgs = [
+      ...ALL_PR,
+      "--cache",
+      "--provider",
+      "agent-file",
+      "--agent-input",
+      "agent-stages.json"
+    ];
+
+    const prime = runCli(tmp, agentArgs);
     assert.equal(prime.status, 0, prime.stderr);
+    const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
+    const packetPath = path.join(tmp, ".review-surfaces", "review_packet.json");
+    const first = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    const firstPacket = JSON.parse(fs.readFileSync(packetPath, "utf8"));
+    assert.match(JSON.stringify(first.narrative), new RegExp(marker));
+    assert.match(first.generated_from.enrichment_signature, /^[a-f0-9]{64}$/);
 
-    const surfacePath = path.join(tmp, ".review-surfaces", "pr_review_surface.json");
-    const legacy = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
-    delete legacy.conversation_analysis;
-    delete legacy.review_insights;
-    fs.writeFileSync(surfacePath, JSON.stringify(legacy, null, 2));
+    const tampered = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    tampered.generated_from.enrichment_signature = "0".repeat(64);
+    fs.writeFileSync(humanPath, `${JSON.stringify(tampered, null, 2)}\n`);
+    const identityMismatch = runCli(tmp, agentArgs);
+    assert.equal(identityMismatch.status, 0, identityMismatch.stderr);
+    assert.match(identityMismatch.stdout, /inputs unchanged \(signature match\)/);
+    const second = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    assert.equal(second.generated_from.enrichment_signature, first.generated_from.enrichment_signature);
+    assert.notEqual(second.generated_from.enrichment_signature, "0".repeat(64));
+    assert.match(JSON.stringify(second.narrative), new RegExp(marker));
 
-    const rerun = runCli(tmp, args);
+    const providerSwitch = runCli(tmp, [
+      ...ALL_PR,
+      "--cache",
+      "--provider",
+      "mock",
+      "--agent-input",
+      "agent-stages.json"
+    ]);
+    assert.equal(providerSwitch.status, 0, providerSwitch.stderr);
+    assert.match(providerSwitch.stdout, /inputs unchanged \(signature match\)/);
+    const third = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    const thirdPacket = JSON.parse(fs.readFileSync(packetPath, "utf8"));
+    assert.equal(
+      thirdPacket.manifest.signature,
+      firstPacket.manifest.signature,
+      "provider switch must exercise unchanged deterministic packet identity"
+    );
+    assert.notEqual(third.generated_from.enrichment_signature, second.generated_from.enrichment_signature);
+    assert.equal(third.narrative, undefined, "mock regeneration must not retain agent-file prose");
+    assert.doesNotMatch(JSON.stringify(third), new RegExp(marker));
 
-    assert.equal(rerun.status, 0, rerun.stderr);
-    assert.doesNotMatch(rerun.stdout, /inputs unchanged \(signature match\)/);
-    const refreshed = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
-    assert.ok(refreshed.conversation_analysis);
-    assert.ok(Array.isArray(refreshed.review_insights));
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("review-surfaces.CONVERSATION_REVIEW.4 cache reuses a deterministic agent-file conversation result", () => {
-  const tmp = setupChangedRepo();
-  try {
-    const narrative = {
-      summary: "Adjusts the comment renderer.",
-      what_changed: [{ text: "Tweaked the sticky comment renderer", paths: [CHANGED] }],
-      why_it_matters: [{ text: "Affects reviewer-facing output", paths: [CHANGED] }],
-      review_first: [{ text: "Confirm the rendered comment", paths: [CHANGED] }],
-      risk_narratives: []
+    const preload = countingProviderPreload(tmp, "unused-conversation-event");
+    const runAiAlias = (model: string): { status: number | null; stdout: string; stderr: string } => {
+      const result = spawnSync(
+        "node",
+        [CLI, ...ALL_PR, "--cache", "--provider", "ai-sdk", "--model", model, "--agent-input", "agent-stages.json"],
+        {
+          cwd: tmp,
+          encoding: "utf8",
+          env: { ...process.env, NODE_OPTIONS: `--require=${preload}` }
+        }
+      );
+      return { status: result.status, stdout: result.stdout, stderr: result.stderr };
     };
-    fs.writeFileSync(path.join(tmp, "narrative.json"), JSON.stringify(narrative));
-    const args = [...ALL_PR, "--cache", "--provider", "agent-file", "--agent-input", "narrative.json"];
-    const prime = runCli(tmp, args);
-    assert.equal(prime.status, 0, prime.stderr);
+    const unprefixed = runAiAlias("gemini-2.5-flash");
+    assert.equal(unprefixed.status, 0, unprefixed.stderr);
+    assert.ok(countedProviderStages(unprefixed.stderr).includes("human_narrative"));
+    const fourth = JSON.parse(fs.readFileSync(humanPath, "utf8"));
 
-    const surfacePath = path.join(tmp, ".review-surfaces", "pr_review_surface.json");
-    const degraded = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
-    degraded.conversation_analysis.status = "degraded";
-    degraded.conversation_analysis.summary = "Temporary provider failure.";
-    degraded.conversation_analysis.quality_flags = ["conversation_analysis_unavailable"];
-    fs.writeFileSync(surfacePath, JSON.stringify(degraded, null, 2));
-
-    const rerun = runCli(tmp, args);
-
-    assert.equal(rerun.status, 0, rerun.stderr);
-    assert.match(rerun.stdout, /inputs unchanged \(signature match\)/);
-    const reused = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
-    assert.equal(reused.conversation_analysis.status, "degraded");
-    assert.ok(reused.conversation_analysis.quality_flags.includes("conversation_analysis_unavailable"));
+    const prefixed = runAiAlias("google:gemini-2.5-flash");
+    assert.equal(prefixed.status, 0, prefixed.stderr);
+    assert.match(prefixed.stdout, /inputs unchanged \(signature match\)/);
+    assert.deepEqual(countedProviderStages(prefixed.stderr), [], "canonical model aliases must reuse enrichment");
+    const fifth = JSON.parse(fs.readFileSync(humanPath, "utf8"));
+    assert.equal(fifth.generated_from.enrichment_signature, fourth.generated_from.enrichment_signature);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -1597,6 +1522,7 @@ test("review-surfaces.CONVERSATION_REVIEW.4 repo cache reuses a successful ai-sd
     successful.decision_projection.active_intent = {
       summary: "Reviewer goal: Keep the renderer behavior.",
       source: "conversation_advisory",
+      redaction_blocked: false,
       requirement_ids: [],
       event_ids: ["user-1"]
     };
@@ -1692,7 +1618,11 @@ test("review-surfaces.CONVERSATION_REVIEW.4 repo cache retries incomplete remote
       const retry = runWithoutCredentials();
 
       assert.equal(retry.status, 0, retry.stderr);
-      assert.doesNotMatch(retry.stdout, /inputs unchanged \(signature match\)/, `${flag} must bypass cache reuse`);
+      assert.match(
+        retry.stdout,
+        /inputs unchanged \(signature match\)/,
+        `${flag} should reuse deterministic packet facts while refreshing provider enrichment`
+      );
       const regenerated = JSON.parse(fs.readFileSync(humanPath, "utf8"));
       assert.equal(regenerated.conversation_analysis.status, "analyzed");
       assert.ok(regenerated.conversation_analysis.quality_flags.includes("conversation_analysis_unavailable"));

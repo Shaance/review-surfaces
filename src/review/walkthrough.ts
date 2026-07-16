@@ -12,7 +12,7 @@ import { stripUndefined } from "../core/guards";
 import { EvidenceRef } from "../evidence/evidence";
 import { HumanReviewModel, ReviewQueueItem, SuggestedReviewComment } from "../human/contract";
 import { renderHunkExcerpt } from "../human/hunk-excerpt";
-import { formatQueueLocation } from "../human/render";
+import { formatQueueLocation } from "../human/review-presentation";
 import { StructuredDiff } from "../pr/contract";
 
 // The actionable decisions a reviewer can record for a queue item. `skip` and

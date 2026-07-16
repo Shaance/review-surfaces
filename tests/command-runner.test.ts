@@ -35,6 +35,18 @@ function sequenceNow(...dates: string[]): () => Date {
   return () => values.shift() ?? new Date(dates[dates.length - 1]);
 }
 
+const HEAD_MUTATION_COMMAND = "printf 'second\\n' >> tracked.txt && git add tracked.txt && git -c user.name=t -c user.email=t@t.t commit -m second";
+
+function setupHeadMutationRepo(prefix: string): { cwd: string; initialHead: string } {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  spawnSync("git", ["init", "-b", "main"], { cwd });
+  fs.writeFileSync(path.join(cwd, "tracked.txt"), "first\n");
+  spawnSync("git", ["add", "tracked.txt"], { cwd });
+  spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-m", "first"], { cwd });
+  const initialHead = spawnSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).stdout.trim();
+  return { cwd, initialHead };
+}
+
 test("review-surfaces.CLI.7 records a passing command as a bounded transcript", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-runner-"));
   const result = await recordCommandTranscript({
@@ -59,6 +71,23 @@ test("review-surfaces.CLI.7 records a passing command as a bounded transcript", 
   assert.equal(indexed[0].id, "CMD-RUN-001");
   assert.equal(indexed[0].status, "passed");
   assert.equal(indexed[0].head_sha, "1111111111111111111111111111111111111111");
+});
+
+test("review-surfaces.CLI.7 snapshots HEAD before an untrusted command can change it", async (t) => {
+  const { cwd, initialHead } = setupHeadMutationRepo("review-surfaces-runner-head-snapshot-");
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+
+  const result = await recordCommandTranscript({
+    cwd,
+    args: ["/bin/sh", "-c", HEAD_MUTATION_COMMAND],
+    id: "CMD-HEAD-SNAPSHOT",
+    streamOutput: false
+  });
+  const finalHead = spawnSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).stdout.trim();
+
+  assert.equal(result.exitCode, 0);
+  assert.notEqual(finalHead, initialHead, "the wrapped command changes the checkout head");
+  assert.equal(result.transcript.head_sha, initialHead, "the transcript stays bound to the checkout that started the command");
 });
 
 test("review-surfaces.CLI.7 records a failed command and preserves its exit code", async () => {
@@ -257,6 +286,35 @@ test("review-surfaces.CLI.7 run command writes transcripts from the CLI", () => 
   const parsed = JSON.parse(fs.readFileSync(transcriptPath, "utf8"));
   assert.equal(parsed.commands[0].id, "CMD-CLI-001");
   assert.equal(parsed.commands[0].status, "passed");
+});
+
+test("review-surfaces.CLI.7 no-dist recorder also snapshots HEAD before the command", (t) => {
+  const { cwd, initialHead } = setupHeadMutationRepo("review-surfaces-runner-fallback-head-");
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const fallbackBin = copyNoDistBin(cwd);
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      fallbackBin,
+      "run",
+      "--id",
+      "CMD-FALLBACK-HEAD-SNAPSHOT",
+      "--command-transcripts",
+      "commands",
+      "--",
+      "/bin/sh",
+      "-c",
+      HEAD_MUTATION_COMMAND
+    ],
+    { cwd, encoding: "utf8" }
+  );
+  const transcript = JSON.parse(
+    fs.readFileSync(path.join(cwd, "commands", "CMD-FALLBACK-HEAD-SNAPSHOT.json"), "utf8")
+  ).commands[0];
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(transcript.head_sha, initialHead);
 });
 
 test("review-surfaces.PRIVACY.2 no-dist run fallback detects secrets after its raw cap", () => {

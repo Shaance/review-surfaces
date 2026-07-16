@@ -168,7 +168,6 @@ areas:
       - src/cli/index.ts
       - src/llm/
       - src/pipeline/pr-surface.ts
-      - src/render/pr-comment.ts
     purpose: Keep code-hosting and LLM-backed PR comment adapters optional, bounded, and safe.
     pattern: optional provider boundary
     test_keywords:
@@ -350,7 +349,7 @@ quality_gate:
 human_review:
   enabled: true
   default_entrypoint: true
-  max_review_first: 20
+  max_supporting_queue: 20
   max_suggested_comments: 10
   max_questions: 10
   risk_lenses:

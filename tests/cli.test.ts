@@ -679,11 +679,11 @@ test("review-surfaces.CLI.8 validate --surface covers packet, human, and all sur
     // required field) fails validation rather than degrading quietly.
     const humanPath = path.join(tmp, out, "human_review.json");
     const model = JSON.parse(fs.readFileSync(humanPath, "utf8"));
-    delete model.review_routes;
+    delete model.evidence_cards;
     fs.writeFileSync(humanPath, JSON.stringify(model, null, 2));
     const stale = human(["validate", "--surface", "human"]);
     assert.equal(stale.status, ExitCodes.schemaValidationFailed, stale.stderr);
-    assert.match(stale.stderr, /review_routes/);
+    assert.match(stale.stderr, /evidence_cards/);
     // --surface all also surfaces the human failure.
     assert.equal(human(["validate", "--surface", "all"]).status, ExitCodes.schemaValidationFailed);
   } finally {
@@ -738,7 +738,6 @@ test("review-surfaces.SCHEMA.3 human schema requires all current model fields", 
   for (const field of [
     "risk_lens_findings",
     "intent_mismatch",
-    "review_routes",
     "since_last_review",
     "evidence_cards",
     "feedback_effects"
@@ -747,11 +746,13 @@ test("review-surfaces.SCHEMA.3 human schema requires all current model fields", 
   }
 });
 
-// review-surfaces.NARRATIVE.1/.2: in repo scope the human narrative anchors
-// against the collected diff, so an agent-file claim citing a real changed file
-// is verified while a fabricated path is demoted (not dropped). Guards the
-// repo-scope diff wiring (the diff is only parsed eagerly for PR scope).
-test("review-surfaces.NARRATIVE.1 human narrative anchors against the repo-scope diff", () => {
+// review-surfaces.NARRATIVE.1/.2: in repo scope the optional supporting
+// narrative anchors against the collected diff, so an agent-file claim citing
+// a real changed file is verified while a fabricated path is demoted (not
+// dropped). The compact Markdown deliberately omits this supporting prose; the
+// HTML cockpit retains it. Guards the repo-scope diff wiring (the diff is only
+// parsed eagerly for PR scope).
+test("review-surfaces.NARRATIVE.1 supporting narrative anchors against the repo-scope diff", () => {
   const tmp = setupComposeFixture("review-surfaces-narrative-");
   try {
     execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
@@ -774,11 +775,10 @@ test("review-surfaces.NARRATIVE.1 human narrative anchors against the repo-scope
       { cwd: tmp, encoding: "utf8" }
     );
     assert.equal(run.status, 0, run.stderr);
-    const md = fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.md"), "utf8");
-    const section = md.split("## Change narrative")[1].split("## Review first")[0];
-    assert.match(section, /✓ Updates the project readme\./, "a claim citing a real changed file is verified");
-    assert.match(section, /~ Edits a file that does not exist\./, "a fabricated-path claim is demoted, not dropped");
-    assert.match(section, /unverified anchor\(s\): `src\/nope-fabricated\.ts`/);
+    const html = fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.html"), "utf8");
+    assert.match(html, /✓ Updates the project readme\./, "a claim citing a real changed file is verified");
+    assert.match(html, /~ Edits a file that does not exist\./, "a fabricated-path claim is demoted, not dropped");
+    assert.match(html, /unverified anchor\(s\): <code>src\/nope-fabricated\.ts<\/code>/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -802,12 +802,51 @@ test("review-surfaces.NARRATIVE.1 cache hit preserves the provider narrative", (
     const firstModel = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
     assert.equal(firstModel.narrative.source, "provider");
     // Second run is a cache hit; the provider narrative must survive (not be
-    // overwritten by the deterministic fallback).
+    // dropped when a cache hit skips the provider).
     const second = spawnSync("node", [CLI, ...args], { cwd: tmp, encoding: "utf8" });
     assert.equal(second.status, 0, second.stderr);
     assert.match(second.stdout + second.stderr, /inputs unchanged/, "second run is a cache hit");
     const secondModel = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
     assert.equal(secondModel.narrative.source, "provider", "cache hit preserves the provider narrative");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("same-head PR cache reuse refreshes an edited author purpose", () => {
+  const tmp = setupComposeFixture("review-surfaces-change-context-cache-");
+  try {
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "init"], { cwd: tmp, stdio: "ignore" });
+    fs.appendFileSync(path.join(tmp, "README.md"), "\nchange context cache marker\n");
+    execFileSync("git", ["add", "-A"], { cwd: tmp, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-m", "change"], { cwd: tmp, stdio: "ignore" });
+    const common = ["all", "--cache", "--review-scope", "pr", "--base", "HEAD~1", "--head", "HEAD", "--spec", "features/review-surfaces.feature.yaml", "--provider", "mock", "--now", "2026-01-01T00:00:00Z", "--out", ".review-surfaces"];
+
+    const first = spawnSync("node", [CLI, ...common, "--change-title", "Original reviewer purpose", "--change-description", "Explain the first purpose."], { cwd: tmp, encoding: "utf8" });
+    assert.equal(first.status, 0, first.stderr);
+    const second = spawnSync("node", [CLI, ...common, "--change-title", "Edited reviewer purpose", "--change-description", "Explain the corrected purpose."], { cwd: tmp, encoding: "utf8" });
+    assert.equal(second.status, 0, second.stderr);
+    assert.match(second.stdout + second.stderr, /inputs unchanged/, "author-context edits reuse deterministic same-head facts");
+
+    const surface = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "pr_review_surface.json"), "utf8"));
+    const human = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    assert.equal(surface.change_context.title, "Edited reviewer purpose");
+    assert.equal(surface.change_context.description, "Explain the corrected purpose.");
+    assert.match(human.decision_projection.active_intent.summary, /^Edited reviewer purpose\./);
+    assert.doesNotMatch(human.decision_projection.active_intent.summary, /Original reviewer purpose/);
+
+    const token = `ghp_${"a".repeat(36)}`;
+    const blocked = spawnSync("node", [CLI, ...common, "--change-title", `Rotate ${token}`, "--change-description", "Sensitive author context."], { cwd: tmp, encoding: "utf8" });
+    assert.equal(blocked.status, 0, blocked.stderr);
+    const blockedSurface = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "pr_review_surface.json"), "utf8"));
+    const blockedHuman = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
+    assert.equal(blockedSurface.change_context.redaction_blocked, true);
+    assert.equal(blockedHuman.decision_projection.active_intent.redaction_blocked, true);
+    assert.doesNotMatch(JSON.stringify(blockedHuman), new RegExp(token));
+    const strict = spawnSync("node", [CLI, "comment", "--review-scope", "pr", "--strict-postability", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
+    assert.equal(strict.status, ExitCodes.privacyBlocked, strict.stderr);
+    assert.match(strict.stderr, /high-confidence secret/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -976,11 +1015,12 @@ test("review-surfaces.PROVIDERS.7 comment --format review rejects a stale/invali
 test("review-surfaces.PROVIDERS.7 comment --format review --review-scope pr fails fast on a repo-scope artifact", () => {
   const tmp = setupReviewFixture("rs-draft-prscope-");
   try {
-    // The fixture generated a repo-scope review (no pr_review_surface.json). A
-    // PR-scope draft export must fail fast rather than export repo-scope comments.
+    // The fixture generated a repo-scope review. A PR-scope draft export must
+    // reject that mismatched brief before considering its PR sidecar rather than
+    // export repo-scope comments under a PR-scoped request.
     const result = spawnSync("node", [CLI, "comment", "--format", "review", "--review-scope", "pr", "--out", ".review-surfaces"], { cwd: tmp, encoding: "utf8" });
     assert.equal(result.status, ExitCodes.usageError, result.stdout + result.stderr);
-    assert.match(result.stderr + result.stdout, /PR-scope draft review requires a current pr_review_surface\.json/);
+    assert.match(result.stderr + result.stdout, /PR-scope draft review requires a pr-scoped human_review\.json/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -1123,7 +1163,9 @@ test("review-surfaces.CLI.9 a pipeline flag passed to a command that does not re
       ["scoreboard", "--provider", "ai-sdk"],
       ["scoreboard", "--base", "main"],
       ["validate", "--base", "main"],
-      ["validate", "--provider", "mock"]
+      ["validate", "--provider", "mock"],
+      ["collect", "--change-title", "Ignored title"],
+      ["intent", "--change-description", "Ignored description"]
     ] as const) {
       const result = spawnSync("node", [CLI, command, flag, value], { cwd: tmp, encoding: "utf8" });
       assert.equal(
@@ -1270,7 +1312,7 @@ test("review-surfaces.CLI.10 --help documents the previously-omitted flags and a
   const result = spawnSync("node", [CLI, "--help"], { encoding: "utf8" });
   assert.equal(result.status, ExitCodes.success, result.stderr);
   // A representative set of the flags the CLI reads but --help used to omit.
-  for (const flag of ["--budget", "--verbose", "--check", "--no-redact-secrets", "--readme", "--run-id", "--artifact-name", "--artifact-url", "--comment-top-n"]) {
+  for (const flag of ["--budget", "--verbose", "--check", "--no-redact-secrets", "--readme", "--run-id", "--artifact-name", "--artifact-url", "--change-title", "--change-description"]) {
     assert.ok(result.stdout.includes(flag), `--help must document ${flag}`);
   }
   // comment --format must list all four values, and --coverage must mention the
@@ -1344,15 +1386,15 @@ test("review-surfaces.CLI.3 non-write commands leave the working tree untouched"
 test("review-surfaces.CLI.10 a blocked draft-review payload is neither written nor printed", () => {
   const tmp = setupReviewFixture("rs-draft-blocked-");
   try {
-    // Inject a high-confidence secret into the human_review.json summary AND a
-    // suggested-comment body (both plain strings, so the file stays schema-valid).
+    // Inject a high-confidence secret into the active purpose AND a suggested-
+    // comment body (both plain strings, so the file stays schema-valid).
     // buildDraftReview then raises `blocked`, and the CLI must refuse to write or
     // print pending_review.json (that payload is exactly what a reviewer pastes
     // to GitHub).
     const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
     const human = JSON.parse(fs.readFileSync(humanPath, "utf8"));
     const secret = "AIzaSyA1234567890abcdefghijklmnopqrstuv";
-    human.summary = `${human.summary} Leaked key ${secret} was committed.`;
+    human.decision_projection.active_intent.summary = `${human.decision_projection.active_intent.summary} Leaked key ${secret} was committed.`;
     if (Array.isArray(human.suggested_comments) && human.suggested_comments.length > 0) {
       human.suggested_comments[0].body = `General note: SECRET=${secret} leaks in logs.`;
     }
@@ -1396,7 +1438,7 @@ test("review-surfaces.PR_SURFACE.4 a blocked draft-review DELETES a stale pendin
     const humanPath = path.join(tmp, ".review-surfaces", "human_review.json");
     const human = JSON.parse(fs.readFileSync(humanPath, "utf8"));
     const secret = "AIzaSyA1234567890abcdefghijklmnopqrstuv";
-    human.summary = `${human.summary} Leaked key ${secret} was committed.`;
+    human.decision_projection.active_intent.summary = `${human.decision_projection.active_intent.summary} Leaked key ${secret} was committed.`;
     if (Array.isArray(human.suggested_comments) && human.suggested_comments.length > 0) {
       human.suggested_comments[0].body = `General note: SECRET=${secret} leaks in logs.`;
     }

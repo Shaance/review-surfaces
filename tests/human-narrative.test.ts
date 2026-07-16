@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
-import { buildChangeNarrative, buildFallbackNarrative, buildNarrativeAllowlist } from "../src/human/narrative";
+import { buildChangeNarrative, buildNarrativeAllowlist } from "../src/human/narrative";
 import { buildHumanReview } from "../src/human/human-review";
 import { renderHumanReviewMarkdown } from "../src/human/render";
+import { renderHumanReviewHtml } from "../src/human/render-html";
 import type { ReasoningProvider, StructuredResult } from "../src/llm/provider";
 import type { ReviewPacket } from "../src/render/packet";
 import type { ChangeNarrative } from "../src/human/contract";
@@ -74,6 +75,7 @@ test("review-surfaces.NARRATIVE.2 demotes (not drops) a claim with a bogus ancho
     redactSecrets: true,
     remotePrivacyBlocked: false
   });
+  assert.ok(narrative, "usable provider claims produce a narrative");
   assert.equal(narrative.source, "provider");
   assert.equal(narrative.claims.length, 2, "both claims are kept; the bogus one is demoted, not dropped");
   assert.equal(narrative.claims[0].trust, "verified");
@@ -81,12 +83,14 @@ test("review-surfaces.NARRATIVE.2 demotes (not drops) a claim with a bogus ancho
   assert.equal(narrative.claims[1].trust, "claimed");
   assert.deepEqual(narrative.claims[1].invalid_anchors, ["src/fabricated.ts"]);
 
-  // The rendered surface shows ✓ and ~ markers and lists the invalid anchor.
-  const md = renderHumanReviewMarkdown(buildHumanReview({ packet, diff, narrative }));
-  const section = md.split("## Change narrative")[1].split("## Review first")[0];
-  assert.match(section, /✓ Changes the real implementation file\./);
-  assert.match(section, /~ Also edits a file that does not exist\./);
-  assert.match(section, /unverified anchor\(s\): `src\/fabricated\.ts`/);
+  // The supporting HTML shows ✓ and ~ markers and lists the invalid anchor;
+  // compact Markdown delegates narrative detail to supporting artifacts.
+  const model = buildHumanReview({ packet, diff, narrative });
+  const html = renderHumanReviewHtml(model);
+  assert.match(html, /✓ Changes the real implementation file\./);
+  assert.match(html, /~ Also edits a file that does not exist\./);
+  assert.match(html, /unverified anchor\(s\): <code>src\/fabricated\.ts<\/code>/);
+  assert.doesNotMatch(renderHumanReviewMarkdown(model), /## Change narrative|fabricated\.ts/);
 });
 
 // review-surfaces.NARRATIVE.3: the rendered narrative marks the trust state of
@@ -103,12 +107,11 @@ test("review-surfaces.NARRATIVE.3 marks the trust state of every claim", () => {
     ]
   };
   const { packet, diff } = narrativeFacts();
-  const md = renderHumanReviewMarkdown(buildHumanReview({ packet, diff, narrative }));
-  const section = md.split("## Change narrative")[1].split("## Review first")[0];
+  const html = renderHumanReviewHtml(buildHumanReview({ packet, diff, narrative }));
   // The verified claim is marked ✓ and the claimed claim ~ — distinct markers.
-  assert.match(section, /- ✓ A verified claim\./, "verified claims get the ✓ marker");
-  assert.match(section, /- ~ A claimed claim\./, "claimed claims get the ~ marker");
-  assert.match(section, /✓ anchored .*~ claimed/, "the legend explains anchor validation without claiming independent proof");
+  assert.match(html, /<li>✓ A verified claim\./, "verified claims get the ✓ marker");
+  assert.match(html, /<li>~ A claimed claim\./, "claimed claims get the ~ marker");
+  assert.match(html, /✓ anchored .*~ claimed/, "the legend explains anchor validation without claiming independent proof");
 });
 
 // review-surfaces.NARRATIVE.2: a fabricated CMD- transcript id in the PROSE
@@ -124,6 +127,7 @@ test("review-surfaces.NARRATIVE.2 fabricated command id in prose demotes the cla
     redactSecrets: true,
     remotePrivacyBlocked: false
   });
+  assert.ok(narrative, "usable provider claims produce a narrative");
   assert.equal(narrative.claims[0].trust, "claimed", "a fabricated CMD- in prose demotes the claim");
   assert.ok(narrative.claims[0].invalid_anchors.includes("CMD-FABRICATED-TEST"));
 });
@@ -144,6 +148,7 @@ test("review-surfaces.NARRATIVE.2 allowlists command transcripts from test evide
     redactSecrets: true,
     remotePrivacyBlocked: false
   });
+  assert.ok(narrative, "usable provider claims produce a narrative");
   assert.equal(narrative.claims[0].trust, "verified", "a CMD- id from test_evidence is a valid anchor");
   assert.ok(narrative.claims[0].anchors.some((ref) => ref.command === "CMD-PNPM-TEST"));
 });
@@ -164,6 +169,7 @@ test("review-surfaces.NARRATIVE.2 allowlists non-CMD test-evidence row ids", asy
     redactSecrets: true,
     remotePrivacyBlocked: false
   });
+  assert.ok(narrative, "usable provider claims produce a narrative");
   assert.equal(narrative.claims[0].trust, "verified", "a real test-evidence row id is a valid anchor");
 });
 
@@ -183,6 +189,7 @@ test("review-surfaces.NARRATIVE.2 unproven test-evidence ids do not verify a cla
     redactSecrets: true,
     remotePrivacyBlocked: false
   });
+  assert.ok(narrative, "usable provider claims produce a narrative");
   assert.equal(narrative.claims[0].trust, "claimed", "an unproven test-evidence id must not become a verified anchor");
   assert.ok(narrative.claims[0].invalid_anchors.includes("CMD-FLAKY-TEST"));
 });
@@ -200,6 +207,7 @@ test("review-surfaces.NARRATIVE.2 fabricated non-CMD test id in prose demotes th
     redactSecrets: true,
     remotePrivacyBlocked: false
   });
+  assert.ok(narrative, "usable provider claims produce a narrative");
   assert.equal(narrative.claims[0].trust, "claimed", "a fabricated TEST-* id in prose demotes the claim");
   assert.ok(narrative.claims[0].invalid_anchors.includes("TEST-RESULT-999"));
 });
@@ -218,21 +226,9 @@ test("review-surfaces.NARRATIVE.2 redacts secret-looking invalid anchors", async
     redactSecrets: true,
     remotePrivacyBlocked: false
   });
+  assert.ok(narrative, "usable provider claims produce a narrative");
   assert.ok(!narrative.claims[0].invalid_anchors.includes(token), "the raw secret must not be stored");
   assert.ok(narrative.claims[0].invalid_anchors.some((v) => v.includes("REDACTED")), "the invalid anchor is redacted");
-});
-
-// review-surfaces.NARRATIVE.5: the fallback counts transcript ROWS, not the
-// allowlist (which may hold both a row id and a CMD-* token from one row).
-test("review-surfaces.NARRATIVE.5 fallback does not double-count a transcript row", () => {
-  const { packet, diff } = narrativeFacts();
-  packet.risks.test_evidence = [
-    { id: "TEST-TR-001", kind: "direct", summary: "Ran CMD-PNPM-TEST.", evidence: [{ kind: "command", command: "CMD-PNPM-TEST", confidence: "high", validation_status: "valid" }] }
-  ] as ReviewPacket["risks"]["test_evidence"];
-  const narrative = buildFallbackNarrative({ packet, diff, headSha: "head123" });
-  const transcriptClaim = narrative.claims.find((claim) => /command transcript/.test(claim.text));
-  assert.ok(transcriptClaim, "a transcript claim is present");
-  assert.match(transcriptClaim!.text, /^1 command transcript/, "one row must be counted once, not twice");
 });
 
 // review-surfaces.NARRATIVE.2: a fabricated NUMERIC transcript id (CMD-001) in
@@ -248,6 +244,7 @@ test("review-surfaces.NARRATIVE.2 fabricated numeric command id in prose demotes
     redactSecrets: true,
     remotePrivacyBlocked: false
   });
+  assert.ok(narrative, "usable provider claims produce a narrative");
   assert.equal(narrative.claims[0].trust, "claimed", "a fabricated numeric CMD-001 in prose demotes the claim");
   assert.ok(narrative.claims[0].invalid_anchors.includes("CMD-001"));
 });
@@ -289,6 +286,7 @@ test("review-surfaces.NARRATIVE.2 demotes a claim with a malformed structured an
     redactSecrets: true,
     remotePrivacyBlocked: false
   });
+  assert.ok(narrative, "usable provider claims produce a narrative");
   assert.equal(narrative.claims[0].trust, "claimed", "a malformed anchor element must demote the claim");
   assert.ok(narrative.claims[0].invalid_anchors.some((v) => /malformed/.test(v)));
 });
@@ -316,20 +314,6 @@ test("review-surfaces.NARRATIVE.2 allowlists custom transcript event ids", () =>
   assert.ok(allowlist.commandIds.has("smoke_1"), "a custom transcript event id must be allowlisted");
 });
 
-// review-surfaces.NARRATIVE.2: the fallback risk claim is anchored to the risk's
-// real evidence (changed files / ACIDs), not the risk row id.
-test("review-surfaces.NARRATIVE.2 anchors the fallback risk claim to real evidence", () => {
-  const { packet, diff } = narrativeFacts();
-  packet.risks.items = [
-    { id: "RISK-001", evidence: [{ kind: "file", path: "src/real.ts", confidence: "high", validation_status: "valid" }] }
-  ] as unknown as ReviewPacket["risks"]["items"];
-  const narrative = buildFallbackNarrative({ packet, diff, headSha: "head123" });
-  const riskClaim = narrative.claims.find((claim) => /packet risk/.test(claim.text));
-  assert.ok(riskClaim, "a risk claim renders");
-  assert.ok(riskClaim!.anchors.some((ref) => ref.path === "src/real.ts"), "anchored to the changed file");
-  assert.ok(!riskClaim!.anchors.some((ref) => ref.acai_id === "RISK-001"), "the risk id is not used as an anchor");
-});
-
 // review-surfaces.NARRATIVE.4: the narrative never alters the verdict.
 test("review-surfaces.NARRATIVE.4 narrative does not change the verdict", () => {
   const { packet, diff } = narrativeFacts();
@@ -347,9 +331,9 @@ test("review-surfaces.NARRATIVE.4 narrative does not change the verdict", () => 
   assert.deepEqual(withNarrative.blockers, withoutNarrative.blockers, "blockers must be unchanged");
 });
 
-// review-surfaces.NARRATIVE.5: a mock run (or a rejected provider) renders the
-// deterministic fallback without failing.
-test("review-surfaces.NARRATIVE.5 mock renders a deterministic verified fallback", async () => {
+// review-surfaces.NARRATIVE.5: unavailable provider prose is omitted without
+// weakening or failing the deterministic reviewer brief.
+test("review-surfaces.NARRATIVE.5 unavailable provider prose is omitted", async () => {
   const { packet, diff } = narrativeFacts();
   const mockProvider: ReasoningProvider = {
     name: "mock",
@@ -357,7 +341,7 @@ test("review-surfaces.NARRATIVE.5 mock renders a deterministic verified fallback
       return { ok: false, reason: "mock_no_enrichment" };
     }
   };
-  const narrative = await buildChangeNarrative({
+  const mockNarrative = await buildChangeNarrative({
     provider: mockProvider,
     providerName: "mock",
     packet,
@@ -366,17 +350,15 @@ test("review-surfaces.NARRATIVE.5 mock renders a deterministic verified fallback
     redactSecrets: true,
     remotePrivacyBlocked: false
   });
-  assert.equal(narrative.source, "fallback");
-  assert.ok(narrative.claims.length > 0, "the fallback produces grounded claims");
-  assert.ok(narrative.claims.every((claim) => claim.trust === "verified"), "deterministic fallback claims are all verified");
-  // A rejected NON-mock provider also falls back.
+  assert.equal(mockNarrative, undefined, "mock mode does not synthesize aggregate prose");
+
   const rejecting: ReasoningProvider = {
     name: "agent-file",
     async generateStructured(): Promise<StructuredResult> {
       return { ok: false, reason: "agent_input_not_found" };
     }
   };
-  const fallback = await buildChangeNarrative({
+  const rejectedNarrative = await buildChangeNarrative({
     provider: rejecting,
     providerName: "agent-file",
     packet,
@@ -385,7 +367,7 @@ test("review-surfaces.NARRATIVE.5 mock renders a deterministic verified fallback
     redactSecrets: true,
     remotePrivacyBlocked: false
   });
-  assert.equal(fallback.source, "fallback");
+  assert.equal(rejectedNarrative, undefined, "rejected provider output is omitted");
 });
 
 // review-surfaces.NARRATIVE.1: the section is capped to max_claims.
@@ -405,23 +387,15 @@ test("review-surfaces.NARRATIVE.1 caps the rendered claims at max_claims", async
     redactSecrets: true,
     remotePrivacyBlocked: false
   });
+  assert.ok(narrative, "usable provider claims produce a narrative");
   assert.equal(narrative.claims.length, 3, "claims are capped at max_claims");
 });
 
-// review-surfaces.NARRATIVE.5: buildHumanReview always carries a narrative (the
-// deterministic fallback) even when none is supplied, so the section never fails.
-test("review-surfaces.NARRATIVE.5 buildHumanReview always populates a narrative", () => {
+// review-surfaces.NARRATIVE.5: the model and Markdown omit the optional section
+// when no validated provider prose exists.
+test("review-surfaces.NARRATIVE.5 buildHumanReview omits absent narrative", () => {
   const { packet, diff } = narrativeFacts();
   const model = buildHumanReview({ packet, diff });
-  assert.ok(model.narrative, "a narrative is always present");
-  assert.equal(model.narrative?.source, "fallback");
-});
-
-// review-surfaces.NARRATIVE.2: a fabricated path in the PROSE (not just a
-// structured anchor) also demotes the claim.
-test("review-surfaces.NARRATIVE.2 fabricated path in prose demotes the claim", () => {
-  const { packet, diff } = narrativeFacts();
-  const narrative = buildFallbackNarrative({ packet, diff, headSha: "head123" });
-  // Sanity: fallback claims are verified and cite only real anchors.
-  assert.ok(narrative.claims.every((claim) => claim.invalid_anchors.length === 0));
+  assert.equal(model.narrative, undefined);
+  assert.doesNotMatch(renderHumanReviewMarkdown(model), /## Change narrative/);
 });

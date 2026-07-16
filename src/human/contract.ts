@@ -11,8 +11,8 @@ export type { SemanticChangeFacts };
 
 export const HUMAN_REVIEW_SCHEMA_VERSION = "review-surfaces.human_review.v1" as const;
 
-// review-surfaces.NARRATIVE.1-5: a bounded, plain-language change narrative that
-// opens the human surface. Every claim carries a deterministically-validated
+// review-surfaces.NARRATIVE.1-5: optional, bounded supporting prose. Every claim
+// carries a deterministically-validated
 // trust state — `verified` when all of its anchors are on the deterministic
 // allowlist, `claimed` when an anchor is missing/invalid (DEMOTED and visibly
 // marked, never dropped or rendered as fact). It is prose over deterministic
@@ -31,8 +31,7 @@ export interface NarrativeClaim {
 }
 
 export interface ChangeNarrative {
-  /** Whether the claims came from the provider or the deterministic fallback. */
-  source: "provider" | "fallback";
+  source: "provider";
   provider: ProviderName;
   /** The head SHA the anchor validation ran against. */
   validated_at_head: string;
@@ -73,15 +72,6 @@ export const RISK_LENSES = [
 ] as const;
 export type RiskLens = (typeof RISK_LENSES)[number];
 
-export const REVIEW_ROUTE_PERSONAS = [
-  "human_reviewer",
-  "maintainer",
-  "security",
-  "product",
-  "agent_continuation"
-] as const;
-export type ReviewRoutePersona = (typeof REVIEW_ROUTE_PERSONAS)[number];
-
 export const EVIDENCE_CARD_STATUSES = [
   "verified",
   "unchecked",
@@ -93,7 +83,7 @@ export const EVIDENCE_CARD_STATUSES = [
 export type EvidenceCardStatus = (typeof EVIDENCE_CARD_STATUSES)[number];
 
 export interface HumanReviewBuildConfig {
-  max_review_first: number;
+  max_supporting_queue: number;
   max_suggested_comments: number;
   max_questions: number;
   risk_lenses: Record<RiskLens, boolean>;
@@ -117,7 +107,7 @@ export interface HumanReviewRequiredManualCheckConfig {
 
 export const DEFAULT_HUMAN_REVIEW_BUILD_CONFIG: HumanReviewBuildConfig = {
   review_budget_minutes: null,
-  max_review_first: 20,
+  max_supporting_queue: 20,
   max_suggested_comments: 10,
   max_questions: 10,
   risk_lenses: {
@@ -193,11 +183,12 @@ export interface HumanReviewVerdict {
   reasons: HumanReviewVerdictReason[];
 }
 
-export type DecisionIntentSource = "affected_requirements" | "packet" | "conversation_advisory";
+export type DecisionIntentSource = "pull_request" | "affected_requirements" | "packet" | "conversation_advisory";
 
 export interface DecisionActiveIntent {
   summary: string;
   source: DecisionIntentSource;
+  redaction_blocked: boolean;
   requirement_ids: string[];
   event_ids: string[];
 }
@@ -213,21 +204,11 @@ export interface DecisionFinding {
   evidence: EvidenceRef[];
   requirement_ids: string[];
   risk_ids: string[];
-  source_queue_ids: string[];
-}
-
-export interface DecisionSupportingDetailCounts {
-  total_queue_items: number;
-  projected_queue_items: number;
-  supporting_queue_items: number;
-  affected_requirement_count: number;
-  supporting_requirement_count: number;
 }
 
 export interface DecisionProjection {
   active_intent: DecisionActiveIntent;
   findings: DecisionFinding[];
-  supporting_detail_counts: DecisionSupportingDetailCounts;
 }
 
 export interface ReviewQueueItem {
@@ -381,31 +362,6 @@ export interface IntentMismatch {
   claimed_candidates?: IntentMismatchItem[];
 }
 
-export interface ReviewRouteStep {
-  id: string;
-  rank: number;
-  title: string;
-  action: string;
-  evidence: EvidenceRef[];
-  priority: HumanReviewPriority;
-  artifact?: string;
-  queue_item_ids: string[];
-  risk_lens_ids: string[];
-  question_ids: string[];
-  test_plan_ids: string[];
-  suggested_comment_ids: string[];
-}
-
-export interface ReviewRoute {
-  id: string;
-  persona: ReviewRoutePersona;
-  title: string;
-  summary: string;
-  is_default: boolean;
-  is_secondary: boolean;
-  steps: ReviewRouteStep[];
-}
-
 export type SinceLastReviewCategory = "requirement" | "risk" | "overreach" | "summary";
 
 export interface SinceLastReviewItem {
@@ -413,6 +369,8 @@ export interface SinceLastReviewItem {
   category: SinceLastReviewCategory;
   summary: string;
   evidence: EvidenceRef[];
+  /** Exact risk/requirement ids used to correlate this delta with approval decisions. */
+  decision_refs?: string[];
   acai_id?: string;
   previous_status?: string;
   current_status?: string;
@@ -493,13 +451,11 @@ export interface CoverageEvidenceHunk {
   classification: "covered" | "uncovered" | "partial";
   // review-surfaces.COVERAGE.5: sorted new-side line numbers that are
   // instrumented but not executed, capped with an explicit truncated flag.
-  // OPTIONAL in the schema for v1 artifact compatibility (pre-COVERAGE.5
-  // sidecars stay valid; absent reads as "no per-line data", never as covered).
-  uncovered_lines?: number[];
+  uncovered_lines: number[];
   uncovered_truncated?: boolean;
   // Executed counterpart so per-line gutters never guess: a line in neither
   // list is not-instrumented (neutral).
-  covered_line_numbers?: number[];
+  covered_line_numbers: number[];
 }
 
 export interface CoverageEvidenceFile {
@@ -684,7 +640,7 @@ export interface ReadingOrder {
 // prior packet (CI artifact or local prior-packet directory — the comparison
 // engine is transport-indifferent). Identity stays on stable finding keys via
 // the compare output; partial history is NORMAL (artifact expiry), never an
-// error. Optional in the schema for pre-TREND v1 artifacts; always emitted.
+// error. The current artifact always emits this ledger, including an empty one.
 export interface RoundsLedgerEntry {
   round: number;
   head_sha: string;
@@ -751,22 +707,14 @@ export interface HumanReviewModel {
   spec_mode: "acai" | "none";
   verdict: HumanReviewVerdict;
   // review-surfaces.REVIEWER_VALUE.4-.6: the compact, PR-scoped decision path.
-  // Writers always emit it and the strict schema requires it. Optional in the
-  // TypeScript read contract so renderers can explain a pre-M2 artifact instead
-  // of throwing before the schema validator reports that it is stale.
-  decision_projection?: DecisionProjection;
-  summary: string;
-  // review-surfaces.NARRATIVE.1: grounded narrative that opens the surface. Always
-  // emitted (provider-built or the deterministic fallback) and required by the
-  // schema, so a stale artifact lacking it fails validation and is rebuilt rather
-  // than rendering an empty section (SCHEMA.3 strictness for new fields).
-  narrative: ChangeNarrative;
+  decision_projection: DecisionProjection;
+  // review-surfaces.NARRATIVE.1: optional provider-built supporting prose. The
+  // deterministic reviewer brief remains complete and postable without it.
+  narrative?: ChangeNarrative;
   // Advisory conversation interpretation and reconciled reviewer insights.
-  // Writers emit both fields, but they remain optional in the v1 read contract
-  // so artifacts created before conversation review was introduced still load.
   // These never participate in verdict, blocker, or coverage computation.
-  conversation_analysis?: ConversationAnalysis;
-  review_insights?: ReviewerInsight[];
+  conversation_analysis: ConversationAnalysis;
+  review_insights: ReviewerInsight[];
   // review-surfaces.SEMANTIC_DIFF.1-4: deterministic facts about what the change
   // means (schema contract changes, exported API surface changes, test-weakening
   // signals). Always present (empty when nothing applies).
@@ -780,7 +728,6 @@ export interface HumanReviewModel {
   // review-surfaces.METHODOLOGY.7/.8 (Phase 4): the agent-workflow audit card.
   methodology_audit: MethodologyAudit;
   intent_mismatch: IntentMismatch;
-  review_routes: ReviewRoute[];
   since_last_review: SinceLastReview;
   coverage_evidence: CoverageEvidence;
   review_plan: ReviewPlan;
@@ -789,8 +736,8 @@ export interface HumanReviewModel {
   change_graph: ChangeGraph;
   reading_order: ReadingOrder;
   // review-surfaces.TREND.1: the full rounds ledger (renderers cap the table;
-  // the artifact keeps every row). Optional for pre-TREND v1 artifacts.
-  rounds?: RoundsLedgerEntry[];
+  // the artifact keeps every row).
+  rounds: RoundsLedgerEntry[];
   // review-surfaces.DEP_FACTS.4 / RENDER.13: attributed dependency chains.
   // Optional: present only when lockfile edges resolved and chains exist.
   dependency_chains?: DependencyChain[];
@@ -803,6 +750,7 @@ export interface HumanReviewModel {
   generated_from: {
     packet_path: string;
     pr_surface_path?: string;
+    pr_surface_signature?: string;
     base_ref: string;
     base_sha?: string;
     head_ref: string;
@@ -810,6 +758,9 @@ export interface HumanReviewModel {
     // Producing packet signature; artifact-only rebuilds retain advisory
     // provider output only when every packet input is unchanged.
     packet_signature?: string;
+    // Provider + effective model identity for optional provider-authored prose.
+    // This is separate from the deterministic packet signature by design.
+    enrichment_signature?: string;
     // COLD_START.7: working-tree files absorbed into this review. 0 on a clean
     // or pinned-head run; a nonzero count renders on every human surface.
     uncommitted_files: number;

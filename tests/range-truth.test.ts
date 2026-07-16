@@ -5,9 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { CLI, runCli } from "./helpers/cli-repo";
-import { collectHeadCommits, MAX_UNTRACKED_REVIEW_BYTES } from "../src/collector/git";
+import { collectDiff, collectHeadCommits, MAX_UNTRACKED_REVIEW_BYTES } from "../src/collector/git";
 import type { HumanReviewModel } from "../src/human/contract";
-import { renderHumanPrComment } from "../src/render/pr-comment";
 import { renderStickySummary } from "../src/render/sticky-summary";
 
 // Release quick-wins uplift Phase 1 (QUICK_WINS_UPLIFT_GOAL.md): range truth.
@@ -49,6 +48,48 @@ function makeRepo(branch: string): string {
 function readManifest(cwd: string, outDir = ".review-surfaces"): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(path.join(cwd, outDir, "manifest.json"), "utf8")) as Record<string, unknown>;
 }
+
+test("review-surfaces.COLD_START.6 collects committed range diffs larger than Node's implicit 1 MiB buffer", () => {
+  const tmp = makeRepo("main");
+  try {
+    const base = commitFile(tmp, "large.txt", "base\n", "base");
+    const largeText = Array.from(
+      { length: 20_000 },
+      (_, index) => `review-line-${index.toString().padStart(5, "0")}-${"x".repeat(64)}`
+    ).join("\n");
+    commitFile(tmp, "large.txt", `${largeText}\n`, "large review change");
+
+    const result = collectDiff(tmp, base, "HEAD", false);
+
+    assert.equal(result.diffSource, "range");
+    assert.deepEqual(result.diagnostics, []);
+    assert.ok(Buffer.byteLength(result.text, "utf8") > 1024 * 1024, "the complete range exceeds the old implicit buffer");
+    assert.match(result.text, /review-line-19999-/, "the end of the committed range is retained");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("review-surfaces.COLD_START.6 a range command failure with resolved refs fails closed", () => {
+  const tmp = makeRepo("main");
+  try {
+    fs.writeFileSync(path.join(tmp, ".gitattributes"), "*.txt diff=broken\n");
+    git(tmp, ["add", ".gitattributes"]);
+    const base = commitFile(tmp, "large.txt", "base\n", "base");
+    git(tmp, ["config", "diff.broken.textconv", "false"]);
+    fs.writeFileSync(path.join(tmp, "large.txt"), "changed\n");
+    git(tmp, ["add", "large.txt"]);
+    git(tmp, ["commit", "-m", "change with broken diff driver"]);
+
+    assert.throws(
+      () => collectDiff(tmp, base, "HEAD", false),
+      /refusing to review a smaller fallback/,
+      "resolved refs must never degrade to an incomplete working-tree review"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
 
 function changedFilePaths(cwd: string, outDir = ".review-surfaces"): string[] {
   const parsed = JSON.parse(
@@ -397,11 +438,11 @@ test("review-surfaces.COLD_START.7 a HEAD review with a dirty tree announces the
     const comment = fs.readFileSync(path.join(tmp, ".review-surfaces", "comment.md"), "utf8");
     assert.match(comment, /includes 2 uncommitted file\(s\) \(working tree\)/, "the sticky must carry the line");
 
-    // PR #79 round 5: the legacy default `comment` format carries it too.
-    const legacy = runCli(tmp, ["comment"]);
-    assert.equal(legacy.status, 0, legacy.stderr);
-    const legacyComment = fs.readFileSync(path.join(tmp, ".review-surfaces", "comment.md"), "utf8");
-    assert.match(legacyComment, /includes 2 uncommitted file\(s\) \(working tree\)/, "the default comment must carry the line");
+    // The default `github` alias renders the same human brief as `sticky`.
+    const defaultComment = runCli(tmp, ["comment"]);
+    assert.equal(defaultComment.status, 0, defaultComment.stderr);
+    const defaultMarkdown = fs.readFileSync(path.join(tmp, ".review-surfaces", "comment.md"), "utf8");
+    assert.equal(defaultMarkdown, comment);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -428,7 +469,7 @@ test("review-surfaces.REVIEWER_VALUE.5 omitted untracked scope survives the full
       fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.md"), "utf8"),
       fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.html"), "utf8"),
       renderStickySummary(model).markdown,
-      renderHumanPrComment(model).markdown
+      renderStickySummary(model).markdown
     ];
     for (const surface of surfaces) {
       assert.match(surface, /Review scope incomplete/);
@@ -473,8 +514,10 @@ test("review-surfaces.COLD_START.7 a ROOT output dir (--out .) never counts its 
     // absorb any of them — this test pins the root-artifact exclusion list, so
     // a new artifact writer that is not excluded turns it red. The draft-review
     // renderer's output is simulated too (PR #79 round 3: pending_review.json
-    // was missing from the list).
+    // was missing from the list). A removed artifact can also remain in a
+    // long-lived root output directory, so deprecated names stay excluded.
     fs.writeFileSync(path.join(tmp, "pending_review.json"), "{}\n");
+    fs.writeFileSync(path.join(tmp, "review_routes.md"), "# stale generated routes\n");
     // REAL user files in same-named directories must NOT be treated as
     // artifact churn (PR #79 round 4): only the exact files the tool writes
     // are excluded at the root.

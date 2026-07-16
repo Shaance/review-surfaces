@@ -116,9 +116,9 @@ test("review-surfaces.HUMAN_REVIEW.16 parses human_review caps and risk lens tog
         "human_review:",
         "  enabled: false",
         "  default_entrypoint: false",
-        "  max_review_first: 3",
-        "  max_suggested_comments: 4",
-        "  max_questions: 5",
+        "  max_supporting_queue: 23",
+        "  max_suggested_comments: 24",
+        "  max_questions: 25",
         "  risk_lenses:",
         "    api_contract: false",
         "    security_privacy: true",
@@ -134,9 +134,11 @@ test("review-surfaces.HUMAN_REVIEW.16 parses human_review caps and risk lens tog
     const config = await loadConfig(tmp);
     assert.equal(config.human_review.enabled, false);
     assert.equal(config.human_review.default_entrypoint, false);
-    assert.equal(config.human_review.max_review_first, 3);
-    assert.equal(config.human_review.max_suggested_comments, 4);
-    assert.equal(config.human_review.max_questions, 5);
+    // Values above the defaults remain authoritative; the builder must not
+    // silently re-cap them with a second hard-coded policy.
+    assert.equal(config.human_review.max_supporting_queue, 23);
+    assert.equal(config.human_review.max_suggested_comments, 24);
+    assert.equal(config.human_review.max_questions, 25);
     assert.equal(config.human_review.risk_lenses.api_contract, false);
     assert.equal(config.human_review.risk_lenses.security_privacy, true);
     assert.equal(config.human_review.risk_lenses.llm_trust_boundary, false);
@@ -174,7 +176,7 @@ test("review-surfaces.HUMAN_REVIEW.16 invalid human_review caps fall back to saf
       path.join(tmp, "review-surfaces.config.yaml"),
       [
         "human_review:",
-        "  max_review_first: 0",
+        "  max_supporting_queue: 0",
         "  max_suggested_comments: -1",
         "  max_questions: nope",
         "  risk_lenses:",
@@ -189,7 +191,7 @@ test("review-surfaces.HUMAN_REVIEW.16 invalid human_review caps fall back to saf
       ].join("\n")
     );
     const config = await loadConfig(tmp);
-    assert.equal(config.human_review.max_review_first, defaultConfig.human_review.max_review_first);
+    assert.equal(config.human_review.max_supporting_queue, defaultConfig.human_review.max_supporting_queue);
     assert.equal(config.human_review.max_suggested_comments, defaultConfig.human_review.max_suggested_comments);
     assert.equal(config.human_review.max_questions, defaultConfig.human_review.max_questions);
     assert.equal(config.human_review.risk_lenses.api_contract, true);

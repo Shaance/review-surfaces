@@ -11,9 +11,9 @@ import { ReviewPacket } from "../src/render/packet";
 import { parseStructuredDiff } from "../src/collector/diff-hunks";
 import { minimalReviewPacket } from "./helpers/review-packet";
 import {
+  renderConversationInsightsMarkdown,
   renderHumanReviewMarkdown,
   renderSuggestedCommentsMarkdown,
-  renderReviewRoutesMarkdown,
   renderRiskLensesMarkdown
 } from "../src/human/render";
 import { renderHumanReviewHtml } from "../src/human/render-html";
@@ -37,12 +37,11 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
     schema_version: HUMAN_REVIEW_SCHEMA_VERSION,
     mode: "pr",
     spec_mode: "acai",
-    narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
     change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
     reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
-    summary: "Two files changed; one impl file lacks a focused test.",
+    decision_projection: { active_intent: { summary: "Fixture intent.", source: "packet", redaction_blocked: false, requirement_ids: [], event_ids: [] }, findings: [] },
     conversation_analysis: notAssessedConversationAnalysis("mock"),
     review_insights: [],
     review_queue: [],
@@ -59,7 +58,6 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
     risk_lens_findings: [],
     methodology_audit: { quality_flags: [], considered: [], research: [], workflow_findings: [] },
     intent_mismatch: { expected_by_spec: [], observed_in_diff: [], possible_mismatches: [], possible_overreach: [], missing_intent: [] },
-    review_routes: [],
     since_last_review: {
       improved: [],
       regressed: [],
@@ -89,7 +87,8 @@ function model(overrides: Partial<HumanReviewModel> = {}): HumanReviewModel {
       head_sha: "deadbeef",
       uncommitted_files: 0
     },
-    ...overrides
+    ...overrides,
+    rounds: overrides.rounds ?? []
   };
 }
 
@@ -149,7 +148,7 @@ function conversationInsight(index: number): NonNullable<HumanReviewModel["revie
   };
 }
 
-test("review-surfaces.CONVERSATION_REVIEW.4 conversation-aware insights lead the reviewer surface, stay capped, and expose evidence state without changing verdict", () => {
+test("review-surfaces.CONVERSATION_REVIEW.4 conversation insights remain available as supporting context without displacing purpose or decisions", () => {
   const review = model({
     conversation_analysis: analyzedConversation(),
     review_insights: [1, 2, 3, 4].map(conversationInsight)
@@ -157,31 +156,28 @@ test("review-surfaces.CONVERSATION_REVIEW.4 conversation-aware insights lead the
   const markdown = renderHumanReviewMarkdown(review);
   const html = renderHumanReviewHtml(review);
 
-  assert.ok(markdown.indexOf("## Verdict") < markdown.indexOf("## Conversation-aware insights"));
-  assert.ok(markdown.indexOf("## Conversation-aware insights") < markdown.indexOf("## Review first"));
-  assert.ok(markdown.indexOf("## Conversation-aware insights") < markdown.indexOf("## Reading order"));
-  assert.match(markdown, /\*\*Analyzed\.\*\*/);
+  assert.ok(markdown.indexOf("## Supporting review queue") < markdown.indexOf("## Conversation-aware insights"));
   assert.match(markdown, /AI synopsis: The author refined the goal/);
-  assert.match(markdown, /\[Conflicts with intent · high\] Conversation finding 1/);
-  assert.match(markdown, /Stated goal.*Give reviewers clear, conversation-aware findings/);
+  assert.match(markdown, /Give reviewers clear, conversation-aware findings/);
+  assert.match(markdown, /Conversation finding 1/);
   assert.match(markdown, /Why it matters: A reviewer could approve behavior/);
   assert.match(markdown, /Review: Check the cited change 1\./);
-  assert.match(markdown, /events `evt-1`; paths `src\/finding-1\.ts`/);
-  assert.match(markdown, /Conversation finding 3/);
-  assert.doesNotMatch(markdown, /Conversation finding 4/);
+  assert.match(markdown, /Conversation finding 4/);
+  assert.match(markdown, /\[Interactive HTML cockpit\]\(human_review\.html\)/);
 
-  assert.ok(html.indexOf('id="conversation-insights"') < html.indexOf('id="queue"'));
+  assert.ok(html.indexOf('id="approval-decisions"') < html.indexOf('id="conversation-insights"'));
+  assert.ok(html.indexOf('id="queue"') < html.indexOf('id="conversation-insights"'));
   assert.ok(html.indexOf('id="conversation-insights"') < html.indexOf('id="reading-order"'));
   assert.match(html, /AI synopsis: The author refined the goal/);
   assert.match(html, /badge contradicted[^>]*>Conflicts with intent</);
   assert.match(html, /<strong>Why it matters:<\/strong> A reviewer could approve behavior/);
   assert.match(html, /<strong>Review:<\/strong> Check the cited change 1\./);
-  assert.doesNotMatch(html, /Conversation finding 4/);
+  assert.match(html, /Conversation finding 4/);
   assert.equal(review.verdict.decision, "reviewable_with_attention");
 });
 
-test("review-surfaces.CONVERSATION_REVIEW.4 full human Markdown neutralizes provider-authored controls without hiding deterministic review content", () => {
-  const markdown = renderHumanReviewMarkdown(model({
+test("review-surfaces.CONVERSATION_REVIEW.4 the conversation artifact neutralizes provider-authored controls without hiding deterministic review content", () => {
+  const markdown = renderConversationInsightsMarkdown(model({
     conversation_analysis: hostileConversationAnalysis(),
     review_insights: [hostileConversationInsight()]
   }));
@@ -203,38 +199,21 @@ test("review-surfaces.CONVERSATION_REVIEW.4 full human Markdown neutralizes prov
   assert.match(markdown, new RegExp(ORDINARY_CONVERSATION_VALUE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(markdown, /&lt;\\!--HOSTILE_SUMMARY--&gt;/);
   assert.match(markdown, /\\\[hostile-title-link\\\]\\\(https&#58;\/\/attacker\.invalid\/title\\\)/);
-  assert.match(markdown, /\n## Reading order\n/);
-  assert.match(markdown, /\n## Review first\n/);
 
   const markerReview = model({ conversation_analysis: {
     ...hostileConversationAnalysis(),
     summary: "Provider output included [REDACTED:github_token]."
   } });
-  assert.match(renderHumanReviewMarkdown(markerReview), /\[REDACTED:github_token\]/);
+  assert.match(renderConversationInsightsMarkdown(markerReview), /\[REDACTED:github_token\]/, "the focused artifact preserves the redacted supporting context");
 });
 
-test("review-surfaces.CONVERSATION_REVIEW.4 missing conversation analysis is an honest not-assessed state, not a clean result", () => {
+test("review-surfaces.CONVERSATION_REVIEW.4 missing conversation analysis does not add primary-surface boilerplate", () => {
   const markdown = renderHumanReviewMarkdown(model());
-  assert.match(markdown, /\*\*Not assessed\.\*\*/);
-  assert.match(markdown, /not evidence that the change is clean/);
+  assert.doesNotMatch(markdown, /Conversation-aware insights|\*\*Not assessed\.\*\*|not evidence that the change is clean/);
+  assert.match(markdown, /## Change purpose/);
 });
 
-test("review-surfaces.CONVERSATION_REVIEW.4 legacy human v1 artifacts render without conversation fields", () => {
-  const legacy = model();
-  delete legacy.conversation_analysis;
-  delete legacy.review_insights;
-
-  const markdown = renderHumanReviewMarkdown(legacy);
-  const html = renderHumanReviewHtml(legacy);
-  const sticky = renderStickySummary(legacy).markdown;
-
-  assert.match(markdown, /\*\*Not assessed\.\*\* No conversation analysis is present/);
-  assert.match(html, /Not assessed[^]*No conversation analysis is present/);
-  assert.match(html, /No conversation-grounded conclusions are available/);
-  assert.doesNotMatch(sticky, /No conversation analysis is present/, "the sticky omits canonical missing-log boilerplate from its primary scan path");
-});
-
-test("review-surfaces.CONVERSATION_REVIEW.4 Markdown and HTML share non-analyzed status, summary, and empty-result meaning", () => {
+test("review-surfaces.CONVERSATION_REVIEW.4 the focused Markdown and HTML share non-analyzed status, summary, and empty-result meaning", () => {
   const cases: Array<{
     analysis: NonNullable<HumanReviewModel["conversation_analysis"]>;
     label: RegExp;
@@ -262,7 +241,7 @@ test("review-surfaces.CONVERSATION_REVIEW.4 Markdown and HTML share non-analyzed
 
   for (const item of cases) {
     const review = model({ conversation_analysis: item.analysis, review_insights: [] });
-    const markdown = renderHumanReviewMarkdown(review);
+    const markdown = renderConversationInsightsMarkdown(review);
     const html = renderHumanReviewHtml(review);
     assert.match(markdown, item.label);
     assert.match(html, item.label);
@@ -275,7 +254,6 @@ test("review-surfaces.CONVERSATION_REVIEW.4 Markdown and HTML share non-analyzed
 
 test("review-surfaces.CONVERSATION_REVIEW.4 stale insights stay hidden unless analysis and reconciliation completed", () => {
   const cases: Array<HumanReviewModel["conversation_analysis"]> = [
-    undefined,
     notAssessedConversationAnalysis("mock"),
     {
       ...notAssessedConversationAnalysis("ai-sdk"),
@@ -293,23 +271,28 @@ test("review-surfaces.CONVERSATION_REVIEW.4 stale insights stay hidden unless an
     }
   ];
 
-  for (const analysis of cases) {
+  for (const [index, analysis] of cases.entries()) {
     const review = model({
       conversation_analysis: analysis,
       review_insights: [conversationInsight(99)]
     });
-    if (analysis === undefined) {
-      delete review.conversation_analysis;
-    }
-    const markdown = renderHumanReviewMarkdown(review);
+    const markdown = renderConversationInsightsMarkdown(review);
+    const fullMarkdown = renderHumanReviewMarkdown(review);
     const html = renderHumanReviewHtml(review);
     const sticky = renderStickySummary(review).markdown;
 
     for (const rendered of [markdown, html, sticky]) {
       assert.doesNotMatch(rendered, /Conversation finding 99|Conflicts with intent/);
     }
+    assert.doesNotMatch(fullMarkdown, /Conversation finding 99|Conflicts with intent/);
     assert.match(markdown, /no conversation-grounded conclusion|Diff reconciliation did not complete/i);
-    assert.match(html, /no conversation-grounded conclusion|Diff reconciliation did not complete/i);
+    if (index === 0) {
+      assert.doesNotMatch(fullMarkdown, /Conversation-aware insights|conversation-grounded conclusion/i);
+      assert.doesNotMatch(html, /conversation-grounded conclusion|Diff reconciliation did not complete/i);
+    } else {
+      assert.match(fullMarkdown, /no conversation-grounded conclusion|Diff reconciliation did not complete/i);
+      assert.match(html, /no conversation-grounded conclusion|Diff reconciliation did not complete/i);
+    }
   }
 });
 
@@ -329,7 +312,7 @@ test("review-surfaces.CONVERSATION_REVIEW.4 incomplete reconciliation is visible
     },
     review_insights: []
   });
-  const markdown = renderHumanReviewMarkdown(review);
+  const markdown = renderConversationInsightsMarkdown(review);
   const html = renderHumanReviewHtml(review);
 
   assert.match(markdown, /\*\*Analyzed — partial\.\*\*/);
@@ -390,32 +373,7 @@ test("review-surfaces.RANKING.4 an aggregate-rollup packet risk renders at file 
   assert.equal(item.title, "Weak test evidence across requirements", "the heading is a short fixed label, not a truncated count sentence");
 });
 
-test("review-surfaces.HUMAN_REVIEW.24 the summary leads with blockers and queue items, not a verdict restatement or provenance preamble", () => {
-  const packet = minimalReviewPacket() as unknown as ReviewPacket;
-  const diff = parseStructuredDiff(
-    [
-      "diff --git a/src/a.ts b/src/a.ts",
-      "--- a/src/a.ts",
-      "+++ b/src/a.ts",
-      "@@ -1 +1 @@",
-      "-a",
-      "+b",
-      "diff --git a/src/b.ts b/src/b.ts",
-      "--- a/src/b.ts",
-      "+++ b/src/b.ts",
-      "@@ -1 +1 @@",
-      "-c",
-      "+d"
-    ].join("\n") + "\n"
-  );
-  const built = buildHumanReview({ packet, diff });
-  assert.match(built.summary, /^\d+ blocker\(s\) and \d+ review queue item\(s\) across /);
-  assert.match(built.summary, /2 changed file\(s\)/);
-  assert.doesNotMatch(built.summary, /Verdict is/);
-  assert.doesNotMatch(built.summary, /Human review surface generated from local evidence/);
-});
-
-test("review-surfaces.HUMAN_TRUST.6 the verdict surfaces the top in-diff risk co-equally with a soft missing-evidence reason", () => {
+test("review-surfaces.HUMAN_TRUST.6 the verdict surfaces the top in-diff risk without unrelated missing-evidence noise", () => {
   const packet = minimalReviewPacket() as unknown as ReviewPacket;
   // An earlier LOW-severity risk precedes the medium one: the cited evidence must
   // name the medium risk that fired hasRiskAtLeast, not the first (low) candidate.
@@ -457,7 +415,7 @@ test("review-surfaces.HUMAN_TRUST.6 the verdict surfaces the top in-diff risk co
   );
   const built = buildHumanReview({ packet, diff, prSurface: decisionSurface(["schemas/human_review.schema.json"]) });
   const reasonIds = built.verdict.reasons.map((reason) => reason.id);
-  assert.ok(reasonIds.includes("READY-MISSING-EVIDENCE"), "the soft missing-evidence reason is present");
+  assert.equal(reasonIds.includes("READY-MISSING-EVIDENCE"), false, "pathless repository evidence gaps do not affect the PR verdict");
   const riskReason = built.verdict.reasons.find((reason) => reason.id === "READY-RISKS-PRESENT");
   assert.ok(riskReason, "the concrete in-diff risk is also surfaced");
   assert.ok(
@@ -469,7 +427,7 @@ test("review-surfaces.HUMAN_TRUST.6 the verdict surfaces the top in-diff risk co
   // the earlier low-severity candidate.
   assert.match(riskReason.summary, /A medium in-diff risk/);
   assert.doesNotMatch(riskReason.summary, /low unrelated risk/);
-  assert.equal(built.verdict.decision, "needs_author_clarification", "the decision precedence is unchanged");
+  assert.equal(built.verdict.decision, "reviewable_with_attention", "missing evidence lowers confidence without inventing an author clarification");
 });
 
 test("review-surfaces.RANKING.5 the 'Why ranked here' block is suppressed when it is only the default severity echo", () => {
@@ -494,25 +452,11 @@ test("review-surfaces.HUMAN_REVIEW.25 a suggested comment whose only evidence ec
   assert.match(renderSuggestedCommentsMarkdown(distinct), /Evidence: /);
 });
 
-test("review-surfaces.HUMAN_REVIEW.26 an all-negation non-default route is flagged skippable", () => {
-  const step = (rank: number) => ({ id: `S-${rank}`, rank, title: "Nothing detected", priority: "low" as const, action: "No signal.", evidence: [{ kind: "file" as const, path: "review_packet.json", confidence: "low" as const }], queue_item_ids: [], risk_lens_ids: [], question_ids: [], test_plan_ids: [], suggested_comment_ids: [] });
-  const withSkippable = model({
-    review_routes: [
-      { id: "ROUTE-SEC", title: "Security review", persona: "security", is_default: false, is_secondary: false, summary: "Security pass.", steps: [step(1), step(2)] }
-    ]
-  });
-  assert.match(renderReviewRoutesMarkdown(withSkippable), /Skippable: no signal fired/);
-});
-
-test("review-surfaces.HUMAN_REVIEW.27 the cockpit answers the three reviewer questions and never renders a bare 'command' evidence anchor", () => {
+test("review-surfaces.HUMAN_REVIEW.27 the cockpit removes the aggregate three-question block and never renders a bare 'command' evidence anchor", () => {
   const html = renderHumanReviewHtml(model({
     review_queue: [queueItem({ evidence: [{ kind: "command", command: "pnpm run test", confidence: "medium" }], ranking_reasons: ["a real ranking signal"] })]
   }));
-  assert.match(html, /Did the agent overreach its instructions\?/);
-  assert.match(html, /Did it weaken tests to make them pass\?/);
-  assert.match(html, /Did it claim things it didn't do\?/);
-  // The three-question block leads the page, before the reading order.
-  assert.ok(html.indexOf("Did the agent overreach") < html.indexOf('id="reading-order"'), "the three questions lead the first screen");
+  assert.doesNotMatch(html, /Did the agent overreach|Did it weaken tests|Did it claim things it didn't do|What a human reviewer needs to know/);
   // A command-only evidence anchor shows the command, not the bare kind word.
   assert.match(html, /<code>pnpm run test<\/code>/);
 });
@@ -583,14 +527,6 @@ test("review-surfaces.EVIDENCE.8 a feedback-recorded passed command surfaces as 
   );
 });
 
-test("review-surfaces.HUMAN_REVIEW.24 a review rebuilt from a packet with no diff does not claim 0 changed file(s)", () => {
-  const packet = minimalReviewPacket() as unknown as ReviewPacket;
-  const built = buildHumanReview({ packet });
-  assert.doesNotMatch(built.summary, /0 changed file\(s\)/);
-  assert.doesNotMatch(built.summary, /changed file\(s\)/, "with no diff the summary falls back to the packet-risk denominator");
-  assert.match(built.summary, /packet risk\(s\)/);
-});
-
 test("review-surfaces.HUMAN_REVIEW.23 a path-only risk lens omits the empty 'Linked risk IDs' line in risk_lenses.md", () => {
   const lensModel = model({
     risk_lens_findings: [
@@ -649,7 +585,7 @@ test("review-surfaces.TREND.3 a status-change delta renders arrow-only, without 
   assert.doesNotMatch(regressed.summary, /\(regressed\)/);
 });
 
-test("review-surfaces.TREND.4 a homogeneous regressed bucket collapses to a count and sample, not a wall of ids", () => {
+test("review-surfaces.TREND.4 an unrelated homogeneous requirement bucket stays out of the primary sticky", () => {
   const regressed = Array.from({ length: 12 }, (_, index) => ({
     id: `S-${index + 1}`,
     category: "requirement" as const,
@@ -663,11 +599,11 @@ test("review-surfaces.TREND.4 a homogeneous regressed bucket collapses to a coun
   const { markdown } = renderStickySummary(model({
     since_last_review: { ...model().since_last_review, previous_packet_path: ".review-surfaces-prev/review_packet.json", regressed }
   }));
-  assert.match(markdown, /12 requirement\(s\) satisfied -> partial/);
+  assert.doesNotMatch(markdown, /12 requirement\(s\) satisfied -> partial/);
   assert.doesNotMatch(markdown, /\(\+\d+ more\)/);
 });
 
-test("review-surfaces.TREND.5 a count-moved aggregate risk renders once as 'still open', not as both resolved and new", () => {
+test("review-surfaces.TREND.5 an unrelated count-moved aggregate stays out of the primary sticky", () => {
   const { markdown } = renderStickySummary(model({
     since_last_review: {
       ...model().since_last_review,
@@ -676,6 +612,6 @@ test("review-surfaces.TREND.5 a count-moved aggregate risk renders once as 'stil
       new_risks: [{ id: "N-1", category: "risk", summary: "testing: 182 requirement(s) have implementation evidence but weak or missing test evidence.", evidence: [] }]
     }
   }));
-  assert.match(markdown, /Still open \(count changed\)/);
-  assert.match(markdown, /139 -> 182 requirement\(s\)/);
+  assert.doesNotMatch(markdown, /Still open \(count changed\)/);
+  assert.doesNotMatch(markdown, /139 (?:->|-&gt;) 182 requirement\(s\)/);
 });

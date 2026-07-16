@@ -18,10 +18,10 @@ test("review-surfaces.REVIEWER_VALUE.10 scores curated precision, density, dupli
     [
       "# Human Review",
       "## Verdict",
-      "## Review first",
+      "## Approval decisions",
       "1. concrete",
-      "   - Action: inspect it",
-      "## Reading order"
+      "   - Review: inspect it",
+      "## Supporting review queue"
     ].join("\n"),
     {
       findings: [
@@ -54,7 +54,7 @@ test("review-surfaces.REVIEWER_VALUE.10 clean usefulness judgments produce no ga
       suggested_comments: [{ path: "src/action.ts", title: "Concrete defect" }],
       decision_projection: { findings: [{ root_cause: "root:a" }] }
     },
-    "# Human Review\n## Review first\n- Action: inspect it\n## Reading order\n",
+    "# Human Review\n## Approval decision\n- Review: inspect it\n## Supporting review queue\n",
     {
       findings: [{ path: "src/action.ts", actionable: true }],
       comments: [{ path: "src/action.ts", actionable: true }],
@@ -74,10 +74,10 @@ test("review-surfaces.REVIEWER_VALUE.10 counts decision findings as first action
     {},
     [
       "# Human Review",
-      "## Decision findings",
+      "## Approval decision",
       "1. Contract break",
-      "   - Action: preserve the public contract",
-      "## Review first",
+      "   - Review: preserve the public contract",
+      "## Supporting review queue",
       "No additional actions.",
       "## Reading order"
     ].join("\n"),
@@ -90,7 +90,7 @@ test("review-surfaces.REVIEWER_VALUE.10 counts decision findings as first action
 test("review-surfaces.REVIEWER_VALUE.10 fails when a curated actionable item disappears", () => {
   const score = scoreReviewerUsefulness(
     { review_queue: [], suggested_comments: [] },
-    "# Human Review\n## Review first\nNo actions.\n## Reading order\n",
+    "# Human Review\n## Approval decisions\nNo decisions.\n## Supporting review queue\n",
     {
       findings: [{ path: "src/action.ts", actionable: true }],
       comments: [{ path: "src/action.ts", body_contains: "Fix this", actionable: true }]

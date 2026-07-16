@@ -2,9 +2,11 @@
 
 ## Context
 
+Status: completed historical plan, superseded by the reviewer-brief product reset.
+
 The product proposal in `docs/history/human-first-review-surfaces-comprehensive-feature-proposal.md` reframes `review-surfaces` from a packet compiler into a human review decision cockpit. The existing PR surface already provides deterministic diff-scoped facts: changed files, affected requirements, scoped coverage, PR risks, and a gated narrative. The first implementation slice should turn those facts plus `review_packet.json` into a human-first artifact without changing the core packet contract.
 
-Light prior-art scan: current AI review products tend to emphasize PR summaries, inline comments, risk scores, and suggested fixes. The differentiator to preserve here is deterministic, local, evidence-backed review routing: verdict, review-first queue, trust audit, questions, and concrete checks.
+Light prior-art scan: current AI review products tend to emphasize PR summaries, inline comments, risk scores, and suggested fixes. The retained differentiator is deterministic, local evidence. The current product exposes that evidence through an author purpose, a verdict, every independent approval decision, and a supporting queue rather than a queue-first cockpit.
 
 ## Architecture
 
@@ -43,7 +45,8 @@ Exit criteria:
 
 - `all` writes `human_review.json` and `human_review.md`.
 - `human_review.json` validates against `schemas/human_review.schema.json`.
-- The first Markdown screen contains verdict, review-first items, blockers/questions, and trust audit.
+- The first Markdown screen contains author purpose, verdict, and all independent
+  approval decisions; blockers, questions, trust, and the queue are supporting detail.
 - The builder is deterministic under `mock`.
 - Dogfood output is inspected and any useful finding is converted into code, tests, schema, docs, feedback, or an explicit deferral.
 
@@ -72,16 +75,16 @@ Deferred:
   - Primary anchors: `src/human/human-review.ts`, `src/human/render.ts`, `tests/human-review.test.ts`.
 - M5: suggested reviewer comments.
   - Implemented deterministic evidence-backed comment drafts grouped by blocking, clarifying, and non-blocking severity. Drafts are local-only and not auto-posted.
-  - Primary anchors: `src/human/human-review.ts`, `src/render/pr-comment.ts`, `tests/human-review.test.ts`, `tests/pr-comment.test.ts`.
+  - Primary anchors: `src/human/human-review.ts`, `src/render/sticky-summary.ts`, `tests/human-review.test.ts`, `tests/sticky-summary.test.ts`.
 - M6: feedback memory and domain risk lenses.
-  - Implemented local feedback policy effects, false-positive/false-negative tuning, required manual checks, review routes, evidence cards, since-last-review deltas, risk lenses, and config caps.
+  - Implemented local feedback policy effects, false-positive/false-negative tuning, required manual checks, evidence cards, since-last-review deltas, risk lenses, and config caps.
   - Primary anchors: `src/human/human-review.ts`, `src/config/config.ts`, `schemas/human_review.schema.json`, `tests/human-review.test.ts`, `tests/config.test.ts`, `tests/schema-contract.test.ts`.
 
 ## Additional Proposal Slices Landed
 
 - PR comments now prefer a current schema-valid `human_review.json` while preserving `pr_review_surface.json` as the lower-level PR fact and postability model.
-- `all` prints `human_review.md` as the default reviewer entrypoint with verdict, review-first count, blockers, suggested comments, and missing-evidence count.
-- Standalone human artifacts are rendered from `human_review.json`: `review_queue.md`, `suggested_comments.md`, `trust_audit.md`, `risk_lenses.md`, `review_routes.md`, `evidence_cards.md`, `since_last_review.md`, `intent_mismatch.md`, and `test_plan.md`.
+- `all` prints `human_review.md` as the default reviewer entrypoint with the change purpose, verdict, and adaptive approval-decision count; queue and evidence counts remain supporting diagnostics.
+- Standalone human artifacts are rendered from `human_review.json`: `review_queue.md`, `suggested_comments.md`, `trust_audit.md`, `risk_lenses.md`, `evidence_cards.md`, `since_last_review.md`, `intent_mismatch.md`, and `test_plan.md`.
 - `review-surfaces.HUMAN_REVIEW.18` implements explicit intent-mismatch findings for expected spec intent, observed diff behavior, possible mismatches, possible overreach, and missing intent mappings.
 
 ## Remaining Cleanup Candidates

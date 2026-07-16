@@ -1,5 +1,4 @@
 import {
-  MAX_VISIBLE_CONVERSATION_INSIGHTS,
   NOT_ASSESSED_CONVERSATION_SUMMARIES,
   type ConversationAnalysis,
   type ReviewerInsight
@@ -7,23 +6,14 @@ import {
 import { uniqueTruthy } from "../core/guards";
 import type { HumanReviewModel } from "./contract";
 
-export function conversationAnalysisForRender(model: HumanReviewModel): ConversationAnalysis | undefined {
-  return model.conversation_analysis;
-}
-
-export function conversationInsightsForRender(model: HumanReviewModel): ReviewerInsight[] {
-  return visibleConversationInsights(model.conversation_analysis, model.review_insights);
-}
-
 /**
  * Hide only the canonical no-log boilerplate on space-constrained comments.
  * Degraded, partial, custom not-assessed, or insight-bearing states remain
  * visible because they carry reviewer-relevant trust caveats.
  */
 export function hasConversationReviewValue(model: HumanReviewModel): boolean {
-  if ((model.review_insights?.length ?? 0) > 0) return true;
   const analysis = model.conversation_analysis;
-  if (!analysis) return false;
+  if (presentableConversationInsights(analysis, model.review_insights).length > 0) return true;
   return analysis.status !== "not_assessed" || analysis.summary !== NOT_ASSESSED_CONVERSATION_SUMMARIES.missing_log;
 }
 
@@ -38,28 +28,26 @@ export interface ConversationReviewPresentation {
 
 /** Shared reviewer meaning; Markdown and HTML add only format-specific markup. */
 export function conversationReviewPresentation(
-  analysis: ConversationAnalysis | undefined
+  analysis: ConversationAnalysis
 ): ConversationReviewPresentation {
-  const status = analysis?.status ?? "not_assessed";
-  const suppliedSummary = typeof analysis?.summary === "string" && analysis.summary.trim().length > 0
+  const status = analysis.status;
+  const suppliedSummary = typeof analysis.summary === "string" && analysis.summary.trim().length > 0
     ? analysis.summary
     : undefined;
   const statusLabel = status === "analyzed"
-    ? `Analyzed${analysis && conversationAnalysisIsPartial(analysis) ? " — partial" : ""}`
+    ? `Analyzed${conversationAnalysisIsPartial(analysis) ? " — partial" : ""}`
     : status === "degraded" ? "Degraded — incomplete" : "Not assessed";
-  const summary = suppliedSummary ?? (analysis === undefined
-    ? "No conversation analysis is present in this review artifact."
-    : status === "analyzed"
-      ? "Conversation intent was reconstructed."
-      : status === "degraded"
-        ? "Conversation analysis was unavailable or incomplete."
-        : "The conversation log was not assessed.");
+  const summary = suppliedSummary ?? (status === "analyzed"
+    ? "Conversation intent was reconstructed."
+    : status === "degraded"
+      ? "Conversation analysis was unavailable or incomplete."
+      : "The conversation log was not assessed.");
   const emptyMessage = conversationReconciliationIncomplete(analysis)
     ? "Diff reconciliation did not complete, so no conversation-grounded conclusion is available."
     : status === "analyzed"
       ? "No conversation-grounded insight survived reconciliation. This is not evidence that the change is clean."
       : "No conversation-grounded conclusions are available. This is not evidence that the change is clean.";
-  const summaryIsLocal = analysis?.quality_flags.includes("conversation_deterministic_baseline") === true &&
+  const summaryIsLocal = analysis.quality_flags.includes("conversation_deterministic_baseline") &&
     !analysis.quality_flags.includes("conversation_no_eligible_baseline_events");
   return {
     status,
@@ -84,10 +72,7 @@ export function conversationEvidenceStateLabel(state: ReviewerInsight["evidence_
   }
 }
 
-export function conversationAnalysisCaveats(analysis: ConversationAnalysis | undefined): string[] {
-  if (!analysis) {
-    return [];
-  }
+export function conversationAnalysisCaveats(analysis: ConversationAnalysis): string[] {
   const messages: string[] = [];
   const flags = new Set(analysis.quality_flags);
   if (flags.has("conversation_input_truncated")) {
@@ -151,9 +136,9 @@ export interface ConversationCitationGroup {
 }
 
 export function conversationAnalysisContextRows(
-  analysis: ConversationAnalysis | undefined
+  analysis: ConversationAnalysis
 ): ConversationContextRow[] {
-  if (!analysis || analysis.status !== "analyzed") {
+  if (analysis.status !== "analyzed") {
     return [];
   }
   const rows: ConversationContextRow[] = [];
@@ -226,22 +211,21 @@ export function conversationAnalysisIsPartial(analysis: ConversationAnalysis): b
   );
 }
 
-export function conversationReconciliationIncomplete(analysis: ConversationAnalysis | undefined): boolean {
-  return analysis?.quality_flags.some((flag) =>
+export function conversationReconciliationIncomplete(analysis: ConversationAnalysis): boolean {
+  return analysis.quality_flags.some((flag) =>
     flag === "conversation_review_unavailable" || flag === "conversation_review_invalid_payload"
-  ) === true;
+  );
 }
 
-export function visibleConversationInsights(
-  analysis: ConversationAnalysis | undefined,
-  insights: ReviewerInsight[] | undefined
+export function presentableConversationInsights(
+  analysis: ConversationAnalysis,
+  insights: ReviewerInsight[]
 ): ReviewerInsight[] {
   if (
-    analysis?.status !== "analyzed" ||
-    conversationReconciliationIncomplete(analysis) ||
-    !Array.isArray(insights)
+    analysis.status !== "analyzed" ||
+    conversationReconciliationIncomplete(analysis)
   ) {
     return [];
   }
-  return insights.slice(0, MAX_VISIBLE_CONVERSATION_INSIGHTS);
+  return insights;
 }

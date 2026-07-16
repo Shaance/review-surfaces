@@ -48,6 +48,12 @@ export interface WorkingTreeSnapshot {
 
 export const MAX_UNTRACKED_REVIEW_FILES = 200;
 export const MAX_UNTRACKED_REVIEW_BYTES = 10 * 1024 * 1024;
+// Node's execFileSync default is only 1 MiB. A normal cross-cutting PR can
+// exceed that, at which point the old helper returned undefined and the
+// collector quietly reviewed only working-tree changes. Keep a bounded
+// physical budget, but make it large enough for real review inputs; callers
+// with resolved refs fail closed if git still cannot produce the range.
+export const MAX_GIT_COMMAND_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 export function collectWorkingTreeSnapshot(
   cwd: string,
@@ -211,7 +217,7 @@ export function collectChangedFiles(
   // diff ("" is not nullish). We replicate that: fall back to the bare
   // working-tree diff only when the range command errors — and only for a
   // literal-HEAD review, where working-tree content is in scope at all.
-  const rangeOutput = git(cwd, ["diff", "--name-status", "-z", `${baseRef}...${headRef}`]);
+  const rangeOutput = gitRange(cwd, baseRef, headRef, ["diff", "--name-status", "-z"]);
   let diffSource: DiffSource = "range";
   let diffOutput = rangeOutput;
   if (rangeOutput === undefined) {
@@ -339,7 +345,7 @@ export function collectDiff(
   workingTreeSnapshot?: WorkingTreeSnapshot
 ): DiffResult {
   const diagnostics: string[] = [];
-  const rangeDiff = git(cwd, ["diff", `${baseRef}...${headRef}`]);
+  const rangeDiff = gitRange(cwd, baseRef, headRef, ["diff"]);
   let diffSource: DiffSource = "range";
   if (rangeDiff === undefined) {
     diffSource = includeWorkingTree ? "working_tree_fallback" : "range";
@@ -477,7 +483,11 @@ export function readFileAtRef(cwd: string, ref: string, filePath: string): strin
 // blobs and strip meaningful trailing newlines from the hash input.
 export function readFileBytesAtRef(cwd: string, ref: string, filePath: string): Buffer | undefined {
   try {
-    return execFileSync("git", ["show", `${ref}:${filePath}`], { cwd, stdio: ["ignore", "pipe", "ignore"] });
+    return execFileSync("git", ["show", `${ref}:${filePath}`], {
+      cwd,
+      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: MAX_GIT_COMMAND_OUTPUT_BYTES
+    });
   } catch {
     return undefined;
   }
@@ -500,8 +510,23 @@ export function blobExistsAtRef(cwd: string, ref: string, filePath: string): boo
 
 function git(cwd: string, args: string[]): string | undefined {
   try {
-    return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trimEnd();
+    return execFileSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: MAX_GIT_COMMAND_OUTPUT_BYTES
+    }).trimEnd();
   } catch {
     return undefined;
   }
+}
+
+function gitRange(cwd: string, baseRef: string, headRef: string, args: string[]): string | undefined {
+  const output = git(cwd, [...args, `${baseRef}...${headRef}`]);
+  if (output === undefined && resolveGitRefSha(cwd, baseRef) !== undefined && resolveGitRefSha(cwd, headRef) !== undefined) {
+    throw new Error(
+      `git could not produce the requested ${baseRef}...${headRef} range; refusing to review a smaller fallback`
+    );
+  }
+  return output;
 }

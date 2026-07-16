@@ -34,8 +34,7 @@ function model(graph: ChangeGraph, order: ReadingOrder): HumanReviewModel {
     mode: "repo",
     spec_mode: "acai",
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
-    summary: "Reading order fixture.",
-    narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
+    decision_projection: { active_intent: { summary: "Fixture intent.", source: "packet", redaction_blocked: false, requirement_ids: [], event_ids: [] }, findings: [] },
     conversation_analysis: notAssessedConversationAnalysis("mock"),
     review_insights: [],
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
@@ -47,7 +46,6 @@ function model(graph: ChangeGraph, order: ReadingOrder): HumanReviewModel {
     risk_lens_findings: [],
     methodology_audit: { quality_flags: [], considered: [], research: [], workflow_findings: [] },
     intent_mismatch: { expected_by_spec: [], observed_in_diff: [], possible_mismatches: [], possible_overreach: [], missing_intent: [], claimed_candidates: [] },
-    review_routes: [],
     since_last_review: {
       improved: [],
       regressed: [],
@@ -68,6 +66,7 @@ function model(graph: ChangeGraph, order: ReadingOrder): HumanReviewModel {
     review_plan: { enabled: false, read: [], skim: [], defer: [] },
     change_graph: graph,
     reading_order: order,
+    rounds: [],
     evidence_cards: [],
     test_plan: [],
     skim_safe: [],
@@ -146,7 +145,7 @@ test("review-surfaces.READING_ORDER.1 the tour never includes unchanged files (h
   assert.equal(sections.change_graph.halo_nodes.length, 1);
 });
 
-test("review-surfaces.READING_ORDER.2 the tour follows reviewer actions in the cockpit, and the sticky carries only the first leg", () => {
+test("review-surfaces.READING_ORDER.2 the HTML tour follows approval decisions while compact Markdown and the sticky delegate it", () => {
   const sections = buildChangeGraphSections({
     files: [file("src/core/contract.ts"), file("src/render/consumer.ts"), file("tests/consumer.test.ts")],
     edges: [
@@ -160,17 +159,15 @@ test("review-surfaces.READING_ORDER.2 the tour follows reviewer actions in the c
   const fixture = model(sections.change_graph, sections.reading_order);
   const markdown = renderHumanReviewMarkdown(fixture);
   const verdictIndex = markdown.indexOf("## Verdict");
-  const orderIndex = markdown.indexOf("## Reading order");
-  const mapIndex = markdown.indexOf("## Change map");
-  const narrativeIndex = markdown.indexOf("## Change narrative");
-  assert.ok(verdictIndex >= 0 && orderIndex > verdictIndex && orderIndex < mapIndex && mapIndex < narrativeIndex, "reading order is THE section after the verdict, before the change map");
+  const decisionsIndex = markdown.indexOf("## Approval decision");
+  assert.ok(verdictIndex >= 0 && decisionsIndex > verdictIndex, "approval decisions follow the verdict");
+  assert.doesNotMatch(markdown, /## Reading order|## Change map|## Change narrative/, "compact Markdown does not duplicate supporting navigation");
+  assert.match(markdown, /\[Interactive HTML cockpit\]\(human_review\.html\)/);
   const html = renderHumanReviewHtml(fixture, {});
   assert.match(html, /<h2 id="reading-order">Reading order<\/h2>/);
+  assert.match(html, /<h2 id="map">Change map<\/h2>/);
   assert.ok(html.indexOf('id="queue"') < html.indexOf('id="reading-order"'), "reviewer actions precede the supporting reading-order tour");
-  // Sticky: only the FIRST leg, with a pointer to the rest.
+  // Sticky: no mechanical tour; the full reading order remains in the artifact.
   const sticky = renderStickySummary(fixture).markdown;
-  assert.match(sticky, /### Start reading here/);
-  assert.match(sticky, /src\/core\/contract\.ts/);
-  assert.doesNotMatch(sticky, /tests\/consumer\.test\.ts.*read after/);
-  assert.match(sticky, /more leg\(s\) in the full reading order/);
+  assert.doesNotMatch(sticky, /Start reading here|more leg\(s\) in the full reading order|tests\/consumer\.test\.ts.*read after/);
 });

@@ -1,0 +1,1244 @@
+{
+  "schema_version": "review-surfaces.human_review.v1",
+  "mode": "pr",
+  "spec_mode": "none",
+  "verdict": {
+    "decision": "reviewable_with_attention",
+    "confidence": "high",
+    "reasons": [
+      {
+        "id": "READY-RISKS-PRESENT",
+        "severity": "medium",
+        "summary": "Reviewable decision finding remains: 2 changed implementation files share one unresolved validation question: the available evidence does not yet show that their behavior was exercised at the current head.",
+        "evidence": [
+          {
+            "kind": "file",
+            "path": "source/core/index.ts",
+            "note": "Changed implementation file with connected changed-test evidence; no current-head passing transcript records the relevant run.",
+            "confidence": "medium",
+            "validation_status": "not_checked"
+          },
+          {
+            "kind": "file",
+            "path": "source/core/options.ts",
+            "note": "Changed implementation file; no test maps to its area and no current-head passing transcript.",
+            "confidence": "medium",
+            "validation_status": "not_checked"
+          },
+          {
+            "kind": "test",
+            "path": "test/abort.ts",
+            "note": "Focused test changed alongside a cited implementation file.",
+            "confidence": "high",
+            "validation_status": "not_checked"
+          }
+        ],
+        "required_action": "Confirm the changed behavior is covered, add focused tests only where coverage is missing, and attach one current-head transcript for the relevant test run."
+      }
+    ]
+  },
+  "decision_projection": {
+    "active_intent": {
+      "summary": "Harden abort handling and cross-origin pagination. Attach abort listeners after request handlers run, strip inherited sensitive headers when pagination crosses origins, and document the behavior.",
+      "source": "pull_request",
+      "redaction_blocked": false,
+      "requirement_ids": [],
+      "event_ids": []
+    },
+    "findings": [
+      {
+        "id": "DECISION-001",
+        "root_cause": "test_validation_area:CLUSTER:SOURCE/CORE",
+        "title": "Current-head test evidence",
+        "priority": "medium",
+        "reason": "2 changed implementation files share one unresolved validation question: the available evidence does not yet show that their behavior was exercised at the current head.",
+        "reviewer_action": "Confirm the changed behavior is covered, add focused tests only where coverage is missing, and attach one current-head transcript for the relevant test run.",
+        "evidence": [
+          {
+            "kind": "file",
+            "path": "source/core/index.ts",
+            "note": "Changed implementation file with connected changed-test evidence; no current-head passing transcript records the relevant run.",
+            "confidence": "medium",
+            "validation_status": "not_checked"
+          },
+          {
+            "kind": "file",
+            "path": "source/core/options.ts",
+            "note": "Changed implementation file; no test maps to its area and no current-head passing transcript.",
+            "confidence": "medium",
+            "validation_status": "not_checked"
+          },
+          {
+            "kind": "test",
+            "path": "test/abort.ts",
+            "note": "Focused test changed alongside a cited implementation file.",
+            "confidence": "high",
+            "validation_status": "not_checked"
+          }
+        ],
+        "requirement_ids": [],
+        "risk_ids": [
+          "PR-RISK-001"
+        ]
+      }
+    ]
+  },
+  "conversation_analysis": {
+    "status": "not_assessed",
+    "provider": "mock",
+    "summary": "No conversation analysis was supplied with this review; conversation intent was not assessed.",
+    "intent": [],
+    "refinements": [],
+    "decisions": [],
+    "constraints": [],
+    "non_goals": [],
+    "rejected_alternatives": [],
+    "claims": [],
+    "validation_claims": [],
+    "known_gaps": [],
+    "quality_flags": [
+      "conversation_log_missing"
+    ]
+  },
+  "review_insights": [],
+  "semantic_facts": {
+    "schema_changes": [],
+    "api_changes": [],
+    "test_weakening": []
+  },
+  "review_queue": [
+    {
+      "id": "REVIEW-001",
+      "rank": 1,
+      "title": "Untested implementation change",
+      "path": "source/core/index.ts",
+      "anchor_side": "new",
+      "reviewer_action": "Confirm the changed tests cover the connected behavior, add focused coverage only for the remaining gap, and record one current-head transcript.",
+      "reason": "2 changed implementation files share one validation question: focused changed-test evidence is connected to 1, 1 still lack connected changed-test evidence, and no current-head transcript proves the relevant checks ran.",
+      "ranking_reasons": [
+        "a focused test changed alongside this file (`test/abort.ts`), so it ranks lower among equal-severity items"
+      ],
+      "evidence": [
+        {
+          "kind": "file",
+          "path": "source/core/index.ts",
+          "note": "Changed implementation file with connected changed-test evidence; no current-head passing transcript records the relevant run.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "file",
+          "path": "source/core/options.ts",
+          "note": "Changed implementation file; no test maps to its area and no current-head passing transcript.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "unknown",
+          "note": "No current-head transcript establishes validation for the complete cited implementation group.",
+          "confidence": "unknown",
+          "validation_status": "unknown"
+        },
+        {
+          "kind": "test",
+          "path": "test/abort.ts",
+          "note": "Focused test changed alongside a cited implementation file.",
+          "confidence": "high",
+          "validation_status": "not_checked"
+        }
+      ],
+      "requirement_ids": [],
+      "risk_ids": [
+        "PR-RISK-001"
+      ],
+      "confidence": "medium",
+      "priority": "medium",
+      "estimated_review_effort": "moderate"
+    },
+    {
+      "id": "REVIEW-002",
+      "rank": 2,
+      "title": "Unmapped changed file",
+      "path": "documentation/4-pagination.md",
+      "anchor_side": "new",
+      "reviewer_action": "Confirm the unmapped change is intended and not missing a review-area mapping.",
+      "reason": "2 changed file(s) did not map to any review area.",
+      "ranking_reasons": [
+        "ranked by low risk severity at file level"
+      ],
+      "evidence": [
+        {
+          "kind": "file",
+          "path": "documentation/4-pagination.md",
+          "note": "Out-of-scope changed file (unmapped).",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "file",
+          "path": "package.json",
+          "note": "Out-of-scope changed file (unmapped).",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        }
+      ],
+      "requirement_ids": [],
+      "risk_ids": [
+        "PR-RISK-002"
+      ],
+      "confidence": "medium",
+      "priority": "low",
+      "estimated_review_effort": "quick"
+    },
+    {
+      "id": "REVIEW-003",
+      "rank": 3,
+      "title": "Review-focus: source/core/options.ts",
+      "path": "source/core/options.ts",
+      "hunk_header": "@@ -793,6 +793,8 @@",
+      "line_start": 796,
+      "line_end": 797,
+      "anchor_side": "new",
+      "reviewer_action": "No defect pattern fired here — read this changed file to confirm the change is intended and skim-safe.",
+      "reason": "Another finding was queued for this diff, and this changed source is also worth reading: an implementation change with no connected test change, touches error/async/auth/network/persistence paths.",
+      "ranking_reasons": [
+        "no changed test or current-head transcript covers this file, so it ranks higher among equal-severity items"
+      ],
+      "evidence": [
+        {
+          "kind": "file",
+          "path": "source/core/options.ts",
+          "note": "Ranked by deterministic change signals because no detector produced a ranked finding.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        }
+      ],
+      "requirement_ids": [],
+      "risk_ids": [],
+      "confidence": "high",
+      "priority": "medium",
+      "estimated_review_effort": "moderate"
+    }
+  ],
+  "blockers": [],
+  "questions": [],
+  "suggested_comments": [
+    {
+      "id": "SC-001",
+      "severity": "clarifying",
+      "path": "source/core/index.ts",
+      "body": "What test or existing fixture covers the behavior changed in source/core/index.ts?",
+      "evidence": [
+        {
+          "kind": "file",
+          "path": "source/core/index.ts",
+          "note": "Changed implementation file; no test maps to its area and no current-head passing transcript.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "file",
+          "path": "source/core/options.ts",
+          "note": "Changed implementation file; no test maps to its area and no current-head passing transcript.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "unknown",
+          "note": "No current-head validation covers this area group (source/core/index.ts, source/core/options.ts).",
+          "confidence": "unknown",
+          "validation_status": "unknown"
+        }
+      ],
+      "risk_ids": [
+        "PR-RISK-001"
+      ],
+      "requirement_ids": [],
+      "confidence": "medium",
+      "ready_to_post": true
+    }
+  ],
+  "trust_audit": {
+    "verified_facts": [
+      {
+        "id": "TRUST-VERIFIED-001",
+        "summary": "PR scope contains 6 changed file(s) and 2 deterministic PR risk candidate(s).",
+        "evidence": [
+          {
+            "kind": "file",
+            "path": "documentation/4-pagination.md",
+            "note": "Changed file included in PR scope.",
+            "confidence": "medium",
+            "validation_status": "not_checked"
+          },
+          {
+            "kind": "file",
+            "path": "package.json",
+            "note": "Changed file included in PR scope.",
+            "confidence": "medium",
+            "validation_status": "not_checked"
+          },
+          {
+            "kind": "file",
+            "path": "source/core/index.ts",
+            "note": "Changed file included in PR scope.",
+            "confidence": "medium",
+            "validation_status": "not_checked"
+          },
+          {
+            "kind": "file",
+            "path": "source/core/options.ts",
+            "note": "Changed file included in PR scope.",
+            "confidence": "medium",
+            "validation_status": "not_checked"
+          },
+          {
+            "kind": "file",
+            "path": "test/abort.ts",
+            "note": "Changed file included in PR scope.",
+            "confidence": "medium",
+            "validation_status": "not_checked"
+          }
+        ]
+      },
+      {
+        "id": "TRUST-VERIFIED-002",
+        "summary": "Deterministic PR risk PR-RISK-001 (untested_changed_impl) fired: 2 implementation files changed in CLUSTER:SOURCE/CORE; no test is mapped to this validation area and no current-head command transcript exists.",
+        "evidence": [
+          {
+            "kind": "file",
+            "path": "source/core/index.ts",
+            "note": "Changed implementation file; no test maps to its area and no current-head passing transcript.",
+            "confidence": "medium",
+            "validation_status": "not_checked"
+          },
+          {
+            "kind": "file",
+            "path": "source/core/options.ts",
+            "note": "Changed implementation file; no test maps to its area and no current-head passing transcript.",
+            "confidence": "medium",
+            "validation_status": "not_checked"
+          }
+        ]
+      },
+      {
+        "id": "TRUST-VERIFIED-003",
+        "summary": "Deterministic PR risk PR-RISK-002 (unmapped_change) fired: 2 changed file(s) did not map to any review area.",
+        "evidence": [
+          {
+            "kind": "file",
+            "path": "documentation/4-pagination.md",
+            "note": "Out-of-scope changed file (unmapped).",
+            "confidence": "medium",
+            "validation_status": "not_checked"
+          },
+          {
+            "kind": "file",
+            "path": "package.json",
+            "note": "Out-of-scope changed file (unmapped).",
+            "confidence": "medium",
+            "validation_status": "not_checked"
+          }
+        ]
+      }
+    ],
+    "claimed_not_verified": [],
+    "missing_evidence": [
+      {
+        "id": "MISSING-001",
+        "summary": "No command transcript or validation feedback was supplied to prove test execution.",
+        "evidence": [
+          {
+            "kind": "unknown",
+            "note": "Run validation commands and preserve output externally or in a future command transcript artifact.",
+            "confidence": "unknown",
+            "validation_status": "unknown"
+          }
+        ]
+      },
+      {
+        "id": "MISSING-002",
+        "summary": "Baseline evaluation unavailable; coverage deltas are current-status only.",
+        "evidence": [
+          {
+            "kind": "unknown",
+            "note": "coverage.base_available=false",
+            "confidence": "unknown",
+            "validation_status": "unknown"
+          }
+        ]
+      }
+    ],
+    "invalid_evidence": [],
+    "confidence_summary": "Medium confidence: 3 verified fact(s), 2 missing evidence item(s), and 0 unverified claim(s)."
+  },
+  "risk_lens_findings": [
+    {
+      "id": "LENS-001",
+      "lens": "test_evidence",
+      "severity": "medium",
+      "summary": "Test evidence lens fired from 1 deterministic risk(s) across source/core/index.ts, source/core/options.ts, test/abort.ts, test/pagination.ts.",
+      "reviewer_action": "Confirm parsed test output, coverage, command transcripts, and skipped-test handling still produce trustworthy review evidence.",
+      "evidence": [
+        {
+          "kind": "file",
+          "path": "source/core/index.ts",
+          "note": "Changed implementation file; no test maps to its area and no current-head passing transcript.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "file",
+          "path": "source/core/options.ts",
+          "note": "Changed implementation file; no test maps to its area and no current-head passing transcript.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "unknown",
+          "note": "No current-head validation covers this area group (source/core/index.ts, source/core/options.ts).",
+          "confidence": "unknown",
+          "validation_status": "unknown"
+        },
+        {
+          "kind": "file",
+          "path": "test/abort.ts",
+          "note": "Test evidence lens matched changed file test/abort.ts. Matched path(s): test/abort.ts.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "file",
+          "path": "test/pagination.ts",
+          "note": "Test evidence lens matched changed file test/pagination.ts. Matched path(s): test/pagination.ts.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        }
+      ],
+      "risk_ids": [
+        "PR-RISK-001"
+      ],
+      "requirement_ids": [],
+      "paths": [
+        "source/core/index.ts",
+        "source/core/options.ts",
+        "test/abort.ts",
+        "test/pagination.ts"
+      ],
+      "confidence": "high",
+      "suggested_tests": [
+        {
+          "id": "LENS-001-TEST-001",
+          "kind": "automatic",
+          "priority": "recommended",
+          "suggested_file": "tests/tests-evidence.test.ts",
+          "scenario": "Run or add a fixture proving test output, coverage, skipped tests, or command transcripts are parsed into the expected evidence state.",
+          "expected_result": "The human review trust audit distinguishes passed, failed, skipped, claimed, and missing validation evidence correctly.",
+          "command": "pnpm run test -- tests/tests-evidence.test.ts",
+          "maps_to_requirements": [],
+          "maps_to_risks": [
+            "PR-RISK-001"
+          ],
+          "evidence_gap": "Test evidence lens fired from 1 deterministic risk(s) across source/core/index.ts, source/core/options.ts, test/abort.ts, test/pagination.ts."
+        }
+      ],
+      "suggested_comments": [
+        {
+          "id": "LENS-001-SC-001",
+          "severity": "clarifying",
+          "path": "source/core/index.ts",
+          "body": "This fires the test evidence lens. Can you point to parsed test output or a command transcript proving the changed evidence path is trustworthy?",
+          "evidence": [
+            {
+              "kind": "file",
+              "path": "source/core/index.ts",
+              "note": "Changed implementation file; no test maps to its area and no current-head passing transcript.",
+              "confidence": "medium",
+              "validation_status": "not_checked"
+            },
+            {
+              "kind": "file",
+              "path": "source/core/options.ts",
+              "note": "Changed implementation file; no test maps to its area and no current-head passing transcript.",
+              "confidence": "medium",
+              "validation_status": "not_checked"
+            },
+            {
+              "kind": "unknown",
+              "note": "No current-head validation covers this area group (source/core/index.ts, source/core/options.ts).",
+              "confidence": "unknown",
+              "validation_status": "unknown"
+            },
+            {
+              "kind": "file",
+              "path": "test/abort.ts",
+              "note": "Test evidence lens matched changed file test/abort.ts. Matched path(s): test/abort.ts.",
+              "confidence": "medium",
+              "validation_status": "not_checked"
+            },
+            {
+              "kind": "file",
+              "path": "test/pagination.ts",
+              "note": "Test evidence lens matched changed file test/pagination.ts. Matched path(s): test/pagination.ts.",
+              "confidence": "medium",
+              "validation_status": "not_checked"
+            }
+          ],
+          "risk_ids": [
+            "PR-RISK-001"
+          ],
+          "requirement_ids": [],
+          "confidence": "high",
+          "ready_to_post": true
+        }
+      ]
+    }
+  ],
+  "methodology_audit": {
+    "quality_flags": [
+      "conversation_log_missing",
+      "methodology_analysis_degraded"
+    ],
+    "considered": [],
+    "research": [],
+    "workflow_findings": [
+      {
+        "id": "XREF-001",
+        "signal_kind": "impl_no_test",
+        "summary": "Implementation changed with no test coverage evidence or test discussion: source/core/index.ts, source/core/options.ts.",
+        "severity": "medium",
+        "advisory": true,
+        "evidence": [
+          {
+            "kind": "file",
+            "path": "source/core/index.ts",
+            "confidence": "medium",
+            "validation_status": "valid"
+          }
+        ]
+      },
+      {
+        "id": "XREF-002",
+        "signal_kind": "deps_no_rationale",
+        "summary": "Dependency/CI/config change with no rationale in the conversation: package.json.",
+        "severity": "medium",
+        "advisory": true,
+        "evidence": [
+          {
+            "kind": "file",
+            "path": "package.json",
+            "confidence": "medium",
+            "validation_status": "valid"
+          }
+        ]
+      }
+    ]
+  },
+  "intent_mismatch": {
+    "spec_note": "No requirement spec configured — intent checks are limited to docs and constraints.",
+    "expected_by_spec": [],
+    "observed_in_diff": [
+      {
+        "id": "INTENT-OBSERVED-001",
+        "summary": "Changed doc file `documentation/4-pagination.md` has no mapped review area.",
+        "evidence": [
+          {
+            "kind": "file",
+            "path": "documentation/4-pagination.md",
+            "note": "Changed file observed in PR scope.",
+            "confidence": "high",
+            "validation_status": "not_checked"
+          }
+        ],
+        "requirement_ids": [],
+        "paths": [
+          "documentation/4-pagination.md"
+        ],
+        "confidence": "medium"
+      },
+      {
+        "id": "INTENT-OBSERVED-002",
+        "summary": "Changed config file `package.json` references exact requirement(s) 15.0.4, 15.0.5.",
+        "evidence": [
+          {
+            "kind": "file",
+            "path": "package.json",
+            "note": "Changed file observed in PR scope.",
+            "confidence": "high",
+            "validation_status": "not_checked"
+          }
+        ],
+        "requirement_ids": [
+          "15.0.4",
+          "15.0.5"
+        ],
+        "paths": [
+          "package.json"
+        ],
+        "confidence": "high"
+      },
+      {
+        "id": "INTENT-OBSERVED-003",
+        "summary": "Changed implementation file `source/core/index.ts` maps to area(s) CLUSTER:SOURCE/CORE.",
+        "evidence": [
+          {
+            "kind": "file",
+            "path": "source/core/index.ts",
+            "note": "Changed file observed in PR scope.",
+            "confidence": "high",
+            "validation_status": "not_checked"
+          }
+        ],
+        "requirement_ids": [],
+        "paths": [
+          "source/core/index.ts"
+        ],
+        "confidence": "high"
+      },
+      {
+        "id": "INTENT-OBSERVED-004",
+        "summary": "Changed implementation file `source/core/options.ts` maps to area(s) CLUSTER:SOURCE/CORE.",
+        "evidence": [
+          {
+            "kind": "file",
+            "path": "source/core/options.ts",
+            "note": "Changed file observed in PR scope.",
+            "confidence": "high",
+            "validation_status": "not_checked"
+          }
+        ],
+        "requirement_ids": [],
+        "paths": [
+          "source/core/options.ts"
+        ],
+        "confidence": "high"
+      },
+      {
+        "id": "INTENT-OBSERVED-005",
+        "summary": "Changed test file `test/abort.ts` maps to area(s) CLUSTER:TEST.",
+        "evidence": [
+          {
+            "kind": "file",
+            "path": "test/abort.ts",
+            "note": "Changed file observed in PR scope.",
+            "confidence": "high",
+            "validation_status": "not_checked"
+          }
+        ],
+        "requirement_ids": [],
+        "paths": [
+          "test/abort.ts"
+        ],
+        "confidence": "high"
+      },
+      {
+        "id": "INTENT-OBSERVED-006",
+        "summary": "Changed test file `test/pagination.ts` maps to area(s) CLUSTER:TEST.",
+        "evidence": [
+          {
+            "kind": "file",
+            "path": "test/pagination.ts",
+            "note": "Changed file observed in PR scope.",
+            "confidence": "high",
+            "validation_status": "not_checked"
+          }
+        ],
+        "requirement_ids": [],
+        "paths": [
+          "test/pagination.ts"
+        ],
+        "confidence": "high"
+      }
+    ],
+    "possible_mismatches": [],
+    "possible_overreach": [],
+    "missing_intent": [],
+    "claimed_candidates": []
+  },
+  "since_last_review": {
+    "improved": [],
+    "regressed": [],
+    "new_risks": [],
+    "resolved_risks": [],
+    "new_overreach": [],
+    "resolved_overreach": [],
+    "still_open": [],
+    "count_deltas": {
+      "satisfied": {
+        "before": 0,
+        "after": 0,
+        "delta": 0
+      },
+      "partial": {
+        "before": 0,
+        "after": 0,
+        "delta": 0
+      },
+      "missing": {
+        "before": 0,
+        "after": 0,
+        "delta": 0
+      },
+      "unknown": {
+        "before": 0,
+        "after": 0,
+        "delta": 0
+      },
+      "invalid_evidence": {
+        "before": 0,
+        "after": 0,
+        "delta": 0
+      }
+    },
+    "unavailable_reason": "No previous packet was supplied; pass --previous-packet to compare review rounds."
+  },
+  "coverage_evidence": {
+    "status": "no_report",
+    "files": []
+  },
+  "review_plan": {
+    "enabled": false,
+    "read": [],
+    "skim": [],
+    "defer": []
+  },
+  "change_graph": {
+    "nodes": [
+      {
+        "path": "documentation/4-pagination.md",
+        "churn_added": 1,
+        "churn_removed": 0,
+        "status": "modified",
+        "cluster": "documentation"
+      },
+      {
+        "path": "package.json",
+        "churn_added": 1,
+        "churn_removed": 1,
+        "status": "modified",
+        "cluster": "(root)"
+      },
+      {
+        "path": "source/core/index.ts",
+        "churn_added": 33,
+        "churn_removed": 20,
+        "status": "modified",
+        "cluster": "source/core",
+        "lens": "test_evidence"
+      },
+      {
+        "path": "source/core/options.ts",
+        "churn_added": 2,
+        "churn_removed": 0,
+        "status": "modified",
+        "cluster": "source/core",
+        "lens": "test_evidence"
+      },
+      {
+        "path": "test/abort.ts",
+        "churn_added": 113,
+        "churn_removed": 8,
+        "status": "modified",
+        "cluster": "test",
+        "lens": "test_evidence"
+      },
+      {
+        "path": "test/pagination.ts",
+        "churn_added": 69,
+        "churn_removed": 0,
+        "status": "modified",
+        "cluster": "test",
+        "lens": "test_evidence"
+      }
+    ],
+    "halo_nodes": [],
+    "edges": [
+      {
+        "from": "source/core/index.ts",
+        "to": "source/core/options.ts",
+        "kind": "existing",
+        "summary": "core/index.ts uses core/options.ts",
+        "detail": "source/core/index.ts uses source/core/options.ts. This is a deterministic import-graph relationship; run with a provider for a semantic explanation of why it matters.",
+        "insight_source": "fallback"
+      },
+      {
+        "from": "test/abort.ts",
+        "to": "source/core/index.ts",
+        "kind": "existing",
+        "summary": "test/abort.ts uses core/index.ts",
+        "detail": "test/abort.ts uses source/core/index.ts. This is a deterministic import-graph relationship; run with a provider for a semantic explanation of why it matters.",
+        "insight_source": "fallback"
+      }
+    ],
+    "clusters": [
+      {
+        "name": "source/core",
+        "paths": [
+          "source/core/index.ts",
+          "source/core/options.ts"
+        ]
+      },
+      {
+        "name": "test",
+        "paths": [
+          "test/abort.ts",
+          "test/pagination.ts"
+        ]
+      },
+      {
+        "name": "documentation",
+        "paths": [
+          "documentation/4-pagination.md"
+        ]
+      },
+      {
+        "name": "(root)",
+        "paths": [
+          "package.json"
+        ]
+      }
+    ],
+    "overview": {
+      "groups": [
+        {
+          "name": "source",
+          "file_count": 2,
+          "cluster_count": 1,
+          "churn_added": 35,
+          "churn_removed": 20,
+          "summary": "Updates source across 2 files; 2 review-queue items; test evidence focus.",
+          "detail": "Churn: +35/-20. 0 deleted files, 0 added files.",
+          "insight_source": "fallback",
+          "queue_count": 2,
+          "topics": [
+            {
+              "label": "Core changes",
+              "summary": "Core changes: 2 changed files (index.ts, options.ts).",
+              "paths": [
+                "source/core/index.ts",
+                "source/core/options.ts"
+              ],
+              "insight_source": "fallback"
+            }
+          ],
+          "lens": "test_evidence"
+        },
+        {
+          "name": "test",
+          "file_count": 2,
+          "cluster_count": 1,
+          "churn_added": 182,
+          "churn_removed": 8,
+          "summary": "Mostly expands test across 2 files; test evidence focus.",
+          "detail": "Churn: +182/-8. 0 deleted files, 0 added files.",
+          "insight_source": "fallback",
+          "queue_count": 0,
+          "topics": [
+            {
+              "label": "Test changes",
+              "summary": "Test changes: 2 changed files (abort.ts, pagination.ts).",
+              "paths": [
+                "test/abort.ts",
+                "test/pagination.ts"
+              ],
+              "insight_source": "fallback"
+            }
+          ],
+          "lens": "test_evidence"
+        },
+        {
+          "name": "documentation",
+          "file_count": 1,
+          "cluster_count": 1,
+          "churn_added": 1,
+          "churn_removed": 0,
+          "summary": "Updates documentation across 1 file; 1 review-queue item.",
+          "detail": "Churn: +1/-0. 0 deleted files, 0 added files.",
+          "insight_source": "fallback",
+          "queue_count": 1,
+          "topics": [
+            {
+              "label": "Documentation changes",
+              "summary": "Documentation changes: 1 changed file (4-pagination.md).",
+              "paths": [
+                "documentation/4-pagination.md"
+              ],
+              "insight_source": "fallback"
+            }
+          ]
+        },
+        {
+          "name": "(root)",
+          "file_count": 1,
+          "cluster_count": 1,
+          "churn_added": 1,
+          "churn_removed": 1,
+          "summary": "Updates repository metadata across 1 file.",
+          "detail": "Churn: +1/-1. 0 deleted files, 0 added files.",
+          "insight_source": "fallback",
+          "queue_count": 0,
+          "topics": [
+            {
+              "label": "Repository metadata",
+              "summary": "Repository metadata: 1 changed file (package.json).",
+              "paths": [
+                "package.json"
+              ],
+              "insight_source": "fallback"
+            }
+          ]
+        }
+      ],
+      "halo_count": 0,
+      "edges": [
+        {
+          "from": "test",
+          "to": "source",
+          "weight": 1,
+          "has_new": false,
+          "has_removed": false,
+          "summary": "test uses source: test/abort.ts uses core/index.ts",
+          "detail": "test/abort.ts uses source/core/index.ts. This is a deterministic import-graph relationship; run with a provider for a semantic explanation of why it matters.",
+          "insight_source": "fallback"
+        }
+      ]
+    }
+  },
+  "reading_order": {
+    "legs": [
+      {
+        "title": "Implementation",
+        "read_together": false,
+        "steps": [
+          {
+            "path": "source/core/options.ts",
+            "why": "imported by 1 changed file(s)",
+            "queue_refs": [
+              "REVIEW-003"
+            ]
+          },
+          {
+            "path": "source/core/index.ts",
+            "why": "imported by 1 changed file(s)",
+            "queue_refs": [
+              "REVIEW-001"
+            ]
+          }
+        ]
+      },
+      {
+        "title": "Tests",
+        "read_together": false,
+        "steps": [
+          {
+            "path": "test/abort.ts",
+            "why": "test — read after the 1 changed file(s) it imports",
+            "queue_refs": []
+          },
+          {
+            "path": "test/pagination.ts",
+            "why": "test — read after the code it covers",
+            "queue_refs": []
+          }
+        ]
+      },
+      {
+        "title": "Config and docs",
+        "read_together": false,
+        "steps": [
+          {
+            "path": "documentation/4-pagination.md",
+            "why": "config or docs — read last",
+            "queue_refs": [
+              "REVIEW-002"
+            ]
+          },
+          {
+            "path": "package.json",
+            "why": "config or docs — read last",
+            "queue_refs": []
+          }
+        ]
+      }
+    ]
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "head_sha": "a5b76bffb33d5fa8b0d1393cce410b88e7c2b848",
+      "new_count": 0,
+      "resolved_count": 0,
+      "regressed_count": 0,
+      "verdict": "reviewable_with_attention"
+    }
+  ],
+  "evidence_cards": [
+    {
+      "id": "CARD-001",
+      "title": "Test evidence lens",
+      "status": "mixed",
+      "summary": "Test evidence lens fired from 1 deterministic risk(s) across source/core/index.ts, source/core/options.ts, test/abort.ts, test/pagination.ts.",
+      "direct_evidence": [
+        {
+          "kind": "file",
+          "path": "source/core/index.ts",
+          "note": "Changed implementation file; no test maps to its area and no current-head passing transcript.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "file",
+          "path": "source/core/options.ts",
+          "note": "Changed implementation file; no test maps to its area and no current-head passing transcript.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "file",
+          "path": "test/abort.ts",
+          "note": "Test evidence lens matched changed file test/abort.ts. Matched path(s): test/abort.ts.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "file",
+          "path": "test/pagination.ts",
+          "note": "Test evidence lens matched changed file test/pagination.ts. Matched path(s): test/pagination.ts.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        }
+      ],
+      "missing_evidence": [
+        {
+          "kind": "unknown",
+          "note": "No current-head validation covers this area group (source/core/index.ts, source/core/options.ts).",
+          "confidence": "unknown",
+          "validation_status": "unknown"
+        }
+      ],
+      "invalid_evidence": [],
+      "why_it_matters": "Test-evidence changes affect whether the reviewer can trust validation and coverage claims.",
+      "reviewer_action": "Confirm parsed test output, coverage, command transcripts, and skipped-test handling still produce trustworthy review evidence.",
+      "source_ids": [
+        "LENS-001",
+        "PR-RISK-001"
+      ],
+      "risk_ids": [
+        "PR-RISK-001"
+      ],
+      "requirement_ids": [],
+      "confidence": "high",
+      "priority": "medium"
+    },
+    {
+      "id": "CARD-002",
+      "title": "No command transcript or validation feedback was supplied to prove test execution.",
+      "status": "missing_evidence",
+      "summary": "No command transcript or validation feedback was supplied to prove test execution.",
+      "direct_evidence": [],
+      "missing_evidence": [
+        {
+          "kind": "unknown",
+          "note": "Run validation commands and preserve output externally or in a future command transcript artifact.",
+          "confidence": "unknown",
+          "validation_status": "unknown"
+        }
+      ],
+      "invalid_evidence": [],
+      "why_it_matters": "Missing evidence keeps the reviewer from verifying a claim, check, or readiness condition.",
+      "reviewer_action": "Ask the author to provide the missing evidence or record an explicit deferral.",
+      "source_ids": [
+        "MISSING-001"
+      ],
+      "risk_ids": [],
+      "requirement_ids": [],
+      "confidence": "medium",
+      "priority": "medium"
+    },
+    {
+      "id": "CARD-003",
+      "title": "Baseline evaluation unavailable; coverage deltas are current-status only.",
+      "status": "missing_evidence",
+      "summary": "Baseline evaluation unavailable; coverage deltas are current-status only.",
+      "direct_evidence": [],
+      "missing_evidence": [
+        {
+          "kind": "unknown",
+          "note": "coverage.base_available=false",
+          "confidence": "unknown",
+          "validation_status": "unknown"
+        }
+      ],
+      "invalid_evidence": [],
+      "why_it_matters": "Missing evidence keeps the reviewer from verifying a claim, check, or readiness condition.",
+      "reviewer_action": "Ask the author to provide the missing evidence or record an explicit deferral.",
+      "source_ids": [
+        "MISSING-002"
+      ],
+      "risk_ids": [],
+      "requirement_ids": [],
+      "confidence": "medium",
+      "priority": "medium"
+    },
+    {
+      "id": "CARD-004",
+      "title": "Add or identify a focused test that exercises the changed implementation in s...",
+      "status": "missing_evidence",
+      "summary": "2 implementation files changed in CLUSTER:SOURCE/CORE; no test is mapped to this validation area and no current-head command transcript exists.",
+      "direct_evidence": [],
+      "missing_evidence": [
+        {
+          "kind": "unknown",
+          "note": "2 implementation files changed in CLUSTER:SOURCE/CORE; no test is mapped to this validation area and no current-head command transcript exists.",
+          "confidence": "unknown",
+          "validation_status": "unknown"
+        }
+      ],
+      "invalid_evidence": [],
+      "why_it_matters": "A required test-plan item records the evidence needed to unblock review confidence.",
+      "reviewer_action": "Run or add the suggested check: Add or identify a focused test that exercises the changed implementation in source/core/index.ts.",
+      "source_ids": [
+        "TEST-001"
+      ],
+      "risk_ids": [
+        "PR-RISK-001"
+      ],
+      "requirement_ids": [],
+      "confidence": "medium",
+      "priority": "high"
+    },
+    {
+      "id": "CARD-005",
+      "title": "PR scope contains 6 changed file(s) and 2 deterministic PR risk candidate(s)",
+      "status": "unchecked",
+      "summary": "PR scope contains 6 changed file(s) and 2 deterministic PR risk candidate(s).",
+      "direct_evidence": [
+        {
+          "kind": "file",
+          "path": "documentation/4-pagination.md",
+          "note": "Changed file included in PR scope.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "file",
+          "path": "package.json",
+          "note": "Changed file included in PR scope.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "file",
+          "path": "source/core/index.ts",
+          "note": "Changed file included in PR scope.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "file",
+          "path": "source/core/options.ts",
+          "note": "Changed file included in PR scope.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "file",
+          "path": "test/abort.ts",
+          "note": "Changed file included in PR scope.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        }
+      ],
+      "missing_evidence": [],
+      "invalid_evidence": [],
+      "why_it_matters": "This is a verified fact the reviewer can use as supporting context while reviewing the change.",
+      "reviewer_action": "Use this as supporting evidence; inspect only if it conflicts with higher-priority findings.",
+      "source_ids": [
+        "TRUST-VERIFIED-001"
+      ],
+      "risk_ids": [],
+      "requirement_ids": [],
+      "confidence": "high",
+      "priority": "low"
+    },
+    {
+      "id": "CARD-006",
+      "title": "Deterministic PR risk PR-RISK-001 (untested_changed_impl) fired",
+      "status": "unchecked",
+      "summary": "Deterministic PR risk PR-RISK-001 (untested_changed_impl) fired: 2 implementation files changed in CLUSTER:SOURCE/CORE; no test is mapped to this validation area and no current-head command transcript exists.",
+      "direct_evidence": [
+        {
+          "kind": "file",
+          "path": "source/core/index.ts",
+          "note": "Changed implementation file; no test maps to its area and no current-head passing transcript.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        },
+        {
+          "kind": "file",
+          "path": "source/core/options.ts",
+          "note": "Changed implementation file; no test maps to its area and no current-head passing transcript.",
+          "confidence": "medium",
+          "validation_status": "not_checked"
+        }
+      ],
+      "missing_evidence": [],
+      "invalid_evidence": [],
+      "why_it_matters": "This is a verified fact the reviewer can use as supporting context while reviewing the change.",
+      "reviewer_action": "Use this as supporting evidence; inspect only if it conflicts with higher-priority findings.",
+      "source_ids": [
+        "TRUST-VERIFIED-002"
+      ],
+      "risk_ids": [],
+      "requirement_ids": [],
+      "confidence": "high",
+      "priority": "low"
+    }
+  ],
+  "test_plan": [
+    {
+      "id": "TEST-001",
+      "kind": "automatic",
+      "priority": "required",
+      "scenario": "Add or identify a focused test that exercises the changed implementation in source/core/index.ts.",
+      "expected_result": "A direct test or command transcript demonstrates the changed implementation behavior before approval.",
+      "command": "pnpm run test",
+      "maps_to_requirements": [],
+      "maps_to_risks": [
+        "PR-RISK-001"
+      ],
+      "evidence_gap": "2 implementation files changed in CLUSTER:SOURCE/CORE; no test is mapped to this validation area and no current-head command transcript exists."
+    }
+  ],
+  "skim_safe": [
+    {
+      "path": "documentation/4-pagination.md",
+      "reason": "Docs-only changed file with no mapped high-risk finding.",
+      "caveat": "Inspect if the doc defines product contracts, policies, or reviewer workflows.",
+      "evidence": [
+        {
+          "kind": "file",
+          "path": "documentation/4-pagination.md",
+          "note": "Changed file considered skim-safe by deterministic role/path heuristics.",
+          "confidence": "low",
+          "validation_status": "not_checked"
+        }
+      ],
+      "confidence": "low"
+    }
+  ],
+  "feedback_effects": [],
+  "generated_from": {
+    "packet_path": "review_packet.json",
+    "pr_surface_path": "pr_review_surface.json",
+    "pr_surface_signature": "2bb56b970a5f2ac354481e351cbe1b1cce576cb0d45d167e66e884dfe9a19208",
+    "base_ref": "HEAD~3",
+    "base_sha": "f6a058a7d1fdd0b65bb75db9faf94490fb7a66ec",
+    "head_ref": "HEAD",
+    "head_sha": "a5b76bffb33d5fa8b0d1393cce410b88e7c2b848",
+    "packet_signature": "62b78550ae75c6d5a5742cbf47865019f56948220b35aa12ddd508a9dc89615a",
+    "uncommitted_files": 0,
+    "omitted_untracked_files": 0,
+    "human_review_config_signature": "a8bcf41534ac6ef63aeb2ad9431e62e60fb7968641be3737c60e308980a304dd"
+  }
+}

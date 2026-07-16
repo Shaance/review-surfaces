@@ -11,21 +11,22 @@
 import { resolveStructuredExcerpt, ExcerptRedactionState } from "./hunk-excerpt";
 import { containsBlockedRedaction } from "../privacy/secrets";
 import {
+  HumanRenderContext
+} from "./render";
+import {
   collapseReadingOrderWhy,
   decisionLabel,
   formatQueueLocation,
-  HumanRenderContext,
   rankingReasonsAreDefaultOnly
-} from "./render";
+} from "./review-presentation";
 import {
   conversationAnalysisCaveats,
   conversationAnalysisContextRows,
-  conversationAnalysisForRender,
   conversationEvidenceStateLabel,
   conversationInsightBasisLabel,
   conversationInsightCitationGroups,
-  conversationInsightsForRender,
   conversationReviewPresentation,
+  presentableConversationInsights,
   hasConversationReviewValue
 } from "./conversation-review-presentation";
 import { coverageHunkForAnchor, coverageSummaryLine } from "./coverage-gutter";
@@ -37,12 +38,11 @@ import { buildGroupDetailViews, detailViewSubGraph } from "./change-graph";
 import { esc } from "./esc";
 import { RISK_LENS_METADATA } from "./contract";
 import {
+  decisionFindingPresentation,
   decisionIntentSourceLabel,
+  decisionProjectionHeading,
   EMPTY_DECISION_FINDINGS_TEXT,
-  fullDecisionSupportingText,
-  incompleteReviewScopeText,
-  STALE_DECISION_PROJECTION_TEXT,
-  UNAVAILABLE_DECISION_FINDINGS_TEXT
+  incompleteReviewScopeText
 } from "./decision-projection-presentation";
 import type { CoverageEvidenceHunk, HumanReviewModel, ReviewQueueItem } from "./contract";
 import type { EvidenceRef } from "../evidence/evidence";
@@ -50,7 +50,7 @@ import type {
   ConversationAnalysis,
   ReviewerInsight
 } from "../contracts/conversation-review";
-import { partitionPrimary } from "./primary-surface-policy";
+import { partitionSupportingPreview } from "./primary-surface-policy";
 
 export function renderHumanReviewHtml(model: HumanReviewModel, context: HumanRenderContext = {}): string {
   const lenses = [...new Set(model.review_queue.flatMap((item) => lensesForItem(model, item)))].sort();
@@ -60,13 +60,13 @@ export function renderHumanReviewHtml(model: HumanReviewModel, context: HumanRen
   const renderedQueue = model.review_queue.map((item) =>
     renderQueueItem(model, item, context, excerptRedaction)
   );
-  const queueItems = partitionPrimary(renderedQueue);
+  const queueItems = partitionSupportingPreview(renderedQueue);
   const queueHtml = renderedQueue.length === 0
     ? `<p class="muted">No path-backed review queue items.</p>`
     : [
-        ...queueItems.primary,
-        queueItems.supporting.length > 0
-          ? `<details data-supporting-queue><summary>+${esc(queueItems.supporting.length)} supporting queue item(s)</summary>${queueItems.supporting.join("\n")}</details>`
+        ...queueItems.preview,
+        queueItems.remaining.length > 0
+          ? `<details data-supporting-queue><summary>+${esc(queueItems.remaining.length)} supporting queue item(s)</summary>${queueItems.remaining.join("\n")}</details>`
           : ""
       ].filter(Boolean).join("\n");
   const body = `<!DOCTYPE html>
@@ -77,6 +77,7 @@ export function renderHumanReviewHtml(model: HumanReviewModel, context: HumanRen
 <title>review-surfaces — human review</title>
 <style>
 :root {
+  color-scheme: light dark;
   --bg:#f7f7f4;
   --chrome:#f2f1ed;
   --card:#ebeae5;
@@ -92,8 +93,17 @@ export function renderHumanReviewHtml(model: HumanReviewModel, context: HumanRen
   --ok:#1f8a65;
   --info:#3a6a9f;
   --shadow:0 1px 0 rgba(38,37,30,.06);
+  --map-card:#f2f1ed;
+  --map-card-alt:#ebeae5;
+  --map-tint-warm:#f3ede6;
+  --map-tint-blue:#e3ebf3;
+  --map-tint-neutral:#e6e5e0;
+  --map-tint-green:#e4efe8;
+  --map-tint-pink:#f1e6ea;
+  --map-edge:#8d877d;
 }
 * { box-sizing: border-box; }
+[hidden] { display:none !important; }
 html { background: var(--bg); }
 body { margin:0 auto; max-width: 1120px; padding: 28px 24px 64px; background: var(--bg); color: var(--fg); font: 14px/1.55 "CursorGothic", "CursorGothic Fallback", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
 h1 { color: var(--strong); font-size: 26px; font-weight: 400; line-height: 32.5px; margin: 0 0 6px; }
@@ -116,7 +126,7 @@ a:hover { text-decoration-color: var(--accent); }
 .badge.contradicted, .badge.degraded { color:var(--bad); border-color:rgba(207,45,86,.38); background:rgba(207,45,86,.07); }
 .badge.unverified, .badge.not_assessed { color:var(--warn); border-color:rgba(192,133,50,.42); background:rgba(192,133,50,.09); }
 .badge.supported, .badge.analyzed { color:var(--ok); border-color:rgba(31,138,101,.34); background:rgba(31,138,101,.08); }
-#strip, .three-questions { background: var(--chrome); border:1px solid var(--line); border-radius:4px; padding: 12px 14px; margin: 12px 0 16px; box-shadow: var(--shadow); }
+#strip { background: var(--chrome); border:1px solid var(--line); border-radius:4px; padding: 12px 14px; margin: 12px 0 16px; box-shadow: var(--shadow); }
 .item { background: var(--card); border:1px solid var(--line); border-radius:4px; padding: 12px 14px; margin: 10px 0; box-shadow: var(--shadow); }
 .item.done { opacity:.62; }
 .item header { display:flex; flex-wrap:wrap; gap:7px 8px; align-items:center; }
@@ -141,9 +151,54 @@ details > summary:hover { color:var(--accent); }
 .lens-key { display:flex; flex-wrap:wrap; gap:8px 12px; }
 .lens-key span { display:inline-block; padding-left:.35rem; }
 .map-detail { background:var(--chrome); border:1px solid var(--line); border-radius:4px; padding:10px 12px; margin:12px 0; }
+svg[aria-label^="Change map"] text[fill="#050503"] { fill:var(--strong); }
+svg[aria-label^="Change map"] text[fill="#26251e"] { fill:var(--fg); }
+svg[aria-label^="Change map"] text[fill="#6f6a60"] { fill:var(--muted); }
+svg[aria-label^="Change map"] rect[fill="#f2f1ed"] { fill:var(--map-card); }
+svg[aria-label^="Change map"] rect[fill="#ebeae5"] { fill:var(--map-card-alt); }
+svg[aria-label^="Change map"] rect[fill="#f3ede6"] { fill:var(--map-tint-warm); }
+svg[aria-label^="Change map"] rect[fill="#e3ebf3"] { fill:var(--map-tint-blue); }
+svg[aria-label^="Change map"] rect[fill="#e6e5e0"] { fill:var(--map-tint-neutral); }
+svg[aria-label^="Change map"] rect[fill="#e4efe8"] { fill:var(--map-tint-green); }
+svg[aria-label^="Change map"] rect[fill="#f1e6ea"] { fill:var(--map-tint-pink); }
+svg[aria-label^="Change map"] rect[stroke="#d9d5cf"] { stroke:var(--line); }
+svg[aria-label^="Change map"] polyline[stroke="#8d877d"] { stroke:var(--map-edge); }
+svg[aria-label^="Change map"] polygon[fill="#8d877d"] { fill:var(--map-edge); }
+svg[aria-label^="Change map"] polyline[stroke="#aaa49a"] { stroke:var(--line-strong); }
 table { width:100%; border-collapse:collapse; margin:.6rem 0; font-size:12px; }
 th, td { border-bottom:1px solid var(--line); padding:.35rem .45rem; text-align:left; vertical-align:top; }
 th { color:var(--muted); font-weight:600; }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#141612;
+    --chrome:#1b1e19;
+    --card:#22251f;
+    --card-hover:#2a2e27;
+    --fg:#d6d9d1;
+    --strong:#f4f5f1;
+    --muted:#a9ada3;
+    --line:#373c34;
+    --line-strong:#60675c;
+    --accent:#ff7137;
+    --bad:#ff668c;
+    --warn:#e0a95a;
+    --ok:#55c49a;
+    --info:#78a9df;
+    --shadow:0 1px 0 rgba(0,0,0,.28);
+    --map-card:#20231e;
+    --map-card-alt:#252821;
+    --map-tint-warm:#302720;
+    --map-tint-blue:#202b37;
+    --map-tint-neutral:#292b27;
+    --map-tint-green:#203029;
+    --map-tint-pink:#31242c;
+    --map-edge:#858c80;
+  }
+  code, pre { background:rgba(255,255,255,.045); border-color:rgba(255,255,255,.08); }
+  .badge { background:rgba(20,22,18,.72); }
+  .filters button.active { background:#302720; }
+  .strip-bar, .progress-track { background:rgba(20,22,18,.72); }
+}
 @media print { #file-filter-note, .item header label { display:none; } details > * { display:block; } }
 </style>
 </head>
@@ -154,20 +209,8 @@ ${incompleteReviewScopeText(model.generated_from.omitted_untracked_files ?? 0) ?
 
 <h2 id="verdict">Verdict</h2>
 <p><span class="badge ${esc(model.verdict.decision)}">${esc(decisionLabel(model.verdict.decision))}</span> <span class="muted">confidence: ${esc(model.verdict.confidence)}</span></p>
-<p>${esc(model.summary)}</p>
 ${renderDecisionProjection(model)}
 
-${hasConversationReviewValue(model) ? renderConversationInsights(model) : ""}
-<h2 id="queue">Review queue</h2>
-<p class="filters" id="file-filter-note" hidden>Filtered to <code id="file-filter-path"></code> <button data-clear-file-filter>show all</button></p>
-${queueHtml}
-
-${renderHeaderStrip(model, lenses)}
-${renderThreeQuestions(model)}
-
-${renderBlockers(model)}
-
-<h2 id="questions">Questions for the author</h2>
 ${renderPrimaryQuestions(model)}
 
 <h2 id="required-checks">Required checks</h2>
@@ -176,7 +219,12 @@ ${renderRequiredChecks(model)}
 <h2 id="trust-summary">Trust summary</h2>
 ${renderTrustSummary(model)}
 
-${hasConversationReviewValue(model) ? "" : renderConversationInsights(model)}
+<h2 id="queue">Supporting review queue</h2>
+<p class="filters" id="file-filter-note" hidden>Filtered to <code id="file-filter-path"></code> <button data-clear-file-filter>show all</button></p>
+${queueHtml}
+
+${renderHeaderStrip(model, lenses)}
+${hasConversationReviewValue(model) ? renderConversationInsights(model) : ""}
 <h2 id="reading-order">Reading order</h2>
 ${renderReadingOrder(model)}
 
@@ -339,15 +387,19 @@ ${renderScoreboardFooter(model)}
 
 function renderDecisionProjection(model: HumanReviewModel): string {
   const projection = model.decision_projection;
-  if (!projection) {
-    return `<h2 id="active-intent">Active intent</h2><p class="muted">${esc(STALE_DECISION_PROJECTION_TEXT)}</p><h2 id="decision-findings">Decision findings</h2><p class="muted">${esc(UNAVAILABLE_DECISION_FINDINGS_TEXT)}</p>`;
-  }
   const source = decisionIntentSourceLabel(projection.active_intent.source);
   const findings = projection.findings.length === 0
     ? `<p class="muted">${esc(EMPTY_DECISION_FINDINGS_TEXT)}</p>`
-    : `<ol>${projection.findings.map((finding) => `<li><strong>${esc(finding.title)}</strong>${finding.path ? ` <code>${esc(finding.path)}</code>` : ""} — ${esc(finding.reason)}<br><span class="muted">Action: ${esc(finding.reviewer_action)} (${esc(finding.priority)}; ${esc(finding.root_cause)})</span></li>`).join("")}</ol>`;
-  const counts = projection.supporting_detail_counts;
-  return `<h2 id="active-intent">Active intent</h2><p>${esc(projection.active_intent.summary)}</p><p class="muted">Source: ${esc(source)}.</p><h2 id="decision-findings">Decision findings</h2>${findings}<p class="muted">${esc(fullDecisionSupportingText(counts))}</p>`;
+    : `<ol>${projection.findings.map((finding) => {
+      const row = decisionFindingPresentation(finding);
+      const evidenceHtml = row.evidence.length > 0
+        ? `<br><span class="muted">Evidence: ${row.evidence.map((value) => `<code>${esc(value)}</code>`).join(", ")}</span>`
+        : "";
+      const reason = row.reason ? ` — ${esc(row.reason)}` : "";
+      return `<li><strong>${esc(row.title)}</strong>${row.path ? ` <code>${esc(row.path)}</code>` : ""}${reason}<br><span class="muted">Review: ${esc(row.reviewerAction)}</span>${evidenceHtml}</li>`;
+    }).join("")}</ol>`;
+  const decisionLabel = decisionProjectionHeading(projection.findings.length);
+  return `<h2 id="change-purpose">Change purpose</h2><p>${esc(projection.active_intent.summary)}</p><p class="muted">${esc(source)}.</p><h2 id="approval-decisions">${esc(decisionLabel)}</h2>${findings}`;
 }
 
 function lensesForItem(model: HumanReviewModel, item: ReviewQueueItem): string[] {
@@ -361,8 +413,8 @@ function lensesForItem(model: HumanReviewModel, item: ReviewQueueItem): string[]
 }
 
 function renderConversationInsights(model: HumanReviewModel): string {
-  const analysis = conversationAnalysisForRender(model);
-  const insights = conversationInsightsForRender(model);
+  const analysis = model.conversation_analysis;
+  const insights = presentableConversationInsights(analysis, model.review_insights);
   const presentation = conversationReviewPresentation(analysis);
   const caveats = conversationAnalysisCaveats(analysis);
   const cards = insights.length === 0
@@ -385,7 +437,7 @@ ${caveats.length > 0 ? `<p class="muted"><strong>Caveat:</strong> ${esc(caveats.
 ${cards}`;
 }
 
-function renderConversationContextHtml(analysis: ConversationAnalysis | undefined): string {
+function renderConversationContextHtml(analysis: ConversationAnalysis): string {
   const rows = conversationAnalysisContextRows(analysis).map((row) =>
     `<li><strong>${esc(row.label)}:</strong> ${row.items.map((item) =>
       `${esc(item.text)} (${compactHtmlCitations(item.eventIds)})`
@@ -406,10 +458,10 @@ function compactHtmlCitations(values: string[]): string {
   return shown ? `${shown}${omitted > 0 ? ` (+${esc(omitted)})` : ""}` : "";
 }
 
-// review-surfaces.RENDER.12: the at-a-glance header strip, rendered purely from
-// existing model fields — lens chips with counts that ARE the filter buttons,
-// the review_plan read/skim/defer cut as a stacked CSS bar with minutes, trust
-// counts, and a progress bar fed by the persisted checkbox state. Every chip
+// review-surfaces.RENDER.12: the at-a-glance supporting-control strip, rendered
+// purely from existing model fields — lens chips with counts that ARE the filter
+// buttons, the review_plan read/skim/defer cut as a stacked CSS bar with minutes,
+// and a progress bar fed by the persisted checkbox state. Every chip
 // and bar segment carries a text label, so color never carries meaning alone.
 function renderHeaderStrip(model: HumanReviewModel, lenses: string[]): string {
   const lensCounts = new Map<string, number>();
@@ -444,22 +496,24 @@ function renderHeaderStrip(model: HumanReviewModel, lenses: string[]): string {
     budgetBar = `<div class="strip-bar">${segment("read", read, "read")}${segment("skim", skim, "skim")}${segment("defer", defer, "defer")}</div>`;
   }
 
-  const trust = model.trust_audit;
-  const trustLine = `<p class="muted">✓ ${esc(trust.verified_facts.length)} verified · ~ ${esc(trust.claimed_not_verified.length)} claimed · ${esc(trust.missing_evidence.length)} missing evidence · ${esc(trust.invalid_evidence.length)} invalid</p>`;
   const progress =
     model.review_queue.length > 0
       ? `<div class="progress-track"><div id="progress-bar"></div></div><p class="muted" id="progress-label">0 of ${esc(model.review_queue.length)} reviewed</p>`
       : "";
-  return `<div id="strip">${chips}${budgetBar}${trustLine}${progress}</div>`;
+  const contents = `${chips}${budgetBar}${progress}`;
+  return contents ? `<div id="strip">${contents}</div>` : "";
 }
 
 // review-surfaces.RENDER.11: the inline SVG map with its text legend; the same
-// change_graph model the mermaid emitter draws — never a second graph model.
+// change_graph model used by the rest of the review — never a second graph model.
+// review-surfaces.CHANGE_MAP.3: structural maps live only in this supporting
+// HTML cockpit. The compact Markdown and GitHub reviewer brief deliberately
+// omit them so a diagram cannot substitute for purpose and approval decisions.
 // review-surfaces.MAP_SCALE.2: the legibility budget decides which level leads
 // — the overview SVG summarizes when the file-level map cannot render at full
 // size (summarize, never shrink).
 function renderSvgMapSection(model: HumanReviewModel): string {
-  const level = changeMapLeadLevel(model.change_graph, "svg");
+  const level = changeMapLeadLevel(model.change_graph);
   const rendered = level === "overview" ? renderChangeMapOverviewSvg(model.change_graph.overview) : renderChangeMapSvg(model.change_graph);
   if (!rendered) {
     return `<p class="muted">No changed files to map.</p>`;
@@ -529,37 +583,6 @@ ${excerptHtml}
 </div>`;
 }
 
-// review-surfaces.HUMAN_REVIEW.27: the cockpit's first screen answers the three
-// questions the README promises about agent-written code — overreach, weakened
-// tests, unbacked claims — each as a count linking to its section, so a reviewer
-// sees the trust posture at a glance instead of inferring it from the queue.
-function renderThreeQuestions(model: HumanReviewModel): string {
-  const specless = model.spec_mode === "none";
-  const overreach = model.intent_mismatch?.possible_overreach ?? [];
-  const weakening = model.semantic_facts?.test_weakening ?? [];
-  const unbacked = model.trust_audit?.claimed_not_verified ?? [];
-  const overreachAnswer = specless
-    ? "not assessed — no spec indexed"
-    : overreach.length === 0
-      ? "none — every changed file maps to a stated requirement"
-      : `${overreach.length} changed file(s) outside any stated requirement`;
-  const weakeningFile = weakening.length > 0 ? ` (${esc(weakening[0].path)}${weakening.length > 1 ? `, +${weakening.length - 1} more` : ""})` : "";
-  const weakeningAnswer = weakening.length === 0
-    ? "none detected — no deleted/skipped tests or removed assertions"
-    : `${weakening.length} test-weakening signal(s)${weakeningFile}`;
-  const unbackedAnswer = unbacked.length === 0
-    ? "none — no claim lacks backing evidence"
-    : `${unbacked.length} claim(s) recorded without proof`;
-  return `<div class="three-questions">
-<strong>What a human reviewer needs to know</strong>
-<ul>
-<li><a href="#queue">Did the agent overreach its instructions?</a> — ${esc(overreachAnswer)}</li>
-<li><a href="#queue">Did it weaken tests to make them pass?</a> — ${weakening.length === 0 ? esc(weakeningAnswer) : weakeningAnswer}</li>
-<li><a href="#trust">Did it claim things it didn't do?</a> — ${esc(unbackedAnswer)}</li>
-</ul>
-</div>`;
-}
-
 // Bounded inline evidence references — the same refs the markdown sibling
 // renders per queue item, so deterministic items without an evidence card still
 // show their evidence.
@@ -578,7 +601,7 @@ function evidenceRefsHtml(evidence: EvidenceRef[]): string {
 
 function renderNarrative(model: HumanReviewModel): string {
   if (!model.narrative || model.narrative.claims.length === 0) {
-    return `<p class="muted">No grounded narrative available; rely on the verdict and review queue.</p>`;
+    return "";
   }
   const claims = model.narrative.claims
     .map((claim) => {
@@ -591,7 +614,7 @@ function renderNarrative(model: HumanReviewModel): string {
       return `<li>${claim.trust === "verified" ? "✓" : "~"} ${esc(claim.text)}${anchors}${invalid}</li>`;
     })
     .join("");
-  return `<p class="muted">✓ anchored means the citations were validated; it does not independently prove the prose. ~ claimed has missing or invalid anchors.</p><ul>${claims}</ul>`;
+  return `<h2 id="narrative">Change narrative</h2><p class="muted">✓ anchored means the citations were validated; it does not independently prove the prose. ~ claimed has missing or invalid anchors.</p><ul>${claims}</ul>`;
 }
 
 // review-surfaces.READING_ORDER.2: the guided tour renders as the section
@@ -629,34 +652,21 @@ function renderReadingOrder(model: HumanReviewModel): string {
     .join("\n");
 }
 
-function renderBlockers(model: HumanReviewModel): string {
-  if (model.blockers.length === 0) {
-    return "";
-  }
-  return `<h2 id="blockers">Blockers</h2><ul>${model.blockers
-    .map((blocker) => `<li><span class="badge blocker">${esc(blocker.severity)}</span> ${esc(blocker.summary)} <em>${esc(blocker.required_action)}</em></li>`)
-    .join("")}</ul>`;
-}
-
 function renderPrimaryQuestions(model: HumanReviewModel): string {
-  if (model.questions.length === 0) return `<p class="muted">No reviewer questions generated.</p>`;
+  const questions = model.questions.filter((question) => question.severity !== "blocking");
+  if (questions.length === 0) return "";
   const renderQuestion = (question: HumanReviewModel["questions"][number]): string =>
-    `<li><span class="badge ${esc(question.severity)}">${esc(question.severity)}</span> ${esc(question.question)} <span class="muted">(${esc(question.id)})</span></li>`;
-  const questionItems = partitionPrimary(model.questions);
-  const primary = questionItems.primary.map(renderQuestion).join("");
-  const supporting = questionItems.supporting;
-  return `<ul>${primary}</ul>${supporting.length > 0 ? `<details><summary>+${esc(supporting.length)} supporting question(s)</summary><ul>${supporting.map(renderQuestion).join("")}</ul></details>` : ""}`;
+    `<li><span class="badge ${esc(question.severity)}">${esc(question.severity)}</span> ${esc(question.question)} <span class="muted">(${esc(question.id)}; evidence: ${evidenceRefsHtml(question.evidence)})</span></li>`;
+  const questionItems = partitionSupportingPreview(questions);
+  const primary = questionItems.preview.map(renderQuestion).join("");
+  const supporting = questionItems.remaining;
+  return `<h2 id="questions">Additional author questions</h2><ul>${primary}</ul>${supporting.length > 0 ? `<details><summary>+${esc(supporting.length)} supporting question(s)</summary><ul>${supporting.map(renderQuestion).join("")}</ul></details>` : ""}`;
 }
 
 function renderRequiredChecks(model: HumanReviewModel): string {
   const required = model.test_plan.filter((item) => item.priority === "required");
   if (required.length === 0) return `<p class="muted">No required checks were generated.</p>`;
-  const renderCheck = (item: HumanReviewModel["test_plan"][number]): string =>
-    `<li>${esc(item.scenario)} <span class="muted">Expected: ${esc(item.expected_result)}</span></li>`;
-  const checkItems = partitionPrimary(required);
-  const primary = checkItems.primary.map(renderCheck).join("");
-  const supporting = checkItems.supporting;
-  return `<ul>${primary}</ul>${supporting.length > 0 ? `<details><summary>+${esc(supporting.length)} supporting required check(s)</summary><ul>${supporting.map(renderCheck).join("")}</ul></details>` : ""}`;
+  return `<p>${esc(required.length)} required check(s). See <a href="test_plan.md"><code>test_plan.md</code></a> for exact commands and expected results.</p>`;
 }
 
 function renderPlan(model: HumanReviewModel): string {
@@ -716,7 +726,10 @@ function renderTrust(model: HumanReviewModel): string {
 
 function renderTrustSummary(model: HumanReviewModel): string {
   const trust = model.trust_audit;
-  return `<p>${esc(trust.verified_facts.length)} verified fact(s); ${esc(trust.claimed_not_verified.length)} unverified claim(s); ${esc(trust.missing_evidence.length)} missing-evidence item(s); ${esc(trust.invalid_evidence.length)} invalid-evidence item(s). <span class="muted">${esc(trust.confidence_summary)}</span></p>`;
+  // The generated confidence summary usually restates these same counts. Keep
+  // the first-pass scan to one line; the full confidence prose remains in the
+  // later Trust audit section.
+  return `<p>${esc(trust.verified_facts.length)} verified fact(s); ${esc(trust.claimed_not_verified.length)} unverified claim(s); ${esc(trust.missing_evidence.length)} missing-evidence item(s); ${esc(trust.invalid_evidence.length)} invalid-evidence item(s).</p>`;
 }
 
 // review-surfaces.METHODOLOGY.7/.8 (Phase 4): the agent-workflow audit card —
@@ -775,10 +788,7 @@ function renderExcerptWithGutter(model: HumanReviewModel, item: ReviewQueueItem,
     return "";
   }
   const coverageSummaryHunk = coverageHunkForAnchor(model, item.path, item.hunk_header);
-  // Per-line gutters need per-line data: a legacy (pre-COVERAGE.5) hunk has
-  // counts but no line arrays — render NO gutter for it (the summary line
-  // still shows the counts) rather than mislabeling lines as not-instrumented.
-  const coverageHunk = coverageSummaryHunk?.uncovered_lines !== undefined ? coverageSummaryHunk : undefined;
+  const coverageHunk = coverageSummaryHunk;
   const uncovered = new Set(coverageHunk?.uncovered_lines ?? []);
   const covered = new Set(coverageHunk?.covered_line_numbers ?? []);
   const rows = excerpt.lines
@@ -826,7 +836,7 @@ function gutterFor(
 // review-surfaces.TREND.2: the rounds ledger as a compact table — last ~8
 // rounds, full ledger in the artifact; partial history renders honestly.
 function renderRounds(model: HumanReviewModel): string {
-  const rounds = model.rounds ?? [];
+  const rounds = model.rounds;
   if (rounds.length === 0) {
     return `<p class="muted">No rounds ledger (no prior packet was compared in).</p>`;
   }

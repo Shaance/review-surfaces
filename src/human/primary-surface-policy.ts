@@ -1,18 +1,14 @@
-import type { HumanReviewModel, ReviewQueueItem } from "./contract";
+import type { HumanReviewModel } from "./contract";
 
-export const PRIMARY_SURFACE_LIMIT = 3;
+// This only bounds previews inside the supporting artifact. The GitHub reviewer
+// brief renders every admitted approval decision and never uses this limit.
+export const SUPPORTING_PREVIEW_LIMIT = 3;
 
-export function partitionPrimary<T>(items: readonly T[]): { primary: T[]; supporting: T[] } {
+export function partitionSupportingPreview<T>(items: readonly T[]): { preview: T[]; remaining: T[] } {
   return {
-    primary: items.slice(0, PRIMARY_SURFACE_LIMIT),
-    supporting: items.slice(PRIMARY_SURFACE_LIMIT)
+    preview: items.slice(0, SUPPORTING_PREVIEW_LIMIT),
+    remaining: items.slice(SUPPORTING_PREVIEW_LIMIT)
   };
-}
-
-/** Queue rows not already represented by the bounded decision projection. */
-export function supportingReviewQueue(model: HumanReviewModel): ReviewQueueItem[] {
-  const projected = new Set(model.decision_projection?.findings.flatMap((finding) => finding.source_queue_ids) ?? []);
-  return model.review_queue.filter((item) => !projected.has(item.id));
 }
 
 /** Concrete author work that makes a clarification verdict actionable. */

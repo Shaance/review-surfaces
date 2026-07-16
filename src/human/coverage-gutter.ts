@@ -56,9 +56,7 @@ export function coverageSummaryLine(hunk: CoverageEvidenceHunk): string {
   if (uncovered <= 0) {
     return `all ${hunk.changed_lines} instrumented changed line(s) executed by tests`;
   }
-  // uncovered_lines is optional for pre-COVERAGE.5 v1 artifacts: counts still
-  // render, the per-line ranges are simply absent.
-  const lines = hunk.uncovered_lines ?? [];
+  const lines = hunk.uncovered_lines;
   const ranges = lines.length > 0 ? `: ${formatUncoveredRanges(lines)}` : "";
   const truncated = hunk.uncovered_truncated ? " (+ more; list truncated)" : "";
   return `${uncovered} of ${hunk.changed_lines} changed line(s) uncovered${ranges}${truncated}`;

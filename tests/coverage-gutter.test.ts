@@ -31,8 +31,7 @@ function modelWithCoverage(): HumanReviewModel {
     mode: "repo",
     spec_mode: "acai",
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
-    summary: "Coverage gutter fixture.",
-    narrative: { source: "fallback", provider: "mock", validated_at_head: "abc", claims: [] },
+    decision_projection: { active_intent: { summary: "Fixture intent.", source: "packet", redaction_blocked: false, requirement_ids: [], event_ids: [] }, findings: [] },
     conversation_analysis: notAssessedConversationAnalysis("mock"),
     review_insights: [],
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
@@ -60,7 +59,6 @@ function modelWithCoverage(): HumanReviewModel {
     risk_lens_findings: [],
     methodology_audit: { quality_flags: [], considered: [], research: [], workflow_findings: [] },
     intent_mismatch: { expected_by_spec: [], observed_in_diff: [], possible_mismatches: [], possible_overreach: [], missing_intent: [], claimed_candidates: [] },
-    review_routes: [],
     since_last_review: {
       improved: [],
       regressed: [],
@@ -81,6 +79,7 @@ function modelWithCoverage(): HumanReviewModel {
     review_plan: { enabled: false, read: [], skim: [], defer: [] },
     change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
     reading_order: { legs: [] },
+    rounds: [],
     evidence_cards: [],
     test_plan: [],
     skim_safe: [],
@@ -118,7 +117,7 @@ ${bigLines}
   assert.deepEqual(bigHunk.uncovered_lines.slice(0, 3), [1, 2, 3]);
 });
 
-test("review-surfaces.COVERAGE.6 the cockpit gutters excerpt lines (deleted lines never), and markdown renders one summary line with uncovered ranges", () => {
+test("review-surfaces.COVERAGE.6 the HTML cockpit gutters excerpt lines while compact Markdown delegates coverage detail", () => {
   const fixture = modelWithCoverage();
   const diff = parseStructuredDiff(DIFF);
   const html = renderHumanReviewHtml(fixture, { diff });
@@ -129,9 +128,12 @@ test("review-surfaces.COVERAGE.6 the cockpit gutters excerpt lines (deleted line
   assert.doesNotMatch(html, /[✖✓·] -removed line/);
   // Glyph paired with tint — color never alone.
   assert.match(html, /background:#fde2e2/);
-  // Markdown: one summary line under the excerpt with the uncovered ranges.
+  assert.match(html, /Coverage: 2 of 3 changed line\(s\) uncovered: L12–L13/);
+  // Compact Markdown links to the HTML instead of repeating coverage detail.
   const markdown = renderHumanReviewMarkdown(fixture, { diff });
-  assert.match(markdown, /Coverage: 2 of 3 changed line\(s\) uncovered: L12–L13/);
+  assert.doesNotMatch(markdown, /## Coverage evidence/);
+  assert.match(markdown, /Coverage: 2 of 3 changed line\(s\) uncovered: L12–L13/, "a queued coverage decision must keep its concrete reason");
+  assert.match(markdown, /\[Interactive HTML cockpit\]\(human_review\.html\)/);
   // Honest negatives carry over: no report renders as no-evidence, never red.
   const noReport = { ...fixture, coverage_evidence: { status: "no_report" as const, files: [] } };
   const noReportHtml = renderHumanReviewHtml(noReport, { diff });
@@ -154,12 +156,13 @@ test("review-surfaces.COVERAGE.6 uncovered range formatting is compact and trunc
       covered_lines: 5,
       classification: "partial",
       uncovered_lines: [1, 2, 3],
-      uncovered_truncated: true
+      uncovered_truncated: true,
+      covered_line_numbers: []
     }),
     /list truncated/
   );
   assert.match(
-    coverageSummaryLine({ hunk_header: "@@ -1,1 +1,2 @@", changed_lines: 3, covered_lines: 3, classification: "covered", uncovered_lines: [] }),
+    coverageSummaryLine({ hunk_header: "@@ -1,1 +1,2 @@", changed_lines: 3, covered_lines: 3, classification: "covered", uncovered_lines: [], covered_line_numbers: [1, 2, 3] }),
     /all 3 instrumented changed line\(s\) executed/
   );
 });

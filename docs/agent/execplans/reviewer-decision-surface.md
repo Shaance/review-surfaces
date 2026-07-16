@@ -25,8 +25,8 @@ Authoritative requirements are recorded as `review-surfaces.REVIEWER_VALUE.*` in
 4. **Provenance-based discovery.** Editing/apply operations, session timing, and
    actor/event roles outrank raw path-string matches.
 5. **Usefulness gates.** Real transcript fixtures and PR-shaped scenarios measure
-   false blockers, top-five actionability, duplicate roots, report density, and
-   artifact validity.
+   false blockers, independent-decision actionability, duplicate roots, report
+   density, and artifact validity.
 
 The user approved these decisions by accepting the complete audit remediation
 proposal and asking for all milestones to be implemented and autolanded.
@@ -67,8 +67,9 @@ Exit criteria:
 
 ## Milestone 2 — decision-first reviewer signal
 
-**Goal:** The top surface contains only the few decisions most likely to affect
-approval, with exhaustive context moved behind supporting detail.
+**Goal:** The top surface contains every independent decision that can affect
+approval exactly once, with exhaustive diagnostic context moved behind supporting
+detail. Decision count follows the change; it is not a fixed top-N budget.
 
 Primary files:
 
@@ -85,8 +86,9 @@ Build sequence:
 2. Restrict top risk admission to PR-scoped evidence and affected requirements.
 3. Distinguish public/persisted contracts from internal TypeScript exports.
 4. Collapse duplicate path/root-cause findings and ordinary dependency edges.
-5. Render verdict, intent, and top three-to-five findings before tours/maps.
-6. Enforce density budgets and preserve full ledgers in supporting artifacts.
+5. Render verdict, intent, and all independent approval decisions before tours/maps.
+6. Adapt wording density to the change and preserve full ledgers in supporting
+   artifacts; only GitHub's physical comment limit may force a compact mode.
 7. Run the milestone quality, dogfood, simplification, PR, and autoland loop.
 
 Exit criteria:
@@ -95,12 +97,13 @@ Exit criteria:
 - repository-wide partial counts do not drive the verdict;
 - duplicate root causes do not occupy multiple top slots;
 - internal exports and ordinary layer edges are not treated as public breakage;
-- a large real PR remains useful above the fold and within explicit density budgets.
+- a large real PR preserves every independent decision while compacting prose and
+  relocating diagnostics before approaching GitHub's physical comment limit.
 
 Implementation status (2026-07-11):
 
 - added a schema-backed decision projection with authoritative active intent,
-  at most five bounded root-cause findings, and explicit supporting-ledger counts;
+  one finding per independent root cause, and explicit supporting-ledger counts;
 - made verdict, blockers, trust, validation, and projection share one reviewed-range
   admission policy, including clean-worktree/current-head validation provenance;
 - canonicalized public/persisted contract removals and kept internal exports and
@@ -179,8 +182,9 @@ Build sequence:
 
 1. Add sanitized Claude/Codex/Cursor and PR-shaped cases covering the observed
    failure classes.
-2. Score artifact validity, false blockers, top-five actionability, duplicate
-   root causes, density, severity coherence, and session-selection correctness.
+2. Score artifact validity, false blockers, actionability of every independent
+   decision, duplicate root causes, density, severity coherence, and
+   session-selection correctness.
 3. Make deterministic regressions part of the local gate; keep subjective/manual
    scoring explicit and non-fabricated.
 4. Refresh examples and docs through the real CLI.
