@@ -14,7 +14,7 @@
       "input": "cases/late-correction.input.json",
       "input_sha256": "8fcb9fc1069d784477dc0818c5101fcb7502e61709fe0b864311dddd2f35748a",
       "gold": "cases/late-correction.gold.json",
-      "gold_sha256": "9ad3d4c8fbc869c7546e131bfd32c299cc6b944c1f6f9927be4301d9b2ac4166"
+      "gold_sha256": "daa5f6e87644a20dc62abbec560b12f57087e272470feac944b56197ce8013de"
     },
     {
       "id": "unauthorized-scope",

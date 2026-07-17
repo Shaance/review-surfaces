@@ -90,7 +90,6 @@ export function groundAgreementAudit(
   const cannotAudit = input.conversation.status !== "complete" ||
     input.conversation.events.length === 0 ||
     agreements.length === 0 ||
-    uncoveredUserEvents.length > 0 ||
     !candidate.complete ||
     rejections.length > 0 ||
     finalGoalReasons.length > 0;

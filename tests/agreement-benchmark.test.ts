@@ -15,7 +15,7 @@ import type { AgreementAuditCandidate } from "../src/audit/contract";
 import { groundAgreementAudit } from "../src/audit/grounding";
 import { parseAgreementAuditInput } from "../src/audit/parse";
 import { buildAuditPrompt } from "../src/audit/prompt";
-import type { AgreementBenchmarkGold } from "../src/audit/benchmark";
+import type { AgreementAdjudication, AgreementBenchmarkGold } from "../src/audit/benchmark";
 import {
   AGREEMENT_BENCH_ROOT as BENCH_ROOT,
   agreementCandidate as agreement,
@@ -90,7 +90,8 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
       agreement({ key: "wording-a", statement: "Swift code is removed.", conversation_event_ids: ["u1"], materiality: "material", diff_citations: [{ path: "src/swift/project.ts", side: "delete", line: 1, contains: "inspectSwiftProject" }] }),
       agreement({ key: "wording-c", statement: "Swift documentation removal is not evidenced.", state: "unresolved", conversation_event_ids: ["u1"], reviewer_action: "Confirm or remove the documentation." }),
       agreement({ key: "wording-d", statement: "Swift test removal is not evidenced.", state: "unresolved", conversation_event_ids: ["u1"], reviewer_action: "Confirm or remove the dedicated tests." }),
-      agreement({ key: "wording-b", kind: "human_boundary", statement: "A retained privacy rule is deleted.", state: "diverged", conversation_event_ids: ["u2"], diff_citations: [{ path: "src/privacy/ignore.ts", side: "delete", line: 4, contains: "DerivedData" }], reviewer_action: "Restore it." })
+      agreement({ key: "wording-b", kind: "human_boundary", statement: "A retained privacy rule is deleted.", state: "diverged", conversation_event_ids: ["u2"], diff_citations: [{ path: "src/privacy/ignore.ts", side: "delete", line: 4, contains: "DerivedData" }], reviewer_action: "Restore it." }),
+      agreement({ key: "wording-e", kind: "human_boundary", statement: "A retained privacy regression test is deleted.", state: "diverged", conversation_event_ids: ["u2"], diff_citations: [{ path: "tests/privacy.test.ts", side: "delete", line: 10, contains: "isIgnored" }], reviewer_action: "Restore the regression test." })
     ],
     complete: true,
     limitations: []
@@ -102,7 +103,8 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
       { candidate_key: "wording-a", gold_id: "remove-swift-code" },
       { candidate_key: "wording-c", gold_id: "remove-swift-docs" },
       { candidate_key: "wording-d", gold_id: "remove-swift-tests" },
-      { candidate_key: "wording-b", gold_id: "retain-privacy-boundary" }
+      { candidate_key: "wording-b", gold_id: "retain-privacy-defaults" },
+      { candidate_key: "wording-e", gold_id: "retain-privacy-tests" }
     ],
     false_positive_candidate_keys: []
   };
@@ -194,17 +196,14 @@ test("six-case runner keeps gold behind generation and cannot pass a tied plain-
     mode,
     model_id: "fake-model",
     model_config_hash: "same-config",
-    generate: async ({ prompt }) => {
+    generate: async (request) => {
+      assert.equal("case_id" in request, false);
+      const { prompt } = request;
       seenPrompts.push(prompt);
       assert.ok(!prompt.includes('"expected_state"'));
-      return {
-        final_goal: { text: "Review the requested work.", conversation_event_ids: ["u1"] },
-        agreements: [],
-        complete: true,
-        limitations: []
-      };
+      return emptyCandidate();
     },
-    adjudicate: async () => ({ matches: [], false_positive_candidate_keys: [] })
+    adjudicate: async () => emptyAdjudication()
   });
   const [baseline, product] = await Promise.all([runArm("plain-agent"), runArm("review-surfaces")]);
   assert.equal(baseline.scores.length, 18);
@@ -262,18 +261,40 @@ test("concurrent benchmark generation finishes before any hidden gold is exposed
     case_concurrency: 3,
     generate: async () => {
       generationCount += 1;
-      return {
-        final_goal: { text: "Review the requested work.", conversation_event_ids: ["u1"] },
-        agreements: [],
-        complete: true,
-        limitations: []
-      };
+      return emptyCandidate();
     },
     adjudicate: async () => {
       assert.equal(generationCount, 18);
-      return { matches: [], false_positive_candidate_keys: [] };
+      return emptyAdjudication();
     }
   });
+});
+
+test("concurrent benchmark workers stop scheduling generation after the first failure", async () => {
+  let generationCount = 0;
+  let releaseBlockedGeneration!: () => void;
+  const blockedGeneration = new Promise<void>((resolve) => { releaseBlockedGeneration = resolve; });
+  const run = runAgreementBenchmarkArm({
+    root: BENCH_ROOT,
+    mode: "review-surfaces",
+    model_id: "fake-model",
+    model_config_hash: "same-config",
+    case_concurrency: 2,
+    generate: async () => {
+      generationCount += 1;
+      if (generationCount === 1) {
+        await Promise.resolve();
+        throw new Error("provider failed");
+      }
+      await blockedGeneration;
+      return emptyCandidate();
+    },
+    adjudicate: async () => emptyAdjudication()
+  });
+  await assert.rejects(run, /provider failed/);
+  releaseBlockedGeneration();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(generationCount, 2);
 });
 
 test("benchmark runner rejects a fixture changed after the manifest was frozen", async () => {
@@ -287,7 +308,7 @@ test("benchmark runner rejects a fixture changed after the manifest was frozen",
       model_id: "unreached",
       model_config_hash: "unreached",
       generate: async () => { throw new Error("generation must not start"); },
-      adjudicate: async () => ({ matches: [], false_positive_candidate_keys: [] })
+      adjudicate: async () => emptyAdjudication()
     }), /does not match its frozen SHA-256 digest/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -296,4 +317,17 @@ test("benchmark runner rejects a fixture changed after the manifest was frozen",
 
 function fileDigest(file: string): string {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function emptyCandidate(): AgreementAuditCandidate {
+  return {
+    final_goal: { text: "Review the requested work.", conversation_event_ids: ["u1"] },
+    agreements: [],
+    complete: true,
+    limitations: []
+  };
+}
+
+function emptyAdjudication(): AgreementAdjudication {
+  return { matches: [], false_positive_candidate_keys: [] };
 }

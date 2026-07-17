@@ -16,7 +16,6 @@ import { buildAuditPrompt, type AuditPromptMode } from "./prompt";
 import { renderAgreementAuditMarkdown } from "./render";
 
 export interface AgreementBenchmarkGenerationRequest {
-  case_id: string;
   pair_id: string;
   run_number: number;
   mode: AuditPromptMode;
@@ -46,8 +45,9 @@ export interface AgreementBenchmarkArmResult {
 }
 
 /**
- * Runs one benchmark arm. Candidate generation receives the prompt only; the
- * hidden gold file is loaded afterwards and is visible only to adjudication.
+ * Runs one benchmark arm. Candidate generation receives arm/run metadata and
+ * the prompt, never the manifest case label or hidden gold. Gold is loaded only
+ * after every candidate has been generated and is visible only to adjudication.
  */
 export async function runAgreementBenchmarkArm(
   options: AgreementBenchmarkArmOptions
@@ -58,7 +58,7 @@ export async function runAgreementBenchmarkArm(
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     throw new Error("case_concurrency must be a positive integer");
   }
-  const generatedCases = await mapWithConcurrency(manifest.cases, concurrency, async (entry) => {
+  const generatedCases = await mapWithConcurrency(manifest.cases, concurrency, async (entry, control) => {
     const inputPath = path.join(options.root, entry.input);
     const inputBytes = fs.readFileSync(inputPath);
     assertDigest(inputBytes, entry.input_sha256, entry.input);
@@ -67,10 +67,10 @@ export async function runAgreementBenchmarkArm(
     const prompt = buildAuditPrompt(input, options.mode);
     const generated = [];
     for (const runNumber of [1, 2, 3]) {
+      if (control.aborted) throw new Error("benchmark generation aborted after another case failed");
       const pairId = `pair-${runNumber}`;
       const started = Date.now();
       const candidateValue = await options.generate({
-        case_id: entry.id,
         pair_id: pairId,
         run_number: runNumber,
         mode: options.mode,
@@ -86,13 +86,14 @@ export async function runAgreementBenchmarkArm(
   });
 
   // Hidden gold is loaded only after every candidate in the arm has been generated.
-  const results = await mapWithConcurrency(generatedCases, concurrency, async ({ entry, input, inputHash, generated }) => {
+  const results = await mapWithConcurrency(generatedCases, concurrency, async ({ entry, input, inputHash, generated }, control) => {
     const goldBytes = fs.readFileSync(path.join(options.root, entry.gold));
     assertDigest(goldBytes, entry.gold_sha256, entry.gold);
     const gold = parseAgreementBenchmarkGold(JSON.parse(goldBytes.toString("utf8")) as unknown, input);
     if (gold.case_id !== entry.id) throw new Error(`benchmark gold case ${gold.case_id} does not match manifest ${entry.id}`);
     const adjudications: AgreementAdjudication[] = [];
     for (const run of generated) {
+      if (control.aborted) throw new Error("benchmark adjudication aborted after another case failed");
       adjudications.push(await options.adjudicate({ case_id: entry.id, pair_id: run.pairId, audit: run.audit, gold }));
     }
     const scores: AgreementBenchmarkScore[] = [];
@@ -137,15 +138,21 @@ function assertDigest(bytes: Buffer, expected: string, file: string): void {
 async function mapWithConcurrency<Input, Output>(
   values: readonly Input[],
   concurrency: number,
-  run: (value: Input) => Promise<Output>
+  run: (value: Input, control: Readonly<{ aborted: boolean }>) => Promise<Output>
 ): Promise<Output[]> {
   const results = new Array<Output>(values.length);
+  const control = { aborted: false };
   let nextIndex = 0;
   const worker = async (): Promise<void> => {
-    while (nextIndex < values.length) {
+    while (!control.aborted && nextIndex < values.length) {
       const index = nextIndex;
       nextIndex += 1;
-      results[index] = await run(values[index]);
+      try {
+        results[index] = await run(values[index], control);
+      } catch (error) {
+        control.aborted = true;
+        throw error;
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => worker()));

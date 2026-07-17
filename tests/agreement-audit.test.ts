@@ -120,6 +120,28 @@ test("final-goal citations cannot replace an agreement for a human turn", () => 
   assert.ok(audit.limitations.some((limitation) => /user turn.*u2/.test(limitation)));
 });
 
+test("an uncited superseded user turn does not suppress a grounded reviewer decision", () => {
+  const input = loadInput("late-correction");
+  input.conversation.events.find((event) => event.id === "u1")!.text = "Consider removing the privacy defaults too.";
+  input.conversation.events.find((event) => event.id === "u2")!.text = "No. Keep the privacy defaults and their regression tests.";
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Keep the privacy defaults and their regression tests.", conversation_event_ids: ["u2"] },
+    agreements: [agreement({
+      key: "privacy-boundary",
+      kind: "human_boundary",
+      statement: "The final privacy boundary was crossed.",
+      state: "diverged",
+      conversation_event_ids: ["u2"],
+      diff_citations: [{ path: "src/privacy/ignore.ts", side: "delete", line: 4, contains: "DerivedData" }],
+      reviewer_action: "Restore the retained privacy defaults."
+    })],
+    complete: true,
+    limitations: []
+  }));
+  assert.equal(audit.status, "needs_human_decision");
+  assert.ok(audit.limitations.some((limitation) => /user turn.*u1/.test(limitation)));
+});
+
 test("rejected agreements cannot satisfy human-turn coverage", () => {
   const input = loadInput("clean-alignment");
   const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
