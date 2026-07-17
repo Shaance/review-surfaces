@@ -183,6 +183,9 @@ test("one broad agreement cannot manufacture a clean result by citing every user
   }));
   assert.equal(audit.status, "cannot_audit");
   assert.ok(audit.limitations.some((limitation) => /completeness was not independently verified/.test(limitation)));
+  const markdown = renderAgreementAuditMarkdown(audit);
+  assert.match(markdown, /No clean alignment conclusion.*extraction completeness was not independently verified/);
+  assert.doesNotMatch(markdown, /conversation or evidence scope is incomplete/);
 });
 
 test("an unchanged context line cannot prove a divergence", () => {
@@ -347,6 +350,13 @@ test("runtime parsing establishes one non-negative total conversation order", ()
   const duplicateEvents = (duplicate.conversation as Record<string, unknown>).events as Array<Record<string, unknown>>;
   duplicateEvents[1].order = duplicateEvents[0].order;
   assert.throws(() => parseAgreementAuditInput(duplicate), /order values must be unique/);
+});
+
+test("runtime parsing rejects duplicate diff coordinates", () => {
+  const raw = readJson<Record<string, unknown>>(path.join(BENCH_ROOT, "cases", "clean-alignment.input.json"));
+  const diff = raw.diff as Array<Record<string, unknown>>;
+  raw.diff = [...diff, { ...diff[0], text: "fabricated replacement text" }];
+  assert.throws(() => parseAgreementAuditInput(raw), /diff coordinates must be unique/);
 });
 
 test("a validation claim cannot cite a command from a stale head", () => {

@@ -8,6 +8,7 @@ import {
   CONVERSATION_SCOPE_STATUSES,
   CONVERSATION_SOURCE_SELECTIONS,
   DIFF_SIDES,
+  auditDiffCoordinate,
   type AgreementAuditCandidate,
   type AgreementAuditInput,
   type AgreementCandidate,
@@ -35,6 +36,14 @@ export function parseAgreementAuditInput(value: unknown): AgreementAuditInput {
   }
   const commands = array(input.commands, "input.commands").map(parseCommand);
   uniqueIds(commands, "command");
+  const diffCoordinates = new Set<string>();
+  const diff = array(input.diff, "input.diff").map((value, index) => {
+    const line = parseDiffLine(value, index);
+    const coordinate = auditDiffCoordinate(line);
+    if (diffCoordinates.has(coordinate)) throw new Error("input.diff coordinates must be unique");
+    diffCoordinates.add(coordinate);
+    return line;
+  });
   return {
     version: AGREEMENT_AUDIT_VERSION,
     repository: nonEmpty(input.repository, "input.repository"),
@@ -46,7 +55,7 @@ export function parseAgreementAuditInput(value: unknown): AgreementAuditInput {
       events: [...events].sort((left, right) => left.order - right.order),
       ...(conversation.caveat === undefined ? {} : { caveat: nonEmpty(conversation.caveat, "input.conversation.caveat") })
     },
-    diff: array(input.diff, "input.diff").map(parseDiffLine),
+    diff,
     commands
   };
 }

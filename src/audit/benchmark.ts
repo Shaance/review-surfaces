@@ -181,6 +181,11 @@ export function compareAgreementBenchmarkRuns(input: {
     new Set(input.product.map((score) => score.run_id)).size !== input.product.length) {
     failures.push("run ids must be unique within each benchmark arm");
   }
+  const allScores = [...input.baseline, ...input.product];
+  if (new Set(allScores.map((score) => score.model_id)).size > 1 ||
+    new Set(allScores.map((score) => score.model_config_hash)).size > 1) {
+    failures.push("benchmark comparison must use one model and config across all runs");
+  }
   const expectedPreferenceKeys = new Set<string>();
   const expectedPreferenceHashes = new Map<string, { baseline: string; product: string }>();
   for (const caseId of requiredCaseIds) {
@@ -196,6 +201,9 @@ export function compareAgreementBenchmarkRuns(input: {
     }
     if (!sameSet(new Set(baselineByPair.keys()), new Set(productByPair.keys()))) {
       failures.push(`${caseId} has unpaired benchmark runs`);
+    }
+    if (new Set([...baselineRuns, ...productRuns].map((run) => run.input_hash)).size > 1) {
+      failures.push(`${caseId} must use one frozen input across all runs`);
     }
     for (const [pairId, baseline] of baselineByPair) {
       const product = productByPair.get(pairId);

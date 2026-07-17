@@ -7,7 +7,8 @@ import {
   type AuditConversationEvent,
   type GroundedAgreement,
   agreementKindAllowsActor,
-  agreementNeedsHumanDecision
+  agreementNeedsHumanDecision,
+  auditDiffCoordinate
 } from "./contract";
 import { redactAuditText } from "./presentation-safety";
 
@@ -141,7 +142,7 @@ function validateAgreement(
   agreement: AgreementCandidate,
   events: ReadonlyMap<string, AuditConversationEvent>,
   commands: ReadonlyMap<string, AgreementAuditInput["commands"][number]>,
-  diffIndex: ReadonlyMap<string, readonly string[]>,
+  diffIndex: ReadonlyMap<string, string>,
   seenKeys: ReadonlySet<string>
 ): string[] {
   const reasons: string[] = [];
@@ -166,8 +167,7 @@ function validateAgreement(
       reasons.push(`diff citation ${citation.path}:${citation.line} has an empty text anchor`);
       continue;
     }
-    const matched = (diffIndex.get(diffKey(citation.path, citation.side, citation.line)) ?? [])
-      .some((text) => text.includes(citation.contains));
+    const matched = diffIndex.get(auditDiffCoordinate(citation))?.includes(citation.contains) ?? false;
     if (!matched) reasons.push(`diff citation ${citation.path}:${citation.line} is not in the reviewed diff`);
   }
 
@@ -213,19 +213,14 @@ function validateAgreement(
   return unique(reasons);
 }
 
-function buildDiffIndex(input: AgreementAuditInput): Map<string, string[]> {
-  const index = new Map<string, string[]>();
+function buildDiffIndex(input: AgreementAuditInput): Map<string, string> {
+  const index = new Map<string, string>();
   for (const line of input.diff) {
-    const key = diffKey(line.path, line.side, line.line);
-    const values = index.get(key) ?? [];
-    values.push(line.text);
-    index.set(key, values);
+    const key = auditDiffCoordinate(line);
+    if (index.has(key)) throw new Error("input.diff coordinates must be unique");
+    index.set(key, line.text);
   }
   return index;
-}
-
-function diffKey(path: string, side: AgreementAuditInput["diff"][number]["side"], line: number): string {
-  return `${path}\0${side}\0${line}`;
 }
 
 function unique(values: readonly string[]): string[] {

@@ -25,7 +25,7 @@ export function renderAgreementAuditMarkdown(audit: AgreementAudit): string {
     lines.push(
       "## Audit incomplete",
       "",
-      "No alignment conclusion is available because the conversation or evidence scope is incomplete.",
+      auditIncompleteMessage(audit),
       ""
     );
   }
@@ -116,6 +116,25 @@ function renderEvidence(agreement: GroundedAgreement): string[] {
 
 function eventRef(id: string): string {
   return `conversation ${safeMarkdownCode(id)}`;
+}
+
+function auditIncompleteMessage(audit: AgreementAudit): string {
+  if (audit.conversation.status !== "complete") {
+    return "No alignment conclusion is available because the supplied conversation scope is incomplete.";
+  }
+  if (!audit.candidate_complete) {
+    return "No alignment conclusion is available because agreement extraction did not complete.";
+  }
+  if (audit.rejections.length > 0) {
+    return "No alignment conclusion is available because one or more candidate conclusions were rejected.";
+  }
+  if (!audit.final_goal) {
+    return "No alignment conclusion is available because the final agreement could not be grounded.";
+  }
+  if (audit.agreements.length === 0) {
+    return "No alignment conclusion is available because no agreement could be grounded.";
+  }
+  return "No clean alignment conclusion is available because agreement extraction completeness was not independently verified.";
 }
 
 function stateLabel(state: GroundedAgreement["state"]): string {

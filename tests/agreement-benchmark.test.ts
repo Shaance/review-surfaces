@@ -180,6 +180,22 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
   assert.equal(malformedPreference.passes, false);
   assert.ok(malformedPreference.failures.some((failure) => /preference outcome is invalid/.test(failure)));
 
+  const mixedModel = compareAgreementBenchmarkRuns({
+    required_case_ids: ["late-correction"],
+    baseline: baseline.map((run, index) => index === 2 ? { ...run, model_id: "model-b", model_config_hash: "config-b" } : run),
+    product: product.map((run, index) => index === 2 ? { ...run, model_id: "model-b", model_config_hash: "config-b" } : run),
+    preferences
+  });
+  assert.ok(mixedModel.failures.some((failure) => /one model and config across all runs/.test(failure)));
+
+  const mixedInput = compareAgreementBenchmarkRuns({
+    required_case_ids: ["late-correction"],
+    baseline: baseline.map((run, index) => index === 2 ? { ...run, input_hash: "input-b" } : run),
+    product: product.map((run, index) => index === 2 ? { ...run, input_hash: "input-b" } : run),
+    preferences
+  });
+  assert.ok(mixedInput.failures.some((failure) => /one frozen input across all runs/.test(failure)));
+
   const duplicatePairs = compareAgreementBenchmarkRuns({
     required_case_ids: ["late-correction"],
     baseline: baseline.map((run) => ({ ...run, pair_id: "pair-1" })),

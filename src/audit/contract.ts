@@ -67,6 +67,12 @@ export interface AuditDiffLine {
   text: string;
 }
 
+export function auditDiffCoordinate(
+  value: Pick<AuditDiffLine, "path" | "side" | "line">
+): string {
+  return `${value.path}\0${value.side}\0${value.line}`;
+}
+
 export interface AuditCommandEvidence {
   id: string;
   command: string;
