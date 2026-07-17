@@ -62,8 +62,17 @@ function ensureOutputDirectory(directory: string): void {
 
 function writePrivateFile(file: string, content: string): void {
   assertWritableArtifactPath(file);
-  fs.writeFileSync(file, content, { mode: 0o600 });
-  fs.chmodSync(file, 0o600);
+  const descriptor = fs.openSync(
+    file,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW,
+    0o600
+  );
+  try {
+    fs.fchmodSync(descriptor, 0o600);
+    fs.writeFileSync(descriptor, content, "utf8");
+  } finally {
+    fs.closeSync(descriptor);
+  }
 }
 
 function assertWritableArtifactPath(file: string): void {

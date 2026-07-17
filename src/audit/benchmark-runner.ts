@@ -7,9 +7,10 @@ import {
   scoreAgreementBenchmarkRun,
   type AgreementAdjudication,
   type AgreementBenchmarkGold,
+  type AgreementBenchmarkManifest,
   type AgreementBenchmarkScore
 } from "./benchmark";
-import type { AgreementAudit } from "./contract";
+import type { AgreementAudit, AgreementAuditInput } from "./contract";
 import { groundAgreementAudit } from "./grounding";
 import { parseAgreementAuditCandidate, parseAgreementAuditInput } from "./parse";
 import { buildAuditPrompt, type AuditPromptMode } from "./prompt";
@@ -22,12 +23,11 @@ export interface AgreementBenchmarkGenerationRequest {
   prompt: string;
 }
 
-export interface AgreementBenchmarkArmOptions {
+export interface AgreementBenchmarkPairOptions {
   root: string;
-  mode: AuditPromptMode;
   model_id: string;
   model_config_hash: string;
-  /** Concurrent cases; generations and adjudications within a case remain sequential. */
+  /** Concurrent cases across both arms; runs within one case remain sequential. */
   case_concurrency?: number;
   generate: (request: AgreementBenchmarkGenerationRequest) => Promise<unknown>;
   adjudicate: (input: {
@@ -44,80 +44,121 @@ export interface AgreementBenchmarkArmResult {
   artifacts: Array<{ case_id: string; pair_id: string; output_hash: string; markdown: string; audit: AgreementAudit }>;
 }
 
+export interface AgreementBenchmarkPairResult {
+  baseline: AgreementBenchmarkArmResult;
+  product: AgreementBenchmarkArmResult;
+}
+
+interface PreparedCase {
+  entry: AgreementBenchmarkManifest["cases"][number];
+  input: AgreementAuditInput;
+}
+
+interface GeneratedCase extends PreparedCase {
+  mode: AuditPromptMode;
+  generated: Array<{
+    runNumber: number;
+    pairId: string;
+    audit: AgreementAudit;
+    markdown: string;
+    outputHash: string;
+    generationMs: number;
+  }>;
+}
+
 /**
- * Runs one benchmark arm. Candidate generation receives arm/run metadata and
- * the prompt, never the manifest case label or hidden gold. Gold is loaded only
- * after every candidate has been generated and is visible only to adjudication.
+ * Runs both benchmark arms as one hidden-gold boundary. Every input fixture is
+ * frozen before any provider call, and no gold is loaded until all candidate
+ * generation for both arms has completed.
  */
-export async function runAgreementBenchmarkArm(
-  options: AgreementBenchmarkArmOptions
-): Promise<AgreementBenchmarkArmResult> {
-  const manifestPath = path.join(options.root, "manifest.json");
-  const manifest = parseAgreementBenchmarkManifest(readJson(manifestPath));
+export async function runAgreementBenchmarkPair(
+  options: AgreementBenchmarkPairOptions
+): Promise<AgreementBenchmarkPairResult> {
+  const manifest = parseAgreementBenchmarkManifest(readJson(path.join(options.root, "manifest.json")));
   const concurrency = options.case_concurrency ?? 1;
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     throw new Error("case_concurrency must be a positive integer");
   }
-  const generatedCases = await mapWithConcurrency(manifest.cases, concurrency, async (entry, control) => {
-    const inputPath = path.join(options.root, entry.input);
-    const inputBytes = fs.readFileSync(inputPath);
+
+  // Synchronous preflight ensures a later invalid fixture cannot race a live call.
+  const preparedCases = manifest.cases.map((entry): PreparedCase => {
+    const inputBytes = fs.readFileSync(path.join(options.root, entry.input));
     assertDigest(inputBytes, entry.input_sha256, entry.input);
-    const input = parseAgreementAuditInput(JSON.parse(inputBytes.toString("utf8")) as unknown);
-    const inputHash = digest(inputBytes);
-    const prompt = buildAuditPrompt(input, options.mode);
-    const generated = [];
+    return {
+      entry,
+      input: parseAgreementAuditInput(JSON.parse(inputBytes.toString("utf8")) as unknown)
+    };
+  });
+
+  const generationTasks = (["plain-agent", "review-surfaces"] as const).flatMap((mode) =>
+    preparedCases.map((prepared) => ({ mode, prepared }))
+  );
+  const generatedCases = await mapWithConcurrency(generationTasks, concurrency, async ({ mode, prepared }, control) => {
+    const prompt = buildAuditPrompt(prepared.input, mode);
+    const generated: GeneratedCase["generated"] = [];
     for (const runNumber of [1, 2, 3]) {
       if (control.aborted) throw new Error("benchmark generation aborted after another case failed");
       const pairId = `pair-${runNumber}`;
       const started = Date.now();
-      const candidateValue = await options.generate({
-        pair_id: pairId,
-        run_number: runNumber,
-        mode: options.mode,
-        prompt
-      });
+      const candidateValue = await options.generate({ pair_id: pairId, run_number: runNumber, mode, prompt });
       const candidate = parseAgreementAuditCandidate(candidateValue);
-      const audit = groundAgreementAudit(input, candidate);
+      const audit = groundAgreementAudit(prepared.input, candidate);
       const markdown = renderAgreementAuditMarkdown(audit);
-      const outputHash = digest(markdown);
-      generated.push({ runNumber, pairId, audit, markdown, outputHash, generationMs: Date.now() - started });
+      generated.push({
+        runNumber,
+        pairId,
+        audit,
+        markdown,
+        outputHash: digest(markdown),
+        generationMs: Date.now() - started
+      });
     }
-    return { entry, input, inputHash, generated };
+    return { ...prepared, mode, generated };
   });
 
-  // Hidden gold is loaded only after every candidate in the arm has been generated.
-  const results = await mapWithConcurrency(generatedCases, concurrency, async ({ entry, input, inputHash, generated }, control) => {
+  // Load and validate every hidden ledger only after both arms finish generation.
+  const goldByCase = new Map(preparedCases.map((prepared) => {
+    const { entry, input } = prepared;
     const goldBytes = fs.readFileSync(path.join(options.root, entry.gold));
     assertDigest(goldBytes, entry.gold_sha256, entry.gold);
     const gold = parseAgreementBenchmarkGold(JSON.parse(goldBytes.toString("utf8")) as unknown, input);
     if (gold.case_id !== entry.id) throw new Error(`benchmark gold case ${gold.case_id} does not match manifest ${entry.id}`);
-    const adjudications: AgreementAdjudication[] = [];
+    return [entry.id, gold] as const;
+  }));
+
+  const completed = await mapWithConcurrency(generatedCases, concurrency, async (generatedCase, control) => {
+    const { entry, generated, mode } = generatedCase;
+    const gold = goldByCase.get(entry.id)!;
+    const scores: AgreementBenchmarkScore[] = [];
     for (const run of generated) {
       if (control.aborted) throw new Error("benchmark adjudication aborted after another case failed");
-      adjudications.push(await options.adjudicate({ case_id: entry.id, pair_id: run.pairId, audit: run.audit, gold }));
-    }
-    const scores: AgreementBenchmarkScore[] = [];
-    const artifacts: AgreementBenchmarkArmResult["artifacts"] = [];
-    for (const [index, run] of generated.entries()) {
-      const adjudication = adjudications[index];
+      const adjudication = await options.adjudicate({ case_id: entry.id, pair_id: run.pairId, audit: run.audit, gold });
       scores.push(scoreAgreementBenchmarkRun(run.audit, gold, adjudication, {
-        run_id: `${options.mode}:${entry.id}:${run.runNumber}`,
+        run_id: `${mode}:${entry.id}:${run.runNumber}`,
         pair_id: run.pairId,
         model_id: options.model_id,
         model_config_hash: options.model_config_hash,
-        input_hash: inputHash,
+        input_hash: entry.input_sha256,
         output_hash: run.outputHash,
         generation_ms: run.generationMs
       }));
-      artifacts.push({ case_id: entry.id, pair_id: run.pairId, output_hash: run.outputHash, markdown: run.markdown, audit: run.audit });
     }
-    return { scores, artifacts };
+    const artifacts = generated.map((run) => ({
+      case_id: entry.id,
+      pair_id: run.pairId,
+      output_hash: run.outputHash,
+      markdown: run.markdown,
+      audit: run.audit
+    }));
+    return { mode, scores, artifacts };
   });
-  return {
+
+  const arm = (mode: AuditPromptMode): AgreementBenchmarkArmResult => ({
     case_ids: manifest.cases.map((entry) => entry.id),
-    scores: results.flatMap((result) => result.scores),
-    artifacts: results.flatMap((result) => result.artifacts)
-  };
+    scores: completed.filter((result) => result.mode === mode).flatMap((result) => result.scores),
+    artifacts: completed.filter((result) => result.mode === mode).flatMap((result) => result.artifacts)
+  });
+  return { baseline: arm("plain-agent"), product: arm("review-surfaces") };
 }
 
 function readJson(file: string): unknown {
@@ -129,8 +170,7 @@ function digest(value: crypto.BinaryLike): string {
 }
 
 function assertDigest(bytes: Buffer, expected: string, file: string): void {
-  const actual = digest(bytes);
-  if (actual !== expected) {
+  if (digest(bytes) !== expected) {
     throw new Error(`benchmark file ${file} does not match its frozen SHA-256 digest`);
   }
 }

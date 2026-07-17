@@ -11,7 +11,7 @@ import {
   parseAgreementBenchmarkManifest,
   scoreAgreementBenchmarkRun
 } from "../src/audit/benchmark";
-import { runAgreementBenchmarkArm } from "../src/audit/benchmark-runner";
+import { runAgreementBenchmarkPair } from "../src/audit/benchmark-runner";
 import type { AgreementAuditCandidate } from "../src/audit/contract";
 import { groundAgreementAudit } from "../src/audit/grounding";
 import { parseAgreementAuditInput } from "../src/audit/parse";
@@ -229,9 +229,8 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
 
 test("six-case runner keeps gold behind generation and cannot pass a tied plain-agent comparison", async () => {
   const seenPrompts: string[] = [];
-  const runArm = (mode: "plain-agent" | "review-surfaces") => runAgreementBenchmarkArm({
+  const { baseline, product } = await runAgreementBenchmarkPair({
     root: BENCH_ROOT,
-    mode,
     model_id: "fake-model",
     model_config_hash: "same-config",
     generate: async (request) => {
@@ -243,7 +242,6 @@ test("six-case runner keeps gold behind generation and cannot pass a tied plain-
     },
     adjudicate: async () => emptyAdjudication()
   });
-  const [baseline, product] = await Promise.all([runArm("plain-agent"), runArm("review-surfaces")]);
   assert.equal(baseline.scores.length, 18);
   assert.equal(product.scores.length, 18);
   assert.equal(seenPrompts.length, 36);
@@ -291,9 +289,8 @@ test("six-case runner keeps gold behind generation and cannot pass a tied plain-
 
 test("concurrent benchmark generation finishes before any hidden gold is exposed", async () => {
   let generationCount = 0;
-  await runAgreementBenchmarkArm({
+  await runAgreementBenchmarkPair({
     root: BENCH_ROOT,
-    mode: "review-surfaces",
     model_id: "fake-model",
     model_config_hash: "same-config",
     case_concurrency: 3,
@@ -302,7 +299,7 @@ test("concurrent benchmark generation finishes before any hidden gold is exposed
       return emptyCandidate();
     },
     adjudicate: async () => {
-      assert.equal(generationCount, 18);
+      assert.equal(generationCount, 36);
       return emptyAdjudication();
     }
   });
@@ -312,9 +309,8 @@ test("concurrent benchmark workers stop scheduling generation after the first fa
   let generationCount = 0;
   let releaseBlockedGeneration!: () => void;
   const blockedGeneration = new Promise<void>((resolve) => { releaseBlockedGeneration = resolve; });
-  const run = runAgreementBenchmarkArm({
+  const run = runAgreementBenchmarkPair({
     root: BENCH_ROOT,
-    mode: "review-surfaces",
     model_id: "fake-model",
     model_config_hash: "same-config",
     case_concurrency: 2,
@@ -339,15 +335,19 @@ test("benchmark runner rejects a fixture changed after the manifest was frozen",
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "agreement-benchmark-"));
   try {
     fs.cpSync(BENCH_ROOT, root, { recursive: true });
-    fs.appendFileSync(path.join(root, "cases", "clean-alignment.input.json"), "\n");
-    await assert.rejects(() => runAgreementBenchmarkArm({
+    fs.appendFileSync(path.join(root, "cases", "large-agreement-set.input.json"), "\n");
+    let generationCount = 0;
+    await assert.rejects(() => runAgreementBenchmarkPair({
       root,
-      mode: "review-surfaces",
       model_id: "unreached",
       model_config_hash: "unreached",
-      generate: async () => { throw new Error("generation must not start"); },
+      generate: async () => {
+        generationCount += 1;
+        throw new Error("generation must not start");
+      },
       adjudicate: async () => emptyAdjudication()
     }), /does not match its frozen SHA-256 digest/);
+    assert.equal(generationCount, 0);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

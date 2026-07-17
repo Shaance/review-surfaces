@@ -51,6 +51,13 @@ test("milestone-one CLI preserves existing output-directory permissions and refu
     assert.equal(fs.statSync(path.join(root, "audit.json")).mode & 0o777, 0o600);
     const priorJson = fs.readFileSync(path.join(root, "audit.json"), "utf8");
 
+    fs.chmodSync(path.join(root, "audit.json"), 0o644);
+    fs.chmodSync(path.join(root, "audit.md"), 0o644);
+    const tightened = spawnSync(process.execPath, args, { cwd: process.cwd(), encoding: "utf8" });
+    assert.equal(tightened.status, 0, tightened.stderr);
+    assert.equal(fs.statSync(path.join(root, "audit.json")).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(path.join(root, "audit.md")).mode & 0o777, 0o600);
+
     const target = path.join(root, "target.md");
     fs.writeFileSync(target, "keep\n");
     fs.rmSync(path.join(root, "audit.md"));
