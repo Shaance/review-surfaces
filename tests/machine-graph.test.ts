@@ -154,8 +154,6 @@ test("review-surfaces.CHANGE_MAP.2 the machine graph stays out of every human re
     reviewQueue: []
   });
   const fixture = model(sections.change_graph, sections.reading_order.legs);
-  const prComment = renderStickySummary(fixture).markdown;
-  assert.doesNotMatch(prComment, /<details><summary>Change map|```mermaid/);
   const sticky = renderStickySummary(fixture);
   assert.doesNotMatch(sticky.markdown, /<details><summary>Change map|```mermaid/);
   const markdown = renderHumanReviewMarkdown(fixture);
