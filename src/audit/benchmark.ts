@@ -1,14 +1,24 @@
 import type {
-  AgreementAudit,
   AgreementAuditInput,
   AgreementKind,
   AgreementMateriality,
   AgreementState
 } from "./contract";
+import type { AgreementBenchmarkScore } from "./benchmark-score";
+import { AGREEMENT_BENCHMARK_VERSION, sameSet } from "./benchmark-shared";
+import { repositoryPath } from "./path";
+export { AGREEMENT_BENCHMARK_VERSION } from "./benchmark-shared";
+export {
+  scoreAgreementBenchmarkRun,
+  type AgreementAdjudication,
+  type AgreementBenchmarkScore
+} from "./benchmark-score";
 import {
   AGREEMENT_KINDS,
   AGREEMENT_MATERIALITIES,
   AGREEMENT_STATES,
+  DIFF_SIDES,
+  auditDiffCoordinate,
   agreementKindAllowsActor
 } from "./contract";
 
@@ -16,7 +26,7 @@ const PREFERENCE_OUTCOMES = ["product", "baseline", "tie"] as const;
 type PreferenceOutcome = (typeof PREFERENCE_OUTCOMES)[number];
 
 export interface AgreementBenchmarkManifest {
-  version: 1;
+  version: typeof AGREEMENT_BENCHMARK_VERSION;
   cases: Array<{
     id: string;
     input: string;
@@ -32,115 +42,20 @@ export interface GoldAgreement {
   materiality: AgreementMateriality;
   expected_state: AgreementState;
   governing_event_ids: string[];
+  expected_diff_coordinates: Array<{
+    path: string;
+    side: AgreementAuditInput["diff"][number]["side"];
+    line: number;
+  }>;
+  expected_command_ids: string[];
 }
 
 export interface AgreementBenchmarkGold {
+  version: typeof AGREEMENT_BENCHMARK_VERSION;
   case_id: string;
   source: "sanitized_real" | "synthetic";
   clean: boolean;
   agreements: GoldAgreement[];
-}
-
-/**
- * Semantic matching stays outside the product under test. A blinded adjudicator
- * maps candidate-owned keys to hidden gold ids after generation.
- */
-export interface AgreementAdjudication {
-  matches: Array<{ candidate_key: string; gold_id: string }>;
-  false_positive_candidate_keys: string[];
-}
-
-export interface AgreementBenchmarkScore {
-  case_id: string;
-  run_id: string;
-  pair_id: string;
-  model_id: string;
-  model_config_hash: string;
-  input_hash: string;
-  output_hash: string;
-  generation_ms: number;
-  precision: number;
-  recall: number;
-  f1: number;
-  material_precision: number;
-  material_recall: number;
-  material_f1: number;
-  exact_citation_gate: boolean;
-  clean_case_gate: boolean;
-  failures: string[];
-}
-
-export function scoreAgreementBenchmarkRun(
-  audit: AgreementAudit,
-  gold: AgreementBenchmarkGold,
-  adjudication: AgreementAdjudication,
-  run: {
-    run_id: string;
-    pair_id: string;
-    model_id: string;
-    model_config_hash: string;
-    input_hash: string;
-    output_hash: string;
-    generation_ms: number;
-  }
-): AgreementBenchmarkScore {
-  const candidateByKey = new Map(audit.agreements.map((agreement) => [agreement.key, agreement]));
-  const goldById = new Map(gold.agreements.map((agreement) => [agreement.id, agreement]));
-  const distinctMatches = uniquePairs(adjudication.matches).filter((match) =>
-    candidateByKey.has(match.candidate_key) && goldById.has(match.gold_id)
-  );
-  const correctMatches = distinctMatches.filter((match) => {
-    const candidate = candidateByKey.get(match.candidate_key)!;
-    const expected = goldById.get(match.gold_id)!;
-    return candidate.kind === expected.kind &&
-      candidate.state === expected.expected_state &&
-      candidate.materiality === expected.materiality &&
-      sameSet(new Set(candidate.conversation_event_ids), new Set(expected.governing_event_ids));
-  });
-  const matchedCandidates = new Set(correctMatches.map((match) => match.candidate_key));
-  const matchedGold = new Set(correctMatches.map((match) => match.gold_id));
-  const falsePositiveKeys = new Set([
-    ...adjudication.false_positive_candidate_keys,
-    ...audit.agreements.filter((agreement) => !matchedCandidates.has(agreement.key)).map((agreement) => agreement.key)
-  ]);
-
-  const precision = ratio(correctMatches.length, correctMatches.length + falsePositiveKeys.size);
-  const recall = ratio(matchedGold.size, gold.agreements.length);
-  const materialGold = gold.agreements.filter((agreement) => agreement.materiality === "material");
-  const materialGoldIds = new Set(materialGold.map((agreement) => agreement.id));
-  const materialMatches = correctMatches.filter((match) => materialGoldIds.has(match.gold_id));
-  const materialCandidateKeys = new Set(materialMatches.map((match) => match.candidate_key));
-  const materialFalsePositives = audit.agreements.filter((agreement) =>
-    agreement.materiality === "material" && !materialCandidateKeys.has(agreement.key)
-  ).length;
-  const materialPrecision = ratio(materialMatches.length, materialMatches.length + materialFalsePositives);
-  const materialRecall = ratio(new Set(materialMatches.map((match) => match.gold_id)).size, materialGold.length);
-  const exactCitationGate = audit.rejections.length === 0 &&
-    audit.agreements.every((agreement) =>
-      agreement.conversation_event_ids.length > 0 &&
-      agreement.diff_citations.every((citation) => citation.validated) &&
-      agreement.commands.every((command) => command.exact_head)
-    );
-  const cleanCaseGate = !gold.clean || audit.agreements.every((agreement) => agreement.state === "fulfilled");
-  const failures: string[] = [];
-  if (!exactCitationGate) failures.push("one or more conclusions lack valid exact evidence");
-  if (!cleanCaseGate) failures.push("the clean case contains a mismatch finding");
-  if (!audit.candidate_complete) failures.push("candidate generation was incomplete");
-  if (!gold.clean && audit.status === "cannot_audit") failures.push("a non-clean case produced no auditable decision");
-
-  return {
-    case_id: gold.case_id,
-    ...run,
-    precision,
-    recall,
-    f1: f1(precision, recall),
-    material_precision: materialPrecision,
-    material_recall: materialRecall,
-    material_f1: f1(materialPrecision, materialRecall),
-    exact_citation_gate: exactCitationGate,
-    clean_case_gate: cleanCaseGate,
-    failures
-  };
 }
 
 export interface AgreementBenchmarkComparison {
@@ -270,7 +185,9 @@ export function compareAgreementBenchmarkRuns(input: {
 
 export function parseAgreementBenchmarkManifest(value: unknown): AgreementBenchmarkManifest {
   const manifest = asRecord(value, "benchmark manifest");
-  if (manifest.version !== 1) throw new Error("benchmark manifest version must be 1");
+  if (manifest.version !== AGREEMENT_BENCHMARK_VERSION) {
+    throw new Error(`benchmark manifest version must be ${AGREEMENT_BENCHMARK_VERSION}`);
+  }
   if (!Array.isArray(manifest.cases) || manifest.cases.length === 0) throw new Error("benchmark manifest cases must be a non-empty array");
   const cases = manifest.cases.map((value, index) => {
     const entry = asRecord(value, `benchmark manifest case ${index}`);
@@ -283,7 +200,7 @@ export function parseAgreementBenchmarkManifest(value: unknown): AgreementBenchm
     };
   });
   assertUnique(cases.map((entry) => entry.id), "benchmark case id");
-  return { version: 1, cases };
+  return { version: AGREEMENT_BENCHMARK_VERSION, cases };
 }
 
 function sha256(value: unknown, label: string): string {
@@ -303,11 +220,16 @@ function relativeManifestPath(value: unknown, label: string): string {
 
 export function parseAgreementBenchmarkGold(value: unknown, input: AgreementAuditInput): AgreementBenchmarkGold {
   const gold = asRecord(value, "benchmark gold");
+  if (gold.version !== AGREEMENT_BENCHMARK_VERSION) {
+    throw new Error(`benchmark gold version must be ${AGREEMENT_BENCHMARK_VERSION}`);
+  }
   const caseId = requiredString(gold.case_id, "benchmark gold.case_id");
   if (gold.source !== "sanitized_real" && gold.source !== "synthetic") throw new Error("benchmark gold.source is invalid");
   if (typeof gold.clean !== "boolean") throw new Error("benchmark gold.clean must be boolean");
   if (!Array.isArray(gold.agreements) || gold.agreements.length === 0) throw new Error("benchmark gold.agreements must be a non-empty array");
   const events = new Map(input.conversation.events.map((event) => [event.id, event]));
+  const diffCoordinates = new Set(input.diff.map(auditDiffCoordinate));
+  const commandIds = new Set(input.commands.map((command) => command.id));
   const agreements = gold.agreements.map((value, index) => {
     const agreement = asRecord(value, `benchmark gold agreement ${index}`);
     const kind = enumString(agreement.kind, AGREEMENT_KINDS, `benchmark gold agreement ${index}.kind`);
@@ -320,38 +242,39 @@ export function parseAgreementBenchmarkGold(value: unknown, input: AgreementAudi
         throw new Error(`benchmark gold agreement ${index} cites a governing event owned by ${event.actor}`);
       }
     }
+    const expectedDiffCoordinates = diffCoordinateList(
+      agreement.expected_diff_coordinates,
+      `benchmark gold agreement ${index}.expected_diff_coordinates`
+    );
+    for (const coordinate of expectedDiffCoordinates) {
+      if (!diffCoordinates.has(auditDiffCoordinate(coordinate))) {
+        throw new Error(`benchmark gold agreement ${index} cites an unknown diff coordinate`);
+      }
+    }
+    const expectedCommandIds = stringList(
+      agreement.expected_command_ids,
+      `benchmark gold agreement ${index}.expected_command_ids`
+    );
+    for (const commandId of expectedCommandIds) {
+      if (!commandIds.has(commandId)) {
+        throw new Error(`benchmark gold agreement ${index} cites unknown command ${commandId}`);
+      }
+    }
     return {
       id: requiredString(agreement.id, `benchmark gold agreement ${index}.id`),
       kind,
       materiality: enumString(agreement.materiality, AGREEMENT_MATERIALITIES, `benchmark gold agreement ${index}.materiality`),
       expected_state: enumString(agreement.expected_state, AGREEMENT_STATES, `benchmark gold agreement ${index}.expected_state`),
-      governing_event_ids: governingEventIds
+      governing_event_ids: governingEventIds,
+      expected_diff_coordinates: expectedDiffCoordinates,
+      expected_command_ids: expectedCommandIds
     };
   });
   assertUnique(agreements.map((agreement) => agreement.id), "benchmark gold agreement id");
   if (gold.clean && agreements.some((agreement) => agreement.expected_state !== "fulfilled")) {
     throw new Error("a clean benchmark case cannot contain non-fulfilled agreements");
   }
-  return { case_id: caseId, source: gold.source, clean: gold.clean, agreements };
-}
-
-function uniquePairs(matches: AgreementAdjudication["matches"]): AgreementAdjudication["matches"] {
-  const seenCandidates = new Set<string>();
-  const seenGold = new Set<string>();
-  return matches.filter((match) => {
-    if (seenCandidates.has(match.candidate_key) || seenGold.has(match.gold_id)) return false;
-    seenCandidates.add(match.candidate_key);
-    seenGold.add(match.gold_id);
-    return true;
-  });
-}
-
-function ratio(numerator: number, denominator: number): number {
-  return denominator === 0 ? 1 : numerator / denominator;
-}
-
-function f1(precision: number, recall: number): number {
-  return precision + recall === 0 ? 0 : 2 * precision * recall / (precision + recall);
+  return { version: AGREEMENT_BENCHMARK_VERSION, case_id: caseId, source: gold.source, clean: gold.clean, agreements };
 }
 
 function mean(values: number[]): number {
@@ -366,10 +289,6 @@ function macroByCase(scores: AgreementBenchmarkScore[]): number {
     grouped.set(score.case_id, values);
   }
   return mean([...grouped.values()].map(mean));
-}
-
-function sameSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
-  return left.size === right.size && [...left].every((value) => right.has(value));
 }
 
 function asRecord(value: unknown, label: string): Record<string, unknown> {
@@ -387,6 +306,24 @@ function stringList(value: unknown, label: string): string[] {
   const values = value.map((item, index) => requiredString(item, `${label}[${index}]`));
   assertUnique(values, label);
   return values;
+}
+
+function diffCoordinateList(value: unknown, label: string): GoldAgreement["expected_diff_coordinates"] {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  const coordinates = value.map((item, index) => {
+    const coordinate = asRecord(item, `${label}[${index}]`);
+    const line = coordinate.line;
+    if (!Number.isSafeInteger(line) || (line as number) <= 0) {
+      throw new Error(`${label}[${index}].line must be a positive integer`);
+    }
+    return {
+      path: repositoryPath(coordinate.path, `${label}[${index}].path`),
+      side: enumString(coordinate.side, DIFF_SIDES, `${label}[${index}].side`),
+      line: line as number
+    };
+  });
+  assertUnique(coordinates.map(auditDiffCoordinate), label);
+  return coordinates;
 }
 
 function enumString<const Values extends readonly string[]>(value: unknown, values: Values, label: string): Values[number] {

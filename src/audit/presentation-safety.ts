@@ -15,3 +15,10 @@ export function safeMarkdownCode(value: string): string {
   const redacted = redactSecrets(value).text.replace(/\s+/gu, " ").trim();
   return markdownInlineCode(redacted);
 }
+
+export function safeMarkdownEvidence(value: string): string {
+  const literal = JSON.stringify(redactSecrets(value).text)
+    .replace(/</gu, "\\u003c")
+    .replace(/>/gu, "\\u003e");
+  return markdownInlineCode(literal);
+}

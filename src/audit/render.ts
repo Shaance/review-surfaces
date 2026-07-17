@@ -1,5 +1,5 @@
 import { agreementNeedsHumanDecision, type AgreementAudit, type GroundedAgreement } from "./contract";
-import { safeMarkdownCode, safeMarkdownProse } from "./presentation-safety";
+import { safeMarkdownCode, safeMarkdownEvidence, safeMarkdownProse } from "./presentation-safety";
 
 export function renderAgreementAuditMarkdown(audit: AgreementAudit): string {
   const lines = [
@@ -102,13 +102,13 @@ function renderSupportingAgreement(agreement: GroundedAgreement): string[] {
 function renderEvidence(agreement: GroundedAgreement): string[] {
   const refs = [
     ...agreement.conversation_evidence.map((event) =>
-      `- Conversation ${safeMarkdownCode(event.id)} (${safeMarkdownCode(event.source_id)}): ${safeMarkdownCode(event.text)}`
+      `- Conversation ${safeMarkdownCode(event.id)} (${safeMarkdownCode(event.source_id)}): ${safeMarkdownEvidence(event.text)}`
     ),
     ...agreement.diff_citations.map((citation) =>
-      `- Diff ${safeMarkdownCode(`${citation.path}:${citation.line}`)} (${citation.side}): ${safeMarkdownCode(citation.contains)}`
+      `- Diff ${safeMarkdownCode(`${citation.path}:${citation.line}`)} (${citation.side}): ${safeMarkdownEvidence(citation.contains)}`
     ),
     ...agreement.commands.map((command) =>
-      `- Command ${safeMarkdownCode(command.id)} (${command.status}, ${command.exact_head ? "exact head" : "not head-bound"}): ${safeMarkdownCode(command.command)}`
+      `- Command ${safeMarkdownCode(command.id)} (${command.status}, ${command.exact_head ? "exact head" : "not head-bound"}): ${safeMarkdownEvidence(command.command)}`
     )
   ];
   return refs.length > 0 ? refs : ["- None"];

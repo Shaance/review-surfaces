@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  AGREEMENT_BENCHMARK_VERSION,
   compareAgreementBenchmarkRuns,
   parseAgreementBenchmarkGold,
   parseAgreementBenchmarkManifest,
@@ -53,6 +54,7 @@ test("agreement benchmark includes a case larger than the legacy eight-item cap"
 test("gold parsing rejects duplicate or wrong-role governing events", () => {
   const input = loadInput("clean-alignment");
   assert.throws(() => parseAgreementBenchmarkGold({
+    version: AGREEMENT_BENCHMARK_VERSION,
     case_id: "invalid",
     source: "synthetic",
     clean: false,
@@ -61,14 +63,16 @@ test("gold parsing rejects duplicate or wrong-role governing events", () => {
       kind: "human_instruction",
       materiality: "material",
       expected_state: "unresolved",
-      governing_event_ids: ["a1", "a1"]
+      governing_event_ids: ["a1", "a1"],
+      expected_diff_coordinates: [],
+      expected_command_ids: []
     }]
   }, input), /non-user governing event|must be unique/);
 });
 
 test("benchmark manifest paths cannot escape the benchmark root", () => {
   const manifest = (input: string) => ({
-    version: 1,
+    version: AGREEMENT_BENCHMARK_VERSION,
     cases: [{
       id: "escape",
       input,
@@ -120,6 +124,24 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
   const score = scoreAgreementBenchmarkRun(audit, gold, adjudication, runMetadata);
   assert.equal(score.material_f1, 1);
   assert.deepEqual(score.failures, []);
+
+  const unrelatedEvidenceAudit = {
+    ...audit,
+    agreements: audit.agreements.map((item) =>
+      item.key === "wording-e"
+        ? { ...item, diff_citations: audit.agreements.find((candidate) => candidate.key === "wording-a")!.diff_citations }
+        : item
+    )
+  };
+  const unrelatedEvidenceScore = scoreAgreementBenchmarkRun(unrelatedEvidenceAudit, gold, adjudication, {
+    ...runMetadata,
+    run_id: "unrelated-evidence",
+    pair_id: "unrelated-evidence",
+    output_hash: "output-unrelated-evidence"
+  });
+  assert.ok(unrelatedEvidenceScore.material_f1 < 1);
+  assert.equal(unrelatedEvidenceScore.exact_citation_gate, false);
+  assert.ok(unrelatedEvidenceScore.failures.some((failure) => /exact evidence/.test(failure)));
 
   const overCitedAudit = {
     ...audit,

@@ -4,6 +4,7 @@ import path from "node:path";
 import type { AgreementAuditInput, AgreementCandidate } from "../src/audit/contract";
 import { groundAgreementAudit } from "../src/audit/grounding";
 import { parseAgreementAuditCandidate, parseAgreementAuditInput } from "../src/audit/parse";
+import { safeMarkdownEvidence } from "../src/audit/presentation-safety";
 import { renderAgreementAuditMarkdown } from "../src/audit/render";
 import {
   AGREEMENT_BENCH_ROOT as BENCH_ROOT,
@@ -281,6 +282,51 @@ test("failed exact-head evidence can contradict an agent validation claim", () =
   const validation = audit.agreements.find((agreement) => agreement.key === "tests-pass");
   assert.equal(validation?.commands[0].exact_head, true);
   assert.ok(validation && !("command_ids" in validation));
+});
+
+test("a changed line cannot replace failed command evidence for a validation divergence", () => {
+  const input = loadInput("validation-contradiction");
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Fix and validate retry behavior.", conversation_event_ids: ["u1"] },
+    agreements: [agreement({
+      key: "tests-pass",
+      kind: "validation_claim",
+      statement: "The claimed test pass is contradicted.",
+      state: "diverged",
+      conversation_event_ids: ["a1"],
+      diff_citations: [{ path: "src/logging.ts", side: "add", line: 8, contains: "logger.debug" }],
+      reviewer_action: "Fix the failing test."
+    })],
+    complete: true,
+    limitations: []
+  }));
+  assert.equal(audit.status, "cannot_audit");
+  assert.match(audit.rejections[0].reasons.join(" "), /needs a failed exact-head command/);
+});
+
+test("renderer preserves significant whitespace in exact evidence", () => {
+  const input = loadInput("late-correction");
+  input.diff[0].text = "  export\tfunction  inspectSwiftProject() {}\n\n## forged heading  ";
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Remove Swift analysis.", conversation_event_ids: ["u1"] },
+    agreements: [agreement({
+      key: "remove-swift",
+      statement: "Swift analysis is removed.",
+      conversation_event_ids: ["u1"],
+      diff_citations: [{
+        path: "src/swift/project.ts",
+        side: "delete",
+        line: 1,
+        contains: input.diff[0].text
+      }]
+    })],
+    complete: true,
+    limitations: []
+  }));
+  const markdown = renderAgreementAuditMarkdown(audit);
+  assert.ok(markdown.includes("`" + JSON.stringify(input.diff[0].text) + "`"));
+  assert.doesNotMatch(markdown, /\n## forged heading/u);
+  assert.notEqual(safeMarkdownEvidence("<tag>"), safeMarkdownEvidence("&lt;tag&gt;"));
 });
 
 test("failed or unknown commands cannot prove a fulfilled validation claim", () => {

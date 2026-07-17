@@ -18,6 +18,7 @@ import {
   type AuditDiffLine
 } from "./contract";
 import { inspectAndRedactSecrets } from "../privacy/secrets";
+import { repositoryPath } from "./path";
 
 
 export function parseAgreementAuditInput(value: unknown): AgreementAuditInput {
@@ -92,7 +93,7 @@ function parseEvent(value: unknown, index: number): AuditConversationEvent {
     source_id: safeId(event.source_id, `event[${index}].source_id`),
     actor: enumValue(event.actor, CONVERSATION_ACTORS, `event[${index}].actor`),
     kind: nonEmpty(event.kind, `event[${index}].kind`),
-    text: nonEmpty(event.text, `event[${index}].text`),
+    text: nonBlank(event.text, `event[${index}].text`),
     order: nonNegativeInteger(event.order, `event[${index}].order`)
   };
 }
@@ -113,7 +114,7 @@ function parseCommand(value: unknown, index: number): AuditCommandEvidence {
   const command = record(value, `command[${index}]`);
   return {
     id: safeId(command.id, `command[${index}].id`),
-    command: nonEmpty(command.command, `command[${index}].command`),
+    command: nonBlank(command.command, `command[${index}].command`),
     status: enumValue(command.status, COMMAND_STATUSES, `command[${index}].status`),
     ...(command.head_sha === undefined ? {} : { head_sha: commitSha(command.head_sha, `command[${index}].head_sha`) })
   };
@@ -136,7 +137,7 @@ function parseAgreement(value: unknown, index: number): AgreementCandidate {
         path: repositoryPath(citation.path, `agreement[${index}].diff_citations[${citationIndex}].path`),
         side: enumValue(citation.side, DIFF_SIDES, `agreement[${index}].diff_citations[${citationIndex}].side`),
         line,
-        contains: nonEmpty(citation.contains, `agreement[${index}].diff_citations[${citationIndex}].contains`)
+        contains: nonBlank(citation.contains, `agreement[${index}].diff_citations[${citationIndex}].contains`)
       };
     }),
     command_ids: safeIdArray(agreement.command_ids, `agreement[${index}].command_ids`),
@@ -165,6 +166,12 @@ function nonEmpty(value: unknown, label: string): string {
   return parsed;
 }
 
+function nonBlank(value: unknown, label: string): string {
+  const parsed = string(value, label);
+  if (!parsed.trim()) throw new Error(`${label} must not be empty`);
+  return parsed;
+}
+
 function boolean(value: unknown, label: string): boolean {
   if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
   return value;
@@ -188,15 +195,6 @@ function safeId(value: unknown, label: string): string {
   }
   if (!/^[A-Za-z0-9._:-]+$/u.test(parsed) || parsed.includes("..")) {
     throw new Error(`${label} must be a safe identifier`);
-  }
-  return parsed;
-}
-
-function repositoryPath(value: unknown, label: string): string {
-  const parsed = nonEmpty(value, label);
-  if (parsed.startsWith("/") || parsed.includes("\\") || /^[A-Za-z]:/u.test(parsed) ||
-    /[\0\r\n]/u.test(parsed) || parsed.split("/").includes("..")) {
-    throw new Error(`${label} must be a repository-relative path`);
   }
   return parsed;
 }

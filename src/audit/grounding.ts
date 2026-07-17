@@ -186,15 +186,14 @@ function validateAgreement(
   const hasPassedExactHeadCommand = citedCommands.some((command) =>
     command.head_sha === input.head_sha && command.status === "passed"
   );
-  if (agreement.state === "diverged" && !hasChangedDiffCitation) {
-    const hasContradictingExactHeadCommand = agreement.kind === "validation_claim" &&
-      agreement.command_ids.some((id) => {
-        const command = commands.get(id);
-        return command?.head_sha === input.head_sha && command.status === "failed";
-      });
-    if (!hasContradictingExactHeadCommand) {
-      reasons.push("a divergence needs an exact diff citation or a failed exact-head validation command");
-    }
+  const hasFailedExactHeadCommand = citedCommands.some((command) =>
+    command.head_sha === input.head_sha && command.status === "failed"
+  );
+  if (agreement.state === "diverged" && agreement.kind === "validation_claim" && !hasFailedExactHeadCommand) {
+    reasons.push("a diverged validation claim needs a failed exact-head command");
+  }
+  if (agreement.state === "diverged" && agreement.kind !== "validation_claim" && !hasChangedDiffCitation) {
+    reasons.push("a divergence needs an exact diff citation from a changed line");
   }
   if (agreement.state === "fulfilled" && citedCommands.some((command) => command.status !== "passed")) {
     reasons.push("a fulfilled agreement cannot cite failed or unknown command evidence");

@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "purpose": "Frozen transcript-plus-diff cases for comparing a plain strong-agent prompt with the review-surfaces trust envelope.",
   "cases": [
     {
@@ -7,42 +7,42 @@
       "input": "cases/clean-alignment.input.json",
       "input_sha256": "d5f8e3fef0ce7eea42256e28c7ef92f6e29b58f94cebdb0825a051ec8d0ee28f",
       "gold": "cases/clean-alignment.gold.json",
-      "gold_sha256": "54bebda579a87210eac47c766cff80395489981eea7a804a791c6ebd11b7482c"
+      "gold_sha256": "1cb3eff80014b2721e3179e7daa40569365846fda92aca927a7a82b5d818f900"
     },
     {
       "id": "late-correction",
       "input": "cases/late-correction.input.json",
       "input_sha256": "8fcb9fc1069d784477dc0818c5101fcb7502e61709fe0b864311dddd2f35748a",
       "gold": "cases/late-correction.gold.json",
-      "gold_sha256": "daa5f6e87644a20dc62abbec560b12f57087e272470feac944b56197ce8013de"
+      "gold_sha256": "2f45320f29797c57a8921d40315900b5d13b48c4b6c182bddc1c1237ca7b7126"
     },
     {
       "id": "unauthorized-scope",
       "input": "cases/unauthorized-scope.input.json",
       "input_sha256": "8b1e0dcb731dc4c66e6c4cd749680aad0c9c610fae245a503e4db104a5721b92",
       "gold": "cases/unauthorized-scope.gold.json",
-      "gold_sha256": "cdb63e9f01f2370958680912d1bc599e89a3f2f672dfe65b4cb394ec8d8dbdb6"
+      "gold_sha256": "f485512357008c4e9658b4c952fe700fedd4b24fb249b3b5782fcf57a73978c1"
     },
     {
       "id": "promised-work-omitted",
       "input": "cases/promised-work-omitted.input.json",
       "input_sha256": "fffa437c3f0d9f5a4a5bfe212c004429952eaec773a39abd5afeaa67136bf67b",
       "gold": "cases/promised-work-omitted.gold.json",
-      "gold_sha256": "b69c0d97956975eb075aa9d6a8fa5fdecfb952d4aac51d5078d9eec68cfd773b"
+      "gold_sha256": "3d25afca435db22f941fa11521d36fedc0bb67f511ad737c31cc83ec74fb7e07"
     },
     {
       "id": "validation-contradiction",
       "input": "cases/validation-contradiction.input.json",
       "input_sha256": "70938bd86820376967c2a121ebf5d47dbff6b43eabf29fbd955f8e6ccf280456",
       "gold": "cases/validation-contradiction.gold.json",
-      "gold_sha256": "64c0ff2c4d9731a28fdacd695329bc418d36683a132c7a91b5b1caa27ad37deb"
+      "gold_sha256": "ee80baefe1ba19d4bc8cd6f08bdb02b0e81fce939ed03087caaffdcc5f3550e8"
     },
     {
       "id": "large-agreement-set",
       "input": "cases/large-agreement-set.input.json",
       "input_sha256": "a1c0744d153eb8c7842d219bc72f2b69140d838c1166b5d7963c405c3ad287a2",
       "gold": "cases/large-agreement-set.gold.json",
-      "gold_sha256": "471edaf08823e524ed78eae473c2dea4a09f5bb9c4f66477a33cde883489c793"
+      "gold_sha256": "00d547dcfe062d571216d2d4f83ffd711de1abd0b9a33cdc9ad4118a4d96c36d"
     }
   ]
 }

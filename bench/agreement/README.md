@@ -19,7 +19,9 @@ scope, omitted promised work, contradicted validation, and a ten-agreement task.
 Three are sanitized from real review-surfaces development scenarios; three are
 synthetic boundary cases.
 
-The manifest content-addresses each input and hidden gold file. The runner
+Benchmark version 2 binds every hidden gold agreement to its exact expected
+diff coordinates and command ids, so a semantically correct conclusion cannot
+score by pointing at unrelated evidence. The manifest content-addresses each input and hidden gold file. The runner
 refuses a fixture whose bytes no longer match its recorded SHA-256 digest.
 Changing a case requires an explicit benchmark version rather than an in-place
 edit during prompt comparison.

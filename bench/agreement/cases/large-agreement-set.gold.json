@@ -1,17 +1,18 @@
 {
+  "version": 2,
   "case_id": "large-agreement-set",
   "source": "synthetic",
   "clean": false,
   "agreements": [
-    { "id": "rename", "kind": "human_instruction", "materiality": "material", "expected_state": "unresolved", "governing_event_ids": ["u1"] },
-    { "id": "preserve-data", "kind": "human_boundary", "materiality": "material", "expected_state": "unresolved", "governing_event_ids": ["u2"] },
-    { "id": "cancel", "kind": "human_instruction", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u3"] },
-    { "id": "partial", "kind": "human_instruction", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u4"] },
-    { "id": "scope", "kind": "human_instruction", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u5"] },
-    { "id": "retry", "kind": "human_instruction", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u6"] },
-    { "id": "no-settings", "kind": "human_boundary", "materiality": "material", "expected_state": "diverged", "governing_event_ids": ["u7"] },
-    { "id": "operator-note", "kind": "human_instruction", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u8"] },
-    { "id": "keyboard", "kind": "human_boundary", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u9"] },
-    { "id": "focused-test", "kind": "human_instruction", "materiality": "material", "expected_state": "unresolved", "governing_event_ids": ["u10"] }
+    { "id": "rename", "kind": "human_instruction", "materiality": "material", "expected_state": "unresolved", "governing_event_ids": ["u1"], "expected_diff_coordinates": [], "expected_command_ids": [] },
+    { "id": "preserve-data", "kind": "human_boundary", "materiality": "material", "expected_state": "unresolved", "governing_event_ids": ["u2"], "expected_diff_coordinates": [], "expected_command_ids": [] },
+    { "id": "cancel", "kind": "human_instruction", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u3"], "expected_diff_coordinates": [{ "path": "src/job.ts", "side": "add", "line": 2 }], "expected_command_ids": [] },
+    { "id": "partial", "kind": "human_instruction", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u4"], "expected_diff_coordinates": [{ "path": "src/job.ts", "side": "add", "line": 3 }], "expected_command_ids": [] },
+    { "id": "scope", "kind": "human_instruction", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u5"], "expected_diff_coordinates": [{ "path": "src/job.ts", "side": "add", "line": 4 }], "expected_command_ids": [] },
+    { "id": "retry", "kind": "human_instruction", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u6"], "expected_diff_coordinates": [{ "path": "src/job.ts", "side": "add", "line": 5 }], "expected_command_ids": [] },
+    { "id": "no-settings", "kind": "human_boundary", "materiality": "material", "expected_state": "diverged", "governing_event_ids": ["u7"], "expected_diff_coordinates": [{ "path": "src/settings.ts", "side": "add", "line": 1 }], "expected_command_ids": [] },
+    { "id": "operator-note", "kind": "human_instruction", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u8"], "expected_diff_coordinates": [{ "path": "docs/operator.md", "side": "add", "line": 8 }], "expected_command_ids": [] },
+    { "id": "keyboard", "kind": "human_boundary", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u9"], "expected_diff_coordinates": [{ "path": "src/view.ts", "side": "add", "line": 20 }], "expected_command_ids": [] },
+    { "id": "focused-test", "kind": "human_instruction", "materiality": "material", "expected_state": "unresolved", "governing_event_ids": ["u10"], "expected_diff_coordinates": [], "expected_command_ids": [] }
   ]
 }
