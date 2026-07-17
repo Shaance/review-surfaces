@@ -76,10 +76,9 @@ export function groundAgreementAudit(
   if (rejections.length > 0) limitations.push("One or more proposed conclusions failed evidence validation.");
   if (sanitizedCaveat) limitations.push(sanitizedCaveat);
 
-  const coveredUserEvents = new Set([
-    ...candidate.final_goal.conversation_event_ids,
-    ...candidate.agreements.flatMap((agreement) => agreement.conversation_event_ids)
-  ]);
+  const coveredUserEvents = new Set(
+    agreements.flatMap((agreement) => agreement.conversation_event_ids)
+  );
   const uncoveredUserEvents = input.conversation.events
     .filter((event) => event.actor === "user" && !coveredUserEvents.has(event.id))
     .map((event) => event.id);

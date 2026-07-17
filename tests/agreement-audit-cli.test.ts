@@ -71,15 +71,25 @@ test("milestone-one CLI preserves existing output-directory permissions and refu
 function candidate(): unknown {
   return {
     final_goal: { text: "Remove Swift analysis while retaining privacy defaults.", conversation_event_ids: ["u1", "u2"] },
-    agreements: [agreement({
-      key: "privacy-boundary",
-      kind: "human_boundary",
-      statement: "The privacy boundary was crossed.",
-      state: "diverged",
-      conversation_event_ids: ["u2"],
-      diff_citations: [{ path: "src/privacy/ignore.ts", side: "delete", line: 4, contains: "DerivedData" }],
-      reviewer_action: "Restore the default."
-    })],
+    agreements: [
+      agreement({
+        key: "remove-swift-code",
+        statement: "The Swift analysis implementation was removed.",
+        conversation_event_ids: ["u1"],
+        diff_citations: [{ path: "src/swift/project.ts", side: "delete", line: 1, contains: "inspectSwiftProject" }]
+      }),
+      agreement({ key: "remove-swift-docs", statement: "Swift analysis documentation removal is not evidenced.", state: "unresolved", conversation_event_ids: ["u1"], reviewer_action: "Confirm or remove the documentation." }),
+      agreement({ key: "remove-swift-tests", statement: "Dedicated Swift analysis test removal is not evidenced.", state: "unresolved", conversation_event_ids: ["u1"], reviewer_action: "Confirm or remove the dedicated tests." }),
+      agreement({
+        key: "privacy-boundary",
+        kind: "human_boundary",
+        statement: "The privacy boundary was crossed.",
+        state: "diverged",
+        conversation_event_ids: ["u2"],
+        diff_citations: [{ path: "src/privacy/ignore.ts", side: "delete", line: 4, contains: "DerivedData" }],
+        reviewer_action: "Restore the default."
+      })
+    ],
     complete: true,
     limitations: []
   };

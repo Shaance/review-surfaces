@@ -103,6 +103,26 @@ test("candidate prompts fail closed before provider integration when secret mate
   assert.throws(() => buildAuditPrompt(assignment, "review-surfaces"), /refusing provider generation/);
 });
 
+test("input and candidate parsing reject Windows and traversal paths", () => {
+  for (const unsafePath of ["C:\\repo\\private.ts", "C:/repo/private.ts", "..\\private.ts", "\\\\server\\share\\private.ts"]) {
+    const input = loadInput("clean-alignment");
+    input.diff[0].path = unsafePath;
+    assert.throws(() => parseAgreementAuditInput(input), /repository-relative path/);
+
+    assert.throws(() => parseAgreementAuditCandidate({
+      final_goal: { text: "Review it.", conversation_event_ids: ["u1"] },
+      agreements: [agreement({
+        key: "unsafe-path",
+        statement: "The change is present.",
+        conversation_event_ids: ["u1"],
+        diff_citations: [{ path: unsafePath, side: "add", line: 1, contains: "change" }]
+      })],
+      complete: true,
+      limitations: []
+    }), /repository-relative path/);
+  }
+});
+
 function tokenAssignment(): string {
   return ["API_", "TOKEN=", "supersecretvalue"].join("");
 }

@@ -103,10 +103,10 @@ test("a candidate with no grounded agreements can never manufacture a clean audi
   assert.equal(audit.status, "cannot_audit");
 });
 
-test("a complete audit must represent every human turn that can change the final agreement", () => {
+test("final-goal citations cannot replace an agreement for a human turn", () => {
   const input = loadInput("clean-alignment");
   const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
-    final_goal: { text: "Remove the change map.", conversation_event_ids: ["u1"] },
+    final_goal: { text: "Remove the change map while preserving the written example.", conversation_event_ids: ["u1", "u2"] },
     agreements: [agreement({
       key: "remove-map",
       statement: "The change map was removed.",
@@ -117,6 +117,32 @@ test("a complete audit must represent every human turn that can change the final
     limitations: []
   }));
   assert.equal(audit.status, "cannot_audit");
+  assert.ok(audit.limitations.some((limitation) => /user turn.*u2/.test(limitation)));
+});
+
+test("rejected agreements cannot satisfy human-turn coverage", () => {
+  const input = loadInput("clean-alignment");
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Remove the change map while preserving the written example.", conversation_event_ids: ["u1", "u2"] },
+    agreements: [
+      agreement({
+        key: "remove-map",
+        statement: "The change map was removed.",
+        conversation_event_ids: ["u1"],
+        diff_citations: [{ path: "src/render/change-map.ts", side: "delete", line: 1, contains: "renderChangeMap" }]
+      }),
+      agreement({
+        key: "preserve-example",
+        kind: "human_boundary",
+        statement: "The written example was preserved.",
+        conversation_event_ids: ["u2"],
+        diff_citations: [{ path: "README.md", side: "context", line: 24, contains: "not present" }]
+      })
+    ],
+    complete: true,
+    limitations: []
+  }));
+  assert.equal(audit.rejections.length, 1);
   assert.ok(audit.limitations.some((limitation) => /user turn.*u2/.test(limitation)));
 });
 
@@ -207,21 +233,26 @@ test("failed exact-head evidence can contradict an agent validation claim", () =
   const input = loadInput("validation-contradiction");
   const candidate = parseAgreementAuditCandidate({
     final_goal: { text: "Fix the retry race, keep the queue contract, document terminal failure, and validate it.", conversation_event_ids: ["u1", "u2", "u3"] },
-    agreements: [agreement({
-      key: "tests-pass",
-      kind: "validation_claim",
-      statement: "The agent said the focused tests passed, but the exact-head command failed.",
-      state: "diverged",
-      conversation_event_ids: ["a1"],
-      command_ids: ["retry-tests"],
-      reviewer_action: "Fix the focused test failure before accepting the claim."
-    })],
+    agreements: [
+      agreement({ key: "retry-race", statement: "The retry-race request needs review.", state: "unresolved", conversation_event_ids: ["u1"], reviewer_action: "Confirm the race is fixed." }),
+      agreement({ key: "queue-boundary", kind: "human_boundary", statement: "The queue contract must remain unchanged.", state: "unresolved", conversation_event_ids: ["u2"], reviewer_action: "Confirm the queue contract is preserved." }),
+      agreement({ key: "terminal-failure-docs", statement: "Terminal retry failure must be documented.", state: "unresolved", conversation_event_ids: ["u3"], reviewer_action: "Confirm the operator documentation is present." }),
+      agreement({
+        key: "tests-pass",
+        kind: "validation_claim",
+        statement: "The agent said the focused tests passed, but the exact-head command failed.",
+        state: "diverged",
+        conversation_event_ids: ["a1"],
+        command_ids: ["retry-tests"],
+        reviewer_action: "Fix the focused test failure before accepting the claim."
+      })
+    ],
     complete: true,
     limitations: []
   });
   const audit = groundAgreementAudit(input, candidate);
   assert.equal(audit.status, "needs_human_decision");
-  assert.equal(audit.agreements[0].commands[0].exact_head, true);
+  assert.equal(audit.agreements.find((agreement) => agreement.key === "tests-pass")?.commands[0].exact_head, true);
 });
 
 test("failed or unknown commands cannot prove a fulfilled validation claim", () => {

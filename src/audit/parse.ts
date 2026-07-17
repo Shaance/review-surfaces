@@ -185,7 +185,8 @@ function safeId(value: unknown, label: string): string {
 
 function repositoryPath(value: unknown, label: string): string {
   const parsed = nonEmpty(value, label);
-  if (parsed.startsWith("/") || /[\0\r\n]/u.test(parsed) || parsed.split("/").includes("..")) {
+  if (parsed.startsWith("/") || parsed.includes("\\") || /^[A-Za-z]:/u.test(parsed) ||
+    /[\0\r\n]/u.test(parsed) || parsed.split("/").includes("..")) {
     throw new Error(`${label} must be a repository-relative path`);
   }
   return parsed;
