@@ -227,6 +227,7 @@ test("an incomplete audit still renders grounded reviewer decisions as non-exhau
   assert.match(markdown, /Needs your decision/);
   assert.match(markdown, /Restore the default/);
   assert.match(markdown, /may not be exhaustive/);
+  assert.ok(markdown.indexOf("## Needs your decision") < markdown.indexOf("## Audit incomplete"));
 });
 
 test("failed exact-head evidence can contradict an agent validation claim", () => {

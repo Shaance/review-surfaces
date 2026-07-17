@@ -10,14 +10,6 @@ export function renderAgreementAuditMarkdown(audit: AgreementAudit): string {
   ];
 
   const decisions = audit.agreements.filter(agreementNeedsHumanDecision);
-  if (audit.status === "cannot_audit") {
-    lines.push(
-      "## Audit incomplete",
-      "",
-      "No alignment conclusion is available because the conversation or evidence scope is incomplete.",
-      ""
-    );
-  }
   if (decisions.length > 0) {
     lines.push(
       "## Needs your decision",
@@ -28,6 +20,14 @@ export function renderAgreementAuditMarkdown(audit: AgreementAudit): string {
     for (const [index, agreement] of decisions.entries()) {
       lines.push(...renderDecision(agreement, index + 1));
     }
+  }
+  if (audit.status === "cannot_audit") {
+    lines.push(
+      "## Audit incomplete",
+      "",
+      "No alignment conclusion is available because the conversation or evidence scope is incomplete.",
+      ""
+    );
   }
 
   const unresolvedSupporting = audit.agreements.filter((agreement) =>

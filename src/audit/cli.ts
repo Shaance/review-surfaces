@@ -67,9 +67,10 @@ function writePrivateFile(file: string, content: string): void {
 }
 
 function assertWritableArtifactPath(file: string): void {
-  if (fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) {
-    throw new Error(`refusing to write through symbolic link ${path.basename(file)}`);
-  }
+  const metadata = fs.lstatSync(file, { throwIfNoEntry: false });
+  if (!metadata) return;
+  if (metadata.isSymbolicLink()) throw new Error(`refusing to write through symbolic link ${path.basename(file)}`);
+  if (!metadata.isFile()) throw new Error(`refusing to replace non-file artifact ${path.basename(file)}`);
 }
 
 function requiredFlag(flags: ReadonlyMap<string, string>, name: string): string {

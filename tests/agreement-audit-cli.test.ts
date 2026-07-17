@@ -63,6 +63,22 @@ test("milestone-one CLI preserves existing output-directory permissions and refu
     assert.match(rejected.stderr, /refusing to write through symbolic link audit\.md/);
     assert.equal(fs.readFileSync(target, "utf8"), "keep\n");
     assert.equal(fs.readFileSync(path.join(root, "audit.json"), "utf8"), priorJson);
+
+    fs.rmSync(path.join(root, "audit.md"));
+    const missingTarget = path.join(root, "missing.md");
+    fs.symlinkSync(missingTarget, path.join(root, "audit.md"));
+    const rejectedDanglingLink = spawnSync(process.execPath, args, { cwd: process.cwd(), encoding: "utf8" });
+    assert.equal(rejectedDanglingLink.status, 1);
+    assert.match(rejectedDanglingLink.stderr, /refusing to write through symbolic link audit\.md/);
+    assert.equal(fs.existsSync(missingTarget), false);
+    assert.equal(fs.readFileSync(path.join(root, "audit.json"), "utf8"), priorJson);
+
+    fs.rmSync(path.join(root, "audit.md"));
+    fs.mkdirSync(path.join(root, "audit.md"));
+    const rejectedDirectory = spawnSync(process.execPath, args, { cwd: process.cwd(), encoding: "utf8" });
+    assert.equal(rejectedDirectory.status, 1);
+    assert.match(rejectedDirectory.stderr, /refusing to replace non-file artifact audit\.md/);
+    assert.equal(fs.readFileSync(path.join(root, "audit.json"), "utf8"), priorJson);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
