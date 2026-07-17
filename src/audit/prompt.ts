@@ -35,7 +35,7 @@ const REVIEW_SURFACES_TASK = `Audit the final agreement between the human and co
 
 Read the conversation chronologically. Later human corrections and explicit boundaries supersede earlier requests and agent proposals. Represent every independently material instruction, boundary, commitment, or validation claim; the number of entries must follow the evidence rather than a fixed output cap. Collapse only duplicate evidence for the same decision.
 
-Classify an agreement as fulfilled only with supplied diff or exact-head command evidence. Use diverged only when an exact changed line contradicts the governing conversation. Use unresolved for omissions, ambiguity, or claims that the supplied evidence cannot prove. Never invent a path, line, event, command, or clean conclusion. If the supplied scope or your inspection is incomplete, set complete=false. Do not perform generic code review: this task is only conversation-to-change alignment.`;
+Classify an agreement as fulfilled only with supplied diff or exact-head command evidence. Use diverged only when an exact changed line contradicts the governing conversation or, for a validation claim, a failed exact-head command contradicts a claimed pass. Use unresolved for omissions, ambiguity, or claims that the supplied evidence cannot prove. For every diverged agreement and every material unresolved agreement, include a concrete reviewer_action. Never invent a path, line, event, command, or clean conclusion. If the supplied scope or your inspection is incomplete, set complete=false. Do not perform generic code review: this task is only conversation-to-change alignment.`;
 
 const CANDIDATE_CONTRACT = `{
   "final_goal": { "text": string, "conversation_event_ids": string[] },
@@ -48,7 +48,7 @@ const CANDIDATE_CONTRACT = `{
     "conversation_event_ids": string[],
     "diff_citations": [{ "path": string, "side": ${literalUnion(DIFF_SIDES)}, "line": number, "contains": string }],
     "command_ids": string[],
-    "reviewer_action": string | undefined
+    "reviewer_action": string (required for diverged or material unresolved agreements; otherwise omit)
   }],
   "complete": boolean,
   "limitations": string[]

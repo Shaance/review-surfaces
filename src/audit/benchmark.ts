@@ -92,7 +92,7 @@ export function scoreAgreementBenchmarkRun(
     return candidate.kind === expected.kind &&
       candidate.state === expected.expected_state &&
       candidate.materiality === expected.materiality &&
-      expected.governing_event_ids.every((id) => candidate.conversation_event_ids.includes(id));
+      sameSet(new Set(candidate.conversation_event_ids), new Set(expected.governing_event_ids));
   });
   const matchedCandidates = new Set(correctMatches.map((match) => match.candidate_key));
   const matchedGold = new Set(correctMatches.map((match) => match.gold_id));

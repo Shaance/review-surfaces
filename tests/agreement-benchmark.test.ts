@@ -39,6 +39,9 @@ test("agreement benchmark freezes six paired cases and keeps gold out of both pr
     assert.ok(!product.includes('"expected_state"'));
     assert.ok(!baseline.includes('"case_id"'));
     assert.ok(!product.includes('"case_id"'));
+    assert.match(product, /failed exact-head command contradicts a claimed pass/);
+    assert.match(product, /every diverged agreement and every material unresolved agreement/);
+    assert.doesNotMatch(product, /string \| undefined/);
   }
 });
 
@@ -94,7 +97,7 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
   };
   const audit = groundAgreementAudit(input, candidate);
   const gold = parseAgreementBenchmarkGold(readJson(path.join(BENCH_ROOT, "cases", "late-correction.gold.json")), input);
-  const score = scoreAgreementBenchmarkRun(audit, gold, {
+  const adjudication = {
     matches: [
       { candidate_key: "wording-a", gold_id: "remove-swift-code" },
       { candidate_key: "wording-c", gold_id: "remove-swift-docs" },
@@ -102,7 +105,8 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
       { candidate_key: "wording-b", gold_id: "retain-privacy-boundary" }
     ],
     false_positive_candidate_keys: []
-  }, {
+  };
+  const runMetadata = {
     run_id: "product-1",
     pair_id: "pair-1",
     model_id: "model-a",
@@ -110,9 +114,24 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
     input_hash: "input-a",
     output_hash: "output-a",
     generation_ms: 1
-  });
+  };
+  const score = scoreAgreementBenchmarkRun(audit, gold, adjudication, runMetadata);
   assert.equal(score.material_f1, 1);
   assert.deepEqual(score.failures, []);
+
+  const overCitedAudit = {
+    ...audit,
+    agreements: audit.agreements.map((item) =>
+      item.key === "wording-a" ? { ...item, conversation_event_ids: ["u1", "u2"] } : item
+    )
+  };
+  const overCitedScore = scoreAgreementBenchmarkRun(overCitedAudit, gold, adjudication, {
+    ...runMetadata,
+    run_id: "over-cited",
+    pair_id: "over-cited",
+    output_hash: "output-over-cited"
+  });
+  assert.ok(overCitedScore.material_f1 < 1);
 
   const baseline = [1, 2, 3].map((run) => ({ ...score, run_id: `baseline-${run}`, pair_id: `pair-${run}`, material_f1: 0.7 }));
   const product = [1, 2, 3].map((run) => ({ ...score, run_id: `product-${run}`, pair_id: `pair-${run}` }));
