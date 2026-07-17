@@ -167,6 +167,17 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
   });
   assert.ok(unboundPreference.failures.some((failure) => /not bound to the scored outputs/.test(failure)));
 
+  const malformedPreference = compareAgreementBenchmarkRuns({
+    required_case_ids: ["late-correction"],
+    baseline,
+    product,
+    preferences: preferences.map((preference, index) =>
+      index === 2 ? { ...preference, preferred: "invalid" as "product" } : preference
+    )
+  });
+  assert.equal(malformedPreference.passes, false);
+  assert.ok(malformedPreference.failures.some((failure) => /preference outcome is invalid/.test(failure)));
+
   const duplicatePairs = compareAgreementBenchmarkRuns({
     required_case_ids: ["late-correction"],
     baseline: baseline.map((run) => ({ ...run, pair_id: "pair-1" })),
@@ -239,6 +250,30 @@ test("six-case runner keeps gold behind generation and cannot pass a tied plain-
     })
   });
   assert.ok(missingCase.failures.some((failure) => /manifest case set/.test(failure)));
+});
+
+test("concurrent benchmark generation finishes before any hidden gold is exposed", async () => {
+  let generationCount = 0;
+  await runAgreementBenchmarkArm({
+    root: BENCH_ROOT,
+    mode: "review-surfaces",
+    model_id: "fake-model",
+    model_config_hash: "same-config",
+    case_concurrency: 3,
+    generate: async () => {
+      generationCount += 1;
+      return {
+        final_goal: { text: "Review the requested work.", conversation_event_ids: ["u1"] },
+        agreements: [],
+        complete: true,
+        limitations: []
+      };
+    },
+    adjudicate: async () => {
+      assert.equal(generationCount, 18);
+      return { matches: [], false_positive_candidate_keys: [] };
+    }
+  });
 });
 
 test("benchmark runner rejects a fixture changed after the manifest was frozen", async () => {

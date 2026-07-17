@@ -12,6 +12,9 @@ import {
   agreementKindAllowsActor
 } from "./contract";
 
+const PREFERENCE_OUTCOMES = ["product", "baseline", "tie"] as const;
+type PreferenceOutcome = (typeof PREFERENCE_OUTCOMES)[number];
+
 export interface AgreementBenchmarkManifest {
   version: 1;
   cases: Array<{
@@ -161,7 +164,7 @@ export function compareAgreementBenchmarkRuns(input: {
     baseline_output_hash: string;
     product_output_hash: string;
     decision_time_ms: number;
-    preferred: "product" | "baseline" | "tie";
+    preferred: PreferenceOutcome;
   }>;
 }): AgreementBenchmarkComparison {
   const baselineMacro = macroByCase(input.baseline);
@@ -226,6 +229,9 @@ export function compareAgreementBenchmarkRuns(input: {
     }
     if (!Number.isFinite(preference.decision_time_ms) || preference.decision_time_ms <= 0) {
       failures.push(`${preference.case_id}/${preference.pair_id} preference needs a positive decision time`);
+    }
+    if (!PREFERENCE_OUTCOMES.includes(preference.preferred)) {
+      failures.push(`${preference.case_id}/${preference.pair_id} preference outcome is invalid`);
     }
   }
   const productPreferences = input.preferences.filter((preference) => preference.preferred === "product").length;

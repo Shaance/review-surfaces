@@ -58,7 +58,7 @@ export async function runAgreementBenchmarkArm(
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     throw new Error("case_concurrency must be a positive integer");
   }
-  const results = await mapWithConcurrency(manifest.cases, concurrency, async (entry) => {
+  const generatedCases = await mapWithConcurrency(manifest.cases, concurrency, async (entry) => {
     const inputPath = path.join(options.root, entry.input);
     const inputBytes = fs.readFileSync(inputPath);
     assertDigest(inputBytes, entry.input_sha256, entry.input);
@@ -82,8 +82,11 @@ export async function runAgreementBenchmarkArm(
       const outputHash = digest(markdown);
       generated.push({ runNumber, pairId, audit, markdown, outputHash, generationMs: Date.now() - started });
     }
+    return { entry, input, inputHash, generated };
+  });
 
-    // Gold is intentionally loaded only after every candidate for the case was generated.
+  // Hidden gold is loaded only after every candidate in the arm has been generated.
+  const results = await mapWithConcurrency(generatedCases, concurrency, async ({ entry, input, inputHash, generated }) => {
     const goldBytes = fs.readFileSync(path.join(options.root, entry.gold));
     assertDigest(goldBytes, entry.gold_sha256, entry.gold);
     const gold = parseAgreementBenchmarkGold(JSON.parse(goldBytes.toString("utf8")) as unknown, input);

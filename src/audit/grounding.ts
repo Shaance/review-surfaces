@@ -50,22 +50,23 @@ export function groundAgreementAudit(
       continue;
     }
     seenKeys.add(agreement.key);
+    const { command_ids, diff_citations, reviewer_action, ...grounded } = agreement;
     agreements.push({
-      ...agreement,
+      ...grounded,
       statement: sanitize(agreement.statement),
-      ...(agreement.reviewer_action ? { reviewer_action: sanitize(agreement.reviewer_action) } : {}),
+      ...(reviewer_action ? { reviewer_action: sanitize(reviewer_action) } : {}),
       conversation_event_ids: unique(agreement.conversation_event_ids),
       conversation_evidence: unique(agreement.conversation_event_ids).map((id) => {
         const event = events.get(id)!;
         return { id, source_id: sanitize(event.source_id), text: sanitize(event.text) };
       }),
-      diff_citations: agreement.diff_citations.map((citation) => ({
+      diff_citations: diff_citations.map((citation) => ({
         ...citation,
         path: sanitize(citation.path),
         contains: sanitize(citation.contains),
         validated: true as const
       })),
-      commands: agreement.command_ids.map((id) => {
+      commands: command_ids.map((id) => {
         const command = commands.get(id)!;
         return { ...command, command: sanitize(command.command), exact_head: command.head_sha === input.head_sha };
       })

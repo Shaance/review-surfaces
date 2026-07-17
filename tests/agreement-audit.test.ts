@@ -252,7 +252,9 @@ test("failed exact-head evidence can contradict an agent validation claim", () =
   });
   const audit = groundAgreementAudit(input, candidate);
   assert.equal(audit.status, "needs_human_decision");
-  assert.equal(audit.agreements.find((agreement) => agreement.key === "tests-pass")?.commands[0].exact_head, true);
+  const validation = audit.agreements.find((agreement) => agreement.key === "tests-pass");
+  assert.equal(validation?.commands[0].exact_head, true);
+  assert.ok(validation && !("command_ids" in validation));
 });
 
 test("failed or unknown commands cannot prove a fulfilled validation claim", () => {
