@@ -70,6 +70,15 @@ test("gold parsing rejects duplicate or wrong-role governing events", () => {
   }, input), /non-user governing event|must be unique/);
 });
 
+test("gold parsing rejects command evidence not bound to the benchmark head", () => {
+  const gold = readJson(path.join(BENCH_ROOT, "cases", "validation-contradiction.gold.json"));
+  for (const headSha of [undefined, "a".repeat(40)]) {
+    const input = loadInput("validation-contradiction");
+    input.commands[0].head_sha = headSha;
+    assert.throws(() => parseAgreementBenchmarkGold(gold, input), /not bound to the benchmark head/);
+  }
+});
+
 test("benchmark manifest paths cannot escape the benchmark root", () => {
   const manifest = (input: string) => ({
     version: AGREEMENT_BENCHMARK_VERSION,
@@ -218,6 +227,34 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
   });
   assert.ok(mixedInput.failures.some((failure) => /one frozen input across all runs/.test(failure)));
 
+  const invalidRecordedScore = compareAgreementBenchmarkRuns({
+    required_case_ids: ["late-correction"],
+    baseline,
+    product: product.map((run, index) => index === 0 ? { ...run, material_f1: 99 } : run),
+    preferences
+  });
+  assert.equal(invalidRecordedScore.passes, false);
+  assert.ok(invalidRecordedScore.failures.some((failure) => /invalid recorded fields/.test(failure)));
+  assert.ok(Number.isFinite(invalidRecordedScore.product_macro_f1));
+
+  const nullRecordedScore = compareAgreementBenchmarkRuns({
+    required_case_ids: ["late-correction"],
+    baseline,
+    product: [null, ...product.slice(1)] as unknown as typeof product,
+    preferences
+  });
+  assert.equal(nullRecordedScore.passes, false);
+  assert.ok(nullRecordedScore.failures.some((failure) => /invalid recorded fields/.test(failure)));
+
+  const blankBindingScore = compareAgreementBenchmarkRuns({
+    required_case_ids: ["late-correction"],
+    baseline,
+    product: product.map((run, index) => index === 0 ? { ...run, output_hash: "   " } : run),
+    preferences
+  });
+  assert.equal(blankBindingScore.passes, false);
+  assert.ok(blankBindingScore.failures.some((failure) => /invalid recorded fields/.test(failure)));
+
   const duplicatePairs = compareAgreementBenchmarkRuns({
     required_case_ids: ["late-correction"],
     baseline: baseline.map((run) => ({ ...run, pair_id: "pair-1" })),
@@ -331,25 +368,27 @@ test("concurrent benchmark workers stop scheduling generation after the first fa
   assert.equal(generationCount, 2);
 });
 
-test("benchmark runner rejects a fixture changed after the manifest was frozen", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agreement-benchmark-"));
-  try {
-    fs.cpSync(BENCH_ROOT, root, { recursive: true });
-    fs.appendFileSync(path.join(root, "cases", "large-agreement-set.input.json"), "\n");
-    let generationCount = 0;
-    await assert.rejects(() => runAgreementBenchmarkPair({
-      root,
-      model_id: "unreached",
-      model_config_hash: "unreached",
-      generate: async () => {
-        generationCount += 1;
-        throw new Error("generation must not start");
-      },
-      adjudicate: async () => emptyAdjudication()
-    }), /does not match its frozen SHA-256 digest/);
-    assert.equal(generationCount, 0);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+test("benchmark runner rejects changed input or gold before provider generation", async () => {
+  for (const file of ["large-agreement-set.input.json", "large-agreement-set.gold.json"]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agreement-benchmark-"));
+    try {
+      fs.cpSync(BENCH_ROOT, root, { recursive: true });
+      fs.appendFileSync(path.join(root, "cases", file), "\n");
+      let generationCount = 0;
+      await assert.rejects(() => runAgreementBenchmarkPair({
+        root,
+        model_id: "unreached",
+        model_config_hash: "unreached",
+        generate: async () => {
+          generationCount += 1;
+          throw new Error("generation must not start");
+        },
+        adjudicate: async () => emptyAdjudication()
+      }), /does not match its frozen SHA-256 digest/);
+      assert.equal(generationCount, 0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 

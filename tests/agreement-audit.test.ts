@@ -41,6 +41,9 @@ test("late correction becomes the primary reviewer decision with exact conversat
   assert.equal(audit.status, "needs_human_decision");
   assert.ok(audit.limitations.some((limitation) => /may not be exhaustive/.test(limitation)));
   assert.equal(audit.rejections.length, 0);
+  const privacyCitation = audit.agreements.find((agreement) => agreement.key === "privacy-boundary")!.diff_citations[0];
+  assert.equal(privacyCitation.contains, input.diff.find((line) => line.path === "src/privacy/ignore.ts")!.text);
+  assert.notEqual(privacyCitation.contains, "DerivedData");
   const markdown = renderAgreementAuditMarkdown(audit);
   assert.ok(markdown.indexOf("## Needs your decision") < markdown.indexOf("Final agreement and aligned work"));
   assert.match(markdown, /Restore the retained privacy defaults/);

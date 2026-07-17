@@ -67,9 +67,9 @@ interface GeneratedCase extends PreparedCase {
 }
 
 /**
- * Runs both benchmark arms as one hidden-gold boundary. Every input fixture is
- * frozen before any provider call, and no gold is loaded until all candidate
- * generation for both arms has completed.
+ * Runs both benchmark arms as one hidden-gold boundary. Input and gold bytes
+ * are integrity-preflighted before any provider call; gold is parsed and
+ * exposed only after candidate generation for both arms has completed.
  */
 export async function runAgreementBenchmarkPair(
   options: AgreementBenchmarkPairOptions
@@ -80,10 +80,14 @@ export async function runAgreementBenchmarkPair(
     throw new Error("case_concurrency must be a positive integer");
   }
 
-  // Synchronous preflight ensures a later invalid fixture cannot race a live call.
+  const goldBytesByCase = new Map<string, Buffer>();
+  // Integrity-preflight all bytes synchronously before live provider calls.
   const preparedCases = manifest.cases.map((entry): PreparedCase => {
     const inputBytes = fs.readFileSync(path.join(options.root, entry.input));
     assertDigest(inputBytes, entry.input_sha256, entry.input);
+    const goldBytes = fs.readFileSync(path.join(options.root, entry.gold));
+    assertDigest(goldBytes, entry.gold_sha256, entry.gold);
+    goldBytesByCase.set(entry.id, goldBytes);
     return {
       entry,
       input: parseAgreementAuditInput(JSON.parse(inputBytes.toString("utf8")) as unknown)
@@ -116,11 +120,10 @@ export async function runAgreementBenchmarkPair(
     return { ...prepared, mode, generated };
   });
 
-  // Load and validate every hidden ledger only after both arms finish generation.
+  // Parse and validate every hidden ledger only after both arms finish generation.
   const goldByCase = new Map(preparedCases.map((prepared) => {
     const { entry, input } = prepared;
-    const goldBytes = fs.readFileSync(path.join(options.root, entry.gold));
-    assertDigest(goldBytes, entry.gold_sha256, entry.gold);
+    const goldBytes = goldBytesByCase.get(entry.id)!;
     const gold = parseAgreementBenchmarkGold(JSON.parse(goldBytes.toString("utf8")) as unknown, input);
     if (gold.case_id !== entry.id) throw new Error(`benchmark gold case ${gold.case_id} does not match manifest ${entry.id}`);
     return [entry.id, gold] as const;

@@ -82,21 +82,23 @@ export function compareAgreementBenchmarkRuns(input: {
     preferred: PreferenceOutcome;
   }>;
 }): AgreementBenchmarkComparison {
-  const baselineMacro = macroByCase(input.baseline);
-  const productMacro = macroByCase(input.product);
-  const delta = productMacro - baselineMacro;
   const failures: string[] = [];
+  const baseline = validBenchmarkScores(input.baseline, "baseline", failures);
+  const product = validBenchmarkScores(input.product, "product", failures);
+  const baselineMacro = macroByCase(baseline);
+  const productMacro = macroByCase(product);
+  const delta = productMacro - baselineMacro;
   const requiredCaseIds = new Set(input.required_case_ids);
-  const baselineCaseIds = new Set(input.baseline.map((score) => score.case_id));
-  const productCaseIds = new Set(input.product.map((score) => score.case_id));
+  const baselineCaseIds = new Set(baseline.map((score) => score.case_id));
+  const productCaseIds = new Set(product.map((score) => score.case_id));
   if (!sameSet(requiredCaseIds, baselineCaseIds) || !sameSet(requiredCaseIds, productCaseIds)) {
     failures.push("benchmark arms must contain exactly the manifest case set");
   }
-  if (new Set(input.baseline.map((score) => score.run_id)).size !== input.baseline.length ||
-    new Set(input.product.map((score) => score.run_id)).size !== input.product.length) {
+  if (new Set(baseline.map((score) => score.run_id)).size !== baseline.length ||
+    new Set(product.map((score) => score.run_id)).size !== product.length) {
     failures.push("run ids must be unique within each benchmark arm");
   }
-  const allScores = [...input.baseline, ...input.product];
+  const allScores = [...baseline, ...product];
   if (new Set(allScores.map((score) => score.model_id)).size > 1 ||
     new Set(allScores.map((score) => score.model_config_hash)).size > 1) {
     failures.push("benchmark comparison must use one model and config across all runs");
@@ -104,8 +106,8 @@ export function compareAgreementBenchmarkRuns(input: {
   const expectedPreferenceKeys = new Set<string>();
   const expectedPreferenceHashes = new Map<string, { baseline: string; product: string }>();
   for (const caseId of requiredCaseIds) {
-    const baselineRuns = input.baseline.filter((score) => score.case_id === caseId);
-    const productRuns = input.product.filter((score) => score.case_id === caseId);
+    const baselineRuns = baseline.filter((score) => score.case_id === caseId);
+    const productRuns = product.filter((score) => score.case_id === caseId);
     if (baselineRuns.length !== 3 || productRuns.length !== 3) {
       failures.push(`${caseId} needs exactly three runs in both benchmark arms`);
     }
@@ -160,10 +162,10 @@ export function compareAgreementBenchmarkRuns(input: {
   const productPreferences = input.preferences.filter((preference) => preference.preferred === "product").length;
   const baselinePreferences = input.preferences.filter((preference) => preference.preferred === "baseline").length;
   const ties = input.preferences.filter((preference) => preference.preferred === "tie").length;
-  if (input.baseline.some((score) => score.failures.length > 0)) failures.push("one or more baseline runs failed a case gate");
-  if (input.product.some((score) => score.failures.length > 0)) failures.push("one or more product runs failed a case gate");
-  if (input.product.some((score) => !score.exact_citation_gate)) failures.push("product failed the exact-citation gate");
-  if (input.product.some((score) => !score.clean_case_gate)) failures.push("product produced a false mismatch on a clean case");
+  if (baseline.some((score) => score.failures.length > 0)) failures.push("one or more baseline runs failed a case gate");
+  if (product.some((score) => score.failures.length > 0)) failures.push("one or more product runs failed a case gate");
+  if (product.some((score) => !score.exact_citation_gate)) failures.push("product failed the exact-citation gate");
+  if (product.some((score) => !score.clean_case_gate)) failures.push("product produced a false mismatch on a clean case");
   if (delta < 0.15) failures.push(`product macro-F1 uplift ${delta.toFixed(3)} is below 0.150`);
   if (productPreferences < Math.max(2, baselinePreferences * 2)) {
     failures.push("blinded reviewer preference is below 2:1");
@@ -229,7 +231,7 @@ export function parseAgreementBenchmarkGold(value: unknown, input: AgreementAudi
   if (!Array.isArray(gold.agreements) || gold.agreements.length === 0) throw new Error("benchmark gold.agreements must be a non-empty array");
   const events = new Map(input.conversation.events.map((event) => [event.id, event]));
   const diffCoordinates = new Set(input.diff.map(auditDiffCoordinate));
-  const commandIds = new Set(input.commands.map((command) => command.id));
+  const commands = new Map(input.commands.map((command) => [command.id, command]));
   const agreements = gold.agreements.map((value, index) => {
     const agreement = asRecord(value, `benchmark gold agreement ${index}`);
     const kind = enumString(agreement.kind, AGREEMENT_KINDS, `benchmark gold agreement ${index}.kind`);
@@ -256,8 +258,12 @@ export function parseAgreementBenchmarkGold(value: unknown, input: AgreementAudi
       `benchmark gold agreement ${index}.expected_command_ids`
     );
     for (const commandId of expectedCommandIds) {
-      if (!commandIds.has(commandId)) {
+      const command = commands.get(commandId);
+      if (!command) {
         throw new Error(`benchmark gold agreement ${index} cites unknown command ${commandId}`);
+      }
+      if (command.head_sha !== input.head_sha) {
+        throw new Error(`benchmark gold agreement ${index} cites command ${commandId} not bound to the benchmark head`);
       }
     }
     return {
@@ -289,6 +295,34 @@ function macroByCase(scores: AgreementBenchmarkScore[]): number {
     grouped.set(score.case_id, values);
   }
   return mean([...grouped.values()].map(mean));
+}
+
+function validBenchmarkScores(
+  scores: AgreementBenchmarkScore[],
+  arm: "baseline" | "product",
+  failures: string[]
+): AgreementBenchmarkScore[] {
+  const textFields = ["case_id", "run_id", "pair_id", "model_id", "model_config_hash", "input_hash", "output_hash"] as const;
+  const metricFields = ["precision", "recall", "f1", "material_precision", "material_recall", "material_f1"] as const;
+  return scores.filter((score, index) => {
+    if (!score || typeof score !== "object" || Array.isArray(score)) {
+      failures.push(`${arm} benchmark score ${index + 1} has invalid recorded fields`);
+      return false;
+    }
+    const record = score as unknown as Record<string, unknown>;
+    const validText = textFields.every((field) =>
+      typeof record[field] === "string" && (record[field] as string).trim().length > 0
+    );
+    const validMetrics = metricFields.every((field) =>
+      typeof record[field] === "number" && Number.isFinite(record[field]) && (record[field] as number) >= 0 && (record[field] as number) <= 1
+    );
+    const valid = validText && validMetrics &&
+      typeof record.generation_ms === "number" && Number.isFinite(record.generation_ms) && record.generation_ms >= 0 &&
+      typeof record.exact_citation_gate === "boolean" && typeof record.clean_case_gate === "boolean" &&
+      Array.isArray(record.failures) && record.failures.every((failure) => typeof failure === "string");
+    if (!valid) failures.push(`${arm} benchmark score ${index + 1} has invalid recorded fields`);
+    return valid;
+  });
 }
 
 function asRecord(value: unknown, label: string): Record<string, unknown> {

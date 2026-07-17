@@ -64,7 +64,7 @@ export function groundAgreementAudit(
       diff_citations: diff_citations.map((citation) => ({
         ...citation,
         path: sanitize(citation.path),
-        contains: sanitize(citation.contains),
+        contains: sanitize(diffIndex.get(auditDiffCoordinate(citation))!),
         validated: true as const
       })),
       commands: command_ids.map((id) => {
