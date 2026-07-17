@@ -144,7 +144,7 @@ The reviewer should be able to answer quickly:
 3. What evidence supports or weakens each decision?
 4. What should I ask, inspect, or run next?
 
-Repository requirement coverage, change maps, reading tours, round ledgers, provider status, and exhaustive queues are supporting artifacts. They appear in the primary surface only when they directly answer one of those questions.
+Repository requirement coverage, reading tours, round ledgers, provider status, and exhaustive queues are supporting artifacts. They appear in the primary surface only when they directly answer one of those questions. The raw change graph remains machine-readable but is not rendered as a reviewer map.
 
 ### 3.5 Dogfood-first development
 
@@ -1183,7 +1183,7 @@ Delivered shape:
 - PR comments lead with a truthful verdict, author-provided change purpose, and
   every independently rooted approval decision, and remain postable with the
   mock provider or no provider enrichment;
-- narrative, provider state, diagrams, maps, reading tours, and repository-wide
+- narrative, provider state, diagrams, reading tours, and repository-wide
   compliance details remain optional supporting material rather than occupying
   or gating the primary scan path;
 - optional GitLab/Gerrit adapters;

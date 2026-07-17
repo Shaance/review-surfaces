@@ -55,7 +55,7 @@ function model(rounds: RoundsLedgerEntry[]): HumanReviewModel {
     },
     coverage_evidence: { status: "no_report", files: [] },
     review_plan: { enabled: false, read: [], skim: [], defer: [] },
-    change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
+    change_graph: { nodes: [], edges: [], clusters: [] },
     reading_order: { legs: [] },
     rounds,
     evidence_cards: [],

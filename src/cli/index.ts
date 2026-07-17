@@ -81,10 +81,9 @@ import { PACKET_SCHEMA_VERSION, PACKET_SEVERITIES } from "../schema/review-packe
 import { validateJsonFile, validateJsonSchema } from "../schema/json-schema";
 import { packagedSchemaPath } from "../schema/packaged-schemas";
 import { buildHumanReview, humanReviewConfigSignature, prSurfaceSignature } from "../human/human-review";
-import { ChangedImportEdge, ChangeGraphAreaInsight, ChangeGraphEdgeInsight, computeChangedImportEdges } from "../human/change-graph";
-import { buildChangeMapInsights, ChangeMapInsights } from "../human/change-map-insights";
+import { ChangedImportEdge, computeChangedImportEdges } from "../human/change-graph";
 import { ArchDriftResult, boundArchDriftByGraphCompleteness, computeArchDriftFacts, moduleOf } from "../risks/arch-drift";
-import { clusterOfPath, detectContractSourceProjection, detectImplementationRoots, DEFAULT_IMPLEMENTATION_ROOTS, type ContractSourceProjection } from "../core/source-roots";
+import { detectContractSourceProjection, detectImplementationRoots, DEFAULT_IMPLEMENTATION_ROOTS, type ContractSourceProjection } from "../core/source-roots";
 import { EvalScoreboardSummary, HUMAN_REVIEW_DECISIONS, RoundsLedgerEntry } from "../human/contract";
 import { buildChangeNarrative } from "../human/narrative";
 import { ChangeNarrative, HumanReviewModel, ReviewQueueItem } from "../human/contract";
@@ -550,7 +549,6 @@ interface PrSurfaceCacheReuse {
 
 interface CachedHumanReviewReuse {
   narrative?: ChangeNarrative;
-  changeMapInsights?: ChangeMapInsights;
   conversationReview?: ConversationReviewResult;
 }
 
@@ -581,7 +579,6 @@ interface HumanReviewBuildOptions {
   config?: ReviewSurfacesConfig;
   // Optional provider prose carried through a cache-hit rebuild.
   narrative?: ChangeNarrative;
-  changeMapInsights?: ChangeMapInsights;
   conversationReview?: ConversationReviewResult;
   factContext?: HumanFactContext;
   enrichmentSignature?: string;
@@ -589,7 +586,7 @@ interface HumanReviewBuildOptions {
 
 interface HumanReviewArtifactInputs extends Pick<
   HumanReviewBuildOptions,
-  "prSurface" | "feedback" | "narrative" | "changeMapInsights" | "conversationReview" | "enrichmentSignature"
+  "prSurface" | "feedback" | "narrative" | "conversationReview" | "enrichmentSignature"
 > {
   packet?: ReviewPacket;
 }
@@ -831,7 +828,6 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
             prSurface: prSurfaceReuse.surface,
             feedback: collection.feedback,
             narrative: cachedHumanReuse?.narrative,
-            changeMapInsights: cachedHumanReuse?.changeMapInsights,
             conversationReview: config.human_review.enabled ? cachedHumanReuse?.conversationReview : undefined,
             enrichmentSignature
           }
@@ -1228,29 +1224,6 @@ async function buildHumanNarrativeForAll(
   });
 }
 
-async function buildChangeMapInsightsForAll(
-  cwd: string,
-  packet: ReviewPacket,
-  diff: StructuredDiff | undefined,
-  enrichment: HumanEnrichmentContext,
-  suppliedFacts?: HumanFactContext
-): Promise<ChangeMapInsights> {
-  if (enrichment.providerName === "mock") {
-    return { edgeInsights: [], areaInsights: [] };
-  }
-  const facts = suppliedFacts ?? buildHumanFactContext(cwd, packet, diff);
-  const areas = changeMapAreasForInsights(diff, facts.implementationRoots);
-  return buildChangeMapInsights({
-    provider: enrichment.provider,
-    providerName: enrichment.providerName,
-    edges: facts.changedImportEdges,
-    areas,
-    diff,
-    redactSecrets: enrichment.redactSecrets,
-    remotePrivacyBlocked: enrichment.remotePrivacyBlocked
-  });
-}
-
 async function buildConversationReviewForAll(
   packet: ReviewPacket,
   diff: StructuredDiff | undefined,
@@ -1278,10 +1251,9 @@ async function buildConversationReviewForAll(
 
 async function buildHumanEnrichmentsForAll(
   input: BuildHumanEnrichmentsInput
-): Promise<Pick<HumanReviewBuildOptions, "narrative" | "changeMapInsights" | "conversationReview">> {
+): Promise<Pick<HumanReviewBuildOptions, "narrative" | "conversationReview">> {
   // A matching human artifact proves each optional stage already completed.
-  // Retry only components whose result is explicitly non-reusable; an absent
-  // map contribution is still a valid completed result when the identity matched.
+  // Retry only components whose result is explicitly non-reusable.
   const narrative = input.cached?.narrative
     ? Promise.resolve(input.cached.narrative)
     : buildHumanNarrativeForAll(
@@ -1292,15 +1264,6 @@ async function buildHumanEnrichmentsForAll(
         input.collection,
         input.enrichment
       );
-  const changeMapInsights = input.cached
-    ? Promise.resolve(input.cached.changeMapInsights)
-    : buildChangeMapInsightsForAll(
-        input.cwd,
-        input.packet,
-        input.diff,
-        input.enrichment,
-        input.factContext
-      );
   const conversationReview = input.cached?.conversationReview
     ? Promise.resolve(input.cached.conversationReview)
     : buildConversationReviewForAll(
@@ -1309,32 +1272,14 @@ async function buildHumanEnrichmentsForAll(
         input.collection,
         input.enrichment
       );
-  const [resolvedNarrative, resolvedChangeMapInsights, resolvedConversationReview] = await Promise.all([
+  const [resolvedNarrative, resolvedConversationReview] = await Promise.all([
     narrative,
-    changeMapInsights,
     conversationReview
   ]);
   return {
     narrative: resolvedNarrative,
-    changeMapInsights: resolvedChangeMapInsights,
     conversationReview: resolvedConversationReview
   };
-}
-
-function changeMapAreasForInsights(diff: StructuredDiff | undefined, roots: readonly string[]): Array<{ name: string; paths: string[] }> {
-  if (!diff) {
-    return [];
-  }
-  const byArea = new Map<string, string[]>();
-  for (const file of diff.files) {
-    const group = clusterOfPath(file.path, roots).split("/")[0];
-    const paths = byArea.get(group) ?? [];
-    paths.push(file.path);
-    byArea.set(group, paths);
-  }
-  return [...byArea.entries()]
-    .sort((a, b) => compareStrings(a[0], b[0]))
-    .map(([name, paths]) => ({ name, paths: [...new Set(paths)].sort() }));
 }
 
 function prSurfaceCacheReuse(
@@ -2054,7 +1999,6 @@ async function buildHumanReviewFromArtifacts(
           feedback: inputs?.feedback ?? readHumanReviewFeedback(outputDir),
           config,
           narrative: inputs?.narrative,
-          changeMapInsights: inputs?.changeMapInsights,
           conversationReview,
           enrichmentSignature: inputs?.enrichmentSignature
         })
@@ -2070,7 +2014,6 @@ async function buildHumanReviewFromArtifacts(
       feedback: inputs?.feedback ?? readHumanReviewFeedback(outputDir),
       config,
       narrative: inputs?.narrative,
-      changeMapInsights: inputs?.changeMapInsights,
       conversationReview,
       enrichmentSignature: inputs?.enrichmentSignature
     })
@@ -2171,8 +2114,6 @@ function buildHumanReviewForPacket(
     // shared import-graph parser over head content — computed here (file access)
     // so the section is uniform on every build path.
     changedImportEdges: facts.changedImportEdges,
-    changeGraphEdgeInsights: options.changeMapInsights?.edgeInsights,
-    changeGraphAreaInsights: options.changeMapInsights?.areaInsights,
     implementationRoots: facts.implementationRoots,
     // review-surfaces.ARCH_DRIFT.1-3: base-vs-head resolved import diffs at
     // module altitude, computed here (base/head file access).
@@ -2884,13 +2825,11 @@ function readCachedHumanReviewReuse(
     const narrative = headSha && model.narrative?.validated_at_head === headSha
       ? model.narrative
       : undefined;
-    const changeMapInsights = cachedChangeMapInsights(model, headSha);
     const conversationReview = humanReviewMatchesPacketIdentity(model, headSha, packetSignature)
       ? conversationReviewFromFields(model.conversation_analysis, model.review_insights)
       : undefined;
     return {
       narrative,
-      changeMapInsights,
       conversationReview: conversationReviewIsReusable(conversationReview)
         ? conversationReview
         : undefined
@@ -2898,49 +2837,6 @@ function readCachedHumanReviewReuse(
   } catch {
     return undefined;
   }
-}
-
-function cachedChangeMapInsights(model: HumanReviewModel, headSha: string): ChangeMapInsights | undefined {
-  if (!headSha || model.generated_from.head_sha !== headSha) {
-    return undefined;
-  }
-  const edgeInsights: ChangeGraphEdgeInsight[] = [];
-  for (const edge of model.change_graph.edges) {
-    if (edge.insight_source === "provider") {
-      edgeInsights.push({
-        from: edge.from,
-        to: edge.to,
-        summary: edge.summary,
-        ...(edge.detail ? { detail: edge.detail } : {}),
-        source: "provider"
-      });
-    }
-  }
-  const areaInsights: ChangeGraphAreaInsight[] = [];
-  for (const group of model.change_graph.overview.groups) {
-    if (group.insight_source !== "provider") {
-      continue;
-    }
-    const topics: NonNullable<ChangeGraphAreaInsight["topics"]> = [];
-    for (const topic of group.topics ?? []) {
-      if (topic.insight_source === "provider" && topic.paths.length > 0) {
-        topics.push({
-          label: topic.label,
-          summary: topic.summary,
-          paths: topic.paths,
-          source: "provider"
-        });
-      }
-    }
-    areaInsights.push({
-      name: group.name,
-      summary: group.summary,
-      ...(group.detail ? { detail: group.detail } : {}),
-      ...(topics.length > 0 ? { topics } : {}),
-      source: "provider"
-    });
-  }
-  return edgeInsights.length > 0 || areaInsights.length > 0 ? { edgeInsights, areaInsights } : undefined;
 }
 
 const NON_REUSABLE_CONVERSATION_FLAGS = new Set([
@@ -4348,7 +4244,7 @@ Options:
   --review-scope <s> all/comment: pr, repo, or auto (default repo). pr emits/reads a SEPARATE
                    diff-scoped surface (pr_review_surface.json) and an adaptive reviewer
                    brief led by author purpose and independent approval decisions. Detailed
-                   requirements, diagnostics, maps, and optional enrichment stay in supporting
+                   requirements, diagnostics, and optional enrichment stay in supporting
                    artifacts. repo is the whole-repo evidence artifact mode.
   --format <fmt>    comment: output format, one of github (default) | sticky | sarif | json | review.
                    github and sticky are aliases that write the adaptive human reviewer

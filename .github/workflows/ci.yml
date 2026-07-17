@@ -130,6 +130,8 @@ jobs:
           provider: mock
           base-ref: origin/main
           head-ref: ${{ env.REVIEW_HEAD_SHA }}
+          change-title: ${{ github.event.pull_request.title }}
+          change-description: ${{ github.event.pull_request.body }}
           output-dir: .review-surfaces
           subject-directory: .
           pr-number: ${{ github.event.pull_request.number }}

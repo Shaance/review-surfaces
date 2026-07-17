@@ -284,10 +284,10 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
-// review-surfaces.COLD_START.2: the shared cluster rule for the change map and
+// review-surfaces.COLD_START.2: the shared cluster rule for the machine graph and
 // the reading order — top-level directory, with files under an implementation
 // root clustered by their directory directly under that root. Generalizes the
-// previous src-only special case so map and tour stay in agreement on any repo.
+// previous src-only special case so the machine graph and reading order stay in agreement on any repo.
 export function clusterOfPath(filePath: string, roots: readonly string[]): string {
   const segments = filePath.split("/");
   if (segments.length === 1) {

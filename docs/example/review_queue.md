@@ -58,9 +58,9 @@ Confirm the unmapped change is intended and not missing a review-area mapping.
  > - The `url` option (if set) accepts **only** a [`URL`](https://developer.mozilla.org/en-US/docs/Web/API/URL) instance.\
  >   This prevents `prefixUrl` ambiguity. In order to use a relative URL string, merge it via `new URL(relativeUrl, response.url)`.
 +> - When pagination navigates to a different origin, Got strips inherited sensitive headers such as `authorization`, `cookie`, and `proxy-authorization`. If you trust the next-page URL and want to fo…
-
+ 
  #### `filter`
-
+ 
 ```
 Evidence:
 - `documentation/4-pagination.md`
@@ -88,9 +88,9 @@ No defect pattern fired here — read this changed file to confirm the change is
 
 ````diff
 @@ -793,6 +793,8 @@
-
+ 
      It should return an object representing Got options pointing to the next page. The options are merged automatically with the previous request, therefore the options returned `pagination.paginate(...…
-
+ 
 +    When pagination navigates to a different origin, Got strips inherited sensitive headers such as `authorization`, `cookie`, and `proxy-authorization`. If you trust the next-page URL and want to forwa…
 +
      @example

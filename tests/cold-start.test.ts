@@ -108,7 +108,7 @@ test("review-surfaces.REVIEWER_VALUE.11 preserves a root-level contract source s
     );
     assert.ok(
       !detectImplementationRoots({ files, read: (filePath) => contents[filePath] }).includes("."),
-      "the contract-only root sentinel never becomes a change-map implementation root"
+      "the contract-only root sentinel never becomes a machine-graph implementation root"
     );
   }
 });
@@ -239,7 +239,6 @@ test("review-surfaces.COLD_START.2 reading order classifies a detected root as i
       { path: "README.md", status: "M", added: 1, removed: 0 }
     ],
     edges: [],
-    usedBy: [],
     lensFindings: [],
     reviewQueue: [],
     implementationRoots: ["source"]
@@ -248,7 +247,7 @@ test("review-surfaces.COLD_START.2 reading order classifies a detected root as i
   assert.ok(implementationLeg, "source file appears in the tour");
   assert.equal(implementationLeg?.title, "Implementation", "source/ classifies as implementation, not config/docs");
   const node = sections.change_graph.nodes.find((candidate) => candidate.path === "source/core/index.ts");
-  assert.equal(node?.cluster, "source/core", "the change-map cluster uses the same detected root");
+  assert.equal(node?.cluster, "source/core", "the machine-graph cluster uses the same detected root");
 });
 
 test("review-surfaces.COLD_START.2 end-to-end: a source/-rooted repo gets implementation reading order from committed signals", () => {
@@ -429,7 +428,7 @@ test("review-surfaces.COLD_START.5 spec-less mode suppresses Acai-shaped noise b
 
     // NOT changed in none mode: the no-spec value proposition.
     assert.ok(human.reading_order.legs.length > 0, "reading order still renders");
-    assert.ok(human.change_graph.nodes.length > 0, "change map still renders");
+  assert.ok(human.change_graph.nodes.length > 0, "machine change graph still exists");
     assert.ok(human.trust_audit, "trust audit still renders");
     assert.ok(Array.isArray(human.semantic_facts.api_changes), "semantic facts still computed");
   } finally {

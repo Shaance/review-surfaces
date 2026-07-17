@@ -130,7 +130,7 @@ function lineOfFirstAction(lines: readonly string[]): number | null {
 }
 
 function lineOfFirstSupportingSection(lines: readonly string[]): number | null {
-  const index = lines.findIndex((line) => line === "## Supporting review queue" || line === "## Reading order" || line === "## Change map");
+  const index = lines.findIndex((line) => line === "## Supporting review queue" || line === "## Reading order");
   return index < 0 ? null : index + 1;
 }
 

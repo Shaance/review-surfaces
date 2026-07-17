@@ -92,7 +92,6 @@ test("review-surfaces.READING_ORDER.1 the tour is topological dependencies-first
       { importer: "src/cycle/x.ts", imported: "src/cycle/y.ts" },
       { importer: "src/cycle/y.ts", imported: "src/cycle/x.ts" }
     ],
-    usedBy: [],
     lensFindings: [],
     reviewQueue: [queueItem("Q-7", "src/core/contract.ts", 1)]
   });
@@ -125,24 +124,21 @@ test("review-surfaces.READING_ORDER.1 the tour is topological dependencies-first
       { importer: "tests/consumer.test.ts", imported: "src/render/consumer.ts" },
       { importer: "src/render/consumer.ts", imported: "src/core/contract.ts" }
     ],
-    usedBy: [],
     lensFindings: [],
     reviewQueue: [queueItem("Q-7", "src/core/contract.ts", 1)]
   });
   assert.deepEqual(again.reading_order, order);
 });
 
-test("review-surfaces.READING_ORDER.1 the tour never includes unchanged files (halo files belong to the map)", () => {
+test("review-surfaces.READING_ORDER.1 the tour never includes unchanged files", () => {
   const sections = buildChangeGraphSections({
     files: [file("src/a.ts")],
     edges: [],
-    usedBy: [{ path: "src/a.ts", top: ["src/unchanged/importer.ts"] }],
     lensFindings: [],
     reviewQueue: []
   });
   const flat = sections.reading_order.legs.flatMap((leg) => leg.steps.map((step) => step.path));
   assert.deepEqual(flat, ["src/a.ts"]);
-  assert.equal(sections.change_graph.halo_nodes.length, 1);
 });
 
 test("review-surfaces.READING_ORDER.2 the HTML tour follows approval decisions while compact Markdown and the sticky delegate it", () => {
@@ -152,7 +148,6 @@ test("review-surfaces.READING_ORDER.2 the HTML tour follows approval decisions w
       { importer: "src/render/consumer.ts", imported: "src/core/contract.ts" },
       { importer: "tests/consumer.test.ts", imported: "src/render/consumer.ts" }
     ],
-    usedBy: [],
     lensFindings: [],
     reviewQueue: []
   });
@@ -165,7 +160,7 @@ test("review-surfaces.READING_ORDER.2 the HTML tour follows approval decisions w
   assert.match(markdown, /\[Interactive HTML cockpit\]\(human_review\.html\)/);
   const html = renderHumanReviewHtml(fixture, {});
   assert.match(html, /<h2 id="reading-order">Reading order<\/h2>/);
-  assert.match(html, /<h2 id="map">Change map<\/h2>/);
+  assert.doesNotMatch(html, /<h2 id="map">Change map<\/h2>|data-map-/);
   assert.ok(html.indexOf('id="queue"') < html.indexOf('id="reading-order"'), "reviewer actions precede the supporting reading-order tour");
   // Sticky: no mechanical tour; the full reading order remains in the artifact.
   const sticky = renderStickySummary(fixture).markdown;

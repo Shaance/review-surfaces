@@ -7,9 +7,9 @@ the smallest useful approval surface:
 2. Which independent decisions could change approval?
 3. What evidence supports each decision, and what should the reviewer do next?
 
-It leads with those answers. Maps, tours, exhaustive requirement coverage,
-provider status, conversation analysis, and generic queues remain supporting
-artifacts instead of forcing the reviewer to reconstruct the decision.
+It leads with those answers. Guided reading order, exhaustive requirement
+coverage, provider status, conversation analysis, and generic queues remain
+supporting artifacts instead of forcing the reviewer to reconstruct the decision.
 
 The brief is adaptive: a 100-file mechanical migration may need one decision,
 while a smaller cross-boundary change may need six. There is no universal word
@@ -70,15 +70,8 @@ and provider diagnostics stay out of the primary scan path.
 Every `review-surfaces all` run writes a self-contained `human_review.html`
 (also available via `review-surfaces human --format html`). It repeats the
 purpose and decisions first, then exposes the ranked queue, coverage gutters,
-reading order, maps, trust audit, and other diagnostics for reviewers who need
+reading order, trust audit, and other diagnostics for reviewers who need
 to dig deeper. No server or CDN is required.
-
-### The change map
-
-The map is optional structural context, never the review itself. Small diffs get
-a file-level view; wide diffs get a compact overview and per-area details. It is
-available after the decisions in the HTML cockpit (and represented in the JSON
-model), and is never duplicated in the compact Markdown or sticky PR brief.
 
 ### The sticky PR comment
 
@@ -101,8 +94,9 @@ Honesty about depth, so you can calibrate trust:
 - **Language-agnostic everywhere else.** Test-weakening signals, secret
   scanning, coverage deltas (any `lcov.info`), dependency/lockfile facts, CI
   workflow and Dockerfile and SQL-migration checks, JSON-schema contract diffs,
-  the change map's clustering, the trust audit, and the review queue itself work
-  on any repository.
+  the machine-readable change graph, the trust audit, and the review queue itself
+  work on any repository. The graph supports tooling and reading order; human
+  surfaces do not turn directory and churn data into a redundant map.
 - **Deterministic by contract.** Identical inputs produce byte-identical
   artifacts. LLM output is optional enrichment and is never treated as proof —
   see [Providers](#providers).

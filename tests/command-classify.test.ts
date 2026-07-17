@@ -29,6 +29,10 @@ test("review-surfaces.COLLECTOR.7 classifies broad and focused test commands", (
   assert.equal(commandLooksLikeTestCommand("CI=1 pnpm run test"), true);
   assert.equal(commandLooksLikeBroadTestCommand("CI=1 pnpm run test"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("CI=1 pnpm run test"), false);
+  assert.equal(commandLooksLikeTestCommand("docker exec review-subject pnpm test"), true);
+  assert.equal(commandLooksLikeBroadTestCommand("docker exec review-subject pnpm test"), true);
+  assert.equal(commandLooksLikeFocusedTestCommand("docker exec review-subject pnpm test"), false);
+  assert.equal(commandLooksLikeTestCommand("docker exec --user node review-subject pnpm test"), false, "ambiguous docker options are not guessed");
   assert.equal(commandLooksLikeTestCommand("NODE_OPTIONS=--conditions=test node --test dist/tests/*.test.js"), true);
   assert.equal(commandLooksLikeBroadTestCommand("NODE_OPTIONS=--conditions=test node --test dist/tests/*.test.js"), true);
   assert.equal(commandLooksLikeFocusedTestCommand("NODE_OPTIONS=--conditions=test node --test dist/tests/*.test.js"), false);

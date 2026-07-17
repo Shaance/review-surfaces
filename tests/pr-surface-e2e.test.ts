@@ -1034,7 +1034,7 @@ test("review-surfaces.CONVERSATION_REVIEW.4 PR optional enrichment is cached on 
       assert.deepEqual(
         retryStages,
         ["conversation_analysis", "conversation_review_insights"],
-        `${flag} must not rerun reusable narrative or change-map enrichment`
+        `${flag} must not rerun reusable narrative or conversation enrichment`
       );
       const refreshed = JSON.parse(fs.readFileSync(humanPath, "utf8"));
       assert.equal(refreshed.conversation_analysis.status, "analyzed");

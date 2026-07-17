@@ -39,7 +39,7 @@ function baseModel(overrides: Partial<HumanReviewModel>): HumanReviewModel {
     conversation_analysis: notAssessedConversationAnalysis("mock"),
     review_insights: [],
     semantic_facts: { schema_changes: [], api_changes: [], test_weakening: [] },
-    change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
+    change_graph: { nodes: [], edges: [], clusters: [] },
     reading_order: { legs: [] },
     verdict: { decision: "reviewable_with_attention", confidence: "medium", reasons: [] },
     decision_projection: { active_intent: { summary: "Fixture intent.", source: "packet", redaction_blocked: false, requirement_ids: [], event_ids: [] }, findings: [] },
@@ -168,9 +168,9 @@ test("review-surfaces.REVIEWER_VALUE.12 keeps every approval decision while boun
   assert.ok(html.indexOf('id="trust-summary"') < html.indexOf('id="reading-order"'), "HTML exposes the compact trust summary on the primary surface");
   const compactTrust = html.split('id="trust-summary"')[1]!.split('id="queue"')[0]!;
   assert.doesNotMatch(compactTrust, /Medium confidence fixture/, "the compact trust line must not repeat the full audit summary");
-  assert.match(html, /details\.open = true/, "map filtering opens a matching supporting queue container");
-  assert.match(html, /activeFile \|\| activeLens/, "lens filtering also opens matching supporting queue items");
-  assert.match(html, /data-filter-opened/, "clearing the map filter restores an auto-opened supporting queue container");
+  assert.match(html, /details\.open = true/, "lens filtering opens a matching supporting queue container");
+  assert.match(html, /activeLens && visibleMatch/, "lens filtering opens matching supporting queue items");
+  assert.match(html, /data-filter-opened/, "clearing the lens filter restores an auto-opened supporting queue container");
 });
 
 // review-surfaces.HUMAN_REVIEW.19: N templated test-plan items that differ only

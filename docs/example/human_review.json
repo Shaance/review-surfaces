@@ -751,23 +751,16 @@
         "lens": "test_evidence"
       }
     ],
-    "halo_nodes": [],
     "edges": [
       {
         "from": "source/core/index.ts",
         "to": "source/core/options.ts",
-        "kind": "existing",
-        "summary": "core/index.ts uses core/options.ts",
-        "detail": "source/core/index.ts uses source/core/options.ts. This is a deterministic import-graph relationship; run with a provider for a semantic explanation of why it matters.",
-        "insight_source": "fallback"
+        "kind": "existing"
       },
       {
         "from": "test/abort.ts",
         "to": "source/core/index.ts",
-        "kind": "existing",
-        "summary": "test/abort.ts uses core/index.ts",
-        "detail": "test/abort.ts uses source/core/index.ts. This is a deterministic import-graph relationship; run with a provider for a semantic explanation of why it matters.",
-        "insight_source": "fallback"
+        "kind": "existing"
       }
     ],
     "clusters": [
@@ -797,112 +790,7 @@
           "package.json"
         ]
       }
-    ],
-    "overview": {
-      "groups": [
-        {
-          "name": "source",
-          "file_count": 2,
-          "cluster_count": 1,
-          "churn_added": 35,
-          "churn_removed": 20,
-          "summary": "Updates source across 2 files; 2 review-queue items; test evidence focus.",
-          "detail": "Churn: +35/-20. 0 deleted files, 0 added files.",
-          "insight_source": "fallback",
-          "queue_count": 2,
-          "topics": [
-            {
-              "label": "Core changes",
-              "summary": "Core changes: 2 changed files (index.ts, options.ts).",
-              "paths": [
-                "source/core/index.ts",
-                "source/core/options.ts"
-              ],
-              "insight_source": "fallback"
-            }
-          ],
-          "lens": "test_evidence"
-        },
-        {
-          "name": "test",
-          "file_count": 2,
-          "cluster_count": 1,
-          "churn_added": 182,
-          "churn_removed": 8,
-          "summary": "Mostly expands test across 2 files; test evidence focus.",
-          "detail": "Churn: +182/-8. 0 deleted files, 0 added files.",
-          "insight_source": "fallback",
-          "queue_count": 0,
-          "topics": [
-            {
-              "label": "Test changes",
-              "summary": "Test changes: 2 changed files (abort.ts, pagination.ts).",
-              "paths": [
-                "test/abort.ts",
-                "test/pagination.ts"
-              ],
-              "insight_source": "fallback"
-            }
-          ],
-          "lens": "test_evidence"
-        },
-        {
-          "name": "documentation",
-          "file_count": 1,
-          "cluster_count": 1,
-          "churn_added": 1,
-          "churn_removed": 0,
-          "summary": "Updates documentation across 1 file; 1 review-queue item.",
-          "detail": "Churn: +1/-0. 0 deleted files, 0 added files.",
-          "insight_source": "fallback",
-          "queue_count": 1,
-          "topics": [
-            {
-              "label": "Documentation changes",
-              "summary": "Documentation changes: 1 changed file (4-pagination.md).",
-              "paths": [
-                "documentation/4-pagination.md"
-              ],
-              "insight_source": "fallback"
-            }
-          ]
-        },
-        {
-          "name": "(root)",
-          "file_count": 1,
-          "cluster_count": 1,
-          "churn_added": 1,
-          "churn_removed": 1,
-          "summary": "Updates repository metadata across 1 file.",
-          "detail": "Churn: +1/-1. 0 deleted files, 0 added files.",
-          "insight_source": "fallback",
-          "queue_count": 0,
-          "topics": [
-            {
-              "label": "Repository metadata",
-              "summary": "Repository metadata: 1 changed file (package.json).",
-              "paths": [
-                "package.json"
-              ],
-              "insight_source": "fallback"
-            }
-          ]
-        }
-      ],
-      "halo_count": 0,
-      "edges": [
-        {
-          "from": "test",
-          "to": "source",
-          "weight": 1,
-          "has_new": false,
-          "has_removed": false,
-          "summary": "test uses source: test/abort.ts uses core/index.ts",
-          "detail": "test/abort.ts uses source/core/index.ts. This is a deterministic import-graph relationship; run with a provider for a semantic explanation of why it matters.",
-          "insight_source": "fallback"
-        }
-      ]
-    }
+    ]
   },
   "reading_order": {
     "legs": [

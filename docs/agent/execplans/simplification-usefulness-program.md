@@ -32,7 +32,7 @@ and iteration cost first-class quality concerns.
 - Add curated usefulness judgments and metrics for precision, duplicate roots,
   actionability, first-action position, and postable comments.
 - Replace importer-count admission with explicit contract-surface evidence.
-- Put every independent approval decision before maps, tours, and exhaustive
+- Put every independent approval decision before tours and exhaustive
   ledgers. Collapse duplicate roots and supporting diagnostics, never a distinct
   decision merely because the change is large.
 - Reproduce `2076964..171b414` and require no internal compatibility finding, a

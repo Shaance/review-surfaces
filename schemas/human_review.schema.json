@@ -232,8 +232,8 @@
     },
     "change_graph": {
       "type": "object",
-      "additionalProperties": true,
-      "required": ["nodes", "halo_nodes", "edges", "clusters", "overview"],
+      "additionalProperties": false,
+      "required": ["nodes", "edges", "clusters"],
       "properties": {
         "nodes": {
           "type": "array",
@@ -252,31 +252,16 @@
             }
           }
         },
-        "halo_nodes": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": true,
-            "required": ["path", "imports"],
-            "properties": {
-              "path": { "type": "string" },
-              "imports": { "type": "array", "items": { "type": "string" } }
-            }
-          }
-        },
         "edges": {
           "type": "array",
           "items": {
             "type": "object",
-            "additionalProperties": true,
-            "required": ["from", "to", "kind", "summary", "insight_source"],
+            "additionalProperties": false,
+            "required": ["from", "to", "kind"],
             "properties": {
               "from": { "type": "string" },
               "to": { "type": "string" },
-              "kind": { "enum": ["existing", "new", "removed"] },
-              "summary": { "type": "string" },
-              "detail": { "type": "string" },
-              "insight_source": { "enum": ["fallback", "provider"] }
+              "kind": { "enum": ["existing", "new", "removed"] }
             }
           }
         },
@@ -284,74 +269,11 @@
           "type": "array",
           "items": {
             "type": "object",
-            "additionalProperties": true,
+            "additionalProperties": false,
             "required": ["name", "paths"],
             "properties": {
               "name": { "type": "string" },
-              "paths": { "type": "array", "items": { "type": "string" } },
-              "label": { "type": "string" },
-              "summary": { "type": "string" },
-              "insight_source": { "enum": ["fallback", "provider"] }
-            }
-          }
-        },
-        "overview": {
-          "type": "object",
-          "additionalProperties": true,
-          "required": ["groups", "halo_count", "edges"],
-          "properties": {
-            "groups": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": true,
-                "required": ["name", "file_count", "cluster_count", "churn_added", "churn_removed", "summary", "insight_source", "queue_count"],
-                "properties": {
-                  "name": { "type": "string" },
-                  "file_count": { "type": "integer", "minimum": 0 },
-                  "cluster_count": { "type": "integer", "minimum": 0 },
-                  "churn_added": { "type": "integer", "minimum": 0 },
-                  "churn_removed": { "type": "integer", "minimum": 0 },
-                  "summary": { "type": "string" },
-                  "detail": { "type": "string" },
-                  "insight_source": { "enum": ["fallback", "provider"] },
-                  "queue_count": { "type": "integer", "minimum": 0 },
-                  "lens": { "$ref": "#/$defs/riskLens" },
-                  "topics": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "additionalProperties": true,
-                      "required": ["label", "summary", "paths", "insight_source"],
-                      "properties": {
-                        "label": { "type": "string" },
-                        "summary": { "type": "string" },
-                        "paths": { "type": "array", "items": { "type": "string" } },
-                        "insight_source": { "enum": ["fallback", "provider"] }
-                      }
-                    }
-                  }
-                }
-              }
-            },
-            "halo_count": { "type": "integer", "minimum": 0 },
-            "edges": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": true,
-                "required": ["from", "to", "weight", "has_new", "has_removed", "summary", "insight_source"],
-                "properties": {
-                  "from": { "type": "string" },
-                  "to": { "type": "string" },
-                  "weight": { "type": "integer", "minimum": 1 },
-                  "has_new": { "type": "boolean" },
-                  "has_removed": { "type": "boolean" },
-                  "summary": { "type": "string" },
-                  "detail": { "type": "string" },
-                  "insight_source": { "enum": ["fallback", "provider"] }
-                }
-              }
+              "paths": { "type": "array", "items": { "type": "string" } }
             }
           }
         }

@@ -211,7 +211,7 @@ ${renderSupportingArtifactIndex()}
 
 function renderSupportingArtifactIndex(): string {
   return [
-    "- [Interactive HTML cockpit](human_review.html) — reading order, maps, coverage, trust, and the complete supporting review.",
+    "- [Interactive HTML cockpit](human_review.html) — reading order, coverage, trust, and the complete supporting review.",
     "- [`human_review.json`](human_review.json) — schema-validated machine model with every recorded fact.",
     ...HUMAN_STANDALONE_ARTIFACTS.map((artifact) =>
       `- [${artifact.label}](${artifact.artifact}) — focused supporting detail.`

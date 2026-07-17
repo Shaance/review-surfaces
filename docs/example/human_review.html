@@ -22,14 +22,6 @@
   --ok:#1f8a65;
   --info:#3a6a9f;
   --shadow:0 1px 0 rgba(38,37,30,.06);
-  --map-card:#f2f1ed;
-  --map-card-alt:#ebeae5;
-  --map-tint-warm:#f3ede6;
-  --map-tint-blue:#e3ebf3;
-  --map-tint-neutral:#e6e5e0;
-  --map-tint-green:#e4efe8;
-  --map-tint-pink:#f1e6ea;
-  --map-edge:#8d877d;
 }
 * { box-sizing: border-box; }
 [hidden] { display:none !important; }
@@ -77,23 +69,6 @@ details > summary:hover { color:var(--accent); }
 .budget-segment.defer { background:rgba(38,37,30,.06); }
 .progress-track { height:10px; }
 #progress-bar { height:100%; width:0; background:var(--accent); }
-.lens-key { display:flex; flex-wrap:wrap; gap:8px 12px; }
-.lens-key span { display:inline-block; padding-left:.35rem; }
-.map-detail { background:var(--chrome); border:1px solid var(--line); border-radius:4px; padding:10px 12px; margin:12px 0; }
-svg[aria-label^="Change map"] text[fill="#050503"] { fill:var(--strong); }
-svg[aria-label^="Change map"] text[fill="#26251e"] { fill:var(--fg); }
-svg[aria-label^="Change map"] text[fill="#6f6a60"] { fill:var(--muted); }
-svg[aria-label^="Change map"] rect[fill="#f2f1ed"] { fill:var(--map-card); }
-svg[aria-label^="Change map"] rect[fill="#ebeae5"] { fill:var(--map-card-alt); }
-svg[aria-label^="Change map"] rect[fill="#f3ede6"] { fill:var(--map-tint-warm); }
-svg[aria-label^="Change map"] rect[fill="#e3ebf3"] { fill:var(--map-tint-blue); }
-svg[aria-label^="Change map"] rect[fill="#e6e5e0"] { fill:var(--map-tint-neutral); }
-svg[aria-label^="Change map"] rect[fill="#e4efe8"] { fill:var(--map-tint-green); }
-svg[aria-label^="Change map"] rect[fill="#f1e6ea"] { fill:var(--map-tint-pink); }
-svg[aria-label^="Change map"] rect[stroke="#d9d5cf"] { stroke:var(--line); }
-svg[aria-label^="Change map"] polyline[stroke="#8d877d"] { stroke:var(--map-edge); }
-svg[aria-label^="Change map"] polygon[fill="#8d877d"] { fill:var(--map-edge); }
-svg[aria-label^="Change map"] polyline[stroke="#aaa49a"] { stroke:var(--line-strong); }
 table { width:100%; border-collapse:collapse; margin:.6rem 0; font-size:12px; }
 th, td { border-bottom:1px solid var(--line); padding:.35rem .45rem; text-align:left; vertical-align:top; }
 th { color:var(--muted); font-weight:600; }
@@ -114,21 +89,13 @@ th { color:var(--muted); font-weight:600; }
     --ok:#55c49a;
     --info:#78a9df;
     --shadow:0 1px 0 rgba(0,0,0,.28);
-    --map-card:#20231e;
-    --map-card-alt:#252821;
-    --map-tint-warm:#302720;
-    --map-tint-blue:#202b37;
-    --map-tint-neutral:#292b27;
-    --map-tint-green:#203029;
-    --map-tint-pink:#31242c;
-    --map-edge:#858c80;
   }
   code, pre { background:rgba(255,255,255,.045); border-color:rgba(255,255,255,.08); }
   .badge { background:rgba(20,22,18,.72); }
   .filters button.active { background:#302720; }
   .strip-bar, .progress-track { background:rgba(20,22,18,.72); }
 }
-@media print { #file-filter-note, .item header label { display:none; } details > * { display:block; } }
+@media print { .item header label { display:none; } details > * { display:block; } }
 </style>
 </head>
 <body>
@@ -149,7 +116,6 @@ th { color:var(--muted); font-weight:600; }
 <p>3 verified fact(s); 0 unverified claim(s); 2 missing-evidence item(s); 0 invalid-evidence item(s).</p>
 
 <h2 id="queue">Supporting review queue</h2>
-<p class="filters" id="file-filter-note" hidden>Filtered to <code id="file-filter-path"></code> <button data-clear-file-filter>show all</button></p>
 <div class="item" data-lenses="test_evidence" data-path="source/core/index.ts" id="queue-REVIEW-001">
 <header><strong>1. <code>source/core/index.ts</code></strong> <span class="badge medium">medium</span><label><input type="checkbox" data-queue-check="REVIEW-001"> reviewed</label></header>
 <p>2 changed implementation files share one validation question: focused changed-test evidence is connected to 1, 1 still lack connected changed-test evidence, and no current-head transcript proves the relevant checks ran.</p>
@@ -190,20 +156,6 @@ th { color:var(--muted); font-weight:600; }
 <h3>Implementation</h3><ol><li value="1"><code>source/core/options.ts</code> — imported by 1 changed file(s) <span class="muted">(queue: REVIEW-003)</span></li><li value="2"><code>source/core/index.ts</code> — imported by 1 changed file(s) <span class="muted">(queue: REVIEW-001)</span></li></ol>
 <h3>Tests</h3><ol><li value="3"><code>test/abort.ts</code> — read after the 1 changed file(s) it imports</li></ol><details><summary>+1 supporting file(s) in dependency order</summary><ol><li value="4"><code>test/pagination.ts</code></li></ol></details>
 <h3>Config and docs</h3><ol><li value="5"><code>documentation/4-pagination.md</code> <span class="muted">(queue: REVIEW-002)</span></li></ol><details><summary>+1 supporting file(s) in dependency order</summary><ol><li value="6"><code>package.json</code></li></ol></details>
-
-<h2 id="map">Change map</h2>
-<svg viewBox="0 0 752 320" width="100%" role="img" aria-label="Change map" style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;max-width:752px"><defs><marker id="map-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><polygon points="0,0 10,5 0,10" fill="#8d877d"/></marker></defs><text x="16" y="28" font-size="11" font-weight="600" fill="#26251e">source/core</text><g data-map-file="source/core/index.ts" style="cursor:pointer"><rect x="16" y="66" width="200" height="40" rx="4" fill="#e3ebf3" stroke="#3a6a9f"/><text x="24" y="83" font-size="12" fill="#050503">index.ts</text><text x="24" y="98" font-size="10" fill="#6f6a60">+33/-20 · test_evidence</text><title>source/core/index.ts
-+33/-20 modified
-lens: test_evidence</title></g><g data-map-file="source/core/options.ts" style="cursor:pointer"><rect x="16" y="120" width="200" height="40" rx="4" fill="#e3ebf3" stroke="#3a6a9f"/><text x="24" y="137" font-size="12" fill="#050503">options.ts</text><text x="24" y="152" font-size="10" fill="#6f6a60">+2/-0 · test_evidence</text><title>source/core/options.ts
-+2/-0 modified
-lens: test_evidence</title></g><text x="276" y="28" font-size="11" font-weight="600" fill="#26251e">test</text><g data-map-file="test/abort.ts" style="cursor:pointer"><rect x="276" y="66" width="200" height="40" rx="4" fill="#e3ebf3" stroke="#3a6a9f"/><text x="284" y="83" font-size="12" fill="#050503">abort.ts</text><text x="284" y="98" font-size="10" fill="#6f6a60">+113/-8 · test_evidence</text><title>test/abort.ts
-+113/-8 modified
-lens: test_evidence</title></g><g data-map-file="test/pagination.ts" style="cursor:pointer"><rect x="276" y="120" width="200" height="40" rx="4" fill="#e3ebf3" stroke="#3a6a9f"/><text x="284" y="137" font-size="12" fill="#050503">pagination.ts</text><text x="284" y="152" font-size="10" fill="#6f6a60">+69/-0 · test_evidence</text><title>test/pagination.ts
-+69/-0 modified
-lens: test_evidence</title></g><text x="536" y="28" font-size="11" font-weight="600" fill="#26251e">documentation</text><g data-map-file="documentation/4-pagination.md" style="cursor:pointer"><rect x="536" y="66" width="200" height="40" rx="4" fill="#f2f1ed" stroke="#d9d5cf"/><text x="544" y="83" font-size="12" fill="#050503">4-pagination.md</text><text x="544" y="98" font-size="10" fill="#6f6a60">+1/-0</text><title>documentation/4-pagination.md
-+1/-0 modified</title></g><text x="16" y="212" font-size="11" font-weight="600" fill="#26251e">(root)</text><g data-map-file="package.json" style="cursor:pointer"><rect x="16" y="250" width="200" height="40" rx="4" fill="#f2f1ed" stroke="#d9d5cf"/><text x="24" y="267" font-size="12" fill="#050503">package.json</text><text x="24" y="282" font-size="10" fill="#6f6a60">+1/-1</text><title>package.json
-+1/-1 modified</title></g></svg>
-<p class="muted lens-key">Lenses: <span style="border-left:10px solid #e3ebf3">Test evidence lens</span></p><p class="muted">Click a node to filter the review queue to that file; hover for details.</p>
 
 
 
@@ -280,29 +232,20 @@ lens: test_evidence</title></g><text x="536" y="28" font-size="11" font-weight="
       try { localStorage.setItem(KEY, JSON.stringify(checked)); } catch (e) { /* private mode */ }
     });
   });
-  // Lens and map-file filters COMPOSE: an item is visible only when it passes
-  // both active filters (intersection), so toggling one never un-hides items
-  // the other filtered out.
+  // Lens filters keep the supporting queue navigable without introducing a
+  // second structural surface that competes with the reading order.
   var activeLens = null;
-  var activeFile = null;
-  var activeFileOld = null;
-  var fileNote = document.getElementById("file-filter-note");
-  var filePathEl = document.getElementById("file-filter-path");
   function applyFilters() {
     Array.prototype.forEach.call(document.querySelectorAll("[data-lenses]"), function (item) {
       var lensOk = !activeLens || activeLens === "all" || (" " + item.getAttribute("data-lenses") + " ").indexOf(" " + activeLens + " ") >= 0;
-      // Rename-aware: an old-side-anchored item (path = rename source) matches
-      // the map node of its renamed destination, and vice versa.
-      var itemPath = item.getAttribute("data-path");
-      var fileOk = !activeFile || itemPath === activeFile || item.getAttribute("data-path-old") === activeFile || (activeFileOld && itemPath === activeFileOld);
-      item.style.display = lensOk && fileOk ? "" : "none";
+      item.style.display = lensOk ? "" : "none";
     });
     Array.prototype.forEach.call(document.querySelectorAll("[data-supporting-queue]"), function (details) {
       var visibleMatch = false;
       Array.prototype.forEach.call(details.querySelectorAll("[data-lenses]"), function (item) {
         if (item.style.display !== "none") { visibleMatch = true; }
       });
-      if ((activeFile || activeLens) && visibleMatch) {
+      if (activeLens && visibleMatch) {
         if (!details.open) { details.setAttribute("data-filter-opened", "true"); }
         details.open = true;
       } else if (details.getAttribute("data-filter-opened") === "true") {
@@ -310,10 +253,6 @@ lens: test_evidence</title></g><text x="536" y="28" font-size="11" font-weight="
         details.removeAttribute("data-filter-opened");
       }
     });
-    if (fileNote && filePathEl) {
-      fileNote.hidden = !activeFile;
-      filePathEl.textContent = activeFile || "";
-    }
   }
   var buttons = document.querySelectorAll("[data-lens-filter]");
   Array.prototype.forEach.call(buttons, function (button) {
@@ -342,41 +281,6 @@ lens: test_evidence</title></g><text x="536" y="28" font-size="11" font-weight="
     box.addEventListener("change", updateProgress);
   });
   updateProgress();
-  // review-surfaces.RENDER.11: clicking a map node filters the queue to that
-  // file (same data- attribute pattern as the lens filters; composes with the
-  // lens filter via applyFilters above).
-  Array.prototype.forEach.call(document.querySelectorAll("[data-map-file]"), function (node) {
-    node.addEventListener("click", function () {
-      var file = node.getAttribute("data-map-file");
-      if (activeFile === file) {
-        activeFile = null;
-        activeFileOld = null;
-      } else {
-        activeFile = file;
-        activeFileOld = node.getAttribute("data-map-file-old");
-      }
-      applyFilters();
-    });
-  });
-  var clearButton = document.querySelector("[data-clear-file-filter]");
-  if (clearButton) {
-    clearButton.addEventListener("click", function () { activeFile = null; activeFileOld = null; applyFilters(); });
-  }
-  // review-surfaces.MAP_SCALE.6: clicking an overview group toggles its
-  // pre-rendered hidden detail SVG (one open at a time; clicking the same
-  // group again closes it). Same data- attribute pattern as the filters.
-  Array.prototype.forEach.call(document.querySelectorAll("[data-map-group]"), function (card) {
-    card.addEventListener("click", function () {
-      var group = card.getAttribute("data-map-group");
-      Array.prototype.forEach.call(document.querySelectorAll("[data-map-detail]"), function (panel) {
-        if (panel.getAttribute("data-map-detail") === group) {
-          panel.hidden = !panel.hidden;
-        } else {
-          panel.hidden = true;
-        }
-      });
-    });
-  });
 })();
 </script>
 </body>

@@ -13,7 +13,7 @@ import { formatHunkHeader, hunkOverlapsRange } from "../collector/diff-hunks";
 import { ApiSurfaceChange, emptySemanticChangeFacts, formatEnumChanges, formatTypeChanges, isBreakingApiChange, isBreakingSchemaChange, isSupportedApiContractChange, SchemaContractChange, SemanticChangeFacts, TestWeakeningSignal } from "../risks/semantic-diff";
 import { emptyRankingEvidence, RankingEvidence } from "../risks/ranking-evidence";
 import { buildReviewPlan } from "./budget";
-import { buildChangeGraphSections, ChangedFileFacts, ChangedImportEdge, ChangeGraphAreaInsight, ChangeGraphEdgeInsight } from "./change-graph";
+import { buildChangeGraphSections, ChangedFileFacts, ChangedImportEdge } from "./change-graph";
 import { ArchDriftFact, ArchDriftResult } from "../risks/arch-drift";
 import { DependencyFact, dependencyFactSeverityRank } from "../risks/dependency-facts";
 import { ConfigFact } from "../risks/config-facts";
@@ -131,12 +131,10 @@ export interface BuildHumanReviewInput {
   policyNowIso?: string;
   // review-surfaces.CHANGE_MAP.1: importer->imported edges among changed files,
   // computed in the pipeline from buildImportGraph() over head content (it needs
-  // file access). Absent -> a map with no edges (nodes still render).
+  // file access). Absent -> a machine graph with no edges.
   changedImportEdges?: ChangedImportEdge[];
-  changeGraphEdgeInsights?: ChangeGraphEdgeInsight[];
-  changeGraphAreaInsights?: ChangeGraphAreaInsight[];
   // review-surfaces.COLD_START.2: implementation roots detected from the target
-  // repo's signals; feeds the change-map clusters and the tour categorization.
+  // repo's signals; feeds machine clusters and the tour categorization.
   implementationRoots?: readonly string[];
   // review-surfaces.ARCH_DRIFT.1-3: module-boundary drift facts + file-level
   // edge deltas computed in the pipeline (base/head file access). Absent ->
@@ -370,21 +368,16 @@ export function buildHumanReview(input: BuildHumanReviewInput): HumanReviewModel
     coverage: coverageEvidence
   });
   const skimSafe = buildSkimSafe(input, feedbackEffects);
-  // review-surfaces.CHANGE_MAP.1 + READING_ORDER.1: one shared computation so
-  // the map's left-to-right flow and the tour's numbering can never disagree.
+  // review-surfaces.CHANGE_MAP.1 + READING_ORDER.1: one shared computation for
+  // the machine graph and the reviewer's guided reading order.
   const changeGraphSections = buildChangeGraphSections({
     files: changedFileFactsForGraph(input),
     edges: input.changedImportEdges ?? [],
-    usedBy: semanticFacts.api_changes
-      .filter((change) => change.used_by && change.used_by.top.length > 0)
-      .map((change) => ({ path: change.path, top: (change.used_by as { top: string[] }).top })),
     lensFindings: riskLensFindings,
     reviewQueue,
-    edgeInsights: input.changeGraphEdgeInsights,
-    areaInsights: input.changeGraphAreaInsights,
     implementationRoots: input.implementationRoots,
     // review-surfaces.ARCH_DRIFT.2: drift edge deltas set kind new/removed so
-    // the supporting map picks the drift up with zero extra work.
+    // machine consumers can distinguish current and removed relationships.
     driftEdges: input.archDrift?.file_edges
   });
   const generatedFrom = buildGeneratedFrom(input);
@@ -478,8 +471,8 @@ function buildRoundsLedger(input: BuildHumanReviewInput, verdict: HumanReviewVer
 // review-surfaces.ARCH_DRIFT.2: drift facts rank as concrete queue items via
 // the risk register plumbing — cycle creation outranks a plain new edge.
 function archDriftQueueDrafts(facts: ArchDriftFact[], diffIndex: DiffIndex | undefined): QueueDraft[] {
-  // REVIEWER_VALUE.6 / ARCH_DRIFT.2: ordinary module edges are useful map and
-  // lens context, but are not independently approval-changing. Only cycles
+  // REVIEWER_VALUE.6 / ARCH_DRIFT.2: ordinary module edges are useful machine
+  // and lens context, but are not independently approval-changing. Only cycles
   // proven on the concrete runtime file graph enter the primary queue.
   const ordered = facts
     .filter((fact) => fact.kind === "import_cycle_created" && (fact.cycle?.length ?? 0) >= 2)
@@ -1751,20 +1744,6 @@ function buildBlockers(
       summary: risk.summary,
       evidence: evidenceOrMissing(risk.evidence, risk.summary),
       required_action: disposition.body
-    });
-  }
-
-  const secretBoundary = prSurface?.risks.candidates.find((risk) =>
-    risk.rule === "ci_secret_boundary_change" &&
-    isDecisionScopedSignal(decisionScope, risk.evidence, requirementIds(risk.evidence))
-  );
-  if (secretBoundary && !hasRecordedCiSecretBoundaryManualCheck(input)) {
-    blockers.push({
-      id: "BLOCK-CI-SECRET-001",
-      severity: "high",
-      summary: "CI / secret-boundary files changed without recorded manual check evidence.",
-      evidence: evidenceOrMissing(secretBoundary.evidence, "CI / secret-boundary risk needs file evidence."),
-      required_action: "Record a manual check confirming PR-controlled code cannot access secrets."
     });
   }
 
@@ -5232,7 +5211,9 @@ function prRiskReviewDisposition(risk: PrRiskCandidate): PrRiskReviewDisposition
     case "comment_surface_change":
       return undefined;
     case "ci_secret_boundary_change":
-      // The merge-readiness blocker is the canonical suggested comment for this manual-check gate.
+      // A changed workflow is an approval decision, not proof of exposure. The
+      // risk lens and required manual test-plan item carry the review action;
+      // only concrete secret/privacy evidence may block merge.
       return undefined;
     case "schema_contract_change":
       return undefined;

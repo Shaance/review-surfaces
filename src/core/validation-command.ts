@@ -3,6 +3,12 @@ const ENV_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=.*$/;
 export function normalizeValidationCommand(command: string): string {
   let normalized = command.trim().replace(/\s+/g, " ");
   if (normalized.startsWith("rtk ")) normalized = normalized.slice("rtk ".length);
+  // Trusted CI records the command it actually executes. Preserve that
+  // provenance while classifying the common credentialless-container shape by
+  // its inner command (`docker exec <container> pnpm test`). Options are left
+  // untouched rather than guessed; only the unambiguous no-option form unwraps.
+  const dockerExec = normalized.match(/^docker exec\s+([^\s-]\S*)\s+(.+)$/);
+  if (dockerExec) normalized = dockerExec[2]!;
   if (/^(?:\/usr\/bin\/env|env)(?:\s|$)/.test(normalized)) {
     normalized = normalized.replace(/^(?:\/usr\/bin\/env|env)\s*/, "");
   }

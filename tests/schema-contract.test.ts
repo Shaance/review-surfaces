@@ -28,7 +28,7 @@ import {
   PACKET_VALIDATION_STATUSES,
   PACKET_WORKFLOW_SIGNAL_KINDS
 } from "../src/schema/review-packet-contract";
-import { RISK_LENSES } from "../src/human/contract";
+import { HumanReviewModel, RISK_LENSES } from "../src/human/contract";
 import {
   CHANGED_FILE_ROLES,
   PR_COVERAGE_DELTAS,
@@ -110,7 +110,7 @@ const HUMAN_REQUIRED_DEFAULTS = {
   },
   coverage_evidence: { status: "no_report", files: [] },
   review_plan: { enabled: false, read: [], skim: [], defer: [] },
-  change_graph: { nodes: [], halo_nodes: [], edges: [], clusters: [], overview: { groups: [], halo_count: 0, edges: [] } },
+  change_graph: { nodes: [], edges: [], clusters: [] },
   reading_order: { legs: [] },
   evidence_cards: [],
   feedback_effects: []
@@ -861,15 +861,26 @@ test("review-surfaces.SCHEMA.4 rejects an unknown property on a change-graph nod
         lenz: "architecture"
       }
     ],
-    halo_nodes: [],
     edges: [],
-    clusters: [],
-    overview: { groups: [], halo_count: 0, edges: [] }
+    clusters: []
   };
   const result = validateJsonSchema(humanReviewSchema, model);
   assert.equal(result.valid, false);
   assert.ok(
     result.issues.some((issue) => /Unexpected property/.test(issue.message) && /lenz/.test(issue.path)),
+    JSON.stringify(result.issues)
+  );
+});
+
+test("review-surfaces.CHANGE_MAP.2 rejects removed human-map fields in the machine graph", () => {
+  const model = structuredClone(validHumanReview()) as unknown as HumanReviewModel & {
+    change_graph: HumanReviewModel["change_graph"] & { overview?: unknown };
+  };
+  model.change_graph.overview = { groups: [], halo_count: 0, edges: [] };
+  const result = validateJsonSchema(humanReviewSchema, model);
+  assert.equal(result.valid, false);
+  assert.ok(
+    result.issues.some((issue) => /Unexpected property/.test(issue.message) && /overview/.test(issue.path)),
     JSON.stringify(result.issues)
   );
 });
@@ -1437,8 +1448,8 @@ test("pr_surface rejects malformed or unknown values throughout every nested ret
 });
 
 test("review-surfaces.SCHEMA.6 the hoisted human risk-lens enum equals RISK_LENSES", () => {
-  // The lens enum was inline-duplicated three times. It is now a single $def
-  // (#/$defs/riskLens) the two change-graph sites $ref; the riskLensFinding copy
+  // The lens enum was inline-duplicated. It is now a single $def
+  // (#/$defs/riskLens) the change-graph node site $refs; the riskLensFinding copy
   // stays inline (it is the site the existing human-review.test.ts guard pins),
   // so this test ALSO ties that inline copy to the hoisted $def, removing the
   // last drift path. Guard the $def against the runtime source of truth.
@@ -1449,28 +1460,13 @@ test("review-surfaces.SCHEMA.6 the hoisted human risk-lens enum equals RISK_LENS
     schemaAt(humanReviewSchema, ["$defs", "riskLensFinding", "properties", "lens", "enum"]),
     hoisted
   );
-  // The two change-graph lens sites $ref the single hoisted $def, not a re-inlined enum.
+  // The change-graph node lens $refs the single hoisted $def, not a re-inlined enum.
   assert.equal(
     schemaAt(humanReviewSchema, [
       "properties",
       "change_graph",
       "properties",
       "nodes",
-      "items",
-      "properties",
-      "lens",
-      "$ref"
-    ]),
-    "#/$defs/riskLens"
-  );
-  assert.equal(
-    schemaAt(humanReviewSchema, [
-      "properties",
-      "change_graph",
-      "properties",
-      "overview",
-      "properties",
-      "groups",
       "items",
       "properties",
       "lens",

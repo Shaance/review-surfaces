@@ -18,9 +18,9 @@ SNAP_A="$WORK/snapshot-a"
 SNAP_B="$WORK/snapshot-b"
 trap 'rm -rf "$WORK"' EXIT
 
-# review-surfaces.CHANGE_MAP.4: determinism is checked for BOTH scopes — the
-# repo-scope `all` and a PR-scope run, so the supporting HTML/SVG map and the
-# reviewer-brief sidecars are covered, not just the repo-scope artifacts.
+# review-surfaces.LOCAL_LOOP.2: determinism is checked for BOTH scopes — the
+# repo-scope `all` and a PR-scope run, so the reviewer-brief sidecars are
+# covered, not just the repo-scope artifacts.
 run() {
   local scope="$1"
   rm -rf "$OUT"
@@ -37,7 +37,7 @@ run() {
     --out "$OUT" >/dev/null
   # Materialize the reviewer brief too: `all` alone never writes comment.md, so
   # nondeterminism in the GitHub/sticky renderer would otherwise slip past this
-  # check (CHANGE_MAP.4). `github` and `sticky` are aliases, so one explicitly
+  # check (LOCAL_LOOP.2). `github` and `sticky` are aliases, so one explicitly
   # scoped render covers both without launching the CLI twice.
   node bin/review-surfaces.js comment --review-scope "$scope" --out "$OUT" >/dev/null 2>&1
   mv "$OUT/comment.md" "$OUT/comment.$scope.md"
