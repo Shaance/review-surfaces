@@ -1,5 +1,6 @@
-// review-surfaces.CHANGE_MAP.1/.2 + READING_ORDER.1: build the strict
-// machine-readable change-graph model
+// review-surfaces.CHANGE_MAP.1 + review-surfaces.CHANGE_MAP.2 +
+// review-surfaces.READING_ORDER.1: build the strict machine-readable
+// change-graph model
 // and the guided diff tour from the SAME deterministic inputs — changed files
 // (churn, status), the import graph restricted to changed files, and the
 // computed lens findings / review queue. No new parsing
