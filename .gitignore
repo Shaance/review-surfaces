@@ -27,6 +27,7 @@ temp/
 .review-surfaces/*
 !.review-surfaces/feedback/
 !.review-surfaces/feedback/*.yaml
+.agreement-audit/
 
 # review-surfaces effectiveness benchmark clone cache (BENCH.1)
 bench/.cache/

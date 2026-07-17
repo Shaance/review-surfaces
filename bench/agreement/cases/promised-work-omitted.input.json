@@ -1,0 +1,18 @@
+{
+  "version": "0.1.0",
+  "repository": "example/repo",
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "conversation": {
+    "status": "complete",
+    "sources": [{ "id": "session-1", "sha256": "4444444444444444444444444444444444444444444444444444444444444444", "selection": "explicit" }],
+    "events": [
+      { "id": "u1", "source_id": "session-1", "actor": "user", "kind": "message", "text": "Add the migration and explain the operator rollback path.", "order": 0 },
+      { "id": "a1", "source_id": "session-1", "actor": "assistant", "kind": "message", "text": "I will add the migration and the rollback runbook.", "order": 1 }
+    ]
+  },
+  "diff": [
+    { "path": "migrations/20260717_add_index.sql", "side": "add", "line": 1, "text": "CREATE INDEX CONCURRENTLY jobs_state_idx ON jobs(state);" }
+  ],
+  "commands": []
+}

@@ -1,0 +1,19 @@
+{
+  "version": "0.1.0",
+  "repository": "example/repo",
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "conversation": {
+    "status": "complete",
+    "sources": [{ "id": "session-1", "sha256": "3333333333333333333333333333333333333333333333333333333333333333", "selection": "explicit" }],
+    "events": [
+      { "id": "u1", "source_id": "session-1", "actor": "user", "kind": "message", "text": "Fix the local config parser only. Do not add a runtime dependency.", "order": 0 },
+      { "id": "a1", "source_id": "session-1", "actor": "assistant", "kind": "message", "text": "I will keep the fix local to the parser.", "order": 1 }
+    ]
+  },
+  "diff": [
+    { "path": "src/config/parser.ts", "side": "add", "line": 18, "text": "return parseQuotedValue(value);" },
+    { "path": "package.json", "side": "add", "line": 25, "text": "\"new-config-parser\": \"^2.0.0\"" }
+  ],
+  "commands": []
+}

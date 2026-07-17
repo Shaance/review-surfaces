@@ -1,7 +1,27 @@
 # review-surfaces
 
-**A reviewer brief for agent-written code.** `review-surfaces` turns a PR into
-the smallest useful approval surface:
+**A conversation-grounded agreement audit for agent-written code.** The product
+is being reset around one question: did the change match the final agreement
+between the human and the coding agent?
+
+Milestone one is an isolated, benchmarked agreement-audit spine. It validates
+citations within supplied transcript, diff, and command evidence, then renders
+divergence, unresolved uncertainty, and the decision the human needs to make.
+It does not yet independently collect or authenticate those inputs; trusted Git
+and conversation collection is the next milestone. Missing or incomplete
+conversation scope is inconclusive, and never falls back to generic review noise.
+Milestone one also refuses to declare a clean result until agreement extraction
+has an independent completeness verifier. The number of decisions follows the
+evidence; there is no universal word or item cap. See the
+[agreement-audit v0 contract](https://github.com/Shaance/review-surfaces/blob/main/docs/agreement-audit-v0.md).
+
+The legacy packet compiler remains temporarily available while the new thesis is
+tested against an equally equipped plain-agent baseline. It is not the target
+product model.
+
+## Legacy packet compiler (temporary)
+
+The existing compiler turns a PR into an approval surface:
 
 1. What is the author trying to change?
 2. Which independent decisions could change approval?
