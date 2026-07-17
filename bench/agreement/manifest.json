@@ -42,7 +42,7 @@
       "input": "cases/large-agreement-set.input.json",
       "input_sha256": "a1c0744d153eb8c7842d219bc72f2b69140d838c1166b5d7963c405c3ad287a2",
       "gold": "cases/large-agreement-set.gold.json",
-      "gold_sha256": "00d547dcfe062d571216d2d4f83ffd711de1abd0b9a33cdc9ad4118a4d96c36d"
+      "gold_sha256": "81d33443125bf31551ec46c7b2aa75b03086266554d4521cbeca9c69ed1c7fca"
     }
   ]
 }

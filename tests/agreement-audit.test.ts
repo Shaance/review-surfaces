@@ -332,6 +332,25 @@ test("renderer preserves significant whitespace in exact evidence", () => {
   assert.notEqual(safeMarkdownEvidence("<tag>"), safeMarkdownEvidence("&lt;tag&gt;"));
 });
 
+test("whitespace-only reviewed lines remain citable as exact evidence", () => {
+  const input = loadInput("late-correction");
+  input.diff[0].text = "    ";
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Remove the whitespace-only line.", conversation_event_ids: ["u1"] },
+    agreements: [agreement({
+      key: "remove-whitespace",
+      statement: "The whitespace-only line is removed.",
+      conversation_event_ids: ["u1"],
+      diff_citations: [{ path: input.diff[0].path, side: input.diff[0].side, line: input.diff[0].line, contains: "    " }]
+    })],
+    complete: true,
+    limitations: []
+  }));
+  assert.equal(audit.rejections.length, 0);
+  assert.equal(audit.agreements[0].diff_citations[0].contains, "    ");
+  assert.match(renderAgreementAuditMarkdown(audit), /`"    "`/);
+});
+
 test("failed or unknown commands cannot prove a fulfilled validation claim", () => {
   for (const status of ["failed", "unknown"] as const) {
     const input = loadInput("validation-contradiction");

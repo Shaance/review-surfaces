@@ -30,6 +30,7 @@ export interface AgreementBenchmarkPairOptions {
   /** Concurrent cases across both arms; runs within one case remain sequential. */
   case_concurrency?: number;
   generate: (request: AgreementBenchmarkGenerationRequest) => Promise<unknown>;
+  /** Receives per-call snapshots; mutations cannot affect scoring, later runs, or returned artifacts. */
   adjudicate: (input: {
     case_id: string;
     pair_id: string;
@@ -135,7 +136,12 @@ export async function runAgreementBenchmarkPair(
     const scores: AgreementBenchmarkScore[] = [];
     for (const run of generated) {
       if (control.aborted) throw new Error("benchmark adjudication aborted after another case failed");
-      const adjudication = await options.adjudicate({ case_id: entry.id, pair_id: run.pairId, audit: run.audit, gold });
+      const adjudication = await options.adjudicate({
+        case_id: entry.id,
+        pair_id: run.pairId,
+        audit: structuredClone(run.audit),
+        gold: structuredClone(gold)
+      });
       scores.push(scoreAgreementBenchmarkRun(run.audit, gold, adjudication, {
         run_id: `${mode}:${entry.id}:${run.runNumber}`,
         pair_id: run.pairId,

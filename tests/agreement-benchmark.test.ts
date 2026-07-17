@@ -49,6 +49,9 @@ test("agreement benchmark freezes six paired cases and keeps gold out of both pr
 test("agreement benchmark includes a case larger than the legacy eight-item cap", () => {
   const gold = readJson<AgreementBenchmarkGold>(path.join(BENCH_ROOT, "cases", "large-agreement-set.gold.json"));
   assert.equal(gold.agreements.length, 10);
+  const rename = gold.agreements.find((agreement) => agreement.id === "rename")!;
+  assert.equal(rename.expected_state, "fulfilled");
+  assert.deepEqual(rename.expected_diff_coordinates, [{ path: "src/job.ts", side: "add", line: 1 }]);
 });
 
 test("gold parsing rejects duplicate or wrong-role governing events", () => {
@@ -340,6 +343,24 @@ test("concurrent benchmark generation finishes before any hidden gold is exposed
       return emptyAdjudication();
     }
   });
+});
+
+test("adjudicator mutation cannot alter scored audits or hidden gold", async () => {
+  const { baseline, product } = await runAgreementBenchmarkPair({
+    root: BENCH_ROOT,
+    model_id: "fake-model",
+    model_config_hash: "same-config",
+    generate: async () => emptyCandidate(),
+    adjudicate: async ({ audit, gold }) => {
+      audit.limitations.push("adjudicator mutation");
+      gold.agreements.length = 0;
+      return emptyAdjudication();
+    }
+  });
+  assert.ok([...baseline.scores, ...product.scores].every((score) => score.recall === 0));
+  assert.ok([...baseline.artifacts, ...product.artifacts].every((artifact) =>
+    !artifact.audit.limitations.includes("adjudicator mutation")
+  ));
 });
 
 test("concurrent benchmark workers stop scheduling generation after the first failure", async () => {

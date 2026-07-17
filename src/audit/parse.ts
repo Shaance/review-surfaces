@@ -137,7 +137,7 @@ function parseAgreement(value: unknown, index: number): AgreementCandidate {
         path: repositoryPath(citation.path, `agreement[${index}].diff_citations[${citationIndex}].path`),
         side: enumValue(citation.side, DIFF_SIDES, `agreement[${index}].diff_citations[${citationIndex}].side`),
         line,
-        contains: nonBlank(citation.contains, `agreement[${index}].diff_citations[${citationIndex}].contains`)
+        contains: nonEmptyLiteral(citation.contains, `agreement[${index}].diff_citations[${citationIndex}].contains`)
       };
     }),
     command_ids: safeIdArray(agreement.command_ids, `agreement[${index}].command_ids`),
@@ -169,6 +169,12 @@ function nonEmpty(value: unknown, label: string): string {
 function nonBlank(value: unknown, label: string): string {
   const parsed = string(value, label);
   if (!parsed.trim()) throw new Error(`${label} must not be empty`);
+  return parsed;
+}
+
+function nonEmptyLiteral(value: unknown, label: string): string {
+  const parsed = string(value, label);
+  if (parsed.length === 0) throw new Error(`${label} must not be empty`);
   return parsed;
 }
 
