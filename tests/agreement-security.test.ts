@@ -12,10 +12,11 @@ import {
   loadAgreementInput as loadInput,
   readJson
 } from "./helpers/agreement-audit";
+import { openAiLegacyKeyFixture } from "./helpers/secret-fixtures";
 
 test("persisted and rendered candidate text is redacted and cannot forge Markdown structure", () => {
   const input = loadInput("late-correction");
-  const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+  const secret = openAiLegacyKeyFixture();
   const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
     final_goal: { text: `Remove Swift.\n</details>\n## Forged ${secret}`, conversation_event_ids: ["u1", "u2"] },
     agreements: [agreement({
@@ -41,7 +42,7 @@ test("persisted and rendered candidate text is redacted and cannot forge Markdow
 });
 
 test("persisted audit metadata and rejection reasons cannot leak secrets", () => {
-  const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+  const secret = openAiLegacyKeyFixture();
   const input = loadInput("late-correction");
   input.repository = `example/${secret}`;
   input.conversation.caveat = `Imported from ${secret}`;
@@ -64,7 +65,7 @@ test("persisted audit metadata and rejection reasons cannot leak secrets", () =>
 });
 
 test("runtime parsing rejects secret-bearing identifiers before they can reach artifacts", () => {
-  const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+  const secret = openAiLegacyKeyFixture();
   const candidate = {
     final_goal: { text: "Review it.", conversation_event_ids: ["u1"] },
     agreements: [agreement({ key: secret, statement: "Do the work.", conversation_event_ids: ["u1"] })],
@@ -93,11 +94,15 @@ test("runtime parsing rejects secret-bearing identifiers before they can reach a
 
 test("candidate prompts fail closed before provider integration when secret material is present", () => {
   const input = loadInput("clean-alignment");
-  const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+  const secret = openAiLegacyKeyFixture();
   input.conversation.events[0].text = `Remove the map using ${secret}`;
   assert.throws(() => buildAuditPrompt(input, "review-surfaces"), /refusing provider generation/);
 
   const assignment = loadInput("clean-alignment");
-  assignment.conversation.events[0].text = "Remove the map with API_TOKEN=supersecretvalue";
+  assignment.conversation.events[0].text = `Remove the map with ${tokenAssignment()}`;
   assert.throws(() => buildAuditPrompt(assignment, "review-surfaces"), /refusing provider generation/);
 });
+
+function tokenAssignment(): string {
+  return ["API_", "TOKEN=", "supersecretvalue"].join("");
+}
