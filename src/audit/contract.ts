@@ -111,6 +111,43 @@ export interface AgreementCandidate {
   reviewer_action?: string;
 }
 
+export function agreementEvidenceFailures(input: {
+  kind: AgreementKind;
+  state: AgreementState;
+  diff_sides: AuditDiffLine["side"][];
+  commands: Array<Pick<AuditCommandEvidence, "status"> & { exact_head: boolean }>;
+}): string[] {
+  if (input.state === "unresolved") return [];
+  if (input.state === "diverged") {
+    if (input.kind === "validation_claim") {
+      return input.commands.some((command) => command.exact_head && command.status === "failed")
+        ? []
+        : ["a diverged validation claim needs a failed exact-head command"];
+    }
+    return input.diff_sides.some((side) => side !== "context")
+      ? []
+      : ["a divergence needs an exact diff citation from a changed line"];
+  }
+
+  const failures: string[] = [];
+  let hasPassedExactHeadCommand = false;
+  let hasInvalidCommand = false;
+  for (const command of input.commands) {
+    if (command.status !== "passed") hasInvalidCommand = true;
+    if (command.exact_head && command.status === "passed") hasPassedExactHeadCommand = true;
+  }
+  if (hasInvalidCommand) failures.push("a fulfilled agreement cannot cite failed or unknown command evidence");
+  const hasChangedDiffCitation = input.diff_sides.some((side) => side !== "context");
+  if (!hasPassedExactHeadCommand && !hasChangedDiffCitation &&
+    !(input.kind === "human_boundary" && input.diff_sides.length > 0)) {
+    failures.push("a fulfilled agreement needs changed diff or exact-head command evidence; a preserved human boundary may use context");
+  }
+  if (input.kind === "validation_claim" && !hasPassedExactHeadCommand) {
+    failures.push("a fulfilled validation claim needs a passed exact-head command");
+  }
+  return failures;
+}
+
 export interface AgreementAuditCandidate {
   final_goal: {
     text: string;

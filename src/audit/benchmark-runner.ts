@@ -5,12 +5,12 @@ import {
   parseAgreementBenchmarkGold,
   parseAgreementBenchmarkManifest,
   scoreAgreementBenchmarkRun,
-  type AgreementAdjudication,
   type AgreementBenchmarkGold,
   type AgreementBenchmarkManifest,
   type AgreementBenchmarkScore
 } from "./benchmark";
 import type { AgreementAudit, AgreementAuditInput } from "./contract";
+import { agreementBenchmarkOutputHash } from "./benchmark-shared";
 import { groundAgreementAudit } from "./grounding";
 import { parseAgreementAuditCandidate, parseAgreementAuditInput } from "./parse";
 import { buildAuditPrompt, type AuditPromptMode } from "./prompt";
@@ -36,7 +36,7 @@ export interface AgreementBenchmarkPairOptions {
     pair_id: string;
     audit: AgreementAudit;
     gold: AgreementBenchmarkGold;
-  }) => Promise<AgreementAdjudication>;
+  }) => Promise<unknown>;
 }
 
 export interface AgreementBenchmarkArmResult {
@@ -114,7 +114,7 @@ export async function runAgreementBenchmarkPair(
         pairId,
         audit,
         markdown,
-        outputHash: digest(markdown),
+        outputHash: agreementBenchmarkOutputHash(audit, markdown),
         generationMs: Date.now() - started
       });
     }

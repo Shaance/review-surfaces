@@ -208,7 +208,7 @@ function safeId(value: unknown, label: string): string {
 function commitSha(value: unknown, label: string): string {
   const parsed = string(value, label);
   if (!/^[a-f0-9]{40}$/i.test(parsed)) throw new Error(`${label} must be a full 40-character commit SHA`);
-  return parsed;
+  return parsed.toLowerCase();
 }
 
 function stringArray(value: unknown, label: string): string[] {

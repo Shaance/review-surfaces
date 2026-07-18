@@ -31,7 +31,7 @@ export interface AgreementBenchmarkScore {
 export function scoreAgreementBenchmarkRun(
   audit: AgreementAudit,
   gold: AgreementBenchmarkGold,
-  adjudication: AgreementAdjudication,
+  adjudication: unknown,
   run: {
     run_id: string;
     pair_id: string;
@@ -44,12 +44,11 @@ export function scoreAgreementBenchmarkRun(
 ): AgreementBenchmarkScore {
   const candidateByKey = new Map(audit.agreements.map((agreement) => [agreement.key, agreement]));
   const goldById = new Map(gold.agreements.map((agreement) => [agreement.id, agreement]));
-  const matchedPairs = uniquePairs(adjudication.matches).flatMap((match) => {
-    const candidate = candidateByKey.get(match.candidate_key);
-    const expected = goldById.get(match.gold_id);
-    return candidate && expected
-      ? [{ ...match, candidate, expected, evidenceMatches: benchmarkEvidenceMatches(candidate, expected) }]
-      : [];
+  const validatedAdjudication = parseAgreementAdjudication(adjudication, candidateByKey, goldById);
+  const matchedPairs = validatedAdjudication.matches.map((match) => {
+    const candidate = candidateByKey.get(match.candidate_key)!;
+    const expected = goldById.get(match.gold_id)!;
+    return { ...match, candidate, expected, evidenceMatches: benchmarkEvidenceMatches(candidate, expected) };
   });
   const correctMatches = matchedPairs.filter(({ candidate, expected, evidenceMatches }) => {
     return candidate.kind === expected.kind &&
@@ -61,7 +60,7 @@ export function scoreAgreementBenchmarkRun(
   const matchedCandidates = new Set(correctMatches.map((match) => match.candidate_key));
   const matchedGold = new Set(correctMatches.map((match) => match.gold_id));
   const falsePositiveKeys = new Set([
-    ...adjudication.false_positive_candidate_keys,
+    ...validatedAdjudication.false_positive_candidate_keys,
     ...audit.agreements.filter((agreement) => !matchedCandidates.has(agreement.key)).map((agreement) => agreement.key)
   ]);
 
@@ -118,15 +117,52 @@ function benchmarkEvidenceMatches(
   );
 }
 
-function uniquePairs(matches: AgreementAdjudication["matches"]): AgreementAdjudication["matches"] {
+function parseAgreementAdjudication(
+  value: unknown,
+  candidateByKey: ReadonlyMap<string, AgreementAudit["agreements"][number]>,
+  goldById: ReadonlyMap<string, GoldAgreement>
+): AgreementAdjudication {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("benchmark adjudication must be an object");
+  }
+  const adjudication = value as Record<string, unknown>;
+  if (!Array.isArray(adjudication.matches) || !Array.isArray(adjudication.false_positive_candidate_keys)) {
+    throw new Error("benchmark adjudication mappings must be arrays");
+  }
+  const matches: AgreementAdjudication["matches"] = [];
   const seenCandidates = new Set<string>();
   const seenGold = new Set<string>();
-  return matches.filter((match) => {
-    if (seenCandidates.has(match.candidate_key) || seenGold.has(match.gold_id)) return false;
-    seenCandidates.add(match.candidate_key);
-    seenGold.add(match.gold_id);
-    return true;
-  });
+  for (const match of adjudication.matches) {
+    if (!match || typeof match !== "object" || Array.isArray(match)) {
+      throw new Error("benchmark adjudication match is malformed");
+    }
+    const candidateKey = (match as Record<string, unknown>).candidate_key;
+    const goldId = (match as Record<string, unknown>).gold_id;
+    if (typeof candidateKey !== "string" || typeof goldId !== "string") {
+      throw new Error("benchmark adjudication match is malformed");
+    }
+    if (!candidateByKey.has(candidateKey)) throw new Error(`benchmark adjudication cites unknown candidate ${candidateKey}`);
+    if (!goldById.has(goldId)) throw new Error(`benchmark adjudication cites unknown gold agreement ${goldId}`);
+    if (seenCandidates.has(candidateKey) || seenGold.has(goldId)) {
+      throw new Error("benchmark adjudication mappings must be one-to-one");
+    }
+    seenCandidates.add(candidateKey);
+    seenGold.add(goldId);
+    matches.push({ candidate_key: candidateKey, gold_id: goldId });
+  }
+  const falsePositiveCandidateKeys: string[] = [];
+  const falsePositiveKeys = new Set<string>();
+  for (const key of adjudication.false_positive_candidate_keys) {
+    if (typeof key !== "string" || !candidateByKey.has(key)) {
+      throw new Error(`benchmark adjudication cites unknown false-positive candidate ${String(key)}`);
+    }
+    if (falsePositiveKeys.has(key) || seenCandidates.has(key)) {
+      throw new Error("benchmark adjudication false-positive mappings must be unique and unmatched");
+    }
+    falsePositiveKeys.add(key);
+    falsePositiveCandidateKeys.push(key);
+  }
+  return { matches, false_positive_candidate_keys: falsePositiveCandidateKeys };
 }
 
 function ratio(numerator: number, denominator: number): number {

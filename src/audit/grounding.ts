@@ -6,6 +6,7 @@ import {
   type AgreementCandidate,
   type AuditConversationEvent,
   type GroundedAgreement,
+  agreementEvidenceFailures,
   agreementKindAllowsActor,
   agreementNeedsHumanDecision,
   auditDiffCoordinate
@@ -179,32 +180,18 @@ function validateAgreement(
     }
   }
 
-  const hasChangedDiffCitation = agreement.diff_citations.some((citation) => citation.side !== "context");
   const citedCommands = unique(agreement.command_ids)
     .map((id) => commands.get(id))
     .filter((command): command is AgreementAuditInput["commands"][number] => command !== undefined);
-  const hasPassedExactHeadCommand = citedCommands.some((command) =>
-    command.head_sha === input.head_sha && command.status === "passed"
-  );
-  const hasFailedExactHeadCommand = citedCommands.some((command) =>
-    command.head_sha === input.head_sha && command.status === "failed"
-  );
-  if (agreement.state === "diverged" && agreement.kind === "validation_claim" && !hasFailedExactHeadCommand) {
-    reasons.push("a diverged validation claim needs a failed exact-head command");
-  }
-  if (agreement.state === "diverged" && agreement.kind !== "validation_claim" && !hasChangedDiffCitation) {
-    reasons.push("a divergence needs an exact diff citation from a changed line");
-  }
-  if (agreement.state === "fulfilled" && citedCommands.some((command) => command.status !== "passed")) {
-    reasons.push("a fulfilled agreement cannot cite failed or unknown command evidence");
-  }
-  if (agreement.state === "fulfilled" && !hasPassedExactHeadCommand && !hasChangedDiffCitation &&
-    !(agreement.kind === "human_boundary" && agreement.diff_citations.length > 0)) {
-    reasons.push("a fulfilled agreement needs changed diff or exact-head command evidence; a preserved human boundary may use context");
-  }
-  if (agreement.state === "fulfilled" && agreement.kind === "validation_claim" && !hasPassedExactHeadCommand) {
-    reasons.push("a fulfilled validation claim needs a passed exact-head command");
-  }
+  reasons.push(...agreementEvidenceFailures({
+    kind: agreement.kind,
+    state: agreement.state,
+    diff_sides: agreement.diff_citations.map((citation) => citation.side),
+    commands: citedCommands.map((command) => ({
+      status: command.status,
+      exact_head: command.head_sha === input.head_sha
+    }))
+  }));
   const needsReviewerAction = agreementNeedsHumanDecision(agreement);
   if (needsReviewerAction && !agreement.reviewer_action?.trim()) {
     reasons.push("a reviewer decision needs an explicit action");

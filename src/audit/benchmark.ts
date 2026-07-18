@@ -18,6 +18,7 @@ import {
   AGREEMENT_MATERIALITIES,
   AGREEMENT_STATES,
   DIFF_SIDES,
+  agreementEvidenceFailures,
   auditDiffCoordinate,
   agreementKindAllowsActor
 } from "./contract";
@@ -230,11 +231,13 @@ export function parseAgreementBenchmarkGold(value: unknown, input: AgreementAudi
   if (typeof gold.clean !== "boolean") throw new Error("benchmark gold.clean must be boolean");
   if (!Array.isArray(gold.agreements) || gold.agreements.length === 0) throw new Error("benchmark gold.agreements must be a non-empty array");
   const events = new Map(input.conversation.events.map((event) => [event.id, event]));
-  const diffCoordinates = new Set(input.diff.map(auditDiffCoordinate));
+  const diffByCoordinate = new Map(input.diff.map((line) => [auditDiffCoordinate(line), line]));
   const commands = new Map(input.commands.map((command) => [command.id, command]));
   const agreements = gold.agreements.map((value, index) => {
     const agreement = asRecord(value, `benchmark gold agreement ${index}`);
     const kind = enumString(agreement.kind, AGREEMENT_KINDS, `benchmark gold agreement ${index}.kind`);
+    const materiality = enumString(agreement.materiality, AGREEMENT_MATERIALITIES, `benchmark gold agreement ${index}.materiality`);
+    const expectedState = enumString(agreement.expected_state, AGREEMENT_STATES, `benchmark gold agreement ${index}.expected_state`);
     const governingEventIds = stringList(agreement.governing_event_ids, `benchmark gold agreement ${index}.governing_event_ids`);
     if (governingEventIds.length === 0) throw new Error(`benchmark gold agreement ${index} needs a governing event`);
     for (const eventId of governingEventIds) {
@@ -249,14 +252,19 @@ export function parseAgreementBenchmarkGold(value: unknown, input: AgreementAudi
       `benchmark gold agreement ${index}.expected_diff_coordinates`
     );
     for (const coordinate of expectedDiffCoordinates) {
-      if (!diffCoordinates.has(auditDiffCoordinate(coordinate))) {
+      const diffLine = diffByCoordinate.get(auditDiffCoordinate(coordinate));
+      if (!diffLine) {
         throw new Error(`benchmark gold agreement ${index} cites an unknown diff coordinate`);
+      }
+      if (diffLine.text.length === 0) {
+        throw new Error(`benchmark gold agreement ${index} cites an empty diff line that candidates cannot anchor`);
       }
     }
     const expectedCommandIds = stringList(
       agreement.expected_command_ids,
       `benchmark gold agreement ${index}.expected_command_ids`
     );
+    const citedCommands: AgreementAuditInput["commands"] = [];
     for (const commandId of expectedCommandIds) {
       const command = commands.get(commandId);
       if (!command) {
@@ -265,12 +273,22 @@ export function parseAgreementBenchmarkGold(value: unknown, input: AgreementAudi
       if (command.head_sha !== input.head_sha) {
         throw new Error(`benchmark gold agreement ${index} cites command ${commandId} not bound to the benchmark head`);
       }
+      citedCommands.push(command);
+    }
+    const evidenceFailures = agreementEvidenceFailures({
+      kind,
+      state: expectedState,
+      diff_sides: expectedDiffCoordinates.map((coordinate) => coordinate.side),
+      commands: citedCommands.map((command) => ({ status: command.status, exact_head: true }))
+    });
+    if (evidenceFailures.length > 0) {
+      throw new Error(`benchmark gold agreement ${index} cannot be grounded: ${evidenceFailures.join("; ")}`);
     }
     return {
       id: requiredString(agreement.id, `benchmark gold agreement ${index}.id`),
       kind,
-      materiality: enumString(agreement.materiality, AGREEMENT_MATERIALITIES, `benchmark gold agreement ${index}.materiality`),
-      expected_state: enumString(agreement.expected_state, AGREEMENT_STATES, `benchmark gold agreement ${index}.expected_state`),
+      materiality,
+      expected_state: expectedState,
       governing_event_ids: governingEventIds,
       expected_diff_coordinates: expectedDiffCoordinates,
       expected_command_ids: expectedCommandIds

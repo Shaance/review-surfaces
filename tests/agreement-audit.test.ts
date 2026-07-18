@@ -448,6 +448,17 @@ test("a validation claim cannot cite a command from a stale head", () => {
   assert.match(audit.rejections[0].reasons.join(" "), /not bound to the reviewed head/);
 });
 
+test("commit SHAs normalize to lowercase before exact-head comparison", () => {
+  const raw = readJson<AgreementAuditInput>(path.join(BENCH_ROOT, "cases", "validation-contradiction.input.json"));
+  raw.base_sha = raw.base_sha.toUpperCase();
+  raw.head_sha = raw.head_sha.toUpperCase();
+  raw.commands[0].head_sha = raw.commands[0].head_sha!.toUpperCase();
+  const input = parseAgreementAuditInput(raw);
+  assert.equal(input.base_sha, raw.base_sha.toLowerCase());
+  assert.equal(input.head_sha, raw.head_sha.toLowerCase());
+  assert.equal(input.commands[0].head_sha, input.head_sha);
+});
+
 function fulfilled(
   key: string,
   statement: string,

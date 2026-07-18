@@ -12,6 +12,7 @@ import {
   scoreAgreementBenchmarkRun
 } from "../src/audit/benchmark";
 import { runAgreementBenchmarkPair } from "../src/audit/benchmark-runner";
+import { agreementBenchmarkOutputHash } from "../src/audit/benchmark-shared";
 import type { AgreementAuditCandidate } from "../src/audit/contract";
 import { groundAgreementAudit } from "../src/audit/grounding";
 import { parseAgreementAuditInput } from "../src/audit/parse";
@@ -82,6 +83,22 @@ test("gold parsing rejects command evidence not bound to the benchmark head", ()
   }
 });
 
+test("gold parsing rejects evidence combinations grounding cannot satisfy", () => {
+  const gold = readJson(path.join(BENCH_ROOT, "cases", "validation-contradiction.gold.json"));
+  for (const status of ["passed", "unknown"] as const) {
+    const input = loadInput("validation-contradiction");
+    input.commands[0].status = status;
+    assert.throws(() => parseAgreementBenchmarkGold(gold, input), /cannot be grounded.*failed exact-head command/);
+  }
+});
+
+test("gold parsing rejects an empty diff line that candidates cannot cite", () => {
+  const input = loadInput("late-correction");
+  input.diff[0].text = "";
+  const gold = readJson(path.join(BENCH_ROOT, "cases", "late-correction.gold.json"));
+  assert.throws(() => parseAgreementBenchmarkGold(gold, input), /empty diff line that candidates cannot anchor/);
+});
+
 test("benchmark manifest paths cannot escape the benchmark root", () => {
   const manifest = (input: string) => ({
     version: AGREEMENT_BENCHMARK_VERSION,
@@ -136,6 +153,28 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
   const score = scoreAgreementBenchmarkRun(audit, gold, adjudication, runMetadata);
   assert.equal(score.material_f1, 1);
   assert.deepEqual(score.failures, []);
+
+  assert.throws(() => scoreAgreementBenchmarkRun(audit, gold, {
+    matches: [{ candidate_key: "missing", gold_id: "remove-swift-code" }],
+    false_positive_candidate_keys: []
+  }, runMetadata), /unknown candidate missing/);
+  assert.throws(() => scoreAgreementBenchmarkRun(audit, gold, {
+    matches: [
+      { candidate_key: "wording-a", gold_id: "remove-swift-code" },
+      { candidate_key: "wording-a", gold_id: "remove-swift-docs" }
+    ],
+    false_positive_candidate_keys: []
+  }, runMetadata), /must be one-to-one/);
+  assert.throws(() => scoreAgreementBenchmarkRun(audit, gold, {
+    matches: [],
+    false_positive_candidate_keys: ["missing"]
+  }, runMetadata), /unknown false-positive candidate missing/);
+  assert.throws(() => scoreAgreementBenchmarkRun(
+    audit,
+    gold,
+    null,
+    runMetadata
+  ), /adjudication must be an object/);
 
   const unrelatedEvidenceAudit = {
     ...audit,
@@ -286,7 +325,19 @@ test("six-case runner keeps gold behind generation and cannot pass a tied plain-
   assert.equal(product.scores.length, 18);
   assert.equal(seenPrompts.length, 36);
   for (const artifact of [...baseline.artifacts, ...product.artifacts]) {
-    assert.equal(artifact.output_hash, crypto.createHash("sha256").update(artifact.markdown).digest("hex"));
+    assert.equal(
+      artifact.output_hash,
+      agreementBenchmarkOutputHash(artifact.audit, artifact.markdown)
+    );
+    assert.notEqual(
+      artifact.output_hash,
+      agreementBenchmarkOutputHash(
+        { ...artifact.audit, candidate_complete: !artifact.audit.candidate_complete },
+        artifact.markdown
+      )
+    );
+    assert.notEqual(artifact.output_hash, agreementBenchmarkOutputHash(artifact.audit, `${artifact.markdown}\n`));
+    assert.notEqual(artifact.output_hash, crypto.createHash("sha256").update(artifact.markdown).digest("hex"));
   }
   const comparison = compareAgreementBenchmarkRuns({
     required_case_ids: baseline.case_ids,
