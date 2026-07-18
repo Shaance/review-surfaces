@@ -1,14 +1,17 @@
 # AGENTS.md — review-surfaces
 
-This repository is developed spec-first and dogfood-first.
+This repository is in a product reset from the legacy packet compiler to a
+conversation-grounded agreement audit. New work is benchmark-first and
+dogfood-first; preserving legacy contracts is not a goal.
 
 ## Source of truth
 
-1. Treat `features/review-surfaces.feature.yaml` as the authoritative requirements ledger.
-2. Treat `docs/review-surfaces-trd.md` as design context.
-3. Treat `schemas/review_packet.schema.json` as the machine-readable packet contract.
-4. Preserve Acai-style IDs such as `review-surfaces.INTENT.2` in implementation notes, tests, review packets, and remediation tasks where useful.
-5. Treat local `coffee-agents` setup as optional bootstrap scaffolding only. Do not introduce public product dependencies on private local scripts or paths.
+1. Treat `docs/agreement-audit-v0.md` as the product and release-decision source of truth for the reset.
+2. Treat `src/audit/contract.ts` as the new machine-readable domain contract.
+3. Treat `bench/agreement/manifest.json` plus its frozen input/gold pairs as development calibration; only a separately frozen holdout may become a product-value gate.
+4. Treat `features/review-surfaces.feature.yaml`, `docs/review-surfaces-trd.md`, and the packet schemas as legacy compiler contracts scheduled for deletion after the benchmark gate passes.
+5. Do not add new behavior to the legacy feature ledger, packet model, risk taxonomy, diagrams, or HTML cockpit.
+6. Treat local `coffee-agents` setup as optional bootstrap scaffolding only. Do not introduce public product dependencies on private local scripts or paths.
 
 ## Start here
 
@@ -42,10 +45,10 @@ Use `--provider agent-file --agent-input <json-or-yaml>` when a coding agent suc
 
 ## Before editing
 
-1. Read `features/review-surfaces.feature.yaml`.
-2. Read `docs/review-surfaces-trd.md` for architecture and milestone context.
+1. Read `docs/agreement-audit-v0.md`.
+2. Read `src/audit/contract.ts` and `bench/agreement/README.md` for the current milestone contract and benchmark.
 3. Read `.agents/skills/review-surfaces/SKILL.md` if present.
-4. Read `.agents/skills/acai/SKILL.md` if present.
+4. Read the legacy feature ledger or TRD only when editing the temporary legacy compiler.
 5. Read `.review-surfaces/agent_handoff.md` and `.review-surfaces/review_packet.md` if they exist.
 6. Check the current milestone from the task prompt, handoff file, or feature spec.
 7. Run the fastest available validation or test command for the current repo state.

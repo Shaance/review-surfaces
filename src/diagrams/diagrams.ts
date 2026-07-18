@@ -278,11 +278,8 @@ function nodeId(id: string, position: number): string {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(sanitized) ? sanitized : `AREA_${position}`;
 }
 
-// Keep diagram labels free of characters that would unbalance Mermaid syntax.
-// review-surfaces.ARCH.6: the ONE shared diagram-label sanitizer — every
-// Mermaid emitter (this module and pr-change-diagram) imports it
-// rather than keeping a private copy.
-export function diagramLabel(text: string): string {
+// Keep labels produced by this module from unbalancing Mermaid syntax.
+function diagramLabel(text: string): string {
   return text.replace(/["[\]{}()]/g, " ").replace(/\s+/g, " ").trim();
 }
 

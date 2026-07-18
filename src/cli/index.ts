@@ -725,6 +725,10 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // manifest/packet left byte-identical. Without --cache nothing is read here.
   const cacheSnapshot = booleanFlag(parsed, "cache") ? await readCacheSnapshot(cwd, parsed) : undefined;
   const { collection, config } = await collect(parsed);
+  const isPrScope = reviewScope(parsed) === "pr";
+  // The product reset removed the human-facing change map. Clear the exact
+  // legacy artifact before either a cache hit or a full regeneration can return.
+  if (isPrScope) removeLegacyPrChangeMap(collection.outputDir);
   const artifactStore = createPipelineArtifactStoreForCollection(collection);
   const provider = providerFlag(parsed, config);
   const requestedModel = effectiveNarrativeModel(parsed, config);
@@ -855,7 +859,6 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     console.warn("Cached output is incomplete (evaluation.yaml missing/unreadable); regenerating to apply the --strict gate.");
   }
   const commands = [`review-surfaces ${parsed.command} ${process.argv.slice(3).join(" ")}`.trim()];
-  const isPrScope = reviewScope(parsed) === "pr";
   // PR-mode contract: scope/coverage/risks are DETERMINISTIC and the live provider
   // contributes only diff-scoped narrative plus advisory conversation review. So
   // in pr mode the whole-repo packet (a side
@@ -1010,13 +1013,6 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     persistedSurface = jsonSerializable(surface);
     assertValidPrSurface(cwd, persistedSurface);
     await writeJson(path.join(collection.outputDir, "pr_review_surface.json"), persistedSurface);
-    // Materialize the diagram artifact the surface advertises (surface.diagram.path),
-    // so a consumer following the advertised path finds the .mmd it points at.
-    if (persistedSurface.diagram) {
-      const diagramPath = path.join(collection.outputDir, persistedSurface.diagram.path);
-      fs.mkdirSync(path.dirname(diagramPath), { recursive: true });
-      await writeText(diagramPath, persistedSurface.diagram.body);
-    }
     if (persistedSurface.status === "blocked") {
       console.warn(`PR review surface is not ready (${persistedSurface.blocked_reason})`);
     }
@@ -1080,6 +1076,13 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     printCockpitPointer(cwd, collection.outputDir);
   }
   return gateExit;
+}
+
+function removeLegacyPrChangeMap(outputDir: string): void {
+  const diagramsDirectory = path.join(outputDir, "diagrams");
+  const metadata = fs.lstatSync(diagramsDirectory, { throwIfNoEntry: false });
+  if (!metadata?.isDirectory() || metadata.isSymbolicLink()) return;
+  fs.rmSync(path.join(diagramsDirectory, "pr-change-impact.mmd"), { force: true });
 }
 
 // --review-scope pr|repo. PR mode emits/reads the diff-scoped pr_review_surface;

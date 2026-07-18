@@ -204,15 +204,6 @@ export interface PrRiskModel {
   candidates: PrRiskCandidate[];
 }
 
-// --- PR change diagram -----------------------------------------------------
-
-export interface PrChangeDiagramModel {
-  path: string; // diagrams/pr-change-impact.mmd
-  status: "valid" | "invalid";
-  body: string;
-  warnings: string[];
-}
-
 // Author-provided host context is the most direct statement of why a PR exists.
 // It is stored separately from inferred intent and provider narrative so a
 // renderer can identify its provenance and so provider failure cannot erase it.
@@ -234,5 +225,4 @@ export interface PrReviewSurfaceModel {
   scope: PrScopeModel;
   coverage: PrScopedCoverageModel;
   risks: PrRiskModel;
-  diagram?: PrChangeDiagramModel;
 }

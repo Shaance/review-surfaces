@@ -17,7 +17,8 @@ export function markdownInlineCode(value: string): string {
     .replace(/>/gu, "&gt;");
   const longestFence = Math.max(0, ...[...sanitized.matchAll(/`+/gu)].map((match) => match[0].length));
   const fence = "`".repeat(longestFence + 1);
-  return `${fence}${sanitized}${fence}`;
+  const padding = sanitized.startsWith("`") || sanitized.endsWith("`") ? " " : "";
+  return `${fence}${padding}${sanitized}${padding}${fence}`;
 }
 
 export function markdownLinkDestination(value: string): string {

@@ -1,0 +1,33 @@
+{
+  "version": "0.1.0",
+  "repository": "example/repo",
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "conversation": {
+    "status": "complete",
+    "sources": [{ "id": "session-1", "sha256": "7777777777777777777777777777777777777777777777777777777777777777", "selection": "explicit" }],
+    "events": [
+      { "id": "u1", "source_id": "session-1", "actor": "user", "kind": "message", "text": "1. Rename the command.", "order": 1 },
+      { "id": "u2", "source_id": "session-1", "actor": "user", "kind": "message", "text": "2. Keep the old data untouched.", "order": 2 },
+      { "id": "u3", "source_id": "session-1", "actor": "user", "kind": "message", "text": "3. Add cancellation.", "order": 3 },
+      { "id": "u4", "source_id": "session-1", "actor": "user", "kind": "message", "text": "4. Preserve partial progress.", "order": 4 },
+      { "id": "u5", "source_id": "session-1", "actor": "user", "kind": "message", "text": "5. Show the current scope.", "order": 5 },
+      { "id": "u6", "source_id": "session-1", "actor": "user", "kind": "message", "text": "6. Add a retry action.", "order": 6 },
+      { "id": "u7", "source_id": "session-1", "actor": "user", "kind": "message", "text": "7. Do not add settings.", "order": 7 },
+      { "id": "u8", "source_id": "session-1", "actor": "user", "kind": "message", "text": "8. Update the operator note.", "order": 8 },
+      { "id": "u9", "source_id": "session-1", "actor": "user", "kind": "message", "text": "9. Keep keyboard access.", "order": 9 },
+      { "id": "u10", "source_id": "session-1", "actor": "user", "kind": "message", "text": "10. Run the focused test.", "order": 10 }
+    ]
+  },
+  "diff": [
+    { "path": "src/job.ts", "side": "add", "line": 1, "text": "export const commandName = 'audit';" },
+    { "path": "src/job.ts", "side": "add", "line": 2, "text": "export function cancel() {}" },
+    { "path": "src/job.ts", "side": "add", "line": 3, "text": "export function persistPartial() {}" },
+    { "path": "src/job.ts", "side": "add", "line": 4, "text": "export function currentScope() {}" },
+    { "path": "src/job.ts", "side": "add", "line": 5, "text": "export function retry() {}" },
+    { "path": "src/settings.ts", "side": "add", "line": 1, "text": "export const auditSettings = {};" },
+    { "path": "docs/operator.md", "side": "add", "line": 8, "text": "Use audit to inspect agent work." },
+    { "path": "src/view.ts", "side": "add", "line": 20, "text": "button.setAttribute('aria-keyshortcuts', 'Enter');" }
+  ],
+  "commands": []
+}

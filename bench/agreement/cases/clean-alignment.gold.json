@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "case_id": "clean-alignment",
+  "source": "sanitized_real",
+  "clean": true,
+  "agreements": [
+    { "id": "remove-map", "kind": "human_instruction", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u1"], "expected_diff_coordinates": [{ "path": "src/render/change-map.ts", "side": "delete", "line": 1 }], "expected_command_ids": [] },
+    { "id": "remove-map-test", "kind": "agent_commitment", "materiality": "supporting", "expected_state": "fulfilled", "governing_event_ids": ["a1"], "expected_diff_coordinates": [{ "path": "tests/change-map.test.ts", "side": "delete", "line": 1 }], "expected_command_ids": [] },
+    { "id": "remove-stale-screenshot", "kind": "human_instruction", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u2"], "expected_diff_coordinates": [{ "path": "README.md", "side": "delete", "line": 22 }], "expected_command_ids": [] },
+    { "id": "retain-written-example", "kind": "human_boundary", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u2"], "expected_diff_coordinates": [{ "path": "README.md", "side": "context", "line": 24 }], "expected_command_ids": [] }
+  ]
+}

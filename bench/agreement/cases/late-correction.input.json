@@ -1,0 +1,21 @@
+{
+  "version": "0.1.0",
+  "repository": "example/repo",
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "conversation": {
+    "status": "complete",
+    "sources": [{ "id": "session-1", "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "selection": "explicit" }],
+    "events": [
+      { "id": "u1", "source_id": "session-1", "actor": "user", "kind": "message", "text": "Remove the Swift analysis feature, its docs, and dedicated tests.", "order": 0 },
+      { "id": "a1", "source_id": "session-1", "actor": "assistant", "kind": "message", "text": "That could include Apple cache ignore defaults.", "order": 1 },
+      { "id": "u2", "source_id": "session-1", "actor": "user", "kind": "message", "text": "No. Keep DerivedData and xcuserdata ignored and keep their privacy regression tests.", "order": 2 }
+    ]
+  },
+  "diff": [
+    { "path": "src/swift/project.ts", "side": "delete", "line": 1, "text": "export function inspectSwiftProject() {}" },
+    { "path": "src/privacy/ignore.ts", "side": "delete", "line": 4, "text": "\"**/DerivedData/**\"," },
+    { "path": "tests/privacy.test.ts", "side": "delete", "line": 10, "text": "assert.equal(isIgnored('App/DerivedData/cache'), true);" }
+  ],
+  "commands": []
+}

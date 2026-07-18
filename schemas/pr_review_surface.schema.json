@@ -23,8 +23,7 @@
     },
     "scope": { "$ref": "#/$defs/prScope" },
     "coverage": { "$ref": "#/$defs/prCoverage" },
-    "risks": { "$ref": "#/$defs/prRisks" },
-    "diagram": { "$ref": "#/$defs/prDiagram" }
+    "risks": { "$ref": "#/$defs/prRisks" }
   },
   "allOf": [
     {
@@ -331,21 +330,6 @@
           "type": "array",
           "maxItems": 100000,
           "items": { "$ref": "#/$defs/riskCandidate" }
-        }
-      }
-    },
-    "prDiagram": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["path", "status", "body", "warnings"],
-      "properties": {
-        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
-        "status": { "enum": ["valid", "invalid"] },
-        "body": { "type": "string", "maxLength": 1000000 },
-        "warnings": {
-          "type": "array",
-          "maxItems": 10000,
-          "items": { "type": "string", "maxLength": 6000 }
         }
       }
     }

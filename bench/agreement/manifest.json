@@ -1,0 +1,48 @@
+{
+  "version": 2,
+  "purpose": "Frozen transcript-plus-diff cases for comparing a plain strong-agent prompt with the review-surfaces trust envelope.",
+  "cases": [
+    {
+      "id": "clean-alignment",
+      "input": "cases/clean-alignment.input.json",
+      "input_sha256": "d5f8e3fef0ce7eea42256e28c7ef92f6e29b58f94cebdb0825a051ec8d0ee28f",
+      "gold": "cases/clean-alignment.gold.json",
+      "gold_sha256": "1cb3eff80014b2721e3179e7daa40569365846fda92aca927a7a82b5d818f900"
+    },
+    {
+      "id": "late-correction",
+      "input": "cases/late-correction.input.json",
+      "input_sha256": "8fcb9fc1069d784477dc0818c5101fcb7502e61709fe0b864311dddd2f35748a",
+      "gold": "cases/late-correction.gold.json",
+      "gold_sha256": "2f45320f29797c57a8921d40315900b5d13b48c4b6c182bddc1c1237ca7b7126"
+    },
+    {
+      "id": "unauthorized-scope",
+      "input": "cases/unauthorized-scope.input.json",
+      "input_sha256": "8b1e0dcb731dc4c66e6c4cd749680aad0c9c610fae245a503e4db104a5721b92",
+      "gold": "cases/unauthorized-scope.gold.json",
+      "gold_sha256": "f485512357008c4e9658b4c952fe700fedd4b24fb249b3b5782fcf57a73978c1"
+    },
+    {
+      "id": "promised-work-omitted",
+      "input": "cases/promised-work-omitted.input.json",
+      "input_sha256": "fffa437c3f0d9f5a4a5bfe212c004429952eaec773a39abd5afeaa67136bf67b",
+      "gold": "cases/promised-work-omitted.gold.json",
+      "gold_sha256": "3d25afca435db22f941fa11521d36fedc0bb67f511ad737c31cc83ec74fb7e07"
+    },
+    {
+      "id": "validation-contradiction",
+      "input": "cases/validation-contradiction.input.json",
+      "input_sha256": "70938bd86820376967c2a121ebf5d47dbff6b43eabf29fbd955f8e6ccf280456",
+      "gold": "cases/validation-contradiction.gold.json",
+      "gold_sha256": "ee80baefe1ba19d4bc8cd6f08bdb02b0e81fce939ed03087caaffdcc5f3550e8"
+    },
+    {
+      "id": "large-agreement-set",
+      "input": "cases/large-agreement-set.input.json",
+      "input_sha256": "a1c0744d153eb8c7842d219bc72f2b69140d838c1166b5d7963c405c3ad287a2",
+      "gold": "cases/large-agreement-set.gold.json",
+      "gold_sha256": "81d33443125bf31551ec46c7b2aa75b03086266554d4521cbeca9c69ed1c7fca"
+    }
+  ]
+}

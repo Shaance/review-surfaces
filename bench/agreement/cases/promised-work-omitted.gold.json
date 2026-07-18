@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "case_id": "promised-work-omitted",
+  "source": "synthetic",
+  "clean": false,
+  "agreements": [
+    { "id": "add-migration", "kind": "human_instruction", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u1"], "expected_diff_coordinates": [{ "path": "migrations/20260717_add_index.sql", "side": "add", "line": 1 }], "expected_command_ids": [] },
+    { "id": "document-rollback", "kind": "human_instruction", "materiality": "material", "expected_state": "unresolved", "governing_event_ids": ["u1"], "expected_diff_coordinates": [], "expected_command_ids": [] }
+  ]
+}

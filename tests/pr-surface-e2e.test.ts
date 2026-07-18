@@ -143,6 +143,9 @@ test("a no-diff PR emits no sticky and removes a stale local comment artifact", 
 test("all --review-scope pr writes a deterministic, LLM-optional reviewer surface", () => {
   const tmp = setupChangedRepo();
   try {
+    const legacyChangeMap = path.join(tmp, ".review-surfaces", "diagrams", "pr-change-impact.mmd");
+    fs.mkdirSync(path.dirname(legacyChangeMap), { recursive: true });
+    fs.writeFileSync(legacyChangeMap, "stale human change map");
     const run = runCli(tmp, [...ALL_PR, "--provider", "mock"]);
     assert.equal(run.status, 0, run.stderr);
     // review-surfaces.HUMAN_REVIEW.15: `all` should point reviewers at the
@@ -658,12 +661,12 @@ test("all --review-scope pr writes a deterministic, LLM-optional reviewer surfac
     assertInlineApprovalBrief(tmp, deterministicComment.stdout);
     assert.doesNotMatch(deterministicComment.stderr, /not postable/);
     assert.doesNotMatch(deterministicComment.stdout, /\d+ satisfied, \d+ partial, \d+ missing/);
-    // The diagram artifact the surface advertises is actually materialized on disk.
-    if (surface.diagram) {
-      const diagramFile = path.join(tmp, ".review-surfaces", surface.diagram.path);
-      assert.ok(fs.existsSync(diagramFile), `surface.diagram.path ${surface.diagram.path} must be written`);
-      assert.equal(fs.readFileSync(diagramFile, "utf8"), surface.diagram.body);
-    }
+    assert.equal("diagram" in surface, false, "PR surfaces do not advertise the removed human change map");
+    assert.equal(
+      fs.existsSync(legacyChangeMap),
+      false,
+      "PR reruns delete rather than preserve the removed human change-map artifact"
+    );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -1354,16 +1357,31 @@ test("review-surfaces.CONVERSATION_REVIEW.4 repo review wires deterministic pack
 
 test("all --review-scope pr --cache reuses a ready PR surface while keeping human review PR-scoped", () => {
   const tmp = setupChangedRepo();
+  const externalDiagrams = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-external-diagrams-"));
   try {
     const prime = runCli(tmp, [...ALL_PR, "--cache", "--provider", "mock"]);
     assert.equal(prime.status, 0, prime.stderr);
     const surface = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "pr_review_surface.json"), "utf8"));
     assert.equal(surface.status, "ready");
 
+    const legacyChangeMap = path.join(tmp, ".review-surfaces", "diagrams", "pr-change-impact.mmd");
+    fs.mkdirSync(path.dirname(legacyChangeMap), { recursive: true });
+    fs.writeFileSync(legacyChangeMap, "stale human change map");
+
     const hit = runCli(tmp, [...ALL_PR, "--cache", "--provider", "mock"]);
     assert.equal(hit.status, 0, hit.stderr);
     assert.match(hit.stdout, /inputs unchanged \(signature match\)/);
     assert.doesNotMatch(hit.stdout, /Wrote review-surfaces artifacts to \.review-surfaces/);
+    assert.equal(fs.existsSync(legacyChangeMap), false);
+
+    fs.rmSync(path.dirname(legacyChangeMap), { recursive: true, force: true });
+    const externalChangeMap = path.join(externalDiagrams, "pr-change-impact.mmd");
+    fs.writeFileSync(externalChangeMap, "must survive a cache hit");
+    fs.symlinkSync(externalDiagrams, path.dirname(legacyChangeMap), "dir");
+    const symlinkHit = runCli(tmp, [...ALL_PR, "--cache", "--provider", "mock"]);
+    assert.equal(symlinkHit.status, 0, symlinkHit.stderr);
+    assert.match(symlinkHit.stdout, /inputs unchanged \(signature match\)/);
+    assert.equal(fs.readFileSync(externalChangeMap, "utf8"), "must survive a cache hit");
 
     const human = JSON.parse(fs.readFileSync(path.join(tmp, ".review-surfaces", "human_review.json"), "utf8"));
     assert.equal(human.mode, "pr");
@@ -1376,6 +1394,7 @@ test("all --review-scope pr --cache reuses a ready PR surface while keeping huma
     assert.ok(changedQueueItem.line_start > 0, "cache-hit human review should preserve diff-derived hunk anchors");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(externalDiagrams, { recursive: true, force: true });
   }
 });
 

@@ -1,0 +1,25 @@
+{
+  "version": "0.1.0",
+  "repository": "example/repo",
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "conversation": {
+    "status": "complete",
+    "sources": [{ "id": "session-1", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "selection": "explicit" }],
+    "events": [
+      { "id": "u1", "source_id": "session-1", "actor": "user", "kind": "message", "text": "Remove the redundant change map from the reviewer brief.", "order": 0 },
+      { "id": "a1", "source_id": "session-1", "actor": "assistant", "kind": "message", "text": "I will remove the change map and its renderer test.", "order": 1 },
+      { "id": "t1", "source_id": "session-1", "actor": "tool", "kind": "tool_result", "text": "Found the renderer, its focused test, and a README screenshot link.", "order": 2 },
+      { "id": "u2", "source_id": "session-1", "actor": "user", "kind": "message", "text": "Yes, remove the stale screenshot reference too; keep the written reviewer brief example.", "order": 3 },
+      { "id": "a2", "source_id": "session-1", "actor": "assistant", "kind": "message", "text": "I will remove only the stale screenshot reference and retain the written example.", "order": 4 },
+      { "id": "t2", "source_id": "session-1", "actor": "tool", "kind": "tool_result", "text": "The focused renderer test passed after the edit.", "order": 5 }
+    ]
+  },
+  "diff": [
+    { "path": "src/render/change-map.ts", "side": "delete", "line": 1, "text": "export function renderChangeMap() {}" },
+    { "path": "tests/change-map.test.ts", "side": "delete", "line": 1, "text": "test('renders the change map', () => {})" },
+    { "path": "README.md", "side": "delete", "line": 22, "text": "![Change map](docs/change-map.png)" },
+    { "path": "README.md", "side": "context", "line": 24, "text": "The reviewer brief explains each approval decision." }
+  ],
+  "commands": []
+}

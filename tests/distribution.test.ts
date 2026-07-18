@@ -287,21 +287,22 @@ test("review-surfaces.DISTRIBUTION.9 --version and the version command print the
 });
 
 test("review-surfaces.DISTRIBUTION.10 the bin shim guards the Node floor with one actionable line", () => {
-  const shim = read("bin/review-surfaces.js");
   const manifest = JSON.parse(read("package.json")) as { engines?: { node?: string } };
   const floorMatch = /([0-9]+)/.exec(manifest.engines?.node ?? "");
   assert.ok(floorMatch, "package.json declares a Node engines floor");
   const floor = floorMatch![1];
-  // The guard checks the runtime version before spawning dist, names the SAME
-  // floor as engines (a bump must touch both or this fails), and exits 1.
-  assert.ok(shim.includes("process.versions.node"), "the shim reads the runtime Node version");
-  assert.match(shim, new RegExp(`REQUIRED_NODE_MAJOR = ${floor}\\b`), "the shim's floor matches package.json engines");
-  assert.match(shim, /requires Node(\.js)? >= /, "the guard message is actionable");
-  // The shim must stay parseable by OLD Node to deliver that message: plain
-  // CJS, no optional chaining or nullish coalescing at the top level of the
-  // guard path before main() can bail out.
-  const guardSection = shim.slice(0, shim.indexOf("async function main"));
-  assert.ok(!guardSection.includes("?."), "no optional chaining before the guard");
+  for (const { file, guardEnd } of [
+    { file: "bin/review-surfaces.js", guardEnd: "async function main" },
+    { file: "bin/agreement-audit.js", guardEnd: "const path" }
+  ]) {
+    const shim = read(file);
+    // Each public shim checks the runtime before loading dist and names the same
+    // floor as engines, so a package floor bump must update both entry points.
+    assert.ok(shim.includes("process.versions.node"), `${file} reads the runtime Node version`);
+    assert.match(shim, new RegExp(`REQUIRED_NODE_MAJOR = ${floor}\\b`), `${file} matches package.json engines`);
+    assert.match(shim, /requires Node(\.js)? >= /, `${file} guard message is actionable`);
+    assert.ok(!shim.slice(0, shim.indexOf(guardEnd)).includes("?."), `${file} guard is old-Node parseable`);
+  }
 });
 
 test("review-surfaces.DISTRIBUTION.11 the README renders on the npm page: absolute links and sidebar metadata", () => {

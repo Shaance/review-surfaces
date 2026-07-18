@@ -1,7 +1,7 @@
 {
   "name": "review-surfaces",
   "version": "0.3.1",
-  "description": "Local-first review packet compiler for agent-generated code changes.",
+  "description": "Evidence-bound audit of whether agent-written changes match the human-agent conversation.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -20,7 +20,8 @@
     "local-first"
   ],
   "bin": {
-    "review-surfaces": "./bin/review-surfaces.js"
+    "review-surfaces": "./bin/review-surfaces.js",
+    "agreement-audit": "./bin/agreement-audit.js"
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
@@ -37,6 +38,7 @@
     "local-review": "./scripts/local-review.sh",
     "local-gate": "./scripts/local-gate.sh",
     "review-surfaces": "pnpm run build && node bin/review-surfaces.js",
+    "agreement-audit": "node bin/agreement-audit.js",
     "copy-env": "./scripts/copy-env.sh",
     "prepublishOnly": "pnpm run local-gate"
   },
@@ -57,6 +59,7 @@
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "fast-xml-parser": "^5.8.0",
+    "proper-lockfile": "4.1.2",
     "typescript": "^6.0.3",
     "yaml": "^2.9.0"
   },
@@ -67,6 +70,7 @@
     "ai": "^6.0.192"
   },
   "devDependencies": {
-    "@types/node": "^25.9.1"
+    "@types/node": "^25.9.1",
+    "@types/proper-lockfile": "4.1.4"
   }
 }
