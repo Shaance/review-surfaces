@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import lockfile from "proper-lockfile";
 import { groundAgreementAudit } from "./grounding";
 import { buildAuditPrompt, type AuditPromptMode } from "./prompt";
 import { renderAgreementAuditMarkdown } from "./render";
@@ -34,8 +35,22 @@ export async function runAgreementAuditCli(argv: string[]): Promise<number> {
     const markdownPath = path.join(out, "audit.md");
     assertWritableArtifactPath(jsonPath);
     assertWritableArtifactPath(markdownPath);
-    writePrivateFile(jsonPath, `${JSON.stringify(audit, null, 2)}\n`);
-    writePrivateFile(markdownPath, renderAgreementAuditMarkdown(audit));
+    const staged = stageArtifactPair([
+      [jsonPath, `${JSON.stringify(audit, null, 2)}\n`],
+      [markdownPath, renderAgreementAuditMarkdown(audit)]
+    ]);
+    try {
+      const releaseLock = acquireArtifactLock(out);
+      try {
+        assertWritableArtifactPath(jsonPath);
+        assertWritableArtifactPath(markdownPath);
+        staged.publish();
+      } finally {
+        releaseLock();
+      }
+    } finally {
+      staged.discard();
+    }
     process.stdout.write(`${markdownPath}\n`);
     return audit.status === "cannot_audit" ? 4 : 0;
   }
@@ -72,6 +87,71 @@ function writePrivateFile(file: string, content: string): void {
     fs.writeFileSync(descriptor, content, "utf8");
   } finally {
     fs.closeSync(descriptor);
+  }
+}
+
+function stageArtifactPair(artifacts: readonly [
+  readonly [file: string, content: string],
+  readonly [file: string, content: string]
+]): { publish: () => void; discard: () => void } {
+  const directory = path.dirname(artifacts[0][0]);
+  if (artifacts.some(([file]) => path.dirname(file) !== directory)) {
+    throw new Error("artifact pair must share one output directory");
+  }
+  const stagingDirectory = fs.mkdtempSync(path.join(directory, ".agreement-audit-"));
+  fs.chmodSync(stagingDirectory, 0o700);
+  try {
+    const staged = artifacts.map(([file, content]) => {
+      const temporary = path.join(stagingDirectory, path.basename(file));
+      writePrivateFile(temporary, content);
+      const backup = path.join(stagingDirectory, `.previous-${path.basename(file)}`);
+      return { file, temporary, backup };
+    });
+    return {
+      publish: () => {
+        const published: string[] = [];
+        for (const { file, backup } of staged) {
+          if (fs.existsSync(file)) fs.linkSync(file, backup);
+        }
+        try {
+          for (const { file, temporary } of staged) {
+            fs.renameSync(temporary, file);
+            published.push(file);
+          }
+        } catch (error) {
+          for (const { file, backup } of staged) {
+            if (fs.existsSync(backup)) fs.renameSync(backup, file);
+            else if (published.includes(file)) fs.rmSync(file, { force: true });
+          }
+          throw error;
+        }
+      },
+      discard: () => {
+        fs.rmSync(stagingDirectory, { recursive: true, force: true });
+      }
+    };
+  } catch (error) {
+    fs.rmSync(stagingDirectory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function acquireArtifactLock(directory: string): () => void {
+  const lockPath = path.join(directory, ".agreement-audit.lock");
+  try {
+    return lockfile.lockSync(directory, {
+      lockfilePath: lockPath,
+      realpath: false,
+      // Artifact-sized rendering and writes happen before locking. The lock
+      // covers only a fixed set of same-filesystem link/rename operations.
+      stale: 120_000,
+      update: 40_000
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
+      throw new Error("another agreement-audit finalize is already writing this output directory");
+    }
+    throw error;
   }
 }
 

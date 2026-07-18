@@ -67,6 +67,11 @@ interface GeneratedCase extends PreparedCase {
   }>;
 }
 
+interface AdjudicationTask {
+  generatedCase: GeneratedCase;
+  run: GeneratedCase["generated"][number];
+}
+
 /**
  * Runs both benchmark arms as one hidden-gold boundary. Input and gold bytes
  * are integrity-preflighted before any provider call; gold is parsed and
@@ -135,12 +140,12 @@ export async function runAgreementBenchmarkPair(
     return [entry.id, gold] as const;
   }));
 
-  const adjudicationOrder = blindedAdjudicationOrder(generatedCases, manifest.cases.map((entry) => entry.id));
-  const completed = await mapWithConcurrency(adjudicationOrder, concurrency, async (generatedCase, control) => {
-    const { entry, generated, mode } = generatedCase;
-    const gold = goldByCase.get(entry.id)!;
-    const scores: AgreementBenchmarkScore[] = [];
-    for (const run of generated) {
+  const adjudicationGroups = blindedAdjudicationOrder(generatedCases, manifest.cases.map((entry) => entry.id));
+  const completedScoreGroups = await mapWithConcurrency(adjudicationGroups, concurrency, async (tasks, control) => {
+    const scores = [];
+    for (const { generatedCase, run } of tasks) {
+      const { entry, mode } = generatedCase;
+      const gold = goldByCase.get(entry.id)!;
       if (control.aborted) throw new Error("benchmark adjudication aborted after another case failed");
       const adjudication = await options.adjudicate({
         case_id: entry.id,
@@ -148,7 +153,7 @@ export async function runAgreementBenchmarkPair(
         audit: structuredClone(run.audit),
         gold: structuredClone(gold)
       });
-      scores.push(scoreAgreementBenchmarkRun(run.audit, gold, adjudication, {
+      const score = scoreAgreementBenchmarkRun(run.audit, gold, adjudication, {
         run_id: `${mode}:${entry.id}:${run.runNumber}`,
         pair_id: run.pairId,
         model_id: options.model_id,
@@ -157,39 +162,65 @@ export async function runAgreementBenchmarkPair(
         gold_sha256: entry.gold_sha256,
         output_hash: run.outputHash,
         generation_ms: run.generationMs
-      }));
+      });
+      scores.push({ mode, caseId: entry.id, runNumber: run.runNumber, score });
     }
-    const artifacts = generated.map((run) => ({
-      case_id: entry.id,
-      pair_id: run.pairId,
-      output_hash: run.outputHash,
-      markdown: run.markdown,
-      audit: run.audit
-    }));
-    return { mode, scores, artifacts };
+    return scores;
   });
 
   const caseIds = manifest.cases.map((entry) => entry.id);
-  const arm = (mode: AuditPromptMode): AgreementBenchmarkArmResult => ({
-    case_ids: caseIds,
-    scores: completed.filter((result) => result.mode === mode).flatMap((result) => result.scores),
-    artifacts: completed.filter((result) => result.mode === mode).flatMap((result) => result.artifacts)
-  });
+  const completedScores = completedScoreGroups.flat();
+  const scoreByRun = new Map(completedScores.map((result) => [
+    `${result.mode}\0${result.caseId}\0${result.runNumber}`,
+    result.score
+  ]));
+  const arm = (mode: AuditPromptMode): AgreementBenchmarkArmResult => {
+    const cases = generatedCases.filter((generatedCase) => generatedCase.mode === mode);
+    return {
+      case_ids: caseIds,
+      scores: cases.flatMap(({ entry, generated }) => generated.map(({ runNumber }) =>
+        scoreByRun.get(`${mode}\0${entry.id}\0${runNumber}`)!
+      )),
+      artifacts: cases.flatMap(({ entry, generated }) => generated.map((run) => ({
+        case_id: entry.id,
+        pair_id: run.pairId,
+        output_hash: run.outputHash,
+        markdown: run.markdown,
+        audit: run.audit
+      })))
+    };
+  };
   return { baseline: arm("plain-agent"), product: arm("review-surfaces") };
 }
 
-function blindedAdjudicationOrder(generatedCases: GeneratedCase[], caseIds: string[]): GeneratedCase[] {
+function blindedAdjudicationOrder(generatedCases: GeneratedCase[], caseIds: string[]): AdjudicationTask[][] {
   const byCase = new Map<string, GeneratedCase[]>();
   for (const generatedCase of generatedCases) {
     const cases = byCase.get(generatedCase.entry.id) ?? [];
     cases.push(generatedCase);
     byCase.set(generatedCase.entry.id, cases);
   }
-  return caseIds.flatMap((caseId) => {
+  return caseIds.map((caseId) => {
     const cases = byCase.get(caseId);
     if (cases?.length !== 2) throw new Error(`benchmark case ${caseId} is missing an arm`);
-    return crypto.randomInt(2) === 0 ? cases : [cases[1], cases[0]];
+    const [first, second] = shuffled(cases.map((generatedCase) => ({
+      generatedCase,
+      runs: shuffled(generatedCase.generated)
+    })));
+    return first.runs.flatMap((run, index) => [
+      { generatedCase: first.generatedCase, run },
+      { generatedCase: second.generatedCase, run: second.runs[index] }
+    ]);
   });
+}
+
+function shuffled<Value>(values: readonly Value[]): Value[] {
+  const result = [...values];
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const other = crypto.randomInt(index + 1);
+    [result[index], result[other]] = [result[other], result[index]];
+  }
+  return result;
 }
 
 function readJson(file: string): unknown {
@@ -213,6 +244,8 @@ async function mapWithConcurrency<Input, Output>(
 ): Promise<Output[]> {
   const results = new Array<Output>(values.length);
   const control = { aborted: false };
+  let firstError: unknown;
+  let failed = false;
   let nextIndex = 0;
   const worker = async (): Promise<void> => {
     while (!control.aborted && nextIndex < values.length) {
@@ -222,10 +255,12 @@ async function mapWithConcurrency<Input, Output>(
         results[index] = await run(values[index], control);
       } catch (error) {
         control.aborted = true;
-        throw error;
+        if (!failed) firstError = error;
+        failed = true;
       }
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => worker()));
+  if (failed) throw firstError;
   return results;
 }

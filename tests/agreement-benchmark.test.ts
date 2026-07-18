@@ -483,6 +483,9 @@ test("benchmark adjudication interleaves secretly ordered arms and returns stabl
     const caseOrder = adjudicationOrder.slice(index, index + 6);
     assert.equal(caseOrder.filter((marker) => marker === "plain-marker").length, 3);
     assert.equal(caseOrder.filter((marker) => marker === "product-marker").length, 3);
+    assert.ok(caseOrder.every((marker, markerIndex) =>
+      markerIndex === 0 || marker !== caseOrder[markerIndex - 1]
+    ));
   }
   assert.deepEqual(baseline.scores.map((score) => score.case_id), baseline.case_ids.flatMap((caseId) => [caseId, caseId, caseId]));
   assert.deepEqual(product.scores.map((score) => score.case_id), product.case_ids.flatMap((caseId) => [caseId, caseId, caseId]));
@@ -527,7 +530,9 @@ test("adjudicator mutation cannot alter scored audits or hidden gold", async () 
 test("concurrent benchmark workers stop scheduling generation after the first failure", async () => {
   let generationCount = 0;
   let releaseBlockedGeneration!: () => void;
+  let blockedGenerationStarted!: () => void;
   const blockedGeneration = new Promise<void>((resolve) => { releaseBlockedGeneration = resolve; });
+  const secondGenerationStarted = new Promise<void>((resolve) => { blockedGenerationStarted = resolve; });
   const run = runAgreementBenchmarkPair({
     root: BENCH_ROOT,
     model_id: "fake-model",
@@ -539,15 +544,72 @@ test("concurrent benchmark workers stop scheduling generation after the first fa
         await Promise.resolve();
         throw new Error("provider failed");
       }
+      blockedGenerationStarted();
       await blockedGeneration;
       return emptyCandidate();
     },
     adjudicate: async () => emptyAdjudication()
   });
-  await assert.rejects(run, /provider failed/);
-  releaseBlockedGeneration();
+  let settled = false;
+  const rejected = assert.rejects(run, /provider failed/).finally(() => { settled = true; });
+  await secondGenerationStarted;
   await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  releaseBlockedGeneration();
+  await rejected;
   assert.equal(generationCount, 2);
+});
+
+test("concurrent benchmark failures drain in-flight adjudication before rejecting", async () => {
+  let adjudicationCount = 0;
+  let releaseBlockedAdjudication!: () => void;
+  let blockedAdjudicationStarted!: () => void;
+  const blockedAdjudication = new Promise<void>((resolve) => { releaseBlockedAdjudication = resolve; });
+  const secondAdjudicationStarted = new Promise<void>((resolve) => { blockedAdjudicationStarted = resolve; });
+  const run = runAgreementBenchmarkPair({
+    root: BENCH_ROOT,
+    model_id: "fake-model",
+    model_config_hash: "same-config",
+    case_concurrency: 2,
+    generate: async () => emptyCandidate(),
+    adjudicate: async () => {
+      adjudicationCount += 1;
+      if (adjudicationCount === 1) {
+        await Promise.resolve();
+        throw new Error("adjudicator failed");
+      }
+      blockedAdjudicationStarted();
+      await blockedAdjudication;
+      return emptyAdjudication();
+    }
+  });
+  let settled = false;
+  const rejected = assert.rejects(run, /adjudicator failed/).finally(() => { settled = true; });
+  await secondAdjudicationStarted;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  releaseBlockedAdjudication();
+  await rejected;
+  assert.equal(adjudicationCount, 2);
+});
+
+test("concurrent benchmark cases keep adjudication runs sequential within each case", async () => {
+  const activeCases = new Set<string>();
+  await runAgreementBenchmarkPair({
+    root: BENCH_ROOT,
+    model_id: "fake-model",
+    model_config_hash: "same-config",
+    case_concurrency: 3,
+    generate: async () => emptyCandidate(),
+    adjudicate: async ({ case_id }) => {
+      assert.equal(activeCases.has(case_id), false, `overlapping adjudication for ${case_id}`);
+      activeCases.add(case_id);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      activeCases.delete(case_id);
+      return emptyAdjudication();
+    }
+  });
+  assert.equal(activeCases.size, 0);
 });
 
 test("benchmark runner rejects changed input or gold before provider generation", async () => {
