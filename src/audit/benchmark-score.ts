@@ -15,6 +15,7 @@ export interface AgreementBenchmarkScore {
   model_id: string;
   model_config_hash: string;
   input_hash: string;
+  gold_sha256: string;
   output_hash: string;
   generation_ms: number;
   precision: number;
@@ -38,6 +39,7 @@ export function scoreAgreementBenchmarkRun(
     model_id: string;
     model_config_hash: string;
     input_hash: string;
+    gold_sha256: string;
     output_hash: string;
     generation_ms: number;
   }

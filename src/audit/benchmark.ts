@@ -123,6 +123,9 @@ export function compareAgreementBenchmarkRuns(input: {
     if (new Set([...baselineRuns, ...productRuns].map((run) => run.input_hash)).size > 1) {
       failures.push(`${caseId} must use one frozen input across all runs`);
     }
+    if (new Set([...baselineRuns, ...productRuns].map((run) => run.gold_sha256)).size > 1) {
+      failures.push(`${caseId} must use one frozen gold ledger across all runs`);
+    }
     for (const [pairId, baseline] of baselineByPair) {
       const product = productByPair.get(pairId);
       expectedPreferenceKeys.add(`${caseId}\0${pairId}`);
@@ -208,8 +211,12 @@ export function parseAgreementBenchmarkManifest(value: unknown): AgreementBenchm
 
 function sha256(value: unknown, label: string): string {
   const hash = requiredString(value, label);
-  if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error(`${label} must be a lowercase SHA-256 digest`);
+  if (!isSha256(hash)) throw new Error(`${label} must be a lowercase SHA-256 digest`);
   return hash;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
 
 function relativeManifestPath(value: unknown, label: string): string {
@@ -334,7 +341,7 @@ function validBenchmarkScores(
     const validMetrics = metricFields.every((field) =>
       typeof record[field] === "number" && Number.isFinite(record[field]) && (record[field] as number) >= 0 && (record[field] as number) <= 1
     );
-    const valid = validText && validMetrics &&
+    const valid = validText && isSha256(record.gold_sha256) && validMetrics &&
       typeof record.generation_ms === "number" && Number.isFinite(record.generation_ms) && record.generation_ms >= 0 &&
       typeof record.exact_citation_gate === "boolean" && typeof record.clean_case_gate === "boolean" &&
       Array.isArray(record.failures) && record.failures.every((failure) => typeof failure === "string");

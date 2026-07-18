@@ -101,6 +101,10 @@ test("candidate prompts fail closed before provider integration when secret mate
   const assignment = loadInput("clean-alignment");
   assignment.conversation.events[0].text = `Remove the map with ${tokenAssignment()}`;
   assert.throws(() => buildAuditPrompt(assignment, "review-surfaces"), /refusing provider generation/);
+
+  const persistedMarker = loadInput("clean-alignment");
+  persistedMarker.conversation.events[0].text = "Remove the map using [REDACTED:github_token]";
+  assert.throws(() => buildAuditPrompt(persistedMarker, "review-surfaces"), /refusing provider generation/);
 });
 
 test("input and candidate parsing reject Windows and traversal paths", () => {

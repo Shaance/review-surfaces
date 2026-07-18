@@ -98,9 +98,11 @@ context/output budget, and three runs per case. Its release gate requires:
 - at least 2:1 blinded reviewer preference for faster, clearer decisions.
 
 The manifest content-addresses every input and hidden gold file. The runner
-refuses changed fixtures, binds each preference to the exact candidate output,
-and records generation and reviewer-decision time. At least two thirds of all
-paired judgments must prefer the product in addition to the 2:1 preference gate.
+refuses changed fixtures, records the hidden-gold digest on each score, rejects
+recorded comparisons that mix gold ledgers for a case, binds each preference to
+the exact candidate output, and records generation and reviewer-decision time.
+At least two thirds of all paired judgments must prefer the product in addition
+to the 2:1 preference gate.
 
 Because this first calibration set and prompt are introduced together, these six
 cases cannot alone prove generalization. This milestone is score-only and is not

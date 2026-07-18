@@ -53,6 +53,7 @@ export interface AgreementBenchmarkPairResult {
 interface PreparedCase {
   entry: AgreementBenchmarkManifest["cases"][number];
   input: AgreementAuditInput;
+  prompts: Record<AuditPromptMode, string>;
 }
 
 interface GeneratedCase extends PreparedCase {
@@ -89,9 +90,14 @@ export async function runAgreementBenchmarkPair(
     const goldBytes = fs.readFileSync(path.join(options.root, entry.gold));
     assertDigest(goldBytes, entry.gold_sha256, entry.gold);
     goldBytesByCase.set(entry.id, goldBytes);
+    const input = parseAgreementAuditInput(JSON.parse(inputBytes.toString("utf8")) as unknown);
     return {
       entry,
-      input: parseAgreementAuditInput(JSON.parse(inputBytes.toString("utf8")) as unknown)
+      input,
+      prompts: {
+        "plain-agent": buildAuditPrompt(input, "plain-agent"),
+        "review-surfaces": buildAuditPrompt(input, "review-surfaces")
+      }
     };
   });
 
@@ -99,7 +105,7 @@ export async function runAgreementBenchmarkPair(
     preparedCases.map((prepared) => ({ mode, prepared }))
   );
   const generatedCases = await mapWithConcurrency(generationTasks, concurrency, async ({ mode, prepared }, control) => {
-    const prompt = buildAuditPrompt(prepared.input, mode);
+    const prompt = prepared.prompts[mode];
     const generated: GeneratedCase["generated"] = [];
     for (const runNumber of [1, 2, 3]) {
       if (control.aborted) throw new Error("benchmark generation aborted after another case failed");
@@ -148,6 +154,7 @@ export async function runAgreementBenchmarkPair(
         model_id: options.model_id,
         model_config_hash: options.model_config_hash,
         input_hash: entry.input_sha256,
+        gold_sha256: entry.gold_sha256,
         output_hash: run.outputHash,
         generation_ms: run.generationMs
       }));

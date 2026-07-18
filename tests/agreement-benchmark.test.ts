@@ -147,6 +147,7 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
     model_id: "model-a",
     model_config_hash: "config-a",
     input_hash: "input-a",
+    gold_sha256: "a".repeat(64),
     output_hash: "output-a",
     generation_ms: 1
   };
@@ -268,6 +269,22 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
     preferences
   });
   assert.ok(mixedInput.failures.some((failure) => /one frozen input across all runs/.test(failure)));
+
+  const mixedGold = compareAgreementBenchmarkRuns({
+    required_case_ids: ["late-correction"],
+    baseline,
+    product: product.map((run, index) => index === 2 ? { ...run, gold_sha256: "b".repeat(64) } : run),
+    preferences
+  });
+  assert.ok(mixedGold.failures.some((failure) => /one frozen gold ledger across all runs/.test(failure)));
+
+  const invalidGoldDigest = compareAgreementBenchmarkRuns({
+    required_case_ids: ["late-correction"],
+    baseline,
+    product: product.map((run, index) => index === 0 ? { ...run, gold_sha256: "not-a-digest" } : run),
+    preferences
+  });
+  assert.ok(invalidGoldDigest.failures.some((failure) => /invalid recorded fields/.test(failure)));
 
   const invalidRecordedScore = compareAgreementBenchmarkRuns({
     required_case_ids: ["late-correction"],
@@ -461,6 +478,38 @@ test("benchmark runner rejects changed input or gold before provider generation"
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  }
+});
+
+test("benchmark runner privacy-preflights every prompt before provider generation", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agreement-benchmark-"));
+  try {
+    fs.cpSync(BENCH_ROOT, root, { recursive: true });
+    const manifest = readJson<{ cases: Array<{ input: string; input_sha256: string }> }>(path.join(root, "manifest.json"));
+    const entry = manifest.cases.at(-1)!;
+    const inputPath = path.join(root, entry.input);
+    const input = readJson<Record<string, unknown>>(inputPath);
+    const conversation = input.conversation as Record<string, unknown>;
+    const events = conversation.events as Array<Record<string, unknown>>;
+    events[0].text = "Review [REDACTED:github_token] without sending it to a provider.";
+    fs.writeFileSync(inputPath, `${JSON.stringify(input, null, 2)}\n`);
+    entry.input_sha256 = fileDigest(inputPath);
+    fs.writeFileSync(path.join(root, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+
+    let generationCount = 0;
+    await assert.rejects(() => runAgreementBenchmarkPair({
+      root,
+      model_id: "unreached",
+      model_config_hash: "unreached",
+      generate: async () => {
+        generationCount += 1;
+        throw new Error("generation must not start");
+      },
+      adjudicate: async () => emptyAdjudication()
+    }), /refusing provider generation/);
+    assert.equal(generationCount, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

@@ -14,7 +14,7 @@ export function buildAuditPrompt(input: AgreementAuditInput, mode: AuditPromptMo
     ? PLAIN_TASK
     : REVIEW_SURFACES_TASK;
   const inspectedInput = inspectAndRedactSecrets(JSON.stringify(input));
-  if (inspectedInput.redactions.length > 0) {
+  if (inspectedInput.blocked || inspectedInput.redactions.length > 0) {
     throw new Error("audit input contains secret material; refusing provider generation");
   }
   return [
